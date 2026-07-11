@@ -1,6 +1,7 @@
 ---
 description: Executor, not a compiler — do the requested work under sharpened discipline (visible restatement, free self-checks, argue-against)
 argument-hint: [request]
+disable-model-invocation: true
 ---
 
 Execute or answer this request under sharpened discipline: $ARGUMENTS

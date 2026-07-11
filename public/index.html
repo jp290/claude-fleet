@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Claude Fleet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#141414">
+<link rel="stylesheet" href="/xterm.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #141414; }
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; color: #ccc; }
+  #app { display: flex; height: 100vh; }
+
+  #side { width: 200px; flex: none; display: flex; flex-direction: column;
+    background: #1a1a1a; border-right: 1px solid #2a2a2a; }
+  #sidehead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px;
+    font-size: 12px; font-weight: 700; color: #e8e8e8; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; }
+  #dot.on { background: #3fb950; } #dot.off { background: #f85149; }
+  #slots { flex: 1; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .slot { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px;
+    border: 1px solid transparent; cursor: pointer; font-size: 12px; user-select: none; }
+  .slot:hover { background: #242424; }
+  .slot.shown { background: #1e2333; border-color: #2a3350; }
+  .slot.current { background: #26314f; border-color: #3a4a7a; }
+  .slot .n { flex: none; width: 16px; color: #7aa2f7; font-weight: 700; }
+  .slot.empty .n { color: #555; }
+  .slot .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slot .lbl.dim { color: #555; }
+  .slot .act { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; }
+  .slot .act.hot { background: #3fb950; }
+  .slot .kill, .slot .ren { flex: none; color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px;
+    visibility: hidden; }
+  .slot:hover .kill, .slot:hover .ren { visibility: visible; }
+  .slot .kill:hover { color: #f85149; background: #2a1a1a; }
+  .slot .ren:hover { color: #7aa2f7; background: #1c2437; }
+  .renamein { flex: 1; min-width: 0; height: 20px; padding: 0 5px; border-radius: 5px;
+    border: 1px solid #3a4a7a; background: #141414; color: #eee; font-size: 12px; font-family: inherit; }
+  .renamein:focus { outline: none; }
+  #sidefoot { padding: 10px 14px; font-size: 11px; color: #555; line-height: 1.5;
+    border-top: 1px solid #2a2a2a; }
+
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #panes { flex: 1; min-height: 0; display: grid; gap: 4px; padding: 4px; }
+  #panes.l1 { grid-template-columns: 1fr; }
+  #panes.l2 { grid-template-columns: 1fr 1fr; }
+  #panes.l4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  .pane { position: relative; min-width: 0; min-height: 0; border: 1px solid #2a2a2a;
+    border-radius: 8px; overflow: hidden; background: #141414; }
+  #panes:not(.l1) .pane.focused { border-color: #3a4a7a; box-shadow: 0 0 0 1px #3a4a7a; }
+  .paneterm { position: absolute; inset: 4px 0 0 6px; }
+  .panehint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #555; font-size: 12px; pointer-events: none; }
+  .jump { position: absolute; display: none; bottom: 12px; right: 14px; z-index: 5;
+    width: 34px; height: 34px; border-radius: 50%; border: 1px solid #444;
+    background: #222d; color: #ddd; font-size: 14px; align-items: center; justify-content: center;
+    cursor: pointer; }
+  #layouts { display: flex; gap: 4px; margin-left: auto; }
+  #layouts button { width: 30px; height: 25px; border-radius: 6px; border: 1px solid #333;
+    background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
+  #layouts button.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
+
+  #bar { flex: none; background: #1c1c1c; border-top: 1px solid #2a2a2a;
+    padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; }
+  #chips { display: flex; gap: 6px; }
+  #chips:empty { display: none; }
+  .chip { padding: 6px 14px; border-radius: 8px; border: 1px solid #2c3a5e; background: #262626;
+    color: #7aa2f7; font-size: 12px; font-family: inherit; cursor: pointer; }
+  .chip.active { background: #7aa2f7; color: #10131c; }
+  #inputrow { display: flex; gap: 7px; align-items: flex-end; }
+  #input { flex: 1; min-height: 42px; max-height: 140px; resize: none; padding: 11px 13px;
+    border-radius: 10px; border: 1px solid #333; background: #262626; color: #eee;
+    font-size: 13px; font-family: inherit; line-height: 1.4; }
+  #input:focus { outline: none; border-color: #3a4a7a; }
+  #send { flex: none; width: 62px; height: 42px; border-radius: 10px; border: none;
+    background: #7aa2f7; color: #10131c; font-size: 16px; font-weight: 700; cursor: pointer; }
+  #send:disabled { opacity: 0.5; }
+
+  .overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: #000a; z-index: 20; }
+  .panel { width: 520px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column;
+    background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 16px; gap: 10px; }
+  .panel h2 { font-size: 13px; color: #e8e8e8; }
+  #pkpathrow { display: flex; gap: 7px; }
+  #pkpath { flex: 1; height: 38px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
+    background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
+  #pkpath:focus { outline: none; border-color: #3a4a7a; }
+  #pkpath.bad { border-color: #f85149; }
+  #pklists { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .pkhead { padding: 9px 4px 4px; font-size: 10px; color: #666; text-transform: uppercase;
+    letter-spacing: 0.06em; }
+  .pkrow { display: flex; align-items: center; padding: 5px 9px; border-radius: 7px; cursor: pointer;
+    font-size: 12px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pkrow:hover { background: #262626; }
+  .pkrow.up { color: #888; }
+  .pkrow.recent { color: #a7c080; }
+  .pkrow .pkuse { margin-left: auto; padding: 3px 10px; border-radius: 6px; font-size: 12px;
+    color: #7aa2f7; visibility: hidden; }
+  .pkrow:hover .pkuse { visibility: visible; }
+  .pkrow .pkuse:hover { background: #2c3a5e; }
+  .pknone { padding: 6px 9px; font-size: 12px; color: #555; }
+  .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
+  .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid #333; background: #262626;
+    color: #ccc; font-size: 13px; font-family: inherit; cursor: pointer; }
+  #pkstart { background: #7aa2f7; border-color: #7aa2f7; color: #10131c; font-weight: 700; }
+
+  #gate .panel { width: 380px; }
+  #gate p { font-size: 11px; color: #888; line-height: 1.5; }
+  #gatein { height: 40px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
+    background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
+  #gatein:focus { outline: none; border-color: #3a4a7a; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <div id="sidehead"><span id="dot" class="off"></span>Claude Fleet
+      <span id="layouts">
+        <button data-l="1" title="single pane">▢</button>
+        <button data-l="2" title="2-up split">◫</button>
+        <button data-l="4" title="2×2 grid">⊞</button>
+      </span>
+    </div>
+    <div id="slots"></div>
+    <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
+  </div>
+  <div id="main">
+    <div id="panes" class="l1"></div>
+    <div id="bar">
+      <div id="chips"></div>
+      <div id="inputrow">
+        <textarea id="input" rows="1" placeholder="Prompt for the selected session… (Enter sends)"
+          autocomplete="off"></textarea>
+        <button id="send">➤</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="picker" class="overlay">
+  <div class="panel">
+    <h2 id="pktitle">New session</h2>
+    <div id="pkpathrow">
+      <input id="pkpath" type="text" spellcheck="false" autocomplete="off"
+        placeholder="/path/to/project — Enter to browse">
+    </div>
+    <div id="pklists"></div>
+    <div class="pkbtns">
+      <button id="pkcancel">Cancel</button>
+      <button id="pkstart">Start here</button>
+    </div>
+  </div>
+</div>
+
+<div id="gate" class="overlay">
+  <div class="panel">
+    <h2>Access token</h2>
+    <p>Paste the fleet token (printed by the server on boot, or open the /?token=… login URL).</p>
+    <input id="gatein" type="password" placeholder="token — Enter to save" autocomplete="off">
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

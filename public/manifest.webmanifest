@@ -1,0 +1,14 @@
+{
+  "name": "Claude Fleet",
+  "short_name": "Fleet",
+  "description": "Multi-session Claude Code dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}

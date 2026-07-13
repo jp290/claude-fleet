@@ -94,6 +94,30 @@ const replayBytes = await new Promise<number>((resolve) => {
   ws.onerror = () => resolve(-1);
 });
 check("WS replay for slot 1 non-empty", replayBytes > 100, `${replayBytes} bytes`);
+
+// --- width-aware reseed: a client's cols/rows on connect should resize the tmux window
+// (tmux reflows history on resize, which is what fixes cross-width scrollback wrapping) ---
+const reseedCols = 55, reseedRows = 38;
+const seedText = await new Promise<string>((resolve) => {
+  let first = "";
+  const ws = new WebSocket(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = (e) => { if (!first) first = new TextDecoder().decode(e.data as ArrayBuffer); };
+  ws.onopen = () => setTimeout(() => { ws.close(); resolve(first); }, 800);
+  ws.onerror = () => resolve(first);
+});
+// capture-pane's plain output separates rows with bare LF; xterm.js doesn't treat LF alone
+// as a carriage return, so an unterminated LF staggers every line after it off column 0 —
+// every LF in the reseed must have a matching CR (see server.ts's crlf() normalizer)
+const lfCount = (seedText.match(/\n/g) ?? []).length;
+const crlfCount = (seedText.match(/\r\n/g) ?? []).length;
+check("reseed content has no bare LF (every line CRLF-terminated)", lfCount > 0 && lfCount === crlfCount, `${crlfCount}/${lfCount}`);
+await Bun.sleep(300);
+const winSize = await tmuxOut("display-message", "-p", "-t", "s2", "#{window_width} #{window_height}");
+check("WS connect with cols/rows reseeds tmux window", winSize.out.trim() === `${reseedCols} ${reseedRows}`, winSize.out.trim());
+const rszSame = await post("/resize", { slot: 2, cols: reseedCols, rows: reseedRows });
+check("/resize accepts matching size (no-op)", rszSame.ok);
+
 const wsNoTok = await new Promise<boolean>((resolve) => {
   let opened = false;
   const ws = new WebSocket(`ws://${IP}:8790/ws/1`);

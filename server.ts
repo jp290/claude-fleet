@@ -12,6 +12,10 @@ const PORT = Number(process.env.FLEET_PORT ?? 8790);
 const SOCK = "claudefleet";
 const MAX_SLOTS = 10;
 const REPLAY_TAIL = 2_000_000;
+// lines of scrollback to re-seed from a fresh capture-pane when a client's width
+// doesn't match the pane's current width (tmux reflows history on resize-window,
+// so this replays correctly-wrapped text instead of the raw stream's stale wrapping)
+const SEED_LINES = 3000;
 const MAX_RECENTS = 8;
 const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
@@ -29,7 +33,7 @@ const CHIPS = (process.env.FLEET_CHIPS ?? "")
 const MAX_LABEL = 40;
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
-type WSData = { slot: number; queue: Uint8Array[]; ready: boolean };
+type WSData = { slot: number; queue: Uint8Array[]; ready: boolean; cols: number; rows: number; force: boolean };
 
 interface Slot {
   id: number;
@@ -38,8 +42,13 @@ interface Slot {
   offset: number;
   lastOutput: number;
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
+  cols: number; // last tmux window size we applied — lets a same-size reconnect skip reseeding
+  rows: number;
   clients: Set<ServerWebSocket<WSData>>;
   inputChain: Promise<unknown>;
+  resizeChain: Promise<unknown>; // serializes resize-window+capture-pane so two concurrent
+  // triggers (e.g. two clients connecting at different widths) can't interleave their
+  // tmux calls and hand one client a seed reflowed to the other's width
 }
 
 const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
@@ -49,8 +58,11 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   offset: 0,
   lastOutput: 0,
   quietUntil: 0,
+  cols: 200,
+  rows: 50,
   clients: new Set(),
   inputChain: Promise.resolve(),
+  resizeChain: Promise.resolve(),
 }));
 let recents: string[] = [];
 let persistedToken: string | null = null;
@@ -87,14 +99,29 @@ async function repaint(name: string): Promise<void> {
   await tmux("resize-window", "-t", name, "-x", String(w), "-y", String(h));
 }
 
+// capture-pane's text output separates rows with a bare LF, never a CR. A raw terminal
+// (xterm.js included) doesn't treat LF alone as "return to column 0" — it just moves down
+// a row, so any line shorter than the pane's width leaves the cursor short of column 0 and
+// the next line starts printing mid-row, staggering everything after it. -e output mostly
+// dodges this because its column-jump escapes reposition text within a line regardless of
+// where the cursor landed, but plain output (our width-reseed path) has no such escapes and
+// hits this on nearly every line — normalize before anything captured reaches a terminal.
+const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
+
 async function ensureSlot(s: Slot): Promise<void> {
   if (!s.cwd) return;
   const name = sess(s.id);
   const has = await tmux("has-session", "-t", name);
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
-    await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, CLAUDE_CMD);
-    console.log(`slot ${s.id}: created tmux session '${name}' in ${s.cwd}`);
+    // has-session/new-session isn't atomic: the 2s self-heal loop and a fresh openSlot()
+    // can race to create the same session — only the winner should log/reset window size
+    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, CLAUDE_CMD);
+    if (created.code === 0) {
+      s.cols = 200;
+      s.rows = 50;
+      console.log(`slot ${s.id}: created tmux session '${name}' in ${s.cwd}`);
+    }
   }
   const pipe = await tmux("display-message", "-p", "-t", name, "#{pane_pipe}");
   const pipeOpen = pipe.out === "1";
@@ -106,7 +133,7 @@ async function ensureSlot(s: Slot): Promise<void> {
   if (pipeOpen) await tmux("pipe-pane", "-t", name); // close stale pipe (file was deleted)
   // seed stream with full pane history, then start piping raw output
   const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", "-");
-  await Bun.write(file, cap.out + "\r\n");
+  await Bun.write(file, crlf(cap.out) + "\r\n");
   chmodSync(file, 0o600);
   await tmux("pipe-pane", "-t", name, "-o", `exec cat >> '${file}'`);
   s.quietUntil = Date.now() + 1500;
@@ -139,21 +166,30 @@ async function killSlot(s: Slot): Promise<void> {
   s.offset = 0;
   s.lastOutput = 0;
   s.quietUntil = 0;
+  s.cols = 200;
+  s.rows = 50;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
 }
 
 async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
-  const buf = `fleetbuf${s.id}`;
-  const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
-  p.stdin.write(text);
-  await p.stdin.end();
-  await p.exited;
-  await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", sess(s.id));
-  if (submit) {
-    await Bun.sleep(150);
-    await tmux("send-keys", "-t", sess(s.id), "Enter");
-  }
+  // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
+  // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
+  // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
+  const task = s.inputChain.then(async () => {
+    const buf = `fleetbuf${s.id}`;
+    const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
+    p.stdin.write(text);
+    await p.stdin.end();
+    await p.exited;
+    await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", sess(s.id));
+    if (submit) {
+      await Bun.sleep(150);
+      await tmux("send-keys", "-t", sess(s.id), "Enter");
+    }
+  });
+  s.inputChain = task.catch(() => {});
+  await task;
 }
 
 function broadcast(s: Slot, chunk: Uint8Array): void {
@@ -250,6 +286,9 @@ const STATIC: Record<string, { path: string; type: string }> = {
   "/": { path: `${import.meta.dir}/public/index.html`, type: "text/html; charset=utf-8" },
   "/app.js": { path: `${import.meta.dir}/public/app.js`, type: "text/javascript" },
   "/xterm.css": { path: `${import.meta.dir}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },
+  "/manifest.webmanifest": { path: `${import.meta.dir}/public/manifest.webmanifest`, type: "application/manifest+json" },
+  "/icon.svg": { path: `${import.meta.dir}/public/icon.svg`, type: "image/svg+xml" },
+  "/icon-180.png": { path: `${import.meta.dir}/public/icon-180.png`, type: "image/png" },
 };
 
 const json = (body: unknown, status = 200) =>
@@ -358,7 +397,19 @@ Bun.serve<WSData>({
     if (wsMatch) {
       const s = slotFrom(wsMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 404);
-      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false } })) return;
+      // cols/rows are the connecting client's real terminal size, known synchronously
+      // at connect time — unlike the client's separate /resize POST (fired onopen),
+      // this avoids a race between the initial replay and the first resize
+      const colsParam = url.searchParams.get("cols");
+      const rowsParam = url.searchParams.get("rows");
+      const cols = colsParam ? Math.min(300, Math.max(20, Number(colsParam) | 0)) : 0;
+      const rows = rowsParam ? Math.min(200, Math.max(10, Number(rowsParam) | 0)) : 0;
+      // set by the client's explicit reload/refresh action — a plain reconnect (auto-retry
+      // after a drop, or a fresh slot assignment) only reseeds on an actual width mismatch,
+      // which does nothing if the client's width already happens to match; force skips that
+      // check so "reload" reliably re-derives from tmux's current state either way
+      const force = url.searchParams.get("force") === "1";
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, cols, rows, force } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/sessions") {
@@ -417,8 +468,22 @@ Bun.serve<WSData>({
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       const c = Math.min(300, Math.max(20, Number(body.cols) | 0));
       const r = Math.min(200, Math.max(10, Number(body.rows) | 0));
-      s.quietUntil = Date.now() + 1500; // the repaint this causes is not session activity
-      await tmux("resize-window", "-t", sess(s.id), "-x", String(c), "-y", String(r));
+      // no-op guard: repaint() forces a visible blank-then-redraw (see below) — skip it
+      // when the size hasn't actually changed, so client-side measurement noise (e.g. the
+      // keyboard nudging the viewport a few px while typing) can't retrigger it
+      if (c === s.cols && r === s.rows) return json({ ok: true, cols: c, rows: r });
+      const name = sess(s.id);
+      const task = s.resizeChain.then(async () => {
+        s.quietUntil = Date.now() + 1500; // the repaint this causes is not session activity
+        await tmux("resize-window", "-t", name, "-x", String(c), "-y", String(r));
+        s.cols = c;
+        s.rows = r;
+        // force the TUI to redraw into the new size now, instead of waiting on its own
+        // SIGWINCH handling (a plain shell prompt won't reflow on its own at all)
+        await repaint(name);
+      });
+      s.resizeChain = task.catch(() => {});
+      await task;
       return json({ ok: true, cols: c, rows: r });
     }
     return new Response("not found", { status: 404 });
@@ -427,11 +492,49 @@ Bun.serve<WSData>({
     async open(ws) {
       const s = slots[ws.data.slot - 1];
       s.clients.add(ws);
-      const upTo = s.offset;
-      const start = Math.max(0, upTo - REPLAY_TAIL);
-      if (upTo > start) {
-        const buf = await Bun.file(streamPath(s.id)).slice(start, upTo).arrayBuffer();
-        ws.send(new Uint8Array(buf));
+      const { cols, rows, force } = ws.data;
+      const name = sess(s.id);
+      if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
+        // this client's width doesn't match the pane's current width (or the client
+        // explicitly asked for a reseed regardless — see the `force` comment above).
+        // tmux reflows pane history on resize-window, so resizing then capturing fresh replays
+        // correctly-wrapped scrollback instead of the raw stream's stale wrapping.
+        // Trade-off: this also resizes the shared pty for any other connected client
+        // (last connect wins, same as /resize) — true concurrent multi-width live
+        // rendering would need a per-client vt emulator, out of scope here.
+        // Chained through resizeChain (shared with /resize) so a second client
+        // connecting/resizing concurrently can't sneak its own resize-window in
+        // between this one and its capture-pane, handing this client a seed
+        // reflowed to the OTHER client's width instead of its own.
+        const task = s.resizeChain.then(async () => {
+          s.quietUntil = Date.now() + 1500;
+          await tmux("resize-window", "-t", name, "-x", String(cols), "-y", String(rows));
+          s.cols = cols;
+          s.rows = rows;
+          // no -e here: tmux's escape-preserving capture encodes styled-vs-default runs
+          // as absolute-column cursor jumps (e.g. "\x1b[200G") baked in at the ORIGINAL
+          // width — replaying those into a narrower terminal reproduces the exact
+          // garbling this reseed exists to fix. Plain text reflows correctly; the
+          // trade-off is old scrollback loses color after a width change, which is
+          // preferable to it being unreadable. Live output stays fully colored.
+          const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
+          ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
+          try {
+            s.offset = (await stat(streamPath(s.id))).size;
+          } catch {
+            // stream file briefly missing during recreate — next poll tick picks it up
+          }
+          await repaint(name);
+        });
+        s.resizeChain = task.catch(() => {});
+        await task;
+      } else {
+        const upTo = s.offset;
+        const start = Math.max(0, upTo - REPLAY_TAIL);
+        if (upTo > start) {
+          const buf = await Bun.file(streamPath(s.id)).slice(start, upTo).arrayBuffer();
+          ws.send(new Uint8Array(buf));
+        }
       }
       ws.data.ready = true;
       for (const chunk of ws.data.queue) ws.send(chunk);

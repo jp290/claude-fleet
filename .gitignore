@@ -4,3 +4,4 @@ fleet.json
 server.log
 public/app.js
 .playwright-mcp/
+.env

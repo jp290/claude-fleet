@@ -3,45 +3,76 @@
 <head>
 <meta charset="utf-8">
 <title>Claude Fleet</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#141414">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fleet">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="stylesheet" href="/xterm.css">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; overflow: hidden; background: #141414; }
-  body { font-family: ui-monospace, Menlo, Consolas, monospace; color: #ccc; }
-  #app { display: flex; height: 100vh; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; background: #141414; overscroll-behavior: none; }
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; color: #ccc; -webkit-text-size-adjust: 100%; }
+  button, .slot, .chip, .pkrow { touch-action: manipulation; }
+  /* momentum scrolling for the terminal scrollback on touch */
+  .xterm .xterm-viewport { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  #app { display: flex; height: 100vh; height: 100dvh; }
 
-  #side { width: 200px; flex: none; display: flex; flex-direction: column;
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.on { background: #3fb950; } .dot.off { background: #f85149; }
+
+  #mhead { display: none; }
+  #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
+  #keys { display: none; }
+  #live { display: none; }
+  #livebar { display: none; gap: 7px; }
+
+  #side { width: 250px; flex: none; display: flex; flex-direction: column;
     background: #1a1a1a; border-right: 1px solid #2a2a2a; }
-  #sidehead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px;
+  #sidehead { display: flex; align-items: center; gap: 6px; padding: 12px 10px 10px;
     font-size: 12px; font-weight: 700; color: #e8e8e8; }
-  #dot { width: 8px; height: 8px; border-radius: 50%; }
-  #dot.on { background: #3fb950; } #dot.off { background: #f85149; }
+  #sidetitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #collapse, #reload { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid #333;
+    background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #collapse:hover, #reload:hover { color: #ccc; }
   #slots { flex: 1; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 4px; }
-  .slot { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px;
-    border: 1px solid transparent; cursor: pointer; font-size: 12px; user-select: none; }
+  .slot { position: relative; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-size: 12px;
+    user-select: none; -webkit-user-select: none; --rb: #242424; }
   .slot:hover { background: #242424; }
-  .slot.shown { background: #1e2333; border-color: #2a3350; }
-  .slot.current { background: #26314f; border-color: #3a4a7a; }
+  .slot.shown { background: #1e2333; border-color: #2a3350; --rb: #1e2333; }
+  .slot.current { background: #26314f; border-color: #3a4a7a; --rb: #26314f; }
   .slot .n { flex: none; width: 16px; color: #7aa2f7; font-weight: 700; }
   .slot.empty .n { color: #555; }
   .slot .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot .lbl.dim { color: #555; }
   .slot .act { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; }
   .slot .act.hot { background: #3fb950; }
-  .slot .kill, .slot .ren { flex: none; color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px;
-    visibility: hidden; }
-  .slot:hover .kill, .slot:hover .ren { visibility: visible; }
+  /* rename/kill overlay the row's right edge on hover only, so the label keeps the full width */
+  .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
+    gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rb) 18px); }
+  .slot:hover .slotact { display: flex; }
+  .slot .kill, .slot .ren { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
   .slot .kill:hover { color: #f85149; background: #2a1a1a; }
   .slot .ren:hover { color: #7aa2f7; background: #1c2437; }
+  /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
+  #side.collapsed { width: 50px; }
+  #side.collapsed #sidetitle, #side.collapsed #layouts, #side.collapsed #dot, #side.collapsed #reload,
+  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
+  #side.collapsed #sidehead { padding: 12px 0 10px; justify-content: center; }
+  #side.collapsed #slots { padding: 4px 4px; }
+  #side.collapsed .slot { justify-content: center; gap: 5px; padding: 8px 2px; }
   .renamein { flex: 1; min-width: 0; height: 20px; padding: 0 5px; border-radius: 5px;
     border: 1px solid #3a4a7a; background: #141414; color: #eee; font-size: 12px; font-family: inherit; }
   .renamein:focus { outline: none; }
   #sidefoot { padding: 10px 14px; font-size: 11px; color: #555; line-height: 1.5;
     border-top: 1px solid #2a2a2a; }
 
-  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  #main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   #panes { flex: 1; min-height: 0; display: grid; gap: 4px; padding: 4px; }
   #panes.l1 { grid-template-columns: 1fr; }
   #panes.l2 { grid-template-columns: 1fr 1fr; }
@@ -49,24 +80,30 @@
   .pane { position: relative; min-width: 0; min-height: 0; border: 1px solid #2a2a2a;
     border-radius: 8px; overflow: hidden; background: #141414; }
   #panes:not(.l1) .pane.focused { border-color: #3a4a7a; box-shadow: 0 0 0 1px #3a4a7a; }
+  /* desktop: briefly ring the pane a clicked sidebar slot landed in or already occupied —
+     in a 2-up/2x2 layout it isn't always obvious at a glance which pane just changed */
+  @keyframes paneflash { 0%, 100% { box-shadow: 0 0 0 0 #7aa2f700; } 25% { box-shadow: 0 0 0 3px #7aa2f7, 0 0 18px 3px #7aa2f799; } }
+  .pane.flash { animation: paneflash 0.6s ease-out; }
   .paneterm { position: absolute; inset: 4px 0 0 6px; }
   .panehint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #555; font-size: 12px; pointer-events: none; }
   .jump { position: absolute; display: none; bottom: 12px; right: 14px; z-index: 5;
     width: 34px; height: 34px; border-radius: 50%; border: 1px solid #444;
-    background: #222d; color: #ddd; font-size: 14px; align-items: center; justify-content: center;
+    background: rgba(30, 30, 30, 0.7); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+    color: #ddd; font-size: 14px; align-items: center; justify-content: center;
     cursor: pointer; }
-  #layouts { display: flex; gap: 4px; margin-left: auto; }
-  #layouts button { width: 30px; height: 25px; border-radius: 6px; border: 1px solid #333;
+  .jump:hover { background: rgba(30, 30, 30, 1); }
+  #layouts { display: flex; gap: 3px; margin-left: auto; }
+  #layouts button { width: 27px; height: 25px; border-radius: 6px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
   #layouts button.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
 
   #bar { flex: none; background: #1c1c1c; border-top: 1px solid #2a2a2a;
     padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; }
-  #chips { display: flex; gap: 6px; }
+  #chips { display: flex; gap: 6px; overflow-x: auto; }
   #chips:empty { display: none; }
   .chip { padding: 6px 14px; border-radius: 8px; border: 1px solid #2c3a5e; background: #262626;
-    color: #7aa2f7; font-size: 12px; font-family: inherit; cursor: pointer; }
+    color: #7aa2f7; font-size: 12px; font-family: inherit; cursor: pointer; white-space: nowrap; }
   .chip.active { background: #7aa2f7; color: #10131c; }
   #inputrow { display: flex; gap: 7px; align-items: flex-end; }
   #input { flex: 1; min-height: 42px; max-height: 140px; resize: none; padding: 11px 13px;
@@ -110,33 +147,125 @@
   #gatein { height: 40px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
     background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
   #gatein:focus { outline: none; border-color: #3a4a7a; }
+
+  /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow */
+  @media (hover: none) {
+    .slotact { display: flex; position: static; padding-left: 0; background: none; }
+    .pkrow .pkuse { visibility: visible; }
+  }
+
+  /* --- mobile: phones in any orientation (short landscape counts too) --- */
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    #app { flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh); }
+
+    #mhead { flex: none; display: flex; align-items: center; gap: 10px;
+      padding: calc(6px + env(safe-area-inset-top)) 12px 6px;
+      background: #1a1a1a; border-bottom: 1px solid #2a2a2a; }
+    #menu { width: 44px; height: 36px; border-radius: 8px; border: 1px solid #333;
+      background: #262626; color: #ccc; font-size: 16px; font-family: inherit; cursor: pointer; }
+    #mtitle { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; color: #e8e8e8;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* forces a reconnect: the server re-seeds scrollback at the current width on
+       connect, so this is mobile's equivalent of desktop toggling the pane layout */
+    #refresh { width: 36px; height: 36px; border-radius: 8px; border: 1px solid #333;
+      background: #262626; color: #ccc; font-size: 15px; font-family: inherit; cursor: pointer; }
+    #refresh:active { background: #2c3a5e; color: #7aa2f7; border-color: #2c3a5e; }
+
+    #side { position: fixed; z-index: 30; top: 0; bottom: 0; left: 0;
+      width: min(80vw, 300px); border-right: 1px solid #333;
+      padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+      transform: translateX(-105%); transition: transform 0.22s ease; will-change: transform; }
+    body.drawer #side { transform: none; }
+    body.drawer #shade { display: block; }
+    #layouts, #sidefoot, #collapse, #reload { display: none; }
+    #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
+    .slot { padding: 12px 10px; font-size: 13px; }
+    /* finger-sized rename/kill so a session can be renamed or deleted from the phone */
+    .slot .kill, .slot .ren { padding: 8px 10px; font-size: 16px; }
+    .renamein { height: 26px; font-size: 16px; }
+
+    #panes { padding: 3px; gap: 3px; }
+    /* a touch-drag on the terminal must scroll scrollback, not start a text selection */
+    .paneterm { user-select: none; -webkit-user-select: none; }
+    .jump { width: 44px; height: 44px; font-size: 16px; }
+
+    #keys { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }
+    #keys::-webkit-scrollbar { display: none; }
+    #keys button { flex: 1 0 44px; height: 36px; border-radius: 8px; border: 1px solid #333;
+      background: #262626; color: #aaa; font-size: 13px; font-family: inherit; cursor: pointer;
+      white-space: nowrap; }
+    #keys button:active { background: #2c3a5e; color: #7aa2f7; border-color: #2c3a5e; }
+
+    .chip { padding: 9px 14px; }
+    #live { display: block; flex: none; width: 44px; height: 44px; border-radius: 10px;
+      border: 1px solid #333; background: #262626; color: #aaa; font-size: 17px;
+      font-family: inherit; cursor: pointer; }
+    #live.on { background: #e0af68; color: #10131c; border-color: #e0af68; }
+    #livein { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border-radius: 10px;
+      border: 1px solid #e0af68; background: #262626; color: #e0af68;
+      font-size: 16px; font-family: inherit; }
+    #livein:focus { outline: none; }
+    #bar { padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+    #input { font-size: 16px; min-height: 44px; max-height: 110px; }
+    #send { height: 44px; width: 56px; }
+
+    .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
+    .pkrow { padding: 11px 9px; font-size: 13px; }
+    #pkpath, #gatein { font-size: 16px; }
+    .pkbtns button { padding: 11px 18px; }
+  }
 </style>
 </head>
 <body>
 <div id="app">
+  <div id="mhead">
+    <button id="menu" title="sessions">☰</button>
+    <span id="mtitle">Claude Fleet</span>
+    <button id="refresh" title="refresh session">↻</button>
+    <span id="mdot" class="dot off"></span>
+  </div>
   <div id="side">
-    <div id="sidehead"><span id="dot" class="off"></span>Claude Fleet
+    <div id="sidehead"><span id="dot" class="dot off"></span><span id="sidetitle">Claude Fleet</span>
       <span id="layouts">
         <button data-l="1" title="single pane">▢</button>
         <button data-l="2" title="2-up split">◫</button>
         <button data-l="4" title="2×2 grid">⊞</button>
       </span>
+      <button id="reload" title="reload focused session">↻</button>
+      <button id="collapse" title="collapse sidebar">‹</button>
     </div>
     <div id="slots"></div>
-    <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
+    <div id="sidefoot">⌃1–⌃0 — switch slot<br>Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
   </div>
   <div id="main">
     <div id="panes" class="l1"></div>
     <div id="bar">
+      <div id="keys">
+        <button data-k="esc">esc</button>
+        <button data-k="tab">tab</button>
+        <button data-k="stab">⇧tab</button>
+        <button data-k="up">↑</button>
+        <button data-k="down">↓</button>
+        <button data-k="left">←</button>
+        <button data-k="right">→</button>
+        <button data-k="enter">⏎</button>
+        <button data-k="cc">^C</button>
+      </div>
       <div id="chips"></div>
+      <div id="livebar">
+        <input id="livein" type="text" placeholder="Live — keys go straight to the terminal"
+          autocomplete="off" autocapitalize="none" spellcheck="false">
+      </div>
       <div id="inputrow">
-        <textarea id="input" rows="1" placeholder="Prompt for the selected session… (Enter sends)"
+        <button id="live" title="live typing — every key goes straight to the terminal">⌨</button>
+        <textarea id="input" rows="1" placeholder="Prompt for the selected session…"
           autocomplete="off"></textarea>
         <button id="send">➤</button>
       </div>
     </div>
   </div>
 </div>
+<div id="shade"></div>
 
 <div id="picker" class="overlay">
   <div class="panel">

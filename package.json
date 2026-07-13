@@ -13,6 +13,7 @@
     "build": "bun build src/client.ts --outfile public/app.js --target browser --minify"
   },
   "dependencies": {
+    "@xterm/addon-canvas": "0.7.0",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0"
   },

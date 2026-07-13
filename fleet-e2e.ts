@@ -172,8 +172,12 @@ check("externally-killed slot self-heals", s2back.code === 0);
 const srvKill = Bun.spawn(["tmux", "-L", "claudefleet", "kill-session", "-t", "srv"]);
 await srvKill.exited;
 await Bun.sleep(500);
+// inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
+// `--dangerously-skip-permissions` would silently leave the server in unattended
+// mode after the test run, an escalation the README promises is explicit opt-in
+const cmdEnv = process.env.FLEET_CMD ? `FLEET_CMD='${process.env.FLEET_CMD.replaceAll("'", "'\\''")}' ` : "";
 const srvStart = Bun.spawn(["tmux", "-L", "claudefleet", "new-session", "-d", "-s", "srv",
-  `cd ~/claude-fleet && FLEET_HOST=${IP} FLEET_CMD='claude --dangerously-skip-permissions' exec bun server.ts >> server.log 2>&1`]);
+  `cd ~/claude-fleet && FLEET_HOST=${IP} ${cmdEnv}exec bun server.ts >> server.log 2>&1`]);
 await srvStart.exited;
 await Bun.sleep(3000);
 const api = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };

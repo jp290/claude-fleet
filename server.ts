@@ -556,4 +556,11 @@ Bun.serve<WSData>({
 });
 
 console.log(`claude-fleet: http://${HOST}:${PORT}  (tmux -L ${SOCK}, slots 1..${MAX_SLOTS})`);
-console.log(`login: http://${HOST}:${PORT}/?token=${TOKEN}`);
+// only print the token to a real terminal — with stdout redirected (the documented
+// tmux `>> server.log` setup) it would land in a file created at the shell's default
+// umask, undoing the 600/700 discipline everything else applies to the token
+if (process.stdout.isTTY) {
+  console.log(`login: http://${HOST}:${PORT}/?token=${TOKEN}`);
+} else {
+  console.log(`login: http://${HOST}:${PORT}/?token=<token> — not printed to a non-TTY; read it from ${STATE_FILE} (mode 600)`);
+}

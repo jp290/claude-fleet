@@ -12,7 +12,7 @@ bun install
 bun run build
 FLEET_HOST=$(tailscale ip -4) bun server.ts   # defaults to 127.0.0.1 (loopback only)
 ```
-The server prints a one-click login URL (`http://<ip>:8790/?token=…`) on boot — open it from any machine on the same private network. The token is stored in a `SameSite=Strict` cookie; you log in once per browser.
+The server prints a one-click login URL (`http://<ip>:8790/?token=…`) on boot when stdout is a terminal — with output redirected to a log (the tmux setup under Ops) it deliberately withholds the token; read it from `fleet.json` instead. Open the URL from any machine on the same private network. The token is stored in a `SameSite=Strict` cookie; you log in once per browser.
 
 ## Security model
 

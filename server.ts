@@ -9,7 +9,9 @@ import type { ServerWebSocket } from "bun";
 // token (printed on boot), because a reachable fleet is remote code execution as your user.
 const HOST = process.env.FLEET_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.FLEET_PORT ?? 8790);
-const SOCK = "claudefleet";
+// separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
+// run its own s1..sN sessions without touching the live fleet's
+const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
 const MAX_SLOTS = 10;
 const REPLAY_TAIL = 2_000_000;
 // lines of scrollback to re-seed from a fresh capture-pane when a client's width

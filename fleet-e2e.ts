@@ -2,7 +2,11 @@
 //   bun fleet-e2e.ts
 // Creates slots 1+2, kills them, and restarts the `srv` tmux session along the way.
 const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
-const BASE = `http://${IP}:8790`;
+// match the server's env so the whole suite can target an isolated instance
+// (own port + own tmux socket) instead of the live fleet — see e2e-isolated.sh
+const PORT = Number(process.env.FLEET_PORT ?? 8790);
+const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
+const BASE = `http://${IP}:${PORT}`;
 const results: string[] = [];
 let failed = 0;
 
@@ -12,7 +16,7 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 async function tmuxOut(...args: string[]) {
-  const p = Bun.spawn(["tmux", "-L", "claudefleet", ...args], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
   const out = await new Response(p.stdout).text();
   const code = await p.exited;
   return { out, code };
@@ -84,7 +88,7 @@ check("blank label clears to null", rnClear.ok && ((await rnClear.json()) as { l
 
 // --- streaming + input ---
 await Bun.sleep(6000);
-const wsUrl = (slot: number) => `ws://${IP}:8790/ws/${slot}?token=${TOKEN}`;
+const wsUrl = (slot: number) => `ws://${IP}:${PORT}/ws/${slot}?token=${TOKEN}`;
 const replayBytes = await new Promise<number>((resolve) => {
   let n = 0;
   const ws = new WebSocket(wsUrl(1));
@@ -120,7 +124,7 @@ check("/resize accepts matching size (no-op)", rszSame.ok);
 
 const wsNoTok = await new Promise<boolean>((resolve) => {
   let opened = false;
-  const ws = new WebSocket(`ws://${IP}:8790/ws/1`);
+  const ws = new WebSocket(`ws://${IP}:${PORT}/ws/1`);
   ws.onopen = () => { opened = true; ws.close(); };
   ws.onerror = () => resolve(!opened);
   ws.onclose = () => resolve(!opened);
@@ -169,15 +173,18 @@ const s2back = await tmuxOut("has-session", "-t", "s2");
 check("externally-killed slot self-heals", s2back.code === 0);
 
 // --- restart persistence ---
-const srvKill = Bun.spawn(["tmux", "-L", "claudefleet", "kill-session", "-t", "srv"]);
+const srvKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
 await srvKill.exited;
 await Bun.sleep(500);
 // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
 // `--dangerously-skip-permissions` would silently leave the server in unattended
 // mode after the test run, an escalation the README promises is explicit opt-in
 const cmdEnv = process.env.FLEET_CMD ? `FLEET_CMD='${process.env.FLEET_CMD.replaceAll("'", "'\\''")}' ` : "";
-const srvStart = Bun.spawn(["tmux", "-L", "claudefleet", "new-session", "-d", "-s", "srv",
-  `cd ~/claude-fleet && FLEET_HOST=${IP} ${cmdEnv}exec bun server.ts >> server.log 2>&1`]);
+// restart the server from wherever THIS suite lives (the isolated copy during
+// e2e-isolated.sh runs, the repo itself when run against the live instance),
+// carrying the port/socket so the restarted server is the same instance we tested
+const srvStart = Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
+  `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}exec bun server.ts >> server.log 2>&1`]);
 await srvStart.exited;
 await Bun.sleep(3000);
 const api = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };

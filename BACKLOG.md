@@ -10,6 +10,10 @@ dies with the session), export = plain-text light-theme print page + `?format=tx
 Remaining: item 4 (UI density pass — needs user feedback per iteration), item 6
 (transcript view — Phase 1 investigation next), item 7 (blocked on definition).
 
+**2026-07-18, later:** session sharing shipped (see SHARING.md) — per-slot
+password-gated guest access via https://klaus.example.com, view/interact
+modes, live through the Cloudflare tunnel, revoke kicks guests instantly.
+
 ---
 
 ## 1. Esc key on desktop  `quick win`

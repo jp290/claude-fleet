@@ -153,12 +153,21 @@ const cap1b = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("no cross-talk (s2 text absent from s1)", !cap1b.out.includes("compose-box-to-slot-two"));
 for (const t of ["s1", "s2"]) await tmuxOut("send-keys", "-t", t, "C-u");
 
+// --- prompt history: composed sends recorded, raw WS typing deliberately not ---
+const h2 = (await (await get("/api/slots/2/history")).json()) as { history: { text: string; ts: number }[] };
+check("history records composed send", h2.history.length === 1 && h2.history[0].text === "compose-box-to-slot-two", JSON.stringify(h2.history));
+check("history entry has timestamp", typeof h2.history[0]?.ts === "number" && h2.history[0].ts > 0);
+const h1 = (await (await get("/api/slots/1/history")).json()) as { history: unknown[] };
+check("raw typed input not recorded in history", h1.history.length === 0, `${h1.history.length} entries`);
+
 // --- file permissions ---
 const { statSync } = await import("node:fs");
 const streamMode = statSync(`${import.meta.dir}/streams/s1.raw`).mode & 0o777;
 const stateMode = statSync(`${import.meta.dir}/fleet.json`).mode & 0o777;
 check("stream file is 600", streamMode === 0o600, streamMode.toString(8));
 check("fleet.json is 600", stateMode === 0o600, stateMode.toString(8));
+const histMode = statSync(`${import.meta.dir}/streams/s2.history.json`).mode & 0o777;
+check("history file is 600", histMode === 0o600, histMode.toString(8));
 
 // --- kill semantics ---
 const k1 = await post("/api/slots/1/kill", {});
@@ -193,6 +202,8 @@ check("after restart: slot 1 still empty", api.slots[0].cwd === null);
 check("after restart: label persisted", api.slots[1].label === "research-agent");
 const rec2 = (await (await get("/api/dirs?path=~")).json()) as { recents: string[] };
 check("after restart: recents persisted", rec2.recents.length >= 2, JSON.stringify(rec2.recents));
+const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
+check("after restart: history persisted", h2b.history.length === 1 && h2b.history[0]?.text === "compose-box-to-slot-two", `${h2b.history.length} entries`);
 const replay2 = await new Promise<number>((resolve) => {
   let n = 0;
   const ws = new WebSocket(wsUrl(2));

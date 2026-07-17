@@ -51,6 +51,24 @@ function setCollapsed(on: boolean) {
 }
 collapseBtn.onclick = () => setCollapsed(!sideCollapsed);
 
+// navigator.clipboard only exists in a secure context (HTTPS or localhost) — this
+// dashboard is normally reached over plain HTTP via a Tailscale IP, so it's undefined
+// there and this falls back to the legacy execCommand copy path
+function copyText(text: string) {
+  if (navigator.clipboard) {
+    void navigator.clipboard.writeText(text);
+    return;
+  }
+  const tmp = document.createElement("textarea");
+  tmp.value = text;
+  tmp.style.position = "fixed";
+  tmp.style.opacity = "0";
+  document.body.appendChild(tmp);
+  tmp.select();
+  document.execCommand("copy");
+  document.body.removeChild(tmp);
+}
+
 // all dynamic text goes through textContent — cwd/dir names are untrusted for the DOM
 function el(tag: string, className: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -162,23 +180,8 @@ class Pane {
     this.root.classList.add("flash");
   }
 
-  // navigator.clipboard only exists in a secure context (HTTPS or localhost) — this
-  // dashboard is normally reached over plain HTTP via a Tailscale IP, so it's undefined
-  // there and this falls back to the legacy execCommand copy path
   private copySelection() {
-    const text = this.term.getSelection();
-    if (navigator.clipboard) {
-      void navigator.clipboard.writeText(text);
-      return;
-    }
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
+    copyText(this.term.getSelection());
   }
 
   sendRaw(s: string) {
@@ -339,6 +342,7 @@ function slotHotkey(e: KeyboardEvent): number | null {
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (picker.style.display === "flex") closePicker();
+    if (hist.style.display === "flex") closeHist();
     setDrawer(false);
     return;
   }
@@ -667,6 +671,84 @@ async function refresh() {
 }
 setInterval(() => void refresh(), 2000);
 
+// --- prompt history: composed sends recorded server-side per slot; recalled via the
+// 🕘 popover or ArrowUp/ArrowDown cycling in an (empty) compose box ---
+const hist = $("hist"), histList = $("histlist"), histTitle = $("histtitle");
+interface HistEntry { text: string; ts: number }
+
+async function fetchHistory(slot: number): Promise<HistEntry[]> {
+  const res = await api(`/api/slots/${slot}/history`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { history?: HistEntry[] };
+  return data.history ?? [];
+}
+
+function fmtTs(ts: number): string {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString()
+    ? time
+    : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+function closeHist() {
+  hist.style.display = "none";
+}
+hist.addEventListener("click", (e) => {
+  if (e.target === hist) closeHist();
+});
+
+async function openHist() {
+  const slot = panes[focused]?.slot;
+  if (!slot) return;
+  const items = await fetchHistory(slot);
+  histTitle.textContent = `Prompt history — slot ${slot === 10 ? 0 : slot}`;
+  histList.replaceChildren();
+  if (!items.length) histList.appendChild(el("div", "histnone", "nothing sent to this session yet"));
+  for (const h of [...items].reverse()) {
+    const row = el("div", "histrow");
+    row.append(el("div", "histtext", h.text), el("span", "histts", fmtTs(h.ts)));
+    const copy = el("span", "histcopy", "⧉");
+    copy.title = "copy prompt";
+    copy.onclick = (e) => {
+      e.stopPropagation();
+      copyText(h.text);
+      copy.textContent = "✓";
+      setTimeout(() => { copy.textContent = "⧉"; }, 800);
+    };
+    row.appendChild(copy);
+    // click loads the prompt into the compose box for editing — it never auto-sends
+    row.onclick = () => {
+      ta.value = h.text;
+      updateChips();
+      closeHist();
+      ta.focus();
+    };
+    histList.appendChild(row);
+  }
+  hist.style.display = "flex";
+}
+$("histbtn").onclick = () => void openHist();
+
+// ArrowUp in an empty box starts cycling (newest first); ArrowDown walks back toward
+// the draft. Typing anything ends the cycle so an edit can't be clobbered.
+let cyc: { slot: number; items: string[]; idx: number; draft: string } | null = null;
+async function cycleHist(dir: number) {
+  const slot = panes[focused]?.slot;
+  if (!slot) return;
+  if (!cyc || cyc.slot !== slot) {
+    const items = (await fetchHistory(slot)).map((h) => h.text);
+    if (!items.length) return;
+    cyc = { slot, items, idx: items.length, draft: ta.value };
+  }
+  const next = cyc.idx + dir;
+  if (next < 0 || next > cyc.items.length) return;
+  cyc.idx = next;
+  ta.value = next === cyc.items.length ? cyc.draft : cyc.items[next];
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  updateChips();
+}
+
 // --- compose box: Enter sends (bracketed paste + Enter server-side), Shift+Enter = newline ---
 function flashSendError() {
   send.style.background = "#f85149";
@@ -681,6 +763,7 @@ async function doSend() {
     const res = await post("/send", { slot, text, submit: true });
     if (!res.ok) throw new Error(`send failed: ${res.status}`);
     ta.value = "";
+    cyc = null;
     updateChips();
     panes[focused].term.scrollToBottom();
   } catch {
@@ -695,6 +778,17 @@ ta.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {
     e.preventDefault();
     void doSend();
+    return;
+  }
+  if (e.isComposing) return;
+  // only hijack ArrowUp when the box is empty or already cycling — mid-text it must
+  // keep its native "move the caret up a line" meaning
+  if (e.key === "ArrowUp" && (cyc || ta.value === "")) {
+    e.preventDefault();
+    void cycleHist(-1);
+  } else if (e.key === "ArrowDown" && cyc) {
+    e.preventDefault();
+    void cycleHist(1);
   }
 });
 
@@ -715,7 +809,10 @@ function togglePrefix(cmd: string) {
   updateChips();
   ta.focus();
 }
-ta.addEventListener("input", updateChips);
+ta.addEventListener("input", () => {
+  cyc = null; // real typing (not our programmatic recall) ends a history cycle
+  updateChips();
+});
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 void (async () => {

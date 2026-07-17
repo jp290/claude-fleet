@@ -46,6 +46,8 @@ interface Slot {
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
   cols: number; // last tmux window size we applied — lets a same-size reconnect skip reseeding
   rows: number;
+  history: { text: string; ts: number }[]; // composed sends only, newest last — the
+  // durable "what did I prompt" record; raw live typing is deliberately not captured
   clients: Set<ServerWebSocket<WSData>>;
   inputChain: Promise<unknown>;
   resizeChain: Promise<unknown>; // serializes resize-window+capture-pane so two concurrent
@@ -62,6 +64,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   quietUntil: 0,
   cols: 200,
   rows: 50,
+  history: [],
   clients: new Set(),
   inputChain: Promise.resolve(),
   resizeChain: Promise.resolve(),
@@ -71,6 +74,18 @@ let persistedToken: string | null = null;
 
 const sess = (id: number) => `s${id}`;
 const streamPath = (id: number) => `${STREAM_DIR}/s${id}.raw`;
+const historyPath = (id: number) => `${STREAM_DIR}/s${id}.history.json`;
+const MAX_HISTORY = 100;
+
+// same serialization rationale as saveState: overlapping rewrites of one file interleave
+let historyChain: Promise<unknown> = Promise.resolve();
+function saveHistory(s: Slot): void {
+  const body = JSON.stringify(s.history);
+  historyChain = historyChain
+    .then(() => Bun.write(historyPath(s.id), body))
+    .then(() => chmodSync(historyPath(s.id), 0o600)) // prompts can carry secrets, like the stream
+    .catch((e: unknown) => console.log(`history save failed: ${e instanceof Error ? e.message : e}`));
+}
 
 async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
   const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -154,6 +169,8 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   s.cwd = cwd;
   s.label = null; // a fresh session gets a fresh identity
+  s.history = []; // ...including a fresh prompt history
+  await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   saveState();
   await ensureSlot(s);
@@ -165,6 +182,8 @@ async function killSlot(s: Slot): Promise<void> {
   saveState();
   await tmux("kill-session", "-t", sess(s.id));
   await rm(streamPath(s.id), { force: true });
+  await rm(historyPath(s.id), { force: true });
+  s.history = [];
   s.offset = 0;
   s.lastOutput = 0;
   s.quietUntil = 0;
@@ -357,6 +376,17 @@ for (const s of slots) {
   if (!s.cwd) continue;
   await ensureSlot(s);
   s.offset = existsSync(streamPath(s.id)) ? (await stat(streamPath(s.id))).size : 0;
+  if (existsSync(historyPath(s.id))) {
+    try {
+      const h: unknown = await Bun.file(historyPath(s.id)).json();
+      if (Array.isArray(h))
+        s.history = h.filter((e): e is { text: string; ts: number } =>
+          typeof e === "object" && e !== null && typeof (e as { text?: unknown }).text === "string"
+          && typeof (e as { ts?: unknown }).ts === "number").slice(-MAX_HISTORY);
+    } catch {
+      console.log(`slot ${s.id}: history file unreadable — starting empty`);
+    }
+  }
 }
 
 setInterval(() => void poll(), 100);
@@ -421,6 +451,12 @@ Bun.serve<WSData>({
         slots: slots.map((s) => ({ id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput })),
       });
     }
+    const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
+    if (req.method === "GET" && histMatch) {
+      const s = slotFrom(histMatch[1]);
+      if (!s) return json({ error: "bad slot" }, 400);
+      return json({ history: s.history });
+    }
     if (url.pathname === "/api/dirs") {
       try {
         return json(await listDirs(url.searchParams.get("path") ?? "~"));
@@ -461,6 +497,8 @@ Bun.serve<WSData>({
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
       await sendText(s, body.text, body.submit !== false);
+      s.history = [...s.history, { text: body.text, ts: Date.now() }].slice(-MAX_HISTORY);
+      saveHistory(s);
       return json({ ok: true });
     }
     if (req.method === "POST" && url.pathname === "/resize") {

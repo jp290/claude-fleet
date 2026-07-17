@@ -26,7 +26,17 @@
 
   #mhead { display: none; }
   #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
-  #keys { display: none; }
+  /* terminal key row: hidden only where a hardware Esc exists (fine-pointer desktop).
+     Any touchscreen device shows it — that includes an iPad in the DESKTOP layout,
+     whose Magic Keyboard has no Esc key */
+  #keys { display: none; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+  #keys::-webkit-scrollbar { display: none; }
+  #keys button { flex: none; min-width: 36px; height: 26px; padding: 0 10px; border-radius: 7px;
+    border: 1px solid #333; background: #262626; color: #888; font-size: 11px;
+    font-family: inherit; cursor: pointer; white-space: nowrap; }
+  #keys button:hover { color: #ccc; }
+  #keys button:active { background: #2c3a5e; color: #7aa2f7; border-color: #2c3a5e; }
+  @media (any-pointer: coarse) { #keys { display: flex; } }
   #live { display: none; }
   #livebar { display: none; gap: 7px; }
 
@@ -189,12 +199,8 @@
     .paneterm { user-select: none; -webkit-user-select: none; }
     .jump { width: 44px; height: 44px; font-size: 16px; }
 
-    #keys { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }
-    #keys::-webkit-scrollbar { display: none; }
-    #keys button { flex: 1 0 44px; height: 36px; border-radius: 8px; border: 1px solid #333;
-      background: #262626; color: #aaa; font-size: 13px; font-family: inherit; cursor: pointer;
-      white-space: nowrap; }
-    #keys button:active { background: #2c3a5e; color: #7aa2f7; border-color: #2c3a5e; }
+    #keys { display: flex; gap: 5px; }
+    #keys button { flex: 1 0 44px; height: 36px; border-radius: 8px; font-size: 13px; color: #aaa; }
 
     .chip { padding: 9px 14px; }
     #live { display: block; flex: none; width: 44px; height: 44px; border-radius: 10px;

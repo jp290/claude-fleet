@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shared session — Claude Fleet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141414">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/xterm.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #141414; overscroll-behavior: none; }
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; color: #ccc;
+    display: flex; flex-direction: column; }
+
+  #head { flex: none; display: flex; align-items: center; gap: 10px;
+    padding: calc(8px + env(safe-area-inset-top)) 14px 8px;
+    background: #1a1a1a; border-bottom: 1px solid #2a2a2a; font-size: 13px; }
+  #title { font-weight: 700; color: #e8e8e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #mode { flex: none; font-size: 10px; padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
+    letter-spacing: 0.05em; }
+  #mode.view { background: #1e261a; color: #a7c080; border: 1px solid #3a4a34; }
+  #mode.interact { background: #2a2118; color: #e0af68; border: 1px solid #5a4a30; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; flex: none; }
+  #dot.on { background: #3fb950; } #dot.off { background: #f85149; }
+
+  #wrap { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+  #term { width: max-content; }
+
+  #bar { flex: none; display: none; gap: 7px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    background: #1c1c1c; border-top: 1px solid #2a2a2a; }
+  #input { flex: 1; min-height: 40px; max-height: 120px; resize: none; padding: 10px 12px;
+    border-radius: 10px; border: 1px solid #333; background: #262626; color: #eee;
+    font-size: 16px; font-family: inherit; line-height: 1.4; }
+  #input:focus { outline: none; border-color: #3a4a7a; }
+  #send { flex: none; width: 56px; border-radius: 10px; border: none;
+    background: #7aa2f7; color: #10131c; font-size: 16px; font-weight: 700; cursor: pointer; }
+  #send:disabled { opacity: 0.5; }
+
+  #gate { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: #141414; z-index: 20; }
+  #gate .panel { width: 340px; max-width: 92vw; display: flex; flex-direction: column; gap: 12px;
+    background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 20px; }
+  #gate h2 { font-size: 14px; color: #e8e8e8; }
+  #gate p { font-size: 11px; color: #888; line-height: 1.5; }
+  #pw { height: 42px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
+    background: #262626; color: #eee; font-size: 16px; font-family: inherit; }
+  #pw:focus { outline: none; border-color: #3a4a7a; }
+  #pw.bad { border-color: #f85149; }
+  #enter { height: 40px; border-radius: 9px; border: none; background: #7aa2f7;
+    color: #10131c; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  #gatemsg { font-size: 11px; color: #f85149; min-height: 14px; }
+
+  #notice { display: none; padding: 40px 20px; text-align: center; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="head">
+  <span id="title">Shared session</span>
+  <span id="mode"></span>
+  <span id="dot" class="off"></span>
+</div>
+<div id="wrap"><div id="term"></div></div>
+<div id="notice"></div>
+<div id="bar">
+  <textarea id="input" rows="1" placeholder="Prompt… (Enter sends, Shift+Enter = newline)"></textarea>
+  <button id="send">➤</button>
+</div>
+
+<div id="gate">
+  <div class="panel">
+    <h2>Shared Claude Fleet session</h2>
+    <p>This live session was shared with you. Enter the password you received to join.</p>
+    <input id="pw" type="password" placeholder="password" autocomplete="off">
+    <div id="gatemsg"></div>
+    <button id="enter">Join session</button>
+  </div>
+</div>
+
+<script src="/share.js"></script>
+</body>
+</html>

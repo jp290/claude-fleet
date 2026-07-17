@@ -35,7 +35,15 @@ const CHIPS = (process.env.FLEET_CHIPS ?? "")
 const MAX_LABEL = 40;
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
-type WSData = { slot: number; queue: Uint8Array[]; ready: boolean; cols: number; rows: number; force: boolean };
+type WSData = {
+  slot: number; queue: Uint8Array[]; ready: boolean; cols: number; rows: number; force: boolean;
+  share?: string; // set on guest connections: the share id this socket belongs to
+  mode?: "view" | "interact";
+};
+
+// a share exposes exactly ONE slot to a guest behind its own password — the owner
+// token never leaves this machine. view = stream only; interact = typing + compose too.
+interface Share { id: string; slot: number; secret: string; mode: "view" | "interact"; created: number }
 
 interface Slot {
   id: number;
@@ -70,7 +78,14 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   resizeChain: Promise.resolve(),
 }));
 let recents: string[] = [];
+let shares: Share[] = [];
 let persistedToken: string | null = null;
+// public base URL for share links shown in the owner UI (e.g. https://klaus.example.com);
+// empty = links are rendered relative to wherever the owner opened the dashboard
+const SHARE_URL = process.env.FLEET_SHARE_URL ?? "";
+// hosts that may ONLY reach share routes — the public tunnel hostname goes here so the
+// internet-facing side can never even load the owner login page
+const SHARE_HOSTS = new Set((process.env.FLEET_SHARE_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean));
 
 const sess = (id: number) => `s${id}`;
 const streamPath = (id: number) => `${STREAM_DIR}/s${id}.raw`;
@@ -99,7 +114,7 @@ let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null }> = {};
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label };
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents }, null, 2);
+  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares }, null, 2);
   saveChain = saveChain
     .then(() => Bun.write(STATE_FILE, body))
     .then(() => chmodSync(STATE_FILE, 0o600))
@@ -179,6 +194,9 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
 async function killSlot(s: Slot): Promise<void> {
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
+  saveState();
+  for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
+  shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
   saveState();
   await tmux("kill-session", "-t", sess(s.id));
   await rm(streamPath(s.id), { force: true });
@@ -274,11 +292,33 @@ function tokenFrom(req: Request): string | null {
   return new URL(req.url).searchParams.get("token");
 }
 
+function secretEq(a: string, b: string): boolean {
+  const A = Buffer.from(a), B = Buffer.from(b);
+  return A.length === B.length && timingSafeEqual(A, B);
+}
 let TOKEN = "";
-function tokenOk(t: string | null): boolean {
-  if (!t) return false;
-  const a = Buffer.from(t), b = Buffer.from(TOKEN);
-  return a.length === b.length && timingSafeEqual(a, b);
+const tokenOk = (t: string | null): boolean => !!t && secretEq(t, TOKEN);
+
+// --- share auth: per-share cookie, brute-force throttled (public-facing) ---
+const shareBy = (id: string) => shares.find((x) => x.id === id) ?? null;
+function shareAuthed(req: Request, sh: Share): boolean {
+  const cookie = req.headers.get("cookie");
+  const m = cookie ? new RegExp(`(?:^|;\\s*)share_${sh.id}=([^;]+)`).exec(cookie) : null;
+  return !!m && secretEq(m[1], sh.secret);
+}
+const authFails = new Map<string, { count: number; resetAt: number }>();
+function failStrike(id: string): boolean {
+  const now = Date.now();
+  const f = authFails.get(id);
+  if (!f || now > f.resetAt) {
+    authFails.set(id, { count: 1, resetAt: now + 3600_000 });
+    return false;
+  }
+  f.count++;
+  return f.count > 50; // locked for the rest of the hour
+}
+function closeShareClients(s: Slot, shareId: string): void {
+  for (const ws of s.clients) if (ws.data.share === shareId) ws.close(4001, "share revoked");
 }
 
 const ALLOWED_HOSTS = new Set(
@@ -306,6 +346,7 @@ function guard(req: Request): Response | null {
 const STATIC: Record<string, { path: string; type: string }> = {
   "/": { path: `${import.meta.dir}/public/index.html`, type: "text/html; charset=utf-8" },
   "/app.js": { path: `${import.meta.dir}/public/app.js`, type: "text/javascript" },
+  "/share.js": { path: `${import.meta.dir}/public/share.js`, type: "text/javascript" },
   "/xterm.css": { path: `${import.meta.dir}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },
   "/manifest.webmanifest": { path: `${import.meta.dir}/public/manifest.webmanifest`, type: "application/manifest+json" },
   "/icon.svg": { path: `${import.meta.dir}/public/icon.svg`, type: "image/svg+xml" },
@@ -338,9 +379,15 @@ await tmux("start-server");
 if (existsSync(STATE_FILE)) {
   try {
     const persisted = (await Bun.file(STATE_FILE).json()) as {
-      token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown;
+      token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
     if (typeof persisted.token === "string") persistedToken = persisted.token;
+    if (Array.isArray(persisted.shares))
+      shares = persisted.shares.filter((x): x is Share =>
+        typeof x === "object" && x !== null
+        && typeof (x as Share).id === "string" && typeof (x as Share).secret === "string"
+        && typeof (x as Share).slot === "number"
+        && ((x as Share).mode === "view" || (x as Share).mode === "interact"));
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -371,6 +418,8 @@ if (ls.code === 0) {
     }
   }
 }
+// a share whose session didn't survive the downtime must not come back
+shares = shares.filter((sh) => slotFrom(sh.slot)?.cwd);
 saveState();
 for (const s of slots) {
   if (!s.cwd) continue;
@@ -404,6 +453,14 @@ Bun.serve<WSData>({
     if (blocked) return blocked;
     const url = new URL(req.url);
 
+    // the public tunnel hostname is share-only: nothing else exists there, not even
+    // the owner login page. (Host was already validated against ALLOWED_HOSTS above.)
+    if (SHARE_HOSTS.has(req.headers.get("host") ?? "")) {
+      const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
+        || /^\/(s\/[a-z0-9]+(\/(auth|info|send))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
+      if (!pub) return new Response("not found", { status: 404 });
+    }
+
     // login: /?token=… sets the cookie and redirects to a clean URL
     if (url.pathname === "/" && url.searchParams.has("token")) {
       if (!tokenOk(url.searchParams.get("token"))) return json({ error: "bad token" }, 401);
@@ -416,6 +473,73 @@ Bun.serve<WSData>({
       });
     }
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
+
+    // --- share routes: per-share cookie auth, never the owner token ---
+    if (/^\/s\/[a-z0-9]+$/.test(url.pathname) && req.method === "GET") {
+      // always serve the page — unauthenticated it renders the password gate
+      return new Response(Bun.file(`${import.meta.dir}/public/share.html`), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send)$/.exec(url.pathname);
+    if (shareApi) {
+      const sh = shareBy(shareApi[1]);
+      if (!sh) return json({ error: "unknown or revoked share" }, 404);
+      const s = slots[sh.slot - 1];
+      if (shareApi[2] === "auth" && req.method === "POST") {
+        if (authFails.get(sh.id) && authFails.get(sh.id)!.count > 50 && Date.now() < authFails.get(sh.id)!.resetAt)
+          return json({ error: "too many attempts — try again later" }, 429);
+        const body = await readJson(req);
+        if (!body || typeof body.password !== "string") return json({ error: "expected password" }, 400);
+        if (!secretEq(body.password, sh.secret)) {
+          const locked = failStrike(sh.id);
+          await Bun.sleep(400); // flat cost per wrong guess
+          return json({ error: locked ? "too many attempts — try again later" : "wrong password" }, locked ? 429 : 401);
+        }
+        authFails.delete(sh.id);
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: {
+            "content-type": "application/json",
+            // Lax (not Strict): the guest lands here from a cross-site click on the link
+            "set-cookie": `share_${sh.id}=${sh.secret}; Path=/; SameSite=Lax; HttpOnly; Max-Age=604800`,
+          },
+        });
+      }
+      if (!shareAuthed(req, sh)) return json({ error: "unauthorized" }, 401);
+      if (shareApi[2] === "info") {
+        return json({
+          slotLabel: s.cwd ? (s.label ?? s.cwd.split("/").pop()) : null,
+          mode: sh.mode,
+          cols: s.cols,
+          rows: s.rows,
+          active: !!s.cwd,
+        });
+      }
+      if (shareApi[2] === "send" && req.method === "POST") {
+        if (sh.mode !== "interact") return json({ error: "view-only share" }, 403);
+        if (!s.cwd) return json({ error: "session gone" }, 404);
+        const body = await readJson(req);
+        if (!body || typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
+        await sendText(s, body.text, body.submit !== false);
+        s.history = [...s.history, { text: body.text, ts: Date.now() }].slice(-MAX_HISTORY);
+        saveHistory(s);
+        return json({ ok: true });
+      }
+      return json({ error: "bad request" }, 400);
+    }
+    const wsShare = /^\/ws-share\/([a-z0-9]+)$/.exec(url.pathname);
+    if (wsShare) {
+      const sh = shareBy(wsShare[1]);
+      if (!sh || !shareAuthed(req, sh)) return json({ error: "unauthorized" }, 401);
+      const s = slots[sh.slot - 1];
+      if (!s.cwd) return json({ error: "session gone" }, 404);
+      // guests never pass cols/rows: they must not resize the owner's pty, so they
+      // take the plain replay-tail path and render at the session's current size
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, cols: 0, rows: 0, force: false, share: sh.id, mode: sh.mode } }))
+        return;
+      return new Response("upgrade failed", { status: 400 });
+    }
+
     const st = STATIC[url.pathname];
     if (st)
       return new Response(Bun.file(st.path), {
@@ -448,7 +572,14 @@ Bun.serve<WSData>({
       return json({
         now: Date.now(),
         chips: CHIPS,
-        slots: slots.map((s) => ({ id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput })),
+        shareBase: SHARE_URL,
+        slots: slots.map((s) => {
+          const sh = shares.find((x) => x.slot === s.id);
+          return {
+            id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
+            share: sh ? { id: sh.id, mode: sh.mode, password: sh.secret } : null,
+          };
+        }),
       });
     }
     // print/PDF export: full scrollback as a self-contained light-theme page — plain
@@ -501,10 +632,34 @@ Bun.serve<WSData>({
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|kill|rename)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|kill|rename|share|unshare)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
+      if (slotMatch[2] === "share") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        const body = await readJson(req);
+        if (!body) return json({ error: "expected application/json" }, 400);
+        const mode = body.mode === "interact" ? "interact" : "view";
+        const secret = typeof body.password === "string" && body.password !== ""
+          ? body.password
+          : randomBytes(9).toString("base64url");
+        if (secret.length < 8 || secret.length > 64)
+          return json({ error: "password must be 8–64 chars" }, 400);
+        const old = shares.find((x) => x.slot === s.id);
+        if (old) closeShareClients(s, old.id); // replaced share = new secret/mode, old guests out
+        const sh: Share = { id: randomBytes(4).toString("hex"), slot: s.id, secret, mode, created: Date.now() };
+        shares = [...shares.filter((x) => x.slot !== s.id), sh];
+        saveState();
+        return json({ ok: true, id: sh.id, path: `/s/${sh.id}`, password: secret, mode });
+      }
+      if (slotMatch[2] === "unshare") {
+        const sh = shares.find((x) => x.slot === s.id);
+        if (sh) closeShareClients(s, sh.id);
+        shares = shares.filter((x) => x.slot !== s.id);
+        saveState();
+        return json({ ok: true });
+      }
       if (slotMatch[2] === "rename") {
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         const body = await readJson(req);
@@ -623,6 +778,9 @@ Bun.serve<WSData>({
     // live input: client sends raw keystroke bytes, forwarded verbatim to the pane.
     // serialized per slot through a promise chain — concurrent send-keys spawns reorder keystrokes
     message(ws, msg) {
+      // view-mode guests are strictly read-only — their input is dropped server-side,
+      // and a revoked share's socket must go silent even before close() lands
+      if (ws.data.share && (ws.data.mode !== "interact" || !shareBy(ws.data.share))) return;
       const s = slots[ws.data.slot - 1];
       const bytes = typeof msg === "string" ? new TextEncoder().encode(msg) : new Uint8Array(msg);
       if (bytes.length === 0 || bytes.length > 1024) return;

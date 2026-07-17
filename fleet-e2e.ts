@@ -89,6 +89,9 @@ check("blank label clears to null", rnClear.ok && ((await rnClear.json()) as { l
 // --- streaming + input ---
 await Bun.sleep(6000);
 const wsUrl = (slot: number) => `ws://${IP}:${PORT}/ws/${slot}?token=${TOKEN}`;
+// Bun's WebSocket client accepts { headers } as a second arg — the DOM lib types don't
+const wsWithHeaders = (url: string, headers: Record<string, string>): WebSocket =>
+  new (WebSocket as unknown as new (u: string, opts: { headers: Record<string, string> }) => WebSocket)(url, { headers });
 const replayBytes = await new Promise<number>((resolve) => {
   let n = 0;
   const ws = new WebSocket(wsUrl(1));
@@ -174,6 +177,75 @@ check("history entry has timestamp", typeof h2.history[0]?.ts === "number" && h2
 const h1 = (await (await get("/api/slots/1/history")).json()) as { history: unknown[] };
 check("raw typed input not recorded in history", h1.history.length === 0, `${h1.history.length} entries`);
 
+// --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
+const shCreate = await post("/api/slots/2/share", { mode: "view", password: "viewpass123" });
+const shView = (await shCreate.json()) as { id: string; path: string; password: string };
+check("create view share", shCreate.ok && !!shView.id, JSON.stringify(shView));
+const shWrong = await post(`/s/${shView.id}/auth`, { password: "totally-wrong" });
+check("share auth rejects wrong password", shWrong.status === 401);
+const shAuth = await post(`/s/${shView.id}/auth`, { password: "viewpass123" });
+const shCookie = (shAuth.headers.get("set-cookie") ?? "").split(";")[0];
+check("share auth sets share cookie", shAuth.ok && shCookie.startsWith(`share_${shView.id}=`), shCookie.slice(0, 20));
+const shInfo = await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shCookie } });
+const shInfoJ = (await shInfo.json()) as { mode: string; cols: number };
+check("share info with cookie", shInfo.ok && shInfoJ.mode === "view", JSON.stringify(shInfoJ));
+check("share info without cookie 401", (await fetch(BASE + `/s/${shView.id}/info`)).status === 401);
+check("share cookie is not an owner credential", (await fetch(BASE + "/api/sessions", { headers: { cookie: shCookie } })).status === 401);
+check("share send blocked in view mode", (await fetch(BASE + `/s/${shView.id}/send`, {
+  method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },
+  body: JSON.stringify({ text: "nope" }),
+})).status === 403);
+const viewWsBytes = await new Promise<number>((resolve) => {
+  let n = 0;
+  const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${shView.id}`, { cookie: shCookie });
+  w.binaryType = "arraybuffer";
+  w.onmessage = (e) => { n += (e.data as ArrayBuffer).byteLength; };
+  w.onopen = () => {
+    w.send("view-must-not-type");
+    setTimeout(() => { w.close(); resolve(n); }, 1200);
+  };
+  w.onerror = () => resolve(-1);
+});
+check("view share WS streams replay", viewWsBytes > 100, `${viewWsBytes} bytes`);
+await Bun.sleep(400);
+const capV = await tmuxOut("capture-pane", "-t", "s2", "-p");
+check("view share WS input dropped server-side", !capV.out.includes("view-must-not-type"));
+check("share WS without cookie rejected", await new Promise<boolean>((resolve) => {
+  let opened = false;
+  const w = new WebSocket(`ws://${IP}:${PORT}/ws-share/${shView.id}`);
+  w.onopen = () => { opened = true; w.close(); };
+  w.onerror = () => resolve(!opened);
+  w.onclose = () => resolve(!opened);
+}));
+const shICreate = await post("/api/slots/1/share", { mode: "interact", password: "interpass123" });
+const shInt = (await shICreate.json()) as { id: string };
+check("create interact share", shICreate.ok && !!shInt.id);
+const shIAuth = await post(`/s/${shInt.id}/auth`, { password: "interpass123" });
+const shICookie = (shIAuth.headers.get("set-cookie") ?? "").split(";")[0];
+const sndI = await fetch(BASE + `/s/${shInt.id}/send`, {
+  method: "POST", headers: { cookie: shICookie, "content-type": "application/json" },
+  body: JSON.stringify({ text: "share-interact-hello", submit: false }),
+});
+check("interact share can send", sndI.ok);
+await Bun.sleep(700);
+const capI = await tmuxOut("capture-pane", "-t", "s1", "-p");
+check("interact share text reaches its pane", capI.out.includes("share-interact-hello"));
+check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
+await tmuxOut("send-keys", "-t", "s1", "C-u");
+const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
+if (SHARE_HOST) {
+  check("share host hides the dashboard", (await fetch(BASE + "/", { headers: { host: SHARE_HOST } })).status === 404);
+  const sPub = await fetch(BASE + `/s/${shView.id}`, { headers: { host: SHARE_HOST } });
+  check("share host serves the share page", sPub.status === 200 && (await sPub.text()).includes("share.js"));
+  check("share host blocks owner API even with token", (await fetch(BASE + "/api/sessions", { headers: { host: SHARE_HOST, ...H } })).status === 404);
+}
+const unshare = await post("/api/slots/2/unshare", {});
+check("unshare accepted", unshare.ok);
+check("revoked share is gone", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shCookie } })).status === 404);
+const shPersistRes = await post("/api/slots/2/share", { mode: "view", password: "persistpass1" });
+const shPersist = (await shPersistRes.json()) as { id: string };
+check("re-share after revoke", shPersistRes.ok && !!shPersist.id);
+
 // --- file permissions ---
 const { statSync } = await import("node:fs");
 const streamMode = statSync(`${import.meta.dir}/streams/s1.raw`).mode & 0o777;
@@ -189,6 +261,7 @@ check("kill slot 1 accepted", k1.ok);
 await Bun.sleep(4000);
 const s1dead = await tmuxOut("has-session", "-t", "s1");
 check("killed slot stays dead after 4s", s1dead.code !== 0);
+check("killed slot's share died with it", (await fetch(BASE + `/s/${shInt.id}/info`, { headers: { cookie: shICookie } })).status === 404);
 
 await tmuxOut("kill-session", "-t", "s2");
 await Bun.sleep(4500);
@@ -202,7 +275,10 @@ await Bun.sleep(500);
 // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
 // `--dangerously-skip-permissions` would silently leave the server in unattended
 // mode after the test run, an escalation the README promises is explicit opt-in
-const cmdEnv = process.env.FLEET_CMD ? `FLEET_CMD='${process.env.FLEET_CMD.replaceAll("'", "'\\''")}' ` : "";
+const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS"]
+  .filter((k) => process.env[k])
+  .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
+  .join("");
 // restart the server from wherever THIS suite lives (the isolated copy during
 // e2e-isolated.sh runs, the repo itself when run against the live instance),
 // carrying the port/socket so the restarted server is the same instance we tested
@@ -218,6 +294,8 @@ const rec2 = (await (await get("/api/dirs?path=~")).json()) as { recents: string
 check("after restart: recents persisted", rec2.recents.length >= 2, JSON.stringify(rec2.recents));
 const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
 check("after restart: history persisted", h2b.history.length === 1 && h2b.history[0]?.text === "compose-box-to-slot-two", `${h2b.history.length} entries`);
+const shPAuth = await post(`/s/${shPersist.id}/auth`, { password: "persistpass1" });
+check("after restart: share persisted and answers", shPAuth.ok);
 const replay2 = await new Promise<number>((resolve) => {
   let n = 0;
   const ws = new WebSocket(wsUrl(2));

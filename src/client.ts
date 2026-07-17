@@ -99,9 +99,11 @@ const post = (path: string, body: unknown) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 // --- fleet state ---
-interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number }
+interface ShareInfo { id: string; mode: "view" | "interact"; password: string }
+interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number; share?: ShareInfo | null }
 let fleet: SlotInfo[] = [];
 let serverNow = 0;
+let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
 // --- panes: each visible terminal owns its Terminal, WS, and resize state ---
 class Pane {
@@ -343,6 +345,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (picker.style.display === "flex") closePicker();
     if (hist.style.display === "flex") closeHist();
+    if (sharedlg.style.display === "flex") closeShareDlg();
     setDrawer(false);
     return;
   }
@@ -613,6 +616,12 @@ function renderSlots() {
       row.appendChild(lbl);
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
+      const shr = el("span", "shr" + (s.share ? " on" : ""), "⤴");
+      shr.title = s.share ? `shared — ${s.share.mode}` : "share session";
+      shr.onclick = (e) => {
+        e.stopPropagation();
+        openShareDlg(s.id);
+      };
       const exp = el("span", "exp", "⇩");
       exp.title = "export session — print / save as PDF";
       exp.onclick = (e) => {
@@ -635,7 +644,7 @@ function renderSlots() {
         await refresh();
       };
       const act = el("div", "slotact");
-      act.append(exp, ren, kill);
+      act.append(shr, exp, ren, kill);
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
     }
@@ -669,14 +678,15 @@ async function refresh() {
   try {
     const res = await api("/api/sessions");
     if (!res.ok) return;
-    const data = (await res.json()) as { now: number; chips: string[]; slots: SlotInfo[] };
+    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; slots: SlotInfo[] };
     fleet = data.slots;
     serverNow = data.now;
+    shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
-      data.slots.map((s) => [s.cwd, s.label, serverNow - s.lastOutput < RECENT_MS])]);
+      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, serverNow - s.lastOutput < RECENT_MS])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();
@@ -686,6 +696,96 @@ async function refresh() {
   }
 }
 setInterval(() => void refresh(), 2000);
+
+// --- share dialog: create/inspect/revoke the one share a slot can have ---
+const sharedlg = $("sharedlg"), sharepanel = $("sharepanel");
+let dlgSlot = 0;
+let dlgMode: "view" | "interact" = "view";
+
+function closeShareDlg() {
+  sharedlg.style.display = "none";
+  dlgSlot = 0;
+}
+sharedlg.addEventListener("click", (e) => {
+  if (e.target === sharedlg) closeShareDlg();
+});
+
+function copyLine(label: string, value: string): HTMLElement {
+  const row = el("div", "shrline");
+  row.appendChild(el("span", "k", label));
+  const code = el("code", "", value);
+  code.title = value;
+  row.appendChild(code);
+  const btn = el("button", "shrbtn", "copy") as HTMLButtonElement;
+  btn.onclick = () => {
+    copyText(value);
+    btn.textContent = "✓";
+    setTimeout(() => { btn.textContent = "copy"; }, 800);
+  };
+  row.appendChild(btn);
+  return row;
+}
+
+function renderShareDlg() {
+  const s = fleet[dlgSlot - 1];
+  if (!s?.cwd) { closeShareDlg(); return; }
+  sharepanel.replaceChildren();
+  sharepanel.appendChild(el("h2", "", `Share session — ${s.label ?? baseName(s.cwd)}`));
+  const sh = s.share;
+  if (sh) {
+    sharepanel.appendChild(copyLine("link", `${shareBase || location.origin}/s/${sh.id}`));
+    sharepanel.appendChild(copyLine("password", sh.password));
+    const modeRow = el("div", "shrline");
+    modeRow.appendChild(el("span", "k", "access"));
+    modeRow.appendChild(el("span", "", sh.mode === "interact" ? "interactive — guests can type and send" : "view only — guests can watch"));
+    sharepanel.appendChild(modeRow);
+    sharepanel.appendChild(el("div", "shrhint",
+      "Give the link and the password to your guest separately. Revoking kicks connected guests immediately."));
+    const btns = el("div", "shrbtns");
+    const revoke = el("button", "shrbtn danger", "revoke share") as HTMLButtonElement;
+    revoke.onclick = async () => {
+      await post(`/api/slots/${s.id}/unshare`, {});
+      await refresh();
+      renderShareDlg();
+    };
+    const close = el("button", "shrbtn", "close") as HTMLButtonElement;
+    close.onclick = closeShareDlg;
+    btns.append(revoke, close);
+    sharepanel.appendChild(btns);
+  } else {
+    const modeRow = el("div", "shrline");
+    modeRow.appendChild(el("span", "k", "access"));
+    const bView = el("button", `shrbtn${dlgMode === "view" ? " active" : ""}`, "view only") as HTMLButtonElement;
+    const bInt = el("button", `shrbtn${dlgMode === "interact" ? " active" : ""}`, "interactive") as HTMLButtonElement;
+    bView.onclick = () => { dlgMode = "view"; renderShareDlg(); };
+    bInt.onclick = () => { dlgMode = "interact"; renderShareDlg(); };
+    modeRow.append(bView, bInt);
+    sharepanel.appendChild(modeRow);
+    sharepanel.appendChild(el("div", "shrhint", dlgMode === "interact"
+      ? "Interactive guests type straight into this terminal — it is YOUR shell. Only share with someone you're actively working with."
+      : "View-only guests see the live terminal but can't type or send anything."));
+    const btns = el("div", "shrbtns");
+    const create = el("button", "shrbtn primary", "create share link") as HTMLButtonElement;
+    create.onclick = async () => {
+      const res = await post(`/api/slots/${s.id}/share`, { mode: dlgMode });
+      if (!res.ok) return;
+      await refresh();
+      renderShareDlg(); // now renders the link + generated password
+    };
+    const close = el("button", "shrbtn", "cancel") as HTMLButtonElement;
+    close.onclick = closeShareDlg;
+    btns.append(create, close);
+    sharepanel.appendChild(btns);
+  }
+}
+
+function openShareDlg(slotId: number) {
+  setDrawer(false);
+  dlgSlot = slotId;
+  dlgMode = fleet[slotId - 1]?.share?.mode ?? "view";
+  renderShareDlg();
+  sharedlg.style.display = "flex";
+}
 
 // --- prompt history: composed sends recorded server-side per slot; recalled via the
 // 🕘 popover or ArrowUp/ArrowDown cycling in an (empty) compose box ---

@@ -66,10 +66,12 @@
   .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
     gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rb) 18px); }
   .slot:hover .slotact { display: flex; }
-  .slot .kill, .slot .ren, .slot .exp { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+  .slot .kill, .slot .ren, .slot .exp, .slot .shr { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
   .slot .kill:hover { color: #f85149; background: #2a1a1a; }
   .slot .ren:hover { color: #7aa2f7; background: #1c2437; }
   .slot .exp:hover { color: #a7c080; background: #1e261a; }
+  .slot .shr:hover { color: #e0af68; background: #2a2118; }
+  .slot .shr.on { color: #e0af68; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #layouts, #side.collapsed #dot, #side.collapsed #reload,
@@ -166,6 +168,19 @@
   .histcopy { flex: none; color: #7aa2f7; padding: 2px 8px; border-radius: 5px; }
   .histcopy:hover { background: #2c3a5e; }
   .histnone { padding: 8px; color: #555; font-size: 12px; }
+
+  #sharepanel { gap: 12px; }
+  .shrline { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+  .shrline .k { flex: none; width: 70px; color: #888; }
+  .shrline code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    background: #141414; border: 1px solid #333; border-radius: 6px; padding: 6px 8px; font-family: inherit; }
+  .shrbtn { padding: 7px 13px; border-radius: 7px; border: 1px solid #333; background: #262626;
+    color: #ccc; cursor: pointer; font-family: inherit; font-size: 12px; }
+  .shrbtn.primary { background: #7aa2f7; color: #10131c; border-color: #7aa2f7; font-weight: 700; }
+  .shrbtn.danger:hover { color: #f85149; border-color: #5a2a2a; }
+  .shrbtn.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
+  .shrhint { font-size: 11px; color: #888; line-height: 1.5; }
+  .shrbtns { display: flex; gap: 8px; justify-content: flex-end; }
 
   #gate .panel { width: 380px; }
   #gate p { font-size: 11px; color: #888; line-height: 1.5; }
@@ -303,6 +318,10 @@
       <button id="pkstart">Start here</button>
     </div>
   </div>
+</div>
+
+<div id="sharedlg" class="overlay">
+  <div class="panel" id="sharepanel"></div>
 </div>
 
 <div id="hist" class="overlay">

@@ -1,6 +1,6 @@
 # Claude Fleet
 
-Web dashboard (desktop + mobile) for up to 10 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback, direct typing into the focused session, a directory picker with recents for starting sessions per project. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
+Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback, direct typing into the focused session, a directory picker with recents for starting sessions per project. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
 
 ![claude-fleet — four Claude Code sessions in a 2×2 grid](docs/screenshot.png)
 
@@ -26,11 +26,11 @@ A reachable fleet is **remote code execution as your user** — every session is
 
 Not provided: TLS, multi-user, rate limiting. For HTTPS + tailnet-identity auth in front, `tailscale serve` works well.
 
-## Architecture — tmux without attach, ×10
+## Architecture — tmux without attach, ×16
 
 Same core as claude-deck (see its README for the full rationale), parameterized per slot:
 
-- tmux socket `claudefleet`, sessions `s1`..`s10`, each created lazily in a directory chosen via the picker (recents are persisted)
+- tmux socket `claudefleet`, sessions `s1`..`s16`, each created lazily in a directory chosen via the picker (recents are persisted)
 - `pipe-pane` per session → `streams/sN.raw`; the Bun server tails all active streams (100ms poll) and broadcasts per-slot over `ws://…/ws/<N>`
 - Reconnect/slot-switch replays the last 2 MB of that slot's stream
 - Per-slot input promise chains and per-slot tmux paste buffers (`fleetbufN`) — one hung session can't stall input to the others, and concurrent sends can't race

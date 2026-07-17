@@ -549,7 +549,8 @@ function startRename(row: HTMLElement, s: SlotInfo) {
   // so the dblclick lands on the detached old row — a rename input there would be invisible.
   // Re-target the live row for this slot instead of silently doing nothing.
   if (!row.isConnected) {
-    const live = slotsEl.children[s.id - 1];
+    // rows are keyed by slot id, not index — the sidebar only lists ACTIVE slots now
+    const live = slotsEl.querySelector(`[data-slot="${s.id}"]`);
     if (!(live instanceof HTMLElement)) return;
     row = live;
   }
@@ -593,12 +594,16 @@ function renderSlots() {
   updateTitle();
   if (slotsEl.querySelector(".renamein")) return; // never destroy an in-progress rename
   slotsEl.replaceChildren();
+  // only active slots get a row — a single "+ new session" entry (lowest free slot)
+  // replaces the old wall of empty placeholders
   for (const s of fleet) {
+    if (!s.cwd) continue;
     const visible = panes.some((p) => p.slot === s.id);
     const isFocused = panes[focused]?.slot === s.id;
-    const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.cwd ? "" : " empty"));
+    const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : ""));
+    row.dataset.slot = String(s.id);
     row.appendChild(el("span", "n", s.id === 10 ? "0" : String(s.id)));
-    if (s.cwd) {
+    {
       const lbl = el("span", "lbl", s.label ?? baseName(s.cwd));
       lbl.title = s.cwd;
       lbl.ondblclick = (e) => {
@@ -627,10 +632,15 @@ function renderSlots() {
       act.append(ren, kill);
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
-    } else {
-      row.appendChild(el("span", "lbl dim", "+ new session"));
-      row.onclick = () => openPicker(s.id);
     }
+    slotsEl.appendChild(row);
+  }
+  const free = fleet.find((s) => !s.cwd);
+  if (free) {
+    const row = el("div", "slot empty");
+    row.appendChild(el("span", "n", "+"));
+    row.appendChild(el("span", "lbl dim", "new session"));
+    row.onclick = () => openPicker(free.id);
     slotsEl.appendChild(row);
   }
 }

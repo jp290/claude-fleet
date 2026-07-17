@@ -66,9 +66,10 @@
   .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
     gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rb) 18px); }
   .slot:hover .slotact { display: flex; }
-  .slot .kill, .slot .ren { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+  .slot .kill, .slot .ren, .slot .exp { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
   .slot .kill:hover { color: #f85149; background: #2a1a1a; }
   .slot .ren:hover { color: #7aa2f7; background: #1c2437; }
+  .slot .exp:hover { color: #a7c080; background: #1e261a; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #layouts, #side.collapsed #dot, #side.collapsed #reload,
@@ -204,8 +205,8 @@
     #layouts, #sidefoot, #collapse, #reload { display: none; }
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
     .slot { padding: 12px 10px; font-size: 13px; }
-    /* finger-sized rename/kill so a session can be renamed or deleted from the phone */
-    .slot .kill, .slot .ren { padding: 8px 10px; font-size: 16px; }
+    /* finger-sized rename/kill/export so a session can be managed from the phone */
+    .slot .kill, .slot .ren, .slot .exp { padding: 8px 10px; font-size: 16px; }
     .renamein { height: 26px; font-size: 16px; }
 
     #panes { padding: 3px; gap: 3px; }

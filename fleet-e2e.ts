@@ -151,6 +151,20 @@ check("composed text visible in s2 pane", cap2.out.includes("compose-box-to-slot
 check("no cross-talk (s1 text absent from s2)", !cap2.out.includes("hello-fleet-typing"));
 const cap1b = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("no cross-talk (s2 text absent from s1)", !cap1b.out.includes("compose-box-to-slot-two"));
+// --- export (before C-u wipes the input line the sent text sits on) ---
+const expHtml = await get("/api/slots/2/export");
+const expBody = await expHtml.text();
+check("export returns HTML", expHtml.ok && (expHtml.headers.get("content-type") ?? "").includes("text/html"));
+check("export contains session content", expBody.includes("compose-box-to-slot-two"));
+check("export escapes HTML metachars", !/<script/i.test(expBody) && expBody.includes("<pre>"));
+const expTxt = await get("/api/slots/2/export?format=txt");
+check("export?format=txt is a plain-text download", expTxt.ok
+  && (expTxt.headers.get("content-type") ?? "").includes("text/plain")
+  && (expTxt.headers.get("content-disposition") ?? "").includes("attachment"), expTxt.headers.get("content-disposition") ?? "");
+check("txt export contains session content", (await expTxt.text()).includes("compose-box-to-slot-two"));
+const expInactive = await get("/api/slots/4/export");
+check("export rejects inactive slot", expInactive.status === 400);
+
 for (const t of ["s1", "s2"]) await tmuxOut("send-keys", "-t", t, "C-u");
 
 // --- prompt history: composed sends recorded, raw WS typing deliberately not ---

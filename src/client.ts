@@ -613,6 +613,12 @@ function renderSlots() {
       row.appendChild(lbl);
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
+      const exp = el("span", "exp", "⇩");
+      exp.title = "export session — print / save as PDF";
+      exp.onclick = (e) => {
+        e.stopPropagation();
+        window.open(`/api/slots/${s.id}/export`, "_blank");
+      };
       const ren = el("span", "ren", "✎");
       ren.title = "rename session";
       ren.onclick = (e) => {
@@ -629,7 +635,7 @@ function renderSlots() {
         await refresh();
       };
       const act = el("div", "slotact");
-      act.append(ren, kill);
+      act.append(exp, ren, kill);
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
     }

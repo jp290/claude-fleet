@@ -451,6 +451,43 @@ Bun.serve<WSData>({
         slots: slots.map((s) => ({ id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput })),
       });
     }
+    // print/PDF export: full scrollback as a self-contained light-theme page — plain
+    // capture (no -e) because tmux's escape-preserving output encodes styling as
+    // absolute-column cursor jumps that any SGR→HTML converter would misplace, and
+    // a white page prints better than terminal colors anyway. ?format=txt downloads raw.
+    const exportMatch = /^\/api\/slots\/(\d+)\/export$/.exec(url.pathname);
+    if (req.method === "GET" && exportMatch) {
+      const s = slotFrom(exportMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const cap = await tmux("capture-pane", "-t", sess(s.id), "-p", "-S", "-");
+      if (cap.code !== 0) return json({ error: "capture failed — session gone?" }, 500);
+      const name = s.label ?? s.cwd.split("/").pop() ?? s.cwd;
+      if (url.searchParams.get("format") === "txt")
+        return new Response(cap.out + "\n", {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "content-disposition": `attachment; filename="fleet-s${s.id}-${new Date().toISOString().slice(0, 10)}.txt"`,
+          },
+        });
+      const esc = (t: string) => t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+      const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>${esc(name)} — Claude Fleet export</title>
+<style>
+  body { margin: 0; background: #fff; color: #1a1a1a;
+    font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  header { padding: 18px 24px 12px; border-bottom: 1px solid #ddd; }
+  h1 { margin: 0 0 4px; font-size: 15px; }
+  .meta { color: #666; font-size: 11px; }
+  pre { margin: 0; padding: 14px 24px 30px; white-space: pre-wrap; word-break: break-word; }
+  @media print { header { border-bottom-color: #999; } @page { margin: 14mm; } }
+</style></head><body>
+<header><h1>${esc(name)}</h1>
+<div class="meta">slot ${s.id} · ${esc(s.cwd)} · exported ${new Date().toLocaleString()}</div></header>
+<pre>${esc(cap.out)}</pre>
+</body></html>`;
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
     const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
     if (req.method === "GET" && histMatch) {
       const s = slotFrom(histMatch[1]);

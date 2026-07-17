@@ -1,6 +1,6 @@
 {
   "name": "claude-fleet",
-  "description": "Web dashboard for up to 10 persistent tmux-backed Claude Code sessions — token auth, split panes, live typing, scrollback replay",
+  "description": "Web dashboard for up to 16 persistent tmux-backed Claude Code sessions — token auth, split panes, live typing, scrollback replay",
   "license": "MIT",
   "author": "jp290",
   "repository": {

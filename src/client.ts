@@ -129,7 +129,15 @@ class Pane {
       // ⌃digit switches slots even while the terminal has keyboard focus — without this,
       // xterm would send the digit to the pty as if it were typed
       if (slotHotkey(e) !== null) return false;
-      return !e.metaKey; // ⌘ combos stay with the browser (copy, paste, reload)
+      // the canvas renderer paints cells as pixels, not DOM text, so a drag-selection has
+      // nothing for the browser's native ⌘C to copy (no real Selection exists) — copy the
+      // selection text directly instead. Guard e.type: xterm invokes this handler from both
+      // _keyDown and _keyPress, and would otherwise fire the clipboard write twice.
+      if (e.type === "keydown" && e.metaKey && e.key.toLowerCase() === "c" && this.term.hasSelection()) {
+        this.copySelection();
+        return false;
+      }
+      return !e.metaKey; // other ⌘ combos stay with the browser (paste, reload, ...)
     });
     const updateJump = () => {
       const b = this.term.buffer.active;
@@ -152,6 +160,25 @@ class Pane {
     this.root.classList.remove("flash");
     void this.root.offsetWidth; // force reflow so re-adding the class retriggers the CSS animation
     this.root.classList.add("flash");
+  }
+
+  // navigator.clipboard only exists in a secure context (HTTPS or localhost) — this
+  // dashboard is normally reached over plain HTTP via a Tailscale IP, so it's undefined
+  // there and this falls back to the legacy execCommand copy path
+  private copySelection() {
+    const text = this.term.getSelection();
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
   }
 
   sendRaw(s: string) {

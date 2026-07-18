@@ -91,6 +91,7 @@ tmux -L claudefleet new-session -d -s srv 'cd ~/claude-fleet && FLEET_HOST=<ip> 
 tmux -L claudefleet kill-session -t srv    # stop (claude sessions survive)
 bun run build                              # rebuild client bundles after editing src/
 ./e2e-isolated.sh                          # full e2e against a throwaway instance (own tmux socket/port — never touches the live fleet)
+./e2e-claude-gate.sh                       # separate: exercises the claude-alive gate against a real compiled stand-in binary (needs a C compiler; own socket/port)
 ```
 
 Env: `FLEET_HOST` (default `127.0.0.1`), `FLEET_PORT` (8790), `FLEET_SOCK` (tmux socket, default `claudefleet`), `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`, `FLEET_CMD`, `FLEET_CHIPS`, and for sharing `FLEET_SHARE_HOSTS` + `FLEET_SHARE_URL` (see SHARING.md).

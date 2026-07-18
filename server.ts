@@ -229,6 +229,12 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
+  // a share must not outlive its session (same invariant killSlot enforces) — recycling
+  // an active slot onto a different cwd must not leave an old guest link/password
+  // pointed at whatever the slot becomes next
+  const oldShare = shares.find((x) => x.slot === s.id);
+  if (oldShare) closeShareClients(s, oldShare.id, 4000, "session ended");
+  shares = shares.filter((x) => x.slot !== s.id);
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   saveState();
@@ -500,6 +506,16 @@ function secretEq(a: string, b: string): boolean {
 }
 let TOKEN = "";
 const tokenOk = (t: string | null): boolean => !!t && secretEq(t, TOKEN);
+// throttled wrapper for the two request paths that check a caller-supplied token: a flat
+// per-attempt cost, same precedent as share auth (failStrike below), but deliberately no
+// escalating lockout here — the owner token is the ONLY credential this app has, so a
+// count-based lockout would let a remote guesser lock the real owner out of their own
+// dashboard, which is worse than unlimited-but-throttled guessing against 192 bits of entropy
+async function tokenGate(t: string | null): Promise<boolean> {
+  if (tokenOk(t)) return true;
+  await Bun.sleep(400);
+  return false;
+}
 
 // --- share auth: per-share cookie, brute-force throttled (public-facing) ---
 const shareBy = (id: string) => shares.find((x) => x.id === id) ?? null;
@@ -687,12 +703,12 @@ Bun.serve<WSData>({
 
     // login: /?token=… sets the cookie and redirects to a clean URL
     if (url.pathname === "/" && url.searchParams.has("token")) {
-      if (!tokenOk(url.searchParams.get("token"))) return json({ error: "bad token" }, 401);
+      if (!(await tokenGate(url.searchParams.get("token")))) return json({ error: "bad token" }, 401);
       return new Response(null, {
         status: 302,
         headers: {
           location: "/",
-          "set-cookie": `fleet=${TOKEN}; Path=/; SameSite=Strict; Max-Age=31536000`,
+          "set-cookie": `fleet=${TOKEN}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
         },
       });
     }
@@ -771,7 +787,7 @@ Bun.serve<WSData>({
       });
 
     // everything below carries authority — token required
-    if (!tokenOk(tokenFrom(req))) return json({ error: "unauthorized" }, 401);
+    if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
 
     const wsMatch = /^\/ws\/(\d+)$/.exec(url.pathname);
     if (wsMatch) {

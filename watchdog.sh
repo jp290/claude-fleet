@@ -9,12 +9,17 @@ FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
 # missing inside every new claude session too.
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# single-quoted PATH interpolation below needs embedded ' escaped (server.ts does the same
+# for its own pane-command PATH bake-in) — otherwise a PATH entry containing a quote breaks
+# out of the tmux command string and the remainder runs as shell syntax as this user
+PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
+
 while true; do
   if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
     tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=klaus.example.com FLEET_SHARE_HOSTS=klaus.example.com FLEET_SHARE_URL=https://klaus.example.com exec bun server.ts >> server.log 2>&1"
+      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=klaus.example.com FLEET_SHARE_HOSTS=klaus.example.com FLEET_SHARE_URL=https://klaus.example.com exec bun server.ts >> server.log 2>&1"
     echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
   fi
   sleep 5

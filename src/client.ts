@@ -83,12 +83,20 @@ function showGate() {
   gate.style.display = "flex";
   gateIn.focus();
 }
+// route the pasted token through the server's own /?token=… login endpoint instead of
+// setting document.cookie directly — JS can never set an HttpOnly cookie, so a client-side
+// set here would silently downgrade the auth cookie below what the URL-based login flow gets
+async function submitToken(t: string) {
+  const res = await fetch(`/?token=${encodeURIComponent(t)}`);
+  if (res.ok) { location.reload(); return; }
+  gateIn.classList.add("bad");
+  setTimeout(() => gateIn.classList.remove("bad"), 1200);
+}
 gateIn.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   const t = gateIn.value.trim();
   if (!t) return;
-  document.cookie = `fleet=${t}; Path=/; SameSite=Strict; Max-Age=31536000`;
-  location.reload();
+  void submitToken(t);
 });
 
 async function api(path: string, init?: RequestInit): Promise<Response> {
@@ -465,6 +473,11 @@ class Pane {
     this.ws?.close();
     clearTimeout(this.resizeTimer);
     clearTimeout(this.chatTimer);
+    // an in-flight pollChat() fetch resolving after dispose would otherwise re-arm its
+    // own setTimeout forever (its finally-block re-checks view/slot, both still truthy) —
+    // clearing them makes that guard fire and end the loop on a disposed instance
+    this.slot = 0;
+    this.view = "term";
     this.term.dispose();
     this.root.remove();
   }

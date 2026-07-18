@@ -12,7 +12,18 @@ Remaining: item 4 (UI density pass — needs user feedback per iteration), item 
 
 **2026-07-18, later:** session sharing shipped (see SHARING.md) — per-slot
 password-gated guest access via https://klaus.example.com, view/interact
-modes, live through the Cloudflare tunnel, revoke kicks guests instantly.
+modes, live through the Cloudflare tunnel, revoke kicks guests instantly. Landing
+page on the share-domain root (subagent-built, reviewed).
+
+**2026-07-18, item 6 shipped (MVP):** conversation view (`aa7be82`) — Phase 1
+findings: JSONL has user/text/tool_use/tool_result (thinking usually empty/redacted;
+permission prompts are UI-only → hybrid stays). Slots pin `claude --session-id` at
+pane creation for a deterministic transcript path; adopted sessions fall back to
+newest-by-mtime (can mispick when two claudes share a cwd — pinning fixes new panes).
+💬 toggle per pane, 1s incremental polling, reflows at any width.
+MVP gaps / follow-ups: no markdown beyond ``` fences, tool_use/result not visually
+paired, transcript endpoint rereads the whole file per poll (fine <10MB), guests
+don't get the conversation view yet, view choice not persisted per pane.
 
 ---
 

@@ -224,7 +224,10 @@
   .shrbtn.danger:hover { color: #f85149; border-color: #5a2a2a; }
   .shrbtn.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
   .shrhint { font-size: 11px; color: #888; line-height: 1.5; }
-  .shrbtns { display: flex; gap: 8px; justify-content: flex-end; }
+  .shrbtns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .shrlive { color: #888; }
+  .shrlive.on { color: #3fb950; }
+  .shrsince { margin-left: auto; color: #666; font-size: 10.5px; }
 
   #autopanel { gap: 10px; }
   .autorow { display: flex; gap: 8px; align-items: center; padding: 7px 9px; border-radius: 8px;
@@ -283,8 +286,8 @@
     #layouts, #sidefoot, #collapse, #reload { display: none; }
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
     .slot { padding: 12px 10px; font-size: 13px; }
-    /* finger-sized rename/kill/export so a session can be managed from the phone */
-    .slot .kill, .slot .ren, .slot .exp { padding: 8px 10px; font-size: 16px; }
+    /* finger-sized share/rename/kill/export so a session can be managed from the phone */
+    .slot .kill, .slot .ren, .slot .exp, .slot .shr { padding: 8px 10px; font-size: 16px; }
     .renamein { height: 26px; font-size: 16px; }
 
     #panes { padding: 2px; gap: 2px; }

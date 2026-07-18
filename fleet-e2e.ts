@@ -277,6 +277,27 @@ await Bun.sleep(700);
 const capI = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("interact share text reaches its pane", capI.out.includes("share-interact-hello"));
 check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
+// --- share-mode: flip view/interact in place, same link + password ---
+const modeFlip = await post("/api/slots/1/share-mode", { mode: "view" });
+check("share-mode flips interact→view", modeFlip.ok);
+const infoFlipped = (await (await fetch(BASE + `/s/${shInt.id}/info`, { headers: { cookie: shICookie } })).json()) as { mode: string };
+check("flipped share keeps cookie, reports view", infoFlipped.mode === "view");
+check("flipped share blocks send", (await fetch(BASE + `/s/${shInt.id}/send`, {
+  method: "POST", headers: { cookie: shICookie, "content-type": "application/json" },
+  body: JSON.stringify({ text: "flipped-must-not-send" }),
+})).status === 403);
+check("share-mode rejects bad mode", (await post("/api/slots/1/share-mode", { mode: "admin" })).status === 400);
+check("share-mode 404 on unshared slot", (await post("/api/slots/3/share-mode", { mode: "view" })).status === 404);
+check("share-mode needs owner token", (await post("/api/slots/1/share-mode", { mode: "view" },
+  { "content-type": "application/json", cookie: shICookie })).status === 401);
+const modeBack = await post("/api/slots/1/share-mode", { mode: "interact" });
+check("share-mode flips back to interact", modeBack.ok);
+const sessAfterFlip = (await (await get("/api/sessions")).json()) as
+  { slots: { id: number; share: { mode: string; guests: number; created: number } | null }[] };
+const flipSlot = sessAfterFlip.slots.find((x) => x.id === 1);
+check("sessions reports share guests + created", flipSlot?.share?.mode === "interact"
+  && typeof flipSlot.share.guests === "number" && typeof flipSlot.share.created === "number",
+  JSON.stringify(flipSlot?.share));
 await tmuxOut("send-keys", "-t", "s1", "C-u");
 const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
 if (SHARE_HOST) {

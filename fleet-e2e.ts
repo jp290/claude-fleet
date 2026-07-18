@@ -177,6 +177,18 @@ check("history entry has timestamp", typeof h2.history[0]?.ts === "number" && h2
 const h1 = (await (await get("/api/slots/1/history")).json()) as { history: unknown[] };
 check("raw typed input not recorded in history", h1.history.length === 0, `${h1.history.length} entries`);
 
+// --- transcript view (slot 1 cwd is ~/claude-fleet, whose project dir has transcripts;
+// FLEET_CMD=true means no pinned session id, so this exercises the mtime fallback) ---
+const tr1 = await get("/api/slots/1/transcript");
+const tr1j = (await tr1.json()) as { entries: { role: string; blocks: unknown[] }[]; total: number; source: string | null };
+check("transcript endpoint returns entries", tr1.ok && tr1j.total > 0 && tr1j.entries.length > 0,
+  `total=${tr1j.total} entries=${tr1j.entries.length} source=${tr1j.source}`);
+check("transcript entries are structured", tr1j.entries.every((e) => (e.role === "user" || e.role === "assistant") && e.blocks.length > 0));
+const tr2 = await get(`/api/slots/1/transcript?after=${tr1j.total}`);
+const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
+check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
+check("transcript rejects inactive slot", (await get("/api/slots/4/transcript")).status === 400);
+
 // --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
 const shCreate = await post("/api/slots/2/share", { mode: "view", password: "viewpass123" });
 const shView = (await shCreate.json()) as { id: string; path: string; password: string };

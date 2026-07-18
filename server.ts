@@ -1,5 +1,5 @@
 import { stat, rm, readdir } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ServerWebSocket } from "bun";
@@ -29,7 +29,13 @@ const SHELL = process.env.SHELL ?? "/bin/sh";
 // (no ~/.local/bin, no brew), NOT this process's env and NOT tmux's global env table.
 // Bake our PATH into the command so `claude` resolves no matter who started tmux.
 const PATH_EXPORT = process.env.PATH ? `export PATH='${process.env.PATH.replaceAll("'", "'\\''")}'; ` : "";
-const CLAUDE_CMD = `${PATH_EXPORT}${process.env.FLEET_CMD ?? "claude"}; exec ${SHELL}`;
+const BASE_CMD = process.env.FLEET_CMD ?? "claude";
+// when the slot actually runs claude, pin its session id so the transcript path
+// (~/.claude/projects/<cwd-slug>/<uuid>.jsonl) is known instead of guessed by mtime
+function slotCmd(sessionId: string | null): string {
+  const cmd = sessionId && /^claude(\s|$)/.test(BASE_CMD) ? `${BASE_CMD} --session-id ${sessionId}` : BASE_CMD;
+  return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+}
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
@@ -54,6 +60,8 @@ interface Slot {
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
   cols: number; // last tmux window size we applied — lets a same-size reconnect skip reseeding
   rows: number;
+  sessionId: string | null; // claude session uuid we pinned at pane creation; null for
+  // adopted/pre-existing sessions (transcript lookup then falls back to newest-by-mtime)
   history: { text: string; ts: number }[]; // composed sends only, newest last — the
   // durable "what did I prompt" record; raw live typing is deliberately not captured
   clients: Set<ServerWebSocket<WSData>>;
@@ -72,6 +80,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   quietUntil: 0,
   cols: 200,
   rows: 50,
+  sessionId: null,
   history: [],
   clients: new Set(),
   inputChain: Promise.resolve(),
@@ -112,8 +121,8 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 // writes are serialized: overlapping fire-and-forget writes to the same file can interleave
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
-  const active: Record<string, { cwd: string; label: string | null }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label };
+  const active: Record<string, { cwd: string; label: string | null; sessionId: string | null }> = {};
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId };
   const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares }, null, 2);
   saveChain = saveChain
     .then(() => Bun.write(STATE_FILE, body))
@@ -146,12 +155,16 @@ async function ensureSlot(s: Slot): Promise<void> {
   const has = await tmux("has-session", "-t", name);
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
-    // has-session/new-session isn't atomic: the 2s self-heal loop and a fresh openSlot()
-    // can race to create the same session — only the winner should log/reset window size
-    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, CLAUDE_CMD);
+    // fresh pane = fresh claude = fresh transcript; pin its uuid only if WE win the
+    // has-session/new-session race below (the 2s self-heal loop and a fresh openSlot()
+    // can race to create the same session — only the winner's uuid is real)
+    const candidate = crypto.randomUUID();
+    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, slotCmd(candidate));
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;
+      s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
+      saveState();
       console.log(`slot ${s.id}: created tmux session '${name}' in ${s.cwd}`);
     }
   }
@@ -184,6 +197,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   s.cwd = cwd;
   s.label = null; // a fresh session gets a fresh identity
+  s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
@@ -207,6 +221,7 @@ async function killSlot(s: Slot): Promise<void> {
   s.quietUntil = 0;
   s.cols = 200;
   s.rows = 50;
+  s.sessionId = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
 }
@@ -278,6 +293,85 @@ async function listDirs(raw: string) {
     .filter((p) => existsSync(p));
   const parent = dirname(dir);
   return { path: dir, parent: parent === dir ? null : parent, dirs, recents, common };
+}
+
+// --- transcript view: read claude's own JSONL (~/.claude/projects/<cwd-slug>/<uuid>.jsonl)
+// and hand the client structured messages instead of terminal bytes. Renders natively at
+// any width — this is the per-device-formatting answer the pty can never give.
+const projDir = (cwd: string) => `${HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+
+function transcriptFile(s: Slot): string | null {
+  const dir = projDir(s.cwd!);
+  if (s.sessionId) {
+    const pinned = `${dir}/${s.sessionId}.jsonl`;
+    if (existsSync(pinned)) return pinned;
+  }
+  // adopted or pre-session-pinning slot: newest transcript in this cwd's project dir.
+  // Can pick the wrong one when several claudes run in the same cwd — pinned ids fix
+  // that for every pane created from now on.
+  try {
+    const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({ f, m: statSync(`${dir}/${f}`).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    return files[0] ? `${dir}/${files[0].f}` : null;
+  } catch {
+    return null;
+  }
+}
+
+interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
+interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
+
+const trim = (t: string, max: number) => (t.length > max ? t.slice(0, max) + ` … [+${t.length - max} chars]` : t);
+
+// tool_result content is a string or a list of {type:"text"} blocks — flatten either
+function resultText(c: unknown): string {
+  if (typeof c === "string") return c;
+  if (Array.isArray(c))
+    return c.map((b: unknown) => {
+      const blk = b as { type?: unknown; text?: unknown };
+      return blk.type === "text" && typeof blk.text === "string" ? blk.text : "";
+    }).join("\n");
+  return "";
+}
+
+function viewEntry(raw: unknown, n: number): TEntry | null {
+  const d = raw as {
+    type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown;
+    message?: { content?: unknown };
+  };
+  if (d.type !== "user" && d.type !== "assistant") return null;
+  if (d.isMeta === true || d.isSidechain === true) return null;
+  const ts = typeof d.timestamp === "string" ? d.timestamp : null;
+  const content = d.message?.content;
+  const blocks: TBlock[] = [];
+  if (d.type === "user") {
+    if (typeof content === "string") {
+      if (content.startsWith("<system-reminder")) return null; // harness noise, not the user
+      blocks.push({ t: "text", text: trim(content, 20_000) });
+    } else if (Array.isArray(content)) {
+      for (const b of content) {
+        const blk = b as { type?: unknown; content?: unknown; text?: unknown };
+        if (blk.type === "tool_result") blocks.push({ t: "tool_result", text: trim(resultText(blk.content), 3000) });
+        else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
+          blocks.push({ t: "text", text: trim(blk.text, 20_000) });
+      }
+      // a pure tool_result entry renders as part of the assistant's turn, not a user bubble
+      if (blocks.length && blocks.every((x) => x.t === "tool_result"))
+        return { n, role: "assistant", ts, blocks };
+    }
+  } else if (Array.isArray(content)) {
+    for (const b of content) {
+      const blk = b as { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown; input?: unknown };
+      if (blk.type === "text" && typeof blk.text === "string") blocks.push({ t: "text", text: trim(blk.text, 40_000) });
+      else if (blk.type === "thinking" && typeof blk.thinking === "string" && blk.thinking)
+        blocks.push({ t: "thinking", text: trim(blk.thinking, 10_000) });
+      else if (blk.type === "tool_use")
+        blocks.push({ t: "tool", name: typeof blk.name === "string" ? blk.name : "tool", text: trim(JSON.stringify(blk.input ?? {}), 600) });
+    }
+  }
+  if (!blocks.length) return null;
+  return { n, role: d.type, ts, blocks };
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -394,6 +488,7 @@ if (existsSync(STATE_FILE)) {
       if (s && typeof v?.cwd === "string") {
         s.cwd = v.cwd;
         if (typeof v.label === "string") s.label = v.label;
+        if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
       }
     }
   } catch {
@@ -623,6 +718,30 @@ Bun.serve<WSData>({
 <pre>${esc(cap.out)}</pre>
 </body></html>`;
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    const trMatch = /^\/api\/slots\/(\d+)\/transcript$/.exec(url.pathname);
+    if (req.method === "GET" && trMatch) {
+      const s = slotFrom(trMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const file = transcriptFile(s);
+      if (!file) return json({ entries: [], total: 0, source: null });
+      const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
+      // `after` = line count the client has already consumed — filtering happens on OUR
+      // side of that cut, so entry numbering must be absolute line numbers
+      const after = Math.max(0, Number(url.searchParams.get("after") ?? 0) | 0);
+      const entries: TEntry[] = [];
+      for (let i = after; i < lines.length; i++) {
+        try {
+          const e = viewEntry(JSON.parse(lines[i]), i + 1);
+          if (e) entries.push(e);
+        } catch {
+          // only the FINAL line may be a partial mid-append (cap total so the next poll
+          // re-reads it once complete) — an unparseable line mid-file is just skipped,
+          // otherwise it would pin total forever and loop the client on the same range
+          if (i === lines.length - 1) return json({ entries, total: i, source: file.split("/").pop() });
+        }
+      }
+      return json({ entries, total: lines.length, source: file.split("/").pop() });
     }
     const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
     if (req.method === "GET" && histMatch) {

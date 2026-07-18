@@ -126,29 +126,8 @@ function mdInto(target: HTMLElement, text: string) {
   });
 }
 
-function renderEntry(e: TEntry): HTMLElement {
-  const msg = el("div", `msg ${e.role}`);
-  if (e.ts) {
-    const d = new Date(e.ts);
-    msg.appendChild(el("div", "ts", d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })));
-  }
-  for (const b of e.blocks) {
-    if (b.t === "text") {
-      mdInto(msg, b.text);
-    } else {
-      const det = document.createElement("details");
-      det.className = b.t === "thinking" ? "think" : "tool";
-      const head = b.t === "thinking" ? "thinking"
-        : b.t === "tool" ? `⚙ ${b.name ?? "tool"} ${b.text.slice(0, 80)}`
-        : "→ result";
-      const sum = document.createElement("summary");
-      sum.textContent = head;
-      det.append(sum, el("pre", "", b.text));
-      msg.appendChild(det);
-    }
-  }
-  return msg;
-}
+const fmtClock = (ts: string | null) =>
+  ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
 // --- panes: each visible terminal owns its Terminal, WS, and resize state ---
 class Pane {
@@ -186,7 +165,13 @@ class Pane {
       e.stopPropagation();
       this.setView(this.view === "term" ? "chat" : "term");
     };
-    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn);
+    const navUp = el("button", "promptnav up", "↑") as HTMLButtonElement;
+    navUp.title = "previous prompt of yours";
+    navUp.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(-1); };
+    const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
+    navDn.title = "next prompt of yours";
+    navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
+    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, navUp, navDn);
     this.term = new Terminal({
       scrollback: 50000,
       fontSize: isMobile() ? 11 : 12,
@@ -275,6 +260,72 @@ class Pane {
     this.chatEl.replaceChildren();
     this.chatTotal = 0;
     this.chatSource = null;
+    this.toolGroup = null;
+  }
+
+  // --- conversation rendering: the view exists so YOUR messages are findable.
+  // They render as prominent anchors; everything the agent did between two texts
+  // collapses into one expandable "⚙ n steps" line instead of a wall of rows. ---
+  private toolGroup: { det: HTMLElement; sum: HTMLElement; body: HTMLElement; count: number;
+    lastStep: HTMLElement | null } | null = null;
+
+  private ensureToolGroup() {
+    if (this.toolGroup) return this.toolGroup;
+    const det = document.createElement("details");
+    det.className = "toolgroup";
+    const sum = document.createElement("summary");
+    const body = el("div", "tgbody");
+    det.append(sum, body);
+    this.chatEl.appendChild(det);
+    this.toolGroup = { det, sum, body, count: 0, lastStep: null };
+    return this.toolGroup;
+  }
+
+  private addStep(b: TBlock) {
+    const g = this.ensureToolGroup();
+    if (b.t === "tool_result" && g.lastStep) {
+      // attach the result to the call it answers instead of its own row
+      g.lastStep.appendChild(el("pre", "tres", b.text));
+      g.lastStep = null;
+    } else {
+      const step = document.createElement("details");
+      step.className = "tstep";
+      const sum = document.createElement("summary");
+      sum.textContent = b.t === "thinking" ? "💭 thinking"
+        : b.t === "tool" ? `${b.name ?? "tool"} ${b.text.slice(0, 90)}`
+        : "result";
+      step.append(sum, el("pre", "", b.text));
+      g.body.appendChild(step);
+      g.count++;
+      g.lastStep = b.t === "tool" ? step : null;
+    }
+    g.sum.textContent = `⚙ ${g.count} step${g.count === 1 ? "" : "s"}`;
+  }
+
+  private appendEntry(e: TEntry) {
+    for (const b of e.blocks) {
+      if (b.t === "text") {
+        this.toolGroup = null; // a message ends the current work block
+        const msg = el("div", `msg ${e.role}`);
+        msg.appendChild(el("div", "mhead", e.role === "user" ? `you · ${fmtClock(e.ts)}` : "claude"));
+        mdInto(msg, b.text);
+        this.chatEl.appendChild(msg);
+      } else {
+        this.addStep(b);
+      }
+    }
+  }
+
+  // jump between YOUR messages — the reason this view exists
+  private jumpPrompt(dir: -1 | 1) {
+    const users = [...this.chatEl.querySelectorAll<HTMLElement>(".msg.user")];
+    if (!users.length) return;
+    const y = this.chatEl.scrollTop;
+    const target = dir === -1
+      ? [...users].reverse().find((u) => u.offsetTop < y - 8)
+      : users.find((u) => u.offsetTop > y + 8);
+    (target ?? (dir === -1 ? users[0] : users[users.length - 1]))
+      .scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   private async pollChat() {
@@ -301,7 +352,7 @@ class Pane {
         if (empty) empty.remove();
         // keep the view pinned to the newest message unless the user scrolled up to read
         const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
-        for (const e of data.entries) this.chatEl.appendChild(renderEntry(e));
+        for (const e of data.entries) this.appendEntry(e);
         if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
       }
       this.chatTotal = data.total;

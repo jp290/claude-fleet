@@ -105,6 +105,50 @@ let fleet: SlotInfo[] = [];
 let serverNow = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
+// --- transcript view model (mirrors server.ts's TEntry/TBlock) ---
+interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
+interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
+
+// minimal, XSS-safe markdown: only ``` fences get structure, everything else is textContent
+function mdInto(target: HTMLElement, text: string) {
+  const parts = text.split("```");
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      const nl = part.indexOf("\n");
+      const code = nl >= 0 ? part.slice(nl + 1) : part;
+      const wrap = el("div", "code");
+      wrap.appendChild(el("pre", "", code.replace(/\n$/, "")));
+      target.appendChild(wrap);
+    } else if (part.trim()) {
+      target.appendChild(el("pre", "", part.replace(/^\n+|\n+$/g, "")));
+    }
+  });
+}
+
+function renderEntry(e: TEntry): HTMLElement {
+  const msg = el("div", `msg ${e.role}`);
+  if (e.ts) {
+    const d = new Date(e.ts);
+    msg.appendChild(el("div", "ts", d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })));
+  }
+  for (const b of e.blocks) {
+    if (b.t === "text") {
+      mdInto(msg, b.text);
+    } else {
+      const det = document.createElement("details");
+      det.className = b.t === "thinking" ? "think" : "tool";
+      const head = b.t === "thinking" ? "thinking"
+        : b.t === "tool" ? `⚙ ${b.name ?? "tool"} ${b.text.slice(0, 80)}`
+        : "→ result";
+      const sum = document.createElement("summary");
+      sum.textContent = head;
+      det.append(sum, el("pre", "", b.text));
+      msg.appendChild(det);
+    }
+  }
+  return msg;
+}
+
 // --- panes: each visible terminal owns its Terminal, WS, and resize state ---
 class Pane {
   slot = 0; // 0 = unassigned
@@ -118,13 +162,30 @@ class Pane {
   private readonly jump: HTMLElement;
   readonly term: Terminal;
   private readonly fit: FitAddon;
+  // conversation view: renders the claude transcript as structured messages —
+  // reflows at any width, which the fixed-width pty stream can't
+  private readonly chatEl: HTMLElement;
+  private readonly viewBtn: HTMLButtonElement;
+  private view: "term" | "chat" = "term";
+  private chatTotal = 0;
+  private chatSource: string | null = null;
+  private chatTimer: ReturnType<typeof setTimeout> | undefined;
+  private chatBusy = false;
 
   constructor(readonly index: number) {
     this.root = el("div", "pane");
     const termEl = el("div", "paneterm");
     this.hint = el("div", "panehint", "no session — click a slot");
     this.jump = el("button", "jump", "▼");
-    this.root.append(termEl, this.hint, this.jump);
+    this.chatEl = el("div", "panechat");
+    this.viewBtn = el("button", "viewtoggle", "💬") as HTMLButtonElement;
+    this.viewBtn.title = "toggle conversation view";
+    this.viewBtn.style.display = "none";
+    this.viewBtn.onclick = (e) => {
+      e.stopPropagation();
+      this.setView(this.view === "term" ? "chat" : "term");
+    };
+    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn);
     this.term = new Terminal({
       scrollback: 50000,
       fontSize: isMobile() ? 11 : 12,
@@ -186,6 +247,62 @@ class Pane {
     copyText(this.term.getSelection());
   }
 
+  setView(v: "term" | "chat") {
+    this.view = v;
+    this.root.classList.toggle("chat", v === "chat");
+    this.viewBtn.textContent = v === "chat" ? "⌨" : "💬";
+    this.viewBtn.title = v === "chat" ? "back to terminal" : "toggle conversation view";
+    clearTimeout(this.chatTimer);
+    if (v === "chat") void this.pollChat();
+    else this.term.focus();
+  }
+
+  private resetChat() {
+    clearTimeout(this.chatTimer);
+    this.chatEl.replaceChildren();
+    this.chatTotal = 0;
+    this.chatSource = null;
+  }
+
+  private async pollChat() {
+    if (!this.slot || this.view !== "chat" || this.chatBusy) return;
+    this.chatBusy = true;
+    try {
+      const res = await api(`/api/slots/${this.slot}/transcript?after=${this.chatTotal}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null };
+      // the slot's active transcript changed (fresh claude after a self-heal, or a better
+      // pinned file appeared) — start over from the top of the new file
+      if (this.chatSource !== null && data.source !== this.chatSource) {
+        this.chatEl.replaceChildren();
+        this.chatTotal = 0;
+        this.chatSource = data.source;
+        return; // next tick refills from 0
+      }
+      this.chatSource = data.source;
+      if (data.source === null && !this.chatEl.childElementCount) {
+        this.chatEl.replaceChildren(el("div", "chatempty", "no transcript yet — say something in the terminal"));
+      }
+      if (data.entries.length) {
+        const empty = this.chatEl.querySelector(".chatempty");
+        if (empty) empty.remove();
+        // keep the view pinned to the newest message unless the user scrolled up to read
+        const pinned = this.chatEl.scrollTop + this.chatEl.clientHeight >= this.chatEl.scrollHeight - 120;
+        for (const e of data.entries) this.chatEl.appendChild(renderEntry(e));
+        if (pinned) this.chatEl.scrollTop = this.chatEl.scrollHeight;
+      }
+      this.chatTotal = data.total;
+    } catch {
+      // transient fetch error — next tick retries
+    } finally {
+      this.chatBusy = false;
+      if (this.view === "chat" && this.slot) {
+        clearTimeout(this.chatTimer);
+        this.chatTimer = setTimeout(() => void this.pollChat(), 1000);
+      }
+    }
+  }
+
   sendRaw(s: string) {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     const bytes = new TextEncoder().encode(s);
@@ -229,6 +346,9 @@ class Pane {
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
     this.term.reset();
+    this.resetChat();
+    this.viewBtn.style.display = slot ? "block" : "none";
+    if (slot && this.view === "chat") void this.pollChat();
     this.hint.style.display = slot ? "none" : "flex";
     // size the terminal to its container before connecting — the WS URL carries
     // this size, and connecting at a stale default (e.g. 80x24) would seed scrollback
@@ -275,6 +395,7 @@ class Pane {
     this.gen++;
     this.ws?.close();
     clearTimeout(this.resizeTimer);
+    clearTimeout(this.chatTimer);
     this.term.dispose();
     this.root.remove();
   }

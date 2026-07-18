@@ -25,6 +25,53 @@ MVP gaps / follow-ups: no markdown beyond ``` fences, transcript endpoint reread
 the whole file per poll (fine <10MB), guests don't get the conversation view yet,
 view choice not persisted per pane.
 
+**2026-07-18, share management + stale-bundle self-heal shipped** (`d05620a`):
+share dialog gets live guest count, shared-since, in-place mode switch
+(`share-mode` route, guests kicked to reload on flip), link/password rotation,
+confirms on revoke/rotate/interactive. `/api/sessions` reports a bundle version
+(`app.js` mtime); a tab open across a deploy self-reloads once backgrounded —
+closes the "missing buttons = regression" false alarm from a stale tab.
+
+**2026-07-18, hardening pass shipped** (acted on unprompted, per the review
+sweep below): fixed the share-survives-reopen bug (#2), added `HttpOnly` to
+the owner cookie — and, found while doing that, moved the token-paste gate
+off `document.cookie` entirely since client-side JS can never set `HttpOnly`
+and would have silently undone the fix for anyone using that flow (`src/client.ts`,
+now routes through the server's own `/?token=` login endpoint), fixed the
+`Pane.dispose()` orphaned-poll-loop leak, added a throttled (not lockout —
+locking the sole owner credential would let a remote guesser DoS the real
+owner) `tokenGate()` wrapper on both token-check call sites, and fixed the
+watchdog's unescaped PATH interpolation. Added regression coverage for all of
+it plus three more gaps the review flagged: adversarial export-escaping (the
+old check never contained a real metacharacter), share-host allowlist against
+path tricks, and the 4002 mode-flip verified over an actually-connected guest
+WebSocket, not just HTTP — main suite now 112 checks. Built a fully separate
+isolated harness (`e2e-claude-gate.sh` + `fleet-e2e-claude-gate.ts`) that
+compiles a real stand-in binary literally named `claude` to exercise the
+claude-alive gate's actual process-tree detection — previously 100% untested,
+because the main suite's `FLEET_CMD=true` short-circuits that logic entirely
+(a shebang script won't do: `ps -o comm=` reports the interpreter, not the
+script name — verified empirically before building it). All of it deployed
+to the live instance and spot-verified there (HttpOnly cookie on `/?token=`,
+share list empty after the slot-11 revoke). Remaining hardening items (#6, #8
+info-disclosure and structural e2e weaknesses) intentionally left for later —
+see the Hardening section below, now annotated with what's fixed vs. still open.
+
+**2026-07-18, still later — 8-agent design + review sweep.** Five feature
+proposals (archive, audit log, worktree spawn, misfire guard, file drop) each
+sent to a fresh read-only analyst against the real code; in parallel, three
+adversarial passes: security review of `server.ts` (incl. everything new since
+the HANDOFF), a correctness review of the client (races, the new stale-bundle
+reload, the share-dialog live-update), and a coverage audit of `fleet-e2e.ts`
+against the actual route/gate surface. Full results: items 8-12 below and the
+**Hardening** section. One live finding was acted on immediately, not queued:
+slot 11 (cwd = the fleet repo itself, containing `fleet.json` with the
+plaintext owner token) was actively shared in interactive mode — any guest
+could `cat fleet.json` and escalate to full owner control. Revoked and
+verified during the same session (`POST /api/slots/11/unshare` → `shares: []`).
+Slots 6 and 11 both still point at the fleet repo itself as their cwd — avoid
+pointing any slot there going forward (see Hardening #1).
+
 **2026-07-18, later still:** user feedback reframed the conversation view: its
 purpose is *reliably seeing your own messages*. Restyled accordingly (`516ea28`):
 user messages as timestamped accent anchors, all agent activity between two
@@ -210,24 +257,392 @@ TUI stream is inherently fragile; revisit only with a concrete use case.
 
 ---
 
+## 8. Session archive + revive  `medium`
+
+**Pain:** `killSlot` (`server.ts:238-258`) permanently deletes the stream and
+prompt history; the label/cwd/sessionId association is lost even though the
+underlying claude transcript survives in `~/.claude/projects/`. `ensureSlot`
+already proves `claude --resume <id>` works (`server.ts:189-191`) — nothing
+today lets you reach for that on purpose.
+
+**Proposal:** Kill archives instead of deleting: snapshot `{id, label, cwd,
+sessionId, history, createdAt (new field — doesn't exist today), killedAt}`
+into its own `archive.json` (own write chain, mode 600, same pattern as
+`saveHistory` `server.ts:131-138`) — **not** `fleet.json`, which rewrites on
+every label/share/auto change (`saveState`, 12+ call sites) and shouldn't grow
+with archive size. Raw stream bytes are **not** worth archiving: current
+streams run 22MB across 11 slots, there's no consumer after a kill (tmux
+history dies with `kill-session`, revive reseeds fresh via `capture-pane`
+anyway), and the durable record is the claude transcript + the export endpoint
+(use it before killing). A "past sessions" list in the sidebar/picker gets a
+revive button → lowest free slot, `--resume`.
+
+**Revive edge cases, each needs explicit handling:**
+- Transcript file gone by revive time → `ensureSlot` silently starts a *fresh*
+  session with a new UUID if the check at `server.ts:189` fails (no error
+  surfaced) — revive must pre-check and 4xx instead of letting that happen quietly.
+- cwd deleted since archiving → `openSlot`'s existence check (`server.ts:226`)
+  isn't replicated in `ensureSlot`; what `tmux new-session -c <gone-dir>` does
+  wasn't verified — validate explicitly before touching slot state.
+- Non-claude `FLEET_CMD` → `slotCmd` (`server.ts:36-38`) only resumes when
+  `BASE_CMD` starts with `claude`; silently ignores the archived sessionId otherwise.
+- `sessionId: null` archives (adopted sessions — 3 of 11 slots today have this)
+  can't `--resume` at all; decide list-only vs. fresh-start-in-same-cwd fallback.
+- Self-heal race: the 2s loop (`server.ts:663-665`) can win against a slow
+  revive and spawn a fresh UUID before the archived fields land — set
+  cwd/label/sessionId atomically, no `await` between them.
+- Same sessionId revived into two slots simultaneously isn't prevented anywhere today.
+
+**Effort:** M, ~1-2 sessions. **Open questions:** retention cap (count or
+age)? default revive target (lowest free slot, like "+ new session")?
+`sessionId: null` archives — list-only or fresh-start fallback button?
+
+---
+
+## 9. Audit log  `small–medium`
+
+**Pain:** No record of who did what, when — not slot open/kill, not guest
+auth attempts (success or failure), not share create/revoke/mode-change, not
+scheduled-prompt fires. HANDOFF.md's still-open item (unexplained tmux
+sessions vanishing, a foreign `dexter` session appearing) has no data trail to
+investigate with; the self-heal recreate log (`server.ts:197`, one
+untimestamped `console.log` into `server.log`) is the closest thing today.
+
+**Proposal:** Append-only `audit.jsonl`, own write chain + mode 600 (same
+`chmodSync` discipline as streams/history/state), **not** routed through
+`console.log` (watchdog redirects stdout to `server.log` at the shell's
+default umask — `watchdog.sh:17` — so anything security-sensitive needs its
+own explicit chmod). One line per event: open/kill, share create/revoke/mode-
+change, guest auth success+failure+lockout, guest WS connect/disconnect, auto
+create/delete/toggle/fire (+ skip reason), owner-API auth failures (currently
+*zero* rate limiting on the owner token — HANDOFF.md's known weakness — this
+is the only detector available short of adding a limiter), self-heal
+recreates (the actual hook for the "sessions vanished" mystery), guard()
+403/host-mismatch rejections (optionally aggregated — could be noisy from
+internet scanning on the public hostname).
+
+**Never logged:** guest passwords (including failed attempts — often contain
+typos of real ones), share secrets, the owner token, prompt text (already
+lives in `sN.history.json` at 600 — log a length/reference, not the content).
+
+**Client identity:** `server.requestIP()` exists (Bun) but resolves to
+cloudflared's local address for tunnel traffic, not the guest — mostly
+useless for the public path. `CF-Connecting-IP` is standard Cloudflare
+behavior but **not verified against a live request** and is spoofable on the
+direct Tailscale path (bypasses the tunnel entirely) — log it as an
+unverified field, alongside `Host` to distinguish which path a request came in on.
+
+**Effort:** S for logging core + a read endpoint; M with a UI view + WS
+identity plumbing + guard-event aggregation. **Open questions:** treat
+self-heal recreates as a security event (recommended) or is a tmux-level hook
+needed to attribute external `kill-session` calls? Log guard()/404 rejections
+or is that just internet-scanner noise? Retention — one rotation generation
+enough for now, or daily files with a defined retention window?
+
+---
+
+## 10. Worktree spawn  `medium`
+
+**Pain:** Multiple slots on the same repo cwd means multiple claudes editing
+the same files. `git worktree add` per slot fixes that — and the transcript
+mis-pick problem (item 6's Phase-1 finding, `BACKLOG.md` above) mostly
+disappears for free, since `projDir`'s slug (`server.ts:126`) is keyed off the
+cwd path and a worktree cwd is automatically distinct.
+
+**Proposal:** A picker footer action "⎇ in fresh worktree", shown when the
+browsed path is a repo (`.git` existence check for display; an authoritative
+`git rev-parse` server-side at spawn time — the server never trusts the
+client for validation, matching `openSlot`'s existing cwd check at
+`server.ts:226`). Branch name: generated default (`fleet/s<slot>-<timestamp>`)
+in an editable field — avoids a required-freetext dead end on mobile where the
+picker already fights the keyboard for space (`client.ts:731-732`).
+
+**Where worktrees live:** sibling directory `<repo>.worktrees/<name>/`, not
+`~/.fleet-worktrees/` — it stays browsable in the picker (`listDirs` only
+filters dot-dirs, `server.ts:397`), needs no `.gitignore` entry, and the
+repo→worktree relationship is legible from the path alone. `git worktree add`
+only materializes *tracked* files — `.claude/settings.local.json` (typically
+gitignored) and any untracked `.env` will be **missing** in the worktree,
+meaning local permission allows don't carry over and Claude re-prompts;
+whether `.claude/` is tracked is repo-dependent and wasn't checked against a
+real worktree.
+
+**Lifecycle:** kill removes the worktree (`git worktree remove`, no
+`--force` — git's own dirty-check is the safety net, no custom parsing
+needed) only if the slot is worktree-tagged; a failed/dirty remove must not
+block the kill itself, and the worktree should surface again as
+re-openable rather than silently vanish. **Real gap found along the way,
+worth fixing regardless of this feature:** if a slot's cwd disappears out
+from under it (worktree removed by hand, or any directory really),
+`ensureSlot`'s `tmux new-session -c <gone-dir>` failure path is silent —
+`server.ts:663-665`'s 2s retry loop swallows everything via
+`.catch(() => {})` and spins forever with no log, no state change; the slot
+stays listed as active in the sidebar. Worktrees turn this from a
+once-in-a-blue-moon case into routine.
+
+**Effort:** M, ~1 session. **Open questions:** delete the branch on cleanup
+if fully merged, or always leave it? List pre-existing worktrees of a repo in
+the picker (not just Fleet-created ones)? Default branch base — current HEAD,
+or a configurable target like `main`?
+
+---
+
+## 11. Misfire guard + per-slot compose drafts  `medium`
+
+**Pain:** At 16 slots, sending to the wrong one is the costliest everyday
+mistake, and today the compose box is global — switching panes loses
+whatever you were mid-typing.
+
+**Proposal, two parts:**
+1. **Per-slot draft buffer** (`Map<slotId, string>`, mirrored to
+   `localStorage` — a pure in-memory buffer would lose everything on the new
+   stale-bundle self-heal reload, item above). Swap point: inside
+   `focusPane()` (`client.ts:477`), keyed on the **slot under the box**, not
+   the pane index — `assign()` can change a pane's slot while `focused`
+   (the index) stays put, which the existing `changed` check (`client.ts:478`)
+   would miss.
+2. **Visible target label** in `#inputrow`, next to the textarea, always on —
+   today's only hint is the placeholder text (`client.ts:483`), which
+   disappears the instant there's any text, and with drafts restored on every
+   switch the box will usually be full. A slot-keyed accent color threaded
+   through sidebar number + drawer + this label would be the actual misfire
+   fix on mobile, where the mistake happens through the drawer with only one
+   pane ever visible.
+
+**Three real collision points found reading the compose code, not
+hypothetical:**
+- `doSend()` clears `ta.value` **after** its `await post(...)` (`client.ts:1249-1251`)
+  — if the user switches panes (draft restored) while the request is still in
+  flight, the clear lands on the wrong slot's just-restored draft. Must
+  target the captured slot, not "clear the box."
+- The scheduled-prompts dialog reads `ta.value` **live at click time**
+  (`client.ts:1129`), not snapshotted at open — a draft-swap while that dialog
+  is open schedules the wrong slot's text into the wrong session.
+- History-cycling (`cyc`, `client.ts:1220-1235`) isn't reset on pane switch
+  today — a naive swap would save a mid-cycle history entry as the "draft"
+  instead of the actual pre-cycle text sitting in `cyc.draft`.
+
+**Confirm heuristic** (only when it'd actually catch something, not
+`window.confirm` on every send): target slot ≠ last-sent slot this tab, AND
+target slot is "busy" (`serverNow - lastOutput < RECENT_MS`, `client.ts:13-14`
+— note this is a different window than the 60s idle-gate scheduled prompts
+use, `server.ts:336` — pick one deliberately), AND prompt is long/multiline.
+Two-stage send button beats a blocking dialog.
+
+**Effort:** M overall (S–M for drafts, S for the label, S for confirm — the
+edge cases above are the actual work). **Open questions:** drafts
+per-device only, or server-synced for simultaneous phone+desktop use? Should
+a draft survive slot kill/reopen, given the server already wipes history on
+reopen (`server.ts:230-232`)?
+
+---
+
+## 12. File / screenshot drop  `medium`
+
+**Pain:** No way to get an image (e.g. a screenshot from a phone) into a
+session — Claude Code reads images by file path, but nothing gets a file onto
+disk from the dashboard.
+
+**Proposal:** Drop-target per pane (not global — ambiguous in a 2-up/2x2
+layout), plus a paste listener (`⌘V` with image data — the custom key handler
+already returns non-`metaKey` combos to the browser, `client.ts:219`,
+confirming paste isn't already claimed) and a hidden `<input type=file>`
+button for mobile where drag-and-drop doesn't exist. Server: a new raw-body
+route below the existing owner-token gate (`server.ts:774` — automatically
+unreachable from share guests, who are 404'd by the `SHARE_HOSTS` allowlist
+before reaching it) writes into `<slot-cwd>/.fleet-drop/`, dir chmod 700, file
+chmod 600 — same discipline as streams/history/state. Server-generated
+filename (`drop-<date>-<randomBytes(3)>`+ext) avoids both collisions and any
+path-traversal surface; if the original name matters for readability,
+sanitize through the same slug pattern `projDir` uses (`server.ts:126`) plus
+a `resolve()`-prefix check. Response path gets appended into the compose box,
+same insertion pattern as history-recall (`client.ts:1207-1210`) — no auto-send.
+
+**Honest security framing:** owner-token holders can already write arbitrary
+files anywhere they can write, via `/send` + shell commands in the pane
+(`server.ts:7-9` says as much: a reachable fleet is RCE as your user) — this
+endpoint doesn't grant new capability, just a more convenient path to
+something already possible. What's genuinely new: binary files land without
+appearing in any stream/history record, and `.fleet-drop/` sits inside
+whatever git working tree the slot's cwd is — a screenshot with secrets could
+get committed by accident. No code fix for that; document it.
+
+**Cleanup:** delete `.fleet-drop/` on kill (mirroring the stream/history
+delete already there, `server.ts:247-248` — note `s.cwd` is read into a local
+var first, since `killSlot` nulls it immediately at line 239) plus age-based
+rotation on write (self-cleaning, no new interval needed) — `openSlot`
+*recycling* a slot onto a different cwd doesn't route through `killSlot` at
+all, so a slot reused for a new cwd wouldn't clean up the old one's drops
+without a separate check.
+
+**Effort:** M. **Open questions:** filenames server-generated only, or
+sanitized-original with a collision suffix? Delete drops on kill, or age-
+rotation only? Images only (`accept="image/*"`) or any file type?
+
+---
+
+## Hardening — findings from the review sweep, not new features
+
+Found while designing/reviewing the above, ranked by what actually costs
+something if left alone. Everything here is either a live issue (already
+acted on) or a gap in existing, shipped code — not part of any single feature above.
+
+1. **[Acted on this session] Confused-deputy via slot cwd = the fleet repo
+   itself.** `fleet.json` (mode 600, but same-user-readable) holds the
+   plaintext owner token and every share secret (`server.ts:150-157`,
+   `795-814`). Slots 6 *and* 11 currently have `cwd:
+   ~/claude-fleet` — any claude session running there (or any
+   guest sharing it) can `cat fleet.json` and escalate to full owner control
+   from anywhere Tailscale-reachable. Slot 11 was **actively shared in
+   interactive mode** when found — revoked and verified
+   (`POST /api/slots/11/unshare` → `shares: []`) during this session. Slot 6
+   still points there; move it, or accept the exposure knowingly. No cheap
+   code fix for the confused-deputy pattern itself — the mitigation is never
+   pointing a slot's cwd at the fleet install directory.
+
+2. **[Fixed this session, `server.ts` — `openSlot` now filters + closes shares
+   like `killSlot` does, regression-tested] `openSlot` didn't filter shares on reopen —
+   contradicts the invariant `killSlot` enforces.** `killSlot`'s comment says
+   "a share must not outlive its session" (`server.ts:243`) and filters both
+   `shares` and `autos`; `openSlot` (`server.ts:224-236`) filters `autos`
+   (line 231) but **not** `shares`. Recycling an active slot onto a different
+   cwd via `/api/slots/:id/open` leaves the old share pointing at the new,
+   unrelated session — a guest with the old link/password gets a live view
+   into whatever the slot became next. One-line fix (`shares =
+   shares.filter(x => x.slot !== s.id)` alongside the existing autos filter),
+   confirmed missing by both the security review and the e2e-gap review
+   independently — top-ranked item on both lists.
+
+3. **[Fixed this session] Owner cookie missing `HttpOnly`** (`server.ts:695`)
+   — the share cookie two routes down sets it (`server.ts:728`); the owner
+   cookie didn't. Not exploitable at the time (no XSS found — all dynamic
+   client rendering goes through `textContent`, verified), but free
+   defense-in-depth. **Found while fixing this:** the token-paste gate
+   (`src/client.ts`, the `gateIn` handler) set the cookie itself via
+   `document.cookie` — JS can never set `HttpOnly`, so that flow would have
+   silently overwritten the server's `HttpOnly` cookie with a non-`HttpOnly`
+   one every time someone used it instead of the `/?token=` URL. Fixed by
+   routing the paste flow through the same server login endpoint instead of
+   setting the cookie client-side at all — now there's exactly one place a
+   session cookie gets minted, and JS never touches it.
+
+4. **[Fixed this session, throttled not locked-out] Owner API token had zero
+   rate limiting** (pre-existing, HANDOFF.md already flagged it) — share auth
+   gets `failStrike` (`server.ts:511-521`); the owner-token check
+   (`server.ts:774`) didn't. Confirmed the exposure is narrower than "public
+   internet" — `SHARE_HOSTS` intercepts the public hostname before the token
+   path is ever reached (`server.ts:677-686`, traced line by line) — so this
+   was Tailnet-only exposure. Deliberately did NOT copy the share's
+   count-based lockout: the owner token is the only credential this app has,
+   so a hard lockout would let a remote guesser lock the real owner out of
+   their own dashboard — worse than the problem it solves. Added a flat
+   400ms-per-failed-attempt throttle instead (`tokenGate()`), same cost model
+   as share auth's per-guess delay, without the escalating block.
+
+5. **[Fixed this session, verified with a round-trip test] Watchdog PATH
+   interpolation wasn't escaped, unlike the equivalent code in `server.ts`.**
+   `watchdog.sh:16-17` single-quoted `$PATH` without escaping embedded `'`
+   characters; `server.ts:31` does this correctly 20 lines away. Copied the
+   same escaping pattern (`sed` equivalent of `replaceAll("'", "'\\''")`) —
+   confirmed round-trips correctly with a `'` embedded in a test PATH before
+   deploying.
+
+6. **[Not fixed — deferred, low severity] Transcript slug collisions can show
+   the wrong conversation** for slots without a pinned `sessionId` (adopted
+   sessions, 3 of 11 today) — the mtime-fallback in `transcriptFile()`
+   (`server.ts:411-428`) trusts the cwd slug alone; two distinct cwds can
+   slug-collide. Same-user info-disclosure, low severity, fixable by
+   cross-checking the transcript's own `cwd` field against `s.cwd` before
+   trusting the mtime pick. Left for whichever session next touches the
+   transcript view rather than a dedicated pass.
+
+7. **[Fixed this session] `Pane.dispose()` didn't clear `this.slot`/`this.view`**,
+   unlike `resetChat()`/`assign()` — an in-flight `pollChat()` fetch resolving
+   after `setLayout()` disposes the pane (layout switch, or any mobile/desktop
+   breakpoint crossing) would re-arm its own `setTimeout` on a dead instance
+   (`client.ts:336-373` vs `463-470`), because its `finally` block checks
+   `this.view`/`this.slot`, both still truthy. Orphaned 1s poll loop against
+   the token-authed transcript endpoint, unbounded until a full page reload.
+   Fixed by nulling both fields in `dispose()`.
+
+8. **[Not fixed — deferred, real but tied to a feature not yet built] Stale-bundle self-heal can silently discard a compose-box draft.**
+   `armReload()` (new this session) reloads the instant the tab is
+   backgrounded after a deploy — with no draft persistence anywhere today
+   (`saveView()` only stores layout/panes/focused, not `ta.value`). Directly
+   relevant to item 11 above: the per-slot draft buffer proposed there, once
+   it exists, should be checked *before* `armReload` fires, not after.
+
+9. **e2e coverage gaps**, ranked by risk × cost (full list of ~10 in the
+   review; top five closed this session, marked below):
+   - **[Fixed]** (a) share surviving a slot reopen — regression test for #2 above.
+   - **[Fixed, dedicated harness]** (b) the claude-alive gate had **zero**
+     coverage because `FLEET_CMD=true` in the main test harness disables it
+     entirely — the single scariest path in scheduled prompts (typing into a
+     bare shell) was completely unverified. New: `e2e-claude-gate.sh` +
+     `fleet-e2e-claude-gate.ts`, a fully separate isolated instance running a
+     real compiled stand-in binary literally named `claude`, exercising the
+     actual `pgrep`+`ps` detection logic in both directions (alive → auto
+     fires; dead → auto skips, marker never reaches the pane).
+   - **[Fixed]** (c) adversarial export-escaping — the old check
+     (`fleet-e2e.ts:162`) was tautological, the pane content it checked never
+     contained an HTML metacharacter to begin with. New checks send a real
+     `<script>` into the pane and a real `<b>"..'</b>` into the label, verify
+     both interpolation sites (pane content, title/h1) escape correctly.
+   - **[Fixed]** (d) share-host allowlist against path tricks (`../`, encoded
+     slashes, case) — HANDOFF.md asked for this explicitly, was never
+     written. New checks cover all three; the dot-segment one is honestly
+     annotated as converging with an existing check via client-side URL
+     normalization (verified empirically, not assumed) rather than claimed
+     as fully independent coverage.
+   - **[Fixed]** (e) the 4002 mode-flip close code was tested over HTTP but
+     not over an actually-connected guest WebSocket — new check connects a
+     real guest socket, triggers the flip, asserts the close code.
+   - **[Not fixed — deferred]** structural: the main suite is now 112 checks
+     in one linear script with shared state and no per-check isolation — a
+     failure early still cascades into unrelated-looking failures, and fixed
+     sleeps with no polling deadline remain a flakiness risk (worst
+     offenders unchanged: 9s/4.5s windows racing a 2s self-heal tick or a 5s
+     auto-tick). A real fix means restructuring the harness, not something
+     to bolt on alongside targeted regression tests — left for a dedicated pass.
+
+---
+
 ## Execution order
+
+**Done this session** (all deployed to the live instance, all verified —
+tsc/build/e2e-isolated.sh at 112 checks, plus the new dedicated
+`e2e-claude-gate.sh`): Hardening #2 (share survives reopen), #3 (`HttpOnly`
++ the paste-gate rewrite it required), #4 (throttled owner-token check), #5
+(watchdog PATH escaping), #7 (`Pane.dispose` leak), and e2e items 9a/c/d/e
+plus the dedicated claude-alive-gate harness (9b). The one live exposure
+found along the way (Hardening #1, slot 11's share) was revoked and verified
+in the same session, not queued.
+
+**Still open:**
 
 | # | Item | Size | Why here |
 |---|------|------|----------|
-| 1 | Esc on desktop (item 1) | XS | Daily iPad pain, 30-minute fix |
-| 2 | Prompt history (item 2) | S | Covers two requests at once, no deps |
-| 3 | More slots + sidebar "+ new" (item 3) | S | Unblocks the UI pass |
-| 4 | UI density pass (item 4) | M | Needs your feedback per iteration |
-| 5 | PDF export (item 5) | M | Self-contained; even better after item 6, but useful now |
-| 6 | Transcript view Phase 1 investigation (item 6) | M | Go/no-go before the big build |
-| 7 | Transcript view Phase 2 build (item 6) | L | The structural payoff |
-| 8 | Input automation (item 7) | ? | Blocked on definition |
-
-Items 1–3 are one working session combined. Item 5 could ride along anytime.
+| 11 | Misfire guard + drafts | M | Daily-use pain, and item 8's revive UI plus any future multi-slot feature gets safer to use once this exists |
+| 12 | File / screenshot drop | M | Fills the one input channel phone users are missing entirely |
+| 9 | Audit log | S–M | Directly answers the still-open "sessions vanished" mystery from the last HANDOFF |
+| 8 | Session archive + revive | M | Real data-loss fix; the resume mechanics already exist and are proven |
+| 10 | Worktree spawn | M | Biggest change to how the tool is *used* — do once the above have proven the workflow is stable |
+| 6 (old) | Transcript view Phase 2 | L | Still open from the prior backlog, unrelated to this sweep |
+| — | Hardening #1 follow-through | — | Slot 11's live exposure is closed; slot 6 still points at the fleet repo cwd — move it, or accept the exposure knowingly, your call |
+| — | Hardening #6, #8, #9 (structural) | — | Ride along with whichever feature touches that code next (transcript view, misfire-guard drafts, e2e harness rework) rather than a dedicated pass |
 
 ## Open questions (answer when convenient)
 
+**Carried over, still open:**
 1. More slots: how many do you actually want — 16, 20, fully dynamic?
 2. Prompt history: composed sends only, or also live-typed input? Server-persisted OK?
 3. PDF: light print theme? Also plain .txt export?
 4. Automation: snippets, scheduler, or auto-responder?
+
+**New from this sweep — see each item's own "Open questions" above for full context:**
+5. Archive retention: count cap or age cap? Default revive target?
+6. Audit log: log guard()/404 rejections (probing visibility) or is that just noise?
+7. Worktree: delete merged branches on cleanup, or always leave them?
+8. Drafts: per-device only, or server-synced for phone+desktop parallel use?
+9. File drop: server-generated filenames only, or sanitized originals?
+10. Hardening #1: move slot 6 off the fleet-repo cwd, or is that intentional?

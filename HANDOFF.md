@@ -91,7 +91,8 @@ Docs: `BACKLOG.md` (per-feature analysis + status), `SHARING.md` (share mechanic
 ```sh
 bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts
 bun run build
-./e2e-isolated.sh     # must end "ALL PASS" (93 checks)
+./e2e-isolated.sh     # must end "ALL PASS" (112 checks — count drifts, verify by reading the tail, not this comment)
+./e2e-claude-gate.sh  # separate isolated instance: claudeAlive() gate against a real compiled stand-in `claude` binary
 ```
 Deploy = `tmux -L claudefleet kill-session -t srv` (watchdog restarts with new code,
 sessions survive). Client bundles are built artifacts (`public/app.js`, `public/share.js`, gitignored).

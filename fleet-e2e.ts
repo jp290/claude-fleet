@@ -160,6 +160,22 @@ const expBody = await expHtml.text();
 check("export returns HTML", expHtml.ok && (expHtml.headers.get("content-type") ?? "").includes("text/html"));
 check("export contains session content", expBody.includes("compose-box-to-slot-two"));
 check("export escapes HTML metachars", !/<script/i.test(expBody) && expBody.includes("<pre>"));
+
+// --- regression: the check above never puts a real metacharacter into the source, so
+// it can't fail on an escaping regression — exercise the actual esc() path with real
+// input, in both the pane-content and the label (title/h1) interpolation sites ---
+const o3exp = await post("/api/slots/3/open", { cwd: "~" });
+check("open slot 3 for export-escaping fixture", o3exp.ok);
+await post("/api/slots/3/rename", { label: `<b>"pwn'd</b>` });
+await post("/send", { slot: 3, text: `<script>window.__pwn=1</script>`, submit: false });
+await Bun.sleep(400);
+const exp3 = await get("/api/slots/3/export");
+const exp3Body = await exp3.text();
+check("export escapes a real metachar in pane content", exp3Body.includes("&lt;script&gt;window.__pwn=1&lt;/script&gt;")
+  && !exp3Body.includes("<script>window"));
+check("export escapes a real metachar in the label (title/h1)", exp3Body.includes(`&lt;b&gt;"pwn'd&lt;/b&gt;`)
+  && !exp3Body.includes(`<b>"pwn`));
+await post("/api/slots/3/kill", {});
 const expTxt = await get("/api/slots/2/export?format=txt");
 check("export?format=txt is a plain-text download", expTxt.ok
   && (expTxt.headers.get("content-type") ?? "").includes("text/plain")
@@ -278,8 +294,19 @@ const capI = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("interact share text reaches its pane", capI.out.includes("share-interact-hello"));
 check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
 // --- share-mode: flip view/interact in place, same link + password ---
-const modeFlip = await post("/api/slots/1/share-mode", { mode: "view" });
-check("share-mode flips interact→view", modeFlip.ok);
+// regression: this must reach an ACTUALLY-CONNECTED guest socket, not just the HTTP
+// send route checked below — the WS message handler looks up the share's mode live on
+// every message specifically so an already-open interact socket goes silent on a flip
+const guestCloseCode = await new Promise<number>((resolve) => {
+  let done = false;
+  const finish = (v: number) => { if (!done) { done = true; resolve(v); } };
+  const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${shInt.id}`, { cookie: shICookie });
+  w.onopen = () => void post("/api/slots/1/share-mode", { mode: "view" });
+  w.onclose = (e) => finish(e.code);
+  w.onerror = () => finish(-1);
+  setTimeout(() => finish(-2), 3000);
+});
+check("share-mode flip closes an already-connected guest socket with 4002", guestCloseCode === 4002, String(guestCloseCode));
 const infoFlipped = (await (await fetch(BASE + `/s/${shInt.id}/info`, { headers: { cookie: shICookie } })).json()) as { mode: string };
 check("flipped share keeps cookie, reports view", infoFlipped.mode === "view");
 check("flipped share blocks send", (await fetch(BASE + `/s/${shInt.id}/send`, {
@@ -299,6 +326,30 @@ check("sessions reports share guests + created", flipSlot?.share?.mode === "inte
   && typeof flipSlot.share.guests === "number" && typeof flipSlot.share.created === "number",
   JSON.stringify(flipSlot?.share));
 await tmuxOut("send-keys", "-t", "s1", "C-u");
+
+// --- regression: a share must not outlive its session — reopening a slot onto a
+// different cwd must kill the old share, not leave it pointed at the new session ---
+const o3 = await post("/api/slots/3/open", { cwd: "~" });
+check("open slot 3 for reopen-regression fixture", o3.ok);
+const sh3Create = await post("/api/slots/3/share", { mode: "view", password: "reopenpass1" });
+const sh3 = (await sh3Create.json()) as { id: string };
+const sh3Auth = await post(`/s/${sh3.id}/auth`, { password: "reopenpass1" });
+const sh3Cookie = (sh3Auth.headers.get("set-cookie") ?? "").split(";")[0];
+const sh3WsClosed = await new Promise<number>((resolve) => {
+  let done = false;
+  const finish = (v: number) => { if (!done) { done = true; resolve(v); } };
+  const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${sh3.id}`, { cookie: sh3Cookie });
+  w.onopen = () => void post("/api/slots/3/open", { cwd: "~/claude-fleet" });
+  w.onclose = (e) => finish(e.code);
+  w.onerror = () => finish(-1);
+  setTimeout(() => finish(-2), 3000); // bound the wait — a hang here must not hang the suite
+});
+check("reopen closes the old share's connected guest socket", sh3WsClosed === 4000, String(sh3WsClosed));
+check("reopen invalidates the old share's cookie", (await fetch(BASE + `/s/${sh3.id}/info`, { headers: { cookie: sh3Cookie } })).status === 404);
+const sess3Api = (await (await get("/api/sessions")).json()) as { slots: { id: number; share: unknown }[] };
+check("reopened slot reports no share", sess3Api.slots.find((x) => x.id === 3)?.share === null);
+await post("/api/slots/3/kill", {}); // restore slot 3 to inactive for the rest of the suite
+
 const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
 if (SHARE_HOST) {
   const landing = await fetch(BASE + "/", { headers: { host: SHARE_HOST } });
@@ -309,6 +360,18 @@ if (SHARE_HOST) {
   const sPub = await fetch(BASE + `/s/${shView.id}`, { headers: { host: SHARE_HOST } });
   check("share host serves the share page", sPub.status === 200 && (await sPub.text()).includes("share.js"));
   check("share host blocks owner API even with token", (await fetch(BASE + "/api/sessions", { headers: { host: SHARE_HOST, ...H } })).status === 404);
+  // --- regression: the share-only allowlist regex must not be widenable via path tricks.
+  // A plain fetch() normalizes "../" client-side before the request is even sent — but the
+  // server parses req.url through the same WHATWG URL rules (verified directly: dot-segments
+  // collapse identically whether resolved by the client or the server), so this still guards
+  // the real end-to-end invariant. The other two send bytes fetch does NOT pre-normalize,
+  // reaching the server's own matching logic unmodified. ---
+  check("share host: dot-segment traversal to owner API blocked", (await fetch(BASE + `/s/${shView.id}/../../api/sessions`,
+    { headers: { host: SHARE_HOST, ...H } })).status === 404);
+  check("share host: encoded-slash path does not decode into a bypass", (await fetch(BASE + `/s/${shView.id}%2f..%2fapi%2fsessions`,
+    { headers: { host: SHARE_HOST, ...H } })).status === 404);
+  check("share host: uppercase share id does not bypass the lowercase-only regex", (await fetch(BASE + `/s/${shView.id.toUpperCase()}`,
+    { headers: { host: SHARE_HOST } })).status === 404);
 }
 const unshare = await post("/api/slots/2/unshare", {});
 check("unshare accepted", unshare.ok);

@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
+import { WebglAddon } from "@xterm/addon-webgl";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -195,13 +196,20 @@ class Pane {
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(termEl);
-    // default DOM renderer paints every visible cell as a real DOM node — on mobile Safari,
-    // with a busy Claude session streaming output while the user scrolls, that DOM churn is
-    // the likely source of scroll stutter. Canvas renderer paints the same content to a
-    // <canvas>, avoiding per-cell DOM updates. Loaded after open() per xterm's addon contract;
-    // it's disposed automatically when this.term.dispose() runs (Terminal.dispose disposes
-    // all loaded addons).
-    this.term.loadAddon(new CanvasAddon());
+    // GPU renderers instead of the default DOM one (which paints every cell as a real DOM
+    // node — scroll stutter on mobile Safari under streaming output). WebGL is the fastest
+    // and crispest; it can fail (no context on old GPUs, context loss later) — fall back to
+    // the canvas renderer either way. Addons are disposed by term.dispose().
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        this.term.loadAddon(new CanvasAddon());
+      });
+      this.term.loadAddon(webgl);
+    } catch {
+      this.term.loadAddon(new CanvasAddon());
+    }
     // on touch devices all input goes through the compose bar + key row; inputMode=none
     // lets xterm keep focus for scrolling without popping the on-screen keyboard
     if (isMobile() && this.term.textarea) this.term.textarea.inputMode = "none";
@@ -246,6 +254,11 @@ class Pane {
   private copySelection() {
     copyText(this.term.getSelection());
   }
+
+  // NOTE: in-terminal sent-prompt markers (xterm decorations anchored at the send line)
+  // were built and tested against a real claude TUI — its full-repaint behavior plus our
+  // own resize jiggle relocates content, so line-anchored marks drift and were dropped.
+  // "What did I send" lives in the 🕘 prompt history and the conversation view instead.
 
   setView(v: "term" | "chat") {
     this.view = v;
@@ -992,8 +1005,9 @@ function flashSendError() {
   setTimeout(() => { send.style.background = ""; }, 1200);
 }
 async function doSend() {
+  const pane = panes[focused];
   const text = ta.value.trim();
-  const slot = panes[focused]?.slot;
+  const slot = pane?.slot;
   if (!text || !slot || send.disabled) return;
   send.disabled = true;
   try {
@@ -1002,7 +1016,7 @@ async function doSend() {
     ta.value = "";
     cyc = null;
     updateChips();
-    panes[focused].term.scrollToBottom();
+    pane.term.scrollToBottom();
   } catch {
     flashSendError(); // text stays in the box so nothing typed is silently lost
   } finally {

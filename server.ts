@@ -32,8 +32,10 @@ const PATH_EXPORT = process.env.PATH ? `export PATH='${process.env.PATH.replaceA
 const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 // when the slot actually runs claude, pin its session id so the transcript path
 // (~/.claude/projects/<cwd-slug>/<uuid>.jsonl) is known instead of guessed by mtime
-function slotCmd(sessionId: string | null): string {
-  const cmd = sessionId && /^claude(\s|$)/.test(BASE_CMD) ? `${BASE_CMD} --session-id ${sessionId}` : BASE_CMD;
+function slotCmd(sessionId: string | null, resume: boolean): string {
+  const cmd = sessionId && /^claude(\s|$)/.test(BASE_CMD)
+    ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
+    : BASE_CMD;
   return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
 }
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
@@ -98,6 +100,9 @@ const SHARE_HOSTS = new Set((process.env.FLEET_SHARE_HOSTS ?? "").split(",").map
 
 const sess = (id: number) => `s${id}`;
 const streamPath = (id: number) => `${STREAM_DIR}/s${id}.raw`;
+// claude's transcript dir for a cwd (used by ensureSlot's resume check at boot,
+// so it must be defined before the startup section runs)
+const projDir = (cwd: string) => `${HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
 const historyPath = (id: number) => `${STREAM_DIR}/s${id}.history.json`;
 const MAX_HISTORY = 100;
 
@@ -155,17 +160,20 @@ async function ensureSlot(s: Slot): Promise<void> {
   const has = await tmux("has-session", "-t", name);
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
-    // fresh pane = fresh claude = fresh transcript; pin its uuid only if WE win the
-    // has-session/new-session race below (the 2s self-heal loop and a fresh openSlot()
-    // can race to create the same session — only the winner's uuid is real)
-    const candidate = crypto.randomUUID();
-    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, slotCmd(candidate));
+    // pane died but we know its claude session and its transcript still exists →
+    // self-heal RESUMES the conversation instead of starting a blank one (verified:
+    // --resume <id> continues in the same transcript file, id stays stable).
+    // Otherwise: fresh claude, fresh pinned uuid — only if WE win the has-session/
+    // new-session race below (the 2s self-heal loop and a fresh openSlot() can race)
+    const resume = !!s.sessionId && existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`);
+    const candidate = resume ? s.sessionId! : crypto.randomUUID();
+    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, slotCmd(candidate, resume));
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;
       s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
       saveState();
-      console.log(`slot ${s.id}: created tmux session '${name}' in ${s.cwd}`);
+      console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }
   const pipe = await tmux("display-message", "-p", "-t", name, "#{pane_pipe}");
@@ -298,8 +306,6 @@ async function listDirs(raw: string) {
 // --- transcript view: read claude's own JSONL (~/.claude/projects/<cwd-slug>/<uuid>.jsonl)
 // and hand the client structured messages instead of terminal bytes. Renders natively at
 // any width — this is the per-device-formatting answer the pty can never give.
-const projDir = (cwd: string) => `${HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
-
 function transcriptFile(s: Slot): string | null {
   const dir = projDir(s.cwd!);
   if (s.sessionId) {

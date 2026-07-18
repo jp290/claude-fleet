@@ -55,6 +55,11 @@ function connect(info: Info) {
       showNotice("The shared session was ended by the owner.");
       return;
     }
+    if (e.code === 4002) {
+      // owner flipped view/interact — reload so the UI (compose bar, stdin) matches
+      location.reload();
+      return;
+    }
     setTimeout(() => { if (g === gen) connect(info); }, 2000);
   };
 }

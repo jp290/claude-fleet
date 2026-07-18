@@ -519,8 +519,8 @@ function failStrike(id: string): boolean {
   f.count++;
   return f.count > 50; // locked for the rest of the hour
 }
-function closeShareClients(s: Slot, shareId: string): void {
-  for (const ws of s.clients) if (ws.data.share === shareId) ws.close(4001, "share revoked");
+function closeShareClients(s: Slot, shareId: string, code = 4001, reason = "share revoked"): void {
+  for (const ws of s.clients) if (ws.data.share === shareId) ws.close(code, reason);
 }
 
 const ALLOWED_HOSTS = new Set(
@@ -554,6 +554,14 @@ const STATIC: Record<string, { path: string; type: string }> = {
   "/icon.svg": { path: `${import.meta.dir}/public/icon.svg`, type: "image/svg+xml" },
   "/icon-180.png": { path: `${import.meta.dir}/public/icon-180.png`, type: "image/png" },
 };
+
+function bundleV(): number {
+  try {
+    return Math.trunc(statSync(`${import.meta.dir}/public/app.js`).mtimeMs);
+  } catch {
+    return 0;
+  }
+}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -789,12 +797,18 @@ Bun.serve<WSData>({
         now: Date.now(),
         chips: CHIPS,
         shareBase: SHARE_URL,
+        // bundle version: a long-lived tab compares this across polls and reloads itself
+        // once it goes stale — "old client after a deploy" must not look like a regression
+        v: bundleV(),
         autos,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {
             id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
-            share: sh ? { id: sh.id, mode: sh.mode, password: sh.secret } : null,
+            share: sh ? {
+              id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
+              guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
+            } : null,
           };
         }),
       });
@@ -921,7 +935,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|kill|rename|share|unshare)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|kill|rename|share|unshare|share-mode)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -941,6 +955,23 @@ Bun.serve<WSData>({
         shares = [...shares.filter((x) => x.slot !== s.id), sh];
         saveState();
         return json({ ok: true, id: sh.id, path: `/s/${sh.id}`, password: secret, mode });
+      }
+      if (slotMatch[2] === "share-mode") {
+        // flip an existing share between view/interact WITHOUT rotating link+password.
+        // The WS message handler reads the share's CURRENT mode, so interact→view cuts
+        // off guest typing instantly; sockets are closed with 4002 so the guest page
+        // reloads into the right UI (compose bar shown/hidden per mode at page load).
+        const sh = shares.find((x) => x.slot === s.id);
+        if (!sh) return json({ error: "slot not shared" }, 404);
+        const body = await readJson(req);
+        const mode = body?.mode;
+        if (mode !== "view" && mode !== "interact") return json({ error: "mode must be view or interact" }, 400);
+        if (mode !== sh.mode) {
+          sh.mode = mode;
+          closeShareClients(s, sh.id, 4002, "share mode changed");
+          saveState();
+        }
+        return json({ ok: true, mode: sh.mode });
       }
       if (slotMatch[2] === "unshare") {
         const sh = shares.find((x) => x.slot === s.id);
@@ -1068,8 +1099,10 @@ Bun.serve<WSData>({
     // serialized per slot through a promise chain — concurrent send-keys spawns reorder keystrokes
     message(ws, msg) {
       // view-mode guests are strictly read-only — their input is dropped server-side,
-      // and a revoked share's socket must go silent even before close() lands
-      if (ws.data.share && (ws.data.mode !== "interact" || !shareBy(ws.data.share))) return;
+      // and a revoked share's socket must go silent even before close() lands.
+      // Mode is looked up LIVE (not from ws.data): an owner flipping interact→view
+      // must silence already-connected guests, not just future ones
+      if (ws.data.share && shareBy(ws.data.share)?.mode !== "interact") return;
       const s = slots[ws.data.slot - 1];
       const bytes = typeof msg === "string" ? new TextEncoder().encode(msg) : new Uint8Array(msg);
       if (bytes.length === 0 || bytes.length > 1024) return;

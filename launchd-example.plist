@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- claude-fleet watchdog: adjust the two /Users/YOU paths, copy to
+     ~/Library/LaunchAgents/com.claude-fleet.watchdog.plist, then `launchctl load` it.
+     watchdog.sh holds the server env (host, share domain, …) — edit it there. -->
+<dict>
+    <key>Label</key>
+    <string>com.claude-fleet.watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/YOU/claude-fleet/watchdog.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/claude-fleet/watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/claude-fleet/watchdog.log</string>
+</dict>
+</plist>

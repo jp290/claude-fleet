@@ -1,6 +1,6 @@
 # Claude Fleet
 
-Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback, direct typing into the focused session, a directory picker with recents for starting sessions per project. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
+Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback (WebGL-rendered), direct typing into the focused session, a directory picker with recents for starting sessions per project. Plus: per-slot prompt history (🕘 / ArrowUp recall), print/PDF export (⇩), a conversation view that renders the claude transcript as structured messages (💬), password-gated session sharing for guests ([SHARING.md](SHARING.md)), and crash-resilient sessions — a died pane self-heals with `claude --resume`, keeping the conversation. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
 
 ![claude-fleet — four Claude Code sessions in a 2×2 grid](docs/screenshot.png)
 
@@ -34,7 +34,8 @@ Same core as claude-deck (see its README for the full rationale), parameterized 
 - `pipe-pane` per session → `streams/sN.raw`; the Bun server tails all active streams (100ms poll) and broadcasts per-slot over `ws://…/ws/<N>`
 - Reconnect/slot-switch replays the last 2 MB of that slot's stream
 - Per-slot input promise chains and per-slot tmux paste buffers (`fleetbufN`) — one hung session can't stall input to the others, and concurrent sends can't race
-- `fleet.json` persists slot→cwd + recents + token (writes serialized). Self-heal (2s loop) recreates any *activated* slot whose pane died; **kill via the UI ✕ removes the slot from state first**, so killed slots stay dead. External `kill-session` on an active slot = crash → resurrected. Server restart re-adopts slots from `fleet.json` plus any stray `sN` tmux sessions.
+- `fleet.json` persists slot→cwd/label/sessionId + recents + shares + token (writes serialized). Self-heal (2s loop) recreates any *activated* slot whose pane died — and because each pane's claude session id is pinned at creation (`claude --session-id`), recreation runs `claude --resume <id>` when the transcript still exists: **the conversation survives the crash**. Kill via the UI ✕ removes the slot from state first, so killed slots stay dead. Server restart re-adopts slots from `fleet.json` plus any stray `sN` tmux sessions.
+- The pinned session id also gives the 💬 conversation view a deterministic transcript path (`~/.claude/projects/<cwd-slug>/<uuid>.jsonl`, served incrementally via `/api/slots/:id/transcript`); adopted pre-pinning sessions fall back to newest-by-mtime.
 
 ## Mobile
 
@@ -68,6 +69,9 @@ Install them user-wide so every fleet session can invoke them, then surface them
 cp commands/*.md ~/.claude/commands/
 FLEET_CHIPS='/sharpen,/gosharp' bun server.ts
 ```
+- Slot-row actions (hover): **⤴ share** (password-gated guest link, view or interact mode — see [SHARING.md](SHARING.md)), **⇩ export** (full scrollback as a printable light page; `?format=txt` for raw), **✎ rename**, **✕ kill**.
+- **🕘 prompt history** next to the compose box: composed sends are recorded per slot server-side (last 100, dies with the session); the popover copies or re-inserts old prompts, ArrowUp in an empty compose box cycles them.
+- **💬 conversation view** per pane: renders the claude transcript as structured messages — your prompts as timestamped anchors (↑/↓ jump between them), everything the agent did in between collapsed to one expandable "⚙ n steps" line. Reflows at any width; the terminal stays the surface for interaction (permission prompts live only there).
 - Rename a session via the ✎ icon or double-clicking its name (Enter saves, Esc cancels, blank resets to the folder name). Labels persist in `fleet.json` and die with the session. The ✎/✕ icons overlay the row's right edge on hover only, so labels get the full sidebar width the rest of the time.
 - **Collapse toggle (‹/›)** in the header shrinks the sidebar to a ~50px rail (slot numbers + activity dots) to hand the width to the terminals; click again to restore. State persists in localStorage; it's a desktop-only affordance (on mobile the sidebar is the ☰ drawer).
 - Sidebar polls `/api/sessions` every 2s; green dot = output within 5s (timestamps compared against server `now` to dodge clock skew). DOM only re-renders on actual change.
@@ -75,14 +79,21 @@ FLEET_CHIPS='/sharpen,/gosharp' bun server.ts
 
 ## Ops
 
+The recommended setup is the launchd watchdog — survives crashes *and* reboots:
+```sh
+# watchdog.sh keeps the `srv` tmux session alive; edit its env line, then:
+cp launchd-example.plist ~/Library/LaunchAgents/com.claude-fleet.watchdog.plist  # adjust paths
+launchctl load ~/Library/LaunchAgents/com.claude-fleet.watchdog.plist
+```
+Manual, without the watchdog:
 ```sh
 tmux -L claudefleet new-session -d -s srv 'cd ~/claude-fleet && FLEET_HOST=<ip> exec bun server.ts >> server.log 2>&1'   # start
 tmux -L claudefleet kill-session -t srv    # stop (claude sessions survive)
-bun run build                              # rebuild client after editing src/client.ts
-FLEET_E2E_HOST=<ip> bun fleet-e2e.ts       # e2e suite: creates slots 1+2, kills them, restarts srv
+bun run build                              # rebuild client bundles after editing src/
+./e2e-isolated.sh                          # full e2e against a throwaway instance (own tmux socket/port — never touches the live fleet)
 ```
 
-Env: `FLEET_HOST` (default `127.0.0.1`), `FLEET_PORT` (8790), `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`, `FLEET_CMD`, `FLEET_CHIPS`.
+Env: `FLEET_HOST` (default `127.0.0.1`), `FLEET_PORT` (8790), `FLEET_SOCK` (tmux socket, default `claudefleet`), `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`, `FLEET_CMD`, `FLEET_CHIPS`, and for sharing `FLEET_SHARE_HOSTS` + `FLEET_SHARE_URL` (see SHARING.md).
 
 ## Pinned: xterm 5.5.0, NOT 6.x
 

@@ -189,6 +189,40 @@ const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
 check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
 check("transcript rejects inactive slot", (await get("/api/slots/4/transcript")).status === 400);
 
+// --- scheduled prompts (FLEET_CMD=true → claude-alive gate is off by design) ---
+const aBad = await post("/api/slots/2/autos", { text: "x", everySec: 5, runs: 3 });
+check("auto rejects sub-minimum interval", aBad.status === 400);
+const aBad2 = await post("/api/slots/2/autos", { text: "x", everySec: 60, runs: 999 });
+check("auto rejects runs over cap", aBad2.status === 400);
+const aFire = await post("/api/slots/2/autos", { text: "auto-fire-check", inSec: 2, idleSec: 0 });
+const aFireJ = (await aFire.json()) as { auto: { id: string } };
+check("create one-shot auto", aFire.ok && !!aFireJ.auto?.id);
+// make slot 1 look busy (fresh output), then schedule with a huge idle gate — must NOT fire
+await tmuxOut("send-keys", "-t", "s1", "echo busy-marker", "Enter");
+const aBusy = await post("/api/slots/1/autos", { text: "auto-must-wait", inSec: 2, idleSec: 3600 });
+const aBusyJ = (await aBusy.json()) as { auto: { id: string } };
+check("create idle-gated auto", aBusy.ok && !!aBusyJ.auto?.id);
+await Bun.sleep(9000); // past due + one 5s scheduler tick
+const cap2a = await tmuxOut("capture-pane", "-t", "s2", "-p");
+check("due auto fired into its pane", cap2a.out.includes("auto-fire-check"));
+const cap1a = await tmuxOut("capture-pane", "-t", "s1", "-p");
+check("idle-gated auto held back while busy", !cap1a.out.includes("auto-must-wait"));
+const sess1 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null }[] };
+const fired = sess1.autos.find((a) => a.id === aFireJ.auto.id);
+const waiting = sess1.autos.find((a) => a.id === aBusyJ.auto.id);
+check("fired one-shot is disabled with result 'sent'", !!fired && !fired.enabled && fired.lastResult === "sent", JSON.stringify(fired));
+check("gated auto still waiting within grace", !!waiting && waiting.enabled && waiting.lastResult === null, JSON.stringify(waiting));
+const h2auto = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
+check("auto send recorded in prompt history", h2auto.history.some((h) => h.text === "auto-fire-check"));
+check("delete auto", (await post(`/api/autos/${aBusyJ.auto.id}/delete`, {})).ok);
+const sess2 = (await (await get("/api/sessions")).json()) as { autos: { id: string }[] };
+check("deleted auto gone", !sess2.autos.some((a) => a.id === aBusyJ.auto.id));
+// persistence probe: far-future one-shot on slot 2, checked again after the restart section
+const aPersist = await post("/api/slots/2/autos", { text: "auto-persist-probe", inSec: 3600 });
+const aPersistJ = (await aPersist.json()) as { auto: { id: string } };
+check("create persistence-probe auto", aPersist.ok && !!aPersistJ.auto?.id);
+await tmuxOut("send-keys", "-t", "s2", "C-u");
+
 // --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
 const shCreate = await post("/api/slots/2/share", { mode: "view", password: "viewpass123" });
 const shView = (await shCreate.json()) as { id: string; path: string; password: string };
@@ -309,9 +343,11 @@ check("after restart: label persisted", api.slots[1].label === "research-agent")
 const rec2 = (await (await get("/api/dirs?path=~")).json()) as { recents: string[] };
 check("after restart: recents persisted", rec2.recents.length >= 2, JSON.stringify(rec2.recents));
 const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
-check("after restart: history persisted", h2b.history.length === 1 && h2b.history[0]?.text === "compose-box-to-slot-two", `${h2b.history.length} entries`);
+check("after restart: history persisted", h2b.history.some((h) => h.text === "compose-box-to-slot-two"), `${h2b.history.length} entries`);
 const shPAuth = await post(`/s/${shPersist.id}/auth`, { password: "persistpass1" });
 check("after restart: share persisted and answers", shPAuth.ok);
+const sess3 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean }[] };
+check("after restart: schedule persisted", sess3.autos.some((a) => a.id === aPersistJ.auto.id && a.enabled));
 const replay2 = await new Promise<number>((resolve) => {
   let n = 0;
   const ws = new WebSocket(wsUrl(2));

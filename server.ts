@@ -53,6 +53,22 @@ type WSData = {
 // token never leaves this machine. view = stream only; interact = typing + compose too.
 interface Share { id: string; slot: number; secret: string; mode: "view" | "interact"; created: number }
 
+// a scheduled prompt: one-shot (everySec null) or recurring with a MANDATORY runs cap.
+// Guard rails are the point — see tickAutos() for the idle gate and the claude-alive gate.
+interface Auto {
+  id: string;
+  slot: number;
+  text: string;
+  everySec: number | null;
+  nextAt: number;
+  runsLeft: number;
+  idleSec: number; // only fire when the session produced no output for this long (0 = always)
+  enabled: boolean;
+  created: number;
+  lastRun: number;
+  lastResult: string | null;
+}
+
 interface Slot {
   id: number;
   cwd: string | null; // null = slot not activated; self-heal only touches activated slots
@@ -90,6 +106,11 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
 }));
 let recents: string[] = [];
 let shares: Share[] = [];
+let autos: Auto[] = [];
+const AUTO_MIN_EVERY_SEC = 10;
+const AUTO_MAX_RUNS = 100;
+const AUTO_MAX_PER_SLOT = 5;
+const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer before skipping
 let persistedToken: string | null = null;
 // public base URL for share links shown in the owner UI (e.g. https://klaus.example.com);
 // empty = links are rendered relative to wherever the owner opened the dashboard
@@ -128,7 +149,7 @@ let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; sessionId: string | null }> = {};
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId };
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares }, null, 2);
+  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos }, null, 2);
   saveChain = saveChain
     .then(() => Bun.write(STATE_FILE, body))
     .then(() => chmodSync(STATE_FILE, 0o600))
@@ -207,6 +228,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.label = null; // a fresh session gets a fresh identity
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
+  autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   saveState();
@@ -219,6 +241,7 @@ async function killSlot(s: Slot): Promise<void> {
   saveState();
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
+  autos = autos.filter((x) => x.slot !== s.id); // neither must a scheduled prompt
   saveState();
   await tmux("kill-session", "-t", sess(s.id));
   await rm(streamPath(s.id), { force: true });
@@ -252,6 +275,85 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
   });
   s.inputChain = task.catch(() => {});
   await task;
+}
+
+// --- scheduled prompts ---
+// a dead claude leaves its pane at a plain shell (`claude; exec $SHELL`) — an unattended
+// prompt typed THERE would execute as shell commands. Only send when a `claude` child
+// still hangs under the pane process. (pane_current_command is useless here: it reports
+// the wrapper zsh even while claude runs.) Gate applies only when FLEET_CMD runs claude;
+// custom commands are intentionally whatever the operator chose.
+async function claudeAlive(slotId: number): Promise<boolean> {
+  if (!/^claude(\s|$)/.test(BASE_CMD)) return true;
+  const p = await tmux("display-message", "-p", "-t", sess(slotId), "#{pane_pid}");
+  const panePid = Number(p.out);
+  if (!panePid) return false;
+  const pg = Bun.spawn(["pgrep", "-P", String(panePid)], { stdout: "pipe" });
+  const kids = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
+  await pg.exited;
+  for (const pid of kids) {
+    const c = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
+    const comm = (await new Response(c.stdout).text()).trim();
+    await c.exited;
+    if ((comm.split("/").pop() ?? "").startsWith("claude")) return true;
+  }
+  return false;
+}
+
+function advanceAuto(a: Auto, now: number): void {
+  if (a.everySec) {
+    a.runsLeft--;
+    a.nextAt = now + a.everySec * 1000;
+    if (a.runsLeft <= 0) a.enabled = false;
+  } else {
+    a.enabled = false;
+  }
+}
+
+let autoTickBusy = false;
+async function tickAutos(): Promise<void> {
+  if (autoTickBusy) return; // a slow tick (tmux calls) must not overlap the next one
+  autoTickBusy = true;
+  try {
+    const now = Date.now();
+    let dirty = false;
+    for (const a of autos) {
+      if (!a.enabled || now < a.nextAt) continue;
+      const s = slotFrom(a.slot);
+      if (!s?.cwd) {
+        a.enabled = false;
+        a.lastResult = "skipped — session gone";
+        dirty = true;
+        continue;
+      }
+      if (!(await claudeAlive(a.slot))) {
+        // NEVER type into a bare shell; count the run and move on
+        a.lastResult = "skipped — claude not running in pane";
+        advanceAuto(a, now);
+        dirty = true;
+        continue;
+      }
+      const idleOk = a.idleSec === 0 || now - s.lastOutput >= a.idleSec * 1000;
+      if (!idleOk) {
+        if (now < a.nextAt + AUTO_GRACE_MS) continue; // wait within grace, no state change
+        a.lastResult = "skipped — session stayed busy";
+        advanceAuto(a, now);
+        dirty = true;
+        continue;
+      }
+      dirty = true;
+      await sendText(s, a.text, true);
+      s.history = [...s.history, { text: a.text, ts: now }].slice(-MAX_HISTORY);
+      saveHistory(s);
+      a.lastRun = now;
+      a.lastResult = "sent";
+      advanceAuto(a, now);
+      console.log(`auto ${a.id}: sent to slot ${a.slot}`);
+    }
+    if (dirty) saveState();
+  } finally {
+    autoTickBusy = false;
+  }
 }
 
 function broadcast(s: Slot, chunk: Uint8Array): void {
@@ -482,6 +584,12 @@ if (existsSync(STATE_FILE)) {
       token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
     if (typeof persisted.token === "string") persistedToken = persisted.token;
+    if (Array.isArray((persisted as { autos?: unknown }).autos))
+      autos = ((persisted as { autos: unknown[] }).autos).filter((x): x is Auto =>
+        typeof x === "object" && x !== null
+        && typeof (x as Auto).id === "string" && typeof (x as Auto).slot === "number"
+        && typeof (x as Auto).text === "string" && typeof (x as Auto).nextAt === "number"
+        && typeof (x as Auto).runsLeft === "number" && typeof (x as Auto).enabled === "boolean");
     if (Array.isArray(persisted.shares))
       shares = persisted.shares.filter((x): x is Share =>
         typeof x === "object" && x !== null
@@ -519,8 +627,9 @@ if (ls.code === 0) {
     }
   }
 }
-// a share whose session didn't survive the downtime must not come back
+// a share whose session didn't survive the downtime must not come back — same for schedules
 shares = shares.filter((sh) => slotFrom(sh.slot)?.cwd);
+autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
 saveState();
 for (const s of slots) {
   if (!s.cwd) continue;
@@ -540,6 +649,7 @@ for (const s of slots) {
 }
 
 setInterval(() => void poll(), 100);
+setInterval(() => void tickAutos().catch(() => {}), 5000);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (two tmux queries) per healthy slot
 setInterval(() => {
@@ -679,6 +789,7 @@ Bun.serve<WSData>({
         now: Date.now(),
         chips: CHIPS,
         shareBase: SHARE_URL,
+        autos,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {
@@ -761,6 +872,54 @@ Bun.serve<WSData>({
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }
+    }
+    const autoCreate = /^\/api\/slots\/(\d+)\/autos$/.exec(url.pathname);
+    if (req.method === "POST" && autoCreate) {
+      const s = slotFrom(autoCreate[1]);
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      if (autos.filter((a) => a.slot === s.id && a.enabled).length >= AUTO_MAX_PER_SLOT)
+        return json({ error: `max ${AUTO_MAX_PER_SLOT} active schedules per slot` }, 400);
+      const body = await readJson(req);
+      if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 10_000)
+        return json({ error: "bad text" }, 400);
+      const inSec = Number(body.inSec ?? 0) | 0;
+      const everySec = body.everySec == null ? null : Number(body.everySec) | 0;
+      if (everySec !== null && everySec < AUTO_MIN_EVERY_SEC)
+        return json({ error: `everySec must be ≥ ${AUTO_MIN_EVERY_SEC}` }, 400);
+      if (everySec === null && inSec < 1) return json({ error: "one-shot needs inSec ≥ 1" }, 400);
+      const runs = everySec === null ? 1 : Number(body.runs ?? 0) | 0;
+      if (everySec !== null && (runs < 1 || runs > AUTO_MAX_RUNS))
+        return json({ error: `runs must be 1–${AUTO_MAX_RUNS}` }, 400); // the cap is mandatory, not optional
+      const idleSec = Math.min(86_400, Math.max(0, Number(body.idleSec ?? 60) | 0));
+      const a: Auto = {
+        id: randomBytes(4).toString("hex"),
+        slot: s.id,
+        text: body.text,
+        everySec,
+        nextAt: Date.now() + (inSec > 0 ? inSec : everySec ?? 0) * 1000,
+        runsLeft: runs,
+        idleSec,
+        enabled: true,
+        created: Date.now(),
+        lastRun: 0,
+        lastResult: null,
+      };
+      autos = [...autos, a];
+      saveState();
+      return json({ ok: true, auto: a });
+    }
+    const autoAct = /^\/api\/autos\/([a-z0-9]+)\/(delete|toggle)$/.exec(url.pathname);
+    if (req.method === "POST" && autoAct) {
+      const a = autos.find((x) => x.id === autoAct[1]);
+      if (!a) return json({ error: "unknown schedule" }, 404);
+      if (autoAct[2] === "delete") {
+        autos = autos.filter((x) => x.id !== a.id);
+      } else {
+        a.enabled = !a.enabled && a.runsLeft > 0;
+        if (a.enabled && a.nextAt < Date.now()) a.nextAt = Date.now() + (a.everySec ?? 60) * 1000;
+      }
+      saveState();
+      return json({ ok: true });
     }
     const slotMatch = /^\/api\/slots\/(\d+)\/(open|kill|rename|share|unshare)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {

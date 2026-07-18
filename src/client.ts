@@ -101,8 +101,13 @@ const post = (path: string, body: unknown) =>
 
 // --- fleet state ---
 interface ShareInfo { id: string; mode: "view" | "interact"; password: string }
+interface AutoInfo {
+  id: string; slot: number; text: string; everySec: number | null; nextAt: number;
+  runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
+}
 interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number; share?: ShareInfo | null }
 let fleet: SlotInfo[] = [];
+let autosList: AutoInfo[] = [];
 let serverNow = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
@@ -531,6 +536,7 @@ window.addEventListener("keydown", (e) => {
     if (picker.style.display === "flex") closePicker();
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
+    if (autodlg.style.display === "flex") closeAutoDlg();
     setDrawer(false);
     return;
   }
@@ -799,6 +805,11 @@ function renderSlots() {
         startRename(row, s);
       };
       row.appendChild(lbl);
+      if (autosList.some((a) => a.slot === s.id && a.enabled)) {
+        const b = el("span", "autobadge", "⏱");
+        b.title = "has scheduled prompts";
+        row.appendChild(b);
+      }
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
       const shr = el("span", "shr" + (s.share ? " on" : ""), "⤴");
@@ -863,14 +874,16 @@ async function refresh() {
   try {
     const res = await api("/api/sessions");
     if (!res.ok) return;
-    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; slots: SlotInfo[] };
+    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; autos?: AutoInfo[]; slots: SlotInfo[] };
     fleet = data.slots;
+    autosList = data.autos ?? [];
     serverNow = data.now;
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
+      autosList.filter((a) => a.enabled).map((a) => a.slot),
       data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, serverNow - s.lastOutput < RECENT_MS])]);
     if (key !== lastRender) {
       lastRender = key;
@@ -971,6 +984,109 @@ function openShareDlg(slotId: number) {
   renderShareDlg();
   sharedlg.style.display = "flex";
 }
+
+// --- scheduled prompts (⏱): compose text + "once in N min" or "every N min × K runs".
+// Guard rails live server-side (idle gate, claude-alive gate, mandatory runs cap) —
+// this dialog is just the window onto them.
+const autodlg = $("autodlg"), autopanel = $("autopanel");
+let autoSlot = 0;
+let autoMode: "once" | "every" = "once";
+
+function closeAutoDlg() {
+  autodlg.style.display = "none";
+  autoSlot = 0;
+}
+autodlg.addEventListener("click", (e) => {
+  if (e.target === autodlg) closeAutoDlg();
+});
+
+function autoDesc(a: AutoInfo): string {
+  if (a.everySec) return `every ${Math.round(a.everySec / 60)}m · ${a.runsLeft} left`;
+  const dueIn = Math.max(0, Math.round((a.nextAt - Date.now()) / 60000));
+  return a.enabled ? `once, in ~${dueIn}m` : "once";
+}
+
+function renderAutoDlg() {
+  const s = fleet[autoSlot - 1];
+  if (!s?.cwd) { closeAutoDlg(); return; }
+  autopanel.replaceChildren();
+  autopanel.appendChild(el("h2", "", `Scheduled prompts — ${s.label ?? baseName(s.cwd)}`));
+  const mine = autosList.filter((a) => a.slot === autoSlot);
+  if (!mine.length) autopanel.appendChild(el("div", "shrhint", "No schedules for this session."));
+  for (const a of mine) {
+    const row = el("div", `autorow${a.enabled ? "" : " off"}`);
+    const txt = el("span", "autotext", a.text);
+    txt.title = a.text;
+    row.appendChild(txt);
+    row.appendChild(el("span", "autometa", autoDesc(a)));
+    if (a.lastResult) row.appendChild(el("span", `autometa${a.lastResult.startsWith("skipped") ? " err" : ""}`, a.lastResult));
+    const tog = el("span", "autobtnx", a.enabled ? "⏸" : "▶");
+    tog.title = a.enabled ? "pause" : "resume";
+    tog.onclick = async () => { await post(`/api/autos/${a.id}/toggle`, {}); await refresh(); renderAutoDlg(); };
+    const del = el("span", "autobtnx", "✕");
+    del.title = "delete schedule";
+    del.onclick = async () => { await post(`/api/autos/${a.id}/delete`, {}); await refresh(); renderAutoDlg(); };
+    row.append(tog, del);
+    autopanel.appendChild(row);
+  }
+  const form = el("div", "autoform");
+  const preview = el("div", `autopreview${ta.value.trim() ? "" : " empty"}`,
+    ta.value.trim() || "Type the prompt into the compose box first — it becomes the scheduled text.");
+  form.appendChild(preview);
+  const modeRow = el("div", "frow");
+  const bOnce = el("button", `shrbtn${autoMode === "once" ? " active" : ""}`, "once") as HTMLButtonElement;
+  const bEvery = el("button", `shrbtn${autoMode === "every" ? " active" : ""}`, "recurring") as HTMLButtonElement;
+  bOnce.onclick = () => { autoMode = "once"; renderAutoDlg(); };
+  bEvery.onclick = () => { autoMode = "every"; renderAutoDlg(); };
+  modeRow.append(bOnce, bEvery);
+  form.appendChild(modeRow);
+  const numRow = el("div", "frow");
+  const mins = document.createElement("input");
+  mins.type = "number"; mins.min = "1"; mins.max = "1440"; mins.value = autoMode === "once" ? "5" : "30";
+  numRow.append(el("span", "", autoMode === "once" ? "in" : "every"), mins, el("span", "", "min"));
+  const runs = document.createElement("input");
+  runs.type = "number"; runs.min = "1"; runs.max = "100"; runs.value = "5";
+  if (autoMode === "every") numRow.append(el("span", "", "· max"), runs, el("span", "", "runs"));
+  form.appendChild(numRow);
+  const idleRow = el("div", "frow");
+  const idle = document.createElement("input");
+  idle.type = "checkbox"; idle.checked = true;
+  const idleLabel = document.createElement("label");
+  idleLabel.append(idle, el("span", "", "only send when the session has been quiet for 60s"));
+  idleRow.appendChild(idleLabel);
+  form.appendChild(idleRow);
+  const btns = el("div", "shrbtns");
+  const create = el("button", "shrbtn primary", "schedule") as HTMLButtonElement;
+  create.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) { renderAutoDlg(); return; }
+    const m = Math.max(1, Number(mins.value) | 0);
+    const body = autoMode === "once"
+      ? { text, inSec: m * 60, idleSec: idle.checked ? 60 : 0 }
+      : { text, everySec: m * 60, runs: Math.max(1, Number(runs.value) | 0), idleSec: idle.checked ? 60 : 0 };
+    const res = await post(`/api/slots/${autoSlot}/autos`, body);
+    if (res.ok) {
+      ta.value = "";
+      updateChips();
+      await refresh();
+      renderAutoDlg();
+    }
+  };
+  const close = el("button", "shrbtn", "close") as HTMLButtonElement;
+  close.onclick = closeAutoDlg;
+  btns.append(create, close);
+  form.appendChild(btns);
+  autopanel.appendChild(form);
+}
+
+$("autobtn").onclick = () => {
+  const slot = panes[focused]?.slot;
+  if (!slot) return;
+  setDrawer(false);
+  autoSlot = slot;
+  renderAutoDlg();
+  autodlg.style.display = "flex";
+};
 
 // --- prompt history: composed sends recorded server-side per slot; recalled via the
 // 🕘 popover or ArrowUp/ArrowDown cycling in an (empty) compose box ---

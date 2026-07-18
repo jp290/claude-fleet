@@ -108,25 +108,39 @@
     font-size: 13px; font-family: inherit; cursor: pointer; }
   .viewtoggle:hover { color: #ccc; }
   .pane.chat .viewtoggle { color: #7aa2f7; border-color: #2c3a5e; }
-  .msg { margin: 0 0 14px; max-width: 940px; }
+  .msg { margin: 0 0 16px; max-width: 900px; }
   .msg pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; }
-  .msg.user { border-left: 3px solid #7aa2f7; background: #1a1f2e; border-radius: 0 8px 8px 0;
-    padding: 8px 12px; color: #dde3f0; }
-  .msg.assistant { color: #ccc; padding: 0 2px; }
+  .msg .mhead { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: #555; margin-bottom: 5px; user-select: none; -webkit-user-select: none; }
+  /* YOUR messages are the anchors this view exists for — unmissable, timestamped */
+  .msg.user { border-left: 3px solid #7aa2f7; background: linear-gradient(90deg, #1c2438, #1a1f2e 70%);
+    border-radius: 0 10px 10px 0; padding: 10px 14px; color: #e2e8f5; margin: 22px 0 14px; }
+  .msg.user .mhead { color: #7aa2f7; }
+  .msg.assistant { color: #c4c4c4; padding: 0 3px; }
   .msg .code { background: #101010; border: 1px solid #2a2a2a; border-radius: 8px;
     padding: 9px 11px; margin: 8px 0; overflow-x: auto; }
   .msg .code pre { white-space: pre; }
-  .msg details { margin: 6px 0; border: 1px solid #2a2a2a; border-radius: 8px; background: #191919; }
-  .msg details summary { cursor: pointer; padding: 6px 11px; font-size: 11px; color: #888;
-    user-select: none; -webkit-user-select: none; list-style: none; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; }
-  .msg details summary::before { content: "▸ "; color: #555; }
-  .msg details[open] summary::before { content: "▾ "; }
-  .msg details > pre { padding: 4px 11px 9px; color: #999; font-size: 11.5px; max-height: 300px; overflow-y: auto; }
-  .msg details.think summary { color: #8a7cc0; }
-  .msg details.tool summary { color: #a7c080; }
-  .msg .ts { font-size: 10px; color: #555; margin-bottom: 3px; }
+  /* everything the agent did between two messages: ONE quiet expandable line */
+  .toolgroup { margin: 0 0 14px; border: 1px solid #232323; border-radius: 8px; background: #171717; }
+  .toolgroup > summary { cursor: pointer; padding: 5px 11px; font-size: 11px; color: #6a7a5f;
+    list-style: none; user-select: none; -webkit-user-select: none; }
+  .toolgroup > summary::before { content: "▸ "; color: #444; }
+  .toolgroup[open] > summary::before { content: "▾ "; }
+  .tgbody { padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 3px; }
+  .tstep { border: 1px solid #262626; border-radius: 6px; background: #1b1b1b; }
+  .tstep > summary { cursor: pointer; padding: 4px 9px; font-size: 11px; color: #889978;
+    list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    user-select: none; -webkit-user-select: none; }
+  .tstep > pre { padding: 4px 10px 8px; color: #999; font-size: 11px; max-height: 260px; overflow-y: auto; }
+  .tstep .tres { border-top: 1px solid #262626; color: #8a8a8a; }
   .chatempty { color: #555; font-size: 12px; padding: 30px 10px; text-align: center; }
+  /* prompt-to-prompt jumps, chat mode only */
+  .promptnav { display: none; position: absolute; right: 10px; z-index: 6; width: 30px; height: 26px;
+    border-radius: 7px; border: 1px solid #333; background: rgba(38, 38, 38, 0.85); color: #7aa2f7;
+    font-size: 13px; font-family: inherit; cursor: pointer; }
+  .promptnav.up { top: 42px; }
+  .promptnav.dn { top: 72px; }
+  .pane.chat .promptnav { display: block; }
   .panehint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #555; font-size: 12px; pointer-events: none; }
   .jump { position: absolute; display: none; bottom: 12px; right: 14px; z-index: 5;

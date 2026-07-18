@@ -100,7 +100,7 @@ const post = (path: string, body: unknown) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 // --- fleet state ---
-interface ShareInfo { id: string; mode: "view" | "interact"; password: string }
+interface ShareInfo { id: string; mode: "view" | "interact"; password: string; created: number; guests: number }
 interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
@@ -868,13 +868,32 @@ function renderChips(chips: string[]) {
   updateChips();
 }
 
+// --- stale-bundle self-heal: the server reports its current app.js version with every
+// poll. A tab left open across a deploy keeps running OLD code (missing buttons read as
+// "regression") — when the version moves, reload as soon as the tab is hidden so we never
+// yank the page out from under active typing.
+let bundleV = 0;
+let reloadArmed = false;
+function armReload() {
+  if (reloadArmed) return;
+  reloadArmed = true;
+  if (document.hidden) { location.reload(); return; }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) location.reload();
+  });
+}
+
 let chipCmds: string[] = [];
 let lastRender = "";
 async function refresh() {
   try {
     const res = await api("/api/sessions");
     if (!res.ok) return;
-    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; autos?: AutoInfo[]; slots: SlotInfo[] };
+    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; v?: number; autos?: AutoInfo[]; slots: SlotInfo[] };
+    if (data.v) {
+      if (!bundleV) bundleV = data.v;
+      else if (data.v !== bundleV) armReload();
+    }
     fleet = data.slots;
     autosList = data.autos ?? [];
     serverNow = data.now;
@@ -889,6 +908,16 @@ async function refresh() {
       lastRender = key;
       renderSlots();
     }
+    // keep an open share dialog honest (guest count, mode changed elsewhere) without
+    // rebuilding it on every poll — rebuilds kill hover state and button focus
+    if (dlgSlot && sharedlg.style.display === "flex") {
+      const sh = fleet[dlgSlot - 1]?.share;
+      const dk = sh ? `${sh.id}|${sh.mode}|${sh.guests}` : "none";
+      if (dk !== dlgKey) {
+        dlgKey = dk;
+        renderShareDlg();
+      }
+    }
   } catch {
     // server briefly unreachable — WS dot already shows disconnect
   }
@@ -899,6 +928,7 @@ setInterval(() => void refresh(), 2000);
 const sharedlg = $("sharedlg"), sharepanel = $("sharepanel");
 let dlgSlot = 0;
 let dlgMode: "view" | "interact" = "view";
+let dlgKey = ""; // last-rendered share state — refresh() only re-renders the open dialog on change
 
 function closeShareDlg() {
   sharedlg.style.display = "none";
@@ -924,31 +954,69 @@ function copyLine(label: string, value: string): HTMLElement {
   return row;
 }
 
+function fmtSince(ts: number): string {
+  const min = Math.max(0, Math.round((Date.now() - ts) / 60000));
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h}h ${min % 60}m ago` : `${Math.floor(h / 24)}d ago`;
+}
+
 function renderShareDlg() {
   const s = fleet[dlgSlot - 1];
   if (!s?.cwd) { closeShareDlg(); return; }
+  dlgKey = s.share ? `${s.share.id}|${s.share.mode}|${s.share.guests}` : "none";
   sharepanel.replaceChildren();
   sharepanel.appendChild(el("h2", "", `Share session — ${s.label ?? baseName(s.cwd)}`));
   const sh = s.share;
   if (sh) {
+    const status = el("div", "shrline");
+    status.appendChild(el("span", "k", "status"));
+    const live = el("span", "shrlive" + (sh.guests > 0 ? " on" : ""),
+      sh.guests > 0 ? `● ${sh.guests} guest${sh.guests === 1 ? "" : "s"} connected` : "○ no guest connected");
+    status.appendChild(live);
+    status.appendChild(el("span", "shrsince", `shared ${fmtSince(sh.created)}`));
+    sharepanel.appendChild(status);
     sharepanel.appendChild(copyLine("link", `${shareBase || location.origin}/s/${sh.id}`));
     sharepanel.appendChild(copyLine("password", sh.password));
+    // live mode switch: keeps link+password, kicks connected guests into a reload so
+    // their UI matches; interact→view also cuts typing off server-side immediately
     const modeRow = el("div", "shrline");
     modeRow.appendChild(el("span", "k", "access"));
-    modeRow.appendChild(el("span", "", sh.mode === "interact" ? "interactive — guests can type and send" : "view only — guests can watch"));
+    const bView = el("button", `shrbtn${sh.mode === "view" ? " active" : ""}`, "view only") as HTMLButtonElement;
+    const bInt = el("button", `shrbtn${sh.mode === "interact" ? " active" : ""}`, "interactive") as HTMLButtonElement;
+    const setMode = async (m: "view" | "interact") => {
+      if (m === sh.mode) return;
+      if (m === "interact" && !confirm("Switch to interactive? Guests can then type straight into YOUR shell.")) return;
+      await post(`/api/slots/${s.id}/share-mode`, { mode: m });
+      await refresh();
+      renderShareDlg();
+    };
+    bView.onclick = () => void setMode("view");
+    bInt.onclick = () => void setMode("interact");
+    modeRow.append(bView, bInt);
     sharepanel.appendChild(modeRow);
-    sharepanel.appendChild(el("div", "shrhint",
-      "Give the link and the password to your guest separately. Revoking kicks connected guests immediately."));
+    sharepanel.appendChild(el("div", "shrhint", sh.mode === "interact"
+      ? "Interactive — guests type into your real shell. Give link and password to your guest separately."
+      : "View only — guests watch, nothing they type reaches the terminal. Give link and password separately."));
     const btns = el("div", "shrbtns");
-    const revoke = el("button", "shrbtn danger", "revoke share") as HTMLButtonElement;
+    const rotate = el("button", "shrbtn", "new link + password") as HTMLButtonElement;
+    rotate.onclick = async () => {
+      if (!confirm("Replace this share? The old link and password stop working and connected guests are kicked.")) return;
+      await post(`/api/slots/${s.id}/share`, { mode: sh.mode });
+      await refresh();
+      renderShareDlg();
+    };
+    const revoke = el("button", "shrbtn danger", "end live share") as HTMLButtonElement;
     revoke.onclick = async () => {
+      if (!confirm("End this share? The link stops working and connected guests are kicked immediately.")) return;
       await post(`/api/slots/${s.id}/unshare`, {});
       await refresh();
       renderShareDlg();
     };
     const close = el("button", "shrbtn", "close") as HTMLButtonElement;
     close.onclick = closeShareDlg;
-    btns.append(revoke, close);
+    btns.append(rotate, revoke, close);
     sharepanel.appendChild(btns);
   } else {
     const modeRow = el("div", "shrline");

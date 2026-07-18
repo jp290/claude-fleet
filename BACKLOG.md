@@ -200,6 +200,14 @@ script/cron on the tailnet can already automate prompts today:
 
 **Effort:** a) small, b) medium, c) large. **Blocked on:** which of these you meant.
 
+**2026-07-18 SHIPPED as (b) scheduled prompts (`a871941`):** compose text + once-in-N-min
+or every-N-min-x-K-runs. Guard rails (all server-side, all e2e-covered): mandatory runs
+cap 1-100, min interval, idle gate (60s quiet, 10min grace, then visible skip),
+claude-alive gate (process-tree check — never types into a bare shell where text would
+EXECUTE), schedules die with slot, restart-persistent, missed runs skipped, auto-sends
+recorded in prompt history. Not built: (c) auto-responder — output-pattern matching on a
+TUI stream is inherently fragile; revisit only with a concrete use case.
+
 ---
 
 ## Execution order

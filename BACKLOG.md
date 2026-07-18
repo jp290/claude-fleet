@@ -21,9 +21,20 @@ permission prompts are UI-only → hybrid stays). Slots pin `claude --session-id
 pane creation for a deterministic transcript path; adopted sessions fall back to
 newest-by-mtime (can mispick when two claudes share a cwd — pinning fixes new panes).
 💬 toggle per pane, 1s incremental polling, reflows at any width.
-MVP gaps / follow-ups: no markdown beyond ``` fences, tool_use/result not visually
-paired, transcript endpoint rereads the whole file per poll (fine <10MB), guests
-don't get the conversation view yet, view choice not persisted per pane.
+MVP gaps / follow-ups: no markdown beyond ``` fences, transcript endpoint rereads
+the whole file per poll (fine <10MB), guests don't get the conversation view yet,
+view choice not persisted per pane.
+
+**2026-07-18, later still:** user feedback reframed the conversation view: its
+purpose is *reliably seeing your own messages*. Restyled accordingly (`516ea28`):
+user messages as timestamped accent anchors, all agent activity between two
+messages collapsed into one "⚙ n steps" line (tool_use/result now paired inside),
+↑/↓ prompt-to-prompt jump buttons. WebGL renderer shipped (`9a634f2`); in-terminal
+sent-prompt markers built, tested against a real claude TUI, found to drift
+(full repaints + resize jiggle), dropped. Density pass shipped (`0be9e1e`):
+sidebar 250→228, compose bar 59→51, mobile paddings trimmed, touch targets kept.
+Item 4 (UI density) now DONE as a first iteration — further tightening wants the
+user's eyes on real devices.
 
 ---
 

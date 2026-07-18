@@ -234,7 +234,11 @@ check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shV
 await tmuxOut("send-keys", "-t", "s1", "C-u");
 const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
 if (SHARE_HOST) {
-  check("share host hides the dashboard", (await fetch(BASE + "/", { headers: { host: SHARE_HOST } })).status === 404);
+  const landing = await fetch(BASE + "/", { headers: { host: SHARE_HOST } });
+  const landingBody = await landing.text();
+  check("share host hides the dashboard", landing.status === 200 && landingBody.includes("klaus — live sessions") && !landingBody.includes("app.js"),
+    `status ${landing.status}`);
+  check("share host hides the manifest", (await fetch(BASE + "/manifest.webmanifest", { headers: { host: SHARE_HOST } })).status === 404);
   const sPub = await fetch(BASE + `/s/${shView.id}`, { headers: { host: SHARE_HOST } });
   check("share host serves the share page", sPub.status === 200 && (await sPub.text()).includes("share.js"));
   check("share host blocks owner API even with token", (await fetch(BASE + "/api/sessions", { headers: { host: SHARE_HOST, ...H } })).status === 404);

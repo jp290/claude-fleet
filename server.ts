@@ -456,6 +456,11 @@ Bun.serve<WSData>({
     // the public tunnel hostname is share-only: nothing else exists there, not even
     // the owner login page. (Host was already validated against ALLOWED_HOSTS above.)
     if (SHARE_HOSTS.has(req.headers.get("host") ?? "")) {
+      // the bare domain gets a deliberate landing page instead of a 404
+      if (url.pathname === "/" && req.method === "GET")
+        return new Response(Bun.file(`${import.meta.dir}/public/landing.html`), {
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+        });
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
         || /^\/(s\/[a-z0-9]+(\/(auth|info|send))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });

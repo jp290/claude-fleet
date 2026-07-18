@@ -4,7 +4,10 @@
 # reboots — previously this loop lived in a tmux session that died with the machine.
 # Env for the server lives HERE, in one place.
 FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
-export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" # launchd's default PATH has neither bun (~/.bun/bin) nor brew (tmux)
+# launchd's default PATH has none of: claude (~/.local/bin), bun (~/.bun/bin), brew (tmux).
+# The server bakes ITS OWN PATH into every pane command, so what's missing here is
+# missing inside every new claude session too.
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 while true; do
   if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then

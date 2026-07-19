@@ -328,6 +328,18 @@
   .bprompt .bn { flex: none; color: #7aa2f7; font-weight: 700; min-width: 16px; text-align: right; }
   .bprompt .bt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bempty { color: #555; padding: 14px 2px; }
+  /* ✨ agent summary — click-only, visibly aged when the git state moved on */
+  .bsum { color: #c4c4c4; line-height: 1.5; margin: 2px 0 6px; }
+  .bstale { color: #e0af68; font-size: 10.5px; margin: 2px 0 5px; }
+  .bsumhead { font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; color: #666; margin: 6px 0 2px; }
+  .bsumrow { color: #aaa; line-height: 1.45; padding: 1px 0; }
+  .bsumver { color: #889978; margin: 6px 0 2px; line-height: 1.45; }
+  .bsummeta { color: #555; font-size: 10px; margin-top: 5px; }
+  .bsumerr { color: #f7768e; line-height: 1.45; margin: 2px 0 6px; word-break: break-word; }
+  .bsumbtn { margin-top: 7px; padding: 5px 12px; border-radius: 7px; border: 1px solid #2c3a5e;
+    background: #1c2437; color: #7aa2f7; font-size: 11.5px; font-family: inherit; cursor: pointer; }
+  .bsumbtn:hover:not(:disabled) { background: #26314f; }
+  .bsumbtn:disabled { opacity: 0.55; cursor: default; }
 
   #gate .panel { width: 380px; }
   #gate p { font-size: 11px; color: #888; line-height: 1.5; }

@@ -28,9 +28,19 @@ SHAREHOST=sharetest
 INTAKE=e2e-intake-secret
 export FLEET_E2E_REPO="$REPO"
 
+# stand-in summarizer: swallows the prompt on stdin, answers in claude -p's
+# --output-format json envelope — exercises the real gather→spawn→parse→cache path
+# without a model call
+cat > "$DIR/fakesum" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"summary\\": \\"fake summary of the session\\", \\"openThreads\\": [\\"thread-a\\"], \\"verification\\": \\"none seen\\"}"}'
+EOF
+chmod +x "$DIR/fakesum"
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1

@@ -6,6 +6,10 @@ const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // (own port + own tmux socket) instead of the live fleet — see e2e-isolated.sh
 const PORT = Number(process.env.FLEET_PORT ?? 8790);
 const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
+// the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
+// hit the live fleet by accident. The isolated wrappers set FLEET_SOCK to their own socket.
+if (SOCK === "claudefleet" && !process.env.FLEET_E2E_ALLOW_LIVE)
+  throw new Error("refusing to run against live socket 'claudefleet' — use ./e2e-isolated.sh (or set FLEET_E2E_ALLOW_LIVE=1)");
 const BASE = `http://${IP}:${PORT}`;
 const results: string[] = [];
 let failed = 0;
@@ -193,6 +197,20 @@ check("history entry has timestamp", typeof h2.history[0]?.ts === "number" && h2
 const h1 = (await (await get("/api/slots/1/history")).json()) as { history: unknown[] };
 check("raw typed input not recorded in history", h1.history.length === 0, `${h1.history.length} entries`);
 
+// --- global prompt log: every composed send from every surface, append-only,
+// survives slot close (slot 3 sent a prompt above and was then killed) ---
+const { statSync } = await import("node:fs");
+const plogPath = `${import.meta.dir}/streams/prompts.jsonl`;
+const plogRead = async () => (await Bun.file(plogPath).text()).trim().split("\n").filter(Boolean)
+  .map((l) => JSON.parse(l) as { ts: number; slot: number; cwd: string | null; label: string | null; source: string; text: string });
+const plog1 = await plogRead();
+check("prompt log records owner send with source 'owner'",
+  plog1.some((e) => e.slot === 2 && e.source === "owner" && e.text === "compose-box-to-slot-two"), `${plog1.length} entries`);
+check("prompt log survives slot close", plog1.some((e) => e.slot === 3 && e.text.includes("__pwn=1")));
+check("prompt log ignores raw WS typing", !plog1.some((e) => e.text.includes("hello-fleet-typing")));
+check("prompt log entries carry ts + cwd", plog1.every((e) => typeof e.ts === "number" && typeof e.cwd === "string"));
+check("prompt log file is 600", (statSync(plogPath).mode & 0o777) === 0o600, (statSync(plogPath).mode & 0o777).toString(8));
+
 // --- transcript view (slot 1 cwd is ~/claude-fleet, whose project dir has transcripts;
 // FLEET_CMD=true means no pinned session id, so this exercises the mtime fallback) ---
 const tr1 = await get("/api/slots/1/transcript");
@@ -230,6 +248,8 @@ check("fired one-shot is disabled with result 'sent'", !!fired && !fired.enabled
 check("gated auto still waiting within grace", !!waiting && waiting.enabled && waiting.lastResult === null, JSON.stringify(waiting));
 const h2auto = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
 check("auto send recorded in prompt history", h2auto.history.some((h) => h.text === "auto-fire-check"));
+check("auto send in prompt log with source 'auto'",
+  (await plogRead()).some((e) => e.slot === 2 && e.source === "auto" && e.text === "auto-fire-check"));
 check("delete auto", (await post(`/api/autos/${aBusyJ.auto.id}/delete`, {})).ok);
 const sess2 = (await (await get("/api/sessions")).json()) as { autos: { id: string }[] };
 check("deleted auto gone", !sess2.autos.some((a) => a.id === aBusyJ.auto.id));
@@ -292,6 +312,8 @@ check("interact share can send", sndI.ok);
 await Bun.sleep(700);
 const capI = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("interact share text reaches its pane", capI.out.includes("share-interact-hello"));
+check("share send in prompt log with source 'share'",
+  (await plogRead()).some((e) => e.slot === 1 && e.source === "share" && e.text === "share-interact-hello"));
 check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
 // --- share-mode: flip view/interact in place, same link + password ---
 // regression: this must reach an ACTUALLY-CONNECTED guest socket, not just the HTTP
@@ -350,8 +372,89 @@ const sess3Api = (await (await get("/api/sessions")).json()) as { slots: { id: n
 check("reopened slot reports no share", sess3Api.slots.find((x) => x.id === 3)?.share === null);
 await post("/api/slots/3/kill", {}); // restore slot 3 to inactive for the rest of the suite
 
+// --- worktree lanes (Phase A/B/C). Uses a throwaway git repo from FLEET_E2E_REPO ---
+const REPO = process.env.FLEET_E2E_REPO ?? "";
+if (REPO) {
+  const wtOpen = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
+  const wtJson = (await wtOpen.json()) as { ok?: boolean; branch?: string; error?: string };
+  check("open-worktree creates a lane", wtOpen.ok && wtJson.branch === "e2e-lane", JSON.stringify(wtJson));
+  const wtDir = `${REPO}.worktrees/e2e-lane`;
+  check("worktree dir materialized on disk", statSync(wtDir).isDirectory());
+  check("untracked .env copied into the worktree", statSync(`${wtDir}/.env`).isFile());
+  const wtRefused = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
+  check("open-worktree on an active slot is refused", wtRefused.status === 400);
+  const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
+  check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
+
+  // diff endpoint: make a tracked change in the lane, expect it in the diff
+  await Bun.write(`${wtDir}/code.txt`, "root\nlane-edit\n");
+  const diff = (await (await get("/api/slots/5/diff")).json()) as { branch: string; status: string[]; diff: string };
+  check("diff endpoint reports branch + changed file", diff.branch === "e2e-lane" && diff.status.some((l) => l.includes("code.txt")), JSON.stringify(diff.status));
+  check("diff endpoint returns the tracked change", diff.diff.includes("lane-edit"));
+  check("diff rejects non-git slot", (await get("/api/slots/2/diff")).status === 400);
+
+  // land refuses a dirty lane
+  const landDirty = await post("/api/slots/5/land", {});
+  check("land refuses a dirty worktree", landDirty.status === 409, `status ${landDirty.status}`);
+
+  // commit the change → still no upstream, but the branch is at a commit ahead of HEAD,
+  // so land must still refuse (unpushed + not merged)
+  const { spawnSync } = await import("node:child_process");
+  spawnSync("git", ["-C", wtDir, "commit", "-aqm", "lane work"]);
+  const landUnpushed = await post("/api/slots/5/land", {});
+  check("land refuses unpushed commits", landUnpushed.status === 409, `status ${landUnpushed.status}`);
+
+  // a lane clean AND merged into HEAD (fresh lane at HEAD) lands cleanly. Open a second one.
+  const wt2 = await post("/api/slots/6/open-worktree", { repo: REPO, branch: "e2e-clean" });
+  check("second clean lane opens", wt2.ok);
+  const landClean = await post("/api/slots/6/land", {});
+  check("land removes a clean, merged lane", landClean.ok, await landClean.text());
+  check("landed slot is now inactive", (await (await get("/api/sessions")).json() as { slots: { cwd: string | null }[] }).slots[5].cwd === null);
+  check("landed worktree removed from disk", !((): boolean => { try { return statSync(`${REPO}.worktrees/e2e-clean`).isDirectory(); } catch { return false; } })());
+  check("land rejects a non-worktree slot", (await post("/api/slots/2/land", {})).status === 400);
+}
+
+// --- task queue (Phase D). Owner CRUD + dispatch availability ---
+const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
+const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; status: string; source: string } };
+check("create owner task as pending", tCreate.ok && tJson.task.status === "pending" && tJson.task.source === "owner");
+check("queue a task", (await post(`/api/tasks/${tJson.task.id}/queue`, {})).ok);
+const sessT = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[]; dispatch: { available: boolean; on: boolean } };
+check("queued task reflected in sessions", sessT.tasks.some((t) => t.id === tJson.task.id && t.status === "queued"));
+check("dispatch reports available when repo set", sessT.dispatch.available === true);
+check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
+check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
+check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
+const dispOff = await post("/api/dispatch", { on: false });
+check("dispatch toggle endpoint works", dispOff.ok);
+
+// --- intake (Phase E). Public dropbox, own secret, pending-only ---
+const INTAKE = process.env.FLEET_INTAKE_SECRET ?? "";
+if (INTAKE) {
+  const noSecret = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x" }) });
+  check("intake without secret is 401", noSecret.status === 401);
+  const wrongSecret = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": "nope" }, body: JSON.stringify({ text: "x" }) });
+  check("intake with wrong secret is 401", wrongSecret.status === 401);
+  const ok = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "CEO wants dark mode", from: "ceo@acme.co" }) });
+  check("intake with secret accepts", ok.ok);
+  const sessI = (await (await get("/api/sessions")).json()) as { tasks: { text: string; source: string; from: string | null; status: string }[]; intake: boolean };
+  const it = sessI.tasks.find((t) => t.text === "CEO wants dark mode");
+  check("intake task lands as pending from intake source", !!it && it.status === "pending" && it.source === "intake" && it.from === "ceo@acme.co", JSON.stringify(it));
+  check("sessions reports intake enabled", sessI.intake === true);
+  check("intake rejects empty text", (await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "   " }) })).status === 400);
+}
+
 const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
 if (SHARE_HOST) {
+  // intake is the one write path reachable on the public share host
+  if (INTAKE) {
+    const pubIntake = await fetch(BASE + "/intake", { method: "POST",
+      headers: { host: SHARE_HOST, "content-type": "application/json", "x-intake-secret": INTAKE },
+      body: JSON.stringify({ text: "via share host", from: "x" }) });
+    check("intake reachable on the share host", pubIntake.ok);
+    check("share host still blocks task API (owner-only)", (await fetch(BASE + "/api/tasks", { method: "POST",
+      headers: { host: SHARE_HOST, ...H, "content-type": "application/json" }, body: JSON.stringify({ text: "y" }) })).status === 404);
+  }
   const landing = await fetch(BASE + "/", { headers: { host: SHARE_HOST } });
   const landingBody = await landing.text();
   check("share host hides the dashboard", landing.status === 200 && landingBody.includes("klaus — live sessions") && !landingBody.includes("app.js"),
@@ -381,7 +484,6 @@ const shPersist = (await shPersistRes.json()) as { id: string };
 check("re-share after revoke", shPersistRes.ok && !!shPersist.id);
 
 // --- file permissions ---
-const { statSync } = await import("node:fs");
 const streamMode = statSync(`${import.meta.dir}/streams/s1.raw`).mode & 0o777;
 const stateMode = statSync(`${import.meta.dir}/fleet.json`).mode & 0o777;
 check("stream file is 600", streamMode === 0o600, streamMode.toString(8));
@@ -428,6 +530,9 @@ const rec2 = (await (await get("/api/dirs?path=~")).json()) as { recents: string
 check("after restart: recents persisted", rec2.recents.length >= 2, JSON.stringify(rec2.recents));
 const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
 check("after restart: history persisted", h2b.history.some((h) => h.text === "compose-box-to-slot-two"), `${h2b.history.length} entries`);
+const plogAfter = await plogRead();
+check("after restart + slot kills: prompt log intact",
+  plogAfter.some((e) => e.text === "compose-box-to-slot-two") && plogAfter.some((e) => e.source === "share"), `${plogAfter.length} entries`);
 const shPAuth = await post(`/s/${shPersist.id}/auth`, { password: "persistpass1" });
 check("after restart: share persisted and answers", shPAuth.ok);
 const sess3 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean }[] };

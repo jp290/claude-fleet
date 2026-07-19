@@ -336,6 +336,35 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
   };
 }
 
+// the deterministic session overview — recent commits, changed files, uncommitted
+// summary — shared by the owner sideboard and the guest info tab. Fresh git output per
+// request (never cached) so neither view can drift from reality. null = not a git repo.
+async function briefPayload(s: Slot): Promise<{ branch: string | null; sessionStart: number | null;
+  uncommitted: number; files: string[]; shortstat: string;
+  commits: { hash: string; ts: number; subject: string }[] } | null> {
+  const st = await git(s.cwd!, "status", "--porcelain");
+  if (st.code !== 0) return null;
+  const br = await git(s.cwd!, "rev-parse", "--abbrev-ref", "HEAD");
+  const start = sessionStart(s);
+  const base = start ? await sessionBase(s.cwd!, start) : null;
+  const sh = await git(s.cwd!, "diff", base ?? "HEAD", "--shortstat", "--no-color");
+  let files: string[];
+  if (base) {
+    const ns = await git(s.cwd!, "diff", "--name-status", "--no-color", base);
+    files = sessionFiles(ns.code === 0 ? ns.out : "", st.out).slice(0, 200);
+  } else {
+    files = st.out.split("\n").filter(Boolean).slice(0, 200);
+  }
+  return {
+    branch: br.code === 0 ? br.out : null,
+    sessionStart: start,
+    uncommitted: st.out.split("\n").filter(Boolean).length,
+    files,
+    shortstat: sh.code === 0 ? sh.out : "",
+    commits: await sessionCommits(s),
+  };
+}
+
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
 // poll must never block on 16 git spawns, so it reads this cache instead
 interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
@@ -1425,7 +1454,7 @@ Bun.serve<WSData>({
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
-        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
+        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
     }
 
@@ -1449,7 +1478,7 @@ Bun.serve<WSData>({
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments)$/.exec(url.pathname);
+    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments|brief)$/.exec(url.pathname);
     if (shareApi) {
       const sh = shareBy(shareApi[1]);
       if (!sh) return json({ error: "unknown or revoked share" }, 404);
@@ -1492,6 +1521,14 @@ Bun.serve<WSData>({
         const p = await diffPayload(s.cwd, await slotBase(s));
         if (!p) return json({ error: "not a git repository" }, 400);
         return json({ ...p, commits: await sessionCommits(s) });
+      }
+      if (shareApi[2] === "brief") {
+        // read-only session overview for the guest info tab — the owner sideboard's
+        // document minus local filesystem details (worktree/repo paths stay private)
+        if (!s.cwd) return json({ error: "session gone" }, 404);
+        const p = await briefPayload(s);
+        if (!p) return json({ error: "not a git repository" }, 400);
+        return json(p);
       }
       if (shareApi[2] === "comments") {
         // guest thread on this share — allowed in BOTH modes, it types nothing into the pty
@@ -1724,31 +1761,9 @@ Bun.serve<WSData>({
     if (req.method === "GET" && briefMatch) {
       const s = slotFrom(briefMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const st = await git(s.cwd, "status", "--porcelain");
-      if (st.code !== 0) return json({ error: "not a git repository" }, 400);
-      const br = await git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD");
-      // every section scoped to THE SESSION's lifetime where a pinned transcript gives us
-      // its start; unpinned slots degrade to repo-now/repo-history (the old behavior)
-      const start = sessionStart(s);
-      const base = start ? await sessionBase(s.cwd, start) : null;
-      const sh = await git(s.cwd, "diff", base ?? "HEAD", "--shortstat", "--no-color");
-      const commits = await sessionCommits(s);
-      let files: string[];
-      if (base) {
-        const ns = await git(s.cwd, "diff", "--name-status", "--no-color", base);
-        files = sessionFiles(ns.code === 0 ? ns.out : "", st.out).slice(0, 200);
-      } else {
-        files = st.out.split("\n").filter(Boolean).slice(0, 200);
-      }
-      return json({
-        branch: br.code === 0 ? br.out : null,
-        worktree: s.worktree,
-        sessionStart: start,
-        uncommitted: st.out.split("\n").filter(Boolean).length,
-        files,
-        shortstat: sh.code === 0 ? sh.out : "",
-        commits,
-      });
+      const p = await briefPayload(s);
+      if (!p) return json({ error: "not a git repository" }, 400);
+      return json({ ...p, worktree: s.worktree });
     }
     // session summary (the ✨ agent). GET = cache lookup only, never spawns.
     // POST = run the agent (single-flight per slot; concurrent clicks share one run).

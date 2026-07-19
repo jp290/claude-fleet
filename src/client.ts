@@ -234,9 +234,6 @@ class Pane {
     if (isMobile() && this.term.textarea) this.term.textarea.inputMode = "none";
     this.term.onData((d) => this.sendRaw(d));
     this.term.attachCustomKeyEventHandler((e) => {
-      // ⌃digit switches slots even while the terminal has keyboard focus — without this,
-      // xterm would send the digit to the pty as if it were typed
-      if (slotHotkey(e) !== null) return false;
       // the canvas renderer paints cells as pixels, not DOM text, so a drag-selection has
       // nothing for the browser's native ⌘C to copy (no real Selection exists) — copy the
       // selection text directly instead. Guard e.type: xterm invokes this handler from both
@@ -605,7 +602,7 @@ async function renderBoard() {
     const brief = briefRes.ok ? ((await briefRes.json()) as BriefInfo) : null;
     const nodes: HTMLElement[] = [];
     const head = el("div", "bsec");
-    head.appendChild(el("h3", "", `slot ${slot === 10 ? 0 : slot} — ${s.label ?? baseName(s.cwd)}`));
+    head.appendChild(el("h3", "", `slot ${slot} — ${s.label ?? baseName(s.cwd)}`));
     if (brief?.branch) {
       const b = el("div", "bstate");
       b.appendChild(el("span", "bbranch", brief.branch));
@@ -747,7 +744,7 @@ function focusPane(index: number) {
   for (const p of panes) p.root.classList.toggle("focused", p.index === focused);
   const slot = panes[focused]?.slot;
   const hint = isMobile() ? "" : " (Enter sends)";
-  ta.placeholder = slot ? `Prompt for slot ${slot === 10 ? 0 : slot}…${hint}` : "Prompt… (no session in focused pane)";
+  ta.placeholder = slot ? `Prompt for slot ${slot}…${hint}` : "Prompt… (no session in focused pane)";
   updateTitle();
   // a no-op focus must not rebuild the sidebar: the first click of a double-click on a
   // slot label lands here, and rebuilding would replace the element mid-double-click
@@ -795,10 +792,6 @@ function showSlot(id: number) {
   target.flash();
 }
 
-function slotHotkey(e: KeyboardEvent): number | null {
-  if (e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9]$/.test(e.key)) return e.key === "0" ? 10 : Number(e.key);
-  return null;
-}
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (picker.style.display === "flex") closePicker();
@@ -808,17 +801,6 @@ window.addEventListener("keydown", (e) => {
     if (diffdlg.style.display === "flex") closeDiffDlg();
     if (queuedlg.style.display === "flex") closeQueueDlg();
     setDrawer(false);
-    return;
-  }
-  const id = slotHotkey(e);
-  // don't hijack Ctrl+digit out from under ANY text entry (compose box, picker path,
-  // token gate, live-typing input, or the sidebar's dynamically-created rename field) —
-  // excluding only `ta` missed all of those
-  const typing = document.activeElement instanceof HTMLInputElement
-    || document.activeElement instanceof HTMLTextAreaElement;
-  if (id !== null && !typing) {
-    e.preventDefault();
-    showSlot(id);
   }
 });
 window.addEventListener("resize", () => { for (const p of panes) p.refit(); });
@@ -1083,7 +1065,7 @@ async function startWorktree(repo: string) {
 function openPicker(slotId: number) {
   setDrawer(false);
   pickerSlot = slotId;
-  pkTitle.textContent = `New session — slot ${slotId === 10 ? 0 : slotId}`;
+  pkTitle.textContent = `New session — slot ${slotId}`;
   picker.style.display = "flex";
   const last = localStorage.getItem("fleet.pkdir") ?? "~";
   void browse(last).then(async (ok) => {
@@ -1149,15 +1131,23 @@ function renderSlots() {
   updateTitle();
   if (slotsEl.querySelector(".renamein")) return; // never destroy an in-progress rename
   slotsEl.replaceChildren();
-  // only active slots get a row — a single "+ new session" entry (lowest free slot)
-  // replaces the old wall of empty placeholders
+  // every slot gets a row, always — slots are fixed places, so a session stays findable
+  // where it was started. An empty slot is itself the "new session here" affordance.
   for (const s of fleet) {
-    if (!s.cwd) continue;
+    if (!s.cwd) {
+      const row = el("div", "slot empty");
+      row.dataset.slot = String(s.id);
+      row.appendChild(el("span", "n", String(s.id)));
+      row.appendChild(el("span", "lbl dim", "empty — start here"));
+      row.onclick = () => openPicker(s.id);
+      slotsEl.appendChild(row);
+      continue;
+    }
     const visible = panes.some((p) => p.slot === s.id);
     const isFocused = panes[focused]?.slot === s.id;
     const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
     row.dataset.slot = String(s.id);
-    row.appendChild(el("span", "n", s.id === 10 ? "0" : String(s.id)));
+    row.appendChild(el("span", "n", String(s.id)));
     {
       const lbl = el("span", "lbl", s.label ?? baseName(s.cwd));
       lbl.title = s.cwd;
@@ -1171,17 +1161,18 @@ function renderSlots() {
         b.title = "has scheduled prompts";
         row.appendChild(b);
       }
-      if (s.git?.branch) {
-        // lifecycle: editing (uncommitted) → ready (clean but commits to push/land) → clean.
-        // for a lane this is exactly its land-readiness, so the color doubles as a "can I ⏏ yet"
+      // branch badges only where they carry function: a lane's lifecycle color IS its
+      // land-readiness. Plain sessions on their repo branch showed "main •4"-style noise.
+      if (s.worktree && s.git?.branch) {
+        // lifecycle: editing (uncommitted) → ready (clean but commits to push/land) → clean
         const state = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean";
-        if (s.worktree) row.appendChild(el("span", "lanechip", "⎇")); // lanes read as first-class
+        row.appendChild(el("span", "lanechip", "⎇")); // lanes read as first-class
         const parts = [s.git.branch];
         if (s.git.dirty) parts.push(`•${s.git.dirty}`);
         if (s.git.ahead) parts.push(`↑${s.git.ahead}`);
         const bb = el("span", `branchbadge ${state}`, parts.join(" "));
         bb.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to push, ${s.git.behind} behind`
-          + (s.worktree ? `\nFleet lane (${state}). ± review · ⏏ land` : "");
+          + `\nFleet lane (${state}). ± review · ⏏ land`;
         row.appendChild(bb);
       }
       // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden)
@@ -1251,14 +1242,6 @@ function renderSlots() {
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
     }
-    slotsEl.appendChild(row);
-  }
-  const free = fleet.find((s) => !s.cwd);
-  if (free) {
-    const row = el("div", "slot empty");
-    row.appendChild(el("span", "n", "+"));
-    row.appendChild(el("span", "lbl dim", "new session"));
-    row.onclick = () => openPicker(free.id);
     slotsEl.appendChild(row);
   }
 }
@@ -1737,7 +1720,7 @@ function histRow(text: string, meta: string): HTMLElement {
 async function renderHist() {
   const slot = panes[focused]?.slot ?? 0;
   const all = histAll || !slot; // no focused session → the directory is all there is
-  histTitle.textContent = all ? "Prompt directory — all sessions" : `Prompt history — slot ${slot === 10 ? 0 : slot}`;
+  histTitle.textContent = all ? "Prompt directory — all sessions" : `Prompt history — slot ${slot}`;
   const tabs = el("div", "shrbtns");
   const bThis = el("button", `shrbtn${all ? "" : " active"}`, "this session") as HTMLButtonElement;
   bThis.disabled = !slot;

@@ -42,9 +42,14 @@
 
   #side { width: 228px; flex: none; display: flex; flex-direction: column;
     background: #1a1a1a; border-right: 1px solid #2a2a2a; }
-  #sidehead { display: flex; align-items: center; gap: 6px; padding: 10px 10px 8px;
+  /* row 1: collapse toggle FIRST (leftmost) so its click target barely moves between the
+     expanded sidebar and the 50px rail — then the title on its own line */
+  #sidehead { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px;
     font-size: 12px; font-weight: 700; color: #e8e8e8; }
   #sidetitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* row 2: view/layout tools, separate from the identity row above */
+  #sidetools { display: flex; align-items: center; gap: 3px; padding: 0 10px 8px; }
+  #sidetools #queuebtn { margin-left: auto; }
   #collapse, #reload { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer;
     display: flex; align-items: center; justify-content: center; line-height: 1; }
@@ -74,10 +79,9 @@
   .slot .shr.on { color: #e0af68; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
-  #side.collapsed #sidetitle, #side.collapsed #layouts, #side.collapsed #dot, #side.collapsed #reload,
-  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact,
-  #side.collapsed #queuebtn { display: none; } /* 26px buttons don't fit the 50px rail — expand to use them */
-  #side.collapsed #sidehead { padding: 12px 0 10px; justify-content: center; }
+  #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
+  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
+  #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
   #side.collapsed .slot { justify-content: center; gap: 5px; padding: 8px 2px; }
   .renamein { flex: 1; min-width: 0; height: 20px; padding: 0 5px; border-radius: 5px;
@@ -150,7 +154,7 @@
     color: #ddd; font-size: 14px; align-items: center; justify-content: center;
     cursor: pointer; }
   .jump:hover { background: rgba(30, 30, 30, 1); }
-  #layouts { display: flex; gap: 3px; margin-left: auto; }
+  #layouts { display: flex; gap: 3px; }
   #layouts button { width: 27px; height: 25px; border-radius: 6px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
   #layouts button.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
@@ -428,7 +432,11 @@
     <span id="mdot" class="dot off"></span>
   </div>
   <div id="side">
-    <div id="sidehead"><span id="dot" class="dot off"></span><span id="sidetitle">Claude Fleet</span>
+    <div id="sidehead">
+      <button id="collapse" title="collapse sidebar">‹</button>
+      <span id="dot" class="dot off"></span><span id="sidetitle">Claude Fleet</span>
+    </div>
+    <div id="sidetools">
       <span id="layouts">
         <button data-l="1" title="single pane">▢</button>
         <button data-l="2" title="2-up split">◫</button>
@@ -436,10 +444,9 @@
       </span>
       <button id="queuebtn" title="task queue">🗒</button>
       <button id="reload" title="reload focused session">↻</button>
-      <button id="collapse" title="collapse sidebar">‹</button>
     </div>
     <div id="slots"></div>
-    <div id="sidefoot">⌃1–⌃0 — switch slot<br>Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
+    <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
   </div>
   <div id="main">
     <div id="panes" class="l1"></div>

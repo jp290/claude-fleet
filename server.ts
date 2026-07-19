@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ServerWebSocket } from "bun";
@@ -383,6 +383,7 @@ function detachSlotTasks(slotId: number, note: string): void {
 async function killSlot(s: Slot): Promise<void> {
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
+  summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
@@ -679,6 +680,95 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   }
   if (!blocks.length) return null;
   return { n, role: d.type, ts, blocks };
+}
+
+// --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. Runs `claude -p` as a
+// short-lived subprocess with cwd in the slot's checkout — the same repo context a
+// session gets (gitignored CLAUDE.md rides along) — NEVER as one of the 16 slots.
+// Read-only, click-only (POST), cached on the exact git state; GET returns the cache
+// without ever spawning. Evidence only by prompt contract — no land/merge verdicts. ---
+const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? "claude";
+const SUMMARY_MODEL = process.env.FLEET_SUMMARY_MODEL ?? "claude-sonnet-5";
+const SUMMARY_TIMEOUT_MS = 120_000;
+interface SummaryResult {
+  summary: string; openThreads: string[]; verification: string;
+  model: string; at: number; head: string | null; dirty: number; raw: boolean;
+}
+const summaryCache = new Map<number, { key: string; result: SummaryResult }>();
+const summaryInflight = new Map<number, Promise<SummaryResult>>();
+
+// last N transcript entries flattened to plain text — same file + parser the
+// transcript view uses, so the agent reads exactly what the owner would see
+function transcriptTail(s: Slot, maxEntries: number): string {
+  const file = transcriptFile(s);
+  if (!file) return "";
+  try {
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-300);
+    const entries: TEntry[] = [];
+    for (const [i, line] of lines.entries()) {
+      try {
+        const e = viewEntry(JSON.parse(line), i);
+        if (e) entries.push(e);
+      } catch {
+        // partial mid-append line — skip
+      }
+    }
+    return entries.slice(-maxEntries).map((e) =>
+      e.blocks.map((b) =>
+        `[${e.role}${b.t === "text" ? "" : `/${b.t}${b.name ? `:${b.name}` : ""}`}] ${b.text}`,
+      ).join("\n"),
+    ).join("\n");
+  } catch {
+    return "";
+  }
+}
+
+async function runSummary(s: Slot, head: string | null, dirty: number): Promise<SummaryResult> {
+  const cwd = s.cwd!;
+  const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
+  const d = await git(cwd, "diff", "HEAD", "--no-color");
+  const prompt = [
+    "You are a read-only reviewer summarizing the state of a coding session for its owner.",
+    "Below: recent commits, the uncommitted diff, and the tail of the session transcript.",
+    'Respond with STRICT JSON only, no markdown fences, exactly this shape:',
+    '{"summary": "...", "openThreads": ["..."], "verification": "..."}',
+    "- summary: 2-3 sentences on what was actually done.",
+    "- openThreads: things started or mentioned but not finished (empty array if none).",
+    '- verification: which checks/tests/builds ran and their results, or "none seen".',
+    "Evidence only — never advise whether to commit, merge or land.",
+    "", "## commits", lg.code === 0 && lg.out ? lg.out : "(none)",
+    "", "## uncommitted diff", (d.code === 0 ? d.out.slice(0, 60_000) : "") || "(clean)",
+    "", "## transcript tail", transcriptTail(s, 30).slice(-40_000) || "(no transcript)",
+  ].join("\n");
+  const p = Bun.spawn([SUMMARY_CMD, "-p", "--model", SUMMARY_MODEL, "--output-format", "json"],
+    { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  p.stdin.write(prompt);
+  await p.stdin.end();
+  const killer = setTimeout(() => p.kill(), SUMMARY_TIMEOUT_MS);
+  const out = await new Response(p.stdout).text();
+  const err = await new Response(p.stderr).text();
+  const code = await p.exited;
+  clearTimeout(killer);
+  if (code !== 0) throw new Error(`summarizer exited ${code}: ${(err || out).slice(0, 300)}`);
+  // claude -p --output-format json wraps the answer in {"result": "..."} — unwrap,
+  // then parse the strict-JSON contract; a non-conforming answer degrades to raw text
+  let text = out.trim();
+  try {
+    const env = JSON.parse(text) as { result?: unknown };
+    if (typeof env.result === "string") text = env.result.trim();
+  } catch { /* not an envelope — treat as the answer itself */ }
+  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  let summary = body, openThreads: string[] = [], verification = "", raw = true;
+  try {
+    const j = JSON.parse(body) as { summary?: unknown; openThreads?: unknown; verification?: unknown };
+    if (typeof j.summary === "string") { summary = j.summary; raw = false; }
+    if (Array.isArray(j.openThreads)) openThreads = j.openThreads.filter((x): x is string => typeof x === "string");
+    if (typeof j.verification === "string") verification = j.verification;
+  } catch { /* keep raw text as the summary */ }
+  return {
+    summary: summary.slice(0, 4000), openThreads: openThreads.slice(0, 12),
+    verification: verification.slice(0, 1000), model: SUMMARY_MODEL, at: Date.now(), head, dirty, raw,
+  };
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -1198,6 +1288,35 @@ Bun.serve<WSData>({
         shortstat: sh.code === 0 ? sh.out : "",
         commits,
       });
+    }
+    // session summary (the ✨ agent). GET = cache lookup only, never spawns.
+    // POST = run the agent (single-flight per slot; concurrent clicks share one run).
+    const sumMatch = /^\/api\/slots\/(\d+)\/summary$/.exec(url.pathname);
+    if (sumMatch && (req.method === "GET" || req.method === "POST")) {
+      const s = slotFrom(sumMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const st = await git(s.cwd, "status", "--porcelain");
+      if (st.code !== 0) return json({ error: "not a git repository" }, 400);
+      const hd = await git(s.cwd, "rev-parse", "HEAD");
+      const head = hd.code === 0 ? hd.out : null;
+      const dirty = st.out.split("\n").filter(Boolean).length;
+      const key = `${head}:${Bun.hash(st.out)}`;
+      const cached = summaryCache.get(s.id);
+      if (cached?.key === key) return json({ ...cached.result, cached: true, stale: false });
+      if (req.method === "GET")
+        return json(cached ? { ...cached.result, cached: true, stale: true } : { cached: false });
+      let run = summaryInflight.get(s.id);
+      if (!run) {
+        run = runSummary(s, head, dirty).finally(() => summaryInflight.delete(s.id));
+        summaryInflight.set(s.id, run);
+      }
+      try {
+        const result = await run;
+        summaryCache.set(s.id, { key, result });
+        return json({ ...result, cached: false, stale: false });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "summarizer failed" }, 500);
+      }
     }
     if (url.pathname === "/api/dirs") {
       try {

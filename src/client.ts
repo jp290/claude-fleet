@@ -521,6 +521,13 @@ let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[] }>();
+// ✨ agent summary (BACKLOG #14 Phase 2): result of the server's short-lived
+// claude -p run, cached per slot. Only ever fetched via GET (cache lookup) on
+// first view — the model call itself is strictly click-triggered (POST).
+interface SummaryInfo { summary?: string; openThreads?: string[]; verification?: string;
+  model?: string; at?: number; head?: string | null; dirty?: number; error?: string }
+const sumCache = new Map<number, SummaryInfo>();
+const sumBusy = new Set<number>();
 
 function applyBoard() {
   document.body.classList.toggle("board", boardOpen && !isMobile());
@@ -603,6 +610,59 @@ async function renderBoard() {
         ` · ${ahead} commit${ahead === 1 ? "" : "s"} to push${brief.worktree ? "/land" : ""}`));
       st.appendChild(line);
       nodes.push(st);
+      // recover a server-cached summary once per slot (GET never spawns the agent)
+      if (!sumCache.has(slot)) {
+        sumCache.set(slot, {});
+        void api(`/api/slots/${slot}/summary`).then(async (r) => {
+          if (!r.ok) return;
+          const j = (await r.json()) as SummaryInfo;
+          if (j.summary) {
+            sumCache.set(slot, j);
+            void renderBoard();
+          }
+        }).catch(() => { /* transient — the button still works */ });
+      }
+      const ssec = el("div", "bsec");
+      ssec.appendChild(el("h3", "", "agent summary"));
+      const sum = sumCache.get(slot);
+      if (sum?.summary) {
+        // visible aging: the summary is pinned to the git state it was computed on
+        const c0 = brief.commits[0];
+        const stale = (!!sum.head && !!c0 && !sum.head.startsWith(c0.hash)) || sum.dirty !== brief.files.length;
+        if (stale) ssec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
+        ssec.appendChild(el("div", "bsum", sum.summary));
+        if (sum.openThreads?.length) {
+          ssec.appendChild(el("div", "bsumhead", "open threads"));
+          for (const t of sum.openThreads) ssec.appendChild(el("div", "bsumrow", `· ${t}`));
+        }
+        if (sum.verification) ssec.appendChild(el("div", "bsumver", `verified: ${sum.verification}`));
+        if (sum.model && sum.at)
+          ssec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
+      } else if (sum?.error) {
+        ssec.appendChild(el("div", "bsumerr", sum.error));
+      }
+      const sbtn = el("button", "bsumbtn",
+        sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "✨ re-summarize" : "✨ summarize") as HTMLButtonElement;
+      sbtn.disabled = sumBusy.has(slot);
+      sbtn.title = "run a short-lived read-only agent (claude -p in this session's checkout) — one model call";
+      sbtn.onclick = async () => {
+        if (sumBusy.has(slot)) return;
+        sumBusy.add(slot);
+        sbtn.disabled = true;
+        sbtn.textContent = "… summarizing";
+        try {
+          const r = await post(`/api/slots/${slot}/summary`, {});
+          const j = (await r.json().catch(() => ({}))) as SummaryInfo;
+          sumCache.set(slot, r.ok ? j : { error: j.error ?? "summarizer failed" });
+        } catch {
+          sumCache.set(slot, { error: "summarizer failed — network error" });
+        } finally {
+          sumBusy.delete(slot);
+          void renderBoard();
+        }
+      };
+      ssec.appendChild(sbtn);
+      nodes.push(ssec);
       if (brief.files.length) {
         const sec = el("div", "bsec");
         sec.appendChild(el("h3", "", "changed files"));

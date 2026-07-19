@@ -433,9 +433,20 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
 // custom commands are intentionally whatever the operator chose.
 async function claudeAlive(slotId: number): Promise<boolean> {
   if (!/^claude(\s|$)/.test(BASE_CMD)) return true;
-  const p = await tmux("display-message", "-p", "-t", sess(slotId), "#{pane_pid}");
+  return claudeAliveAt(sess(slotId));
+}
+
+// same check for an arbitrary tmux target (the summarizer's own session).
+// The pane process ITSELF can be claude (a single trailing command makes sh exec
+// it — unlike slotCmd's `; exec $SHELL`, which keeps claude a child), so check both.
+async function claudeAliveAt(target: string): Promise<boolean> {
+  const p = await tmux("display-message", "-p", "-t", target, "#{pane_pid}");
   const panePid = Number(p.out);
   if (!panePid) return false;
+  const self = Bun.spawn(["ps", "-o", "comm=", "-p", String(panePid)], { stdout: "pipe" });
+  const selfComm = (await new Response(self.stdout).text()).trim();
+  await self.exited;
+  if ((selfComm.split("/").pop() ?? "").startsWith("claude")) return true;
   const pg = Bun.spawn(["pgrep", "-P", String(panePid)], { stdout: "pipe" });
   const kids = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
   await pg.exited;
@@ -682,14 +693,18 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   return { n, role: d.type, ts, blocks };
 }
 
-// --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. Runs `claude -p` as a
-// short-lived subprocess with cwd in the slot's checkout — the same repo context a
-// session gets (gitignored CLAUDE.md rides along) — NEVER as one of the 16 slots.
-// Read-only, click-only (POST), cached on the exact git state; GET returns the cache
-// without ever spawning. Evidence only by prompt contract — no land/merge verdicts. ---
-const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? "claude";
+// --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. Runs an INTERACTIVE
+// claude in a throwaway tmux session (cwd = the slot's checkout, so CLAUDE.md and
+// repo context ride along) — NOT `claude -p`: print mode bills the Anthropic API
+// per token (its envelope reports total_cost_usd), while an interactive session
+// stays inside the subscription. Never one of the 16 slots; click-only (POST),
+// cached on the exact git state; GET returns the cache without ever spawning.
+// Evidence only by prompt contract — no land/merge verdicts. The answer is read
+// from the transcript JSONL, never scraped from the TUI.
+// FLEET_SUMMARY_CMD (tests only) switches to a plain subprocess stand-in.
+const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? null;
 const SUMMARY_MODEL = process.env.FLEET_SUMMARY_MODEL ?? "claude-sonnet-5";
-const SUMMARY_TIMEOUT_MS = 120_000;
+const SUMMARY_TIMEOUT_MS = 180_000;
 interface SummaryResult {
   summary: string; openThreads: string[]; verification: string;
   model: string; at: number; head: string | null; dirty: number; raw: boolean;
@@ -723,6 +738,78 @@ function transcriptTail(s: Slot, maxEntries: number): string {
   }
 }
 
+// test hook: FLEET_SUMMARY_CMD points at a stand-in answering in a {"result": …}
+// envelope on stdout — lets e2e exercise gather→deliver→parse→cache without claude
+async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string): Promise<string> {
+  const p = Bun.spawn([cmd, "--model", SUMMARY_MODEL], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  p.stdin.write(prompt);
+  await p.stdin.end();
+  const killer = setTimeout(() => p.kill(), SUMMARY_TIMEOUT_MS);
+  const out = await new Response(p.stdout).text();
+  const err = await new Response(p.stderr).text();
+  const code = await p.exited;
+  clearTimeout(killer);
+  if (code !== 0) throw new Error(`summarizer exited ${code}: ${(err || out).slice(0, 300)}`);
+  return out.trim();
+}
+
+// production path: throwaway INTERACTIVE claude in its own tmux session on the
+// server socket — runs on the subscription, not the metered API. Session id is
+// pinned (same trick as slotCmd) so the transcript path is known; the answer is
+// read from that JSONL with the transcript view's own parser.
+async function summaryViaSession(prompt: string, cwd: string): Promise<string> {
+  const sid = crypto.randomUUID();
+  const name = `sum-${sid.slice(0, 8)}`;
+  const started = Date.now();
+  const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
+    `${PATH_EXPORT}claude --session-id ${sid} --model ${SUMMARY_MODEL}`);
+  if (sp.code !== 0) throw new Error("summarizer session failed to start");
+  const file = `${projDir(cwd)}/${sid}.jsonl`;
+  try {
+    // the transcript file only appears AFTER the first prompt — readiness is
+    // "a claude child process hangs under the pane" (same check as the auto gate),
+    // plus a short settle so the TUI actually accepts input
+    while (!(await claudeAliveAt(name))) {
+      if (Date.now() - started > 30_000) throw new Error("summarizer session never initialized");
+      await Bun.sleep(500);
+    }
+    await Bun.sleep(2500);
+    // deliver exactly like sendText: paste-buffer (no key interpretation), then Enter
+    const buf = `sumbuf-${name}`;
+    const lb = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
+    lb.stdin.write(prompt);
+    await lb.stdin.end();
+    await lb.exited;
+    await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", name);
+    await Bun.sleep(400);
+    await tmux("send-keys", "-t", name, "Enter");
+    // poll the transcript for the newest assistant text block; done as soon as it
+    // carries the JSON contract (a non-conforming answer degrades to raw upstream)
+    let lastText = "";
+    while (Date.now() - started < SUMMARY_TIMEOUT_MS) {
+      await Bun.sleep(2000);
+      let lines: string[];
+      try {
+        lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+      } catch {
+        continue;
+      }
+      for (const [i, line] of lines.entries()) {
+        try {
+          const e = viewEntry(JSON.parse(line), i);
+          if (e?.role !== "assistant") continue;
+          for (const b of e.blocks) if (b.t === "text" && b.text.trim()) lastText = b.text.trim();
+        } catch { /* partial mid-append line */ }
+      }
+      if (lastText.includes('"summary"')) return lastText;
+    }
+    if (lastText) return lastText;
+    throw new Error("summarizer timed out without an answer");
+  } finally {
+    await tmux("kill-session", "-t", name); // never leave an unattended claude behind
+  }
+}
+
 async function runSummary(s: Slot, head: string | null, dirty: number): Promise<SummaryResult> {
   const cwd = s.cwd!;
   const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
@@ -730,6 +817,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
   const prompt = [
     "You are a read-only reviewer summarizing the state of a coding session for its owner.",
     "Below: recent commits, the uncommitted diff, and the tail of the session transcript.",
+    "Do NOT use any tools — answer directly from the input, in one single message.",
     'Respond with STRICT JSON only, no markdown fences, exactly this shape:',
     '{"summary": "...", "openThreads": ["..."], "verification": "..."}',
     "- summary: 2-3 sentences on what was actually done.",
@@ -740,19 +828,11 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     "", "## uncommitted diff", (d.code === 0 ? d.out.slice(0, 60_000) : "") || "(clean)",
     "", "## transcript tail", transcriptTail(s, 30).slice(-40_000) || "(no transcript)",
   ].join("\n");
-  const p = Bun.spawn([SUMMARY_CMD, "-p", "--model", SUMMARY_MODEL, "--output-format", "json"],
-    { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  p.stdin.write(prompt);
-  await p.stdin.end();
-  const killer = setTimeout(() => p.kill(), SUMMARY_TIMEOUT_MS);
-  const out = await new Response(p.stdout).text();
-  const err = await new Response(p.stderr).text();
-  const code = await p.exited;
-  clearTimeout(killer);
-  if (code !== 0) throw new Error(`summarizer exited ${code}: ${(err || out).slice(0, 300)}`);
-  // claude -p --output-format json wraps the answer in {"result": "..."} — unwrap,
-  // then parse the strict-JSON contract; a non-conforming answer degrades to raw text
-  let text = out.trim();
+  let text = SUMMARY_CMD
+    ? await summaryViaSubprocess(SUMMARY_CMD, prompt, cwd)
+    : await summaryViaSession(prompt, cwd);
+  // the test stand-in answers in a {"result": "..."} envelope — unwrap it; the
+  // contract JSON itself has no string `result`, so this is a no-op for real runs
   try {
     const env = JSON.parse(text) as { result?: unknown };
     if (typeof env.result === "string") text = env.result.trim();
@@ -1016,6 +1096,9 @@ setInterval(() => {
 Bun.serve<WSData>({
   hostname: HOST,
   port: PORT,
+  // Bun's default is 10s per request — the ✨ summary POST legitimately holds the
+  // connection while its background claude session thinks (up to SUMMARY_TIMEOUT_MS)
+  idleTimeout: 240,
   async fetch(req, server) {
     const blocked = guard(req);
     if (blocked) return blocked;

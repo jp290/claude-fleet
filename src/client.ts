@@ -644,7 +644,7 @@ async function renderBoard() {
       const sbtn = el("button", "bsumbtn",
         sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "✨ re-summarize" : "✨ summarize") as HTMLButtonElement;
       sbtn.disabled = sumBusy.has(slot);
-      sbtn.title = "run a short-lived read-only agent (claude -p in this session's checkout) — one model call";
+      sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
       sbtn.onclick = async () => {
         if (sumBusy.has(slot)) return;
         sumBusy.add(slot);

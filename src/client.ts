@@ -538,6 +538,43 @@ interface SummaryInfo { summary?: string; openThreads?: string[]; verification?:
   model?: string; at?: number; head?: string | null; dirty?: number; error?: string }
 const sumCache = new Map<number, SummaryInfo>();
 const sumBusy = new Set<number>();
+// lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
+interface WtRow { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number }
+interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
+interface MergeState { running: boolean;
+  last: { status: "merged" | "blocked" | "error"; detail: string; landed: boolean; branch: string; at: number } | null }
+// slots with a merge job the client kicked off or observed — when such a slot goes
+// inactive (job landed the lane), its panes must be released like a manual ⏏ does
+const mergeWatch = new Set<number>();
+
+async function doMerge(slot: number) {
+  if (!confirm("Agent merge & land? A background claude session rebases this lane onto main, resolves "
+    + "conflicts and fast-forwards main. The lane is only removed after a deterministic re-check.")) return;
+  try {
+    const r = await post(`/api/slots/${slot}/merge`, {});
+    const j = (await r.json().catch(() => ({}))) as
+      { running?: boolean; status?: string; landed?: boolean; detail?: string; error?: string };
+    if (!r.ok) { alert(`Merge failed: ${j.error ?? r.status}`); return; }
+    if (j.running) { mergeWatch.add(slot); void renderBoard(); return; }
+    // immediate verdicts (dirty lane/primary, already-merged) come back synchronously
+    if (j.status === "blocked") alert(`Merge blocked: ${j.detail ?? ""}`);
+    else if (j.status === "merged" && j.landed) {
+      for (const p of panes) if (p.slot === slot) p.assign(0);
+      await refresh();
+    }
+  } catch {
+    alert("Merge failed — network error");
+  }
+  void renderBoard();
+}
+
+async function newLane(repo: string): Promise<void> {
+  const r = await post("/api/lanes", { repo });
+  const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+  if (!r.ok) { alert(`Lane failed: ${j.error ?? "?"}`); return; }
+  await refresh();
+  if (j.slot) showSlot(j.slot);
+}
 
 function applyBoard() {
   document.body.classList.toggle("board", boardOpen && !isMobile());
@@ -598,8 +635,15 @@ async function renderBoard() {
       boardBody.replaceChildren(el("div", "bempty", "no session in the focused pane"));
       return;
     }
-    const [briefRes, prompts] = await Promise.all([api(`/api/slots/${slot}/brief`), pollOutline(slot)]);
+    const [briefRes, prompts, wtRes, mgRes] = await Promise.all([
+      api(`/api/slots/${slot}/brief`), pollOutline(slot),
+      s.git ? api(`/api/slots/${slot}/worktrees`) : Promise.resolve(null),
+      s.worktree ? api(`/api/slots/${slot}/merge`) : Promise.resolve(null),
+    ]);
     const brief = briefRes.ok ? ((await briefRes.json()) as BriefInfo) : null;
+    const wts = wtRes?.ok ? ((await wtRes.json()) as WtInfo) : null;
+    const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
+    if (mg?.running) mergeWatch.add(slot);
     const nodes: HTMLElement[] = [];
     const head = el("div", "bsec");
     head.appendChild(el("h3", "", `slot ${slot} — ${s.label ?? baseName(s.cwd)}`));
@@ -632,7 +676,82 @@ async function renderBoard() {
       const db = el("button", "bdiffbtn", "± view diff") as HTMLButtonElement;
       db.onclick = () => void openDiff(slot);
       st.appendChild(db);
+      // a lane's endgame lives right next to its state: the ⏫ agent that rebases onto
+      // main, resolves conflicts, ff-merges and lands — plus the last run's verdict
+      if (brief.worktree) {
+        const mb = el("button", "bmergebtn", mg?.running ? "… agent merging" : "⏫ merge & land") as HTMLButtonElement;
+        mb.disabled = !!mg?.running;
+        mb.title = "background claude session rebases this lane onto main, resolves conflicts, fast-forwards "
+          + "main, then lands the lane — merge re-verified deterministically before anything is removed";
+        mb.onclick = () => void doMerge(slot);
+        st.appendChild(mb);
+        if (!mg?.running && mg?.last && mg.last.branch === brief.worktree.branch) {
+          const l = mg.last;
+          const cls = l.status === "merged" && l.landed ? "ok" : l.status === "blocked" ? "warn" : "err";
+          st.appendChild(el("div", `bmergenote ${cls}`,
+            `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed") : l.status}: ${l.detail}`));
+        }
+      }
       nodes.push(st);
+      // the repo's lane map: every open worktree — who holds it, its state, and the
+      // orphans (killed slot, worktree still on disk) with reattach/remove right there
+      if (wts) {
+        const sec = el("div", "bsec");
+        sec.appendChild(el("h3", "", `lanes — ${baseName(wts.repo)} · main: ${wts.main}`));
+        if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "no open lanes in this repo"));
+        for (const w of wts.worktrees) {
+          const row = el("div", "bwt");
+          row.appendChild(el("span", "lanechip", "⎇"));
+          const b = el("span", "bwtbr", w.branch);
+          b.title = w.path;
+          row.appendChild(b);
+          const state = w.dirty ? "editing" : w.ahead ? "ready" : "clean";
+          const parts: string[] = [];
+          if (w.dirty) parts.push(`•${w.dirty}`);
+          if (w.ahead) parts.push(`↑${w.ahead}`);
+          if (w.behind) parts.push(`↓${w.behind}`);
+          row.appendChild(el("span", `bwtstate ${state}`, parts.join(" ") || "="));
+          if (w.slot != null) {
+            const here = w.slot === slot;
+            const chip = el("button", "bwtact", here ? "this slot" : `slot ${w.slot}`) as HTMLButtonElement;
+            chip.disabled = here;
+            if (!here) {
+              const target = w.slot;
+              chip.onclick = () => showSlot(target);
+            }
+            row.appendChild(chip);
+          } else {
+            const open = el("button", "bwtact", "open") as HTMLButtonElement;
+            open.title = "no session holds this worktree — reopen it in a free slot (reviewable/landable again)";
+            open.onclick = async () => {
+              const r = await post("/api/lanes", { repo: wts.repo, attach: w.path });
+              const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+              if (!r.ok) { alert(j.error ?? "open failed"); return; }
+              await refresh();
+              if (j.slot) showSlot(j.slot);
+            };
+            row.appendChild(open);
+            const rmv = el("button", "bwtact del", "✕") as HTMLButtonElement;
+            rmv.title = "remove this worktree — refused if it has uncommitted or unpushed/unmerged work";
+            rmv.onclick = async () => {
+              if (!confirm(`Remove worktree ${w.branch}? Refused if it has uncommitted or unpushed work.`)) return;
+              const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
+              if (!r.ok) {
+                const j = (await r.json().catch(() => ({}))) as { error?: string };
+                alert(j.error ?? "remove failed");
+              }
+              void renderBoard();
+            };
+            row.appendChild(rmv);
+          }
+          sec.appendChild(row);
+        }
+        const nb = el("button", "bwtnew", "＋ ⎇ new lane") as HTMLButtonElement;
+        nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;
+        nb.onclick = () => { nb.disabled = true; void newLane(wts.repo); };
+        sec.appendChild(nb);
+        nodes.push(sec);
+      }
       // recover a server-cached summary once per slot (GET never spawns the agent)
       if (!sumCache.has(slot)) {
         sumCache.set(slot, {});
@@ -1143,6 +1262,11 @@ function renderSlots() {
   slotsEl.replaceChildren();
   // every slot gets a row, always — slots are fixed places, so a session stays findable
   // where it was started. An empty slot is itself the "new session here" affordance.
+  // quick-lane target: the focused session's repo (a lane's PRIMARY repo, never the lane
+  // dir itself — a lane off a lane would nest .worktrees inside the worktree)
+  const focSlot = panes[focused]?.slot;
+  const foc = focSlot ? fleet[focSlot - 1] : undefined;
+  const quickRepo = foc?.git && foc.cwd ? (foc.worktree?.repo ?? foc.cwd) : null;
   for (const s of fleet) {
     if (!s.cwd) {
       const row = el("div", "slot empty");
@@ -1150,6 +1274,24 @@ function renderSlots() {
       row.appendChild(el("span", "n", String(s.id)));
       row.appendChild(el("span", "lbl dim", "empty — start here"));
       row.onclick = () => openPicker(s.id);
+      if (quickRepo) {
+        // one click from "empty" to a working lane in the focused repo — the picker
+        // path (browse → ⎇ new lane) stays for everything else
+        const q = el("span", "quicklane", "⎇+");
+        q.title = `new lane in ${baseName(quickRepo)} — one click, no picker`;
+        q.onclick = async (e) => {
+          e.stopPropagation();
+          const r = await post(`/api/slots/${s.id}/open-worktree`, { repo: quickRepo, branch: "" });
+          if (!r.ok) {
+            const err = (await r.json().catch(() => ({}))) as { error?: string };
+            alert(`Lane failed: ${err.error ?? "?"}`);
+            return;
+          }
+          await refresh();
+          showSlot(s.id);
+        };
+        row.appendChild(q);
+      }
       slotsEl.appendChild(row);
       continue;
     }
@@ -1228,6 +1370,13 @@ function renderSlots() {
         startRename(row, s);
       };
       if (s.worktree) {
+        const mgl = el("span", "lane mgl", "⏫");
+        mgl.title = "agent merge & land — background claude rebases onto main, resolves conflicts, ff-merges, lands";
+        mgl.onclick = (e) => {
+          e.stopPropagation();
+          void doMerge(s.id);
+        };
+        act.appendChild(mgl);
         const land = el("span", "lane", "⏏");
         land.title = "land lane — remove the worktree (only if clean & pushed/merged)";
         land.onclick = async (e) => {
@@ -1309,6 +1458,13 @@ async function refresh() {
       else if (data.v !== bundleV) armReload();
     }
     fleet = data.slots;
+    // a merge job that landed its lane leaves the slot inactive — release its panes
+    // exactly like a manual ⏏ land click does
+    for (const sl of [...mergeWatch]) {
+      const st = fleet[sl - 1];
+      if (!st || !st.worktree) mergeWatch.delete(sl);
+      if (st && !st.cwd) for (const p of panes) if (p.slot === sl) p.assign(0);
+    }
     autosList = data.autos ?? [];
     tasksList = data.tasks ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };

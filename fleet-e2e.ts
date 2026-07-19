@@ -542,6 +542,102 @@ if (REPO) {
   check("landed slot is now inactive", (await (await get("/api/sessions")).json() as { slots: { cwd: string | null }[] }).slots[5].cwd === null);
   check("landed worktree removed from disk", !((): boolean => { try { return statSync(`${REPO}.worktrees/e2e-clean`).isDirectory(); } catch { return false; } })());
   check("land rejects a non-worktree slot", (await post("/api/slots/2/land", {})).status === 400);
+
+  // --- lane lifecycle v2: worktrees map, one-click lanes, orphan flows, ⏫ merge agent ---
+  const exists = (p: string): boolean => { try { statSync(p); return true; } catch { return false; } };
+  const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/mergemode`, m);
+  // merge is an async job — poll GET until the run settles; a 400 means the slot was
+  // torn down (the job landed the lane), which IS the success signal for `do`
+  const waitMerge = async (slot: number): Promise<{ gone: boolean; last: { status: string; detail: string; landed: boolean } | null }> => {
+    for (let i = 0; i < 100; i++) {
+      const r = await get(`/api/slots/${slot}/merge`);
+      if (r.status === 400) return { gone: true, last: null };
+      const j = (await r.json()) as { running: boolean; last: { status: string; detail: string; landed: boolean } | null };
+      if (!j.running) return { gone: false, last: j.last };
+      await Bun.sleep(100);
+    }
+    return { gone: false, last: null };
+  };
+
+  // one-click lane: the server picks the free slot and auto-names the branch
+  const ln1res = await post("/api/lanes", { repo: REPO });
+  const ln1 = (await ln1res.json()) as { ok?: boolean; slot?: number; branch?: string; cwd?: string; error?: string };
+  check("POST /api/lanes creates a lane in a server-picked free slot",
+    ln1res.ok && typeof ln1.slot === "number" && (ln1.branch ?? "").startsWith("fleet/"), JSON.stringify(ln1));
+  const lnSlot = ln1.slot ?? 0;
+  const lnPath = ln1.cwd ?? "";
+  check("lanes slot is tagged as a worktree lane",
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
+      .slots.find((x) => x.id === lnSlot)?.worktree?.branch === ln1.branch);
+
+  // the lane map: repo-wide worktree list with slot attribution, queryable FROM the lane
+  const wm = (await (await get(`/api/slots/${lnSlot}/worktrees`)).json()) as
+    { repo: string; main: string; worktrees: { path: string; branch: string; slot: number | null; dirty: number; ahead: number }[] };
+  check("worktrees map: primary repo + main branch resolved from a lane slot",
+    wm.repo.endsWith("/testrepo") && (wm.main === "main" || wm.main === "master"), JSON.stringify({ repo: wm.repo, main: wm.main }));
+  check("worktrees map lists the lane with its holding slot",
+    wm.worktrees.some((w) => w.slot === lnSlot && w.branch === ln1.branch), JSON.stringify(wm.worktrees));
+
+  // ⏫ merge: dirty lane → deterministic block, no agent run
+  await Bun.write(`${lnPath}/code.txt`, "root\nmerge-work\n");
+  const mgDirty = (await (await post(`/api/slots/${lnSlot}/merge`, {})).json()) as { status?: string; detail?: string };
+  check("merge blocks a dirty lane deterministically",
+    mgDirty.status === "blocked" && (mgDirty.detail ?? "").includes("uncommitted"), JSON.stringify(mgDirty));
+
+  spawnSync("git", ["-C", lnPath, "commit", "-aqm", "merge work"]);
+  await setMergeMode("blocked");
+  const mgB = await post(`/api/slots/${lnSlot}/merge`, {});
+  check("merge POST starts an async job", ((await mgB.json()) as { running?: boolean }).running === true);
+  const vB = await waitMerge(lnSlot);
+  check("merge agent 'blocked' verdict passes through with detail",
+    !vB.gone && vB.last?.status === "blocked" && vB.last.detail === "fake conflict", JSON.stringify(vB));
+
+  await setMergeMode("lie");
+  await post(`/api/slots/${lnSlot}/merge`, {});
+  const vL = await waitMerge(lnSlot);
+  check("merge re-verifies the agent's claim — lying agent → error, lane kept",
+    !vL.gone && vL.last?.status === "error" && exists(lnPath), JSON.stringify(vL.last));
+
+  await setMergeMode("do");
+  await post(`/api/slots/${lnSlot}/merge`, {});
+  const vD = await waitMerge(lnSlot);
+  check("merge agent really merges → verified, landed, slot torn down", vD.gone, JSON.stringify(vD));
+  check("merged lane removed from disk", !exists(lnPath));
+  check("main received the lane's commit",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("merge work"));
+  check("merge rejects a non-lane slot", (await post("/api/slots/2/merge", {})).status === 400);
+
+  // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
+  // can be reattached into a fresh slot (landable again) or safely removed
+  const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await post(`/api/slots/${ln2.slot}/kill`, {});
+  check("killed lane's worktree survives on disk", exists(ln2.cwd));
+  const probeRes = await post("/api/lanes", { repo: REPO }); // any repo slot can read the map
+  const probe = (await probeRes.json()) as { slot: number; cwd: string };
+  const wm2 = (await (await get(`/api/slots/${probe.slot}/worktrees`)).json()) as
+    { worktrees: { path: string; branch: string; slot: number | null }[] };
+  check("orphaned worktree listed with slot null",
+    wm2.worktrees.some((w) => w.branch === ln2.branch && w.slot === null), JSON.stringify(wm2.worktrees));
+  const att = await post("/api/lanes", { repo: REPO, attach: ln2.cwd });
+  const attJ = (await att.json()) as { ok?: boolean; slot?: number; branch?: string; error?: string };
+  check("orphan reattaches into a free slot with its lane tag intact",
+    att.ok && attJ.branch === ln2.branch, JSON.stringify(attJ));
+  check("attach refuses a worktree already open in a slot",
+    (await post("/api/lanes", { repo: REPO, attach: ln2.cwd })).status === 409);
+  check("reattached orphan lands (clean, merged)", (await post(`/api/slots/${attJ.slot}/land`, {})).ok);
+
+  // removal path: dirty orphan refused, clean orphan dropped; slot-held worktree refused
+  const ln3 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  check("remove refuses a worktree still open in a slot",
+    (await post("/api/worktrees/remove", { repo: REPO, path: ln3.cwd })).status === 409);
+  await post(`/api/slots/${ln3.slot}/kill`, {});
+  await Bun.write(`${ln3.cwd}/code.txt`, "root\ndirty-orphan\n");
+  check("remove refuses a dirty orphan",
+    (await post("/api/worktrees/remove", { repo: REPO, path: ln3.cwd })).status === 409);
+  spawnSync("git", ["-C", ln3.cwd, "checkout", "-q", "--", "code.txt"]);
+  check("remove drops a clean orphan", (await post("/api/worktrees/remove", { repo: REPO, path: ln3.cwd })).ok);
+  check("removed orphan gone from disk", !exists(ln3.cwd));
+  await post(`/api/slots/${probe.slot}/land`, {}); // clean up the probe lane too
 }
 
 // --- task queue (Phase D). Owner CRUD + dispatch availability ---

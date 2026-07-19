@@ -52,12 +52,27 @@
   #gatemsg { font-size: 11px; color: #f85149; min-height: 14px; }
 
   #notice { display: none; padding: 40px 20px; text-align: center; color: #888; font-size: 13px; }
+
+  #changes { display: none; flex: none; padding: 4px 10px; border-radius: 6px; border: 1px solid #333;
+    background: #262626; color: #7dcfff; font-size: 11px; font-family: inherit; cursor: pointer; }
+  #changes:hover { background: #1c2c37; border-color: #2c4a5e; }
+  #diffdlg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: #000a; z-index: 25; }
+  #diffpanel { width: 900px; max-width: 94vw; max-height: 84vh; display: flex; flex-direction: column;
+    gap: 8px; background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 16px; }
+  #diffpanel h2 { font-size: 13px; color: #e8e8e8; }
+  #dstat { color: #888; font-size: 12px; }
+  #dtxt { white-space: pre; overflow: auto; flex: 1; min-height: 80px; background: #101010;
+    border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px;
+    font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  #dtxt .add { color: #9ece6a; } #dtxt .del { color: #f7768e; } #dtxt .hdr { color: #7aa2f7; }
 </style>
 </head>
 <body>
 <div id="head">
   <span id="title">Shared session</span>
   <span id="mode"></span>
+  <button id="changes" title="what this session changed (working diff)">± changes</button>
   <span id="dot" class="off"></span>
 </div>
 <div id="wrap"><div id="term"></div></div>
@@ -65,6 +80,14 @@
 <div id="bar">
   <textarea id="input" rows="1" placeholder="Prompt… (Enter sends, Shift+Enter = newline)"></textarea>
   <button id="send">➤</button>
+</div>
+
+<div id="diffdlg">
+  <div id="diffpanel">
+    <h2>What this session changed</h2>
+    <div id="dstat"></div>
+    <div id="dtxt"></div>
+  </div>
 </div>
 
 <div id="gate">

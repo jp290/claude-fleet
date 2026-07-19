@@ -625,6 +625,11 @@ async function renderBoard() {
       if (ahead) line.appendChild(document.createTextNode(
         ` · ${ahead} commit${ahead === 1 ? "" : "s"} to push${brief.worktree ? "/land" : ""}`));
       st.appendChild(line);
+      // the board is the index, the ± overlay is the reading room — a diff needs line
+      // width the 264px board can't give, so the board links instead of embedding
+      const db = el("button", "bdiffbtn", "± view diff") as HTMLButtonElement;
+      db.onclick = () => void openDiff(slot);
+      st.appendChild(db);
       nodes.push(st);
       // recover a server-cached summary once per slot (GET never spawns the agent)
       if (!sumCache.has(slot)) {
@@ -686,7 +691,8 @@ async function renderBoard() {
           const row = el("div", "bfile");
           row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
           row.appendChild(document.createTextNode(f.slice(3)));
-          row.title = f;
+          row.title = `${f} — click to review the diff`;
+          row.onclick = () => void openDiff(slot);
           sec.appendChild(row);
         }
         if (brief.files.length > 30) sec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));

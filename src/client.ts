@@ -113,9 +113,18 @@ interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
 }
-interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number; share?: ShareInfo | null }
+interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
+interface WorktreeInfo { repo: string; branch: string }
+interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number;
+  share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null }
+interface TaskInfo { id: string; text: string; source: "owner" | "intake"; from: string | null;
+  status: "pending" | "queued" | "sent" | "done"; created: number; slot: number | null; note: string | null }
+interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
+let tasksList: TaskInfo[] = [];
+let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
+let intakeOn = false;
 let serverNow = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
 
@@ -550,6 +559,8 @@ window.addEventListener("keydown", (e) => {
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
+    if (diffdlg.style.display === "flex") closeDiffDlg();
+    if (queuedlg.style.display === "flex") closeQueueDlg();
     setDrawer(false);
     return;
   }
@@ -669,8 +680,60 @@ picker.addEventListener("click", (e) => {
 });
 $("pkcancel").onclick = closePicker;
 $("pkstart").onclick = () => void startSession(pkPath.value);
+
+// type-to-filter + arrow-key selection over the row list — the picker opens on every
+// new session, so the common path must be "type a few letters, Enter" with no mouse
+const pkFilter = $("pkfilter") as HTMLInputElement;
+interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null }
+let pkRows: PkRow[] = [];
+let pkSel = -1;
+
+function pkVisible(): PkRow[] {
+  return pkRows.filter((r) => !r.row.classList.contains("pkhide"));
+}
+
+function setPkSel(i: number) {
+  const vis = pkVisible();
+  pkSel = Math.max(-1, Math.min(i, vis.length - 1));
+  for (const r of pkRows) r.row.classList.remove("sel");
+  const cur = pkSel >= 0 ? vis[pkSel] : undefined;
+  if (cur) {
+    cur.row.classList.add("sel");
+    cur.row.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function applyPkFilter() {
+  const q = pkFilter.value.trim().toLowerCase();
+  const headHits = new Map<HTMLElement, number>();
+  for (const r of pkRows) {
+    const hit = q === "" || r.name.includes(q);
+    r.row.classList.toggle("pkhide", !hit);
+    if (r.head) headHits.set(r.head, (headHits.get(r.head) ?? 0) + (hit ? 1 : 0));
+  }
+  for (const [head, n] of headHits) head.classList.toggle("pkhide", n === 0);
+  setPkSel(q ? 0 : -1); // filtering pre-selects the best match so Enter just works
+}
+
+function pkKeyNav(e: KeyboardEvent): boolean {
+  if (e.key === "ArrowDown") { setPkSel(pkSel + 1); return true; }
+  if (e.key === "ArrowUp") { setPkSel(pkSel - 1); return true; }
+  return false;
+}
+pkFilter.addEventListener("input", applyPkFilter);
+pkFilter.addEventListener("keydown", (e) => {
+  if (pkKeyNav(e)) { e.preventDefault(); return; }
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const target = pkSel >= 0 ? pkVisible()[pkSel] : undefined;
+  if (e.metaKey || e.ctrlKey) void startSession(target?.path ?? pkPath.value);
+  else if (target) void browse(target.path);
+});
 pkPath.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") void browse(pkPath.value);
+  if (pkKeyNav(e)) { e.preventDefault(); return; }
+  if (e.key !== "Enter") return;
+  if (e.metaKey || e.ctrlKey) void startSession(pkPath.value);
+  else void browse(pkPath.value);
 });
 
 function dirRow(label: string, path: string, cls: string): HTMLElement {
@@ -697,29 +760,43 @@ function dirRow(label: string, path: string, cls: string): HTMLElement {
   return row;
 }
 
-async function browse(path: string) {
+async function browse(path: string): Promise<boolean> {
   const res = await api(`/api/dirs?path=${encodeURIComponent(path)}`);
   const data = (await res.json()) as
-    | { path: string; parent: string | null; dirs: string[]; recents: string[]; common: string[] }
+    | { path: string; parent: string | null; dirs: string[]; recents: string[]; common: string[]; git?: boolean }
     | { error: string };
   if ("error" in data) {
     pkPath.classList.add("bad");
     setTimeout(() => pkPath.classList.remove("bad"), 1200);
-    return;
+    return false;
   }
   pkPath.value = data.path;
   pkPath.classList.remove("bad");
+  // the worktree action only makes sense inside a git repo
+  pkWorktreeBtn.style.display = data.git ? "" : "none";
+  localStorage.setItem("fleet.pkdir", data.path); // next openPicker starts where you left off
   pkLists.replaceChildren();
+  pkRows = [];
+  pkSel = -1;
+  pkFilter.value = "";
+  let head: HTMLElement | null = null;
+  const addHead = (t: string) => { head = el("div", "pkhead", t); pkLists.appendChild(head); };
+  const addRow = (label: string, p: string, cls: string) => {
+    const row = dirRow(label, p, cls);
+    pkLists.appendChild(row);
+    pkRows.push({ row, path: p, name: label.toLowerCase(), head });
+  };
   if (data.recents.length) {
-    pkLists.appendChild(el("div", "pkhead", "Recent"));
-    for (const r of data.recents) pkLists.appendChild(dirRow(r.replace(/^\/Users\/[^/]+/, "~"), r, "recent"));
+    addHead("Recent");
+    for (const r of data.recents) addRow(r.replace(/^\/Users\/[^/]+/, "~"), r, "recent");
   }
-  pkLists.appendChild(el("div", "pkhead", "Places"));
-  for (const c of data.common) pkLists.appendChild(dirRow(c.replace(/^\/Users\/[^/]+/, "~"), c, "place"));
-  pkLists.appendChild(el("div", "pkhead", `Folders in ${data.path}`));
-  if (data.parent) pkLists.appendChild(dirRow("..", data.parent, "up"));
-  for (const d of data.dirs) pkLists.appendChild(dirRow(d, `${data.path}/${d}`.replace("//", "/"), "dir"));
+  addHead("Places");
+  for (const c of data.common) addRow(c.replace(/^\/Users\/[^/]+/, "~"), c, "place");
+  addHead(`Folders in ${data.path}`);
+  if (data.parent) addRow("..", data.parent, "up");
+  for (const d of data.dirs) addRow(d, `${data.path}/${d}`.replace("//", "/"), "dir");
   if (!data.dirs.length) pkLists.appendChild(el("div", "pknone", "no subfolders"));
+  return true;
 }
 
 async function startSession(path: string) {
@@ -736,13 +813,37 @@ async function startSession(path: string) {
   showSlot(slot);
 }
 
+const pkWorktreeBtn = $("pkworktree") as HTMLButtonElement;
+pkWorktreeBtn.onclick = () => void startWorktree(pkPath.value);
+async function startWorktree(repo: string) {
+  if (!pickerSlot) return;
+  const branch = prompt("Branch name for the new lane (blank = auto):", "") ?? undefined;
+  if (branch === undefined) return; // cancelled
+  const slot = pickerSlot;
+  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    pkPath.classList.add("bad");
+    setTimeout(() => pkPath.classList.remove("bad"), 1200);
+    if (err.error) alert(`Lane failed: ${err.error}`);
+    return;
+  }
+  closePicker();
+  await refresh();
+  showSlot(slot);
+}
+
 function openPicker(slotId: number) {
   setDrawer(false);
   pickerSlot = slotId;
   pkTitle.textContent = `New session — slot ${slotId === 10 ? 0 : slotId}`;
   picker.style.display = "flex";
-  // focusing the path input on mobile would pop the keyboard over the folder list
-  void browse("~").then(() => { if (!isMobile()) pkPath.focus(); });
+  const last = localStorage.getItem("fleet.pkdir") ?? "~";
+  void browse(last).then(async (ok) => {
+    if (!ok && last !== "~") await browse("~"); // remembered dir may have been deleted
+    // focusing an input on mobile would pop the keyboard over the folder list
+    if (!isMobile()) pkFilter.focus();
+  });
 }
 
 // --- sidebar ---
@@ -823,6 +924,15 @@ function renderSlots() {
         b.title = "has scheduled prompts";
         row.appendChild(b);
       }
+      if (s.git?.branch) {
+        const dirty = s.git.dirty > 0;
+        const parts = [s.worktree ? "⎇" : "", s.git.branch];
+        if (dirty) parts.push(`•${s.git.dirty}`);
+        if (s.git.ahead) parts.push(`↑${s.git.ahead}`);
+        const bb = el("span", "branchbadge" + (dirty ? " dirty" : ""), parts.filter(Boolean).join(" "));
+        bb.title = `${s.git.branch} — ${s.git.dirty} changed, ${s.git.ahead} ahead, ${s.git.behind} behind`;
+        row.appendChild(bb);
+      }
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
       const shr = el("span", "shr" + (s.share ? " on" : ""), "⤴");
@@ -837,23 +947,48 @@ function renderSlots() {
         e.stopPropagation();
         window.open(`/api/slots/${s.id}/export`, "_blank");
       };
+      const act = el("div", "slotact");
+      if (s.git) {
+        const dff = el("span", "diff", "±");
+        dff.title = "review working diff";
+        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
+        act.appendChild(dff);
+      }
       const ren = el("span", "ren", "✎");
       ren.title = "rename session";
       ren.onclick = (e) => {
         e.stopPropagation();
         startRename(row, s);
       };
+      if (s.worktree) {
+        const land = el("span", "lane", "⏏");
+        land.title = "land lane — remove the worktree (only if clean & pushed/merged)";
+        land.onclick = async (e) => {
+          e.stopPropagation();
+          if (!confirm(`Land lane ${s.worktree!.branch}? Removes the worktree. Refused if it has uncommitted or unpushed work.`)) return;
+          const res = await post(`/api/slots/${s.id}/land`, {});
+          if (!res.ok) {
+            const err = (await res.json().catch(() => ({}))) as { error?: string };
+            alert(`Not landed: ${err.error ?? "failed"}`);
+            return;
+          }
+          for (const p of panes) if (p.slot === s.id) p.assign(0);
+          await refresh();
+        };
+        act.appendChild(land);
+      }
       const kill = el("span", "kill", "✕");
       kill.title = "kill session";
       kill.onclick = async (e) => {
         e.stopPropagation();
-        if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.`)) return;
+        const wtNote = s.worktree ? " The worktree is left on disk (use ⏏ to remove it)." : "";
+        if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.${wtNote}`)) return;
         await post(`/api/slots/${s.id}/kill`, {});
         for (const p of panes) if (p.slot === s.id) p.assign(0);
         await refresh();
       };
-      const act = el("div", "slotact");
-      act.append(shr, exp, ren, kill);
+      act.prepend(shr);
+      act.append(exp, ren, kill);
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
     }
@@ -902,25 +1037,33 @@ async function refresh() {
   try {
     const res = await api("/api/sessions");
     if (!res.ok) return;
-    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; v?: number; autos?: AutoInfo[]; slots: SlotInfo[] };
+    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string; v?: number;
+      autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
       else if (data.v !== bundleV) armReload();
     }
     fleet = data.slots;
     autosList = data.autos ?? [];
+    tasksList = data.tasks ?? [];
+    dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
+    intakeOn = data.intake ?? false;
     serverNow = data.now;
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
+    const pendingIntake = tasksList.some((t) => t.status === "pending" && t.source === "intake");
+    $("queuebtn").classList.toggle("hot", pendingIntake);
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, serverNow - s.lastOutput < RECENT_MS])]);
+      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, serverNow - s.lastOutput < RECENT_MS,
+        s.git?.branch, s.git?.dirty, s.git?.ahead, !!s.worktree])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();
     }
+    renderQueue(); // no-op unless the queue overlay is open; keeps it live
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
     // rebuilding it on every poll — rebuilds kill hover state and button focus
     if (dlgSlot && sharedlg.style.display === "flex") {
@@ -950,6 +1093,111 @@ function closeShareDlg() {
 sharedlg.addEventListener("click", (e) => {
   if (e.target === sharedlg) closeShareDlg();
 });
+
+// --- diff review overlay: what the agent actually changed in this slot's tree ---
+const diffdlg = $("diffdlg"), diffpanel = $("diffpanel");
+function closeDiffDlg() { diffdlg.style.display = "none"; }
+diffdlg.addEventListener("click", (e) => { if (e.target === diffdlg) closeDiffDlg(); });
+
+function renderDiffInto(target: HTMLElement, diff: string) {
+  // colorize by line prefix — each line is its own textContent node, never innerHTML
+  for (const line of diff.split("\n")) {
+    const cls = line.startsWith("+") ? "add" : line.startsWith("-") ? "del"
+      : (line.startsWith("@@") || line.startsWith("diff ")) ? "hdr" : "";
+    const span = el("span", cls, line + "\n");
+    target.appendChild(span);
+  }
+}
+
+async function openDiff(slotId: number) {
+  setDrawer(false);
+  diffpanel.replaceChildren(el("h2", "", "Working diff"));
+  diffdlg.style.display = "flex";
+  const res = await api(`/api/slots/${slotId}/diff`);
+  const data = (await res.json().catch(() => ({}))) as
+    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean; error?: string };
+  if (data.error) { diffpanel.appendChild(el("div", "diffstat", data.error)); return; }
+  const nChanged = data.status?.length ?? 0;
+  diffpanel.appendChild(el("div", "diffstat",
+    `${data.branch ?? "?"} · ${nChanged} file${nChanged === 1 ? "" : "s"} changed${data.truncated ? " · diff truncated" : ""}`));
+  if (!data.diff) {
+    diffpanel.appendChild(el("div", "diffstat", nChanged ? "(changes are untracked — no tracked diff)" : "clean working tree"));
+    return;
+  }
+  const box = el("div", "difftxt");
+  renderDiffInto(box, data.diff);
+  diffpanel.appendChild(box);
+}
+
+// --- task queue overlay ---
+const queuedlg = $("queuedlg"), queuepanel = $("queuepanel");
+function closeQueueDlg() { queuedlg.style.display = "none"; }
+queuedlg.addEventListener("click", (e) => { if (e.target === queuedlg) closeQueueDlg(); });
+$("queuebtn").onclick = () => openQueue();
+
+function renderQueue() {
+  if (queuedlg.style.display !== "flex") return;
+  queuepanel.replaceChildren(el("h2", "", intakeOn ? "Task queue · ✉ intake on" : "Task queue"));
+
+  if (dispatch.available) {
+    const drow = el("div", "diffstat");
+    drow.textContent = `Dispatcher ${dispatch.on ? "ON" : "off"} · repo ${baseName(dispatch.repo)} · max ${dispatch.maxLanes} lanes — `;
+    const toggle = el("button", "qbtn", dispatch.on ? "turn off" : "turn on") as HTMLButtonElement;
+    toggle.onclick = async () => { await post("/api/dispatch", { on: !dispatch.on }); await refresh(); renderQueue(); };
+    drow.appendChild(toggle);
+    queuepanel.appendChild(drow);
+  } else {
+    queuepanel.appendChild(el("div", "diffstat", "Dispatcher unavailable (set FLEET_DISPATCH_REPO to auto-run queued tasks). Tasks are still tracked; send them by hand."));
+  }
+
+  const addWrap = el("div", "qrow");
+  const addIn = el("textarea", "qtext") as HTMLTextAreaElement;
+  addIn.placeholder = "New task…";
+  addIn.rows = 2;
+  const addBtn = el("button", "qbtn", "add") as HTMLButtonElement;
+  addBtn.onclick = async () => {
+    if (!addIn.value.trim()) return;
+    await post("/api/tasks", { text: addIn.value, queue: false });
+    addIn.value = "";
+    await refresh();
+    renderQueue();
+  };
+  addWrap.append(addIn, addBtn);
+  queuepanel.appendChild(addWrap);
+
+  const order = { pending: 0, queued: 1, sent: 2, done: 3 };
+  const sorted = [...tasksList].sort((a, b) => (order[a.status] - order[b.status]) || (b.created - a.created));
+  if (!sorted.length) { queuepanel.appendChild(el("div", "diffstat", "no tasks yet")); return; }
+  for (const t of sorted) {
+    const row = el("div", `qrow ${t.status}`);
+    const main = el("div", "qtext");
+    const meta = el("div", "qmeta");
+    meta.textContent = `${t.status}${t.slot ? ` · slot ${t.slot}` : ""}${t.note ? ` · ${t.note}` : ""} · `;
+    if (t.source === "intake") {
+      const tag = el("span", "qintake", `✉ ${t.from ?? "intake"}`);
+      meta.appendChild(tag);
+    } else meta.append("owner");
+    main.appendChild(meta);
+    main.appendChild(el("div", "", t.text));
+    row.appendChild(main);
+    const mkBtn = (label: string, action: string) => {
+      const b = el("button", "qbtn", label) as HTMLButtonElement;
+      b.onclick = async () => { await post(`/api/tasks/${t.id}/${action}`, {}); await refresh(); renderQueue(); };
+      return b;
+    };
+    if (t.status === "pending") row.appendChild(mkBtn("queue ▸", "queue"));
+    if (t.status === "queued") row.appendChild(mkBtn("hold", "unqueue"));
+    if (t.status !== "done") row.appendChild(mkBtn("done", "done"));
+    row.appendChild(mkBtn("✕", "delete"));
+    queuepanel.appendChild(row);
+  }
+}
+
+function openQueue() {
+  setDrawer(false);
+  queuedlg.style.display = "flex";
+  renderQueue();
+}
 
 function copyLine(label: string, value: string): HTMLElement {
   const row = el("div", "shrline");

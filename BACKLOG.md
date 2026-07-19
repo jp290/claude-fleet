@@ -385,6 +385,27 @@ if fully merged, or always leave it? List pre-existing worktrees of a repo in
 the picker (not just Fleet-created ones)? Default branch base — current HEAD,
 or a configurable target like `main`?
 
+**Addendum (2026-07-18, research pass):** Claude Code has native worktree
+support that changes the build/buy calculus — `claude --worktree <name>`
+creates `.claude/worktrees/<name>/` on branch `worktree-<name>`, a
+`.worktreeinclude` file (gitignore syntax) declares which gitignored files
+(.env etc.) get COPIED into every new worktree, and its cleanup inspects for
+dirty/unpushed work before removing (docs: code.claude.com/docs/en/worktrees).
+Fleet already bakes the slot command via `slotCmd` (`server.ts:35-40`) — the
+cheapest correct implementation is to pass `--worktree` there and let claude
+own creation, env-copying, and lock-aware cleanup, instead of hand-rolling
+`git worktree add/remove`. Hands-on verified: a worktree contains only
+tracked files (untracked CLAUDE.md/.env absent — `.worktreeinclude` is the
+fix), and `git -C <wt> status --porcelain`/ahead-behind is cheap enough to
+poll for UI badges. Cross-tool research (uzi, Conductor, claude-squad,
+Crystal†, vibe-kanban†; † = discontinued): the load-bearing patterns are
+copy-not-symlink env propagation, per-worktree port injection from a range,
+and refuse-to-delete-work cleanup; the consistently-abandoned idea is
+"fan out the SAME task to N agents and auto-compare/merge" — real users
+report the bottleneck is human review capacity, not agent throughput.
+Broadcast-a-prompt to slots doing INDEPENDENT tasks is the thin, useful
+subset (a loop over `sendText`, `server.ts:279`).
+
 ---
 
 ## 11. Misfire guard + per-slot compose drafts  `medium`
@@ -478,6 +499,37 @@ without a separate check.
 **Effort:** M. **Open questions:** filenames server-generated only, or
 sanitized-original with a collision suffix? Delete drops on kill, or age-
 rotation only? Images only (`accept="image/*"`) or any file type?
+
+---
+
+## 13. Right sideboard: project file tree  `medium, desktop-only`
+
+**Idea (2026-07-18):** collapsible RIGHT sidebar showing the focused slot's
+project tree; possible worktree awareness (branch/dirty badges) on top.
+
+**Layout:** sibling of `#main` inside `#app` (`index.html:22`), `flex:none`,
+mirroring `#side`; the toggle must copy `setCollapsed`'s refit pattern
+(`client.ts:46-52`) or terminals render at stale width. Hook rendering into
+`focusPane` (`client.ts:490`). Mobile: `display:none` — there is one drawer +
+one `#shade` (`client.ts:26-30`) and a second drawer isn't worth the
+contortion.
+
+**Server:** `/api/dirs` (`server.ts:412`) is dirs-only; a tree needs files +
+(optionally) `git status --porcelain` per level. Lazy per-level fetch already
+matches the picker's browse() pattern. A file-LISTING endpoint adds no real
+authority (owner token already = keystroke injection = RCE); a file-CONTENT
+endpoint is genuinely new — cap bytes if ever added. Share-host isolation
+holds automatically: unmatched paths 404 on the public tunnel before the
+token gate (`server.ts:707-716`).
+
+**Value math (be honest):** the terminal already shows files — claude itself
+lists/reads them. The tree's real value is (a) tap-a-file → insert its path
+into the compose box (saves typing paths into prompts, big on phone — though
+mobile is excluded, so weigh this), (b) seeing what the agent changed via
+git-status coloring. Against: stored feedback "native over parallel views" —
+improve the terminal before adding side surfaces. Verdict: nice-to-have,
+build after item 10's worktree badges exist to share the git-status plumbing;
+not before the 07-22 interview.
 
 ---
 

@@ -15,15 +15,26 @@ mkdir -p "$DIR"
 cp -R "$SRC/server.ts" "$SRC/fleet-e2e.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
+# a throwaway git repo the worktree/dispatch tests spawn lanes from
+REPO="$DIR/testrepo"
+mkdir -p "$REPO"
+# .env is gitignored, as in a real repo — so createWorktree's copy of it stays invisible
+# to `git status` and doesn't dirty a fresh lane
+( cd "$REPO" && git init -q && git config user.email t@t && git config user.name t \
+  && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\n' > .gitignore \
+  && git add code.txt .gitignore && git commit -qm init )
+
 SHAREHOST=sharetest
+INTAKE=e2e-intake-secret
+export FLEET_E2E_REPO="$REPO"
 
 tmux -L "$SOCK" kill-server 2>/dev/null
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST bun fleet-e2e.ts
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

@@ -630,6 +630,50 @@ manual per-repo color)? Does the outline rail replace or sit alongside the exist
 ↑/↓ prompt-jump buttons? Review agent model choice (cost vs. thoroughness) and
 whether findings persist anywhere or are ephemeral-per-click.
 
+**Update 2026-07-19 — Phase 1 core SHIPPED (branch `fleet/lane-brief`, unmerged):**
+right desktop-only sideboard "session brief" (ℹ toggle in #sidehead): fresh git
+facts from new `/api/slots/:id/brief` (state line, changed files, recent commits)
++ prompt outline off the transcript feed, rows jump the conversation view to that
+prompt. Design decisions settled with JP, binding for Phases 2–3:
+- Ephemeral agents run as `claude -p` subprocesses with cwd in the worktree (same
+  repo context incl. CLAUDE.md), NOT as slots — slots are scarce and TUI output
+  would need scraping. A "→ open in session" button promotes a result to a real
+  slot when follow-up is wanted. No hidden service sessions (invisible automation
+  contradicts the gates principle).
+- No repo cloning: worktrees already are clone-light; the one future case (foreign
+  repos as reference context) is better served by `--add-dir` at invocation.
+- Anti-drift rule (per stored feedback "native over parallel views"): the board
+  holds NO derived state — deterministic layers recomputed fresh per render, agent
+  results cached keyed on git state and visibly aged ("3 commits old"), never
+  silently stale.
+- Land stays evidence-based: the board answers "is it saved / finished / verified",
+  never emits a verdict. Agent buttons start with exactly two: ✨ summarize
+  (Phase 2, folded structural summary) and 🔍 review — read-only, click-only.
+
+---
+
+## 15. Lane vocabulary layer  `small, UI-only`
+
+**Idea (2026-07-19):** JP: the raw git vocabulary confuses more than it informs.
+Fleet-generated branch names (`fleet/<stamp>-<rand>`) carry zero information for
+the owner — hide them from the badge (self-chosen names stay visible); keep the
+lifecycle color + ⎇ as the primary signal, details in the tooltip. Rewrite the
+land/kill confirm dialogs in intent language ("work is saved — retire the lane?")
+instead of worktree/unpushed prose (`client.ts` land/kill handlers). Mechanics
+unchanged — this is purely what the surface assumes the user knows.
+
+---
+
+## 16. Orphan-reap on lane kill  `small`
+
+**Idea (2026-07-19, from a real incident):** killing a lane leaves the worktree on
+disk by design ("never eat work") — but when the lane is PROVABLY empty (clean tree
+AND zero commits since its spawn point, both deterministic git checks), the kill
+dialog should offer to remove worktree + branch in one step. Exactly the manual
+cleanup performed for the stray `docs/knowledge-corpus` lane this session. No
+timer-based auto-reaping — a clock is not evidence. Optional visibility net: a lane
+with no commits and no activity for hours gets an "unused" hint in its badge.
+
 ---
 
 ## Hardening — findings from the review sweep, not new features

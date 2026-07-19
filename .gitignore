@@ -1,9 +1,8 @@
 node_modules/
 streams/
 fleet.json
-server.log
+*.log
 public/app.js
 .playwright-mcp/
 .env
 public/share.js
-watchdog.log

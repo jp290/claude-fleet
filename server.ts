@@ -1,4 +1,4 @@
-import { stat, rm, readdir } from "node:fs/promises";
+import { stat, rm, readdir, appendFile } from "node:fs/promises";
 import { existsSync, statSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -69,10 +69,27 @@ interface Auto {
   lastResult: string | null;
 }
 
+// a queued feature request. Owner-created or submitted via the public /intake address
+// (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
+// the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
+// free lanes. External text is data, never a command until the owner opts it in.
+interface Task {
+  id: string;
+  text: string;
+  source: "owner" | "intake";
+  from: string | null; // intake sender label (freeform, for display only — never trusted)
+  status: "pending" | "queued" | "sent" | "done";
+  created: number;
+  slot: number | null; // set once dispatched
+  note: string | null;
+}
+
 interface Slot {
   id: number;
   cwd: string | null; // null = slot not activated; self-heal only touches activated slots
   label: string | null; // user-chosen session name; falls back to cwd basename in the UI
+  worktree: { repo: string; branch: string } | null; // set when Fleet created this slot's
+  // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots
   offset: number;
   lastOutput: number;
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
@@ -93,6 +110,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   id: i + 1,
   cwd: null,
   label: null,
+  worktree: null,
   offset: 0,
   lastOutput: 0,
   quietUntil: 0,
@@ -107,6 +125,17 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
 let recents: string[] = [];
 let shares: Share[] = [];
 let autos: Auto[] = [];
+let tasks: Task[] = [];
+const MAX_TASKS = 200;
+const MAX_TASK_TEXT = 20_000;
+// the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
+// auto-spawning claude sessions from external email is exactly the footgun we refuse by default
+const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
+const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
+let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
+// public intake shares its own secret, NEVER the owner token. Empty = intake disabled.
+const INTAKE_SECRET = process.env.FLEET_INTAKE_SECRET ?? "";
+const intakeStrikes: number[] = []; // timestamps, for a simple hourly rate limit
 const AUTO_MIN_EVERY_SEC = 10;
 const AUTO_MAX_RUNS = 100;
 const AUTO_MAX_PER_SLOT = 5;
@@ -137,6 +166,19 @@ function saveHistory(s: Slot): void {
     .catch((e: unknown) => console.log(`history save failed: ${e instanceof Error ? e.message : e}`));
 }
 
+// global append-only prompt log: every composed send from every surface (owner compose,
+// share guests, scheduled autos), across slot lifetimes. Unlike per-slot history it is
+// never capped, never rotated, and survives slot close — raw material for prompt analysis.
+const PROMPT_LOG = `${STREAM_DIR}/prompts.jsonl`;
+let promptLogChain: Promise<unknown> = Promise.resolve();
+function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto", ts: number): void {
+  const line = `${JSON.stringify({ ts, slot: s.id, cwd: s.cwd, label: s.label, source, text })}\n`;
+  promptLogChain = promptLogChain
+    .then(() => appendFile(PROMPT_LOG, line, { mode: 0o600 }))
+    .then(() => chmodSync(PROMPT_LOG, 0o600)) // prompts can carry secrets, like the stream
+    .catch((e: unknown) => console.log(`prompt log failed: ${e instanceof Error ? e.message : e}`));
+}
+
 async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
   const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
   const out = await new Response(p.stdout).text();
@@ -147,13 +189,76 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 // writes are serialized: overlapping fire-and-forget writes to the same file can interleave
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
-  const active: Record<string, { cwd: string; label: string | null; sessionId: string | null }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId };
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos }, null, 2);
+  const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
+    worktree: { repo: string; branch: string } | null }> = {};
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree };
+  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks }, null, 2);
   saveChain = saveChain
     .then(() => Bun.write(STATE_FILE, body))
     .then(() => chmodSync(STATE_FILE, 0o600))
     .catch((e: unknown) => console.log(`state save failed: ${e instanceof Error ? e.message : e}`));
+}
+
+// --- git: lane (worktree) support. All git runs through the array-form spawn — nothing
+// user-controlled ever reaches a shell string ---
+async function git(dir: string, ...args: string[]): Promise<{ out: string; err: string; code: number }> {
+  const p = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(p.stdout).text();
+  const err = await new Response(p.stderr).text();
+  const code = await p.exited;
+  return { out: out.trim(), err: err.trim(), code };
+}
+
+// branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
+// poll must never block on 16 git spawns, so it reads this cache instead
+interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
+const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
+let gitTickBusy = false;
+async function tickGit(): Promise<void> {
+  if (gitTickBusy) return;
+  gitTickBusy = true;
+  try {
+    for (const s of slots) {
+      if (!s.cwd) { gitInfo.delete(s.id); continue; }
+      const st = await git(s.cwd, "status", "--porcelain=v2", "--branch");
+      if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
+      let branch = "", ahead = 0, behind = 0, dirty = 0;
+      for (const line of st.out.split("\n")) {
+        if (line.startsWith("# branch.head ")) branch = line.slice(14);
+        else if (line.startsWith("# branch.ab ")) {
+          const m = /\+(\d+) -(\d+)/.exec(line);
+          if (m) { ahead = Number(m[1]); behind = Number(m[2]); }
+        } else if (line && !line.startsWith("#")) dirty++;
+      }
+      gitInfo.set(s.id, { branch, dirty, ahead, behind });
+    }
+  } finally {
+    gitTickBusy = false;
+  }
+}
+
+// creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
+// HEAD. Worktrees only materialize tracked files, so the two files agents predictably
+// need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
+async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ repo: string; path: string; branch: string }> {
+  const repoDir = resolve(expandCwd(repoRaw));
+  if (!existsSync(repoDir) || !statSync(repoDir).isDirectory()) throw new Error(`not a directory: ${repoDir}`);
+  const top = await git(repoDir, "rev-parse", "--show-toplevel");
+  if (top.code !== 0) throw new Error("not a git repository");
+  const root = top.out;
+  const branch = branchRaw.trim() || `fleet/${new Date().toISOString().slice(2, 16).replace(/[-:T]/g, "")}`;
+  const chk = await git(root, "check-ref-format", "--branch", branch);
+  if (chk.code !== 0) throw new Error(`invalid branch name: ${branch}`);
+  const path = `${root}.worktrees/${branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+  if (existsSync(path)) throw new Error(`worktree path already exists: ${path}`);
+  mkdirSync(`${root}.worktrees`, { recursive: true });
+  const add = await git(root, "worktree", "add", "-b", branch, path);
+  if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
+  for (const f of [".env", "CLAUDE.md"]) {
+    if (existsSync(`${root}/${f}`) && !existsSync(`${path}/${f}`))
+      await Bun.write(`${path}/${f}`, Bun.file(`${root}/${f}`));
+  }
+  return { repo: root, path, branch };
 }
 
 // resize jiggle: SIGWINCH makes the TUI repaint into the fresh pipe so the client aligns
@@ -226,6 +331,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   s.cwd = cwd;
   s.label = null; // a fresh session gets a fresh identity
+  s.worktree = null; // a plain open is not a lane — open-worktree re-tags after this
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
@@ -244,6 +350,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
 async function killSlot(s: Slot): Promise<void> {
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
+  s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   saveState();
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
@@ -351,6 +458,7 @@ async function tickAutos(): Promise<void> {
       await sendText(s, a.text, true);
       s.history = [...s.history, { text: a.text, ts: now }].slice(-MAX_HISTORY);
       saveHistory(s);
+      logPrompt(s, a.text, "auto", now);
       a.lastRun = now;
       a.lastResult = "sent";
       advanceAuto(a, now);
@@ -359,6 +467,48 @@ async function tickAutos(): Promise<void> {
     if (dirty) saveState();
   } finally {
     autoTickBusy = false;
+  }
+}
+
+// idle-lane dispatcher: when ON and a lane budget is free, pull the oldest queued task,
+// spawn a fresh worktree lane from DISPATCH_REPO, and send the task text into it once
+// claude is actually up. Serial by design — one lane per tick — so a burst of intake email
+// can never fan out into a machine full of unattended sessions.
+let dispatchBusy = false;
+async function tickDispatch(): Promise<void> {
+  if (dispatchBusy || !dispatchOn || !DISPATCH_REPO) return;
+  dispatchBusy = true;
+  try {
+    const lanes = slots.filter((s) => s.worktree).length;
+    if (lanes >= DISPATCH_MAX_LANES) return;
+    const free = slots.find((s) => !s.cwd);
+    if (!free) return;
+    const next = tasks.find((t) => t.status === "queued");
+    if (!next) return;
+    try {
+      const wt = await createWorktree(DISPATCH_REPO, "");
+      await openSlot(free, wt.path);
+      free.worktree = { repo: wt.repo, branch: wt.branch };
+      free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
+      next.status = "sent";
+      next.slot = free.id;
+      next.note = `lane ${wt.branch}`;
+      saveState();
+      // let claude finish booting in the fresh pane before the first prompt lands; the
+      // next tickAutos-style gate isn't reused here because a brand-new lane is idle by
+      // definition, but claude's own startup needs a moment
+      await Bun.sleep(4000);
+      await sendText(free, next.text, true);
+      logPrompt(free, next.text, "auto", Date.now());
+      console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
+    } catch (e) {
+      // spawning failed — mark the task so the owner sees why instead of it silently vanishing
+      next.status = "queued";
+      next.note = `dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
+      saveState();
+    }
+  } finally {
+    dispatchBusy = false;
   }
 }
 
@@ -408,7 +558,8 @@ async function listDirs(raw: string) {
   const common = [HOME, `${HOME}/Desktop`, `${HOME}/Documents`, `${HOME}/Downloads`]
     .filter((p) => existsSync(p));
   const parent = dirname(dir);
-  return { path: dir, parent: parent === dir ? null : parent, dirs, recents, common };
+  // .git can be a dir (normal repo) or a file (worktree) — either marks a repo for the picker
+  return { path: dir, parent: parent === dir ? null : parent, dirs, recents, common, git: existsSync(`${dir}/.git`) };
 }
 
 // --- transcript view: read claude's own JSONL (~/.claude/projects/<cwd-slug>/<uuid>.jsonl)
@@ -598,6 +749,32 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
+// public feature-request dropbox. Gated by its own secret; strict caps; hard hourly rate
+// limit. The result is always a `pending` task the owner must review before anything runs.
+async function handleIntake(req: Request): Promise<Response> {
+  if (!INTAKE_SECRET) return json({ error: "intake disabled" }, 404);
+  const given = req.headers.get("x-intake-secret") ?? "";
+  const a = Buffer.from(given), b = Buffer.from(INTAKE_SECRET);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return json({ error: "unauthorized" }, 401);
+  const now = Date.now();
+  while (intakeStrikes.length && now - intakeStrikes[0] > 3_600_000) intakeStrikes.shift();
+  if (intakeStrikes.length >= 30) return json({ error: "rate limited" }, 429);
+  const body = await readJson(req);
+  if (!body || typeof body.text !== "string") return json({ error: "expected { text }" }, 400);
+  const text = body.text.slice(0, MAX_TASK_TEXT).trim();
+  if (!text) return json({ error: "empty text" }, 400);
+  intakeStrikes.push(now);
+  const from = typeof body.from === "string" ? body.from.slice(0, 120) : null;
+  const t: Task = {
+    id: randomBytes(4).toString("hex"), text, source: "intake", from,
+    status: "pending", created: now, slot: null, note: null,
+  };
+  tasks = [...tasks, t].slice(-MAX_TASKS);
+  saveState();
+  console.log(`intake: task from ${from ?? "unknown"} (${text.length} chars)`);
+  return json({ ok: true });
+}
+
 // --- startup: restore persisted state, adopt stray fleet sessions, seed offsets ---
 mkdirSync(STREAM_DIR, { recursive: true });
 chmodSync(STREAM_DIR, 0o700);
@@ -621,12 +798,22 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Share).slot === "number"
         && ((x as Share).mode === "view" || (x as Share).mode === "interact"));
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
+    if (Array.isArray((persisted as { tasks?: unknown }).tasks))
+      tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
+        typeof x === "object" && x !== null
+        && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
+        && ((x as Task).source === "owner" || (x as Task).source === "intake")
+        && ["pending", "queued", "sent", "done"].includes((x as Task).status)).slice(-MAX_TASKS);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
       if (s && typeof v?.cwd === "string") {
         s.cwd = v.cwd;
         if (typeof v.label === "string") s.label = v.label;
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
+        const wt = (v as { worktree?: unknown }).worktree;
+        if (typeof wt === "object" && wt !== null
+          && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")
+          s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch };
       }
     }
   } catch {
@@ -674,6 +861,9 @@ for (const s of slots) {
 
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch(() => {}), 5000);
+setInterval(() => void tickGit().catch(() => {}), 10_000);
+void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
+setInterval(() => void tickDispatch().catch(() => {}), 8000);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (two tmux queries) per healthy slot
 setInterval(() => {
@@ -687,6 +877,12 @@ Bun.serve<WSData>({
     const blocked = guard(req);
     if (blocked) return blocked;
     const url = new URL(req.url);
+
+    // /intake is a feature-request dropbox behind its own secret (never the owner token).
+    // Handled before the share-host gate so it works on BOTH the owner host and the public
+    // tunnel. It only ever creates a `pending` task — nothing here runs code or reaches a
+    // session. (Host already validated against ALLOWED_HOSTS in guard() above.)
+    if (url.pathname === "/intake" && req.method === "POST") return handleIntake(req);
 
     // the public tunnel hostname is share-only: nothing else exists there, not even
     // the owner login page. (Host was already validated against ALLOWED_HOSTS above.)
@@ -761,8 +957,10 @@ Bun.serve<WSData>({
         const body = await readJson(req);
         if (!body || typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
         await sendText(s, body.text, body.submit !== false);
-        s.history = [...s.history, { text: body.text, ts: Date.now() }].slice(-MAX_HISTORY);
+        const ts = Date.now();
+        s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
         saveHistory(s);
+        logPrompt(s, body.text, "share", ts);
         return json({ ok: true });
       }
       return json({ error: "bad request" }, 400);
@@ -817,10 +1015,14 @@ Bun.serve<WSData>({
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),
         autos,
+        tasks,
+        dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
+        intake: !!INTAKE_SECRET,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {
             id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
+            git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
             share: sh ? {
               id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
@@ -896,12 +1098,65 @@ Bun.serve<WSData>({
       if (!s) return json({ error: "bad slot" }, 400);
       return json({ history: s.history });
     }
+    // lane review: what did the agent actually DO — tracked diff vs HEAD + untracked list.
+    // Complements the transcript view (what it said). Byte-capped: a phone shouldn't
+    // receive a megabyte lockfile diff.
+    const diffMatch = /^\/api\/slots\/(\d+)\/diff$/.exec(url.pathname);
+    if (req.method === "GET" && diffMatch) {
+      const s = slotFrom(diffMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const st = await git(s.cwd, "status", "--porcelain");
+      if (st.code !== 0) return json({ error: "not a git repository" }, 400);
+      const DIFF_CAP = 400_000;
+      const d = await git(s.cwd, "diff", "HEAD", "--no-color");
+      const diff = d.code === 0 ? d.out : ""; // e.g. repo with no commits yet
+      // read the branch fresh, not from the 10s badge cache — a just-created lane isn't cached yet
+      const br = await git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD");
+      return json({
+        branch: br.code === 0 ? br.out : null,
+        worktree: s.worktree,
+        status: st.out.split("\n").filter(Boolean).slice(0, 500),
+        diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
+        truncated: diff.length > DIFF_CAP,
+      });
+    }
     if (url.pathname === "/api/dirs") {
       try {
         return json(await listDirs(url.searchParams.get("path") ?? "~"));
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }
+    }
+    // --- task queue (owner side). Tasks arrive here (owner-created) or via /intake
+    // (pending). Only the owner moves a task to `queued`; only then can the dispatcher run it.
+    if (url.pathname === "/api/tasks" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
+      const t: Task = {
+        id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+        source: "owner", from: null,
+        status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null, note: null,
+      };
+      tasks = [...tasks, t].slice(-MAX_TASKS);
+      saveState();
+      return json({ ok: true, task: t });
+    }
+    const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete)$/.exec(url.pathname);
+    if (req.method === "POST" && taskAct) {
+      const t = tasks.find((x) => x.id === taskAct[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
+      else if (taskAct[2] === "queue") { t.status = "queued"; t.note = null; }
+      else if (taskAct[2] === "unqueue") t.status = "pending";
+      else t.status = "done";
+      saveState();
+      return json({ ok: true });
+    }
+    if (url.pathname === "/api/dispatch" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!DISPATCH_REPO) return json({ error: "dispatcher unavailable — set FLEET_DISPATCH_REPO" }, 400);
+      dispatchOn = body?.on === true;
+      return json({ ok: true, on: dispatchOn });
     }
     const autoCreate = /^\/api\/slots\/(\d+)\/autos$/.exec(url.pathname);
     if (req.method === "POST" && autoCreate) {
@@ -951,7 +1206,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|kill|rename|share|unshare|share-mode)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|share|unshare|share-mode|land)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -1015,6 +1270,46 @@ Bun.serve<WSData>({
         }
         return json({ ok: true, cwd: s.cwd });
       }
+      if (slotMatch[2] === "open-worktree") {
+        const body = await readJson(req);
+        if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
+        if (s.cwd) return json({ error: "slot already active — use a free slot" }, 400);
+        try {
+          const wt = await createWorktree(body.repo, typeof body.branch === "string" ? body.branch : "");
+          await openSlot(s, wt.path);
+          s.worktree = { repo: wt.repo, branch: wt.branch };
+          s.label = wt.branch.replace(/^fleet\//, "⎇ "); // lane identity beats the dir-slug basename
+          saveState();
+          void tickGit().catch(() => {}); // badge should appear on the next sessions poll
+          return json({ ok: true, cwd: s.cwd, branch: wt.branch });
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);
+        }
+      }
+      if (slotMatch[2] === "land") {
+        // deterministic lane teardown: git's OWN dirty/unmerged checks are the safety net —
+        // `worktree remove` without --force refuses when the tree is dirty, and we
+        // additionally refuse while commits are unpushed, so "land" can never eat work.
+        if (!s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+        const { repo, branch } = s.worktree;
+        const path = s.cwd;
+        const st = await git(path, "status", "--porcelain");
+        if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
+        if (st.out) return json({ error: `worktree has uncommitted changes:\n${st.out.slice(0, 400)}` }, 409);
+        const unpushed = await git(path, "log", "--oneline", "@{push}..", "--");
+        // no upstream configured counts as unpushed unless the branch is fully merged into HEAD of the repo
+        if (unpushed.code !== 0) {
+          const merged = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
+          if (!merged.out.trim()) return json({ error: "branch has no upstream and is not merged — push or merge it first" }, 409);
+        } else if (unpushed.out) {
+          return json({ error: `unpushed commits:\n${unpushed.out.slice(0, 400)}` }, 409);
+        }
+        await killSlot(s); // frees the pane first so nothing holds the tree
+        const rmv = await git(repo, "worktree", "remove", path);
+        if (rmv.code !== 0) return json({ error: `slot closed, but worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 500);
+        void tickGit().catch(() => {});
+        return json({ ok: true, removed: path, branch });
+      }
       await killSlot(s);
       return json({ ok: true });
     }
@@ -1025,8 +1320,10 @@ Bun.serve<WSData>({
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
       await sendText(s, body.text, body.submit !== false);
-      s.history = [...s.history, { text: body.text, ts: Date.now() }].slice(-MAX_HISTORY);
+      const ts = Date.now();
+      s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
       saveHistory(s);
+      logPrompt(s, body.text, "owner", ts);
       return json({ ok: true });
     }
     if (req.method === "POST" && url.pathname === "/resize") {

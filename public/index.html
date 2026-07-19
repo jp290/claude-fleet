@@ -166,6 +166,29 @@
     background: #262626; color: #888; font-size: 15px; font-family: inherit; cursor: pointer; }
   #histbtn:hover, #autobtn:hover { color: #ccc; }
   .slot .autobadge { flex: none; font-size: 10px; color: #e0af68; }
+  .slot .branchbadge { flex: none; font-size: 10px; color: #7dcfff; max-width: 90px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .slot .branchbadge.dirty { color: #e0af68; }
+  .slot .lane, .slot .diff { flex: none; font-size: 12px; color: #666; cursor: pointer; }
+  .slot .lane:hover, .slot .diff:hover { color: #7dcfff; }
+  #diffpanel, #queuepanel { max-width: 900px; width: 92vw; }
+  .difftxt { white-space: pre; overflow: auto; max-height: 60vh; background: #101010; border: 1px solid #2a2a2a;
+    border-radius: 8px; padding: 10px 12px; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  .difftxt .add { color: #9ece6a; } .difftxt .del { color: #f7768e; } .difftxt .hdr { color: #7aa2f7; }
+  .diffstat { color: #888; font-size: 12px; margin: 4px 0 10px; }
+  .qrow { display: flex; gap: 8px; align-items: flex-start; padding: 8px; border-radius: 8px; background: #1c1c1c;
+    margin-bottom: 6px; }
+  .qrow .qtext { flex: 1; min-width: 0; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+  .qrow .qmeta { font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 3px; }
+  .qrow.pending { border-left: 3px solid #666; } .qrow.queued { border-left: 3px solid #7aa2f7; }
+  .qrow.sent { border-left: 3px solid #9ece6a; } .qrow.done { border-left: 3px solid #333; opacity: 0.6; }
+  .qrow .qintake { color: #e0af68; }
+  .qbtn { flex: none; padding: 4px 9px; border-radius: 6px; border: 1px solid #333; background: #262626;
+    color: #ccc; font-size: 11px; cursor: pointer; font-family: inherit; }
+  .qbtn:hover { background: #2c3a5e; }
+  #queuebtn { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid #333;
+    background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
+  #queuebtn:hover { color: #ccc; } #queuebtn.hot { color: #e0af68; border-color: #5a4a2a; }
   #input { flex: 1; min-height: 38px; max-height: 140px; resize: none; padding: 9px 12px;
     border-radius: 10px; border: 1px solid #333; background: #262626; color: #eee;
     font-size: 13px; font-family: inherit; line-height: 1.4; }
@@ -184,6 +207,12 @@
     background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
   #pkpath:focus { outline: none; border-color: #3a4a7a; }
   #pkpath.bad { border-color: #f85149; }
+  #pkfilter { height: 34px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
+    background: #1a1a1a; color: #ddd; font-size: 13px; }
+  #pkfilter:focus { outline: none; border-color: #3a4a7a; }
+  .pkrow.pkhide, .pkhead.pkhide, .pknone.pkhide { display: none; }
+  .pkrow.sel { background: #2c3a5e; }
+  .pkrow.sel .pkuse { visibility: visible; }
   #pklists { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .pkhead { padding: 9px 4px 4px; font-size: 10px; color: #666; text-transform: uppercase;
     letter-spacing: 0.06em; }
@@ -315,7 +344,7 @@
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
     .pkrow { padding: 11px 9px; font-size: 13px; }
-    #pkpath, #gatein { font-size: 16px; }
+    #pkpath, #pkfilter, #gatein { font-size: 16px; }
     .pkbtns button { padding: 11px 18px; }
   }
 </style>
@@ -335,6 +364,7 @@
         <button data-l="2" title="2-up split">◫</button>
         <button data-l="4" title="2×2 grid">⊞</button>
       </span>
+      <button id="queuebtn" title="task queue">🗒</button>
       <button id="reload" title="reload focused session">↻</button>
       <button id="collapse" title="collapse sidebar">‹</button>
     </div>
@@ -380,9 +410,13 @@
       <input id="pkpath" type="text" spellcheck="false" autocomplete="off"
         placeholder="/path/to/project — Enter to browse">
     </div>
+    <input id="pkfilter" type="text" spellcheck="false" autocomplete="off"
+      placeholder="filter folders — ↑↓ select · Enter open · ⌘Enter start">
+
     <div id="pklists"></div>
     <div class="pkbtns">
       <button id="pkcancel">Cancel</button>
+      <button id="pkworktree" title="create a git worktree (lane) here and open a session in it" style="display:none">⎇ new lane</button>
       <button id="pkstart">Start here</button>
     </div>
   </div>
@@ -401,6 +435,14 @@
     <h2 id="histtitle">Prompt history</h2>
     <div id="histlist"></div>
   </div>
+</div>
+
+<div id="diffdlg" class="overlay">
+  <div class="panel" id="diffpanel"></div>
+</div>
+
+<div id="queuedlg" class="overlay">
+  <div class="panel" id="queuepanel"></div>
 </div>
 
 <div id="gate" class="overlay">

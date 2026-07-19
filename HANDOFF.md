@@ -1,5 +1,14 @@
 # HANDOFF — session of 2026-07-19 (lanes shipped; next: BACKLOG #14)
 
+**Update later that day:** BACKLOG #14 Phase-1 core is MERGED + LIVE-DEPLOYED
+(commits `273dbd9`+`cdd7bdb`, verified ALL PASS, server restarted, HTTP 200):
+the "session brief" right sideboard (ℹ toggle) — git facts via new
+`/api/slots/:id/brief` + prompt outline with jump-to-prompt. Design decisions
+binding for Phases 2–3 are recorded in the #14 update block; new items #15
+(vocabulary layer) and #16 (orphan-reap on kill) await. The stray
+`docs/knowledge-corpus` lane was removed (work was already in main). Push to
+origin is STILL blocked (gh auth) — local main is now ~37 ahead.
+
 Written for a fresh session — ideally started **inside a Fleet lane** (see "Starting
 a lane" below; verify you're actually IN the lane before prompting — this exact
 mistake happened this session: a prompt meant for a lane landed in a main slot

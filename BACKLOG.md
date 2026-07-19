@@ -650,6 +650,19 @@ prompt. Design decisions settled with JP, binding for Phases 2–3:
   never emits a verdict. Agent buttons start with exactly two: ✨ summarize
   (Phase 2, folded structural summary) and 🔍 review — read-only, click-only.
 
+**Update 2026-07-19 (later) — Phase 2 ✨ summarize SHIPPED (branch
+`fleet/lane-summary`, unmerged):** `POST /api/slots/:id/summary` runs `claude -p`
+(default `claude-sonnet-5` — best cost/quality point for summarization; override
+via `FLEET_SUMMARY_MODEL`, binary via `FLEET_SUMMARY_CMD`) with cwd in the slot's
+checkout. Prompt contract: strict JSON `{summary, openThreads, verification}`,
+evidence only. Single-flight + git-state-keyed cache, GET never spawns, cache
+cleared on kill, board shows an "older state" badge when stale. Real-CLI smoke
+test: ~$0.11/call (mostly 1h-cache write; cheaper within the window). Remaining
+in Phase 2: the 🔍 review agent (same plumbing, diff-focused critic prompt) —
+and note the known limitation: transcript/diff content is untrusted input to the
+summarizer (prompt injection can skew the advisory text; it is display-only and
+read-only by design, but don't ever wire it into a gate).
+
 ---
 
 ## 15. Lane vocabulary layer  `small, UI-only`

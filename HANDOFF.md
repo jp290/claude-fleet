@@ -30,6 +30,9 @@ reviewable, landable units of work. Plus the automation scaffolding around them.
   keeps the lane recoverable. Never eats work.
 - **Task queue** (🗒) + **idle dispatcher** (OFF unless `FLEET_DISPATCH_REPO` set;
   pulls one `queued` task per tick into a fresh lane behind the claude-alive gate).
+  Task↔lane lifecycle is closed: landing a lane marks its `sent` task `done`;
+  kill/recycle detaches it back to `pending` (owner re-review); boot requeues only
+  crash-orphaned `sent` tasks. No duplicate re-dispatch after restart.
 - **Public `/intake`** — secret-gated (`FLEET_INTAKE_SECRET`) feature dropbox on the
   share host; always creates a `pending` task. Cloudflare Email Worker recipe in
   `INTAKE.md` (the "CEO emails features in" address).

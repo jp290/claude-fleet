@@ -1,8 +1,16 @@
 # HANDOFF — session of 2026-07-19 (worktree lanes + automation direction)
 
 Written for a fresh session that will run **inside a Fleet lane** to keep building
-this. Read this, then `docs/tailored-context.md` (the conceptual foundation), then
-`BACKLOG.md` items 10/13. Verify every claim here you can.
+this. Read this, then `docs/README.md` (the documentation charter — the real mission),
+then `docs/tailored-context.md`, then `BACKLOG.md` items 10/13. Verify every claim.
+
+**This session's meta-realization (JP):** Fleet is not a dashboard, it is a *body of
+operating knowledge about driving Claude Code sessions well* — for the agent, the
+orchestrator, and the human — made concrete. The next session's primary mission is to
+**document that knowledge comprehensively** per the charter in `docs/README.md`: two
+shelves, knowledge (human-facing) and operative context (agent-facing, loaded not just
+read). The bar: does a session that loads it behave more reliably? Building more
+features serves this; it is not the point on its own.
 
 ## What this session shipped (all live-deployed + browser-verified)
 
@@ -30,9 +38,10 @@ reviewable, landable units of work. Plus the automation scaffolding around them.
 
 ## Repo state RIGHT NOW
 
-- **Branch `main` is 30 commits ahead of `origin/main`, UNPUSHED** (this session
-  added the last 4: worktree feature, hardening+UI, tailored-context doc,
-  handoff+gitignore — the rest are stale from prior sessions). Push is blocked: the
+- **Branch `main` is many commits ahead of `origin/main`, all UNPUSHED** (check the
+  exact count: `git rev-list --count origin/main..main`; this session added the most
+  recent ones — worktree feature, hardening+UI, tailored-context doc, docs charter,
+  handoff+gitignore — the older backlog is stale from prior sessions). Push is blocked: the
   logged-in gh account `other-account` has only pull access to `jp290/claude-fleet`
   (403). Push needs `jp290` auth (`gh auth login` as jp290, or add other-account as a
   write collaborator). Worth clearing this backlog once auth is sorted.

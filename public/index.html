@@ -276,6 +276,16 @@
   .shrbtn.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
   .shrhint { font-size: 11px; color: #888; line-height: 1.5; }
   .shrbtns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .shrcmts { display: flex; flex-direction: column; gap: 6px; }
+  .shrcmthead { font-size: 11px; color: #888; }
+  .shrcmtlist { max-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .shrcmt { background: #232323; border: 1px solid #2e2e2e; border-radius: 8px; padding: 6px 9px; }
+  .shrcmtmeta { display: flex; gap: 8px; align-items: center; font-size: 10px; color: #888; }
+  .shrcmtmeta b { color: #a7c080; font-size: 11px; }
+  .shrcmtdel { margin-left: auto; border: none; background: none; color: #666; cursor: pointer;
+    font-size: 11px; font-family: inherit; padding: 0 2px; }
+  .shrcmtdel:hover { color: #f85149; }
+  .shrcmttext { font-size: 12px; color: #ddd; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
   .shrlive { color: #888; }
   .shrlive.on { color: #3fb950; }
   .shrsince { margin-left: auto; color: #666; font-size: 10.5px; }

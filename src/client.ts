@@ -108,7 +108,7 @@ const post = (path: string, body: unknown) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 // --- fleet state ---
-interface ShareInfo { id: string; mode: "view" | "interact"; password: string; created: number; guests: number }
+interface ShareInfo { id: string; mode: "view" | "interact"; password: string; created: number; guests: number; comments: number }
 interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
@@ -1320,7 +1320,7 @@ async function refresh() {
     // rebuilding it on every poll — rebuilds kill hover state and button focus
     if (dlgSlot && sharedlg.style.display === "flex") {
       const sh = fleet[dlgSlot - 1]?.share;
-      const dk = sh ? `${sh.id}|${sh.mode}|${sh.guests}` : "none";
+      const dk = sh ? `${sh.id}|${sh.mode}|${sh.guests}|${sh.comments}` : "none";
       if (dk !== dlgKey) {
         dlgKey = dk;
         renderShareDlg();
@@ -1489,7 +1489,7 @@ function fmtSince(ts: number): string {
 function renderShareDlg() {
   const s = fleet[dlgSlot - 1];
   if (!s?.cwd) { closeShareDlg(); return; }
-  dlgKey = s.share ? `${s.share.id}|${s.share.mode}|${s.share.guests}` : "none";
+  dlgKey = s.share ? `${s.share.id}|${s.share.mode}|${s.share.guests}|${s.share.comments}` : "none";
   sharepanel.replaceChildren();
   sharepanel.appendChild(el("h2", "", `Share session — ${s.label ?? baseName(s.cwd)}`));
   const sh = s.share;
@@ -1523,6 +1523,15 @@ function renderShareDlg() {
     sharepanel.appendChild(el("div", "shrhint", sh.mode === "interact"
       ? "Interactive — guests type into your real shell. Give link and password to your guest separately."
       : "View only — guests watch, nothing they type reaches the terminal. Give link and password separately."));
+    const cmts = el("div", "shrcmts");
+    cmts.appendChild(el("div", "shrcmthead",
+      sh.comments > 0 ? `💬 ${sh.comments} guest comment${sh.comments === 1 ? "" : "s"}` : "💬 no guest comments yet"));
+    if (sh.comments > 0) {
+      const list = el("div", "shrcmtlist");
+      cmts.appendChild(list);
+      void loadShareComments(s.id, list);
+    }
+    sharepanel.appendChild(cmts);
     const btns = el("div", "shrbtns");
     const rotate = el("button", "shrbtn", "new link + password") as HTMLButtonElement;
     rotate.onclick = async () => {
@@ -1566,6 +1575,31 @@ function renderShareDlg() {
     close.onclick = closeShareDlg;
     btns.append(create, close);
     sharepanel.appendChild(btns);
+  }
+}
+
+interface ShareCommentInfo { id: string; ts: number; name: string; text: string }
+async function loadShareComments(slotId: number, target: HTMLElement) {
+  const res = await api(`/api/slots/${slotId}/comments`);
+  if (!res.ok) return;
+  const data = (await res.json().catch(() => ({}))) as { comments?: ShareCommentInfo[] };
+  target.replaceChildren();
+  for (const c of data.comments ?? []) {
+    const row = el("div", "shrcmt");
+    const head = el("div", "shrcmtmeta");
+    head.appendChild(el("b", "", c.name));
+    head.appendChild(el("span", "", fmtSince(c.ts)));
+    const del = el("button", "shrcmtdel", "✕") as HTMLButtonElement;
+    del.title = "delete this comment";
+    del.onclick = async () => {
+      await post(`/api/slots/${slotId}/comments/${c.id}/delete`, {});
+      await refresh();
+      renderShareDlg();
+    };
+    head.appendChild(del);
+    row.appendChild(head);
+    row.appendChild(el("div", "shrcmttext", c.text));
+    target.appendChild(row);
   }
 }
 

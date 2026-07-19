@@ -12,7 +12,7 @@ const PORT = Number(process.env.FLEET_PORT ?? 8790);
 // separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
 // run its own s1..sN sessions without touching the live fleet's
 const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
-const MAX_SLOTS = 16; // ⌃1–⌃0 reach the first ten; 11+ are click/tap-only overflow
+const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
 const REPLAY_TAIL = 2_000_000;
 // lines of scrollback to re-seed from a fresh capture-pane when a client's width
 // doesn't match the pane's current width (tmux reflows history on resize-window,

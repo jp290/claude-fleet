@@ -547,15 +547,22 @@ interface MergeState { running: boolean;
 // inactive (job landed the lane), its panes must be released like a manual ⏏ does
 const mergeWatch = new Set<number>();
 
+// synchronous in-flight guards: the server serializes too, but a double-click must not
+// even fire the second request (the response to it would just say "running"/"reserved")
+const mergePending = new Set<number>();
+let laneReqBusy = false;
+
 async function doMerge(slot: number) {
-  if (!confirm("Agent merge & land? A background claude session rebases this lane onto main, resolves "
-    + "conflicts and fast-forwards main. The lane is only removed after a deterministic re-check.")) return;
+  if (mergePending.has(slot)) return;
+  mergePending.add(slot);
   try {
+    if (!confirm("Agent merge & land? A background claude session rebases this lane onto main and resolves "
+      + "conflicts; the server then fast-forwards main and lands — each step re-verified deterministically.")) return;
     const r = await post(`/api/slots/${slot}/merge`, {});
     const j = (await r.json().catch(() => ({}))) as
       { running?: boolean; status?: string; landed?: boolean; detail?: string; error?: string };
     if (!r.ok) { alert(`Merge failed: ${j.error ?? r.status}`); return; }
-    if (j.running) { mergeWatch.add(slot); void renderBoard(); return; }
+    if (j.running) { mergeWatch.add(slot); return; }
     // immediate verdicts (dirty lane/primary, already-merged) come back synchronously
     if (j.status === "blocked") alert(`Merge blocked: ${j.detail ?? ""}`);
     else if (j.status === "merged" && j.landed) {
@@ -564,16 +571,29 @@ async function doMerge(slot: number) {
     }
   } catch {
     alert("Merge failed — network error");
+  } finally {
+    mergePending.delete(slot);
+    void renderBoard();
   }
-  void renderBoard();
 }
 
-async function newLane(repo: string): Promise<void> {
-  const r = await post("/api/lanes", { repo });
-  const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
-  if (!r.ok) { alert(`Lane failed: ${j.error ?? "?"}`); return; }
-  await refresh();
-  if (j.slot) showSlot(j.slot);
+async function newLane(repo: string, slot?: number): Promise<void> {
+  if (laneReqBusy) return;
+  laneReqBusy = true;
+  try {
+    // with a target slot (the ⎇+ chip on an empty row) the lane opens THERE;
+    // without one (the board button) the server picks the first free slot
+    const r = slot
+      ? await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "" })
+      : await post("/api/lanes", { repo });
+    const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+    if (!r.ok) { alert(`Lane failed: ${j.error ?? "?"}`); return; }
+    await refresh();
+    const target = slot ?? j.slot;
+    if (target) showSlot(target);
+  } finally {
+    laneReqBusy = false;
+  }
 }
 
 function applyBoard() {
@@ -681,8 +701,8 @@ async function renderBoard() {
       if (brief.worktree) {
         const mb = el("button", "bmergebtn", mg?.running ? "… agent merging" : "⏫ merge & land") as HTMLButtonElement;
         mb.disabled = !!mg?.running;
-        mb.title = "background claude session rebases this lane onto main, resolves conflicts, fast-forwards "
-          + "main, then lands the lane — merge re-verified deterministically before anything is removed";
+        mb.title = "background claude session rebases this lane onto main and resolves conflicts; the server "
+          + "then re-verifies, fast-forwards main and lands — nothing is removed on the agent's word alone";
         mb.onclick = () => void doMerge(slot);
         st.appendChild(mb);
         if (!mg?.running && mg?.last && mg.last.branch === brief.worktree.branch) {
@@ -724,11 +744,17 @@ async function renderBoard() {
             const open = el("button", "bwtact", "open") as HTMLButtonElement;
             open.title = "no session holds this worktree — reopen it in a free slot (reviewable/landable again)";
             open.onclick = async () => {
-              const r = await post("/api/lanes", { repo: wts.repo, attach: w.path });
-              const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
-              if (!r.ok) { alert(j.error ?? "open failed"); return; }
-              await refresh();
-              if (j.slot) showSlot(j.slot);
+              if (laneReqBusy) return;
+              laneReqBusy = true;
+              try {
+                const r = await post("/api/lanes", { repo: wts.repo, attach: w.path });
+                const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+                if (!r.ok) { alert(j.error ?? "open failed"); return; }
+                await refresh();
+                if (j.slot) showSlot(j.slot);
+              } finally {
+                laneReqBusy = false;
+              }
             };
             row.appendChild(open);
             const rmv = el("button", "bwtact del", "✕") as HTMLButtonElement;
@@ -1279,16 +1305,9 @@ function renderSlots() {
         // path (browse → ⎇ new lane) stays for everything else
         const q = el("span", "quicklane", "⎇+");
         q.title = `new lane in ${baseName(quickRepo)} — one click, no picker`;
-        q.onclick = async (e) => {
+        q.onclick = (e) => {
           e.stopPropagation();
-          const r = await post(`/api/slots/${s.id}/open-worktree`, { repo: quickRepo, branch: "" });
-          if (!r.ok) {
-            const err = (await r.json().catch(() => ({}))) as { error?: string };
-            alert(`Lane failed: ${err.error ?? "?"}`);
-            return;
-          }
-          await refresh();
-          showSlot(s.id);
+          void newLane(quickRepo, s.id);
         };
         row.appendChild(q);
       }

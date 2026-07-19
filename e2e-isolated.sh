@@ -46,23 +46,22 @@ printf '{"result": "{\\"prompt\\": \\"enhanced prompt. own your work! /sharpen3\
 EOF
 chmod +x "$DIR/fakeenh"
 
-# stand-in ⏫ merge agent: cwd is the lane worktree. The mode file next to the test repo
-# steers each run: blocked — report blocked · lie — claim merged without merging (the
-# server must catch this) · do — really ff-merge into the primary checkout, then claim
+# stand-in ⏫ merge agent: cwd is the lane worktree. The agent's contract is REBASE-ONLY
+# (the server ff-merges and lands afterwards). The mode file next to the test repo steers
+# each run: blocked — report blocked · lie — claim rebased without rebasing (the server
+# must catch this via merge-base) · do — really rebase onto main, then claim
 cat > "$DIR/fakemerge" <<'EOF'
 #!/bin/sh
 cat >/dev/null
 ctl="$(dirname "$(dirname "$PWD")")/mergemode"
 mode="$(cat "$ctl" 2>/dev/null || echo blocked)"
 if [ "$mode" = do ]; then
-  branch="$(git rev-parse --abbrev-ref HEAD)"
-  root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-  git -C "$root" merge --ff-only -q "$branch" >/dev/null 2>&1
+  git rebase -q main >/dev/null 2>&1
 fi
 if [ "$mode" = blocked ]; then
   printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"fake conflict\\"}"}'
 else
-  printf '{"result": "{\\"status\\": \\"merged\\", \\"detail\\": \\"fake merged\\"}"}'
+  printf '{"result": "{\\"status\\": \\"rebased\\", \\"detail\\": \\"fake rebased\\"}"}'
 fi
 EOF
 chmod +x "$DIR/fakemerge"

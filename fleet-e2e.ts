@@ -373,6 +373,13 @@ check("share diff readable with share cookie", shDiff.ok && typeof shDiffJ.branc
   && Array.isArray(shDiffJ.status) && typeof shDiffJ.diff === "string", JSON.stringify(shDiffJ).slice(0, 120));
 check("share diff carries session commits", Array.isArray(shDiffJ.commits), JSON.stringify(shDiffJ.commits).slice(0, 80));
 check("share diff without cookie 401", (await fetch(BASE + `/s/${shInt.id}/diff`)).status === 401);
+// guest info tab: session overview behind the share cookie, minus local filesystem details
+const shBrief = await fetch(BASE + `/s/${shInt.id}/brief`, { headers: { cookie: shICookie } });
+const shBriefJ = (await shBrief.json()) as { branch?: unknown; commits?: unknown; files?: unknown };
+check("share brief readable with share cookie", shBrief.ok && typeof shBriefJ.branch === "string"
+  && Array.isArray(shBriefJ.commits) && Array.isArray(shBriefJ.files), JSON.stringify(shBriefJ).slice(0, 100));
+check("share brief hides local paths (no worktree field)", !("worktree" in shBriefJ));
+check("share brief without cookie 401", (await fetch(BASE + `/s/${shInt.id}/brief`)).status === 401);
 check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
 
 // --- guest comments: allowed in BOTH modes (they type nothing), owner-moderated ---

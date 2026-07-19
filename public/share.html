@@ -4,141 +4,222 @@
 <meta charset="utf-8">
 <title>Shared session — Claude Fleet</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#141414">
+<meta name="theme-color" content="#131316">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/xterm.css">
 <style>
+  /* tokens: the terminal is the hero — everything else is quiet telemetry beside it */
+  :root {
+    --bg: #131316; --panel: #17171b; --raised: #1d1d22; --line: #26262c;
+    --text: #d6d6dc; --dim: #86868f; --faint: #5c5c66;
+    --accent: #7aa2f7; --live: #3fb950; --amber: #e0af68;
+    --add: #9ece6a; --del: #f7768e; --danger: #f85149;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; background: #141414; overscroll-behavior: none; }
-  body { font-family: ui-monospace, Menlo, Consolas, monospace; color: #ccc;
+  html, body { height: 100%; background: var(--bg); overscroll-behavior: none; }
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text);
     display: flex; flex-direction: column; }
+  button { font-family: inherit; cursor: pointer; }
+  .lbl { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 
-  #head { flex: none; display: flex; align-items: center; gap: 10px;
-    padding: calc(8px + env(safe-area-inset-top)) 14px 8px;
-    background: #1a1a1a; border-bottom: 1px solid #2a2a2a; font-size: 13px; }
-  #title { font-weight: 700; color: #e8e8e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #mode { flex: none; font-size: 10px; padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
-    letter-spacing: 0.05em; }
+  /* --- header: one slim strip, stream identity on the left, viewer tools right --- */
+  #head { flex: none; display: flex; align-items: center; gap: 10px; min-width: 0;
+    padding: calc(7px + env(safe-area-inset-top)) 12px 7px;
+    background: var(--panel); border-bottom: 1px solid var(--line); font-size: 13px; }
+  #livechip { flex: none; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10px; letter-spacing: 0.1em; color: var(--live);
+    border: 1px solid #2c4a34; background: #17211a; border-radius: 5px; padding: 3px 8px; }
+  #livechip.off { color: var(--danger); border-color: #4a2c2c; background: #211717; }
+  #dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+  #livechip.off #dot { background: var(--danger); animation: none; }
+  @media (prefers-reduced-motion: no-preference) {
+    #dot { animation: pulse 2.4s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+  }
+  #title { font-weight: 700; color: #ececf1; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0; }
+  #mode { flex: none; font-size: 10px; padding: 2px 7px; border-radius: 5px;
+    letter-spacing: 0.05em; text-transform: uppercase; display: none; }
   #mode.view { background: #1e261a; color: #a7c080; border: 1px solid #3a4a34; }
-  #mode.interact { background: #2a2118; color: #e0af68; border: 1px solid #5a4a30; }
-  #dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; flex: none; }
-  #dot.on { background: #3fb950; } #dot.off { background: #f85149; }
+  #mode.interact { background: #2a2118; color: var(--amber); border: 1px solid #5a4a30; }
+  #hsp { flex: 1; }
+  .hbtn { flex: none; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--raised); color: var(--dim); font-size: 11px; display: none; }
+  .hbtn:hover { color: var(--text); border-color: #3a3a44; }
+  #sidebtn.open { color: var(--accent); border-color: #2c3a5e; }
 
+  /* --- main: stage (terminal) + sidebar --- */
+  #main { flex: 1; min-height: 0; display: flex; }
+  #stage { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
   #wrap { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
   #term { width: max-content; }
+  #jump { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: none;
+    padding: 7px 12px; border-radius: 18px; border: 1px solid var(--line);
+    background: #1d1d22ee; color: var(--accent); font-size: 11px; }
+  #stage.composing #jump { bottom: 76px; }
+  #notice { display: none; padding: 40px 20px; text-align: center; color: var(--dim); font-size: 13px; }
 
   #bar { flex: none; display: none; gap: 7px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-    background: #1c1c1c; border-top: 1px solid #2a2a2a; }
+    background: var(--panel); border-top: 1px solid var(--line); }
   #input { flex: 1; min-height: 40px; max-height: 120px; resize: none; padding: 10px 12px;
-    border-radius: 10px; border: 1px solid #333; background: #262626; color: #eee;
+    border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: #eee;
     font-size: 16px; font-family: inherit; line-height: 1.4; }
   #input:focus { outline: none; border-color: #3a4a7a; }
   #send { flex: none; width: 56px; border-radius: 10px; border: none;
-    background: #7aa2f7; color: #10131c; font-size: 16px; font-weight: 700; cursor: pointer; }
+    background: var(--accent); color: #10131c; font-size: 16px; font-weight: 700; }
   #send:disabled { opacity: 0.5; }
 
-  #gate { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    background: #141414; z-index: 20; }
-  #gate .panel { width: 340px; max-width: 92vw; display: flex; flex-direction: column; gap: 12px;
-    background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 20px; }
-  #gate h2 { font-size: 14px; color: #e8e8e8; }
-  #gate p { font-size: 11px; color: #888; line-height: 1.5; }
-  #pw { height: 42px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
-    background: #262626; color: #eee; font-size: 16px; font-family: inherit; }
-  #pw:focus { outline: none; border-color: #3a4a7a; }
-  #pw.bad { border-color: #f85149; }
-  #enter { height: 40px; border-radius: 9px; border: none; background: #7aa2f7;
-    color: #10131c; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; }
-  #gatemsg { font-size: 11px; color: #f85149; min-height: 14px; }
+  /* --- sidebar: broadcast telemetry beside the feed --- */
+  #side { flex: none; width: 320px; display: none; flex-direction: column; min-height: 0;
+    background: var(--panel); border-left: 1px solid var(--line); }
+  body.side-open #side { display: flex; }
 
-  #notice { display: none; padding: 40px 20px; text-align: center; color: #888; font-size: 13px; }
+  #telemetry { flex: none; padding: 12px 14px 10px; border-bottom: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 6px; }
+  #telemetry .row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  #tname { font-size: 13px; font-weight: 700; color: #ececf1; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #tviewers { flex: none; margin-left: auto; font-size: 11px; color: var(--live); }
+  #tmeta { font-size: 11px; color: var(--dim); display: flex; gap: 12px; flex-wrap: wrap; }
+  #sideclose { display: none; flex: none; border: none; background: none; color: var(--dim);
+    font-size: 14px; padding: 0 0 0 6px; }
+  #sideclose:hover { color: var(--text); }
+  #tbranch { color: var(--accent); }
 
-  #changes, #cmtbtn, .hbtn { display: none; flex: none; padding: 4px 10px; border-radius: 6px; border: 1px solid #333;
-    background: #262626; color: #7dcfff; font-size: 11px; font-family: inherit; cursor: pointer; }
-  #changes:hover, #cmtbtn:hover, .hbtn:hover { background: #1c2c37; border-color: #2c4a5e; }
-  .hbtn { color: #ccc; padding: 4px 8px; }
-  #viewers { display: none; flex: none; font-size: 11px; color: #888; }
-  #jump { position: fixed; right: 16px; bottom: 76px; z-index: 15; display: none; width: 36px; height: 36px;
-    border-radius: 50%; border: 1px solid #333; background: #262626ee; color: #7dcfff; font-size: 16px; cursor: pointer; }
+  #tabs { flex: none; display: flex; border-bottom: 1px solid var(--line); }
+  .tab { flex: 1; padding: 8px 4px 7px; background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--dim); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  #chatbadge { display: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+    background: var(--accent); color: #10131c; font-size: 10px; font-weight: 700;
+    line-height: 16px; text-align: center; }
 
-  #cmtdlg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    background: #000a; z-index: 25; }
-  #cmtpanel { width: 480px; max-width: 94vw; max-height: 84vh; display: flex; flex-direction: column;
-    gap: 10px; background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 16px; }
-  #cmtpanel h2 { font-size: 13px; color: #e8e8e8; }
-  #cmtlist { flex: 1; min-height: 60px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
-  .cmt { background: #232323; border: 1px solid #2e2e2e; border-radius: 8px; padding: 8px 10px; }
-  .cmthead { display: flex; gap: 8px; font-size: 10px; color: #888; margin-bottom: 3px; }
+  .pane { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  .pane.active { display: flex; }
+  .scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
+
+  /* info tab */
+  .kv { display: flex; gap: 10px; font-size: 12px; line-height: 1.9; }
+  .kv .k { flex: none; width: 84px; color: var(--faint); }
+  .kv .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sect { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .commit { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; align-items: baseline; }
+  .commit .h { flex: none; color: var(--amber); }
+  .commit .s { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .commit .t { flex: none; margin-left: auto; color: var(--faint); font-size: 10px; }
+  .file { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; }
+  .file .st { flex: none; width: 14px; }
+  .file .st.a { color: var(--add); } .file .st.d { color: var(--del); } .file .st.m { color: var(--amber); }
+  .file .p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .empty { color: var(--faint); font-size: 11px; padding: 6px 0; }
+
+  /* chat tab */
+  #cmtlist { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: flex;
+    flex-direction: column; gap: 8px; }
+  .cmt { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .cmthead { display: flex; gap: 8px; align-items: baseline; margin-bottom: 2px; }
   .cmthead b { color: #a7c080; font-size: 11px; }
-  .cmttext { font-size: 12px; color: #ddd; white-space: pre-wrap; word-break: break-word; }
-  #cmtempty { color: #666; font-size: 11px; padding: 8px 2px; }
-  #cmtrow { display: flex; flex-direction: column; gap: 6px; }
-  #cmtname { height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid #333;
-    background: #262626; color: #eee; font-size: 12px; font-family: inherit; }
+  .cmthead span { color: var(--faint); font-size: 10px; }
+  .cmttext { font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+  #composer { flex: none; display: flex; flex-direction: column; gap: 6px;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+  #cmtname { height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--raised); color: #eee; font-size: 12px; font-family: inherit; }
   #cmtline { display: flex; gap: 6px; }
-  #cmtinput { flex: 1; min-height: 38px; max-height: 100px; resize: none; padding: 8px 10px; border-radius: 8px;
-    border: 1px solid #333; background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
+  #cmtinput { flex: 1; min-height: 38px; max-height: 100px; resize: none; padding: 8px 10px;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: #eee;
+    font-size: 13px; font-family: inherit; line-height: 1.4; }
   #cmtname:focus, #cmtinput:focus { outline: none; border-color: #3a4a7a; }
-  #cmtpost { flex: none; width: 48px; border-radius: 8px; border: none; background: #7aa2f7;
-    color: #10131c; font-size: 15px; font-weight: 700; cursor: pointer; }
+  #cmtpost { flex: none; width: 46px; border-radius: 8px; border: none; background: var(--accent);
+    color: #10131c; font-size: 15px; font-weight: 700; }
   #cmtpost:disabled { opacity: 0.5; }
-  #cmtmsg { font-size: 10px; color: #f85149; min-height: 12px; }
-  #diffdlg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    background: #000a; z-index: 25; }
-  #diffpanel { width: 900px; max-width: 94vw; max-height: 84vh; display: flex; flex-direction: column;
-    gap: 8px; background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 16px; }
-  #diffpanel h2 { font-size: 13px; color: #e8e8e8; }
-  #dstat { color: #888; font-size: 12px; }
-  #dcommits { display: none; flex: none; max-height: 130px; overflow: auto; font-size: 11px; line-height: 1.6; }
-  #dcommits .ch { color: #e0af68; margin-right: 8px; }
-  #dcommits .ct { color: #666; margin-left: 8px; }
-  #dtxt { white-space: pre; overflow: auto; flex: 1; min-height: 80px; background: #101010;
-    border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px;
+  #cmtmsg { font-size: 10px; color: var(--danger); min-height: 12px; }
+
+  /* changes tab */
+  #chead { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px 8px; }
+  #dstat { font-size: 11px; color: var(--dim); min-width: 0; }
+  #crefresh { margin-left: auto; flex: none; padding: 3px 9px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--raised); color: var(--dim); font-size: 10px; }
+  #crefresh:hover { color: var(--text); }
+  #dtxt { flex: 1; min-height: 0; overflow: auto; white-space: pre; margin: 0 14px 12px;
+    background: #101013; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
     font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
-  #dtxt .add { color: #9ece6a; } #dtxt .del { color: #f7768e; } #dtxt .hdr { color: #7aa2f7; }
+  #dtxt .add { color: var(--add); } #dtxt .del { color: var(--del); } #dtxt .hdr { color: var(--accent); }
+
+  /* narrow viewports: the sidebar slides over the stage instead of squeezing it */
+  @media (max-width: 860px) {
+    #side { position: fixed; top: 0; right: 0; bottom: 0; z-index: 30; width: min(340px, 92vw);
+      padding-top: env(safe-area-inset-top); box-shadow: -12px 0 30px #0008; }
+    #sideclose { display: block; }
+  }
+
+  /* password gate */
+  #gate { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: var(--bg); z-index: 40; }
+  #gate .panel { width: 340px; max-width: 92vw; display: flex; flex-direction: column; gap: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  #gate h2 { font-size: 14px; color: #ececf1; }
+  #gate p { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  #pw { height: 42px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--raised); color: #eee; font-size: 16px; font-family: inherit; }
+  #pw:focus { outline: none; border-color: #3a4a7a; }
+  #pw.bad { border-color: var(--danger); }
+  #enter { height: 40px; border-radius: 9px; border: none; background: var(--accent);
+    color: #10131c; font-size: 14px; font-weight: 700; }
+  #gatemsg { font-size: 11px; color: var(--danger); min-height: 14px; }
 </style>
 </head>
 <body>
 <div id="head">
+  <span id="livechip"><span id="dot"></span><span id="livetxt">LIVE</span></span>
   <span id="title">Shared session</span>
   <span id="mode"></span>
-  <button id="changes" title="what this session changed (commits + working diff)">± changes</button>
-  <button id="cmtbtn" title="comments">💬</button>
-  <span id="viewers" title="connected viewers"></span>
+  <span id="hsp"></span>
   <button id="fminus" class="hbtn" title="smaller text">A−</button>
   <button id="fplus" class="hbtn" title="larger text">A+</button>
-  <span id="dot" class="off"></span>
-</div>
-<div id="wrap"><div id="term"></div></div>
-<button id="jump" title="jump to latest output">⤓</button>
-<div id="notice"></div>
-<div id="bar">
-  <textarea id="input" rows="1" placeholder="Prompt… (Enter sends, Shift+Enter = newline)"></textarea>
-  <button id="send">➤</button>
+  <button id="sidebtn" class="hbtn" title="session panel">panel</button>
 </div>
 
-<div id="cmtdlg">
-  <div id="cmtpanel">
-    <h2>Comments</h2>
-    <div id="cmtlist"></div>
-    <div id="cmtrow">
-      <input id="cmtname" placeholder="your name" maxlength="40" autocomplete="off">
-      <div id="cmtline">
-        <textarea id="cmtinput" rows="1" placeholder="Leave a comment… (Enter posts)"></textarea>
-        <button id="cmtpost">➤</button>
-      </div>
-      <div id="cmtmsg"></div>
+<div id="main">
+  <div id="stage">
+    <div id="wrap"><div id="term"></div></div>
+    <div id="notice"></div>
+    <button id="jump">⤓ latest</button>
+    <div id="bar">
+      <textarea id="input" rows="1" placeholder="Prompt… (Enter sends, Shift+Enter = newline)"></textarea>
+      <button id="send">➤</button>
     </div>
   </div>
-</div>
 
-<div id="diffdlg">
-  <div id="diffpanel">
-    <h2>What this session changed</h2>
-    <div id="dstat"></div>
-    <div id="dcommits"></div>
-    <div id="dtxt"></div>
-  </div>
+  <aside id="side">
+    <div id="telemetry">
+      <div class="row"><span id="tname">Shared session</span><span id="tviewers"></span><button id="sideclose" title="close panel">✕</button></div>
+      <div id="tmeta"><span id="tup"></span><span id="tbranch"></span></div>
+    </div>
+    <nav id="tabs">
+      <button class="tab active" data-tab="info">info</button>
+      <button class="tab" data-tab="chat">chat<span id="chatbadge"></span></button>
+      <button class="tab" data-tab="changes">changes</button>
+    </nav>
+    <section class="pane active" id="pane-info"><div class="scroll" id="infobody"></div></section>
+    <section class="pane" id="pane-chat">
+      <div id="cmtlist"></div>
+      <div id="composer">
+        <input id="cmtname" placeholder="your name" maxlength="40" autocomplete="off">
+        <div id="cmtline">
+          <textarea id="cmtinput" rows="1" placeholder="Say something…"></textarea>
+          <button id="cmtpost">➤</button>
+        </div>
+        <div id="cmtmsg"></div>
+      </div>
+    </section>
+    <section class="pane" id="pane-changes">
+      <div id="chead"><span id="dstat"></span><button id="crefresh">refresh</button></div>
+      <div id="dtxt"></div>
+    </section>
+  </aside>
 </div>
 
 <div id="gate">

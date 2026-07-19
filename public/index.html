@@ -75,7 +75,8 @@
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #layouts, #side.collapsed #dot, #side.collapsed #reload,
-  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
+  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact,
+  #side.collapsed #queuebtn { display: none; } /* 26px buttons don't fit the 50px rail — expand to use them */
   #side.collapsed #sidehead { padding: 12px 0 10px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
   #side.collapsed .slot { justify-content: center; gap: 5px; padding: 8px 2px; }
@@ -307,10 +308,13 @@
     display: flex; align-items: center; justify-content: center; line-height: 1; }
   #boardclose:hover { color: #ccc; }
   #boardbody { flex: 1; overflow-y: auto; padding: 4px 10px 14px; font-size: 11.5px; }
-  #boardbtn { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid #333;
-    background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
-  #boardbtn:hover { color: #ccc; }
-  #boardbtn.active { color: #7aa2f7; border-color: #2c3a5e; background: #1c2437; }
+  /* per-pane board toggle, sits left of the 💬 viewtoggle (top edge is taken, so
+     "beside" not "above"); same visual language as the viewtoggle */
+  .boardtoggle { position: absolute; top: 8px; right: 46px; z-index: 6; width: 30px; height: 26px;
+    border-radius: 7px; border: 1px solid #333; background: rgba(38, 38, 38, 0.85); color: #888;
+    font-size: 13px; font-family: inherit; cursor: pointer; }
+  .boardtoggle:hover { color: #ccc; }
+  .boardtoggle.active { color: #7aa2f7; border-color: #2c3a5e; }
   .bsec { margin: 10px 0 0; }
   .bsec h3 { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
     color: #666; margin-bottom: 5px; user-select: none; -webkit-user-select: none; }
@@ -377,7 +381,8 @@
       transform: translateX(-105%); transition: transform 0.22s ease; will-change: transform; }
     body.drawer #side { transform: none; }
     body.drawer #shade { display: block; }
-    #layouts, #sidefoot, #collapse, #reload, #boardbtn { display: none; }
+    #layouts, #sidefoot, #collapse, #reload { display: none; }
+    .boardtoggle { display: none !important; } /* must beat the JS inline display:block */
     body.board #board { display: none; } /* must outrank the desktop body.board rule */
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
     .slot { padding: 12px 10px; font-size: 13px; }
@@ -430,7 +435,6 @@
         <button data-l="4" title="2×2 grid">⊞</button>
       </span>
       <button id="queuebtn" title="task queue">🗒</button>
-      <button id="boardbtn" title="session brief — commits, changes, prompt outline">ℹ</button>
       <button id="reload" title="reload focused session">↻</button>
       <button id="collapse" title="collapse sidebar">‹</button>
     </div>

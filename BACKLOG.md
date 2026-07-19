@@ -550,6 +550,88 @@ not before the 07-22 interview.
 
 ---
 
+## 14. Lane visibility → advisory review → structure overview  `phased, see below`
+
+**Idea (2026-07-19):** four asks from one conversation — better lane iconography, a
+non-disruptive way to judge "what kind of message fits right now" (JP's manual
+motivational-quote + `/sharpen` combo gets strong results; question was whether to
+systematize it), an automatic critical review before landing, and a structure
+overview of a session/conversation. They converge into one 3-phase arc, not four
+separate features — do NOT build them as four independent things.
+
+**Hard constraint that reframes idea 2:** Fleet's only delivery path into a session
+is `sendText` → tmux `paste-buffer`+`send-keys` (`server.ts:407-417`) — literally
+typing, indistinguishable from the user. There is no side-channel. "Non-disruptive"
+can only ever mean *well-timed*, never *invisible*. The existing `idleSec` gate in
+`tickAutos` (`server.ts:483`: `now - s.lastOutput >= a.idleSec * 1000`) already
+solves timing for scheduled autos; the new ask is *message-type* selection, which
+needs either heuristics or a cheap classifier call — see Phase 3.
+
+### Phase 1 — visibility only (low risk, no new behavior)
+
+- **Lane iconography:** a real branch *diagram* doesn't fit a 228px row
+  (`index.html:43`, collapses to 50px at `:76`) and grouping lanes by repo would
+  break the slot-number ↔ `⌃1–⌃0` hotkey position invariant (sidebar footer promise).
+  Ship a **per-repo hash color** on the lane accent border instead of the fixed blue
+  (`.slot.lane` border-left, currently `#3a4a7a` — see the lane restructure commit) —
+  lanes from the same repo read as "same tree" at a glance without moving rows.
+  Optionally swap the ⎇ glyph if JP wants a more literal fork icon — pure taste call,
+  confirm before shipping.
+- **Signal surfacing (for idea 2, manual judgment first):** idle duration is already
+  in the sessions payload (`lastOutput`); add a short last-transcript-entry preview
+  and a cheap "repeated tool error" flag so JP can scan many lanes for "is this a
+  good moment" without opening each one. This is the SAME data a smart-auto
+  classifier (Phase 3) would need — build it as UI first, reuse it as the classifier
+  input later.
+- **Mechanical structure outline (idea 4, cheap half):** `.msg.user` DOM markers
+  already exist and are already used by `jumpPrompt` (`client.ts:342-343`) to
+  navigate between prompts. Render that same list as a visible outline/rail instead
+  of only using it for ↑/↓ nav — zero new server calls, reuses data already flowing
+  through `/api/slots/:id/transcript`. This is the one sub-item that's genuinely
+  trivial+low-risk; the other Phase 1 items are small but are UI/taste decisions
+  worth a quick confirm.
+
+### Phase 2 — advisory review agent (idea 3 + idea 4's expensive half, merged)
+
+- One new sidebar action next to `±`/`⏏` (`🔍 review`) that spawns an INDEPENDENT
+  reviewer agent against the lane's diff (`/api/slots/:id/diff`, `server.ts:1157`) —
+  not a self-review by the same session (this session's own two real defect finds
+  both came from a fresh reviewer agent, not from re-reading my own work — don't
+  repeat that mistake here).
+- Deliberately **advisory, not blocking**: `land` stays gated on deterministic git
+  facts only (dirty/unpushed — see the land handler around `server.ts:1297+`). Mixing
+  in a soft LLM verdict as a hard gate would regress the "deterministic > statistical"
+  principle (`CLAUDE.md`) — false positives block real work, false negatives approve
+  bad work, and either way it *feels* like a hard fact when it isn't.
+- The review agent already reads the whole diff/transcript to critique it — have it
+  ALSO emit a short structural summary (what changed, in what order, any open
+  threads) as a second field in its output. This is idea 4's expensive half, folded
+  into Phase 2 as a side effect rather than a fifth thing to build separately.
+
+### Phase 3 — smart auto (only after Phase 1 signals prove out)
+
+- An opt-in Auto variant: before firing (same `idleSec` gate as today), classify the
+  recent transcript with a cheap model (Haiku) to decide message TYPE — motivational
+  nudge / re-focus (`/sharpen`-style) / hold. Same guard rails as today's Autos
+  (explicit per-slot opt-in, capped runs, `lastResult` shows why it fired).
+- **Do not build this first.** JP's manual technique works because HE reads the
+  moment. A wrong auto-classification injects an unsolicited message into a real
+  session under the appearance of being smart, which is worse than a badly-timed
+  cron message — it's more trusted precisely because it looks adaptive. Prove the
+  Phase 1 signals are the right ones (by using them manually for a while) before
+  automating the judgment they inform.
+
+**Effort:** Phase 1 ~half a session (mostly confirm-then-ship UI). Phase 2 ~1
+session (one new endpoint spawning an agent, one overlay). Phase 3: not before
+Phase 1 has been used for real and the signals are validated.
+
+**Open questions:** repo-color hashing scheme (deterministic hash → palette, or
+manual per-repo color)? Does the outline rail replace or sit alongside the existing
+↑/↓ prompt-jump buttons? Review agent model choice (cost vs. thoroughness) and
+whether findings persist anywhere or are ephemeral-per-click.
+
+---
+
 ## Hardening — findings from the review sweep, not new features
 
 Found while designing/reviewing the above, ranked by what actually costs

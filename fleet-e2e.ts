@@ -40,9 +40,12 @@ const badtok = await fetch(BASE + "/api/sessions", { headers: { authorization: "
 check("401 with wrong token", badtok.status === 401);
 const authed = await get("/api/sessions");
 check("200 with token", authed.status === 200);
-const sessJ = (await authed.json()) as { suffixes?: string[] };
-check("sessions payload carries suffix chips (defaults)", Array.isArray(sessJ.suffixes)
-  && sessJ.suffixes.length >= 1 && sessJ.suffixes.some((s) => s.includes("own your work")), JSON.stringify(sessJ.suffixes));
+// --- ✨ enhance (FLEET_ENHANCE_CMD stand-in): draft in → reworked prompt out ---
+check("enhance rejects empty text", (await post("/api/enhance", { text: "  " })).status === 400);
+const enhRes = await post("/api/enhance", { slot: 1, text: "mach mal x" });
+const enhJ = (await enhRes.json()) as { prompt?: string };
+check("enhance returns reworked prompt via stand-in",
+  enhRes.ok && enhJ.prompt === "enhanced prompt. own your work! /sharpen3", JSON.stringify(enhJ));
 const badhost = await fetch(BASE + "/api/sessions", { headers: { ...H, host: "evil.example:8790" } });
 check("403 DNS-rebinding host", badhost.status === 403);
 const badorigin = await fetch(BASE + "/send", {

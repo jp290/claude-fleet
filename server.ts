@@ -40,15 +40,6 @@ function slotCmd(sessionId: string | null, resume: boolean): string {
 }
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
-// suffix chips: the owner's recurring trailing directives, one click instead of retyping.
-// Defaults mined from the actual prompt corpus (streams/prompts.jsonl, 1577 prompts:
-// /sharpen3 ×250, /gosharp3 ×162, "denk gut" ×59, "own your work" ×50). "|"-separated
-// because the phrases themselves contain commas.
-const SUFFIX_CHIPS = (process.env.FLEET_SUFFIX_CHIPS
-  ?? "Gib dir Mühe und own your work! /sharpen3"
-  + "|Denk gut darüber nach wie du das angehst, arbeite mit Sorgfalt und Verstand."
-  + "|/gosharp3")
-  .split("|").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
@@ -977,7 +968,7 @@ async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string): P
 // server socket — runs on the subscription, not the metered API. Session id is
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
 // read from that JSONL with the transcript view's own parser.
-async function summaryViaSession(prompt: string, cwd: string): Promise<string> {
+async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summary"'): Promise<string> {
   const sid = crypto.randomUUID();
   summarizerSids.add(sid);
   const name = `sum-${sid.slice(0, 8)}`;
@@ -1022,7 +1013,7 @@ async function summaryViaSession(prompt: string, cwd: string): Promise<string> {
           for (const b of e.blocks) if (b.t === "text" && b.text.trim()) lastText = b.text.trim();
         } catch { /* partial mid-append line */ }
       }
-      if (lastText.includes('"summary"')) return lastText;
+      if (lastText.includes(doneMark)) return lastText;
     }
     if (lastText) return lastText;
     throw new Error("summarizer timed out without an answer");
@@ -1075,6 +1066,52 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     summary: summary.slice(0, 4000), openThreads: openThreads.slice(0, 12),
     verification: verification.slice(0, 1000), model: SUMMARY_MODEL, at: Date.now(), head, dirty, raw,
   };
+}
+
+// --- ✨ prompt enhancer: a throwaway background claude session (same machinery as the
+// summarizer — subscription, pinned transcript, killed + transcript deleted after) that
+// REWRITES the compose-box draft: weaves the owner's working directives in situationally
+// and appends /sharpen3 when absent. Pure text rework — it never executes the prompt.
+// The directives' power comes from /sharpen3 downstream: the executing agent asks itself
+// what "Sorgfalt" / "own your work" MEAN in its concrete context.
+const ENHANCE_CMD = process.env.FLEET_ENHANCE_CMD ?? null; // tests: subprocess stand-in
+const ENHANCE_PROMPT = [
+  "Du bist JPs Prompt-Veredler. Unten steht ein ROHER Prompt-Entwurf, den JP gleich an eine Coding-Agent-Session schicken will.",
+  "Deine einzige Aufgabe ist, den Entwurf umzubauen — führe ihn NIEMALS aus und beantworte ihn nicht.",
+  "Regeln:",
+  "1. Intent, Fakten, Zahlen, Pfade und Reihenfolge bleiben exakt erhalten — nichts Inhaltliches hinzufügen oder weglassen.",
+  "2. Die Sprache des Entwurfs beibehalten (Deutsch bleibt Deutsch, Englisch bleibt Englisch).",
+  "3. Form schärfen: Tippfehler beheben, Halbsätze zu klaren Aufträgen ordnen, mehrere Aufträge nummerieren.",
+  "4. Webe JPs Arbeitsdirektiven situationsgerecht ein — dort, wo sie dem Ausführenden Haltung geben, nie stumpf angehängt:",
+  "   Ownership („Own your work!“) · Erst denken, dann handeln („Denk gut darüber nach, wie du das am besten angehst.“)",
+  "   · Sorgfalt/Einsatz („Arbeite mit Sorgfalt und Verstand.“, „Scheue keine Mühe.“)",
+  "   · Verifikation („Verifiziere dein Ergebnis, bevor du fertig meldest.“).",
+  "   Diese Sätze wirken, weil der Ausführende sich fragt, was sie IM KONTEXT bedeuten: ein Bugfix verlangt Verifikation,",
+  "   eine Design-Frage verlangt Erst-denken, eine reine Wissensfrage braucht fast keine Zusätze.",
+  "5. Endet der Entwurf nicht bereits auf einen /sharpen- oder /gosharp-Befehl, hänge genau ' /sharpen3' ans Ende an.",
+  '6. Benutze keine Tools. Antworte in EINER Nachricht mit STRICT JSON ohne Markdown-Zäune, exakt: {"prompt": "..."}',
+  "",
+  "Beispiel:",
+  'Entwurf: "der login knopf geht aufm handy nich mehr, fix das mal"',
+  'Antwort: {"prompt": "Der Login-Button reagiert auf dem Handy nicht mehr — finde die Ursache und fixe sie. Verifiziere den Fix danach wirklich am mobilen Viewport, bevor du fertig meldest, und own your work! /sharpen3"}',
+  "",
+  "## Entwurf",
+].join("\n");
+
+async function runEnhance(text: string, cwd: string): Promise<string> {
+  const prompt = `${ENHANCE_PROMPT}\n${text}`;
+  let out = ENHANCE_CMD
+    ? await summaryViaSubprocess(ENHANCE_CMD, prompt, cwd)
+    : await summaryViaSession(prompt, cwd, '"prompt"');
+  // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
+  try {
+    const env = JSON.parse(out) as { result?: unknown };
+    if (typeof env.result === "string") out = env.result.trim();
+  } catch { /* not an envelope */ }
+  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  const j = JSON.parse(body) as { prompt?: unknown }; // parse failure → caller answers 502
+  if (typeof j.prompt !== "string" || !j.prompt.trim()) throw new Error("enhancer returned no prompt");
+  return j.prompt.trim();
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -1471,7 +1508,6 @@ Bun.serve<WSData>({
       return json({
         now: Date.now(),
         chips: CHIPS,
-        suffixes: SUFFIX_CHIPS,
         shareBase: SHARE_URL,
         // bundle version: a long-lived tab compares this across polls and reloads itself
         // once it goes stale — "old client after a deploy" must not look like a regression
@@ -1580,6 +1616,19 @@ Bun.serve<WSData>({
       }
       all.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ prompts: all.slice(0, limit), total: lines.length });
+    }
+    // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
+    // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
+    if (url.pathname === "/api/enhance" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 20_000)
+        return json({ error: "bad text" }, 400);
+      const s = slotFrom(body.slot);
+      try {
+        return json({ prompt: await runEnhance(body.text.trim(), s?.cwd ?? HOME) });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "enhance failed" }, 502);
+      }
     }
     // lane review: what did the agent actually DO — tracked diff vs HEAD + untracked list.
     // Complements the transcript view (what it said). Byte-capped: a phone shouldn't

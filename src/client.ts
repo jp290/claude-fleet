@@ -908,7 +908,7 @@ function renderSlots() {
     if (!s.cwd) continue;
     const visible = panes.some((p) => p.slot === s.id);
     const isFocused = panes[focused]?.slot === s.id;
-    const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : ""));
+    const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
     row.dataset.slot = String(s.id);
     row.appendChild(el("span", "n", s.id === 10 ? "0" : String(s.id)));
     {
@@ -925,13 +925,24 @@ function renderSlots() {
         row.appendChild(b);
       }
       if (s.git?.branch) {
-        const dirty = s.git.dirty > 0;
-        const parts = [s.worktree ? "⎇" : "", s.git.branch];
-        if (dirty) parts.push(`•${s.git.dirty}`);
+        // lifecycle: editing (uncommitted) → ready (clean but commits to push/land) → clean.
+        // for a lane this is exactly its land-readiness, so the color doubles as a "can I ⏏ yet"
+        const state = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean";
+        if (s.worktree) row.appendChild(el("span", "lanechip", "⎇")); // lanes read as first-class
+        const parts = [s.git.branch];
+        if (s.git.dirty) parts.push(`•${s.git.dirty}`);
         if (s.git.ahead) parts.push(`↑${s.git.ahead}`);
-        const bb = el("span", "branchbadge" + (dirty ? " dirty" : ""), parts.filter(Boolean).join(" "));
-        bb.title = `${s.git.branch} — ${s.git.dirty} changed, ${s.git.ahead} ahead, ${s.git.behind} behind`;
+        const bb = el("span", `branchbadge ${state}`, parts.join(" "));
+        bb.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to push, ${s.git.behind} behind`
+          + (s.worktree ? `\nFleet lane (${state}). ± review · ⏏ land` : "");
         row.appendChild(bb);
+      }
+      // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden)
+      if (s.worktree) {
+        const dff = el("span", "lanediff", "±");
+        dff.title = "review this lane's diff";
+        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
+        row.appendChild(dff);
       }
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
@@ -948,7 +959,8 @@ function renderSlots() {
         window.open(`/api/slots/${s.id}/export`, "_blank");
       };
       const act = el("div", "slotact");
-      if (s.git) {
+      if (s.git && !s.worktree) {
+        // plain repo session: diff is available but secondary, so it stays in the hover row
         const dff = el("span", "diff", "±");
         dff.title = "review working diff";
         dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
@@ -1150,11 +1162,11 @@ function renderQueue() {
     queuepanel.appendChild(el("div", "diffstat", "Dispatcher unavailable (set FLEET_DISPATCH_REPO to auto-run queued tasks). Tasks are still tracked; send them by hand."));
   }
 
-  const addWrap = el("div", "qrow");
-  const addIn = el("textarea", "qtext") as HTMLTextAreaElement;
-  addIn.placeholder = "New task…";
+  const addWrap = el("div", "qadd");
+  const addIn = el("textarea", "qaddin") as HTMLTextAreaElement;
+  addIn.placeholder = "New task — describe a feature or fix…";
   addIn.rows = 2;
-  const addBtn = el("button", "qbtn", "add") as HTMLButtonElement;
+  const addBtn = el("button", "qbtn primary", "add") as HTMLButtonElement;
   addBtn.onclick = async () => {
     if (!addIn.value.trim()) return;
     await post("/api/tasks", { text: addIn.value, queue: false });
@@ -1164,6 +1176,10 @@ function renderQueue() {
   };
   addWrap.append(addIn, addBtn);
   queuepanel.appendChild(addWrap);
+  // legend: the sidebar badges + lane lifecycle, explained once where the workflow lives
+  queuepanel.appendChild(el("div", "qlegend",
+    "flow: pending → queue ▸ → (dispatcher spawns a ⎇ lane, or send by hand) → ± review → ⏏ land.  "
+    + "badge: •N uncommitted · ↑N to push · amber = editing · green = ready to land"));
 
   const order = { pending: 0, queued: 1, sent: 2, done: 3 };
   const sorted = [...tasksList].sort((a, b) => (order[a.status] - order[b.status]) || (b.created - a.created));

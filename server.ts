@@ -56,7 +56,7 @@ interface Share { id: string; slot: number; secret: string; mode: "view" | "inte
 // a guest comment on a share — allowed in BOTH modes (it types nothing into the pty).
 // Freeform name is display-only, never trusted; keyed by share id so revoking the share
 // drops its thread (pruned in saveState).
-interface ShareComment { id: string; ts: number; name: string; text: string }
+interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
 const MAX_COMMENT_TEXT = 2000;
 const MAX_COMMENT_NAME = 40;
 const MAX_COMMENTS_PER_SHARE = 300;
@@ -1080,6 +1080,34 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summa
   }
 }
 
+// the summary contract, shared by the owner sideboard and the guest info tab:
+// run=false is a pure cache lookup and never spawns; run=true spawns at most one
+// agent per slot (single-flight) and the HEAD+status cache key stops repeat spends
+// on an unchanged tree no matter who keeps clicking.
+async function summaryResponse(s: Slot, run: boolean): Promise<Response> {
+  const st = await git(s.cwd!, "status", "--porcelain");
+  if (st.code !== 0) return json({ error: "not a git repository" }, 400);
+  const hd = await git(s.cwd!, "rev-parse", "HEAD");
+  const head = hd.code === 0 ? hd.out : null;
+  const dirty = st.out.split("\n").filter(Boolean).length;
+  const key = `${head}:${Bun.hash(st.out)}`;
+  const cached = summaryCache.get(s.id);
+  if (cached?.key === key) return json({ ...cached.result, cached: true, stale: false });
+  if (!run) return json(cached ? { ...cached.result, cached: true, stale: true } : { cached: false });
+  let inflight = summaryInflight.get(s.id);
+  if (!inflight) {
+    inflight = runSummary(s, head, dirty).finally(() => summaryInflight.delete(s.id));
+    summaryInflight.set(s.id, inflight);
+  }
+  try {
+    const result = await inflight;
+    summaryCache.set(s.id, { key, result });
+    return json({ ...result, cached: false, stale: false });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "summarizer failed" }, 500);
+  }
+}
+
 async function runSummary(s: Slot, head: string | null, dirty: number): Promise<SummaryResult> {
   const cwd = s.cwd!;
   const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
@@ -1454,7 +1482,7 @@ Bun.serve<WSData>({
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
-        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
+        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
     }
 
@@ -1478,7 +1506,7 @@ Bun.serve<WSData>({
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments|brief)$/.exec(url.pathname);
+    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments|brief|summary)$/.exec(url.pathname);
     if (shareApi) {
       const sh = shareBy(shareApi[1]);
       if (!sh) return json({ error: "unknown or revoked share" }, 404);
@@ -1529,6 +1557,13 @@ Bun.serve<WSData>({
         const p = await briefPayload(s);
         if (!p) return json({ error: "not a git repository" }, 400);
         return json(p);
+      }
+      if (shareApi[2] === "summary" && (req.method === "GET" || req.method === "POST")) {
+        // guests get the same ✨ summary as the owner sideboard — POST is safe to expose:
+        // single-flight per slot plus the git-state cache key bound how often the agent
+        // can actually run, no matter how often a guest clicks
+        if (!s.cwd) return json({ error: "session gone" }, 404);
+        return summaryResponse(s, req.method === "POST");
       }
       if (shareApi[2] === "comments") {
         // guest thread on this share — allowed in BOTH modes, it types nothing into the pty
@@ -1739,7 +1774,7 @@ Bun.serve<WSData>({
       if (!p) return json({ error: "not a git repository" }, 400);
       return json({ ...p, worktree: s.worktree });
     }
-    // guest comments, owner side: read the thread, delete single comments
+    // guest comments, owner side: read the thread, reply into it, delete single comments
     const cmMatch = /^\/api\/slots\/(\d+)\/comments(?:\/([a-z0-9]+)\/delete)?$/.exec(url.pathname);
     if (cmMatch) {
       const s = slotFrom(cmMatch[1]);
@@ -1750,6 +1785,17 @@ Bun.serve<WSData>({
         shareComments[sh.id] = (shareComments[sh.id] ?? []).filter((c) => c.id !== cmMatch[2]);
         saveState();
         return json({ ok: true });
+      }
+      if (!cmMatch[2] && req.method === "POST") {
+        // owner reply — lands in the same thread, marked so guests see who's talking
+        const body = await readJson(req);
+        const text = body && typeof body.text === "string" ? body.text.trim() : "";
+        if (!text || text.length > MAX_COMMENT_TEXT)
+          return json({ error: `comment must be 1–${MAX_COMMENT_TEXT} chars` }, 400);
+        const c: ShareComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), name: "owner", text, from: "owner" };
+        shareComments[sh.id] = [...(shareComments[sh.id] ?? []), c].slice(-MAX_COMMENTS_PER_SHARE);
+        saveState();
+        return json({ ok: true, comment: c });
       }
       if (!cmMatch[2] && req.method === "GET") return json({ comments: shareComments[sh.id] ?? [] });
       return json({ error: "bad request" }, 400);
@@ -1771,28 +1817,7 @@ Bun.serve<WSData>({
     if (sumMatch && (req.method === "GET" || req.method === "POST")) {
       const s = slotFrom(sumMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const st = await git(s.cwd, "status", "--porcelain");
-      if (st.code !== 0) return json({ error: "not a git repository" }, 400);
-      const hd = await git(s.cwd, "rev-parse", "HEAD");
-      const head = hd.code === 0 ? hd.out : null;
-      const dirty = st.out.split("\n").filter(Boolean).length;
-      const key = `${head}:${Bun.hash(st.out)}`;
-      const cached = summaryCache.get(s.id);
-      if (cached?.key === key) return json({ ...cached.result, cached: true, stale: false });
-      if (req.method === "GET")
-        return json(cached ? { ...cached.result, cached: true, stale: true } : { cached: false });
-      let run = summaryInflight.get(s.id);
-      if (!run) {
-        run = runSummary(s, head, dirty).finally(() => summaryInflight.delete(s.id));
-        summaryInflight.set(s.id, run);
-      }
-      try {
-        const result = await run;
-        summaryCache.set(s.id, { key, result });
-        return json({ ...result, cached: false, stale: false });
-      } catch (e) {
-        return json({ error: e instanceof Error ? e.message : "summarizer failed" }, 500);
-      }
+      return summaryResponse(s, req.method === "POST");
     }
     if (url.pathname === "/api/dirs") {
       try {

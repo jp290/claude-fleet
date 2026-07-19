@@ -413,6 +413,23 @@ check("sessions payload carries comment count", sessCmt.slots.find((x) => x.id =
 check("owner deletes a comment", (await post(`/api/slots/2/comments/${cmtPostJ.comment?.id ?? "x"}/delete`, {})).ok);
 const ownCmts2 = (await (await get("/api/slots/2/comments")).json()) as { comments: unknown[] };
 check("deleted comment gone", ownCmts2.comments.length === 0);
+// owner reply: lands in the same thread, marked, readable by guests
+const orep = await post("/api/slots/2/comments", { text: "owner-reply-check" });
+const orepJ = (await orep.json()) as { comment?: { id: string; from?: string } };
+check("owner reply posts into the thread marked from=owner", orep.ok && orepJ.comment?.from === "owner", JSON.stringify(orepJ));
+const cmtAfterReply = (await (await fetch(BASE + `/s/${shView.id}/comments`, { headers: { cookie: shCookie } })).json()) as
+  { comments: { text: string; from?: string }[] };
+check("guest sees the owner reply", cmtAfterReply.comments.some((c) => c.text === "owner-reply-check" && c.from === "owner"));
+check("owner empty reply rejected", (await post("/api/slots/2/comments", { text: "   " })).status === 400);
+// guest ✨ summary: same single-flight/cache contract as the owner endpoint
+check("share summary without cookie 401", (await fetch(BASE + `/s/${shInt.id}/summary`)).status === 401);
+const gsum = await fetch(BASE + `/s/${shInt.id}/summary`, { method: "POST", headers: { cookie: shICookie } });
+const gsumJ = (await gsum.json()) as { summary?: string };
+check("guest summary POST runs the shared agent path", gsum.ok && gsumJ.summary === "fake summary of the session",
+  JSON.stringify(gsumJ).slice(0, 80));
+const gsumGet = (await (await fetch(BASE + `/s/${shInt.id}/summary`, { headers: { cookie: shICookie } })).json()) as
+  { summary?: string; cached?: boolean };
+check("guest summary GET serves the cache", gsumGet.summary === "fake summary of the session" && gsumGet.cached === true);
 // --- share-mode: flip view/interact in place, same link + password ---
 // regression: this must reach an ACTUALLY-CONNECTED guest socket, not just the HTTP
 // send route checked below — the WS message handler looks up the share's mode live on

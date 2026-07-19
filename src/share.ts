@@ -18,7 +18,7 @@ const gate = $("gate"), pw = $("pw") as HTMLInputElement, gatemsg = $("gatemsg")
 
 interface Info { slotLabel: string | null; mode: "view" | "interact"; cols: number; rows: number; active: boolean;
   viewers?: number; comments?: number }
-interface ShareComment { id: string; ts: number; name: string; text: string }
+interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
 interface Brief { branch: string | null; sessionStart: number | null; uncommitted: number;
   files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] }
 
@@ -88,7 +88,7 @@ function activateTab(name: TabName) {
     b.classList.toggle("active", b.dataset.tab === name);
   for (const p of document.querySelectorAll<HTMLElement>(".pane"))
     p.classList.toggle("active", p.id === `pane-${name}`);
-  if (name === "info") void loadBrief();
+  if (name === "info") { void loadBrief(); void loadSummary(false); }
   if (name === "chat") {
     void loadComments();
     ($("cmtinput") as HTMLTextAreaElement).focus();
@@ -141,10 +141,75 @@ function empty(target: HTMLElement, text: string) {
   target.appendChild(e);
 }
 
+// --- ✨ summary: same agent the owner sideboard uses. GET = cache only; the button
+// POSTs a run (server side is single-flight + keyed on git state, so clicking twice
+// or two guests clicking at once still runs at most one agent).
+interface SummaryView { summary?: string; openThreads?: string[]; verification?: string;
+  at?: number; stale?: boolean; error?: string }
+let sumBusy = false;
+function renderSummary(d: SummaryView) {
+  const body = $("sumbody");
+  body.replaceChildren();
+  body.classList.remove("empty");
+  if (!d.summary) {
+    body.classList.add("empty");
+    body.textContent = "no summary yet — ask the agent for one";
+    return;
+  }
+  const p = document.createElement("div");
+  p.className = "sumtext";
+  p.textContent = d.summary;
+  body.appendChild(p);
+  for (const t of d.openThreads ?? []) {
+    const li = document.createElement("div");
+    li.className = "sumthread";
+    li.textContent = `· ${t}`;
+    body.appendChild(li);
+  }
+  if (d.verification) {
+    const v = document.createElement("div");
+    v.className = "sumver";
+    v.textContent = `verification: ${d.verification}`;
+    body.appendChild(v);
+  }
+  const meta = document.createElement("div");
+  meta.className = "summeta";
+  meta.textContent = `${d.at ? fmtAgo(d.at) : ""}${d.stale ? " · session moved on — refresh for current state" : ""}`;
+  body.appendChild(meta);
+}
+async function loadSummary(runIt: boolean) {
+  if (sumBusy) return;
+  const btn = $("sumbtn") as HTMLButtonElement;
+  if (runIt) {
+    sumBusy = true;
+    btn.disabled = true;
+    btn.textContent = "summarizing…";
+  }
+  try {
+    const res = await fetch(`/s/${shareId}/summary`, runIt ? { method: "POST" } : undefined);
+    const d = (await res.json().catch(() => ({}))) as SummaryView;
+    if (!res.ok || d.error) {
+      const body = $("sumbody");
+      body.replaceChildren();
+      body.classList.add("empty");
+      body.textContent = d.error ?? "summary unavailable for this session";
+      return;
+    }
+    renderSummary(d);
+  } finally {
+    if (runIt) {
+      sumBusy = false;
+      btn.disabled = false;
+    }
+    btn.textContent = $("sumbody").querySelector(".sumtext") ? "refresh" : "generate";
+  }
+}
+$("sumbtn").onclick = () => void loadSummary(true);
+
 let lastInfo: Info | null = null;
 async function loadBrief() {
   const res = await fetch(`/s/${shareId}/brief`);
-  const body = $("infobody");
+  const body = $("briefwrap");
   if (!res.ok) {
     body.replaceChildren();
     empty(body, res.status === 400 ? "this session is not inside a git repository" : "session overview unavailable");
@@ -235,11 +300,11 @@ function renderComments(comments: ShareComment[]) {
   }
   for (const c of comments) {
     const box = document.createElement("div");
-    box.className = "cmt";
+    box.className = c.from === "owner" ? "cmt own" : "cmt";
     const head = document.createElement("div");
     head.className = "cmthead";
     const who = document.createElement("b");
-    who.textContent = c.name;
+    who.textContent = c.from === "owner" ? "owner" : c.name;
     const when = document.createElement("span");
     when.textContent = fmtAgo(c.ts);
     head.append(who, when);

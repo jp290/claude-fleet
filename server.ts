@@ -238,21 +238,86 @@ async function git(dir: string, ...args: string[]): Promise<{ out: string; err: 
   return { out: out.trim(), err: err.trim(), code };
 }
 
+// --- session scoping: every brief/diff section describes THE SESSION's lifetime, not the
+// repo's whole history (git log -15 was identical for every session in the same repo, and
+// diff-vs-HEAD went blank the moment work was committed). Anchor = the first timestamp in
+// the pinned transcript. Pinned sessions only — same rationale as the harvester: the mtime
+// fallback can flap between files. Unpinned slots degrade to repo-scoped behavior.
+// Limitation: TIME scope, not author scope — parallel sessions committing in the same cwd
+// show up too; exact isolation is what lanes are for.
+const startCache = new Map<number, { file: string; ts: number | null }>();
+function sessionStart(s: Slot): number | null {
+  if (!s.sessionId || !s.cwd) return null;
+  const file = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
+  const c = startCache.get(s.id);
+  if (c && c.file === file) return c.ts;
+  let ts: number | null = null;
+  try {
+    const fd = openSync(file, "r");
+    const buf = Buffer.alloc(16_384);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    closeSync(fd);
+    for (const line of buf.toString("utf8", 0, n).split("\n")) {
+      try {
+        const d = JSON.parse(line) as { timestamp?: unknown };
+        if (typeof d.timestamp === "string") {
+          const t = Date.parse(d.timestamp);
+          if (t) { ts = t; break; }
+        }
+      } catch { /* meta or partial line — keep looking */ }
+    }
+  } catch {
+    return null; // transcript not created yet
+  }
+  startCache.set(s.id, { file, ts });
+  return ts;
+}
+// the last commit BEFORE the session began — everything after it is the session's work
+async function sessionBase(cwd: string, startTs: number): Promise<string | null> {
+  const r = await git(cwd, "rev-list", "-1", `--before=${new Date(startTs).toISOString()}`, "HEAD");
+  return r.code === 0 && r.out ? r.out : null;
+}
+async function slotBase(s: Slot): Promise<string | null> {
+  const start = sessionStart(s);
+  return start ? await sessionBase(s.cwd!, start) : null;
+}
+// session-scoped changed-files list, porcelain-shaped ("M  path") so the client renders
+// both scopes the same way; untracked files ride along from live status
+function sessionFiles(nameStatusOut: string, statusOut: string): string[] {
+  const files = nameStatusOut.split("\n").filter(Boolean).map((l) => {
+    const [code, ...rest] = l.split("\t");
+    return `${(code[0] ?? "M").padEnd(2)} ${rest[rest.length - 1] ?? ""}`;
+  });
+  for (const l of statusOut.split("\n")) if (l.startsWith("??")) files.push(l);
+  return files.slice(0, 500);
+}
+
 // the "what changed" document, shared by the owner ± overlay and the guest changes view.
-// Byte-capped: a phone shouldn't receive a megabyte lockfile diff.
+// base = session base commit → the session's cumulative work (committed + uncommitted);
+// base null → plain uncommitted diff vs HEAD. Byte-capped: a phone shouldn't receive a
+// megabyte lockfile diff.
 const DIFF_CAP = 400_000;
-async function diffPayload(cwd: string): Promise<{ branch: string | null; status: string[]; diff: string; truncated: boolean } | null> {
+async function diffPayload(cwd: string, base: string | null): Promise<{ branch: string | null; status: string[];
+  diff: string; truncated: boolean; sessionScoped: boolean } | null> {
   const st = await git(cwd, "status", "--porcelain");
   if (st.code !== 0) return null; // not a git repository
-  const d = await git(cwd, "diff", "HEAD", "--no-color");
+  const d = await git(cwd, "diff", base ?? "HEAD", "--no-color");
   const diff = d.code === 0 ? d.out : ""; // e.g. repo with no commits yet
+  let status: string[];
+  if (base) {
+    const ns = await git(cwd, "diff", "--name-status", "--no-color", base);
+    status = sessionFiles(ns.code === 0 ? ns.out : "", st.out);
+  } else {
+    status = st.out.split("\n").filter(Boolean).slice(0, 500);
+  }
   // read the branch fresh, not from the 10s badge cache — a just-created lane isn't cached yet
   const br = await git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
   return {
     branch: br.code === 0 ? br.out : null,
-    status: st.out.split("\n").filter(Boolean).slice(0, 500),
+    status,
     diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
     truncated: diff.length > DIFF_CAP,
+    sessionScoped: !!base,
   };
 }
 
@@ -391,6 +456,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
+  startCache.delete(s.id); // the fresh session gets a fresh start anchor
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
@@ -424,6 +490,7 @@ async function killSlot(s: Slot): Promise<void> {
   s.label = null;
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
   harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
+  startCache.delete(s.id);
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
@@ -1341,7 +1408,7 @@ Bun.serve<WSData>({
         // read-only "what did this session change" for guests — allowed in BOTH modes
         // (it types nothing into the pty), PR-review feel without repo access
         if (!s.cwd) return json({ error: "session gone" }, 404);
-        const p = await diffPayload(s.cwd);
+        const p = await diffPayload(s.cwd, await slotBase(s));
         if (!p) return json({ error: "not a git repository" }, 400);
         return json(p);
       }
@@ -1521,7 +1588,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && diffMatch) {
       const s = slotFrom(diffMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const p = await diffPayload(s.cwd);
+      const p = await diffPayload(s.cwd, await slotBase(s));
       if (!p) return json({ error: "not a git repository" }, 400);
       return json({ ...p, worktree: s.worktree });
     }
@@ -1535,18 +1602,33 @@ Bun.serve<WSData>({
       const st = await git(s.cwd, "status", "--porcelain");
       if (st.code !== 0) return json({ error: "not a git repository" }, 400);
       const br = await git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD");
-      const lg = await git(s.cwd, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
-      const sh = await git(s.cwd, "diff", "HEAD", "--shortstat", "--no-color");
+      // every section scoped to THE SESSION's lifetime where a pinned transcript gives us
+      // its start; unpinned slots degrade to repo-now/repo-history (the old behavior)
+      const start = sessionStart(s);
+      const base = start ? await sessionBase(s.cwd, start) : null;
+      const lg = start
+        ? await git(s.cwd, "log", "--no-color", `--since=${new Date(start).toISOString()}`, "--format=%h%x09%ct%x09%s", "-15")
+        : await git(s.cwd, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
+      const sh = await git(s.cwd, "diff", base ?? "HEAD", "--shortstat", "--no-color");
       const commits = lg.code === 0
         ? lg.out.split("\n").filter(Boolean).map((l) => {
             const [hash, ct, ...rest] = l.split("\t");
             return { hash, ts: Number(ct) * 1000, subject: rest.join("\t") };
           })
         : [];
+      let files: string[];
+      if (base) {
+        const ns = await git(s.cwd, "diff", "--name-status", "--no-color", base);
+        files = sessionFiles(ns.code === 0 ? ns.out : "", st.out).slice(0, 200);
+      } else {
+        files = st.out.split("\n").filter(Boolean).slice(0, 200);
+      }
       return json({
         branch: br.code === 0 ? br.out : null,
         worktree: s.worktree,
-        files: st.out.split("\n").filter(Boolean).slice(0, 200),
+        sessionStart: start,
+        uncommitted: st.out.split("\n").filter(Boolean).length,
+        files,
         shortstat: sh.code === 0 ? sh.out : "",
         commits,
       });

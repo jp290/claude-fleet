@@ -524,8 +524,8 @@ let layout = 1;
 // git facts fetched fresh from /brief per render, and the prompt outline derived from
 // the SAME transcript feed the conversation view renders. No state of its own to drift.
 interface BriefCommit { hash: string; ts: number; subject: string }
-interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; files: string[];
-  shortstat: string; commits: BriefCommit[] }
+interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; sessionStart: number | null;
+  uncommitted: number; files: string[]; shortstat: string; commits: BriefCommit[] }
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
@@ -607,6 +607,8 @@ async function renderBoard() {
       const b = el("div", "bstate");
       b.appendChild(el("span", "bbranch", brief.branch));
       if (brief.worktree) b.appendChild(document.createTextNode(" · fleet lane"));
+      if (brief.sessionStart) b.appendChild(document.createTextNode(
+        ` · session since ${new Date(brief.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));
       head.appendChild(b);
     }
     nodes.push(head);
@@ -614,10 +616,10 @@ async function renderBoard() {
       const st = el("div", "bsec");
       st.appendChild(el("h3", "", "state"));
       const line = el("div", "bstate");
-      if (brief.files.length) {
+      if (brief.uncommitted) {
         line.appendChild(el("span", "editing",
-          `${brief.files.length} file${brief.files.length === 1 ? "" : "s"} with uncommitted changes`));
-        if (brief.shortstat) line.appendChild(document.createTextNode(` — ${brief.shortstat}`));
+          `${brief.uncommitted} file${brief.uncommitted === 1 ? "" : "s"} with uncommitted changes`));
+        if (!brief.sessionStart && brief.shortstat) line.appendChild(document.createTextNode(` — ${brief.shortstat}`));
       } else {
         line.appendChild(el("span", "ready", "working tree clean"));
       }
@@ -649,7 +651,7 @@ async function renderBoard() {
       if (sum?.summary) {
         // visible aging: the summary is pinned to the git state it was computed on
         const c0 = brief.commits[0];
-        const stale = (!!sum.head && !!c0 && !sum.head.startsWith(c0.hash)) || sum.dirty !== brief.files.length;
+        const stale = (!!sum.head && !!c0 && !sum.head.startsWith(c0.hash)) || sum.dirty !== brief.uncommitted;
         if (stale) ssec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
         ssec.appendChild(el("div", "bsum", sum.summary));
         if (sum.openThreads?.length) {
@@ -686,7 +688,8 @@ async function renderBoard() {
       nodes.push(ssec);
       if (brief.files.length) {
         const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", "changed files"));
+        sec.appendChild(el("h3", "", brief.sessionStart ? "changed this session" : "changed files"));
+        if (brief.sessionStart && brief.shortstat) sec.appendChild(el("div", "bstate", brief.shortstat));
         for (const f of brief.files.slice(0, 30)) {
           const row = el("div", "bfile");
           row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
@@ -698,9 +701,10 @@ async function renderBoard() {
         if (brief.files.length > 30) sec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
         nodes.push(sec);
       }
-      if (brief.commits.length) {
+      if (brief.commits.length || brief.sessionStart) {
         const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", "recent commits"));
+        sec.appendChild(el("h3", "", brief.sessionStart ? "commits this session" : "recent commits"));
+        if (!brief.commits.length) sec.appendChild(el("div", "bempty", "no commits this session yet"));
         for (const cm of brief.commits) {
           const row = el("div", "brow");
           row.appendChild(el("span", "bhash", cm.hash));
@@ -1377,11 +1381,14 @@ function renderDiffInto(target: HTMLElement, diff: string) {
 
 async function openDiff(slotId: number) {
   setDrawer(false);
-  diffpanel.replaceChildren(el("h2", "", "Working diff"));
+  diffpanel.replaceChildren(el("h2", "", "Diff"));
   diffdlg.style.display = "flex";
   const res = await api(`/api/slots/${slotId}/diff`);
   const data = (await res.json().catch(() => ({}))) as
-    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean; error?: string };
+    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean;
+      sessionScoped?: boolean; error?: string };
+  diffpanel.replaceChildren(el("h2", "", data.sessionScoped
+    ? "Session diff — everything this session changed" : "Working diff (uncommitted)"));
   if (data.error) { diffpanel.appendChild(el("div", "diffstat", data.error)); return; }
   const nChanged = data.status?.length ?? 0;
   diffpanel.appendChild(el("div", "diffstat",
@@ -1389,7 +1396,9 @@ async function openDiff(slotId: number) {
   if (!data.diff) {
     diffpanel.appendChild(el("div", "diffstat", nChanged
       ? "(changes are untracked — no tracked diff)"
-      : "clean working tree — everything is committed; see the recent commits in the session brief"));
+      : data.sessionScoped
+        ? "this session hasn't changed anything yet"
+        : "clean working tree — everything is committed"));
     return;
   }
   const box = el("div", "difftxt");

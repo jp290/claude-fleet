@@ -127,6 +127,15 @@ let shares: Share[] = [];
 let autos: Auto[] = [];
 let tasks: Task[] = [];
 const MAX_TASKS = 200;
+// cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
+// must never be evicted just because 200 done tasks piled up — only `done` is prunable
+function capTasks(list: Task[]): Task[] {
+  if (list.length <= MAX_TASKS) return list;
+  const live = new Set(list.filter((t) => t.status !== "done"));
+  const keepDone = Math.max(0, MAX_TASKS - live.size);
+  const keptDone = new Set(list.filter((t) => t.status === "done").slice(-keepDone));
+  return list.filter((t) => live.has(t) || keptDone.has(t));
+}
 const MAX_TASK_TEXT = 20_000;
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
@@ -246,7 +255,10 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   const top = await git(repoDir, "rev-parse", "--show-toplevel");
   if (top.code !== 0) throw new Error("not a git repository");
   const root = top.out;
-  const branch = branchRaw.trim() || `fleet/${new Date().toISOString().slice(2, 16).replace(/[-:T]/g, "")}`;
+  // auto name carries seconds + a random suffix so two lanes spawned in the same minute
+  // (e.g. back-to-back dispatcher ticks) can't slug to the same worktree path and collide
+  const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
+  const branch = branchRaw.trim() || `fleet/${stamp}-${randomBytes(2).toString("hex")}`;
   const chk = await git(root, "check-ref-format", "--branch", branch);
   if (chk.code !== 0) throw new Error(`invalid branch name: ${branch}`);
   const path = `${root}.worktrees/${branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
@@ -254,9 +266,15 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   mkdirSync(`${root}.worktrees`, { recursive: true });
   const add = await git(root, "worktree", "add", "-b", branch, path);
   if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
-  for (const f of [".env", "CLAUDE.md"]) {
-    if (existsSync(`${root}/${f}`) && !existsSync(`${path}/${f}`))
-      await Bun.write(`${path}/${f}`, Bun.file(`${root}/${f}`));
+  // copy env scaffolding a fresh checkout lacks — but ONLY files git IGNORES in the source
+  // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
+  // and would leave the lane permanently "dirty", blocking `land`. Gitignored copies stay
+  // invisible to `git status`, so the lane is landable the moment its real work is committed.
+  for (const f of [".env", "CLAUDE.md", ".claude/settings.local.json"]) {
+    if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`)) continue;
+    if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
+    if (f.includes("/")) mkdirSync(dirname(`${path}/${f}`), { recursive: true });
+    await Bun.write(`${path}/${f}`, Bun.file(`${root}/${f}`));
   }
   return { repo: root, path, branch };
 }
@@ -498,6 +516,14 @@ async function tickDispatch(): Promise<void> {
       // next tickAutos-style gate isn't reused here because a brand-new lane is idle by
       // definition, but claude's own startup needs a moment
       await Bun.sleep(4000);
+      // the owner may have killed/re-opened this slot during the sleep — re-verify it is
+      // still OUR lane before injecting external text, or we'd prompt an unrelated session
+      if (free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id) {
+        next.status = "queued";
+        next.note = "slot changed during spawn — requeued";
+        saveState();
+        return;
+      }
       await sendText(free, next.text, true);
       logPrompt(free, next.text, "auto", Date.now());
       console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
@@ -769,7 +795,7 @@ async function handleIntake(req: Request): Promise<Response> {
     id: randomBytes(4).toString("hex"), text, source: "intake", from,
     status: "pending", created: now, slot: null, note: null,
   };
-  tasks = [...tasks, t].slice(-MAX_TASKS);
+  tasks = capTasks([...tasks, t]);
   saveState();
   console.log(`intake: task from ${from ?? "unknown"} (${text.length} chars)`);
   return json({ ok: true });
@@ -803,7 +829,8 @@ if (existsSync(STATE_FILE)) {
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
         && ((x as Task).source === "owner" || (x as Task).source === "intake")
-        && ["pending", "queued", "sent", "done"].includes((x as Task).status)).slice(-MAX_TASKS);
+        && ["pending", "queued", "sent", "done"].includes((x as Task).status));
+      tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
       if (s && typeof v?.cwd === "string") {
@@ -841,6 +868,16 @@ if (ls.code === 0) {
 // a share whose session didn't survive the downtime must not come back — same for schedules
 shares = shares.filter((sh) => slotFrom(sh.slot)?.cwd);
 autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
+// a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
+// slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
+// instead of leaving it "sent" forever with nothing running
+for (const t of tasks) {
+  if (t.status === "sent" && !(t.slot != null && slotFrom(t.slot)?.worktree)) {
+    t.status = "queued";
+    t.note = "requeued after restart";
+    t.slot = null;
+  }
+}
 saveState();
 for (const s of slots) {
   if (!s.cwd) continue;
@@ -1137,7 +1174,7 @@ Bun.serve<WSData>({
         source: "owner", from: null,
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null, note: null,
       };
-      tasks = [...tasks, t].slice(-MAX_TASKS);
+      tasks = capTasks([...tasks, t]);
       saveState();
       return json({ ok: true, task: t });
     }
@@ -1268,6 +1305,7 @@ Bun.serve<WSData>({
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed" }, 400);
         }
+        void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
         return json({ ok: true, cwd: s.cwd });
       }
       if (slotMatch[2] === "open-worktree") {
@@ -1296,17 +1334,25 @@ Bun.serve<WSData>({
         const st = await git(path, "status", "--porcelain");
         if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
         if (st.out) return json({ error: `worktree has uncommitted changes:\n${st.out.slice(0, 400)}` }, 409);
+        // "safe to drop" = the commits ahead of main are preserved somewhere: pushed to a
+        // push/upstream ref, OR present on ANY remote (covers `push` without `-u`), OR merged
+        // into the repo's main HEAD. Otherwise refuse — landing would lose unpushed work.
         const unpushed = await git(path, "log", "--oneline", "@{push}..", "--");
-        // no upstream configured counts as unpushed unless the branch is fully merged into HEAD of the repo
-        if (unpushed.code !== 0) {
+        if (unpushed.code === 0) {
+          if (unpushed.out) return json({ error: `unpushed commits:\n${unpushed.out.slice(0, 400)}` }, 409);
+        } else {
+          const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
           const merged = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
-          if (!merged.out.trim()) return json({ error: "branch has no upstream and is not merged — push or merge it first" }, 409);
-        } else if (unpushed.out) {
-          return json({ error: `unpushed commits:\n${unpushed.out.slice(0, 400)}` }, 409);
+          if (!onRemote.out.trim() && !merged.out.trim())
+            return json({ error: "branch is not pushed to any remote and not merged — push or merge it first" }, 409);
         }
-        await killSlot(s); // frees the pane first so nothing holds the tree
+        // remove the worktree FIRST, while the slot is still intact: a failed remove (locked,
+        // submodule, races dirty) then leaves the lane fully recoverable via ⏏ instead of a
+        // torn-down slot pointing at an orphaned tree. `worktree remove` re-checks dirtiness
+        // itself, so the small window since the status check above stays safe.
         const rmv = await git(repo, "worktree", "remove", path);
-        if (rmv.code !== 0) return json({ error: `slot closed, but worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 500);
+        if (rmv.code !== 0) return json({ error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
+        await killSlot(s);
         void tickGit().catch(() => {});
         return json({ ok: true, removed: path, branch });
       }

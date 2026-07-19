@@ -166,11 +166,20 @@
     background: #262626; color: #888; font-size: 15px; font-family: inherit; cursor: pointer; }
   #histbtn:hover, #autobtn:hover { color: #ccc; }
   .slot .autobadge { flex: none; font-size: 10px; color: #e0af68; }
-  .slot .branchbadge { flex: none; font-size: 10px; color: #7dcfff; max-width: 90px; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-  .slot .branchbadge.dirty { color: #e0af68; }
+  /* lanes are first-class: a left accent + a ⎇ chip set them apart from plain repo sessions */
+  .slot.lane { border-left: 2px solid #3a4a7a; }
+  .slot.lane.current { border-left-color: #7aa2f7; }
+  .slot .lanechip { flex: none; font-size: 11px; color: #7aa2f7; font-weight: 700; }
+  .slot .branchbadge { flex: none; font-size: 10px; max-width: 96px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; color: #6a7080; }
+  /* lifecycle colors double as land-readiness for lanes */
+  .slot .branchbadge.editing { color: #e0af68; }  /* uncommitted work in progress */
+  .slot .branchbadge.ready { color: #9ece6a; }    /* clean, commits waiting to push/land */
+  .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
+  .slot .lanediff:hover { color: #bfe6ff; }
   .slot .lane, .slot .diff { flex: none; font-size: 12px; color: #666; cursor: pointer; }
-  .slot .lane:hover, .slot .diff:hover { color: #7dcfff; }
+  .slot .lane:hover { color: #9ece6a; }
+  .slot .diff:hover { color: #7dcfff; }
   #diffpanel, #queuepanel { max-width: 900px; width: 92vw; }
   .difftxt { white-space: pre; overflow: auto; max-height: 60vh; background: #101010; border: 1px solid #2a2a2a;
     border-radius: 8px; padding: 10px 12px; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
@@ -183,9 +192,17 @@
   .qrow.pending { border-left: 3px solid #666; } .qrow.queued { border-left: 3px solid #7aa2f7; }
   .qrow.sent { border-left: 3px solid #9ece6a; } .qrow.done { border-left: 3px solid #333; opacity: 0.6; }
   .qrow .qintake { color: #e0af68; }
+  .qadd { display: flex; gap: 8px; align-items: stretch; margin: 4px 0 6px; }
+  .qaddin { flex: 1; min-height: 40px; resize: vertical; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #333; background: #1a1a1a; color: #eee; font: 13px/1.4 inherit; }
+  .qaddin:focus { outline: none; border-color: #3a4a7a; }
+  .qlegend { color: #666; font-size: 11px; line-height: 1.5; margin: 2px 0 12px;
+    padding: 8px 10px; background: #161616; border-radius: 8px; }
   .qbtn { flex: none; padding: 4px 9px; border-radius: 6px; border: 1px solid #333; background: #262626;
     color: #ccc; font-size: 11px; cursor: pointer; font-family: inherit; }
   .qbtn:hover { background: #2c3a5e; }
+  .qbtn.primary { background: #7aa2f7; border-color: #7aa2f7; color: #10131c; font-weight: 700; padding: 4px 16px; }
+  .qbtn.primary:hover { background: #6a92e7; }
   #queuebtn { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
   #queuebtn:hover { color: #ccc; } #queuebtn.hot { color: #e0af68; border-color: #5a4a2a; }

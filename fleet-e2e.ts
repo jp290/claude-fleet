@@ -385,6 +385,10 @@ if (REPO) {
   check("open-worktree on an active slot is refused", wtRefused.status === 400);
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
+  // the copied .env is gitignored in the test repo, so it must NOT show as dirty — a fresh
+  // lane has to be clean, or `land` would be permanently blocked by scaffolding files
+  const freshDiff = (await (await get("/api/slots/5/diff")).json()) as { status: string[] };
+  check("fresh lane is clean (gitignored .env copy not counted dirty)", freshDiff.status.length === 0, JSON.stringify(freshDiff.status));
 
   // diff endpoint: make a tracked change in the lane, expect it in the diff
   await Bun.write(`${wtDir}/code.txt`, "root\nlane-edit\n");
@@ -403,6 +407,17 @@ if (REPO) {
   spawnSync("git", ["-C", wtDir, "commit", "-aqm", "lane work"]);
   const landUnpushed = await post("/api/slots/5/land", {});
   check("land refuses unpushed commits", landUnpushed.status === 409, `status ${landUnpushed.status}`);
+
+  // pushing the lane to a remote (WITHOUT -u/upstream) must make land succeed — the work is
+  // preserved on the remote even though @{push} is unresolvable. Regression for the
+  // over-strict no-upstream fallback.
+  const bare = `${REPO}.remote.git`;
+  spawnSync("git", ["init", "--bare", "-q", bare]);
+  spawnSync("git", ["-C", wtDir, "remote", "add", "origin", bare]);
+  spawnSync("git", ["-C", wtDir, "push", "-q", "origin", "e2e-lane"]); // no -u: creates refs/remotes/origin/*
+  const landPushed = await post("/api/slots/5/land", {});
+  check("land accepts a lane pushed to a remote (no upstream set)", landPushed.ok, await landPushed.text());
+  check("pushed lane removed from disk", !((): boolean => { try { return statSync(wtDir).isDirectory(); } catch { return false; } })());
 
   // a lane clean AND merged into HEAD (fresh lane at HEAD) lands cleanly. Open a second one.
   const wt2 = await post("/api/slots/6/open-worktree", { repo: REPO, branch: "e2e-clean" });

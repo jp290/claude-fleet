@@ -585,6 +585,12 @@ if (REPO) {
     mgDirty.status === "blocked" && (mgDirty.detail ?? "").includes("uncommitted"), JSON.stringify(mgDirty));
 
   spawnSync("git", ["-C", lnPath, "commit", "-aqm", "merge work"]);
+  // diverge main AFTER the lane's commit: a lane that was never rebased is now NOT a
+  // descendant of main, so a lying "rebased" claim is deterministically detectable
+  await Bun.write(`${REPO}/other.txt`, "mainline\n");
+  spawnSync("git", ["-C", REPO, "add", "other.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "mainline work"]);
+
   await setMergeMode("blocked");
   const mgB = await post(`/api/slots/${lnSlot}/merge`, {});
   check("merge POST starts an async job", ((await mgB.json()) as { running?: boolean }).running === true);
@@ -595,16 +601,17 @@ if (REPO) {
   await setMergeMode("lie");
   await post(`/api/slots/${lnSlot}/merge`, {});
   const vL = await waitMerge(lnSlot);
-  check("merge re-verifies the agent's claim — lying agent → error, lane kept",
+  check("merge re-verifies the rebase claim — lying agent → error, lane kept",
     !vL.gone && vL.last?.status === "error" && exists(lnPath), JSON.stringify(vL.last));
 
   await setMergeMode("do");
   await post(`/api/slots/${lnSlot}/merge`, {});
   const vD = await waitMerge(lnSlot);
-  check("merge agent really merges → verified, landed, slot torn down", vD.gone, JSON.stringify(vD));
+  check("agent rebases → server ff-merges + lands, slot torn down", vD.gone, JSON.stringify(vD));
   check("merged lane removed from disk", !exists(lnPath));
-  check("main received the lane's commit",
-    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("merge work"));
+  const mainLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+  check("main received the lane's commit on top of the diverged mainline",
+    mainLog.includes("merge work") && mainLog.includes("mainline work"), mainLog.trim());
   check("merge rejects a non-lane slot", (await post("/api/slots/2/merge", {})).status === 400);
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,

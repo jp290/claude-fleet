@@ -1173,6 +1173,32 @@ Bun.serve<WSData>({
         truncated: diff.length > DIFF_CAP,
       });
     }
+    // lane brief: the deterministic layer of the session overview — recent commits,
+    // changed files, uncommitted summary. Everything here is fresh git output computed
+    // per request (never cached), so the sideboard can't drift from reality.
+    const briefMatch = /^\/api\/slots\/(\d+)\/brief$/.exec(url.pathname);
+    if (req.method === "GET" && briefMatch) {
+      const s = slotFrom(briefMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const st = await git(s.cwd, "status", "--porcelain");
+      if (st.code !== 0) return json({ error: "not a git repository" }, 400);
+      const br = await git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD");
+      const lg = await git(s.cwd, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
+      const sh = await git(s.cwd, "diff", "HEAD", "--shortstat", "--no-color");
+      const commits = lg.code === 0
+        ? lg.out.split("\n").filter(Boolean).map((l) => {
+            const [hash, ct, ...rest] = l.split("\t");
+            return { hash, ts: Number(ct) * 1000, subject: rest.join("\t") };
+          })
+        : [];
+      return json({
+        branch: br.code === 0 ? br.out : null,
+        worktree: s.worktree,
+        files: st.out.split("\n").filter(Boolean).slice(0, 200),
+        shortstat: sh.code === 0 ? sh.out : "",
+        commits,
+      });
+    }
     if (url.pathname === "/api/dirs") {
       try {
         return json(await listDirs(url.searchParams.get("path") ?? "~"));

@@ -426,6 +426,81 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   return { repo: root, path, branch };
 }
 
+// every open worktree of a repo, primary checkout first — `git worktree list` is the
+// single source of truth, so lanes whose slot was killed (worktree still on disk,
+// previously invisible anywhere in the UI) stay findable
+interface WtEntry { path: string; branch: string; primary: boolean }
+async function listWorktrees(root: string): Promise<WtEntry[]> {
+  const ls = await git(root, "worktree", "list", "--porcelain");
+  if (ls.code !== 0) return [];
+  const out: WtEntry[] = [];
+  let cur: { path?: string; branch?: string } = {};
+  for (const line of [...ls.out.split("\n"), ""]) {
+    if (line.startsWith("worktree ")) cur = { path: line.slice(9) };
+    else if (line.startsWith("branch ")) cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
+    else if (!line.trim() && cur.path) {
+      out.push({ path: cur.path, branch: cur.branch ?? "(detached)", primary: out.length === 0 });
+      cur = {};
+    }
+  }
+  return out;
+}
+
+// "safe to drop" checks + removal, shared by land and orphan cleanup: git's OWN
+// dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
+// commits are neither pushed to any remote nor merged, so removal can never eat work
+async function removeWorktreeSafe(repo: string, path: string, branch: string): Promise<{ error: string; code: number } | null> {
+  const st = await git(path, "status", "--porcelain");
+  if (st.code !== 0) return { error: "git status failed — worktree gone?", code: 400 };
+  if (st.out) return { error: `worktree has uncommitted changes:\n${st.out.slice(0, 400)}`, code: 409 };
+  // "safe to drop" = the commits are preserved somewhere: pushed to a push/upstream ref,
+  // OR present on ANY remote (covers `push` without `-u`), OR merged into the repo's HEAD
+  const unpushed = await git(path, "log", "--oneline", "@{push}..", "--");
+  if (unpushed.code === 0) {
+    if (unpushed.out) return { error: `unpushed commits:\n${unpushed.out.slice(0, 400)}`, code: 409 };
+  } else {
+    const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
+    const merged = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
+    if (!onRemote.out.trim() && !merged.out.trim())
+      return { error: "branch is not pushed to any remote and not merged — push or merge it first", code: 409 };
+  }
+  const rmv = await git(repo, "worktree", "remove", path);
+  if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
+  return null;
+}
+
+// deterministic lane teardown: safety-checked worktree removal FIRST, while the slot is
+// still intact — a failed remove leaves the lane fully recoverable instead of a torn-down
+// slot pointing at an orphaned tree. Shared by the ⏏ land endpoint and the merge agent.
+async function landLane(s: Slot): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
+  if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
+  const { repo, branch } = s.worktree;
+  const path = s.cwd;
+  const fail = await removeWorktreeSafe(repo, path, branch);
+  if (fail) return fail;
+  // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
+  // (which handles aborts) sees nothing left to detach
+  for (const t of tasks) {
+    if (t.slot === s.id && t.status === "sent") {
+      t.status = "done";
+      t.note = `landed (${branch})`;
+    }
+  }
+  await killSlot(s);
+  void tickGit().catch(() => {});
+  return { removed: path, branch };
+}
+
+async function openLaneInSlot(s: Slot, repo: string, branch: string): Promise<{ cwd: string; branch: string }> {
+  const wt = await createWorktree(repo, branch);
+  await openSlot(s, wt.path);
+  s.worktree = { repo: wt.repo, branch: wt.branch };
+  s.label = wt.branch.replace(/^fleet\//, "⎇ "); // lane identity beats the dir-slug basename
+  saveState();
+  void tickGit().catch(() => {}); // badge should appear on the next sessions poll
+  return { cwd: s.cwd ?? wt.path, branch: wt.branch };
+}
+
 // resize jiggle: SIGWINCH makes the TUI repaint into the fresh pipe so the client aligns
 async function repaint(name: string): Promise<void> {
   const size = await tmux("display-message", "-p", "-t", name, "#{window_width} #{window_height}");
@@ -501,6 +576,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
+  mergeLast.delete(s.id); // a recycled slot must never show a previous lane's merge verdict
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
@@ -1004,11 +1080,11 @@ function transcriptTail(s: Slot, maxEntries: number): string {
 
 // test hook: FLEET_SUMMARY_CMD points at a stand-in answering in a {"result": …}
 // envelope on stdout — lets e2e exercise gather→deliver→parse→cache without claude
-async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string): Promise<string> {
+async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, timeoutMs = SUMMARY_TIMEOUT_MS): Promise<string> {
   const p = Bun.spawn([cmd, "--model", SUMMARY_MODEL], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   p.stdin.write(prompt);
   await p.stdin.end();
-  const killer = setTimeout(() => p.kill(), SUMMARY_TIMEOUT_MS);
+  const killer = setTimeout(() => p.kill(), timeoutMs);
   const out = await new Response(p.stdout).text();
   const err = await new Response(p.stderr).text();
   const code = await p.exited;
@@ -1021,13 +1097,15 @@ async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string): P
 // server socket — runs on the subscription, not the metered API. Session id is
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
 // read from that JSONL with the transcript view's own parser.
-async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summary"'): Promise<string> {
+async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summary"',
+  opts: { extraArgs?: string; timeoutMs?: number } = {}): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? SUMMARY_TIMEOUT_MS;
   const sid = crypto.randomUUID();
   summarizerSids.add(sid);
   const name = `sum-${sid.slice(0, 8)}`;
   const started = Date.now();
   const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
-    `${PATH_EXPORT}claude --session-id ${sid} --model ${SUMMARY_MODEL}`);
+    `${PATH_EXPORT}claude --session-id ${sid} --model ${SUMMARY_MODEL}${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`);
   if (sp.code !== 0) throw new Error("summarizer session failed to start");
   const file = `${projDir(cwd)}/${sid}.jsonl`;
   try {
@@ -1051,7 +1129,7 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summa
     // poll the transcript for the newest assistant text block; done as soon as it
     // carries the JSON contract (a non-conforming answer degrades to raw upstream)
     let lastText = "";
-    while (Date.now() - started < SUMMARY_TIMEOUT_MS) {
+    while (Date.now() - started < timeoutMs) {
       await Bun.sleep(2000);
       let lines: string[];
       try {
@@ -1193,6 +1271,89 @@ async function runEnhance(text: string, cwd: string): Promise<string> {
   const j = JSON.parse(body) as { prompt?: unknown }; // parse failure → caller answers 502
   if (typeof j.prompt !== "string" || !j.prompt.trim()) throw new Error("enhancer returned no prompt");
   return j.prompt.trim();
+}
+
+// --- ⏫ merge agent: the third background-claude function (same machinery as the
+// summarizer/enhancer — throwaway session, strict JSON contract, killed after), but this
+// one WRITES: it rebases the lane onto the repo's main branch, resolves conflicts, and
+// fast-forwards main. Tool surface is scoped via --allowedTools to git + file edits (for
+// conflict hunks); anything else would sit at a permission prompt until the timeout.
+// The agent's claim is never trusted: the endpoint re-checks `branch --merged`
+// deterministically and teardown goes through the same landLane safety path as ⏏.
+// Async job (not request-held): a conflictful rebase can outlive any HTTP timeout, so
+// POST starts the run and the board's poll reads progress/result via GET.
+const MERGE_CMD = process.env.FLEET_MERGE_CMD ?? null; // tests: subprocess stand-in
+const MERGE_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_MERGE_TIMEOUT_MS ?? 480_000) | 0);
+const MERGE_TOOLS = '--allowedTools "Bash(git *)" Read Grep Glob Edit Write';
+interface MergeLast { status: "merged" | "blocked" | "error"; detail: string; landed: boolean; branch: string; at: number }
+const mergeInflight = new Map<number, Promise<void>>();
+const mergeLast = new Map<number, MergeLast>();
+
+async function runMerge(cwd: string, root: string, branch: string, main: string): Promise<{ status: "merged" | "blocked"; detail: string }> {
+  const lg = await git(cwd, "log", "--no-color", "--oneline", `${main}..HEAD`);
+  const prompt = [
+    "You are landing a fleet worktree lane back into its repository. Work autonomously — nobody is watching.",
+    "FACTS:",
+    `- lane worktree (your cwd): ${cwd} — branch: ${branch}`,
+    `- repo primary checkout: ${root} — target branch: ${main}`,
+    `- lane commits not on ${main}:`, lg.code === 0 && lg.out ? lg.out : "(none)",
+    "",
+    "DO, in order:",
+    `1. In this worktree run: git rebase ${main}`,
+    "2. If conflicts arise, resolve them by editing the conflicted files: read enough surrounding code to preserve",
+    "   the INTENT of both sides — never blanket-pick ours/theirs, never delete code you don't understand.",
+    "   Then git add the files and git rebase --continue. Repeat until the rebase completes.",
+    `3. Fast-forward the target: git -C ${root} merge --ff-only ${branch}`,
+    "RULES: never push; never run build/test commands (they would hang on a permission prompt); never touch",
+    "anything outside the two directories above. If a conflict is beyond safe resolution or the rebase goes",
+    "wrong, run git rebase --abort so the lane is exactly as you found it, and report blocked.",
+    'FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:',
+    '{"status": "merged", "detail": "..."} or {"status": "blocked", "detail": "..."}',
+    "- detail: 1-3 sentences — what you did (conflicts resolved where?), or precisely why blocked.",
+  ].join("\n");
+  let out = MERGE_CMD
+    ? await summaryViaSubprocess(MERGE_CMD, prompt, cwd, MERGE_TIMEOUT_MS)
+    : await summaryViaSession(prompt, cwd, '"status"', { extraArgs: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS });
+  // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
+  try {
+    const env = JSON.parse(out) as { result?: unknown };
+    if (typeof env.result === "string") out = env.result.trim();
+  } catch { /* not an envelope */ }
+  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  const j = JSON.parse(body) as { status?: unknown; detail?: unknown }; // parse failure → job records error
+  if (j.status !== "merged" && j.status !== "blocked") throw new Error("merge agent returned no status");
+  return { status: j.status, detail: typeof j.detail === "string" ? j.detail.slice(0, 600) : "" };
+}
+
+async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
+  let res: MergeLast;
+  try {
+    const r = await runMerge(cwd, root, branch, main);
+    if (r.status === "blocked") {
+      res = { status: "blocked", detail: r.detail, landed: false, branch, at: Date.now() };
+    } else {
+      // the agent SAYS merged — believe git, not the agent
+      const verify = await git(root, "branch", "--merged", "HEAD", "--list", branch);
+      if (!verify.out.trim()) {
+        res = { status: "error", landed: false, branch, at: Date.now(),
+          detail: `agent reported merged, but ${branch} is not merged into ${main} — lane kept. ${r.detail}`.slice(0, 600) };
+      } else {
+        // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
+        const land = s.cwd === cwd && s.worktree?.branch === branch
+          ? await landLane(s)
+          : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
+        res = "error" in land
+          ? { status: "merged", landed: false, branch, at: Date.now(), detail: `${r.detail} — land refused: ${land.error}`.slice(0, 600) }
+          : { status: "merged", landed: true, branch, at: Date.now(), detail: r.detail };
+      }
+    }
+  } catch (e) {
+    res = { status: "error", detail: (e instanceof Error ? e.message : "merge agent failed").slice(0, 600),
+      landed: false, branch, at: Date.now() };
+  }
+  // a slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared
+  // by openSlot — don't write this lane's verdict onto whatever lives there now
+  if (!s.cwd || s.cwd === cwd) mergeLast.set(s.id, res);
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -1811,6 +1972,114 @@ Bun.serve<WSData>({
       if (!p) return json({ error: "not a git repository" }, 400);
       return json({ ...p, worktree: s.worktree });
     }
+    // lane map: every open worktree of the focused slot's repo — held by which slot,
+    // dirty count, ahead/behind vs the primary checkout's HEAD. Includes ORPHANS
+    // (worktrees whose slot was killed): previously invisible, now reattachable/removable.
+    // Works from lane slots too: `worktree list` from a linked worktree covers the whole repo.
+    const wtsMatch = /^\/api\/slots\/(\d+)\/worktrees$/.exec(url.pathname);
+    if (req.method === "GET" && wtsMatch) {
+      const s = slotFrom(wtsMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const top = await git(s.cwd, "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const list = await listWorktrees(top.out);
+      const primary = list.find((w) => w.primary);
+      if (!primary) return json({ error: "no worktree info" }, 400);
+      const rows = [];
+      for (const w of list) {
+        if (w.primary) continue;
+        const st = await git(w.path, "status", "--porcelain");
+        const ab = await git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...HEAD`);
+        const m = /^(\d+)\s+(\d+)$/.exec(ab.out);
+        const holder = slots.find((x) => x.cwd === w.path);
+        rows.push({
+          path: w.path, branch: w.branch, slot: holder?.id ?? null,
+          dirty: st.code === 0 ? st.out.split("\n").filter(Boolean).length : 0,
+          ahead: m ? Number(m[1]) : 0, behind: m ? Number(m[2]) : 0,
+        });
+      }
+      return json({ repo: primary.path, main: primary.branch, worktrees: rows });
+    }
+    // one-click lane: the server picks the first free slot itself (create), or re-seats an
+    // orphaned worktree into a slot (attach) so it becomes reviewable/landable again
+    if (url.pathname === "/api/lanes" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
+      const free = slots.find((x) => !x.cwd);
+      if (!free) return json({ error: "no free slot" }, 409);
+      try {
+        if (typeof body.attach === "string" && body.attach) {
+          const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+          if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+          const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.attach);
+          if (!wt) return json({ error: "not a worktree of this repo" }, 400);
+          if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
+          await openSlot(free, wt.path);
+          free.worktree = { repo: top.out, branch: wt.branch };
+          free.label = wt.branch.replace(/^fleet\//, "⎇ ");
+          saveState();
+          void tickGit().catch(() => {});
+          return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
+        }
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "");
+        return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
+      }
+    }
+    // orphan cleanup: drop a worktree no slot holds — same safety net as ⏏ land
+    if (url.pathname === "/api/worktrees/remove" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || typeof body.path !== "string")
+        return json({ error: "expected { repo, path }" }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.path);
+      if (!wt) return json({ error: "not a worktree of this repo" }, 400);
+      if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree is open in a slot — land it there" }, 409);
+      const fail = await removeWorktreeSafe(top.out, wt.path, wt.branch);
+      if (fail) return json({ error: fail.error }, fail.code);
+      void tickGit().catch(() => {});
+      return json({ ok: true, removed: wt.path });
+    }
+    // ⏫ agent merge & land. POST: deterministic guards → start the background job (the
+    // fuzzy middle: rebase, conflicts, ff-merge) → deterministic re-verify + landLane
+    // inside the job. GET: job state for the board's poll (a conflictful rebase outlives
+    // any request-held connection, so this is never synchronous).
+    const mgMatch = /^\/api\/slots\/(\d+)\/merge$/.exec(url.pathname);
+    if (mgMatch && (req.method === "GET" || req.method === "POST")) {
+      const s = slotFrom(mgMatch[1]);
+      if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+      if (req.method === "GET")
+        return json({ running: mergeInflight.has(s.id), last: mergeLast.get(s.id) ?? null });
+      if (mergeInflight.has(s.id)) return json({ running: true });
+      const { repo, branch } = s.worktree;
+      const cwd = s.cwd;
+      const st = await git(cwd, "status", "--porcelain");
+      if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
+      if (st.out) return json({ status: "blocked",
+        detail: `uncommitted changes — commit them (or ask the session to) first:\n${st.out.slice(0, 400)}` });
+      const mainBr = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
+      if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
+      if (mainBr.out === branch) return json({ error: "primary checkout is on the lane branch itself" }, 409);
+      // an ff-merge rewrites the primary checkout's files — refuse while it has tracked
+      // uncommitted changes there (untracked files are fine, git refuses only real collisions)
+      const pst = await git(repo, "status", "--porcelain");
+      if (pst.code === 0 && pst.out.split("\n").some((l) => l && !l.startsWith("??")))
+        return json({ status: "blocked",
+          detail: `primary checkout (${repo}) has uncommitted tracked changes — commit or stash there first` });
+      // already merged (by hand, or an empty lane)? No agent needed — land directly.
+      const done = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
+      if (done.out.trim()) {
+        const land = await landLane(s);
+        if ("error" in land) return json({ error: land.error }, land.code);
+        return json({ status: "merged", landed: true, branch, detail: "already merged — landed without the agent" });
+      }
+      mergeLast.delete(s.id); // a new run supersedes the previous verdict
+      const job = mergeJob(s, cwd, repo, branch, mainBr.out).finally(() => mergeInflight.delete(s.id));
+      mergeInflight.set(s.id, job);
+      return json({ running: true });
+    }
     // session summary (the ✨ agent). GET = cache lookup only, never spawns.
     // POST = run the agent (single-flight per slot; concurrent clicks share one run).
     const sumMatch = /^\/api\/slots\/(\d+)\/summary$/.exec(url.pathname);
@@ -1975,56 +2244,16 @@ Bun.serve<WSData>({
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd) return json({ error: "slot already active — use a free slot" }, 400);
         try {
-          const wt = await createWorktree(body.repo, typeof body.branch === "string" ? body.branch : "");
-          await openSlot(s, wt.path);
-          s.worktree = { repo: wt.repo, branch: wt.branch };
-          s.label = wt.branch.replace(/^fleet\//, "⎇ "); // lane identity beats the dir-slug basename
-          saveState();
-          void tickGit().catch(() => {}); // badge should appear on the next sessions poll
-          return json({ ok: true, cwd: s.cwd, branch: wt.branch });
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "");
+          return json({ ok: true, cwd: r.cwd, branch: r.branch });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);
         }
       }
       if (slotMatch[2] === "land") {
-        // deterministic lane teardown: git's OWN dirty/unmerged checks are the safety net —
-        // `worktree remove` without --force refuses when the tree is dirty, and we
-        // additionally refuse while commits are unpushed, so "land" can never eat work.
-        if (!s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
-        const { repo, branch } = s.worktree;
-        const path = s.cwd;
-        const st = await git(path, "status", "--porcelain");
-        if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
-        if (st.out) return json({ error: `worktree has uncommitted changes:\n${st.out.slice(0, 400)}` }, 409);
-        // "safe to drop" = the commits ahead of main are preserved somewhere: pushed to a
-        // push/upstream ref, OR present on ANY remote (covers `push` without `-u`), OR merged
-        // into the repo's main HEAD. Otherwise refuse — landing would lose unpushed work.
-        const unpushed = await git(path, "log", "--oneline", "@{push}..", "--");
-        if (unpushed.code === 0) {
-          if (unpushed.out) return json({ error: `unpushed commits:\n${unpushed.out.slice(0, 400)}` }, 409);
-        } else {
-          const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
-          const merged = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
-          if (!onRemote.out.trim() && !merged.out.trim())
-            return json({ error: "branch is not pushed to any remote and not merged — push or merge it first" }, 409);
-        }
-        // remove the worktree FIRST, while the slot is still intact: a failed remove (locked,
-        // submodule, races dirty) then leaves the lane fully recoverable via ⏏ instead of a
-        // torn-down slot pointing at an orphaned tree. `worktree remove` re-checks dirtiness
-        // itself, so the small window since the status check above stays safe.
-        const rmv = await git(repo, "worktree", "remove", path);
-        if (rmv.code !== 0) return json({ error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
-        // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
-        // (which handles aborts) sees nothing left to detach
-        for (const t of tasks) {
-          if (t.slot === s.id && t.status === "sent") {
-            t.status = "done";
-            t.note = `landed (${branch})`;
-          }
-        }
-        await killSlot(s);
-        void tickGit().catch(() => {});
-        return json({ ok: true, removed: path, branch });
+        const land = await landLane(s);
+        if ("error" in land) return json({ error: land.error }, land.code);
+        return json({ ok: true, ...land });
       }
       await killSlot(s);
       return json({ ok: true });

@@ -375,6 +375,29 @@
     background: #1c2437; color: #7aa2f7; font-size: 11.5px; font-family: inherit; cursor: pointer; }
   .bsumbtn:hover:not(:disabled) { background: #26314f; }
   .bsumbtn:disabled { opacity: 0.55; cursor: default; }
+  /* lane map + ⏫ merge agent */
+  .bwt { display: flex; gap: 6px; align-items: center; padding: 2px 0; color: #aaa; line-height: 1.5; }
+  .bwt .bwtbr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9ab; }
+  .bwt .bwtstate { flex: none; font-size: 10px; color: #666; }
+  .bwt .bwtstate.editing { color: #e0af68; } .bwt .bwtstate.ready { color: #9ece6a; }
+  .bwtact { flex: none; padding: 1px 8px; border-radius: 6px; border: 1px solid #333; background: #262626;
+    color: #999; font-size: 10px; font-family: inherit; cursor: pointer; }
+  .bwtact:hover:not(:disabled) { color: #ddd; border-color: #3a4a7a; }
+  .bwtact:disabled { color: #667; cursor: default; }
+  .bwtact.del:hover { color: #f7768e; border-color: #5e2c3a; }
+  .bwtnew { margin-top: 6px; padding: 4px 11px; border-radius: 7px; border: 1px solid #2c3a5e;
+    background: #1c2437; color: #7aa2f7; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bwtnew:hover:not(:disabled) { background: #26314f; }
+  .bmergebtn { margin: 6px 0 0 6px; padding: 4px 11px; border-radius: 7px; border: 1px solid #2c5e3a;
+    background: #1c3724; color: #9ece6a; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bmergebtn:hover:not(:disabled) { background: #264f31; }
+  .bmergebtn:disabled { opacity: 0.55; cursor: default; }
+  .bmergenote { margin-top: 5px; font-size: 10.5px; line-height: 1.45; word-break: break-word; }
+  .bmergenote.ok { color: #9ece6a; } .bmergenote.warn { color: #e0af68; } .bmergenote.err { color: #f7768e; }
+  .slot .mgl:hover { color: #7aa2f7; }
+  .slot .quicklane { flex: none; font-size: 11px; color: #556; cursor: pointer; padding: 0 3px;
+    border: 1px solid #2c3a5e; border-radius: 5px; }
+  .slot .quicklane:hover { color: #7aa2f7; background: #1c2437; }
 
   #gate .panel { width: 380px; }
   #gate p { font-size: 11px; color: #888; line-height: 1.5; }

@@ -11,13 +11,19 @@ const gate = $("gate"), pw = $("pw") as HTMLInputElement, gatemsg = $("gatemsg")
   title = $("title"), modeEl = $("mode"), dot = $("dot"), notice = $("notice"),
   bar = $("bar"), input = $("input") as HTMLTextAreaElement, send = $("send") as HTMLButtonElement;
 
-interface Info { slotLabel: string | null; mode: "view" | "interact"; cols: number; rows: number; active: boolean }
+interface Info { slotLabel: string | null; mode: "view" | "interact"; cols: number; rows: number; active: boolean;
+  viewers?: number; comments?: number }
+interface ShareComment { id: string; ts: number; name: string; text: string }
 
 const MAX_CHUNK = 1000; // server drops WS messages over 1024 bytes
+const FONT_KEY = "fleetShareFont";
+const NAME_KEY = "fleetShareName";
+const MIN_FONT = 8, MAX_FONT = 22;
 
 let term: Terminal | null = null;
 let ws: WebSocket | null = null;
 let gen = 0;
+let fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, Number(localStorage.getItem(FONT_KEY)) || 12));
 
 function setConn(on: boolean) {
   dot.className = on ? "on" : "off";
@@ -64,6 +70,15 @@ function connect(info: Info) {
   };
 }
 
+// header extras + comment badge, refreshed from /info on a slow poll
+function applyInfoExtras(info: Info) {
+  const v = info.viewers ?? 0;
+  $("viewers").textContent = `👁 ${v}`;
+  $("viewers").style.display = "inline";
+  const n = info.comments ?? 0;
+  $("cmtbtn").textContent = n > 0 ? `💬 ${n}` : "💬";
+}
+
 function start(info: Info) {
   gate.style.display = "none";
   if (!info.active) {
@@ -72,14 +87,17 @@ function start(info: Info) {
   }
   title.textContent = info.slotLabel ?? "Shared session";
   document.title = `${info.slotLabel ?? "Shared session"} — Claude Fleet`;
-  $("changes").style.display = "block"; // only after auth — the fetch 401s otherwise anyway
+  // header tools only after auth — their fetches 401 otherwise anyway
+  for (const id of ["changes", "cmtbtn", "fminus", "fplus", "jump"]) $(id).style.display = "block";
+  applyInfoExtras(info);
+  setInterval(() => { void fetchInfo().then((i) => { if (i) applyInfoExtras(i); }); }, 45_000);
   modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
   modeEl.className = info.mode;
   term = new Terminal({
     cols: info.cols,
     rows: info.rows,
     scrollback: 20000,
-    fontSize: 12,
+    fontSize,
     fontFamily: "ui-monospace, Menlo, Consolas, monospace",
     theme: { background: "#141414", foreground: "#d8d8d8" },
     disableStdin: info.mode !== "interact",
@@ -119,26 +137,52 @@ async function join() {
 }
 // --- ± changes: read-only working diff of the shared session (PR-review feel).
 // Server allows it in both share modes — it reads git state, it types nothing.
-const changesBtn = $("changes"), diffdlg = $("diffdlg"), dstat = $("dstat"), dtxt = $("dtxt");
+const changesBtn = $("changes"), diffdlg = $("diffdlg"), dstat = $("dstat"), dtxt = $("dtxt"), dcommits = $("dcommits");
 diffdlg.addEventListener("click", (e) => {
   if (e.target === diffdlg) diffdlg.style.display = "none";
 });
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") diffdlg.style.display = "none";
+  if (e.key === "Escape") { diffdlg.style.display = "none"; closeCmts(); }
 });
+const fmtAgo = (ts: number) => {
+  const min = Math.max(0, Math.round((Date.now() - ts) / 60000));
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+};
 async function openChanges() {
   dstat.textContent = "loading…";
   dtxt.replaceChildren();
+  dcommits.replaceChildren();
+  dcommits.style.display = "none";
   diffdlg.style.display = "flex";
   const res = await fetch(`/s/${shareId}/diff`);
   const data = (await res.json().catch(() => ({}))) as
-    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean; error?: string };
+    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean; error?: string;
+      commits?: { hash: string; ts: number; subject: string }[] };
   if (!res.ok || data.error) {
     dstat.textContent = data.error ?? "diff unavailable";
     return;
   }
   const n = data.status?.length ?? 0;
   dstat.textContent = `${data.branch ?? "?"} · ${n} file${n === 1 ? "" : "s"} changed${data.truncated ? " · diff truncated" : ""}`;
+  if (data.commits?.length) {
+    dcommits.style.display = "block";
+    for (const c of data.commits) {
+      const row = document.createElement("div");
+      const hash = document.createElement("span");
+      hash.className = "ch";
+      hash.textContent = c.hash;
+      const subject = document.createElement("span");
+      subject.textContent = c.subject;
+      const when = document.createElement("span");
+      when.className = "ct";
+      when.textContent = fmtAgo(c.ts);
+      row.append(hash, subject, when);
+      dcommits.appendChild(row);
+    }
+  }
   if (!data.diff) {
     dtxt.textContent = n ? "(changes are untracked — no tracked diff)" : "clean working tree — nothing changed yet";
     return;
@@ -184,6 +228,109 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     void doSend();
+  }
+});
+
+// --- viewer QoL: font size (persisted) + jump to latest output ---
+function setFont(delta: number) {
+  fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, fontSize + delta));
+  localStorage.setItem(FONT_KEY, String(fontSize));
+  if (term) term.options.fontSize = fontSize;
+}
+$("fminus").onclick = () => setFont(-1);
+$("fplus").onclick = () => setFont(1);
+$("jump").onclick = () => term?.scrollToBottom();
+
+// --- comments: guest thread on this share, allowed in both modes ---
+const cmtdlg = $("cmtdlg"), cmtlist = $("cmtlist"), cmtmsg = $("cmtmsg"),
+  cmtname = $("cmtname") as HTMLInputElement, cmtinput = $("cmtinput") as HTMLTextAreaElement,
+  cmtpost = $("cmtpost") as HTMLButtonElement;
+cmtname.value = localStorage.getItem(NAME_KEY) ?? "";
+let cmtTimer = 0;
+
+function renderComments(comments: ShareComment[]) {
+  const atBottom = cmtlist.scrollHeight - cmtlist.scrollTop - cmtlist.clientHeight < 40;
+  cmtlist.replaceChildren();
+  if (!comments.length) {
+    const empty = document.createElement("div");
+    empty.id = "cmtempty";
+    empty.textContent = "no comments yet — say hi";
+    cmtlist.appendChild(empty);
+    return;
+  }
+  for (const c of comments) {
+    const box = document.createElement("div");
+    box.className = "cmt";
+    const head = document.createElement("div");
+    head.className = "cmthead";
+    const who = document.createElement("b");
+    who.textContent = c.name;
+    const when = document.createElement("span");
+    when.textContent = fmtAgo(c.ts);
+    head.append(who, when);
+    const text = document.createElement("div");
+    text.className = "cmttext";
+    text.textContent = c.text;
+    box.append(head, text);
+    cmtlist.appendChild(box);
+  }
+  if (atBottom) cmtlist.scrollTop = cmtlist.scrollHeight;
+}
+
+async function loadComments() {
+  const res = await fetch(`/s/${shareId}/comments`);
+  if (!res.ok) return;
+  const data = (await res.json().catch(() => ({}))) as { comments?: ShareComment[] };
+  renderComments(data.comments ?? []);
+  $("cmtbtn").textContent = data.comments?.length ? `💬 ${data.comments.length}` : "💬";
+}
+
+function closeCmts() {
+  cmtdlg.style.display = "none";
+  clearInterval(cmtTimer);
+}
+cmtdlg.addEventListener("click", (e) => {
+  if (e.target === cmtdlg) closeCmts();
+});
+$("cmtbtn").onclick = () => {
+  cmtdlg.style.display = "flex";
+  void loadComments();
+  clearInterval(cmtTimer);
+  cmtTimer = window.setInterval(() => void loadComments(), 8000);
+  (cmtname.value ? cmtinput : cmtname).focus();
+};
+
+async function postComment() {
+  const text = cmtinput.value.trim();
+  if (!text || cmtpost.disabled) return;
+  cmtpost.disabled = true;
+  cmtmsg.textContent = "";
+  localStorage.setItem(NAME_KEY, cmtname.value.trim());
+  try {
+    const res = await fetch(`/s/${shareId}/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: cmtname.value, text }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      cmtmsg.textContent = err.error ?? "posting failed — try again";
+      return;
+    }
+    cmtinput.value = ""; // text survives in the box on failure, cleared only on success
+    await loadComments();
+    cmtlist.scrollTop = cmtlist.scrollHeight;
+  } catch {
+    cmtmsg.textContent = "posting failed — try again";
+  } finally {
+    cmtpost.disabled = false;
+  }
+}
+cmtpost.onclick = () => void postComment();
+cmtinput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    void postComment();
   }
 });
 

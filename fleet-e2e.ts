@@ -368,11 +368,44 @@ check("share send in prompt log with source 'share'",
   (await plogRead()).some((e) => e.slot === 1 && e.source === "share" && e.text === "share-interact-hello"));
 // guest "± changes" view: read-only working diff behind the share cookie (slot 1 is a git repo)
 const shDiff = await fetch(BASE + `/s/${shInt.id}/diff`, { headers: { cookie: shICookie } });
-const shDiffJ = (await shDiff.json()) as { branch?: string | null; status?: string[]; diff?: string };
+const shDiffJ = (await shDiff.json()) as { branch?: string | null; status?: string[]; diff?: string; commits?: unknown };
 check("share diff readable with share cookie", shDiff.ok && typeof shDiffJ.branch === "string"
   && Array.isArray(shDiffJ.status) && typeof shDiffJ.diff === "string", JSON.stringify(shDiffJ).slice(0, 120));
+check("share diff carries session commits", Array.isArray(shDiffJ.commits), JSON.stringify(shDiffJ.commits).slice(0, 80));
 check("share diff without cookie 401", (await fetch(BASE + `/s/${shInt.id}/diff`)).status === 401);
 check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
+
+// --- guest comments: allowed in BOTH modes (they type nothing), owner-moderated ---
+const cmtPost = await fetch(BASE + `/s/${shView.id}/comments`, {
+  method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },
+  body: JSON.stringify({ name: "kiebitz", text: "guest-comment-hello" }),
+});
+const cmtPostJ = (await cmtPost.json()) as { comment?: { id: string } };
+check("view-mode guest can post a comment", cmtPost.ok && !!cmtPostJ.comment?.id, JSON.stringify(cmtPostJ));
+const cmtListJ = (await (await fetch(BASE + `/s/${shView.id}/comments`, { headers: { cookie: shCookie } })).json()) as
+  { comments: { id: string; name: string; text: string }[] };
+check("guest sees the posted comment", cmtListJ.comments.some((c) => c.name === "kiebitz" && c.text === "guest-comment-hello"));
+check("comments without cookie 401", (await fetch(BASE + `/s/${shView.id}/comments`)).status === 401);
+check("comments on unknown share 404", (await fetch(BASE + "/s/nosuchshare0/comments")).status === 404);
+check("empty comment rejected", (await fetch(BASE + `/s/${shView.id}/comments`, {
+  method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },
+  body: JSON.stringify({ text: "   " }),
+})).status === 400);
+check("oversized comment rejected", (await fetch(BASE + `/s/${shView.id}/comments`, {
+  method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },
+  body: JSON.stringify({ text: "x".repeat(2001) }),
+})).status === 400);
+const shInfoC = (await (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shCookie } })).json()) as
+  { viewers?: number; comments?: number };
+check("share info reports viewers + comment count", typeof shInfoC.viewers === "number" && shInfoC.comments === 1, JSON.stringify(shInfoC));
+check("owner comments route needs token", (await fetch(BASE + "/api/slots/2/comments")).status === 401);
+const ownCmts = (await (await get("/api/slots/2/comments")).json()) as { comments: { id: string }[] };
+check("owner reads the share thread", ownCmts.comments.length === 1, JSON.stringify(ownCmts));
+const sessCmt = (await (await get("/api/sessions")).json()) as { slots: { id: number; share: { comments: number } | null }[] };
+check("sessions payload carries comment count", sessCmt.slots.find((x) => x.id === 2)?.share?.comments === 1);
+check("owner deletes a comment", (await post(`/api/slots/2/comments/${cmtPostJ.comment?.id ?? "x"}/delete`, {})).ok);
+const ownCmts2 = (await (await get("/api/slots/2/comments")).json()) as { comments: unknown[] };
+check("deleted comment gone", ownCmts2.comments.length === 0);
 // --- share-mode: flip view/interact in place, same link + password ---
 // regression: this must reach an ACTUALLY-CONNECTED guest socket, not just the HTTP
 // send route checked below — the WS message handler looks up the share's mode live on

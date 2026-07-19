@@ -53,6 +53,14 @@ type WSData = {
 // token never leaves this machine. view = stream only; interact = typing + compose too.
 interface Share { id: string; slot: number; secret: string; mode: "view" | "interact"; created: number }
 
+// a guest comment on a share — allowed in BOTH modes (it types nothing into the pty).
+// Freeform name is display-only, never trusted; keyed by share id so revoking the share
+// drops its thread (pruned in saveState).
+interface ShareComment { id: string; ts: number; name: string; text: string }
+const MAX_COMMENT_TEXT = 2000;
+const MAX_COMMENT_NAME = 40;
+const MAX_COMMENTS_PER_SHARE = 300;
+
 // a scheduled prompt: one-shot (everySec null) or recurring with a MANDATORY runs cap.
 // Guard rails are the point — see tickAutos() for the idle gate and the claude-alive gate.
 interface Auto {
@@ -125,6 +133,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
 }));
 let recents: string[] = [];
 let shares: Share[] = [];
+let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
 let tasks: Task[] = [];
 const MAX_TASKS = 200;
@@ -212,7 +221,9 @@ function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
     worktree: { repo: string; branch: string } | null }> = {};
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree };
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks }, null, 2);
+  // comments must not outlive their share — every share-removal path funnels through here
+  for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
+  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks, comments: shareComments }, null, 2);
   saveChain = saveChain
     .then(() => Bun.write(STATE_FILE, body))
     .then(() => chmodSync(STATE_FILE, 0o600))
@@ -271,6 +282,19 @@ async function sessionBase(cwd: string, startTs: number): Promise<string | null>
 async function slotBase(s: Slot): Promise<string | null> {
   const start = sessionStart(s);
   return start ? await sessionBase(s.cwd!, start) : null;
+}
+// recent commits, session-scoped where the transcript gives a start anchor — shared by
+// the owner brief and the guest changes view
+async function sessionCommits(s: Slot): Promise<{ hash: string; ts: number; subject: string }[]> {
+  const start = sessionStart(s);
+  const lg = start
+    ? await git(s.cwd!, "log", "--no-color", `--since=${new Date(start).toISOString()}`, "--format=%h%x09%ct%x09%s", "-15")
+    : await git(s.cwd!, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
+  if (lg.code !== 0) return [];
+  return lg.out.split("\n").filter(Boolean).map((l) => {
+    const [hash, ct, ...rest] = l.split("\t");
+    return { hash, ts: Number(ct) * 1000, subject: rest.join("\t") };
+  });
 }
 // session-scoped changed-files list, porcelain-shaped ("M  path") so the client renders
 // both scopes the same way; untracked files ride along from live status
@@ -1145,6 +1169,16 @@ async function tokenGate(t: string | null): Promise<boolean> {
 
 // --- share auth: per-share cookie, brute-force throttled (public-facing) ---
 const shareBy = (id: string) => shares.find((x) => x.id === id) ?? null;
+// comment flood guard: per-share sliding minute, cheap and in-memory — guests are
+// already authed, this only stops a stuck key / paste loop from filling the thread
+const commentTimes = new Map<string, number[]>();
+function commentStrike(id: string): boolean {
+  const now = Date.now();
+  const list = (commentTimes.get(id) ?? []).filter((t) => now - t < 60_000);
+  if (list.length >= 10) { commentTimes.set(id, list); return true; }
+  commentTimes.set(id, [...list, now]);
+  return false;
+}
 function shareAuthed(req: Request, sh: Share): boolean {
   const cookie = req.headers.get("cookie");
   const m = cookie ? new RegExp(`(?:^|;\\s*)share_${sh.id}=([^;]+)`).exec(cookie) : null;
@@ -1272,6 +1306,14 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Share).id === "string" && typeof (x as Share).secret === "string"
         && typeof (x as Share).slot === "number"
         && ((x as Share).mode === "view" || (x as Share).mode === "interact"));
+    const pc = (persisted as { comments?: unknown }).comments;
+    if (typeof pc === "object" && pc !== null && !Array.isArray(pc))
+      for (const [k, v] of Object.entries(pc as Record<string, unknown>))
+        if (Array.isArray(v))
+          shareComments[k] = v.filter((c): c is ShareComment =>
+            typeof c === "object" && c !== null
+            && typeof (c as ShareComment).id === "string" && typeof (c as ShareComment).ts === "number"
+            && typeof (c as ShareComment).name === "string" && typeof (c as ShareComment).text === "string");
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
     if (Array.isArray((persisted as { tasks?: unknown }).tasks))
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
@@ -1383,7 +1425,7 @@ Bun.serve<WSData>({
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
-        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
+        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
     }
 
@@ -1407,7 +1449,7 @@ Bun.serve<WSData>({
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff)$/.exec(url.pathname);
+    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments)$/.exec(url.pathname);
     if (shareApi) {
       const sh = shareBy(shareApi[1]);
       if (!sh) return json({ error: "unknown or revoked share" }, 404);
@@ -1439,6 +1481,8 @@ Bun.serve<WSData>({
           cols: s.cols,
           rows: s.rows,
           active: !!s.cwd,
+          viewers: [...s.clients].filter((c) => c.data.share === sh.id).length,
+          comments: (shareComments[sh.id] ?? []).length,
         });
       }
       if (shareApi[2] === "diff") {
@@ -1447,7 +1491,23 @@ Bun.serve<WSData>({
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await diffPayload(s.cwd, await slotBase(s));
         if (!p) return json({ error: "not a git repository" }, 400);
-        return json(p);
+        return json({ ...p, commits: await sessionCommits(s) });
+      }
+      if (shareApi[2] === "comments") {
+        // guest thread on this share — allowed in BOTH modes, it types nothing into the pty
+        if (req.method === "GET") return json({ comments: shareComments[sh.id] ?? [] });
+        if (req.method === "POST") {
+          if (commentStrike(sh.id)) return json({ error: "slow down — try again in a minute" }, 429);
+          const body = await readJson(req);
+          const text = body && typeof body.text === "string" ? body.text.trim() : "";
+          if (!text || text.length > MAX_COMMENT_TEXT)
+            return json({ error: `comment must be 1–${MAX_COMMENT_TEXT} chars` }, 400);
+          const name = (body && typeof body.name === "string" ? body.name.trim() : "").slice(0, MAX_COMMENT_NAME) || "guest";
+          const c: ShareComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), name, text };
+          shareComments[sh.id] = [...(shareComments[sh.id] ?? []), c].slice(-MAX_COMMENTS_PER_SHARE);
+          saveState();
+          return json({ ok: true, comment: c });
+        }
       }
       if (shareApi[2] === "send" && req.method === "POST") {
         if (sh.mode !== "interact") return json({ error: "view-only share" }, 403);
@@ -1524,6 +1584,7 @@ Bun.serve<WSData>({
             share: sh ? {
               id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
+              comments: (shareComments[sh.id] ?? []).length,
             } : null,
           };
         }),
@@ -1641,6 +1702,21 @@ Bun.serve<WSData>({
       if (!p) return json({ error: "not a git repository" }, 400);
       return json({ ...p, worktree: s.worktree });
     }
+    // guest comments, owner side: read the thread, delete single comments
+    const cmMatch = /^\/api\/slots\/(\d+)\/comments(?:\/([a-z0-9]+)\/delete)?$/.exec(url.pathname);
+    if (cmMatch) {
+      const s = slotFrom(cmMatch[1]);
+      if (!s) return json({ error: "bad slot" }, 400);
+      const sh = shares.find((x) => x.slot === s.id);
+      if (!sh) return json({ error: "slot not shared" }, 404);
+      if (cmMatch[2] && req.method === "POST") {
+        shareComments[sh.id] = (shareComments[sh.id] ?? []).filter((c) => c.id !== cmMatch[2]);
+        saveState();
+        return json({ ok: true });
+      }
+      if (!cmMatch[2] && req.method === "GET") return json({ comments: shareComments[sh.id] ?? [] });
+      return json({ error: "bad request" }, 400);
+    }
     // lane brief: the deterministic layer of the session overview — recent commits,
     // changed files, uncommitted summary. Everything here is fresh git output computed
     // per request (never cached), so the sideboard can't drift from reality.
@@ -1655,16 +1731,8 @@ Bun.serve<WSData>({
       // its start; unpinned slots degrade to repo-now/repo-history (the old behavior)
       const start = sessionStart(s);
       const base = start ? await sessionBase(s.cwd, start) : null;
-      const lg = start
-        ? await git(s.cwd, "log", "--no-color", `--since=${new Date(start).toISOString()}`, "--format=%h%x09%ct%x09%s", "-15")
-        : await git(s.cwd, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
       const sh = await git(s.cwd, "diff", base ?? "HEAD", "--shortstat", "--no-color");
-      const commits = lg.code === 0
-        ? lg.out.split("\n").filter(Boolean).map((l) => {
-            const [hash, ct, ...rest] = l.split("\t");
-            return { hash, ts: Number(ct) * 1000, subject: rest.join("\t") };
-          })
-        : [];
+      const commits = await sessionCommits(s);
       let files: string[];
       if (base) {
         const ns = await git(s.cwd, "diff", "--name-status", "--no-color", base);

@@ -114,11 +114,24 @@
   .file .st.a { color: var(--add); } .file .st.d { color: var(--del); } .file .st.m { color: var(--amber); }
   .file .p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .empty { color: var(--faint); font-size: 11px; padding: 6px 0; }
+  #sumsect { display: flex; flex-direction: column; gap: 6px; padding-bottom: 12px;
+    border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+  #sumhead { display: flex; align-items: center; }
+  #sumbtn { margin-left: auto; flex: none; padding: 3px 9px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--raised); color: var(--accent); font-size: 10px; }
+  #sumbtn:hover { border-color: #2c3a5e; }
+  #sumbtn:disabled { opacity: 0.5; cursor: default; }
+  .sumtext { font-size: 12px; line-height: 1.55; color: var(--text); white-space: pre-wrap; }
+  .sumthread { font-size: 11px; line-height: 1.5; color: var(--dim); }
+  .sumver { font-size: 11px; color: var(--amber); margin-top: 4px; }
+  .summeta { font-size: 10px; color: var(--faint); margin-top: 4px; }
 
   /* chat tab */
   #cmtlist { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: flex;
     flex-direction: column; gap: 8px; }
   .cmt { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .cmt.own { border-color: #33415e; background: #191e2b; }
+  .cmt.own .cmthead b { color: var(--accent); }
   .cmthead { display: flex; gap: 8px; align-items: baseline; margin-bottom: 2px; }
   .cmthead b { color: #a7c080; font-size: 11px; }
   .cmthead span { color: var(--faint); font-size: 10px; }
@@ -203,7 +216,15 @@
       <button class="tab" data-tab="chat">chat<span id="chatbadge"></span></button>
       <button class="tab" data-tab="changes">changes</button>
     </nav>
-    <section class="pane active" id="pane-info"><div class="scroll" id="infobody"></div></section>
+    <section class="pane active" id="pane-info">
+      <div class="scroll" id="infobody">
+        <div id="sumsect">
+          <div id="sumhead"><span class="lbl">✨ session summary</span><button id="sumbtn">generate</button></div>
+          <div id="sumbody" class="empty">checking…</div>
+        </div>
+        <div id="briefwrap"></div>
+      </div>
+    </section>
     <section class="pane" id="pane-chat">
       <div id="cmtlist"></div>
       <div id="composer">

@@ -6,3 +6,4 @@ public/app.js
 .playwright-mcp/
 .env
 public/share.js
+CLAUDE.md

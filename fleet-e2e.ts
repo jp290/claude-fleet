@@ -40,6 +40,9 @@ const badtok = await fetch(BASE + "/api/sessions", { headers: { authorization: "
 check("401 with wrong token", badtok.status === 401);
 const authed = await get("/api/sessions");
 check("200 with token", authed.status === 200);
+const sessJ = (await authed.json()) as { suffixes?: string[] };
+check("sessions payload carries suffix chips (defaults)", Array.isArray(sessJ.suffixes)
+  && sessJ.suffixes.length >= 1 && sessJ.suffixes.some((s) => s.includes("own your work")), JSON.stringify(sessJ.suffixes));
 const badhost = await fetch(BASE + "/api/sessions", { headers: { ...H, host: "evil.example:8790" } });
 check("403 DNS-rebinding host", badhost.status === 403);
 const badorigin = await fetch(BASE + "/send", {

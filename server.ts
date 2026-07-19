@@ -40,6 +40,15 @@ function slotCmd(sessionId: string | null, resume: boolean): string {
 }
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
+// suffix chips: the owner's recurring trailing directives, one click instead of retyping.
+// Defaults mined from the actual prompt corpus (streams/prompts.jsonl, 1577 prompts:
+// /sharpen3 ×250, /gosharp3 ×162, "denk gut" ×59, "own your work" ×50). "|"-separated
+// because the phrases themselves contain commas.
+const SUFFIX_CHIPS = (process.env.FLEET_SUFFIX_CHIPS
+  ?? "Gib dir Mühe und own your work! /sharpen3"
+  + "|Denk gut darüber nach wie du das angehst, arbeite mit Sorgfalt und Verstand."
+  + "|/gosharp3")
+  .split("|").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
@@ -381,7 +390,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.worktree = null; // a plain open is not a lane — open-worktree re-tags after this
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
-  harvest.set(s.id, { file: "", lines: 0 }); // sentinel: harvest the NEW transcript from line 0
+  harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
@@ -758,7 +767,10 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
 // between files when several sessions share a cwd, and a flap would re-log whole foreign
 // transcripts. Composed sends are suppressed via recentComposed (they're in the transcript
 // too). At boot the cursor seeds to end-of-file so old history is never re-logged.
-const harvest = new Map<number, { file: string; lines: number }>();
+// Incremental by BYTE OFFSET — transcripts grow to tens of MB, re-reading them whole
+// every tick would be constant I/O for nothing. Only new bytes are read; the partial
+// trailing line is carried as raw bytes so a chunk boundary can't split a UTF-8 char.
+const harvest = new Map<number, { file: string; offset: number; rest: Buffer }>();
 let harvestBusy = false;
 async function tickHarvest(): Promise<void> {
   if (harvestBusy || !/^claude(\s|$)/.test(BASE_CMD)) return;
@@ -767,34 +779,47 @@ async function tickHarvest(): Promise<void> {
     for (const s of slots) {
       if (!s.cwd || !s.sessionId) continue;
       const file = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
-      if (!existsSync(file)) continue;
-      let text: string;
+      let size: number;
       try {
-        text = readFileSync(file, "utf8");
+        size = statSync(file).size;
       } catch {
-        continue;
+        continue; // transcript not created yet (appears after the first prompt)
       }
-      const raw = text.split("\n");
-      if (!text.endsWith("\n")) raw.pop(); // partial mid-append line — next tick reads it whole
       let cur = harvest.get(s.id);
       if (!cur || cur.file !== file) {
         // no cursor = first sight since boot → skip existing content; a NEW file for an
         // already-tracked slot (fresh claude after self-heal, recycled slot) reads from 0
-        cur = { file, lines: cur ? 0 : raw.length };
+        cur = { file, offset: cur ? 0 : size, rest: Buffer.alloc(0) };
         harvest.set(s.id, cur);
       }
-      if (raw.length <= cur.lines) {
-        cur.lines = Math.min(cur.lines, raw.length); // truncated/rewritten file — resync
-        continue;
+      if (size < cur.offset) { cur.offset = 0; cur.rest = Buffer.alloc(0); } // rewritten — resync
+      if (size === cur.offset) continue;
+      let lines: string[];
+      try {
+        const buf = Buffer.alloc(size - cur.offset);
+        const fd = openSync(file, "r");
+        const n = readSync(fd, buf, 0, buf.length, cur.offset);
+        closeSync(fd);
+        cur.offset += n;
+        let chunk = Buffer.concat([cur.rest, buf.subarray(0, n)]);
+        lines = [];
+        let nl: number;
+        while ((nl = chunk.indexOf(0x0a)) !== -1) {
+          lines.push(chunk.subarray(0, nl).toString("utf8"));
+          chunk = chunk.subarray(nl + 1);
+        }
+        cur.rest = Buffer.from(chunk); // copy — a subarray would pin the whole read buffer
+      } catch {
+        continue; // transient read error — next tick retries from the same offset
       }
       const composed = (recentComposed.get(s.id) ?? []).filter((e) => Date.now() - e.ts < COMPOSED_TTL);
       recentComposed.set(s.id, composed);
       let dirty = false;
-      for (let i = cur.lines; i < raw.length; i++) {
-        if (!raw[i].trim()) continue;
+      for (const line of lines) {
+        if (!line.trim()) continue;
         let e: TEntry | null;
         try {
-          e = viewEntry(JSON.parse(raw[i]), i);
+          e = viewEntry(JSON.parse(line), 0);
         } catch {
           continue;
         }
@@ -811,7 +836,6 @@ async function tickHarvest(): Promise<void> {
           dirty = true;
         }
       }
-      cur.lines = raw.length;
       if (dirty) saveHistory(s);
     }
   } finally {
@@ -1380,6 +1404,7 @@ Bun.serve<WSData>({
       return json({
         now: Date.now(),
         chips: CHIPS,
+        suffixes: SUFFIX_CHIPS,
         shareBase: SHARE_URL,
         // bundle version: a long-lived tab compares this across polls and reloads itself
         // once it goes stale — "old client after a deploy" must not look like a regression
@@ -1469,23 +1494,25 @@ Bun.serve<WSData>({
       return json({ history: s.history });
     }
     // the global prompt directory: every composed send ever, across slots and slot
-    // lifetimes, straight from the append-only prompts.jsonl. Newest first.
+    // lifetimes, straight from the append-only prompts.jsonl. Sorted by ts (newest
+    // first) — file order stopped meaning time order once backfill entries landed.
     if (url.pathname === "/api/prompts" && req.method === "GET") {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
       const text = existsSync(PROMPT_LOG) ? await Bun.file(PROMPT_LOG).text() : "";
       const lines = text.split("\n").filter(Boolean);
-      const prompts: unknown[] = [];
-      for (let i = lines.length - 1; i >= 0 && prompts.length < limit; i--) {
+      const all: { ts?: unknown; text?: unknown; label?: unknown; cwd?: unknown }[] = [];
+      for (const line of lines) {
         try {
-          const e = JSON.parse(lines[i]) as { text?: unknown; label?: unknown; cwd?: unknown };
+          const e = JSON.parse(line) as (typeof all)[number];
           if (q && !`${e.text} ${e.label ?? ""} ${e.cwd ?? ""}`.toLowerCase().includes(q)) continue;
-          prompts.push(e);
+          all.push(e);
         } catch {
           // a torn mid-append line — skip
         }
       }
-      return json({ prompts, total: lines.length });
+      all.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
+      return json({ prompts: all.slice(0, limit), total: lines.length });
     }
     // lane review: what did the agent actually DO — tracked diff vs HEAD + untracked list.
     // Complements the transcript view (what it said). Byte-capped: a phone shouldn't

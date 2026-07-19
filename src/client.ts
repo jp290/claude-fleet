@@ -168,6 +168,7 @@ class Pane {
   // reflows at any width, which the fixed-width pty stream can't
   private readonly chatEl: HTMLElement;
   private readonly viewBtn: HTMLButtonElement;
+  private readonly boardBtn: HTMLButtonElement;
   private view: "term" | "chat" = "term";
   private chatTotal = 0;
   private chatSource: string | null = null;
@@ -187,13 +188,24 @@ class Pane {
       e.stopPropagation();
       this.setView(this.view === "term" ? "chat" : "term");
     };
+    // board toggle sits beside the viewtoggle; the board always describes the
+    // FOCUSED session, and clicking a pane focuses it first (root mousedown)
+    this.boardBtn = el("button", "boardtoggle", "ℹ") as HTMLButtonElement;
+    this.boardBtn.title = "session brief — commits, changes, prompts, ✨ summary";
+    this.boardBtn.style.display = "none";
+    this.boardBtn.classList.toggle("active", boardOpen);
+    this.boardBtn.onclick = (e) => {
+      e.stopPropagation();
+      focusPane(this.index);
+      setBoard(!boardOpen);
+    };
     const navUp = el("button", "promptnav up", "↑") as HTMLButtonElement;
     navUp.title = "previous prompt of yours";
     navUp.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(-1); };
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, navUp, navDn);
+    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, this.boardBtn, navUp, navDn);
     this.term = new Terminal({
       scrollback: 50000,
       fontSize: isMobile() ? 11 : 12,
@@ -448,6 +460,7 @@ class Pane {
     this.term.reset();
     this.resetChat();
     this.viewBtn.style.display = slot ? "block" : "none";
+    this.boardBtn.style.display = slot ? "block" : "none";
     if (slot && this.view === "chat") void this.pollChat();
     this.hint.style.display = slot ? "none" : "flex";
     // size the terminal to its container before connecting — the WS URL carries
@@ -516,7 +529,7 @@ let layout = 1;
 interface BriefCommit { hash: string; ts: number; subject: string }
 interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; files: string[];
   shortstat: string; commits: BriefCommit[] }
-const boardBtn = $("boardbtn") as HTMLButtonElement, boardBody = $("boardbody");
+const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
@@ -531,7 +544,9 @@ const sumBusy = new Set<number>();
 
 function applyBoard() {
   document.body.classList.toggle("board", boardOpen && !isMobile());
-  boardBtn.classList.toggle("active", boardOpen);
+  // the toggle lives per-pane (next to the 💬 viewtoggle) — sync them all
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".boardtoggle"))
+    b.classList.toggle("active", boardOpen);
 }
 function setBoard(on: boolean) {
   boardOpen = on;
@@ -711,7 +726,6 @@ async function renderBoard() {
     boardBusy = false;
   }
 }
-boardBtn.onclick = () => setBoard(!boardOpen);
 $("boardclose").onclick = () => setBoard(false);
 applyBoard();
 setInterval(() => void renderBoard(), 3000);

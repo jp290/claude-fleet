@@ -352,6 +352,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.worktree = null; // a plain open is not a lane — open-worktree re-tags after this
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
+  detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
   // an active slot onto a different cwd must not leave an old guest link/password
@@ -365,10 +366,25 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   await ensureSlot(s);
 }
 
+// a task's `sent` state is only meaningful while ITS lane lives in that slot. On any
+// teardown/recycle the link must be resolved, or the task re-runs after a restart
+// (duplicate work) or silently attaches to whatever lane occupies the slot next.
+// Landing marks the task done BEFORE killSlot runs, so this only catches real aborts.
+function detachSlotTasks(slotId: number, note: string): void {
+  for (const t of tasks) {
+    if (t.slot === slotId && t.status === "sent") {
+      t.status = "pending"; // back to owner review, NOT auto-queued — the abort was deliberate
+      t.note = note;
+      t.slot = null;
+    }
+  }
+}
+
 async function killSlot(s: Slot): Promise<void> {
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
+  detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
@@ -1352,6 +1368,14 @@ Bun.serve<WSData>({
         // itself, so the small window since the status check above stays safe.
         const rmv = await git(repo, "worktree", "remove", path);
         if (rmv.code !== 0) return json({ error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
+        // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
+        // (which handles aborts) sees nothing left to detach
+        for (const t of tasks) {
+          if (t.slot === s.id && t.status === "sent") {
+            t.status = "done";
+            t.note = `landed (${branch})`;
+          }
+        }
         await killSlot(s);
         void tickGit().catch(() => {});
         return json({ ok: true, removed: path, branch });

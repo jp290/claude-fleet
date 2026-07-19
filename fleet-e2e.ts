@@ -211,6 +211,19 @@ check("prompt log ignores raw WS typing", !plog1.some((e) => e.text.includes("he
 check("prompt log entries carry ts + cwd", plog1.every((e) => typeof e.ts === "number" && typeof e.cwd === "string"));
 check("prompt log file is 600", (statSync(plogPath).mode & 0o777) === 0o600, (statSync(plogPath).mode & 0o777).toString(8));
 
+// --- /api/prompts: the global prompt directory served from that log, newest first ---
+const pd = (await (await get("/api/prompts")).json()) as { prompts: { ts: number; slot: number; text: string }[]; total: number };
+check("prompt directory returns all logged prompts", pd.prompts.length === plog1.length && pd.total === plog1.length,
+  `${pd.prompts.length}/${plog1.length}`);
+check("prompt directory is newest-first", pd.prompts.every((e, i) => i === 0 || pd.prompts[i - 1].ts >= e.ts));
+check("prompt directory includes closed-slot prompts", pd.prompts.some((e) => e.slot === 3 && e.text.includes("__pwn=1")));
+const pdLim = (await (await get("/api/prompts?limit=1")).json()) as { prompts: unknown[]; total: number };
+check("prompt directory respects limit", pdLim.prompts.length === 1 && pdLim.total === pd.total);
+const pdQ = (await (await get("/api/prompts?q=compose-box")).json()) as { prompts: { text: string }[] };
+check("prompt directory filters by q", pdQ.prompts.length >= 1 && pdQ.prompts.every((e) => e.text.includes("compose-box")));
+const pdNone = (await (await get("/api/prompts?q=zz-no-such-prompt-zz")).json()) as { prompts: unknown[] };
+check("prompt directory q with no hits is empty", pdNone.prompts.length === 0);
+
 // --- transcript view (slot 1 cwd is ~/claude-fleet, whose project dir has transcripts;
 // FLEET_CMD=true means no pinned session id, so this exercises the mtime fallback) ---
 const tr1 = await get("/api/slots/1/transcript");

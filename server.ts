@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ServerWebSocket } from "bun";
@@ -619,6 +619,27 @@ async function listDirs(raw: string) {
 // --- transcript view: read claude's own JSONL (~/.claude/projects/<cwd-slug>/<uuid>.jsonl)
 // and hand the client structured messages instead of terminal bytes. Renders natively at
 // any width — this is the per-device-formatting answer the pty can never give.
+// The summarizer's throwaway sessions write transcripts into the SAME project dir as the
+// slot they describe — without these guards the newest-by-mtime fallback below hands the
+// board/chat view the summarizer's own prompt as "your prompt". Live runs are tracked in
+// summarizerSids; strays from crashed runs are caught by sniffing the prompt's marker text.
+const SUMMARIZER_MARK = "read-only reviewer summarizing the state of a coding session";
+const sniffedSummarizer = new Set<string>(); // positive verdicts only — a marker can't un-happen
+function sniffSummarizer(path: string): boolean {
+  if (sniffedSummarizer.has(path)) return true;
+  try {
+    const fd = openSync(path, "r");
+    const buf = Buffer.alloc(16_384);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    closeSync(fd);
+    if (!buf.toString("utf8", 0, n).includes(SUMMARIZER_MARK)) return false;
+    sniffedSummarizer.add(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function transcriptFile(s: Slot): string | null {
   const dir = projDir(s.cwd!);
   if (s.sessionId) {
@@ -626,13 +647,18 @@ function transcriptFile(s: Slot): string | null {
     if (existsSync(pinned)) return pinned;
   }
   // adopted or pre-session-pinning slot: newest transcript in this cwd's project dir.
-  // Can pick the wrong one when several claudes run in the same cwd — pinned ids fix
-  // that for every pane created from now on.
+  // Excluded: transcripts pinned to OTHER slots (several slots can share a cwd) and the
+  // summarizer's throwaway transcripts (see above). Pinned ids make this exact for every
+  // pane created from now on.
+  const pinnedElsewhere = new Set<string>();
+  for (const o of slots) if (o !== s && o.sessionId) pinnedElsewhere.add(`${o.sessionId}.jsonl`);
   try {
-    const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"))
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl") && !pinnedElsewhere.has(f) && !summarizerSids.has(f.slice(0, -6)))
       .map((f) => ({ f, m: statSync(`${dir}/${f}`).mtimeMs }))
       .sort((a, b) => b.m - a.m);
-    return files[0] ? `${dir}/${files[0].f}` : null;
+    for (const { f } of files.slice(0, 8)) if (!sniffSummarizer(`${dir}/${f}`)) return `${dir}/${f}`;
+    return null;
   } catch {
     return null;
   }
@@ -711,6 +737,9 @@ interface SummaryResult {
 }
 const summaryCache = new Map<number, { key: string; result: SummaryResult }>();
 const summaryInflight = new Map<number, Promise<SummaryResult>>();
+// session ids of summarizer runs currently in flight — transcriptFile's fallback must
+// never serve these as the slot's own conversation (their file is deleted after the run)
+const summarizerSids = new Set<string>();
 
 // last N transcript entries flattened to plain text — same file + parser the
 // transcript view uses, so the agent reads exactly what the owner would see
@@ -759,6 +788,7 @@ async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string): P
 // read from that JSONL with the transcript view's own parser.
 async function summaryViaSession(prompt: string, cwd: string): Promise<string> {
   const sid = crypto.randomUUID();
+  summarizerSids.add(sid);
   const name = `sum-${sid.slice(0, 8)}`;
   const started = Date.now();
   const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
@@ -807,6 +837,11 @@ async function summaryViaSession(prompt: string, cwd: string): Promise<string> {
     throw new Error("summarizer timed out without an answer");
   } finally {
     await tmux("kill-session", "-t", name); // never leave an unattended claude behind
+    // the transcript is throwaway — leaving it would make it the newest .jsonl in the
+    // slot's project dir, and the transcript view's mtime fallback would show the
+    // summarizer's prompt as the session's own conversation
+    await rm(file, { force: true });
+    summarizerSids.delete(sid);
   }
 }
 
@@ -1323,6 +1358,25 @@ Bun.serve<WSData>({
       const s = slotFrom(histMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
       return json({ history: s.history });
+    }
+    // the global prompt directory: every composed send ever, across slots and slot
+    // lifetimes, straight from the append-only prompts.jsonl. Newest first.
+    if (url.pathname === "/api/prompts" && req.method === "GET") {
+      const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
+      const q = (url.searchParams.get("q") ?? "").toLowerCase();
+      const text = existsSync(PROMPT_LOG) ? await Bun.file(PROMPT_LOG).text() : "";
+      const lines = text.split("\n").filter(Boolean);
+      const prompts: unknown[] = [];
+      for (let i = lines.length - 1; i >= 0 && prompts.length < limit; i--) {
+        try {
+          const e = JSON.parse(lines[i]) as { text?: unknown; label?: unknown; cwd?: unknown };
+          if (q && !`${e.text} ${e.label ?? ""} ${e.cwd ?? ""}`.toLowerCase().includes(q)) continue;
+          prompts.push(e);
+        } catch {
+          // a torn mid-append line — skip
+        }
+      }
+      return json({ prompts, total: lines.length });
     }
     // lane review: what did the agent actually DO — tracked diff vs HEAD + untracked list.
     // Complements the transcript view (what it said). Byte-capped: a phone shouldn't

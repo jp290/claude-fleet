@@ -587,8 +587,12 @@ async function pollOutline(slot: number): Promise<string[]> {
   return c.prompts;
 }
 
+let boardAgain = false;
 async function renderBoard() {
-  if (boardBusy || !boardOpen || isMobile()) return;
+  // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
+  // dropped — remember it and re-run once the current pass finishes
+  if (boardBusy) { boardAgain = true; return; }
+  if (!boardOpen || isMobile()) return;
   boardBusy = true;
   try {
     const slot = panes[focused]?.slot;
@@ -718,12 +722,19 @@ async function renderBoard() {
       psec.appendChild(row);
     });
     nodes.push(psec);
+    // the focus moved to another pane while we were fetching — this render describes
+    // the wrong slot; drop it (the re-run below paints the right one)
+    if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
     // rebuild in place but keep the reading position
     const y = boardBody.scrollTop;
     boardBody.replaceChildren(...nodes);
     boardBody.scrollTop = y;
   } finally {
     boardBusy = false;
+    if (boardAgain) {
+      boardAgain = false;
+      void renderBoard();
+    }
   }
 }
 $("boardclose").onclick = () => setBoard(false);
@@ -1053,10 +1064,10 @@ const pkWorktreeBtn = $("pkworktree") as HTMLButtonElement;
 pkWorktreeBtn.onclick = () => void startWorktree(pkPath.value);
 async function startWorktree(repo: string) {
   if (!pickerSlot) return;
-  const branch = prompt("Branch name for the new lane (blank = auto):", "") ?? undefined;
-  if (branch === undefined) return; // cancelled
   const slot = pickerSlot;
-  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch });
+  // branch names are plumbing, not something to type: the server auto-names the lane
+  // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
+  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "" });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     pkPath.classList.add("bad");
@@ -1696,34 +1707,68 @@ hist.addEventListener("click", (e) => {
   if (e.target === hist) closeHist();
 });
 
-async function openHist() {
-  const slot = panes[focused]?.slot;
-  if (!slot) return;
-  const items = await fetchHistory(slot);
-  histTitle.textContent = `Prompt history — slot ${slot === 10 ? 0 : slot}`;
-  histList.replaceChildren();
-  if (!items.length) histList.appendChild(el("div", "histnone", "nothing sent to this session yet"));
-  for (const h of [...items].reverse()) {
-    const row = el("div", "histrow");
-    row.append(el("div", "histtext", h.text), el("span", "histts", fmtTs(h.ts)));
-    const copy = el("span", "histcopy", "⧉");
-    copy.title = "copy prompt";
-    copy.onclick = (e) => {
-      e.stopPropagation();
-      copyText(h.text);
-      copy.textContent = "✓";
-      setTimeout(() => { copy.textContent = "⧉"; }, 800);
-    };
-    row.appendChild(copy);
-    // click loads the prompt into the compose box for editing — it never auto-sends
-    row.onclick = () => {
-      ta.value = h.text;
-      updateChips();
-      closeHist();
-      ta.focus();
-    };
-    histList.appendChild(row);
+// the directory view: every composed send ever, across all slots and slot lifetimes
+interface PromptDirEntry { ts: number; slot: number; cwd: string | null; label: string | null; source: string; text: string }
+let histAll = localStorage.getItem("fleet.histall") === "1";
+
+// one row per prompt; meta = timestamp, plus origin session in the directory view.
+// click loads the prompt into the compose box for editing — it never auto-sends
+function histRow(text: string, meta: string): HTMLElement {
+  const row = el("div", "histrow");
+  row.append(el("div", "histtext", text), el("span", "histts", meta));
+  const copy = el("span", "histcopy", "⧉");
+  copy.title = "copy prompt";
+  copy.onclick = (e) => {
+    e.stopPropagation();
+    copyText(text);
+    copy.textContent = "✓";
+    setTimeout(() => { copy.textContent = "⧉"; }, 800);
+  };
+  row.appendChild(copy);
+  row.onclick = () => {
+    ta.value = text;
+    updateChips();
+    closeHist();
+    ta.focus();
+  };
+  return row;
+}
+
+async function renderHist() {
+  const slot = panes[focused]?.slot ?? 0;
+  const all = histAll || !slot; // no focused session → the directory is all there is
+  histTitle.textContent = all ? "Prompt directory — all sessions" : `Prompt history — slot ${slot === 10 ? 0 : slot}`;
+  const tabs = el("div", "shrbtns");
+  const bThis = el("button", `shrbtn${all ? "" : " active"}`, "this session") as HTMLButtonElement;
+  bThis.disabled = !slot;
+  const bAll = el("button", `shrbtn${all ? " active" : ""}`, "all sessions") as HTMLButtonElement;
+  const setAll = (on: boolean) => {
+    histAll = on;
+    localStorage.setItem("fleet.histall", on ? "1" : "0");
+    void renderHist();
+  };
+  bThis.onclick = () => setAll(false);
+  bAll.onclick = () => setAll(true);
+  tabs.append(bThis, bAll);
+  if (all) {
+    const res = await api("/api/prompts?limit=300");
+    const data = res.ok ? ((await res.json()) as { prompts: PromptDirEntry[] }) : { prompts: [] };
+    histList.replaceChildren(tabs);
+    if (!data.prompts.length) histList.appendChild(el("div", "histnone", "no prompts recorded yet"));
+    for (const p of data.prompts) {
+      const origin = p.label ?? (p.cwd ? baseName(p.cwd) : `slot ${p.slot}`);
+      histList.appendChild(histRow(p.text, `${origin} · ${fmtTs(p.ts)}`));
+    }
+  } else {
+    const items = await fetchHistory(slot);
+    histList.replaceChildren(tabs);
+    if (!items.length) histList.appendChild(el("div", "histnone", "nothing sent to this session yet"));
+    for (const h of [...items].reverse()) histList.appendChild(histRow(h.text, fmtTs(h.ts)));
   }
+}
+
+async function openHist() {
+  await renderHist();
   hist.style.display = "flex";
 }
 $("histbtn").onclick = () => void openHist();

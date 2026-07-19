@@ -1,111 +1,102 @@
-# HANDOFF — session of 2026-07-19 (worktree lanes + automation direction)
+# HANDOFF — session of 2026-07-19 (lanes shipped; next: BACKLOG #14)
 
-Written for a fresh session that will run **inside a Fleet lane** to keep building
-this. Read this, then `docs/README.md` (the documentation charter — the real mission),
-then `docs/tailored-context.md`, then `BACKLOG.md` items 10/13. Verify every claim.
-
-**This session's meta-realization (JP):** Fleet is not a dashboard, it is a *body of
-operating knowledge about driving Claude Code sessions well* — for the agent, the
-orchestrator, and the human — made concrete. The next session's primary mission is to
-**document that knowledge comprehensively** per the charter in `docs/README.md`: two
-shelves, knowledge (human-facing) and operative context (agent-facing, loaded not just
-read). The bar: does a session that loads it behave more reliably? Building more
-features serves this; it is not the point on its own.
-
-## What this session shipped (all live-deployed + browser-verified)
-
-Feature: **worktree lanes** — turn the 16-slot fleet into a portfolio of isolated,
-reviewable, landable units of work. Plus the automation scaffolding around them.
-
-- **Lane spawn** — picker "⎇ new lane" → `git worktree add` under
-  `<repo>.worktrees/<branch>`, opens a Claude session in it. `createWorktree` copies
-  only *gitignored* scaffolding (`.env`, `CLAUDE.md`, `.claude/settings.local.json`)
-  so the lane starts clean and stays landable (the `.worktreeinclude` rule).
-- **Sidebar** — branch/dirty/ahead badge, lifecycle-colored (amber=editing,
-  green=ready); lanes get a left accent + ⎇ chip + inline `±` (review) + `⏏` (land).
-- **Diff view** (`/api/slots/:id/diff`) — colorized `git diff HEAD`, byte-capped,
-  textContent-only. Overlay via `±`.
-- **Land** (`/api/slots/:id/land`) — removes the worktree ONLY if clean AND
-  (pushed to any remote / merged into HEAD). Remove-first ordering: a failed remove
-  keeps the lane recoverable. Never eats work.
-- **Task queue** (🗒) + **idle dispatcher** (OFF unless `FLEET_DISPATCH_REPO` set;
-  pulls one `queued` task per tick into a fresh lane behind the claude-alive gate).
-  Task↔lane lifecycle is closed: landing a lane marks its `sent` task `done`;
-  kill/recycle detaches it back to `pending` (owner re-review); boot requeues only
-  crash-orphaned `sent` tasks. No duplicate re-dispatch after restart.
-- **Public `/intake`** — secret-gated (`FLEET_INTAKE_SECRET`) feature dropbox on the
-  share host; always creates a `pending` task. Cloudflare Email Worker recipe in
-  `INTAKE.md` (the "CEO emails features in" address).
-- Hardening from two review passes (5 real defects the 152 e2e checks missed) — see
-  the two fix commits.
+Written for a fresh session — ideally started **inside a Fleet lane** (see "Starting
+a lane" below; verify you're actually IN the lane before prompting — this exact
+mistake happened this session: a prompt meant for a lane landed in a main slot
+instead, because the wrong sidebar row was clicked). Read this fully, then
+`BACKLOG.md` item 14 (the concrete next mission), then `docs/README.md` +
+`docs/tailored-context.md` for the "why" if you need it. Verify every claim you
+build on — numbers here drift the moment another commit lands.
 
 ## Repo state RIGHT NOW
 
-- **Branch `main` is many commits ahead of `origin/main`, all UNPUSHED** (check the
-  exact count: `git rev-list --count origin/main..main`; this session added the most
-  recent ones — worktree feature, hardening+UI, tailored-context doc, docs charter,
-  handoff+gitignore — the older backlog is stale from prior sessions). Push is blocked: the
-  logged-in gh account `other-account` has only pull access to `jp290/claude-fleet`
-  (403). Push needs `jp290` auth (`gh auth login` as jp290, or add other-account as a
-  write collaborator). Worth clearing this backlog once auth is sorted.
-- Live server: unchanged deploy story — tmux session `srv` on socket `claudefleet`,
-  port 8790, Tailscale 100.64.0.1, watchdog under launchd. Public tunnel →
+- `main` is clean. Check the exact push gap yourself: `git rev-list --count
+  origin/main..main` (was 34 at write time — will be higher by the time you read
+  this). **Push is blocked**: the logged-in `gh` account `other-account` has only pull
+  access to `jp290/claude-fleet` (403 on push). Needs `jp290` auth or a write-collab
+  grant. Not your problem to fix unless asked — just know local `main` is ahead and
+  stays ahead until JP sorts auth.
+- **A stray, unused lane exists**: `git worktree list` will show
+  `claude-fleet.worktrees/docs-knowledge-corpus` on branch `docs/knowledge-corpus`
+  (slot 16 in the dashboard). It's clean and one commit behind current `main` HEAD —
+  it was spawned to do the documentation work, but that work happened by accident in
+  a main-slot session instead (the mistake mentioned above). The lane itself is now
+  pointless — either land it (`⏏`, should succeed cleanly) or repurpose it for your
+  next task. Don't be confused finding it; don't redo docs work in it.
+- Live server unchanged: tmux session `srv` on socket `claudefleet`, port 8790,
+  Tailscale 100.64.0.1, watchdog under launchd. Public tunnel →
   klaus.example.com. Deploy = `tmux -L claudefleet kill-session -t srv`.
-- **e2e: 155 checks ALL PASS** (`./e2e-isolated.sh`), claude-gate ALL PASS.
-- `CLAUDE.md` is now gitignored (was untracked) — so it is copied into every new
-  lane, giving lane sessions the project rules. It stays private (never committed).
+- e2e: **155 checks ALL PASS** (`./e2e-isolated.sh`), claude-gate ALL PASS, at time
+  of writing — re-run, don't trust the number.
+- `CLAUDE.md` is gitignored (private, never committed) but copied into every new
+  lane — lane sessions already have the project rules, including two added this
+  session: never run `bun server.ts` with default env inside a lane (drives the LIVE
+  tmux socket, not a sandbox — likely cause of a historic "sessions vanished"
+  incident); worktree isolation ends at the repo edge (anything outside — other
+  repos, `~/.claude`, launchd, shared ports — is shared reality, stop and report).
 
-## The plan (agreed with JP) — the "tailored work environment" direction
+## What shipped today (all live-deployed + verified, in order)
 
-The one hard bottleneck in a fleet of agents is **human review**. The lever is not
-more parallelism but making each lane's first-pass output reliable enough that review
-is a glance — which comes from the *context* a lane starts with, not from vigilance.
-See `docs/tailored-context.md` for the principle (environment → silent capture of the
-implicit complementary parameters → output only the relevant).
+1. **Worktree lanes** — the core feature. Spawn (picker "⎇ new lane" →
+   `git worktree add`), sidebar badges (branch/dirty/ahead, lifecycle-colored:
+   amber=editing, green=ready), diff view (`±`, `/api/slots/:id/diff`), land (`⏏`,
+   refuses dirty/unpushed, remove-first so a failed remove never orphans the lane),
+   task queue (🗒) + idle dispatcher (OFF unless `FLEET_DISPATCH_REPO` set), public
+   `/intake` dropbox (secret-gated, always creates a `pending` task — see
+   `INTAKE.md` for the "email a feature request in" Cloudflare Worker recipe).
+2. **Hardening** — two independent review passes found and fixed 5 real defects the
+   e2e suite didn't cover: a dispatcher slot-race (could inject external task text
+   into an unrelated session), orphaned worktrees on failed land, land wrongly
+   refusing already-pushed-without-`-u` work, branch-name collisions, and — found
+   live, not by a reviewer — `createWorktree` was copying `CLAUDE.md` unconditionally
+   into new lanes, which made every fresh lane permanently dirty and unlandable
+   until fixed to copy ONLY gitignored scaffolding (the `.worktreeinclude` rule).
+   Also closed: the task↔lane lifecycle (`sent` tasks now resolve to `done` on land
+   or `pending` on kill/recycle — no more duplicate re-dispatch after a restart).
+3. **Documentation charter** (`docs/README.md`, `docs/tailored-context.md`,
+   `docs/operating-model.md`, `docs/interaction-modes.md`, `docs/verification.md`,
+   `docs/lane-brief-template.md`) — **DONE**, all checked off in the charter. This
+   was the prior mission; it is no longer the open task. If you want the "why" behind
+   the lane design, read these — but the next ACTION item is BACKLOG #14, not more
+   documentation for its own sake.
 
-- **Phase 1 — per-lane model** (small, safe, do first): a `model` field on the lane →
-  `--model` in `slotCmd` (server.ts ~35). Cheap model (Haiku) for well-specified
-  lanes, Fable/Opus for hard ones. Composes with the brief: a foolproof brief lets a
-  cheaper model succeed — tailoring is a cost lever, not just a review lever.
-- **Phase 2 — lane brief at LAUNCH, not a file**: a bespoke per-lane task/environment
-  brief passed via the session's initial prompt / `--append-system-prompt`, NOT
-  written into the worktree (an unignored file would dirty the tree and block `land`
-  — the bug fixed this session). Generated from the queue task text + a template;
-  a default or input for hand-opened lanes.
-- **Phase 3 — verify gate** (post-interview): a lane runs a repo-defined verify
-  command on idle; only green flips the badge to "ready". Turns the idle heuristic
-  into a real done-signal — "3 agents that earned a review", not "16 making noise".
+## The next mission: BACKLOG.md item 14
 
-## Working inside a lane on THIS repo — safe practices
+Read the full entry — it's a phased plan (visibility → advisory review → structure
+overview → optional smart-auto), converging four separate ideas JP raised into one
+coherent arc. **Start with Phase 1**, and specifically the one sub-item that's
+genuinely low-risk and needs no taste confirmation: the mechanical prompt-outline
+(reusing the existing `.msg.user` DOM markers `jumpPrompt` already navigates,
+`client.ts:342-343`, as a visible rail instead of only for ↑/↓ nav — zero new server
+calls). The other Phase 1 items (per-repo lane accent color, signal surfacing) are
+small but are UI/taste calls — confirm the approach with JP before shipping, the way
+this session did for the lane restructure.
 
-- The lane branches off local HEAD, so it has all 5 unpushed commits. Good.
-- Lane edits do NOT affect the live server until merged to main + `kill-session srv`.
-  Write + review in the lane; merge to make it live.
-- Run `./e2e-isolated.sh` freely inside a lane — it now refuses the live socket
-  (guard added this session), so it can't touch the real fleet. `bun fleet-e2e.ts`
-  directly is blocked unless `FLEET_E2E_ALLOW_LIVE=1`.
-- `land` refuses dirty/unpushed — commit and push (or merge) before landing.
+Do NOT jump to Phase 2 (advisory review agent) or Phase 3 (smart-auto message
+classifier) without Phase 1 existing and being used for real first — the BACKLOG
+entry explains why each phase depends on the one before it working, not just
+existing.
 
-## Known issues (honest, out of scope this session)
+## Starting a lane (recap)
 
-- **Slot 1 shows `zsh: command not found: claude`** — the watchdog PATH issue from
-  `CLAUDE.md`, pre-existing, unrelated to these changes.
-- **`land` leaves the (merged) branch** on disk — only the worktree is removed.
-  `fleet/*` branches accumulate. Open question in BACKLOG #10 (auto-delete merged?).
-- A fresh lane's badge briefly shows the copied-scaffolding state until the first
-  10s git tick; open-worktree warms it, so this is sub-second in practice.
+Picker → pick the repo → "⎇ new lane" → name a branch (or leave blank for auto).
+Fleet creates the worktree + opens Claude in it — you don't create the worktree
+yourself. **Confirm you're in it** before prompting: the row has a colored left
+accent, a ⎇ chip, and a lifecycle-colored branch badge; the pane title shows the
+`.worktrees/...` path, not the bare repo path. Land with `⏏` when committed+pushed
+(or merged) and clean — it refuses otherwise, deterministically, every time.
 
 ## Verify before/after any change
 
 ```sh
 bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts
 bun run build
-./e2e-isolated.sh     # must end "ALL PASS" (155 checks — verify by reading the tail, not this number)
+./e2e-isolated.sh     # must end "ALL PASS" — read the tail, don't trust a remembered count
 ./e2e-claude-gate.sh  # claudeAlive() gate against a compiled stand-in `claude`
 ```
 Deploy = `tmux -L claudefleet kill-session -t srv` (watchdog restarts with new code,
 sessions survive). Client bundles (`public/app.js`, `public/share.js`) are gitignored
 build artifacts — always `bun run build` before deploying client changes.
 
-**Interview Tuesday 2026-07-22 uses session sharing on the public domain — keep `main`
-stable and the server up.**
+**Interview Tuesday 2026-07-22 uses session sharing on the public domain — keep
+`main` stable and the server up. Nothing in BACKLOG #14 is urgent before then.**

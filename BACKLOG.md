@@ -341,7 +341,15 @@ enough for now, or daily files with a defined retention window?
 
 ---
 
-## 10. Worktree spawn  `medium`
+## 10. Worktree spawn  `✅ SHIPPED 2026-07-19`
+
+**Shipped:** lane spawn (⎇ new lane), branch/dirty/ahead badges, diff view (±),
+land (⏏, refuses dirty/unpushed), task queue + idle dispatcher, public /intake.
+See `HANDOFF.md` for the full state. **Next (agreed direction, the "tailored work
+environment" — reduces the human-review bottleneck):** Phase 1 per-lane model
+(`--model` in slotCmd, cost lever); Phase 2 lane brief at launch (not a file — a
+tracked file would block land); Phase 3 verify-gate before a lane surfaces as
+"ready". Conceptual basis: `docs/tailored-context.md`. Original proposal below.
 
 **Pain:** Multiple slots on the same repo cwd means multiple claudes editing
 the same files. `git worktree add` per slot fixes that — and the transcript

@@ -1,98 +1,99 @@
-# HANDOFF — session of 2026-07-17/18
+# HANDOFF — session of 2026-07-19 (worktree lanes + automation direction)
 
-Written for a fresh session doing a **security review** of this codebase. Read this,
-then `README.md` + `SHARING.md`, then the code. Trust nothing here you can re-verify.
+Written for a fresh session that will run **inside a Fleet lane** to keep building
+this. Read this, then `docs/tailored-context.md` (the conceptual foundation), then
+`BACKLOG.md` items 10/13. Verify every claim here you can.
 
-## What this session shipped (a414ada..a942fcf, ~2700 insertions)
+## What this session shipped (all live-deployed + browser-verified)
 
-| Commit | What |
-|---|---|
-| `a414ada` | ⌘C copies the canvas/WebGL selection |
-| `8135c00` | isolated e2e: `FLEET_SOCK` env + `./e2e-isolated.sh` (throwaway copy, own tmux socket/port) |
-| `80049b9` | terminal key row (esc/tab/arrows) on touchscreen devices, compact on desktop |
-| `7f4ff61` | per-slot prompt history — server-persisted, 🕘 popover + ArrowUp recall |
-| `7b26ed4` | 16 slots; sidebar shows active slots + one "+ new session" row |
-| `3a38f8f` | session export ⇩ — printable page + `?format=txt` |
-| `b2ef699` | **session sharing** — per-slot password-gated guest access, view/interact |
-| `b0abbf2` | landing page on the share-domain root (subagent-built, reviewed) |
-| `aa7be82` `516ea28` | conversation view (claude JSONL transcripts) + purpose-restyle |
-| `9a634f2` | WebGL renderer (canvas fallback); in-terminal sent-markers built, verified drifting, dropped |
-| `0be9e1e` | UI density pass |
-| `c2a9c08` | **launchd watchdog** (`watchdog.sh` + `~/Library/LaunchAgents/com.claude-fleet.watchdog.plist`) |
-| `7e3f861` | self-heal resumes claude conversations (`--resume` when pinned transcript exists) |
-| `a871941` | **scheduled prompts** ⏱ with guard rails |
+Feature: **worktree lanes** — turn the 16-slot fleet into a portfolio of isolated,
+reviewable, landable units of work. Plus the automation scaffolding around them.
 
-Docs: `BACKLOG.md` (per-feature analysis + status), `SHARING.md` (share mechanics).
+- **Lane spawn** — picker "⎇ new lane" → `git worktree add` under
+  `<repo>.worktrees/<branch>`, opens a Claude session in it. `createWorktree` copies
+  only *gitignored* scaffolding (`.env`, `CLAUDE.md`, `.claude/settings.local.json`)
+  so the lane starts clean and stays landable (the `.worktreeinclude` rule).
+- **Sidebar** — branch/dirty/ahead badge, lifecycle-colored (amber=editing,
+  green=ready); lanes get a left accent + ⎇ chip + inline `±` (review) + `⏏` (land).
+- **Diff view** (`/api/slots/:id/diff`) — colorized `git diff HEAD`, byte-capped,
+  textContent-only. Overlay via `±`.
+- **Land** (`/api/slots/:id/land`) — removes the worktree ONLY if clean AND
+  (pushed to any remote / merged into HEAD). Remove-first ordering: a failed remove
+  keeps the lane recoverable. Never eats work.
+- **Task queue** (🗒) + **idle dispatcher** (OFF unless `FLEET_DISPATCH_REPO` set;
+  pulls one `queued` task per tick into a fresh lane behind the claude-alive gate).
+- **Public `/intake`** — secret-gated (`FLEET_INTAKE_SECRET`) feature dropbox on the
+  share host; always creates a `pending` task. Cloudflare Email Worker recipe in
+  `INTAKE.md` (the "CEO emails features in" address).
+- Hardening from two review passes (5 real defects the 152 e2e checks missed) — see
+  the two fix commits.
 
-## Live environment (this machine)
+## Repo state RIGHT NOW
 
-- Fleet server: tmux session `srv` on socket `claudefleet`, port **8790**, bound to
-  Tailscale IP 100.64.0.1, started by `watchdog.sh` under launchd label
-  `com.claude-fleet.watchdog` (KeepAlive — kill the process and it respawns).
-- Public: Cloudflare tunnel `cc734c13…` (config `~/.cloudflared/config-logic-extraction.yml`,
-  launchd `com.logic-extraction.tunnel`) routes **klaus.example.com → 100.64.0.1:8790**.
-  Backup of the pre-change config: `~/.cloudflared/config-logic-extraction.yml.bak-fleet`.
-- Ten live claude sessions in slots 1–10. **Do not run `bun fleet-e2e.ts` against the
-  live server** — it kills slots 1+2 and restarts srv. Use `./e2e-isolated.sh` (93 checks).
-- User's job interview **Tue 2026-07-22** will use session sharing over the public domain.
+- **Branch `main` is 30 commits ahead of `origin/main`, UNPUSHED** (this session
+  added the last 4: worktree feature, hardening+UI, tailored-context doc,
+  handoff+gitignore — the rest are stale from prior sessions). Push is blocked: the
+  logged-in gh account `other-account` has only pull access to `jp290/claude-fleet`
+  (403). Push needs `jp290` auth (`gh auth login` as jp290, or add other-account as a
+  write collaborator). Worth clearing this backlog once auth is sorted.
+- Live server: unchanged deploy story — tmux session `srv` on socket `claudefleet`,
+  port 8790, Tailscale 100.64.0.1, watchdog under launchd. Public tunnel →
+  klaus.example.com. Deploy = `tmux -L claudefleet kill-session -t srv`.
+- **e2e: 155 checks ALL PASS** (`./e2e-isolated.sh`), claude-gate ALL PASS.
+- `CLAUDE.md` is now gitignored (was untracked) — so it is copied into every new
+  lane, giving lane sessions the project rules. It stays private (never committed).
 
-## New attack surface — review these hardest
+## The plan (agreed with JP) — the "tailored work environment" direction
 
-1. **Share routes** (`server.ts`, search `shareApi` / `wsShare` / `shareAuthed`):
-   public-internet-reachable through the tunnel. Per-share secret in a
-   `share_<id>` cookie (HttpOnly, SameSite=Lax, **no `Secure` flag** — deliberate,
-   TLS terminates at Cloudflare and local access is plain http; challenge this).
-   `timingSafeEqual` compares; brute force = 400ms/attempt + lock after 50/h
-   (`failStrike`, in-memory — resets on server restart). View-mode input dropped
-   server-side in the WS `message` handler; revoke closes sockets (code 4001).
-2. **Share-host isolation** (`SHARE_HOSTS` block at top of `fetch`): on
-   klaus.example.com only `/`, `/s/*`, `/ws-share/*`, share assets exist;
-   dashboard/login/owner API 404 even with a valid token. The landing page is served
-   for GET `/` inside that block. Verify the allowlist regex can't be widened by
-   crafted paths.
-3. **Share secrets stored plaintext** in `fleet.json` (mode 600) and echoed to the
-   owner UI via `/api/sessions`. Deliberate trade-off (owner re-views password);
-   a reviewer may want hashing + one-time display instead.
-4. **Export endpoint** (`exportMatch`): interpolates capture-pane output and
-   label/cwd into HTML — `esc()` covers `& < >`; check attribute contexts.
-5. **Transcript endpoint** (`trMatch` + `projDir`/`transcriptFile`): derives a
-   filesystem path from the slot's cwd via slug regex `[^a-zA-Z0-9] → "-"`, reads
-   `~/.claude/projects/<slug>/*.jsonl`, serves parsed content to the owner. cwd is
-   realpath-validated at openSlot; still, path-derivation code deserves eyes.
-   Whole-file read per poll (no cap on file size).
-6. **Scheduled prompts** (`Auto` / `tickAutos`): unattended text injection into
-   sessions. Gates: mandatory runs cap (1–100), min interval 10s, idle gate
-   (60s quiet, 10min grace), claude-alive gate (process-tree check via
-   `pgrep -P pane_pid` — never types into a bare shell where text would EXECUTE;
-   gate active only when `FLEET_CMD` runs claude). Owner-token only.
-7. **Watchdog/launchd** (`watchdog.sh`): env (incl. public hostnames) baked into a
-   tmux command string; PATH baked into the pane command. Check quoting/injection
-   surface if `$PATH`/paths ever contain quotes.
-8. **Guest page** (`src/share.ts`, `public/share.html`) and **landing page**
-   (`public/landing.html`, subagent-written, human-reviewed once).
+The one hard bottleneck in a fleet of agents is **human review**. The lever is not
+more parallelism but making each lane's first-pass output reliable enough that review
+is a glance — which comes from the *context* a lane starts with, not from vigilance.
+See `docs/tailored-context.md` for the principle (environment → silent capture of the
+implicit complementary parameters → output only the relevant).
 
-## Known weaknesses / open items (honest list)
+- **Phase 1 — per-lane model** (small, safe, do first): a `model` field on the lane →
+  `--model` in `slotCmd` (server.ts ~35). Cheap model (Haiku) for well-specified
+  lanes, Fable/Opus for hard ones. Composes with the brief: a foolproof brief lets a
+  cheaper model succeed — tailoring is a cost lever, not just a review lever.
+- **Phase 2 — lane brief at LAUNCH, not a file**: a bespoke per-lane task/environment
+  brief passed via the session's initial prompt / `--append-system-prompt`, NOT
+  written into the worktree (an unignored file would dirty the tree and block `land`
+  — the bug fixed this session). Generated from the queue task text + a template;
+  a default or input for hand-opened lanes.
+- **Phase 3 — verify gate** (post-interview): a lane runs a repo-defined verify
+  command on idle; only green flips the badge to "ready". Turns the idle heuristic
+  into a real done-signal — "3 agents that earned a review", not "16 making noise".
 
-- Owner token has **no rate limiting** (unchanged pre-existing state); share auth does.
-- `authFails` map is unbounded per share id (bounded by #shares in practice).
-- Transcript + history + autos endpoints are owner-only but share one token — no
-  scoping/audit inside the owner role.
-- e2e covers authz boundaries listed above (93 checks) but was never run as an
-  adversarial fuzz — inputs are friendly.
-- **Unexplained:** tmux sessions on socket `claudefleet` vanished twice on 2026-07-18
-  (`s1`, `srv`, old watchdog), and a foreign session `dexter` appeared on that socket
-  (08:02). Something outside this repo (suspect: rag-job-channel / serve-dexter on
-  port 8899) manipulates the shared socket. Not investigated yet — worth a look
-  because it intersects the availability story.
-- Untracked in repo: `CLAUDE.md` (private project notes), `fleet.log` (stale).
+## Working inside a lane on THIS repo — safe practices
+
+- The lane branches off local HEAD, so it has all 5 unpushed commits. Good.
+- Lane edits do NOT affect the live server until merged to main + `kill-session srv`.
+  Write + review in the lane; merge to make it live.
+- Run `./e2e-isolated.sh` freely inside a lane — it now refuses the live socket
+  (guard added this session), so it can't touch the real fleet. `bun fleet-e2e.ts`
+  directly is blocked unless `FLEET_E2E_ALLOW_LIVE=1`.
+- `land` refuses dirty/unpushed — commit and push (or merge) before landing.
+
+## Known issues (honest, out of scope this session)
+
+- **Slot 1 shows `zsh: command not found: claude`** — the watchdog PATH issue from
+  `CLAUDE.md`, pre-existing, unrelated to these changes.
+- **`land` leaves the (merged) branch** on disk — only the worktree is removed.
+  `fleet/*` branches accumulate. Open question in BACKLOG #10 (auto-delete merged?).
+- A fresh lane's badge briefly shows the copied-scaffolding state until the first
+  10s git tick; open-worktree warms it, so this is sub-second in practice.
 
 ## Verify before/after any change
 
 ```sh
 bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts
 bun run build
-./e2e-isolated.sh     # must end "ALL PASS" (112 checks — count drifts, verify by reading the tail, not this comment)
-./e2e-claude-gate.sh  # separate isolated instance: claudeAlive() gate against a real compiled stand-in `claude` binary
+./e2e-isolated.sh     # must end "ALL PASS" (155 checks — verify by reading the tail, not this number)
+./e2e-claude-gate.sh  # claudeAlive() gate against a compiled stand-in `claude`
 ```
 Deploy = `tmux -L claudefleet kill-session -t srv` (watchdog restarts with new code,
-sessions survive). Client bundles are built artifacts (`public/app.js`, `public/share.js`, gitignored).
+sessions survive). Client bundles (`public/app.js`, `public/share.js`) are gitignored
+build artifacts — always `bun run build` before deploying client changes.
+
+**Interview Tuesday 2026-07-22 uses session sharing on the public domain — keep `main`
+stable and the server up.**

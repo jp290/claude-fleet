@@ -166,13 +166,10 @@
   .chip { padding: 5px 12px; border-radius: 8px; border: 1px solid #2c3a5e; background: #262626;
     color: #7aa2f7; font-size: 12px; font-family: inherit; cursor: pointer; white-space: nowrap; }
   .chip.active { background: #7aa2f7; color: #10131c; }
-  /* suffix chips (append trailing directives) — amber, to read apart from prefix chips */
-  .chip.sfx { border-color: #5a4a2a; color: #e0af68; }
-  .chip.sfx.active { background: #e0af68; color: #10131c; }
   #inputrow { display: flex; gap: 7px; align-items: flex-end; }
-  #histbtn, #autobtn { flex: none; width: 38px; height: 38px; border-radius: 10px; border: 1px solid #333;
+  #histbtn, #autobtn, #enhbtn { flex: none; width: 38px; height: 38px; border-radius: 10px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 15px; font-family: inherit; cursor: pointer; }
-  #histbtn:hover, #autobtn:hover { color: #ccc; }
+  #histbtn:hover, #autobtn:hover, #enhbtn:hover { color: #ccc; }
   .slot .autobadge { flex: none; font-size: 10px; color: #e0af68; }
   /* lanes are first-class: a left accent + a ⎇ chip set them apart from plain repo sessions */
   .slot.lane { border-left: 2px solid #3a4a7a; }
@@ -422,7 +419,7 @@
     #bar { padding-top: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
     #input { font-size: 16px; min-height: 44px; max-height: 110px; }
     #send { height: 44px; width: 56px; }
-    #histbtn, #autobtn { width: 44px; height: 44px; font-size: 17px; }
+    #histbtn, #autobtn, #enhbtn { width: 44px; height: 44px; font-size: 17px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
     .pkrow { padding: 11px 9px; font-size: 13px; }
@@ -479,6 +476,7 @@
         <button id="live" title="live typing — every key goes straight to the terminal">⌨</button>
         <button id="histbtn" title="prompt history (↑ in the empty box recalls too)">🕘</button>
         <button id="autobtn" title="scheduled prompts for this session">⏱</button>
+        <button id="enhbtn" title="✨ rework this prompt — a background agent weaves in your directives + /sharpen3 (~20s, never auto-sends)">✨</button>
         <textarea id="input" rows="1" placeholder="Prompt for the selected session…"
           autocomplete="off"></textarea>
         <button id="send">➤</button>

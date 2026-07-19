@@ -350,6 +350,20 @@ class Pane {
       .scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // sideboard outline → open the conversation view and bring prompt #i into view.
+  // The chat may still be loading right after the view switch — retry until the
+  // marker exists (same .msg.user anchors jumpPrompt navigates)
+  showPromptAt(i: number, attempts = 15) {
+    if (!this.slot) return;
+    if (this.view !== "chat") this.setView("chat");
+    const users = this.chatEl.querySelectorAll<HTMLElement>(".msg.user");
+    if (users.length > i) {
+      users[i].scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (attempts > 0) setTimeout(() => this.showPromptAt(i, attempts - 1), 400);
+  }
+
   private async pollChat() {
     if (!this.slot || this.view !== "chat" || this.chatBusy) return;
     this.chatBusy = true;
@@ -496,6 +510,152 @@ let panes: Pane[] = [];
 let focused = 0;
 let layout = 1;
 
+// --- right sideboard: session brief (desktop-only). Deterministic layers only —
+// git facts fetched fresh from /brief per render, and the prompt outline derived from
+// the SAME transcript feed the conversation view renders. No state of its own to drift.
+interface BriefCommit { hash: string; ts: number; subject: string }
+interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; files: string[];
+  shortstat: string; commits: BriefCommit[] }
+const boardBtn = $("boardbtn") as HTMLButtonElement, boardBody = $("boardbody");
+let boardOpen = localStorage.getItem("fleet.board") === "1";
+let boardBusy = false;
+// per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
+const outline = new Map<number, { total: number; source: string | null; prompts: string[] }>();
+
+function applyBoard() {
+  document.body.classList.toggle("board", boardOpen && !isMobile());
+  boardBtn.classList.toggle("active", boardOpen);
+}
+function setBoard(on: boolean) {
+  boardOpen = on;
+  localStorage.setItem("fleet.board", on ? "1" : "0");
+  applyBoard();
+  // the board's width changed → terminals must refit (same rule as the sidebar collapse)
+  requestAnimationFrame(() => { for (const p of panes) p.refit(); });
+  if (on) void renderBoard();
+}
+
+async function pollOutline(slot: number): Promise<string[]> {
+  const c = outline.get(slot) ?? { total: 0, source: null, prompts: [] };
+  try {
+    const res = await api(`/api/slots/${slot}/transcript?after=${c.total}`);
+    if (!res.ok) return c.prompts;
+    const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null };
+    // fresh claude after a self-heal → transcript restarted; rebuild from the top
+    if (c.source !== null && data.source !== c.source) {
+      outline.set(slot, { total: 0, source: data.source, prompts: [] });
+      return [];
+    }
+    c.source = data.source;
+    for (const e of data.entries) {
+      if (e.role !== "user") continue;
+      // one outline row per user text block — exactly mirrors the .msg.user elements
+      // appendEntry creates, so row index i maps to showPromptAt(i)
+      for (const b of e.blocks) {
+        if (b.t !== "text") continue;
+        const first = b.text.split("\n").find((l) => l.trim()) ?? "";
+        c.prompts.push(first.trim().slice(0, 100) || "(empty)");
+      }
+    }
+    c.total = data.total;
+    outline.set(slot, c);
+  } catch {
+    // transient fetch error — next render retries
+  }
+  return c.prompts;
+}
+
+async function renderBoard() {
+  if (boardBusy || !boardOpen || isMobile()) return;
+  boardBusy = true;
+  try {
+    const slot = panes[focused]?.slot;
+    const s = slot ? fleet[slot - 1] : undefined;
+    if (!slot || !s?.cwd) {
+      boardBody.replaceChildren(el("div", "bempty", "no session in the focused pane"));
+      return;
+    }
+    const [briefRes, prompts] = await Promise.all([api(`/api/slots/${slot}/brief`), pollOutline(slot)]);
+    const brief = briefRes.ok ? ((await briefRes.json()) as BriefInfo) : null;
+    const nodes: HTMLElement[] = [];
+    const head = el("div", "bsec");
+    head.appendChild(el("h3", "", `slot ${slot === 10 ? 0 : slot} — ${s.label ?? baseName(s.cwd)}`));
+    if (brief?.branch) {
+      const b = el("div", "bstate");
+      b.appendChild(el("span", "bbranch", brief.branch));
+      if (brief.worktree) b.appendChild(document.createTextNode(" · fleet lane"));
+      head.appendChild(b);
+    }
+    nodes.push(head);
+    if (brief) {
+      const st = el("div", "bsec");
+      st.appendChild(el("h3", "", "state"));
+      const line = el("div", "bstate");
+      if (brief.files.length) {
+        line.appendChild(el("span", "editing",
+          `${brief.files.length} file${brief.files.length === 1 ? "" : "s"} with uncommitted changes`));
+        if (brief.shortstat) line.appendChild(document.createTextNode(` — ${brief.shortstat}`));
+      } else {
+        line.appendChild(el("span", "ready", "working tree clean"));
+      }
+      const ahead = s.git?.ahead ?? 0;
+      if (ahead) line.appendChild(document.createTextNode(
+        ` · ${ahead} commit${ahead === 1 ? "" : "s"} to push${brief.worktree ? "/land" : ""}`));
+      st.appendChild(line);
+      nodes.push(st);
+      if (brief.files.length) {
+        const sec = el("div", "bsec");
+        sec.appendChild(el("h3", "", "changed files"));
+        for (const f of brief.files.slice(0, 30)) {
+          const row = el("div", "bfile");
+          row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
+          row.appendChild(document.createTextNode(f.slice(3)));
+          row.title = f;
+          sec.appendChild(row);
+        }
+        if (brief.files.length > 30) sec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
+        nodes.push(sec);
+      }
+      if (brief.commits.length) {
+        const sec = el("div", "bsec");
+        sec.appendChild(el("h3", "", "recent commits"));
+        for (const cm of brief.commits) {
+          const row = el("div", "brow");
+          row.appendChild(el("span", "bhash", cm.hash));
+          const sub = el("span", "bsub", cm.subject);
+          sub.title = cm.subject;
+          row.appendChild(sub);
+          sec.appendChild(row);
+        }
+        nodes.push(sec);
+      }
+    }
+    const psec = el("div", "bsec");
+    psec.appendChild(el("h3", "", `your prompts (${prompts.length})`));
+    if (!prompts.length) psec.appendChild(el("div", "bempty", "no prompts in the transcript yet"));
+    prompts.forEach((p, i) => {
+      const row = el("div", "bprompt");
+      row.appendChild(el("span", "bn", String(i + 1)));
+      const t = el("span", "bt", p);
+      t.title = p;
+      row.appendChild(t);
+      row.onclick = () => panes[focused]?.showPromptAt(i);
+      psec.appendChild(row);
+    });
+    nodes.push(psec);
+    // rebuild in place but keep the reading position
+    const y = boardBody.scrollTop;
+    boardBody.replaceChildren(...nodes);
+    boardBody.scrollTop = y;
+  } finally {
+    boardBusy = false;
+  }
+}
+boardBtn.onclick = () => setBoard(!boardOpen);
+$("boardclose").onclick = () => setBoard(false);
+applyBoard();
+setInterval(() => void renderBoard(), 3000);
+
 function focusPane(index: number) {
   const changed = focused !== index;
   focused = index;
@@ -509,6 +669,7 @@ function focusPane(index: number) {
   if (changed) {
     renderSlots();
     saveView();
+    void renderBoard(); // the board describes the FOCUSED session — follow the focus
   }
 }
 
@@ -583,6 +744,7 @@ MOBILE_MQ.addEventListener("change", () => {
   setDrawer(false);
   setLive(false); // the live bar is a mobile-only surface
   applyCollapsed(); // strip the rail on mobile, restore it on desktop
+  applyBoard(); // same for the right sideboard — a desktop-only surface
   setLayout(isMobile() ? 1 : layout, panes.map((p) => p.slot));
 });
 

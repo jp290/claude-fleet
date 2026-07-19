@@ -223,6 +223,19 @@ const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
 check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
 check("transcript rejects inactive slot", (await get("/api/slots/4/transcript")).status === 400);
 
+// --- session brief (slot 1 cwd is ~/claude-fleet, a real git repo) ---
+const bf1 = await get("/api/slots/1/brief");
+const bf1j = (await bf1.json()) as { branch: string | null; worktree: unknown;
+  files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] };
+check("brief returns git facts for a repo slot", bf1.ok && typeof bf1j.branch === "string" && bf1j.branch.length > 0,
+  `branch=${bf1j.branch}`);
+check("brief lists commits with hash+ts+subject", bf1j.commits.length > 0
+  && bf1j.commits.every((c) => /^[0-9a-f]{7,}$/.test(c.hash) && c.ts > 0 && c.subject.length > 0),
+  `commits=${bf1j.commits.length}`);
+check("brief caps commit list at 15", bf1j.commits.length <= 15);
+check("brief files is an array", Array.isArray(bf1j.files));
+check("brief rejects inactive slot", (await get("/api/slots/4/brief")).status === 400);
+
 // --- scheduled prompts (FLEET_CMD=true → claude-alive gate is off by design) ---
 const aBad = await post("/api/slots/2/autos", { text: "x", everySec: 5, runs: 3 });
 check("auto rejects sub-minimum interval", aBad.status === 400);

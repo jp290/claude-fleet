@@ -635,11 +635,13 @@ right desktop-only sideboard "session brief" (ℹ toggle in #sidehead): fresh gi
 facts from new `/api/slots/:id/brief` (state line, changed files, recent commits)
 + prompt outline off the transcript feed, rows jump the conversation view to that
 prompt. Design decisions settled with JP, binding for Phases 2–3:
-- Ephemeral agents run as `claude -p` subprocesses with cwd in the worktree (same
-  repo context incl. CLAUDE.md), NOT as slots — slots are scarce and TUI output
-  would need scraping. A "→ open in session" button promotes a result to a real
-  slot when follow-up is wanted. No hidden service sessions (invisible automation
-  contradicts the gates principle).
+- Ephemeral agents run as throwaway INTERACTIVE claude sessions in their own tmux
+  session (cwd in the worktree — same repo context incl. CLAUDE.md), NOT as slots
+  and NOT as `claude -p`: print mode bills the metered Anthropic API per token
+  (JP-verified: its envelope reports total_cost_usd), while interactive sessions
+  stay inside the Claude Max subscription. The answer is read from the pinned
+  transcript JSONL (never scraped from the TUI). Click-only keeps the gates
+  principle intact despite the session being invisible.
 - No repo cloning: worktrees already are clone-light; the one future case (foreign
   repos as reference context) is better served by `--add-dir` at invocation.
 - Anti-drift rule (per stored feedback "native over parallel views"): the board
@@ -651,13 +653,15 @@ prompt. Design decisions settled with JP, binding for Phases 2–3:
   (Phase 2, folded structural summary) and 🔍 review — read-only, click-only.
 
 **Update 2026-07-19 (later) — Phase 2 ✨ summarize SHIPPED (branch
-`fleet/lane-summary`, unmerged):** `POST /api/slots/:id/summary` runs `claude -p`
-(default `claude-sonnet-5` — best cost/quality point for summarization; override
-via `FLEET_SUMMARY_MODEL`, binary via `FLEET_SUMMARY_CMD`) with cwd in the slot's
-checkout. Prompt contract: strict JSON `{summary, openThreads, verification}`,
-evidence only. Single-flight + git-state-keyed cache, GET never spawns, cache
-cleared on kill, board shows an "older state" badge when stale. Real-CLI smoke
-test: ~$0.11/call (mostly 1h-cache write; cheaper within the window). Remaining
+`fleet/lane-summary`, unmerged):** `POST /api/slots/:id/summary` spawns a throwaway
+interactive claude in its own tmux session (`sum-<id>`, pinned session-id, cwd =
+the slot's checkout, default model `claude-sonnet-5` via `FLEET_SUMMARY_MODEL`;
+`FLEET_SUMMARY_CMD` is a subprocess stand-in hook for e2e only) and reads the
+answer from the transcript JSONL — subscription-covered, no metered API. Prompt
+contract: strict JSON `{summary, openThreads, verification}`, evidence only.
+Single-flight + git-state-keyed cache, GET never spawns, cache cleared on kill,
+board shows an "older state" badge when stale. Needs `Bun.serve idleTimeout: 240`
+(default 10s kills the long POST). Live-verified end-to-end: ~13s. Remaining
 in Phase 2: the 🔍 review agent (same plumbing, diff-focused critic prompt) —
 and note the known limitation: transcript/diff content is untrusted input to the
 summarizer (prompt injection can skew the advisory text; it is display-only and

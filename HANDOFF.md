@@ -9,6 +9,13 @@ binding for Phases 2–3 are recorded in the #14 update block; new items #15
 `docs/knowledge-corpus` lane was removed (work was already in main). Push to
 origin is STILL blocked (gh auth) — local main is now ~37 ahead.
 
+**Second update:** #14 Phase 2 ✨ summary is MERGED + LIVE (through `44f3bff`):
+background INTERACTIVE claude session (subscription, NOT `claude -p` — that
+bills the metered API), answer read from the transcript JSONL, Sonnet 5 default.
+Board ℹ toggle moved into the pane beside 💬; collapsed rail fixed (hides 🗒).
+Note: claude login expires ~2026-07-23 ("run /login") — renew BEFORE the
+Tuesday interview. All four verification suites ALL PASS at merge time.
+
 Written for a fresh session — ideally started **inside a Fleet lane** (see "Starting
 a lane" below; verify you're actually IN the lane before prompting — this exact
 mistake happened this session: a prompt meant for a lane landed in a main slot

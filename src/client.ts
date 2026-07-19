@@ -1192,6 +1192,13 @@ function renderSlots() {
         dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
         row.appendChild(dff);
       }
+      if (s.share && s.share.comments > 0) {
+        // passive signal — hidden while the hover-action row is up; the 💬 in that row
+        // (below) is the clickable path, so aiming at the badge still lands right
+        const cb = el("span", "cmtb", `💬${s.share.comments}`);
+        cb.title = `guest chat — ${s.share.comments} message${s.share.comments === 1 ? "" : "s"}`;
+        row.appendChild(cb);
+      }
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
       const shr = el("span", "shr" + (s.share ? " on" : ""), "⤴");
@@ -1248,6 +1255,12 @@ function renderSlots() {
         await refresh();
       };
       act.prepend(shr);
+      if (s.share) {
+        const ca = el("span", "cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬");
+        ca.title = "guest chat";
+        ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
+        act.prepend(ca);
+      }
       act.append(exp, ren, kill);
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
@@ -1309,7 +1322,7 @@ async function refresh() {
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, serverNow - s.lastOutput < RECENT_MS,
+      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, s.share?.comments, serverNow - s.lastOutput < RECENT_MS,
         s.git?.branch, s.git?.dirty, s.git?.ahead, !!s.worktree])]);
     if (key !== lastRender) {
       lastRender = key;
@@ -1525,12 +1538,36 @@ function renderShareDlg() {
       : "View only — guests watch, nothing they type reaches the terminal. Give link and password separately."));
     const cmts = el("div", "shrcmts");
     cmts.appendChild(el("div", "shrcmthead",
-      sh.comments > 0 ? `💬 ${sh.comments} guest comment${sh.comments === 1 ? "" : "s"}` : "💬 no guest comments yet"));
-    if (sh.comments > 0) {
-      const list = el("div", "shrcmtlist");
-      cmts.appendChild(list);
-      void loadShareComments(s.id, list);
-    }
+      sh.comments > 0 ? `💬 guest chat · ${sh.comments}` : "💬 guest chat"));
+    const list = el("div", "shrcmtlist");
+    cmts.appendChild(list);
+    if (sh.comments > 0) void loadShareComments(s.id, list);
+    // owner reply lands in the same thread, highlighted on the guest page
+    const rrow = el("div", "shrreply");
+    const rin = el("input", "shrreplyin") as HTMLInputElement;
+    rin.placeholder = "reply to guests…";
+    const rbtn = el("button", "shrbtn", "reply") as HTMLButtonElement;
+    const sendReply = async () => {
+      const text = rin.value.trim();
+      if (!text || rbtn.disabled) return;
+      rbtn.disabled = true;
+      try {
+        const res = await post(`/api/slots/${s.id}/comments`, { text });
+        if (res.ok) {
+          rin.value = "";
+          await loadShareComments(s.id, list);
+          await refresh();
+        }
+      } finally {
+        rbtn.disabled = false;
+      }
+    };
+    rbtn.onclick = () => void sendReply();
+    rin.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void sendReply(); }
+    });
+    rrow.append(rin, rbtn);
+    cmts.appendChild(rrow);
     sharepanel.appendChild(cmts);
     const btns = el("div", "shrbtns");
     const rotate = el("button", "shrbtn", "new link + password") as HTMLButtonElement;
@@ -1578,16 +1615,16 @@ function renderShareDlg() {
   }
 }
 
-interface ShareCommentInfo { id: string; ts: number; name: string; text: string }
+interface ShareCommentInfo { id: string; ts: number; name: string; text: string; from?: string }
 async function loadShareComments(slotId: number, target: HTMLElement) {
   const res = await api(`/api/slots/${slotId}/comments`);
   if (!res.ok) return;
   const data = (await res.json().catch(() => ({}))) as { comments?: ShareCommentInfo[] };
   target.replaceChildren();
   for (const c of data.comments ?? []) {
-    const row = el("div", "shrcmt");
+    const row = el("div", c.from === "owner" ? "shrcmt own" : "shrcmt");
     const head = el("div", "shrcmtmeta");
-    head.appendChild(el("b", "", c.name));
+    head.appendChild(el("b", "", c.from === "owner" ? "owner" : c.name));
     head.appendChild(el("span", "", fmtSince(c.ts)));
     const del = el("button", "shrcmtdel", "✕") as HTMLButtonElement;
     del.title = "delete this comment";

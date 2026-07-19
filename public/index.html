@@ -286,6 +286,18 @@
     font-size: 11px; font-family: inherit; padding: 0 2px; }
   .shrcmtdel:hover { color: #f85149; }
   .shrcmttext { font-size: 12px; color: #ddd; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+  .shrcmt.own { border-color: #33415e; background: #191e2b; }
+  .shrcmt.own .shrcmtmeta b { color: #7aa2f7; }
+  .shrreply { display: flex; gap: 6px; }
+  .shrreplyin { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border-radius: 8px;
+    border: 1px solid #333; background: #262626; color: #eee; font-size: 12px; font-family: inherit; }
+  .shrreplyin:focus { outline: none; border-color: #3a4a7a; }
+  .cmtb { flex: none; font-size: 10px; color: #7aa2f7; background: #1a2030; border: 1px solid #33415e;
+    border-radius: 8px; padding: 1px 6px; }
+  .slot:hover .cmtb { display: none; }
+  .slot .cmtact { color: #555; font-size: 12px; padding: 2px 5px; border-radius: 4px; }
+  .slot .cmtact.hot { color: #7aa2f7; }
+  .slot .cmtact:hover { color: #7aa2f7; background: #1c2437; }
   .shrlive { color: #888; }
   .shrlive.on { color: #3fb950; }
   .shrsince { margin-left: auto; color: #666; font-size: 10.5px; }

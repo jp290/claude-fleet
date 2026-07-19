@@ -38,9 +38,17 @@ printf '{"result": "{\\"summary\\": \\"fake summary of the session\\", \\"openTh
 EOF
 chmod +x "$DIR/fakesum"
 
+# stand-in ✨ enhancer: same envelope contract, answers a fixed reworked prompt
+cat > "$DIR/fakeenh" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"prompt\\": \\"enhanced prompt. own your work! /sharpen3\\"}"}'
+EOF
+chmod +x "$DIR/fakeenh"
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1

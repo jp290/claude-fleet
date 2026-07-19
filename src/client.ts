@@ -1256,8 +1256,8 @@ function renderSlots() {
   }
 }
 
-function renderChips(chips: string[], suffixes: string[]) {
-  if (chipsEl.childElementCount === chips.length + suffixes.length) return;
+function renderChips(chips: string[]) {
+  if (chipsEl.childElementCount === chips.length) return;
   chipsEl.replaceChildren();
   for (const c of chips) {
     const b = el("button", "chip", c.replace(/^\//, "")) as HTMLButtonElement;
@@ -1265,25 +1265,7 @@ function renderChips(chips: string[], suffixes: string[]) {
     b.onclick = () => togglePrefix(c);
     chipsEl.appendChild(b);
   }
-  // suffix chips: append the owner's recurring trailing directives ("Gib dir Mühe …",
-  // /sharpen3) with one tap — mined from the prompt corpus, override via FLEET_SUFFIX_CHIPS
-  for (const sfx of suffixes) {
-    const b = el("button", "chip sfx", sfx.length > 30 ? sfx.slice(0, 28) + "…" : sfx) as HTMLButtonElement;
-    b.dataset.sfx = sfx;
-    b.title = `append: ${sfx}`;
-    b.onclick = () => toggleSuffix(sfx);
-    chipsEl.appendChild(b);
-  }
   updateChips();
-}
-
-function toggleSuffix(sfx: string) {
-  const cur = ta.value.replace(/\s+$/, "");
-  ta.value = cur.endsWith(sfx)
-    ? cur.slice(0, cur.length - sfx.length).replace(/\s+$/, "")
-    : (cur ? cur + " " : "") + sfx;
-  updateChips();
-  ta.focus();
 }
 
 // --- stale-bundle self-heal: the server reports its current app.js version with every
@@ -1307,7 +1289,7 @@ async function refresh() {
   try {
     const res = await api("/api/sessions");
     if (!res.ok) return;
-    const data = (await res.json()) as { now: number; chips: string[]; suffixes?: string[]; shareBase?: string;
+    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -1321,7 +1303,7 @@ async function refresh() {
     serverNow = data.now;
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
-    renderChips(data.chips, data.suffixes ?? []);
+    renderChips(data.chips);
     const pendingIntake = tasksList.some((t) => t.status === "pending" && t.source === "intake");
     $("queuebtn").classList.toggle("hot", pendingIntake);
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
@@ -1861,11 +1843,8 @@ function currentPrefix(): string | null {
 }
 function updateChips() {
   const active = currentPrefix();
-  const end = ta.value.replace(/\s+$/, "");
-  for (const b of chipsEl.querySelectorAll<HTMLButtonElement>(".chip")) {
-    if (b.dataset.sfx !== undefined) b.classList.toggle("active", end !== "" && end.endsWith(b.dataset.sfx));
-    else b.classList.toggle("active", b.dataset.cmd === active);
-  }
+  for (const b of chipsEl.querySelectorAll<HTMLButtonElement>(".chip"))
+    b.classList.toggle("active", b.dataset.cmd === active);
 }
 function togglePrefix(cmd: string) {
   const active = currentPrefix();
@@ -1878,6 +1857,30 @@ ta.addEventListener("input", () => {
   cyc = null; // real typing (not our programmatic recall) ends a history cycle
   updateChips();
 });
+
+// --- ✨ enhance: hand the draft to the background rework agent; the result replaces
+// the box for review — it NEVER auto-sends. On failure the draft stays untouched.
+const enhBtn = $("enhbtn") as HTMLButtonElement;
+enhBtn.onclick = async () => {
+  const text = ta.value.trim();
+  if (!text || enhBtn.disabled) return;
+  enhBtn.disabled = true;
+  enhBtn.textContent = "…";
+  try {
+    const res = await post("/api/enhance", { slot: panes[focused]?.slot ?? 0, text });
+    const j = (await res.json().catch(() => ({}))) as { prompt?: string; error?: string };
+    if (!res.ok || !j.prompt) throw new Error(j.error ?? "enhance failed");
+    ta.value = j.prompt;
+    updateChips();
+    ta.focus();
+  } catch {
+    enhBtn.style.borderColor = "#f85149";
+    setTimeout(() => { enhBtn.style.borderColor = ""; }, 1500);
+  } finally {
+    enhBtn.disabled = false;
+    enhBtn.textContent = "✨";
+  }
+};
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 void (async () => {

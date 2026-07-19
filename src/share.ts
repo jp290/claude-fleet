@@ -72,6 +72,7 @@ function start(info: Info) {
   }
   title.textContent = info.slotLabel ?? "Shared session";
   document.title = `${info.slotLabel ?? "Shared session"} — Claude Fleet`;
+  $("changes").style.display = "block"; // only after auth — the fetch 401s otherwise anyway
   modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
   modeEl.className = info.mode;
   term = new Terminal({
@@ -116,6 +117,43 @@ async function join() {
   const info = await fetchInfo();
   if (info) start(info);
 }
+// --- ± changes: read-only working diff of the shared session (PR-review feel).
+// Server allows it in both share modes — it reads git state, it types nothing.
+const changesBtn = $("changes"), diffdlg = $("diffdlg"), dstat = $("dstat"), dtxt = $("dtxt");
+diffdlg.addEventListener("click", (e) => {
+  if (e.target === diffdlg) diffdlg.style.display = "none";
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") diffdlg.style.display = "none";
+});
+async function openChanges() {
+  dstat.textContent = "loading…";
+  dtxt.replaceChildren();
+  diffdlg.style.display = "flex";
+  const res = await fetch(`/s/${shareId}/diff`);
+  const data = (await res.json().catch(() => ({}))) as
+    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean; error?: string };
+  if (!res.ok || data.error) {
+    dstat.textContent = data.error ?? "diff unavailable";
+    return;
+  }
+  const n = data.status?.length ?? 0;
+  dstat.textContent = `${data.branch ?? "?"} · ${n} file${n === 1 ? "" : "s"} changed${data.truncated ? " · diff truncated" : ""}`;
+  if (!data.diff) {
+    dtxt.textContent = n ? "(changes are untracked — no tracked diff)" : "clean working tree — nothing changed yet";
+    return;
+  }
+  // colorize by line prefix — every line is its own textContent node, never innerHTML
+  for (const line of data.diff.split("\n")) {
+    const span = document.createElement("span");
+    span.className = line.startsWith("+") ? "add" : line.startsWith("-") ? "del"
+      : (line.startsWith("@@") || line.startsWith("diff ")) ? "hdr" : "";
+    span.textContent = line + "\n";
+    dtxt.appendChild(span);
+  }
+}
+changesBtn.onclick = () => void openChanges();
+
 $("enter").onclick = () => void join();
 pw.addEventListener("keydown", (e) => {
   if (e.key === "Enter") void join();

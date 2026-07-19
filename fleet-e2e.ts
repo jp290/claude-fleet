@@ -360,6 +360,12 @@ const capI = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("interact share text reaches its pane", capI.out.includes("share-interact-hello"));
 check("share send in prompt log with source 'share'",
   (await plogRead()).some((e) => e.slot === 1 && e.source === "share" && e.text === "share-interact-hello"));
+// guest "± changes" view: read-only working diff behind the share cookie (slot 1 is a git repo)
+const shDiff = await fetch(BASE + `/s/${shInt.id}/diff`, { headers: { cookie: shICookie } });
+const shDiffJ = (await shDiff.json()) as { branch?: string | null; status?: string[]; diff?: string };
+check("share diff readable with share cookie", shDiff.ok && typeof shDiffJ.branch === "string"
+  && Array.isArray(shDiffJ.status) && typeof shDiffJ.diff === "string", JSON.stringify(shDiffJ).slice(0, 120));
+check("share diff without cookie 401", (await fetch(BASE + `/s/${shInt.id}/diff`)).status === 401);
 check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
 // --- share-mode: flip view/interact in place, same link + password ---
 // regression: this must reach an ACTUALLY-CONNECTED guest socket, not just the HTTP

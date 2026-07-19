@@ -328,8 +328,13 @@
   .brow { display: flex; gap: 7px; padding: 2px 0; color: #999; line-height: 1.45; }
   .brow .bhash { flex: none; color: #666; }
   .brow .bsub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bfile { color: #999; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bfile { color: #999; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; border-radius: 4px; }
+  .bfile:hover { background: #242424; color: #ddd; }
   .bfile .bfst { color: #e0af68; margin-right: 6px; }
+  .bdiffbtn { margin-top: 6px; padding: 4px 11px; border-radius: 7px; border: 1px solid #333;
+    background: #262626; color: #7dcfff; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bdiffbtn:hover { background: #1c2c37; border-color: #2c4a5e; }
   .bprompt { display: flex; gap: 7px; padding: 3px 0; color: #bbb; cursor: pointer;
     border-radius: 5px; line-height: 1.45; }
   .bprompt:hover { background: #242424; color: #e2e8f5; }

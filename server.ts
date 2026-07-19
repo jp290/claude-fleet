@@ -97,8 +97,9 @@ interface Slot {
   rows: number;
   sessionId: string | null; // claude session uuid we pinned at pane creation; null for
   // adopted/pre-existing sessions (transcript lookup then falls back to newest-by-mtime)
-  history: { text: string; ts: number }[]; // composed sends only, newest last — the
-  // durable "what did I prompt" record; raw live typing is deliberately not captured
+  history: { text: string; ts: number }[]; // the durable "what did I prompt" record,
+  // newest last: composed sends, plus terminal-typed prompts harvested from the
+  // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
   clients: Set<ServerWebSocket<WSData>>;
   inputChain: Promise<unknown>;
   resizeChain: Promise<unknown>; // serializes resize-window+capture-pane so two concurrent
@@ -180,7 +181,17 @@ function saveHistory(s: Slot): void {
 // never capped, never rotated, and survives slot close — raw material for prompt analysis.
 const PROMPT_LOG = `${STREAM_DIR}/prompts.jsonl`;
 let promptLogChain: Promise<unknown> = Promise.resolve();
-function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto", ts: number): void {
+// composed sends land in the transcript too — remember them briefly so the transcript
+// harvester (tickHarvest) doesn't double-log them as "terminal" prompts
+const recentComposed = new Map<number, { text: string; ts: number }[]>();
+const COMPOSED_TTL = 300_000;
+function noteComposed(slotId: number, text: string): void {
+  const list = (recentComposed.get(slotId) ?? []).filter((e) => Date.now() - e.ts < COMPOSED_TTL);
+  list.push({ text: text.trim().slice(0, 5000), ts: Date.now() });
+  recentComposed.set(slotId, list);
+}
+function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal", ts: number): void {
+  if (source !== "terminal") noteComposed(s.id, text);
   const line = `${JSON.stringify({ ts, slot: s.id, cwd: s.cwd, label: s.label, source, text })}\n`;
   promptLogChain = promptLogChain
     .then(() => appendFile(PROMPT_LOG, line, { mode: 0o600 }))
@@ -216,6 +227,24 @@ async function git(dir: string, ...args: string[]): Promise<{ out: string; err: 
   const err = await new Response(p.stderr).text();
   const code = await p.exited;
   return { out: out.trim(), err: err.trim(), code };
+}
+
+// the "what changed" document, shared by the owner ± overlay and the guest changes view.
+// Byte-capped: a phone shouldn't receive a megabyte lockfile diff.
+const DIFF_CAP = 400_000;
+async function diffPayload(cwd: string): Promise<{ branch: string | null; status: string[]; diff: string; truncated: boolean } | null> {
+  const st = await git(cwd, "status", "--porcelain");
+  if (st.code !== 0) return null; // not a git repository
+  const d = await git(cwd, "diff", "HEAD", "--no-color");
+  const diff = d.code === 0 ? d.out : ""; // e.g. repo with no commits yet
+  // read the branch fresh, not from the 10s badge cache — a just-created lane isn't cached yet
+  const br = await git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+  return {
+    branch: br.code === 0 ? br.out : null,
+    status: st.out.split("\n").filter(Boolean).slice(0, 500),
+    diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
+    truncated: diff.length > DIFF_CAP,
+  };
 }
 
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
@@ -352,6 +381,7 @@ async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
   s.worktree = null; // a plain open is not a lane — open-worktree re-tags after this
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
+  harvest.set(s.id, { file: "", lines: 0 }); // sentinel: harvest the NEW transcript from line 0
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
@@ -384,6 +414,7 @@ async function killSlot(s: Slot): Promise<void> {
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
+  harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
@@ -717,6 +748,75 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   }
   if (!blocks.length) return null;
   return { n, role: d.type, ts, blocks };
+}
+
+// --- terminal-prompt harvester: prompts typed DIRECTLY into the pty never pass /send,
+// so history + prompt log would miss them. The transcript JSONL is the ground truth of
+// what claude actually received — harvest new user text entries from there instead of
+// trying to reconstruct prompts from raw keystrokes (arrows, edits, tab-completion make
+// the byte stream unreliable). Pinned-session slots only: the mtime fallback can flap
+// between files when several sessions share a cwd, and a flap would re-log whole foreign
+// transcripts. Composed sends are suppressed via recentComposed (they're in the transcript
+// too). At boot the cursor seeds to end-of-file so old history is never re-logged.
+const harvest = new Map<number, { file: string; lines: number }>();
+let harvestBusy = false;
+async function tickHarvest(): Promise<void> {
+  if (harvestBusy || !/^claude(\s|$)/.test(BASE_CMD)) return;
+  harvestBusy = true;
+  try {
+    for (const s of slots) {
+      if (!s.cwd || !s.sessionId) continue;
+      const file = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
+      if (!existsSync(file)) continue;
+      let text: string;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      const raw = text.split("\n");
+      if (!text.endsWith("\n")) raw.pop(); // partial mid-append line — next tick reads it whole
+      let cur = harvest.get(s.id);
+      if (!cur || cur.file !== file) {
+        // no cursor = first sight since boot → skip existing content; a NEW file for an
+        // already-tracked slot (fresh claude after self-heal, recycled slot) reads from 0
+        cur = { file, lines: cur ? 0 : raw.length };
+        harvest.set(s.id, cur);
+      }
+      if (raw.length <= cur.lines) {
+        cur.lines = Math.min(cur.lines, raw.length); // truncated/rewritten file — resync
+        continue;
+      }
+      const composed = (recentComposed.get(s.id) ?? []).filter((e) => Date.now() - e.ts < COMPOSED_TTL);
+      recentComposed.set(s.id, composed);
+      let dirty = false;
+      for (let i = cur.lines; i < raw.length; i++) {
+        if (!raw[i].trim()) continue;
+        let e: TEntry | null;
+        try {
+          e = viewEntry(JSON.parse(raw[i]), i);
+        } catch {
+          continue;
+        }
+        if (e?.role !== "user") continue;
+        for (const b of e.blocks) {
+          if (b.t !== "text") continue;
+          const t = b.text.trim();
+          // skip slash-command envelopes — they're UI plumbing, not a prompt
+          if (!t || t.startsWith("<command-") || t.startsWith("<local-command")) continue;
+          if (composed.some((c) => c.text === t.slice(0, 5000))) continue;
+          const ts = (e.ts && Date.parse(e.ts)) || Date.now();
+          s.history = [...s.history, { text: t, ts }].slice(-MAX_HISTORY);
+          logPrompt(s, t, "terminal", ts);
+          dirty = true;
+        }
+      }
+      cur.lines = raw.length;
+      if (dirty) saveHistory(s);
+    }
+  } finally {
+    harvestBusy = false;
+  }
 }
 
 // --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. Runs an INTERACTIVE
@@ -1122,6 +1222,7 @@ setInterval(() => void tickAutos().catch(() => {}), 5000);
 setInterval(() => void tickGit().catch(() => {}), 10_000);
 void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch(() => {}), 8000);
+setInterval(() => void tickHarvest().catch(() => {}), 5000);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (two tmux queries) per healthy slot
 setInterval(() => {
@@ -1154,7 +1255,7 @@ Bun.serve<WSData>({
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
-        || /^\/(s\/[a-z0-9]+(\/(auth|info|send))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
+        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
     }
 
@@ -1178,7 +1279,7 @@ Bun.serve<WSData>({
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send)$/.exec(url.pathname);
+    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff)$/.exec(url.pathname);
     if (shareApi) {
       const sh = shareBy(shareApi[1]);
       if (!sh) return json({ error: "unknown or revoked share" }, 404);
@@ -1211,6 +1312,14 @@ Bun.serve<WSData>({
           rows: s.rows,
           active: !!s.cwd,
         });
+      }
+      if (shareApi[2] === "diff") {
+        // read-only "what did this session change" for guests — allowed in BOTH modes
+        // (it types nothing into the pty), PR-review feel without repo access
+        if (!s.cwd) return json({ error: "session gone" }, 404);
+        const p = await diffPayload(s.cwd);
+        if (!p) return json({ error: "not a git repository" }, 400);
+        return json(p);
       }
       if (shareApi[2] === "send" && req.method === "POST") {
         if (sh.mode !== "interact") return json({ error: "view-only share" }, 403);
@@ -1385,20 +1494,9 @@ Bun.serve<WSData>({
     if (req.method === "GET" && diffMatch) {
       const s = slotFrom(diffMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const st = await git(s.cwd, "status", "--porcelain");
-      if (st.code !== 0) return json({ error: "not a git repository" }, 400);
-      const DIFF_CAP = 400_000;
-      const d = await git(s.cwd, "diff", "HEAD", "--no-color");
-      const diff = d.code === 0 ? d.out : ""; // e.g. repo with no commits yet
-      // read the branch fresh, not from the 10s badge cache — a just-created lane isn't cached yet
-      const br = await git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD");
-      return json({
-        branch: br.code === 0 ? br.out : null,
-        worktree: s.worktree,
-        status: st.out.split("\n").filter(Boolean).slice(0, 500),
-        diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
-        truncated: diff.length > DIFF_CAP,
-      });
+      const p = await diffPayload(s.cwd);
+      if (!p) return json({ error: "not a git repository" }, 400);
+      return json({ ...p, worktree: s.worktree });
     }
     // lane brief: the deterministic layer of the session overview — recent commits,
     // changed files, uncommitted summary. Everything here is fresh git output computed

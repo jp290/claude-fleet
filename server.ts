@@ -496,6 +496,8 @@ async function landLane(s: Slot): Promise<{ error: string; code: number } | { re
 // must reserve its slot SYNCHRONOUSLY before the first await or two concurrent requests
 // pick the same slot and one worktree ends up orphaned with a lying { ok } response
 const laneSpawn = new Set<number>();
+// worktree paths mid-attach — see the attach race note in /api/lanes
+const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
@@ -2043,11 +2045,17 @@ Bun.serve<WSData>({
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
       laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
+      // the slot is reserved, but for attach the WORKTREE is the contended resource too:
+      // the "already open in a slot" check and openSlot are awaits apart, so two attach
+      // requests for the same orphan would otherwise both pass it and double-seat the tree
+      const attachPath = typeof body.attach === "string" && body.attach ? body.attach : null;
+      if (attachPath && attachBusy.has(attachPath)) return json({ error: "worktree is being attached" }, 409);
+      if (attachPath) attachBusy.add(attachPath);
       try {
-        if (typeof body.attach === "string" && body.attach) {
+        if (attachPath) {
           const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
           if (top.code !== 0) return json({ error: "not a git repository" }, 400);
-          const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.attach);
+          const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === attachPath);
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
           await openSlot(free, wt.path);
@@ -2063,6 +2071,7 @@ Bun.serve<WSData>({
         return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
       } finally {
         laneSpawn.delete(free.id);
+        if (attachPath) attachBusy.delete(attachPath);
       }
     }
     // orphan cleanup: drop a worktree no slot holds — same safety net as ⏏ land

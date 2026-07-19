@@ -34,10 +34,10 @@ So documentation here comes in **two shelves**, and the second matters more:
 Knowledge shelf (`docs/`):
 - [x] **`tailored-context.md`** — environment → silent capture of the implicit
       complementary parameters → output only the relevant. The context principle.
-- [ ] **`operating-model.md`** — the primitives and mental model: session, lane,
+- [x] **`operating-model.md`** — the primitives and mental model: session, lane,
       queue/dispatch, quarantine-by-default, review-as-bottleneck. What each *is* and
       when to reach for it.
-- [ ] **`interaction-modes.md`** — the three relationships, each with concrete do's,
+- [x] **`interaction-modes.md`** — the three relationships, each with concrete do's,
       don'ts, and failure modes:
       - **human → session**: prompt shape, when to review vs. let it run, chunking
         work into landable lanes, keeping review cheap.
@@ -45,13 +45,14 @@ Knowledge shelf (`docs/`):
         (cheap model + good brief ≥ expensive model + thin brief).
       - **session → self**: self-sharpening (the `/sharpen` family), CLAUDE.md as
         self-instruction, done-criteria you set before starting.
-- [ ] **`verification.md`** — done-signals; deterministic > semi-deterministic >
+- [x] **`verification.md`** — done-signals; deterministic > semi-deterministic >
       statistical; verify before claiming done; cap retry loops (structural after ~5).
 
 Operative shelf (loaded, not just read):
-- [ ] **lane brief templates** — the Phase-2 artifact: a per-task foolproof framing
-      passed at launch (NOT a tracked file — it would dirty the tree and block `land`).
-- [ ] **CLAUDE.md discipline** — the operating rules a fleet session should embody,
+- [x] **lane brief templates** (`lane-brief-template.md`) — the Phase-2 artifact: a
+      per-task foolproof framing passed at launch (NOT a tracked file — it would
+      dirty the tree and block `land`).
+- [x] **CLAUDE.md discipline** — the operating rules a fleet session should embody,
       kept terse so they load cheaply. (CLAUDE.md is gitignored → copied into every
       lane, so a lane inherits the discipline automatically.)
 - [ ] **skills** — recurring session-operating moves worth a `/command`.

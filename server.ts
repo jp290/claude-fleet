@@ -1310,7 +1310,7 @@ const mergeInflight = new Map<number, Promise<void>>();
 const mergeStart = new Set<number>();
 const mergeLast = new Map<number, MergeLast>();
 
-async function runMerge(cwd: string, branch: string, main: string): Promise<{ status: "rebased" | "blocked"; detail: string }> {
+async function runMerge(cwd: string, branch: string, main: string): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
   const lg = await git(cwd, "log", "--no-color", "--oneline", `${main}..HEAD`);
   const prompt = [
     "You are preparing a fleet worktree lane for landing. Work autonomously — nobody is watching.",
@@ -1346,9 +1346,18 @@ async function runMerge(cwd: string, branch: string, main: string): Promise<{ st
     if (typeof env.result === "string") out = env.result.trim();
   } catch { /* not an envelope */ }
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  const j = JSON.parse(body) as { status?: unknown; detail?: unknown }; // parse failure → job records error
-  if (j.status !== "rebased" && j.status !== "blocked") throw new Error("merge agent returned no status");
-  return { status: j.status, detail: typeof j.detail === "string" ? j.detail.slice(0, 600) : "" };
+  // the JSON is the agent's NARRATIVE, never the authority — a correct rebase answered in
+  // prose must not be thrown away (seen live: agent ignored an injected commit subject,
+  // rebased perfectly, then narrated instead of answering the contract). Unparseable →
+  // mergeJob decides by the same git verification a claimed "rebased" gets.
+  try {
+    const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
+    if (j.status !== "rebased" && j.status !== "blocked")
+      return { status: "unparseable", detail: `agent answered without a status: ${body.slice(0, 200)}` };
+    return { status: j.status, detail: typeof j.detail === "string" ? j.detail.slice(0, 600) : "" };
+  } catch {
+    return { status: "unparseable", detail: `agent answer was not the JSON contract: ${body.slice(0, 200)}` };
+  }
 }
 
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
@@ -1358,13 +1367,15 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     if (r.status === "blocked") {
       res = { status: "blocked", detail: r.detail, landed: false, branch, at: Date.now() };
     } else {
-      // the agent SAYS rebased — believe git, not the agent: tree clean AND main is an
-      // ancestor of the lane branch, checked against the shared refs, not the claim
+      // the agent SAYS rebased (or answered off-contract) — believe git, not the agent:
+      // tree clean AND main an ancestor of the lane branch, checked against the shared
+      // refs, not the claim. An unparseable answer over a git-verified rebase proceeds;
+      // over an unverified lane it fails exactly like a false "rebased" claim.
       const st = await git(cwd, "status", "--porcelain");
       const anc = await git(root, "merge-base", "--is-ancestor", main, branch);
       if (st.code !== 0 || st.out || anc.code !== 0) {
         res = { status: "error", landed: false, branch, at: Date.now(),
-          detail: `agent reported rebased, but the lane is ${st.out ? "not clean" : `not rebased onto ${main}`} — lane kept. ${r.detail}`.slice(0, 600) };
+          detail: `agent ${r.status === "unparseable" ? "answered off-contract" : "reported rebased"}, but the lane is ${st.out ? "not clean" : `not rebased onto ${main}`} — lane kept. ${r.detail}`.slice(0, 600) };
       } else {
         // the state-changing step on the primary checkout is the SERVER's, never the
         // agent's: a plain ff-merge, which git itself refuses unless it is a clean

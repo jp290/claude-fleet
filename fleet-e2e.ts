@@ -578,6 +578,54 @@ if (REPO) {
   check("worktrees map lists the lane with its holding slot",
     wm.worktrees.some((w) => w.slot === lnSlot && w.branch === ln1.branch), JSON.stringify(wm.worktrees));
 
+  // --- lane brief must be LANE-SCOPED and match git exactly (regression: it used to show
+  // the base branch's whole history for lanes, and truncated the first uncommitted file) ---
+  {
+    const bl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    // two lane commits on top of the base
+    await Bun.write(`${bl.cwd}/lane-a.txt`, "a\n");
+    spawnSync("git", ["-C", bl.cwd, "add", "lane-a.txt"]);
+    spawnSync("git", ["-C", bl.cwd, "commit", "-qm", "lane commit one"]);
+    await Bun.write(`${bl.cwd}/lane-b.txt`, "b\n");
+    spawnSync("git", ["-C", bl.cwd, "add", "lane-b.txt"]);
+    spawnSync("git", ["-C", bl.cwd, "commit", "-qm", "lane commit two"]);
+    // main diverges on a file the lane never touched (regression bait for two-dot footprint)
+    await Bun.write(`${REPO}/divergent.txt`, "main only\n");
+    spawnSync("git", ["-C", REPO, "add", "divergent.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "main divergence"]);
+    // mixed uncommitted work: unstaged modify (leading-space porcelain), staged add, untracked
+    await Bun.write(`${bl.cwd}/lane-a.txt`, "a changed\n");
+    await Bun.write(`${bl.cwd}/lane-staged.txt`, "s\n");
+    spawnSync("git", ["-C", bl.cwd, "add", "lane-staged.txt"]);
+    await Bun.write(`${bl.cwd}/lane-untracked.txt`, "u\n");
+
+    const blb = (await (await get(`/api/slots/${bl.slot}/brief`)).json()) as
+      { laneScoped: boolean; laneBase: string; ahead: number; behind: number;
+        commits: { subject: string }[]; files: string[]; uncommittedFiles: string[] };
+    // git truth for comparison
+    const gitCommits = spawnSync("git", ["-C", bl.cwd, "log", "--format=%s", `${blb.laneBase}..HEAD`]).stdout.toString().split("\n").filter(Boolean);
+    const gitStatus = spawnSync("git", ["-C", bl.cwd, "status", "--porcelain"]).stdout.toString().split("\n").filter(Boolean);
+    const gitFootprint = spawnSync("git", ["-C", bl.cwd, "diff", "--name-only", `${blb.laneBase}...HEAD`]).stdout.toString().split("\n").filter(Boolean);
+
+    check("lane brief is laneScoped with the base branch", blb.laneScoped === true && (blb.laneBase === "main" || blb.laneBase === "master"));
+    check("lane commits = git main..HEAD exactly (no base history)",
+      blb.commits.map((c) => c.subject).join("|") === gitCommits.join("|")
+      && blb.commits.length === 2 && !blb.commits.some((c) => c.subject.startsWith("main:")),
+      `brief=${JSON.stringify(blb.commits.map((c) => c.subject))} git=${JSON.stringify(gitCommits)}`);
+    check("lane ahead/behind vs base match git (ahead 2, behind 1)", blb.ahead === 2 && blb.behind === 1,
+      `ahead=${blb.ahead} behind=${blb.behind}`);
+    check("lane footprint is three-dot (only lane's own files, not main's divergence)",
+      blb.files.map((f) => f.slice(3)).sort().join(",") === gitFootprint.sort().join(",")
+      && !blb.files.some((f) => f.includes("divergent.txt")),
+      `brief=${JSON.stringify(blb.files)} git=${JSON.stringify(gitFootprint)}`);
+    check("lane uncommittedFiles match git status byte-for-byte (columns preserved)",
+      blb.uncommittedFiles.join("\n") === gitStatus.join("\n"),
+      `brief=${JSON.stringify(blb.uncommittedFiles)} git=${JSON.stringify(gitStatus)}`);
+    check("first uncommitted entry keeps its leading status column (not truncated)",
+      blb.uncommittedFiles.some((f) => f === " M lane-a.txt"), JSON.stringify(blb.uncommittedFiles));
+    await post(`/api/slots/${bl.slot}/kill`, {}); // free the slot; worktree orphaned in the throwaway repo
+  }
+
   // ⏫ merge: dirty lane → deterministic block, no agent run
   await Bun.write(`${lnPath}/code.txt`, "root\nmerge-work\n");
   const mgDirty = (await (await post(`/api/slots/${lnSlot}/merge`, {})).json()) as { status?: string; detail?: string };

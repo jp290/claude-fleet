@@ -760,6 +760,30 @@ if (REPO) {
   spawnSync("git", ["-C", ln3.cwd, "checkout", "-q", "--", "code.txt"]);
   check("remove drops a clean orphan", (await post("/api/worktrees/remove", { repo: REPO, path: ln3.cwd })).ok);
   check("removed orphan gone from disk", !exists(ln3.cwd));
+
+  // ☠ discard path: the deliberate-destruction endpoint MUST take the dirty+unmerged
+  // orphan `remove` refuses — and must itself refuse slot-held trees and stale identities
+  const ln4 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${ln4.cwd}/junk.txt`, "experiment gone wrong\n");
+  spawnSync("git", ["-C", ln4.cwd, "add", "junk.txt"]);
+  spawnSync("git", ["-C", ln4.cwd, "commit", "-qm", "unmerged junk"]);
+  await Bun.write(`${ln4.cwd}/dirty.txt`, "uncommitted\n");
+  const ln4head = spawnSync("git", ["-C", ln4.cwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+  check("discard refuses a worktree still open in a slot",
+    (await post("/api/worktrees/discard", { repo: REPO, path: ln4.cwd, branch: ln4.branch })).status === 409);
+  await post(`/api/slots/${ln4.slot}/kill`, {});
+  check("discard refuses on branch mismatch (stale board)",
+    (await post("/api/worktrees/discard", { repo: REPO, path: ln4.cwd, branch: "not-the-branch" })).status === 409);
+  const discRes = await post("/api/worktrees/discard", { repo: REPO, path: ln4.cwd, branch: ln4.branch });
+  const discJ = (await discRes.json()) as { ok?: boolean; head?: string | null; branchDeleted?: boolean };
+  check("discard drops a dirty, unmerged orphan (the case remove refuses)", discRes.ok, JSON.stringify(discJ));
+  check("discard returns the pre-delete head sha as undo ammo", discJ.head === ln4head, `${discJ.head} vs ${ln4head}`);
+  check("discarded worktree gone from disk", !exists(ln4.cwd));
+  check("discarded branch deleted",
+    discJ.branchDeleted === true
+      && spawnSync("git", ["-C", REPO, "rev-parse", "--verify", "-q", `refs/heads/${ln4.branch}`]).status !== 0);
+  check("discard on an unknown path is refused",
+    (await post("/api/worktrees/discard", { repo: REPO, path: ln4.cwd, branch: ln4.branch })).status === 400);
   await post(`/api/slots/${probe.slot}/land`, {}); // clean up the probe lane too
 }
 

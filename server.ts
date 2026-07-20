@@ -1956,13 +1956,22 @@ Bun.serve<WSData>({
         if (!p) return json({ error: "not a git repository" }, 400);
         return json(p);
       }
-      // the guest reader: the conversation as text, same payload the owner chat view
-      // uses. A phone can't render a 233-col pty raster readably — but it CAN render
-      // the transcript, which reflows natively. Content-wise this shows nothing the
-      // live terminal doesn't already stream to the same guest.
+      // the guest reader: the conversation as text. A phone can't render a 233-col pty
+      // raster readably — but it CAN render the transcript. Guests get a REDUCED cut of
+      // the owner payload: no thinking blocks (the TUI hides them — a guest must not see
+      // more than the screen), tool_result capped hard (the TUI shows them collapsed;
+      // full file contents that only scrolled past collapsed must not be readable here).
       if (shareApi[2] === "transcript") {
         if (!s.cwd) return json({ error: "session gone" }, 404);
-        return json(await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0)));
+        const p = await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0));
+        return json({
+          ...p,
+          entries: p.entries.map((e) => ({
+            ...e,
+            blocks: e.blocks.filter((b) => b.t !== "thinking")
+              .map((b) => (b.t === "tool_result" ? { ...b, text: trim(b.text, 400) } : b)),
+          })).filter((e) => e.blocks.length),
+        });
       }
       if (shareApi[2] === "summary" && (req.method === "GET" || req.method === "POST")) {
         // guests get the same ✨ summary as the owner sideboard — POST is safe to expose:

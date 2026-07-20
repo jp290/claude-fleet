@@ -64,6 +64,12 @@
     line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
   .rmsg.user { align-self: flex-end; background: #1c2437; border: 1px solid #2c3a5e; color: #dbe4ff; }
   .rmsg.assistant { align-self: flex-start; background: var(--raised); border: 1px solid var(--line); }
+  .rmsg.pending { opacity: 0.55; }
+  .rmsg pre { white-space: pre-wrap; word-break: break-word; font: inherit; margin: 0 0 6px; }
+  .rmsg pre:last-child { margin-bottom: 0; }
+  .rmsg .code { background: #101013; border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 9px; margin: 4px 0 8px; overflow-x: auto; }
+  .rmsg .code pre { white-space: pre; word-break: normal; font-size: 11px; margin: 0; }
   .rhead { font-size: 10px; color: var(--faint); margin-bottom: 3px; letter-spacing: 0.05em; }
   .rstep { align-self: flex-start; font-size: 11px; color: var(--faint); padding: 0 4px; }
   .rempty { color: var(--faint); font-size: 12px; padding: 30px 10px; text-align: center; }
@@ -200,11 +206,21 @@
       color: var(--dim); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
       display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
     #mobilebar .mtab.active { color: var(--accent); }
-    body.side-open #shade { display: block; position: fixed; inset: 0; background: #0007; z-index: 25; }
-    #side { position: fixed; left: 0; right: 0; top: auto; z-index: 30; width: auto;
+    /* sheet + shade animate: display-swaps read as glitches, motion reads as an app.
+       The sheet stays display:flex and slides via transform; the shade fades. */
+    #shade { display: block; position: fixed; inset: 0; background: #0007; z-index: 25;
+      opacity: 0; pointer-events: none; transition: opacity 0.22s ease; }
+    body.side-open #shade { opacity: 1; pointer-events: auto; }
+    #side { display: flex; position: fixed; left: 0; right: 0; top: auto; z-index: 30; width: auto;
       bottom: calc(45px + env(safe-area-inset-bottom)); height: min(62dvh, 480px);
       border-left: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
-      box-shadow: 0 -12px 30px #0008; }
+      box-shadow: 0 -12px 30px #0008;
+      transform: translateY(calc(100% + 60px + env(safe-area-inset-bottom))); pointer-events: none;
+      transition: transform 0.22s ease; }
+    body.side-open #side { transform: none; pointer-events: auto; }
+    @media (prefers-reduced-motion: reduce) {
+      #side, #shade { transition: none; }
+    }
     #sideclose { display: block; padding: 0 4px 0 10px; }
     .tab { padding: 12px 4px 11px; font-size: 12px; }
     #cmtname, #cmtinput { font-size: 16px; }
@@ -241,12 +257,13 @@
 </head>
 <body>
 <div id="head">
-  <span id="livechip"><span id="dot"></span><span id="livetxt">LIVE</span></span>
+  <span id="livechip" class="off"><span id="dot"></span><span id="livetxt">connecting…</span></span>
   <span id="title">Shared session</span>
   <span id="mode"></span>
   <span id="hsp"></span>
   <button id="viewtog" title="switch between conversation and terminal view">⌨ terminal</button>
   <button id="reload" class="hbtn" title="reload / fix formatting">⟳</button>
+  <button id="fitw" class="hbtn" title="fit terminal width to the window">⤢ fit</button>
   <button id="fminus" class="hbtn" title="smaller text">A−</button>
   <button id="fplus" class="hbtn" title="larger text">A+</button>
   <button id="sidebtn" class="hbtn" title="session panel">panel</button>

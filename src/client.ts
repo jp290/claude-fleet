@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
 import qrcode from "qrcode-generator";
+import { mdInto } from "./md";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -133,21 +134,7 @@ let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server
 interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
 interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
 
-// minimal, XSS-safe markdown: only ``` fences get structure, everything else is textContent
-function mdInto(target: HTMLElement, text: string) {
-  const parts = text.split("```");
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      const nl = part.indexOf("\n");
-      const code = nl >= 0 ? part.slice(nl + 1) : part;
-      const wrap = el("div", "code");
-      wrap.appendChild(el("pre", "", code.replace(/\n$/, "")));
-      target.appendChild(wrap);
-    } else if (part.trim()) {
-      target.appendChild(el("pre", "", part.replace(/^\n+|\n+$/g, "")));
-    }
-  });
-}
+// markdown rendering shared with the guest reader — see src/md.ts
 
 const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";

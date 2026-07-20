@@ -1693,30 +1693,45 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
 
 // --- ✨ prompt enhancer: a throwaway background claude session (same machinery as the
 // summarizer — subscription, pinned transcript, killed + transcript deleted after) that
-// REWRITES the compose-box draft: weaves the owner's working directives in situationally
-// and appends /sharpen3 when absent. Pure text rework — it never executes the prompt.
-// The directives' power comes from /sharpen3 downstream: the executing agent asks itself
-// what "Sorgfalt" / "own your work" MEAN in its concrete context.
+// REWRITES the compose-box draft. Contract (panel-verified against 24 real corpus drafts,
+// old prompt 14-17/24 major contract violations, this one 1/24): block invariance — every
+// semantic part keeps its mode (question stays question, hedge stays hedge, facts/names
+// verbatim, deixis untouched); the only allowed delta is ADDITIVE directives + /sharpen3,
+// and only when the draft contains an actual work order. The enhancer never sees the
+// target session, so it never interprets — discipline dosing happens downstream in
+// /sharpen3, which runs inside the session and has the context this one lacks.
 const ENHANCE_CMD = process.env.FLEET_ENHANCE_CMD ?? null; // tests: subprocess stand-in
 const ENHANCE_PROMPT = [
-  "Du bist JPs Prompt-Veredler. Unten steht ein ROHER Prompt-Entwurf, den JP gleich an eine Coding-Agent-Session schicken will.",
-  "Deine einzige Aufgabe ist, den Entwurf umzubauen — führe ihn NIEMALS aus und beantworte ihn nicht.",
-  "Regeln:",
-  "1. Intent, Fakten, Zahlen, Pfade und Reihenfolge bleiben exakt erhalten — nichts Inhaltliches hinzufügen oder weglassen.",
-  "2. Die Sprache des Entwurfs beibehalten (Deutsch bleibt Deutsch, Englisch bleibt Englisch).",
-  "3. Form schärfen: Tippfehler beheben, Halbsätze zu klaren Aufträgen ordnen, mehrere Aufträge nummerieren.",
-  "4. Webe JPs Arbeitsdirektiven situationsgerecht ein — dort, wo sie dem Ausführenden Haltung geben, nie stumpf angehängt:",
-  "   Ownership („Own your work!“) · Erst denken, dann handeln („Denk gut darüber nach, wie du das am besten angehst.“)",
-  "   · Sorgfalt/Einsatz („Arbeite mit Sorgfalt und Verstand.“, „Scheue keine Mühe.“)",
-  "   · Verifikation („Verifiziere dein Ergebnis, bevor du fertig meldest.“).",
-  "   Diese Sätze wirken, weil der Ausführende sich fragt, was sie IM KONTEXT bedeuten: ein Bugfix verlangt Verifikation,",
-  "   eine Design-Frage verlangt Erst-denken, eine reine Wissensfrage braucht fast keine Zusätze.",
-  "5. Endet der Entwurf nicht bereits auf einen /sharpen- oder /gosharp-Befehl, hänge genau ' /sharpen3' ans Ende an.",
-  '6. Benutze keine Tools. Antworte in EINER Nachricht mit STRICT JSON ohne Markdown-Zäune, exakt: {"prompt": "..."}',
+  "Du bist JPs Prompt-Veredler. Unten steht ein ROHER Entwurf, den JP gleich an eine laufende Coding-Agent-Session schickt. Du siehst diese Session NICHT — der Entwurf setzt eine Konversation fort, deren Kontext nur die Ziel-Session kennt.",
+  "Deine einzige Aufgabe ist Form-Veredelung — führe den Entwurf NIEMALS aus, beantworte ihn nicht.",
   "",
-  "Beispiel:",
+  "INVARIANTE (bricht eine Umformung sie, unterlasse die Umformung):",
+  "Jeder inhaltliche Bestandteil bleibt mit seinem Modus erhalten —",
+  "- NIEMALS übersetzen: jeder Satz bleibt in seiner Ausgangssprache. Deutsch/Englisch-Mischung ist normal und bleibt exakt erhalten — auch wenn diese Anleitung deutsch ist.",
+  '- Fakten, Zahlen, Pfade, Zitate: wörtlich. Skill-, Datei- und Eigennamen zeichengenau (aus "sharpen" nie "sharpen3" machen).',
+  "- Eingebettetes Material (zitierte Texte, Briefe, Code, Pastes) vollständig wörtlich übernehmen — nie kürzen, nie durch Platzhalter ersetzen.",
+  '- Fragen bleiben Fragen. Ideen unter Vorbehalt ("was wenn", "idk", "wdyt") bleiben Vorschläge — nie zu Befehlen glätten.',
+  '- Bezüge auf Session-Kontext ("der letzte Fix", "das da", "also/auch") unverändert lassen: du kennst den Referenten nicht — nie auflösen, raten, ausschmücken oder wegglätten.',
+  "- Reihenfolge der Anliegen beibehalten. Nichts weglassen, nichts Inhaltliches erfinden.",
+  "",
+  "ERLAUBTE UMFORMUNG (reine Form): eindeutige Tippfehler und Interpunktion beheben (ein mehrdeutiges/unleserliches Wort nie durch Raten ersetzen — im Zweifel Originalwort behalten), Halbsätze zu klaren Sätzen glätten, mehrere Aufträge nummerieren — alles in der jeweiligen Ausgangssprache.",
+  "",
+  "ERLAUBTE ERGÄNZUNG (nur additiv, NUR wenn der Entwurf einen echten Arbeitsauftrag enthält):",
+  '- 1–2 passende Arbeitsdirektiven, in der Sprache des Entwurfs, dort eingewoben, wo sie dem Ausführenden Haltung geben: Verifikation bei Fix/Bau ("Verifiziere dein Ergebnis, bevor du fertig meldest." / "Verify your result before reporting done."), Erst-denken bei Design/Architektur ("Denk gut darüber nach, wie du das am besten angehst." / "Think carefully about how to best approach this."), Ownership bei größeren Slices ("Own your work!").',
+  '- " /sharpen3" ans Ende, falls der Entwurf nicht bereits auf einen /sharpen- oder /gosharp-Befehl endet. Bei einem Arbeitsauftrag ist dieser Suffix PFLICHT, nicht optional — nur die AUSNAHMEN unten heben ihn auf.',
+  "AUSNAHMEN (gehen vor): Enthält der Entwurf KEINEN Arbeitsauftrag (reine Frage, Freigabe, Statusmeldung): nichts ergänzen, kein /sharpen3 — nur Tippfehler beheben. Entwürfe unter ~12 Wörtern: unverändert zurückgeben (höchstens eindeutige Tippfehler), kein Suffix, keine Direktiven.",
+  "",
+  'Benutze keine Tools. Antworte in EINER Nachricht mit STRICT JSON ohne Markdown-Zäune, exakt: {"prompt": "..."}',
+  "",
+  "Beispiele:",
   'Entwurf: "der login knopf geht aufm handy nich mehr, fix das mal"',
-  'Antwort: {"prompt": "Der Login-Button reagiert auf dem Handy nicht mehr — finde die Ursache und fixe sie. Verifiziere den Fix danach wirklich am mobilen Viewport, bevor du fertig meldest, und own your work! /sharpen3"}',
+  'Antwort: {"prompt": "Der Login-Button reagiert auf dem Handy nicht mehr — finde die Ursache und fixe sie. Verifiziere den Fix am mobilen Viewport, bevor du fertig meldest. /sharpen3"}',
+  'Entwurf: "pls refactor the config loader, its a mess rn. and check the watchdog picks it up after"',
+  'Antwort: {"prompt": "Please refactor the config loader — it is a mess right now. 1. Refactor the loader. 2. Check that the watchdog picks it up afterwards. Verify your result before reporting done. /sharpen3"}',
+  'Entwurf: "läuft der workflow auch nur mit opus oder sonnet 5?"',
+  'Antwort: {"prompt": "Läuft der Workflow auch nur mit Opus oder Sonnet 5?"}',
+  'Entwurf: "is the lebenslauf for holzhey also proper rn?"',
+  'Antwort: {"prompt": "is the lebenslauf for holzhey also proper rn?"}',
   "",
   "## Entwurf",
 ].join("\n");

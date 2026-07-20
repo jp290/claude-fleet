@@ -161,12 +161,41 @@
     font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; }
   #dtxt .add { color: var(--add); } #dtxt .del { color: var(--del); } #dtxt .hdr { color: var(--accent); }
 
-  /* narrow viewports: the sidebar slides over the stage instead of squeezing it */
+  /* bottom nav for narrow viewports — in normal flow (not fixed) so the keyboard and the
+     interact bar stack naturally above it; hidden entirely on desktop */
+  #mobilebar { display: none; }
+  #shade { display: none; }
+
+  /* narrow viewports: phone-first. The sidebar becomes a bottom sheet driven by a
+     thumb-reach tab bar; the old top-right "panel" button disappears. Inputs are ≥16px —
+     anything smaller makes iOS zoom the whole page on focus, which reads as broken. */
   @media (max-width: 860px) {
-    #side { position: fixed; top: 0; right: 0; bottom: 0; z-index: 30; width: min(340px, 92vw);
-      padding-top: env(safe-area-inset-top); box-shadow: -12px 0 30px #0008; }
-    #sideclose { display: block; }
+    .hbtn { padding: 9px 13px; font-size: 12px; }
+    #sidebtn { display: none !important; }
+    #wrap { touch-action: pan-x pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+    #bar { padding-bottom: 8px; } /* mobilebar below it carries the safe-area inset */
+    #mobilebar { flex: none; display: flex; background: var(--panel); z-index: 31;
+      border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+    #mobilebar .mtab { flex: 1; padding: 13px 4px; background: none; border: none;
+      color: var(--dim); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+    #mobilebar .mtab.active { color: var(--accent); }
+    body.side-open #shade { display: block; position: fixed; inset: 0; background: #0007; z-index: 25; }
+    #side { position: fixed; left: 0; right: 0; top: auto; z-index: 30; width: auto;
+      bottom: calc(45px + env(safe-area-inset-bottom)); height: min(62dvh, 480px);
+      border-left: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+      box-shadow: 0 -12px 30px #0008; }
+    #sideclose { display: block; padding: 0 4px 0 10px; }
+    .tab { padding: 12px 4px 11px; font-size: 12px; }
+    #cmtname, #cmtinput { font-size: 16px; }
+    #mchatbadge { display: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+      background: var(--accent); color: #10131c; font-size: 10px; font-weight: 700;
+      line-height: 16px; text-align: center; }
   }
+  @media (min-width: 861px) {
+    #fitw { display: none !important; } /* fit-to-width is a phone tool — desktop has room */
+  }
+  .hbtn.active { color: var(--accent); border-color: #2c3a5e; }
 
   /* password gate */
   #gate { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
@@ -191,6 +220,7 @@
   <span id="mode"></span>
   <span id="hsp"></span>
   <button id="reload" class="hbtn" title="reload / fix formatting">⟳</button>
+  <button id="fitw" class="hbtn" title="fit terminal width to screen">⤢ fit</button>
   <button id="fminus" class="hbtn" title="smaller text">A−</button>
   <button id="fplus" class="hbtn" title="larger text">A+</button>
   <button id="sidebtn" class="hbtn" title="session panel">panel</button>
@@ -243,6 +273,13 @@
     </section>
   </aside>
 </div>
+
+<div id="shade"></div>
+<nav id="mobilebar">
+  <button class="mtab" data-tab="info">info</button>
+  <button class="mtab" data-tab="chat">chat<span id="mchatbadge"></span></button>
+  <button class="mtab" data-tab="changes">changes</button>
+</nav>
 
 <div id="gate">
   <div class="panel">

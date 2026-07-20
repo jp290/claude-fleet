@@ -47,16 +47,22 @@ EOF
 chmod +x "$DIR/fakeenh"
 
 # stand-in ⏫ merge agent: cwd is the lane worktree. The agent's contract is REBASE-ONLY
-# (the server ff-merges and lands afterwards). The mode file next to the test repo steers
-# each run: blocked — report blocked · lie — claim rebased without rebasing (the server
-# must catch this via merge-base) · do — really rebase onto main, then claim
+# (the server ff-merges and lands afterwards) and it is only ever spawned on a real
+# conflict — the server resolves conflict-free rebases itself. The mode file next to the
+# test repo steers each run: blocked — report blocked · lie — claim rebased without
+# rebasing (the server must catch this via merge-base) · do — really resolve+rebase, then
+# claim rebased · prose — really resolve+rebase, then answer off-contract (in prose)
 cat > "$DIR/fakemerge" <<'EOF'
 #!/bin/sh
 cat >/dev/null
 ctl="$(dirname "$(dirname "$PWD")")/mergemode"
 mode="$(cat "$ctl" 2>/dev/null || echo blocked)"
+# do/prose simulate the real agent, which only runs on a CONFLICT (clean rebases are
+# handled by the server's script pre-pass and never reach here) — so resolve with a
+# strategy that always completes, leaving a clean tree rebased onto main for the server
+# to verify. -X theirs keeps the lane's side on conflict.
 if [ "$mode" = do ] || [ "$mode" = prose ]; then
-  git rebase -q main >/dev/null 2>&1
+  git rebase -X theirs -q main >/dev/null 2>&1
 fi
 if [ "$mode" = blocked ]; then
   printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"fake conflict\\"}"}'

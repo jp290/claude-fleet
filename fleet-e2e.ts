@@ -908,6 +908,20 @@ check("after restart + slot kills: prompt log intact",
   plogAfter.some((e) => e.text === "compose-box-to-slot-two") && plogAfter.some((e) => e.source === "share"), `${plogAfter.length} entries`);
 const shPAuth = await post(`/s/${shPersist.id}/auth`, { password: "persistpass1" });
 check("after restart: share persisted and answers", shPAuth.ok);
+// the size a guest builds its grid from must be TMUX TRUTH, not the fresh process's
+// 200×50 default — the restart is exactly the moment the in-memory cache dies while
+// the pane keeps the size the last client set (regression: every deploy desynced /info)
+{
+  // resize the pane BEHIND the server's back (raw tmux, not /resize) — the server cache
+  // still holds the old size, so only a live tmux read can answer correctly
+  await tmuxOut("resize-window", "-t", "s2", "-x", "77", "-y", "31");
+  const shPCookie = (shPAuth.headers.get("set-cookie") ?? "").split(";")[0];
+  const inf = (await (await fetch(BASE + `/s/${shPersist.id}/info`, { headers: { cookie: shPCookie } })).json()) as
+    { cols: number; rows: number };
+  const truth = (await tmuxOut("display-message", "-p", "-t", "s2", "#{window_width} #{window_height}")).out.trim();
+  check("share info reports the pane's true size, not the server cache",
+    `${inf.cols} ${inf.rows}` === truth && truth === "77 31", `info ${inf.cols}x${inf.rows} vs tmux ${truth}`);
+}
 const sess3 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean }[] };
 check("after restart: schedule persisted", sess3.autos.some((a) => a.id === aPersistJ.auto.id && a.enabled));
 const replay2 = await new Promise<number>((resolve) => {

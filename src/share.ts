@@ -71,7 +71,7 @@ const fmtUp = (start: number) => {
 };
 
 // --- sidebar: tabs + open/close ---
-type TabName = "info" | "chat" | "changes";
+type TabName = "info" | "chat" | "changes" | "tools";
 let activeTab: TabName = "info";
 const sideOpen = () => document.body.classList.contains("side-open");
 
@@ -104,6 +104,7 @@ function activateTab(name: TabName) {
     if (!NARROW()) ($("cmtinput") as HTMLTextAreaElement).focus();
   }
   if (name === "changes") void loadChanges();
+  if (name === "tools") applyFont(); // sync the size readout + fit state
 }
 for (const b of document.querySelectorAll<HTMLButtonElement>(".tab"))
   b.onclick = () => activateTab(b.dataset.tab as TabName);
@@ -428,22 +429,38 @@ function fitFont(): number {
 }
 function applyFont() {
   if (term) term.options.fontSize = fitOn ? fitFont() : fontSize;
-  $("fitw").classList.toggle("active", fitOn);
+  $("tfit").classList.toggle("active", fitOn);
+  $("tfsize").textContent = String(fitOn ? fitFont() : fontSize);
 }
-$("fitw").onclick = () => { fitOn = !fitOn; applyFont(); };
+function toggleFit() { fitOn = !fitOn; applyFont(); }
 window.addEventListener("resize", () => { if (fitOn) applyFont(); }); // rotation refits
 function setFont(delta: number) {
-  fitOn = false; // manual sizing takes over from fit
-  fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, fontSize + delta));
+  // compose with fit instead of fighting it: A± continues from the size on screen —
+  // fitted 7px + A+ = manual 8px, not a jarring jump back to the pre-fit size
+  fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, (fitOn ? fitFont() : fontSize) + delta));
+  fitOn = false;
   localStorage.setItem(FONT_KEY, String(fontSize));
   applyFont();
 }
 $("fminus").onclick = () => setFont(-1);
 $("fplus").onclick = () => setFont(1);
-$("jump").onclick = () => {
+// tools pane = the same controls with thumb-sized targets (narrow viewports only)
+$("tfminus").onclick = () => setFont(-1);
+$("tfplus").onclick = () => setFont(1);
+$("tfit").onclick = () => toggleFit();
+$("treload").onclick = () => { reloadStream(); setSide(false); }; // show the result, not the sheet
+function jumpDown() {
   term?.scrollToBottom();
   $("wrap").scrollTop = $("wrap").scrollHeight;
-};
+}
+$("jump").onclick = () => jumpDown();
+// ⤓ appears only while scrolled AWAY from the tail — a control that is always visible
+// reads as a permanent UI bar; one that appears on demand reads as help
+function updateJump() {
+  if (!term) return;
+  const b = term.buffer.active;
+  $("jump").style.display = b.viewportY < b.baseY ? "block" : "none";
+}
 
 // reload/refresh: drop the current socket and reconnect, which re-seeds the whole
 // terminal from a fresh capture-pane (connect() resets first). "Fix my formatting" on
@@ -507,14 +524,15 @@ function start(info: Info) {
   title.textContent = name;
   $("tname").textContent = name;
   document.title = `${name} — Claude Fleet`;
-  for (const id of ["reload", "fitw", "fminus", "fplus", "sidebtn", "jump"]) $(id).style.display = "block";
+  for (const id of ["reload", "fminus", "fplus", "sidebtn"]) $(id).style.display = "block";
   modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
   modeEl.className = info.mode;
   modeEl.style.display = "inline-block";
   applyInfo(info);
-  // sidebar: remembered preference; first visit defaults to open on wide screens
+  // sidebar: remembered preference on wide screens; phones ALWAYS start on the stream —
+  // an app opens on its content, not on a half-screen sheet from last visit
   const saved = localStorage.getItem(SIDE_KEY);
-  setSide(saved === null ? !NARROW() : saved === "1");
+  setSide(NARROW() ? false : (saved === null || saved === "1"));
   setInterval(() => { void fetchInfo().then((i) => { if (i) applyInfo(i); }); }, 10_000);
   setInterval(() => { if (sideOpen() && activeTab === "info") void loadBrief(); }, 30_000);
   term = new Terminal({
@@ -528,12 +546,39 @@ function start(info: Info) {
   });
   term.open($("term"));
   term.loadAddon(new CanvasAddon());
+  term.onScroll(() => updateJump());
+  term.onWriteParsed(() => updateJump());
   // phone first visit (no saved font): start fitted, IF the session is narrow enough for
   // fit to stay legible — a 200-col session at 5px is worse than panning at 12px
   if (NARROW() && localStorage.getItem(FONT_KEY) === null && fitFont() >= 8) {
     fitOn = true;
     applyFont();
   }
+  // touch pan, axis-locked: xterm's own touch handling owns vertical (scrollback), but it
+  // swallows the gesture before #wrap's horizontal overflow can pan. Capture-phase handler
+  // on the ancestor decides the axis on first significant movement: horizontal gestures
+  // drive wrap.scrollLeft ourselves and stop before xterm sees them; vertical ones pass
+  // through untouched.
+  const wrap = $("wrap");
+  let tx = 0, ty = 0, lx = 0, axis: "h" | "v" | null = null;
+  wrap.addEventListener("touchstart", (e) => {
+    const t = e.touches[0];
+    tx = lx = t.clientX; ty = t.clientY; axis = null;
+  }, { passive: true, capture: true });
+  wrap.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    if (axis === null) {
+      const dx = Math.abs(t.clientX - tx), dy = Math.abs(t.clientY - ty);
+      if (dx < 6 && dy < 6) return; // not decided yet
+      axis = dx > dy ? "h" : "v";
+    }
+    if (axis === "h") {
+      wrap.scrollLeft += lx - t.clientX;
+      lx = t.clientX;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, { passive: false, capture: true });
   if (info.mode === "interact") {
     bar.style.display = "flex";
     $("stage").classList.add("composing");

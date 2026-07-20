@@ -525,7 +525,8 @@ let layout = 1;
 // the SAME transcript feed the conversation view renders. No state of its own to drift.
 interface BriefCommit { hash: string; ts: number; subject: string }
 interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; sessionStart: number | null;
-  uncommitted: number; files: string[]; shortstat: string; commits: BriefCommit[] }
+  uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
+  commits: BriefCommit[]; laneScoped: boolean; laneBase: string | null; ahead: number; behind: number }
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
@@ -700,6 +701,14 @@ async function renderBoard() {
       if (brief.sessionStart) b.appendChild(document.createTextNode(
         ` · session since ${new Date(brief.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));
       head.appendChild(b);
+      // one-click copy of the worktree path — the one thing you need when you do reach for
+      // a terminal in a lane, and it's long and buried otherwise
+      if (brief.worktree && s.cwd) {
+        const cwd = s.cwd;
+        const cp = el("button", "bcopypath", "⧉ copy worktree path") as HTMLButtonElement;
+        cp.onclick = () => { copyText(cwd); cp.textContent = "✓ copied"; setTimeout(() => { cp.textContent = "⧉ copy worktree path"; }, 1200); };
+        head.appendChild(cp);
+      }
     }
     nodes.push(head);
     if (brief) {
@@ -708,15 +717,42 @@ async function renderBoard() {
       const line = el("div", "bstate");
       if (brief.uncommitted) {
         line.appendChild(el("span", "editing",
-          `${brief.uncommitted} file${brief.uncommitted === 1 ? "" : "s"} with uncommitted changes`));
-        if (!brief.sessionStart && brief.shortstat) line.appendChild(document.createTextNode(` — ${brief.shortstat}`));
+          `${brief.uncommitted} uncommitted file${brief.uncommitted === 1 ? "" : "s"}`));
       } else {
         line.appendChild(el("span", "ready", "working tree clean"));
       }
-      const ahead = s.git?.ahead ?? 0;
+      // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane
+      // session, vs the upstream (from the sessions-poll gitInfo)
+      const ahead = brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0);
+      const behind = brief.laneScoped ? brief.behind : (s.git?.behind ?? 0);
       if (ahead) line.appendChild(document.createTextNode(
-        ` · ${ahead} commit${ahead === 1 ? "" : "s"} to push${brief.worktree ? "/land" : ""}`));
+        ` · ↑${ahead} to ${brief.worktree ? "land" : "push"}`));
+      if (behind && brief.laneScoped) line.appendChild(document.createTextNode(` · ↓${behind} behind ${brief.laneBase ?? "main"}`));
       st.appendChild(line);
+      // the concrete uncommitted work — exactly what git status shows, with its codes, so
+      // managing a worktree needs no terminal round-trip. This is also precisely what blocks
+      // ⏫ merge / ⏏ land, so seeing it here tells you what to commit.
+      if (brief.uncommittedFiles.length) {
+        const uf = el("div", "bunc");
+        for (const f of brief.uncommittedFiles.slice(0, 40)) {
+          // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
+          const x = f[0] ?? " ", y = f[1] ?? " ";
+          const row = el("div", "buncf");
+          // untracked → new; anything staged (X set, not '?') → staged; else unstaged-only → mod
+          const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
+          const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
+          badge.title = x !== " " && y !== " " ? "staged + unstaged changes"
+            : x !== " " ? "staged" : f.startsWith("??") ? "untracked" : "unstaged changes";
+          row.appendChild(badge);
+          row.appendChild(document.createTextNode(f.slice(3)));
+          row.title = `${f} — click to review the diff`;
+          row.onclick = () => void openDiff(slot);
+          uf.appendChild(row);
+        }
+        if (brief.uncommittedFiles.length > 40)
+          uf.appendChild(el("div", "bempty", `… ${brief.uncommittedFiles.length - 40} more`));
+        st.appendChild(uf);
+      }
       // the board is the index, the ± overlay is the reading room — a diff needs line
       // width the 264px board can't give, so the board links instead of embedding
       const db = el("button", "bdiffbtn", "± view diff") as HTMLButtonElement;
@@ -775,7 +811,13 @@ async function renderBoard() {
           if (w.dirty) parts.push(`•${w.dirty}`);
           if (w.ahead) parts.push(`↑${w.ahead}`);
           if (w.behind) parts.push(`↓${w.behind}`);
-          row.appendChild(el("span", `bwtstate ${state}`, parts.join(" ") || "="));
+          const stateEl = el("span", `bwtstate ${state}`, parts.join(" ") || "=");
+          stateEl.title = [
+            w.dirty ? `${w.dirty} uncommitted file${w.dirty === 1 ? "" : "s"}` : "working tree clean",
+            w.ahead ? `${w.ahead} commit${w.ahead === 1 ? "" : "s"} ahead of ${wts.main}` : "",
+            w.behind ? `${w.behind} behind ${wts.main}` : "",
+          ].filter(Boolean).join(" · ");
+          row.appendChild(stateEl);
           if (w.slot != null) {
             const here = w.slot === slot;
             const chip = el("button", "bwtact", here ? "this slot" : `slot ${w.slot}`) as HTMLButtonElement;
@@ -878,8 +920,9 @@ async function renderBoard() {
       nodes.push(ssec);
       if (brief.files.length) {
         const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", brief.sessionStart ? "changed this session" : "changed files"));
-        if (brief.sessionStart && brief.shortstat) sec.appendChild(el("div", "bstate", brief.shortstat));
+        sec.appendChild(el("h3", "", brief.laneScoped ? `files this lane changes vs ${brief.laneBase ?? "main"}`
+          : brief.sessionStart ? "changed this session" : "changed files"));
+        if (brief.shortstat) sec.appendChild(el("div", "bstate", brief.shortstat));
         for (const f of brief.files.slice(0, 30)) {
           const row = el("div", "bfile");
           row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
@@ -891,10 +934,12 @@ async function renderBoard() {
         if (brief.files.length > 30) sec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
         nodes.push(sec);
       }
-      if (brief.commits.length || brief.sessionStart) {
+      if (brief.commits.length || brief.sessionStart || brief.laneScoped) {
         const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", brief.sessionStart ? "commits this session" : "recent commits"));
-        if (!brief.commits.length) sec.appendChild(el("div", "bempty", "no commits this session yet"));
+        sec.appendChild(el("h3", "", brief.laneScoped ? `commits on this lane (vs ${brief.laneBase ?? "main"})`
+          : brief.sessionStart ? "commits this session" : "recent commits"));
+        if (!brief.commits.length) sec.appendChild(el("div", "bempty",
+          brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
         for (const cm of brief.commits) {
           const row = el("div", "brow");
           row.appendChild(el("span", "bhash", cm.hash));

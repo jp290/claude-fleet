@@ -2678,12 +2678,19 @@ ta.addEventListener("input", () => {
 
 // --- ✨ enhance: hand the draft to the background rework agent; the result replaces
 // the box for review — it NEVER auto-sends. On failure the draft stays untouched.
+// The server holds the request for up to SUMMARY_TIMEOUT_MS (3min, server.ts) — typically
+// ~20s but occasionally the full window, so past 20s we say so instead of sitting on "…"
+// looking stuck.
 const enhBtn = $("enhbtn") as HTMLButtonElement;
+const enhTitle = enhBtn.title;
 enhBtn.onclick = async () => {
   const text = ta.value.trim();
   if (!text || enhBtn.disabled) return;
   enhBtn.disabled = true;
   enhBtn.textContent = "…";
+  const slowNotice = setTimeout(() => {
+    enhBtn.title = "✨ still working — this can take up to 3 min, not stuck";
+  }, 20_000);
   try {
     const res = await post("/api/enhance", { slot: panes[focused]?.slot ?? 0, text });
     const j = (await res.json().catch(() => ({}))) as { prompt?: string; error?: string };
@@ -2695,8 +2702,10 @@ enhBtn.onclick = async () => {
     enhBtn.style.borderColor = "#f85149";
     setTimeout(() => { enhBtn.style.borderColor = ""; }, 1500);
   } finally {
+    clearTimeout(slowNotice);
     enhBtn.disabled = false;
     enhBtn.textContent = "✨";
+    enhBtn.title = enhTitle;
   }
 };
 

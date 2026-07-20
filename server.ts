@@ -98,6 +98,9 @@ interface Slot {
   label: string | null; // user-chosen session name; falls back to cwd basename in the UI
   worktree: { repo: string; branch: string } | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots
+  selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
+  // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
+  // be self-scheduled against by a session that was talking to whatever used to live here.
   offset: number;
   lastOutput: number;
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
@@ -120,6 +123,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   cwd: null,
   label: null,
   worktree: null,
+  selfToken: randomBytes(16).toString("hex"),
   offset: 0,
   lastOutput: 0,
   quietUntil: 0,
@@ -510,24 +514,49 @@ async function listWorktrees(root: string): Promise<WtEntry[]> {
   return out;
 }
 
+// the real risk behind a destructive action, computed once and shared by every surface
+// that needs to show it BEFORE the click (risk preview panels, the sweep agent) and the
+// one that enforces it (removeWorktreeSafe). "empty" = provably safe to drop: clean tree
+// AND nothing unpushed — the destructive click becomes a no-op cleanup, not a judgment call.
+interface WorktreeRisk { dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean }
+async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
+  const st = await statusLines(path); // column-preserving — see statusLines
+  const dirtyFiles = st.code === 0 ? st.lines.slice(0, 200) : [];
+  let unpushedCommits: CommitRow[] = [];
+  // "safe to drop" = the commits are preserved somewhere: pushed to a push/upstream ref,
+  // OR present on ANY remote (covers `push` without `-u`), OR merged into the repo's HEAD.
+  // @{push} is unresolvable for a branch with no upstream — same fallback as before.
+  const unpushed = await git(path, "log", "--no-color", "@{push}..", "--format=%h%x09%ct%x09%s");
+  if (unpushed.code === 0) {
+    unpushedCommits = parseCommitLog(unpushed.out);
+  } else {
+    const br = await git(path, "rev-parse", "--abbrev-ref", "HEAD");
+    const branch = br.code === 0 ? br.out : "";
+    const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
+    const merged = branch ? await git(repo, "branch", "--merged", "HEAD", "--list", branch) : { out: "" };
+    if (!onRemote.out.trim() && !merged.out.trim()) {
+      const lg = await git(path, "log", "--no-color", "--format=%h%x09%ct%x09%s");
+      unpushedCommits = parseCommitLog(lg.out);
+    }
+  }
+  const sh = await git(path, "diff", "HEAD", "--shortstat", "--no-color");
+  return {
+    dirtyFiles, unpushedCommits,
+    shortstat: sh.code === 0 && sh.out ? sh.out : null,
+    empty: dirtyFiles.length === 0 && unpushedCommits.length === 0,
+  };
+}
+
 // "safe to drop" checks + removal, shared by land and orphan cleanup: git's OWN
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
 async function removeWorktreeSafe(repo: string, path: string, branch: string): Promise<{ error: string; code: number } | null> {
   const st = await git(path, "status", "--porcelain");
   if (st.code !== 0) return { error: "git status failed — worktree gone?", code: 400 };
-  if (st.out) return { error: `worktree has uncommitted changes:\n${st.out.slice(0, 400)}`, code: 409 };
-  // "safe to drop" = the commits are preserved somewhere: pushed to a push/upstream ref,
-  // OR present on ANY remote (covers `push` without `-u`), OR merged into the repo's HEAD
-  const unpushed = await git(path, "log", "--oneline", "@{push}..", "--");
-  if (unpushed.code === 0) {
-    if (unpushed.out) return { error: `unpushed commits:\n${unpushed.out.slice(0, 400)}`, code: 409 };
-  } else {
-    const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
-    const merged = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
-    if (!onRemote.out.trim() && !merged.out.trim())
-      return { error: "branch is not pushed to any remote and not merged — push or merge it first", code: 409 };
-  }
+  const risk = await worktreeRisk(repo, path);
+  if (risk.dirtyFiles.length) return { error: `worktree has uncommitted changes:\n${risk.dirtyFiles.join("\n").slice(0, 400)}`, code: 409 };
+  if (risk.unpushedCommits.length)
+    return { error: `unpushed commits:\n${risk.unpushedCommits.map((c) => `${c.hash} ${c.subject}`).join("\n").slice(0, 400)}`, code: 409 };
   const rmv = await git(repo, "worktree", "remove", path);
   if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
   return null;
@@ -565,8 +594,7 @@ const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
-  await openSlot(s, wt.path);
-  s.worktree = { repo: wt.repo, branch: wt.branch };
+  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch });
   s.label = wt.branch.replace(/^fleet\//, "⎇ "); // lane identity beats the dir-slug basename
   saveState();
   void tickGit().catch(() => {}); // badge should appear on the next sessions poll
@@ -605,7 +633,13 @@ async function ensureSlot(s: Slot): Promise<void> {
     // new-session race below (the 2s self-heal loop and a fresh openSlot() can race)
     const resume = !!s.sessionId && existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`);
     const candidate = resume ? s.sessionId! : crypto.randomUUID();
-    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd, slotCmd(candidate, resume));
+    // self-scheduling credential: only baked into a LANE's pane (never a plain session) —
+    // a session running inside its own worktree can POST /api/self/autos to check in on
+    // itself later, scoped to exactly this slot, without ever touching the owner token
+    const selfExport = s.worktree
+      ? `export FLEET_SELF_TOKEN='${s.selfToken}'; export FLEET_SELF_SLOT='${s.id}'; ` : "";
+    const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
+      `${selfExport}${slotCmd(candidate, resume)}`);
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;
@@ -648,12 +682,16 @@ function expandCwd(raw: string): string {
   return t;
 }
 
-async function openSlot(s: Slot, cwdRaw: string): Promise<void> {
+async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string } | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   s.cwd = cwd;
   s.label = null; // a fresh session gets a fresh identity
-  s.worktree = null; // a plain open is not a lane — open-worktree re-tags after this
+  // set BEFORE ensureSlot spawns the pane below — FLEET_SELF_TOKEN is only baked into a
+  // lane's pane env, so ensureSlot must see the final worktree tag, not a later patch-up
+  s.worktree = worktree;
+  s.selfToken = randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
+  // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
@@ -773,6 +811,44 @@ async function claudeAliveAt(target: string): Promise<boolean> {
   return false;
 }
 
+// shared by the owner route (POST /api/slots/:id/autos) and the self-scheduling route
+// (POST /api/self/autos) — every guard rail (AUTO_MAX_PER_SLOT, min interval, mandatory
+// runs cap, idle gate downstream in tickAutos) lives here exactly once. The caller is
+// responsible for how `s` was derived; this function trusts it and never reads a `slot`
+// field from the body, so it structurally cannot create an Auto anywhere but on `s`.
+function createAutoForSlot(s: Slot, body: Record<string, unknown> | null): Response {
+  if (!s.cwd) return json({ error: "slot not active" }, 400);
+  if (autos.filter((a) => a.slot === s.id && a.enabled).length >= AUTO_MAX_PER_SLOT)
+    return json({ error: `max ${AUTO_MAX_PER_SLOT} active schedules per slot` }, 400);
+  if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 10_000)
+    return json({ error: "bad text" }, 400);
+  const inSec = Number(body.inSec ?? 0) | 0;
+  const everySec = body.everySec == null ? null : Number(body.everySec) | 0;
+  if (everySec !== null && everySec < AUTO_MIN_EVERY_SEC)
+    return json({ error: `everySec must be ≥ ${AUTO_MIN_EVERY_SEC}` }, 400);
+  if (everySec === null && inSec < 1) return json({ error: "one-shot needs inSec ≥ 1" }, 400);
+  const runs = everySec === null ? 1 : Number(body.runs ?? 0) | 0;
+  if (everySec !== null && (runs < 1 || runs > AUTO_MAX_RUNS))
+    return json({ error: `runs must be 1–${AUTO_MAX_RUNS}` }, 400); // the cap is mandatory, not optional
+  const idleSec = Math.min(86_400, Math.max(0, Number(body.idleSec ?? 60) | 0));
+  const a: Auto = {
+    id: randomBytes(4).toString("hex"),
+    slot: s.id,
+    text: body.text,
+    everySec,
+    nextAt: Date.now() + (inSec > 0 ? inSec : everySec ?? 0) * 1000,
+    runsLeft: runs,
+    idleSec,
+    enabled: true,
+    created: Date.now(),
+    lastRun: 0,
+    lastResult: null,
+  };
+  autos = [...autos, a];
+  saveState();
+  return json({ ok: true, auto: a });
+}
+
 function advanceAuto(a: Auto, now: number): void {
   if (a.everySec) {
     a.runsLeft--;
@@ -855,8 +931,7 @@ async function tickDispatch(): Promise<void> {
     laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
     try {
       const wt = await createWorktree(DISPATCH_REPO, "");
-      await openSlot(free, wt.path);
-      free.worktree = { repo: wt.repo, branch: wt.branch };
+      await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch });
       free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
       next.status = "sent";
       next.slot = free.id;
@@ -1349,6 +1424,102 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     summary: summary.slice(0, 4000), openThreads: openThreads.slice(0, 12),
     verification: verification.slice(0, 1000), model: SUMMARY_MODEL, at: Date.now(), head, dirty, raw,
   };
+}
+
+// --- 🧹 agentic lane sweep: ADVISORY ONLY. Same throwaway-session machinery as the
+// summarizer, fed the small structured worktreeRisk facts (never raw diffs) for every
+// worktree of a repo, and asked for a strict per-lane verdict. This function NEVER
+// executes a destructive git op — the client's "do it" button still goes through the
+// real, git-verified /api/worktrees/remove and /api/worktrees/discard endpoints, so a
+// wrong or injected verdict can only ever propose an action, never force it.
+const SWEEP_CMD = process.env.FLEET_SWEEP_CMD ?? null; // tests: subprocess stand-in
+interface SweepVerdict { path: string; verdict: "safe-to-remove" | "stale" | "active-work";
+  reason: string; suggestedAction: "remove" | "discard" | "none" }
+interface SweepResult { verdicts: SweepVerdict[]; model: string; at: number }
+// keyed by repo root (a sweep is repo-wide, not per-slot)
+const sweepCache = new Map<string, { key: string; result: SweepResult }>();
+const sweepInflight = new Map<string, Promise<SweepResult>>();
+
+function parseSweepVerdicts(body: string): SweepVerdict[] {
+  try {
+    const arr: unknown = JSON.parse(body);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((x): x is SweepVerdict =>
+      typeof x === "object" && x !== null
+      && typeof (x as SweepVerdict).path === "string"
+      && ["safe-to-remove", "stale", "active-work"].includes((x as SweepVerdict).verdict)
+      && typeof (x as SweepVerdict).reason === "string"
+      && ["remove", "discard", "none"].includes((x as SweepVerdict).suggestedAction));
+  } catch {
+    return []; // unparseable → no verdicts; the client shows nothing actionable
+  }
+}
+
+async function runSweep(repo: string, entries: { path: string; branch: string; risk: WorktreeRisk }[]): Promise<SweepResult> {
+  const facts = entries.map((e) => ({
+    path: e.path, branch: e.branch, dirtyFileCount: e.risk.dirtyFiles.length,
+    unpushedCommitSubjects: e.risk.unpushedCommits.map((c) => c.subject),
+    shortstat: e.risk.shortstat, empty: e.risk.empty,
+  }));
+  const prompt = [
+    "You are a read-only reviewer assessing which git worktree lanes are safe to clean up.",
+    "Below is small, structured, deterministic git-state data for every open lane of one repo —",
+    "no diffs, no transcripts, only facts already computed by the server.",
+    "Do NOT use any tools — answer directly from the input, in one single message.",
+    "Respond with STRICT JSON only, no markdown fences: an ARRAY, one entry per lane, exactly:",
+    '[{"path": "...", "verdict": "safe-to-remove"|"stale"|"active-work", "reason": "...", "suggestedAction": "remove"|"discard"|"none"}]',
+    "Rules:",
+    "- empty:true (no uncommitted changes, no unpushed commits) → verdict safe-to-remove, suggestedAction remove.",
+    "- non-empty but looks abandoned/superseded → verdict stale; suggestedAction remove ONLY if truly empty,",
+    "  otherwise discard (which destroys uncommitted/unpushed work) — say exactly why in reason.",
+    "- real work in progress → verdict active-work, suggestedAction none. Never suggest destroying live work.",
+    "- reason: one concise sentence citing the facts (file count, commit subjects, empty).",
+    "", "## lanes", JSON.stringify(facts, null, 2),
+  ].join("\n");
+  let text = SWEEP_CMD
+    ? await summaryViaSubprocess(SWEEP_CMD, prompt, repo)
+    : await summaryViaSession(prompt, repo, '"verdict"');
+  try {
+    const env = JSON.parse(text) as { result?: unknown };
+    if (typeof env.result === "string") text = env.result.trim();
+  } catch { /* not an envelope */ }
+  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  return { verdicts: parseSweepVerdicts(body), model: SUMMARY_MODEL, at: Date.now() };
+}
+
+// GET = cache lookup only, never spawns. POST = run the agent, single-flight per repo;
+// the cache key is the paths + HEAD shas of every lane, so it invalidates the instant
+// any lane's git state changes — no matter who else keeps clicking sweep meanwhile.
+async function sweepResponse(s: Slot, run: boolean): Promise<Response> {
+  if (!s.cwd) return json({ error: "slot not active" }, 400);
+  const top = await git(s.cwd, "rev-parse", "--show-toplevel");
+  if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+  const repo = top.out;
+  const list = await listWorktrees(repo);
+  const primary = list.find((w) => w.primary);
+  if (!primary) return json({ error: "no worktree info" }, 400);
+  const lanes = list.filter((w) => !w.primary);
+  const shas = await Promise.all(lanes.map((w) => git(w.path, "rev-parse", "HEAD")));
+  const key = lanes.map((w, i) => `${w.path}@${shas[i].out}`).join("|");
+  const cached = sweepCache.get(repo);
+  if (cached?.key === key) return json({ ...cached.result, repo, cached: true, stale: false });
+  if (!run) return json(cached ? { ...cached.result, repo, cached: true, stale: true } : { cached: false, repo });
+  let inflight = sweepInflight.get(repo);
+  if (!inflight) {
+    inflight = (async () => {
+      const entries = await Promise.all(
+        lanes.map(async (w) => ({ path: w.path, branch: w.branch, risk: await worktreeRisk(primary.path, w.path) })));
+      return runSweep(primary.path, entries);
+    })().finally(() => sweepInflight.delete(repo));
+    sweepInflight.set(repo, inflight);
+  }
+  try {
+    const result = await inflight;
+    sweepCache.set(repo, { key, result });
+    return json({ ...result, repo, cached: false, stale: false });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "sweep failed" }, 500);
+  }
 }
 
 // --- ✨ prompt enhancer: a throwaway background claude session (same machinery as the
@@ -1876,6 +2047,20 @@ Bun.serve<WSData>({
       if (!pub) return new Response("not found", { status: 404 });
     }
 
+    // self-scheduling: a session running INSIDE a lane schedules its own future check-in,
+    // authenticated by its scoped FLEET_SELF_TOKEN (baked into the pane env — see ensureSlot)
+    // instead of the owner token. Deliberately unreachable on the public share host (this
+    // sits AFTER that gate, unlike /intake) — it's a local-machine credential, not a public
+    // one. The target slot is HARD-DERIVED from which slot's token matches — any `slot`
+    // field in the body is structurally never read (createAutoForSlot takes `s` directly),
+    // so this route cannot be pointed at any slot but the token's own.
+    if (url.pathname === "/api/self/autos" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      return createAutoForSlot(s, await readJson(req));
+    }
+
     // login: /?token=… sets the cookie and redirects to a clean URL
     if (url.pathname === "/" && url.searchParams.has("token")) {
       if (!(await tokenGate(url.searchParams.get("token")))) return json({ error: "bad token" }, 401);
@@ -2231,13 +2416,26 @@ Bun.serve<WSData>({
         const ab = await git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...HEAD`);
         const m = /^(\d+)\s+(\d+)$/.exec(ab.out);
         const holder = slots.find((x) => x.cwd === w.path);
+        const risk = await worktreeRisk(primary.path, w.path);
         rows.push({
           path: w.path, branch: w.branch, slot: holder?.id ?? null,
           dirty: st.code === 0 ? st.out.split("\n").filter(Boolean).length : 0,
           ahead: m ? Number(m[1]) : 0, behind: m ? Number(m[2]) : 0,
+          dirtyFiles: risk.dirtyFiles, unpushedCommits: risk.unpushedCommits,
+          shortstat: risk.shortstat, empty: risk.empty,
         });
       }
       return json({ repo: primary.path, main: primary.branch, worktrees: rows });
+    }
+    // focused risk preview for a SLOT's own lane worktree — used by the client before
+    // ⏏ land and before killing a lane-holding slot, neither of which had real git-state
+    // context before this (kill in particular never checked git state at all)
+    const riskMatch = /^\/api\/slots\/(\d+)\/risk$/.exec(url.pathname);
+    if (req.method === "GET" && riskMatch) {
+      const s = slotFrom(riskMatch[1]);
+      if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+      const risk = await worktreeRisk(s.worktree.repo, s.cwd);
+      return json({ path: s.cwd, branch: s.worktree.branch, ...risk });
     }
     // one-click lane: the server picks the first free slot itself (create), or re-seats an
     // orphaned worktree into a slot (attach) so it becomes reviewable/landable again
@@ -2260,8 +2458,7 @@ Bun.serve<WSData>({
           const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === attachPath);
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
-          await openSlot(free, wt.path);
-          free.worktree = { repo: top.out, branch: wt.branch };
+          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch });
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           saveState();
           void tickGit().catch(() => {});
@@ -2419,6 +2616,14 @@ Bun.serve<WSData>({
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return summaryResponse(s, req.method === "POST");
     }
+    // 🧹 agentic lane sweep (the ✨/🔍 pattern applied to lane cleanup). GET = cache lookup
+    // only. POST = run the agent (single-flight per repo). Advisory only — see runSweep.
+    const swMatch = /^\/api\/slots\/(\d+)\/sweep$/.exec(url.pathname);
+    if (swMatch && (req.method === "GET" || req.method === "POST")) {
+      const s = slotFrom(swMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      return sweepResponse(s, req.method === "POST");
+    }
     if (url.pathname === "/api/dirs") {
       try {
         return json(await listDirs(url.searchParams.get("path") ?? "~"));
@@ -2460,37 +2665,8 @@ Bun.serve<WSData>({
     const autoCreate = /^\/api\/slots\/(\d+)\/autos$/.exec(url.pathname);
     if (req.method === "POST" && autoCreate) {
       const s = slotFrom(autoCreate[1]);
-      if (!s?.cwd) return json({ error: "slot not active" }, 400);
-      if (autos.filter((a) => a.slot === s.id && a.enabled).length >= AUTO_MAX_PER_SLOT)
-        return json({ error: `max ${AUTO_MAX_PER_SLOT} active schedules per slot` }, 400);
-      const body = await readJson(req);
-      if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 10_000)
-        return json({ error: "bad text" }, 400);
-      const inSec = Number(body.inSec ?? 0) | 0;
-      const everySec = body.everySec == null ? null : Number(body.everySec) | 0;
-      if (everySec !== null && everySec < AUTO_MIN_EVERY_SEC)
-        return json({ error: `everySec must be ≥ ${AUTO_MIN_EVERY_SEC}` }, 400);
-      if (everySec === null && inSec < 1) return json({ error: "one-shot needs inSec ≥ 1" }, 400);
-      const runs = everySec === null ? 1 : Number(body.runs ?? 0) | 0;
-      if (everySec !== null && (runs < 1 || runs > AUTO_MAX_RUNS))
-        return json({ error: `runs must be 1–${AUTO_MAX_RUNS}` }, 400); // the cap is mandatory, not optional
-      const idleSec = Math.min(86_400, Math.max(0, Number(body.idleSec ?? 60) | 0));
-      const a: Auto = {
-        id: randomBytes(4).toString("hex"),
-        slot: s.id,
-        text: body.text,
-        everySec,
-        nextAt: Date.now() + (inSec > 0 ? inSec : everySec ?? 0) * 1000,
-        runsLeft: runs,
-        idleSec,
-        enabled: true,
-        created: Date.now(),
-        lastRun: 0,
-        lastResult: null,
-      };
-      autos = [...autos, a];
-      saveState();
-      return json({ ok: true, auto: a });
+      if (!s) return json({ error: "bad slot" }, 400);
+      return createAutoForSlot(s, await readJson(req));
     }
     const autoAct = /^\/api\/autos\/([a-z0-9]+)\/(delete|toggle)$/.exec(url.pathname);
     if (req.method === "POST" && autoAct) {

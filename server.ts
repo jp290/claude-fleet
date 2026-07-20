@@ -2196,6 +2196,31 @@ Bun.serve<WSData>({
       void tickGit().catch(() => {});
       return json({ ok: true, removed: wt.path });
     }
+    // ☠ deliberate destruction — the ONE path that may eat work. Force-removes the
+    // worktree and deletes its branch; everything else in fleet refuses that. The client
+    // gates the click behind a read-first confirm, the server re-checks identity: branch
+    // rides along in the body so a click aimed at a stale board can't destroy whatever
+    // lane replaced it. Head sha is captured first and returned — the one-line undo
+    // (`git branch <name> <sha>`) keeps the commits recoverable until gc.
+    if (url.pathname === "/api/worktrees/discard" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || typeof body.path !== "string" || typeof body.branch !== "string")
+        return json({ error: "expected { repo, path, branch }" }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.path);
+      if (!wt) return json({ error: "not a worktree of this repo" }, 400);
+      if (wt.branch !== body.branch) return json({ error: "lane changed since the board rendered — reload" }, 409);
+      if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree is open in a slot — kill the slot first" }, 409);
+      const head = await git(wt.path, "rev-parse", "HEAD");
+      const rmv = await git(top.out, "worktree", "remove", "--force", wt.path);
+      if (rmv.code !== 0) return json({ error: `worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
+      const branchDeleted = wt.branch !== "(detached)"
+        && (await git(top.out, "branch", "-D", wt.branch)).code === 0;
+      void tickGit().catch(() => {});
+      return json({ ok: true, removed: wt.path, branch: wt.branch,
+        head: head.code === 0 ? head.out : null, branchDeleted });
+    }
     // ⏫ agent merge & land. POST: deterministic guards → start the background job (the
     // fuzzy middle: rebase + conflict resolution in the lane) → deterministic re-verify,
     // server-side ff-merge and landLane inside the job. GET: job state for the board's
@@ -2539,6 +2564,20 @@ Bun.serve<WSData>({
         });
         s.resizeChain = task.catch(() => {});
         await task;
+      } else if (ws.data.share) {
+        // guests never pass cols/rows (they must not resize the owner's pty), so they
+        // can't take the resize+capture reseed above. Seed them from a plain capture-pane
+        // at the pane's CURRENT size instead of slicing the raw stream: capture output is
+        // line-aligned and already-reflowed, so it can't begin mid-escape-sequence and
+        // it's a few KB rather than up to REPLAY_TAIL bytes pushed to a phone on every
+        // reconnect — the raw-tail path desynced guest terminals (partial escapes stacked
+        // onto un-reset scrollback) after the frequent WS drops mobile connections see.
+        // Live bytes after this keep flowing from the shared offset via poll()/broadcast,
+        // same as the owner reseed path. No -e (see that path): the styled-run cursor
+        // jumps it bakes in would re-garble a narrower guest; history goes monochrome,
+        // live output stays fully colored.
+        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
+        ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
         const upTo = s.offset;
         const start = Math.max(0, upTo - REPLAY_TAIL);

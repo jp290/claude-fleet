@@ -1,5 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { CanvasAddon } from "@xterm/addon-canvas";
+import { mdInto } from "./md";
 
 // guest page for one shared slot: /s/<id>. Auth is the share's own cookie (set by
 // POST /s/<id>/auth) — the owner token never appears here. The terminal renders at
@@ -445,9 +446,11 @@ function fitFont(): number {
 function applyFont() {
   if (term) term.options.fontSize = fitOn ? fitFont() : fontSize;
   $("tfit").classList.toggle("active", fitOn);
+  $("fitw").classList.toggle("active", fitOn); // desktop header twin
   $("tfsize").textContent = String(fitOn ? fitFont() : fontSize);
 }
 function toggleFit() { fitOn = !fitOn; applyFont(); }
+$("fitw").onclick = () => toggleFit();
 window.addEventListener("resize", () => { if (fitOn) applyFont(); }); // rotation refits
 function setFont(delta: number) {
   // compose with fit instead of fighting it: A± continues from the size on screen —
@@ -507,17 +510,23 @@ function setView(r: boolean) {
 }
 $("viewtog").onclick = () => setView(!readerOn);
 
+const fmtClock = (ts: string | null) =>
+  ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
 function rAppend(e: TEntry) {
   for (const b of e.blocks) {
     if (b.t === "text") {
+      // slash-command bookkeeping (`<command-name>/model…`, `<local-command-stdout>` with
+      // raw ANSI) lands in the transcript as user entries — noise, not conversation
+      if (e.role === "user" && /^<(command-|local-command)/.test(b.text.trimStart())) continue;
       const box = document.createElement("div");
       box.className = `rmsg ${e.role}`;
       const head = document.createElement("div");
       head.className = "rhead";
-      head.textContent = e.role === "user" ? "you" : "claude";
-      const body = document.createElement("div");
-      body.textContent = b.text;
-      box.append(head, body);
+      const clock = fmtClock(e.ts);
+      head.textContent = (e.role === "user" ? "you" : "claude") + (clock ? ` · ${clock}` : "");
+      box.appendChild(head);
+      mdInto(box, b.text); // fences render as code blocks; everything else stays textContent
       reader.appendChild(box);
     } else if (b.t === "tool") {
       const step = document.createElement("div");
@@ -526,6 +535,7 @@ function rAppend(e: TEntry) {
       reader.appendChild(step);
     }
     // thinking / tool_result stay out of the reader — it's the conversation, not the trace
+    // (the server also strips/caps them for guests — see the share transcript route)
   }
 }
 
@@ -546,6 +556,10 @@ async function pollReader() {
     rSource = d.source;
     if (d.entries.length) {
       reader.querySelector(".rempty")?.remove();
+      // reconcile optimistic send-echoes: once ANY real user entry arrives, the
+      // transcript is the truth and the placeholders would double the prompt
+      if (d.entries.some((e) => e.role === "user"))
+        for (const p of reader.querySelectorAll(".rmsg.pending")) p.remove();
       const atTail = reader.scrollHeight - reader.scrollTop - reader.clientHeight < 80;
       for (const e of d.entries) rAppend(e);
       if (atTail || rCursor === 0) reader.scrollTop = reader.scrollHeight;
@@ -614,7 +628,7 @@ function start(info: Info) {
   title.textContent = name;
   $("tname").textContent = name;
   document.title = `${name} — Claude Fleet`;
-  for (const id of ["viewtog", "reload", "fminus", "fplus", "sidebtn"]) $(id).style.display = "block";
+  for (const id of ["viewtog", "reload", "fitw", "fminus", "fplus", "sidebtn"]) $(id).style.display = "block";
   // phones open on the conversation — the raster is the fallback view; desktop keeps
   // the terminal front and center
   setView(NARROW());
@@ -687,13 +701,25 @@ function start(info: Info) {
 
 async function join() {
   const password = pw.value;
-  if (!password) return;
+  const enter = $("enter") as HTMLButtonElement;
+  if (!password || enter.disabled) return;
   gatemsg.textContent = "";
-  const res = await fetch(`/s/${shareId}/auth`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password }),
-  });
+  enter.disabled = true; // slow tunnel: an idle-looking gate double-submits into the rate limiter
+  enter.textContent = "joining…";
+  let res: Response;
+  try {
+    res = await fetch(`/s/${shareId}/auth`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+  } catch {
+    gatemsg.textContent = "can't reach the session — check your connection and try again";
+    return;
+  } finally {
+    enter.disabled = false;
+    enter.textContent = "Join session";
+  }
   if (!res.ok) {
     pw.classList.add("bad");
     setTimeout(() => pw.classList.remove("bad"), 1200);
@@ -721,6 +747,21 @@ async function doSend() {
       body: JSON.stringify({ text, submit: true }),
     });
     if (!res.ok) throw new Error(`send failed: ${res.status}`);
+    // optimistic echo: the prompt only reaches the transcript once claude ingests it
+    // (≤3s poll, or minutes if claude is mid-turn) — without a local bubble the reader
+    // looks like it swallowed the send, and guests re-send
+    if (readerOn) {
+      const box = document.createElement("div");
+      box.className = "rmsg user pending";
+      const head = document.createElement("div");
+      head.className = "rhead";
+      head.textContent = "you · sending…";
+      const body = document.createElement("div");
+      body.textContent = text;
+      box.append(head, body);
+      reader.appendChild(box);
+      reader.scrollTop = reader.scrollHeight;
+    }
     input.value = "";
     term?.scrollToBottom();
   } catch {
@@ -739,7 +780,14 @@ input.addEventListener("keydown", (e) => {
 });
 
 void (async () => {
-  const info = await fetchInfo(); // cookie may already be set from an earlier visit
+  let info: Info | null = null;
+  try {
+    info = await fetchInfo(); // cookie may already be set from an earlier visit
+  } catch {
+    // first fetch died (flaky phone network, tunnel blip) — without this catch the page
+    // stays a dark void with neither gate nor message
+    gatemsg.textContent = "can't reach the session — check your connection and try again";
+  }
   if (info) start(info);
   else {
     gate.style.display = "flex";

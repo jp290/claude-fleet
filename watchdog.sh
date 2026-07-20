@@ -8,6 +8,9 @@ FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The server bakes ITS OWN PATH into every pane command, so what's missing here is
 # missing inside every new claude session too.
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# everything this loop creates (server.log via the pane redirect) stays owner-only —
+# the log carries cwd paths and, if the isTTY gate is ever defeated, the token
+umask 077
 
 # single-quoted PATH interpolation below needs embedded ' escaped (server.ts does the same
 # for its own pane-command PATH bake-in) — otherwise a PATH entry containing a quote breaks
@@ -18,9 +21,15 @@ while true; do
   if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
-    tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=klaus.example.com FLEET_SHARE_HOSTS=klaus.example.com FLEET_SHARE_URL=https://klaus.example.com exec bun server.ts >> server.log 2>&1"
-    echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
+    if tmux -L claudefleet new-session -d -s srv \
+      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=klaus.example.com FLEET_SHARE_HOSTS=klaus.example.com FLEET_SHARE_URL=https://klaus.example.com exec bun server.ts >> server.log 2>&1"; then
+      echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
+    else
+      # log the truth: an unconditional "restarted" here used to fill the log with
+      # success lines during the exact outage it should have documented
+      echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv down and RESTART FAILED (tmux error)" >> "$FLEET_DIR/server.log"
+      sleep 25 # back off — a broken tmux/deploy isn't fixed by hammering every 5s
+    fi
   fi
   sleep 5
 done

@@ -44,10 +44,14 @@ function setConn(on: boolean) {
   livetxt.textContent = on ? "LIVE" : "OFFLINE";
 }
 
+let ended = false; // revoked / session gone — freezes polls, reader included
 function showNotice(text: string) {
+  ended = true;
   notice.textContent = text;
   notice.style.display = "block";
   $("wrap").style.display = "none";
+  $("reader").style.display = "none"; // reader is the phone default — a stale transcript must not read as live
+  document.body.classList.remove("reader");
   bar.style.display = "none";
   $("jump").style.display = "none";
 }
@@ -494,6 +498,7 @@ let rSource: string | null = null;
 let rBusy = false;
 
 function setView(r: boolean) {
+  if (ended) return; // the notice owns the stage now — no view to switch back into
   readerOn = r;
   document.body.classList.toggle("reader", r);
   $("viewtog").textContent = r ? "⌨ terminal" : "☰ reader";
@@ -525,7 +530,7 @@ function rAppend(e: TEntry) {
 }
 
 async function pollReader() {
-  if (rBusy || !readerOn) return;
+  if (rBusy || !readerOn || ended) return;
   rBusy = true;
   try {
     const res = await fetch(`/s/${shareId}/transcript?after=${rCursor}`);

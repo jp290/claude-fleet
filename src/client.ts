@@ -553,6 +553,14 @@ const mergeWatch = new Set<number>();
 // even fire the second request (the response to it would just say "running"/"reserved")
 const mergePending = new Set<number>();
 let laneReqBusy = false;
+// ☠ discard confirm state — module-level because the board fully re-renders on a 3s poll:
+// the panel (and its read-first countdown) must survive re-renders, so each render derives
+// it from here instead of holding DOM state. `at` anchors the 4s gate to the FIRST click.
+let discardArm: { path: string; at: number } | null = null;
+const DISCARD_READ_MS = 4000;
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && discardArm) { discardArm = null; void renderBoard(); }
+});
 
 async function doMerge(slot: number) {
   if (mergePending.has(slot)) return;
@@ -856,8 +864,54 @@ async function renderBoard() {
               void renderBoard();
             };
             row.appendChild(rmv);
+            const disc = el("button", "bwtact del", "☠") as HTMLButtonElement;
+            disc.title = "discard this lane — force-deletes the worktree AND its branch; uncommitted work is destroyed";
+            disc.onclick = () => { discardArm = { path: w.path, at: Date.now() }; void renderBoard(); };
+            row.appendChild(disc);
           }
           sec.appendChild(row);
+          // the confirm panel is not a dialog: the consequences ARE the wait screen. The
+          // destructive button unlocks only after the read window, counted from the first
+          // click and re-derived on every 3s board re-render, so polling can't reset or
+          // skip the gate. Stale arms (>60s) auto-cancel — a forgotten panel must not
+          // sit primed forever.
+          if (w.slot == null && discardArm?.path === w.path) {
+            if (Date.now() - discardArm.at > 60_000) { discardArm = null; continue; }
+            const arm = discardArm;
+            const box = el("div", "bdiscard");
+            box.appendChild(el("div", "bdtitle", `discard ${w.branch}?`));
+            box.appendChild(el("div", "bdline", w.dirty
+              ? `${w.dirty} uncommitted file${w.dirty === 1 ? "" : "s"} — DESTROYED, no undo`
+              : "working tree clean — nothing uncommitted to lose"));
+            box.appendChild(el("div", "bdline", w.ahead
+              ? `${w.ahead} unmerged commit${w.ahead === 1 ? "" : "s"} — branch deleted; the undo line appears after`
+              : `no commits beyond ${wts.main} — branch deleted`));
+            const cancel = el("button", "bwtact", "cancel") as HTMLButtonElement;
+            cancel.onclick = () => { discardArm = null; void renderBoard(); };
+            const go = el("button", "bwtact del", "") as HTMLButtonElement;
+            const tick = () => {
+              const left = Math.ceil((arm.at + DISCARD_READ_MS - Date.now()) / 1000);
+              go.disabled = left > 0;
+              go.textContent = left > 0 ? `read the above … ${left}` : "☠ discard forever";
+            };
+            tick();
+            const iv = setInterval(() => { if (go.isConnected) tick(); else clearInterval(iv); }, 250);
+            go.onclick = async () => {
+              if (go.disabled) return;
+              go.disabled = true;
+              const r = await post("/api/worktrees/discard", { repo: wts.repo, path: w.path, branch: w.branch });
+              const j = (await r.json().catch(() => ({}))) as
+                { error?: string; branch?: string; head?: string | null };
+              discardArm = null;
+              if (!r.ok) alert(j.error ?? "discard failed");
+              else if (j.head) alert(`lane discarded.\nUndo until git gc:\n  git branch ${j.branch} ${j.head}`);
+              void renderBoard();
+            };
+            const btns = el("div", "bdbtns");
+            btns.append(cancel, go);
+            box.appendChild(btns);
+            sec.appendChild(box);
+          }
         }
         const nb = el("button", "bwtnew", "＋ ⎇ new lane") as HTMLButtonElement;
         nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;

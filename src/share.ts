@@ -18,6 +18,8 @@ const gate = $("gate"), pw = $("pw") as HTMLInputElement, gatemsg = $("gatemsg")
 
 interface Info { slotLabel: string | null; mode: "view" | "interact"; cols: number; rows: number; active: boolean;
   viewers?: number; comments?: number }
+interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
+interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
 interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
 interface Brief { branch: string | null; sessionStart: number | null; uncommitted: number;
   files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] }
@@ -482,6 +484,80 @@ function reloadStream() {
 }
 $("reload").onclick = () => reloadStream();
 
+// --- reader: the conversation as native text, polled from the share transcript
+// endpoint with a line cursor. Phone-first primary view; the raster terminal stays one
+// toggle away. All content renders through textContent — transcripts are hostile input.
+const reader = $("reader");
+let readerOn = false;
+let rCursor = 0;
+let rSource: string | null = null;
+let rBusy = false;
+
+function setView(r: boolean) {
+  readerOn = r;
+  document.body.classList.toggle("reader", r);
+  $("viewtog").textContent = r ? "⌨ terminal" : "☰ reader";
+  if (r) void pollReader();
+  else updateJump(); // returning to the raster — restore the jump pill's state
+}
+$("viewtog").onclick = () => setView(!readerOn);
+
+function rAppend(e: TEntry) {
+  for (const b of e.blocks) {
+    if (b.t === "text") {
+      const box = document.createElement("div");
+      box.className = `rmsg ${e.role}`;
+      const head = document.createElement("div");
+      head.className = "rhead";
+      head.textContent = e.role === "user" ? "you" : "claude";
+      const body = document.createElement("div");
+      body.textContent = b.text;
+      box.append(head, body);
+      reader.appendChild(box);
+    } else if (b.t === "tool") {
+      const step = document.createElement("div");
+      step.className = "rstep";
+      step.textContent = `⚙ ${b.name ?? "tool"}`;
+      reader.appendChild(step);
+    }
+    // thinking / tool_result stay out of the reader — it's the conversation, not the trace
+  }
+}
+
+async function pollReader() {
+  if (rBusy || !readerOn) return;
+  rBusy = true;
+  try {
+    const res = await fetch(`/s/${shareId}/transcript?after=${rCursor}`);
+    if (!res.ok) return;
+    const d = (await res.json()) as { entries: TEntry[]; total: number; source: string | null };
+    // fresh claude after a self-heal → transcript restarted; rebuild from the top
+    if (rSource !== null && d.source !== rSource) {
+      rCursor = 0;
+      rSource = d.source;
+      reader.replaceChildren();
+      return;
+    }
+    rSource = d.source;
+    if (d.entries.length) {
+      reader.querySelector(".rempty")?.remove();
+      const atTail = reader.scrollHeight - reader.scrollTop - reader.clientHeight < 80;
+      for (const e of d.entries) rAppend(e);
+      if (atTail || rCursor === 0) reader.scrollTop = reader.scrollHeight;
+    } else if (!reader.childElementCount) {
+      const emp = document.createElement("div");
+      emp.className = "rempty";
+      emp.textContent = "no conversation yet — the session hasn't been prompted";
+      reader.appendChild(emp);
+    }
+    rCursor = d.total;
+  } catch {
+    // transient — next tick retries
+  } finally {
+    rBusy = false;
+  }
+}
+
 // --- stream ---
 function connect(info: Info) {
   gen++;
@@ -533,7 +609,11 @@ function start(info: Info) {
   title.textContent = name;
   $("tname").textContent = name;
   document.title = `${name} — Claude Fleet`;
-  for (const id of ["reload", "fminus", "fplus", "sidebtn"]) $(id).style.display = "block";
+  for (const id of ["viewtog", "reload", "fminus", "fplus", "sidebtn"]) $(id).style.display = "block";
+  // phones open on the conversation — the raster is the fallback view; desktop keeps
+  // the terminal front and center
+  setView(NARROW());
+  setInterval(() => void pollReader(), 3000);
   modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
   modeEl.className = info.mode;
   modeEl.style.display = "inline-block";

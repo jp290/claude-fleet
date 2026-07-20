@@ -1023,6 +1023,30 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   return { n, role: d.type, ts, blocks };
 }
 
+// the conversation view's data source, shared by the owner chat view and the guest
+// reader — `after` = line count the client has already consumed, so entry numbering
+// must be absolute line numbers
+async function transcriptPayload(s: Slot, afterRaw: number):
+  Promise<{ entries: TEntry[]; total: number; source: string | null }> {
+  const file = transcriptFile(s);
+  if (!file) return { entries: [], total: 0, source: null };
+  const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
+  const after = Math.max(0, afterRaw | 0);
+  const entries: TEntry[] = [];
+  for (let i = after; i < lines.length; i++) {
+    try {
+      const e = viewEntry(JSON.parse(lines[i]), i + 1);
+      if (e) entries.push(e);
+    } catch {
+      // only the FINAL line may be a partial mid-append (cap total so the next poll
+      // re-reads it once complete) — an unparseable line mid-file is just skipped,
+      // otherwise it would pin total forever and loop the client on the same range
+      if (i === lines.length - 1) return { entries, total: i, source: file.split("/").pop() ?? null };
+    }
+  }
+  return { entries, total: lines.length, source: file.split("/").pop() ?? null };
+}
+
 // --- terminal-prompt harvester: prompts typed DIRECTLY into the pty never pass /send,
 // so history + prompt log would miss them. The transcript JSONL is the ground truth of
 // what claude actually received — harvest new user text entries from there instead of
@@ -1794,7 +1818,7 @@ Bun.serve<WSData>({
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
-        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
+        || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });
     }
 
@@ -1818,7 +1842,7 @@ Bun.serve<WSData>({
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments|brief|summary)$/.exec(url.pathname);
+    const shareApi = /^\/s\/([a-z0-9]+)\/(auth|info|send|diff|comments|brief|summary|transcript)$/.exec(url.pathname);
     if (shareApi) {
       const sh = shareBy(shareApi[1]);
       if (!sh) return json({ error: "unknown or revoked share" }, 404);
@@ -1877,6 +1901,14 @@ Bun.serve<WSData>({
         const p = await briefPayload(s);
         if (!p) return json({ error: "not a git repository" }, 400);
         return json(p);
+      }
+      // the guest reader: the conversation as text, same payload the owner chat view
+      // uses. A phone can't render a 233-col pty raster readably — but it CAN render
+      // the transcript, which reflows natively. Content-wise this shows nothing the
+      // live terminal doesn't already stream to the same guest.
+      if (shareApi[2] === "transcript") {
+        if (!s.cwd) return json({ error: "session gone" }, 404);
+        return json(await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0)));
       }
       if (shareApi[2] === "summary" && (req.method === "GET" || req.method === "POST")) {
         // guests get the same ✨ summary as the owner sideboard — POST is safe to expose:
@@ -2026,25 +2058,7 @@ Bun.serve<WSData>({
     if (req.method === "GET" && trMatch) {
       const s = slotFrom(trMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const file = transcriptFile(s);
-      if (!file) return json({ entries: [], total: 0, source: null });
-      const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
-      // `after` = line count the client has already consumed — filtering happens on OUR
-      // side of that cut, so entry numbering must be absolute line numbers
-      const after = Math.max(0, Number(url.searchParams.get("after") ?? 0) | 0);
-      const entries: TEntry[] = [];
-      for (let i = after; i < lines.length; i++) {
-        try {
-          const e = viewEntry(JSON.parse(lines[i]), i + 1);
-          if (e) entries.push(e);
-        } catch {
-          // only the FINAL line may be a partial mid-append (cap total so the next poll
-          // re-reads it once complete) — an unparseable line mid-file is just skipped,
-          // otherwise it would pin total forever and loop the client on the same range
-          if (i === lines.length - 1) return json({ entries, total: i, source: file.split("/").pop() });
-        }
-      }
-      return json({ entries, total: lines.length, source: file.split("/").pop() });
+      return json(await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0)));
     }
     const histMatch = /^\/api\/slots\/(\d+)\/history$/.exec(url.pathname);
     if (req.method === "GET" && histMatch) {

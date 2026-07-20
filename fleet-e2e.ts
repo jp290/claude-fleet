@@ -324,6 +324,14 @@ const shInfo = await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: s
 const shInfoJ = (await shInfo.json()) as { mode: string; cols: number };
 check("share info with cookie", shInfo.ok && shInfoJ.mode === "view", JSON.stringify(shInfoJ));
 check("share info without cookie 401", (await fetch(BASE + `/s/${shView.id}/info`)).status === 401);
+// guest reader: transcript is share-gated like every other share resource
+check("share transcript without cookie 401", (await fetch(BASE + `/s/${shView.id}/transcript`)).status === 401);
+{
+  const tr = await fetch(BASE + `/s/${shView.id}/transcript?after=0`, { headers: { cookie: shCookie } });
+  const trJ = (await tr.json()) as { entries?: unknown[]; total?: number };
+  check("share transcript answers with entries+total for an authed guest",
+    tr.ok && Array.isArray(trJ.entries) && typeof trJ.total === "number", JSON.stringify(trJ).slice(0, 80));
+}
 check("share cookie is not an owner credential", (await fetch(BASE + "/api/sessions", { headers: { cookie: shCookie } })).status === 401);
 check("share send blocked in view mode", (await fetch(BASE + `/s/${shView.id}/send`, {
   method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },

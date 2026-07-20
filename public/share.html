@@ -53,6 +53,23 @@
   #stage { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
   #wrap { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
   #term { width: max-content; }
+  /* reader: the conversation as native text — the phone-first primary view. The pty
+     raster stays one toggle away as the fallback ("see exactly what the screen shows"). */
+  #reader { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 20px; display: none;
+    flex-direction: column; gap: 10px; }
+  body.reader #wrap { display: none; }
+  body.reader #jump { display: none !important; }
+  body.reader #reader { display: flex; }
+  .rmsg { max-width: 720px; border-radius: 10px; padding: 8px 12px; font-size: 13px;
+    line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .rmsg.user { align-self: flex-end; background: #1c2437; border: 1px solid #2c3a5e; color: #dbe4ff; }
+  .rmsg.assistant { align-self: flex-start; background: var(--raised); border: 1px solid var(--line); }
+  .rhead { font-size: 10px; color: var(--faint); margin-bottom: 3px; letter-spacing: 0.05em; }
+  .rstep { align-self: flex-start; font-size: 11px; color: var(--faint); padding: 0 4px; }
+  .rempty { color: var(--faint); font-size: 12px; padding: 30px 10px; text-align: center; }
+  #viewtog { flex: none; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--raised); color: var(--dim); font-size: 11px; display: none; }
+  #viewtog:hover { color: var(--text); }
   #jump { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: none;
     padding: 7px 12px; border-radius: 18px; border: 1px solid var(--line);
     background: #1d1d22ee; color: var(--accent); font-size: 11px; }
@@ -228,6 +245,7 @@
   <span id="title">Shared session</span>
   <span id="mode"></span>
   <span id="hsp"></span>
+  <button id="viewtog" title="switch between conversation and terminal view">⌨ terminal</button>
   <button id="reload" class="hbtn" title="reload / fix formatting">⟳</button>
   <button id="fminus" class="hbtn" title="smaller text">A−</button>
   <button id="fplus" class="hbtn" title="larger text">A+</button>
@@ -237,6 +255,7 @@
 <div id="main">
   <div id="stage">
     <div id="wrap"><div id="term"></div></div>
+    <div id="reader"></div>
     <div id="notice"></div>
     <button id="jump">⤓ latest</button>
     <div id="bar">

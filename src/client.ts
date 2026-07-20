@@ -528,8 +528,16 @@ interface SummaryInfo { summary?: string; openThreads?: string[]; verification?:
 const sumCache = new Map<number, SummaryInfo>();
 const sumBusy = new Set<number>();
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
-interface WtRow { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number }
+interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
+  shortstat: string | null; empty: boolean }
+interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number }
 interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
+// 🧹 agentic lane sweep — advisory verdicts, cached per repo. "do it" still goes through
+// the real, git-verified remove/discard endpoints — a bad verdict can only propose, never force.
+interface SweepVerdict { path: string; verdict: "safe-to-remove" | "stale" | "active-work";
+  reason: string; suggestedAction: "remove" | "discard" | "none" }
+const sweepCache = new Map<string, SweepVerdict[]>(); // keyed by repo
+const sweepBusy = new Set<string>();
 interface MergeState { running: boolean;
   last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
     branch: string; at: number; conflicted?: string[] } | null }
@@ -549,6 +557,60 @@ const DISCARD_READ_MS = 4000;
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && discardArm) { discardArm = null; void renderBoard(); }
 });
+
+// shared risk-preview panel: shows the ACTUAL file names / commit subjects a destructive
+// action is about to touch, before the click — not only after a refusal (the server always
+// re-verifies via worktreeRisk regardless of what this shows; this is purely informational).
+function showRiskPreview(title: string, risk: WtRisk, confirmLabel: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = el("div", "overlay riskoverlay");
+    overlay.style.display = "flex";
+    const panel = el("div", "panel riskpanel");
+    panel.appendChild(el("h2", "", title));
+    if (risk.empty) {
+      panel.appendChild(el("div", "riskempty", "safe — no uncommitted changes, no unpushed commits"));
+    } else {
+      if (risk.dirtyFiles.length) {
+        panel.appendChild(el("div", "riskhead",
+          `${risk.dirtyFiles.length} uncommitted file${risk.dirtyFiles.length === 1 ? "" : "s"}`));
+        const list = el("div", "risklist");
+        for (const f of risk.dirtyFiles.slice(0, 40)) list.appendChild(el("div", "riskfile", f));
+        if (risk.dirtyFiles.length > 40) list.appendChild(el("div", "riskmore", `… ${risk.dirtyFiles.length - 40} more`));
+        panel.appendChild(list);
+      }
+      if (risk.unpushedCommits.length) {
+        panel.appendChild(el("div", "riskhead",
+          `${risk.unpushedCommits.length} unpushed commit${risk.unpushedCommits.length === 1 ? "" : "s"}`));
+        const list = el("div", "risklist");
+        for (const c of risk.unpushedCommits.slice(0, 40)) list.appendChild(el("div", "riskcommit", `${c.hash} ${c.subject}`));
+        panel.appendChild(list);
+      }
+    }
+    const btns = el("div", "riskbtns");
+    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
+    const go = el("button", "riskbtn danger", confirmLabel) as HTMLButtonElement;
+    const finish = (ok: boolean) => { overlay.remove(); resolve(ok); };
+    cancel.onclick = () => finish(false);
+    go.onclick = () => finish(true);
+    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
+    btns.append(cancel, go);
+    panel.appendChild(btns);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  });
+}
+// fail CLOSED: if the risk fetch itself fails, never claim "empty/safe" — show it as a
+// single unverifiable "file" so the preview still reads as "don't assume, go check"
+const UNKNOWN_RISK: WtRisk = { dirtyFiles: ["(could not verify — check manually before proceeding)"], unpushedCommits: [], shortstat: null, empty: false };
+async function fetchSlotRisk(slotId: number): Promise<WtRisk> {
+  try {
+    const r = await api(`/api/slots/${slotId}/risk`);
+    if (!r.ok) return UNKNOWN_RISK;
+    return (await r.json()) as WtRisk;
+  } catch {
+    return UNKNOWN_RISK;
+  }
+}
 
 async function doMerge(slot: number) {
   if (mergePending.has(slot)) return;
@@ -794,7 +856,29 @@ async function renderBoard() {
       // orphans (killed slot, worktree still on disk) with reattach/remove right there
       if (wts) {
         const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", `lanes — ${baseName(wts.repo)} · main: ${wts.main}`));
+        const hd = el("div", "bwthead");
+        hd.appendChild(el("h3", "", `lanes — ${baseName(wts.repo)} · main: ${wts.main}`));
+        if (wts.worktrees.length) {
+          const sw = el("button", "bwtsweep", sweepBusy.has(wts.repo) ? "… sweeping" : "🧹 sweep") as HTMLButtonElement;
+          sw.title = "ask an agent which lanes look safe to clean up — advisory only, review before acting";
+          sw.disabled = sweepBusy.has(wts.repo);
+          sw.onclick = async () => {
+            if (sweepBusy.has(wts.repo)) return;
+            sweepBusy.add(wts.repo);
+            void renderBoard();
+            try {
+              const r = await post(`/api/slots/${slot}/sweep`, {});
+              const j = (await r.json().catch(() => ({}))) as { verdicts?: SweepVerdict[]; error?: string };
+              if (r.ok && j.verdicts) sweepCache.set(wts.repo, j.verdicts);
+              else alert(j.error ?? "sweep failed");
+            } finally {
+              sweepBusy.delete(wts.repo);
+              void renderBoard();
+            }
+          };
+          hd.appendChild(sw);
+        }
+        sec.appendChild(hd);
         if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "no open lanes in this repo"));
         for (const w of wts.worktrees) {
           const row = el("div", "bwt");
@@ -843,7 +927,8 @@ async function renderBoard() {
             const rmv = el("button", "bwtact del", "✕") as HTMLButtonElement;
             rmv.title = "remove this worktree — refused if it has uncommitted or unpushed/unmerged work";
             rmv.onclick = async () => {
-              if (!confirm(`Remove worktree ${w.branch}? Refused if it has uncommitted or unpushed work.`)) return;
+              const ok = await showRiskPreview(`Remove worktree ${w.branch}?`, w, "remove");
+              if (!ok) return;
               const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
               if (!r.ok) {
                 const j = (await r.json().catch(() => ({}))) as { error?: string };
@@ -858,6 +943,36 @@ async function renderBoard() {
             row.appendChild(disc);
           }
           sec.appendChild(row);
+          // 🧹 sweep verdict, if one was fetched for this repo — purely advisory: "do it"
+          // still runs through the real remove/discard endpoints, which re-verify from git
+          const verdict = sweepCache.get(wts.repo)?.find((v) => v.path === w.path);
+          if (verdict) {
+            const vrow = el("div", `sweepv ${verdict.verdict}`);
+            vrow.appendChild(el("span", "sweepvbadge", verdict.verdict));
+            vrow.appendChild(el("span", "sweepvreason", verdict.reason));
+            if (verdict.suggestedAction !== "none") {
+              const doit = el("button", "bwtact", `do: ${verdict.suggestedAction}`) as HTMLButtonElement;
+              doit.title = "runs the real, git-verified endpoint — a wrong verdict can only propose, never force this";
+              doit.onclick = async () => {
+                if (verdict.suggestedAction === "remove") {
+                  const ok = await showRiskPreview(`Remove worktree ${w.branch}? (agent suggested)`, w, "remove");
+                  if (!ok) return;
+                  const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
+                  if (!r.ok) {
+                    const j = (await r.json().catch(() => ({}))) as { error?: string };
+                    alert(j.error ?? "remove failed");
+                  }
+                  void renderBoard();
+                } else if (verdict.suggestedAction === "discard") {
+                  // reuse the existing read-window discard flow — the real gate stays exactly there
+                  discardArm = { path: w.path, at: Date.now() };
+                  void renderBoard();
+                }
+              };
+              vrow.appendChild(doit);
+            }
+            sec.appendChild(vrow);
+          }
           // the confirm panel is not a dialog: the consequences ARE the wait screen. The
           // destructive button unlocks only after the read window, counted from the first
           // click and re-derived on every 3s board re-render, so polling can't reset or
@@ -868,12 +983,22 @@ async function renderBoard() {
             const arm = discardArm;
             const box = el("div", "bdiscard");
             box.appendChild(el("div", "bdtitle", `discard ${w.branch}?`));
-            box.appendChild(el("div", "bdline", w.dirty
-              ? `${w.dirty} uncommitted file${w.dirty === 1 ? "" : "s"} — DESTROYED, no undo`
-              : "working tree clean — nothing uncommitted to lose"));
-            box.appendChild(el("div", "bdline", w.ahead
-              ? `${w.ahead} unmerged commit${w.ahead === 1 ? "" : "s"} — branch deleted; the undo line appears after`
-              : `no commits beyond ${wts.main} — branch deleted`));
+            if (w.empty) {
+              box.appendChild(el("div", "riskempty", "safe — no uncommitted changes, no unpushed commits"));
+            } else {
+              if (w.dirtyFiles.length) {
+                box.appendChild(el("div", "bdline", `${w.dirtyFiles.length} uncommitted file${w.dirtyFiles.length === 1 ? "" : "s"} — DESTROYED, no undo:`));
+                for (const f of w.dirtyFiles.slice(0, 15)) box.appendChild(el("div", "riskfile", f));
+              } else {
+                box.appendChild(el("div", "bdline", "working tree clean — nothing uncommitted to lose"));
+              }
+              if (w.unpushedCommits.length) {
+                box.appendChild(el("div", "bdline", `${w.unpushedCommits.length} unmerged commit${w.unpushedCommits.length === 1 ? "" : "s"} — branch deleted; the undo line appears after:`));
+                for (const c of w.unpushedCommits.slice(0, 15)) box.appendChild(el("div", "riskcommit", `${c.hash} ${c.subject}`));
+              } else {
+                box.appendChild(el("div", "bdline", `no commits beyond ${wts.main} — branch deleted`));
+              }
+            }
             const cancel = el("button", "bwtact", "cancel") as HTMLButtonElement;
             cancel.onclick = () => { discardArm = null; void renderBoard(); };
             const go = el("button", "bwtact del", "") as HTMLButtonElement;
@@ -1539,7 +1664,9 @@ function renderSlots() {
         land.title = "land lane — remove the worktree (only if clean & pushed/merged)";
         land.onclick = async (e) => {
           e.stopPropagation();
-          if (!confirm(`Land lane ${s.worktree!.branch}? Removes the worktree. Refused if it has uncommitted or unpushed work.`)) return;
+          const risk = await fetchSlotRisk(s.id);
+          const ok = await showRiskPreview(`Land lane ${s.worktree!.branch}?`, risk, "land");
+          if (!ok) return;
           const res = await post(`/api/slots/${s.id}/land`, {});
           if (!res.ok) {
             const err = (await res.json().catch(() => ({}))) as { error?: string };
@@ -1555,8 +1682,16 @@ function renderSlots() {
       kill.title = "kill session";
       kill.onclick = async (e) => {
         e.stopPropagation();
-        const wtNote = s.worktree ? " The worktree is left on disk (use ⏏ to remove it)." : "";
-        if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.${wtNote}`)) return;
+        if (s.worktree) {
+          // a lane-holding slot never had real git-state context on kill before — fetch it,
+          // same risk preview as ⏏ land (kill leaves the worktree on disk, land removes it)
+          const risk = await fetchSlotRisk(s.id);
+          const ok = await showRiskPreview(
+            `Kill session ${s.id} (${baseName(s.cwd!)})? The worktree is left on disk (use ⏏ to remove it).`, risk, "kill");
+          if (!ok) return;
+        } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.`)) {
+          return;
+        }
         await post(`/api/slots/${s.id}/kill`, {});
         for (const p of panes) if (p.slot === s.id) p.assign(0);
         await refresh();

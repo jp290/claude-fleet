@@ -350,6 +350,9 @@
   .bstate { color: #aaa; line-height: 1.5; }
   .bstate .editing { color: #e0af68; } .bstate .ready { color: #9ece6a; }
   .bbranch { color: #7aa2f7; word-break: break-all; }
+  .bcopypath { margin-top: 5px; padding: 3px 9px; border-radius: 6px; border: 1px solid #333;
+    background: #262626; color: #888; font-size: 10px; font-family: inherit; cursor: pointer; }
+  .bcopypath:hover { color: #ccc; border-color: #3a3a44; }
   .brow { display: flex; gap: 7px; padding: 2px 0; color: #999; line-height: 1.45; }
   .brow .bhash { flex: none; color: #666; }
   .brow .bsub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -357,6 +360,16 @@
     cursor: pointer; border-radius: 4px; }
   .bfile:hover { background: #242424; color: #ddd; }
   .bfile .bfst { color: #e0af68; margin-right: 6px; }
+  /* concrete uncommitted work in the STATE section — status code chips like git status */
+  .bunc { margin-top: 5px; }
+  .buncf { display: flex; align-items: baseline; gap: 7px; padding: 1px 0; color: #bbb; line-height: 1.5;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; border-radius: 4px; }
+  .buncf:hover { background: #242424; color: #eee; }
+  .buncf .buncst { flex: none; width: 16px; text-align: center; font-size: 9.5px; font-weight: 700;
+    border-radius: 3px; padding: 0 3px; }
+  .buncf .buncst.mod { color: #e0af68; background: #2a2118; }    /* unstaged modify */
+  .buncf .buncst.staged { color: #9ece6a; background: #1a2416; } /* staged */
+  .buncf .buncst.new { color: #7dcfff; background: #16222b; }    /* untracked */
   .bdiffbtn { margin-top: 6px; padding: 4px 11px; border-radius: 7px; border: 1px solid #333;
     background: #262626; color: #7dcfff; font-size: 11px; font-family: inherit; cursor: pointer; }
   .bdiffbtn:hover { background: #1c2c37; border-color: #2c4a5e; }

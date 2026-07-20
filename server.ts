@@ -239,6 +239,16 @@ async function git(dir: string, ...args: string[]): Promise<{ out: string; err: 
   const code = await p.exited;
   return { out: out.trim(), err: err.trim(), code };
 }
+// git status --porcelain, columns PRESERVED. The trim in git() strips the leading space of
+// the first entry (an unstaged " M path" becomes "M path"), which silently corrupts the
+// status-code column and truncates the first filename. Every column-accurate status parse
+// (uncommitted-files display, diff status list) must read through here, never git().out.
+async function statusLines(cwd: string): Promise<{ code: number; lines: string[] }> {
+  const p = Bun.spawn(["git", "-C", cwd, "status", "--porcelain"], { stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(p.stdout).text();
+  const code = await p.exited;
+  return { code, lines: out.split("\n").filter((l) => l.length > 0) };
+}
 
 // --- session scoping: every brief/diff section describes THE SESSION's lifetime, not the
 // repo's whole history (git log -15 was identical for every session in the same repo, and
@@ -283,18 +293,32 @@ async function slotBase(s: Slot): Promise<string | null> {
   const start = sessionStart(s);
   return start ? await sessionBase(s.cwd!, start) : null;
 }
-// recent commits, session-scoped where the transcript gives a start anchor — shared by
-// the owner brief and the guest changes view
-async function sessionCommits(s: Slot): Promise<{ hash: string; ts: number; subject: string }[]> {
+interface CommitRow { hash: string; ts: number; subject: string }
+function parseCommitLog(out: string): CommitRow[] {
+  return out.split("\n").filter(Boolean).map((l) => {
+    const [hash, ct, ...rest] = l.split("\t");
+    return { hash, ts: Number(ct) * 1000, subject: rest.join("\t") };
+  });
+}
+// recent commits, session-scoped where the transcript gives a start anchor — used for
+// NON-lane sessions, which have no branch boundary. (Lanes use laneCommits: a worktree
+// lane has an exact base branch, so its own commits are base..HEAD, never a time window.)
+async function sessionCommits(s: Slot): Promise<CommitRow[]> {
   const start = sessionStart(s);
   const lg = start
     ? await git(s.cwd!, "log", "--no-color", `--since=${new Date(start).toISOString()}`, "--format=%h%x09%ct%x09%s", "-15")
     : await git(s.cwd!, "log", "--no-color", "--format=%h%x09%ct%x09%s", "-15");
-  if (lg.code !== 0) return [];
-  return lg.out.split("\n").filter(Boolean).map((l) => {
-    const [hash, ct, ...rest] = l.split("\t");
-    return { hash, ts: Number(ct) * 1000, subject: rest.join("\t") };
-  });
+  return lg.code === 0 ? parseCommitLog(lg.out) : [];
+}
+// the ref a lane sits on top of: the primary checkout's current branch (e.g. "main"),
+// resolved as a NAME so it tracks the tip even after the owner commits on main; falls back
+// to the primary's HEAD sha if it is detached. Only meaningful for worktree lanes.
+async function laneBaseRef(s: Slot): Promise<string | null> {
+  if (!s.worktree) return null;
+  const br = await git(s.worktree.repo, "rev-parse", "--abbrev-ref", "HEAD");
+  if (br.code === 0 && br.out && br.out !== "HEAD") return br.out;
+  const sha = await git(s.worktree.repo, "rev-parse", "HEAD");
+  return sha.code === 0 && sha.out ? sha.out : null;
 }
 // session-scoped changed-files list, porcelain-shaped ("M  path") so the client renders
 // both scopes the same way; untracked files ride along from live status
@@ -314,16 +338,16 @@ function sessionFiles(nameStatusOut: string, statusOut: string): string[] {
 const DIFF_CAP = 400_000;
 async function diffPayload(cwd: string, base: string | null): Promise<{ branch: string | null; status: string[];
   diff: string; truncated: boolean; sessionScoped: boolean } | null> {
-  const st = await git(cwd, "status", "--porcelain");
+  const st = await statusLines(cwd); // column-preserving — see statusLines
   if (st.code !== 0) return null; // not a git repository
   const d = await git(cwd, "diff", base ?? "HEAD", "--no-color");
   const diff = d.code === 0 ? d.out : ""; // e.g. repo with no commits yet
   let status: string[];
   if (base) {
     const ns = await git(cwd, "diff", "--name-status", "--no-color", base);
-    status = sessionFiles(ns.code === 0 ? ns.out : "", st.out);
+    status = sessionFiles(ns.code === 0 ? ns.out : "", st.lines.join("\n"));
   } else {
-    status = st.out.split("\n").filter(Boolean).slice(0, 500);
+    status = st.lines.slice(0, 500);
   }
   // read the branch fresh, not from the 10s badge cache — a just-created lane isn't cached yet
   const br = await git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
@@ -339,29 +363,63 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
 // the deterministic session overview — recent commits, changed files, uncommitted
 // summary — shared by the owner sideboard and the guest info tab. Fresh git output per
 // request (never cached) so neither view can drift from reality. null = not a git repo.
-async function briefPayload(s: Slot): Promise<{ branch: string | null; sessionStart: number | null;
-  uncommitted: number; files: string[]; shortstat: string;
-  commits: { hash: string; ts: number; subject: string }[] } | null> {
-  const st = await git(s.cwd!, "status", "--porcelain");
+interface BriefPayload { branch: string | null; sessionStart: number | null;
+  uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
+  commits: CommitRow[]; laneScoped: boolean; laneBase: string | null;
+  ahead: number; behind: number }
+async function briefPayload(s: Slot): Promise<BriefPayload | null> {
+  const st = await statusLines(s.cwd!); // column-preserving — see statusLines
   if (st.code !== 0) return null;
   const br = await git(s.cwd!, "rev-parse", "--abbrev-ref", "HEAD");
+  // the concrete uncommitted work in this worktree — staged/unstaged/untracked, porcelain
+  // codes intact so the client shows exactly what git sees. Shown for lanes and non-lanes.
+  const uncommittedFiles = st.lines.slice(0, 200);
+  const branch = br.code === 0 ? br.out : null;
+
+  // a worktree lane has a precise boundary — its base branch — so its commits and committed
+  // footprint are base..HEAD (what the lane ADDS), never the base branch's own history.
+  const laneBase = await laneBaseRef(s);
+  if (s.worktree && laneBase) {
+    // commits = two-dot log (reachable from HEAD, not base = the lane's own commits).
+    // footprint = THREE-dot diff (base...HEAD, from the merge-base) so a lane that is
+    // behind main shows only ITS OWN file changes, not main's divergent commits inverted.
+    const lg = await git(s.cwd!, "log", "--no-color", `${laneBase}..HEAD`, "--format=%h%x09%ct%x09%s", "-50");
+    const ns = await git(s.cwd!, "diff", "--name-status", "--no-color", `${laneBase}...HEAD`);
+    const sh = await git(s.cwd!, "diff", `${laneBase}...HEAD`, "--shortstat", "--no-color");
+    // ahead/behind vs the base branch, NOT vs an upstream — a lane usually has no upstream,
+    // so the sessions-poll gitInfo (branch.ab, upstream-tracking) reports 0/0 for it
+    const ab = await git(s.cwd!, "rev-list", "--left-right", "--count", `${laneBase}...HEAD`);
+    const abm = /^(\d+)\s+(\d+)$/.exec(ab.out); // left = base-only (behind), right = HEAD-only (ahead)
+    return {
+      branch, sessionStart: sessionStart(s),
+      uncommitted: uncommittedFiles.length, uncommittedFiles,
+      files: sessionFiles(ns.code === 0 ? ns.out : "", "").slice(0, 200), // committed footprint, no untracked
+      shortstat: sh.code === 0 ? sh.out : "",
+      commits: lg.code === 0 ? parseCommitLog(lg.out) : [],
+      laneScoped: true, laneBase,
+      ahead: abm ? Number(abm[2]) : 0, behind: abm ? Number(abm[1]) : 0,
+    };
+  }
+
+  // non-lane session: no branch boundary → keep the transcript-time-scoped heuristic
   const start = sessionStart(s);
   const base = start ? await sessionBase(s.cwd!, start) : null;
   const sh = await git(s.cwd!, "diff", base ?? "HEAD", "--shortstat", "--no-color");
   let files: string[];
   if (base) {
     const ns = await git(s.cwd!, "diff", "--name-status", "--no-color", base);
-    files = sessionFiles(ns.code === 0 ? ns.out : "", st.out).slice(0, 200);
+    files = sessionFiles(ns.code === 0 ? ns.out : "", st.lines.join("\n")).slice(0, 200);
   } else {
-    files = st.out.split("\n").filter(Boolean).slice(0, 200);
+    files = uncommittedFiles.slice(0, 200);
   }
   return {
-    branch: br.code === 0 ? br.out : null,
-    sessionStart: start,
-    uncommitted: st.out.split("\n").filter(Boolean).length,
+    branch, sessionStart: start,
+    uncommitted: uncommittedFiles.length, uncommittedFiles,
     files,
     shortstat: sh.code === 0 ? sh.out : "",
     commits: await sessionCommits(s),
+    laneScoped: false, laneBase: null,
+    ahead: 0, behind: 0, // non-lane: the client uses the upstream-based gitInfo instead
   };
 }
 
@@ -2208,9 +2266,11 @@ Bun.serve<WSData>({
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
       const mainBr = await git(s.worktree.repo, "rev-parse", "--abbrev-ref", "HEAD");
       if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
-      const d = await git(s.cwd, "diff", `${mainBr.out}..HEAD`, "--no-color");
+      // three-dot (from the merge-base): the lane's OWN changes, so a lane behind main
+      // doesn't show main's divergent commits inverted
+      const d = await git(s.cwd, "diff", `${mainBr.out}...HEAD`, "--no-color");
       const diff = d.code === 0 ? d.out : "";
-      const ns = await git(s.cwd, "diff", `${mainBr.out}..HEAD`, "--name-only");
+      const ns = await git(s.cwd, "diff", `${mainBr.out}...HEAD`, "--name-only");
       return json({
         main: mainBr.out, branch: s.worktree.branch,
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],

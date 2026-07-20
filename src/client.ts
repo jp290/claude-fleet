@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
+import qrcode from "qrcode-generator";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -1676,10 +1677,12 @@ const sharedlg = $("sharedlg"), sharepanel = $("sharepanel");
 let dlgSlot = 0;
 let dlgMode: "view" | "interact" = "view";
 let dlgKey = ""; // last-rendered share state — refresh() only re-renders the open dialog on change
+let dlgQr = false; // QR block open? module-level so refresh()'s re-render keeps it visible
 
 function closeShareDlg() {
   sharedlg.style.display = "none";
   dlgSlot = 0;
+  dlgQr = false; // next share starts collapsed — a QR is per-link, never sticky across slots
 }
 sharedlg.addEventListener("click", (e) => {
   if (e.target === sharedlg) closeShareDlg();
@@ -1863,7 +1866,25 @@ function renderShareDlg() {
     status.appendChild(live);
     status.appendChild(el("span", "shrsince", `shared ${fmtSince(sh.created)}`));
     sharepanel.appendChild(status);
-    sharepanel.appendChild(copyLine("link", `${shareBase || location.origin}/s/${sh.id}`));
+    const shareUrl = `${shareBase || location.origin}/s/${sh.id}`;
+    const linkRow = copyLine("link", shareUrl);
+    // QR encodes the LINK only — password travels separately by design (see the hint below)
+    const qrBtn = el("button", `shrbtn${dlgQr ? " active" : ""}`, "QR") as HTMLButtonElement;
+    qrBtn.onclick = () => { dlgQr = !dlgQr; renderShareDlg(); };
+    linkRow.appendChild(qrBtn);
+    sharepanel.appendChild(linkRow);
+    if (dlgQr) {
+      const box = el("div", "shrqr");
+      const qr = qrcode(0, "M"); // type 0 = auto-size to the payload
+      qr.addData(shareUrl);
+      qr.make();
+      const img = el("img", "") as HTMLImageElement;
+      img.src = qr.createDataURL(6, 3); // self-contained GIF data URI — no innerHTML, no network
+      img.alt = shareUrl;
+      box.appendChild(img);
+      box.appendChild(el("div", "shrqrhint", "scan to open the share link — password still needed"));
+      sharepanel.appendChild(box);
+    }
     sharepanel.appendChild(copyLine("password", sh.password));
     // live mode switch: keeps link+password, kicks connected guests into a reload so
     // their UI matches; interact→view also cuts typing off server-side immediately

@@ -793,6 +793,85 @@ if (REPO) {
   check("discard on an unknown path is refused",
     (await post("/api/worktrees/discard", { repo: REPO, path: ln4.cwd, branch: ln4.branch })).status === 400);
   await post(`/api/slots/${probe.slot}/land`, {}); // clean up the probe lane too
+
+  // --- Part A: worktreeRisk — real dirty files + unpushed commits, not just counts ---
+  interface WtRiskRow { path: string; branch: string; dirtyFiles: string[];
+    unpushedCommits: { hash: string; subject: string }[]; shortstat: string | null; empty: boolean }
+  const lnDirty = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnDirty.cwd}/sweepdirty.txt`, "wip\n");
+  spawnSync("git", ["-C", lnDirty.cwd, "add", "sweepdirty.txt"]);
+  spawnSync("git", ["-C", lnDirty.cwd, "commit", "-qm", "sweep test unpushed commit"]);
+  await Bun.write(`${lnDirty.cwd}/code.txt`, "root\nsweep-uncommitted\n");
+  const lnClean2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  const wmRisk = (await (await get(`/api/slots/${lnDirty.slot}/worktrees`)).json()) as { worktrees: WtRiskRow[] };
+  const rowDirty = wmRisk.worktrees.find((w) => w.branch === lnDirty.branch);
+  check("worktrees map reports real dirty FILE NAMES, not just a count",
+    !!rowDirty && rowDirty.dirtyFiles.some((f) => f.includes("code.txt")) && rowDirty.empty === false,
+    JSON.stringify(rowDirty));
+  check("worktrees map reports the real unpushed COMMIT SUBJECT",
+    !!rowDirty && rowDirty.unpushedCommits.some((c) => c.subject.includes("sweep test unpushed commit")),
+    JSON.stringify(rowDirty?.unpushedCommits));
+  const rowClean = wmRisk.worktrees.find((w) => w.branch === lnClean2.branch);
+  check("worktrees map reports empty:true for a clean, fresh lane (provably safe to drop)",
+    !!rowClean && rowClean.empty === true && rowClean.dirtyFiles.length === 0 && rowClean.unpushedCommits.length === 0,
+    JSON.stringify(rowClean));
+  // focused single-path risk endpoint (used by the client before ⏏ land / kill-with-lane)
+  const riskDirty = (await (await get(`/api/slots/${lnDirty.slot}/risk`)).json()) as WtRiskRow;
+  check("single-slot risk endpoint matches the worktrees-map row for the same lane",
+    riskDirty.empty === false && riskDirty.dirtyFiles.some((f) => f.includes("code.txt")), JSON.stringify(riskDirty));
+  check("risk endpoint rejects a non-lane slot", (await get("/api/slots/2/risk")).status === 400);
+
+  // --- Part B: 🧹 sweep agent (FLEET_SWEEP_CMD stand-in maps empty→safe-to-remove/remove,
+  // non-empty→active-work/none — deterministic, so the contract round-trips exactly) ---
+  interface SweepVerdictRow { path: string; verdict: string; reason: string; suggestedAction: string }
+  const swRes = await post(`/api/slots/${lnDirty.slot}/sweep`, {});
+  const swJ = (await swRes.json()) as { verdicts?: SweepVerdictRow[]; error?: string };
+  check("sweep endpoint round-trips the documented JSON contract",
+    swRes.ok && Array.isArray(swJ.verdicts) && swJ.verdicts.length >= 2, JSON.stringify(swJ));
+  const vDirty = swJ.verdicts?.find((v) => v.path === lnDirty.cwd);
+  const vClean = swJ.verdicts?.find((v) => v.path === lnClean2.cwd);
+  check("sweep verdict for the dirty+unpushed lane is active-work/none",
+    vDirty?.verdict === "active-work" && vDirty?.suggestedAction === "none", JSON.stringify(vDirty));
+  check("sweep verdict for the clean empty lane is safe-to-remove/remove",
+    vClean?.verdict === "safe-to-remove" && vClean?.suggestedAction === "remove", JSON.stringify(vClean));
+  const swGet = await get(`/api/slots/${lnDirty.slot}/sweep`);
+  const swGetJ = (await swGet.json()) as { verdicts?: unknown; cached?: boolean };
+  check("sweep GET serves the cache without re-spawning the agent", swGet.ok && swGetJ.cached === true, JSON.stringify(swGetJ));
+  await post(`/api/slots/${lnDirty.slot}/kill`, {});
+  await post(`/api/slots/${lnClean2.slot}/kill`, {});
+
+  // --- Part C: scoped self-scheduling token (FLEET_SELF_TOKEN / FLEET_SELF_SLOT) ---
+  const lnTok = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await tmuxOut("send-keys", "-t", `s${lnTok.slot}`, `printf 'SELFTOK=[%s] SELFSLOT=[%s]\\n' "$FLEET_SELF_TOKEN" "$FLEET_SELF_SLOT"`, "Enter");
+  await Bun.sleep(600);
+  const capTok = await tmuxOut("capture-pane", "-t", `s${lnTok.slot}`, "-p");
+  const tokMatch = /SELFTOK=\[([0-9a-f]{32})\] SELFSLOT=\[(\d+)\]/.exec(capTok.out);
+  check("FLEET_SELF_TOKEN + FLEET_SELF_SLOT present in a lane slot's spawn env",
+    !!tokMatch && Number(tokMatch[2]) === lnTok.slot, capTok.out.slice(-200));
+  const selfTok = tokMatch?.[1] ?? "";
+  await tmuxOut("send-keys", "-t", "s2", `printf 'SELFTOK=[%s]\\n' "$FLEET_SELF_TOKEN"`, "Enter");
+  await Bun.sleep(600);
+  const capTok2 = await tmuxOut("capture-pane", "-t", "s2", "-p");
+  check("FLEET_SELF_TOKEN absent for a non-lane slot", capTok2.out.includes("SELFTOK=[]"), capTok2.out.slice(-200));
+
+  const selfAuto = (opts: { token?: string; body?: unknown }) => fetch(BASE + "/api/self/autos", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(opts.token !== undefined ? { "x-fleet-self-token": opts.token } : {}) },
+    body: JSON.stringify(opts.body ?? { text: "x", inSec: 60 }),
+  });
+  const okRes = await selfAuto({ token: selfTok, body: { text: "self-scheduled check-in", inSec: 3600, slot: 2 } });
+  const okJ = (await okRes.json()) as { ok?: boolean; auto?: { id: string; slot: number } };
+  check("POST /api/self/autos succeeds with a valid selfToken", okRes.ok && !!okJ.auto, JSON.stringify(okJ));
+  check("a spoofed `slot` field in the body is ignored — the auto lands on the token's OWN slot",
+    okJ.auto?.slot === lnTok.slot, JSON.stringify(okJ.auto));
+  const ownerOnSelf = await selfAuto({ token: TOKEN });
+  check("the owner token does not substitute for a selfToken on this route", ownerOnSelf.status === 401);
+  const wrongSelf = await selfAuto({ token: "0".repeat(32) });
+  check("an unknown selfToken is rejected", wrongSelf.status === 401);
+  const noSelf = await selfAuto({});
+  check("a missing selfToken header is rejected", noSelf.status === 401);
+  if (okJ.auto) check("delete self-scheduled auto (cleanup)", (await post(`/api/autos/${okJ.auto.id}/delete`, {})).ok);
+  await post(`/api/slots/${lnTok.slot}/kill`, {});
 }
 
 // --- task queue (Phase D). Owner CRUD + dispatch availability ---

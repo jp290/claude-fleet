@@ -1302,7 +1302,11 @@ const MERGE_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_MERGE_TIMEOUT
 const MERGE_TOOLS = "--permission-mode dontAsk --allowedTools "
   + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" '
   + '"Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" Read Grep Glob';
-interface MergeLast { status: "merged" | "blocked" | "error"; detail: string; landed: boolean; branch: string; at: number }
+// "resolved" = the agent had to make semantic conflict choices; the rebase is git-verified
+// but deliberately NOT landed — it waits for the owner to review the diff and confirm.
+// A clean (script) rebase involves no judgment and still goes straight to "merged".
+interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
+  detail: string; landed: boolean; branch: string; at: number; conflicted?: string[] }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -1398,10 +1402,19 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       if (st.code !== 0 || st.out || anc.code !== 0) {
         res = { status: "error", landed: false, branch, at: Date.now(),
           detail: `agent ${r.status === "unparseable" ? "answered off-contract" : "reported rebased"}, but the lane is ${st.out ? "not clean" : `not rebased onto ${main}`} — lane kept. ${r.detail}`.slice(0, 600) };
+      } else if (!pre.clean) {
+        // CONFLICT path: the agent made semantic choices resolving conflicts. The rebase is
+        // git-verified, but a human hasn't seen those choices — so we STOP here (no ff-merge,
+        // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
+        // agent left it, rebased onto main; the owner reviews the diff and confirms the land.
+        res = { status: "resolved", landed: false, branch, at: Date.now(),
+          conflicted: pre.conflicted,
+          detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"}; review the diff, then land.`.slice(0, 600) };
       } else {
-        // the state-changing step on the primary checkout is the SERVER's, never the
-        // agent's: a plain ff-merge, which git itself refuses unless it is a clean
-        // fast-forward over an untouched working tree
+        // CLEAN path: no judgment was involved (git rebased it with zero conflicts), so there
+        // is nothing to review — land it. The state-changing step on the primary checkout is
+        // the SERVER's, never the agent's: a plain ff-merge git refuses unless it is a clean
+        // fast-forward over an untouched working tree.
         const ff = await git(root, "merge", "--ff-only", branch);
         if (ff.code !== 0) {
           res = { status: "error", landed: false, branch, at: Date.now(),
@@ -1889,6 +1902,9 @@ Bun.serve<WSData>({
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
               comments: (shareComments[sh.id] ?? []).length,
             } : null,
+            // a conflict resolution waiting for the owner to review + land — cheap in-memory
+            // lookup (no git), so the tile can flag it without the board being open
+            mergePending: mergeLast.get(s.id)?.status === "resolved",
           };
         }),
       });
@@ -2133,6 +2149,7 @@ Bun.serve<WSData>({
       if (req.method === "GET")
         return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null });
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
+      const body = await readJson(req);
       mergeStart.add(s.id); // reserve before the first await — see mergeStart
       try {
         const { repo, branch } = s.worktree;
@@ -2150,6 +2167,23 @@ Bun.serve<WSData>({
         if (pst.code === 0 && pst.out.split("\n").some((l) => l && !l.startsWith("??")))
           return json({ status: "blocked",
             detail: `primary checkout (${repo}) has uncommitted tracked changes — commit or stash there first` });
+        // confirm-land: the owner reviewed an agent conflict resolution and is landing it.
+        // No agent, no trust in the stored verdict — the guarantee is purely git: main is an
+        // ancestor of the (clean) lane branch, so the branch is genuinely rebased on top and
+        // the ff-merge is safe. If main moved since the resolution the ancestry fails and we
+        // send them back to re-run ⏫ (which re-rebases against the new main).
+        if (body?.confirm === true) {
+          const anc = await git(repo, "merge-base", "--is-ancestor", mainBr.out, branch);
+          if (anc.code !== 0) return json({ status: "blocked",
+            detail: `${mainBr.out} moved since the resolution — the lane is no longer rebased onto it. Re-run ⏫ merge.` });
+          const ff = await git(repo, "merge", "--ff-only", branch);
+          if (ff.code !== 0) return json({ status: "error",
+            detail: `fast-forwarding ${mainBr.out} failed: ${(ff.err || ff.out).slice(0, 300)} — lane kept` }, 409);
+          const land = await landLane(s);
+          if ("error" in land) return json({ error: land.error }, land.code);
+          mergeLast.delete(s.id);
+          return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });
+        }
         // already merged (by hand, or an empty lane)? No agent needed — land directly.
         const done = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
         if (done.out.trim()) {
@@ -2165,6 +2199,24 @@ Bun.serve<WSData>({
       } finally {
         mergeStart.delete(s.id);
       }
+    }
+    // the resolved lane's diff for review: exactly what will fast-forward onto main
+    // (main..HEAD), byte-capped like the other diff surfaces
+    const mgDiffMatch = /^\/api\/slots\/(\d+)\/merge-diff$/.exec(url.pathname);
+    if (req.method === "GET" && mgDiffMatch) {
+      const s = slotFrom(mgDiffMatch[1]);
+      if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+      const mainBr = await git(s.worktree.repo, "rev-parse", "--abbrev-ref", "HEAD");
+      if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
+      const d = await git(s.cwd, "diff", `${mainBr.out}..HEAD`, "--no-color");
+      const diff = d.code === 0 ? d.out : "";
+      const ns = await git(s.cwd, "diff", `${mainBr.out}..HEAD`, "--name-only");
+      return json({
+        main: mainBr.out, branch: s.worktree.branch,
+        files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
+        diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
+        truncated: diff.length > DIFF_CAP,
+      });
     }
     // session summary (the ✨ agent). GET = cache lookup only, never spawns.
     // POST = run the agent (single-flight per slot; concurrent clicks share one run).

@@ -608,8 +608,19 @@ if (REPO) {
   await setMergeMode("do");
   await post(`/api/slots/${lnSlot}/merge`, {});
   const vD = await waitMerge(lnSlot);
-  check("agent resolves the conflict → server ff-merges + lands, slot torn down", vD.gone, JSON.stringify(vD));
-  check("merged lane removed from disk", !exists(lnPath));
+  check("agent resolves the conflict → PAUSES for review (verified, NOT landed, lane kept)",
+    !vD.gone && vD.last?.status === "resolved" && exists(lnPath), JSON.stringify(vD.last));
+  const preLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+  check("resolved conflict has NOT reached main before the owner confirms",
+    !preLand.includes("merge work"), preLand.trim());
+  const md = (await (await get(`/api/slots/${lnSlot}/merge-diff`)).json()) as { files?: string[]; diff?: string };
+  check("merge-diff shows exactly what will land (main..HEAD)",
+    (md.files ?? []).includes("code.txt") && typeof md.diff === "string", JSON.stringify(md.files));
+  const conf = await post(`/api/slots/${lnSlot}/merge`, { confirm: true });
+  const confJ = (await conf.json()) as { status?: string; landed?: boolean };
+  check("owner confirm → server ff-merges the reviewed resolution + tears down the slot",
+    conf.ok && confJ.status === "merged" && confJ.landed === true, JSON.stringify(confJ));
+  check("confirmed lane removed from disk", !exists(lnPath));
   const mainLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
   check("main received the lane's commit on top of the diverged mainline",
     mainLog.includes("merge work") && mainLog.includes("mainline work"), mainLog.trim());
@@ -644,9 +655,32 @@ if (REPO) {
   await setMergeMode("prose");
   await post(`/api/slots/${lnP.slot}/merge`, {});
   const vP = await waitMerge(lnP.slot);
-  check("off-contract agent answer over a git-verified rebase still merges + lands", vP.gone, JSON.stringify(vP));
+  check("off-contract agent answer over a git-verified rebase → resolved (paused for review)",
+    !vP.gone && vP.last?.status === "resolved", JSON.stringify(vP.last));
+  check("prose-resolved lane confirms + lands",
+    ((await (await post(`/api/slots/${lnP.slot}/merge`, { confirm: true })).json()) as { landed?: boolean }).landed === true);
   check("prose-merged lane's commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("prose lane work"));
+
+  // review gate is git-anchored, not verdict-trust: if main moves between the resolution and
+  // the owner's confirm, the ancestry check refuses the land and sends them back to re-run ⏫
+  const lnStale = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnStale.cwd}/code.txt`, "root\nstale-lane\n");
+  spawnSync("git", ["-C", lnStale.cwd, "commit", "-aqm", "stale lane work"]);
+  await Bun.write(`${REPO}/code.txt`, "root\nstale-main\n"); // conflict → agent runs → resolved
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "stale main work"]);
+  await setMergeMode("do");
+  await post(`/api/slots/${lnStale.slot}/merge`, {});
+  const vSt = await waitMerge(lnStale.slot);
+  check("stale-test lane resolved + paused", !vSt.gone && vSt.last?.status === "resolved", JSON.stringify(vSt.last));
+  await Bun.write(`${REPO}/moved.txt`, "moved\n"); // main moves AGAIN before confirm
+  spawnSync("git", ["-C", REPO, "add", "moved.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "main moved after resolution"]);
+  const staleJ = (await (await post(`/api/slots/${lnStale.slot}/merge`, { confirm: true })).json()) as
+    { status?: string; detail?: string };
+  check("confirm-land refuses when main moved since the resolution",
+    staleJ.status === "blocked" && (staleJ.detail ?? "").includes("moved"), JSON.stringify(staleJ));
+  await post(`/api/slots/${lnStale.slot}/kill`, {}); // free the slot for the orphan tests below
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed

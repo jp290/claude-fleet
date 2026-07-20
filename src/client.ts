@@ -550,26 +550,41 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && discardArm) { discardArm = null; void renderBoard(); }
 });
 
-async function doMerge(slot: number) {
+// unified land action — the row used to offer three glyphs for this (⏫ agent merge&land,
+// ⏏ plain land, ⏬ confirm-land-after-review) that were really the same intent seen from
+// three server paths. One click, one confirm: try the fast direct path first (lane already
+// clean & pushed/merged — /land removes the worktree with no agent involved), and only fall
+// through to the merge agent (/merge — rebases onto main, resolves conflicts if any, then
+// either lands automatically or pauses for review) when the fast path refuses. Server-side
+// semantics of both endpoints are untouched; this only decides which one the UI calls first.
+async function doLand(slot: number) {
   if (mergePending.has(slot)) return;
+  const s = fleet[slot - 1];
+  if (!s?.worktree) return;
+  if (!confirm(`Land lane ${s.worktree.branch}?\n\nAlready-merged lanes land immediately. Otherwise this `
+    + "rebases onto main and lands automatically — on conflicts, a background agent resolves them and "
+    + "pauses for your review before anything reaches main.")) return;
   mergePending.add(slot);
   try {
-    if (!confirm("Agent merge & land?\n\nA conflict-free lane is rebased and landed automatically. If the "
-      + "rebase hits conflicts, a background claude session resolves them and then PAUSES so you can review "
-      + "the resolved diff before it lands — nothing reaches main on the agent's word alone.")) return;
+    const direct = await post(`/api/slots/${slot}/land`, {});
+    if (direct.ok) {
+      for (const p of panes) if (p.slot === slot) p.assign(0);
+      await refresh();
+      return;
+    }
     const r = await post(`/api/slots/${slot}/merge`, {});
     const j = (await r.json().catch(() => ({}))) as
       { running?: boolean; status?: string; landed?: boolean; detail?: string; error?: string };
-    if (!r.ok) { alert(`Merge failed: ${j.error ?? r.status}`); return; }
+    if (!r.ok) { alert(`Land failed: ${j.error ?? r.status}`); return; }
     if (j.running) { mergeWatch.add(slot); return; }
     // immediate verdicts (dirty lane/primary, already-merged) come back synchronously
-    if (j.status === "blocked") alert(`Merge blocked: ${j.detail ?? ""}`);
+    if (j.status === "blocked") alert(`Land blocked: ${j.detail ?? ""}`);
     else if (j.status === "merged" && j.landed) {
       for (const p of panes) if (p.slot === slot) p.assign(0);
       await refresh();
     }
   } catch {
-    alert("Merge failed — network error");
+    alert("Land failed — network error");
   } finally {
     mergePending.delete(slot);
     void renderBoard();
@@ -707,6 +722,28 @@ async function renderBoard() {
       }
     }
     nodes.push(head);
+    // board = the workbench: share/export/rename used to be hover-only glyphs squeezed
+    // onto a 228px row (half of them unreachable on touch) — as labeled controls here
+    // they're always reachable and self-explanatory without a tooltip
+    {
+      const asec = el("div", "bsec");
+      asec.appendChild(el("h3", "", "actions"));
+      const arow = el("div", "bactrow");
+      const shrb = el("button", "bactbtn" + (s.share ? " on" : ""),
+        s.share ? `⤴ shared — ${s.share.mode}` : "⤴ share") as HTMLButtonElement;
+      shrb.onclick = () => openShareDlg(slot);
+      const expb = el("button", "bactbtn", "⇩ export") as HTMLButtonElement;
+      expb.title = "export session — print / save as PDF";
+      expb.onclick = () => window.open(`/api/slots/${slot}/export`, "_blank");
+      const renb = el("button", "bactbtn", "✎ rename") as HTMLButtonElement;
+      renb.onclick = () => {
+        const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
+        if (row instanceof HTMLElement) startRename(row, s);
+      };
+      arow.append(shrb, expb, renb);
+      asec.appendChild(arow);
+      nodes.push(asec);
+    }
     if (brief) {
       const st = el("div", "bsec");
       st.appendChild(el("h3", "", "state"));
@@ -754,31 +791,35 @@ async function renderBoard() {
       const db = el("button", "bdiffbtn", "± view diff") as HTMLButtonElement;
       db.onclick = () => void openDiff(slot);
       st.appendChild(db);
-      // a lane's endgame lives right next to its state: the ⏫ agent that rebases onto
-      // main, resolves conflicts, ff-merges and lands — plus the last run's verdict
+      // a lane's endgame lives right next to its state: ONE land action (glyph ⏏) whose
+      // label carries the auto-vs-review-needed distinction as text, not as a second or
+      // third triangle glyph. The three server paths this used to expose as ⏫/⏏/⏬ are
+      // still there underneath (doLand tries the direct /land path, then falls back to
+      // the /merge agent) — only the UI collapsed to one control.
       if (brief.worktree) {
         const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
         const awaitingReview = l?.status === "resolved";
-        const mb = el("button", "bmergebtn", mg?.running ? "… agent merging" : "⏫ merge & land") as HTMLButtonElement;
-        mb.disabled = !!mg?.running;
-        mb.title = "conflict-free lanes rebase and land automatically; on conflicts a background claude "
-          + "session resolves them, then pauses for you to review the diff before it lands — nothing "
-          + "reaches main on the agent's word alone";
-        mb.onclick = () => void doMerge(slot);
-        st.appendChild(mb);
+        const lb = el("button", "bmergebtn",
+          mg?.running ? "… landing" : awaitingReview ? "⏏ land (re-run if main moved)" : "⏏ land lane") as HTMLButtonElement;
+        lb.disabled = !!mg?.running;
+        lb.title = "already-merged lanes land immediately; otherwise this rebases onto main and lands "
+          + "automatically — on conflicts a background agent resolves them and pauses for your review "
+          + "before anything reaches main";
+        lb.onclick = () => void doLand(slot);
+        st.appendChild(lb);
         if (awaitingReview && l) {
           // the agent resolved conflicts and the server verified the rebase — the owner
           // reviews the diff and lands. This is the one place a human eye is required.
           const n = l.conflicted?.length ?? 0;
           const note = el("div", "bmergenote review");
           note.appendChild(el("div", "bmergehd",
-            `⏸ conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land`));
+            `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land`));
           if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
           note.appendChild(el("div", "bmergedetail", l.detail));
           const acts = el("div", "bmergeacts");
           const rev = el("button", "bmergereview", "± review diff") as HTMLButtonElement;
           rev.onclick = () => void openMergeDiff(slot);
-          const land = el("button", "bmergeland", "⏬ land it") as HTMLButtonElement;
+          const land = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
           land.onclick = () => void doMergeLand(slot);
           acts.append(rev, land);
           note.appendChild(acts);
@@ -1464,21 +1505,21 @@ function renderSlots() {
         b.title = "has scheduled prompts";
         row.appendChild(b);
       }
-      // branch badges only where they carry function: a lane's lifecycle color IS its
-      // land-readiness. Plain sessions on their repo branch showed "main •4"-style noise.
+      // row = identity + state: a lane's lifecycle color IS its land-readiness, shown as
+      // ONE dot. The branch name and counts that used to fill a 96px badge move into the
+      // tooltip — the name up top is already derived from this same branch (baseName(cwd))
       if (s.worktree && s.git?.branch) {
         // lifecycle: editing (uncommitted) → ready (clean but commits to push/land) → clean
         const state = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean";
         row.appendChild(el("span", "lanechip", "⎇")); // lanes read as first-class
-        const parts = [s.git.branch];
-        if (s.git.dirty) parts.push(`•${s.git.dirty}`);
-        if (s.git.ahead) parts.push(`↑${s.git.ahead}`);
-        const bb = el("span", `branchbadge ${state}`, parts.join(" "));
-        bb.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to push, ${s.git.behind} behind`
-          + `\nFleet lane (${state}). ± review · ⏏ land`;
-        row.appendChild(bb);
+        const dot = el("span", `lcdot ${state}`);
+        dot.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`
+          + `\nFleet lane (${state}). ± review · open the board to land`;
+        row.appendChild(dot);
       }
-      // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden)
+      // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden) —
+      // the one action that belongs on the row; everything else (share/export/rename/land)
+      // lives in the board now
       if (s.worktree) {
         const dff = el("span", "lanediff", "±");
         dff.title = "review this lane's diff";
@@ -1501,18 +1542,6 @@ function renderSlots() {
       }
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
-      const shr = el("span", "shr" + (s.share ? " on" : ""), "⤴");
-      shr.title = s.share ? `shared — ${s.share.mode}` : "share session";
-      shr.onclick = (e) => {
-        e.stopPropagation();
-        openShareDlg(s.id);
-      };
-      const exp = el("span", "exp", "⇩");
-      exp.title = "export session — print / save as PDF";
-      exp.onclick = (e) => {
-        e.stopPropagation();
-        window.open(`/api/slots/${s.id}/export`, "_blank");
-      };
       const act = el("div", "slotact");
       if (s.git && !s.worktree) {
         // plain repo session: diff is available but secondary, so it stays in the hover row
@@ -1521,54 +1550,23 @@ function renderSlots() {
         dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
         act.appendChild(dff);
       }
-      const ren = el("span", "ren", "✎");
-      ren.title = "rename session";
-      ren.onclick = (e) => {
-        e.stopPropagation();
-        startRename(row, s);
-      };
-      if (s.worktree) {
-        const mgl = el("span", "lane mgl", "⏫");
-        mgl.title = "agent merge & land — background claude rebases onto main, resolves conflicts, ff-merges, lands";
-        mgl.onclick = (e) => {
-          e.stopPropagation();
-          void doMerge(s.id);
-        };
-        act.appendChild(mgl);
-        const land = el("span", "lane", "⏏");
-        land.title = "land lane — remove the worktree (only if clean & pushed/merged)";
-        land.onclick = async (e) => {
-          e.stopPropagation();
-          if (!confirm(`Land lane ${s.worktree!.branch}? Removes the worktree. Refused if it has uncommitted or unpushed work.`)) return;
-          const res = await post(`/api/slots/${s.id}/land`, {});
-          if (!res.ok) {
-            const err = (await res.json().catch(() => ({}))) as { error?: string };
-            alert(`Not landed: ${err.error ?? "failed"}`);
-            return;
-          }
-          for (const p of panes) if (p.slot === s.id) p.assign(0);
-          await refresh();
-        };
-        act.appendChild(land);
+      if (s.share) {
+        const ca = el("span", "cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬");
+        ca.title = "guest chat";
+        ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
+        act.appendChild(ca);
       }
       const kill = el("span", "kill", "✕");
       kill.title = "kill session";
       kill.onclick = async (e) => {
         e.stopPropagation();
-        const wtNote = s.worktree ? " The worktree is left on disk (use ⏏ to remove it)." : "";
+        const wtNote = s.worktree ? " The worktree is left on disk (open the board to land or remove it)." : "";
         if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.${wtNote}`)) return;
         await post(`/api/slots/${s.id}/kill`, {});
         for (const p of panes) if (p.slot === s.id) p.assign(0);
         await refresh();
       };
-      act.prepend(shr);
-      if (s.share) {
-        const ca = el("span", "cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬");
-        ca.title = "guest chat";
-        ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
-        act.prepend(ca);
-      }
-      act.append(exp, ren, kill);
+      act.appendChild(kill);
       row.appendChild(act);
       row.onclick = () => showSlot(s.id);
     }
@@ -1734,7 +1732,7 @@ async function openMergeDiff(slotId: number) {
   const box = el("div", "difftxt");
   renderDiffInto(box, data.diff);
   diffpanel.appendChild(box);
-  const land = el("button", "bmergeland", "⏬ land it") as HTMLButtonElement;
+  const land = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
   land.style.marginTop = "10px";
   land.onclick = () => { closeDiffDlg(); void doMergeLand(slotId); };
   diffpanel.appendChild(land);

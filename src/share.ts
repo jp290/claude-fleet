@@ -75,11 +75,18 @@ type TabName = "info" | "chat" | "changes";
 let activeTab: TabName = "info";
 const sideOpen = () => document.body.classList.contains("side-open");
 
+function syncMtabs() {
+  // bottom-bar highlight mirrors "sheet open at this tab", not just the remembered tab
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".mtab"))
+    b.classList.toggle("active", sideOpen() && b.dataset.tab === activeTab);
+}
+
 function setSide(open: boolean) {
   document.body.classList.toggle("side-open", open);
   $("sidebtn").classList.toggle("open", open);
   localStorage.setItem(SIDE_KEY, open ? "1" : "0");
   if (open) activateTab(activeTab); // refresh whatever is visible
+  else syncMtabs();
 }
 
 function activateTab(name: TabName) {
@@ -88,15 +95,28 @@ function activateTab(name: TabName) {
     b.classList.toggle("active", b.dataset.tab === name);
   for (const p of document.querySelectorAll<HTMLElement>(".pane"))
     p.classList.toggle("active", p.id === `pane-${name}`);
+  syncMtabs();
   if (name === "info") { void loadBrief(); void loadSummary(false); }
   if (name === "chat") {
     void loadComments();
-    ($("cmtinput") as HTMLTextAreaElement).focus();
+    // a programmatic focus pops the on-screen keyboard over the fresh thread on phones —
+    // only pre-focus where a hardware keyboard is the norm
+    if (!NARROW()) ($("cmtinput") as HTMLTextAreaElement).focus();
   }
   if (name === "changes") void loadChanges();
 }
 for (const b of document.querySelectorAll<HTMLButtonElement>(".tab"))
   b.onclick = () => activateTab(b.dataset.tab as TabName);
+// thumb navigation: each bottom tab opens the sheet at its pane; tapping the active
+// one again closes the sheet — one control, no hunt for a separate close affordance
+for (const b of document.querySelectorAll<HTMLButtonElement>(".mtab"))
+  b.onclick = () => {
+    const t = b.dataset.tab as TabName;
+    if (sideOpen() && activeTab === t) { setSide(false); return; }
+    activeTab = t;
+    setSide(true);
+  };
+$("shade").onclick = () => setSide(false);
 $("sidebtn").onclick = () => setSide(!sideOpen());
 $("sideclose").onclick = () => setSide(false);
 window.addEventListener("keydown", (e) => {
@@ -105,9 +125,11 @@ window.addEventListener("keydown", (e) => {
 
 function badge() {
   const n = activeTab === "chat" && sideOpen() ? 0 : cmtCount - cmtSeen;
-  const b = $("chatbadge");
-  b.style.display = n > 0 ? "inline-block" : "none";
-  if (n > 0) b.textContent = n > 99 ? "99+" : String(n);
+  for (const id of ["chatbadge", "mchatbadge"]) {
+    const b = $(id);
+    b.style.display = n > 0 ? "inline-block" : "none";
+    if (n > 0) b.textContent = n > 99 ? "99+" : String(n);
+  }
 }
 
 // --- info tab + telemetry (branch, uptime) ---
@@ -392,11 +414,29 @@ async function loadChanges() {
 }
 $("crefresh").onclick = () => void loadChanges();
 
-// --- viewer QoL: font size (persisted) + jump to latest output ---
+// --- viewer QoL: font size (persisted), fit-to-width, jump to latest output ---
+// fit-to-width: the one thing a guest CANNOT have natively — the terminal renders at the
+// session's cols (guests must not resize the owner's pty), so on a phone it overflows
+// sideways. Fit shrinks the font until all cols land in the viewport: whole-layout
+// readability at a glance, pan-free. Toggle, not default-forever: A−/A+ hand control back.
+let fitOn = false;
+function fitFont(): number {
+  if (!lastInfo) return fontSize;
+  // 0.602 ≈ advance-width/font-size for the Menlo/Consolas stack; floor errs on "fits"
+  const w = $("wrap").clientWidth - 12;
+  return Math.min(MAX_FONT, Math.max(5, Math.floor(w / lastInfo.cols / 0.602)));
+}
+function applyFont() {
+  if (term) term.options.fontSize = fitOn ? fitFont() : fontSize;
+  $("fitw").classList.toggle("active", fitOn);
+}
+$("fitw").onclick = () => { fitOn = !fitOn; applyFont(); };
+window.addEventListener("resize", () => { if (fitOn) applyFont(); }); // rotation refits
 function setFont(delta: number) {
+  fitOn = false; // manual sizing takes over from fit
   fontSize = Math.min(MAX_FONT, Math.max(MIN_FONT, fontSize + delta));
   localStorage.setItem(FONT_KEY, String(fontSize));
-  if (term) term.options.fontSize = fontSize;
+  applyFont();
 }
 $("fminus").onclick = () => setFont(-1);
 $("fplus").onclick = () => setFont(1);
@@ -467,7 +507,7 @@ function start(info: Info) {
   title.textContent = name;
   $("tname").textContent = name;
   document.title = `${name} — Claude Fleet`;
-  for (const id of ["reload", "fminus", "fplus", "sidebtn", "jump"]) $(id).style.display = "block";
+  for (const id of ["reload", "fitw", "fminus", "fplus", "sidebtn", "jump"]) $(id).style.display = "block";
   modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
   modeEl.className = info.mode;
   modeEl.style.display = "inline-block";
@@ -488,6 +528,12 @@ function start(info: Info) {
   });
   term.open($("term"));
   term.loadAddon(new CanvasAddon());
+  // phone first visit (no saved font): start fitted, IF the session is narrow enough for
+  // fit to stay legible — a 200-col session at 5px is worse than panning at 12px
+  if (NARROW() && localStorage.getItem(FONT_KEY) === null && fitFont() >= 8) {
+    fitOn = true;
+    applyFont();
+  }
   if (info.mode === "interact") {
     bar.style.display = "flex";
     $("stage").classList.add("composing");

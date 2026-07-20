@@ -295,6 +295,9 @@
   .cmtb { flex: none; font-size: 10px; color: #7aa2f7; background: #1a2030; border: 1px solid #33415e;
     border-radius: 8px; padding: 1px 6px; }
   .slot:hover .cmtb { display: none; }
+  .revb { flex: none; font-size: 10px; color: #e0af68; background: #2a2118; border: 1px solid #5a4a30;
+    border-radius: 8px; padding: 1px 5px; cursor: pointer; }
+  .slot:hover .revb { display: none; }
   .slot .cmtact { color: #555; font-size: 12px; padding: 2px 5px; border-radius: 4px; }
   .slot .cmtact.hot { color: #7aa2f7; }
   .slot .cmtact:hover { color: #7aa2f7; background: #1c2437; }
@@ -394,6 +397,19 @@
   .bmergebtn:disabled { opacity: 0.55; cursor: default; }
   .bmergenote { margin-top: 5px; font-size: 10.5px; line-height: 1.45; word-break: break-word; }
   .bmergenote.ok { color: #9ece6a; } .bmergenote.warn { color: #e0af68; } .bmergenote.err { color: #f7768e; }
+  /* the review gate: the one place a human eye is required — give it real presence */
+  .bmergenote.review { margin: 6px 0 0 6px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #5a4a30; background: #221b12; color: #d6d6dc; }
+  .bmergehd { color: #e0af68; font-weight: 700; font-size: 11px; }
+  .bmergefiles { color: #7dcfff; font-size: 10px; margin-top: 3px; word-break: break-all; }
+  .bmergedetail { color: #9a9aa2; font-size: 10px; margin-top: 4px; line-height: 1.4; }
+  .bmergeacts { display: flex; gap: 6px; margin-top: 8px; }
+  .bmergereview { flex: 1; padding: 5px 8px; border-radius: 7px; border: 1px solid #2c4a5e;
+    background: #16222b; color: #7dcfff; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bmergereview:hover { background: #1c2c37; }
+  .bmergeland { flex: 1; padding: 5px 8px; border-radius: 7px; border: 1px solid #2c5e3a;
+    background: #16281c; color: #9ece6a; font-size: 11px; font-weight: 700; font-family: inherit; cursor: pointer; }
+  .bmergeland:hover { background: #1d3826; }
   .slot .mgl:hover { color: #7aa2f7; }
   .slot .quicklane { flex: none; font-size: 11px; color: #556; cursor: pointer; padding: 0 3px;
     border: 1px solid #2c3a5e; border-radius: 5px; }

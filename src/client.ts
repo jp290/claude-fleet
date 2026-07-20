@@ -116,7 +116,7 @@ interface AutoInfo {
 interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
 interface WorktreeInfo { repo: string; branch: string }
 interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number;
-  share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null }
+  share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean }
 interface TaskInfo { id: string; text: string; source: "owner" | "intake"; from: string | null;
   status: "pending" | "queued" | "sent" | "done"; created: number; slot: number | null; note: string | null }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
@@ -542,7 +542,8 @@ const sumBusy = new Set<number>();
 interface WtRow { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number }
 interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 interface MergeState { running: boolean;
-  last: { status: "merged" | "blocked" | "error"; detail: string; landed: boolean; branch: string; at: number } | null }
+  last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
+    branch: string; at: number; conflicted?: string[] } | null }
 // slots with a merge job the client kicked off or observed — when such a slot goes
 // inactive (job landed the lane), its panes must be released like a manual ⏏ does
 const mergeWatch = new Set<number>();
@@ -556,8 +557,9 @@ async function doMerge(slot: number) {
   if (mergePending.has(slot)) return;
   mergePending.add(slot);
   try {
-    if (!confirm("Agent merge & land? A background claude session rebases this lane onto main and resolves "
-      + "conflicts; the server then fast-forwards main and lands — each step re-verified deterministically.")) return;
+    if (!confirm("Agent merge & land?\n\nA conflict-free lane is rebased and landed automatically. If the "
+      + "rebase hits conflicts, a background claude session resolves them and then PAUSES so you can review "
+      + "the resolved diff before it lands — nothing reaches main on the agent's word alone.")) return;
     const r = await post(`/api/slots/${slot}/merge`, {});
     const j = (await r.json().catch(() => ({}))) as
       { running?: boolean; status?: string; landed?: boolean; detail?: string; error?: string };
@@ -571,6 +573,30 @@ async function doMerge(slot: number) {
     }
   } catch {
     alert("Merge failed — network error");
+  } finally {
+    mergePending.delete(slot);
+    void renderBoard();
+  }
+}
+
+// confirm-land after reviewing an agent conflict resolution: the server ff-merges the
+// already-rebased lane onto main and lands — no agent, purely git-verified
+async function doMergeLand(slot: number) {
+  if (mergePending.has(slot)) return;
+  mergePending.add(slot);
+  try {
+    const r = await post(`/api/slots/${slot}/merge`, { confirm: true });
+    const j = (await r.json().catch(() => ({}))) as
+      { status?: string; landed?: boolean; detail?: string; error?: string };
+    if (!r.ok) { alert(`Land failed: ${j.error ?? r.status}`); return; }
+    if (j.status === "merged" && j.landed) {
+      for (const p of panes) if (p.slot === slot) p.assign(0);
+      await refresh();
+    } else if (j.status === "blocked" || j.status === "error") {
+      alert(`Not landed: ${j.detail ?? j.status}`);
+    }
+  } catch {
+    alert("Land failed — network error");
   } finally {
     mergePending.delete(slot);
     void renderBoard();
@@ -699,14 +725,33 @@ async function renderBoard() {
       // a lane's endgame lives right next to its state: the ⏫ agent that rebases onto
       // main, resolves conflicts, ff-merges and lands — plus the last run's verdict
       if (brief.worktree) {
+        const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
+        const awaitingReview = l?.status === "resolved";
         const mb = el("button", "bmergebtn", mg?.running ? "… agent merging" : "⏫ merge & land") as HTMLButtonElement;
         mb.disabled = !!mg?.running;
-        mb.title = "background claude session rebases this lane onto main and resolves conflicts; the server "
-          + "then re-verifies, fast-forwards main and lands — nothing is removed on the agent's word alone";
+        mb.title = "conflict-free lanes rebase and land automatically; on conflicts a background claude "
+          + "session resolves them, then pauses for you to review the diff before it lands — nothing "
+          + "reaches main on the agent's word alone";
         mb.onclick = () => void doMerge(slot);
         st.appendChild(mb);
-        if (!mg?.running && mg?.last && mg.last.branch === brief.worktree.branch) {
-          const l = mg.last;
+        if (awaitingReview && l) {
+          // the agent resolved conflicts and the server verified the rebase — the owner
+          // reviews the diff and lands. This is the one place a human eye is required.
+          const n = l.conflicted?.length ?? 0;
+          const note = el("div", "bmergenote review");
+          note.appendChild(el("div", "bmergehd",
+            `⏸ conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land`));
+          if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
+          note.appendChild(el("div", "bmergedetail", l.detail));
+          const acts = el("div", "bmergeacts");
+          const rev = el("button", "bmergereview", "± review diff") as HTMLButtonElement;
+          rev.onclick = () => void openMergeDiff(slot);
+          const land = el("button", "bmergeland", "⏬ land it") as HTMLButtonElement;
+          land.onclick = () => void doMergeLand(slot);
+          acts.append(rev, land);
+          note.appendChild(acts);
+          st.appendChild(note);
+        } else if (l) {
           const cls = l.status === "merged" && l.landed ? "ok" : l.status === "blocked" ? "warn" : "err";
           st.appendChild(el("div", `bmergenote ${cls}`,
             `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed") : l.status}: ${l.detail}`));
@@ -1360,6 +1405,13 @@ function renderSlots() {
         cb.title = `guest chat — ${s.share.comments} message${s.share.comments === 1 ? "" : "s"}`;
         row.appendChild(cb);
       }
+      if (s.mergePending) {
+        // a resolved conflict waiting for review — discoverable without opening the board
+        const rb = el("span", "revb", "⏸");
+        rb.title = "conflicts resolved — review & land (open the board)";
+        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
+        row.appendChild(rb);
+      }
       // green = live in a pane, or a background session that just produced output
       row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
       const shr = el("span", "shr" + (s.share ? " on" : ""), "⤴");
@@ -1497,7 +1549,7 @@ async function refresh() {
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, s.share?.comments, serverNow - s.lastOutput < RECENT_MS,
+      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, s.share?.comments, s.mergePending, serverNow - s.lastOutput < RECENT_MS,
         s.git?.branch, s.git?.dirty, s.git?.ahead, !!s.worktree])]);
     if (key !== lastRender) {
       lastRender = key;
@@ -1574,6 +1626,29 @@ async function openDiff(slotId: number) {
   const box = el("div", "difftxt");
   renderDiffInto(box, data.diff);
   diffpanel.appendChild(box);
+}
+
+// the resolved lane's diff (main..HEAD) — exactly what will fast-forward onto main once
+// the owner confirms. Same overlay as openDiff, different source.
+async function openMergeDiff(slotId: number) {
+  setDrawer(false);
+  diffpanel.replaceChildren(el("h2", "", "Resolved diff — what will land on main"));
+  diffdlg.style.display = "flex";
+  const res = await api(`/api/slots/${slotId}/merge-diff`);
+  const data = (await res.json().catch(() => ({}))) as
+    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string };
+  if (data.error) { diffpanel.appendChild(el("div", "diffstat", data.error)); return; }
+  const n = data.files?.length ?? 0;
+  diffpanel.appendChild(el("div", "diffstat",
+    `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""}`));
+  if (!data.diff) { diffpanel.appendChild(el("div", "diffstat", "no changes to land")); return; }
+  const box = el("div", "difftxt");
+  renderDiffInto(box, data.diff);
+  diffpanel.appendChild(box);
+  const land = el("button", "bmergeland", "⏬ land it") as HTMLButtonElement;
+  land.style.marginTop = "10px";
+  land.onclick = () => { closeDiffDlg(); void doMergeLand(slotId); };
+  diffpanel.appendChild(land);
 }
 
 // --- task queue overlay ---

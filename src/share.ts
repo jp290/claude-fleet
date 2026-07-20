@@ -405,10 +405,25 @@ $("jump").onclick = () => {
   $("wrap").scrollTop = $("wrap").scrollHeight;
 };
 
+// reload/refresh: drop the current socket and reconnect, which re-seeds the whole
+// terminal from a fresh capture-pane (connect() resets first). "Fix my formatting" on
+// demand — the mobile counterpart to just waiting out a garbled reconnect.
+function reloadStream() {
+  if (!lastInfo) return;
+  gen++; // orphan the live socket so its onclose can't fire a second reconnect
+  ws?.close();
+  connect(lastInfo);
+}
+$("reload").onclick = () => reloadStream();
+
 // --- stream ---
 function connect(info: Info) {
   gen++;
   const g = gen;
+  // clear the screen + scrollback before the server's seed arrives. Each (re)connect
+  // re-seeds the whole visible state, so without this the seed stacks onto whatever the
+  // dropped socket left behind — the exact garbling mobile guests hit after a WS drop.
+  term?.reset();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const sock = new WebSocket(`${proto}://${location.host}/ws-share/${shareId}`);
   ws = sock;
@@ -418,7 +433,9 @@ function connect(info: Info) {
     // the pre-connect info fetch counted 0 viewers (our own socket wasn't up yet)
     void fetchInfo().then((i) => { if (i) applyInfo(i); });
   };
-  sock.onmessage = (e) => term?.write(new Uint8Array(e.data as ArrayBuffer));
+  // a superseded socket (reload/reassign bumped gen) can still deliver buffered frames —
+  // writing them after the new socket's reset would re-corrupt the fresh screen
+  sock.onmessage = (e) => { if (g === gen) term?.write(new Uint8Array(e.data as ArrayBuffer)); };
   sock.onclose = (e) => {
     if (g !== gen) return;
     setConn(false);
@@ -450,7 +467,7 @@ function start(info: Info) {
   title.textContent = name;
   $("tname").textContent = name;
   document.title = `${name} — Claude Fleet`;
-  for (const id of ["fminus", "fplus", "sidebtn", "jump"]) $(id).style.display = "block";
+  for (const id of ["reload", "fminus", "fplus", "sidebtn", "jump"]) $(id).style.display = "block";
   modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
   modeEl.className = info.mode;
   modeEl.style.display = "inline-block";

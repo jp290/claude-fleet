@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync, renameSync, copyFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ServerWebSocket } from "bun";
@@ -223,10 +223,16 @@ function saveState(): void {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks, comments: shareComments }, null, 2);
+  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks,
+    comments: shareComments, dispatch: dispatchOn, merges: Object.fromEntries(mergeLast) }, null, 2);
+  // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
+  // intact, not a torn file that boot reads as "empty" and then re-persists as the
+  // new truth (which would eat every share, task, lane tag and session pin at once)
+  const tmp = `${STATE_FILE}.tmp`;
   saveChain = saveChain
-    .then(() => Bun.write(STATE_FILE, body))
-    .then(() => chmodSync(STATE_FILE, 0o600))
+    .then(() => Bun.write(tmp, body))
+    .then(() => chmodSync(tmp, 0o600))
+    .then(() => renameSync(tmp, STATE_FILE))
     .catch((e: unknown) => console.log(`state save failed: ${e instanceof Error ? e.message : e}`));
 }
 
@@ -717,11 +723,16 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
     const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
     p.stdin.write(text);
     await p.stdin.end();
-    await p.exited;
-    await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", sess(s.id));
+    // failures must THROW, not vanish: a pane dying between the caller's alive-check and
+    // this send otherwise records "sent" in autos/history/prompt-log for a prompt that
+    // never arrived — a false audit trail is worse than a failed send
+    if ((await p.exited) !== 0) throw new Error("tmux load-buffer failed — session gone?");
+    const pb = await tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", sess(s.id));
+    if (pb.code !== 0) throw new Error("tmux paste-buffer failed — session gone?");
     if (submit) {
       await Bun.sleep(150);
-      await tmux("send-keys", "-t", sess(s.id), "Enter");
+      const sk = await tmux("send-keys", "-t", sess(s.id), "Enter");
+      if (sk.code !== 0) throw new Error("tmux send-keys failed — text pasted but not submitted");
     }
   });
   s.inputChain = task.catch(() => {});
@@ -804,7 +815,14 @@ async function tickAutos(): Promise<void> {
         continue;
       }
       dirty = true;
-      await sendText(s, a.text, true);
+      try {
+        await sendText(s, a.text, true);
+      } catch (e) {
+        // sendText now surfaces tmux failures — record the truth instead of "sent"
+        a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
+        advanceAuto(a, now);
+        continue;
+      }
       s.history = [...s.history, { text: a.text, ts: now }].slice(-MAX_HISTORY);
       saveHistory(s);
       logPrompt(s, a.text, "auto", now);
@@ -864,6 +882,11 @@ async function tickDispatch(): Promise<void> {
       next.status = "queued";
       next.note = `dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
       saveState();
+    } finally {
+      // release the spawn reservation ALWAYS — without this every dispatched slot stayed
+      // in laneSpawn forever, unusable by the dispatcher, attach and manual open alike
+      // until a restart (the sibling routes release in finally; this path didn't)
+      laneSpawn.delete(free.id);
     }
   } finally {
     dispatchBusy = false;
@@ -1528,7 +1551,10 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   }
   // a slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared
   // by openSlot — don't write this lane's verdict onto whatever lives there now
-  if (!s.cwd || s.cwd === cwd) mergeLast.set(s.id, res);
+  if (!s.cwd || s.cwd === cwd) {
+    mergeLast.set(s.id, res);
+    saveState(); // verdicts are part of persisted state now — the ⏸ gate must survive deploys
+  }
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -1727,8 +1753,27 @@ if (existsSync(STATE_FILE)) {
           s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch };
       }
     }
+    // dispatcher toggle survives deploys — queued tasks persist, so the thing that
+    // drains them must too (the silent off-after-restart was the cols/rows bug's twin)
+    if (typeof (persisted as { dispatch?: unknown }).dispatch === "boolean")
+      dispatchOn = (persisted as { dispatch: boolean }).dispatch;
+    // merge verdicts survive deploys — the ⏸ pause-for-review gate lives in mergeLast,
+    // and a deploy that wiped it let a re-run ⏫ land agent conflict resolutions unreviewed
+    const pm = (persisted as { merges?: unknown }).merges;
+    if (typeof pm === "object" && pm !== null && !Array.isArray(pm))
+      for (const [k, v] of Object.entries(pm as Record<string, unknown>)) {
+        const s = slotFrom(k);
+        if (s?.worktree && typeof v === "object" && v !== null
+          && ["merged", "blocked", "error", "resolved"].includes((v as MergeLast).status)
+          && typeof (v as MergeLast).detail === "string" && typeof (v as MergeLast).branch === "string"
+          && (v as MergeLast).branch === s.worktree.branch)
+          mergeLast.set(s.id, v as MergeLast);
+      }
   } catch {
-    console.log("fleet.json unreadable — starting with empty state");
+    // keep the evidence: the unreadable file is preserved before the next saveState
+    // overwrites it, so a torn write is recoverable by hand instead of erased
+    try { copyFileSync(STATE_FILE, `${STATE_FILE}.bak`); } catch { /* fleet.json gone entirely */ }
+    console.log(`fleet.json unreadable — starting with empty state (original kept as ${STATE_FILE}.bak)`);
   }
 }
 if (process.env.FLEET_TOKEN) {
@@ -1740,6 +1785,15 @@ if (process.env.FLEET_TOKEN) {
 const ls = await tmux("list-sessions", "-F", "#{session_name}");
 if (ls.code === 0) {
   for (const name of ls.out.split("\n")) {
+    // background-claude sessions (summarizer/enhancer/merge agent) are throwaways whose
+    // cleanup lives in a process-memory finally — a deploy mid-run skips it and leaves a
+    // write-capable agent running invisibly (it matches no slot regex, shows nowhere).
+    // Boot is the safe reaping point: any survivor here is by definition orphaned.
+    if (name.startsWith("sum-")) {
+      void tmux("kill-session", "-t", name);
+      console.log(`reaped orphaned background-agent session '${name}' (deploy interrupted its cleanup)`);
+      continue;
+    }
     const m = /^s(\d+)$/.exec(name);
     const s = m ? slotFrom(m[1]) : null;
     if (s && !s.cwd) {
@@ -2297,6 +2351,7 @@ Bun.serve<WSData>({
           const land = await landLane(s);
           if ("error" in land) return json({ error: land.error }, land.code);
           mergeLast.delete(s.id);
+          saveState();
           return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });
         }
         // already merged (by hand, or an empty lane)? No agent needed — land directly.
@@ -2306,7 +2361,19 @@ Bun.serve<WSData>({
           if ("error" in land) return json({ error: land.error }, land.code);
           return json({ status: "merged", landed: true, branch, detail: "already merged — landed without the agent" });
         }
+        // ⏸ guard: a pending "resolved" verdict means agent-chosen conflict resolutions
+        // are sitting in this lane awaiting a human eye. While the lane is still rebased
+        // onto main, a plain re-run would sail through the clean path and LAND them
+        // unreviewed — refuse and point back at review. Only when main has moved on is
+        // the verdict genuinely stale; then a fresh run (which re-rebases) is the fix.
+        if (mergeLast.get(s.id)?.status === "resolved") {
+          const anc = await git(repo, "merge-base", "--is-ancestor", mainBr.out, branch);
+          if (anc.code === 0)
+            return json({ running: false, last: mergeLast.get(s.id),
+              status: "resolved", detail: "conflict resolution awaits your review — open the board and land it from there" });
+        }
         mergeLast.delete(s.id); // a new run supersedes the previous verdict
+        saveState();
         const job: Promise<void> = mergeJob(s, cwd, repo, branch, mainBr.out)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);

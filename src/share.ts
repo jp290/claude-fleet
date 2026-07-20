@@ -299,6 +299,15 @@ function applyInfo(info: Info) {
   cmtCount = info.comments ?? 0;
   if (activeTab === "chat" && sideOpen()) void loadComments();
   badge();
+  // the pane's true size moved (owner resized, or their client reconnected at another
+  // width) — a grid frozen at the old size garbles every frame from now on. Reconnect:
+  // connect() resets and the server reseeds at the current size, so the guest follows
+  // the session instead of drifting from it.
+  if (term && (term.cols !== info.cols || term.rows !== info.rows)) {
+    term.resize(info.cols, info.rows);
+    if (fitOn) applyFont(); // fit is a function of cols — recompute for the new width
+    reloadStream();
+  }
 }
 
 // --- chat tab ---

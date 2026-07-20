@@ -608,6 +608,16 @@ async function ensureSlot(s: Slot): Promise<void> {
       console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }
+  // the size cache follows TMUX TRUTH, not the other way round: the in-memory cols/rows
+  // die with every server restart (deploys!) while the pane keeps whatever the last
+  // owner client set — a guest reading the stale 200×50 default then renders a terminal
+  // that has nothing to do with the actual pane. Re-sync on every ensure.
+  const size = await tmux("display-message", "-p", "-t", name, "#{window_width} #{window_height}");
+  const sm = /^(\d+) (\d+)$/.exec(size.out);
+  if (sm) {
+    s.cols = Number(sm[1]);
+    s.rows = Number(sm[2]);
+  }
   const pipe = await tmux("display-message", "-p", "-t", name, "#{pane_pipe}");
   const pipeOpen = pipe.out === "1";
   const file = streamPath(s.id);
@@ -1753,7 +1763,7 @@ void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't
 setInterval(() => void tickDispatch().catch(() => {}), 8000);
 setInterval(() => void tickHarvest().catch(() => {}), 5000);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
-// ensureSlot is a cheap no-op (two tmux queries) per healthy slot
+// ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
   for (const s of slots) void ensureSlot(s).catch(() => {});
 }, 2000);
@@ -1834,11 +1844,19 @@ Bun.serve<WSData>({
       }
       if (!shareAuthed(req, sh)) return json({ error: "unauthorized" }, 401);
       if (shareApi[2] === "info") {
+        // live pane size, never the cache alone: the guest builds its whole terminal
+        // grid from this answer — cache fallback only if the pane is briefly gone
+        let { cols, rows } = s;
+        if (s.cwd) {
+          const sz = await tmux("display-message", "-p", "-t", sess(s.id), "#{window_width} #{window_height}");
+          const m = /^(\d+) (\d+)$/.exec(sz.out);
+          if (m) { cols = Number(m[1]); rows = Number(m[2]); }
+        }
         return json({
           slotLabel: s.cwd ? (s.label ?? s.cwd.split("/").pop()) : null,
           mode: sh.mode,
-          cols: s.cols,
-          rows: s.rows,
+          cols,
+          rows,
           active: !!s.cwd,
           viewers: [...s.clients].filter((c) => c.data.share === sh.id).length,
           comments: (shareComments[sh.id] ?? []).length,

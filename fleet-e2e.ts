@@ -614,6 +614,22 @@ if (REPO) {
     mainLog.includes("merge work") && mainLog.includes("mainline work"), mainLog.trim());
   check("merge rejects a non-lane slot", (await post("/api/slots/2/merge", {})).status === 400);
 
+  // a correct rebase answered in PROSE must not be thrown away: git verification is the
+  // authority, the agent's JSON is only narrative (seen live — injection-distracted agent
+  // rebased perfectly, then narrated instead of answering the contract)
+  const lnP = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnP.cwd}/prose.txt`, "prose-lane-work\n");
+  spawnSync("git", ["-C", lnP.cwd, "add", "prose.txt"]);
+  spawnSync("git", ["-C", lnP.cwd, "commit", "-qm", "prose lane work"]);
+  await Bun.write(`${REPO}/other.txt`, "mainline\nmoved again\n");
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "mainline moves again"]);
+  await setMergeMode("prose");
+  await post(`/api/slots/${lnP.slot}/merge`, {});
+  const vP = await waitMerge(lnP.slot);
+  check("off-contract agent answer over a git-verified rebase still merges + lands", vP.gone, JSON.stringify(vP));
+  check("prose-merged lane's commit reached main",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("prose lane work"));
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

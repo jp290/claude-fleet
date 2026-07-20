@@ -55,11 +55,13 @@ cat > "$DIR/fakemerge" <<'EOF'
 cat >/dev/null
 ctl="$(dirname "$(dirname "$PWD")")/mergemode"
 mode="$(cat "$ctl" 2>/dev/null || echo blocked)"
-if [ "$mode" = do ]; then
+if [ "$mode" = do ] || [ "$mode" = prose ]; then
   git rebase -q main >/dev/null 2>&1
 fi
 if [ "$mode" = blocked ]; then
   printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"fake conflict\\"}"}'
+elif [ "$mode" = prose ]; then
+  printf '{"result": "Rebase complete! I resolved the conflicts but forgot to answer in the JSON contract."}'
 else
   printf '{"result": "{\\"status\\": \\"rebased\\", \\"detail\\": \\"fake rebased\\"}"}'
 fi

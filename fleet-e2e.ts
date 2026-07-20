@@ -585,17 +585,18 @@ if (REPO) {
     mgDirty.status === "blocked" && (mgDirty.detail ?? "").includes("uncommitted"), JSON.stringify(mgDirty));
 
   spawnSync("git", ["-C", lnPath, "commit", "-aqm", "merge work"]);
-  // diverge main AFTER the lane's commit: a lane that was never rebased is now NOT a
-  // descendant of main, so a lying "rebased" claim is deterministically detectable
-  await Bun.write(`${REPO}/other.txt`, "mainline\n");
-  spawnSync("git", ["-C", REPO, "add", "other.txt"]);
-  spawnSync("git", ["-C", REPO, "commit", "-qm", "mainline work"]);
+  // diverge main on the SAME file+lines the lane touched → a genuine rebase conflict, which
+  // is the ONLY case that reaches the agent (a conflict-free rebase is done by the server's
+  // script pre-pass; that path is covered separately below). The lane is also not a
+  // descendant of main, so a lying "rebased" claim stays deterministically detectable.
+  await Bun.write(`${REPO}/code.txt`, "root\nmainline-work\n");
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "mainline work"]);
 
   await setMergeMode("blocked");
   const mgB = await post(`/api/slots/${lnSlot}/merge`, {});
   check("merge POST starts an async job", ((await mgB.json()) as { running?: boolean }).running === true);
   const vB = await waitMerge(lnSlot);
-  check("merge agent 'blocked' verdict passes through with detail",
+  check("conflict → agent 'blocked' verdict passes through with detail",
     !vB.gone && vB.last?.status === "blocked" && vB.last.detail === "fake conflict", JSON.stringify(vB));
 
   await setMergeMode("lie");
@@ -607,22 +608,39 @@ if (REPO) {
   await setMergeMode("do");
   await post(`/api/slots/${lnSlot}/merge`, {});
   const vD = await waitMerge(lnSlot);
-  check("agent rebases → server ff-merges + lands, slot torn down", vD.gone, JSON.stringify(vD));
+  check("agent resolves the conflict → server ff-merges + lands, slot torn down", vD.gone, JSON.stringify(vD));
   check("merged lane removed from disk", !exists(lnPath));
   const mainLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
   check("main received the lane's commit on top of the diverged mainline",
     mainLog.includes("merge work") && mainLog.includes("mainline work"), mainLog.trim());
   check("merge rejects a non-lane slot", (await post("/api/slots/2/merge", {})).status === 400);
 
+  // script pre-pass: a conflict-FREE lane is rebased and landed by the server itself, the
+  // agent is NEVER spawned. Proof: mergemode is set to "blocked" — if the agent were
+  // consulted the lane would be kept, not landed.
+  const lnClean = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnClean.cwd}/clean-lane.txt`, "lane side\n");
+  spawnSync("git", ["-C", lnClean.cwd, "add", "clean-lane.txt"]);
+  spawnSync("git", ["-C", lnClean.cwd, "commit", "-qm", "clean lane work"]);
+  await Bun.write(`${REPO}/clean-main.txt`, "main side\n"); // different file → no conflict
+  spawnSync("git", ["-C", REPO, "add", "clean-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "clean main work"]);
+  await setMergeMode("blocked"); // agent, if wrongly consulted, would block — it must not be
+  await post(`/api/slots/${lnClean.slot}/merge`, {});
+  const vC = await waitMerge(lnClean.slot);
+  check("conflict-free lane merges + lands via the script, agent never consulted", vC.gone, JSON.stringify(vC));
+  check("script-path lane commit reached main",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("clean lane work"));
+
   // a correct rebase answered in PROSE must not be thrown away: git verification is the
   // authority, the agent's JSON is only narrative (seen live — injection-distracted agent
-  // rebased perfectly, then narrated instead of answering the contract)
+  // rebased perfectly, then narrated instead of answering the contract). Conflict setup so
+  // the agent actually runs.
   const lnP = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  await Bun.write(`${lnP.cwd}/prose.txt`, "prose-lane-work\n");
-  spawnSync("git", ["-C", lnP.cwd, "add", "prose.txt"]);
-  spawnSync("git", ["-C", lnP.cwd, "commit", "-qm", "prose lane work"]);
-  await Bun.write(`${REPO}/other.txt`, "mainline\nmoved again\n");
-  spawnSync("git", ["-C", REPO, "commit", "-aqm", "mainline moves again"]);
+  await Bun.write(`${lnP.cwd}/code.txt`, "root\nprose-lane\n");
+  spawnSync("git", ["-C", lnP.cwd, "commit", "-aqm", "prose lane work"]);
+  await Bun.write(`${REPO}/code.txt`, "root\nprose-main\n"); // same file+line → conflict
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "prose main work"]);
   await setMergeMode("prose");
   await post(`/api/slots/${lnP.slot}/merge`, {});
   const vP = await waitMerge(lnP.slot);

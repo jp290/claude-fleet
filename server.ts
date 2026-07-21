@@ -454,6 +454,18 @@ async function tickGit(): Promise<void> {
           if (m) { ahead = Number(m[1]); behind = Number(m[2]); }
         } else if (line && !line.startsWith("#")) dirty++;
       }
+      // a lane has no upstream, so branch.ab is 0/0 — but its land-readiness is exactly
+      // "commits ahead of the base branch", which the sidebar lifecycle dot needs. Compute
+      // it the same way briefPayload does (rev-list vs laneBaseRef) or the green "ready"
+      // state is unreachable for every lane and a landable lane reads as empty.
+      if (s.worktree) {
+        const base = await laneBaseRef(s);
+        if (base) {
+          const ab = await git(s.cwd, "rev-list", "--left-right", "--count", `${base}...HEAD`);
+          const m = /^(\d+)\s+(\d+)$/.exec(ab.out); // left = base-only (behind), right = HEAD-only (ahead)
+          if (m) { behind = Number(m[1]); ahead = Number(m[2]); }
+        }
+      }
       gitInfo.set(s.id, { branch, dirty, ahead, behind });
     }
   } finally {

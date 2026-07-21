@@ -181,7 +181,7 @@ class Pane {
     // board toggle sits beside the viewtoggle; the board always describes the
     // FOCUSED session, and clicking a pane focuses it first (root mousedown)
     this.boardBtn = el("button", "boardtoggle", "ℹ") as HTMLButtonElement;
-    this.boardBtn.title = "session brief — commits, changes, prompts, ✨ summary";
+    this.boardBtn.title = "session brief — commits, changes, prompts, 📋 summary";
     this.boardBtn.style.display = "none";
     this.boardBtn.classList.toggle("active", boardOpen);
     this.boardBtn.onclick = (e) => {
@@ -1221,7 +1221,7 @@ async function renderBoard() {
       asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
       const sum = sumCache.get(slot);
       const sbtn = el("button", "bbtn accent",
-        sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "✨ re-summarize" : "✨ summarize") as HTMLButtonElement;
+        sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "📋 re-summarize" : "📋 summarize") as HTMLButtonElement;
       sbtn.disabled = sumBusy.has(slot);
       sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
       sbtn.onclick = async () => {

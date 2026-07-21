@@ -34,7 +34,7 @@ $("shade").onclick = () => setDrawer(false);
 // #reload (quicker than toggling panes, and works in single-pane layout too) both
 // force the focused pane to reconnect — the server re-seeds scrollback at the
 // reconnecting client's width, so this is "fix my wrapping" on demand either way
-for (const b of [$("refresh"), $("reload")]) b.onclick = () => panes[focused]?.reconnect();
+$("refresh").onclick = () => panes[focused]?.reconnect(); // mobile header (no per-pane controls there)
 
 // --- desktop sidebar collapse (persisted). The .collapsed class is desktop-only:
 // on mobile #side is the slide-in drawer, so applyCollapsed strips it there ---
@@ -157,6 +157,7 @@ class Pane {
   private readonly chatEl: HTMLElement;
   private readonly viewBtn: HTMLButtonElement;
   private readonly boardBtn: HTMLButtonElement;
+  private readonly reloadBtn: HTMLButtonElement;
   private view: "term" | "chat" = "term";
   private chatTotal = 0;
   private chatSource: string | null = null;
@@ -187,13 +188,19 @@ class Pane {
       focusPane(this.index);
       setBoard(!boardOpen);
     };
+    // reload sits left of the ℹ/💬 cluster — forces THIS pane to reconnect + reseed
+    // scrollback (moved here from the sidebar so it acts on the pane you're looking at)
+    this.reloadBtn = el("button", "panereload", "↻") as HTMLButtonElement;
+    this.reloadBtn.title = "reload this session (reconnect + reseed scrollback)";
+    this.reloadBtn.style.display = "none";
+    this.reloadBtn.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
     const navUp = el("button", "promptnav up", "↑") as HTMLButtonElement;
     navUp.title = "previous prompt of yours";
     navUp.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(-1); };
     const navDn = el("button", "promptnav dn", "↓") as HTMLButtonElement;
     navDn.title = "next prompt of yours";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
-    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, this.boardBtn, navUp, navDn);
+    this.root.append(termEl, this.chatEl, this.hint, this.jump, this.viewBtn, this.boardBtn, this.reloadBtn, navUp, navDn);
     this.term = new Terminal({
       scrollback: 50000,
       fontSize: isMobile() ? 11 : 12,
@@ -446,6 +453,7 @@ class Pane {
     this.resetChat();
     this.viewBtn.style.display = slot ? "block" : "none";
     this.boardBtn.style.display = slot ? "block" : "none";
+    this.reloadBtn.style.display = slot ? "block" : "none";
     if (slot && this.view === "chat") void this.pollChat();
     this.hint.style.display = slot ? "none" : "flex";
     // size the terminal to its container before connecting — the WS URL carries
@@ -514,7 +522,8 @@ let layout = 1;
 interface BriefCommit { hash: string; ts: number; subject: string }
 interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; sessionStart: number | null;
   uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
-  commits: BriefCommit[]; laneScoped: boolean; laneBase: string | null; ahead: number; behind: number }
+  commits: BriefCommit[]; laneScoped: boolean; laneBase: string | null; ahead: number; behind: number;
+  gitOp?: boolean }
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
@@ -635,11 +644,18 @@ async function doLand(slot: number) {
   if (mergePending.has(slot)) return;
   const s = fleet[slot - 1];
   if (!s?.worktree) return;
-  mergePending.add(slot); // reserve BEFORE the risk-preview await, else a double-click opens two overlays
+  mergePending.add(slot); // reserve BEFORE the preview await, else a double-click opens two overlays
   try {
+    // only UNCOMMITTED work is a pre-land warning (land refuses a dirty tree). Unpushed
+    // commits are the land's payload, not a risk — they're shown in the diff review below.
     const risk = await fetchSlotRisk(slot);
-    const ok = await showRiskPreview(`Land lane ${s.worktree.branch}?`, risk, "land");
-    if (!ok) return;
+    if (risk.dirtyFiles.length) {
+      const ok = await showRiskPreview(`Land lane ${s.worktree.branch}? — commit or the session will need to first`, risk, "continue");
+      if (!ok) return;
+    }
+    // always review the diff that will land, even on a clean auto-land (the old blind spot)
+    const proceed = await showLandReview(`Land ${s.worktree.branch} → main — review what lands`, slot);
+    if (!proceed) return;
     const direct = await post(`/api/slots/${slot}/land`, {});
     if (direct.ok) {
       for (const p of panes) if (p.slot === slot) p.assign(0);
@@ -710,6 +726,92 @@ async function doCommit(slot: number, mode: "quick" | "agent"): Promise<void> {
     await refresh();
     void renderBoard();
   }
+}
+
+// commit for a MAIN (non-lane) session: preview exactly what `git add -u` will stage
+// (tracked changes) and which untracked files are left alone, THEN commit. The server
+// re-derives everything; this preview is the guardrail that makes a commit onto a shipped
+// branch as transparent as a lane commit onto a throwaway one.
+function showCommitPreview(title: string, tracked: string[], untracked: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = el("div", "overlay riskoverlay");
+    overlay.style.display = "flex";
+    const panel = el("div", "panel riskpanel");
+    panel.appendChild(el("h2", "", title));
+    panel.appendChild(el("div", "riskhead", `${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} → committed (git add -u)`));
+    const tl = el("div", "risklist");
+    for (const f of tracked.slice(0, 40)) tl.appendChild(el("div", "riskfile", f));
+    if (tracked.length > 40) tl.appendChild(el("div", "riskmore", `… ${tracked.length - 40} more`));
+    panel.appendChild(tl);
+    if (untracked.length) {
+      panel.appendChild(el("div", "riskhead skip", `${untracked.length} untracked file${untracked.length === 1 ? "" : "s"} → left alone`));
+      const ul = el("div", "risklist");
+      for (const f of untracked.slice(0, 20)) ul.appendChild(el("div", "riskfile skip", f.slice(3)));
+      if (untracked.length > 20) ul.appendChild(el("div", "riskmore", `… ${untracked.length - 20} more`));
+      panel.appendChild(ul);
+    }
+    const btns = el("div", "riskbtns");
+    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
+    const go = el("button", "riskbtn", "commit") as HTMLButtonElement; // reversible → not styled destructive
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
+    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
+    document.addEventListener("keydown", onKey, true);
+    cancel.onclick = () => finish(false);
+    go.onclick = () => finish(true);
+    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
+    btns.append(cancel, go);
+    panel.appendChild(btns);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  });
+}
+
+// pre-land review: show the diff that will land on main (main...HEAD, three-dot) BEFORE it
+// lands. Closes the gap where a conflict-free rebase auto-landed with no diff ever shown —
+// "textually clean" isn't "semantically correct", so the owner gets one look before it merges.
+async function showLandReview(title: string, slot: number): Promise<boolean> {
+  const data = await api(`/api/slots/${slot}/merge-diff`).then((r) => r.json()).catch(() => ({})) as
+    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string };
+  return new Promise((resolve) => {
+    const overlay = el("div", "overlay riskoverlay");
+    overlay.style.display = "flex";
+    const panel = el("div", "panel riskpanel landreviewpanel");
+    panel.appendChild(el("h2", "", title));
+    if (data.error) {
+      panel.appendChild(el("div", "diffstat", data.error));
+    } else {
+      const n = data.files?.length ?? 0;
+      panel.appendChild(el("div", "diffstat",
+        `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""}`));
+      if (data.diff) { const box = el("div", "difftxt"); renderDiffInto(box, data.diff); panel.appendChild(box); }
+      else panel.appendChild(el("div", "diffstat", "no committed changes to land — landing just cleans up the worktree"));
+    }
+    const btns = el("div", "riskbtns");
+    const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
+    const go = el("button", "riskbtn", "⏏ land") as HTMLButtonElement;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
+    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
+    document.addEventListener("keydown", onKey, true);
+    cancel.onclick = () => finish(false);
+    go.onclick = () => finish(true);
+    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
+    btns.append(cancel, go);
+    panel.appendChild(btns);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  });
+}
+
+async function doCommitMain(slot: number, mode: "quick" | "agent", files: string[]): Promise<void> {
+  if (commitBusy.has(slot)) return;
+  const tracked = files.filter((f) => !f.startsWith("??"));
+  const untracked = files.filter((f) => f.startsWith("??"));
+  if (!tracked.length) {
+    alert("Only untracked files here — nothing tracked to commit. A main-session commit stages tracked changes only (git add -u); add the files in the terminal first if you want them in.");
+    return;
+  }
+  const ok = await showCommitPreview(`Commit ${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} in ${baseName(fleet[slot - 1]?.cwd ?? "")}?`, tracked, untracked);
+  if (ok) await doCommit(slot, mode);
 }
 
 async function newLane(repo: string, slot?: number): Promise<void> {
@@ -852,6 +954,13 @@ async function renderBoard() {
       // and its committed footprint. The commit action fills the gap land/merge leave open.
       const work = el("div", "bsec");
       work.appendChild(el("h3", "", "work"));
+      // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges
+      // commit + land here — surface it as an explicit, fixable state, not a silent refusal
+      if (brief.gitOp) {
+        const warn = el("div", "bgitop",
+          "⚠ a git merge/rebase is in progress — finish or abort it in this session's terminal (git rebase --abort / git merge --abort), then retry. Commit & land are blocked until then.");
+        work.appendChild(warn);
+      }
       if (brief.uncommitted) {
         const wl = el("div", "bstate");
         wl.appendChild(el("span", "editing",
@@ -895,10 +1004,24 @@ async function renderBoard() {
           crow.append(q, a);
           work.appendChild(crow);
         } else {
-          // non-lane: no commit action, but keep the diff reachable
-          const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
+          // main (non-lane) session: commit TRACKED changes (add -u) with a staging preview,
+          // so the owner sees exactly what lands on a branch they ship and that untracked
+          // files are left alone. Reversible (git reset); the server never pushes.
+          const busy = commitBusy.get(slot);
+          const files = brief.uncommittedFiles;
+          const crow = el("div", "bbtnrow");
+          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "✔ commit tracked") as HTMLButtonElement;
+          q.disabled = !!busy;
+          q.title = "stage & commit TRACKED changes only (git add -u) with a wip message — untracked files left alone; reversible with git reset";
+          q.onclick = () => void doCommitMain(slot, "quick", files);
+          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ commit (agent msg)") as HTMLButtonElement;
+          a.disabled = !!busy;
+          a.title = "a short-lived agent writes a conventional-commit message from the staged diff, then commits tracked changes";
+          a.onclick = () => void doCommitMain(slot, "agent", files);
+          const db = el("button", "bbtn", "± diff") as HTMLButtonElement;
           db.onclick = () => void openDiff(slot);
-          work.appendChild(db);
+          crow.append(q, a, db);
+          work.appendChild(crow);
         }
       } else if (ahead) {
         work.appendChild(el("div", "bnote ready",

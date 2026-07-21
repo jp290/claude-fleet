@@ -22,7 +22,7 @@ while true; do
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
     if tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=gast.example.com FLEET_SHARE_HOSTS=gast.example.com FLEET_SHARE_URL=https://gast.example.com exec bun server.ts >> server.log 2>&1"; then
+      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,gast.example.com FLEET_SHARE_HOSTS=cowork.example.com,gast.example.com FLEET_SHARE_URL=https://cowork.example.com exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

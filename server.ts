@@ -75,6 +75,7 @@ interface Auto {
   everySec: number | null;
   nextAt: number;
   runsLeft: number;
+  perpetual?: boolean; // owner-only: a recurring auto that re-arms instead of expiring at the runs cap
   idleSec: number; // only fire when the session produced no output for this long (0 = always)
   enabled: boolean;
   created: number;
@@ -1032,7 +1033,7 @@ async function claudeAliveAt(target: string): Promise<boolean> {
 // runs cap, idle gate downstream in tickAutos) lives here exactly once. The caller is
 // responsible for how `s` was derived; this function trusts it and never reads a `slot`
 // field from the body, so it structurally cannot create an Auto anywhere but on `s`.
-function createAutoForSlot(s: Slot, body: Record<string, unknown> | null): Response {
+function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: { allowPerpetual?: boolean } = {}): Response {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   if (autos.filter((a) => a.slot === s.id && a.enabled).length >= AUTO_MAX_PER_SLOT)
     return json({ error: `max ${AUTO_MAX_PER_SLOT} active schedules per slot` }, 400);
@@ -1043,8 +1044,14 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null): Respo
   if (everySec !== null && everySec < AUTO_MIN_EVERY_SEC)
     return json({ error: `everySec must be ≥ ${AUTO_MIN_EVERY_SEC}` }, 400);
   if (everySec === null && inSec < 1) return json({ error: "one-shot needs inSec ≥ 1" }, 400);
-  const runs = everySec === null ? 1 : Number(body.runs ?? 0) | 0;
-  if (everySec !== null && (runs < 1 || runs > AUTO_MAX_RUNS))
+  // perpetual: a recurring auto that re-arms instead of expiring at the runs cap. Owner-only —
+  // a steward/self principal minting an immortal schedule would be an un-gated autonomy
+  // escalation (the run-forever cadence decision is the owner's, per prove-before-schedule).
+  const perpetual = body.perpetual === true;
+  if (perpetual && !opts.allowPerpetual) return json({ error: "perpetual autos are owner-only" }, 403);
+  if (perpetual && everySec === null) return json({ error: "perpetual needs a recurring everySec" }, 400);
+  const runs = everySec === null ? 1 : perpetual ? 1 : Number(body.runs ?? 0) | 0;
+  if (everySec !== null && !perpetual && (runs < 1 || runs > AUTO_MAX_RUNS))
     return json({ error: `runs must be 1–${AUTO_MAX_RUNS}` }, 400); // the cap is mandatory, not optional
   const idleSec = Math.min(86_400, Math.max(0, Number(body.idleSec ?? 60) | 0));
   const a: Auto = {
@@ -1054,6 +1061,7 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null): Respo
     everySec,
     nextAt: Date.now() + (inSec > 0 ? inSec : everySec ?? 0) * 1000,
     runsLeft: runs,
+    ...(perpetual ? { perpetual: true } : {}),
     idleSec,
     enabled: true,
     created: Date.now(),
@@ -1074,10 +1082,12 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null): Respo
 
 function advanceAuto(a: Auto, now: number): void {
   if (a.everySec) {
-    a.runsLeft--;
     a.nextAt = now + a.everySec * 1000;
+    if (a.perpetual) return; // immortal beat: reschedule, never decrement or disable
+    a.runsLeft--;
     if (a.runsLeft <= 0) a.enabled = false;
   } else {
+    a.runsLeft = 0; // one-shot spent: make "spent" one predicate (runsLeft 0 AND disabled)
     a.enabled = false;
   }
 }
@@ -3431,7 +3441,7 @@ Bun.serve<WSData>({
     if (req.method === "POST" && autoCreate) {
       const s = slotFrom(autoCreate[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      return createAutoForSlot(s, await readJson(req));
+      return createAutoForSlot(s, await readJson(req), { allowPerpetual: true }); // owner may mint a perpetual (heartbeat) auto
     }
     const autoAct = /^\/api\/autos\/([a-z0-9]+)\/(delete|toggle)$/.exec(url.pathname);
     if (req.method === "POST" && autoAct) {

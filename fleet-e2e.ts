@@ -833,9 +833,12 @@ if (REPO) {
   // non-empty→active-work/none — deterministic, so the contract round-trips exactly) ---
   interface SweepVerdictRow { path: string; verdict: string; reason: string; suggestedAction: string }
   const swRes = await post(`/api/slots/${lnDirty.slot}/sweep`, {});
-  const swJ = (await swRes.json()) as { verdicts?: SweepVerdictRow[]; error?: string };
+  const swJ = (await swRes.json()) as { verdicts?: SweepVerdictRow[]; outstanding?: string; error?: string };
   check("sweep endpoint round-trips the documented JSON contract",
     swRes.ok && Array.isArray(swJ.verdicts) && swJ.verdicts.length >= 2, JSON.stringify(swJ));
+  // the new {verdicts, outstanding} object shape — the "what's still missing" synthesis
+  check("sweep response carries the outstanding synthesis (what's still missing)",
+    typeof swJ.outstanding === "string" && swJ.outstanding.includes("fake outstanding"), JSON.stringify(swJ.outstanding));
   const vDirty = swJ.verdicts?.find((v) => v.path === lnDirty.cwd);
   const vClean = swJ.verdicts?.find((v) => v.path === lnClean2.cwd);
   check("sweep verdict for the dirty+unpushed lane is active-work/none",
@@ -849,6 +852,34 @@ if (REPO) {
   // did not re-run the agent (which, being non-deterministic in prod, could differ)
   check("sweep GET verdicts are byte-identical to the POST verdicts (agent not re-run)",
     JSON.stringify(swGetJ.verdicts) === JSON.stringify(swJ.verdicts), JSON.stringify(swGetJ.verdicts));
+
+  // --- Part B2: 💾 lane commit — the SAVE that land/merge (dirty-tree refusers) can't do.
+  // Commit-only (never push/land); reversible by the owner. lnDirty is dirty here (its
+  // uncommitted code.txt edit) — quick mode must commit it and leave the tree clean.
+  interface CommitRes { committed?: boolean; hash?: string; subject?: string; reason?: string; error?: string }
+  const ciQuick = await post(`/api/slots/${lnDirty.slot}/commit`, { mode: "quick" });
+  const ciQuickJ = (await ciQuick.json()) as CommitRes;
+  check("commit quick mode commits a dirty lane and returns a short hash",
+    ciQuick.ok && ciQuickJ.committed === true && /^[0-9a-f]{7,}$/.test(ciQuickJ.hash ?? ""), JSON.stringify(ciQuickJ));
+  check("commit quick mode uses the deterministic wip message",
+    (ciQuickJ.subject ?? "").startsWith("wip: saved from Fleet dashboard"), JSON.stringify(ciQuickJ.subject));
+  const riskAfterCommit = (await (await get(`/api/slots/${lnDirty.slot}/risk`)).json()) as WtRiskRow;
+  check("lane tree is clean after commit (no dirty files remain)",
+    riskAfterCommit.dirtyFiles.length === 0, JSON.stringify(riskAfterCommit.dirtyFiles));
+  const ciClean = await post(`/api/slots/${lnDirty.slot}/commit`, { mode: "quick" });
+  const ciCleanJ = (await ciClean.json()) as CommitRes;
+  check("commit on a clean lane is an idempotent no-op (committed:false + reason)",
+    ciClean.ok && ciCleanJ.committed === false && (ciCleanJ.reason ?? "").includes("clean"), JSON.stringify(ciCleanJ));
+  // agent mode on a fresh dirty lane: the FLEET_COMMIT_CMD stand-in supplies the message
+  const lnAgent = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnAgent.cwd}/code.txt`, "root\nagent-commit\n");
+  const ciAgent = await post(`/api/slots/${lnAgent.slot}/commit`, { mode: "agent" });
+  const ciAgentJ = (await ciAgent.json()) as CommitRes;
+  check("commit agent mode lands the agent-supplied conventional-commit message",
+    ciAgent.ok && ciAgentJ.committed === true && ciAgentJ.subject === "feat: stand-in commit message", JSON.stringify(ciAgentJ));
+  await post(`/api/slots/${lnAgent.slot}/kill`, {});
+  check("commit refuses a non-lane (plain repo) slot", (await post("/api/slots/2/commit", { mode: "quick" })).status === 400);
+
   await post(`/api/slots/${lnDirty.slot}/kill`, {});
   await post(`/api/slots/${lnClean2.slot}/kill`, {});
 

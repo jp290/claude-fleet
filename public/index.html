@@ -363,15 +363,51 @@
     font-size: 13px; font-family: inherit; cursor: pointer; }
   .boardtoggle:hover { color: #ccc; }
   .boardtoggle.active { color: #7aa2f7; border-color: #2c3a5e; }
-  .bsec { margin: 10px 0 0; }
+  /* the board is one lifecycle story — sections are separated by a divider + consistent
+     spacing so it scans as designed, not a stack of miscellaneous controls */
+  .bsec { margin: 0; padding: 13px 0 3px; border-top: 1px solid #242424; }
+  .bsec:first-child { border-top: none; padding-top: 6px; }
   .bsec h3 { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
-    color: #666; margin-bottom: 5px; user-select: none; -webkit-user-select: none; }
+    color: #666; margin-bottom: 6px; user-select: none; -webkit-user-select: none; }
+  /* a lighter in-section subheading (commits / files groups inside WORK) */
+  .bsubhead { font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase;
+    color: #555; margin: 9px 0 3px; }
+  .bidhead { color: #e8e8e8; font-weight: 700; font-size: 12px; margin-bottom: 3px; }
+  .bidmeta { color: #777; font-size: 10.5px; margin-top: 2px; }
   .bstate { color: #aaa; line-height: 1.5; }
   .bstate .editing { color: #e0af68; } .bstate .ready { color: #9ece6a; }
   .bbranch { color: #7aa2f7; word-break: break-all; }
-  .bcopypath { margin-top: 5px; padding: 3px 9px; border-radius: 6px; border: 1px solid #333;
-    background: #262626; color: #888; font-size: 10px; font-family: inherit; cursor: pointer; }
-  .bcopypath:hover { color: #ccc; border-color: #3a3a44; }
+  /* a lifecycle status line: amber = uncommitted, green(ready) = something to land */
+  .bnote { color: #8a8a8a; line-height: 1.5; margin-top: 4px; }
+  .bnote.ready { color: #9ece6a; }
+  /* --- ONE board button family: every action reads the same; lifecycle colour only where
+     it carries meaning (amber = uncommitted work to save, green = ready to land) --- */
+  .bbtnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .bbtn { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px;
+    padding: 5px 11px; border-radius: 7px; border: 1px solid #333; background: #262626;
+    color: #cbd2e0; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bbtnrow .bbtn { margin-top: 0; }
+  .bbtn:hover:not(:disabled) { border-color: #3a4a7a; color: #fff; }
+  .bbtn:disabled { opacity: 0.55; cursor: default; }
+  .bbtn.amber { border-color: #5a4a2a; background: #241d12; color: #e0af68; }
+  .bbtn.amber:hover:not(:disabled) { background: #2e2416; border-color: #6a552f; color: #f0c078; }
+  .bbtn.green { border-color: #2c5e3a; background: #16281c; color: #9ece6a; }
+  .bbtn.green:hover:not(:disabled) { background: #1d3826; color: #b6e08a; }
+  .bbtn.accent { border-color: #2c3a5e; background: #1c2437; color: #7aa2f7; }
+  .bbtn.accent:hover:not(:disabled) { background: #26314f; color: #9ab8ff; }
+  .bbtn.on { border-color: #5a4a2a; background: #241d12; color: #e0af68; }
+  .bbtn.ghost { background: transparent; }
+  .bbtn.ghost:hover:not(:disabled) { background: #1d1710; }
+  .bbtn.subtle { margin-top: 5px; padding: 3px 9px; font-size: 10px; color: #888; }
+  .bbtn.subtle:hover:not(:disabled) { color: #ccc; border-color: #3a3a44; }
+  /* AGENTS group: make the advisory / read-only nature legible */
+  .bagenthint { color: #666; font-size: 10px; margin-bottom: 2px; }
+  /* the sweep's cross-lane "what's still missing" synthesis — set apart from verdict rows */
+  .boutstanding { margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #2c3a5e; background: #161b28; }
+  .bouthd { font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase;
+    color: #7aa2f7; margin-bottom: 3px; }
+  .boutbody { color: #c4c4c4; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
   .brow { display: flex; gap: 7px; padding: 2px 0; color: #999; line-height: 1.45; }
   .brow .bhash { flex: none; color: #666; }
   .brow .bsub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -526,7 +562,7 @@
       min-width: 40px; min-height: 40px; border-radius: 8px; border: 1px solid #333;
       background: #262626; color: #ccc; font-size: 16px; cursor: pointer; }
     .rowacts .rowact:active { background: #2c3a5e; color: #7aa2f7; border-color: #2c3a5e; }
-    .bactbtn { padding: 8px 12px; font-size: 13px; }
+    .bbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }
 
     #panes { padding: 2px; gap: 2px; }

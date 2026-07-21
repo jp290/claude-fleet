@@ -138,12 +138,73 @@ steward itself collected, rather than a single scary on/off switch.
 5. **Steal proven structure.** Fold Hermes/OpenClaw's loop, state, scheduling, and
    safety patterns into §6 rather than reinventing — see next section.
 
-## 6. Lessons from Hermes & OpenClaw
+## 6. Lessons from Hermes & OpenClaw (studied 2026-07-21)
 
-*(Pending the two architecture studies — folded in on completion. Looking
-specifically for: their top-level loop shape, durable-state format, how they
-schedule unattended work and bound it, and where — if anywhere — they keep a human
-in the loop. Adopt what's proven; reject anything that dissolves the gate.)*
+Two independent read-only studies of mature agents on this machine — Hermes
+(`~/.hermes/hermes-agent`, Python) and OpenClaw (`~/openclaw`, TS). The headline:
+**both, independently, converged on the exact mechanism §4 describes** — a
+conservative-default gate on irreversible/mutating actions whose one-time human
+approvals *ratchet a durable allowlist*, making the agent more autonomous over
+time without ever losing the gate on genuinely new irreversible actions. That two
+production systems arrived there separately is strong evidence the design is
+right. What they add is concrete, proven implementation:
+
+**Adopt (proven mechanisms):**
+
+1. **Classify mutation per *call*, deterministically — separate from
+   permission.** OpenClaw's `isMutatingToolCall` + action fingerprints
+   (`tool-mutation.ts`) tell read from write for every call, independent of
+   whether it's allowed. This is §1's reversibility axis made concrete: implement
+   `isReversible(action)` as a deterministic classifier in code, **never
+   LLM-self-reported** (both studies stress: don't trust the model to report its
+   own danger). The steward's typed-send `kind`s already carry this — extend it to
+   every steward action.
+2. **Graduation *is* the ratchet, not a separate ceremony.** Hermes
+   (`deny/session/always`) and OpenClaw (`allow-once/allow-always/deny` →
+   persisted per-agent allowlist) both make an action-class climb the ladder as a
+   byproduct of the owner approving instances of it. This is more ergonomic than
+   §4's manual promotion: the owner clicking "always" on a class of proposal *is*
+   the promotion, recorded durably (in the journal / a steward-allowlist via
+   `appendEvent`). **Irreversible classes never offer "always"** — they stay at
+   `propose` by construction (§1), which is precisely OpenClaw's
+   `DANGEROUS_ACP_TOOLS` "never silent yes for mutating tools" rule.
+3. **Two-stage gate: deterministic flag → triage that escalates on doubt.**
+   Hermes' `_smart_approve` runs a cheap model over danger-pattern hits to clear
+   false positives, returning approve/deny/**escalate** — uncertainty fails
+   *toward the human*. Sharpens joint 2's "unknown → escalate": a candidate action
+   is flagged deterministically, then optionally triaged, and any doubt escalates.
+4. **Unattended runs cannot reach the outside world — the harness mediates all
+   delivery.** Hermes strips `messaging` from cron toolsets; OpenClaw sets
+   `disableMessageTool` and instructs "return plain text, do NOT message
+   recipients yourself." Both independently reached Fleet's own steward-mail v1
+   and typed-send decisions (server renders, no free-text, inbound-only). Triple
+   validation of capability asymmetry — bank it as settled doctrine.
+5. **The Rundgang is a heartbeat, and heartbeats need three bounds.** OpenClaw's
+   `heartbeat-runner` — a self-rescheduling pulse that injects a system prompt so
+   the agent takes initiative unprompted — is exactly the Rundgang. Adopt its
+   bounds: **active-hours quiet windows** (no 3am nudges), a **global kill
+   switch**, and per-target enable. Plus Hermes/OpenClaw's **staleness
+   fast-forward / catch-up**: a supervisor waking after downtime must **skip and
+   reschedule** missed ticks, never replay a backlog of stale interventions
+   (critical against the effect-window logic firing on ancient state).
+6. **Ephemeral worker with a *reduced* toolset.** Both spawn a fresh isolated
+   agent per unattended run that deliberately *cannot* create more schedules, ask
+   clarifying questions, or message. The Rundgang worker (on `summaryViaSession`)
+   gets the same: it observes and files `pending` only — it cannot send, spawn,
+   or promote.
+7. **Model the owner in a curated file, and scan it for injection.** Hermes keeps
+   `USER.md` (a user model) beside `MEMORY.md`, loaded into the system prompt, and
+   `_scan_memory_content` checks memory for injected instructions. This is §3's
+   owner-model with a proven shape — and the injection scan matters because the
+   steward's journal ingests untrusted transcript observations.
+
+**Where we go beyond them (don't copy — extend):** neither has a durable
+task-backlog or goal-decomposition it works down over days (Hermes explicitly
+lacks it; OpenClaw has cron but no plan). Fleet's **task-queue-as-substrate +
+two-tier backlog** (`queue-automation.md`, §2 here) is a genuine addition, not a
+reinvention — it is the piece both mature agents are missing, and the reason a
+Fleet steward can pursue multi-step work across days that a heartbeat-only agent
+cannot. Build it deliberately; it's our edge.
 
 ## The one-sentence thesis
 

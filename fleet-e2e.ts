@@ -308,10 +308,10 @@ const cap2a = await tmuxOut("capture-pane", "-t", "s2", "-p");
 check("due auto fired into its pane", cap2a.out.includes("auto-fire-check"));
 const cap1a = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("idle-gated auto held back while busy", !cap1a.out.includes("auto-must-wait"));
-const sess1 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null }[] };
+const sess1 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null; runsLeft: number }[] };
 const fired = sess1.autos.find((a) => a.id === aFireJ.auto.id);
 const waiting = sess1.autos.find((a) => a.id === aBusyJ.auto.id);
-check("fired one-shot is disabled with result 'sent'", !!fired && !fired.enabled && fired.lastResult === "sent", JSON.stringify(fired));
+check("fired one-shot is disabled, result 'sent', runsLeft driven to 0 (spent is one predicate)", !!fired && !fired.enabled && fired.lastResult === "sent" && fired.runsLeft === 0, JSON.stringify(fired));
 check("gated auto still waiting within grace", !!waiting && waiting.enabled && waiting.lastResult === null, JSON.stringify(waiting));
 const h2auto = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
 check("auto send recorded in prompt history", h2auto.history.some((h) => h.text === "auto-fire-check"));
@@ -324,6 +324,30 @@ check("deleted auto gone", !sess2.autos.some((a) => a.id === aBusyJ.auto.id));
 const aPersist = await post("/api/slots/2/autos", { text: "auto-persist-probe", inSec: 3600 });
 const aPersistJ = (await aPersist.json()) as { auto: { id: string } };
 check("create persistence-probe auto", aPersist.ok && !!aPersistJ.auto?.id);
+
+// --- perpetual autos: an owner-only recurring beat that re-arms instead of expiring at the runs
+// cap. Proven by CONTRAST — a runs=1 control dies after one fire; a runs=1 perpetual, same params,
+// survives it. Both fire on slot 2 (idleSec:0 bypasses the idle gate); the C-u below clears both. ---
+const aPerp = await post("/api/slots/2/autos", { text: "perp-beat", inSec: 1, everySec: 10, idleSec: 0, perpetual: true });
+const aPerpJ = (await aPerp.json()) as { ok?: boolean; auto?: { id: string; perpetual?: boolean } };
+check("owner can create a perpetual auto (flagged perpetual)", aPerp.ok && aPerpJ.auto?.perpetual === true, JSON.stringify(aPerpJ.auto));
+const aCtl = await post("/api/slots/2/autos", { text: "ctl-beat", inSec: 1, everySec: 10, runs: 1, idleSec: 0 });
+const aCtlJ = (await aCtl.json()) as { auto?: { id: string } };
+check("perpetual requires a recurring interval (one-shot + perpetual -> 400)",
+  (await post("/api/slots/2/autos", { text: "x", inSec: 2, perpetual: true })).status === 400);
+await Bun.sleep(9000); // one fire + a 5s scheduler tick
+const sessP = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; runsLeft: number; lastResult: string | null; perpetual?: boolean }[] };
+const perp = sessP.autos.find((a) => a.id === aPerpJ.auto?.id);
+const ctl = sessP.autos.find((a) => a.id === aCtlJ.auto?.id);
+check("control (runs=1, non-perpetual) is spent after one fire", !!ctl && !ctl.enabled && ctl.runsLeft === 0, JSON.stringify(ctl));
+check("perpetual SURVIVES the same fire — enabled, runsLeft un-decremented, sent",
+  !!perp && perp.enabled === true && perp.runsLeft === 1 && perp.lastResult === "sent" && perp.perpetual === true, JSON.stringify(perp));
+check("a perpetual auto is still killable (delete succeeds)", (await post(`/api/autos/${aPerpJ.auto?.id}/delete`, {})).ok);
+if (aCtlJ.auto) await post(`/api/autos/${aCtlJ.auto.id}/delete`, {});
+const aPerpPersist = await post("/api/slots/2/autos", { text: "perp-persist-probe", inSec: 3600, everySec: 3600, perpetual: true });
+const aPerpPersistJ = (await aPerpPersist.json()) as { auto?: { id: string } };
+check("create perpetual persistence-probe", aPerpPersist.ok && !!aPerpPersistJ.auto?.id);
+
 await tmuxOut("send-keys", "-t", "s2", "C-u");
 
 // --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
@@ -1193,6 +1217,8 @@ if (REPO) {
   const noSelf = await selfAuto({});
   check("a missing selfToken header is rejected", noSelf.status === 401);
   if (okJ.auto) check("delete self-scheduled auto (cleanup)", (await post(`/api/autos/${okJ.auto.id}/delete`, {})).ok);
+  const selfPerp = await selfAuto({ token: selfTok, body: { text: "self immortal", inSec: 5, everySec: 10, perpetual: true } });
+  check("a self-token lane cannot mint a perpetual auto (owner-only, 403)", selfPerp.status === 403, String(selfPerp.status));
   // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
   // the restart section (guards fix A) uses this token, then tears the lane down.
   restartSelfTok = selfTok;
@@ -1423,8 +1449,11 @@ check("after restart: share persisted and answers", shPAuth.ok);
   check("share info reports the pane's true size, not the server cache",
     `${inf.cols} ${inf.rows}` === truth && truth === "77 31", `info ${inf.cols}x${inf.rows} vs tmux ${truth}`);
 }
-const sess3 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean }[] };
+const sess3 = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; perpetual?: boolean }[] };
 check("after restart: schedule persisted", sess3.autos.some((a) => a.id === aPersistJ.auto.id && a.enabled));
+check("after restart: perpetual auto persisted with its flag intact",
+  sess3.autos.some((a) => a.id === aPerpPersistJ.auto?.id && a.enabled && a.perpetual === true),
+  JSON.stringify(sess3.autos.find((a) => a.id === aPerpPersistJ.auto?.id)));
 const replay2 = await new Promise<number>((resolve) => {
   let n = 0;
   const ws = new WebSocket(wsUrl(2));
@@ -1573,6 +1602,8 @@ if (auditRotExists) {
   check("steward's own autos route lands on the steward's OWN slot regardless of a spoofed `slot` field",
     stewAutoRes.ok && stewAutoJ.auto?.slot === lnStew.slot, JSON.stringify(stewAutoJ));
   if (stewAutoJ.auto) await post(`/api/autos/${stewAutoJ.auto.id}/delete`, {});
+  const stewPerp = await stewPost("/api/steward/autos", { text: "steward immortal", inSec: 5, everySec: 10, perpetual: true });
+  check("steward cannot mint a perpetual auto (owner-only, 403)", stewPerp.status === 403, String(stewPerp.status));
 
   // --- an unknown steward token is unauthorized like any other unrecognized credential ---
   const wrongStew = await fetch(BASE + "/api/steward/sessions", { headers: { authorization: "Bearer " + "0".repeat(32) } });

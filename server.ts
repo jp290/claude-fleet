@@ -3162,7 +3162,10 @@ Bun.serve<WSData>({
         if (st.out) return json({ status: "blocked",
           detail: `uncommitted changes — commit them (or ask the session to) first:\n${st.out.slice(0, 400)}` });
         if (await gitOpInProgress(cwd)) return json({ status: "blocked", detail: "a git merge/rebase is in progress in this lane — finish or abort it in the session first" });
-        if (Date.now() - s.lastOutput < MERGE_IDLE_MS) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
+        // the idle gate guards a run that STARTS the agent — a confirm-land is a pure git ff
+        // of an already-reviewed resolution, so the agent's own trailing pane output must not
+        // block it (otherwise every confirm right after a resolve bounces off "let it settle").
+        if (!body?.confirm && Date.now() - s.lastOutput < MERGE_IDLE_MS) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
         const main = await integrationBranch(repo);
         if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
@@ -3203,9 +3206,24 @@ Bun.serve<WSData>({
         // the ff-merge is safe. If main moved since the resolution the ancestry fails and we
         // send them back to re-run ⏫ (which re-rebases against the new main).
         if (body?.confirm === true) {
-          const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
-          if (anc.code !== 0) return json({ status: "blocked",
-            detail: `${main} moved since the resolution — the lane is no longer rebased onto it. Re-run ⏫ merge.` });
+          // atomic confirm-land: if main moved since the agent resolved, the earlier rebase is
+          // stale — but the conflicts were already resolved once, so REPLAY those resolved
+          // commits onto the CURRENT main and land in one step, instead of sending the owner
+          // back through a full agent re-run. Only a re-rebase that CONFLICTS AGAIN (main
+          // touched the same lines) genuinely needs the agent — then, and only then, fall back
+          // to ⏫. rerere off: never silently replay a recorded resolution and land it unseen.
+          let anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
+          if (anc.code !== 0) {
+            const rb = await git(cwd, "-c", "rerere.enabled=false", "rebase", main);
+            if (rb.code !== 0) {
+              await git(cwd, "rebase", "--abort");
+              return json({ status: "blocked",
+                detail: `${main} moved and the resolution no longer replays cleanly onto it — re-run ⏫ merge to resolve against the new ${main}.` });
+            }
+            anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
+            if (anc.code !== 0) return json({ status: "error",
+              detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
+          }
           const adv = await advanceIntegration(repo, main, branch);
           if (adv) return json({ status: "error",
             detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);

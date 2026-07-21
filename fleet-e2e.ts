@@ -637,6 +637,31 @@ if (REPO) {
     check("worktrees map derives main again after clear", wmClr.main === "main" || wmClr.main === "master", wmClr.main);
   }
 
+  // --- issue 2: risk/merged checks measure against the integration branch, not the primary's
+  // HEAD. A lane merged into a CONFIGURED integration branch (distinct from main) must read as
+  // safe-to-remove — otherwise landLane's own removeWorktreeSafe would wedge after a
+  // ref-advance land (lane merged into main, but primary HEAD parked elsewhere). ---
+  {
+    const l2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${l2.cwd}/issue2.txt`, "work\n");
+    spawnSync("git", ["-C", l2.cwd, "add", "issue2.txt"]);
+    spawnSync("git", ["-C", l2.cwd, "commit", "-qm", "issue2 lane work"]);
+    // an integration branch that already CONTAINS the lane (points at its tip), unlike main
+    spawnSync("git", ["-C", REPO, "branch", "intb", l2.branch]);
+    // baseline (unconfigured → integration branch = main): the lane's commit is unmerged
+    const riskBefore = (await (await get(`/api/slots/${l2.slot}/risk`)).json()) as { unpushedCommits: unknown[]; empty: boolean };
+    check("issue2: lane reads as unpushed vs main before config", riskBefore.unpushedCommits.length === 1 && riskBefore.empty === false,
+      JSON.stringify(riskBefore));
+    // configure integration branch = intb (which contains the lane) → lane now reads merged/safe
+    await post("/api/repo-base", { repo: REPO, branch: "intb" });
+    const riskAfter = (await (await get(`/api/slots/${l2.slot}/risk`)).json()) as { unpushedCommits: unknown[]; empty: boolean };
+    check("issue2: lane merged into the configured integration branch reads as safe (no unpushed)",
+      riskAfter.unpushedCommits.length === 0 && riskAfter.empty === true, JSON.stringify(riskAfter));
+    await post("/api/repo-base", { repo: REPO, branch: "" }); // clear config
+    spawnSync("git", ["-C", REPO, "branch", "-D", "intb"]);
+    await post(`/api/slots/${l2.slot}/kill`, {});
+  }
+
   // --- lane brief must be LANE-SCOPED and match git exactly (regression: it used to show
   // the base branch's whole history for lanes, and truncated the first uncommitted file) ---
   {

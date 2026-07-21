@@ -86,7 +86,7 @@ input="$(cat)"
 lanes_section="$(printf '%s' "$input" | sed -n '/^## lanes$/,$p')"
 paths="$(printf '%s' "$lanes_section" | grep -o '"path": "[^"]*"' | sed 's/"path": "\(.*\)"/\1/')"
 empties="$(printf '%s' "$lanes_section" | grep -o '"empty": \(true\|false\)' | sed 's/"empty": //')"
-out="["
+out="{\"verdicts\":["
 first=1
 i=1
 printf '%s\n' "$paths" > /tmp/fakesweep_paths.$$
@@ -103,15 +103,25 @@ while IFS= read -r p; do
   i=$((i+1))
 done < /tmp/fakesweep_paths.$$
 rm -f /tmp/fakesweep_paths.$$ /tmp/fakesweep_empties.$$
-out="$out]"
+# new contract: an OBJECT {verdicts, outstanding} — outstanding is a plain-text synthesis
+out="$out],\"outstanding\":\"fake outstanding: some lanes have unlanded commits to land\"}"
 esc="$(printf '%s' "$out" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 printf '{"result": "%s"}' "$esc"
 EOF
 chmod +x "$DIR/fakesweep"
 
+# stand-in 💾 commit-message agent: same {"result": …} envelope, answers a fixed
+# conventional-commit message so the agent-mode commit path round-trips without a model.
+cat > "$DIR/fakecommit" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"message\\": \\"feat: stand-in commit message\\"}"}'
+EOF
+chmod +x "$DIR/fakecommit"
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_SWEEP_CMD='$DIR/fakesweep' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_SWEEP_CMD='$DIR/fakesweep' FLEET_COMMIT_CMD='$DIR/fakecommit' exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1

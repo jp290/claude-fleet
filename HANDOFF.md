@@ -59,28 +59,34 @@ merged into the steward worktree.
 ## Live state
 
 Slot 1 = `⚙ steward`, cwd `claude-fleet.worktrees/steward` (branch `steward`,
-mirrors main + carries gitignored CLAUDE.md). A manual `/rundgang` proof-run
-surfaced two wiring gaps: `/rundgang` isn't loaded in a running session (needs a
-fresh session or reload), and the steward has **no token in its pane** so it can't
-self-serve state via `/api/steward/sessions`.
+mirrors main + carries gitignored CLAUDE.md). The token gap is now **closed**: the
+pane carries `FLEET_STEWARD_TOKEN` (baked at the 2026-07-21 respawn) and it
+authorizes `/api/steward/*`. The remaining gap is the other one the earlier
+`/rundgang` proof-run surfaced: whether `/rundgang` loads and self-serves correctly
+in the (now respawned, so fresh-process) session — unverified; that's item #3.
 
 ## Parked / next (ranked)
 
 0. ~~Investigate the deploy 404~~ — **DONE** (RESOLVED section above): not a deploy
    bug, a scope mismatch. Nothing steward-runtime is blocked.
-1. **Wire the steward token into its pane** (`FLEET_STEWARD_TOKEN`) — **BUILT, lane
-   `steward-token` @ `1bf55c0`, pending owner land.** Mechanism decided by grounding:
-   env is only injectable at spawn (can't patch a running `claude` process), and a
-   slot becomes steward by *relabel* (server.ts:2337), so bake at spawn keyed on
-   `s.label === STEWARD_LABEL` — same mechanism + exposure as `FLEET_SELF_TOKEN`
-   (server.ts:843). Consequence (accepted, mirrors FLEET_SELF_TOKEN): a live relabel
-   takes effect only on the pane's next (re)spawn, since a srv-only deploy doesn't
-   recycle living panes. e2e proves the token reaches a steward pane and is absent
-   for a non-steward slot (collision-safe run: 349 PASS / ALL PASS).
-   *Open follow-up to weigh:* whether `/rename`→steward should trigger a
+1. **Wire the steward token into its pane** (`FLEET_STEWARD_TOKEN`) — **DONE & LIVE**
+   (landed `908f45b`, deployed, verified 2026-07-21). Mechanism: bake at spawn keyed
+   on `s.label === STEWARD_LABEL` — same mechanism + exposure as `FLEET_SELF_TOKEN`
+   (server.ts:843), chosen because env is only injectable at spawn (can't patch a
+   running `claude`) and a slot becomes steward by *relabel* (server.ts:2337).
+   Live proof chain: srv redeployed (new PID); slot 1 respawned via self-heal
+   `--resume` (audit `self_heal_recreate`=`resumed`, conversation intact); the pane's
+   `claude` process env carries `FLEET_STEWARD_TOKEN`; that exact token GETs
+   `/api/steward/sessions` → 200. The baked `export FLEET_STEWARD_TOKEN=` in the
+   respawn command is itself the deterministic fingerprint that the new binary is
+   live. e2e (349 PASS / ALL PASS) covers the token reaching a steward pane and being
+   absent for a non-steward slot. Consequence (accepted, mirrors FLEET_SELF_TOKEN): a
+   live relabel-to-steward takes effect only on the pane's next (re)spawn.
+   *Open follow-ups to weigh (NOT built):* (a) should `/rename`→steward trigger a
    resume-respawn so designation delivers the token immediately (a behavioral change
-   to `/rename`, deliberately NOT smuggled into this lane); and whether an
-   ex-steward pane should drop the token on relabel-away.
+   to `/rename`); (b) should an ex-steward pane drop the token on relabel-away.
+   *Not yet proven:* that `/rundgang` itself self-serves correctly from inside the
+   pane — that is item #3's watched proving, not this plumbing.
 2. **Owner-model** — none exists yet (`steward-intelligence.md` §3 designed it).
    Plan: synthesize the already-curated corpus (feedback+user memories under
    `~/.claude/projects/*/memory`, the ~33 project `CLAUDE.md`s, the global

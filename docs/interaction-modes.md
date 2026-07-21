@@ -58,8 +58,8 @@ any session that spawns or drives another.
   `land`.)
 - **Gate before acting.** Fleet's own automation only fires through gates:
   claude-alive, idle, lane budget, and re-verifying the slot is still yours before
-  injecting text (`server.ts:537`). A driver that types into a pane without
-  checking who lives there is a confused deputy.
+  injecting text (`tickDispatch`, `server.ts:1109`). A driver that types into a
+  pane without checking who lives there is a confused deputy.
 - **Route models by brief quality, not task prestige.** A foolproof brief lets a
   cheap model succeed; a thin brief wastes an expensive one. Tailoring is a cost
   lever *and* a review lever. (Phase 1: per-lane `--model` in `slotCmd`.)
@@ -82,7 +82,7 @@ any session that spawns or drives another.
 
 **Failure modes:** prompting the wrong session (gate on identity before send);
 duplicate work after restart (resolve links on every teardown path); silent spawn
-failure (surface the error on the task — `server.ts:548` — never swallow it).
+failure (surface the error on the task — `server.ts:1121` — never swallow it).
 
 ## 3. Session → self
 

@@ -1593,6 +1593,30 @@ if (auditRotExists) {
     selfRegRes.ok && selfRegJ.auto?.slot === lnStew.slot, JSON.stringify(selfRegJ));
   if (selfRegJ.auto) await post(`/api/autos/${selfRegJ.auto.id}/delete`, {});
 
+  // --- FLEET_STEWARD_TOKEN is baked into the ⚙ steward pane's spawn env (bake-at-spawn, keyed
+  // on the steward label) so the Rundgang can self-serve /api/steward/* without the owner token.
+  // Env is only injectable at spawn: the lane above was spawned label-less then relabeled, so
+  // the token appears only after the pane (re)spawns WITH the label set — identical semantics to
+  // FLEET_SELF_TOKEN. Force a self-heal respawn to observe it. ---
+  await tmuxOut("kill-session", "-t", `s${lnStew.slot}`);
+  for (let i = 0; i < 80; i++) {
+    if ((await tmuxOut("has-session", "-t", `s${lnStew.slot}`)).code === 0) break;
+    await Bun.sleep(100);
+  }
+  await Bun.sleep(700); // let the resumed shell settle before it can echo the env
+  await tmuxOut("send-keys", "-t", `s${lnStew.slot}`, `printf 'STEWTOK=[%s]\\n' "$FLEET_STEWARD_TOKEN"`, "Enter");
+  await Bun.sleep(700);
+  const capStewEnv = await tmuxOut("capture-pane", "-t", `s${lnStew.slot}`, "-p");
+  const bakedStewTok = /STEWTOK=\[([0-9a-f]{32})\]/.exec(capStewEnv.out)?.[1] ?? "";
+  check("FLEET_STEWARD_TOKEN is baked into a steward-labeled pane's spawn env and equals the steward token",
+    bakedStewTok === STEW && STEW.length === 32, `baked=[${bakedStewTok}] steward=[${STEW}]`);
+
+  // a non-steward slot never carries the steward token
+  await tmuxOut("send-keys", "-t", "s2", `printf 'STEWTOK=[%s]\\n' "$FLEET_STEWARD_TOKEN"`, "Enter");
+  await Bun.sleep(700);
+  const capS2Stew = await tmuxOut("capture-pane", "-t", "s2", "-p");
+  check("FLEET_STEWARD_TOKEN absent for a non-steward slot", capS2Stew.out.includes("STEWTOK=[]"), capS2Stew.out.slice(-200));
+
   await post(`/api/slots/${lnStew.slot}/kill`, {});
 }
 

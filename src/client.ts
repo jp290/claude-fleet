@@ -144,6 +144,7 @@ const fmtClock = (ts: string | null) =>
 class Pane {
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
+  private pinPending = false; // pin the viewport to the bottom once the next seed lands
   private ws: WebSocket | null = null;
   private lastCols = 0;
   private lastRows = 0;
@@ -465,7 +466,17 @@ class Pane {
       if (focused === this.index) setConn(true);
       this.sendResize(true);
     };
-    ws.onmessage = (e) => this.term.write(new Uint8Array(e.data as ArrayBuffer));
+    ws.onmessage = (e) => {
+      // the seed (scrollback capture or raw-tail replay) is always the first frame the
+      // server sends on open. Once it's parsed, the buffer sits at ydisp===ybase, but
+      // xterm's DOM viewport can be parked at row 0 — its Viewport refresh multiplies
+      // ydisp by a rowHeight that is 0 until the pane element is measured/visible, so a
+      // refresh that lands a frame too early leaves scrollTop=0 ("stuck at the top").
+      // Re-pin once the seed is written; the write callback runs after the buffer settles.
+      const pin = this.pinPending;
+      this.pinPending = false;
+      this.term.write(new Uint8Array(e.data as ArrayBuffer), pin ? () => this.pinToBottom() : undefined);
+    };
     ws.onclose = () => {
       if (g !== this.gen) return; // superseded by a reassign or dispose
       if (focused === this.index) setConn(false);
@@ -490,7 +501,7 @@ class Pane {
     // size the terminal to its container before connecting — the WS URL carries
     // this size, and connecting at a stale default (e.g. 80x24) would seed scrollback
     // at the wrong width and force an immediate second reseed once refit() catches up
-    if (slot) { this.fit.fit(); this.connect(); }
+    if (slot) { this.fit.fit(); this.pinPending = true; this.connect(); }
     this.focus();
     renderSlots(); // focusPane skips no-op renders, but an assignment always changes the sidebar
     saveView();
@@ -511,7 +522,23 @@ class Pane {
     this.ws?.close();
     this.term.reset();
     this.fit.fit();
+    this.pinPending = true;
     this.connect(true);
+  }
+
+  // called from the seed's write callback (see connect()). The buffer is already at
+  // ydisp===ybase, so term.scrollToBottom() would early-return without re-syncing the
+  // DOM viewport (scrollLines(0) fires no scroll event). Nudge one line off the bottom
+  // and back on the next frame — by then the pane is laid out, so the second scroll's
+  // refresh computes a correct rowHeight and parks scrollTop at the real bottom.
+  private pinToBottom() {
+    requestAnimationFrame(() => {
+      const b = this.term.buffer.active;
+      if (b.baseY === 0) return; // single screen, nothing above to be stuck on
+      if (b.viewportY !== b.baseY) { this.term.scrollToBottom(); return; }
+      this.term.scrollLines(-1);
+      this.term.scrollToBottom();
+    });
   }
 
   refit() {

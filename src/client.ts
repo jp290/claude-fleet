@@ -2930,18 +2930,23 @@ const enhTitle = enhBtn.title;
 enhBtn.onclick = async () => {
   const text = ta.value.trim();
   if (!text || enhBtn.disabled) return;
+  const slot = panes[focused]?.slot ?? 0;
   enhBtn.disabled = true;
   enhBtn.textContent = "…";
   const slowNotice = setTimeout(() => {
     enhBtn.title = "✨ still working — this can take up to 3 min, not stuck";
   }, 20_000);
   try {
-    const res = await post("/api/enhance", { slot: panes[focused]?.slot ?? 0, text });
+    const res = await post("/api/enhance", { slot, text });
     const j = (await res.json().catch(() => ({}))) as { prompt?: string; error?: string };
     if (!res.ok || !j.prompt) throw new Error(j.error ?? "enhance failed");
-    ta.value = j.prompt;
-    updateChips();
-    ta.focus();
+    // the wait can run up to 3min — if the draft moved on (edited, sent, pane switched)
+    // in the meantime, dropping the stale result silently beats clobbering new work
+    if (ta.value.trim() === text && (panes[focused]?.slot ?? 0) === slot) {
+      ta.value = j.prompt;
+      updateChips();
+      ta.focus();
+    }
   } catch {
     enhBtn.style.borderColor = "#f85149";
     setTimeout(() => { enhBtn.style.borderColor = ""; }, 1500);

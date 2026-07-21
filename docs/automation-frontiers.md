@@ -109,3 +109,44 @@ Recommended next action, unchanged and now underlined: **land the token lane →
 build the Rundgang on `summaryViaSession`, writing the journal via `appendEvent`
 from its first run.** Then this doc becomes a backlog we prune with evidence,
 not a plan we extend by argument.
+
+---
+
+## Check verdicts (pressure-tested 2026-07-21) — the six are not independent
+
+Adversarial re-examination of the six above. It *reduced* the set, not extended
+it:
+
+- **#3 verify-before-surface is the keystone** — #2 and #4 both hang off it. Two
+  unstated constraints: it covers only tasks with a deterministic `verifyCmd`
+  (fuzzy tasks stay heuristic — a two-class system, state it), and running a
+  `verifyCmd` server-side is code execution, so it **must be owner-approved at
+  promotion, never taken raw from untrusted intake** (else RCE via external input).
+- **#4 self-repair collapses into a playbook rule**, not a new mechanism: a
+  re-brief is just a typed nudge carrying the failure output, already in the
+  delivery path. Refine: re-run the verify first (catches flakes cheaply), then
+  one re-brief, then escalate; cap total attempts server-side, episode-scoped.
+- **#5 decay is the strongest on pure logic** and needs the **promote-slow /
+  demote-fast asymmetry** (N clean instances to climb; one or two corrections to
+  fall — the cost of a wrongly-trusted silent class is high, re-demotion is one
+  click) plus hysteresis against oscillation. Needs a *recency-windowed* journal,
+  not lifetime.
+- **#2 backpressure** is control-theoretically correct but depends on #3 for a
+  real "awaiting review" signal, and is low near-term priority (dispatch is off by
+  default). It makes explicit that autonomous throughput cannot outrun owner
+  presence — a feature, not a bug.
+- **#1 corrections→owner-model** is highest value, least buildable: correction
+  *capture* (classifying an owner turn as a correction vs. a new instruction, from
+  untrusted transcript) and *attribution* (one correction ≠ a general rule) are
+  unsolved; it also depends on the brief compiler consuming the model. Demote to
+  last — a research direction, not a near-term frontier.
+- **#6 adaptive cadence is a v2, and was mis-costed**: "event-triggered" needs an
+  event bus Fleet doesn't have (idle is detected by polling today). v1 Rundgang =
+  a fixed heartbeat (a plain auto); adaptive comes only after the fixed one proves
+  the signals.
+
+**Dependency spine (the real build order, not the value ranking):**
+`journal → #3 → (#5, #4) → #2 → #1`, with **#6 as a v2**. The keystone is #3; the
+safety complement is #5; #4 is a rule that falls out for free; #1 is the hard
+research problem; #6 waits for an event mechanism. Everything still gates on the
+journal existing — which remains the one thing to ship next.

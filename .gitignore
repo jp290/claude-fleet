@@ -1,6 +1,8 @@
 node_modules/
 streams/
 fleet.json
+audit.jsonl
+audit.jsonl.1
 *.log
 public/app.js
 .playwright-mcp/

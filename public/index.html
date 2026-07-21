@@ -73,6 +73,9 @@
   .slot:hover .slotact { display: flex; }
   .slot .kill { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
   .slot .kill:hover { color: #f85149; background: #2a1a1a; }
+  /* mobile-only per-row action strip (share/export/rename/land); hidden on desktop where
+     the board carries these actions — the mobile media query flips it to a flex row */
+  .rowacts { display: none; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
@@ -513,9 +516,16 @@
     body.board #board { display: none; } /* must outrank the desktop body.board rule */
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
     .slot { padding: 12px 10px; font-size: 13px; }
-    /* finger-sized kill target; share/export/rename/land moved to the board (desktop-only —
-       see CLAUDE.md P2 note: mobile board access is a known gap left open by this lane) */
+    /* finger-sized kill target; share/export/rename/land come back as .rowacts on mobile
+       (the desktop-only board is display:none under 700px) */
     .slot .kill { padding: 8px 10px; font-size: 16px; }
+    /* the row wraps so the action strip drops onto its own full-width line under the label */
+    .slot { flex-wrap: wrap; }
+    .rowacts { display: flex; flex-basis: 100%; gap: 8px; margin-top: 6px; }
+    .rowacts .rowact { display: flex; align-items: center; justify-content: center;
+      min-width: 40px; min-height: 40px; border-radius: 8px; border: 1px solid #333;
+      background: #262626; color: #ccc; font-size: 16px; cursor: pointer; }
+    .rowacts .rowact:active { background: #2c3a5e; color: #7aa2f7; border-color: #2c3a5e; }
     .bactbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }
 

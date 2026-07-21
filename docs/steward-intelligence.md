@@ -159,6 +159,16 @@ right. What they add is concrete, proven implementation:
    LLM-self-reported** (both studies stress: don't trust the model to report its
    own danger). The steward's typed-send `kind`s already carry this — extend it to
    every steward action.
+   **Refinement (steward review 2026-07-21, real):** reversibility is
+   action-type **× context**, not type alone. A commit or nudge is git-reversible
+   by type, but if the owner is *actively working the same slot*, its true blast
+   radius is destroyed attention — a severed train of thought, an overwritten
+   half-typed prompt, a work-state cut mid-diff. Git state resets; lost human
+   intent does not. So `isReversible` must down-rank to irreversible whenever a
+   human is active at the target. The machinery already exists: the idle gate in
+   `sendText`/`tickAutos` is not merely "will the paste land cleanly" — it is a
+   **reversibility modifier**. Wire it in as such: no otherwise-reversible action
+   counts as reversible against an active human.
 2. **Graduation *is* the ratchet, not a separate ceremony.** Hermes
    (`deny/session/always`) and OpenClaw (`allow-once/allow-always/deny` →
    persisted per-agent allowlist) both make an action-class climb the ladder as a

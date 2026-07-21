@@ -121,6 +121,18 @@ The order that makes each step earn the next:
    each built when a concrete plan demands it, never speculatively.
 
 First concrete build, smallest safe increment: **steward-token scope for filing
-pending tasks.** It is one route addition, changes no task-model invariant, and
-converts the steward's judgment into reviewable proposals — the exact join
-between the automation ladder and the queue.
+pending tasks.** It changes no task-model invariant and converts the steward's
+judgment into reviewable proposals — the exact join between the automation
+ladder and the queue.
+
+**Hard build constraint (steward review 2026-07-21, confirmed against the
+code).** It is *not* merely "allow the route for the steward token." The single
+create endpoint `POST /api/tasks` (`interface Task` create path, near
+server.ts:3117) sets `status` from `body.queue === true` in the *same call* —
+create and promote are fused there. If the steward principal is simply mapped
+onto that route, a single `queue:true` in the body self-promotes to `queued` and
+the whole pending gate is bypassed by one forgotten field. The scope check must
+**hard-force `status:"pending"` and discard `body.queue`** for any non-owner
+principal — "pending only" enforced in code, not convention. This is the one
+place the pending→queued boundary is most easily undermined in practice; the
+token lane (or its successor) must encode it, not assume it.

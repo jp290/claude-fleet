@@ -663,6 +663,23 @@ async function landLane(s: Slot): Promise<{ error: string; code: number } | { re
   return { removed: path, branch };
 }
 
+// advance the integration branch to a (clean, already-rebased) lane tip. If a working tree
+// has the integration branch checked out, git ties the ref to that tree — ff-merge THERE, and
+// git's own --ff-only refuses to clobber uncommitted work (the historical guarantee). If the
+// integration branch is checked out nowhere (the primary parked off it), advance the ref
+// directly with branch -f, gated on ancestry so it stays a fast-forward and touches no tree.
+async function advanceIntegration(repo: string, main: string, branch: string): Promise<{ error: string } | null> {
+  const holder = (await listWorktrees(repo)).find((w) => w.branch === main);
+  if (holder) {
+    const ff = await git(holder.path, "merge", "--ff-only", branch);
+    return ff.code === 0 ? null : { error: (ff.err || ff.out).slice(0, 300) };
+  }
+  const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
+  if (anc.code !== 0) return { error: `${main} is not an ancestor of ${branch} — not a fast-forward` };
+  const upd = await git(repo, "branch", "-f", main, branch);
+  return upd.code === 0 ? null : { error: (upd.err || upd.out).slice(0, 300) };
+}
+
 // slots currently being opened as lanes: the "is this slot free" checks and the eventual
 // `openSlot` write are separated by several awaits, so every spawner (routes, dispatcher)
 // must reserve its slot SYNCHRONOUSLY before the first await or two concurrent requests
@@ -1985,13 +2002,13 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"}; review the diff, then land.`.slice(0, 600) };
       } else {
         // CLEAN path: no judgment was involved (git rebased it with zero conflicts), so there
-        // is nothing to review — land it. The state-changing step on the primary checkout is
-        // the SERVER's, never the agent's: a plain ff-merge git refuses unless it is a clean
-        // fast-forward over an untouched working tree.
-        const ff = await git(root, "merge", "--ff-only", branch);
-        if (ff.code !== 0) {
+        // is nothing to review — land it. The state-changing step on the integration branch is
+        // the SERVER's, never the agent's: advanceIntegration ff-merges (if it's checked out,
+        // git refuses over a dirty tree) or advances the ref directly (touching no tree).
+        const adv = await advanceIntegration(root, main, branch);
+        if (adv) {
           res = { status: "error", landed: false, branch, at: Date.now(),
-            detail: `rebase ok, but fast-forwarding ${main} failed: ${(ff.err || ff.out).slice(0, 300)} — lane kept` };
+            detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
         } else {
           // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
           const land = s.cwd === cwd && s.worktree?.branch === branch
@@ -2865,27 +2882,35 @@ Bun.serve<WSData>({
         const main = await integrationBranch(repo);
         if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
-        // an ff-merge rewrites ONLY the files the lane changed — so refuse the land only if
-        // one of THOSE files is uncommitted in the primary checkout. An unrelated dirty file
-        // (e.g. a working HANDOFF.md the owner keeps editing) is left untouched by git's ff
-        // and must not block; the old check refused on ANY dirty tracked file and wedged every
-        // land behind an irrelevant edit. git's own --ff-only stays the final arbiter below.
-        const pst = await git(repo, "status", "--porcelain");
-        if (pst.code === 0 && pst.out) {
-          const dirty = new Set(pst.out.split("\n")
-            .filter((l) => l && !l.startsWith("??") && !l.startsWith("!!"))
-            .map((l) => (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim()));
-          if (dirty.size) {
-            const mb = await git(repo, "merge-base", main, branch);
-            const changed = mb.code === 0 && mb.out
-              ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
-              : { code: 1, out: "", err: "" };
-            // couldn't compute the lane's file set → fall back to the safe (broad) refusal
-            const collide = changed.code === 0
-              ? changed.out.split("\n").map((f) => f.trim()).filter((f) => f && dirty.has(f))
-              : [...dirty];
-            if (collide.length) return json({ status: "blocked",
-              detail: `primary checkout (${repo}) has uncommitted changes to ${collide.join(", ")} — the land would overwrite them; commit or stash there first` });
+        // the collision guard only matters when the integration branch is checked out in a
+        // working tree: an ff-merge THERE rewrites the lane's files on disk and git refuses if
+        // one is uncommitted. When the integration branch is checked out nowhere (the primary
+        // parked off it), landing advances the ref with branch -f and touches no working tree,
+        // so a dirty primary is irrelevant — skip the guard entirely.
+        const landHolder = (await listWorktrees(repo)).find((w) => w.branch === main);
+        if (landHolder) {
+          // an ff-merge rewrites ONLY the files the lane changed — so refuse the land only if
+          // one of THOSE files is uncommitted in the holder tree. An unrelated dirty file
+          // (e.g. a working HANDOFF.md the owner keeps editing) is left untouched by git's ff
+          // and must not block; the old check refused on ANY dirty tracked file and wedged every
+          // land behind an irrelevant edit. git's own --ff-only stays the final arbiter below.
+          const pst = await git(landHolder.path, "status", "--porcelain");
+          if (pst.code === 0 && pst.out) {
+            const dirty = new Set(pst.out.split("\n")
+              .filter((l) => l && !l.startsWith("??") && !l.startsWith("!!"))
+              .map((l) => (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim()));
+            if (dirty.size) {
+              const mb = await git(repo, "merge-base", main, branch);
+              const changed = mb.code === 0 && mb.out
+                ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
+                : { code: 1, out: "", err: "" };
+              // couldn't compute the lane's file set → fall back to the safe (broad) refusal
+              const collide = changed.code === 0
+                ? changed.out.split("\n").map((f) => f.trim()).filter((f) => f && dirty.has(f))
+                : [...dirty];
+              if (collide.length) return json({ status: "blocked",
+                detail: `${main} is checked out at ${landHolder.path} with uncommitted changes to ${collide.join(", ")} — the land would overwrite them; commit or stash there first` });
+            }
           }
         }
         // confirm-land: the owner reviewed an agent conflict resolution and is landing it.
@@ -2897,9 +2922,9 @@ Bun.serve<WSData>({
           const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code !== 0) return json({ status: "blocked",
             detail: `${main} moved since the resolution — the lane is no longer rebased onto it. Re-run ⏫ merge.` });
-          const ff = await git(repo, "merge", "--ff-only", branch);
-          if (ff.code !== 0) return json({ status: "error",
-            detail: `fast-forwarding ${main} failed: ${(ff.err || ff.out).slice(0, 300)} — lane kept` }, 409);
+          const adv = await advanceIntegration(repo, main, branch);
+          if (adv) return json({ status: "error",
+            detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);
           const land = await landLane(s);
           if ("error" in land) return json({ error: land.error }, land.code);
           mergeLast.delete(s.id);

@@ -1166,7 +1166,7 @@ if (SHARE_HOST) {
   }
   const landing = await fetch(BASE + "/", { headers: { host: SHARE_HOST } });
   const landingBody = await landing.text();
-  check("share host hides the dashboard", landing.status === 200 && landingBody.includes("klaus — live sessions") && !landingBody.includes("app.js"),
+  check("share host hides the dashboard", landing.status === 200 && landingBody.includes("cowork — live sessions") && !landingBody.includes("app.js"),
     `status ${landing.status}`);
   check("share host hides the manifest", (await fetch(BASE + "/manifest.webmanifest", { headers: { host: SHARE_HOST } })).status === 404);
   const sPub = await fetch(BASE + `/s/${shView.id}`, { headers: { host: SHARE_HOST } });

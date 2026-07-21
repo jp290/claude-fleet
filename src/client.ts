@@ -821,6 +821,8 @@ async function showLandReview(title: string, slot: number): Promise<boolean> {
     overlay.style.display = "flex";
     const panel = el("div", "panel riskpanel landreviewpanel");
     panel.appendChild(el("h2", "", title));
+    panel.appendChild(el("div", "landhint",
+      "This is the merge preview — everything that will land on main (main…HEAD). Committing does NOT clear it; only landing does. A clean worktree with commits ahead is exactly what a ready-to-land lane looks like."));
     if (data.error) {
       panel.appendChild(el("div", "diffstat", data.error));
     } else {

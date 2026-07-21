@@ -190,6 +190,8 @@
   .riskpanel { gap: 8px; }
   /* land review shows a full diff, so it needs more width than the file-list risk preview */
   .landreviewpanel { width: min(760px, 94vw); }
+  /* explainer so the merge-preview diff isn't misread as unsaved work — committing doesn't clear it, landing does */
+  .landhint { color: #7aa2f7; font-size: 11.5px; padding: 2px 0 4px; line-height: 1.45; }
   .riskempty { color: #9ece6a; font-size: 12.5px; padding: 6px 0; }
   .riskhead { color: #e0af68; font-size: 11px; font-weight: 700; margin-top: 4px; }
   /* "left alone" section of the commit preview — muted, so it reads as skipped, not committed */

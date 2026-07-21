@@ -536,8 +536,14 @@ interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 // the real, git-verified remove/discard endpoints — a bad verdict can only propose, never force.
 interface SweepVerdict { path: string; verdict: "safe-to-remove" | "stale" | "active-work";
   reason: string; suggestedAction: "remove" | "discard" | "none" }
-const sweepCache = new Map<string, SweepVerdict[]>(); // keyed by repo
+// sweep now returns an OBJECT: per-lane verdicts PLUS an "outstanding" synthesis of
+// what's still missing across the lanes ("what's really still missing").
+interface SweepData { verdicts: SweepVerdict[]; outstanding: string }
+const sweepCache = new Map<string, SweepData>(); // keyed by repo
 const sweepBusy = new Set<string>();
+// 💾 lane commit in flight, per slot — carries the MODE so the button can label itself
+// ("… saving" vs "… writing message") while the request runs.
+const commitBusy = new Map<number, "quick" | "agent">();
 interface MergeState { running: boolean;
   last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
     branch: string; at: number; conflicted?: string[] } | null }
@@ -683,6 +689,29 @@ async function doMergeLand(slot: number) {
   }
 }
 
+// 💾 save a lane's uncommitted work — the gap land/merge (dirty-tree refusers) leave open.
+// quick = deterministic wip commit; agent = a short-lived agent writes a conventional-commit
+// message (falls back to wip). Commit-only, reversible; the server never pushes or lands.
+async function doCommit(slot: number, mode: "quick" | "agent"): Promise<void> {
+  if (commitBusy.has(slot)) return;
+  commitBusy.set(slot, mode);
+  void renderBoard(); // reflect the disabled/"… writing message" state immediately
+  try {
+    const r = await post(`/api/slots/${slot}/commit`, { mode });
+    const j = (await r.json().catch(() => ({}))) as
+      { committed?: boolean; hash?: string; subject?: string; reason?: string; error?: string };
+    if (!r.ok) alert(`Commit failed: ${j.error ?? r.status}`);
+    else if (j.committed) alert(`committed ${j.hash} — ${j.subject}`);
+    else alert(j.reason ?? "nothing to commit");
+  } catch {
+    alert("Commit failed — network error");
+  } finally {
+    commitBusy.delete(slot);
+    await refresh();
+    void renderBoard();
+  }
+}
+
 async function newLane(repo: string, slot?: number): Promise<void> {
   if (laneReqBusy) return;
   laneReqBusy = true;
@@ -771,110 +800,169 @@ async function renderBoard() {
     const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
     if (mg?.running) mergeWatch.add(slot);
     const nodes: HTMLElement[] = [];
-    const head = el("div", "bsec");
-    head.appendChild(el("h3", "", `slot ${slot} — ${s.label ?? baseName(s.cwd)}`));
+    // the right board tells ONE story — the lane lifecycle: IDENTITY → WORK → LAND →
+    // AGENTS → LANES → OUTLINE. Every function of the old flat list is kept, only regrouped.
+
+    // 1 — IDENTITY: which lane this is, how to reach it, session-level actions
+    const idsec = el("div", "bsec");
+    idsec.appendChild(el("h3", "", "identity"));
+    idsec.appendChild(el("div", "bidhead", `slot ${slot} · ${s.label ?? baseName(s.cwd)}`));
     if (brief?.branch) {
       const b = el("div", "bstate");
       b.appendChild(el("span", "bbranch", brief.branch));
-      if (brief.worktree) b.appendChild(document.createTextNode(" · fleet lane"));
-      if (brief.sessionStart) b.appendChild(document.createTextNode(
-        ` · session since ${new Date(brief.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));
-      head.appendChild(b);
+      b.appendChild(document.createTextNode(brief.worktree ? " · fleet lane" : " · repo session"));
+      idsec.appendChild(b);
+      if (brief.sessionStart) idsec.appendChild(el("div", "bidmeta",
+        `session since ${new Date(brief.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));
       // one-click copy of the worktree path — the one thing you need when you do reach for
       // a terminal in a lane, and it's long and buried otherwise
       if (brief.worktree && s.cwd) {
         const cwd = s.cwd;
-        const cp = el("button", "bcopypath", "⧉ copy worktree path") as HTMLButtonElement;
+        const cp = el("button", "bbtn subtle", "⧉ copy worktree path") as HTMLButtonElement;
         cp.onclick = () => { copyText(cwd); cp.textContent = "✓ copied"; setTimeout(() => { cp.textContent = "⧉ copy worktree path"; }, 1200); };
-        head.appendChild(cp);
+        idsec.appendChild(cp);
       }
     }
-    nodes.push(head);
-    // board = the workbench: share/export/rename used to be hover-only glyphs squeezed
-    // onto a 228px row (half of them unreachable on touch) — as labeled controls here
-    // they're always reachable and self-explanatory without a tooltip
+    // session-level actions — labeled controls (were hover-only glyphs unreachable on touch)
     {
-      const asec = el("div", "bsec");
-      asec.appendChild(el("h3", "", "actions"));
-      const arow = el("div", "bactrow");
-      const shrb = el("button", "bactbtn" + (s.share ? " on" : ""),
+      const arow = el("div", "bbtnrow");
+      const shrb = el("button", "bbtn" + (s.share ? " on" : ""),
         s.share ? `⤴ shared — ${s.share.mode}` : "⤴ share") as HTMLButtonElement;
       shrb.onclick = () => openShareDlg(slot);
-      const expb = el("button", "bactbtn", "⇩ export") as HTMLButtonElement;
+      const expb = el("button", "bbtn", "⇩ export") as HTMLButtonElement;
       expb.title = "export session — print / save as PDF";
       expb.onclick = () => window.open(`/api/slots/${slot}/export`, "_blank");
-      const renb = el("button", "bactbtn", "✎ rename") as HTMLButtonElement;
+      const renb = el("button", "bbtn", "✎ rename") as HTMLButtonElement;
       renb.onclick = () => {
         const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
         if (row instanceof HTMLElement) startRename(row, s);
       };
       arow.append(shrb, expb, renb);
-      asec.appendChild(arow);
-      nodes.push(asec);
+      idsec.appendChild(arow);
     }
+    nodes.push(idsec);
+
     if (brief) {
-      const st = el("div", "bsec");
-      st.appendChild(el("h3", "", "state"));
-      const line = el("div", "bstate");
-      if (brief.uncommitted) {
-        line.appendChild(el("span", "editing",
-          `${brief.uncommitted} uncommitted file${brief.uncommitted === 1 ? "" : "s"}`));
-      } else {
-        line.appendChild(el("span", "ready", "working tree clean"));
-      }
       // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane
       // session, vs the upstream (from the sessions-poll gitInfo)
       const ahead = brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0);
       const behind = brief.laneScoped ? brief.behind : (s.git?.behind ?? 0);
-      if (ahead) line.appendChild(document.createTextNode(
-        ` · ↑${ahead} to ${brief.worktree ? "land" : "push"}`));
-      if (behind && brief.laneScoped) line.appendChild(document.createTextNode(` · ↓${behind} behind ${brief.laneBase ?? "main"}`));
-      st.appendChild(line);
-      // the concrete uncommitted work — exactly what git status shows, with its codes, so
-      // managing a worktree needs no terminal round-trip. This is also precisely what blocks
-      // ⏫ merge / ⏏ land, so seeing it here tells you what to commit.
-      if (brief.uncommittedFiles.length) {
-        const uf = el("div", "bunc");
-        for (const f of brief.uncommittedFiles.slice(0, 40)) {
-          // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
-          const x = f[0] ?? " ", y = f[1] ?? " ";
-          const row = el("div", "buncf");
-          // untracked → new; anything staged (X set, not '?') → staged; else unstaged-only → mod
-          const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
-          const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
-          badge.title = x !== " " && y !== " " ? "staged + unstaged changes"
-            : x !== " " ? "staged" : f.startsWith("??") ? "untracked" : "unstaged changes";
-          row.appendChild(badge);
+
+      // 2 — WORK: the heart. Uncommitted state + the SAVE buttons, then this lane's commits
+      // and its committed footprint. The commit action fills the gap land/merge leave open.
+      const work = el("div", "bsec");
+      work.appendChild(el("h3", "", "work"));
+      if (brief.uncommitted) {
+        const wl = el("div", "bstate");
+        wl.appendChild(el("span", "editing",
+          `${brief.uncommitted} uncommitted file${brief.uncommitted === 1 ? "" : "s"}`));
+        work.appendChild(wl);
+        // the concrete uncommitted work — exactly what git status shows, with its codes
+        if (brief.uncommittedFiles.length) {
+          const uf = el("div", "bunc");
+          for (const f of brief.uncommittedFiles.slice(0, 40)) {
+            // porcelain XY: X = staged (index) column, Y = worktree (unstaged) column
+            const x = f[0] ?? " ", y = f[1] ?? " ";
+            const row = el("div", "buncf");
+            // untracked → new; anything staged (X set, not '?') → staged; else unstaged-only → mod
+            const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
+            const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
+            badge.title = x !== " " && y !== " " ? "staged + unstaged changes"
+              : x !== " " ? "staged" : f.startsWith("??") ? "untracked" : "unstaged changes";
+            row.appendChild(badge);
+            row.appendChild(document.createTextNode(f.slice(3)));
+            row.title = `${f} — click to review the diff`;
+            row.onclick = () => void openDiff(slot);
+            uf.appendChild(row);
+          }
+          if (brief.uncommittedFiles.length > 40)
+            uf.appendChild(el("div", "bempty", `… ${brief.uncommittedFiles.length - 40} more`));
+          work.appendChild(uf);
+        }
+        // the SAVE — lanes only. land/merge refuse a dirty tree; this commits so a kill can't
+        // lose the work. quick = deterministic wip; agent = an agent writes the message.
+        if (brief.worktree) {
+          const busy = commitBusy.get(slot);
+          const crow = el("div", "bbtnrow");
+          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "✔ commit work") as HTMLButtonElement;
+          q.disabled = !!busy;
+          q.title = "commit all uncommitted work with a wip message — saved, never pushed or landed (reversible with git reset)";
+          q.onclick = () => void doCommit(slot, "quick");
+          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ commit (agent msg)") as HTMLButtonElement;
+          a.disabled = !!busy;
+          a.title = "a short-lived agent writes a one-line conventional-commit message from the diff, then commits (falls back to wip)";
+          a.onclick = () => void doCommit(slot, "agent");
+          crow.append(q, a);
+          work.appendChild(crow);
+        } else {
+          // non-lane: no commit action, but keep the diff reachable
+          const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
+          db.onclick = () => void openDiff(slot);
+          work.appendChild(db);
+        }
+      } else if (ahead) {
+        work.appendChild(el("div", "bnote ready",
+          `${ahead} commit${ahead === 1 ? "" : "s"} ready to ${brief.worktree ? "land ↓" : "push"}`));
+      } else {
+        work.appendChild(el("div", "bnote", "working tree clean — nothing to save"));
+        if (!brief.worktree) {
+          const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
+          db.onclick = () => void openDiff(slot);
+          work.appendChild(db);
+        }
+      }
+      if (behind && brief.laneScoped)
+        work.appendChild(el("div", "bnote", `↓${behind} behind ${brief.laneBase ?? "main"}`));
+      // this lane's commits vs its base (or the session's commits for a non-lane)
+      work.appendChild(el("div", "bsubhead", brief.laneScoped ? `commits on this lane (vs ${brief.laneBase ?? "main"})`
+        : brief.sessionStart ? "commits this session" : "recent commits"));
+      if (!brief.commits.length) work.appendChild(el("div", "bempty",
+        brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
+      for (const cm of brief.commits) {
+        const row = el("div", "brow");
+        row.appendChild(el("span", "bhash", cm.hash));
+        const sub = el("span", "bsub", cm.subject);
+        sub.title = cm.subject;
+        row.appendChild(sub);
+        work.appendChild(row);
+      }
+      // the committed footprint — what this lane/session changes vs its base
+      if (brief.files.length) {
+        work.appendChild(el("div", "bsubhead", brief.laneScoped ? `files changed vs ${brief.laneBase ?? "main"}`
+          : brief.sessionStart ? "changed this session" : "changed files"));
+        if (brief.shortstat) work.appendChild(el("div", "bstate", brief.shortstat));
+        for (const f of brief.files.slice(0, 30)) {
+          const row = el("div", "bfile");
+          row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
           row.appendChild(document.createTextNode(f.slice(3)));
           row.title = `${f} — click to review the diff`;
           row.onclick = () => void openDiff(slot);
-          uf.appendChild(row);
+          work.appendChild(row);
         }
-        if (brief.uncommittedFiles.length > 40)
-          uf.appendChild(el("div", "bempty", `… ${brief.uncommittedFiles.length - 40} more`));
-        st.appendChild(uf);
+        if (brief.files.length > 30) work.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
       }
-      // the board is the index, the ± overlay is the reading room — a diff needs line
-      // width the 264px board can't give, so the board links instead of embedding
-      const db = el("button", "bdiffbtn", "± view diff") as HTMLButtonElement;
-      db.onclick = () => void openDiff(slot);
-      st.appendChild(db);
-      // a lane's endgame lives right next to its state: ONE land action (glyph ⏏) whose
-      // label carries the auto-vs-review-needed distinction as text, not as a second or
-      // third triangle glyph. The three server paths this used to expose as ⏫/⏏/⏬ are
-      // still there underneath (doLand tries the direct /land path, then falls back to
-      // the /merge agent) — only the UI collapsed to one control.
+      nodes.push(work);
+
+      // 3 — LAND: the lane's endgame (lanes only). ± view diff + ONE land action whose label
+      // carries the auto-vs-review-needed distinction as text. doLand tries the direct /land
+      // path, then falls back to the /merge agent — the UI is collapsed to one control.
       if (brief.worktree) {
+        const land = el("div", "bsec");
+        land.appendChild(el("h3", "", "land"));
+        const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
+        db.onclick = () => void openDiff(slot);
+        land.appendChild(db);
         const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
         const awaitingReview = l?.status === "resolved";
-        const lb = el("button", "bmergebtn",
+        // green only when there's something to land — the lifecycle "ready" signal
+        const lb = el("button", "bbtn" + (ahead && !mg?.running ? " green" : ""),
           mg?.running ? "… landing" : awaitingReview ? "⏏ land (re-run if main moved)" : "⏏ land lane") as HTMLButtonElement;
         lb.disabled = !!mg?.running;
         lb.title = "already-merged lanes land immediately; otherwise this rebases onto main and lands "
           + "automatically — on conflicts a background agent resolves them and pauses for your review "
           + "before anything reaches main";
         lb.onclick = () => void doLand(slot);
-        st.appendChild(lb);
+        land.appendChild(lb);
         if (awaitingReview && l) {
           // the agent resolved conflicts and the server verified the rebase — the owner
           // reviews the diff and lands. This is the one place a human eye is required.
@@ -887,44 +975,110 @@ async function renderBoard() {
           const acts = el("div", "bmergeacts");
           const rev = el("button", "bmergereview", "± review diff") as HTMLButtonElement;
           rev.onclick = () => void openMergeDiff(slot);
-          const land = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
-          land.onclick = () => void doMergeLand(slot);
-          acts.append(rev, land);
+          const landb = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
+          landb.onclick = () => void doMergeLand(slot);
+          acts.append(rev, landb);
           note.appendChild(acts);
-          st.appendChild(note);
+          land.appendChild(note);
         } else if (l) {
           const cls = l.status === "merged" && l.landed ? "ok" : l.status === "blocked" ? "warn" : "err";
-          st.appendChild(el("div", `bmergenote ${cls}`,
+          land.appendChild(el("div", `bmergenote ${cls}`,
             `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed") : l.status}: ${l.detail}`));
         }
+        nodes.push(land);
       }
-      nodes.push(st);
-      // the repo's lane map: every open worktree — who holds it, its state, and the
-      // orphans (killed slot, worktree still on disk) with reattach/remove right there
+
+      // 4 — AGENTS: advisory, read-only. ✨ summarize + 🧹 sweep. The sweep's per-lane
+      // verdicts render down in LANES; its "what's still missing" synthesis renders here.
+      // recover a server-cached summary once per slot (GET never spawns the agent)
+      if (!sumCache.has(slot)) {
+        sumCache.set(slot, {});
+        void api(`/api/slots/${slot}/summary`).then(async (r) => {
+          if (!r.ok) return;
+          const j = (await r.json()) as SummaryInfo;
+          if (j.summary) { sumCache.set(slot, j); void renderBoard(); }
+        }).catch(() => { /* transient — the button still works */ });
+      }
+      const asec = el("div", "bsec");
+      asec.appendChild(el("h3", "", "agents"));
+      asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
+      const sum = sumCache.get(slot);
+      const sbtn = el("button", "bbtn accent",
+        sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "✨ re-summarize" : "✨ summarize") as HTMLButtonElement;
+      sbtn.disabled = sumBusy.has(slot);
+      sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
+      sbtn.onclick = async () => {
+        if (sumBusy.has(slot)) return;
+        sumBusy.add(slot);
+        sbtn.disabled = true;
+        sbtn.textContent = "… summarizing";
+        try {
+          const r = await post(`/api/slots/${slot}/summary`, {});
+          const j = (await r.json().catch(() => ({}))) as SummaryInfo;
+          sumCache.set(slot, r.ok ? j : { error: j.error ?? "summarizer failed" });
+        } catch {
+          sumCache.set(slot, { error: "summarizer failed — network error" });
+        } finally {
+          sumBusy.delete(slot);
+          void renderBoard();
+        }
+      };
+      asec.appendChild(sbtn);
+      if (sum?.summary) {
+        // visible aging: the summary is pinned to the git state it was computed on
+        const c0 = brief.commits[0];
+        const stale = (!!sum.head && !!c0 && !sum.head.startsWith(c0.hash)) || sum.dirty !== brief.uncommitted;
+        if (stale) asec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
+        asec.appendChild(el("div", "bsum", sum.summary));
+        if (sum.openThreads?.length) {
+          asec.appendChild(el("div", "bsumhead", "open threads"));
+          for (const t of sum.openThreads) asec.appendChild(el("div", "bsumrow", `· ${t}`));
+        }
+        if (sum.verification) asec.appendChild(el("div", "bsumver", `verified: ${sum.verification}`));
+        if (sum.model && sum.at)
+          asec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
+      } else if (sum?.error) {
+        asec.appendChild(el("div", "bsumerr", sum.error));
+      }
+      if (wts && wts.worktrees.length) {
+        const repo = wts.repo;
+        const swb = el("button", "bbtn accent", sweepBusy.has(repo) ? "… sweeping" : "🧹 sweep lanes") as HTMLButtonElement;
+        swb.title = "ask an agent which lanes look safe to clean up and what's still unfinished — advisory only, review before acting";
+        swb.disabled = sweepBusy.has(repo);
+        swb.onclick = async () => {
+          if (sweepBusy.has(repo)) return;
+          sweepBusy.add(repo);
+          void renderBoard();
+          try {
+            const r = await post(`/api/slots/${slot}/sweep`, {});
+            const j = (await r.json().catch(() => ({}))) as { verdicts?: SweepVerdict[]; outstanding?: string; error?: string };
+            if (r.ok && j.verdicts) sweepCache.set(repo, { verdicts: j.verdicts, outstanding: j.outstanding ?? "" });
+            else alert(j.error ?? "sweep failed");
+          } finally {
+            sweepBusy.delete(repo);
+            void renderBoard();
+          }
+        };
+        asec.appendChild(swb);
+        // "what's really still missing" — the sweep's cross-lane synthesis, set apart from
+        // the per-lane verdict rows below
+        const swept = sweepCache.get(repo);
+        if (swept?.outstanding) {
+          const box = el("div", "boutstanding");
+          box.appendChild(el("div", "bouthd", "what's still missing"));
+          box.appendChild(el("div", "boutbody", swept.outstanding));
+          asec.appendChild(box);
+        }
+      }
+      nodes.push(asec);
+
+      // 5 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
+      // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
+      // per-lane sweep verdicts + ＋ new lane.
       if (wts) {
         const sec = el("div", "bsec");
         const hd = el("div", "bwthead");
         hd.appendChild(el("h3", "", `lanes — ${baseName(wts.repo)} · main: ${wts.main}`));
-        if (wts.worktrees.length) {
-          const sw = el("button", "bwtsweep", sweepBusy.has(wts.repo) ? "… sweeping" : "🧹 sweep") as HTMLButtonElement;
-          sw.title = "ask an agent which lanes look safe to clean up — advisory only, review before acting";
-          sw.disabled = sweepBusy.has(wts.repo);
-          sw.onclick = async () => {
-            if (sweepBusy.has(wts.repo)) return;
-            sweepBusy.add(wts.repo);
-            void renderBoard();
-            try {
-              const r = await post(`/api/slots/${slot}/sweep`, {});
-              const j = (await r.json().catch(() => ({}))) as { verdicts?: SweepVerdict[]; error?: string };
-              if (r.ok && j.verdicts) sweepCache.set(wts.repo, j.verdicts);
-              else alert(j.error ?? "sweep failed");
-            } finally {
-              sweepBusy.delete(wts.repo);
-              void renderBoard();
-            }
-          };
-          hd.appendChild(sw);
-        }
         sec.appendChild(hd);
         if (!wts.worktrees.length) sec.appendChild(el("div", "bempty", "no open lanes in this repo"));
         for (const w of wts.worktrees) {
@@ -992,7 +1146,7 @@ async function renderBoard() {
           sec.appendChild(row);
           // 🧹 sweep verdict, if one was fetched for this repo — purely advisory: "do it"
           // still runs through the real remove/discard endpoints, which re-verify from git
-          const verdict = sweepCache.get(wts.repo)?.find((v) => v.path === w.path);
+          const verdict = sweepCache.get(wts.repo)?.verdicts.find((v) => v.path === w.path);
           if (verdict) {
             const vrow = el("div", `sweepv ${verdict.verdict}`);
             vrow.appendChild(el("span", "sweepvbadge", verdict.verdict));
@@ -1079,98 +1233,14 @@ async function renderBoard() {
             sec.appendChild(box);
           }
         }
-        const nb = el("button", "bwtnew", "＋ ⎇ new lane") as HTMLButtonElement;
+        const nb = el("button", "bbtn accent", "＋ ⎇ new lane") as HTMLButtonElement;
         nb.title = `fresh worktree lane off ${wts.main}, session opens in the first free slot — one click`;
         nb.onclick = () => { nb.disabled = true; void newLane(wts.repo); };
         sec.appendChild(nb);
         nodes.push(sec);
       }
-      // recover a server-cached summary once per slot (GET never spawns the agent)
-      if (!sumCache.has(slot)) {
-        sumCache.set(slot, {});
-        void api(`/api/slots/${slot}/summary`).then(async (r) => {
-          if (!r.ok) return;
-          const j = (await r.json()) as SummaryInfo;
-          if (j.summary) {
-            sumCache.set(slot, j);
-            void renderBoard();
-          }
-        }).catch(() => { /* transient — the button still works */ });
-      }
-      const ssec = el("div", "bsec");
-      ssec.appendChild(el("h3", "", "agent summary"));
-      const sum = sumCache.get(slot);
-      if (sum?.summary) {
-        // visible aging: the summary is pinned to the git state it was computed on
-        const c0 = brief.commits[0];
-        const stale = (!!sum.head && !!c0 && !sum.head.startsWith(c0.hash)) || sum.dirty !== brief.uncommitted;
-        if (stale) ssec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
-        ssec.appendChild(el("div", "bsum", sum.summary));
-        if (sum.openThreads?.length) {
-          ssec.appendChild(el("div", "bsumhead", "open threads"));
-          for (const t of sum.openThreads) ssec.appendChild(el("div", "bsumrow", `· ${t}`));
-        }
-        if (sum.verification) ssec.appendChild(el("div", "bsumver", `verified: ${sum.verification}`));
-        if (sum.model && sum.at)
-          ssec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
-      } else if (sum?.error) {
-        ssec.appendChild(el("div", "bsumerr", sum.error));
-      }
-      const sbtn = el("button", "bsumbtn",
-        sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "✨ re-summarize" : "✨ summarize") as HTMLButtonElement;
-      sbtn.disabled = sumBusy.has(slot);
-      sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
-      sbtn.onclick = async () => {
-        if (sumBusy.has(slot)) return;
-        sumBusy.add(slot);
-        sbtn.disabled = true;
-        sbtn.textContent = "… summarizing";
-        try {
-          const r = await post(`/api/slots/${slot}/summary`, {});
-          const j = (await r.json().catch(() => ({}))) as SummaryInfo;
-          sumCache.set(slot, r.ok ? j : { error: j.error ?? "summarizer failed" });
-        } catch {
-          sumCache.set(slot, { error: "summarizer failed — network error" });
-        } finally {
-          sumBusy.delete(slot);
-          void renderBoard();
-        }
-      };
-      ssec.appendChild(sbtn);
-      nodes.push(ssec);
-      if (brief.files.length) {
-        const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", brief.laneScoped ? `files this lane changes vs ${brief.laneBase ?? "main"}`
-          : brief.sessionStart ? "changed this session" : "changed files"));
-        if (brief.shortstat) sec.appendChild(el("div", "bstate", brief.shortstat));
-        for (const f of brief.files.slice(0, 30)) {
-          const row = el("div", "bfile");
-          row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
-          row.appendChild(document.createTextNode(f.slice(3)));
-          row.title = `${f} — click to review the diff`;
-          row.onclick = () => void openDiff(slot);
-          sec.appendChild(row);
-        }
-        if (brief.files.length > 30) sec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
-        nodes.push(sec);
-      }
-      if (brief.commits.length || brief.sessionStart || brief.laneScoped) {
-        const sec = el("div", "bsec");
-        sec.appendChild(el("h3", "", brief.laneScoped ? `commits on this lane (vs ${brief.laneBase ?? "main"})`
-          : brief.sessionStart ? "commits this session" : "recent commits"));
-        if (!brief.commits.length) sec.appendChild(el("div", "bempty",
-          brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
-        for (const cm of brief.commits) {
-          const row = el("div", "brow");
-          row.appendChild(el("span", "bhash", cm.hash));
-          const sub = el("span", "bsub", cm.subject);
-          sub.title = cm.subject;
-          row.appendChild(sub);
-          sec.appendChild(row);
-        }
-        nodes.push(sec);
-      }
     }
+    // 6 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
     const psec = el("div", "bsec");
     psec.appendChild(el("h3", "", `your prompts (${prompts.length})`));
     if (!prompts.length) psec.appendChild(el("div", "bempty", "no prompts in the transcript yet"));
@@ -1730,6 +1800,9 @@ function renderSlots() {
       mkact("⤴", "share", () => openShareDlg(s.id));
       mkact("⇩", "export", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
       mkact("✎", "rename", () => startRename(row, s));
+      // ✔ save = quick-commit this lane's uncommitted work — lets a phone user save outside
+      // the conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
+      if (s.worktree) mkact("✔", "save (commit work)", () => { void doCommit(s.id, "quick"); });
       if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
       row.appendChild(rowacts);
       row.onclick = () => showSlot(s.id);

@@ -259,6 +259,16 @@ async function statusLines(cwd: string): Promise<{ code: number; lines: string[]
   const code = await p.exited;
   return { code, lines: out.split("\n").filter((l) => l.length > 0) };
 }
+// a mutating git op (add/commit) in a lane races the live session's OWN git — if it holds
+// .git/index.lock we back off and retry rather than fail. Initial attempt + up to 5 retries.
+async function gitRetry(dir: string, ...args: string[]): Promise<{ out: string; err: string; code: number }> {
+  let r = await git(dir, ...args);
+  for (let i = 0; i < 5 && r.code !== 0 && /index\.lock|another git process/i.test(r.err); i++) {
+    await Bun.sleep(300);
+    r = await git(dir, ...args);
+  }
+  return r;
+}
 
 // --- session scoping: every brief/diff section describes THE SESSION's lifetime, not the
 // repo's whole history (git log -15 was identical for every session in the same repo, and
@@ -1458,23 +1468,37 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
 const SWEEP_CMD = process.env.FLEET_SWEEP_CMD ?? null; // tests: subprocess stand-in
 interface SweepVerdict { path: string; verdict: "safe-to-remove" | "stale" | "active-work";
   reason: string; suggestedAction: "remove" | "discard" | "none" }
-interface SweepResult { verdicts: SweepVerdict[]; model: string; at: number }
+interface SweepResult { verdicts: SweepVerdict[]; outstanding: string; model: string; at: number }
 // keyed by repo root (a sweep is repo-wide, not per-slot)
 const sweepCache = new Map<string, { key: string; result: SweepResult }>();
 const sweepInflight = new Map<string, Promise<SweepResult>>();
 
-function parseSweepVerdicts(body: string): SweepVerdict[] {
+function filterVerdicts(arr: unknown): SweepVerdict[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((x): x is SweepVerdict =>
+    typeof x === "object" && x !== null
+    && typeof (x as SweepVerdict).path === "string"
+    && ["safe-to-remove", "stale", "active-work"].includes((x as SweepVerdict).verdict)
+    && typeof (x as SweepVerdict).reason === "string"
+    && ["remove", "discard", "none"].includes((x as SweepVerdict).suggestedAction));
+}
+
+// the agent's answer is now an OBJECT {verdicts, outstanding}; tolerate the OLD bare-array
+// shape too (safety), and a missing/oddly-typed outstanding → empty string.
+function parseSweep(body: string): { verdicts: SweepVerdict[]; outstanding: string } {
   try {
-    const arr: unknown = JSON.parse(body);
-    if (!Array.isArray(arr)) return [];
-    return arr.filter((x): x is SweepVerdict =>
-      typeof x === "object" && x !== null
-      && typeof (x as SweepVerdict).path === "string"
-      && ["safe-to-remove", "stale", "active-work"].includes((x as SweepVerdict).verdict)
-      && typeof (x as SweepVerdict).reason === "string"
-      && ["remove", "discard", "none"].includes((x as SweepVerdict).suggestedAction));
+    const parsed: unknown = JSON.parse(body);
+    if (Array.isArray(parsed)) return { verdicts: filterVerdicts(parsed), outstanding: "" };
+    if (parsed && typeof parsed === "object") {
+      const o = parsed as { verdicts?: unknown; outstanding?: unknown };
+      return {
+        verdicts: filterVerdicts(o.verdicts),
+        outstanding: typeof o.outstanding === "string" ? o.outstanding.slice(0, 2000) : "",
+      };
+    }
+    return { verdicts: [], outstanding: "" };
   } catch {
-    return []; // unparseable → no verdicts; the client shows nothing actionable
+    return { verdicts: [], outstanding: "" }; // unparseable → nothing actionable
   }
 }
 
@@ -1489,14 +1513,17 @@ async function runSweep(repo: string, entries: { path: string; branch: string; r
     "Below is small, structured, deterministic git-state data for every open lane of one repo —",
     "no diffs, no transcripts, only facts already computed by the server.",
     "Do NOT use any tools — answer directly from the input, in one single message.",
-    "Respond with STRICT JSON only, no markdown fences: an ARRAY, one entry per lane, exactly:",
-    '[{"path": "...", "verdict": "safe-to-remove"|"stale"|"active-work", "reason": "...", "suggestedAction": "remove"|"discard"|"none"}]',
-    "Rules:",
+    "Respond with STRICT JSON only, no markdown fences: an OBJECT exactly this shape:",
+    '{"verdicts": [{"path": "...", "verdict": "safe-to-remove"|"stale"|"active-work", "reason": "...", "suggestedAction": "remove"|"discard"|"none"}], "outstanding": "..."}',
+    "Rules for each verdict (one entry per lane):",
     "- empty:true (no uncommitted changes, no unpushed commits) → verdict safe-to-remove, suggestedAction remove.",
     "- non-empty but looks abandoned/superseded → verdict stale; suggestedAction remove ONLY if truly empty,",
     "  otherwise discard (which destroys uncommitted/unpushed work) — say exactly why in reason.",
     "- real work in progress → verdict active-work, suggestedAction none. Never suggest destroying live work.",
     "- reason: one concise sentence citing the facts (file count, unpushed commit count, empty).",
+    "outstanding: a short synthesis across ALL lanes — which have uncommitted work to save, which have",
+    "unpushed/unlanded commits to land, which look stale — and the single most useful next action.",
+    "1-4 sentences or short bullets, plain text (no JSON, no markdown fences).",
     "", "## lanes", JSON.stringify(facts, null, 2),
   ].join("\n");
   let text = SWEEP_CMD
@@ -1507,7 +1534,8 @@ async function runSweep(repo: string, entries: { path: string; branch: string; r
     if (typeof env.result === "string") text = env.result.trim();
   } catch { /* not an envelope */ }
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  return { verdicts: parseSweepVerdicts(body), model: SUMMARY_MODEL, at: Date.now() };
+  const { verdicts, outstanding } = parseSweep(body);
+  return { verdicts, outstanding, model: SUMMARY_MODEL, at: Date.now() };
 }
 
 // GET = cache lookup only, never spawns. POST = run the agent, single-flight per repo;
@@ -1546,6 +1574,77 @@ async function sweepResponse(s: Slot, run: boolean): Promise<Response> {
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "sweep failed" }, 500);
   }
+}
+
+// --- 💾 lane commit: the load-bearing SAVE. land/merge both refuse a dirty tree, so
+// uncommitted work in a lane could only be saved from inside the session — one kill from
+// gone. This commits it (NEVER pushes, NEVER lands — everything here is reversible by the
+// owner with `git reset`). mode:"quick" is a deterministic wip commit; mode:"agent" asks a
+// throwaway agent (same machinery as the summarizer) for a one-line conventional-commit
+// message, and ALWAYS falls back to the wip message so a save can never fail on the model.
+const COMMIT_CMD = process.env.FLEET_COMMIT_CMD ?? null; // tests: subprocess stand-in
+const commitInflight = new Set<number>();
+
+function sanitizeCommitMsg(raw: string): string {
+  return raw.replace(/[`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100);
+}
+
+// ask the agent for ONE conventional-commit line from the diff only. Returns "" on any
+// failure/unparseable answer — the caller falls back to the wip message.
+async function agentCommitMessage(cwd: string): Promise<string> {
+  const d = await git(cwd, "diff", "HEAD", "--no-color");
+  const st = await statusLines(cwd);
+  const sh = await git(cwd, "diff", "HEAD", "--shortstat", "--no-color");
+  const prompt = [
+    "You are writing ONE git commit message for the uncommitted work in a worktree.",
+    "Do NOT use any tools — answer ONLY from the diff/status below, in one single message.",
+    'Respond with STRICT JSON only, no markdown fences, exactly: {"message": "<type(scope): summary>"}',
+    "- a single line, a lowercase conventional-commit type (feat/fix/chore/refactor/docs/test), <= 80 chars.",
+    "", "## shortstat", sh.code === 0 && sh.out ? sh.out : "(none)",
+    "", "## status", st.code === 0 && st.lines.length ? st.lines.join("\n") : "(none)",
+    "", "## diff (truncated)", (d.code === 0 ? d.out.slice(0, 6000) : "") || "(none)",
+  ].join("\n");
+  let text = COMMIT_CMD
+    ? await summaryViaSubprocess(COMMIT_CMD, prompt, cwd)
+    : await summaryViaSession(prompt, cwd, '"message"');
+  try {
+    const env = JSON.parse(text) as { result?: unknown };
+    if (typeof env.result === "string") text = env.result.trim();
+  } catch { /* not an envelope */ }
+  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  try {
+    const j = JSON.parse(body) as { message?: unknown };
+    if (typeof j.message === "string" && j.message.trim()) return sanitizeCommitMsg(j.message);
+  } catch { /* unparseable → caller falls back */ }
+  return "";
+}
+
+async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
+  const cwd = s.cwd!;
+  const st = await statusLines(cwd); // column-preserving — see statusLines
+  if (st.code !== 0) return json({ error: "git status failed — worktree gone?", code: 400 }, 400);
+  // CLEAN → idempotent no-op: the session may have committed already
+  if (st.lines.length === 0) return json({ committed: false, reason: "nothing to commit — working tree clean" });
+  const wip = `wip: saved from Fleet dashboard ${new Date().toISOString()}`;
+  let message = wip;
+  if (mode === "agent") {
+    try {
+      const m = await agentCommitMessage(cwd);
+      if (m) message = m;
+    } catch { /* saving must NEVER fail on the model — keep the wip message */ }
+  }
+  const add = await gitRetry(cwd, "add", "-A");
+  if (add.code !== 0) return json({ error: `git add failed: ${add.err.slice(0, 200)}`, code: 500 }, 500);
+  const ci = await gitRetry(cwd, "commit", "-m", message);
+  if (ci.code !== 0) {
+    // the session may have committed everything between our status read and the add
+    const recheck = await statusLines(cwd);
+    if (recheck.code === 0 && recheck.lines.length === 0)
+      return json({ committed: false, reason: "nothing to commit — working tree clean" });
+    return json({ error: `git commit failed: ${(ci.err || ci.out).slice(0, 200)}`, code: 500 }, 500);
+  }
+  const hd = await git(cwd, "rev-parse", "--short", "HEAD");
+  return json({ committed: true, hash: hd.out, subject: message });
 }
 
 // --- ✨ prompt enhancer: a throwaway background claude session (same machinery as the
@@ -2650,6 +2749,24 @@ Bun.serve<WSData>({
       const s = slotFrom(swMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return sweepResponse(s, req.method === "POST");
+    }
+    // 💾 commit a lane's uncommitted work — the SAVE that land/merge (dirty-tree refusers)
+    // can't do. Lanes only; commit-only (never push, never land). Serialized per slot; the
+    // real race protection is gitRetry's index.lock backoff against the live session.
+    const ciMatch = /^\/api\/slots\/(\d+)\/commit$/.exec(url.pathname);
+    if (req.method === "POST" && ciMatch) {
+      const s = slotFrom(ciMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      if (!s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+      const body = await readJson(req);
+      const mode = body?.mode === "agent" ? "agent" : "quick";
+      if (commitInflight.has(s.id)) return json({ error: "a commit is already running for this slot" }, 409);
+      commitInflight.add(s.id);
+      try {
+        return await commitLane(s, mode);
+      } finally {
+        commitInflight.delete(s.id);
+      }
     }
     if (url.pathname === "/api/dirs") {
       try {

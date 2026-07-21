@@ -223,8 +223,8 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
-    worktree: { repo: string; branch: string } | null }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree };
+    worktree: { repo: string; branch: string } | null; selfToken: string }> = {};
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks,
@@ -547,7 +547,12 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
     const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
     const merged = branch ? await git(repo, "branch", "--merged", "HEAD", "--list", branch) : { out: "" };
     if (!onRemote.out.trim() && !merged.out.trim()) {
-      const lg = await git(path, "log", "--no-color", "--format=%h%x09%ct%x09%s");
+      // scope to the lane's OWN commits (HEAD not in the primary checkout's base),
+      // else a no-upstream lane over-reports all of main's history as "unpushed"
+      const baseSha = (await git(repo, "rev-parse", "HEAD")).out;
+      const lg = baseSha
+        ? await git(path, "log", "--no-color", `${baseSha}..HEAD`, "--format=%h%x09%ct%x09%s")
+        : await git(path, "log", "--no-color", "--format=%h%x09%ct%x09%s");
       unpushedCommits = parseCommitLog(lg.out);
     }
   }
@@ -1476,7 +1481,7 @@ function parseSweepVerdicts(body: string): SweepVerdict[] {
 async function runSweep(repo: string, entries: { path: string; branch: string; risk: WorktreeRisk }[]): Promise<SweepResult> {
   const facts = entries.map((e) => ({
     path: e.path, branch: e.branch, dirtyFileCount: e.risk.dirtyFiles.length,
-    unpushedCommitSubjects: e.risk.unpushedCommits.map((c) => c.subject),
+    unpushedCommitCount: e.risk.unpushedCommits.length,
     shortstat: e.risk.shortstat, empty: e.risk.empty,
   }));
   const prompt = [
@@ -1491,7 +1496,7 @@ async function runSweep(repo: string, entries: { path: string; branch: string; r
     "- non-empty but looks abandoned/superseded → verdict stale; suggestedAction remove ONLY if truly empty,",
     "  otherwise discard (which destroys uncommitted/unpushed work) — say exactly why in reason.",
     "- real work in progress → verdict active-work, suggestedAction none. Never suggest destroying live work.",
-    "- reason: one concise sentence citing the facts (file count, commit subjects, empty).",
+    "- reason: one concise sentence citing the facts (file count, unpushed commit count, empty).",
     "", "## lanes", JSON.stringify(facts, null, 2),
   ].join("\n");
   let text = SWEEP_CMD
@@ -1518,7 +1523,10 @@ async function sweepResponse(s: Slot, run: boolean): Promise<Response> {
   if (!primary) return json({ error: "no worktree info" }, 400);
   const lanes = list.filter((w) => !w.primary);
   const shas = await Promise.all(lanes.map((w) => git(w.path, "rev-parse", "HEAD")));
-  const key = lanes.map((w, i) => `${w.path}@${shas[i].out}`).join("|");
+  // dirty signature folded in: sweep facts are dirty-derived, so a lane going dirty at an
+  // unchanged HEAD must invalidate its cached "safe-to-remove" verdict (as summaryResponse does)
+  const dirt = await Promise.all(lanes.map((w) => git(w.path, "status", "--porcelain")));
+  const key = lanes.map((w, i) => `${w.path}@${shas[i].out}#${Bun.hash(dirt[i].out)}`).join("|");
   const cached = sweepCache.get(repo);
   if (cached?.key === key) return json({ ...cached.result, repo, cached: true, stale: false });
   if (!run) return json(cached ? { ...cached.result, repo, cached: true, stale: true } : { cached: false, repo });
@@ -1936,6 +1944,7 @@ if (existsSync(STATE_FILE)) {
         s.cwd = v.cwd;
         if (typeof v.label === "string") s.label = v.label;
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
+        if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")

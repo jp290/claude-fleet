@@ -589,7 +589,12 @@ function showRiskPreview(title: string, risk: WtRisk, confirmLabel: string): Pro
     const btns = el("div", "riskbtns");
     const cancel = el("button", "riskbtn", "cancel") as HTMLButtonElement;
     const go = el("button", "riskbtn danger", confirmLabel) as HTMLButtonElement;
-    const finish = (ok: boolean) => { overlay.remove(); resolve(ok); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+    };
+    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
+    // capture-phase so Escape closes THIS overlay before the global discardArm handler sees it
+    document.addEventListener("keydown", onKey, true);
     cancel.onclick = () => finish(false);
     go.onclick = () => finish(true);
     overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
@@ -624,11 +629,11 @@ async function doLand(slot: number) {
   if (mergePending.has(slot)) return;
   const s = fleet[slot - 1];
   if (!s?.worktree) return;
-  const risk = await fetchSlotRisk(slot);
-  const ok = await showRiskPreview(`Land lane ${s.worktree.branch}?`, risk, "land");
-  if (!ok) return;
-  mergePending.add(slot);
+  mergePending.add(slot); // reserve BEFORE the risk-preview await, else a double-click opens two overlays
   try {
+    const risk = await fetchSlotRisk(slot);
+    const ok = await showRiskPreview(`Land lane ${s.worktree.branch}?`, risk, "land");
+    if (!ok) return;
     const direct = await post(`/api/slots/${slot}/land`, {});
     if (direct.ok) {
       for (const p of panes) if (p.slot === slot) p.assign(0);
@@ -1006,6 +1011,12 @@ async function renderBoard() {
                   }
                   void renderBoard();
                 } else if (verdict.suggestedAction === "discard") {
+                  // the discard confirm panel only renders for slot-less lanes; on a slot-held
+                  // lane, arming would set state that never shows — tell the owner to kill first
+                  if (w.slot != null) {
+                    alert(`This lane is open in slot ${w.slot} — kill the slot first, then discard.`);
+                    return;
+                  }
                   // reuse the existing read-window discard flow — the real gate stays exactly there
                   discardArm = { path: w.path, at: Date.now() };
                   void renderBoard();
@@ -1706,6 +1717,21 @@ function renderSlots() {
       };
       act.appendChild(kill);
       row.appendChild(act);
+      // mobile-only action strip: share/export/rename/land moved off the row into the
+      // desktop-only board, leaving phones with no reachable share/export/rename/land.
+      // These are CSS-hidden on desktop (.rowacts { display:none }) so the row stays clean.
+      const rowacts = el("div", "rowacts");
+      const mkact = (glyph: string, title: string, fn: () => void) => {
+        const b = el("span", "rowact", glyph);
+        b.title = title;
+        b.onclick = (e) => { e.stopPropagation(); fn(); };
+        rowacts.appendChild(b);
+      };
+      mkact("⤴", "share", () => openShareDlg(s.id));
+      mkact("⇩", "export", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
+      mkact("✎", "rename", () => startRename(row, s));
+      if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
+      row.appendChild(rowacts);
       row.onclick = () => showSlot(s.id);
     }
     slotsEl.appendChild(row);

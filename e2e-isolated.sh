@@ -122,7 +122,11 @@ chmod +x "$DIR/fakecommit"
 tmux -L "$SOCK" kill-server 2>/dev/null
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_SWEEP_CMD='$DIR/fakesweep' FLEET_COMMIT_CMD='$DIR/fakecommit' exec bun server.ts >> server.log 2>&1"
-sleep 2
+# wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep
+for _ in $(seq 1 40); do
+  curl -sf "http://127.0.0.1:$PORT/api/sessions" -H "authorization: Bearer x" >/dev/null 2>&1 && break
+  sleep 0.5
+done
 
 cd "$DIR" || exit 1
 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE bun fleet-e2e.ts

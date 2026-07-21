@@ -708,8 +708,11 @@ async function doMergeLand(slot: number) {
 // 💾 save a lane's uncommitted work — the gap land/merge (dirty-tree refusers) leave open.
 // quick = deterministic wip commit; agent = a short-lived agent writes a conventional-commit
 // message (falls back to wip). Commit-only, reversible; the server never pushes or lands.
-async function doCommit(slot: number, mode: "quick" | "agent"): Promise<void> {
+async function doCommit(slot: number, mode: "quick" | "agent", activeConfirmed = false): Promise<void> {
   if (commitBusy.has(slot)) return;
+  // the session is still producing output → confirm before snapshotting a half-finished tree.
+  // main sessions already warn inside their staging preview, so they pass activeConfirmed.
+  if (!activeConfirmed && sessionActive(slot) && !(await confirmMidRun(slot))) return;
   commitBusy.set(slot, mode);
   void renderBoard(); // reflect the disabled/"… writing message" state immediately
   try {
@@ -728,16 +731,57 @@ async function doCommit(slot: number, mode: "quick" | "agent"): Promise<void> {
   }
 }
 
+// "working" = the pane produced real output within RECENT_MS — the same signal as the sidebar
+// activity dot. For Claude Code this tracks the working spinner, so it reads true while the agent
+// runs and false once it's back at the prompt. It's a heuristic (a silently-running command reads
+// idle; a just-finished run reads active for a few seconds), so it GATES WITH A CONFIRM, never a
+// hard block — and a commit is reversible anyway.
+function sessionActive(slot: number): boolean {
+  const s = fleet[slot - 1];
+  return !!s && s.cwd !== null && serverNow - s.lastOutput < RECENT_MS;
+}
+
+// mid-run guard for the commit action: the session is producing output, so a commit now would
+// snapshot a half-finished tree. Confirm, don't forbid — sometimes you DO want to save before
+// killing a stuck run.
+function confirmMidRun(slot: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = el("div", "overlay riskoverlay");
+    overlay.style.display = "flex";
+    const panel = el("div", "panel riskpanel");
+    panel.appendChild(el("h2", "", `Slot ${slot} is still working`));
+    panel.appendChild(el("div", "bmidrun",
+      "This session produced output a moment ago — it may be mid-edit. Committing now snapshots a half-finished "
+      + "tree, and an agent message would describe that partial state. It's reversible (git reset), but usually "
+      + "you want to let the run finish first."));
+    const btns = el("div", "riskbtns");
+    const cancel = el("button", "riskbtn", "wait") as HTMLButtonElement;
+    const go = el("button", "riskbtn danger", "commit anyway") as HTMLButtonElement;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(false); } };
+    const finish = (ok: boolean) => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(ok); };
+    document.addEventListener("keydown", onKey, true);
+    cancel.onclick = () => finish(false);
+    go.onclick = () => finish(true);
+    overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
+    btns.append(cancel, go);
+    panel.appendChild(btns);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  });
+}
+
 // commit for a MAIN (non-lane) session: preview exactly what `git add -u` will stage
 // (tracked changes) and which untracked files are left alone, THEN commit. The server
 // re-derives everything; this preview is the guardrail that makes a commit onto a shipped
 // branch as transparent as a lane commit onto a throwaway one.
-function showCommitPreview(title: string, tracked: string[], untracked: string[]): Promise<boolean> {
+function showCommitPreview(title: string, tracked: string[], untracked: string[], active: boolean): Promise<boolean> {
   return new Promise((resolve) => {
     const overlay = el("div", "overlay riskoverlay");
     overlay.style.display = "flex";
     const panel = el("div", "panel riskpanel");
     panel.appendChild(el("h2", "", title));
+    if (active) panel.appendChild(el("div", "bmidrun",
+      "⚠ this session is still working — you may be committing a half-finished snapshot."));
     panel.appendChild(el("div", "riskhead", `${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} → committed (git add -u)`));
     const tl = el("div", "risklist");
     for (const f of tracked.slice(0, 40)) tl.appendChild(el("div", "riskfile", f));
@@ -810,8 +854,8 @@ async function doCommitMain(slot: number, mode: "quick" | "agent", files: string
     alert("Only untracked files here — nothing tracked to commit. A main-session commit stages tracked changes only (git add -u); add the files in the terminal first if you want them in.");
     return;
   }
-  const ok = await showCommitPreview(`Commit ${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} in ${baseName(fleet[slot - 1]?.cwd ?? "")}?`, tracked, untracked);
-  if (ok) await doCommit(slot, mode);
+  const ok = await showCommitPreview(`Commit ${tracked.length} tracked file${tracked.length === 1 ? "" : "s"} in ${baseName(fleet[slot - 1]?.cwd ?? "")}?`, tracked, untracked, sessionActive(slot));
+  if (ok) await doCommit(slot, mode, true); // the preview already carried the mid-run warning
 }
 
 async function newLane(repo: string, slot?: number): Promise<void> {
@@ -913,6 +957,10 @@ async function renderBoard() {
       const b = el("div", "bstate");
       b.appendChild(el("span", "bbranch", brief.branch));
       b.appendChild(document.createTextNode(brief.worktree ? " · fleet lane" : " · repo session"));
+      // live working/idle state — the same signal as the sidebar dot, so you can see BEFORE
+      // reaching for commit whether the session is mid-run (re-rendered every 3s)
+      const working = sessionActive(slot);
+      b.appendChild(el("span", "bwork" + (working ? " on" : ""), working ? " · ● working" : " · ○ idle"));
       idsec.appendChild(b);
       if (brief.sessionStart) idsec.appendChild(el("div", "bidmeta",
         `session since ${new Date(brief.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));

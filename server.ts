@@ -595,8 +595,11 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
   const dirtyFiles = st.code === 0 ? st.lines.slice(0, 200) : [];
   let unpushedCommits: CommitRow[] = [];
   // "safe to drop" = the commits are preserved somewhere: pushed to a push/upstream ref,
-  // OR present on ANY remote (covers `push` without `-u`), OR merged into the repo's HEAD.
+  // OR present on ANY remote (covers `push` without `-u`), OR merged into the integration
+  // branch. Measured against the integration branch — NOT the primary's HEAD, which may be
+  // parked off it — so a lane landed via a ref-advance still reads as merged/safe-to-remove.
   // @{push} is unresolvable for a branch with no upstream — same fallback as before.
+  const intRef = (await integrationBranch(repo)) ?? "HEAD";
   const unpushed = await git(path, "log", "--no-color", "@{push}..", "--format=%h%x09%ct%x09%s");
   if (unpushed.code === 0) {
     unpushedCommits = parseCommitLog(unpushed.out);
@@ -604,11 +607,11 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
     const br = await git(path, "rev-parse", "--abbrev-ref", "HEAD");
     const branch = br.code === 0 ? br.out : "";
     const onRemote = await git(path, "branch", "-r", "--contains", "HEAD");
-    const merged = branch ? await git(repo, "branch", "--merged", "HEAD", "--list", branch) : { out: "" };
+    const merged = branch ? await git(repo, "branch", "--merged", intRef, "--list", branch) : { out: "" };
     if (!onRemote.out.trim() && !merged.out.trim()) {
-      // scope to the lane's OWN commits (HEAD not in the primary checkout's base),
+      // scope to the lane's OWN commits (HEAD not in the integration branch's base),
       // else a no-upstream lane over-reports all of main's history as "unpushed"
-      const baseSha = (await git(repo, "rev-parse", "HEAD")).out;
+      const baseSha = (await git(repo, "rev-parse", intRef)).out;
       const lg = baseSha
         ? await git(path, "log", "--no-color", `${baseSha}..HEAD`, "--format=%h%x09%ct%x09%s")
         : await git(path, "log", "--no-color", "--format=%h%x09%ct%x09%s");
@@ -2904,7 +2907,8 @@ Bun.serve<WSData>({
           return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });
         }
         // already merged (by hand, or an empty lane)? No agent needed — land directly.
-        const done = await git(repo, "branch", "--merged", "HEAD", "--list", branch);
+        // Against the integration branch, not the primary's HEAD (which may be parked off it).
+        const done = await git(repo, "branch", "--merged", main, "--list", branch);
         if (done.out.trim()) {
           const land = await landLane(s);
           if ("error" in land) return json({ error: land.error }, land.code);

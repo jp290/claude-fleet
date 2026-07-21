@@ -64,9 +64,15 @@ when substance warrants it.
 
 ### 5. Checking effect — did it help?
 After an intervention: measurable response = new output activity, git delta, or
-an explicit reply, within a bounded window. Outcome (helped / no effect /
-worsened) goes into the steward's **journal** — a data file, not docs. No effect
-→ escalate; never re-send the same nudge past its cap. This makes every playbook
+an explicit reply, within a bounded window. Fixed, not judgment-based (steward
+review 2026-07-21: an unspecified window lets a generous reading silently undo
+the caps): the window is **10 minutes from delivery**; "effect" means git delta
+(commit or tree change) OR output activity that *begins* inside the window and
+sustains ≥60s OR a reply referencing the message. Ambiguous attribution counts
+as **no effect** — the conservative reading is mandatory. Outcome (helped / no
+effect / worsened) goes into the steward's **journal** — a data file, not docs.
+No effect → escalate; never re-send the same nudge past its cap, and the cap
+counter is per condition *episode*, never reset by the window expiring. This makes every playbook
 entry falsifiable, which is exactly what BACKLOG #14 Phase 3 demanded before
 trusting automated judgment.
 

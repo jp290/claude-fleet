@@ -94,6 +94,14 @@ worktree churn would wipe it). It lives server-side, beside `fleet.json`, on the
 - **`steward-journal.jsonl`** — append-only, mode 600, via `appendEvent`. Every
   intervention + outcome. First consumer of `appendEvent` after `audit.jsonl`
   (exactly the reuse `automation-synergies.md` Finding 5 called for).
+  *Built 2026-07-22 (narrative half):* `writeStewardJournal`/`readStewardJournal`
+  + typed `POST`/`GET /api/steward/journal` (steward-scoped), and the Rundgang now
+  records each pulse there instead of a free-text line. The **file rotates**
+  (single `.1` generation) and the reader spans that boundary so the delta anchor
+  survives — but promotion **counts** must live in a durable state tally
+  incremented on outcomes (§4), *never* by scanning this file, or the second
+  rotation silently resets the record autonomy depends on. Outcome back-fill and
+  the tally land with the ladder.
 - **Owner-model** — a curated document the steward *proposes* edits to and the
   owner promotes (like the shelf, but about JP). Server-side or a gitignored doc;
   decide at build time.

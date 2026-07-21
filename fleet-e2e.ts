@@ -1208,6 +1208,34 @@ if (REPO) {
       `head=${deskHead} file=${JSON.stringify(deskFile)}`);
     await post("/api/repo-base", { repo: raRepo, branch: "" }); // clear config
   }
+
+  // --- issue 5: fork point. A new lane forks from the integration branch, NOT the parked
+  // primary HEAD — so lanes created while the primary sits on `desk` still branch from `main`
+  // and don't inherit desk-only commits. ---
+  {
+    const fpRepo = `${REPO}.forkpoint`;
+    spawnSync("git", ["init", "-q", fpRepo]);
+    spawnSync("git", ["-C", fpRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", fpRepo, "config", "user.name", "e2e"]);
+    await Bun.write(`${fpRepo}/f.txt`, "base\n");
+    spawnSync("git", ["-C", fpRepo, "add", "f.txt"]);
+    spawnSync("git", ["-C", fpRepo, "commit", "-qm", "base"]);
+    const fpInteg = spawnSync("git", ["-C", fpRepo, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
+    // park the primary on desk and add a DESK-ONLY commit the integration branch never sees
+    spawnSync("git", ["-C", fpRepo, "checkout", "-q", "-b", "desk"]);
+    await Bun.write(`${fpRepo}/desk-only.txt`, "desk\n");
+    spawnSync("git", ["-C", fpRepo, "add", "desk-only.txt"]);
+    spawnSync("git", ["-C", fpRepo, "commit", "-qm", "desk-only commit"]);
+    await post("/api/repo-base", { repo: fpRepo, branch: fpInteg });
+
+    const fp = (await (await post("/api/lanes", { repo: fpRepo })).json()) as { slot: number; cwd: string };
+    const laneLog = spawnSync("git", ["-C", fp.cwd, "log", "--oneline"]).stdout.toString();
+    const laneHasDeskFile = exists(`${fp.cwd}/desk-only.txt`);
+    check("issue5: lane forks from the integration branch, not the desk-only primary HEAD",
+      !laneLog.includes("desk-only commit") && !laneHasDeskFile, `log=${JSON.stringify(laneLog.trim())} deskFile=${laneHasDeskFile}`);
+    await post("/api/repo-base", { repo: fpRepo, branch: "" });
+    await post(`/api/slots/${fp.slot}/kill`, {});
+  }
 }
 
 // --- task queue (Phase D). Owner CRUD + dispatch availability ---

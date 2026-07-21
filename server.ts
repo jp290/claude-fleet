@@ -22,6 +22,9 @@ const MAX_RECENTS = 8;
 const MAX_PINS = 20;
 const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
+const AUDIT_FILE = `${import.meta.dir}/audit.jsonl`;
+// one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
+const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
 const SHELL = process.env.SHELL ?? "/bin/sh";
 // Safe default: claude WITH its permission prompts. Opt into unattended mode explicitly:
@@ -220,6 +223,43 @@ function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "
     .then(() => appendFile(PROMPT_LOG, line, { mode: 0o600 }))
     .then(() => chmodSync(PROMPT_LOG, 0o600)) // prompts can carry secrets, like the stream
     .catch((e: unknown) => console.log(`prompt log failed: ${e instanceof Error ? e.message : e}`));
+}
+
+// --- audit log: append-only, own write chain + mode 600 (same discipline as saveHistory/
+// saveState above), deliberately NOT routed through console.log — watchdog.sh redirects
+// stdout to server.log at the shell's default umask, so anything security-sensitive needs
+// its own explicit chmod. One compact line per event, never free prose: guest passwords
+// (including failed attempts), share secrets, the owner token, and prompt text must NEVER
+// appear here — only lengths/references, same rule PROMPT_LOG follows for prompt content.
+// Fire-and-forget like its neighbors: a wedged disk must never block the request path.
+type AuditEvent =
+  | "slot_open" | "slot_kill"
+  | "share_create" | "share_revoke" | "share_mode_change"
+  | "share_auth_ok" | "share_auth_fail" | "share_auth_lock"
+  | "guest_ws_connect" | "guest_ws_disconnect"
+  | "auto_fire" | "auto_skip"
+  | "owner_auth_fail"
+  | "self_heal_recreate";
+let auditChain: Promise<unknown> = Promise.resolve();
+let auditWriteFailed = false; // report a wedged audit log once, not on every subsequent event
+function audit(event: AuditEvent, slot?: number, detail?: string): void {
+  const line = `${JSON.stringify({
+    ts: Date.now(), event,
+    ...(slot !== undefined ? { slot } : {}),
+    ...(detail !== undefined ? { detail } : {}),
+  })}\n`;
+  auditChain = auditChain
+    .then(async () => {
+      if (existsSync(AUDIT_FILE) && statSync(AUDIT_FILE).size >= AUDIT_ROTATE_BYTES)
+        renameSync(AUDIT_FILE, `${AUDIT_FILE}.1`);
+      await appendFile(AUDIT_FILE, line, { mode: 0o600 });
+      chmodSync(AUDIT_FILE, 0o600); // append doesn't guarantee mode on a pre-existing file
+    })
+    .catch((e: unknown) => {
+      if (auditWriteFailed) return;
+      auditWriteFailed = true;
+      console.log(`audit log write failed, further failures suppressed: ${e instanceof Error ? e.message : e}`);
+    });
 }
 
 async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
@@ -755,6 +795,7 @@ async function ensureSlot(s: Slot): Promise<void> {
       s.rows = 50;
       s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
       saveState();
+      audit("self_heal_recreate", s.id, resume ? "resumed" : "created");
       console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }
@@ -817,6 +858,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   shares = shares.filter((x) => x.slot !== s.id);
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
+  audit("slot_open", s.id, cwd);
   saveState();
   await ensureSlot(s);
 }
@@ -836,6 +878,7 @@ function detachSlotTasks(slotId: number, note: string): void {
 }
 
 async function killSlot(s: Slot): Promise<void> {
+  audit("slot_kill", s.id);
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
@@ -989,12 +1032,14 @@ async function tickAutos(): Promise<void> {
       if (!s?.cwd) {
         a.enabled = false;
         a.lastResult = "skipped — session gone";
+        audit("auto_skip", a.slot, a.lastResult);
         dirty = true;
         continue;
       }
       if (!(await claudeAlive(a.slot))) {
         // NEVER type into a bare shell; count the run and move on
         a.lastResult = "skipped — claude not running in pane";
+        audit("auto_skip", a.slot, a.lastResult);
         advanceAuto(a, now);
         dirty = true;
         continue;
@@ -1003,6 +1048,7 @@ async function tickAutos(): Promise<void> {
       if (!idleOk) {
         if (now < a.nextAt + AUTO_GRACE_MS) continue; // wait within grace, no state change
         a.lastResult = "skipped — session stayed busy";
+        audit("auto_skip", a.slot, a.lastResult);
         advanceAuto(a, now);
         dirty = true;
         continue;
@@ -1013,6 +1059,7 @@ async function tickAutos(): Promise<void> {
       } catch (e) {
         // sendText now surfaces tmux failures — record the truth instead of "sent"
         a.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
+        audit("auto_skip", a.slot, a.lastResult);
         advanceAuto(a, now);
         continue;
       }
@@ -1021,6 +1068,7 @@ async function tickAutos(): Promise<void> {
       logPrompt(s, a.text, "auto", now);
       a.lastRun = now;
       a.lastResult = "sent";
+      audit("auto_fire", a.slot, a.id);
       advanceAuto(a, now);
       console.log(`auto ${a.id}: sent to slot ${a.slot}`);
     }
@@ -2065,6 +2113,7 @@ const tokenOk = (t: string | null): boolean => !!t && secretEq(t, TOKEN);
 async function tokenGate(t: string | null): Promise<boolean> {
   if (tokenOk(t)) return true;
   await Bun.sleep(400);
+  audit("owner_auth_fail"); // never the attempted token itself — the only owner credential
   return false;
 }
 
@@ -2420,9 +2469,11 @@ Bun.serve<WSData>({
         if (!body || typeof body.password !== "string") return json({ error: "expected password" }, 400);
         if (!secretEq(body.password, sh.secret)) {
           const locked = failStrike(sh.id);
+          audit(locked ? "share_auth_lock" : "share_auth_fail", sh.slot); // never the guessed password
           await Bun.sleep(400); // flat cost per wrong guess
           return json({ error: locked ? "too many attempts — try again later" : "wrong password" }, locked ? 429 : 401);
         }
+        audit("share_auth_ok", sh.slot);
         authFails.delete(sh.id);
         return new Response(JSON.stringify({ ok: true }), {
           headers: {
@@ -2661,6 +2712,24 @@ Bun.serve<WSData>({
       }
       all.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ prompts: all.slice(0, limit), total: lines.length });
+    }
+    // owner-only read of the audit trail — same access model as /api/prompts (token-gated
+    // above, structurally unreachable on SHARE_HOSTS since that block 404s anything not in
+    // its own allowlist before this line is ever reached). Last N lines, newest first.
+    if (url.pathname === "/api/audit" && req.method === "GET") {
+      const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
+      const text = existsSync(AUDIT_FILE) ? await Bun.file(AUDIT_FILE).text() : "";
+      const lines = text.split("\n").filter(Boolean);
+      const events: { ts?: unknown; event?: unknown; slot?: unknown; detail?: unknown }[] = [];
+      for (const line of lines) {
+        try {
+          events.push(JSON.parse(line) as (typeof events)[number]);
+        } catch {
+          // a torn mid-append line — skip
+        }
+      }
+      events.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
+      return json({ events: events.slice(0, limit), total: lines.length });
     }
     // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
     // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
@@ -3111,6 +3180,7 @@ Bun.serve<WSData>({
         if (old) closeShareClients(s, old.id); // replaced share = new secret/mode, old guests out
         const sh: Share = { id: randomBytes(4).toString("hex"), slot: s.id, secret, mode, created: Date.now() };
         shares = [...shares.filter((x) => x.slot !== s.id), sh];
+        audit("share_create", s.id, mode);
         saveState();
         return json({ ok: true, id: sh.id, path: `/s/${sh.id}`, password: secret, mode });
       }
@@ -3126,6 +3196,7 @@ Bun.serve<WSData>({
         if (mode !== "view" && mode !== "interact") return json({ error: "mode must be view or interact" }, 400);
         if (mode !== sh.mode) {
           sh.mode = mode;
+          audit("share_mode_change", s.id, mode);
           closeShareClients(s, sh.id, 4002, "share mode changed");
           saveState();
         }
@@ -3134,6 +3205,7 @@ Bun.serve<WSData>({
       if (slotMatch[2] === "unshare") {
         const sh = shares.find((x) => x.slot === s.id);
         if (sh) closeShareClients(s, sh.id);
+        if (sh) audit("share_revoke", s.id);
         shares = shares.filter((x) => x.slot !== s.id);
         saveState();
         return json({ ok: true });
@@ -3224,6 +3296,7 @@ Bun.serve<WSData>({
     async open(ws) {
       const s = slots[ws.data.slot - 1];
       s.clients.add(ws);
+      if (ws.data.share) audit("guest_ws_connect", s.id, ws.data.share);
       const { cols, rows, force } = ws.data;
       const name = sess(s.id);
       if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
@@ -3287,6 +3360,7 @@ Bun.serve<WSData>({
       ws.data.queue = [];
     },
     close(ws) {
+      if (ws.data.share) audit("guest_ws_disconnect", ws.data.slot, ws.data.share);
       slots[ws.data.slot - 1].clients.delete(ws);
     },
     // live input: client sends raw keystroke bytes, forwarded verbatim to the pane.

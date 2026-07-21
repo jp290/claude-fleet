@@ -1460,6 +1460,108 @@ if (auditRotExists) {
   check("post-rotation audit.jsonl starts fresh, smaller than what rotated out", freshSize < auditSizeBeforeRotate, `${freshSize} vs ${auditSizeBeforeRotate}`);
 }
 
+// --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---
+{
+  const stewTokRes = await get("/api/steward/token");
+  const stewTokJ = (await stewTokRes.json()) as { token?: string };
+  check("owner can read the steward token", stewTokRes.ok && !!stewTokJ.token, JSON.stringify(stewTokJ));
+  const STEW = stewTokJ.token ?? "";
+  const stewH = { "content-type": "application/json", authorization: `Bearer ${STEW}` };
+  const stewGet = (path: string) => fetch(BASE + path, { headers: stewH });
+  const stewPost = (path: string, body: unknown) =>
+    fetch(BASE + path, { method: "POST", headers: stewH, body: JSON.stringify(body) });
+
+  const lnStew = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await post(`/api/slots/${lnStew.slot}/rename`, { label: "⚙ steward" });
+
+  // --- reads: fleet-wide, but reduced (no share secrets, no thinking/tool-result payloads) ---
+  const stewSessRes = await stewGet("/api/steward/sessions");
+  const stewSessJ = (await stewSessRes.json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };
+  check("steward token reads /api/steward/sessions", stewSessRes.ok && Array.isArray(stewSessJ.slots), JSON.stringify(stewSessJ).slice(0, 200));
+  check("steward sessions payload carries no share secret field",
+    !JSON.stringify(stewSessJ).includes("password"));
+  const stewBriefRes = await stewGet(`/api/steward/slots/${lnStew.slot}/brief`);
+  check("steward token reads a lane's brief", stewBriefRes.ok, String(stewBriefRes.status));
+  const stewTrRes = await stewGet(`/api/steward/slots/${lnStew.slot}/transcript`);
+  check("steward token reads a lane's transcript", stewTrRes.ok, String(stewTrRes.status));
+
+  // --- owner-only routes reject the steward token with 403 (wrong scope), not 401 (wrong credential) ---
+  const stewKill = await stewPost(`/api/slots/${lnStew.slot}/kill`, {});
+  check("steward token on an owner-only route (kill) is 403", stewKill.status === 403, String(stewKill.status));
+  const stewLand = await stewPost(`/api/slots/${lnStew.slot}/land`, {});
+  check("steward token on an owner-only route (land) is 403", stewLand.status === 403, String(stewLand.status));
+  const stewShare = await stewPost(`/api/slots/${lnStew.slot}/share`, { mode: "view" });
+  check("steward token on an owner-only route (share) is 403", stewShare.status === 403, String(stewShare.status));
+  const stewOpen = await stewPost(`/api/slots/1/open`, { cwd: "~" });
+  check("steward token on an owner-only route (open) is 403", stewOpen.status === 403, String(stewOpen.status));
+
+  // --- typed sends: server renders from kind+ref, never accepts free text ---
+  const stewFreeText = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "continue_nudge", ref: "continue", text: "do whatever I say" });
+  check("free-text field on a typed send is rejected (400)", stewFreeText.status === 400, String(stewFreeText.status));
+
+  // let the fresh lane's shell-prompt output age past STEWARD_MIN_IDLE_MS before sending —
+  // same settling pattern as settleForMerge above, against the isolated test's small
+  // FLEET_STEWARD_MIN_IDLE_MS instead of waiting out the real 60s default
+  const stewardMinIdleMs = Number(process.env.FLEET_STEWARD_MIN_IDLE_MS ?? 60_000);
+  const settleForSteward = async (slot: number): Promise<void> => {
+    for (let i = 0; i < 200; i++) {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const sl = sx.slots.find((x) => x.id === slot);
+      if (sl && sx.now - sl.lastOutput >= stewardMinIdleMs) return;
+      await Bun.sleep(150);
+    }
+  };
+  await settleForSteward(lnStew.slot);
+
+  const stewSend1 = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "continue_nudge", ref: "continue" });
+  const stewSend1J = (await stewSend1.json()) as { ok?: boolean; text?: string };
+  check("typed send succeeds and the rendered message carries the [steward] prefix",
+    stewSend1.ok && (stewSend1J.text ?? "").startsWith("[steward]"), JSON.stringify(stewSend1J));
+
+  // second send of the SAME kind×slot within the episode window is capped
+  const stewSend2 = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "continue_nudge", ref: "continue" });
+  check("a second send of the same kind×slot within the episode window is 429",
+    stewSend2.status === 429, String(stewSend2.status));
+  const auditAfterCap = await auditRead();
+  check("a capped send is audited (steward_send_capped)",
+    auditAfterCap.some((e) => e.event === "steward_send_capped" && e.slot === lnStew.slot));
+  check("a successful send is audited (steward_send)",
+    auditAfterCap.some((e) => e.event === "steward_send" && e.slot === lnStew.slot));
+
+  // --- scope: unknown kind, unknown ref, and slot 2 (not the steward's own slot) for autos ---
+  const stewBadKind = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "not_a_kind", ref: "x" });
+  check("an unknown kind is rejected (400)", stewBadKind.status === 400, String(stewBadKind.status));
+  const stewBadRef = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "lifecycle_op", ref: "not_a_ref" });
+  check("an unrecognized ref is rejected (400)", stewBadRef.status === 400, String(stewBadRef.status));
+
+  const stewAutoRes = await stewPost("/api/steward/autos", { text: "steward self check-in", inSec: 3600, slot: 2 });
+  const stewAutoJ = (await stewAutoRes.json()) as { ok?: boolean; auto?: { id: string; slot: number } };
+  check("steward's own autos route lands on the steward's OWN slot regardless of a spoofed `slot` field",
+    stewAutoRes.ok && stewAutoJ.auto?.slot === lnStew.slot, JSON.stringify(stewAutoJ));
+  if (stewAutoJ.auto) await post(`/api/autos/${stewAutoJ.auto.id}/delete`, {});
+
+  // --- an unknown steward token is unauthorized like any other unrecognized credential ---
+  const wrongStew = await fetch(BASE + "/api/steward/sessions", { headers: { authorization: "Bearer " + "0".repeat(32) } });
+  check("an unknown steward-shaped token is 401 (falls through to the owner gate)", wrongStew.status === 401, String(wrongStew.status));
+
+  // --- self-token regression: the pre-existing self-autos route is untouched by the steward lane ---
+  await tmuxOut("send-keys", "-t", `s${lnStew.slot}`, `printf 'SELFTOK=[%s]\\n' "$FLEET_SELF_TOKEN"`, "Enter");
+  await Bun.sleep(600);
+  const capStewTok = await tmuxOut("capture-pane", "-t", `s${lnStew.slot}`, "-p");
+  const stewSelfTok = /SELFTOK=\[([0-9a-f]{32})\]/.exec(capStewTok.out)?.[1] ?? "";
+  const selfRegRes = await fetch(BASE + "/api/self/autos", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": stewSelfTok },
+    body: JSON.stringify({ text: "self regression after steward lane build", inSec: 3600 }),
+  });
+  const selfRegJ = (await selfRegRes.json()) as { ok?: boolean; auto?: { id: string; slot: number } };
+  check("self-autos route still works unchanged for a lane that also happens to be labeled steward",
+    selfRegRes.ok && selfRegJ.auto?.slot === lnStew.slot, JSON.stringify(selfRegJ));
+  if (selfRegJ.auto) await post(`/api/autos/${selfRegJ.auto.id}/delete`, {});
+
+  await post(`/api/slots/${lnStew.slot}/kill`, {});
+}
+
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

@@ -177,6 +177,50 @@ const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer befo
 const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
 const MERGE_IDLE_MS = 3000; // don't start a rebase while the pane is actively producing output
 let persistedToken: string | null = null;
+// --- steward principal: a scoped token bound to whichever slot currently carries the
+// recognized steward label (docs/steward.md, "⚙ steward"), not to a fixed slot id — the
+// steward's worktree can be closed/reopened and the token must keep meaning "whoever is
+// the steward right now". Same shape as FLEET_SELF_TOKEN (token -> principal -> bound
+// slot), generalized one step further (automation-synergies.md finding 6): the self-token
+// route is left untouched below, this is a NEW second instance of the same shape, not a
+// rewire of the first. Persisted like the owner token so it survives restarts; minted once.
+const STEWARD_LABEL = "⚙ steward";
+let stewardToken: string | null = null;
+const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
+// joint 5's 10-minute effect window (steward-autonomy.md) doubles as the v1 episode
+// boundary: with no sensor loop yet to detect when an intervention actually helped, an
+// "episode" for cap purposes is simply kind×slot within this window of the last send —
+// a fresh window after it elapses is treated as a new episode. This is a deliberate
+// simplification, not the full joint-5 semantics (real outcome-based episode closure
+// needs the journal/effect-sensing this doc's own build order defers).
+const STEWARD_EPISODE_MS = 10 * 60 * 1000;
+// cap counters are NOT kept in memory: they're derived by re-reading audit.jsonl's
+// steward_send events on every send. Audit.jsonl is already the durable, chmod-600,
+// rotated append log (appendEvent above) — a separate in-memory counter would just be a
+// second, restart-fragile copy of the same fact. Cost is one file read per send; sends are
+// capped at STEWARD_SENDS_PER_HOUR, so this is deliberately cheap enough not to matter.
+async function stewardRecentSends(): Promise<{ ts: number; kind: string; ref: string; slot: number }[]> {
+  if (!existsSync(AUDIT_FILE)) return [];
+  const text = await Bun.file(AUDIT_FILE).text();
+  const out: { ts: number; kind: string; ref: string; slot: number }[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      const e = JSON.parse(line) as { event?: unknown; ts?: unknown; slot?: unknown; detail?: unknown };
+      if (e.event === "steward_send" && typeof e.ts === "number" && typeof e.slot === "number"
+        && typeof e.detail === "string") {
+        const [kind, ref] = e.detail.split(":");
+        out.push({ ts: e.ts, kind: kind ?? "", ref: ref ?? "", slot: e.slot });
+      }
+    } catch {
+      // a torn mid-append line — skip, same stance as every other audit/prompt-log reader
+    }
+  }
+  return out;
+}
+function stewardSlot(): Slot | null {
+  return slots.find((x) => x.cwd && x.label === STEWARD_LABEL) ?? null;
+}
 // public base URL for share links shown in the owner UI (e.g. https://cowork.example.com);
 // empty = links are rendered relative to wherever the owner opened the dashboard
 const SHARE_URL = process.env.FLEET_SHARE_URL ?? "";
@@ -216,7 +260,7 @@ function noteComposed(slotId: number, text: string): void {
   list.push({ text: text.trim().slice(0, 5000), ts: Date.now() });
   recentComposed.set(slotId, list);
 }
-function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal", ts: number): void {
+function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward", ts: number): void {
   if (source !== "terminal") noteComposed(s.id, text);
   const line = `${JSON.stringify({ ts, slot: s.id, cwd: s.cwd, label: s.label, source, text })}\n`;
   promptLogChain = promptLogChain
@@ -239,27 +283,37 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "owner_auth_fail"
-  | "self_heal_recreate";
+  | "self_heal_recreate"
+  | "steward_send" | "steward_send_capped";
+// generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
+// rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
+// synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
+// re-deriving it). One write chain + one failure flag shared across every file that goes
+// through here: today that's just AUDIT_FILE, so serializing unrelated files on one chain
+// costs nothing yet — split per-file if a second consumer's volume ever makes that a problem.
 let auditChain: Promise<unknown> = Promise.resolve();
-let auditWriteFailed = false; // report a wedged audit log once, not on every subsequent event
-function audit(event: AuditEvent, slot?: number, detail?: string): void {
-  const line = `${JSON.stringify({
-    ts: Date.now(), event,
-    ...(slot !== undefined ? { slot } : {}),
-    ...(detail !== undefined ? { detail } : {}),
-  })}\n`;
+let auditWriteFailed = false; // report a wedged event log once, not on every subsequent event
+function appendEvent(file: string, obj: Record<string, unknown>): void {
+  const line = `${JSON.stringify(obj)}\n`;
   auditChain = auditChain
     .then(async () => {
-      if (existsSync(AUDIT_FILE) && statSync(AUDIT_FILE).size >= AUDIT_ROTATE_BYTES)
-        renameSync(AUDIT_FILE, `${AUDIT_FILE}.1`);
-      await appendFile(AUDIT_FILE, line, { mode: 0o600 });
-      chmodSync(AUDIT_FILE, 0o600); // append doesn't guarantee mode on a pre-existing file
+      if (existsSync(file) && statSync(file).size >= AUDIT_ROTATE_BYTES)
+        renameSync(file, `${file}.1`);
+      await appendFile(file, line, { mode: 0o600 });
+      chmodSync(file, 0o600); // append doesn't guarantee mode on a pre-existing file
     })
     .catch((e: unknown) => {
       if (auditWriteFailed) return;
       auditWriteFailed = true;
-      console.log(`audit log write failed, further failures suppressed: ${e instanceof Error ? e.message : e}`);
+      console.log(`event log write failed, further failures suppressed: ${e instanceof Error ? e.message : e}`);
     });
+}
+function audit(event: AuditEvent, slot?: number, detail?: string): void {
+  appendEvent(AUDIT_FILE, {
+    ts: Date.now(), event,
+    ...(slot !== undefined ? { slot } : {}),
+    ...(detail !== undefined ? { detail } : {}),
+  });
 }
 
 async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
@@ -277,7 +331,7 @@ function saveState(): void {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents, pins, shares, autos, tasks,
+  const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, merges: Object.fromEntries(mergeLast), repoBases }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
@@ -2244,6 +2298,8 @@ if (existsSync(STATE_FILE)) {
       token?: unknown; slots?: Record<string, { cwd?: unknown; label?: unknown }>; recents?: unknown; shares?: unknown;
     };
     if (typeof persisted.token === "string") persistedToken = persisted.token;
+    if (typeof (persisted as { stewardToken?: unknown }).stewardToken === "string")
+      stewardToken = (persisted as { stewardToken: string }).stewardToken;
     if (Array.isArray((persisted as { autos?: unknown }).autos))
       autos = ((persisted as { autos: unknown[] }).autos).filter((x): x is Auto =>
         typeof x === "object" && x !== null
@@ -2329,6 +2385,7 @@ if (process.env.FLEET_TOKEN) {
   if (!persistedToken) persistedToken = randomBytes(24).toString("hex");
   TOKEN = persistedToken;
 }
+if (!stewardToken) stewardToken = randomBytes(16).toString("hex"); // same width as selfToken
 const ls = await tmux("list-sessions", "-F", "#{session_name}");
 if (ls.code === 0) {
   for (const name of ls.out.split("\n")) {
@@ -2393,6 +2450,138 @@ setInterval(() => {
   for (const s of slots) void ensureSlot(s).catch(() => {});
 }, 2000);
 
+type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge";
+// static suffix every intervention template carries (steward-autonomy.md joint 5's
+// "verification-suffix" item — not itself an intervention, just a constant line).
+const STEWARD_VERIFY_SUFFIX = " Verifiziere dein Ergebnis, bevor du fertig meldest.";
+
+// The hardening from automation-synergies.md finding 2: the server renders the FULL
+// message from its own template plus deterministic server-side facts (mergeLast, gitInfo)
+// — the caller supplies only `kind` + `ref`, selecting which template/fact, never text.
+// A `ref` that doesn't match a real, currently-true deterministic fact is rejected outright
+// (no "trust me, that's the state" path) — this is what makes mislabeling structurally
+// impossible rather than merely audited after the fact.
+function renderStewardMessage(kind: StewardKind, ref: string, s: Slot): { text: string } | { error: string } {
+  if (kind === "continue_nudge") {
+    if (ref !== "continue") return { error: "continue_nudge takes ref 'continue' only" };
+    return { text: `[steward] Mach weiter.${STEWARD_VERIFY_SUFFIX}` };
+  }
+  if (kind === "lifecycle_op") {
+    if (ref === "commit") {
+      const gi = gitInfo.get(s.id);
+      if (!gi || gi.dirty === 0) return { error: "no uncommitted changes on record for this lane" };
+      return { text: `[steward] Committe deine Arbeit, bevor du weitermachst.${STEWARD_VERIFY_SUFFIX}` };
+    }
+    if (ref === "handoff")
+      return { text: `[steward] Kontext nähert sich der Grenze — schreib ein /handoff.${STEWARD_VERIFY_SUFFIX}` };
+    if (ref === "verify") {
+      if (!mergeLast.get(s.id)) return { error: "no merge verdict on record for this lane" };
+      return { text: `[steward] Lane gelandet — führe deine Verifikation aus und melde das Ergebnis.${STEWARD_VERIFY_SUFFIX}` };
+    }
+    return { error: "unknown lifecycle_op ref" };
+  }
+  // state_relay: "Status: <fact verbatim from the deterministic source>." — no interpretation
+  // added, so the verification suffix is deliberately NOT appended here (playbook item 1).
+  const m = mergeLast.get(s.id);
+  if (ref === "merge_blocked") {
+    if (!m || (m.status !== "blocked" && m.status !== "error")) return { error: "no blocked/error merge verdict on record" };
+    return { text: `[steward] Status: ${m.detail}` };
+  }
+  if (ref === "merge_resolved") {
+    if (!m || m.status !== "resolved") return { error: "no resolved merge verdict on record" };
+    return { text: `[steward] Status: ${m.detail}` };
+  }
+  return { error: "unknown state_relay ref" };
+}
+
+// same delivery gates tickAutos applies before an unattended prompt reaches a pane (joint 4:
+// only via the gated send path, never raw tmux) — a one-shot steward send gets the same
+// idle + claude-alive re-verification an auto's scheduled fire gets, just evaluated inline
+// instead of on a timer. STEWARD_MIN_IDLE_MS mirrors createAutoForSlot's idleSec default (60s).
+const STEWARD_MIN_IDLE_MS = Number(process.env.FLEET_STEWARD_MIN_IDLE_MS ?? 60_000) | 0;
+async function handleStewardSend(body: Record<string, unknown> | null): Promise<Response> {
+  if (!body) return json({ error: "expected application/json" }, 400);
+  if ("text" in body) return json({ error: "free text not accepted — send kind + ref, the server renders the message" }, 400);
+  const kind = body.kind;
+  if (kind !== "state_relay" && kind !== "lifecycle_op" && kind !== "continue_nudge")
+    return json({ error: "kind must be state_relay | lifecycle_op | continue_nudge" }, 400);
+  const ref = typeof body.ref === "string" ? body.ref : "";
+  const s = slotFrom(body.slot);
+  if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+  const rendered = renderStewardMessage(kind, ref, s);
+  if ("error" in rendered) return json({ error: rendered.error }, 400);
+  if (!(await claudeAlive(s.id))) return json({ error: "claude not running in target pane" }, 409);
+  if (Date.now() - s.lastOutput < STEWARD_MIN_IDLE_MS) return json({ error: "target slot not idle" }, 409);
+  const recent = await stewardRecentSends();
+  const now = Date.now();
+  const withinHour = recent.filter((r) => now - r.ts < 3_600_000).length;
+  if (withinHour >= STEWARD_SENDS_PER_HOUR) {
+    audit("steward_send_capped", s.id, `${kind}:${ref}:hourly`);
+    return json({ error: `hourly steward send cap (${STEWARD_SENDS_PER_HOUR}) reached` }, 429);
+  }
+  const sameEpisode = recent.some((r) => r.kind === kind && r.slot === s.id && now - r.ts < STEWARD_EPISODE_MS);
+  if (sameEpisode) {
+    audit("steward_send_capped", s.id, `${kind}:${ref}:episode`);
+    return json({ error: "cap: 1 per kind×slot per episode" }, 429);
+  }
+  try {
+    await sendText(s, rendered.text, true);
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "send failed" }, 502);
+  }
+  const ts = Date.now();
+  s.history = [...s.history, { text: rendered.text, ts }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, rendered.text, "steward", ts);
+  audit("steward_send", s.id, `${kind}:${ref}`);
+  return json({ ok: true, text: rendered.text });
+}
+
+// steward reads are a reduced cut of the owner's views (never share passwords, never full
+// thinking/tool-result payloads — same capability-asymmetry stance as the guest cut below).
+async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
+  if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
+    return json({
+      now: Date.now(),
+      slots: slots.map((s) => ({
+        id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
+        git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
+        mergePending: mergeLast.get(s.id)?.status === "resolved",
+      })),
+    });
+  }
+  const briefMatch = /^\/api\/steward\/slots\/(\d+)\/brief$/.exec(url.pathname);
+  if (req.method === "GET" && briefMatch) {
+    const s = slotFrom(briefMatch[1]);
+    if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+    const p = await briefPayload(s);
+    if (!p) return json({ error: "not a git repository" }, 400);
+    return json({ ...p, worktree: s.worktree });
+  }
+  const trMatch = /^\/api\/steward\/slots\/(\d+)\/transcript$/.exec(url.pathname);
+  if (req.method === "GET" && trMatch) {
+    const s = slotFrom(trMatch[1]);
+    if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+    const p = await transcriptPayload(s, Number(url.searchParams.get("after") ?? 0));
+    return json({
+      ...p,
+      entries: p.entries.map((e) => ({
+        ...e,
+        blocks: e.blocks.filter((b) => b.t !== "thinking")
+          .map((b) => (b.t === "tool_result" ? { ...b, text: trim(b.text, 400) } : b)),
+      })).filter((e) => e.blocks.length),
+    });
+  }
+  if (url.pathname === "/api/steward/autos" && req.method === "POST") {
+    const home = stewardSlot();
+    if (!home) return json({ error: "no steward slot active" }, 404);
+    return createAutoForSlot(home, await readJson(req));
+  }
+  if (url.pathname === "/api/steward/send" && req.method === "POST")
+    return handleStewardSend(await readJson(req));
+  return null;
+}
+
 Bun.serve<WSData>({
   hostname: HOST,
   port: PORT,
@@ -2435,6 +2624,18 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
+    }
+
+    // steward principal: same placement rationale as self/autos above — sits AFTER the
+    // SHARE_HOSTS gate, so a valid steward token is structurally unreachable from the public
+    // tunnel. Any request carrying the steward token is intercepted HERE, before the owner
+    // gate below: hitting an out-of-scope path (kill/land/share/open, or any owner route)
+    // with a valid-but-wrong-scope credential is a 403 (told apart from tokenGate's 401,
+    // which means "not a credential we recognize at all" and carries its throttle/audit).
+    const stewardGiven = tokenFrom(req);
+    if (stewardGiven && stewardToken && secretEq(stewardGiven, stewardToken)) {
+      const r = await handleStewardRoute(req, url);
+      return r ?? json({ error: "steward token: route not in scope" }, 403);
     }
 
     // login: /?token=… sets the cookie and redirects to a clean URL
@@ -2731,6 +2932,10 @@ Bun.serve<WSData>({
       events.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ events: events.slice(0, limit), total: lines.length });
     }
+    // owner-only: read the steward's own scoped credential, to paste into the steward
+    // pane's env (FLEET_STEWARD_TOKEN) by hand — same access model as /api/audit.
+    if (url.pathname === "/api/steward/token" && req.method === "GET")
+      return json({ token: stewardToken });
     // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
     // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
     if (url.pathname === "/api/enhance" && req.method === "POST") {

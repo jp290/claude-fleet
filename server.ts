@@ -1780,6 +1780,28 @@ const ENHANCE_PROMPT = [
   "## Entwurf",
 ].join("\n");
 
+// carve the first balanced {...} object out of a noisy answer, ignoring braces inside
+// string literals. The enhancer must return a prompt VERBATIM (never degrade to raw text
+// the way the summarizer does — that would dump prose into the compose box), so when the
+// real model wraps its JSON in a preamble/trailing line despite the strict-JSON contract,
+// we extract rather than 502. Without this, any wrapping fails JSON.parse → red-flash button.
+function extractJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
 async function runEnhance(text: string, cwd: string): Promise<string> {
   const prompt = `${ENHANCE_PROMPT}\n${text}`;
   let out = ENHANCE_CMD
@@ -1791,7 +1813,15 @@ async function runEnhance(text: string, cwd: string): Promise<string> {
     if (typeof env.result === "string") out = env.result.trim();
   } catch { /* not an envelope */ }
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  const j = JSON.parse(body) as { prompt?: unknown }; // parse failure → caller answers 502
+  let j: { prompt?: unknown };
+  try {
+    j = JSON.parse(body) as { prompt?: unknown };
+  } catch {
+    // real model wrapped the JSON in prose/fences — pull the object out before giving up
+    const obj = extractJsonObject(out);
+    if (!obj) throw new Error("enhancer returned no JSON"); // caller answers 502
+    j = JSON.parse(obj) as { prompt?: unknown };
+  }
   if (typeof j.prompt !== "string" || !j.prompt.trim()) throw new Error("enhancer returned no prompt");
   return j.prompt.trim();
 }

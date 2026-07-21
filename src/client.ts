@@ -132,7 +132,8 @@ let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server
 
 // --- transcript view model (mirrors server.ts's TEntry/TBlock) ---
 interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
-interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
+// meta = a harness-injected user turn (task-notification): shown folded, not as a "you" bubble
+interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
 // markdown rendering shared with the guest reader — see src/md.ts
 
@@ -287,6 +288,7 @@ class Pane {
     this.chatTotal = 0;
     this.chatSource = null;
     this.toolGroup = null;
+    this.notifGroup = null;
   }
 
   // --- conversation rendering: the view exists so YOUR messages are findable.
@@ -294,6 +296,9 @@ class Pane {
   // collapses into one expandable "⚙ n steps" line instead of a wall of rows. ---
   private toolGroup: { det: HTMLElement; sum: HTMLElement; body: HTMLElement; count: number;
     lastStep: HTMLElement | null } | null = null;
+  // task-notifications between two of your messages fold into one collapsed accordion —
+  // hidden by default, expandable to read — instead of masquerading as your bubbles
+  private notifGroup: { sum: HTMLElement; body: HTMLElement; count: number } | null = null;
 
   private ensureToolGroup() {
     if (this.toolGroup) return this.toolGroup;
@@ -328,7 +333,33 @@ class Pane {
     g.sum.textContent = `⚙ ${g.count} step${g.count === 1 ? "" : "s"}`;
   }
 
+  // harness task-notifications: collapsed by default under "🔔 n task notification(s)".
+  // Consecutive ones share a group; any real message/step below closes the run.
+  private addNotif(e: TEntry) {
+    this.toolGroup = null;
+    if (!this.notifGroup) {
+      const det = document.createElement("details");
+      det.className = "notifgroup";
+      const sum = document.createElement("summary");
+      const body = el("div", "ngbody");
+      det.append(sum, body);
+      this.chatEl.appendChild(det);
+      this.notifGroup = { sum, body, count: 0 };
+    }
+    const g = this.notifGroup;
+    const text = e.blocks.map((b) => b.text).join("\n");
+    const item = el("div", "nitem");
+    const status = /<status>([^<]*)<\/status>/.exec(text)?.[1] ?? "update";
+    item.appendChild(el("div", "nihead", `${status}${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`));
+    item.appendChild(el("pre", "nibody", text));
+    g.body.appendChild(item);
+    g.count++;
+    g.sum.textContent = `🔔 ${g.count} task notification${g.count === 1 ? "" : "s"}`;
+  }
+
   private appendEntry(e: TEntry) {
+    if (e.meta) { this.addNotif(e); return; }
+    this.notifGroup = null; // a real entry ends the notification run
     for (const b of e.blocks) {
       if (b.t === "text") {
         this.toolGroup = null; // a message ends the current work block

@@ -20,7 +20,7 @@ const gate = $("gate"), pw = $("pw") as HTMLInputElement, gatemsg = $("gatemsg")
 interface Info { slotLabel: string | null; mode: "view" | "interact"; cols: number; rows: number; active: boolean;
   viewers?: number; comments?: number }
 interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
-interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
+interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 interface ShareComment { id: string; ts: number; name: string; text: string; from?: "owner" }
 interface Brief { branch: string | null; sessionStart: number | null; uncommitted: number;
   files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] }
@@ -514,6 +514,7 @@ const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
 function rAppend(e: TEntry) {
+  if (e.meta) return; // harness task-notifications aren't conversation — guests don't see them
   for (const b of e.blocks) {
     if (b.t === "text") {
       // slash-command bookkeeping (`<command-name>/model…`, `<local-command-stdout>` with

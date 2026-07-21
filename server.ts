@@ -19,6 +19,7 @@ const REPLAY_TAIL = 2_000_000;
 // so this replays correctly-wrapped text instead of the raw stream's stale wrapping)
 const SEED_LINES = 3000;
 const MAX_RECENTS = 8;
+const MAX_PINS = 20;
 const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
 const HOME = process.env.HOME!;
@@ -136,6 +137,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   resizeChain: Promise.resolve(),
 }));
 let recents: string[] = [];
+let pins: string[] = []; // owner-pinned project roots, surfaced first in the picker (persisted like recents)
 let shares: Share[] = [];
 let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
@@ -227,7 +229,7 @@ function saveState(): void {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, slots: active, recents, shares, autos, tasks,
+  const body = JSON.stringify({ token: persistedToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, merges: Object.fromEntries(mergeLast) }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
@@ -1047,8 +1049,19 @@ async function listDirs(raw: string) {
   const common = [HOME, `${HOME}/Desktop`, `${HOME}/Documents`, `${HOME}/Downloads`]
     .filter((p) => existsSync(p));
   const parent = dirname(dir);
-  // .git can be a dir (normal repo) or a file (worktree) — either marks a repo for the picker
-  return { path: dir, parent: parent === dir ? null : parent, dirs, recents, common, git: existsSync(`${dir}/.git`) };
+  // one statSync probe per listed folder classifies it: .git-as-dir = a real repo (badge it,
+  // you can start a lane here); .git-as-file = a git worktree (a lane already — the picker's
+  // "hide worktrees" toggle filters these). Same syscall budget as a plain existsSync loop.
+  const repos: string[] = [];
+  const worktrees: string[] = [];
+  for (const name of dirs) {
+    try {
+      const st = statSync(`${dir}/${name}/.git`);
+      repos.push(name);
+      if (st.isFile()) worktrees.push(name);
+    } catch { /* no .git here — not a repo */ }
+  }
+  return { path: dir, parent: parent === dir ? null : parent, dirs, repos, worktrees, recents, pins, common, git: existsSync(`${dir}/.git`) };
 }
 
 // --- transcript view: read claude's own JSONL (~/.claude/projects/<cwd-slug>/<uuid>.jsonl)
@@ -2030,6 +2043,8 @@ if (existsSync(STATE_FILE)) {
             && typeof (c as ShareComment).id === "string" && typeof (c as ShareComment).ts === "number"
             && typeof (c as ShareComment).name === "string" && typeof (c as ShareComment).text === "string");
     if (Array.isArray(persisted.recents)) recents = persisted.recents.filter((r): r is string => typeof r === "string");
+    if (Array.isArray((persisted as { pins?: unknown }).pins))
+      pins = ((persisted as { pins: unknown[] }).pins).filter((r): r is string => typeof r === "string").slice(0, MAX_PINS);
     if (Array.isArray((persisted as { tasks?: unknown }).tasks))
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
@@ -2791,6 +2806,16 @@ Bun.serve<WSData>({
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }
+    }
+    // pin/unpin a folder in the picker. { on:false } unpins; anything else pins (most-recent-first,
+    // capped at MAX_PINS). Persisted in fleet.json so pins follow the owner across devices.
+    if (url.pathname === "/api/pins" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.path !== "string" || !body.path.trim()) return json({ error: "bad path" }, 400);
+      const p = body.path.trim();
+      pins = body.on === false ? pins.filter((x) => x !== p) : [p, ...pins.filter((x) => x !== p)].slice(0, MAX_PINS);
+      saveState();
+      return json({ ok: true, pins });
     }
     // --- task queue (owner side). Tasks arrive here (owner-created) or via /intake
     // (pending). Only the owner moves a task to `queued`; only then can the dispatcher run it.

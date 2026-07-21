@@ -83,6 +83,19 @@ sidebar 250→228, compose bar 59→51, mobile paddings trimmed, touch targets k
 Item 4 (UI density) now DONE as a first iteration — further tightening wants the
 user's eyes on real devices.
 
+**2026-07-21 — conversation-view + commit/land UI polish (this lane, unmerged):**
+task-notifications no longer render as fake "you" bubbles in the conversation view
+— the server tags those harness-injected user turns `meta`, the owner view folds
+consecutive ones into a collapsed "🔔 n task notification(s)" accordion (same idiom
+as the "⚙ n steps" toolgroup), guests skip them (`035a1b9`). Commit/land controls
+simplified (`0ac70b0`): one primary `commit` + a subordinate `✎ message` (was two
+co-equal amber buttons that read as two ways to commit), the redundant main-session
+`± diff` button dropped (the uncommitted file rows are already click-to-diff), and
+the review-state double-`⏏ land` untangled (the top button becomes `↻ re-run merge`,
+its actual distinct job; its generic diff hidden there so the review state has one
+diff + one land). Two server-side gaps found while auditing that UI, deferred — see
+Hardening #10 and #11.
+
 ---
 
 ## 1. Esc key on desktop  `quick win`
@@ -816,6 +829,31 @@ acted on) or a gap in existing, shipped code — not part of any single feature 
      offenders unchanged: 9s/4.5s windows racing a 2s self-heal tick or a 5s
      auto-tick). A real fix means restructuring the harness, not something
      to bolt on alongside targeted regression tests — left for a dedicated pass.
+
+10. **[Not fixed — deferred, low severity] The commit mid-run guard is
+    client-only.** `confirmMidRun` (`client.ts:778`) warns before committing a
+    session that produced output within `RECENT_MS`, so the owner doesn't
+    snapshot a half-finished tree. But the server route
+    `POST /api/slots/:id/commit` (`server.ts:2900-2915`) enforces only
+    `commitInflight`/`mergeInflight` — there is **no** `lastOutput` check,
+    unlike `/merge`, which hard-blocks on active output (`MERGE_IDLE_MS`,
+    `server.ts:2787`). A commit reaching the route any other way — the
+    self-token autos route, the raw owner API, a second browser tab — bypasses
+    the warning entirely. The commit is reversible (`git reset`), so severity is
+    low, but the guard is theatre if only one client path enforces it. Fix:
+    mirror the `lastOutput` confirm/block server-side, or accept it as a
+    UI-only hint knowingly and stop implying it's a real gate.
+
+11. **[Not fixed — deferred, low severity] `✎ message` (agent-written commit)
+    falls back to `wip:` silently.** If the agent message fails or comes back
+    unparseable, `commitLane` (`server.ts:1720-1725`) commits with the wip
+    message and returns `{committed:true, subject:"wip: …"}` — the button
+    promised an agent message; you get a wip commit with no signal that the
+    agent half failed. Low severity (the commit still succeeds, which is the
+    point of the fallback — a save must never fail on the model), but the label
+    occasionally lies. Fix: have `commitLane` return a flag when the fallback
+    fired and surface "agent message unavailable — saved as wip" in `doCommit`'s
+    result alert (`client.ts:753-755`).
 
 ---
 

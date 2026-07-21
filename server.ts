@@ -1149,7 +1149,10 @@ function transcriptFile(s: Slot): string | null {
 }
 
 interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
-interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[] }
+// meta: a harness-injected user turn (e.g. a <task-notification> — a background task
+// reported back). Real content, but not something the user typed, so the conversation
+// view folds it away instead of rendering a fake "you" bubble.
+interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
 const trim = (t: string, max: number) => (t.length > max ? t.slice(0, max) + ` … [+${t.length - max} chars]` : t);
 
@@ -1174,9 +1177,11 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
   const ts = typeof d.timestamp === "string" ? d.timestamp : null;
   const content = d.message?.content;
   const blocks: TBlock[] = [];
+  let meta = false;
   if (d.type === "user") {
     if (typeof content === "string") {
       if (content.startsWith("<system-reminder")) return null; // harness noise, not the user
+      if (content.startsWith("<task-notification")) meta = true; // background task reported back
       blocks.push({ t: "text", text: trim(content, 20_000) });
     } else if (Array.isArray(content)) {
       for (const b of content) {
@@ -1200,7 +1205,7 @@ function viewEntry(raw: unknown, n: number): TEntry | null {
     }
   }
   if (!blocks.length) return null;
-  return { n, role: d.type, ts, blocks };
+  return { n, role: d.type, ts, blocks, ...(meta && { meta: true }) };
 }
 
 // the conversation view's data source, shared by the owner chat view and the guest

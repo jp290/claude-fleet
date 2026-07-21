@@ -47,6 +47,14 @@ matching condition episode, because the counter lives server-side.
 **Cost/risk:** small route surface (a `kind` field + counters keyed
 slot×episode); the risk of over-modeling is real — enforce only what the
 playbook already fixes (type, cap, window), nothing speculative.
+**Hardening (steward review 2026-07-21, confirmed real):** a declared `kind`
+alone is spoofable — an injected steward could label arbitrary text as a
+favorable kind and inherit its cap. Fix: for every v1 playbook kind the
+**server renders the message itself** from its template plus deterministic
+inputs (event ref, condition, slot); the steward's typed-send call carries
+*references, never free text*. Free-text delivery simply is not in the scoped
+token's capability set — mislabeling becomes impossible rather than detected.
+Plus one global sends-per-hour cap across all kinds.
 **Build-order impact:** fold into the token lane — the token and the typed-send
 route are one feature ("scoped principals with typed, capped actions").
 

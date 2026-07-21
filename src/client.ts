@@ -1224,7 +1224,9 @@ async function renderBoard() {
                 { error?: string; branch?: string; head?: string | null };
               discardArm = null;
               if (!r.ok) alert(j.error ?? "discard failed");
-              else if (j.head) alert(`lane discarded.\nUndo until git gc:\n  git branch ${j.branch} ${j.head}`);
+              else if (j.head) alert(j.branch === "(detached)"
+                ? `lane discarded.\nRecover until git gc from sha:\n  ${j.head}`
+                : `lane discarded.\nUndo until git gc:\n  git branch ${j.branch} ${j.head}`);
               void renderBoard();
             };
             const btns = el("div", "bdbtns");

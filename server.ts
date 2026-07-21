@@ -164,7 +164,10 @@ const intakeStrikes: number[] = []; // timestamps, for a simple hourly rate limi
 const AUTO_MIN_EVERY_SEC = 10;
 const AUTO_MAX_RUNS = 100;
 const AUTO_MAX_PER_SLOT = 5;
+const AUTO_KEEP_DONE = 5; // completed one-shots kept per slot before the oldest are pruned
 const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer before skipping
+const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
+const MERGE_IDLE_MS = 3000; // don't start a rebase while the pane is actively producing output
 let persistedToken: string | null = null;
 // public base URL for share links shown in the owner UI (e.g. https://klaus.example.com);
 // empty = links are rendered relative to wherever the owner opened the dashboard
@@ -246,10 +249,15 @@ function saveState(): void {
 // user-controlled ever reaches a shell string ---
 async function git(dir: string, ...args: string[]): Promise<{ out: string; err: string; code: number }> {
   const p = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
-  const out = await new Response(p.stdout).text();
-  const err = await new Response(p.stderr).text();
-  const code = await p.exited;
-  return { out: out.trim(), err: err.trim(), code };
+  const timer = setTimeout(() => { try { p.kill(); } catch {} }, GIT_TIMEOUT_MS);
+  try {
+    const out = await new Response(p.stdout).text();
+    const err = await new Response(p.stderr).text();
+    const code = await p.exited;
+    return { out: out.trim(), err: err.trim(), code };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 // git status --porcelain, columns PRESERVED. The trim in git() strips the leading space of
 // the first entry (an unstaged " M path" becomes "M path"), which silently corrupts the
@@ -257,9 +265,14 @@ async function git(dir: string, ...args: string[]): Promise<{ out: string; err: 
 // (uncommitted-files display, diff status list) must read through here, never git().out.
 async function statusLines(cwd: string): Promise<{ code: number; lines: string[] }> {
   const p = Bun.spawn(["git", "-C", cwd, "status", "--porcelain"], { stdout: "pipe", stderr: "pipe" });
-  const out = await new Response(p.stdout).text();
-  const code = await p.exited;
-  return { code, lines: out.split("\n").filter((l) => l.length > 0) };
+  const timer = setTimeout(() => { try { p.kill(); } catch {} }, GIT_TIMEOUT_MS);
+  try {
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    return { code, lines: out.split("\n").filter((l) => l.length > 0) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 // a mutating git op (add/commit) in a lane races the live session's OWN git — if it holds
 // .git/index.lock we back off and retry rather than fail. Initial attempt + up to 5 retries.
@@ -270,6 +283,16 @@ async function gitRetry(dir: string, ...args: string[]): Promise<{ out: string; 
     r = await git(dir, ...args);
   }
   return r;
+}
+
+// a lane whose session left a merge/rebase/cherry-pick half-done must not be committed or
+// rebased by Fleet — a plain add+commit would finalize it into a bogus commit (conflict
+// markers and all), and a Fleet rebase would collide with it.
+async function gitOpInProgress(cwd: string): Promise<boolean> {
+  const gd = await git(cwd, "rev-parse", "--absolute-git-dir");
+  if (gd.code !== 0 || !gd.out) return false;
+  return ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
+    .some((f) => existsSync(resolve(gd.out, f)));
 }
 
 // --- session scoping: every brief/diff section describes THE SESSION's lifetime, not the
@@ -880,6 +903,13 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null): Respo
     lastResult: null,
   };
   autos = [...autos, a];
+  // completed one-shots (enabled=false) are never otherwise pruned — a self-scheduling lane
+  // could grow autos + fleet.json without bound. Keep only the most recent AUTO_KEEP_DONE.
+  const done = autos.filter((x) => x.slot === s.id && !x.enabled);
+  if (done.length > AUTO_KEEP_DONE) {
+    const drop = new Set(done.slice(0, done.length - AUTO_KEEP_DONE).map((x) => x.id));
+    autos = autos.filter((x) => !drop.has(x.id));
+  }
   saveState();
   return json({ ok: true, auto: a });
 }
@@ -1646,6 +1676,7 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
       if (m) message = m;
     } catch { /* saving must NEVER fail on the model — keep the wip message */ }
   }
+  if (await gitOpInProgress(cwd)) return json({ committed: false, reason: "a git merge/rebase is in progress in this lane — finish or abort it in the session first" });
   const add = await gitRetry(cwd, "add", "-A");
   if (add.code !== 0) return json({ error: `git add failed: ${add.err.slice(0, 200)}`, code: 500 }, 500);
   const ci = await gitRetry(cwd, "commit", "-m", message);
@@ -1657,7 +1688,7 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
     return json({ error: `git commit failed: ${(ci.err || ci.out).slice(0, 200)}`, code: 500 }, 500);
   }
   const hd = await git(cwd, "rev-parse", "--short", "HEAD");
-  return json({ committed: true, hash: hd.out, subject: message });
+  return json({ committed: true, hash: hd.code === 0 ? hd.out : "", subject: message });
 }
 
 // --- ✨ prompt enhancer: a throwaway background claude session (same machinery as the
@@ -1744,7 +1775,10 @@ const mergeLast = new Map<number, MergeLast>();
 // and hand the agent the conflict surface we just discovered, so it starts working
 // instead of exploring.
 async function tryScriptRebase(cwd: string, main: string): Promise<{ clean: boolean; conflicted: string[] }> {
-  const rb = await git(cwd, "rebase", main);
+  // rerere.enabled would silently replay recorded resolutions and exit 0, landing an
+  // unreviewed conflict resolution — disable it just for this pre-pass so exit 0 means
+  // genuinely no conflicts to review.
+  const rb = await git(cwd, "-c", "rerere.enabled=false", "rebase", main);
   if (rb.code === 0) return { clean: true, conflicted: [] };
   const files = await git(cwd, "diff", "--name-only", "--diff-filter=U");
   await git(cwd, "rebase", "--abort");
@@ -2585,12 +2619,14 @@ Bun.serve<WSData>({
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
-      laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
-      // the slot is reserved, but for attach the WORKTREE is the contended resource too:
+      // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
       // the "already open in a slot" check and openSlot are awaits apart, so two attach
-      // requests for the same orphan would otherwise both pass it and double-seat the tree
+      // requests for the same orphan would otherwise both pass it and double-seat the tree.
+      // The attachBusy 409 must come BEFORE laneSpawn.add — a return before the try/finally
+      // would otherwise leak the laneSpawn reservation and wedge the slot forever.
       const attachPath = typeof body.attach === "string" && body.attach ? body.attach : null;
       if (attachPath && attachBusy.has(attachPath)) return json({ error: "worktree is being attached" }, 409);
+      laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
       if (attachPath) attachBusy.add(attachPath);
       try {
         if (attachPath) {
@@ -2619,6 +2655,7 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || typeof body.path !== "string")
         return json({ error: "expected { repo, path }" }, 400);
+      if (attachBusy.has(body.path)) return json({ error: "worktree is being attached right now — try again in a moment" }, 409);
       const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
       if (top.code !== 0) return json({ error: "not a git repository" }, 400);
       const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.path);
@@ -2639,6 +2676,7 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || typeof body.path !== "string" || typeof body.branch !== "string")
         return json({ error: "expected { repo, path, branch }" }, 400);
+      if (attachBusy.has(body.path)) return json({ error: "worktree is being attached right now — try again in a moment" }, 409);
       const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
       if (top.code !== 0) return json({ error: "not a git repository" }, 400);
       const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === body.path);
@@ -2665,15 +2703,18 @@ Bun.serve<WSData>({
       if (req.method === "GET")
         return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null });
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
-      const body = await readJson(req);
-      mergeStart.add(s.id); // reserve before the first await — see mergeStart
+      mergeStart.add(s.id); // reserve BEFORE the first await — two parallel POSTs otherwise both start a rebase
       try {
+        if (commitInflight.has(s.id)) return json({ status: "blocked", detail: "a commit is in progress on this lane — try again in a moment" });
+        const body = await readJson(req);
         const { repo, branch } = s.worktree;
         const cwd = s.cwd;
         const st = await git(cwd, "status", "--porcelain");
         if (st.code !== 0) return json({ error: "git status failed — worktree gone?" }, 400);
         if (st.out) return json({ status: "blocked",
           detail: `uncommitted changes — commit them (or ask the session to) first:\n${st.out.slice(0, 400)}` });
+        if (await gitOpInProgress(cwd)) return json({ status: "blocked", detail: "a git merge/rebase is in progress in this lane — finish or abort it in the session first" });
+        if (Date.now() - s.lastOutput < MERGE_IDLE_MS) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
         const mainBr = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
         if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
         if (mainBr.out === branch) return json({ error: "primary checkout is on the lane branch itself" }, 409);
@@ -2793,6 +2834,7 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       const mode = body?.mode === "agent" ? "agent" : "quick";
       if (commitInflight.has(s.id)) return json({ error: "a commit is already running for this slot" }, 409);
+      if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ error: "a merge/land is in progress on this lane — try again once it finishes" }, 409);
       commitInflight.add(s.id);
       try {
         return await commitLane(s, mode);

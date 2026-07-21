@@ -587,6 +587,20 @@ if (REPO) {
     return { gone: false, last: null };
   };
 
+  // FIX 9 adds an idle gate: a merge is refused while the pane produced output within
+  // MERGE_IDLE_MS (3s). A freshly-spawned lane pane emits its shell prompt, so wait until
+  // the slot's lastOutput is stale enough before firing a merge that must start a job.
+  // Deterministic: polls the server's own clock/lastOutput, returns the instant it clears.
+  const MERGE_IDLE_MS = 3000;
+  const settleForMerge = async (slot: number): Promise<void> => {
+    for (let i = 0; i < 80; i++) {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const sl = sx.slots.find((x) => x.id === slot);
+      if (sl && sx.now - sl.lastOutput >= MERGE_IDLE_MS) return;
+      await Bun.sleep(150);
+    }
+  };
+
   // one-click lane: the server picks the free slot and auto-names the branch
   const ln1res = await post("/api/lanes", { repo: REPO });
   const ln1 = (await ln1res.json()) as { ok?: boolean; slot?: number; branch?: string; cwd?: string; error?: string };
@@ -669,6 +683,7 @@ if (REPO) {
   spawnSync("git", ["-C", REPO, "commit", "-aqm", "mainline work"]);
 
   await setMergeMode("blocked");
+  await settleForMerge(lnSlot);
   const mgB = await post(`/api/slots/${lnSlot}/merge`, {});
   check("merge POST starts an async job", ((await mgB.json()) as { running?: boolean }).running === true);
   const vB = await waitMerge(lnSlot);
@@ -676,12 +691,14 @@ if (REPO) {
     !vB.gone && vB.last?.status === "blocked" && vB.last.detail === "fake conflict", JSON.stringify(vB));
 
   await setMergeMode("lie");
+  await settleForMerge(lnSlot);
   await post(`/api/slots/${lnSlot}/merge`, {});
   const vL = await waitMerge(lnSlot);
   check("merge re-verifies the rebase claim — lying agent → error, lane kept",
     !vL.gone && vL.last?.status === "error" && exists(lnPath), JSON.stringify(vL.last));
 
   await setMergeMode("do");
+  await settleForMerge(lnSlot);
   await post(`/api/slots/${lnSlot}/merge`, {});
   const vD = await waitMerge(lnSlot);
   check("agent resolves the conflict → PAUSES for review (verified, NOT landed, lane kept)",
@@ -697,6 +714,7 @@ if (REPO) {
   // .gitignore the lane never touched has to be left alone, not wedge the land. The OLD
   // check refused on ANY dirty tracked file and returned status:"blocked" here.
   await Bun.write(`${REPO}/.gitignore`, ".env\n# unrelated dirty edit — must not block the land\n");
+  await settleForMerge(lnSlot);
   const conf = await post(`/api/slots/${lnSlot}/merge`, { confirm: true });
   const confJ = (await conf.json()) as { status?: string; landed?: boolean };
   check("owner confirm → server ff-merges the reviewed resolution + tears down the slot",
@@ -722,6 +740,7 @@ if (REPO) {
   spawnSync("git", ["-C", REPO, "add", "clean-main.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "clean main work"]);
   await setMergeMode("blocked"); // agent, if wrongly consulted, would block — it must not be
+  await settleForMerge(lnClean.slot);
   await post(`/api/slots/${lnClean.slot}/merge`, {});
   const vC = await waitMerge(lnClean.slot);
   check("conflict-free lane merges + lands via the script, agent never consulted", vC.gone, JSON.stringify(vC));
@@ -738,10 +757,12 @@ if (REPO) {
   await Bun.write(`${REPO}/code.txt`, "root\nprose-main\n"); // same file+line → conflict
   spawnSync("git", ["-C", REPO, "commit", "-aqm", "prose main work"]);
   await setMergeMode("prose");
+  await settleForMerge(lnP.slot);
   await post(`/api/slots/${lnP.slot}/merge`, {});
   const vP = await waitMerge(lnP.slot);
   check("off-contract agent answer over a git-verified rebase → resolved (paused for review)",
     !vP.gone && vP.last?.status === "resolved", JSON.stringify(vP.last));
+  await settleForMerge(lnP.slot);
   check("prose-resolved lane confirms + lands",
     ((await (await post(`/api/slots/${lnP.slot}/merge`, { confirm: true })).json()) as { landed?: boolean }).landed === true);
   check("prose-merged lane's commit reached main",
@@ -755,12 +776,14 @@ if (REPO) {
   await Bun.write(`${REPO}/code.txt`, "root\nstale-main\n"); // conflict → agent runs → resolved
   spawnSync("git", ["-C", REPO, "commit", "-aqm", "stale main work"]);
   await setMergeMode("do");
+  await settleForMerge(lnStale.slot);
   await post(`/api/slots/${lnStale.slot}/merge`, {});
   const vSt = await waitMerge(lnStale.slot);
   check("stale-test lane resolved + paused", !vSt.gone && vSt.last?.status === "resolved", JSON.stringify(vSt.last));
   await Bun.write(`${REPO}/moved.txt`, "moved\n"); // main moves AGAIN before confirm
   spawnSync("git", ["-C", REPO, "add", "moved.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "main moved after resolution"]);
+  await settleForMerge(lnStale.slot);
   const staleJ = (await (await post(`/api/slots/${lnStale.slot}/merge`, { confirm: true })).json()) as
     { status?: string; detail?: string };
   check("confirm-land refuses when main moved since the resolution",
@@ -906,6 +929,95 @@ if (REPO) {
 
   await post(`/api/slots/${lnDirty.slot}/kill`, {});
   await post(`/api/slots/${lnClean2.slot}/kill`, {});
+
+  // --- Part B3: concurrency / race-hardening regression guards ---
+  // helper: read this slot's autos split by enabled from /api/sessions
+  const autosFor = async (slot: number): Promise<{ enabled: number; disabled: number; total: number }> => {
+    const sx = (await (await get("/api/sessions")).json()) as { autos: { slot: number; enabled: boolean }[] };
+    const mine = sx.autos.filter((a) => a.slot === slot);
+    return { enabled: mine.filter((a) => a.enabled).length, disabled: mine.filter((a) => !a.enabled).length, total: mine.length };
+  };
+
+  // FIX 3 — completed one-shots must be pruned to AUTO_KEEP_DONE (=5) per slot, not grow
+  // unbounded. Create AUTO_KEEP_DONE+4 one-shots; toggle all but the last to disabled
+  // (deterministic stand-in for a one-shot completing). Each create prunes the slot's
+  // disabled set, so after the final create the disabled count is capped at exactly 5.
+  {
+    const KEEP = 5;
+    const lnAuto = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number };
+    const mk = async (): Promise<string> => {
+      const j = (await (await post(`/api/slots/${lnAuto.slot}/autos`, { text: "prune-test", inSec: 3600 })).json()) as { auto?: { id: string } };
+      return j.auto?.id ?? "";
+    };
+    for (let i = 0; i < KEEP + 3; i++) {
+      const id = await mk();
+      await post(`/api/autos/${id}/toggle`, {}); // one-shot enabled→disabled, no run needed
+    }
+    // after KEEP+3 creates the slot retains at most KEEP+1 (each create prunes disabled back
+    // to KEEP, then the just-created one is toggled done → KEEP+1) — bounded, not KEEP+3.
+    const beforeLast = await autosFor(lnAuto.slot);
+    check("FIX3: disabled one-shots stay bounded (KEEP+1) despite KEEP+3 creates — no unbounded growth",
+      beforeLast.disabled === KEEP + 1 && beforeLast.total === KEEP + 1, JSON.stringify(beforeLast));
+    await mk(); // one more create → prunes again, leaving KEEP disabled + 1 enabled
+    const after = await autosFor(lnAuto.slot);
+    check("FIX3: a fresh create prunes disabled to exactly AUTO_KEEP_DONE (+ the new enabled one)",
+      after.disabled === KEEP && after.enabled === 1 && after.total === KEEP + 1, JSON.stringify(after));
+    await post(`/api/slots/${lnAuto.slot}/kill`, {});
+  }
+
+  // FIX 4 — a lane with a half-finished git op (MERGE_HEAD present) must not be committed
+  // (a plain add+commit would finalize conflict markers) nor merged by Fleet.
+  {
+    const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const gd = spawnSync("git", ["-C", ln.cwd, "rev-parse", "--absolute-git-dir"]).stdout.toString().trim();
+    const head = spawnSync("git", ["-C", ln.cwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+    // commit path: needs a DIRTY tree (clean tree short-circuits before the guard) + MERGE_HEAD
+    await Bun.write(`${ln.cwd}/code.txt`, "root\nhalf-merge\n");
+    await Bun.write(`${gd}/MERGE_HEAD`, `${head}\n`);
+    const ciJ = (await (await post(`/api/slots/${ln.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean; reason?: string };
+    check("FIX4: commit refuses a lane with a git op in progress",
+      ciJ.committed === false && (ciJ.reason ?? "").includes("in progress"), JSON.stringify(ciJ));
+    // merge path: needs a CLEAN tree (uncommitted check precedes the guard) + MERGE_HEAD
+    spawnSync("git", ["-C", ln.cwd, "checkout", "-q", "--", "code.txt"]);
+    const mgJ = (await (await post(`/api/slots/${ln.slot}/merge`, {})).json()) as { status?: string; detail?: string };
+    check("FIX4: merge blocks a lane with a git op in progress",
+      mgJ.status === "blocked" && (mgJ.detail ?? "").includes("in progress"), JSON.stringify(mgJ));
+    spawnSync("rm", ["-f", `${gd}/MERGE_HEAD`]);
+    await post(`/api/slots/${ln.slot}/kill`, {});
+  }
+
+  // FIX 1 + FIX 5 — merge concurrency + cross-guard with commit. Build a genuine conflict so
+  // the merge starts a real (async, non-trivial) job.
+  {
+    const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${ln.cwd}/code.txt`, "root\nCONC-lane\n");
+    spawnSync("git", ["-C", ln.cwd, "commit", "-aqm", "conc lane work"]);
+    await Bun.write(`${REPO}/code.txt`, "root\nCONC-main\n"); // same line → conflict
+    spawnSync("git", ["-C", REPO, "commit", "-aqm", "conc main work"]);
+    await setMergeMode("do");
+    await settleForMerge(ln.slot); // clear FIX 9's idle gate before starting the job
+
+    // FIX 1: two truly-concurrent merge POSTs. Post-fix, the mergeStart reservation is taken
+    // BEFORE the readJson await, so only one job is ever started; both requests report
+    // running:true and the lane resolves to a single clean verdict (no double-rebase error).
+    const [r1, r2] = await Promise.all([post(`/api/slots/${ln.slot}/merge`, {}), post(`/api/slots/${ln.slot}/merge`, {})]);
+    const j1 = (await r1.json()) as { running?: boolean; status?: string };
+    const j2 = (await r2.json()) as { running?: boolean; status?: string };
+    check("FIX1: two concurrent merge POSTs both report running (neither errors)",
+      j1.running === true && j2.running === true && !j1.status && !j2.status, JSON.stringify({ j1, j2 }));
+
+    // FIX 5 (commit side): while the merge job is inflight, a commit is refused with the
+    // cross-guard 409 — deterministic, mergeInflight is held for the job's whole lifetime.
+    const ciDuring = await post(`/api/slots/${ln.slot}/commit`, { mode: "quick" });
+    const ciDuringJ = (await ciDuring.json()) as { error?: string };
+    check("FIX5: commit is refused (409) while a merge/land is in progress",
+      ciDuring.status === 409 && (ciDuringJ.error ?? "").includes("merge/land is in progress"), `${ciDuring.status} ${JSON.stringify(ciDuringJ)}`);
+
+    const vConc = await waitMerge(ln.slot);
+    check("FIX1: concurrent merges settle to a single clean resolution (lane intact, no corruption)",
+      !vConc.gone && vConc.last?.status === "resolved" && exists(ln.cwd), JSON.stringify(vConc.last));
+    await post(`/api/slots/${ln.slot}/kill`, {});
+  }
 
   // --- Part C: scoped self-scheduling token (FLEET_SELF_TOKEN / FLEET_SELF_SLOT) ---
   const lnTok = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

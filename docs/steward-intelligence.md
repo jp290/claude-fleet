@@ -216,10 +216,54 @@ reinvention — it is the piece both mature agents are missing, and the reason a
 Fleet steward can pursue multi-step work across days that a heartbeat-only agent
 cannot. Build it deliberately; it's our edge.
 
+## 7. The impact layer — where the value actually lives (reframe 2026-07-21)
+
+Everything above (§1–6, and all of steward-autonomy/queue-automation) is the
+**reliability layer** — gates, ladder, journal, backpressure. It amplifies value;
+it does not create it. The value lives one layer up, in the **content** that gets
+run: the library of well-crafted prompts and workflows. The equation is
+`impact = value(prompt) × reliability(scheduling) × frequency` — scheduling is a
+*multiplier*, and it multiplies negative value too (a bad prompt run 100× is 100×
+the harm). So the reliability machinery is subordinate; the impact asset is the
+**library of proven templates** (already forming: the `/sharpen` family, the
+lane-brief template, `/handoff`, `/catchup`, the Grok-research prompt).
+
+Three critical constraints on this layer:
+
+- **Not every good prompt is a good *scheduled* prompt.** Scheduling runs a prompt
+  with no human reading the moment — but the owner's highest-value technique *is*
+  reading the moment (mined data; BACKLOG #14). The schedulable subset is
+  specific: **self-contextualizing** (gathers its own context on run),
+  **periodic-by-nature** (digest, sweep, health-check, research-sweep), and
+  **harmless when nothing changed**. A scheduled "make the UI nicer" is nonsense;
+  a scheduled "each morning, digest what changed and what needs my decision" is
+  pure value.
+- **The reliable impact channel is reclaimed attention, not autonomous
+  throughput.** The highest value-per-unit work — building a feature, a hard call,
+  a creative leap — is *not schedulable* (it needs novelty and judgment).
+  Scheduling captures the long tail of routine so the owner's attention is freed
+  for the unschedulable. Optimize for *attention reclamation*, not for firing as
+  much as possible autonomously.
+- **Prove-before-schedule.** A template graduates to scheduled only after being
+  watched working N times — the same ladder as autonomy expansion. Scheduling is
+  the *last* step of a template's life, never the first. This is what stops the
+  multiplier from amplifying an unproven prompt.
+
+Concretely for Fleet: autos already schedule single prompts, so a
+self-contextualizing library item (a digest) is schedulable *today*; a multi-step
+workflow primitive isn't needed — a scheduled prompt can *trigger* a
+workflow-shaped session that orchestrates itself. The **Rundgang digest** is
+simultaneously the steward's ladder-stage-1 and the prototype first library item:
+self-contextualizing, periodic, decision-ready output. Build it, and it proves the
+whole loop on one real, valuable item instead of more reliability-layer theory.
+
 ## The one-sentence thesis
 
-A truly autonomous, truly intelligent steward is not one that asks for nothing —
-it is one that **acts freely on everything reversible, prepares every irreversible
-decision to a glance, parks every big question in the backlog with framing, and
-gets provably smarter from its own logged outcomes** — with the human gate intact
-on exactly the actions that can't be taken back, forever.
+Getting the best of autonomy *and* safety is not a compromise between them — it is
+a steward that **acts freely on everything reversible, prepares every irreversible
+decision to a glance, parks every big question in the backlog with framing, gets
+provably smarter from its own logged outcomes, and reliably runs a library of
+proven prompts whose value the owner already verified** — with the human gate
+intact on exactly the actions that can't be taken back, forever. Autonomy is the
+reach; safety is the gate on the irreversible; the library is where the impact
+actually lives.

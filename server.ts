@@ -1,6 +1,6 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
 import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync, renameSync, copyFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 
@@ -595,7 +595,13 @@ const attachBusy = new Set<string>();
 async function openLaneInSlot(s: Slot, repo: string, branch: string): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
   await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch });
-  s.label = wt.branch.replace(/^fleet\//, "⎇ "); // lane identity beats the dir-slug basename
+  // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
+  // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
+  // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
+  // label. Fall back to a short repo-based slug instead: "⎇ <repo> <hex>".
+  s.label = branch.trim()
+    ? wt.branch.replace(/^fleet\//, "⎇ ")
+    : `⎇ ${basename(wt.repo)} ${wt.branch.split("-").pop() ?? ""}`.trimEnd().slice(0, MAX_LABEL);
   saveState();
   void tickGit().catch(() => {}); // badge should appear on the next sessions poll
   return { cwd: s.cwd ?? wt.path, branch: wt.branch };

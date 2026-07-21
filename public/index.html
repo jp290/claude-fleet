@@ -71,12 +71,8 @@
   .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
     gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rb) 18px); }
   .slot:hover .slotact { display: flex; }
-  .slot .kill, .slot .ren, .slot .exp, .slot .shr { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+  .slot .kill { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
   .slot .kill:hover { color: #f85149; background: #2a1a1a; }
-  .slot .ren:hover { color: #7aa2f7; background: #1c2437; }
-  .slot .exp:hover { color: #a7c080; background: #1e261a; }
-  .slot .shr:hover { color: #e0af68; background: #2a2118; }
-  .slot .shr.on { color: #e0af68; }
   /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
@@ -175,15 +171,15 @@
   .slot.lane { border-left: 2px solid #3a4a7a; }
   .slot.lane.current { border-left-color: #7aa2f7; }
   .slot .lanechip { flex: none; font-size: 11px; color: #7aa2f7; font-weight: 700; }
-  .slot .branchbadge { flex: none; font-size: 10px; max-width: 96px; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; color: #6a7080; }
-  /* lifecycle colors double as land-readiness for lanes */
-  .slot .branchbadge.editing { color: #e0af68; }  /* uncommitted work in progress */
-  .slot .branchbadge.ready { color: #9ece6a; }    /* clean, commits waiting to push/land */
+  /* ONE lifecycle dot replaces the old branch-name badge — the branch is already the
+     source of the row's label (baseName(cwd)), and the •N/↑N counts move into its
+     tooltip instead of squeezing .lbl down to a sliver */
+  .slot .lcdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6a7080; }
+  .slot .lcdot.editing { background: #e0af68; }  /* uncommitted work in progress */
+  .slot .lcdot.ready { background: #9ece6a; }    /* clean, commits waiting to push/land */
   .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
   .slot .lanediff:hover { color: #bfe6ff; }
-  .slot .lane, .slot .diff { flex: none; font-size: 12px; color: #666; cursor: pointer; }
-  .slot .lane:hover { color: #9ece6a; }
+  .slot .diff { flex: none; font-size: 12px; color: #666; cursor: pointer; }
   .slot .diff:hover { color: #7dcfff; }
   #diffpanel, #queuepanel { max-width: 900px; width: 92vw; }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
@@ -466,7 +462,12 @@
   .bmergeland { flex: 1; padding: 5px 8px; border-radius: 7px; border: 1px solid #2c5e3a;
     background: #16281c; color: #9ece6a; font-size: 11px; font-weight: 700; font-family: inherit; cursor: pointer; }
   .bmergeland:hover { background: #1d3826; }
-  .slot .mgl:hover { color: #7aa2f7; }
+  /* board = the workbench: share/export/rename as labeled controls, not hover-only glyphs */
+  .bactrow { display: flex; gap: 6px; flex-wrap: wrap; }
+  .bactbtn { padding: 4px 10px; border-radius: 7px; border: 1px solid #333; background: #262626;
+    color: #aaa; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .bactbtn:hover { color: #ddd; border-color: #3a4a7a; }
+  .bactbtn.on { color: #e0af68; border-color: #5a4a2a; }
   .slot .quicklane { flex: none; font-size: 11px; color: #556; cursor: pointer; padding: 0 3px;
     border: 1px solid #2c3a5e; border-radius: 5px; }
   .slot .quicklane:hover { color: #7aa2f7; background: #1c2437; }
@@ -512,8 +513,10 @@
     body.board #board { display: none; } /* must outrank the desktop body.board rule */
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
     .slot { padding: 12px 10px; font-size: 13px; }
-    /* finger-sized share/rename/kill/export so a session can be managed from the phone */
-    .slot .kill, .slot .ren, .slot .exp, .slot .shr { padding: 8px 10px; font-size: 16px; }
+    /* finger-sized kill target; share/export/rename/land moved to the board (desktop-only —
+       see CLAUDE.md P2 note: mobile board access is a known gap left open by this lane) */
+    .slot .kill { padding: 8px 10px; font-size: 16px; }
+    .bactbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }
 
     #panes { padding: 2px; gap: 2px; }

@@ -1617,6 +1617,38 @@ if (auditRotExists) {
   const capS2Stew = await tmuxOut("capture-pane", "-t", "s2", "-p");
   check("FLEET_STEWARD_TOKEN absent for a non-steward slot", capS2Stew.out.includes("STEWTOK=[]"), capS2Stew.out.slice(-200));
 
+  // --- steward journal: the typed durable pulse ledger (POST/GET /api/steward/journal), the
+  // delta anchor that survives /clear. The route acks without awaiting the append chain, so
+  // settle briefly before each read. ---
+  const { renameSync } = await import("node:fs");
+  const jPost1 = await stewPost("/api/steward/journal", { counts: { "healthy-running": 3, "stalled-dirty": 1 }, decisions_surfaced: 1, changed: true });
+  const jPost1J = (await jPost1.json()) as { ok?: boolean; ts?: number };
+  check("steward journal accepts a typed record", jPost1.ok && jPost1J.ok === true && typeof jPost1J.ts === "number", JSON.stringify(jPost1J));
+  await Bun.sleep(200);
+  const jGet1J = (await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean; ts?: number }[] };
+  const r1 = jGet1J.records?.[0];
+  check("steward journal returns the record it stored, server-stamped",
+    r1?.kind === "rundgang" && r1?.counts?.["stalled-dirty"] === 1 && r1?.decisions_surfaced === 1 && r1?.changed === true && typeof r1?.ts === "number",
+    JSON.stringify(jGet1J).slice(0, 200));
+
+  // typed choke-point: malformed bodies are rejected, no free-text leaks into the ledger
+  check("steward journal rejects non-object counts (400)", (await stewPost("/api/steward/journal", { counts: "all clear", decisions_surfaced: 0, changed: false })).status === 400);
+  check("steward journal rejects non-number count values (400)", (await stewPost("/api/steward/journal", { counts: { x: "many" }, decisions_surfaced: 0, changed: false })).status === 400);
+  check("steward journal rejects a missing changed flag (400)", (await stewPost("/api/steward/journal", { counts: { x: 1 }, decisions_surfaced: 0 })).status === 400);
+
+  // owner token is out of scope for the steward journal, same 404 as the other steward routes
+  check("owner token on the steward journal route is out of scope (404)", (await get("/api/steward/journal?tail=1")).status === 404);
+
+  // rotation-immunity of the delta anchor: force the current file to .1, write again, assert
+  // tail=2 reads BOTH (the first record from the rotated .1, the second from the fresh file)
+  renameSync("steward-journal.jsonl", "steward-journal.jsonl.1");
+  await stewPost("/api/steward/journal", { counts: { "healthy-running": 4 }, decisions_surfaced: 0, changed: false });
+  await Bun.sleep(200);
+  const jGet2J = (await (await stewGet("/api/steward/journal?tail=2")).json()) as { records: { decisions_surfaced?: number; changed?: boolean }[] };
+  check("steward journal delta anchor survives a rotation boundary (reads across .1)",
+    jGet2J.records?.length === 2 && jGet2J.records[0]?.decisions_surfaced === 1 && jGet2J.records[1]?.changed === false,
+    JSON.stringify(jGet2J).slice(0, 200));
+
   await post(`/api/slots/${lnStew.slot}/kill`, {});
 }
 

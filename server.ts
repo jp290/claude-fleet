@@ -23,6 +23,7 @@ const MAX_PINS = 20;
 const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
 const AUDIT_FILE = `${import.meta.dir}/audit.jsonl`;
+const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
 // one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
 const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
@@ -284,7 +285,8 @@ type AuditEvent =
   | "auto_fire" | "auto_skip"
   | "owner_auth_fail"
   | "self_heal_recreate"
-  | "steward_send" | "steward_send_capped";
+  | "steward_send" | "steward_send_capped"
+  | "steward_journal";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -2546,6 +2548,27 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
 
 // steward reads are a reduced cut of the owner's views (never share passwords, never full
 // thinking/tool-result payloads — same capability-asymmetry stance as the guest cut below).
+// the steward's durable pulse ledger (docs/steward-intelligence.md §3 — the self-model's home),
+// written via the same appendEvent chain as audit. The FILE is a NARRATIVE log and MAY rotate;
+// readStewardJournal reads across the single .1 generation so the Rundgang's delta anchor (its
+// own last record) survives a rotation boundary. IMPORTANT: promotion COUNTS, when the ladder
+// lands (§4), must accrue in a durable state tally incremented on recorded outcomes — NEVER by
+// scanning this rotatable file, whose oldest lines are discarded on the second rotation.
+function writeStewardJournal(rec: Record<string, unknown>): void {
+  appendEvent(STEWARD_JOURNAL_FILE, { ts: Date.now(), ...rec });
+}
+async function readStewardJournal(tail: number): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (const f of [`${STEWARD_JOURNAL_FILE}.1`, STEWARD_JOURNAL_FILE]) { // .1 is older → chronological
+    if (!existsSync(f)) continue;
+    for (const line of (await Bun.file(f).text()).split("\n")) {
+      if (!line) continue;
+      try { out.push(JSON.parse(line) as Record<string, unknown>); } catch { /* skip a torn tail line */ }
+    }
+  }
+  return out.slice(-tail);
+}
+
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     return json({
@@ -2586,6 +2609,37 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   }
   if (url.pathname === "/api/steward/send" && req.method === "POST")
     return handleStewardSend(await readJson(req));
+  if (url.pathname === "/api/steward/journal" && req.method === "GET") {
+    const tail = Math.min(50, Math.max(1, Number(url.searchParams.get("tail") ?? 1) | 0));
+    return json({ records: await readStewardJournal(tail) });
+  }
+  if (url.pathname === "/api/steward/journal" && req.method === "POST") {
+    const body = await readJson(req);
+    if (!body) return json({ error: "invalid json" }, 400);
+    // typed choke-point (same stance as typed sends): build the stored record ONLY from validated
+    // fields, never spread the body, so no free-text/injected key can enter the ledger. The pulse
+    // supplies its own judged counts; trust-sensitive outcome fields are back-filled server-side
+    // later, never pane-asserted here.
+    const counts = body.counts;
+    if (typeof counts !== "object" || counts === null || Array.isArray(counts))
+      return json({ error: "counts must be an object of condition->number" }, 400);
+    const entries = Object.entries(counts as Record<string, unknown>);
+    if (entries.length > 12 || entries.some(([k, v]) => k.length > 40 || typeof v !== "number" || !Number.isFinite(v)))
+      return json({ error: "counts: ≤12 keys, each a finite number" }, 400);
+    if (typeof body.decisions_surfaced !== "number" || !Number.isFinite(body.decisions_surfaced) || body.decisions_surfaced < 0)
+      return json({ error: "decisions_surfaced must be a number ≥ 0" }, 400);
+    if (typeof body.changed !== "boolean") return json({ error: "changed must be a boolean" }, 400);
+    const note = typeof body.note === "string" ? body.note.slice(0, 280) : undefined;
+    writeStewardJournal({
+      kind: "rundgang",
+      counts: Object.fromEntries(entries) as Record<string, number>,
+      decisions_surfaced: body.decisions_surfaced,
+      changed: body.changed,
+      ...(note !== undefined ? { note } : {}),
+    });
+    audit("steward_journal", stewardSlot()?.id, `d:${body.decisions_surfaced} c:${body.changed}`);
+    return json({ ok: true, ts: Date.now() });
+  }
   return null;
 }
 

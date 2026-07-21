@@ -1,6 +1,6 @@
 # Sharing a session
 
-A share exposes **one slot** to a guest at `https://klaus.example.com/s/<id>`,
+A share exposes **one slot** to a guest at `https://cowork.example.com/s/<id>`,
 behind its own password. The owner token never leaves the machine; the public hostname
 serves *only* share routes — dashboard, login and owner API 404 there, even with a token.
 
@@ -36,7 +36,7 @@ type into the terminal directly. Guest prompts land in the session's prompt hist
   hostname share-only, `FLEET_SHARE_URL` prints proper links in the share dialog,
   `FLEET_ALLOWED_HOSTS` admits the hostname past the DNS-rebinding guard.
 - Ingress: `~/.cloudflared/config-logic-extraction.yml` routes
-  `klaus.example.com → http://100.64.0.1:8790` (Cloudflare tunnel
+  `cowork.example.com → http://100.64.0.1:8790` (Cloudflare tunnel
   `cc734c13…`, restarts via launchd `com.logic-extraction.tunnel`).
 - e2e coverage: `./e2e-isolated.sh` — auth, mode enforcement, scope, revoke,
   restart persistence, share-host isolation.

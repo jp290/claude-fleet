@@ -32,7 +32,7 @@ export FLEET_INTAKE_SECRET="$(openssl rand -hex 24)"
 Restart the server (`tmux -L claudefleet kill-session -t srv`). Verify:
 
 ```sh
-curl -sS -X POST https://klaus.example.com/intake \
+curl -sS -X POST https://cowork.example.com/intake \
   -H "X-Intake-Secret: <the secret>" \
   -H "content-type: application/json" \
   -d '{"text":"add dark-mode toggle","from":"jane@acme.co"}'
@@ -64,7 +64,7 @@ export default {
     // keep it small; the server caps at 20k anyway
     const body = `${message.headers.get("subject") ?? ""}\n\n${text}`.slice(0, 20000);
 
-    const res = await fetch("https://klaus.example.com/intake", {
+    const res = await fetch("https://cowork.example.com/intake", {
       method: "POST",
       headers: {
         "X-Intake-Secret": env.INTAKE_SECRET,   // set as a Worker secret

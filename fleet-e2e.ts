@@ -668,6 +668,73 @@ if (REPO) {
     await post(`/api/slots/${bl.slot}/kill`, {}); // free the slot; worktree orphaned in the throwaway repo
   }
 
+  // --- 💾 commit endpoint: a LANE stages untracked too (add -A), a MAIN (non-lane) session
+  // stages tracked only (add -u) so scratch/secrets never sweep into a shipped branch, and a
+  // detached HEAD is refused. All on throwaway repos — never the real checkout. ---
+  {
+    // (a) lane commit includes untracked → clean tree afterwards
+    const cl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${cl.cwd}/tracked.txt`, "x\n");
+    spawnSync("git", ["-C", cl.cwd, "add", "tracked.txt"]);
+    spawnSync("git", ["-C", cl.cwd, "commit", "-qm", "seed"]);
+    await Bun.write(`${cl.cwd}/tracked.txt`, "x changed\n");    // tracked modify
+    await Bun.write(`${cl.cwd}/fresh-untracked.txt`, "u\n");    // untracked
+    const clRes = (await (await post(`/api/slots/${cl.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean };
+    const clStatus = spawnSync("git", ["-C", cl.cwd, "status", "--porcelain"]).stdout.toString().trim();
+    check("lane commit stages untracked too (add -A) → clean tree", clRes.committed === true && clStatus === "",
+      `committed=${clRes.committed} status=${JSON.stringify(clStatus)}`);
+    await post(`/api/slots/${cl.slot}/kill`, {});
+
+    // (b) main-session commit stages tracked only (add -u), leaves untracked alone
+    const mainRepo = `${REPO}.commit-main`;
+    spawnSync("git", ["init", "-q", mainRepo]);
+    spawnSync("git", ["-C", mainRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", mainRepo, "config", "user.name", "e2e"]);
+    await Bun.write(`${mainRepo}/f.txt`, "1\n");
+    spawnSync("git", ["-C", mainRepo, "add", "f.txt"]);
+    spawnSync("git", ["-C", mainRepo, "commit", "-qm", "init"]);
+    await post("/api/slots/9/kill", {}); // ensure the slot is free before opening
+    const mOpen = await post("/api/slots/9/open", { cwd: mainRepo });
+    check("open a main (non-lane) session for commit test", mOpen.ok, JSON.stringify(await mOpen.json().catch(() => ({}))));
+    await Bun.write(`${mainRepo}/f.txt`, "2\n");                 // tracked modify
+    await Bun.write(`${mainRepo}/scratch.txt`, "secret\n");     // untracked — must NOT be committed
+    const mRes = (await (await post("/api/slots/9/commit", { mode: "quick" })).json()) as { committed?: boolean };
+    const mStatus = spawnSync("git", ["-C", mainRepo, "status", "--porcelain"]).stdout.toString();
+    check("main-session commit stages tracked (add -u), leaves untracked untracked",
+      mRes.committed === true && /\?\? scratch\.txt/.test(mStatus) && !/f\.txt/.test(mStatus),
+      `committed=${mRes.committed} status=${JSON.stringify(mStatus)}`);
+
+    // (c) a detached HEAD is refused (would otherwise be a dangling commit)
+    spawnSync("git", ["-C", mainRepo, "checkout", "-q", "--detach"]);
+    await Bun.write(`${mainRepo}/f.txt`, "3\n");
+    const dRes = (await (await post("/api/slots/9/commit", { mode: "quick" })).json()) as { committed?: boolean; reason?: string };
+    check("commit refuses a detached HEAD", dRes.committed === false && (dRes.reason ?? "").includes("detached"), JSON.stringify(dRes));
+    await post("/api/slots/9/kill", {});
+
+    // (d) an interrupted rebase is surfaced (brief.gitOp) and blocks commit — restart-recovery
+    // detection. Isolated repo so the induced conflict never touches the shared test repo.
+    const gopRepo = `${REPO}.gitop`;
+    spawnSync("git", ["init", "-q", gopRepo]);
+    spawnSync("git", ["-C", gopRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", gopRepo, "config", "user.name", "e2e"]);
+    await Bun.write(`${gopRepo}/c.txt`, "base\n");
+    spawnSync("git", ["-C", gopRepo, "add", "c.txt"]);
+    spawnSync("git", ["-C", gopRepo, "commit", "-qm", "base"]);
+    const gl = (await (await post("/api/lanes", { repo: gopRepo })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${gl.cwd}/c.txt`, "lane side\n");            // lane edit
+    spawnSync("git", ["-C", gl.cwd, "commit", "-aqm", "lane edit"]);
+    const gopMain = spawnSync("git", ["-C", gopRepo, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
+    await Bun.write(`${gopRepo}/c.txt`, "main side\n");           // main edits the SAME line → conflict
+    spawnSync("git", ["-C", gopRepo, "commit", "-aqm", "main edit"]);
+    spawnSync("git", ["-C", gl.cwd, "rebase", gopMain]);          // stops mid-rebase on the conflict
+    const glBrief = (await (await get(`/api/slots/${gl.slot}/brief`)).json()) as { gitOp?: boolean };
+    check("brief flags an interrupted rebase (gitOp)", glBrief.gitOp === true, JSON.stringify(glBrief.gitOp));
+    const glCommit = (await (await post(`/api/slots/${gl.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean; reason?: string };
+    check("commit is blocked during an interrupted rebase", glCommit.committed === false && (glCommit.reason ?? "").includes("in progress"), JSON.stringify(glCommit));
+    spawnSync("git", ["-C", gl.cwd, "rebase", "--abort"]);
+    await post(`/api/slots/${gl.slot}/kill`, {});
+  }
+
   // ⏫ merge: dirty lane → deterministic block, no agent run
   await Bun.write(`${lnPath}/code.txt`, "root\nmerge-work\n");
   const mgDirty = (await (await post(`/api/slots/${lnSlot}/merge`, {})).json()) as { status?: string; detail?: string };

@@ -11,7 +11,7 @@ Remaining: item 4 (UI density pass — needs user feedback per iteration), item 
 (transcript view — Phase 1 investigation next), item 7 (blocked on definition).
 
 **2026-07-18, later:** session sharing shipped (see SHARING.md) — per-slot
-password-gated guest access via https://klaus.example.com, view/interact
+password-gated guest access via https://cowork.example.com, view/interact
 modes, live through the Cloudflare tunnel, revoke kicks guests instantly. Landing
 page on the share-domain root (subagent-built, reviewed).
 

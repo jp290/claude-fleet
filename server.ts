@@ -169,7 +169,7 @@ const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer befo
 const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
 const MERGE_IDLE_MS = 3000; // don't start a rebase while the pane is actively producing output
 let persistedToken: string | null = null;
-// public base URL for share links shown in the owner UI (e.g. https://klaus.example.com);
+// public base URL for share links shown in the owner UI (e.g. https://cowork.example.com);
 // empty = links are rendered relative to wherever the owner opened the dashboard
 const SHARE_URL = process.env.FLEET_SHARE_URL ?? "";
 // hosts that may ONLY reach share routes — the public tunnel hostname goes here so the

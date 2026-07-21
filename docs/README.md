@@ -29,33 +29,51 @@ So documentation here comes in **two shelves**, and the second matters more:
    templates). The test of "usefully documented" is not "well written" — it is
    **does a session that loads this behave more reliably?**
 
-## The corpus (charter — fill in the next session, in a lane)
+## The corpus (the shelf)
 
-Knowledge shelf (`docs/`):
-- [x] **`tailored-context.md`** — environment → silent capture of the implicit
-      complementary parameters → output only the relevant. The context principle.
-- [x] **`operating-model.md`** — the primitives and mental model: session, lane,
-      queue/dispatch, quarantine-by-default, review-as-bottleneck. What each *is* and
-      when to reach for it.
-- [x] **`interaction-modes.md`** — the three relationships, each with concrete do's,
-      don'ts, and failure modes:
-      - **human → session**: prompt shape, when to review vs. let it run, chunking
-        work into landable lanes, keeping review cheap.
-      - **session → session** (orchestration): briefing, gating, verify, model routing
-        (cheap model + good brief ≥ expensive model + thin brief).
-      - **session → self**: self-sharpening (the `/sharpen` family), CLAUDE.md as
-        self-instruction, done-criteria you set before starting.
-- [x] **`verification.md`** — done-signals; deterministic > semi-deterministic >
-      statistical; verify before claiming done; cap retry loops (structural after ~5).
+One line per doc — its *purpose*, not its contents, so this index points without
+rotting. Two shelves, plus the steward subsystem.
 
-Operative shelf (loaded, not just read):
-- [x] **lane brief templates** (`lane-brief-template.md`) — the Phase-2 artifact: a
-      per-task foolproof framing passed at launch (NOT a tracked file — it would
-      dirty the tree and block `land`).
-- [x] **CLAUDE.md discipline** — the operating rules a fleet session should embody,
-      kept terse so they load cheaply. (CLAUDE.md is gitignored → copied into every
-      lane, so a lane inherits the discipline automatically.)
-- [ ] **skills** — recurring session-operating moves worth a `/command`.
+**Knowledge (the *why* — read to build the model):**
+- **`tailored-context.md`** — the brief principle: shape the environment, induce
+  silent capture of the complementary parameters, emit only the result. The lever
+  on review cost.
+- **`operating-model.md`** — what each primitive *is* (slot, lane, land, queue,
+  dispatch, intake, auto, share) and the invariants that hold them together.
+- **`interaction-modes.md`** — the three relationships (human→session,
+  session→session, session→self) as one discipline: shape context up front, gate
+  on verified state, verify before believing.
+- **`verification.md`** — done-signals: deterministic > semi-deterministic >
+  statistical; verify before claiming done; cap retry loops (structural after ~5).
+
+**Operative (the discipline *made loadable* — changes how a session behaves):**
+- **`lane-brief-template.md`** — the per-task foolproof framing passed at launch
+  (never a tracked file — it would dirty the tree and block `land`).
+- **CLAUDE.md** — the terse operating rules a session embodies; gitignored, so
+  every lane inherits them automatically.
+- **`/steward`** (`.claude/commands/steward.md`) — the steward's load ritual: read
+  the shelf, spot-verify its claims, then operate.
+
+**Steward (the workhorse agent — an optional Fleet subsystem):**
+- **`steward.md`** — the convention: optional, recognizable as `⚙ steward`, plans
+  but never lands.
+- **`steward-autonomy.md`** — the seven joints of the management loop and the
+  empirically-grounded intervention playbook.
+- **`queue-automation.md`** — the task queue as an automation substrate: producers
+  multiply, the gate stays one.
+- **`automation-synergies.md`** — where the mechanisms are secretly one lever, and
+  the one place they must stay apart.
+- **`steward-intelligence.md`** — the capstone: autonomy and safety as one design
+  (reversibility × track-record), the three models, the learning loop, the impact
+  layer.
+- **`steward-mail.md`** — an email address as an assistant channel: inbound-only
+  v1, layered against prompt injection.
+- **`automation-frontiers.md`** — speculative next levers, pressure-tested and
+  dependency-ordered: a backlog to prune with evidence, not a plan to extend.
+
+**Design notes:**
+- **`right-tab-agents.md`** — the board's agentic surfaces: inventory and the open
+  advisory-vs-acts axis.
 
 ## The bar
 

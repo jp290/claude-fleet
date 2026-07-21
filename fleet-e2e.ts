@@ -1287,6 +1287,7 @@ if (SHARE_HOST) {
   const sPub = await fetch(BASE + `/s/${shView.id}`, { headers: { host: SHARE_HOST } });
   check("share host serves the share page", sPub.status === 200 && (await sPub.text()).includes("share.js"));
   check("share host blocks owner API even with token", (await fetch(BASE + "/api/sessions", { headers: { host: SHARE_HOST, ...H } })).status === 404);
+  check("share host blocks the audit read endpoint even with token", (await fetch(BASE + "/api/audit", { headers: { host: SHARE_HOST, ...H } })).status === 404);
   // --- regression: the share-only allowlist regex must not be widenable via path tricks.
   // A plain fetch() normalizes "../" client-side before the request is even sent — but the
   // server parses req.url through the same WHATWG URL rules (verified directly: dot-segments
@@ -1335,7 +1336,7 @@ await Bun.sleep(500);
 // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
 // `--dangerously-skip-permissions` would silently leave the server in unattended
 // mode after the test run, an escalation the README promises is explicit opt-in
-const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS"]
+const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES"]
   .filter((k) => process.env[k])
   .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
   .join("");
@@ -1401,6 +1402,63 @@ const replay2 = await new Promise<number>((resolve) => {
 check("after restart: WS replay for slot 2 non-empty", replay2 > 100, `${replay2} bytes`);
 const ws404 = await get("/ws/1");
 check("WS route rejects inactive slot", ws404.status === 404);
+
+// --- audit log: security-relevant event trail, own file/write-chain, owner-gated read ---
+const auditPath = `${import.meta.dir}/audit.jsonl`;
+const auditRead = async (): Promise<{ ts: number; event: string; slot?: number; detail?: string }[]> =>
+  (await Bun.file(auditPath).text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+check("audit endpoint requires owner token", (await fetch(BASE + "/api/audit")).status === 401);
+const auditRes = await get("/api/audit?limit=1000");
+const auditJ = (await auditRes.json()) as { events: { event: string; slot?: number }[]; total: number };
+check("audit endpoint returns events", auditRes.ok && Array.isArray(auditJ.events) && auditJ.events.length > 0,
+  `${auditJ.events.length}/${auditJ.total}`);
+const auditAll = await auditRead();
+check("audit records slot_open", auditAll.some((e) => e.event === "slot_open" && e.slot === 2), `${auditAll.length} events`);
+check("audit records slot_kill", auditAll.some((e) => e.event === "slot_kill" && e.slot === 1));
+check("audit records share_create", auditAll.some((e) => e.event === "share_create"));
+check("audit records share_revoke", auditAll.some((e) => e.event === "share_revoke"));
+check("audit records share_mode_change", auditAll.some((e) => e.event === "share_mode_change"));
+check("audit records guest auth failure", auditAll.some((e) => e.event === "share_auth_fail"));
+check("audit records guest auth success", auditAll.some((e) => e.event === "share_auth_ok"));
+check("audit records owner auth failure", auditAll.some((e) => e.event === "owner_auth_fail"));
+check("audit records guest ws connect", auditAll.some((e) => e.event === "guest_ws_connect"));
+const readText = async (p: string): Promise<string> => {
+  try {
+    return await Bun.file(p).text();
+  } catch {
+    return "";
+  }
+};
+const auditRaw = (await readText(auditPath)) + (await readText(`${auditPath}.1`));
+check("audit log never contains the guessed guest password", !auditRaw.includes("totally-wrong"));
+check("audit log never contains a share secret", !auditRaw.includes("viewpass123") && !auditRaw.includes("interpass123"));
+check("audit log never contains the owner token", !auditRaw.includes(TOKEN));
+const auditMode = statSync(auditPath).mode & 0o777;
+check("audit log file is 600", auditMode === 0o600, auditMode.toString(8));
+
+// --- rotation: restart with the threshold pinned to the CURRENT file size, so the very
+// next audit event is guaranteed to push it over and trigger exactly one rotation —
+// deterministic regardless of how many bytes the rest of the suite happened to produce
+const auditSizeBeforeRotate = statSync(auditPath).size;
+check("audit log has content to rotate", auditSizeBeforeRotate > 0, `${auditSizeBeforeRotate} bytes`);
+const rotKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
+await rotKill.exited;
+await Bun.sleep(500);
+const rotStart = Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
+  `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}FLEET_AUDIT_ROTATE_BYTES=${auditSizeBeforeRotate} exec bun server.ts >> server.log 2>&1`]);
+await rotStart.exited;
+await Bun.sleep(3000);
+// one cheap, deterministic audit event: a failed owner-token request (no state mutated)
+await fetch(BASE + "/api/sessions", { headers: { authorization: "Bearer wrong-for-rotation-test" } });
+await Bun.sleep(300); // let the fire-and-forget audit write chain flush
+const auditRotExists = ((): boolean => { try { return statSync(`${auditPath}.1`).isFile(); } catch { return false; } })();
+check("audit log rotates to .1 once the size threshold is crossed", auditRotExists);
+if (auditRotExists) {
+  const rotSize = statSync(`${auditPath}.1`).size;
+  check("rotated .1 preserves the pre-rotation history", rotSize >= auditSizeBeforeRotate, `${rotSize} vs ${auditSizeBeforeRotate}`);
+  const freshSize = statSync(auditPath).size;
+  check("post-rotation audit.jsonl starts fresh, smaller than what rotated out", freshSize < auditSizeBeforeRotate, `${freshSize} vs ${auditSizeBeforeRotate}`);
+}
 
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");

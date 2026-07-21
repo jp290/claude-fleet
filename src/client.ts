@@ -10,7 +10,7 @@ const slotsEl = $("slots"), dot = $("dot"),
   ta = $("input") as HTMLTextAreaElement, send = $("send") as HTMLButtonElement,
   gate = $("gate"), gateIn = $("gatein") as HTMLInputElement,
   picker = $("picker"), pkTitle = $("pktitle"), pkPath = $("pkpath") as HTMLInputElement,
-  pkLists = $("pklists"), chipsEl = $("chips"), panesEl = $("panes");
+  pkLists = $("pklists"), pkCrumb = $("pkcrumb"), chipsEl = $("chips"), panesEl = $("panes");
 
 const RECENT_MS = 5000;
 const MAX_CHUNK = 1000; // stay under the server's 1024-byte cap per WS message
@@ -1448,12 +1448,34 @@ $("pkstart").onclick = () => void startSession(pkPath.value);
 // type-to-filter + arrow-key selection over the row list — the picker opens on every
 // new session, so the common path must be "type a few letters, Enter" with no mouse
 const pkFilter = $("pkfilter") as HTMLInputElement;
-interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null }
+const pkHideWt = $("pkhidewt") as HTMLButtonElement;
+interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null; wt: boolean }
 let pkRows: PkRow[] = [];
 let pkSel = -1;
+let pkPins = new Set<string>(); // pinned paths, refreshed from /api/dirs on every browse()
+// worktree lanes clutter the picker (recents are mostly `*.worktrees/fleet-*`); hide them by
+// default. View-only pref, per device — kept in localStorage like the board/histall toggles.
+let hideWorktrees = localStorage.getItem("fleet.hidewt") !== "0";
+// a path is a lane if it lives under (or is) a `.worktrees` dir — reliable, no false positives
+function isWtPath(p: string): boolean { return /\.worktrees(\/|$)/.test(p); }
 
+// a row is out when the worktree toggle hides it (pkwt) OR the text filter excludes it (pkhide)
 function pkVisible(): PkRow[] {
-  return pkRows.filter((r) => !r.row.classList.contains("pkhide"));
+  return pkRows.filter((r) => !r.row.classList.contains("pkhide") && !r.row.classList.contains("pkwt"));
+}
+
+// mark/unmark worktree rows, refresh section counts to match, then re-run the text filter
+function applyWtHide() {
+  for (const r of pkRows) r.row.classList.toggle("pkwt", hideWorktrees && r.wt);
+  // section count badges show how many rows survive the toggle (so RECENT 4→2 signals what it did).
+  // the "Up to …" parent row is navigation, not a folder in this dir — exclude it from the count.
+  const counts = new Map<HTMLElement, number>();
+  for (const r of pkRows) {
+    if (!r.head || r.row.classList.contains("up")) continue;
+    counts.set(r.head, (counts.get(r.head) ?? 0) + (r.row.classList.contains("pkwt") ? 0 : 1));
+  }
+  for (const [head, n] of counts) { const b = head.querySelector(".pkheadn"); if (b) b.textContent = String(n); }
+  applyPkFilter();
 }
 
 function setPkSel(i: number) {
@@ -1473,7 +1495,9 @@ function applyPkFilter() {
   for (const r of pkRows) {
     const hit = q === "" || r.name.includes(q);
     r.row.classList.toggle("pkhide", !hit);
-    if (r.head) headHits.set(r.head, (headHits.get(r.head) ?? 0) + (hit ? 1 : 0));
+    // a row counts toward its section head only if it survives BOTH the query and the wt toggle
+    const shown = hit && !r.row.classList.contains("pkwt");
+    if (r.head) headHits.set(r.head, (headHits.get(r.head) ?? 0) + (shown ? 1 : 0));
   }
   for (const [head, n] of headHits) head.classList.toggle("pkhide", n === 0);
   setPkSel(q ? 0 : -1); // filtering pre-selects the best match so Enter just works
@@ -1482,10 +1506,20 @@ function applyPkFilter() {
 function pkKeyNav(e: KeyboardEvent): boolean {
   if (e.key === "ArrowDown") { setPkSel(pkSel + 1); return true; }
   if (e.key === "ArrowUp") { setPkSel(pkSel - 1); return true; }
+  if (e.key === "Home") { setPkSel(0); return true; }
+  if (e.key === "End") { setPkSel(pkVisible().length - 1); return true; }
   return false;
+}
+// ⌘/Ctrl+D pins or unpins the selected row — bookmark convention, never pollutes filter text
+function pkPinKey(e: KeyboardEvent): boolean {
+  if (!(e.metaKey || e.ctrlKey) || (e.key !== "d" && e.key !== "D")) return false;
+  const target = pkSel >= 0 ? pkVisible()[pkSel] : undefined;
+  if (target) void togglePin(target.path);
+  return true;
 }
 pkFilter.addEventListener("input", applyPkFilter);
 pkFilter.addEventListener("keydown", (e) => {
+  if (pkPinKey(e)) { e.preventDefault(); return; }
   if (pkKeyNav(e)) { e.preventDefault(); return; }
   if (e.key !== "Enter") return;
   e.preventDefault();
@@ -1493,6 +1527,17 @@ pkFilter.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey) void startSession(target?.path ?? pkPath.value);
   else if (target) void browse(target.path);
 });
+function renderHideWtBtn() {
+  pkHideWt.textContent = "⎇ hide lanes";
+  pkHideWt.classList.toggle("on", hideWorktrees);
+  pkHideWt.title = hideWorktrees ? "worktree lanes hidden — click to show them" : "click to hide worktree lanes";
+}
+pkHideWt.onclick = () => {
+  hideWorktrees = !hideWorktrees;
+  localStorage.setItem("fleet.hidewt", hideWorktrees ? "1" : "0");
+  renderHideWtBtn();
+  applyWtHide();
+};
 pkPath.addEventListener("keydown", (e) => {
   if (pkKeyNav(e)) { e.preventDefault(); return; }
   if (e.key !== "Enter") return;
@@ -1500,9 +1545,41 @@ pkPath.addEventListener("keydown", (e) => {
   else void browse(pkPath.value);
 });
 
-function dirRow(label: string, path: string, cls: string): HTMLElement {
-  const row = el("div", `pkrow ${cls}`, label);
-  row.title = path;
+// crisp monochrome glyphs (stroke = currentColor, tinted per row-kind in CSS). Static markup,
+// no interpolated data — safe to set via innerHTML.
+const PK_ICONS: Record<string, string> = {
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
+  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
+};
+function pkIcon(kind: string): HTMLElement {
+  const s = el("span", "pkicon");
+  s.innerHTML = PK_ICONS[kind] ?? PK_ICONS.folder;
+  return s;
+}
+
+interface DirRowOpts { label: string; sub?: string; path: string; cls: string; icon: string; repo?: boolean; wt?: boolean }
+function dirRow(o: DirRowOpts): HTMLElement {
+  const row = el("div", `pkrow ${o.cls}`);
+  row.title = o.path;
+  row.appendChild(pkIcon(o.icon));
+  const name = el("span", "pkname");
+  name.appendChild(el("span", "pkleaf", o.label));
+  if (o.sub) name.appendChild(el("span", "pksub", o.sub));
+  row.appendChild(name);
+  if (o.repo) {
+    const g = el("span", "pkgit", "⎇");
+    g.title = "git repo — ⌘Enter or “new lane” starts a worktree here";
+    row.appendChild(g);
+  }
+  // pin star: filled+amber when pinned (always shown), a ghost outline on hover otherwise.
+  // stopPropagation keeps the click off the row's browse/start timer.
+  const pinned = pkPins.has(o.path);
+  const star = el("span", `pkpin${pinned ? " on" : ""}`, pinned ? "★" : "☆");
+  star.title = pinned ? "unpin (⌘D)" : "pin this folder (⌘D)";
+  star.onclick = (e) => { e.stopPropagation(); void togglePin(o.path); };
+  row.appendChild(star);
   // single click navigates in (browse); double click starts here directly — same
   // navigate-vs-activate convention as double-clicking a slot label to rename it.
   // Reconciled via MouseEvent.detail in one handler, not separate onclick/ondblclick:
@@ -1512,22 +1589,55 @@ function dirRow(label: string, path: string, cls: string): HTMLElement {
   let clickTimer: ReturnType<typeof setTimeout> | undefined;
   row.onclick = (e) => {
     clearTimeout(clickTimer);
-    if (e.detail >= 2) { void startSession(path); return; }
-    clickTimer = setTimeout(() => void browse(path), 250);
+    if (e.detail >= 2) { void startSession(o.path); return; }
+    clickTimer = setTimeout(() => void browse(o.path), 250);
   };
   const use = el("span", "pkuse", "start ▸");
   use.onclick = (e) => {
     e.stopPropagation();
-    void startSession(path);
+    void startSession(o.path);
   };
   row.appendChild(use);
   return row;
 }
 
+// clickable path: each ancestor segment jumps straight there. /Users/<me> collapses to ~.
+function renderCrumb(path: string) {
+  pkCrumb.replaceChildren();
+  const home = /^(\/Users\/[^/]+)(\/.*)?$/.exec(path);
+  const segs: { label: string; full: string }[] = [];
+  let base: string;
+  let rest: string;
+  if (home) {
+    segs.push({ label: "~", full: home[1] });
+    base = home[1];
+    rest = home[2] ?? "";
+  } else {
+    segs.push({ label: "/", full: "/" });
+    base = "";
+    rest = path;
+  }
+  for (const part of rest.split("/").filter(Boolean)) {
+    base = `${base}/${part}`;
+    segs.push({ label: part, full: base });
+  }
+  segs.forEach((s, i) => {
+    if (i) pkCrumb.appendChild(el("span", "pksep", "›"));
+    const seg = el("span", "pkseg", s.label);
+    if (i === segs.length - 1) { seg.classList.add("here"); seg.title = s.full; }
+    else { seg.title = s.full; seg.onclick = () => void browse(s.full); }
+    pkCrumb.appendChild(seg);
+  });
+  pkCrumb.scrollLeft = pkCrumb.scrollWidth; // keep the current folder in view when deep
+  // fade the left edge when ancestors have scrolled out of view, so hidden segments are hinted
+  pkCrumb.classList.toggle("overflow", pkCrumb.scrollWidth > pkCrumb.clientWidth + 1);
+}
+
 async function browse(path: string): Promise<boolean> {
   const res = await api(`/api/dirs?path=${encodeURIComponent(path)}`);
   const data = (await res.json()) as
-    | { path: string; parent: string | null; dirs: string[]; recents: string[]; common: string[]; git?: boolean }
+    | { path: string; parent: string | null; dirs: string[]; repos?: string[]; worktrees?: string[];
+        recents: string[]; pins?: string[]; common: string[]; git?: boolean }
     | { error: string };
   if ("error" in data) {
     pkPath.classList.add("bad");
@@ -1536,6 +1646,8 @@ async function browse(path: string): Promise<boolean> {
   }
   pkPath.value = data.path;
   pkPath.classList.remove("bad");
+  renderCrumb(data.path);
+  pkPins = new Set(data.pins ?? []);
   // the worktree action only makes sense inside a git repo
   pkWorktreeBtn.style.display = data.git ? "" : "none";
   localStorage.setItem("fleet.pkdir", data.path); // next openPicker starts where you left off
@@ -1544,23 +1656,63 @@ async function browse(path: string): Promise<boolean> {
   pkSel = -1;
   pkFilter.value = "";
   let head: HTMLElement | null = null;
-  const addHead = (t: string) => { head = el("div", "pkhead", t); pkLists.appendChild(head); };
-  const addRow = (label: string, p: string, cls: string) => {
-    const row = dirRow(label, p, cls);
-    pkLists.appendChild(row);
-    pkRows.push({ row, path: p, name: label.toLowerCase(), head });
+  const addHead = (t: string, n?: number) => {
+    head = el("div", "pkhead");
+    head.appendChild(el("span", "pkheadt", t));
+    if (n !== undefined) head.appendChild(el("span", "pkheadn", String(n)));
+    pkLists.appendChild(head);
   };
+  const addRow = (o: DirRowOpts) => {
+    const row = dirRow(o);
+    pkLists.appendChild(row);
+    pkRows.push({ row, path: o.path, name: `${o.label} ${o.sub ?? ""}`.toLowerCase(), head, wt: !!o.wt });
+  };
+  // full paths render as name-up-front + dimmed parent; a bare top-level dir (/tmp) still splits
+  const split = (p: string): { leaf: string; sub: string } => {
+    const disp = p.replace(/^\/Users\/[^/]+/, "~");
+    const i = disp.lastIndexOf("/");
+    if (i < 0) return { leaf: disp, sub: "" };
+    if (i === 0) return { leaf: disp.slice(1) || disp, sub: "/" };
+    return { leaf: disp.slice(i + 1), sub: disp.slice(0, i) };
+  };
+  if (data.pins?.length) {
+    addHead("Pinned", data.pins.length);
+    for (const p of data.pins) {
+      const { leaf, sub } = split(p);
+      addRow({ label: leaf, sub, path: p, cls: "pin", icon: "star", wt: isWtPath(p) });
+    }
+  }
   if (data.recents.length) {
-    addHead("Recent");
-    for (const r of data.recents) addRow(r.replace(/^\/Users\/[^/]+/, "~"), r, "recent");
+    addHead("Recent", data.recents.length);
+    for (const r of data.recents) {
+      const { leaf, sub } = split(r);
+      addRow({ label: leaf, sub, path: r, cls: "recent", icon: "clock", wt: isWtPath(r) });
+    }
   }
   addHead("Places");
-  for (const c of data.common) addRow(c.replace(/^\/Users\/[^/]+/, "~"), c, "place");
-  addHead(`Folders in ${data.path}`);
-  if (data.parent) addRow("..", data.parent, "up");
-  for (const d of data.dirs) addRow(d, `${data.path}/${d}`.replace("//", "/"), "dir");
-  if (!data.dirs.length) pkLists.appendChild(el("div", "pknone", "no subfolders"));
+  for (const c of data.common) addRow({ label: c.replace(/^\/Users\/[^/]+/, "~"), path: c, cls: "place", icon: "folder" });
+  const repoSet = new Set(data.repos ?? []);
+  const wtSet = new Set(data.worktrees ?? []);
+  addHead("Folders", data.dirs.length);
+  if (data.parent) addRow({ label: `Up to ${baseName(data.parent)}`, path: data.parent, cls: "up", icon: "up" });
+  for (const d of data.dirs) addRow({
+    label: d, path: `${data.path}/${d}`.replace("//", "/"), cls: "dir", icon: "folder",
+    repo: repoSet.has(d), wt: wtSet.has(d) || d.endsWith(".worktrees"),
+  });
+  if (!data.dirs.length) pkLists.appendChild(el("div", "pknone", "no subfolders here"));
+  applyWtHide(); // honor the current "hide lanes" toggle for the freshly built rows
   return true;
+}
+
+// pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
+async function togglePin(path: string) {
+  const res = await post("/api/pins", { path, on: !pkPins.has(path) });
+  if (!res.ok) return;
+  const data = (await res.json()) as { pins?: string[] };
+  pkPins = new Set(data.pins ?? []);
+  const keepFilter = pkFilter.value; // browse() clears it — restore so ⌘D-pin keeps your context
+  await browse(pkPath.value); // rebuild the Pinned section + star states from the new set
+  if (keepFilter) { pkFilter.value = keepFilter; applyPkFilter(); }
 }
 
 async function startSession(path: string) {
@@ -1601,6 +1753,7 @@ function openPicker(slotId: number) {
   setDrawer(false);
   pickerSlot = slotId;
   pkTitle.textContent = `New session — slot ${slotId}`;
+  renderHideWtBtn();
   picker.style.display = "flex";
   const last = localStorage.getItem("fleet.pkdir") ?? "~";
   void browse(last).then(async (ok) => {

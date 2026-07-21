@@ -2662,12 +2662,29 @@ Bun.serve<WSData>({
         const mainBr = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
         if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
         if (mainBr.out === branch) return json({ error: "primary checkout is on the lane branch itself" }, 409);
-        // an ff-merge rewrites the primary checkout's files — refuse while it has tracked
-        // uncommitted changes there (untracked files are fine, git refuses only real collisions)
+        // an ff-merge rewrites ONLY the files the lane changed — so refuse the land only if
+        // one of THOSE files is uncommitted in the primary checkout. An unrelated dirty file
+        // (e.g. a working HANDOFF.md the owner keeps editing) is left untouched by git's ff
+        // and must not block; the old check refused on ANY dirty tracked file and wedged every
+        // land behind an irrelevant edit. git's own --ff-only stays the final arbiter below.
         const pst = await git(repo, "status", "--porcelain");
-        if (pst.code === 0 && pst.out.split("\n").some((l) => l && !l.startsWith("??")))
-          return json({ status: "blocked",
-            detail: `primary checkout (${repo}) has uncommitted tracked changes — commit or stash there first` });
+        if (pst.code === 0 && pst.out) {
+          const dirty = new Set(pst.out.split("\n")
+            .filter((l) => l && !l.startsWith("??") && !l.startsWith("!!"))
+            .map((l) => (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim()));
+          if (dirty.size) {
+            const mb = await git(repo, "merge-base", mainBr.out, branch);
+            const changed = mb.code === 0 && mb.out
+              ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
+              : { code: 1, out: "", err: "" };
+            // couldn't compute the lane's file set → fall back to the safe (broad) refusal
+            const collide = changed.code === 0
+              ? changed.out.split("\n").map((f) => f.trim()).filter((f) => f && dirty.has(f))
+              : [...dirty];
+            if (collide.length) return json({ status: "blocked",
+              detail: `primary checkout (${repo}) has uncommitted changes to ${collide.join(", ")} — the land would overwrite them; commit or stash there first` });
+          }
+        }
         // confirm-land: the owner reviewed an agent conflict resolution and is landing it.
         // No agent, no trust in the stored verdict — the guarantee is purely git: main is an
         // ancestor of the (clean) lane branch, so the branch is genuinely rebased on top and

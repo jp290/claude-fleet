@@ -677,10 +677,19 @@ if (REPO) {
   const md = (await (await get(`/api/slots/${lnSlot}/merge-diff`)).json()) as { files?: string[]; diff?: string };
   check("merge-diff shows exactly what will land (main..HEAD)",
     (md.files ?? []).includes("code.txt") && typeof md.diff === "string", JSON.stringify(md.files));
+  // regression (land-check fix): an UNRELATED dirty tracked file in the primary must NOT
+  // block the land — git's ff only rewrites the lane's own files (code.txt), so a dirty
+  // .gitignore the lane never touched has to be left alone, not wedge the land. The OLD
+  // check refused on ANY dirty tracked file and returned status:"blocked" here.
+  await Bun.write(`${REPO}/.gitignore`, ".env\n# unrelated dirty edit — must not block the land\n");
   const conf = await post(`/api/slots/${lnSlot}/merge`, { confirm: true });
   const confJ = (await conf.json()) as { status?: string; landed?: boolean };
   check("owner confirm → server ff-merges the reviewed resolution + tears down the slot",
     conf.ok && confJ.status === "merged" && confJ.landed === true, JSON.stringify(confJ));
+  check("land ignores an UNRELATED dirty file in the primary (ff only touches lane files)",
+    confJ.status === "merged" && spawnSync("git", ["-C", REPO, "status", "--porcelain"]).stdout.toString().includes(".gitignore"),
+    "expected .gitignore to stay dirty AND the land to still succeed");
+  spawnSync("git", ["-C", REPO, "checkout", "--", ".gitignore"]); // restore for later checks
   check("confirmed lane removed from disk", !exists(lnPath));
   const mainLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
   check("main received the lane's commit on top of the diverged mainline",

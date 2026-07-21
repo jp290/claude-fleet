@@ -877,8 +877,11 @@ if (REPO) {
   check("prose-merged lane's commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("prose lane work"));
 
-  // review gate is git-anchored, not verdict-trust: if main moves between the resolution and
-  // the owner's confirm, the ancestry check refuses the land and sends them back to re-run ⏫
+  // atomic confirm-land: if main moves between the resolution and the owner's confirm, the
+  // earlier rebase is stale — but the resolution was already made, so the server REPLAYS it
+  // onto the current main and lands in one step (no full agent re-run) when the move doesn't
+  // re-conflict. Only a move that touches the SAME lines falls back to ⏫. (Was: confirm hard-
+  // refused on ANY move, which in a busy fleet meant a resolved lane could never win the race.)
   const lnStale = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   await Bun.write(`${lnStale.cwd}/code.txt`, "root\nstale-lane\n");
   spawnSync("git", ["-C", lnStale.cwd, "commit", "-aqm", "stale lane work"]);
@@ -889,14 +892,45 @@ if (REPO) {
   await post(`/api/slots/${lnStale.slot}/merge`, {});
   const vSt = await waitMerge(lnStale.slot);
   check("stale-test lane resolved + paused", !vSt.gone && vSt.last?.status === "resolved", JSON.stringify(vSt.last));
-  await Bun.write(`${REPO}/moved.txt`, "moved\n"); // main moves AGAIN before confirm
+  // main moves on an UNRELATED file before confirm → the resolution still replays cleanly
+  await Bun.write(`${REPO}/moved.txt`, "moved\n");
   spawnSync("git", ["-C", REPO, "add", "moved.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "main moved after resolution"]);
-  await settleForMerge(lnStale.slot);
   const staleJ = (await (await post(`/api/slots/${lnStale.slot}/merge`, { confirm: true })).json()) as
+    { status?: string; landed?: boolean; detail?: string };
+  check("confirm-land re-rebases onto a moved main and lands (unrelated move, no agent re-run)",
+    staleJ.status === "merged" && staleJ.landed === true, JSON.stringify(staleJ));
+  check("confirm-landed lane's resolution + the intervening main move both reached main",
+    ((): boolean => { const lg = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+      return lg.includes("stale lane work") && lg.includes("main moved after resolution"); })(),
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
+  check("confirm-landed lane kept its resolved content on main (theirs = lane side)",
+    spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString() === "root\nstale-lane\n",
+    JSON.stringify(spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString()));
+
+  // the fallback still holds: when the moved main touches the SAME lines the resolution did,
+  // the re-rebase re-conflicts — the server aborts it cleanly and sends the owner back to ⏫
+  // (never landing a NEW, unreviewed auto-resolution). Lane is left exactly as it was.
+  const lnReconf = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnReconf.cwd}/code.txt`, "root\nrc-lane\n");
+  spawnSync("git", ["-C", lnReconf.cwd, "commit", "-aqm", "reconf lane work"]);
+  await Bun.write(`${REPO}/code.txt`, "root\nrc-main\n"); // conflict → agent resolves
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "reconf main work"]);
+  await settleForMerge(lnReconf.slot);
+  await post(`/api/slots/${lnReconf.slot}/merge`, {});
+  const vRc = await waitMerge(lnReconf.slot);
+  check("reconf lane resolved + paused", !vRc.gone && vRc.last?.status === "resolved", JSON.stringify(vRc.last));
+  await Bun.write(`${REPO}/code.txt`, "root\nrc-main2\n"); // main re-touches the SAME line before confirm
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "reconf main re-touch"]);
+  const rcJ = (await (await post(`/api/slots/${lnReconf.slot}/merge`, { confirm: true })).json()) as
     { status?: string; detail?: string };
-  check("confirm-land refuses when main moved since the resolution",
-    staleJ.status === "blocked" && (staleJ.detail ?? "").includes("moved"), JSON.stringify(staleJ));
+  check("confirm-land falls back to ⏫ when the moved main re-conflicts",
+    rcJ.status === "blocked" && (rcJ.detail ?? "").includes("re-run"), JSON.stringify(rcJ));
+  check("re-conflicting confirm leaves the lane intact (no half-rebase, no git op stuck)",
+    exists(lnReconf.cwd)
+    && spawnSync("git", ["-C", lnReconf.cwd, "status", "--porcelain"]).stdout.toString().trim() === "",
+    spawnSync("git", ["-C", lnReconf.cwd, "status", "--porcelain"]).stdout.toString());
+  await post(`/api/slots/${lnReconf.slot}/kill`, {});
   await post(`/api/slots/${lnStale.slot}/kill`, {}); // free the slot for the orphan tests below
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,

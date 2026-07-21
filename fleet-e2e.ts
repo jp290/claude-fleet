@@ -497,6 +497,11 @@ await post("/api/slots/3/kill", {}); // restore slot 3 to inactive for the rest 
 
 // --- worktree lanes (Phase A/B/C). Uses a throwaway git repo from FLEET_E2E_REPO ---
 const REPO = process.env.FLEET_E2E_REPO ?? "";
+// carried across the server restart below to guard fix A: a lane's selfToken must be
+// persisted + restored, else the lane pane (which keeps its OLD baked token across a
+// deploy) can never match the fresh in-memory slot and /api/self/autos 401s forever
+let restartSelfTok: string | null = null;
+let restartSelfSlot = 0;
 if (REPO) {
   const wtOpen = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
   const wtJson = (await wtOpen.json()) as { ok?: boolean; branch?: string; error?: string };
@@ -808,8 +813,11 @@ if (REPO) {
   check("worktrees map reports real dirty FILE NAMES, not just a count",
     !!rowDirty && rowDirty.dirtyFiles.some((f) => f.includes("code.txt")) && rowDirty.empty === false,
     JSON.stringify(rowDirty));
-  check("worktrees map reports the real unpushed COMMIT SUBJECT",
-    !!rowDirty && rowDirty.unpushedCommits.some((c) => c.subject.includes("sweep test unpushed commit")),
+  // guards fix B: the no-upstream fallback must list the lane's OWN commit ONLY, never
+  // the base history — so exactly one entry, and it is the commit this test created
+  check("worktrees map reports ONLY the lane's own unpushed commit (not base history)",
+    !!rowDirty && rowDirty.unpushedCommits.length === 1
+      && rowDirty.unpushedCommits[0].subject === "sweep test unpushed commit",
     JSON.stringify(rowDirty?.unpushedCommits));
   const rowClean = wmRisk.worktrees.find((w) => w.branch === lnClean2.branch);
   check("worktrees map reports empty:true for a clean, fresh lane (provably safe to drop)",
@@ -835,8 +843,12 @@ if (REPO) {
   check("sweep verdict for the clean empty lane is safe-to-remove/remove",
     vClean?.verdict === "safe-to-remove" && vClean?.suggestedAction === "remove", JSON.stringify(vClean));
   const swGet = await get(`/api/slots/${lnDirty.slot}/sweep`);
-  const swGetJ = (await swGet.json()) as { verdicts?: unknown; cached?: boolean };
+  const swGetJ = (await swGet.json()) as { verdicts?: SweepVerdictRow[]; cached?: boolean };
   check("sweep GET serves the cache without re-spawning the agent", swGet.ok && swGetJ.cached === true, JSON.stringify(swGetJ));
+  // guards fix J: a true cache hit returns the SAME verdicts the POST produced — proving GET
+  // did not re-run the agent (which, being non-deterministic in prod, could differ)
+  check("sweep GET verdicts are byte-identical to the POST verdicts (agent not re-run)",
+    JSON.stringify(swGetJ.verdicts) === JSON.stringify(swJ.verdicts), JSON.stringify(swGetJ.verdicts));
   await post(`/api/slots/${lnDirty.slot}/kill`, {});
   await post(`/api/slots/${lnClean2.slot}/kill`, {});
 
@@ -871,7 +883,10 @@ if (REPO) {
   const noSelf = await selfAuto({});
   check("a missing selfToken header is rejected", noSelf.status === 401);
   if (okJ.auto) check("delete self-scheduled auto (cleanup)", (await post(`/api/autos/${okJ.auto.id}/delete`, {})).ok);
-  await post(`/api/slots/${lnTok.slot}/kill`, {});
+  // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
+  // the restart section (guards fix A) uses this token, then tears the lane down.
+  restartSelfTok = selfTok;
+  restartSelfSlot = lnTok.slot;
 }
 
 // --- task queue (Phase D). Owner CRUD + dispatch availability ---
@@ -986,6 +1001,21 @@ const api = (await (await get("/api/sessions")).json()) as { slots: { id: number
 check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
 check("after restart: slot 1 still empty", api.slots[0].cwd === null);
 check("after restart: label persisted", api.slots[1].label === "research-agent");
+// guards fix A: the lane's selfToken must survive the restart. The lane pane still holds
+// the token baked at spawn; the restarted server must restore the SAME token from state,
+// so a /api/self/autos call authed with the pre-restart token still succeeds.
+if (restartSelfTok) {
+  const restRes = await fetch(BASE + "/api/self/autos", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-fleet-self-token": restartSelfTok },
+    body: JSON.stringify({ text: "post-restart self check-in", inSec: 3600 }),
+  });
+  const restJ = (await restRes.json()) as { ok?: boolean; auto?: { id: string; slot: number } };
+  check("after restart: lane selfToken still authorizes /api/self/autos (persisted, not rotated)",
+    restRes.ok && restJ.auto?.slot === restartSelfSlot, `${restRes.status} ${JSON.stringify(restJ)}`);
+  if (restJ.auto) await post(`/api/autos/${restJ.auto.id}/delete`, {});
+  await post(`/api/slots/${restartSelfSlot}/kill`, {}); // tear the persistence lane down
+}
 const rec2 = (await (await get("/api/dirs?path=~")).json()) as { recents: string[] };
 check("after restart: recents persisted", rec2.recents.length >= 2, JSON.stringify(rec2.recents));
 const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };

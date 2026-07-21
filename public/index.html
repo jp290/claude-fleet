@@ -50,10 +50,10 @@
   /* row 2: view/layout tools, separate from the identity row above */
   #sidetools { display: flex; align-items: center; gap: 3px; padding: 0 10px 8px; }
   #sidetools #queuebtn { margin-left: auto; }
-  #collapse, #reload { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid #333;
+  #collapse { flex: none; width: 22px; height: 22px; border-radius: 6px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer;
     display: flex; align-items: center; justify-content: center; line-height: 1; }
-  #collapse:hover, #reload:hover { color: #ccc; }
+  #collapse:hover { color: #ccc; }
   #slots { flex: 1; overflow-y: auto; padding: 4px 7px; display: flex; flex-direction: column; gap: 3px; }
   .slot { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 9px;
     border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-size: 12px;
@@ -188,8 +188,13 @@
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
   .riskpanel { gap: 8px; }
+  /* land review shows a full diff, so it needs more width than the file-list risk preview */
+  .landreviewpanel { width: min(760px, 94vw); }
   .riskempty { color: #9ece6a; font-size: 12.5px; padding: 6px 0; }
   .riskhead { color: #e0af68; font-size: 11px; font-weight: 700; margin-top: 4px; }
+  /* "left alone" section of the commit preview — muted, so it reads as skipped, not committed */
+  .riskhead.skip { color: #666; font-weight: 600; }
+  .riskfile.skip { color: #666; }
   .risklist { max-height: 180px; overflow-y: auto; background: #141414; border: 1px solid #2a2a2a;
     border-radius: 8px; padding: 6px 9px; }
   .riskfile, .riskcommit { font-size: 11.5px; color: #ccc; padding: 1px 0; white-space: nowrap;
@@ -408,6 +413,12 @@
     font-size: 13px; font-family: inherit; cursor: pointer; }
   .boardtoggle:hover { color: #ccc; }
   .boardtoggle.active { color: #7aa2f7; border-color: #2c3a5e; }
+  /* reload sits left of the ℹ board toggle — same cluster, same visual language */
+  .panereload { position: absolute; top: 8px; right: 82px; z-index: 6; width: 30px; height: 26px;
+    border-radius: 7px; border: 1px solid #333; background: rgba(38, 38, 38, 0.85); color: #888;
+    font-size: 14px; font-family: inherit; cursor: pointer; }
+  .panereload:hover { color: #ccc; }
+  .panereload:active { color: #7aa2f7; border-color: #2c3a5e; }
   /* the board is one lifecycle story — sections are separated by a divider + consistent
      spacing so it scans as designed, not a stack of miscellaneous controls */
   .bsec { margin: 0; padding: 13px 0 3px; border-top: 1px solid #242424; }
@@ -425,6 +436,9 @@
   /* a lifecycle status line: amber = uncommitted, green(ready) = something to land */
   .bnote { color: #8a8a8a; line-height: 1.5; margin-top: 4px; }
   .bnote.ready { color: #9ece6a; }
+  /* interrupted rebase/merge warning — amber, bordered, so it reads as "act on me" */
+  .bgitop { color: #e0af68; background: #2a2320; border: 1px solid #5a4a2a; border-radius: 7px;
+    padding: 7px 9px; font-size: 11px; line-height: 1.5; margin: 2px 0 8px; }
   /* --- ONE board button family: every action reads the same; lifecycle colour only where
      it carries meaning (amber = uncommitted work to save, green = ready to land) --- */
   .bbtnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
@@ -659,7 +673,6 @@
         <button data-l="4" title="2×2 grid">⊞</button>
       </span>
       <button id="queuebtn" title="task queue">🗒</button>
-      <button id="reload" title="reload focused session">↻</button>
     </div>
     <div id="slots"></div>
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>

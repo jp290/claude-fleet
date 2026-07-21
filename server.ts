@@ -550,7 +550,14 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   const path = `${root}.worktrees/${branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
   if (existsSync(path)) throw new Error(`worktree path already exists: ${path}`);
   mkdirSync(`${root}.worktrees`, { recursive: true });
-  const add = await git(root, "worktree", "add", "-b", branch, path);
+  // fork the lane off the integration branch explicitly, NOT the primary's HEAD — the primary
+  // may be parked on a working branch, and a lane must still branch from (and later land onto)
+  // the integration branch. Unset config → integrationBranch is the primary's HEAD, so this is
+  // the same start point as the bare `worktree add -b` default (no-op today).
+  const start = await integrationBranch(root);
+  const add = start
+    ? await git(root, "worktree", "add", "-b", branch, path, start)
+    : await git(root, "worktree", "add", "-b", branch, path);
   if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   // copy env scaffolding a fresh checkout lacks — but ONLY files git IGNORES in the source
   // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
@@ -2729,11 +2736,14 @@ Bun.serve<WSData>({
       const list = await listWorktrees(top.out);
       const primary = list.find((w) => w.primary);
       if (!primary) return json({ error: "no worktree info" }, 400);
+      // ahead/behind measured against the integration branch, not the primary's HEAD (which may
+      // be parked off it) — matches what land actually integrates onto
+      const intb = (await integrationBranch(primary.path)) ?? "HEAD";
       const rows = [];
       for (const w of list) {
         if (w.primary) continue;
         const st = await git(w.path, "status", "--porcelain");
-        const ab = await git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...HEAD`);
+        const ab = await git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...${intb}`);
         const m = /^(\d+)\s+(\d+)$/.exec(ab.out);
         const holder = slots.find((x) => x.cwd === w.path);
         const risk = await worktreeRisk(primary.path, w.path);
@@ -2745,7 +2755,7 @@ Bun.serve<WSData>({
           shortstat: risk.shortstat, empty: risk.empty,
         });
       }
-      return json({ repo: primary.path, main: (await integrationBranch(primary.path)) ?? primary.branch, worktrees: rows });
+      return json({ repo: primary.path, main: intb !== "HEAD" ? intb : primary.branch, worktrees: rows });
     }
     // focused risk preview for a SLOT's own lane worktree — used by the client before
     // ⏏ land and before killing a lane-holding slot, neither of which had real git-state

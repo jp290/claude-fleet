@@ -1074,13 +1074,16 @@ async function renderBoard() {
         if (brief.worktree) {
           const busy = commitBusy.get(slot);
           const crow = el("div", "bbtnrow");
-          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "✔ commit work") as HTMLButtonElement;
+          // ONE commit action, one refinement: the solid button commits now (instant, no
+          // agent — the safety net so a kill can't lose the work); the ghost adds an
+          // agent-written message. Not two ways to commit — a commit and an option ON it.
+          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "commit") as HTMLButtonElement;
           q.disabled = !!busy;
-          q.title = "commit all uncommitted work with a wip message — saved, never pushed or landed (reversible with git reset)";
+          q.title = "commit all uncommitted work now so a kill can't lose it — saved locally, never pushed or landed (undo with git reset)";
           q.onclick = () => void doCommit(slot, "quick");
-          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ commit (agent msg)") as HTMLButtonElement;
+          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ message") as HTMLButtonElement;
           a.disabled = !!busy;
-          a.title = "a short-lived agent writes a one-line conventional-commit message from the diff, then commits (falls back to wip)";
+          a.title = "same commit, but a short-lived agent writes a conventional-commit message from the diff first (falls back to a wip message)";
           a.onclick = () => void doCommit(slot, "agent");
           crow.append(q, a);
           work.appendChild(crow);
@@ -1091,17 +1094,18 @@ async function renderBoard() {
           const busy = commitBusy.get(slot);
           const files = brief.uncommittedFiles;
           const crow = el("div", "bbtnrow");
-          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "✔ commit tracked") as HTMLButtonElement;
+          // same one-action-plus-refinement as a lane. On a MAIN checkout the preview shows
+          // that only tracked changes (git add -u) are staged — untracked files are left
+          // alone. No separate diff button here: the file rows above are already click-to-diff.
+          const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "commit") as HTMLButtonElement;
           q.disabled = !!busy;
-          q.title = "stage & commit TRACKED changes only (git add -u) with a wip message — untracked files left alone; reversible with git reset";
+          q.title = "stage & commit tracked changes only (git add -u); untracked files left alone — undo with git reset. Shows a preview first.";
           q.onclick = () => void doCommitMain(slot, "quick", files);
-          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ commit (agent msg)") as HTMLButtonElement;
+          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ message") as HTMLButtonElement;
           a.disabled = !!busy;
-          a.title = "a short-lived agent writes a conventional-commit message from the staged diff, then commits tracked changes";
+          a.title = "same commit, but a short-lived agent writes a conventional-commit message from the staged diff first";
           a.onclick = () => void doCommitMain(slot, "agent", files);
-          const db = el("button", "bbtn", "± diff") as HTMLButtonElement;
-          db.onclick = () => void openDiff(slot);
-          crow.append(q, a, db);
+          crow.append(q, a);
           work.appendChild(crow);
         }
       } else if (ahead) {
@@ -1153,18 +1157,27 @@ async function renderBoard() {
       if (brief.worktree) {
         const land = el("div", "bsec");
         land.appendChild(el("h3", "", "land"));
-        const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
-        db.onclick = () => void openDiff(slot);
-        land.appendChild(db);
         const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
         const awaitingReview = l?.status === "resolved";
-        // green only when there's something to land — the lifecycle "ready" signal
-        const lb = el("button", "bbtn" + (ahead && !mg?.running ? " green" : ""),
-          mg?.running ? "… landing" : awaitingReview ? "⏏ land (re-run if main moved)" : "⏏ land lane") as HTMLButtonElement;
+        // while a resolution awaits review the note below owns the diff + the single "⏏ land";
+        // showing this generic (differently-scoped) diff button too would just be a second
+        // diff on screen — hide it there so the review state has one diff, one land.
+        if (!awaitingReview) {
+          const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
+          db.onclick = () => void openDiff(slot);
+          land.appendChild(db);
+        }
+        // one land verb on screen at a time. Normally this IS the land. In the review state
+        // the note owns "⏏ land", so this becomes the distinct "re-run" action (only needed
+        // if main moved) — never a second, competing land button. Green = "ready to land".
+        const lb = el("button", "bbtn" + (ahead && !mg?.running && !awaitingReview ? " green" : ""),
+          mg?.running ? "… landing" : awaitingReview ? "↻ re-run merge" : "⏏ land lane") as HTMLButtonElement;
         lb.disabled = !!mg?.running;
-        lb.title = "already-merged lanes land immediately; otherwise this rebases onto main and lands "
-          + "automatically — on conflicts a background agent resolves them and pauses for your review "
-          + "before anything reaches main";
+        lb.title = awaitingReview
+          ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
+          : "already-merged lanes land immediately; otherwise this rebases onto main and lands "
+            + "automatically — on conflicts a background agent resolves them and pauses for your review "
+            + "before anything reaches main";
         lb.onclick = () => void doLand(slot);
         land.appendChild(lb);
         if (awaitingReview && l) {

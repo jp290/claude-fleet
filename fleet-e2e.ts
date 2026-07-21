@@ -620,6 +620,23 @@ if (REPO) {
   check("worktrees map lists the lane with its holding slot",
     wm.worktrees.some((w) => w.slot === lnSlot && w.branch === ln1.branch), JSON.stringify(wm.worktrees));
 
+  // --- integration-branch config (/api/repo-base): overrides the branch derived from the
+  // primary's HEAD, so the primary can be parked off the integration branch. Set to a decoy
+  // real branch, confirm the worktrees map reports it, then clear back to derived. ---
+  {
+    spawnSync("git", ["-C", REPO, "branch", "-f", "integ-decoy", "HEAD"]);
+    const setBad = await post("/api/repo-base", { repo: REPO, branch: "no-such-branch" });
+    check("repo-base rejects a nonexistent branch", setBad.status === 400, String(setBad.status));
+    const setOk = (await (await post("/api/repo-base", { repo: REPO, branch: "integ-decoy" })).json()) as { ok?: boolean; base?: string };
+    check("repo-base sets the integration branch", setOk.ok === true && setOk.base === "integ-decoy", JSON.stringify(setOk));
+    const wmCfg = (await (await get(`/api/slots/${lnSlot}/worktrees`)).json()) as { main: string };
+    check("worktrees map reflects the configured integration branch", wmCfg.main === "integ-decoy", wmCfg.main);
+    const clr = (await (await post("/api/repo-base", { repo: REPO, branch: "" })).json()) as { base: string | null };
+    check("repo-base clears back to derived (null)", clr.base === null, JSON.stringify(clr));
+    const wmClr = (await (await get(`/api/slots/${lnSlot}/worktrees`)).json()) as { main: string };
+    check("worktrees map derives main again after clear", wmClr.main === "main" || wmClr.main === "master", wmClr.main);
+  }
+
   // --- lane brief must be LANE-SCOPED and match git exactly (regression: it used to show
   // the base branch's whole history for lanes, and truncated the first uncommitted file) ---
   {

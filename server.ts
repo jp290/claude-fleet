@@ -97,7 +97,7 @@ interface Slot {
   id: number;
   cwd: string | null; // null = slot not activated; self-heal only touches activated slots
   label: string | null; // user-chosen session name; falls back to cwd basename in the UI
-  worktree: { repo: string; branch: string } | null; // set when Fleet created this slot's
+  worktree: { repo: string; branch: string; base?: string } | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
@@ -138,6 +138,11 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
 }));
 let recents: string[] = [];
 let pins: string[] = []; // owner-pinned project roots, surfaced first in the picker (persisted like recents)
+// repo root → the branch lanes integrate into (rebase onto + land into). Unset for a repo
+// means "derive from the primary checkout's HEAD" — the legacy assumption that the primary
+// sits on the integration branch. Setting it lets the owner park the primary on a working
+// branch (e.g. `desk`) while lanes still land onto `main` without touching that dirty tree.
+let repoBases: Record<string, string> = {};
 let shares: Share[] = [];
 let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
@@ -228,12 +233,12 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
-    worktree: { repo: string; branch: string } | null; selfToken: string }> = {};
+    worktree: { repo: string; branch: string; base?: string } | null; selfToken: string }> = {};
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, slots: active, recents, pins, shares, autos, tasks,
-    comments: shareComments, dispatch: dispatchOn, merges: Object.fromEntries(mergeLast) }, null, 2);
+    comments: shareComments, dispatch: dispatchOn, merges: Object.fromEntries(mergeLast), repoBases }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once)
@@ -358,10 +363,23 @@ async function sessionCommits(s: Slot): Promise<CommitRow[]> {
 // the ref a lane sits on top of: the primary checkout's current branch (e.g. "main"),
 // resolved as a NAME so it tracks the tip even after the owner commits on main; falls back
 // to the primary's HEAD sha if it is detached. Only meaningful for worktree lanes.
+// the branch lanes integrate into (rebase onto + land into) for a repo. A configured value
+// (repoBases) wins so the primary can be parked off the integration branch; otherwise fall
+// back to the primary's current HEAD, which is exactly the legacy behavior. Returns null on a
+// detached/unresolvable HEAD with no config (callers treat that as "can't resolve").
+async function integrationBranch(repo: string): Promise<string | null> {
+  const cfg = repoBases[repo];
+  if (cfg) return cfg;
+  const br = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
+  return br.code === 0 && br.out && br.out !== "HEAD" ? br.out : null;
+}
 async function laneBaseRef(s: Slot): Promise<string | null> {
   if (!s.worktree) return null;
-  const br = await git(s.worktree.repo, "rev-parse", "--abbrev-ref", "HEAD");
-  if (br.code === 0 && br.out && br.out !== "HEAD") return br.out;
+  // the base recorded when the lane was forked is authoritative — it survives the primary
+  // later moving off the integration branch, which live re-derivation would not
+  if (s.worktree.base) return s.worktree.base;
+  const ib = await integrationBranch(s.worktree.repo);
+  if (ib) return ib;
   const sha = await git(s.worktree.repo, "rev-parse", "HEAD");
   return sha.code === 0 && sha.out ? sha.out : null;
 }
@@ -652,7 +670,8 @@ const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
-  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch });
+  const base = await integrationBranch(wt.repo);
+  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined });
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -746,7 +765,7 @@ function expandCwd(raw: string): string {
   return t;
 }
 
-async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string } | null = null): Promise<void> {
+async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string } | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   s.cwd = cwd;
@@ -2189,11 +2208,16 @@ if (existsSync(STATE_FILE)) {
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")
-          s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch };
+          s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch,
+            ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}) };
       }
     }
     // dispatcher toggle survives deploys — queued tasks persist, so the thing that
     // drains them must too (the silent off-after-restart was the cols/rows bug's twin)
+    const prb = (persisted as { repoBases?: unknown }).repoBases;
+    if (typeof prb === "object" && prb !== null && !Array.isArray(prb))
+      for (const [k, v] of Object.entries(prb as Record<string, unknown>))
+        if (typeof k === "string" && typeof v === "string" && v) repoBases[k] = v;
     if (typeof (persisted as { dispatch?: unknown }).dispatch === "boolean")
       dispatchOn = (persisted as { dispatch: boolean }).dispatch;
     // merge verdicts survive deploys — the ⏸ pause-for-review gate lives in mergeLast,
@@ -2701,7 +2725,7 @@ Bun.serve<WSData>({
           shortstat: risk.shortstat, empty: risk.empty,
         });
       }
-      return json({ repo: primary.path, main: primary.branch, worktrees: rows });
+      return json({ repo: primary.path, main: (await integrationBranch(primary.path)) ?? primary.branch, worktrees: rows });
     }
     // focused risk preview for a SLOT's own lane worktree — used by the client before
     // ⏏ land and before killing a lane-holding slot, neither of which had real git-state
@@ -2736,7 +2760,7 @@ Bun.serve<WSData>({
           const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === attachPath);
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
-          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch });
+          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: (await integrationBranch(top.out)) ?? undefined });
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           saveState();
           void tickGit().catch(() => {});
@@ -2793,6 +2817,25 @@ Bun.serve<WSData>({
       return json({ ok: true, removed: wt.path, branch: wt.branch,
         head: head.code === 0 ? head.out : null, branchDeleted });
     }
+    // set/clear a repo's integration branch — the branch lanes land into. Setting it lets the
+    // owner park the primary checkout on a working branch while lanes still land onto `main`.
+    // Empty branch clears it (back to deriving from the primary's HEAD). The branch must exist.
+    if (url.pathname === "/api/repo-base" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo, branch }" }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const branch = typeof body.branch === "string" ? body.branch.trim() : "";
+      if (branch) {
+        const ok = await git(top.out, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
+        if (ok.code !== 0) return json({ error: `no such branch: ${branch}` }, 400);
+        repoBases[top.out] = branch;
+      } else {
+        delete repoBases[top.out];
+      }
+      saveState();
+      return json({ ok: true, repo: top.out, base: repoBases[top.out] ?? null });
+    }
     // ⏫ agent merge & land. POST: deterministic guards → start the background job (the
     // fuzzy middle: rebase + conflict resolution in the lane) → deterministic re-verify,
     // server-side ff-merge and landLane inside the job. GET: job state for the board's
@@ -2816,9 +2859,9 @@ Bun.serve<WSData>({
           detail: `uncommitted changes — commit them (or ask the session to) first:\n${st.out.slice(0, 400)}` });
         if (await gitOpInProgress(cwd)) return json({ status: "blocked", detail: "a git merge/rebase is in progress in this lane — finish or abort it in the session first" });
         if (Date.now() - s.lastOutput < MERGE_IDLE_MS) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
-        const mainBr = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
-        if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
-        if (mainBr.out === branch) return json({ error: "primary checkout is on the lane branch itself" }, 409);
+        const main = await integrationBranch(repo);
+        if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
+        if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);
         // an ff-merge rewrites ONLY the files the lane changed — so refuse the land only if
         // one of THOSE files is uncommitted in the primary checkout. An unrelated dirty file
         // (e.g. a working HANDOFF.md the owner keeps editing) is left untouched by git's ff
@@ -2830,7 +2873,7 @@ Bun.serve<WSData>({
             .filter((l) => l && !l.startsWith("??") && !l.startsWith("!!"))
             .map((l) => (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim()));
           if (dirty.size) {
-            const mb = await git(repo, "merge-base", mainBr.out, branch);
+            const mb = await git(repo, "merge-base", main, branch);
             const changed = mb.code === 0 && mb.out
               ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
               : { code: 1, out: "", err: "" };
@@ -2848,12 +2891,12 @@ Bun.serve<WSData>({
         // the ff-merge is safe. If main moved since the resolution the ancestry fails and we
         // send them back to re-run ⏫ (which re-rebases against the new main).
         if (body?.confirm === true) {
-          const anc = await git(repo, "merge-base", "--is-ancestor", mainBr.out, branch);
+          const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code !== 0) return json({ status: "blocked",
-            detail: `${mainBr.out} moved since the resolution — the lane is no longer rebased onto it. Re-run ⏫ merge.` });
+            detail: `${main} moved since the resolution — the lane is no longer rebased onto it. Re-run ⏫ merge.` });
           const ff = await git(repo, "merge", "--ff-only", branch);
           if (ff.code !== 0) return json({ status: "error",
-            detail: `fast-forwarding ${mainBr.out} failed: ${(ff.err || ff.out).slice(0, 300)} — lane kept` }, 409);
+            detail: `fast-forwarding ${main} failed: ${(ff.err || ff.out).slice(0, 300)} — lane kept` }, 409);
           const land = await landLane(s);
           if ("error" in land) return json({ error: land.error }, land.code);
           mergeLast.delete(s.id);
@@ -2873,14 +2916,14 @@ Bun.serve<WSData>({
         // unreviewed — refuse and point back at review. Only when main has moved on is
         // the verdict genuinely stale; then a fresh run (which re-rebases) is the fix.
         if (mergeLast.get(s.id)?.status === "resolved") {
-          const anc = await git(repo, "merge-base", "--is-ancestor", mainBr.out, branch);
+          const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code === 0)
             return json({ running: false, last: mergeLast.get(s.id),
               status: "resolved", detail: "conflict resolution awaits your review — open the board and land it from there" });
         }
         mergeLast.delete(s.id); // a new run supersedes the previous verdict
         saveState();
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, mainBr.out)
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
         return json({ running: true });
@@ -2894,15 +2937,15 @@ Bun.serve<WSData>({
     if (req.method === "GET" && mgDiffMatch) {
       const s = slotFrom(mgDiffMatch[1]);
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
-      const mainBr = await git(s.worktree.repo, "rev-parse", "--abbrev-ref", "HEAD");
-      if (mainBr.code !== 0 || !mainBr.out) return json({ error: "cannot resolve the repo's main branch" }, 400);
+      const main = await laneBaseRef(s);
+      if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
       // three-dot (from the merge-base): the lane's OWN changes, so a lane behind main
       // doesn't show main's divergent commits inverted
-      const d = await git(s.cwd, "diff", `${mainBr.out}...HEAD`, "--no-color");
+      const d = await git(s.cwd, "diff", `${main}...HEAD`, "--no-color");
       const diff = d.code === 0 ? d.out : "";
-      const ns = await git(s.cwd, "diff", `${mainBr.out}...HEAD`, "--name-only");
+      const ns = await git(s.cwd, "diff", `${main}...HEAD`, "--name-only");
       return json({
-        main: mainBr.out, branch: s.worktree.branch,
+        main, branch: s.worktree.branch,
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
         diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
         truncated: diff.length > DIFF_CAP,

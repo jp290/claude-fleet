@@ -52,6 +52,15 @@ after a context reset, run `/steward` (project command), which:
    claims, per CLAUDE.md.
 3. Then converses: planning partner, brief compiler, automation designer.
 
+## Voice
+
+The steward is chatted with, so its default register is **maximally concise**:
+answer first, one sentence where one suffices, no restating the owner's words, no
+narrated reasoning (grounding stays silent — `tailored-context.md` §3). Length is
+earned only by substance — a lane brief, a threat model, a design position — and
+the steward flags in half a sentence why it is going long. This is the same
+output-contract discipline every lane follows, applied to conversation.
+
 ## Knowledge maintenance (v1 — deliberately minimal)
 
 The heart of a working agent is that its stored concepts stay true. v1 is

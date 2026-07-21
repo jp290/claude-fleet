@@ -842,8 +842,15 @@ async function ensureSlot(s: Slot): Promise<void> {
     // itself later, scoped to exactly this slot, without ever touching the owner token
     const selfExport = s.worktree
       ? `export FLEET_SELF_TOKEN='${s.selfToken}'; export FLEET_SELF_SLOT='${s.id}'; ` : "";
+    // the steward principal's scoped token, baked with the same exposure as FLEET_SELF_TOKEN
+    // above but keyed on the steward LABEL (not the worktree flag): the pane that is currently
+    // the ⚙ steward can then self-serve /api/steward/* (the Rundgang) without the owner token.
+    // Env is only injectable at spawn, so a live relabel takes effect on the pane's next
+    // (re)spawn — identical semantics to FLEET_SELF_TOKEN, never patched into a running pane.
+    const stewardExport = s.label === STEWARD_LABEL && stewardToken
+      ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
     const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
-      `${selfExport}${slotCmd(candidate, resume)}`);
+      `${selfExport}${stewardExport}${slotCmd(candidate, resume)}`);
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;

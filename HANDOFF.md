@@ -20,16 +20,22 @@ one deploy is unresolved.
   typed+capped sends (server renders templates, no free-text), 403 on owner
   routes (commit `31a962d`, landed ~21:11).
 
-## OPEN PUZZLE — the steward routes are NOT being served
+## RESOLVED — the steward routes ARE served; the 404 was a scope mismatch, not a stale deploy (2026-07-21)
 
-`curl http://100.64.0.1:8790/api/steward/sessions -H "authorization: Bearer
-<owner-token>"` → **404**, even though `srv` was restarted at **22:18** (after the
-21:11 landing) and the route exists in main's `server.ts` (`/api/steward/sessions`
-handler, ~server.ts:2543). So a plain `kill-session -t srv` restart did NOT pick
-up the code. Investigate first: is the running server started from the current
-main checkout? Check the watchdog/launchd path, whether the process is stale,
-whether FLEET_HOST/cwd differ. (I earlier wrongly claimed "deployed" from a 401 —
-a weak signal; the 404 against a valid owner token is the real evidence.)
+The previous session tested `/api/steward/sessions` with the **owner** token and
+got 404, concluding the deploy was stale. Deterministically disproven:
+`handleStewardRoute` (server.ts:2542) is only entered for requests carrying the
+**steward** token (the gate at server.ts:2636); the owner token falls through to
+owner routing, which has no such handler → the final `not found` 404. That 404 is
+**by design** — capability scoping, per the code comment at server.ts:2631–2634.
+Verified against the running server (PID 65674, started 22:18 from the main
+checkout, includes `31a962d`):
+- `/api/steward/token` + owner token → **200** (owner reads the steward token here).
+- `/api/steward/sessions` + **steward** token → **200**, returns all 16 slots.
+
+So nothing steward-runtime is blocked by a deploy. The real remaining gap is the
+one under "Live state": the steward pane has no `FLEET_STEWARD_TOKEN`, so the
+Rundgang can't self-serve `/api/steward/*` (was ranked #4 — now the actual #1).
 
 ## The knowledge shelf (docs/, all on main; README.md is the index)
 
@@ -60,7 +66,21 @@ self-serve state via `/api/steward/sessions`.
 
 ## Parked / next (ranked)
 
-1. **Investigate the deploy 404** (above) — blocks everything steward-runtime.
+0. ~~Investigate the deploy 404~~ — **DONE** (RESOLVED section above): not a deploy
+   bug, a scope mismatch. Nothing steward-runtime is blocked.
+1. **Wire the steward token into its pane** (`FLEET_STEWARD_TOKEN`) — **BUILT, lane
+   `steward-token` @ `1bf55c0`, pending owner land.** Mechanism decided by grounding:
+   env is only injectable at spawn (can't patch a running `claude` process), and a
+   slot becomes steward by *relabel* (server.ts:2337), so bake at spawn keyed on
+   `s.label === STEWARD_LABEL` — same mechanism + exposure as `FLEET_SELF_TOKEN`
+   (server.ts:843). Consequence (accepted, mirrors FLEET_SELF_TOKEN): a live relabel
+   takes effect only on the pane's next (re)spawn, since a srv-only deploy doesn't
+   recycle living panes. e2e proves the token reaches a steward pane and is absent
+   for a non-steward slot (collision-safe run: 349 PASS / ALL PASS).
+   *Open follow-up to weigh:* whether `/rename`→steward should trigger a
+   resume-respawn so designation delivers the token immediately (a behavioral change
+   to `/rename`, deliberately NOT smuggled into this lane); and whether an
+   ex-steward pane should drop the token on relabel-away.
 2. **Owner-model** — none exists yet (`steward-intelligence.md` §3 designed it).
    Plan: synthesize the already-curated corpus (feedback+user memories under
    `~/.claude/projects/*/memory`, the ~33 project `CLAUDE.md`s, the global

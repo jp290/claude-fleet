@@ -220,21 +220,26 @@ const PROMOTION_MIN_N = Math.max(1, Number(process.env.FLEET_PROMOTION_MIN_N ?? 
 // rotated append log (appendEvent above) — a separate in-memory counter would just be a
 // second, restart-fragile copy of the same fact. Cost is one file read per send; sends are
 // capped at STEWARD_SENDS_PER_HOUR, so this is deliberately cheap enough not to matter.
+// The caps are a safety invariant (synergy-findings.md Tier-0 #3): appendEvent rotates
+// AUDIT_FILE to .1 at AUDIT_ROTATE_BYTES, so this must span both generations — the same
+// two-file read readStewardJournal does — or the counters reset toward zero right after
+// a rotation. Bounded: exactly two files, each capped at the rotation threshold.
 async function stewardRecentSends(): Promise<{ ts: number; kind: string; ref: string; slot: number }[]> {
-  if (!existsSync(AUDIT_FILE)) return [];
-  const text = await Bun.file(AUDIT_FILE).text();
   const out: { ts: number; kind: string; ref: string; slot: number }[] = [];
-  for (const line of text.split("\n")) {
-    if (!line) continue;
-    try {
-      const e = JSON.parse(line) as { event?: unknown; ts?: unknown; slot?: unknown; detail?: unknown };
-      if (e.event === "steward_send" && typeof e.ts === "number" && typeof e.slot === "number"
-        && typeof e.detail === "string") {
-        const [kind, ref] = e.detail.split(":");
-        out.push({ ts: e.ts, kind: kind ?? "", ref: ref ?? "", slot: e.slot });
+  for (const f of [`${AUDIT_FILE}.1`, AUDIT_FILE]) {
+    if (!existsSync(f)) continue;
+    for (const line of (await Bun.file(f).text()).split("\n")) {
+      if (!line) continue;
+      try {
+        const e = JSON.parse(line) as { event?: unknown; ts?: unknown; slot?: unknown; detail?: unknown };
+        if (e.event === "steward_send" && typeof e.ts === "number" && typeof e.slot === "number"
+          && typeof e.detail === "string") {
+          const [kind, ref] = e.detail.split(":");
+          out.push({ ts: e.ts, kind: kind ?? "", ref: ref ?? "", slot: e.slot });
+        }
+      } catch {
+        // a torn mid-append line — skip, same stance as every other audit/prompt-log reader
       }
-    } catch {
-      // a torn mid-append line — skip, same stance as every other audit/prompt-log reader
     }
   }
   return out;

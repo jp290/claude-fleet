@@ -42,16 +42,18 @@ vs. good work" failure: autonomy machinery with no fuel, over unclosed seams.
 **Phase 1 — Foundation** *(next; all reversible / low-risk → act-freely to prototype)*
 Make the steward reason from facts, behind one safe delivery gate. One phase because these
 touch the same code and share `claudeAlive`.
-- **Tier 1 signal-sharing** (`synergy-findings.md`): **surface `claudeAlive` first** — the
-  linchpin (fold into `tickGit`'s loop + cache **for reads**, *not* inline per poll; but keep the
-  delivery/dispatch **gates** on a **fresh** check — a 10 s-stale cache can gate a send into a
-  just-dead pane); the **full `mergeLast` verdict** (only the `resolved` bool is exposed today),
-  the summarizer's **`verification`/`openThreads`** (advisory), plus `idleMs`, `gitOp`, `Task`
-  status. **The `condition` classifier is deferred within the phase** (corrected 2026-07-22): its
-  git-derived subset is already derivable by the steward (`/api/steward/sessions` ships `git`,
-  `server.ts:2771`) and is not the 6-way `rundgang.md:14` taxonomy — a real classifier needs
-  `claudeAlive` and an unbuilt `stuck-looping` detector, so the pulse keeps deriving `condition`
-  in-LLM meanwhile.
+- **Tier 1 signal-sharing** (`synergy-findings.md`) — **DONE 2026-07-22 except the advisory
+  summarizer fields**: `claudeAlive` is surfaced as the cached `alive` field (computed in
+  `tickGit`'s ~10s loop, cache **for reads only**; the delivery/dispatch **gates** keep their
+  **fresh** check inside `canDeliver` — a 10 s-stale cache can gate a send into a just-dead
+  pane; e2e-proven by `fleet-e2e-claude-gate.ts` branch 4), plus the **full `mergeLast`
+  verdict** (status/detail/conflicted/at — was only the `resolved` bool), `idleMs`, `gitOp`,
+  and `Task` status on `/api/steward/sessions` (`server.ts:2788`) and the per-slot `/brief`.
+  Still open in this bullet: the summarizer's **`verification`/`openThreads`** (advisory).
+  **The `condition` classifier stays deferred** (corrected 2026-07-22): its git-derived subset
+  is already derivable by the steward and is not the 6-way `rundgang.md:14` taxonomy — a real
+  classifier still needs an unbuilt `stuck-looping` detector, so the pulse keeps deriving
+  `condition` in-LLM from the now-complete inputs.
 - **Tier 0 `canDeliver()` consolidation** — **DONE (landed `5e653dc`)**: one choke-point
   (imitating `createAutoForSlot`) now makes the kill-switch/quiet **and** a fresh `claudeAlive`
   reach every delivery path. Closed: the kill-switch/quiet not gating a direct

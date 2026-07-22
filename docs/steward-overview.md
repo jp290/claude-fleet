@@ -23,9 +23,14 @@ it exists; Fleet is fully functional without it.
 ## What it can do today (AS-BUILT)
 
 - **Sense** (read-reduced, capability-asymmetric by design): `GET /api/steward/sessions`
-  (`server.ts:2770`) → per-slot `id, cwd, label, lastOutput, git{branch,dirty,ahead,behind},
-  worktree, mergePending`; on-demand `/brief` (full lane git footprint), `/transcript`
-  (thinking blocks stripped, tool_result trimmed to 400 chars — `2663`), `/journal`.
+  (`server.ts:2788`) → per-slot `id, cwd, label, lastOutput, git{branch,dirty,ahead,behind},
+  worktree, mergePending` **plus, since 2026-07-22 (Tier-1 signal-sharing): `alive` (cached
+  `claudeAlive`, ~10s `tickGit` tick — READS only, gates stay fresh), `gitOp` (wedged
+  merge/rebase, cached the same way), `idleMs` (server-computed `now−lastOutput`), `merge`
+  (the FULL `mergeLast` verdict: status/detail/conflicted/at), and `task` (the lane's founding
+  Task: id/status/source/text)**; on-demand `/brief` (full lane git footprint + the same
+  `merge`/`task`), `/transcript` (thinking blocks stripped, tool_result trimmed to 400 chars —
+  `2822`), `/journal`.
 - **Pulse — the Rundgang** (`/rundgang`, now on a live 2h perpetual beat): *calibrate →
   sense → interpret (assign each lane a condition) → honesty gate → emit 3 sections
   (needs-decision / changed / state) + a typed journal record.* **Zero delivery: it is
@@ -44,23 +49,23 @@ it exists; Fleet is fully functional without it.
 **What the steward CANNOT do (owner-only, 403 "route not in scope"):** perpetual autos,
 the kill-switch, quiet hours, and **all** spawn/dispatch — open a slot, spawn a lane, file
 or promote a task, toggle the dispatcher (`handleStewardRoute` exposes none of these,
-`2633–2706`). By construction, not by policy.
+`2787–2881`). By construction, not by policy.
 
 ## How the heartbeat runs (the automation engine, AS-BUILT)
 
-`tickAutos` fires every 5s (`server.ts:2623`): **global kill-switch first** (`autosOn`,
-`1176` — mutes the entire *scheduled* surface, all autos incl. the live `/rundgang` beat, by
+`tickAutos` fires every 5s (`server.ts:2630`): **global kill-switch first** (`autosOn`,
+`1234` — mutes the entire *scheduled* surface, all autos incl. the live `/rundgang` beat, by
 not ticking) → skip if `now < nextAt` → then the shared `canDeliver(s, opts)` choke-point
-(`1160`, called at `1195`): **fresh claude-alive** → **quiet hours** (recurring autos only,
-tick-in-place reschedule; one-shots always fire — `inQuietHours` `1139`) → **idle gate**
-(`idleSec` vs `lastOutput`, with a 10-min grace window, `1219`) → fire (`sendText`) →
+(`1218`, called at `1253`): **fresh claude-alive** → **quiet hours** (recurring autos only,
+tick-in-place reschedule; one-shots always fire — `inQuietHours` `1197`) → **idle gate**
+(`idleSec` vs `lastOutput`, `1228`) → fire (`sendText`) →
 `advanceAuto` (perpetual **re-arms without decrementing**; non-perpetual burns `runsLeft` →
-dies at 0, `1127`). **The former seam is CLOSED (2026-07-22):** the master stop + quiet-hours +
-a fresh alive-check now reach a direct `/api/steward/send` (`2578`) AND the dispatcher (pre-gate
-`1270`, requeue-on-fail re-gate `1297`) through the *same* `canDeliver`, not just `tickAutos` —
+dies at 0, `1185`). **The former seam is CLOSED (2026-07-22):** the master stop + quiet-hours +
+a fresh alive-check now reach a direct `/api/steward/send` (`2704`) AND the dispatcher (pre-gate
+`1328`, requeue-on-fail re-gate `1355`) through the *same* `canDeliver`, not just `tickAutos` —
 see `synergy-findings.md` Tier-0 #1/#2. Caps in `createAutoForSlot`: 5 active per slot, min 10s
 interval, mandatory run cap 1–100, **perpetual owner-only** (`allowPerpetual`, passed only by
-`POST /api/slots/:id/autos`, `3559`). *The live beat:* `/rundgang` every 7200s, idle-gated 60s,
+`POST /api/slots/:id/autos`, `3767`). *The live beat:* `/rundgang` every 7200s, idle-gated 60s,
 quiet 23–8, kill-switch = `POST /api/autos/switch {"on":false}`.
 
 ## The signal-quality lever — "are we using the deterministic abstractions?" (near-term, high-leverage, LOW-risk)
@@ -70,39 +75,44 @@ computes but does not hand over, the steward **re-infers in the LLM** — statis
 where a deterministic fact exists. This is `OWNER.md` §2 ("verify against real state, never
 guess") applied to the steward's own *senses*, and it is "context beats restraint" in its
 purest form: better deterministic input → better judgment → more earned autonomy, at **zero
-added risk**. Ranked gaps (each: *server already knows X → steward must infer it*):
+added risk**. Ranked gaps (each: *server already knows X → steward must infer it*).
+***Gaps 2/3/5/6 CLOSED 2026-07-22 (the Tier-1 lane)** — see the Sense bullet above for the
+shipped fields; 1 (deferred by design), 4, and 7 remain:*
 
 1. **Lane CONDITION is LLM-derived every pulse — but this ranked too high (corrected 2026-07-22).**
    `rundgang.md:14` orders the steward to *classify* each lane (`healthy-running / stalled-dirty /
    stuck-looping / awaiting-human / done-looking / unknown`). The server has **no** such classifier
    (grep-verified). But two things sink an early fix: the git-derived 3-way it might compute
    (`editing/ready/clean`) is **already derivable by the steward** — `/api/steward/sessions` ships
-   the full `git` object (`server.ts:2771`) — and it is **not** the 6-way taxonomy above, none of
-   which fall out of git alone. *Revised fix: no early classifier; surface `claudeAlive` +
-   `mergeLast`/`Task`/`gitOp` first, keep `condition` in-LLM until a real 6-way classifier — which
-   needs `claudeAlive` and an unbuilt `stuck-looping` detector — is worth building. See
-   `synergy-findings.md` Tier 1.*
-2. **`claudeAlive` (`server.ts:1098`) is computed but on no steward route** — the steward
-   cannot tell a *dead* pane from an *idle* one; `now − lastOutput` reads identically for
-   "human thinking," "agent finished," and "process crashed." Highest-value single withheld
-   field — it disambiguates `awaiting-human` / `done-looking` / `dead`.
-3. **`mergeLast` verdict is invisible except the `resolved` boolean** (`2641`) — a lane whose
-   land **failed** (`error`) or was **refused** (`blocked`), with `detail` + `conflicted[]`,
-   is a section-1 "needs your decision" item the steward *cannot see*. Directly defeats the
-   pulse's primary output.
+   the full `git` object (`server.ts:2794`) — and it is **not** the 6-way taxonomy above, none of
+   which fall out of git alone. *Standing plan: no early classifier; the withheld inputs
+   (`claudeAlive`/`mergeLast`/`Task`/`gitOp`) are now surfaced, so the pulse keeps deriving
+   `condition` in-LLM from complete inputs until a real 6-way classifier — which still needs an
+   unbuilt `stuck-looping` detector — is worth building. See `synergy-findings.md` Tier 1.*
+2. **CLOSED — `claudeAlive` (computed `server.ts:1105`) is on the steward read routes** as the
+   cached `alive` field (per-slot `aliveInfo`, refreshed each ~10s `tickGit` tick; delivery
+   gates keep their FRESH check — cache-for-reads/fresh-for-gates, e2e-proven). The steward can
+   now tell a *dead* pane from an *idle* one; previously `now − lastOutput` read identically for
+   "human thinking," "agent finished," and "process crashed." Was the highest-value single
+   withheld field — it disambiguates `awaiting-human` / `done-looking` / `dead`.
+3. **CLOSED — the FULL `mergeLast` verdict** ({status, detail, conflicted, at} via
+   `stewardMergeView`, `server.ts:2776`) is on the steward sessions + brief routes — a lane whose
+   land **failed** (`error`) or was **refused** (`blocked`) is now visible as the section-1
+   "needs your decision" item it is. Previously only the `resolved` boolean leaked.
 4. **The "what changed" delta is not computed server-side** — `rundgang.md:11` hands the
    steward two payloads (prior journal + current sessions) to diff by hand; the server could
    difference them deterministically.
-5. **Task / `laneTask` status is withheld entirely** — the founding-intent baseline against
-   which "done-looking" is judged; without it the steward infers intent from transcript text
-   (which `rundgang.md:14` itself flags as untrusted).
-6. **`gitOp` (wedged merge/rebase) is absent from the overview** (per-slot `/brief` only) — a
-   wedged lane is a hard `awaiting-human` a fast pulse misses.
+5. **CLOSED — Task / `laneTask` status** rides on the steward surface (`stewardTaskView`,
+   `server.ts:2782`: id/status/source/text) — the founding-intent baseline against which
+   "done-looking" is judged, no longer inferred from untrusted transcript text.
+6. **CLOSED — `gitOp` (wedged merge/rebase)** is on the fleet-wide overview (cached `gitOpInfo`,
+   same tick + reads-only contract as `alive`) — a wedged lane is a hard `awaiting-human` the
+   fast pulse previously missed.
 7. **Land-blocked reasons are computed only at land time** — never surfaced ahead as a
    per-lane "why this can't land yet."
 
 **Principle: build these before adding autonomy.** A steward that reasons from facts is both
-safer *and* more useful than one inferring them — this is the cheapest, lowest-risk step on
+safer *and* more useful than one inferring them — this was the cheapest, lowest-risk step on
 the whole roadmap, and it raises the ceiling on everything above it.
 
 ## What it's primed to become (INTENDED — steward-intelligence.md)

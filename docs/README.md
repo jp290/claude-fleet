@@ -72,6 +72,9 @@ rotting. Two shelves, plus the steward subsystem.
   multiply, the gate stays one.
 - **`automation-synergies.md`** — where the mechanisms are secretly one lever, and
   the one place they must stay apart.
+- **`synergy-findings.md`** — a producer/consumer audit (2026-07-22): deterministic
+  facts computed but not shared, the "master stop" safety seams, and the enablers —
+  a ranked, evidence-cited backlog to prune. Extends `automation-synergies.md`.
 - **`steward-intelligence.md`** — the capstone: autonomy and safety as one design
   (reversibility × track-record), the three models, the learning loop, the impact
   layer.

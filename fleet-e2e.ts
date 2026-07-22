@@ -737,6 +737,33 @@ if (REPO) {
     await post(`/api/slots/${l2.slot}/kill`, {});
   }
 
+  // --- shelve → resume round-trip: a lane set aside with a note keeps its worktree AND its
+  // uncommitted work; the worktrees map surfaces the note on the now-orphan lane; reopening
+  // (attach) re-seats it in a slot and clears the note. (A bare kill leaves a note-less orphan.) ---
+  {
+    const sh = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${sh.cwd}/shelve-work.txt`, "half done\n"); // uncommitted work that must NOT be lost
+    const shRes = await post(`/api/slots/${sh.slot}/shelve`, { note: "finish the parser, then add a test" });
+    check("shelve returns ok", shRes.ok, await shRes.text());
+    check("shelved slot is now inactive (killed)",
+      ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+        .slots.find((x) => x.id === sh.slot)?.cwd === null);
+    check("shelved worktree kept on disk (not destroyed)", exists(sh.cwd));
+    check("uncommitted work survives the shelve", exists(`${sh.cwd}/shelve-work.txt`));
+    const wmap = (await (await get(`/api/slots/${lnSlot}/worktrees`)).json()) as
+      { worktrees: { path: string; slot: number | null; note: string | null }[] };
+    const orphan = wmap.worktrees.find((w) => w.path === sh.cwd);
+    check("shelved lane is an orphan (no holding slot)", orphan != null && orphan.slot === null, JSON.stringify(orphan));
+    check("shelve note surfaced on the orphan", orphan?.note === "finish the parser, then add a test", JSON.stringify(orphan));
+    const reopen = (await (await post("/api/lanes", { repo: REPO, attach: sh.cwd })).json()) as { ok?: boolean; slot?: number; error?: string };
+    check("resume (attach) re-seats the shelved lane in a slot", reopen.ok === true && typeof reopen.slot === "number", JSON.stringify(reopen));
+    const wmap2 = (await (await get(`/api/slots/${lnSlot}/worktrees`)).json()) as { worktrees: { path: string; note: string | null }[] };
+    check("resuming clears the shelve note", wmap2.worktrees.find((w) => w.path === sh.cwd)?.note == null,
+      JSON.stringify(wmap2.worktrees.find((w) => w.path === sh.cwd)));
+    check("shelve rejects a non-worktree slot", (await post("/api/slots/2/shelve", { note: "x" })).status === 400);
+    await post(`/api/slots/${reopen.slot ?? 0}/kill`, {}); // free the slot for later tests
+  }
+
   // --- lane brief must be LANE-SCOPED and match git exactly (regression: it used to show
   // the base branch's whole history for lanes, and truncated the first uncommitted file) ---
   {

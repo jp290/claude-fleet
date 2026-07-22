@@ -83,14 +83,23 @@ this note's word for it.*
    `/rundgang` every 7200s, perpetual, idle-gated 60s, quiet 23–8. Kill-switch =
    `POST /api/autos/switch {"on":false}`. A code-grounded as-built map now lives in
    **`docs/steward-overview.md`** (three-agent read of `server.ts`).
-2. **THE high-leverage, low-risk lever — hand the steward deterministic facts it currently
-   re-infers** (`docs/steward-overview.md` §signal-quality lever). The pulse's whole
-   `condition` classification is LLM-derived every time, though the server holds the raw
-   signals; `claudeAlive` (`server.ts:1007`), the full `mergeLast` verdict (only the
-   `resolved` bool is surfaced), `Task` status, and `gitOp` in the overview are all withheld
-   from every steward route. Compute the condition server-side + surface these. This is
-   "verify against real state" applied to the steward's senses — it raises the ceiling on
-   everything below and adds **zero** risk. Do this **before** widening autonomy.
+2. **THE high-leverage lever + the synergy backlog** — see `docs/synergy-findings.md` (a
+   four-agent producer/consumer audit, 2026-07-22). Tiers, all evidence-cited:
+   - **Tier 0 — safety seams (verified, fix before widening autonomy):** the kill-switch +
+     quiet-hours gate *only* `tickAutos`, so they do **NOT** stop a direct `/api/steward/send`
+     or the dispatcher (corrects an earlier over-broad "mutes the entire surface" claim —
+     inert today, real once the steward is promoted to nudge); the dispatcher injects task
+     text with no `claudeAlive` check (bare-shell exec risk on the `/intake`-fed path); the
+     send-cap reader misses the `audit.jsonl` `.1` rotation. Root cause: the delivery gate is
+     reimplemented 4× — extract one `canDeliver()` choke-point (imitate `createAutoForSlot`).
+   - **Tier 1 — signal quality (near-zero risk):** server-side `condition` classifier;
+     surface `claudeAlive` (fold into `tickGit`, not inline), the full `mergeLast` verdict,
+     the summarizer's `verification`/`openThreads` (advisory), `idleMs`, `gitOp`, `Task`.
+   - **Tier 2 — enablers:** `summaryViaSession` as the digest engine (fixes context-drain,
+     zero new machinery); per-session model via its existing `--model`/`opts` hook (Opus/Fable
+     lanes); steward files a `pending` Task (owner still promotes).
+   - **Tier 3 — learning-loop fuel:** intervention *outcomes* are recorded by no one, so the
+     §4 ladder can never promote — needs a write-time per-class tally + effect-sensor.
 3. **(Owner's emphasis) Test the steward AGENT under the long-autonomous lens** — now
    with OWNER.md loaded: does it self-gate correctly (OWNER.md §4d), stay honest,
    quiet-when-nothing-changed, non-drifting over many pulses, and *use* the owner-model's

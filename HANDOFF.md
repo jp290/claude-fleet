@@ -45,9 +45,12 @@ trusted.*
 
 **Phase 1 = Foundation** (next; all reversible/low-risk → act-freely to prototype): make the
 steward reason from *facts*, behind one safe delivery gate.
-- **Tier-1 signal-sharing:** server-side `condition` classifier (git-subset first), surface
-  `claudeAlive` (fold into `tickGit`, not inline), the full `mergeLast` verdict, the
-  summarizer's `verification`/`openThreads` (advisory), `idleMs`, `gitOp`, `Task` status.
+- **Tier-1 signal-sharing:** surface `claudeAlive` **first** (the linchpin — fold into `tickGit`
+  + cache for reads, but keep the delivery/dispatch gates on a **fresh** check), the full
+  `mergeLast` verdict, `idleMs`, `gitOp`, `Task` status, and the summarizer's
+  `verification`/`openThreads` (advisory). **The `condition` classifier is deferred** (corrected
+  2026-07-22): its git subset is already derivable by the steward and it's not the 6-way
+  `rundgang.md:14` taxonomy — see `synergy-findings.md` Tier 1.
 - **Tier-0 `canDeliver()`:** one delivery-gate choke-point (imitate `createAutoForSlot`) that
   closes the kill-switch/dispatcher seams structurally.
 

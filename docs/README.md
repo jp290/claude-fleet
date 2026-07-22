@@ -64,6 +64,9 @@ rotting. Two shelves, plus the steward subsystem.
 - **`steward-overview.md`** — the entry map: what the steward *is*, what it can *do
   today* (as-built, `server.ts`-cited), the deterministic-signal lever that most
   improves it, and the trajectory it's designed toward. Start here.
+- **`steward-roadmap.md`** — the ordered plan (Phase 1→5 + continuous) across the whole
+  backlog, with the ordering *derived from principles* (facts-before-claims, safety-first,
+  leverage, prove-before-trust; don't-sequence-by-excitement). The living plan.
 - **`steward.md`** — the convention: optional, recognizable as `⚙ steward`, plans
   but never lands.
 - **`steward-autonomy.md`** — the seven joints of the management loop and the

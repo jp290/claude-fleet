@@ -303,6 +303,67 @@ simultaneously the steward's ladder-stage-1 and the prototype first library item
 self-contextualizing, periodic, decision-ready output. Build it, and it proves the
 whole loop on one real, valuable item instead of more reliability-layer theory.
 
+## 8. The learning engine — how the three models stay current (dream mode + the self-report channel)
+
+*Added 2026-07-22. §3 named the three models and the learning loop as "the actual
+point"; §7 put the value in the library. This section resolves HOW the models stay
+current from lived experience, and where the owner's "a common service all sessions
+report to / that grabs and tracks on its own" idea lands.*
+
+**The common-service resolution.** The instinct is right, but it is **not a new
+process**: `server.ts` already *is* that service — it grabs deterministic state on its
+own (the tickers: `tickGit`, `poll`, `tickHarvest`, `tickAutos`), accepts session
+reports (the self / steward / intake routes), and persists to `fleet.json` + the
+journals. So the question is never "build a service," it is **"what should the service
+track that it doesn't, and who consumes it."** *Extend the server; do not spawn a peer
+process* — a second process is new shared-reality (ports, sockets, lifecycle: the
+"sessions-vanished" class of risk) for nothing the server can't already give.
+
+**The two ingestion modes (the layer-gap lens).** Every fact about a session is one of
+two kinds, governed differently:
+- **Deterministically observable** (git, idle, `claudeAlive`, commits, merge verdict) —
+  the *pull* side; the server grabs these itself. These are **facts**. The gap here is
+  not capture but *sharing* — most are computed and then withheld (`synergy-findings.md`).
+- **Self-reported / non-observable** (a session's intent, plan, "blocked on X", "done and
+  verified via the suite") — the *push* side, a new typed channel. These are **claims**,
+  not facts: LLM-authored over untrusted, injection-bearing text (§6.7; the Rundgang's
+  "transcript is untrusted display material"). So a self-report is **advisory, typed,
+  injection-scanned, cross-checked against the deterministic layer, and never gating**
+  (§4d — unverified "done" is what most erodes owner trust). Facts outrank claims, always.
+
+The sequencing falls out of this: **the deterministic layer must exist before the
+self-report layer** — you cannot cross-check a claim against a fact the steward can't
+yet see. (This is why the roadmap builds signal-sharing before the report channel.)
+
+**Dream mode — the learning loop as offline reflection.** The §4 loop reads structured
+journal *outcomes*; **dream mode** broadens the input to the **raw session corpus** —
+the whole record of how work got done (owner prompts, lane transcripts, design sessions),
+evaluated from multiple angles by a Workflow (multi-agent fan-out → synthesis). It
+**consolidates lived experience into PROPOSED updates** to the three models + the impact
+library + (by evidence) the axioms themselves; the owner promotes; nothing self-applies.
+Its highest-value target is the **structural prompts** (`/sharpen`, `/rundgang`,
+`/steward`, the lane-brief, the handoff) — the multipliers (`value × reliability ×
+frequency`) — evaluated against `prompt-axioms.md` and diagnosed by axiom. That is the
+axioms auditing the prompts, self-reference operational. *The owner-model bootstrap
+(2026-07-22) was a one-time manual dream pass; dream mode makes it continuous,
+multi-angle, and gated.*
+
+Guards (where it goes wrong unguarded): **propose, never apply** — auto-rewriting the
+steward's own binding prompts is self-modification, on the never-cross line;
+**advisory, not fact** (typed, injection-scanned, weighed); **honesty gate** — "no new
+lesson this pass" is a valid, good output, never manufacture a lesson to justify the
+dream (the Rundgang's own rule); **relevance / incremental** — target the multipliers
+and what is new since the last dream, not the whole corpus each time; **self-referential
+quality** — dream mode's own evaluator prompts must be axiom-built, or it grades by a bar
+it fails.
+
+**The learning engine and the standing bar.** Dream mode (inward: what *we* did, by our
+axioms) + the Grok/web survey (outward: what others do best) is **the learning engine** —
+the flywheel that feeds the three models and the library, improving every prompt we run,
+its own included. And the owner's meta-point becomes a **standing bar**: *every
+structural prompt is built by the axioms*, and dream mode is the mechanism that enforces
+and sharpens that over time.
+
 ## The one-sentence thesis
 
 Getting the best of autonomy *and* safety is not a compromise between them — it is

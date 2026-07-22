@@ -1,169 +1,110 @@
-# HANDOFF — safety spine + risk-doctrine revision + owner-model built; next is deploy + prove the live heartbeat (2026-07-22)
+# HANDOFF — the steward is built, safe, and beating; the roadmap is set, Phase 1 is next (2026-07-22)
 
-*This file is a prompt for you, the next session. Treat every claim, number, path,
-and commit hash here as a **claim to verify** against the tree and the running
-system before building on it (CLAUDE.md) — deterministic evidence beats this
-document. Its job is to induce the right model, not to be trusted.*
+*A prompt for you, the next session. Treat every claim, number, path, and commit hash here as
+a **claim to verify** against the tree and the running system before building on it (CLAUDE.md)
+— deterministic evidence beats this document. Its job is to induce the right model, not to be
+trusted.*
 
-*Two work phases landed 2026-07-22, in order: **Phase 1** (earlier) built the
-heartbeat's safety-spine CODE — journal/perpetual/kill-switch/quiet (next section).
-**Phase 2** (later) revised the risk doctrine and built the owner-model — see "THE
-open decision — RESOLVED" and "Ranked next steps" below; that is the current front.
-Where the two sections say "this session," Phase-1 text means the earlier phase.*
+## Start here (primary sources — read, don't accept this handoff in their place)
 
-## Start here (primary sources, not summaries)
+- `docs/README.md` — the corpus index (two shelves + the steward subsystem).
+- `docs/steward-overview.md` — **start here**: the as-built map (code-cited) of what the
+  steward *is*, can *do today*, and is *primed to become*.
+- `docs/steward-roadmap.md` — **the ordered plan** (Phase 1→5 + continuous), and *why the order
+  is what it is* (four forces; don't-sequence-by-excitement).
+- `docs/steward-intelligence.md` — the theory: §1 doctrine (autonomy×safety), §3 the three
+  models + learning loop, §4 the ladder, §7 the impact layer, **§8 the learning engine**
+  (dream mode + the self-report channel + the common-service resolution).
+- `docs/synergy-findings.md` — the ranked, evidence-cited backlog (the source for Phase 1).
+- `OWNER.md` (gitignored, in the checkout) — the model of JP; **§4 risk-surface binds the gate**.
+- `docs/prompt-axioms.md` — what makes a prompt good; the CLAUDE.md lane discipline.
 
-Read these as primary sources — do not accept this handoff in their place:
-`docs/README.md` (the corpus index), `docs/steward-intelligence.md` (the capstone:
-autonomy×safety), `docs/prompt-axioms.md` (why a prompt is good), and the CLAUDE.md
-lane discipline. The working plan below is the distilled output of a 47-agent deep
-analysis run this session (31/38 findings adversarially CONFIRMED); its essence is
-embedded here because the raw output lived in ephemeral `/tmp`.
+## Verified current state (check each — most is now LIVE, a change from prior handoffs)
 
-## What this session built — the heartbeat's safety spine (verify each on `main`)
+- **Doctrine (steward-intelligence §1, revised 2026-07-22):** the permanent gate is on the
+  **unrecoverable-and-large-blast few only**; everywhere else the steward acts, accepting
+  bounded probabilistic harm **scaled to judgment quality**; *for a capable model, context
+  beats restraint*. On `main`.
+- **Owner-model built:** `OWNER.md` — home resolved (gitignored, mirrors CLAUDE.md, in the
+  steward worktree, read by the `/steward` load ritual). §4 risk-surface corpus-confirmed
+  (48/48 transcripts, two extraction agents).
+- **Spine deployed + a bounded live heartbeat armed:** `srv` restarted (sessions survived);
+  perpetual/kill-switch/quiet are live. Auto **`3499a018`**: `/rundgang` every **7200s**,
+  perpetual, idle-gated 60s, quiet **23–8**. **Proven once** (it ran a pulse and correctly
+  refused to treat the deploy's reset `0`-idle values as real). Steward = **slot 1** (`s1`),
+  Sonnet 5. Journal live at `/api/steward/journal`.
+- **Kill-switch caveat (verified):** `POST /api/autos/switch {"on":false}` stops all *scheduled*
+  autos (incl. the live beat) — but `autosOn`/`quietHours` are checked **only** in `tickAutos`,
+  so they do **NOT** gate a direct `/api/steward/send` or the dispatcher (Tier-0 seam, inert
+  today; `synergy-findings.md`).
+- **Docs on `main`** (HEAD after commit; verify with `git log`): `steward-overview.md`,
+  `synergy-findings.md`, `steward-roadmap.md`, `OWNER.md`, `steward-intelligence.md` §1/§3/§8.
+  Steward worktree ff-merged; both checkouts clean.
 
-A steward that runs autonomously needs a heartbeat with bounds. All landed on `main`:
+## The front — Phase 1 (see `steward-roadmap.md` for the full plan + why)
 
-- `6a4a584` **journal** — durable pulse ledger (the self-model's home,
-  steward-intelligence §3). Typed `POST`/`GET /api/steward/journal` (steward-scoped);
-  file may rotate, reader spans the `.1` boundary so the delta anchor survives.
-  **LIVE + proven in production** (a real pulse wrote a record). `rundgang.md` now
-  POSTs a typed record instead of a free-text `JOURNAL:` line.
-- `a5d28b4` gitignore `steward-journal.jsonl(.1)` (runtime artifact, like `audit.jsonl`).
-- `10e45d3` **perpetual autos** — a recurring beat that re-arms instead of dying at
-  `AUTO_MAX_RUNS`(100). **Owner-only** (`createAutoForSlot` opts.allowPerpetual; only
-  `POST /api/slots/:id/autos` passes it). Fixed the one-shot `runsLeft` quirk.
-- `b5b4da9` **kill-switch** — `autosOn` (default **true**) gates `tickAutos`;
-  `POST /api/autos/switch {on}` owner-only, persists immediately, audited.
-- `a4a7cfc` **quiet hours** — mute the *periodic* surface in an owner-set local-hour
-  window; `POST /api/autos/quiet {start,end}|{start:null}` owner-only. Recurring-only
-  (one-shots always fire); tick-in-place.
+**Phase 1 = Foundation** (next; all reversible/low-risk → act-freely to prototype): make the
+steward reason from *facts*, behind one safe delivery gate.
+- **Tier-1 signal-sharing:** server-side `condition` classifier (git-subset first), surface
+  `claudeAlive` (fold into `tickGit`, not inline), the full `mergeLast` verdict, the
+  summarizer's `verification`/`openThreads` (advisory), `idleMs`, `gitOp`, `Task` status.
+- **Tier-0 `canDeliver()`:** one delivery-gate choke-point (imitate `createAutoForSlot`) that
+  closes the kill-switch/dispatcher seams structurally.
 
-Each: assumptions questioned against the code, tests that interrogate (a contrast
-where the wrong branch visibly fails), tsc + build + full `./e2e-isolated.sh` green.
+Then: **Phase 2** (digest engine via `summaryViaSession`, fixes context-drain; the learning
+engine v1 = Grok survey + dream-mode v1), **Phase 3** (self-model home + intervention
+outcomes), **Phase 4** (the typed self-report channel + cross-lane conflict), **Phase 5** (the
+gated endgame: ladder promotion, steward-files-Task, per-session model / Opus-Fable dispatch —
+land stays owner-only). **Continuous:** test the steward under the long-autonomous lens; Item A
+(the real commit-QA gate).
 
-## CRITICAL verified-vs-deployed distinction (verify first)
-
-`main` (`a4a7cfc`) is **~4 commits ahead of the live server**. The live `srv`'s last
-restart was the **journal** deploy, so **only the journal is live**; perpetual,
-kill-switch, and quiet-hours are landed but **NOT deployed** — and all are *inert*
-until an owner configures them, so nothing live changed. **Verify** (owner token
-required — no token hits the 401 auth gate before routing): `POST
-/api/autos/switch` with the owner Bearer token and an empty body → **404** means the
-spine is undeployed (route absent); **400** ("body.on must be a boolean") means it is
-deployed. Deploy is deliberately deferred (see below). Deploy ritual: `tmux -L claudefleet kill-session -t srv` (watchdog
-respawns from `main`), health-check `curl http://100.64.0.1:8790/` (binds the
-Tailscale IP only). `rundgang.md` changes also need the **steward worktree**
-fast-forwarded (`git -C claude-fleet.worktrees/steward merge --ff-only main`) — the
-live steward reads `/rundgang` from its own worktree, not `main`.
-
-## THE open decision — RESOLVED 2026-07-22 (the fork is dissolved)
-
-*Superseded. The old fork (read-only worker vs. read-only token) existed only to
-**prevent the steward acting (sending) during a pulse**. The 2026-07-22 doctrine
-revision (steward-intelligence §1) removes its premise: the steward acting during a
-pulse is **acceptable bounded action**, not a hole to close. `/api/steward/send` is
-owner-facing + reversible + idle-gated against an active human (OWNER.md §4c), so it
-sits in the reversible-latitude zone, not the unrecoverable-and-large-blast gate.
-Third-party outbound (the real never-cross line, OWNER.md §4b) is a **different**
-capability and stays gated regardless. So: **no read-only worker/token is needed for
-a safe beat.** Context-drain remains a real but *non-safety* concern — iterate the
-ephemeral worker later for context economy, not as a safety prerequisite. Verify the
-send-target claim against the `/api/steward/send` route before deploy — don't take
-this note's word for it.*
-
-## Ranked next steps
-
-1. **DONE this session:** doctrine revised (§1 + intro + thesis + this handoff);
-   **owner-model built** → gitignored `OWNER.md` (home resolved, §3), the safety-critical
-   §4 risk-surface corpus-confirmed (48/48 transcripts, two extraction agents). This is
-   the old step-5 "Item B" owner-model half. Wired into `/steward` load ritual + README.
-   **Also DONE:** committed to `main` (`e959227`), steward worktree ff-merged, `srv`
-   restarted (sessions survived), and a **bounded live heartbeat armed** — auto `3499a018`,
-   `/rundgang` every 7200s, perpetual, idle-gated 60s, quiet 23–8. Kill-switch =
-   `POST /api/autos/switch {"on":false}`. A code-grounded as-built map now lives in
-   **`docs/steward-overview.md`** (three-agent read of `server.ts`).
-2. **THE high-leverage lever + the synergy backlog** — see `docs/synergy-findings.md` (a
-   four-agent producer/consumer audit, 2026-07-22). Tiers, all evidence-cited:
-   - **Tier 0 — safety seams (verified, fix before widening autonomy):** the kill-switch +
-     quiet-hours gate *only* `tickAutos`, so they do **NOT** stop a direct `/api/steward/send`
-     or the dispatcher (corrects an earlier over-broad "mutes the entire surface" claim —
-     inert today, real once the steward is promoted to nudge); the dispatcher injects task
-     text with no `claudeAlive` check (bare-shell exec risk on the `/intake`-fed path); the
-     send-cap reader misses the `audit.jsonl` `.1` rotation. Root cause: the delivery gate is
-     reimplemented 4× — extract one `canDeliver()` choke-point (imitate `createAutoForSlot`).
-   - **Tier 1 — signal quality (near-zero risk):** server-side `condition` classifier;
-     surface `claudeAlive` (fold into `tickGit`, not inline), the full `mergeLast` verdict,
-     the summarizer's `verification`/`openThreads` (advisory), `idleMs`, `gitOp`, `Task`.
-   - **Tier 2 — enablers:** `summaryViaSession` as the digest engine (fixes context-drain,
-     zero new machinery); per-session model via its existing `--model`/`opts` hook (Opus/Fable
-     lanes); steward files a `pending` Task (owner still promotes).
-   - **Tier 3 — learning-loop fuel:** intervention *outcomes* are recorded by no one, so the
-     §4 ladder can never promote — needs a write-time per-class tally + effect-sensor.
-3. **(Owner's emphasis) Test the steward AGENT under the long-autonomous lens** — now
-   with OWNER.md loaded: does it self-gate correctly (OWNER.md §4d), stay honest,
-   quiet-when-nothing-changed, non-drifting over many pulses, and *use* the owner-model's
-   risk map? Try genuinely different approaches. Richest once a bounded beat runs.
-4. **Item A — commit-functions QA gate** (owner-requested, "at the end"): exercise the
-   *real* commit machinery end-to-end, not the `fakecommit` e2e stub.
-5. **Impact library (old Item B, second half)**: the owner-model is built; remaining is
-   seeding the **library of proven prompts** (§7) — the Rundgang digest as prototype
-   item — and standing up the journal→owner-model growth loop (steward *proposes* edits,
-   JP promotes). Propose-not-assert, evidence-weighted.
-   - **Concrete first seed step (owner-requested):** run a **Grok/web-research prompt**
-     (existing forming library item, §7) to survey what people already do most impactfully
-     with agents — e.g. a scheduled morning news/state digest — and distill the
-     *schedulable subset* (self-contextualizing, periodic, harmless-when-nothing-changed)
-     into candidate library items. Prove-before-schedule each before it graduates.
-
-Deeper backlog (from the analysis, not yet built): send-cap re-key + escalation
-(step 6); `isReversible()` table + ladder rung-state + owner promotion route
-(step 7, gated on the journal accruing a clean per-class record); safe queue
-increment for steward task-filing (step 8); the delivery/notification surface (a
-digest in an unwatched pane is wasted — no push path wired); `steward-mail` (largest
-attack surface — none of its defenses exist; keep gated). Fast-follow: a one-click UI
-toggle for the kill-switch (mechanism tested, button not built).
+**Two open owner calls** (`steward-roadmap.md`): digest-engine-early?; cross-lane-conflict pull
+forward?
 
 ## Load-bearing decisions + WHY (do not re-litigate or undermine)
 
-- **Autonomy and safety are one design** (steward-intelligence §1, *revised 2026-07-22*):
-  act freely on everything recoverable — accepting *bounded probabilistic harm* to the
-  degree the steward's judgment is proven — gate only the **unrecoverable-and-large-blast**
-  few *forever*, park big decisions in the backlog. Tolerance scales with judgment quality;
-  the owner-model (§3) is what *licenses* the loosened tolerance, so building it and
-  loosening the gate are **one move**, not two. For a capable model, context beats restraint.
-- **The journal is the keystone**: the ladder, prove-before-schedule, and the pulse's
-  delta anchor all read from it. Promotion **counts** must live in a durable state
-  tally (built with the ladder), **never** by scanning the rotatable journal file, or
-  the second rotation silently resets the record autonomy depends on (the critic's
-  catch — documented at the write site).
-- **Perpetual + kill-switch + quiet are owner-only** by construction: a steward/self
-  principal minting an immortal schedule or muting the surface would be un-gated
-  autonomy escalation. The run-forever cadence is the owner's call.
-- **No staleness fast-forward** (deliberately not built): `advanceAuto` reschedules
-  `now + everySec`, so there is no backlog to replay; the pulse is self-contextualizing.
-- **The impact lives in the library of proven prompts**, not the autonomy machinery;
-  scheduling *multiplies* value (and a bad prompt's harm) → prove-before-schedule.
+- **Autonomy and safety are one design** (§1, revised): gate only the unrecoverable-and-
+  large-blast; tolerance scales with judgment; **the owner-model licenses the loosened
+  tolerance — building it and loosening the gate are one move.**
+- **Three models + the learning engine** (§3/§8): system (docs), owner (`OWNER.md`), self
+  (journal). The learning loop and **dream mode** keep them current — **propose, never apply;
+  the owner promotes.** Auto-rewriting the steward's own binding prompts is self-modification,
+  on the never-cross line.
+- **Facts before claims** (§8): the deterministic layer (Phase 1) must precede the self-report
+  channel (Phase 4) — a claim is cross-checked against a fact, so the fact must exist first.
+  Self-reports are advisory, typed, injection-scanned, never gating (§4d).
+- **The journal is the keystone**, but **promotion counts must live in a durable write-time
+  tally**, never a scan of the rotatable journal (the second rotation would reset the record).
+- **Perpetual/kill-switch/quiet are owner-only** by construction; **land/merge, third-party
+  outbound, real money, credential exposure, driving an active human's pane** are the permanent
+  gates (`OWNER.md` §4b).
+- **The impact lives in the library of proven prompts**, not the machinery; scheduling
+  *multiplies* value and harm → **prove-before-schedule**, and **don't sequence by excitement**.
+- **The common service is the server** — extend it, don't spawn a peer process (§8).
 
 ## How this session worked (keep this rhythm — the owner values it)
 
-Question every assumption against the **actual code** before building (this changed
-the design repeatedly). Write tests that **interrogate**, not rubber-stamp — prove
-each feature by a contrast where the wrong branch visibly fails (a control that dies
-while the perpetual lives; a probe held silent while paused that fires on resume).
-**One feature per lane**, verify-first (tsc + `bun run build` + a collision-safe copy
-of `./e2e-isolated.sh` with unique SOCK/PORT/DIR), owner lands. **Docs and code move
-together** in the same lane. Deterministic evidence beats any document — including
-this one.
+Question every assumption against the **actual code** before building (it changed the design
+repeatedly — and caught a wrong claim: the kill-switch does *not* mute a direct steward send,
+found only by re-reading `handleStewardSend`). Delegate to **sharp, parallel agents** with
+exact files + done-criterion; **verify their load-bearing claims yourself** before enshrining.
+**Docs and code move together.** Deploy/land/commit are **owner-triggered** (OWNER.md §4c); the
+owner-token stays out of the assistant's context (hand a `!` one-liner that reads `.token`
+locally). Verify-first (tsc + `bun run build` + a collision-safe `./e2e-isolated.sh`); judge it
+by the tail (`ALL PASS`).
 
 ## Operational facts (verify)
 
-Steward = **slot 1**, cwd `claude-fleet.worktrees/steward`, `FLEET_STEWARD_TOKEN`
-baked at spawn (live). Journal live at `/api/steward/journal`. New owner APIs (landed,
-undeployed): `/api/autos/switch`, `/api/autos/quiet`, `perpetual:true` on auto create.
-A clean `./e2e-isolated.sh` is now longer (perpetual/kill/quiet fire-waits + restart)
-— it can exceed a 120s foreground limit; run it in the background and judge the tail
-(`ALL PASS`).
+Steward = **slot 1**, cwd `<repo>.worktrees/steward` (absolute: `~/claude-fleet.worktrees/steward`),
+`FLEET_STEWARD_TOKEN` baked at spawn. Owner token = `fleet.json` `.token` (server.ts:2428–2432;
+never read it into context — `!`-run it). **Deploy ritual:** `tmux -L claudefleet kill-session
+-t srv` (watchdog respawns from `main`; **slot sessions survive** — verify `srv` is its own
+session first), health-check `curl http://100.64.0.1:8790/` (binds the Tailscale IP only);
+`rundgang.md`/doc changes also need the steward worktree ff-merged
+(`git -C ~/claude-fleet.worktrees/steward merge --ff-only main`). `OWNER.md` +
+`.claude/commands/*` reach the live steward via that ff-merge, **not** an `srv` restart (the
+server reads none of docs/OWNER/commands at runtime). `./e2e-isolated.sh` can exceed a 120s
+foreground limit — run it backgrounded, judge the tail.
 
 ## Not mine (pre-existing dirty at session start)
 

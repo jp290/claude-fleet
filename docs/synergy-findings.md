@@ -19,22 +19,22 @@ re-verified by hand and are tagged **[verified]**; others are agent-cited **[age
 delivery gate was hand-reimplemented four times, each a different subset (`server.ts`): full in
 `tickAutos`, **claudeAlive+idle only** in `handleStewardSend`, **absent** in `tickDispatch`,
 idle-only in the merge path. That drift **was** the cause of the Tier-0 safety seams #1/#2 below.
-A single guarded `canDeliver(s, opts)` choke-point (`1160`) now encodes, in order, kill-switch
+A single guarded `canDeliver(s, opts)` choke-point (`1216`) now encodes, in order, kill-switch
 (`autosOn`) → fresh `claudeAlive` → quiet-hours → idle, and returns the first failing gate so
-each caller keeps its bespoke reaction. All four actors route through it: `tickAutos` (`1195`,
-`killSwitch:false` because the tick-level early return at `1176` already handles it),
-`handleStewardSend` (`2578`), `tickDispatch` (pre-gate `1270` before a lane is spawned + fresh
-`claudeAlive` re-gate `1297` after the boot sleep), and the merge/land idle guard (`3335`,
+each caller keeps its bespoke reaction. All four actors route through it: `tickAutos` (`1251`,
+`killSwitch:false` because the tick-level early return at `1232` already handles it),
+`handleStewardSend` (`2702`), `tickDispatch` (pre-gate `1326` before a lane is spawned + fresh
+`claudeAlive` re-gate `1353` after the boot sleep), and the merge/land idle guard (`3521`,
 idle-only). Each passes `opts` for its legitimate differences (one-shots waive quiet-hours; the
 owner land waives all but idle; a fresh dispatch lane waives idle). Mirrors the pre-existing
-`createAutoForSlot` (`1080`) choke-point pattern. Seams #1 and #2 are now closed and e2e-proven;
-#3 (send-cap rotation) remains open.
+`createAutoForSlot` (`1136`) choke-point pattern. Seams #1, #2 and #3 are all closed and
+e2e-proven.
 
 ## Tier 0 — safety seams (the "master stop" isn't master). Low risk, high trust value.
 
 1. **CLOSED (2026-07-22) — the kill-switch and quiet-hours now stop a direct steward nudge AND
-   the dispatcher.** `canDeliver` (`1160`) is checked in `handleStewardSend` (`2578`, returns 409
-   `paused` / `quiet hours`) and in the dispatcher's pre-gate (`1270`) — the master stop +
+   the dispatcher.** `canDeliver` (`1216`) is checked in `handleStewardSend` (`2702`, returns 409
+   `paused` / `quiet hours`) and in the dispatcher's pre-gate (`1326`) — the master stop +
    quiet-hours refuse *before* a lane is spawned, so the queued task stays queued. `dispatchOn`
    was deliberately decided to fall under master `autosOn`. Proven in `fleet-e2e.ts` (steward
    `autosOn=false`/quiet 409 tests; dispatch `autosOn=false`/quiet stay-queued tests, with a
@@ -42,21 +42,22 @@ owner land waives all but idle; a fresh dispatch lane waives idle). Mirrors the 
    only inside `tickAutos`, `inQuietHours` only there; `handleStewardSend`/`tickDispatch` checked
    neither.
 2. **CLOSED (2026-07-22) — the dispatcher now runs a FRESH `claudeAlive` gate before pasting task
-   text.** After the 4s boot sleep + cwd re-verify (`1287`), `canDeliver(free, {idleMs:0})`
-   (`1297`) re-checks master-stop + quiet-hours + a fresh alive read and requeues the task on any
+   text.** After the 4s boot sleep + cwd re-verify (`1343`), `canDeliver(free, {idleMs:0})`
+   (`1353`) re-checks master-stop + quiet-hours + a fresh alive read and requeues the task on any
    failure, so a claude that failed to boot (the launchd PATH footgun in CLAUDE.md) never has
    external `/intake` text executed as shell commands at the bare `slotCmd` shell (`40`, `claude;
-   exec $SHELL`). The gated `sendText(free, next.text)` is now at `1304`. Note the gate calls
+   exec $SHELL`). The gated `sendText(free, next.text)` is now at `1360`. Note the gate calls
    `claudeAlive` **fresh**, never the read-route cache (Tier 1) — a stale cache defeats the exact
    race it closes.
-3. **`stewardRecentSends` reads only the live `audit.jsonl`, not the `.1` rotation → the send
-   caps silently under-count across a rotation.** **[agent, cross-confirmed]** `211–213` reads
-   `AUDIT_FILE` alone; `appendEvent` rotates at 5 MB (`314`). `readStewardJournal` (`2621`)
-   deliberately spans `[.1, current]` for exactly this reason — the send-cap reader doesn't.
-   **STILL OPEN** (deferred out of the canDeliver lane).
-   The durable send-cap is the invariant `automation-synergies.md` §2 calls the injection
-   endgame, so this is a hole under a safety guarantee. *Fix: mirror the journal reader's
-   two-file span (verify a rotation is plausible within the trailing hour first).*
+3. **CLOSED (2026-07-22) — the send caps now count across the audit rotation boundary.**
+   `stewardRecentSends` (`227`) spans `[audit.jsonl.1, audit.jsonl]` — the same two-generation
+   read as `readStewardJournal` (`2758`) — so the hourly/episode counters no longer reset
+   toward zero right after `appendEvent` rotates at 5 MB (`332`). Was: the cap reader scanned
+   the live `AUDIT_FILE` alone. The durable send-cap is the invariant `automation-synergies.md`
+   §2 calls the injection endgame, so this was a hole under a safety guarantee. Proven in
+   `fleet-e2e.ts`: a rotation is simulated mid-window (the exact `renameSync → .1` appendEvent
+   does) and the episode cap still refuses (429) on the pre-rotation send; with a cap's worth
+   of pre-rotation sends in `.1`, the hourly cap still refuses a different-kind send.
 
 ## Tier 1 — signal quality (the steward reasons from facts, not guesses). Low risk.
 
@@ -68,7 +69,7 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
   **[re-examined 2026-07-22, verified]** No classifier exists server-side (still true), but two
   corrections to the original framing drop this out of the early set. (a) The git-derived 3-way
   (`dirty?editing:ahead?ready:clean`) is **not a withheld signal**: `/api/steward/sessions`
-  already ships the full `git{branch,dirty,ahead,behind}` object per slot (`server.ts:2770–2773`),
+  already ships the full `git{branch,dirty,ahead,behind}` object per slot (`server.ts:2774–2778`),
   so the steward derives the 3-way in one line from inputs it *already holds* — not statistical
   guessing. (b) That 3-way is **not the taxonomy the pulse runs on**: `rundgang.md:14` classifies
   `healthy-running / done-looking / stalled-dirty / stuck-looping / awaiting-human / unknown`, and
@@ -80,17 +81,17 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
   now-complete inputs; build a real classifier only later, against the actual 6-way, and only once
   a `stuck-looping` detector exists.*
 - **Surface `claudeAlive` on the read routes — one signal, two consumers, two freshness
-  contracts.** **[verified]** Computed at `1047`, consumed only by write-gates; absent from every
+  contracts.** **[verified]** Computed at `1103`, consumed only by write-gates; absent from every
   overview. It disambiguates the steward's `awaiting-human`/`done`/`dead` blob **and** gives
   Tier-0 #2 its safety gate. *Fold into `tickGit`'s per-slot loop and cache **for the read route**
   — do NOT call the 2–3 `ps`/`pgrep` spawns inline per 100 ms poll. But the cache serves the
   **senses**, not the **gates**: the delivery/dispatch gates await `claudeAlive` **fresh** today
-  (inside `canDeliver`, `1168`) and `tickGit` runs only every 10 s (`2505`), so a gate reading the cache could
+  (inside `canDeliver`, `1224`) and `tickGit` runs only every 10 s (`2629`), so a gate reading the cache could
   fire a nudge — or a bare-shell dispatch (Tier-0 #2) — into a pane that died 9 s ago. Cache the
   read; keep the gates fresh.*
 - **Full `mergeLast` verdict to the steward's senses.** **[verified, triple-confirmed]** A
   failed (`error`)/refused (`blocked`) land is a top "needs decision" item, but the steward sees
-  only `mergePending = status==="resolved"` (`2641`) — while `renderStewardMessage` (`2526`)
+  only `mergePending = status==="resolved"` (`2778`) — while `renderStewardMessage` (`2650`)
   *already reads the full verdict* server-side to relay it. The server will relay a verdict on
   the steward's command yet won't let the steward *see* it to decide. One-line read; already
   deemed steward-safe.
@@ -115,7 +116,7 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
   machinery**. The "delta since last" needs no engine state — just the two payloads the caller
   already holds. Also the impact-library's first real item.
 - **Per-session model selection (Opus/Fable lanes).** **[verified]** The `--model` thread and an
-  `extraArgs`/`opts` extension already live at `summaryViaSession:1667` (the merge agent uses
+  `extraArgs`/`opts` extension already live at `summaryViaSession:1723` (the merge agent uses
   `extraArgs` for tool scope). A `model` opt there + a `Slot.model` field threaded into
   `slotCmd` (`40`, today bakes the process-wide `BASE_CMD`) unblocks `steward-overview.md`'s
   "unbuilt #1." Subscription-safe (interactive `claude`, never `-p`). *Moderate: touches session
@@ -123,7 +124,7 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
 - **A steward brief and a queued `Task` are the same object.** **[verified path absent]** The
   steward *produces* briefs but `handleStewardRoute` exposes no task-file route, and the
   dispatcher injects `Task.text` raw. Wire the steward to file a **`pending`** Task (owner still
-  promotes at `3520`, dispatcher stays deterministic) + add a structured `brief`/`verifyCmd`
+  promotes at `3706`, dispatcher stays deterministic) + add a structured `brief`/`verifyCmd`
   field on `Task`. This is the outsourcing trajectory **without** tripping the anti-synergy —
   promotion stays owner-gated, briefs proven before scheduling.
 
@@ -132,12 +133,12 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
 - **Intervention OUTCOMES — the ladder's fuel. BUILT 2026-07-22 (fuel + criterion; ladder wiring future).**
   **[agent]** *Was:* `audit.jsonl` logged every `steward_send` but no outcome; §4 needs "N interventions
   of a class with a clean helped/no-harm record" and that data was written nowhere. *Now:* every steward
-  send parks a persisted pending-outcome baseline (`handleStewardSend`, `server.ts:2683`); a window-close
-  pass folded into `tickGit` (`measureOutcomes`, `server.ts:672`) classifies it DETERMINISTICALLY — helped
+  send parks a persisted pending-outcome baseline (`handleStewardSend`, `server.ts:2688`); a window-close
+  pass folded into `tickGit` (`measureOutcomes`, `server.ts:677`) classifies it DETERMINISTICALLY — helped
   = git delta OR sustained output; else no-effect (ambiguous → no-effect, conservative) — and increments a
   durable per-class tally `{helped,noEffect,harmed}` in persisted state (`outcomeTally`, read by the ladder,
   NEVER a journal scan — §3). `harmed` is OWNER-supplied only via `POST /api/steward/outcomes/harm`
-  (`server.ts:3219`); a deterministic `claudeAlive` true→false-in-window is a crash CANDIDATE escalated to
+  (`server.ts:3224`); a deterministic `claudeAlive` true→false-in-window is a crash CANDIDATE escalated to
   the owner, never an auto harm label (§6). The promotion predicate `promotionEligible` (`server.ts`, gauge
   at `GET /api/steward/outcomes`) requires `helped ≥ N AND harmed == 0 AND` the harm channel has operated —
   never eligible on a harm-blind record. **Deferred (documented, not hidden):** reply-referencing detection —

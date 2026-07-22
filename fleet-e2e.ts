@@ -1803,8 +1803,11 @@ if (auditRotExists) {
   // same settling pattern as settleForMerge above, against the isolated test's small
   // FLEET_STEWARD_MIN_IDLE_MS instead of waiting out the real 60s default
   const stewardMinIdleMs = Number(process.env.FLEET_STEWARD_MIN_IDLE_MS ?? 60_000);
+  // deadline-based (not a fixed iteration count) so a re-settle after a send's paste echo
+  // can actually wait out the full default idle window, not give up at ~30s
   const settleForSteward = async (slot: number): Promise<void> => {
-    for (let i = 0; i < 200; i++) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < stewardMinIdleMs + 30_000) {
       const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
       const sl = sx.slots.find((x) => x.id === slot);
       if (sl && sx.now - sl.lastOutput >= stewardMinIdleMs) return;
@@ -1827,6 +1830,36 @@ if (auditRotExists) {
     auditAfterCap.some((e) => e.event === "steward_send_capped" && e.slot === lnStew.slot));
   check("a successful send is audited (steward_send)",
     auditAfterCap.some((e) => e.event === "steward_send" && e.slot === lnStew.slot));
+
+  // --- Tier-0 (synergy-findings.md #3): the send caps must count across the audit-log
+  // rotation boundary. Simulate exactly appendEvent's rotation (renameSync file → file.1),
+  // so the pre-rotation steward_send now lives ONLY in .1 — the caps must still see it
+  // there, not reset toward zero because the live file is fresh/absent. ---
+  const { renameSync } = await import("node:fs");
+  await Bun.sleep(300); // let the fire-and-forget audit chain flush before renaming
+  renameSync(auditPath, `${auditPath}.1`);
+  // stewSend1's paste echo reset the target pane's idle clock — wait it out again so the
+  // attempt reaches the cap gates (canDeliver runs before them) instead of 409ing on busy
+  await settleForSteward(lnStew.slot);
+  const stewRotSend = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "continue_nudge", ref: "continue" });
+  const stewRotSendJ = (await stewRotSend.json()) as { error?: string; ok?: boolean };
+  check("episode cap survives an audit rotation — pre-rotation send still counted from .1 (429)",
+    stewRotSend.status === 429 && !stewRotSendJ.ok && (stewRotSendJ.error ?? "").includes("episode"),
+    `${stewRotSend.status} ${JSON.stringify(stewRotSendJ)}`);
+  // hourly "should refuse" across the same boundary: top .1 up with a cap's worth (server
+  // default 10) of recent steward_send lines — exactly what .1 holds right after a real
+  // mid-window rotation — then a DIFFERENT kind (immune to the episode cap) must still be
+  // refused by the hourly counter. The refused attempt pasted nothing, so the pane is idle.
+  const preForge = await readText(`${auditPath}.1`);
+  const forged = Array.from({ length: 10 }, () =>
+    JSON.stringify({ ts: Date.now(), event: "steward_send", slot: lnStew.slot, detail: "state_relay:merge_resolved" })).join("\n");
+  await Bun.write(`${auditPath}.1`, `${preForge}${forged}\n`);
+  const stewHourlyRot = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "lifecycle_op", ref: "handoff" });
+  const stewHourlyRotJ = (await stewHourlyRot.json()) as { error?: string; ok?: boolean };
+  check("hourly cap survives an audit rotation — a cap's worth of pre-rotation sends still refuses (429)",
+    stewHourlyRot.status === 429 && !stewHourlyRotJ.ok && (stewHourlyRotJ.error ?? "").includes("hourly"),
+    `${stewHourlyRot.status} ${JSON.stringify(stewHourlyRotJ)}`);
+  await Bun.write(`${auditPath}.1`, preForge); // drop the forged lines so later real sends aren't hourly-capped
 
   // --- Tier-0 (synergy-findings.md #1): the master stop and quiet hours now reach the steward's
   // OWN /api/steward/send, not just the scheduled-auto surface. canDeliver runs BEFORE the send
@@ -1913,7 +1946,6 @@ if (auditRotExists) {
   // --- steward journal: the typed durable pulse ledger (POST/GET /api/steward/journal), the
   // delta anchor that survives /clear. The route acks without awaiting the append chain, so
   // settle briefly before each read. ---
-  const { renameSync } = await import("node:fs");
   const jPost1 = await stewPost("/api/steward/journal", { counts: { "healthy-running": 3, "stalled-dirty": 1 }, decisions_surfaced: 1, changed: true });
   const jPost1J = (await jPost1.json()) as { ok?: boolean; ts?: number };
   check("steward journal accepts a typed record", jPost1.ok && jPost1J.ok === true && typeof jPost1J.ts === "number", JSON.stringify(jPost1J));

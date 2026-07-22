@@ -1487,6 +1487,64 @@ check("deleted task gone", !(await (await get("/api/sessions")).json() as { task
 const dispOff = await post("/api/dispatch", { on: false });
 check("dispatch toggle endpoint works", dispOff.ok);
 
+// --- Tier-0 (synergy-findings.md #1): the master stop + quiet hours reach the DISPATCHER too,
+// not just scheduled autos. MUST run before the restart section below — that restart respawns srv
+// WITHOUT FLEET_DISPATCH_REPO, permanently disabling the dispatcher. Non-tautological: the SAME
+// queued task is actually dispatched once both gates open (positive control), proving the negatives
+// stayed queued because of the gate, not a dead queue. Preserves the persistence lane
+// (restartSelfSlot) that the restart section needs alive. ---
+{
+  const DISP_TICK_MS = 9000; // > the 8s tickDispatch interval, so a full tick fires within the wait
+  const sessJson = async (): Promise<{ slots: { id: number; cwd: string | null; worktree: unknown | null }[]; tasks: { id: string; status: string; note?: string }[]; dispatch: { on: boolean; maxLanes: number }; autosOn: boolean; quietHours: unknown }> =>
+    (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[]; tasks: { id: string; status: string; note?: string }[]; dispatch: { on: boolean; maxLanes: number }; autosOn: boolean; quietHours: unknown };
+  const laneIds = async (): Promise<number[]> => (await sessJson()).slots.filter((s) => s.worktree).map((s) => s.id);
+  // free every worktree lane EXCEPT the persistence lane, so lanes < maxLanes and a slot is free
+  for (const id of await laneIds()) if (id !== restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
+  await Bun.sleep(600);
+  await post("/api/dispatch", { on: true });
+  const sess0 = await sessJson();
+  const lanes0 = new Set(sess0.slots.filter((s) => s.worktree).map((s) => s.id));
+  check("dispatch gate: precondition — dispatcher on, a free slot, lanes < cap (non-tautology guard)",
+    sess0.dispatch.on === true && sess0.slots.some((s) => !s.cwd) && lanes0.size < sess0.dispatch.maxLanes,
+    `on=${sess0.dispatch.on} free=${sess0.slots.filter((s) => !s.cwd).length} lanes=${lanes0.size}/${sess0.dispatch.maxLanes}`);
+  const taskStatus = async (id: string): Promise<string | undefined> => (await sessJson()).tasks.find((t) => t.id === id)?.status;
+
+  // (a) master stop: pause BEFORE queuing (no consumption window), then a full tick must not consume
+  await post("/api/autos/switch", { on: false });
+  const dTask = (await (await post("/api/tasks", { text: "dispatch-gate-probe", queue: false })).json()) as { task: { id: string } };
+  const tid = dTask.task.id;
+  await post(`/api/tasks/${tid}/queue`, {});
+  await Bun.sleep(DISP_TICK_MS);
+  check("master stop (autosOn=false) keeps a dispatch task QUEUED — dispatcher never spawns a lane",
+    (await taskStatus(tid)) === "queued" && (await laneIds()).length === lanes0.size, `status=${await taskStatus(tid)} lanes=${(await laneIds()).length} (was ${lanes0.size})`);
+
+  // (b) quiet hours: quiet fleet must NOT consume the still-queued task either
+  await post("/api/autos/switch", { on: true });
+  const dQh = new Date().getHours();
+  await post("/api/autos/quiet", { start: dQh, end: (dQh + 2) % 24 });
+  await Bun.sleep(DISP_TICK_MS);
+  check("quiet hours keep a dispatch task QUEUED — dispatcher suppressed like the autos surface",
+    (await taskStatus(tid)) === "queued" && (await laneIds()).length === lanes0.size, `status=${await taskStatus(tid)} lanes=${(await laneIds()).length} (was ${lanes0.size})`);
+
+  // (c) positive control: both gates open → the SAME task is dispatched (proves the gate is causal)
+  await post("/api/autos/quiet", { start: null });
+  let consumed = false;
+  for (let i = 0; i < 30; i++) { // up to ~15s (≈2 ticks) for the now-eligible task to be dispatched
+    await Bun.sleep(500);
+    if ((await taskStatus(tid)) !== "queued") { consumed = true; break; }
+  }
+  const sessEnd = await sessJson();
+  const tEnd = sessEnd.tasks.find((x) => x.id === tid);
+  check("with both gates open the dispatcher DOES consume the same task (proves the gate, not a dead queue)",
+    consumed, `task=${JSON.stringify(tEnd)} dispatchOn=${sessEnd.dispatch.on} autosOn=${sessEnd.autosOn} quiet=${JSON.stringify(sessEnd.quietHours)}`);
+
+  // cleanup: kill only the lane the positive control spawned (a worktree slot new since setup, never
+  // the persistence lane), delete the probe task, restore the dispatcher off (persisted off).
+  for (const id of await laneIds()) if (!lanes0.has(id) && id !== restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
+  await post(`/api/tasks/${tid}/delete`, {});
+  await post("/api/dispatch", { on: false });
+}
+
 // --- intake (Phase E). Public dropbox, own secret, pending-only ---
 const INTAKE = process.env.FLEET_INTAKE_SECRET ?? "";
 if (INTAKE) {
@@ -1765,6 +1823,27 @@ if (auditRotExists) {
     auditAfterCap.some((e) => e.event === "steward_send_capped" && e.slot === lnStew.slot));
   check("a successful send is audited (steward_send)",
     auditAfterCap.some((e) => e.event === "steward_send" && e.slot === lnStew.slot));
+
+  // --- Tier-0 (synergy-findings.md #1): the master stop and quiet hours now reach the steward's
+  // OWN /api/steward/send, not just the scheduled-auto surface. canDeliver runs BEFORE the send
+  // caps, so a paused/quiet fleet returns 409 (its own reason) rather than the 429 episode cap
+  // already held above — and the distinct error string proves WHICH gate fired (not "not idle"). ---
+  await post("/api/autos/switch", { on: false });
+  const stewKilled = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "continue_nudge", ref: "continue" });
+  const stewKilledJ = (await stewKilled.json()) as { error?: string; ok?: boolean };
+  check("master stop (autosOn=false) blocks a direct steward send — no delivery (409, 'paused')",
+    stewKilled.status === 409 && !stewKilledJ.ok && (stewKilledJ.error ?? "").includes("paused"),
+    `${stewKilled.status} ${JSON.stringify(stewKilledJ)}`);
+  await post("/api/autos/switch", { on: true });
+
+  const stewQh = new Date().getHours();
+  await post("/api/autos/quiet", { start: stewQh, end: (stewQh + 2) % 24 });
+  const stewQuietBlocked = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "continue_nudge", ref: "continue" });
+  const stewQuietBlockedJ = (await stewQuietBlocked.json()) as { error?: string; ok?: boolean };
+  check("quiet hours now mute a direct steward send too — no delivery (409, 'quiet hours')",
+    stewQuietBlocked.status === 409 && !stewQuietBlockedJ.ok && (stewQuietBlockedJ.error ?? "").includes("quiet hours"),
+    `${stewQuietBlocked.status} ${JSON.stringify(stewQuietBlockedJ)}`);
+  await post("/api/autos/quiet", { start: null });
 
   // --- scope: unknown kind, unknown ref, and slot 2 (not the steward's own slot) for autos ---
   const stewBadKind = await stewPost("/api/steward/send", { slot: lnStew.slot, kind: "not_a_kind", ref: "x" });

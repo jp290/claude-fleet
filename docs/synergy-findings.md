@@ -130,12 +130,13 @@ every delivery gate still calls `claudeAlive` fresh inside `canDeliver` (`1231`)
   alongside, and `digest:null` on any worker failure keeps the pulse independent of the
   worker. Concurrent pulses share one inflight run. The worker holds no token: it cannot
   send, schedule, or journal by construction (Finding-3 guard).
-- **Per-session model selection (Opus/Fable lanes).** **[verified]** The `--model` thread and an
-  `extraArgs`/`opts` extension already live at `summaryViaSession:1730` (the merge agent uses
-  `extraArgs` for tool scope). A `model` opt there + a `Slot.model` field threaded into
-  `slotCmd` (`40`, today bakes the process-wide `BASE_CMD`) unblocks `steward-overview.md`'s
-  "unbuilt #1." Subscription-safe (interactive `claude`, never `-p`). *Moderate: touches session
-  spawn.*
+- **Per-session model selection (Opus/Fable lanes). BUILT 2026-07-22** (the `Slot.model` half):
+  `Slot.model` (charset-validated `MODEL_RE` — the value lands in a tmux shell line) threads
+  through `openSlot`/`openLaneInSlot` → `slotCmd` appends `--model <m>` when `FLEET_CMD` is
+  claude; settable on `POST /api/lanes`, `open`, `open-worktree`; persisted with the slot,
+  cleared on kill/recycle; echoed on the owner + steward session reads. Spawn-string proven in
+  the claude-gate suite. Subscription-safe (interactive `claude`, never `-p`). The
+  `summaryViaSession` `model` opt (per-worker model) remains unbuilt.
 - **A steward brief and a queued `Task` are the same object.** **[verified path absent]** The
   steward *produces* briefs but `handleStewardRoute` exposes no task-file route, and the
   dispatcher injects `Task.text` raw. Wire the steward to file a **`pending`** Task (owner still

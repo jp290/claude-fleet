@@ -54,10 +54,17 @@ it exists; Fleet is fully functional without it.
 - **Journal**: durable pulse ledger, append-only via the same `appendEvent` chain as audit,
   single `.1` rotation, reader spans the boundary so the delta anchor survives a `/clear`.
 
+**File pending tasks (2026-07-22):** `POST /api/steward/tasks` — observations become
+reviewable proposals in the owner's queue (`source:"steward"`, badge + review-hot). Status is
+**hard-forced `pending` in code** (any `queue` field discarded — the create/promote fusion the
+owner route has is unreachable for this principal); open proposals capped
+(`FLEET_STEWARD_MAX_PENDING`, default 10); audited. The owner promotes at the same gate as
+intake — producers write pending, only the owner promotes (`queue-automation.md`).
+
 **What the steward CANNOT do (owner-only, 403 "route not in scope"):** perpetual autos,
-the kill-switch, quiet hours, and **all** spawn/dispatch — open a slot, spawn a lane, file
-or promote a task, toggle the dispatcher (`handleStewardRoute` exposes none of these,
-`2787–2881`). By construction, not by policy.
+the kill-switch, quiet hours, **promoting** a task (`pending→queued`), and **all**
+spawn/dispatch — open a slot, spawn a lane, toggle the dispatcher (`handleStewardRoute`
+exposes none of these). By construction, not by policy.
 
 ## How the heartbeat runs (the automation engine, AS-BUILT)
 
@@ -139,12 +146,12 @@ the whole roadmap, and it raises the ceiling on everything above it.
   spawn-fresh-isolated-sessions substrate — `createWorktree` lanes + a `pending→queued→sent→done`
   task queue + an idle `tickDispatch`. The **intended** shape: the steward files/briefs work
   (reversible → act-freely), a lane executes **quarantined** in a worktree, and **land stays
-  owner-only forever** (the gate). What is **unbuilt** for steward-driven Opus/Fable dispatch:
-  (1) **per-session model selection** — today every slot runs the process-wide `FLEET_CMD`
-  (`server.ts:37`); no per-slot `--model`, no model field on `Slot` (only throwaway helper
-  agents take `--model`); (2) a **steward-scoped dispatch/file capability** — today the steward
-  has zero spawn reach; (3) **closing the loop** — today the owner promotes `pending→queued`
-  and arms the dispatcher, *and promotion should stay gated*. **Subscription-safe:** all spawns
+  owner-only forever** (the gate). The precursors, as of 2026-07-22:
+  (1) **per-session model selection — BUILT** (`Slot.model` → `slotCmd --model`, owner-settable
+  on lane/slot open, persisted, spawn-string proven in the claude-gate suite);
+  (2) a **steward file capability — BUILT pending-only** (`POST /api/steward/tasks`, above);
+  actual spawn/dispatch reach remains zero; (3) **closing the loop** — today the owner promotes
+  `pending→queued` and arms the dispatcher, *and promotion should stay gated*. **Subscription-safe:** all spawns
   are interactive `claude`, never metered `-p` (designed so, `server.ts:1651`). **The
   constraint that dominates:** *review capacity, not throughput* (README) — dispatching N
   Opus lanes only helps if the steward **prepares each landing to a glance**; throughput
@@ -171,6 +178,7 @@ reversible: the steward acts, accepting bounded harm scaled to judgment
    now with the digest carrying the sensing.
 4. **Learning engine v1** (manual: Grok survey + dream-mode pass) + seed the impact library —
    proved before scheduled.
-5. **(Larger, gated) reach precursors then B** — steward-files-pending (force-`pending` in
-   code, `queue-automation.md`), `Slot.model`, then scoped operate-routes; land stays
-   owner-only. Only with review-prep, or it buries you.
+5. ~~Reach precursors~~ — **DONE 2026-07-22** (steward-files-pending force-`pending` in code +
+   `Slot.model`, both above). **(Larger, gated) B itself** — scoped operate-routes, latitude
+   calibrated by the arena record; land stays owner-only. Only with review-prep, or it buries
+   you.

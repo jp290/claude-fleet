@@ -119,7 +119,7 @@ interface GitInfo { branch: string; dirty: number; ahead: number; behind: number
 interface WorktreeInfo { repo: string; branch: string }
 interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number;
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean }
-interface TaskInfo { id: string; text: string; source: "owner" | "intake"; from: string | null;
+interface TaskInfo { id: string; text: string; source: "owner" | "intake" | "steward"; from: string | null;
   status: "pending" | "queued" | "sent" | "done"; created: number; slot: number | null; note: string | null }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
@@ -2256,8 +2256,8 @@ async function refresh() {
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
-    const pendingIntake = tasksList.some((t) => t.status === "pending" && t.source === "intake");
-    $("queuebtn").classList.toggle("hot", pendingIntake);
+    const pendingReview = tasksList.some((t) => t.status === "pending" && (t.source === "intake" || t.source === "steward"));
+    $("queuebtn").classList.toggle("hot", pendingReview);
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
@@ -2416,6 +2416,8 @@ function renderQueue() {
     if (t.source === "intake") {
       const tag = el("span", "qintake", `✉ ${t.from ?? "intake"}`);
       meta.appendChild(tag);
+    } else if (t.source === "steward") {
+      meta.appendChild(el("span", "qintake", "⚙ steward"));
     } else meta.append("owner");
     main.appendChild(meta);
     main.appendChild(el("div", "", t.text));

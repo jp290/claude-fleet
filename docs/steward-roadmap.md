@@ -94,10 +94,11 @@ injection-scanned, **cross-checked against Phase-1 facts, never gating**. Then t
 cross-lane conflict detection (a real pain in the mined history).
 
 **Phase 5 — The gated endgame** *(only once the foundations hold)*
-Ladder **promotion** (now it has fuel); the steward **files a `pending` Task** (owner still
-promotes — the anti-synergy holds); **per-session model** via `summaryViaSession`'s existing
-`--model` hook → Opus/Fable lane dispatch. **Land stays owner-only forever**; promote only
-what the journal earned.
+Ladder **promotion** (now it has fuel); Opus/Fable lane dispatch. *Two precursors BUILT
+2026-07-22, pulled forward as reversible reach-precursors:* the steward **files a `pending`
+Task** (`POST /api/steward/tasks`, hard-forced pending, capped — owner still promotes, the
+anti-synergy holds) and **per-session model** (`Slot.model` → `slotCmd --model`, owner-settable
+at lane/slot open). **Land stays owner-only forever**; promote only what the journal earned.
 
 **Continuous** — **test the steward under the long-autonomous lens** (starts with today's
 beat: honest, quiet-when-nothing-changed, non-drifting, *uses* the owner-model's risk map);

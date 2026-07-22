@@ -60,8 +60,12 @@ Two amendments make the ledger powerful, both already implied by earlier docs:
 
 ## What becomes possible (ranked by leverage × safety)
 
-1. **Steward files pending tasks (highest — small, safe, compounding).** Give
-   the steward token scope to `POST /api/tasks` as **pending only**. Its
+1. **Steward files pending tasks (highest — small, safe, compounding). BUILT 2026-07-22:**
+   `POST /api/steward/tasks` (steward-scoped) — status HARD-FORCED to `pending` in code, any
+   `queue` field discarded (exactly the constraint below), `source:"steward"`, capped open
+   proposals (`FLEET_STEWARD_MAX_PENDING`, default 10 → 409), audited (`steward_task`), badge +
+   review-hot in the queue panel. The owner promotes at the same gate as intake. *Original
+   rationale:* give the steward token scope to file as **pending only**. Its
    Rundgang observations (stalled lane needs rebase, doc claim rotted, a
    Hardening item's code was just touched) become reviewable tasks. Zero
    task-model change; the pending gate already guarantees safety. This is what

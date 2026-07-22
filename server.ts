@@ -1143,6 +1143,34 @@ function inQuietHours(ts: number): boolean {
   return start < end ? h >= start && h < end : h >= start || h < end;
 }
 
+// The single pre-delivery choke-point. EVERY path that types an unattended prompt into a pane —
+// scheduled autos, the steward's direct send, the lane dispatcher, the merge/land idle guard —
+// funnels through here, so the master stop (`autosOn`), quiet hours, a FRESH claude-alive check,
+// and the idle gate can never again reach one path but silently skip another (the drift that was
+// synergy-findings.md Tier-0 #1: gates added to tickAutos never reached the paths written later).
+// Mirrors the createAutoForSlot choke-point pattern — a caller structurally can't misfire a gate.
+// Each caller passes `opts` to keep its LEGITIMATE differences: a one-shot waives quiet hours
+// (owner intent always fires), an owner-initiated land waives everything but idle, a just-spawned
+// dispatch lane waives idle (idle by definition). Gate order is deliberate and preserves tickAutos:
+// master stop first, then never touch a dead pane, then the quiet-hours policy, then the busy check.
+// `alive` MUST stay a fresh claudeAlive call (never a cached read — a 10s-stale cache could fire
+// into a pane that died seconds ago). Returns the FIRST failing gate so callers keep their own
+// bespoke reaction (record+advance vs 409 vs requeue vs "blocked").
+type DeliveryGate = "kill-switch" | "not-alive" | "quiet-hours" | "busy";
+async function canDeliver(s: Slot, opts: {
+  now: number;
+  killSwitch?: boolean; // honor autosOn (default true)
+  alive?: boolean;      // honor a FRESH claudeAlive (default true) — never a cache
+  quietHours?: boolean; // honor quiet hours (default true; pass false for one-shots / owner acts)
+  idleMs?: number;      // idle threshold in ms; 0/undefined disables the busy gate
+}): Promise<{ ok: true } | { ok: false; gate: DeliveryGate }> {
+  if ((opts.killSwitch ?? true) && !autosOn) return { ok: false, gate: "kill-switch" };
+  if ((opts.alive ?? true) && !(await claudeAlive(s.id))) return { ok: false, gate: "not-alive" };
+  if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
+  if (opts.idleMs && opts.now - s.lastOutput < opts.idleMs) return { ok: false, gate: "busy" };
+  return { ok: true };
+}
+
 let autoTickBusy = false;
 async function tickAutos(): Promise<void> {
   if (!autosOn) return; // global kill-switch: no scheduled auto fires while automation is paused
@@ -1161,25 +1189,33 @@ async function tickAutos(): Promise<void> {
         dirty = true;
         continue;
       }
-      if (!(await claudeAlive(a.slot))) {
-        // NEVER type into a bare shell; count the run and move on
-        a.lastResult = "skipped — claude not running in pane";
-        audit("auto_skip", a.slot, a.lastResult);
-        advanceAuto(a, now);
-        dirty = true;
-        continue;
-      }
-      // quiet hours mute the PERIODIC surface only: a recurring pulse due inside the owner's quiet
-      // window is held and retried next interval (tick-in-place). One-shots are a specific owner
-      // intent and always fire. No staleness fast-forward is needed — advanceAuto reschedules
-      // now-relative, so an overdue auto fires at most once, never a replayed backlog.
-      if (a.everySec !== null && inQuietHours(now)) {
-        a.nextAt = now + a.everySec * 1000;
-        dirty = true;
-        continue;
-      }
-      const idleOk = a.idleSec === 0 || now - s.lastOutput >= a.idleSec * 1000;
-      if (!idleOk) {
+      // the shared choke-point (killSwitch already handled by the tick-level early return above;
+      // quiet hours mute the PERIODIC surface only — one-shots are a specific owner intent and
+      // always fire, so quiet-hours is honored only for a recurring auto).
+      const verdict = await canDeliver(s, {
+        now,
+        killSwitch: false,
+        quietHours: a.everySec !== null,
+        idleMs: a.idleSec === 0 ? 0 : a.idleSec * 1000,
+      });
+      if (!verdict.ok) {
+        if (verdict.gate === "not-alive") {
+          // NEVER type into a bare shell; count the run and move on
+          a.lastResult = "skipped — claude not running in pane";
+          audit("auto_skip", a.slot, a.lastResult);
+          advanceAuto(a, now);
+          dirty = true;
+          continue;
+        }
+        if (verdict.gate === "quiet-hours") {
+          // held inside the owner's quiet window and retried next interval (tick-in-place). No
+          // staleness fast-forward is needed — advanceAuto reschedules now-relative, so an overdue
+          // auto fires at most once, never a replayed backlog.
+          a.nextAt = now + (a.everySec ?? 0) * 1000;
+          dirty = true;
+          continue;
+        }
+        // gate === "busy": the idle gate
         if (now < a.nextAt + AUTO_GRACE_MS) continue; // wait within grace, no state change
         a.lastResult = "skipped — session stayed busy";
         audit("auto_skip", a.slot, a.lastResult);
@@ -1227,6 +1263,12 @@ async function tickDispatch(): Promise<void> {
     if (!free) return;
     const next = tasks.find((t) => t.status === "queued");
     if (!next) return;
+    // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned or the task is
+    // consumed (was synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet
+    // fleet leaves the task queued for the next eligible tick. No idle/alive gate: the target lane
+    // does not exist yet.
+    const pre = await canDeliver(free, { now: Date.now(), alive: false });
+    if (!pre.ok) return; // task stays queued
     laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
     try {
       const wt = await createWorktree(DISPATCH_REPO, "");
@@ -1245,6 +1287,17 @@ async function tickDispatch(): Promise<void> {
       if (free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id) {
         next.status = "queued";
         next.note = "slot changed during spawn — requeued";
+        saveState();
+        return;
+      }
+      // fresh claude-alive gate (was synergy-findings.md Tier-0 #2): slotCmd is `claude; exec
+      // $SHELL`, so a claude that failed to boot leaves a bare shell that would EXECUTE this
+      // externally-fed task text as commands. Re-check the master stop + quiet hours too (the owner
+      // may have paused during the 4s boot). Requeue on any failure — the lane exists, the prompt waits.
+      const post = await canDeliver(free, { now: Date.now(), idleMs: 0 });
+      if (!post.ok) {
+        next.status = "queued";
+        next.note = `dispatch held (${post.gate}) — requeued`;
         saveState();
         return;
       }
@@ -2519,8 +2572,16 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
   const rendered = renderStewardMessage(kind, ref, s);
   if ("error" in rendered) return json({ error: rendered.error }, 400);
-  if (!(await claudeAlive(s.id))) return json({ error: "claude not running in target pane" }, 409);
-  if (Date.now() - s.lastOutput < STEWARD_MIN_IDLE_MS) return json({ error: "target slot not idle" }, 409);
+  // the shared delivery choke-point: the master stop (autosOn) and quiet hours now reach the
+  // steward's own send, not just scheduled autos (was synergy-findings.md Tier-0 #1) — plus the
+  // fresh claude-alive + idle gates it already had.
+  const verdict = await canDeliver(s, { now: Date.now(), idleMs: STEWARD_MIN_IDLE_MS });
+  if (!verdict.ok) {
+    if (verdict.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
+    if (verdict.gate === "not-alive") return json({ error: "claude not running in target pane" }, 409);
+    if (verdict.gate === "quiet-hours") return json({ error: "quiet hours — steward sends are muted" }, 409);
+    return json({ error: "target slot not idle" }, 409);
+  }
   const recent = await stewardRecentSends();
   const now = Date.now();
   const withinHour = recent.filter((r) => now - r.ts < 3_600_000).length;
@@ -3267,7 +3328,12 @@ Bun.serve<WSData>({
         // the idle gate guards a run that STARTS the agent — a confirm-land is a pure git ff
         // of an already-reviewed resolution, so the agent's own trailing pane output must not
         // block it (otherwise every confirm right after a resolve bounces off "let it settle").
-        if (!body?.confirm && Date.now() - s.lastOutput < MERGE_IDLE_MS) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
+        // the shared choke-point, idle-only: a land is an owner-initiated git ff, not automation,
+        // so it deliberately waives the master stop + quiet hours (opts off) and only honors the
+        // idle gate — and a confirm-land waives even that (idleMs 0), since it's a pure ff of an
+        // already-reviewed resolution whose trailing pane output must not block it.
+        const landGate = await canDeliver(s, { now: Date.now(), killSwitch: false, alive: false, quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
+        if (!landGate.ok) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
         const main = await integrationBranch(repo);
         if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
         if (main === branch) return json({ error: "the integration branch is the lane branch itself" }, 409);

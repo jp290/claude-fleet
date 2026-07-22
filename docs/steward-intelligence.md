@@ -133,8 +133,14 @@ worktree churn would wipe it). It lives server-side, beside `fleet.json`, on the
   (single `.1` generation) and the reader spans that boundary so the delta anchor
   survives — but promotion **counts** must live in a durable state tally
   incremented on outcomes (§4), *never* by scanning this file, or the second
-  rotation silently resets the record autonomy depends on. Outcome back-fill and
-  the tally land with the ladder.
+  rotation silently resets the record autonomy depends on. *Built 2026-07-22 (outcome
+  half, ahead of the ladder):* per-send persisted baseline → deterministic window-close
+  classification in `tickGit` (`measureOutcomes`) → durable harm-AWARE per-class tally
+  `{helped,noEffect,harmed}` in `fleet.json`, read by `promotionEligible`/`GET
+  /api/steward/outcomes`, never a scan of this file. `harmed` is owner-supplied only
+  (`POST /api/steward/outcomes/harm`); a `claudeAlive` true→false-in-window is an escalated
+  crash CANDIDATE, never auto-harm (§6). Reply-referencing deferred (under-counts `helped`,
+  conservative). The ladder wiring that consumes the tally is still future.
 - **Owner-model** — a curated document the steward *proposes* edits to and the
   owner promotes (like the shelf, but about JP). *Resolved 2026-07-22:* a gitignored
   **`OWNER.md`** at repo root, mirroring CLAUDE.md (hand-copied into the steward

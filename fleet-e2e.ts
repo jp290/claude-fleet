@@ -1629,7 +1629,11 @@ await Bun.sleep(500);
 // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
 // `--dangerously-skip-permissions` would silently leave the server in unattended
 // mode after the test run, an escalation the README promises is explicit opt-in
-const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES"]
+// FLEET_OUTCOME_WINDOW_MS / FLEET_PROMOTION_MIN_N must ride across the restart too, or the
+// post-restart server reverts to the 10-min default window and the outcome tests (which run
+// after this section) can never measure a send inside the test's time budget.
+const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
+  "FLEET_OUTCOME_WINDOW_MS", "FLEET_PROMOTION_MIN_N"]
   .filter((k) => process.env[k])
   .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
   .join("");
@@ -1938,6 +1942,87 @@ if (auditRotExists) {
     jGet2J.records?.length === 2 && jGet2J.records[0]?.decisions_surfaced === 1 && jGet2J.records[1]?.changed === false,
     JSON.stringify(jGet2J).slice(0, 200));
 
+  // --- intervention-outcome fuel (steward-intelligence.md §4): per-send measurement + a
+  // HARM-AWARE durable per-class tally, read from STATE (never a journal scan, §3). The server
+  // runs with FLEET_OUTCOME_WINDOW_MS=1500 + FLEET_PROMOTION_MIN_N=1 so this measures in seconds.
+  // Measurement is folded into tickGit (~10s), so each awaitMeasured tolerates one tick. ---
+  const { spawnSync } = await import("node:child_process");
+  interface Outcomes {
+    tally: Record<string, { helped: number; noEffect: number; harmed: number }>;
+    pending: { slot: number; class: string }[];
+    candidates: { slot: number; class: string }[];
+    eligibility: Record<string, boolean>;
+    config: { minN: number; windowMs: number; harmChannelActive: boolean };
+  }
+  const readOutcomes = async (): Promise<Outcomes> => (await (await stewGet("/api/steward/outcomes")).json()) as Outcomes;
+  const outcomeFor = async (slot: number): Promise<string | undefined> => {
+    const recs = ((await (await stewGet("/api/steward/journal?tail=50")).json()) as { records: Record<string, unknown>[] }).records;
+    return recs.filter((x) => x.kind === "outcome" && x.slot === slot).map((x) => x.outcome as string).pop();
+  };
+  const awaitMeasured = async (slot: number): Promise<void> => {
+    for (let i = 0; i < 140; i++) { // ~28s: window (1.5s) + one tickGit (≤10s) + margin
+      if (!(await readOutcomes()).pending.some((p) => p.slot === slot)) return;
+      await Bun.sleep(200);
+    }
+  };
+
+  // three fresh lanes (distinct slots) so continue_nudge's per-kind×slot episode cap never collides
+  const oc1 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const oc2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const oc3 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await settleForSteward(oc1.slot); await settleForSteward(oc2.slot); await settleForSteward(oc3.slot);
+
+  const oc1send = await stewPost("/api/steward/send", { slot: oc1.slot, kind: "continue_nudge", ref: "continue" });
+  check("outcome: a steward send parks a pending-outcome baseline (survives via saveState)",
+    oc1send.ok && (await readOutcomes()).pending.some((p) => p.slot === oc1.slot), String(oc1send.status));
+  await stewPost("/api/steward/send", { slot: oc2.slot, kind: "continue_nudge", ref: "continue" });
+  await stewPost("/api/steward/send", { slot: oc3.slot, kind: "continue_nudge", ref: "continue" });
+
+  const tally0 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
+  // oc1: a real git delta in the window → helped
+  spawnSync("git", ["-C", oc1.cwd, "commit", "--allow-empty", "-qm", "outcome effect delta"]);
+  // oc3: transient output that BEGINS but cannot sustain ≥60s inside a 1.5s window → still no-effect
+  await tmuxOut("send-keys", "-t", `s${oc3.slot}`, "echo outcome-blip", "Enter");
+  await awaitMeasured(oc1.slot); await awaitMeasured(oc2.slot); await awaitMeasured(oc3.slot);
+
+  check("outcome: a git delta since baseline records 'helped'", (await outcomeFor(oc1.slot)) === "helped");
+  check("outcome: no git delta and no sustained output records 'no-effect'", (await outcomeFor(oc2.slot)) === "noEffect");
+  check("outcome: transient output that did not sustain ≥60s stays 'no-effect' (conservative)", (await outcomeFor(oc3.slot)) === "noEffect");
+  const tally1 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
+  check("outcome: 'helped' increments tally.continue_nudge.helped", tally1.helped === tally0.helped + 1, `${tally0.helped}->${tally1.helped}`);
+  check("outcome: two 'no-effect' outcomes increment tally.continue_nudge.noEffect", tally1.noEffect === tally0.noEffect + 2, `${tally0.noEffect}->${tally1.noEffect}`);
+
+  // harm-BLIND guard: continue_nudge now has helped≥N(=1) and harmed==0, but the owner harm
+  // channel has never operated → NOT eligible (never promote on a record that can't show harm)
+  check("promotion: helped≥N but a harm-BLIND record (channel never operated) is NOT eligible",
+    (await readOutcomes()).eligibility.continue_nudge === false);
+  // owner marks a DIFFERENT class harmful — the ONLY writer of `harmed`, never auto/LLM-judged
+  const harmRes = await post("/api/steward/outcomes/harm", { class: "lifecycle_op", ref: "commit", slot: oc1.slot });
+  const harmJ = (await harmRes.json()) as { ok?: boolean; tally?: { harmed: number }; eligible?: boolean };
+  check("harm-label: an owner harm-label increments tally[class].harmed", harmRes.ok && harmJ.tally?.harmed === 1, JSON.stringify(harmJ));
+  check("harm-label: the harmed class is not promotion-eligible", harmJ.eligible === false);
+  const afterHarm = await readOutcomes();
+  check("harm-label: harmed is recorded in state and blocks that class (helped==0, harmed==1)",
+    afterHarm.tally.lifecycle_op?.harmed === 1 && afterHarm.eligibility.lifecycle_op === false, JSON.stringify(afterHarm.tally.lifecycle_op));
+  check("promotion: once the harm channel has operated, a clean class (helped≥N, harmed==0) IS eligible",
+    afterHarm.eligibility.continue_nudge === true && afterHarm.config.harmChannelActive === true);
+
+  // owner token is out of scope for the steward outcomes GET (steward-scoped, like the journal)
+  check("owner token on the steward outcomes route is out of scope (404)", (await get("/api/steward/outcomes")).status === 404);
+
+  // the tally lives in STATE, never the rotatable journal (§3): rotating the journal file must
+  // not touch the counts. Simulate the 2nd rotation that would discard the oldest outcome lines.
+  const beforeRot = JSON.stringify((await readOutcomes()).tally);
+  renameSync("steward-journal.jsonl", "steward-journal.jsonl.1"); // discards the prior .1, rotates current out
+  const afterRot = await readOutcomes();
+  check("tally survives a journal rotation (read from state, never a journal scan — §3)",
+    JSON.stringify(afterRot.tally) === beforeRot
+    && (afterRot.tally.continue_nudge?.helped ?? 0) >= 1 && afterRot.tally.lifecycle_op?.harmed === 1,
+    JSON.stringify(afterRot.tally).slice(0, 200));
+
+  await post(`/api/slots/${oc1.slot}/kill`, {});
+  await post(`/api/slots/${oc2.slot}/kill`, {});
+  await post(`/api/slots/${oc3.slot}/kill`, {});
   await post(`/api/slots/${lnStew.slot}/kill`, {});
 }
 

@@ -203,6 +203,18 @@ const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SEND
 // simplification, not the full joint-5 semantics (real outcome-based episode closure
 // needs the journal/effect-sensing this doc's own build order defers).
 const STEWARD_EPISODE_MS = 10 * 60 * 1000;
+// --- intervention-outcome measurement (steward-autonomy.md §5 / steward-intelligence.md §4):
+// the FUEL the autonomy ladder promotes on. Every steward send parks a pending-outcome
+// baseline; a window-close pass in tickGit classifies it DETERMINISTICALLY (git delta /
+// sustained output / claudeAlive) and increments a durable per-class tally. The window is
+// overridable so e2e can shrink it. SUSTAIN is the "output began inside the window and
+// sustained ≥60s" bar (steward-autonomy §5); left long so a shrunk window never marks helped
+// on transient output — every helped in a shrunk-window test is via the git signal.
+const OUTCOME_WINDOW_MS = Number(process.env.FLEET_OUTCOME_WINDOW_MS ?? 10 * 60 * 1000) | 0;
+const OUTCOME_SUSTAIN_MS = Number(process.env.FLEET_OUTCOME_SUSTAIN_MS ?? 60_000) | 0;
+// promotion criterion N (steward-intelligence §4: "N interventions of a class with a clean
+// helped/no-harm record"). The ladder wiring itself is future — only the fuel + predicate ship.
+const PROMOTION_MIN_N = Math.max(1, Number(process.env.FLEET_PROMOTION_MIN_N ?? 5) | 0);
 // cap counters are NOT kept in memory: they're derived by re-reading audit.jsonl's
 // steward_send events on every send. Audit.jsonl is already the durable, chmod-600,
 // rotated append log (appendEvent above) — a separate in-memory counter would just be a
@@ -347,7 +359,8 @@ function saveState(): void {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
-    repoBases, shelved, undoLands: Object.fromEntries(undoLast) }, null, 2);
+    repoBases, shelved, undoLands: Object.fromEntries(undoLast),
+    outcomePending, outcomeTally, harmCandidates, harmChannelActive }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once)
@@ -645,9 +658,47 @@ async function tickGit(): Promise<void> {
       }
       gitInfo.set(s.id, { branch, dirty, ahead, behind });
     }
+    measureOutcomes(); // the gitInfo/aliveInfo caches are now fresh for THIS tick — measure against them
   } finally {
     gitTickBusy = false;
   }
+}
+
+// window-close classification of pending steward sends (steward-autonomy.md §5). Folded into
+// tickGit so it runs AFTER the gitInfo/aliveInfo refresh above — it reads the just-updated
+// caches, never a tick-stale copy. Every AUTO signal is DETERMINISTIC (git delta / sustained
+// output / claudeAlive); `harmed` is NEVER set here (owner-only). A claudeAlive true→false in
+// the window is a crash CANDIDATE escalated to the owner, not a harm verdict.
+function measureOutcomes(): void {
+  const now = Date.now();
+  let changed = false;
+  for (let i = outcomePending.length - 1; i >= 0; i--) {
+    const p = outcomePending[i];
+    if (now - p.sentAt < OUTCOME_WINDOW_MS) continue; // window still open — leave it
+    const gi = gitInfo.get(p.slot);
+    const s = slots[p.slot - 1];
+    // crash CANDIDATE: aliveBaseline true, now false. Escalate — do NOT touch the harmed tally
+    // (attribution is ambiguous; the owner is the harm oracle, §6). aliveInfo default true
+    // matches claudeAlive's short-circuit for non-claude FLEET_CMD (no false crash there).
+    const curAlive = aliveInfo.get(p.slot) ?? true;
+    if (p.aliveBaseline && !curAlive) {
+      harmCandidates.push({ slot: p.slot, class: p.class, ref: p.ref, at: now });
+      if (harmCandidates.length > 20) harmCandidates.shift();
+      writeStewardJournal({ kind: "harm_candidate", class: p.class, ref: p.ref, slot: p.slot });
+    }
+    // helped = git delta (new commits OR a tree change) since baseline, OR output that began
+    // after the send and is still going ≥SUSTAIN later (scalar-lastOutput proxy for §5's
+    // "begins inside the window and sustains ≥60s"). Ambiguous → no-effect (conservative,
+    // mandatory). Reply-referencing is DEFERRED → `helped` under-counts (see promotionEligible).
+    const helpedGit = !!gi && (gi.ahead > p.gitBaseline.ahead || gi.dirty !== p.gitBaseline.dirty);
+    const helpedOutput = (s?.lastOutput ?? 0) > p.sentAt + OUTCOME_SUSTAIN_MS;
+    const outcome: "helped" | "noEffect" = helpedGit || helpedOutput ? "helped" : "noEffect";
+    bumpTally(p.class, outcome);
+    writeStewardJournal({ kind: "outcome", class: p.class, ref: p.ref, outcome, at: now, slot: p.slot });
+    outcomePending.splice(i, 1);
+    changed = true;
+  }
+  if (changed) saveState();
 }
 
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
@@ -2042,6 +2093,42 @@ function recordLand(repo: string, main: string, branch: string, mainBefore: stri
   undoLast.set(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
 }
 
+// --- intervention-outcome fuel (steward-intelligence.md §4). A per-send pending baseline
+// (survives restart via saveState) + a durable, HARM-AWARE per-class tally. The tally is the
+// ladder's promotion evidence and is read from STATE, NEVER by scanning the rotatable journal
+// (§3: the 2nd rotation would silently reset it). `helped`/`noEffect` auto-increment on the
+// deterministic window-close pass; `harmed` is OWNER-supplied only (§6: "worsened" is not
+// deterministically measurable — never guessed, never LLM-judged).
+interface OutcomePending {
+  slot: number; class: string; ref: string; sentAt: number;
+  gitBaseline: { ahead: number; dirty: number };
+  outputBaseline: number; aliveBaseline: boolean;
+}
+const outcomePending: OutcomePending[] = [];
+interface OutcomeCounts { helped: number; noEffect: number; harmed: number }
+const outcomeTally: Record<string, OutcomeCounts> = {}; // class(kind) -> counts
+// a deterministic claudeAlive true→false-in-window is a crash CANDIDATE escalated to the owner,
+// never an auto harm label (attribution is ambiguous: a coincidental crash ≠ one this send caused).
+interface HarmCandidate { slot: number; class: string; ref: string; at: number }
+const harmCandidates: HarmCandidate[] = [];
+// the record is "harm-blind" until the owner harm channel has operated at least once. No class is
+// promotion-eligible on a harm-blind tally — a record that structurally cannot show the harm
+// disqualifier must never license autonomy (the safety-critical half of §4).
+let harmChannelActive = false;
+function bumpTally(cls: string, field: keyof OutcomeCounts): void {
+  const t = outcomeTally[cls] ?? { helped: 0, noEffect: 0, harmed: 0 };
+  outcomeTally[cls] = { ...t, [field]: t[field] + 1 };
+}
+// the promotion predicate the ladder (future) reads — NOT the ladder itself. A class promotes
+// iff it has N clean helps AND zero owner-recorded harm AND the harm channel is operating.
+// NOTE: `helped` is UNDER-COUNTED — reply-referencing detection is deferred, so a pure reply/
+// Q&A intervention records as no-effect. Conservative: it only ever DELAYS a promotion, never
+// enables a wrong one, so it is safe to omit (documented, not hidden).
+function promotionEligible(cls: string): boolean {
+  const t = outcomeTally[cls];
+  return !!t && harmChannelActive && t.harmed === 0 && t.helped >= PROMOTION_MIN_N;
+}
+
 // deterministic first attempt: most rebases don't conflict at all, and `git rebase` alone
 // handles those completely — spawning a model session for that is minutes and money for
 // nothing. Clean → the agent is never spawned. Conflict → abort (lane exactly as found)
@@ -2426,6 +2513,38 @@ if (existsSync(STATE_FILE)) {
           && typeof (v as LandRecord).at === "number")
           undoLast.set(k, { repo: k, main: (v as LandRecord).main, branch: (v as LandRecord).branch,
             mainBefore: (v as LandRecord).mainBefore, mainAfter: (v as LandRecord).mainAfter, at: (v as LandRecord).at });
+    // intervention-outcome fuel survives deploys — a pending baseline whose window is still
+    // open must be measured after a restart, and the per-class tally is the ladder's promotion
+    // record (§3: it CANNOT be re-derived by scanning the rotatable journal). Backward-compatible:
+    // a fleet.json written before this feature simply has none of these keys → empty state.
+    const pop = (persisted as { outcomePending?: unknown }).outcomePending;
+    if (Array.isArray(pop))
+      for (const v of pop)
+        if (typeof v === "object" && v !== null
+          && typeof (v as OutcomePending).slot === "number" && typeof (v as OutcomePending).class === "string"
+          && typeof (v as OutcomePending).ref === "string" && typeof (v as OutcomePending).sentAt === "number"
+          && typeof (v as OutcomePending).outputBaseline === "number" && typeof (v as OutcomePending).aliveBaseline === "boolean"
+          && typeof (v as OutcomePending).gitBaseline === "object" && (v as OutcomePending).gitBaseline !== null
+          && typeof (v as OutcomePending).gitBaseline.ahead === "number" && typeof (v as OutcomePending).gitBaseline.dirty === "number")
+          outcomePending.push({ slot: (v as OutcomePending).slot, class: (v as OutcomePending).class, ref: (v as OutcomePending).ref,
+            sentAt: (v as OutcomePending).sentAt, gitBaseline: { ahead: (v as OutcomePending).gitBaseline.ahead, dirty: (v as OutcomePending).gitBaseline.dirty },
+            outputBaseline: (v as OutcomePending).outputBaseline, aliveBaseline: (v as OutcomePending).aliveBaseline });
+    const pot = (persisted as { outcomeTally?: unknown }).outcomeTally;
+    if (typeof pot === "object" && pot !== null && !Array.isArray(pot))
+      for (const [k, v] of Object.entries(pot as Record<string, unknown>))
+        if (typeof k === "string" && k.length <= 40 && typeof v === "object" && v !== null
+          && typeof (v as OutcomeCounts).helped === "number" && typeof (v as OutcomeCounts).noEffect === "number"
+          && typeof (v as OutcomeCounts).harmed === "number")
+          outcomeTally[k] = { helped: (v as OutcomeCounts).helped, noEffect: (v as OutcomeCounts).noEffect, harmed: (v as OutcomeCounts).harmed };
+    const phc = (persisted as { harmCandidates?: unknown }).harmCandidates;
+    if (Array.isArray(phc))
+      for (const v of phc)
+        if (typeof v === "object" && v !== null && typeof (v as HarmCandidate).slot === "number"
+          && typeof (v as HarmCandidate).class === "string" && typeof (v as HarmCandidate).ref === "string"
+          && typeof (v as HarmCandidate).at === "number")
+          harmCandidates.push({ slot: (v as HarmCandidate).slot, class: (v as HarmCandidate).class, ref: (v as HarmCandidate).ref, at: (v as HarmCandidate).at });
+    if (typeof (persisted as { harmChannelActive?: unknown }).harmChannelActive === "boolean")
+      harmChannelActive = (persisted as { harmChannelActive: boolean }).harmChannelActive;
   } catch {
     // keep the evidence: the unreadable file is preserved before the next saveState
     // overwrites it, so a torn write is recoverable by hand instead of erased
@@ -2604,6 +2723,19 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   saveHistory(s);
   logPrompt(s, rendered.text, "steward", ts);
   audit("steward_send", s.id, `${kind}:${ref}`);
+  // park a pending-outcome baseline right after the send fires — the window-close pass in
+  // tickGit measures this against the same deterministic signals (git delta / lastOutput /
+  // claudeAlive). aliveBaseline is a FRESH read (canDeliver just proved it alive), never the
+  // 10s cache; git/output baselines are the cheap caches (the delta, not the absolute, is what
+  // matters, and measurement reads the same caches so they stay consistent).
+  const gi = gitInfo.get(s.id);
+  outcomePending.push({
+    slot: s.id, class: kind, ref, sentAt: ts,
+    gitBaseline: { ahead: gi?.ahead ?? 0, dirty: gi?.dirty ?? 0 },
+    outputBaseline: s.lastOutput, aliveBaseline: await claudeAlive(s.id),
+  });
+  if (outcomePending.length > 200) outcomePending.shift(); // unbounded only if measurement wedges
+  saveState();
   return json({ ok: true, text: rendered.text });
 }
 
@@ -2671,6 +2803,22 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   }
   if (url.pathname === "/api/steward/send" && req.method === "POST")
     return handleStewardSend(await readJson(req));
+  // the ladder's fuel gauge (steward-intelligence.md §4): the durable per-class tally, the
+  // open pending baselines, unreviewed crash candidates, and the promotion-eligibility verdict
+  // per class. Read from STATE, never a journal scan (§3). `helped` under-counts (reply-
+  // referencing deferred) — surfaced explicitly, not hidden.
+  if (url.pathname === "/api/steward/outcomes" && req.method === "GET") {
+    const eligibility: Record<string, boolean> = {};
+    for (const cls of Object.keys(outcomeTally)) eligibility[cls] = promotionEligible(cls);
+    return json({
+      tally: outcomeTally,
+      pending: outcomePending.map((p) => ({ slot: p.slot, class: p.class, ref: p.ref, sentAt: p.sentAt })),
+      candidates: harmCandidates,
+      eligibility,
+      config: { minN: PROMOTION_MIN_N, windowMs: OUTCOME_WINDOW_MS, sustainMs: OUTCOME_SUSTAIN_MS, harmChannelActive },
+      helpedUndercount: "reply-referencing deferred — a pure reply/Q&A intervention records as no-effect (conservative: delays promotion, never enables a wrong one)",
+    });
+  }
   if (url.pathname === "/api/steward/journal" && req.method === "GET") {
     const tail = Math.min(50, Math.max(1, Number(url.searchParams.get("tail") ?? 1) | 0));
     return json({ records: await readStewardJournal(tail) });
@@ -3061,6 +3209,39 @@ Bun.serve<WSData>({
     // pane's env (FLEET_STEWARD_TOKEN) by hand — same access model as /api/audit.
     if (url.pathname === "/api/steward/token" && req.method === "GET")
       return json({ token: stewardToken });
+    // owner harm-label channel — the safety-critical half of the fuel (steward-intelligence.md
+    // §4/§6). This is the ONLY writer of `harmed`: the owner is the harm oracle, harm is never
+    // auto-measured or LLM-judged. `{ class }` (optionally confirming a crash candidate) marks a
+    // class harmful → harmed++. `{ attest: true }` records that the owner is operating the channel
+    // WITHOUT flagging harm (e.g. dismissing a crash candidate as coincidental). Either way the
+    // channel is now "operating", which is what lets promotionEligible() ever return true — a
+    // harm-blind tally (owner has never engaged) promotes nothing.
+    if (url.pathname === "/api/steward/outcomes/harm" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body) return json({ error: "invalid json" }, 400);
+      if (body.attest === true && body.class === undefined) {
+        harmChannelActive = true;
+        writeStewardJournal({ kind: "harm_channel_attest" });
+        saveState();
+        return json({ ok: true, harmChannelActive });
+      }
+      const cls = body.class;
+      if (typeof cls !== "string" || !cls || cls.length > 40)
+        return json({ error: "class must be a non-empty string ≤40 chars (or { attest: true })" }, 400);
+      bumpTally(cls, "harmed");
+      harmChannelActive = true; // the owner engaging the harm oracle is what makes the record harm-aware
+      // clear a matching unreviewed crash candidate — the owner has now ruled on it
+      const ref = typeof body.ref === "string" ? body.ref : undefined;
+      const slotN = typeof body.slot === "number" ? body.slot : undefined;
+      for (let i = harmCandidates.length - 1; i >= 0; i--)
+        if (harmCandidates[i].class === cls && (ref === undefined || harmCandidates[i].ref === ref)
+          && (slotN === undefined || harmCandidates[i].slot === slotN))
+          harmCandidates.splice(i, 1);
+      writeStewardJournal({ kind: "harm_confirmed", class: cls, ...(ref !== undefined ? { ref } : {}), ...(slotN !== undefined ? { slot: slotN } : {}) });
+      audit("steward_journal", stewardSlot()?.id, `harm:${cls}`);
+      saveState();
+      return json({ ok: true, class: cls, tally: outcomeTally[cls], eligible: promotionEligible(cls) });
+    }
     // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
     // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
     if (url.pathname === "/api/enhance" && req.method === "POST") {

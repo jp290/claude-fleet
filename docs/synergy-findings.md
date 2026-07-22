@@ -68,7 +68,7 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
   **[re-examined 2026-07-22, verified]** No classifier exists server-side (still true), but two
   corrections to the original framing drop this out of the early set. (a) The git-derived 3-way
   (`dirty?editing:ahead?ready:clean`) is **not a withheld signal**: `/api/steward/sessions`
-  already ships the full `git{branch,dirty,ahead,behind}` object per slot (`server.ts:2638–2641`),
+  already ships the full `git{branch,dirty,ahead,behind}` object per slot (`server.ts:2770–2773`),
   so the steward derives the 3-way in one line from inputs it *already holds* — not statistical
   guessing. (b) That 3-way is **not the taxonomy the pulse runs on**: `rundgang.md:14` classifies
   `healthy-running / done-looking / stalled-dirty / stuck-looping / awaiting-human / unknown`, and
@@ -129,15 +129,21 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
 
 ## Tier 3 — learning-loop fuel (foundational for the ladder, §4). Medium effort.
 
-- **Intervention OUTCOMES are recorded by no one — so the ladder can never promote.**
-  **[agent]** `audit.jsonl` logs every `steward_send` (`kind×ref×slot×ts`) but no outcome; the
-  journal logs pulse-level counts, and outcomes are *explicitly deferred* (`2618`). §4 needs "N
-  interventions of a class with a clean helped/no-harm record" — that data is written nowhere.
-  *Needs a write-time durable per-class tally (NOT a scan of the rotatable journal — §3's own
-  warning) + an effect-sensor comparing post-send `lastOutput`/`gitInfo` delta. Caution: the
-  effect-window must not fire on stale state (the handoff's staleness warning).* Until this
-  exists, the whole ladder/autonomy-expansion vision has no fuel — arguably the highest
-  *strategic* value here, at the highest effort.
+- **Intervention OUTCOMES — the ladder's fuel. BUILT 2026-07-22 (fuel + criterion; ladder wiring future).**
+  **[agent]** *Was:* `audit.jsonl` logged every `steward_send` but no outcome; §4 needs "N interventions
+  of a class with a clean helped/no-harm record" and that data was written nowhere. *Now:* every steward
+  send parks a persisted pending-outcome baseline (`handleStewardSend`, `server.ts:2683`); a window-close
+  pass folded into `tickGit` (`measureOutcomes`, `server.ts:672`) classifies it DETERMINISTICALLY — helped
+  = git delta OR sustained output; else no-effect (ambiguous → no-effect, conservative) — and increments a
+  durable per-class tally `{helped,noEffect,harmed}` in persisted state (`outcomeTally`, read by the ladder,
+  NEVER a journal scan — §3). `harmed` is OWNER-supplied only via `POST /api/steward/outcomes/harm`
+  (`server.ts:3219`); a deterministic `claudeAlive` true→false-in-window is a crash CANDIDATE escalated to
+  the owner, never an auto harm label (§6). The promotion predicate `promotionEligible` (`server.ts`, gauge
+  at `GET /api/steward/outcomes`) requires `helped ≥ N AND harmed == 0 AND` the harm channel has operated —
+  never eligible on a harm-blind record. **Deferred (documented, not hidden):** reply-referencing detection —
+  its absence under-counts `helped` (a pure reply/Q&A intervention records as no-effect), which is CONSERVATIVE
+  (delays a promotion, never enables a wrong one). The autonomy *ladder wiring itself* is still future — only
+  the fuel + criterion shipped.
 - **`auto_skip` streaks and capped-demand are surfaced nowhere but the raw `/api/audit` dump.**
   "This auto skipped 6× running" / "the steward hit the episode cap 4× wanting slot 3" are
   derivable and are exactly the self-model's demand signal.

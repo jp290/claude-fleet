@@ -1121,30 +1121,6 @@ if (REPO) {
     riskDirty.empty === false && riskDirty.dirtyFiles.some((f) => f.includes("code.txt")), JSON.stringify(riskDirty));
   check("risk endpoint rejects a non-lane slot", (await get("/api/slots/2/risk")).status === 400);
 
-  // --- Part B: 🧹 sweep agent (FLEET_SWEEP_CMD stand-in maps empty→safe-to-remove/remove,
-  // non-empty→active-work/none — deterministic, so the contract round-trips exactly) ---
-  interface SweepVerdictRow { path: string; verdict: string; reason: string; suggestedAction: string }
-  const swRes = await post(`/api/slots/${lnDirty.slot}/sweep`, {});
-  const swJ = (await swRes.json()) as { verdicts?: SweepVerdictRow[]; outstanding?: string; error?: string };
-  check("sweep endpoint round-trips the documented JSON contract",
-    swRes.ok && Array.isArray(swJ.verdicts) && swJ.verdicts.length >= 2, JSON.stringify(swJ));
-  // the new {verdicts, outstanding} object shape — the "what's still missing" synthesis
-  check("sweep response carries the outstanding synthesis (what's still missing)",
-    typeof swJ.outstanding === "string" && swJ.outstanding.includes("fake outstanding"), JSON.stringify(swJ.outstanding));
-  const vDirty = swJ.verdicts?.find((v) => v.path === lnDirty.cwd);
-  const vClean = swJ.verdicts?.find((v) => v.path === lnClean2.cwd);
-  check("sweep verdict for the dirty+unpushed lane is active-work/none",
-    vDirty?.verdict === "active-work" && vDirty?.suggestedAction === "none", JSON.stringify(vDirty));
-  check("sweep verdict for the clean empty lane is safe-to-remove/remove",
-    vClean?.verdict === "safe-to-remove" && vClean?.suggestedAction === "remove", JSON.stringify(vClean));
-  const swGet = await get(`/api/slots/${lnDirty.slot}/sweep`);
-  const swGetJ = (await swGet.json()) as { verdicts?: SweepVerdictRow[]; cached?: boolean };
-  check("sweep GET serves the cache without re-spawning the agent", swGet.ok && swGetJ.cached === true, JSON.stringify(swGetJ));
-  // guards fix J: a true cache hit returns the SAME verdicts the POST produced — proving GET
-  // did not re-run the agent (which, being non-deterministic in prod, could differ)
-  check("sweep GET verdicts are byte-identical to the POST verdicts (agent not re-run)",
-    JSON.stringify(swGetJ.verdicts) === JSON.stringify(swJ.verdicts), JSON.stringify(swGetJ.verdicts));
-
   // --- Part B2: 💾 lane commit — the SAVE that land/merge (dirty-tree refusers) can't do.
   // Commit-only (never push/land); reversible by the owner. lnDirty is dirty here (its
   // uncommitted code.txt edit) — quick mode must commit it and leave the tree clean.

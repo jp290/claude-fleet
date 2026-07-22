@@ -482,12 +482,6 @@
   .bbtn.subtle:hover:not(:disabled) { color: #ccc; border-color: #3a3a44; }
   /* AGENTS group: make the advisory / read-only nature legible */
   .bagenthint { color: #666; font-size: 10px; margin-bottom: 2px; }
-  /* the sweep's cross-lane "what's still missing" synthesis — set apart from verdict rows */
-  .boutstanding { margin-top: 8px; padding: 8px 10px; border-radius: 8px;
-    border: 1px solid #2c3a5e; background: #161b28; }
-  .bouthd { font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase;
-    color: #7aa2f7; margin-bottom: 3px; }
-  .boutbody { color: #c4c4c4; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
   .brow { display: flex; gap: 7px; padding: 2px 0; color: #999; line-height: 1.45; }
   .brow .bhash { flex: none; color: #666; }
   .brow .bsub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -529,20 +523,10 @@
   /* lane map + ⏫ merge agent */
   .bwthead { display: flex; align-items: center; gap: 8px; }
   .bwthead h3 { flex: 1; min-width: 0; }
-  .bwtsweep { flex: none; padding: 2px 8px; border-radius: 6px; border: 1px solid #333; background: #262626;
-    color: #999; font-size: 10px; font-family: inherit; cursor: pointer; }
-  .bwtsweep:hover:not(:disabled) { color: #ddd; border-color: #3a4a7a; }
-  .bwtsweep:disabled { opacity: 0.6; cursor: default; }
-  /* 🧹 sweep verdicts — advisory only; the "do it" button still runs the real gated endpoint */
+  /* ⇲ shelve note row on an orphaned lane — "what's left" context when resuming */
   .sweepv { margin: 3px 0 6px 16px; padding: 5px 8px; border-radius: 7px; font-size: 10.5px; line-height: 1.4;
     display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .sweepv.safe-to-remove { background: #16241a; border: 1px solid #2c5e3a; }
-  .sweepv.stale { background: #221b12; border: 1px solid #5a4a30; }
-  .sweepv.active-work { background: #1a1a1a; border: 1px solid #2a2a2a; }
   .sweepvbadge { flex: none; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
-  .sweepv.safe-to-remove .sweepvbadge { color: #9ece6a; }
-  .sweepv.stale .sweepvbadge { color: #e0af68; }
-  .sweepv.active-work .sweepvbadge { color: #888; }
   .sweepvreason { flex: 1; min-width: 120px; color: #aaa; }
   .bwt { display: flex; gap: 6px; align-items: center; padding: 2px 0; color: #aaa; line-height: 1.5; }
   .bwt .bwtbr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9ab; }

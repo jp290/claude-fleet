@@ -72,6 +72,46 @@ const sess2 = (await (await get("/api/sessions")).json()) as { autos: AutoInfo[]
 const a2after = sess2.autos.find((a) => a.id === a2.auto.id);
 check("alive-claude gate: lastResult reports sent", a2after?.lastResult === "sent", a2after?.lastResult ?? "missing");
 
+// --- branch 3: intervention-outcome crash CANDIDATE (steward-intelligence.md §4/§6). A steward
+// send parks a pending-outcome baseline while claude is alive; if claude dies inside the effect
+// window, the window-close pass records a crash CANDIDATE for owner review — it must NEVER auto-set
+// the `harmed` tally (attribution is ambiguous; the owner is the harm oracle). This needs a REAL
+// claude that can transition alive→dead, so it lives here, not in the FLEET_CMD=true main suite
+// (where claudeAlive short-circuits `return true`). Slot 2 still runs the alive claude-hang. ---
+const stewTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+const stewH = { "content-type": "application/json", authorization: `Bearer ${stewTok}` };
+const stewPost = (path: string, body: unknown) => fetch(BASE + path, { method: "POST", headers: stewH, body: JSON.stringify(body) });
+const stewGet = (path: string) => fetch(BASE + path, { headers: stewH });
+
+// let slot 2's last output age past the (shrunk) idle gate before the nudge
+const MIN_IDLE = Number(process.env.FLEET_STEWARD_MIN_IDLE_MS ?? 60_000);
+for (let i = 0; i < 200; i++) {
+  const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+  const sl = sx.slots.find((x) => x.id === 2);
+  if (sl && sx.now - sl.lastOutput >= MIN_IDLE) break;
+  await Bun.sleep(150);
+}
+const crashSend = await stewPost("/api/steward/send", { slot: 2, kind: "continue_nudge", ref: "continue" });
+check("crash-candidate: steward send succeeds while claude is alive", crashSend.ok, String(crashSend.status));
+// make claude DIE inside the window: swap the binary back to the immediate-exit variant and kill
+// the pane, so the respawn runs `claude` (exits at once) and falls through to a bare shell → dead
+await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-exit`).arrayBuffer());
+await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
+await tmuxOut("kill-session", "-t", "s2");
+let crashSeen = false, harmedCount = -1, cleared = false;
+for (let i = 0; i < 160; i++) { // ~32s: window (3s) + one measuring tickGit (≤10s) + margin
+  const o = (await (await stewGet("/api/steward/outcomes")).json()) as {
+    tally: Record<string, { harmed: number }>; candidates: { slot: number; class: string }[]; pending: { slot: number }[];
+  };
+  crashSeen = o.candidates.some((c) => c.slot === 2 && c.class === "continue_nudge");
+  harmedCount = o.tally.continue_nudge?.harmed ?? 0;
+  cleared = !o.pending.some((p) => p.slot === 2);
+  if (crashSeen && cleared) break;
+  await Bun.sleep(200);
+}
+check("crash-candidate: a claudeAlive true→false in the window is recorded as a candidate for owner review", crashSeen);
+check("crash-candidate: it does NOT auto-set the harmed tally (owner is the harm oracle, §6)", harmedCount === 0, `harmed=${harmedCount}`);
+
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

@@ -45,12 +45,15 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # PATH_EXPORT is read ONCE at server.ts startup and baked into every pane command for the
 # server's whole lifetime (server.ts:31) — $FAKEBIN must be prepended here, at server start,
 # not passed to the test script later, or newly-opened panes wouldn't see it
+# FLEET_STEWARD_MIN_IDLE_MS + FLEET_OUTCOME_WINDOW_MS are shrunk for the crash-candidate branch:
+# it must send a steward nudge (idle gate) then let claude die inside the effect window (which the
+# window-close measurement pass reads) within the test's time budget rather than the 60s/10min defaults.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=claude exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=claude FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_OUTCOME_WINDOW_MS=3000 exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" bun fleet-e2e-claude-gate.ts
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 bun fleet-e2e-claude-gate.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

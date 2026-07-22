@@ -84,8 +84,12 @@ EOF
 chmod +x "$DIR/fakecommit"
 
 tmux -L "$SOCK" kill-server 2>/dev/null
+# FLEET_OUTCOME_WINDOW_MS shrinks the 10-min intervention-effect window so the outcome tests
+# can measure a send within seconds; SUSTAIN is left at its 60s default so a shrunk window can
+# never mark helped on transient output (every helped in-test is via the git signal).
+# FLEET_PROMOTION_MIN_N=1 so a single helped makes a class promotion-eligible.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_COMMIT_CMD='$DIR/fakecommit' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_COMMIT_CMD='$DIR/fakecommit' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 for _ in $(seq 1 60); do
@@ -96,7 +100,10 @@ done
 sleep 0.5
 
 cd "$DIR" || exit 1
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE bun fleet-e2e.ts
+# the outcome-window/N overrides must also be in the TEST's env: the suite restarts srv mid-run
+# and rebuilds the server env from a whitelist of process.env keys — without these here they'd be
+# dropped on restart and the post-restart server would revert to the 10-min default window.
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

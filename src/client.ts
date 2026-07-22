@@ -1369,23 +1369,30 @@ async function renderBoard() {
               }
             };
             row.appendChild(open);
-            const rmv = el("button", "bwtact del", "✕") as HTMLButtonElement;
-            rmv.title = "remove this worktree — refused if it has uncommitted or unpushed/unmerged work";
-            rmv.onclick = async () => {
-              const ok = await showRiskPreview(`Remove worktree ${w.branch}?`, w, "remove");
-              if (!ok) return;
-              const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
-              if (!r.ok) {
-                const j = (await r.json().catch(() => ({}))) as { error?: string };
-                alert(j.error ?? "remove failed");
+            // one "close" affordance: git state (w.empty) picks the safe default — a clean
+            // lane is removed after a light confirm; a lane with unsaved/unmerged work opens
+            // the deliberate discard read-window below (destruction stays gated exactly as
+            // before). "open" above is the separate, opposite intent (reattach to KEEP it).
+            const close = el("button", "bwtact del", "close") as HTMLButtonElement;
+            close.title = w.empty
+              ? "close this lane — clean worktree, nothing to lose (removes it)"
+              : "close this lane — it has unsaved/unmerged work: opens the discard read-window (destroys it). Reattach with ‘open’ to keep it.";
+            close.onclick = async () => {
+              if (w.empty) {
+                const ok = await showRiskPreview(`Close lane ${w.branch}? — clean worktree, nothing to lose`, w, "close");
+                if (!ok) return;
+                const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
+                if (!r.ok) {
+                  const j = (await r.json().catch(() => ({}))) as { error?: string };
+                  alert(j.error ?? "close failed");
+                }
+                void renderBoard();
+              } else {
+                discardArm = { path: w.path, at: Date.now() }; // deliberate destruction gate (read-window below)
+                void renderBoard();
               }
-              void renderBoard();
             };
-            row.appendChild(rmv);
-            const disc = el("button", "bwtact del", "☠") as HTMLButtonElement;
-            disc.title = "discard this lane — force-deletes the worktree AND its branch; uncommitted work is destroyed";
-            disc.onclick = () => { discardArm = { path: w.path, at: Date.now() }; void renderBoard(); };
-            row.appendChild(disc);
+            row.appendChild(close);
           }
           sec.appendChild(row);
           // 🧹 sweep verdict, if one was fetched for this repo — purely advisory: "do it"
@@ -1395,33 +1402,11 @@ async function renderBoard() {
             const vrow = el("div", `sweepv ${verdict.verdict}`);
             vrow.appendChild(el("span", "sweepvbadge", verdict.verdict));
             vrow.appendChild(el("span", "sweepvreason", verdict.reason));
-            if (verdict.suggestedAction !== "none") {
-              const doit = el("button", "bwtact", `do: ${verdict.suggestedAction}`) as HTMLButtonElement;
-              doit.title = "runs the real, git-verified endpoint — a wrong verdict can only propose, never force this";
-              doit.onclick = async () => {
-                if (verdict.suggestedAction === "remove") {
-                  const ok = await showRiskPreview(`Remove worktree ${w.branch}? (agent suggested)`, w, "remove");
-                  if (!ok) return;
-                  const r = await post("/api/worktrees/remove", { repo: wts.repo, path: w.path });
-                  if (!r.ok) {
-                    const j = (await r.json().catch(() => ({}))) as { error?: string };
-                    alert(j.error ?? "remove failed");
-                  }
-                  void renderBoard();
-                } else if (verdict.suggestedAction === "discard") {
-                  // the discard confirm panel only renders for slot-less lanes; on a slot-held
-                  // lane, arming would set state that never shows — tell the owner to kill first
-                  if (w.slot != null) {
-                    alert(`This lane is open in slot ${w.slot} — kill the slot first, then discard.`);
-                    return;
-                  }
-                  // reuse the existing read-window discard flow — the real gate stays exactly there
-                  discardArm = { path: w.path, at: Date.now() };
-                  void renderBoard();
-                }
-              };
-              vrow.appendChild(doit);
-            }
+            // advisory only: the single "close" action on the row above computes the safe
+            // default from git state (which the verdict's suggestedAction merely guessed at),
+            // so the verdict no longer carries its own action button — it reads as the WHY,
+            // and one action path can never diverge from a second. (slot-held lanes show no
+            // close button at all — land or kill them in the slot first, as before.)
             sec.appendChild(vrow);
           }
           // the confirm panel is not a dialog: the consequences ARE the wait screen. The

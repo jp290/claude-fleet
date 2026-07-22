@@ -78,13 +78,19 @@ this note's word for it.*
    **owner-model built** → gitignored `OWNER.md` (home resolved, §3), the safety-critical
    §4 risk-surface corpus-confirmed (48/48 transcripts, two extraction agents). This is
    the old step-5 "Item B" owner-model half. Wired into `/steward` load ritual + README.
-2. **Deploy + make the wiring live** (owner-triggered — deploy is his call, OWNER.md §4c):
-   commit the tracked doc changes to `main`; `git -C claude-fleet.worktrees/steward merge
-   --ff-only main` (propagates `.gitignore` so OWNER.md is ignored-not-untracked there, and
-   the updated `/steward` command); one `srv` restart. Then configure a **bounded
-   heartbeat**: `POST /api/slots/1/autos {text:"/rundgang", everySec:<e.g. 3600>,
-   perpetual:true, idleSec:60}` + quiet hours. **Prove-before-schedule** (§7): watch N
-   times first — one manual proof-run is not N.
+   **Also DONE:** committed to `main` (`e959227`), steward worktree ff-merged, `srv`
+   restarted (sessions survived), and a **bounded live heartbeat armed** — auto `3499a018`,
+   `/rundgang` every 7200s, perpetual, idle-gated 60s, quiet 23–8. Kill-switch =
+   `POST /api/autos/switch {"on":false}`. A code-grounded as-built map now lives in
+   **`docs/steward-overview.md`** (three-agent read of `server.ts`).
+2. **THE high-leverage, low-risk lever — hand the steward deterministic facts it currently
+   re-infers** (`docs/steward-overview.md` §signal-quality lever). The pulse's whole
+   `condition` classification is LLM-derived every time, though the server holds the raw
+   signals; `claudeAlive` (`server.ts:1007`), the full `mergeLast` verdict (only the
+   `resolved` bool is surfaced), `Task` status, and `gitOp` in the overview are all withheld
+   from every steward route. Compute the condition server-side + surface these. This is
+   "verify against real state" applied to the steward's senses — it raises the ceiling on
+   everything below and adds **zero** risk. Do this **before** widening autonomy.
 3. **(Owner's emphasis) Test the steward AGENT under the long-autonomous lens** — now
    with OWNER.md loaded: does it self-gate correctly (OWNER.md §4d), stay honest,
    quiet-when-nothing-changed, non-drifting over many pulses, and *use* the owner-model's
@@ -95,6 +101,11 @@ this note's word for it.*
    seeding the **library of proven prompts** (§7) — the Rundgang digest as prototype
    item — and standing up the journal→owner-model growth loop (steward *proposes* edits,
    JP promotes). Propose-not-assert, evidence-weighted.
+   - **Concrete first seed step (owner-requested):** run a **Grok/web-research prompt**
+     (existing forming library item, §7) to survey what people already do most impactfully
+     with agents — e.g. a scheduled morning news/state digest — and distill the
+     *schedulable subset* (self-contextualizing, periodic, harmless-when-nothing-changed)
+     into candidate library items. Prove-before-schedule each before it graduates.
 
 Deeper backlog (from the analysis, not yet built): send-cap re-key + escalation
 (step 6); `isReversible()` table + ladder rung-state + owner promotion route

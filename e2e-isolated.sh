@@ -102,8 +102,10 @@ sleep 0.5
 cd "$DIR" || exit 1
 # the outcome-window/N overrides must also be in the TEST's env: the suite restarts srv mid-run
 # and rebuilds the server env from a whitelist of process.env keys — without these here they'd be
-# dropped on restart and the post-restart server would revert to the 10-min default window.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 bun fleet-e2e.ts
+# dropped on restart and the post-restart server would revert to the 10-min default window. Same
+# for the dispatch repo + fake-agent cmds: dropped, the post-restart dispatcher is permanently
+# unavailable and merge/summary/commit fall back to the real `claude`.
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_COMMIT_CMD="$DIR/fakecommit" bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

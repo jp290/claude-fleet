@@ -1632,8 +1632,12 @@ await Bun.sleep(500);
 // FLEET_OUTCOME_WINDOW_MS / FLEET_PROMOTION_MIN_N must ride across the restart too, or the
 // post-restart server reverts to the 10-min default window and the outcome tests (which run
 // after this section) can never measure a send inside the test's time budget.
+// FLEET_DISPATCH_REPO + the fake-agent cmds must ride across too, or every post-restart test
+// meets a server whose dispatcher is permanently unavailable and whose merge/summary/commit
+// agents are the real `claude` instead of the suite's stand-ins.
 const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
-  "FLEET_OUTCOME_WINDOW_MS", "FLEET_PROMOTION_MIN_N"]
+  "FLEET_OUTCOME_WINDOW_MS", "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
+  "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD"]
   .filter((k) => process.env[k])
   .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
   .join("");
@@ -2052,10 +2056,113 @@ if (auditRotExists) {
     && (afterRot.tally.continue_nudge?.helped ?? 0) >= 1 && afterRot.tally.lifecycle_op?.harmed === 1,
     JSON.stringify(afterRot.tally).slice(0, 200));
 
+  // --- Tier-1 signal surface (synergy-findings.md): the steward's READ routes expose the
+  // deterministic facts the server already computes — cached claudeAlive, idleMs, gitOp, the
+  // FULL mergeLast verdict, and the lane's founding Task. The FLEET_CMD=true suite can only
+  // prove the cache PLUMBING (claudeAlive short-circuits true here); the dead-vs-live pane
+  // readings and the cache-for-reads/fresh-for-gates safety proof live in the claude-gate
+  // harness (fleet-e2e-claude-gate.ts), where a real claude process can die. ---
+  interface SigSlot {
+    id: number; cwd: string | null; lastOutput: number;
+    alive: boolean | null; gitOp: boolean | null; idleMs: number | null;
+    merge: { status: string; detail: string; conflicted: string[]; at: number } | null;
+    task: { id: string; status: string; source: string; text: string } | null;
+  }
+  const sigSessions = async (): Promise<{ now: number; slots: SigSlot[] }> =>
+    (await (await stewGet("/api/steward/sessions")).json()) as { now: number; slots: SigSlot[] };
+  const sigFor = async (slot: number): Promise<SigSlot | undefined> =>
+    (await sigSessions()).slots.find((x) => x.id === slot);
+
+  // cached alive: tickGit (≤10s) must deliver a reading for a live pane
+  let sigOc2: SigSlot | undefined;
+  for (let i = 0; i < 80; i++) {
+    sigOc2 = await sigFor(oc2.slot);
+    if (sigOc2?.alive === true) break;
+    await Bun.sleep(250);
+  }
+  check("steward sessions surfaces the cached claudeAlive reading for a live pane", sigOc2?.alive === true, JSON.stringify(sigOc2));
+  check("gitOp reads false for an unwedged lane (control for the wedged assertion below)", sigOc2?.gitOp === false);
+  check("no merge verdict yet → merge reads null (control for the verdict assertion below)", sigOc2?.merge === null);
+
+  // idleMs is server-computed from the same `now` the payload carries — exact, not approximate
+  const sigAll = await sigSessions();
+  const sigIdle = sigAll.slots.find((x) => x.id === oc2.slot);
+  check("steward sessions surfaces idleMs = now − lastOutput for an active slot",
+    sigIdle?.idleMs === Math.max(0, sigAll.now - (sigIdle?.lastOutput ?? 0)), JSON.stringify({ now: sigAll.now, slot: sigIdle }));
+  const sigFree = sigAll.slots.find((x) => !x.cwd);
+  check("an inactive slot reads null across the signal surface (alive/gitOp/idleMs/merge/task)",
+    !!sigFree && sigFree.alive === null && sigFree.gitOp === null && sigFree.idleMs === null
+    && sigFree.merge === null && sigFree.task === null, JSON.stringify(sigFree));
+
+  // FULL mergeLast verdict: run a conflicting merge with the fake agent in "blocked" mode —
+  // the steward previously saw only `mergePending`; a failed/refused land was invisible.
+  await Bun.write(`${oc2.cwd}/sig.txt`, "lane side\n");
+  spawnSync("git", ["-C", oc2.cwd, "add", "sig.txt"]);
+  spawnSync("git", ["-C", oc2.cwd, "commit", "-qm", "signal lane work"]);
+  await Bun.write(`${REPO}/sig.txt`, "main side\n");
+  spawnSync("git", ["-C", REPO, "add", "sig.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "signal main work"]);
+  await Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/mergemode`, "blocked");
+  for (let i = 0; i < 80; i++) { // settle past MERGE_IDLE_MS (3s) so the merge job actually starts
+    const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+    const sl = sx.slots.find((x) => x.id === oc2.slot);
+    if (sl && sx.now - sl.lastOutput >= 3000) break;
+    await Bun.sleep(150);
+  }
+  const sigMgPost = await (await post(`/api/slots/${oc2.slot}/merge`, {})).json();
+  let sigMgLast: unknown = null;
+  for (let i = 0; i < 150; i++) { // wait for the async merge job to settle
+    const mj = (await (await get(`/api/slots/${oc2.slot}/merge`)).json()) as { running?: boolean; last?: unknown };
+    if (!mj.running) { sigMgLast = mj.last ?? null; break; }
+    await Bun.sleep(100);
+  }
+  const sigMerge = await sigFor(oc2.slot);
+  check("steward sessions surfaces the FULL mergeLast verdict of a refused land (status+detail+conflicted)",
+    sigMerge?.merge?.status === "blocked" && sigMerge.merge.detail === "fake conflict" && Array.isArray(sigMerge.merge.conflicted)
+    && typeof sigMerge.merge.at === "number",
+    `merge=${JSON.stringify(sigMerge?.merge)} post=${JSON.stringify(sigMgPost)} last=${JSON.stringify(sigMgLast)}`);
+  const sigBrief = (await (await stewGet(`/api/steward/slots/${oc2.slot}/brief`)).json()) as { merge?: { status?: string } | null };
+  check("the steward brief carries the same merge verdict", sigBrief.merge?.status === "blocked", JSON.stringify(sigBrief.merge));
+
+  // gitOp: wedge a real mid-rebase conflict in the lane → the cached flag flips true
+  const sigMain = spawnSync("git", ["-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
+  spawnSync("git", ["-C", oc2.cwd, "rebase", sigMain]); // stops on the sig.txt conflict
+  let sigWedged: SigSlot | undefined;
+  for (let i = 0; i < 80; i++) {
+    sigWedged = await sigFor(oc2.slot);
+    if (sigWedged?.gitOp === true) break;
+    await Bun.sleep(250);
+  }
+  check("steward sessions surfaces a wedged merge/rebase (gitOp true)", sigWedged?.gitOp === true, JSON.stringify(sigWedged?.gitOp));
+  spawnSync("git", ["-C", oc2.cwd, "rebase", "--abort"]);
+
   await post(`/api/slots/${oc1.slot}/kill`, {});
   await post(`/api/slots/${oc2.slot}/kill`, {});
   await post(`/api/slots/${oc3.slot}/kill`, {});
   await post(`/api/slots/${lnStew.slot}/kill`, {});
+
+  // --- Task on the signal surface: dispatch a queued task and the holding lane's steward
+  // view carries the founding intent (id/status/source/text) it was started for. ---
+  {
+    await post("/api/dispatch", { on: true });
+    const sigTask = (await (await post("/api/tasks", { text: "steward-signal task probe", queue: false })).json()) as { task: { id: string } };
+    const sigTid = sigTask.task.id;
+    await post(`/api/tasks/${sigTid}/queue`, {});
+    let sigLaneSlot = 0;
+    for (let i = 0; i < 80; i++) { // dispatch tick (8s) + 4s boot re-gate → give it ~40s
+      const found = (await sigSessions()).slots.find((x) => x.task?.id === sigTid && x.task.status === "sent");
+      if (found) { sigLaneSlot = found.id; break; }
+      await Bun.sleep(500);
+    }
+    const sigLane = sigLaneSlot ? await sigFor(sigLaneSlot) : undefined;
+    check("steward sessions surfaces the dispatched lane's founding Task (id/status/source/text)",
+      !!sigLane?.task && sigLane.task.id === sigTid && sigLane.task.status === "sent"
+      && sigLane.task.source === "owner" && sigLane.task.text.startsWith("steward-signal task probe"),
+      JSON.stringify(sigLane?.task ?? null));
+    await post("/api/dispatch", { on: false });
+    if (sigLaneSlot) await post(`/api/slots/${sigLaneSlot}/kill`, {});
+    await post(`/api/tasks/${sigTid}/delete`, {});
+  }
 }
 
 console.log(results.join("\n"));

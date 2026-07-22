@@ -112,6 +112,72 @@ for (let i = 0; i < 160; i++) { // ~32s: window (3s) + one measuring tickGit (�
 check("crash-candidate: a claudeAlive true→false in the window is recorded as a candidate for owner review", crashSeen);
 check("crash-candidate: it does NOT auto-set the harmed tally (owner is the harm oracle, §6)", harmedCount === 0, `harmed=${harmedCount}`);
 
+// --- branch 4: Tier-1 signal surface under a REAL claude — the cached `alive` reading on the
+// steward read routes, and THE safety invariant: cache-for-reads / fresh-for-gates. The main
+// suite can't test either (FLEET_CMD=true short-circuits claudeAlive to a constant true). ---
+
+interface SigSlot { id: number; alive: boolean | null }
+const sigFor = async (slot: number): Promise<SigSlot | undefined> =>
+  ((await (await stewGet("/api/steward/sessions")).json()) as { slots: SigSlot[] }).slots.find((x) => x.id === slot);
+
+// slot 1 has been a bare shell since branch 1 — the cached reading must say so (≤ one tick)
+let sigDead: SigSlot | undefined;
+for (let i = 0; i < 60; i++) {
+  sigDead = await sigFor(1);
+  if (sigDead?.alive === false) break;
+  await Bun.sleep(250);
+}
+check("steward sessions: a dead-claude pane reads alive=false from the cache", sigDead?.alive === false, JSON.stringify(sigDead));
+
+// cache-for-reads / fresh-for-gates: build a pane whose CACHED reading says alive but whose
+// claude is actually dead, and prove the delivery gate refuses anyway — i.e. the gate ran a
+// FRESH claudeAlive, never the ≤10s-stale tickGit cache (a stale-cache gate would type into
+// the bare shell). The tickGit interval can race the kill→send window and flip the cache
+// early; that only weakens the PROOF (not the gate), so retry the setup up to 3 times.
+let gateRefused = false, freshProven = false, sigDetail = "";
+for (let attempt = 0; attempt < 3 && !freshProven; attempt++) {
+  // (re)establish a LIVE claude in slot 3
+  await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-hang`).arrayBuffer());
+  await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
+  if (attempt === 0) {
+    const o3 = await post("/api/slots/3/open", { cwd: "~" });
+    check("open slot 3 (fresh-gate branch)", o3.ok);
+  } else {
+    await tmuxOut("kill-session", "-t", "s3"); // self-heal respawns with the hang binary
+  }
+  let aliveCached = false;
+  for (let i = 0; i < 80; i++) { // respawn + one tickGit (≤10s) + margin
+    if ((await sigFor(3))?.alive === true) { aliveCached = true; break; }
+    await Bun.sleep(250);
+  }
+  if (!aliveCached) { sigDetail = `attempt ${attempt}: cache never read alive`; continue; }
+  // kill claude NOW: exit-variant binary + pane kill → self-heal respawns straight to a bare
+  // shell. No tick has run yet, so the cache still says alive — exactly the stale-cache race
+  // the docs name ("a pane that died 9s ago").
+  await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-exit`).arrayBuffer());
+  await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
+  await tmuxOut("kill-session", "-t", "s3");
+  for (let i = 0; i < 40; i++) { // wait for the self-heal respawn so a real (bare-shell) pane exists
+    if ((await tmuxOut("has-session", "-t", "s3")).code === 0) break;
+    await Bun.sleep(100);
+  }
+  await Bun.sleep(800); // let the exit-variant claude die and the pane settle at the shell
+  const cacheBefore = (await sigFor(3))?.alive;
+  const r = await stewPost("/api/steward/send", { slot: 3, kind: "continue_nudge", ref: "continue" });
+  const rj = (await r.json()) as { error?: string };
+  const cacheAfter = (await sigFor(3))?.alive;
+  gateRefused = r.status === 409 && (rj.error ?? "").includes("claude not running");
+  sigDetail = `attempt ${attempt}: status=${r.status} error=${rj.error} cacheBefore=${cacheBefore} cacheAfter=${cacheAfter}`;
+  if (!gateRefused) break; // a delivered send is a real gate failure — never retry past it
+  // proof condition: the cache read alive on BOTH sides of the refusal, so the refusing
+  // check cannot have come from the cache
+  if (cacheBefore === true && cacheAfter === true) freshProven = true;
+}
+check("fresh-for-gates: a steward send into a cache-alive-but-actually-dead pane is refused (409 not-alive)", gateRefused, sigDetail);
+check("the refusal fired WHILE the cache still read alive — the gate reads FRESH, never the cache", freshProven, sigDetail);
+const cap3 = await tmuxOut("capture-pane", "-t", "s3", "-p");
+check("nothing was typed into the bare shell despite the stale cache", !cap3.out.includes("[steward]"), cap3.out.slice(-120));
+
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

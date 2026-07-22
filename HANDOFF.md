@@ -1,9 +1,15 @@
-# HANDOFF — the steward's safety spine is built; next is the safe live heartbeat (2026-07-22)
+# HANDOFF — safety spine + risk-doctrine revision + owner-model built; next is deploy + prove the live heartbeat (2026-07-22)
 
 *This file is a prompt for you, the next session. Treat every claim, number, path,
 and commit hash here as a **claim to verify** against the tree and the running
 system before building on it (CLAUDE.md) — deterministic evidence beats this
 document. Its job is to induce the right model, not to be trusted.*
+
+*Two work phases landed 2026-07-22, in order: **Phase 1** (earlier) built the
+heartbeat's safety-spine CODE — journal/perpetual/kill-switch/quiet (next section).
+**Phase 2** (later) revised the risk doctrine and built the owner-model — see "THE
+open decision — RESOLVED" and "Ranked next steps" below; that is the current front.
+Where the two sections say "this session," Phase-1 text means the earlier phase.*
 
 ## Start here (primary sources, not summaries)
 
@@ -51,41 +57,44 @@ Tailscale IP only). `rundgang.md` changes also need the **steward worktree**
 fast-forwarded (`git -C claude-fleet.worktrees/steward merge --ff-only main`) — the
 live steward reads `/rundgang` from its own worktree, not `main`.
 
-## THE open decision — resolve this first (blocks a *safe* live heartbeat)
+## THE open decision — RESOLVED 2026-07-22 (the fork is dissolved)
 
-The bounds exist, but a live perpetual Rundgang is **not yet safe to turn on**: the
-Rundgang's `FLEET_STEWARD_TOKEN` can hit `/api/steward/send` (act-during-pulse seam),
-and the pulse runs in the steward's durable conversation (context-drain). Fork:
-
-- **(1) Full ephemeral read-only worker** (steward-intelligence §6.6) — fixes the
-  seam + context-drain + server-side journaling at once. But `summaryViaSession`
-  (server.ts ~1541) is *stateless*, so the pulse's "what changed since last time"
-  delta must be **server-injected** — real design work. Design-first.
-- **(2) Interim read-only Rundgang token** — a scoped credential that GETs
-  `/api/steward/*` but is 403'd by `/api/steward/send`. Closes the seam now; leaves
-  context-drain for later. Faster to a *safe* (if not context-optimal) live beat.
-
-This session recommended **(2) first, then iterate to (1)**. The owner had not
-chosen when the session ended — **confirm before building.**
+*Superseded. The old fork (read-only worker vs. read-only token) existed only to
+**prevent the steward acting (sending) during a pulse**. The 2026-07-22 doctrine
+revision (steward-intelligence §1) removes its premise: the steward acting during a
+pulse is **acceptable bounded action**, not a hole to close. `/api/steward/send` is
+owner-facing + reversible + idle-gated against an active human (OWNER.md §4c), so it
+sits in the reversible-latitude zone, not the unrecoverable-and-large-blast gate.
+Third-party outbound (the real never-cross line, OWNER.md §4b) is a **different**
+capability and stays gated regardless. So: **no read-only worker/token is needed for
+a safe beat.** Context-drain remains a real but *non-safety* concern — iterate the
+ephemeral worker later for context economy, not as a safety prerequisite. Verify the
+send-target claim against the `/api/steward/send` route before deploy — don't take
+this note's word for it.*
 
 ## Ranked next steps
 
-1. **Resolve the fork (2 vs 1) and build it** — the last mile to a *safe* live beat.
-2. **Deploy the spine + configure a bounded heartbeat**: one `srv` restart, then
-   `POST /api/slots/1/autos {text:"/rundgang", everySec:<e.g. 3600>, perpetual:true,
-   idleSec:60}`, plus set quiet hours. **Prove-before-schedule** (§7): watch it work
-   N times first — the single manual proof-run this session is not N.
-3. **(Owner's emphasis) Test the steward AGENT, and try genuinely different
-   approaches** — under the *long-autonomous* lens. Not just plumbing: does it stay
-   honest (the honesty gate), quiet-when-nothing-changed, non-drifting over many
-   autonomous pulses? This is far richer once a bounded beat is actually running.
-4. **Item A — commit-functions QA gate** (owner-requested, "at the end"): exercise
-   the *real* commit machinery end-to-end, not the `fakecommit` e2e stub. Autonomous
-   lane work leans on it. Scope it against the real code first.
-5. **Item B — prompt-history deep analysis (NEW session)**: multi-level analysis of
-   the owner's prompt history → the **owner-model** (steward-intelligence §3, home
-   still undecided: server-side vs gitignored `OWNER.md`) and the **impact library**
-   (§7). Discipline: propose-not-assert, durable, evidence-weighted. Its own context.
+1. **DONE this session:** doctrine revised (§1 + intro + thesis + this handoff);
+   **owner-model built** → gitignored `OWNER.md` (home resolved, §3), the safety-critical
+   §4 risk-surface corpus-confirmed (48/48 transcripts, two extraction agents). This is
+   the old step-5 "Item B" owner-model half. Wired into `/steward` load ritual + README.
+2. **Deploy + make the wiring live** (owner-triggered — deploy is his call, OWNER.md §4c):
+   commit the tracked doc changes to `main`; `git -C claude-fleet.worktrees/steward merge
+   --ff-only main` (propagates `.gitignore` so OWNER.md is ignored-not-untracked there, and
+   the updated `/steward` command); one `srv` restart. Then configure a **bounded
+   heartbeat**: `POST /api/slots/1/autos {text:"/rundgang", everySec:<e.g. 3600>,
+   perpetual:true, idleSec:60}` + quiet hours. **Prove-before-schedule** (§7): watch N
+   times first — one manual proof-run is not N.
+3. **(Owner's emphasis) Test the steward AGENT under the long-autonomous lens** — now
+   with OWNER.md loaded: does it self-gate correctly (OWNER.md §4d), stay honest,
+   quiet-when-nothing-changed, non-drifting over many pulses, and *use* the owner-model's
+   risk map? Try genuinely different approaches. Richest once a bounded beat runs.
+4. **Item A — commit-functions QA gate** (owner-requested, "at the end"): exercise the
+   *real* commit machinery end-to-end, not the `fakecommit` e2e stub.
+5. **Impact library (old Item B, second half)**: the owner-model is built; remaining is
+   seeding the **library of proven prompts** (§7) — the Rundgang digest as prototype
+   item — and standing up the journal→owner-model growth loop (steward *proposes* edits,
+   JP promotes). Propose-not-assert, evidence-weighted.
 
 Deeper backlog (from the analysis, not yet built): send-cap re-key + escalation
 (step 6); `isReversible()` table + ladder rung-state + owner promotion route
@@ -97,8 +106,12 @@ toggle for the kill-switch (mechanism tested, button not built).
 
 ## Load-bearing decisions + WHY (do not re-litigate or undermine)
 
-- **Autonomy and safety are one design** (steward-intelligence §1): act freely on the
-  reversible, gate the irreversible *forever*, park big decisions in the backlog.
+- **Autonomy and safety are one design** (steward-intelligence §1, *revised 2026-07-22*):
+  act freely on everything recoverable — accepting *bounded probabilistic harm* to the
+  degree the steward's judgment is proven — gate only the **unrecoverable-and-large-blast**
+  few *forever*, park big decisions in the backlog. Tolerance scales with judgment quality;
+  the owner-model (§3) is what *licenses* the loosened tolerance, so building it and
+  loosening the gate are **one move**, not two. For a capable model, context beats restraint.
 - **The journal is the keystone**: the ladder, prove-before-schedule, and the pulse's
   delta anchor all read from it. Promotion **counts** must live in a durable state
   tally (built with the ladder), **never** by scanning the rotatable journal file, or

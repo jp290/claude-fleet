@@ -1,8 +1,10 @@
 # Making the steward truly autonomous — and truly intelligent
 
 *Capstone design note 2026-07-21. The endgame is a steward that runs autonomously
-(JP). Everything built so far guards a human gate as inviolable. This doc resolves
-that apparent contradiction, defines what "intelligent" (not merely "automated")
+(JP). Everything built so far guards a human gate on the irreversible — narrowed
+and revised in §1 (2026-07-22) to the *unrecoverable-and-large-blast* set, with
+tolerance elsewhere scaled to judgment quality. This doc resolves that apparent
+contradiction, defines what "intelligent" (not merely "automated")
 requires, and sets how we think and act from here. It sits above
 `steward-autonomy.md` (the loop's joints) and `queue-automation.md` (the ledger);
 those are the mechanism, this is the theory of the thing. External-agent lessons
@@ -12,31 +14,62 @@ those are the mechanism, this is the theory of the thing. External-agent lessons
 
 ## 1. Autonomy and the gate are not opposites — two axes were being conflated
 
+*Revised 2026-07-22 (JP): the permanent gate is on **unrecoverable-and-large-blast**
+actions, not on "irreversible" as a category — and how much probabilistic harm we
+accept everywhere else scales with the steward's judgment quality. This supersedes
+the earlier "gate the irreversible, forever / zero harm" absolutism. Downstream
+sections use "irreversible" as shorthand for this narrowed set.*
+
 The whole "autonomous vs. human-gated" tension dissolves once you separate two
 independent axes of every action:
 
-- **Reversibility.** A nudge, a commit (git-resettable), filing a *pending* task,
-  running a read-only verify, a summary — all reversible or zero-blast-radius.
-  Landing to `main`, sending outbound mail, killing work, spending money, any
-  external side effect — irreversible or high-blast-radius.
-- **Proven track record.** How reliably the steward has handled *this class* of
-  action in the past, measured from outcomes.
+- **Recoverability × blast radius** — not a binary. A nudge, a commit
+  (git-resettable), filing a *pending* task, a read-only verify, a summary are
+  recoverable *and* small-radius: harm here is cheap and undoable. At the far end
+  sit the few actions that are **both unrecoverable and large-radius** — sending
+  outbound mail to a third party, spending money, destroying the sole copy of
+  something, cutting into a human's actively-worked pane (the §6.1 "destroyed
+  attention" case: git state resets, lost human intent does not). Most
+  "irreversible-by-type" actions (a stray commit, a bad nudge) are *not* here —
+  they are small-radius and recoverable in practice.
+- **Judgment quality** — how reliably the steward's model of the world and the
+  owner produces good decisions. Its *upfront* seed is the owner-model (§3); its
+  *ongoing* proof is the journal track record (§4). This is the axis that was
+  underweighted: for a capable model, this — not the count of gates — is what
+  actually keeps it safe.
 
-The gate belongs on the **irreversible** axis — permanently. That is not a ceiling
-on autonomy; it *is* safe autonomy. Truly autonomous therefore means:
+The gate belongs, **permanently**, on the small **unrecoverable-and-large-blast**
+set — the one place harm can't be averaged away by many good outcomes, so it can
+never be a probability we accept. Everywhere else the objective is not zero harm
+but **positive expected value with bounded downside**: the steward acts, accepting
+*some* likelihood of recoverable harm, because refusing to is its own cost — every
+gate trades away help to avoid a loss you could just undo. **How much** probabilistic
+harm we accept in that zone is a function of judgment quality — the better the
+owner-model and the track record, the wider the latitude. Loosening tolerance and
+building the owner-model are therefore **one move**: the model is what *licenses*
+the latitude; without it, latitude is just recklessness.
 
-> On the vast **reversible** majority of session management, the steward acts
-> without asking. On the **irreversible** minority, it does not act and does not
-> freeze — it **prepares the decision so completely that the owner's approval is a
-> glance, not an investigation.**
+This is the deeper correction: **for a capable model, context is a better safety
+investment than restraint.** A gate catches harm only after bad judgment already
+formed the intent; a good owner-model means the harmful intent rarely forms. Every
+token spent modelling the owner buys *both* more help and less harm; every token
+spent on a reversible-zone gate buys less harm at the cost of less help. So the
+safety budget belongs in judgment (A0 applied to safety: the completeness of the
+steward's model of JP sets the ceiling), not in restraint — with the hard gate held
+only on the unrecoverable-and-large-blast few.
+
+> On the vast recoverable majority of session management, the steward acts without
+> asking, accepting bounded harm. On the unrecoverable-and-large-blast minority, it
+> does not act and does not freeze — it **prepares the decision so completely that
+> the owner's approval is a glance, not an investigation.**
 
 The goal is not to remove the human. It is to shrink the human's role to exactly
-the decisions that are genuinely theirs — the irreversible ones and the
-taste/scope ones — and make even those cheap. The owner stops being the *operator*
-of the machine and becomes its *board*: it approves the irreversible and sets
-direction; the steward runs everything else. That is "so autonom wie möglich" done
-correctly, and it is strictly more autonomous than a system that must ask about
-everything because it can't tell the categories apart.
+the decisions that are genuinely theirs — the unrecoverable-and-large-blast ones and
+the taste/scope ones — and make even those cheap. The owner stops being the
+*operator* of the machine and becomes its *board*: it approves the few unrecoverable
+calls and sets direction; the steward runs everything else. That is "so autonom wie
+möglich" done correctly, and it is strictly more autonomous than a system that must
+ask about everything because it can't tell the categories apart.
 
 ## 2. The backlog is the release valve that makes autonomy possible
 
@@ -103,8 +136,13 @@ worktree churn would wipe it). It lives server-side, beside `fleet.json`, on the
   rotation silently resets the record autonomy depends on. Outcome back-fill and
   the tally land with the ladder.
 - **Owner-model** — a curated document the steward *proposes* edits to and the
-  owner promotes (like the shelf, but about JP). Server-side or a gitignored doc;
-  decide at build time.
+  owner promotes (like the shelf, but about JP). *Resolved 2026-07-22:* a gitignored
+  **`OWNER.md`** at repo root, mirroring CLAUDE.md (hand-copied into the steward
+  worktree, read by the `/steward` load ritual) — not server-side, since the steward
+  already reads its shelf from the worktree and server storage buys nothing at v1. Per
+  the §1 revision its **§4 risk-surface is safety-critical**: it is the upfront seed of
+  judgment quality that licenses the loosened harm-tolerance. Built 2026-07-22 from the
+  mined base + this-session's direct owner signal + a targeted history extraction.
 - **Backlog** stays `BACKLOG.md` in-repo, owner-curated. The steward never writes
   the repo directly; its backlog *proposals* accumulate in the journal / Rundgang
   digest, and the owner graduates what earns a place. Keeps the steward off `main`.
@@ -268,10 +306,12 @@ whole loop on one real, valuable item instead of more reliability-layer theory.
 ## The one-sentence thesis
 
 Getting the best of autonomy *and* safety is not a compromise between them — it is
-a steward that **acts freely on everything reversible, prepares every irreversible
+a steward that **acts freely on everything recoverable (accepting bounded harm to
+the degree its judgment is proven), prepares every unrecoverable-and-large-blast
 decision to a glance, parks every big question in the backlog with framing, gets
 provably smarter from its own logged outcomes, and reliably runs a library of
 proven prompts whose value the owner already verified** — with the human gate
-intact on exactly the actions that can't be taken back, forever. Autonomy is the
-reach; safety is the gate on the irreversible; the library is where the impact
-actually lives.
+intact on exactly the actions that can't be taken back *and* carry large blast
+radius, forever. Autonomy is the reach; safety is judgment quality plus the gate on
+the unrecoverable-and-large-blast few; the library is where the impact actually
+lives.

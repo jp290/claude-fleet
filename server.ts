@@ -90,7 +90,7 @@ interface Auto {
 interface Task {
   id: string;
   text: string;
-  source: "owner" | "intake";
+  source: "owner" | "intake" | "steward";
   from: string | null; // intake sender label (freeform, for display only — never trusted)
   status: "pending" | "queued" | "sent" | "done";
   created: number;

@@ -348,6 +348,29 @@ const aPerpPersist = await post("/api/slots/2/autos", { text: "perp-persist-prob
 const aPerpPersistJ = (await aPerpPersist.json()) as { auto?: { id: string } };
 check("create perpetual persistence-probe", aPerpPersist.ok && !!aPerpPersistJ.auto?.id);
 
+// --- global kill-switch (/api/autos/switch): pauses the entire scheduled-auto surface. Proven
+// by an auto that must NOT fire while paused, then fires once resumed; persisted immediately. ---
+check("autosOn defaults on and is exposed in state",
+  ((await (await get("/api/sessions")).json()) as { autosOn?: boolean }).autosOn === true);
+check("switch rejects a non-boolean body (400)", (await post("/api/autos/switch", { on: "off" })).status === 400);
+const swOff = await post("/api/autos/switch", { on: false });
+check("owner kills the automation surface", swOff.ok && ((await swOff.json()) as { autosOn?: boolean }).autosOn === false);
+await Bun.sleep(150); // let the route's saveState land
+const { readFileSync } = await import("node:fs");
+check("the kill-switch state is persisted immediately (so a restart stays killed)",
+  (JSON.parse(readFileSync("fleet.json", "utf8")) as { autosOn?: boolean }).autosOn === false);
+const aKill = await post("/api/slots/2/autos", { text: "killswitch-probe", inSec: 1, idleSec: 0 });
+const aKillJ = (await aKill.json()) as { auto?: { id: string } };
+await Bun.sleep(7000); // well past when it would fire if automation were live
+const killed = ((await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null }[] }).autos.find((a) => a.id === aKillJ.auto?.id);
+check("no auto fires while the kill-switch is off", !!killed && killed.enabled === true && killed.lastResult === null, JSON.stringify(killed));
+check("owner re-enables the automation surface",
+  ((await (await post("/api/autos/switch", { on: true })).json()) as { autosOn?: boolean }).autosOn === true);
+await Bun.sleep(7000); // now it may fire
+const resumed = ((await (await get("/api/sessions")).json()) as { autos: { id: string; lastResult: string | null }[] }).autos.find((a) => a.id === aKillJ.auto?.id);
+check("the same auto fires once automation is resumed", !!resumed && resumed.lastResult === "sent", JSON.stringify(resumed));
+if (aKillJ.auto) await post(`/api/autos/${aKillJ.auto.id}/delete`, {});
+
 await tmuxOut("send-keys", "-t", "s2", "C-u");
 
 // --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
@@ -1604,6 +1627,8 @@ if (auditRotExists) {
   if (stewAutoJ.auto) await post(`/api/autos/${stewAutoJ.auto.id}/delete`, {});
   const stewPerp = await stewPost("/api/steward/autos", { text: "steward immortal", inSec: 5, everySec: 10, perpetual: true });
   check("steward cannot mint a perpetual auto (owner-only, 403)", stewPerp.status === 403, String(stewPerp.status));
+  const stewSwitch = await stewPost("/api/autos/switch", { on: false });
+  check("steward cannot flip the global automation kill-switch (out of scope, 403)", stewSwitch.status === 403, String(stewSwitch.status));
 
   // --- an unknown steward token is unauthorized like any other unrecognized credential ---
   const wrongStew = await fetch(BASE + "/api/steward/sessions", { headers: { authorization: "Bearer " + "0".repeat(32) } });

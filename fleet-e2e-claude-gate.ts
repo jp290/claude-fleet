@@ -178,6 +178,23 @@ check("the refusal fired WHILE the cache still read alive — the gate reads FRE
 const cap3 = await tmuxOut("capture-pane", "-t", "s3", "-p");
 check("nothing was typed into the bare shell despite the stale cache", !cap3.out.includes("[steward]"), cap3.out.slice(-120));
 
+// --- Slot.model reaches the spawn string: FLEET_CMD here IS `claude` (the fake binary),
+// so slotCmd must append `--model <m>` to the pane command — the main suite (FLEET_CMD=true)
+// can never prove this, the append is claude-gated by design. ---
+const oM = await post("/api/slots/4/open", { cwd: process.cwd(), model: "gate-model-probe" });
+check("open slot 4 with a per-slot model", oM.ok, String(oM.status));
+let startCmd = "";
+for (let i = 0; i < 40; i++) {
+  if ((await tmuxOut("has-session", "-t", "s4")).code === 0) {
+    startCmd = (await tmuxOut("display-message", "-p", "-t", "s4", "#{pane_start_command}")).out;
+    if (startCmd.includes("claude")) break;
+  }
+  await Bun.sleep(250);
+}
+check("the pane spawn command carries --model gate-model-probe",
+  startCmd.includes("--model gate-model-probe"), startCmd.slice(-160));
+await tmuxOut("kill-session", "-t", "s4");
+
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

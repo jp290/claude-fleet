@@ -15,41 +15,45 @@ re-verified by hand and are tagged **[verified]**; others are agent-cited **[age
 
 ## The one structural root
 
-The pre-send **delivery gate is hand-reimplemented four times, each a different subset**
-(`server.ts`): full in `tickAutos` (`autosOn → nextAt → claudeAlive → quietHours → idle`,
-`1108–1149`), **claudeAlive+idle only** in `handleStewardSend` (`2559–2560`), **absent** in
-`tickDispatch` (`1180–1228`), idle-only in the merge path (`3268`). There is no shared
-`canDeliver(slot)` choke-point. This drift **is** the cause of the Tier-0 safety seams below:
-gates added to `tickAutos` never reached the paths written later. The codebase already proves
-the fix pattern — `createAutoForSlot` (`1040`) is the one choke-point all three auto callers
-funnel through, so a scoped caller *structurally* can't target another slot. **Extracting one
-guarded `canDeliver()` and routing all four actors through it makes Tier 0 automatic and
-drift-proof.** Cost: it's a refactor on the hot delivery path — do it behind the isolated e2e
-suite, not casually.
+**RESOLVED (2026-07-22) — `canDeliver()` extracted; the fix below landed.** The pre-send
+delivery gate was hand-reimplemented four times, each a different subset (`server.ts`): full in
+`tickAutos`, **claudeAlive+idle only** in `handleStewardSend`, **absent** in `tickDispatch`,
+idle-only in the merge path. That drift **was** the cause of the Tier-0 safety seams #1/#2 below.
+A single guarded `canDeliver(s, opts)` choke-point (`1160`) now encodes, in order, kill-switch
+(`autosOn`) → fresh `claudeAlive` → quiet-hours → idle, and returns the first failing gate so
+each caller keeps its bespoke reaction. All four actors route through it: `tickAutos` (`1195`,
+`killSwitch:false` because the tick-level early return at `1176` already handles it),
+`handleStewardSend` (`2578`), `tickDispatch` (pre-gate `1270` before a lane is spawned + fresh
+`claudeAlive` re-gate `1297` after the boot sleep), and the merge/land idle guard (`3335`,
+idle-only). Each passes `opts` for its legitimate differences (one-shots waive quiet-hours; the
+owner land waives all but idle; a fresh dispatch lane waives idle). Mirrors the pre-existing
+`createAutoForSlot` (`1080`) choke-point pattern. Seams #1 and #2 are now closed and e2e-proven;
+#3 (send-cap rotation) remains open.
 
 ## Tier 0 — safety seams (the "master stop" isn't master). Low risk, high trust value.
 
-1. **The kill-switch and quiet-hours do not stop a direct steward nudge or the dispatcher.**
-   **[verified]** `autosOn` is read only at `tickAutos:1108`, `inQuietHours` only at `1136`.
-   `handleStewardSend` (`2548–2584`) checks neither; `tickDispatch` checks only `dispatchOn`.
-   So "stop all automation" / "no 3am nudges" gate the *scheduled* surface but not the
-   steward's own `/api/steward/send` or lane dispatch. **Severity today: low** — the live beat
-   is `/rundgang` (an Auto, so it *is* stopped) and the steward isn't promoted to send yet; but
-   the guarantee is false and becomes a real hole the moment the steward is allowed to nudge.
-   *Fix: route all three through the Tier-0 `canDeliver()` (or add two `if` checks); decide
-   deliberately whether `dispatchOn` also falls under master `autosOn`.*
-2. **The dispatcher pastes task text without a `claudeAlive` check → shell-exec risk on the
-   externally-fed path.** **[verified]** `tickDispatch:1211` `sendText(free, next.text)` runs
-   after a 4s sleep + cwd re-verify (`1205`) but no alive check; `slotCmd` is `claude; exec
-   $SHELL` (`44`), so a claude that fails to boot (the launchd PATH footgun in CLAUDE.md) leaves
-   a bare shell that executes the task text — and this is the one path fed by external
-   `/intake`. **Inert today** (dispatcher off unless owner sets `DISPATCH_REPO`+`dispatchOn`),
-   but fix before enabling. *Fix: add `claudeAlive(free.id)` to the `1205` re-verify; requeue on
-   false (the sibling guard already requeues).*
+1. **CLOSED (2026-07-22) — the kill-switch and quiet-hours now stop a direct steward nudge AND
+   the dispatcher.** `canDeliver` (`1160`) is checked in `handleStewardSend` (`2578`, returns 409
+   `paused` / `quiet hours`) and in the dispatcher's pre-gate (`1270`) — the master stop +
+   quiet-hours refuse *before* a lane is spawned, so the queued task stays queued. `dispatchOn`
+   was deliberately decided to fall under master `autosOn`. Proven in `fleet-e2e.ts` (steward
+   `autosOn=false`/quiet 409 tests; dispatch `autosOn=false`/quiet stay-queued tests, with a
+   both-gates-open positive control so "stays queued" is non-tautological). Was: `autosOn` read
+   only inside `tickAutos`, `inQuietHours` only there; `handleStewardSend`/`tickDispatch` checked
+   neither.
+2. **CLOSED (2026-07-22) — the dispatcher now runs a FRESH `claudeAlive` gate before pasting task
+   text.** After the 4s boot sleep + cwd re-verify (`1287`), `canDeliver(free, {idleMs:0})`
+   (`1297`) re-checks master-stop + quiet-hours + a fresh alive read and requeues the task on any
+   failure, so a claude that failed to boot (the launchd PATH footgun in CLAUDE.md) never has
+   external `/intake` text executed as shell commands at the bare `slotCmd` shell (`40`, `claude;
+   exec $SHELL`). The gated `sendText(free, next.text)` is now at `1304`. Note the gate calls
+   `claudeAlive` **fresh**, never the read-route cache (Tier 1) — a stale cache defeats the exact
+   race it closes.
 3. **`stewardRecentSends` reads only the live `audit.jsonl`, not the `.1` rotation → the send
-   caps silently under-count across a rotation.** **[agent, cross-confirmed]** `206–208` reads
-   `AUDIT_FILE` alone; `appendEvent` rotates at 5 MB (`307`). `readStewardJournal` (`2599`)
+   caps silently under-count across a rotation.** **[agent, cross-confirmed]** `211–213` reads
+   `AUDIT_FILE` alone; `appendEvent` rotates at 5 MB (`314`). `readStewardJournal` (`2621`)
    deliberately spans `[.1, current]` for exactly this reason — the send-cap reader doesn't.
+   **STILL OPEN** (deferred out of the canDeliver lane).
    The durable send-cap is the invariant `automation-synergies.md` §2 calls the injection
    endgame, so this is a hole under a safety guarantee. *Fix: mirror the journal reader's
    two-file span (verify a rotation is plausible within the trailing hour first).*
@@ -60,19 +64,33 @@ suite, not casually.
 read-only widening — no new write path, near-zero risk. "Verify against real state"
 (`OWNER.md` §2) applied to the steward's own senses.*
 
-- **Server-side lane `condition` classifier.** **[verified absent server-side]** The 6-way
-  the whole pulse turns on is LLM-derived every pulse; the git-derived 3-way
-  (`dirty?editing:ahead?ready:clean`) is duplicated **client-side twice** (`src/client.ts:1334,
-  2119`), nowhere on the server. Compute `laneCondition(s)` once, add to `/api/steward/sessions`
-  + `/api/sessions`; ship the git-derived subset first (`stuck-looping`/`awaiting-human` need #2).
-- **Surface `claudeAlive` on the read routes — one signal, two consumers.** **[verified]**
-  Computed at `1007`, consumed only by write-gates; absent from every overview. It disambiguates
-  the steward's `awaiting-human`/`done`/`dead` blob **and** gives Tier-0 #2 its safety gate.
-  *Fold into `tickGit`'s per-slot loop and cache — do NOT call the 2–3 `ps`/`pgrep` spawns
-  inline per 100 ms poll.*
+- **Server-side lane `condition` classifier — deferred, and narrower than it first looked.**
+  **[re-examined 2026-07-22, verified]** No classifier exists server-side (still true), but two
+  corrections to the original framing drop this out of the early set. (a) The git-derived 3-way
+  (`dirty?editing:ahead?ready:clean`) is **not a withheld signal**: `/api/steward/sessions`
+  already ships the full `git{branch,dirty,ahead,behind}` object per slot (`server.ts:2638–2641`),
+  so the steward derives the 3-way in one line from inputs it *already holds* — not statistical
+  guessing. (b) That 3-way is **not the taxonomy the pulse runs on**: `rundgang.md:14` classifies
+  `healthy-running / done-looking / stalled-dirty / stuck-looping / awaiting-human / unknown`, and
+  *none* of those fall out of git alone — `done-looking`/`awaiting-human` need `claudeAlive`
+  (below), and `stuck-looping` needs an output-rate signal **nobody has built**. So "ship the git
+  subset first" would deliver a value the steward doesn't need in a vocabulary the pulse doesn't
+  speak. *Revised plan: no early classifier. Surface `claudeAlive` + the genuinely-withheld
+  verdicts first (`mergeLast`/`Task`/`gitOp`); let the pulse keep deriving `condition` in-LLM from
+  now-complete inputs; build a real classifier only later, against the actual 6-way, and only once
+  a `stuck-looping` detector exists.*
+- **Surface `claudeAlive` on the read routes — one signal, two consumers, two freshness
+  contracts.** **[verified]** Computed at `1047`, consumed only by write-gates; absent from every
+  overview. It disambiguates the steward's `awaiting-human`/`done`/`dead` blob **and** gives
+  Tier-0 #2 its safety gate. *Fold into `tickGit`'s per-slot loop and cache **for the read route**
+  — do NOT call the 2–3 `ps`/`pgrep` spawns inline per 100 ms poll. But the cache serves the
+  **senses**, not the **gates**: the delivery/dispatch gates await `claudeAlive` **fresh** today
+  (inside `canDeliver`, `1168`) and `tickGit` runs only every 10 s (`2505`), so a gate reading the cache could
+  fire a nudge — or a bare-shell dispatch (Tier-0 #2) — into a pane that died 9 s ago. Cache the
+  read; keep the gates fresh.*
 - **Full `mergeLast` verdict to the steward's senses.** **[verified, triple-confirmed]** A
   failed (`error`)/refused (`blocked`) land is a top "needs decision" item, but the steward sees
-  only `mergePending = status==="resolved"` (`2616`) — while `renderStewardMessage` (`2531`)
+  only `mergePending = status==="resolved"` (`2641`) — while `renderStewardMessage` (`2526`)
   *already reads the full verdict* server-side to relay it. The server will relay a verdict on
   the steward's command yet won't let the steward *see* it to decide. One-line read; already
   deemed steward-safe.
@@ -97,15 +115,15 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
   machinery**. The "delta since last" needs no engine state — just the two payloads the caller
   already holds. Also the impact-library's first real item.
 - **Per-session model selection (Opus/Fable lanes).** **[verified]** The `--model` thread and an
-  `extraArgs`/`opts` extension already live at `summaryViaSession:1582` (the merge agent uses
+  `extraArgs`/`opts` extension already live at `summaryViaSession:1667` (the merge agent uses
   `extraArgs` for tool scope). A `model` opt there + a `Slot.model` field threaded into
-  `slotCmd` (`41`, today bakes the process-wide `BASE_CMD`) unblocks `steward-overview.md`'s
+  `slotCmd` (`40`, today bakes the process-wide `BASE_CMD`) unblocks `steward-overview.md`'s
   "unbuilt #1." Subscription-safe (interactive `claude`, never `-p`). *Moderate: touches session
   spawn.*
 - **A steward brief and a queued `Task` are the same object.** **[verified path absent]** The
   steward *produces* briefs but `handleStewardRoute` exposes no task-file route, and the
   dispatcher injects `Task.text` raw. Wire the steward to file a **`pending`** Task (owner still
-  promotes at `3457`, dispatcher stays deterministic) + add a structured `brief`/`verifyCmd`
+  promotes at `3520`, dispatcher stays deterministic) + add a structured `brief`/`verifyCmd`
   field on `Task`. This is the outsourcing trajectory **without** tripping the anti-synergy —
   promotion stays owner-gated, briefs proven before scheduling.
 
@@ -113,7 +131,7 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
 
 - **Intervention OUTCOMES are recorded by no one — so the ladder can never promote.**
   **[agent]** `audit.jsonl` logs every `steward_send` (`kind×ref×slot×ts`) but no outcome; the
-  journal logs pulse-level counts, and outcomes are *explicitly deferred* (`2658`). §4 needs "N
+  journal logs pulse-level counts, and outcomes are *explicitly deferred* (`2618`). §4 needs "N
   interventions of a class with a clean helped/no-harm record" — that data is written nowhere.
   *Needs a write-time durable per-class tally (NOT a scan of the rotatable journal — §3's own
   warning) + an effect-sensor comparing post-send `lastOutput`/`gitInfo` delta. Caution: the
@@ -143,8 +161,10 @@ read-only widening — no new write path, near-zero risk. "Verify against real s
 
 1. **Tier-0 `canDeliver()` choke-point** — closes seams #1/#2 structurally and drift-proofs
    every future delivery path. Highest safety-per-effort.
-2. **Tier-1 `claudeAlive` + `condition` + full `mergeLast` on the steward routes** — the biggest
-   jump in the steward's judgment quality, near-zero risk, and #2 doubles as Tier-0 #2's gate.
+2. **Tier-1 `claudeAlive` + full `mergeLast` + `Task`/`gitOp` on the steward routes** — the
+   biggest jump in the steward's judgment quality, near-zero risk, and `claudeAlive` doubles as
+   Tier-0 #2's gate. The `condition` classifier is **not** in this set (see Tier 1): its git
+   subset is already derivable and its real conditions need `claudeAlive` first.
 3. **Tier-2 `summaryViaSession` as the digest engine** — proves the impact-library loop on one
    real item *and* fixes context-drain, with machinery that already exists.
 

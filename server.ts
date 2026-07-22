@@ -603,13 +603,22 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
 // poll must never block on 16 git spawns, so it reads this cache instead
 interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
 const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
+// per-slot claude-liveness, refreshed on the same slow tick as gitInfo. This cache exists
+// ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
+// spawns inline on the 100ms sessions poll. The delivery/dispatch GATES (claudeAlive at the
+// send/dispatch sites) must keep calling claudeAlive FRESH: a 10s-stale cache could gate a
+// nudge or a bare-shell dispatch into a pane that died seconds ago.
+const aliveInfo = new Map<number, boolean>();
 let gitTickBusy = false;
 async function tickGit(): Promise<void> {
   if (gitTickBusy) return;
   gitTickBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); aliveInfo.delete(s.id); continue; }
+      // liveness is independent of git state — compute it before the git branching so a
+      // non-repo cwd (st.code !== 0 below) still gets an alive reading.
+      aliveInfo.set(s.id, await claudeAlive(s.id));
       const st = await git(s.cwd, "status", "--porcelain=v2", "--branch");
       if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
       let branch = "", ahead = 0, behind = 0, dirty = 0;
@@ -2626,6 +2635,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       slots: slots.map((s) => ({
         id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
         git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
+        alive: aliveInfo.get(s.id) ?? null,
         mergePending: mergeLast.get(s.id)?.status === "resolved",
       })),
     });

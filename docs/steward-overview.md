@@ -49,7 +49,10 @@ or promote a task, toggle the dispatcher (`handleStewardRoute` exposes none of t
 ## How the heartbeat runs (the automation engine, AS-BUILT)
 
 `tickAutos` fires every 5s (`server.ts:2488`): **global kill-switch first** (`autosOn`,
-`1108` — mutes the *entire* surface by not ticking) → skip if `now < nextAt` → claude-alive
+`1108` — mutes the entire *scheduled* surface, all autos incl. the live `/rundgang` beat, by
+not ticking; **caveat**, verified 2026-07-22: `autosOn`/`quietHours` are checked *only* in
+`tickAutos`, so they do **not** gate a direct `/api/steward/send` or the dispatcher — a real
+seam, see `synergy-findings.md`) → skip if `now < nextAt` → claude-alive
 gate → **quiet hours** (recurring autos only, tick-in-place reschedule; one-shots always
 fire — `1136`) → **idle gate** (`idleSec` vs `lastOutput`, with a 10-min grace window,
 `1141`) → fire (`sendText`) → `advanceAuto` (perpetual **re-arms without decrementing**;

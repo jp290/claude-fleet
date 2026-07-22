@@ -42,16 +42,21 @@ vs. good work" failure: autonomy machinery with no fuel, over unclosed seams.
 **Phase 1 — Foundation** *(next; all reversible / low-risk → act-freely to prototype)*
 Make the steward reason from facts, behind one safe delivery gate. One phase because these
 touch the same code and share `claudeAlive`.
-- **Tier 1 signal-sharing** (`synergy-findings.md`): a **server-side `condition` classifier**
-  (the git-derived subset first; the pulse re-derives this in the LLM today); **surface
-  `claudeAlive`** (fold into `tickGit`'s loop, *not* inline per poll), the **full `mergeLast`
-  verdict** (only the `resolved` bool is exposed today), the summarizer's
-  **`verification`/`openThreads`** (advisory), plus `idleMs`, `gitOp`, `Task` status.
-- **Tier 0 `canDeliver()` consolidation**: the pre-send gate is reimplemented 4× — extract
-  one choke-point (imitate `createAutoForSlot`) so the kill-switch/quiet **and** `claudeAlive`
-  reach every delivery path. Closes: the kill-switch/quiet not gating a direct
-  `/api/steward/send` or the dispatcher; the dispatcher's no-`claudeAlive` bare-shell-exec
-  risk; the send-cap `.1`-rotation miss.
+- **Tier 1 signal-sharing** (`synergy-findings.md`): **surface `claudeAlive` first** — the
+  linchpin (fold into `tickGit`'s loop + cache **for reads**, *not* inline per poll; but keep the
+  delivery/dispatch **gates** on a **fresh** check — a 10 s-stale cache can gate a send into a
+  just-dead pane); the **full `mergeLast` verdict** (only the `resolved` bool is exposed today),
+  the summarizer's **`verification`/`openThreads`** (advisory), plus `idleMs`, `gitOp`, `Task`
+  status. **The `condition` classifier is deferred within the phase** (corrected 2026-07-22): its
+  git-derived subset is already derivable by the steward (`/api/steward/sessions` ships `git`,
+  `server.ts:2639`) and is not the 6-way `rundgang.md:14` taxonomy — a real classifier needs
+  `claudeAlive` and an unbuilt `stuck-looping` detector, so the pulse keeps deriving `condition`
+  in-LLM meanwhile.
+- **Tier 0 `canDeliver()` consolidation** — **DONE (landed `5e653dc`)**: one choke-point
+  (imitating `createAutoForSlot`) now makes the kill-switch/quiet **and** a fresh `claudeAlive`
+  reach every delivery path. Closed: the kill-switch/quiet not gating a direct
+  `/api/steward/send` or the dispatcher; the dispatcher's no-`claudeAlive` bare-shell-exec risk.
+  **Still open: the send-cap `.1`-rotation miss** (Tier-0 #3).
 
 **Phase 2 — Prove impact** *(high value / effort; where the value shows)*
 - **`summaryViaSession` as the digest engine** — the Rundgang's mechanical half becomes

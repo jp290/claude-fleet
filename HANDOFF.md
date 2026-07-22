@@ -1,119 +1,137 @@
-# HANDOFF — the steward subsystem (2026-07-21)
+# HANDOFF — the steward's safety spine is built; next is the safe live heartbeat (2026-07-22)
 
-*Treat every claim here as a claim: verify against the tree / running system
-before building on it (CLAUDE.md). Pointers, not assertions.*
+*This file is a prompt for you, the next session. Treat every claim, number, path,
+and commit hash here as a **claim to verify** against the tree and the running
+system before building on it (CLAUDE.md) — deterministic evidence beats this
+document. Its job is to induce the right model, not to be trusted.*
 
-## What this session did
+## Start here (primary sources, not summaries)
 
-Designed and partially built **the steward** — an optional "workhorse agent"
-subsystem for Fleet: a designated planning/conversation agent that observes,
-digests, and proposes, but never acts unprompted. Wrote its full knowledge shelf,
-landed two server features, and codified the theory of prompt-writing underneath
-the whole library. Most output is **design** (docs); the built core is small and
-one deploy is unresolved.
+Read these as primary sources — do not accept this handoff in their place:
+`docs/README.md` (the corpus index), `docs/steward-intelligence.md` (the capstone:
+autonomy×safety), `docs/prompt-axioms.md` (why a prompt is good), and the CLAUDE.md
+lane discipline. The working plan below is the distilled output of a 47-agent deep
+analysis run this session (31/38 findings adversarially CONFIRMED); its essence is
+embedded here because the raw output lived in ephemeral `/tmp`.
 
-## Built & landed on main (verify each)
+## What this session built — the heartbeat's safety spine (verify each on `main`)
 
-- **Audit log** — `appendEvent()` generic write chain + `audit()` (commit
-  `9477b80`, landed ~20:14). `audit.jsonl` is gitignored (runtime artifact).
-- **Scoped steward principal** — `/api/steward/{sessions,send,autos,token}`,
-  typed+capped sends (server renders templates, no free-text), 403 on owner
-  routes (commit `31a962d`, landed ~21:11).
+A steward that runs autonomously needs a heartbeat with bounds. All landed on `main`:
 
-## RESOLVED — the steward routes ARE served; the 404 was a scope mismatch, not a stale deploy (2026-07-21)
+- `6a4a584` **journal** — durable pulse ledger (the self-model's home,
+  steward-intelligence §3). Typed `POST`/`GET /api/steward/journal` (steward-scoped);
+  file may rotate, reader spans the `.1` boundary so the delta anchor survives.
+  **LIVE + proven in production** (a real pulse wrote a record). `rundgang.md` now
+  POSTs a typed record instead of a free-text `JOURNAL:` line.
+- `a5d28b4` gitignore `steward-journal.jsonl(.1)` (runtime artifact, like `audit.jsonl`).
+- `10e45d3` **perpetual autos** — a recurring beat that re-arms instead of dying at
+  `AUTO_MAX_RUNS`(100). **Owner-only** (`createAutoForSlot` opts.allowPerpetual; only
+  `POST /api/slots/:id/autos` passes it). Fixed the one-shot `runsLeft` quirk.
+- `b5b4da9` **kill-switch** — `autosOn` (default **true**) gates `tickAutos`;
+  `POST /api/autos/switch {on}` owner-only, persists immediately, audited.
+- `a4a7cfc` **quiet hours** — mute the *periodic* surface in an owner-set local-hour
+  window; `POST /api/autos/quiet {start,end}|{start:null}` owner-only. Recurring-only
+  (one-shots always fire); tick-in-place.
 
-The previous session tested `/api/steward/sessions` with the **owner** token and
-got 404, concluding the deploy was stale. Deterministically disproven:
-`handleStewardRoute` (server.ts:2542) is only entered for requests carrying the
-**steward** token (the gate at server.ts:2636); the owner token falls through to
-owner routing, which has no such handler → the final `not found` 404. That 404 is
-**by design** — capability scoping, per the code comment at server.ts:2631–2634.
-Verified against the running server (PID 65674, started 22:18 from the main
-checkout, includes `31a962d`):
-- `/api/steward/token` + owner token → **200** (owner reads the steward token here).
-- `/api/steward/sessions` + **steward** token → **200**, returns all 16 slots.
+Each: assumptions questioned against the code, tests that interrogate (a contrast
+where the wrong branch visibly fails), tsc + build + full `./e2e-isolated.sh` green.
 
-So nothing steward-runtime is blocked by a deploy. The real remaining gap is the
-one under "Live state": the steward pane has no `FLEET_STEWARD_TOKEN`, so the
-Rundgang can't self-serve `/api/steward/*` (was ranked #4 — now the actual #1).
+## CRITICAL verified-vs-deployed distinction (verify first)
 
-## The knowledge shelf (docs/, all on main; README.md is the index)
+`main` (`a4a7cfc`) is **~4 commits ahead of the live server**. The live `srv`'s last
+restart was the **journal** deploy, so **only the journal is live**; perpetual,
+kill-switch, and quiet-hours are landed but **NOT deployed** — and all are *inert*
+until an owner configures them, so nothing live changed. **Verify** (owner token
+required — no token hits the 401 auth gate before routing): `POST
+/api/autos/switch` with the owner Bearer token and an empty body → **404** means the
+spine is undeployed (route absent); **400** ("body.on must be a boolean") means it is
+deployed. Deploy is deliberately deferred (see below). Deploy ritual: `tmux -L claudefleet kill-session -t srv` (watchdog
+respawns from `main`), health-check `curl http://100.64.0.1:8790/` (binds the
+Tailscale IP only). `rundgang.md` changes also need the **steward worktree**
+fast-forwarded (`git -C claude-fleet.worktrees/steward merge --ff-only main`) — the
+live steward reads `/rundgang` from its own worktree, not `main`.
 
-Steward subsystem: `steward.md` (the convention: optional, `⚙ steward`,
-plans-never-lands), `steward-autonomy.md` (7 joints + empirical playbook),
-`queue-automation.md` (queue as substrate: producers multiply, gate stays one),
-`automation-synergies.md` (6 synergies + the anti-synergy), **`steward-intelligence.md`**
-(capstone: autonomy×safety via reversibility×track-record, the 3 models, the
-learning loop, the impact layer), `steward-mail.md` (email channel, inbound-only,
-threat model), `automation-frontiers.md` (6 speculative levers, pressure-tested,
-dependency-spined). Foundation shelf unchanged + new **`prompt-axioms.md`** (the
-theory under tailored-context + /sharpen).
+## THE open decision — resolve this first (blocks a *safe* live heartbeat)
 
-## Library artifacts (committed)
+The bounds exist, but a live perpetual Rundgang is **not yet safe to turn on**: the
+Rundgang's `FLEET_STEWARD_TOKEN` can hit `/api/steward/send` (act-during-pulse seam),
+and the pulse runs in the steward's durable conversation (context-drain). Fork:
 
-`.claude/commands/steward.md` (`/steward` — load ritual) and
-`.claude/commands/rundgang.md` (`/rundgang` — the observe-and-digest pulse, built
-with the implicit-question technique + a metacognitive calibration opener). Both
-merged into the steward worktree.
+- **(1) Full ephemeral read-only worker** (steward-intelligence §6.6) — fixes the
+  seam + context-drain + server-side journaling at once. But `summaryViaSession`
+  (server.ts ~1541) is *stateless*, so the pulse's "what changed since last time"
+  delta must be **server-injected** — real design work. Design-first.
+- **(2) Interim read-only Rundgang token** — a scoped credential that GETs
+  `/api/steward/*` but is 403'd by `/api/steward/send`. Closes the seam now; leaves
+  context-drain for later. Faster to a *safe* (if not context-optimal) live beat.
 
-## Live state
+This session recommended **(2) first, then iterate to (1)**. The owner had not
+chosen when the session ended — **confirm before building.**
 
-Slot 1 = `⚙ steward`, cwd `claude-fleet.worktrees/steward` (branch `steward`,
-mirrors main + carries gitignored CLAUDE.md). The token gap is now **closed**: the
-pane carries `FLEET_STEWARD_TOKEN` (baked at the 2026-07-21 respawn) and it
-authorizes `/api/steward/*`. The remaining gap is the other one the earlier
-`/rundgang` proof-run surfaced: whether `/rundgang` loads and self-serves correctly
-in the (now respawned, so fresh-process) session — unverified; that's item #3.
+## Ranked next steps
 
-## Parked / next (ranked)
+1. **Resolve the fork (2 vs 1) and build it** — the last mile to a *safe* live beat.
+2. **Deploy the spine + configure a bounded heartbeat**: one `srv` restart, then
+   `POST /api/slots/1/autos {text:"/rundgang", everySec:<e.g. 3600>, perpetual:true,
+   idleSec:60}`, plus set quiet hours. **Prove-before-schedule** (§7): watch it work
+   N times first — the single manual proof-run this session is not N.
+3. **(Owner's emphasis) Test the steward AGENT, and try genuinely different
+   approaches** — under the *long-autonomous* lens. Not just plumbing: does it stay
+   honest (the honesty gate), quiet-when-nothing-changed, non-drifting over many
+   autonomous pulses? This is far richer once a bounded beat is actually running.
+4. **Item A — commit-functions QA gate** (owner-requested, "at the end"): exercise
+   the *real* commit machinery end-to-end, not the `fakecommit` e2e stub. Autonomous
+   lane work leans on it. Scope it against the real code first.
+5. **Item B — prompt-history deep analysis (NEW session)**: multi-level analysis of
+   the owner's prompt history → the **owner-model** (steward-intelligence §3, home
+   still undecided: server-side vs gitignored `OWNER.md`) and the **impact library**
+   (§7). Discipline: propose-not-assert, durable, evidence-weighted. Its own context.
 
-0. ~~Investigate the deploy 404~~ — **DONE** (RESOLVED section above): not a deploy
-   bug, a scope mismatch. Nothing steward-runtime is blocked.
-1. **Wire the steward token into its pane** (`FLEET_STEWARD_TOKEN`) — **DONE & LIVE**
-   (landed `908f45b`, deployed, verified 2026-07-21). Mechanism: bake at spawn keyed
-   on `s.label === STEWARD_LABEL` — same mechanism + exposure as `FLEET_SELF_TOKEN`
-   (server.ts:843), chosen because env is only injectable at spawn (can't patch a
-   running `claude`) and a slot becomes steward by *relabel* (server.ts:2337).
-   Live proof chain: srv redeployed (new PID); slot 1 respawned via self-heal
-   `--resume` (audit `self_heal_recreate`=`resumed`, conversation intact); the pane's
-   `claude` process env carries `FLEET_STEWARD_TOKEN`; that exact token GETs
-   `/api/steward/sessions` → 200. The baked `export FLEET_STEWARD_TOKEN=` in the
-   respawn command is itself the deterministic fingerprint that the new binary is
-   live. e2e (349 PASS / ALL PASS) covers the token reaching a steward pane and being
-   absent for a non-steward slot. Consequence (accepted, mirrors FLEET_SELF_TOKEN): a
-   live relabel-to-steward takes effect only on the pane's next (re)spawn.
-   *Open follow-ups to weigh (NOT built):* (a) should `/rename`→steward trigger a
-   resume-respawn so designation delivers the token immediately (a behavioral change
-   to `/rename`); (b) should an ex-steward pane drop the token on relabel-away.
-   *Not yet proven:* that `/rundgang` itself self-serves correctly from inside the
-   pane — that is item #3's watched proving, not this plumbing.
-2. **Owner-model** — none exists yet (`steward-intelligence.md` §3 designed it).
-   Plan: synthesize the already-curated corpus (feedback+user memories under
-   `~/.claude/projects/*/memory`, the ~33 project `CLAUDE.md`s, the global
-   `~/.claude/CLAUDE.md`) via a fan-out workflow into a **proposed** draft the
-   owner curates; home = a gitignored local `OWNER.md` (like CLAUDE.md), NOT a
-   committed doc. Disciplines: durable+evidence-weighted, work-function-scoped,
-   propose-not-assert. Re-derive the file list in the new session (don't trust
-   `/tmp`).
-3. **Prove `/rundgang` then schedule as the heartbeat** — prove-before-schedule
-   (§6.5/6.6): watch it work N times, then a Fleet auto on the steward slot firing
-   `/rundgang` (autos already carry the idle + claude-alive gates); bound by
-   active-hours + kill-switch. Heartbeat verb-discipline: **attend unprompted, act
-   only through the ladder** — never "act/work unprompted" raw.
-4. **Wire the steward token into its pane** (the token-lane's unresolved point) so
-   the Rundgang can self-serve.
-5. Optional: add `prompt-axioms.md` + `/rundgang` to the `/steward` load ritual.
+Deeper backlog (from the analysis, not yet built): send-cap re-key + escalation
+(step 6); `isReversible()` table + ladder rung-state + owner promotion route
+(step 7, gated on the journal accruing a clean per-class record); safe queue
+increment for steward task-filing (step 8); the delivery/notification surface (a
+digest in an unwatched pane is wasted — no push path wired); `steward-mail` (largest
+attack surface — none of its defenses exist; keep gated). Fast-follow: a one-click UI
+toggle for the kill-switch (mechanism tested, button not built).
 
-## Load-bearing decisions (pointers into the shelf)
+## Load-bearing decisions + WHY (do not re-litigate or undermine)
 
-Autonomy and safety are one design (reversibility × track-record; irreversible
-classes capped at *propose* forever; promote-slow/demote-fast). The impact lives
-in the **library of proven prompts**, not the autonomy machinery; scheduling
-*multiplies* value (bad prompts too) → prove-before-schedule. Reversibility is
-action-type × context (the idle gate is a reversibility modifier). Advisors
-inform; the gate decides; landing stays human.
+- **Autonomy and safety are one design** (steward-intelligence §1): act freely on the
+  reversible, gate the irreversible *forever*, park big decisions in the backlog.
+- **The journal is the keystone**: the ladder, prove-before-schedule, and the pulse's
+  delta anchor all read from it. Promotion **counts** must live in a durable state
+  tally (built with the ladder), **never** by scanning the rotatable journal file, or
+  the second rotation silently resets the record autonomy depends on (the critic's
+  catch — documented at the write site).
+- **Perpetual + kill-switch + quiet are owner-only** by construction: a steward/self
+  principal minting an immortal schedule or muting the surface would be un-gated
+  autonomy escalation. The run-forever cadence is the owner's call.
+- **No staleness fast-forward** (deliberately not built): `advanceAuto` reschedules
+  `now + everySec`, so there is no backlog to replay; the pulse is self-contextualizing.
+- **The impact lives in the library of proven prompts**, not the autonomy machinery;
+  scheduling *multiplies* value (and a bad prompt's harm) → prove-before-schedule.
+
+## How this session worked (keep this rhythm — the owner values it)
+
+Question every assumption against the **actual code** before building (this changed
+the design repeatedly). Write tests that **interrogate**, not rubber-stamp — prove
+each feature by a contrast where the wrong branch visibly fails (a control that dies
+while the perpetual lives; a probe held silent while paused that fires on resume).
+**One feature per lane**, verify-first (tsc + `bun run build` + a collision-safe copy
+of `./e2e-isolated.sh` with unique SOCK/PORT/DIR), owner lands. **Docs and code move
+together** in the same lane. Deterministic evidence beats any document — including
+this one.
+
+## Operational facts (verify)
+
+Steward = **slot 1**, cwd `claude-fleet.worktrees/steward`, `FLEET_STEWARD_TOKEN`
+baked at spawn (live). Journal live at `/api/steward/journal`. New owner APIs (landed,
+undeployed): `/api/autos/switch`, `/api/autos/quiet`, `perpetual:true` on auto create.
+A clean `./e2e-isolated.sh` is now longer (perpetual/kill/quiet fire-waits + restart)
+— it can exceed a 120s foreground limit; run it in the background and judge the tail
+(`ALL PASS`).
 
 ## Not mine (pre-existing dirty at session start)
 
-`public/share.html`, `watchdog.sh` were already modified before this session —
-left untouched.
+`public/share.html`, `watchdog.sh` were modified before this session — left untouched.

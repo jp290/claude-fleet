@@ -613,7 +613,9 @@ const sweepBusy = new Set<string>();
 const commitBusy = new Map<number, "quick" | "agent">();
 interface MergeState { running: boolean;
   last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
-    branch: string; at: number; conflicted?: string[] } | null }
+    branch: string; at: number; conflicted?: string[] } | null;
+  // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
+  undoable?: { branch: string; at: number } | null }
 // slots with a merge job the client kicked off or observed — when such a slot goes
 // inactive (job landed the lane), its panes must be released like a manual ⏏ does
 const mergeWatch = new Set<number>();
@@ -704,12 +706,19 @@ async function doLand(slot: number) {
   if (!s?.worktree) return;
   mergePending.add(slot); // reserve BEFORE the preview await, else a double-click opens two overlays
   try {
-    // only UNCOMMITTED work is a pre-land warning (land refuses a dirty tree). Unpushed
-    // commits are the land's payload, not a risk — they're shown in the diff review below.
+    // one-gesture land: a dirty tree is committed FIRST (reusing the 💾 commit machinery — the
+    // same local, never-pushed, reversible commit), then landed. The owner no longer pre-commits.
+    // Unpushed commits are the land's payload, not a risk — shown in the diff review below.
     const risk = await fetchSlotRisk(slot);
     if (risk.dirtyFiles.length) {
-      const ok = await showRiskPreview(`Land lane ${s.worktree.branch}? — commit or the session will need to first`, risk, "continue");
+      const ok = await showRiskPreview(`Land lane ${s.worktree.branch}? — your uncommitted work is committed first, then landed`, risk, "commit + land");
       if (!ok) return;
+      const cr = await post(`/api/slots/${slot}/commit`, { mode: "agent" });
+      const cj = (await cr.json().catch(() => ({}))) as { committed?: boolean; reason?: string; error?: string };
+      if (!cr.ok) { alert(`Land failed — could not commit the work first: ${cj.error ?? cr.status}`); return; }
+      // commit refused for an UNSAFE tree (a half-finished git op, or a detached HEAD) → never
+      // finalize that into a land. A benign "nothing to commit" (a race) falls through to land.
+      if (!cj.committed && /in progress|detached/i.test(cj.reason ?? "")) { alert(`Cannot land: ${cj.reason}`); return; }
     }
     // always review the diff that will land, even on a clean auto-land (the old blind spot)
     const proceed = await showLandReview(`Land ${s.worktree.branch} → main — review what lands`, slot);
@@ -779,6 +788,18 @@ async function doShelve(slot: number) {
     return;
   }
   for (const p of panes) if (p.slot === slot) p.assign(0);
+  await refresh();
+}
+
+// ↩ undo the last land on a repo — reset main back to where the land found it. The server
+// decides with git (only if main hasn't moved since and the commit is on no remote) and
+// refuses safely otherwise. The landed branch survives, so the work is recoverable either way.
+async function doUndoLand(repo: string, branch: string): Promise<void> {
+  if (!confirm(`Undo the last land (${branch}) — reset main back to before it? The '${branch}' branch is kept, so the work stays recoverable.`)) return;
+  const r = await post("/api/repos/undo-land", { repo });
+  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; note?: string; error?: string };
+  if (!r.ok) { alert(j.error ?? "undo failed"); await refresh(); return; }
+  alert(j.note ?? "main reset to before the last land");
   await refresh();
 }
 
@@ -1232,6 +1253,17 @@ async function renderBoard() {
         shb.title = "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed";
         shb.onclick = () => void doShelve(slot);
         land.appendChild(shb);
+        // ↩ undo last land — only when the server still holds an undoable land for THIS repo
+        // (main not moved since, not pushed). Reverses the one action that mutates main.
+        if (mg?.undoable && brief.worktree.repo) {
+          const ub = el("button", "bbtn", `↩ undo last land (${mg.undoable.branch.replace(/^fleet\//, "")})`) as HTMLButtonElement;
+          ub.disabled = !!mg?.running;
+          ub.title = "reset main back to before the last land in this repo — refuses if main moved since or the commit was pushed; the landed branch is kept, so the work is recoverable either way";
+          const repo = brief.worktree.repo;
+          const landedBranch = mg.undoable.branch;
+          ub.onclick = () => void doUndoLand(repo, landedBranch);
+          land.appendChild(ub);
+        }
         if (awaitingReview && l) {
           // the agent resolved conflicts and the server verified the rebase — the owner
           // reviews the diff and lands. This is the one place a human eye is required.

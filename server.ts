@@ -152,6 +152,11 @@ let shares: Share[] = [];
 let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
 let tasks: Task[] = [];
+// worktree path -> shelve note ("what's left"), set when a lane is shelved. killSlot keeps the
+// worktree on disk as any kill does; this note is what makes "set aside for later" a real state
+// instead of a bare, context-less orphan. Survives the slot; cleared on resume/remove/discard.
+// Deliberately NOT a LaneRecord — just the one field the feature needs.
+let shelved: Record<string, { at: number; note: string }> = {};
 const MAX_TASKS = 200;
 // cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
 // must never be evicted just because 200 done tasks piled up — only `done` is prunable
@@ -290,6 +295,7 @@ type AuditEvent =
   | "self_heal_recreate"
   | "steward_send" | "steward_send_capped"
   | "steward_journal"
+  | "slot_shelve"
   | "autos_switch"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
@@ -339,7 +345,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
-    comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast), repoBases }, null, 2);
+    comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast), repoBases, shelved }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once)
@@ -746,6 +752,7 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string): P
     return { error: `unpushed commits:\n${risk.unpushedCommits.map((c) => `${c.hash} ${c.subject}`).join("\n").slice(0, 400)}`, code: 409 };
   const rmv = await git(repo, "worktree", "remove", path);
   if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
+  delete shelved[path]; // the worktree is gone — drop any shelve note with it
   return null;
 }
 
@@ -2410,6 +2417,12 @@ if (existsSync(STATE_FILE)) {
           && (v as MergeLast).branch === s.worktree.branch)
           mergeLast.set(s.id, v as MergeLast);
       }
+    const psh = (persisted as { shelved?: unknown }).shelved;
+    if (typeof psh === "object" && psh !== null && !Array.isArray(psh))
+      for (const [k, v] of Object.entries(psh as Record<string, unknown>))
+        if (typeof k === "string" && typeof v === "object" && v !== null
+          && typeof (v as { note?: unknown }).note === "string" && typeof (v as { at?: unknown }).at === "number")
+          shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note };
   } catch {
     // keep the evidence: the unreadable file is preserved before the next saveState
     // overwrites it, so a torn write is recoverable by hand instead of erased
@@ -3127,6 +3140,7 @@ Bun.serve<WSData>({
           ahead: m ? Number(m[1]) : 0, behind: m ? Number(m[2]) : 0,
           dirtyFiles: risk.dirtyFiles, unpushedCommits: risk.unpushedCommits,
           shortstat: risk.shortstat, empty: risk.empty,
+          note: shelved[w.path]?.note ?? null, // shelve note, if this orphan was set aside
         });
       }
       return json({ repo: primary.path, main: intb !== "HEAD" ? intb : primary.branch, worktrees: rows });
@@ -3166,6 +3180,7 @@ Bun.serve<WSData>({
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
           await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: (await integrationBranch(top.out)) ?? undefined });
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
+          delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
@@ -3215,6 +3230,7 @@ Bun.serve<WSData>({
       const head = await git(wt.path, "rev-parse", "HEAD");
       const rmv = await git(top.out, "worktree", "remove", "--force", wt.path);
       if (rmv.code !== 0) return json({ error: `worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
+      delete shelved[wt.path]; // worktree destroyed — drop any shelve note
       const branchDeleted = wt.branch !== "(detached)"
         && (await git(top.out, "branch", "-D", wt.branch)).code === 0;
       void tickGit().catch(() => {});
@@ -3508,7 +3524,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|share|unshare|share-mode|land)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|share|unshare|share-mode|land|shelve)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -3594,6 +3610,15 @@ Bun.serve<WSData>({
         const land = await landLane(s);
         if ("error" in land) return json({ error: land.error }, land.code);
         return json({ ok: true, ...land });
+      }
+      if (slotMatch[2] === "shelve") {
+        if (!s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
+        const body = await readJson(req);
+        const note = typeof body?.note === "string" ? body.note.slice(0, 500).trim() : "";
+        shelved[s.cwd] = { at: Date.now(), note }; // keyed by worktree path; survives the kill below
+        audit("slot_shelve", s.id, `note:${note.length}`); // never the note TEXT — same hygiene as prompt logging
+        await killSlot(s); // keeps the worktree on disk (as any kill does) — now WITH a note to resume from
+        return json({ ok: true });
       }
       await killSlot(s);
       return json({ ok: true });

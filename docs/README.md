@@ -61,6 +61,9 @@ rotting. Two shelves, plus the steward subsystem.
   the shelf, spot-verify its claims, then operate.
 
 **Steward (the workhorse agent — an optional Fleet subsystem):**
+- **`steward-overview.md`** — the entry map: what the steward *is*, what it can *do
+  today* (as-built, `server.ts`-cited), the deterministic-signal lever that most
+  improves it, and the trajectory it's designed toward. Start here.
 - **`steward.md`** — the convention: optional, recognizable as `⚙ steward`, plans
   but never lands.
 - **`steward-autonomy.md`** — the seven joints of the management loop and the

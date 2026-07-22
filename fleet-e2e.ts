@@ -371,6 +371,34 @@ const resumed = ((await (await get("/api/sessions")).json()) as { autos: { id: s
 check("the same auto fires once automation is resumed", !!resumed && resumed.lastResult === "sent", JSON.stringify(resumed));
 if (aKillJ.auto) await post(`/api/autos/${aKillJ.auto.id}/delete`, {});
 
+// --- quiet hours: mute the PERIODIC surface during the owner's local-hour window. Set to cover
+// the current hour so the test is deterministic regardless of when it runs; a recurring pulse is
+// held while a one-shot still fires; clearing the window lets the held pulse fire. ---
+const nowH = new Date().getHours();
+check("quiet-hours rejects an invalid window (400)", (await post("/api/autos/quiet", { start: 5, end: 5 })).status === 400);
+const qSet = await post("/api/autos/quiet", { start: nowH, end: (nowH + 2) % 24 });
+check("owner sets a quiet-hours window covering now",
+  qSet.ok && ((await qSet.json()) as { quietHours?: { start: number } }).quietHours?.start === nowH);
+const aQuietRec = await post("/api/slots/2/autos", { text: "quiet-recurring", inSec: 1, everySec: 10, runs: 5, idleSec: 0 });
+const aQuietRecJ = (await aQuietRec.json()) as { auto?: { id: string } };
+const aQuietOne = await post("/api/slots/2/autos", { text: "quiet-oneshot", inSec: 1, idleSec: 0 });
+const aQuietOneJ = (await aQuietOne.json()) as { auto?: { id: string } };
+await Bun.sleep(9000);
+const sessQ = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null; nextAt: number }[] };
+const qRec = sessQ.autos.find((a) => a.id === aQuietRecJ.auto?.id);
+const qOne = sessQ.autos.find((a) => a.id === aQuietOneJ.auto?.id);
+check("a recurring pulse is held (does not fire) during quiet hours",
+  !!qRec && qRec.enabled === true && qRec.lastResult === null && qRec.nextAt > Date.now(), JSON.stringify(qRec));
+check("a one-shot still fires during quiet hours (only the periodic surface is muted)",
+  !!qOne && qOne.lastResult === "sent", JSON.stringify(qOne));
+check("clearing quiet hours nulls the window",
+  ((await (await post("/api/autos/quiet", { start: null })).json()) as { quietHours: unknown }).quietHours === null);
+await Bun.sleep(12000); // > everySec, so the held recurring pulse now fires
+const qRec2 = ((await (await get("/api/sessions")).json()) as { autos: { id: string; lastResult: string | null }[] }).autos.find((a) => a.id === aQuietRecJ.auto?.id);
+check("the held recurring pulse fires once quiet hours are cleared", !!qRec2 && qRec2.lastResult === "sent", JSON.stringify(qRec2));
+if (aQuietRecJ.auto) await post(`/api/autos/${aQuietRecJ.auto.id}/delete`, {});
+if (aQuietOneJ.auto) await post(`/api/autos/${aQuietOneJ.auto.id}/delete`, {});
+
 await tmuxOut("send-keys", "-t", "s2", "C-u");
 
 // --- session sharing: guest access is slot-scoped, password-gated, mode-enforced ---
@@ -1629,6 +1657,8 @@ if (auditRotExists) {
   check("steward cannot mint a perpetual auto (owner-only, 403)", stewPerp.status === 403, String(stewPerp.status));
   const stewSwitch = await stewPost("/api/autos/switch", { on: false });
   check("steward cannot flip the global automation kill-switch (out of scope, 403)", stewSwitch.status === 403, String(stewSwitch.status));
+  const stewQuiet = await stewPost("/api/autos/quiet", { start: 0, end: 6 });
+  check("steward cannot set quiet hours (owner-only, 403)", stewQuiet.status === 403, String(stewQuiet.status));
 
   // --- an unknown steward token is unauthorized like any other unrecognized credential ---
   const wrongStew = await fetch(BASE + "/api/steward/sessions", { headers: { authorization: "Bearer " + "0".repeat(32) } });

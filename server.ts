@@ -296,6 +296,7 @@ type AuditEvent =
   | "steward_send" | "steward_send_capped"
   | "steward_journal"
   | "slot_shelve"
+  | "repo_undo_land"
   | "autos_switch"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
@@ -345,7 +346,8 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
-    comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast), repoBases, shelved }, null, 2);
+    comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
+    repoBases, shelved, undoLands: Object.fromEntries(undoLast) }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once)
@@ -801,6 +803,28 @@ async function advanceIntegration(repo: string, main: string, branch: string): P
   const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
   if (anc.code !== 0) return { error: `${main} is not an ancestor of ${branch} — not a fast-forward` };
   const upd = await git(repo, "branch", "-f", main, branch);
+  return upd.code === 0 ? null : { error: (upd.err || upd.out).slice(0, 300) };
+}
+
+// advanceIntegration in reverse: move main from its current tip (mainAfter) back to mainBefore.
+// Symmetric to advanceIntegration — if a working tree holds main, git ties the ref to that tree,
+// so we reset THERE (refusing over a dirty tree, never discarding uncommitted work); otherwise
+// move the ref directly with branch -f, gated on ancestry so it stays a real rewind. The caller
+// (undo-land) has already verified main is still at mainAfter and mainAfter is on no remote.
+async function resetIntegration(repo: string, main: string, mainAfter: string, mainBefore: string): Promise<{ error: string } | null> {
+  const holder = (await listWorktrees(repo)).find((w) => w.branch === main);
+  if (holder) {
+    const st = await git(holder.path, "status", "--porcelain");
+    if (st.code !== 0) return { error: `cannot read the ${main} checkout at ${holder.path}` };
+    if (st.out) return { error: `${main} is checked out at ${holder.path} with uncommitted changes — undo would discard them; commit or stash there first` };
+    const cur = await git(holder.path, "rev-parse", "HEAD");
+    if (cur.out !== mainAfter) return { error: `${main} moved since this land — nothing safely undoable` };
+    const rs = await git(holder.path, "reset", "--hard", mainBefore);
+    return rs.code === 0 ? null : { error: (rs.err || rs.out).slice(0, 300) };
+  }
+  const anc = await git(repo, "merge-base", "--is-ancestor", mainBefore, mainAfter);
+  if (anc.code !== 0) return { error: `the recorded pre-land commit is not an ancestor of ${main} — not a clean rewind` };
+  const upd = await git(repo, "branch", "-f", main, mainBefore);
   return upd.code === 0 ? null : { error: (upd.err || upd.out).slice(0, 300) };
 }
 
@@ -2062,6 +2086,26 @@ const mergeInflight = new Map<number, Promise<void>>();
 const mergeStart = new Set<number>();
 const mergeLast = new Map<number, MergeLast>();
 
+// --- ↩ undo-last-land: the one reversible pointer for the one action that mutates main.
+// On every land that ADVANCED the integration branch we record where main was before and
+// after, keyed by repo (last land per repo). Undo is git-gated (see /api/repos/undo-land):
+// it resets main back to mainBefore ONLY while main is still exactly at mainAfter and that
+// commit has not reached any remote — otherwise it refuses. The landed branch is kept by
+// land, so a reset leaves the work fully recoverable by reopening the lane.
+interface LandRecord { repo: string; main: string; branch: string; mainBefore: string; mainAfter: string; at: number }
+const undoLast = new Map<string, LandRecord>(); // repo toplevel -> its most recent undoable land
+// what the board needs to show/hide the undo button for a lane's repo — nulled once undone
+function undoableFor(repo: string): { branch: string; at: number } | null {
+  const r = undoLast.get(repo);
+  return r ? { branch: r.branch, at: r.at } : null;
+}
+// record a land that moved main. Skipped when main did not advance (already-merged lands),
+// where mainBefore === mainAfter and an "undo" would be a no-op.
+function recordLand(repo: string, main: string, branch: string, mainBefore: string, mainAfter: string): void {
+  if (!mainBefore || !mainAfter || mainBefore === mainAfter) return;
+  undoLast.set(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
+}
+
 // deterministic first attempt: most rebases don't conflict at all, and `git rebase` alone
 // handles those completely — spawning a model session for that is minutes and money for
 // nothing. Clean → the agent is never spawned. Conflict → abort (lane exactly as found)
@@ -2170,15 +2214,18 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // is nothing to review — land it. The state-changing step on the integration branch is
         // the SERVER's, never the agent's: advanceIntegration ff-merges (if it's checked out,
         // git refuses over a dirty tree) or advances the ref directly (touching no tree).
+        const mainBefore = (await git(root, "rev-parse", main)).out;
         const adv = await advanceIntegration(root, main, branch);
         if (adv) {
           res = { status: "error", landed: false, branch, at: Date.now(),
             detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
         } else {
+          const mainAfter = (await git(root, "rev-parse", main)).out;
           // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
           const land = s.cwd === cwd && s.worktree?.branch === branch
             ? await landLane(s)
             : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
+          if (!("error" in land)) recordLand(root, main, branch, mainBefore, mainAfter);
           res = "error" in land
             ? { status: "merged", landed: false, branch, at: Date.now(), detail: `${r.detail} — land refused: ${land.error}`.slice(0, 600) }
             : { status: "merged", landed: true, branch, at: Date.now(), detail: r.detail };
@@ -2432,6 +2479,17 @@ if (existsSync(STATE_FILE)) {
         if (typeof k === "string" && typeof v === "object" && v !== null
           && typeof (v as { note?: unknown }).note === "string" && typeof (v as { at?: unknown }).at === "number")
           shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note };
+    // undoable lands survive deploys — the reversibility pointer must outlast a restart, or a
+    // deploy right after a land would silently strip the owner's one chance to undo it
+    const pul = (persisted as { undoLands?: unknown }).undoLands;
+    if (typeof pul === "object" && pul !== null && !Array.isArray(pul))
+      for (const [k, v] of Object.entries(pul as Record<string, unknown>))
+        if (typeof k === "string" && typeof v === "object" && v !== null
+          && typeof (v as LandRecord).main === "string" && typeof (v as LandRecord).branch === "string"
+          && typeof (v as LandRecord).mainBefore === "string" && typeof (v as LandRecord).mainAfter === "string"
+          && typeof (v as LandRecord).at === "number")
+          undoLast.set(k, { repo: k, main: (v as LandRecord).main, branch: (v as LandRecord).branch,
+            mainBefore: (v as LandRecord).mainBefore, mainAfter: (v as LandRecord).mainAfter, at: (v as LandRecord).at });
   } catch {
     // keep the evidence: the unreadable file is preserved before the next saveState
     // overwrites it, so a torn write is recoverable by hand instead of erased
@@ -3266,6 +3324,40 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true, repo: top.out, base: repoBases[top.out] ?? null });
     }
+    // ↩ undo the last land on a repo — the one reversible pointer for the one action that
+    // mutates main. GIT decides, never optimism: reset main back to where it was ONLY while
+    // it is still EXACTLY where the land left it (nobody landed/committed on top) AND that
+    // commit has reached no remote (undoing a pushed land would rewrite shared history).
+    // Otherwise refuse with a precise reason — a safe refusal is the correct v1. The landed
+    // branch is kept by land, so a reset leaves the work fully recoverable by reopening the lane.
+    if (url.pathname === "/api/repos/undo-land" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const rec = undoLast.get(top.out);
+      if (!rec) return json({ error: "nothing to undo — no recorded land for this repo" }, 404);
+      const cur = await git(top.out, "rev-parse", rec.main);
+      if (cur.code !== 0) return json({ error: `cannot resolve ${rec.main}` }, 400);
+      // main moved since the land → the record is permanently unusable; consume it and refuse
+      if (cur.out !== rec.mainAfter) {
+        undoLast.delete(top.out); saveState();
+        return json({ error: `${rec.main} moved since this land (landed at ${rec.mainAfter.slice(0, 8)}, now at ${cur.out.slice(0, 8)}) — nothing safely undoable. The '${rec.branch}' branch still exists if you need the work.` }, 409);
+      }
+      // already pushed → undo would rewrite shared history; permanent refusal, consume the record
+      const onRemote = await git(top.out, "branch", "-r", "--contains", rec.mainAfter);
+      if (onRemote.out.trim()) {
+        undoLast.delete(top.out); saveState();
+        return json({ error: `this land is already on a remote (${onRemote.out.trim().split("\n")[0].trim()}) — undo would rewrite shared history; revert it by hand instead.` }, 409);
+      }
+      const reset = await resetIntegration(top.out, rec.main, rec.mainAfter, rec.mainBefore);
+      if (reset) return json({ error: reset.error }, 409); // transient (dirty holder etc.) — record kept for a retry
+      undoLast.delete(top.out); // an undo can be undone once
+      saveState();
+      audit("repo_undo_land", undefined, `${basename(top.out)} ${rec.branch} ${rec.mainAfter.slice(0, 8)}->${rec.mainBefore.slice(0, 8)}`);
+      return json({ ok: true, repo: top.out, main: rec.main, branch: rec.branch, from: rec.mainAfter, to: rec.mainBefore,
+        note: `${rec.main} reset to ${rec.mainBefore.slice(0, 8)}. The '${rec.branch}' branch still exists — reopen the lane to recover the work.` });
+    }
     // ⏫ agent merge & land. POST: deterministic guards → start the background job (the
     // fuzzy middle: rebase + conflict resolution in the lane) → deterministic re-verify,
     // server-side ff-merge and landLane inside the job. GET: job state for the board's
@@ -3275,7 +3367,8 @@ Bun.serve<WSData>({
       const s = slotFrom(mgMatch[1]);
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
       if (req.method === "GET")
-        return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null });
+        return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: mergeLast.get(s.id) ?? null,
+          undoable: undoableFor(s.worktree.repo) });
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ running: true });
       mergeStart.add(s.id); // reserve BEFORE the first await — two parallel POSTs otherwise both start a rebase
       try {
@@ -3350,11 +3443,14 @@ Bun.serve<WSData>({
             if (anc.code !== 0) return json({ status: "error",
               detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
           }
+          const mainBefore = (await git(repo, "rev-parse", main)).out;
           const adv = await advanceIntegration(repo, main, branch);
           if (adv) return json({ status: "error",
             detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);
+          const mainAfter = (await git(repo, "rev-parse", main)).out;
           const land = await landLane(s);
           if ("error" in land) return json({ error: land.error }, land.code);
+          recordLand(repo, main, branch, mainBefore, mainAfter);
           mergeLast.delete(s.id);
           saveState();
           return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });

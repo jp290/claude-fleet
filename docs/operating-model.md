@@ -53,6 +53,18 @@ torn-down slot pointing at an orphaned tree. Only after a successful remove is t
 lane's `sent` task marked `done` and the slot killed. Known residue: the merged
 branch stays on disk (BACKLOG #10 open question).
 
+One gesture, and reversible: the owner's `⏏` land flow (`doLand`, `src/client.ts`)
+commits a dirty tree **first** — the same local, never-pushed, reversible commit `💾`
+save makes — then lands, so the owner no longer pre-commits. The endpoints themselves
+still refuse a dirty tree; the commit-first happens in the client flow. A land that
+**advances** the integration branch is recorded (`recordLand`, keyed by repo) and can
+be undone **once** via `↩ undo last land` (`POST /api/repos/undo-land`): git resets main
+back to where the land found it, but only while main is still exactly at the landed SHA
+*and* that commit is on no remote — otherwise it refuses (main moved / already pushed).
+The landed branch is kept by land, so an undo leaves the work recoverable by reopening
+the lane. The conflict path is untouched: a semantic conflict still resolves and
+**pauses for owner review** before anything reaches main.
+
 Kill, by contrast, never touches the worktree (`killSlot`, `server.ts:880`) — the
 tree stays on disk, re-openable. Kill is "abandon the slot", land is "this work is
 safe elsewhere, retire the lane."

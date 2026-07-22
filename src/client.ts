@@ -1132,18 +1132,15 @@ async function renderBoard() {
         if (brief.worktree) {
           const busy = commitBusy.get(slot);
           const crow = el("div", "bbtnrow");
-          // ONE commit action, one refinement: the solid button commits now (instant, no
-          // agent — the safety net so a kill can't lose the work); the ghost adds an
-          // agent-written message. Not two ways to commit — a commit and an option ON it.
+          // ONE commit here — the safety net: instant wip commit so a kill can't lose the
+          // work (saved locally, never pushed/landed, reversible with git reset). The
+          // agent-written-message path moved to land time — ⏏ land now commits-if-dirty
+          // with an agent message — so there's no separate "✎ message" affordance on a lane.
           const q = el("button", "bbtn amber", busy === "quick" ? "… saving" : "commit") as HTMLButtonElement;
-          q.disabled = !!busy;
+          q.disabled = !!busy; // also disabled mid-land, while doLand's commit-if-dirty runs (busy === "agent")
           q.title = "commit all uncommitted work now so a kill can't lose it — saved locally, never pushed or landed (undo with git reset)";
           q.onclick = () => void doCommit(slot, "quick");
-          const a = el("button", "bbtn amber ghost", busy === "agent" ? "… writing message" : "✎ message") as HTMLButtonElement;
-          a.disabled = !!busy;
-          a.title = "same commit, but a short-lived agent writes a conventional-commit message from the diff first (falls back to a wip message)";
-          a.onclick = () => void doCommit(slot, "agent");
-          crow.append(q, a);
+          crow.append(q);
           work.appendChild(crow);
         } else {
           // main (non-lane) session: commit TRACKED changes (add -u) with a staging preview,
@@ -1217,14 +1214,11 @@ async function renderBoard() {
         land.appendChild(el("h3", "", "land"));
         const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
         const awaitingReview = l?.status === "resolved";
-        // while a resolution awaits review the note below owns the diff + the single "⏏ land";
-        // showing this generic (differently-scoped) diff button too would just be a second
-        // diff on screen — hide it there so the review state has one diff, one land.
-        if (!awaitingReview) {
-          const db = el("button", "bbtn", "± view diff") as HTMLButtonElement;
-          db.onclick = () => void openDiff(slot);
-          land.appendChild(db);
-        }
+        // no standalone "± view diff" here: it opened the same working diff (openDiff) already
+        // reachable by clicking a file row in WORK — a second button for an identical source.
+        // The working diff lives on the file rows (one consistent affordance); the resolved
+        // main..HEAD diff lives on the review note's "± review diff" below. Two sources, not
+        // three competing buttons — so each land state shows one obvious review control.
         // one land verb on screen at a time. Normally this IS the land. In the review state
         // the note owns "⏏ land", so this becomes the distinct "re-run" action (only needed
         // if main moved) — never a second, competing land button. Green = "ready to land".

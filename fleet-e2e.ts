@@ -1175,6 +1175,127 @@ if (REPO) {
   await post(`/api/slots/${lnDirty.slot}/kill`, {});
   await post(`/api/slots/${lnClean2.slot}/kill`, {});
 
+  // === Lane A: one-gesture land (commit-if-dirty → land) + ↩ undo-last-land ===
+  // Isolated fresh repos so main-mutation + undo never touch the shared REPO later tests use.
+  {
+    const freshRepo = async (suffix: string): Promise<{ repo: string; main: string; sha: string }> => {
+      const repo = `${REPO}.${suffix}`;
+      spawnSync("git", ["init", "-q", "-b", "main", repo]); // fakemerge hardcodes `git rebase main`
+      spawnSync("git", ["-C", repo, "config", "user.email", "e2e@test"]);
+      spawnSync("git", ["-C", repo, "config", "user.name", "e2e"]);
+      spawnSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
+      await Bun.write(`${repo}/base.txt`, "base\n");
+      spawnSync("git", ["-C", repo, "add", "base.txt"]);
+      spawnSync("git", ["-C", repo, "commit", "-qm", "base"]);
+      return { repo, main: "main", sha: spawnSync("git", ["-C", repo, "rev-parse", "HEAD"]).stdout.toString().trim() };
+    };
+    const headOf = (repo: string, ref = "HEAD"): string => spawnSync("git", ["-C", repo, "rev-parse", ref]).stdout.toString().trim();
+    // land a lane with committed work via the clean script path (no conflict → agent never consulted)
+    const landClean = async (slot: number): Promise<void> => {
+      await setMergeMode("blocked"); // a clean rebase must NOT consult the agent
+      await settleForMerge(slot);
+      await post(`/api/slots/${slot}/merge`, {});
+      await waitMerge(slot);
+    };
+
+    // --- one-gesture land: a lane with ONLY uncommitted work lands in one flow (commit → land),
+    // the owner never pre-commits. Mirrors doLand: commit (agent message) then /land→/merge. ---
+    const og = await freshRepo("onegesture");
+    const lane = (await (await post("/api/lanes", { repo: og.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lane.cwd}/feature.txt`, "feature work\n"); // uncommitted — the friction one-gesture removes
+    const ogCommit = (await (await post(`/api/slots/${lane.slot}/commit`, { mode: "agent" })).json()) as { committed?: boolean; subject?: string };
+    check("one-gesture land: the dirty tree is committed first (agent message)",
+      ogCommit.committed === true && ogCommit.subject === "feat: stand-in commit message", JSON.stringify(ogCommit));
+    check("one-gesture land: direct /land refuses the committed-but-unmerged lane (→ /merge fallback)",
+      (await post(`/api/slots/${lane.slot}/land`, {})).status === 409);
+    // a second lane on the SAME repo, kept open, so the undoable land is observable on the board
+    const probe = (await (await post("/api/lanes", { repo: og.repo })).json()) as { slot: number; branch: string };
+    const ogBefore = headOf(og.repo, og.main);
+    await landClean(lane.slot);
+    check("one-gesture land: committed work then landed (landed slot torn down)",
+      (await get(`/api/slots/${lane.slot}/merge`)).status === 400);
+    const ogAfter = headOf(og.repo, og.main);
+    check("one-gesture land: main advanced past its pre-land SHA", ogAfter !== ogBefore, `${ogBefore} -> ${ogAfter}`);
+    check("one-gesture land: the committed work reached main with the expected message",
+      spawnSync("git", ["-C", og.repo, "log", "--oneline"]).stdout.toString().includes("stand-in commit message"),
+      spawnSync("git", ["-C", og.repo, "log", "--oneline"]).stdout.toString().trim());
+    // the undoable land surfaces to the board via GET /merge on any live lane of the same repo
+    const probeMg = (await (await get(`/api/slots/${probe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
+    check("undo: the landed lane is exposed as undoable on the repo's board",
+      probeMg.undoable?.branch === lane.branch, JSON.stringify(probeMg.undoable));
+
+    // --- undo resets main to the EXACT pre-land SHA; keeps the branch; is one-shot ---
+    const undo = await post("/api/repos/undo-land", { repo: og.repo });
+    const undoJ = (await undo.json()) as { ok?: boolean; to?: string };
+    check("undo-land resets main to the exact pre-land SHA",
+      undo.ok === true && headOf(og.repo, og.main) === ogBefore, `${JSON.stringify(undoJ)} now=${headOf(og.repo, og.main)} want=${ogBefore}`);
+    check("undo-land keeps the landed branch (work recoverable by reopening the lane)",
+      spawnSync("git", ["-C", og.repo, "rev-parse", "--verify", "-q", `refs/heads/${lane.branch}`]).status === 0);
+    check("undo-land clears the undoable record from the board",
+      (((await (await get(`/api/slots/${probe.slot}/merge`)).json()) as { undoable?: unknown }).undoable ?? null) === null);
+    check("undo-land is one-shot — a second undo has nothing left to undo",
+      (await post("/api/repos/undo-land", { repo: og.repo })).status === 404);
+    await post(`/api/slots/${probe.slot}/kill`, {});
+
+    // --- undo REFUSES when main moved since the land (a new commit landed on top) ---
+    const mv = await freshRepo("undomoved");
+    const mvLane = (await (await post("/api/lanes", { repo: mv.repo })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${mvLane.cwd}/f.txt`, "work\n");
+    spawnSync("git", ["-C", mvLane.cwd, "add", "f.txt"]);
+    spawnSync("git", ["-C", mvLane.cwd, "commit", "-qm", "lane work"]);
+    await landClean(mvLane.slot);
+    const mvAfterLand = headOf(mv.repo, mv.main);
+    await Bun.write(`${mv.repo}/onmain.txt`, "later\n"); // main moves on top of the land
+    spawnSync("git", ["-C", mv.repo, "add", "onmain.txt"]);
+    spawnSync("git", ["-C", mv.repo, "commit", "-qm", "later main work"]);
+    const mvMoved = headOf(mv.repo, mv.main);
+    const mvUndo = await post("/api/repos/undo-land", { repo: mv.repo });
+    const mvUndoJ = (await mvUndo.json()) as { error?: string };
+    check("undo REFUSES when main moved since the land",
+      mvUndo.status === 409 && (mvUndoJ.error ?? "").includes("moved"), `${mvUndo.status} ${JSON.stringify(mvUndoJ)}`);
+    check("refused undo (moved) leaves main exactly where it was",
+      headOf(mv.repo, mv.main) === mvMoved && mvMoved !== mvAfterLand, `now=${headOf(mv.repo, mv.main)}`);
+
+    // --- undo REFUSES when the landed commit is already on a remote (would rewrite shared history) ---
+    const rm = await freshRepo("undoremote");
+    spawnSync("git", ["init", "--bare", "-q", `${rm.repo}.remote.git`]);
+    spawnSync("git", ["-C", rm.repo, "remote", "add", "origin", `${rm.repo}.remote.git`]);
+    const rmLane = (await (await post("/api/lanes", { repo: rm.repo })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${rmLane.cwd}/f.txt`, "work\n");
+    spawnSync("git", ["-C", rmLane.cwd, "add", "f.txt"]);
+    spawnSync("git", ["-C", rmLane.cwd, "commit", "-qm", "lane work"]);
+    await landClean(rmLane.slot);
+    const rmAfterLand = headOf(rm.repo, rm.main);
+    spawnSync("git", ["-C", rm.repo, "push", "-q", "origin", rm.main]); // land now on a remote
+    spawnSync("git", ["-C", rm.repo, "fetch", "-q", "origin"]);
+    const rmUndo = await post("/api/repos/undo-land", { repo: rm.repo });
+    const rmUndoJ = (await rmUndo.json()) as { error?: string };
+    check("undo REFUSES when the landed commit is already on a remote",
+      rmUndo.status === 409 && (rmUndoJ.error ?? "").includes("remote"), `${rmUndo.status} ${JSON.stringify(rmUndoJ)}`);
+    check("refused undo (remote) leaves main exactly where it was", headOf(rm.repo, rm.main) === rmAfterLand);
+
+    // --- REGRESSION GUARD: a CONFLICTING one-gesture land still PAUSES for review (human gate) ---
+    const cf = await freshRepo("conflict");
+    const cfLane = (await (await post("/api/lanes", { repo: cf.repo })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${cfLane.cwd}/base.txt`, "base\nlane-side\n"); // uncommitted — one-gesture commits it
+    check("regression guard: one-gesture commits the dirty conflicting lane",
+      ((await (await post(`/api/slots/${cfLane.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean }).committed === true);
+    await Bun.write(`${cf.repo}/base.txt`, "base\nmain-side\n"); // same line → rebase conflict → agent path
+    spawnSync("git", ["-C", cf.repo, "commit", "-aqm", "main conflict"]);
+    const cfMainBefore = headOf(cf.repo, cf.main);
+    await setMergeMode("do"); // agent resolves the conflict, then the server PAUSES for review
+    await settleForMerge(cfLane.slot);
+    await post(`/api/slots/${cfLane.slot}/merge`, {});
+    const cfV = await waitMerge(cfLane.slot);
+    check("regression guard: a conflicting land PAUSES (resolved, NOT landed, lane kept)",
+      !cfV.gone && cfV.last?.status === "resolved" && cfV.last.landed === false && exists(cfLane.cwd), JSON.stringify(cfV.last));
+    check("regression guard: the human gate held — nothing reached main, no undoable land recorded",
+      headOf(cf.repo, cf.main) === cfMainBefore
+      && (((await (await get(`/api/slots/${cfLane.slot}/merge`)).json()) as { undoable?: unknown }).undoable ?? null) === null,
+      `main=${headOf(cf.repo, cf.main)} before=${cfMainBefore}`);
+    await post(`/api/slots/${cfLane.slot}/kill`, {});
+  }
+
   // --- Part B3: concurrency / race-hardening regression guards ---
   // helper: read this slot's autos split by enabled from /api/sessions
   const autosFor = async (slot: number): Promise<{ enabled: number; disabled: number; total: number }> => {

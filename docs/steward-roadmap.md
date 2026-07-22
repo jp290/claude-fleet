@@ -49,7 +49,7 @@ touch the same code and share `claudeAlive`.
   the summarizer's **`verification`/`openThreads`** (advisory), plus `idleMs`, `gitOp`, `Task`
   status. **The `condition` classifier is deferred within the phase** (corrected 2026-07-22): its
   git-derived subset is already derivable by the steward (`/api/steward/sessions` ships `git`,
-  `server.ts:2639`) and is not the 6-way `rundgang.md:14` taxonomy — a real classifier needs
+  `server.ts:2771`) and is not the 6-way `rundgang.md:14` taxonomy — a real classifier needs
   `claudeAlive` and an unbuilt `stuck-looping` detector, so the pulse keeps deriving `condition`
   in-LLM meanwhile.
 - **Tier 0 `canDeliver()` consolidation** — **DONE (landed `5e653dc`)**: one choke-point
@@ -73,6 +73,13 @@ a **write-time per-class tally** (never a scan of the rotatable journal — §4)
 **effect-sensor** (post-intervention `lastOutput`/`gitInfo` delta, guarded against firing on
 stale state). Data starts accruing at the **propose rung** — the steward proposes, the owner
 approves, the outcome is logged — with no autonomous action yet.
+*Outcome half BUILT 2026-07-22:* per-send persisted baseline (`handleStewardSend`) → deterministic
+window-close classification in `tickGit` (`measureOutcomes`: git delta / sustained output / else
+no-effect) → durable harm-AWARE per-class tally `{helped,noEffect,harmed}` in persisted state; `harmed`
+is owner-supplied only (`POST /api/steward/outcomes/harm`), a `claudeAlive` true→false-in-window is an
+escalated crash CANDIDATE not an auto-harm; predicate `promotionEligible` (helped ≥ N ∧ harmed == 0 ∧
+harm-channel-operated) + gauge `GET /api/steward/outcomes` ship the criterion. Reply-referencing is
+deferred (under-counts `helped`, conservative). The **ladder wiring** that reads this fuel is Phase 5.
 
 **Phase 4 — The self-report channel** *(the common-service increment; §8)*
 A **typed, advisory** session→server report path (intent / blocker / done+how-verified),

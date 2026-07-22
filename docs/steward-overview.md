@@ -23,7 +23,7 @@ it exists; Fleet is fully functional without it.
 ## What it can do today (AS-BUILT)
 
 - **Sense** (read-reduced, capability-asymmetric by design): `GET /api/steward/sessions`
-  (`server.ts:2638`) → per-slot `id, cwd, label, lastOutput, git{branch,dirty,ahead,behind},
+  (`server.ts:2770`) → per-slot `id, cwd, label, lastOutput, git{branch,dirty,ahead,behind},
   worktree, mergePending`; on-demand `/brief` (full lane git footprint), `/transcript`
   (thinking blocks stripped, tool_result trimmed to 400 chars — `2663`), `/journal`.
 - **Pulse — the Rundgang** (`/rundgang`, now on a live 2h perpetual beat): *calibrate →
@@ -48,7 +48,7 @@ or promote a task, toggle the dispatcher (`handleStewardRoute` exposes none of t
 
 ## How the heartbeat runs (the automation engine, AS-BUILT)
 
-`tickAutos` fires every 5s (`server.ts:2504`): **global kill-switch first** (`autosOn`,
+`tickAutos` fires every 5s (`server.ts:2623`): **global kill-switch first** (`autosOn`,
 `1176` — mutes the entire *scheduled* surface, all autos incl. the live `/rundgang` beat, by
 not ticking) → skip if `now < nextAt` → then the shared `canDeliver(s, opts)` choke-point
 (`1160`, called at `1195`): **fresh claude-alive** → **quiet hours** (recurring autos only,
@@ -77,12 +77,12 @@ added risk**. Ranked gaps (each: *server already knows X → steward must infer 
    stuck-looping / awaiting-human / done-looking / unknown`). The server has **no** such classifier
    (grep-verified). But two things sink an early fix: the git-derived 3-way it might compute
    (`editing/ready/clean`) is **already derivable by the steward** — `/api/steward/sessions` ships
-   the full `git` object (`server.ts:2639`) — and it is **not** the 6-way taxonomy above, none of
+   the full `git` object (`server.ts:2771`) — and it is **not** the 6-way taxonomy above, none of
    which fall out of git alone. *Revised fix: no early classifier; surface `claudeAlive` +
    `mergeLast`/`Task`/`gitOp` first, keep `condition` in-LLM until a real 6-way classifier — which
    needs `claudeAlive` and an unbuilt `stuck-looping` detector — is worth building. See
    `synergy-findings.md` Tier 1.*
-2. **`claudeAlive` (`server.ts:1047`) is computed but on no steward route** — the steward
+2. **`claudeAlive` (`server.ts:1098`) is computed but on no steward route** — the steward
    cannot tell a *dead* pane from an *idle* one; `now − lastOutput` reads identically for
    "human thinking," "agent finished," and "process crashed." Highest-value single withheld
    field — it disambiguates `awaiting-human` / `done-looking` / `dead`.
@@ -127,7 +127,7 @@ the whole roadmap, and it raises the ceiling on everything above it.
   agents take `--model`); (2) a **steward-scoped dispatch/file capability** — today the steward
   has zero spawn reach; (3) **closing the loop** — today the owner promotes `pending→queued`
   and arms the dispatcher, *and promotion should stay gated*. **Subscription-safe:** all spawns
-  are interactive `claude`, never metered `-p` (designed so, `server.ts:1602`). **The
+  are interactive `claude`, never metered `-p` (designed so, `server.ts:1651`). **The
   constraint that dominates:** *review capacity, not throughput* (README) — dispatching N
   Opus lanes only helps if the steward **prepares each landing to a glance**; throughput
   without review-prep buries the owner (negative value), and scheduling multiplies a bad

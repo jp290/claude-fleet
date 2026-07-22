@@ -104,9 +104,12 @@ thing is isolated.**
    **Still open: Tier-0 #3** (send-cap `.1`-rotation under-count). This was the prerequisite before
    B opens any live reach — it now holds. (A's kill-switch stays cruder but total: `tmux -L
    fleetarena kill-server`.)
-2. **Journal-outcome fuel** — log every steward operate-action **with its outcome** from day one
-   via the existing `appendEvent` chain. Without it the §4 ladder has no fuel and the experiment
-   is data-less (`synergy-findings.md` Tier-3: "outcomes recorded by no one").
+2. **Journal-outcome fuel** — **DONE (landed `f47fca1`, 2026-07-22).** Per-send baseline in
+   `handleStewardSend` → deterministic window-close classification in `tickGit` (`measureOutcomes`)
+   → durable harm-AWARE per-class tally `{helped,noEffect,harmed}`; `harmed` owner-supplied only
+   (`POST /api/steward/outcomes/harm`), a crash is an escalated candidate not an auto-harm;
+   `promotionEligible` = `helped ≥ N ∧ harmed == 0 ∧ harm-channel-operated`. The ladder that
+   drinks this fuel is Phase 5 (not built).
 3. **Per-lane model** (`Slot.model` threaded through `slotCmd`, reusing `summaryViaSession`'s
    `--model` hook, `synergy-findings.md` Tier-2) — the *only* place a separate instance had real
    pull (`FLEET_CMD` is process-wide). Solve by **extending**, not forking.

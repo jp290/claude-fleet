@@ -76,8 +76,8 @@ Two amendments make the ledger powerful, both already implied by earlier docs:
    instead of silently to done. Closes the loop the dispatcher is currently
    blind to (it never learns whether a dispatched lane succeeded).
 4. **Typed tasks (medium).** Today task = "spawn a lane, inject text". A
-   `kind` field (lane | review | verify | sweep) routes execution: a lane spawn
-   for real work, an ephemeral `summaryViaSession` agent for review/summary/sweep
+   `kind` field (lane | review | verify) routes execution: a lane spawn
+   for real work, an ephemeral `summaryViaSession` agent for review/summary
    (the Finding-3 plumbing). Lets the queue drive cheap read-only agents, not
    only expensive lanes.
 5. **Task dependencies (medium, defer).** `dependsOn` + the dispatcher skipping

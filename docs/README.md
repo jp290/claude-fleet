@@ -54,6 +54,9 @@ rotting. Two shelves, plus the steward subsystem.
   (never a tracked file — it would dirty the tree and block `land`).
 - **CLAUDE.md** — the terse operating rules a session embodies; gitignored, so
   every lane inherits them automatically.
+- **OWNER.md** — the steward's model of JP (standards, register, and the
+  safety-critical risk-surface that calibrates its gate); gitignored, owner-curated,
+  read by the `/steward` load ritual. See `steward-intelligence.md` §3.
 - **`/steward`** (`.claude/commands/steward.md`) — the steward's load ritual: read
   the shelf, spot-verify its claims, then operate.
 

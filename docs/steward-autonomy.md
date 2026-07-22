@@ -154,6 +154,13 @@ land/merge/kill, permission grants, answering in the owner's voice, touching
 credentials/config/`fleet.json`, modifying the steward's own binding
 instructions, or any intervention type without a manually-proven predecessor.
 
+*This list is the steward's concrete instantiation of the narrowed permanent gate
+(steward-intelligence §1, revised 2026-07-22: unrecoverable-and-large-blast +
+consent-shaped + the propose/promote boundary) — everything **off** it is now
+reversible-latitude the steward acts on, accepting bounded harm scaled to judgment.
+The owner-calibrated, evidence-cited version of this map is **OWNER.md §4** (§4b
+hard-gate / §4c context-dependent / §4d self-check enforcement); keep the two aligned.*
+
 ## Impact on the build order
 
 Unchanged front: **audit log → scoped steward token → Rundgang.** The Rundgang

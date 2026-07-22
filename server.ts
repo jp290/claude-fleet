@@ -169,6 +169,7 @@ const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
 let autosOn = true; // global kill-switch for scheduled autos (the heartbeat surface); owner-toggled, default on
+let quietHours: { start: number; end: number } | null = null; // owner-set local-hour window muting the recurring/heartbeat surface (no 3am nudges)
 // public intake shares its own secret, NEVER the owner token. Empty = intake disabled.
 const INTAKE_SECRET = process.env.FLEET_INTAKE_SECRET ?? "";
 const intakeStrikes: number[] = []; // timestamps, for a simple hourly rate limit
@@ -289,7 +290,8 @@ type AuditEvent =
   | "self_heal_recreate"
   | "steward_send" | "steward_send_capped"
   | "steward_journal"
-  | "autos_switch";
+  | "autos_switch"
+  | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -337,7 +339,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
-    comments: shareComments, dispatch: dispatchOn, autosOn, merges: Object.fromEntries(mergeLast), repoBases }, null, 2);
+    comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast), repoBases }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once)
@@ -1094,6 +1096,13 @@ function advanceAuto(a: Auto, now: number): void {
   }
 }
 
+function inQuietHours(ts: number): boolean {
+  if (!quietHours) return false;
+  const h = new Date(ts).getHours();
+  const { start, end } = quietHours;
+  return start < end ? h >= start && h < end : h >= start || h < end;
+}
+
 let autoTickBusy = false;
 async function tickAutos(): Promise<void> {
   if (!autosOn) return; // global kill-switch: no scheduled auto fires while automation is paused
@@ -1117,6 +1126,15 @@ async function tickAutos(): Promise<void> {
         a.lastResult = "skipped — claude not running in pane";
         audit("auto_skip", a.slot, a.lastResult);
         advanceAuto(a, now);
+        dirty = true;
+        continue;
+      }
+      // quiet hours mute the PERIODIC surface only: a recurring pulse due inside the owner's quiet
+      // window is held and retried next interval (tick-in-place). One-shots are a specific owner
+      // intent and always fire. No staleness fast-forward is needed — advanceAuto reschedules
+      // now-relative, so an overdue auto fires at most once, never a replayed backlog.
+      if (a.everySec !== null && inQuietHours(now)) {
+        a.nextAt = now + a.everySec * 1000;
         dirty = true;
         continue;
       }
@@ -2376,6 +2394,10 @@ if (existsSync(STATE_FILE)) {
       dispatchOn = (persisted as { dispatch: boolean }).dispatch;
     if (typeof (persisted as { autosOn?: unknown }).autosOn === "boolean")
       autosOn = (persisted as { autosOn: boolean }).autosOn;
+    const qh = (persisted as { quietHours?: unknown }).quietHours;
+    if (qh && typeof qh === "object"
+      && typeof (qh as { start?: unknown }).start === "number" && typeof (qh as { end?: unknown }).end === "number")
+      quietHours = { start: (qh as { start: number }).start, end: (qh as { end: number }).end };
     // merge verdicts survive deploys — the ⏸ pause-for-review gate lives in mergeLast,
     // and a deploy that wiped it let a re-run ⏫ land agent conflict resolutions unreviewed
     const pm = (persisted as { merges?: unknown }).merges;
@@ -2903,6 +2925,7 @@ Bun.serve<WSData>({
         tasks,
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
         autosOn,
+        quietHours,
         intake: !!INTAKE_SECRET,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
@@ -3451,6 +3474,20 @@ Bun.serve<WSData>({
       saveState(); // a kill must survive an immediate restart, so persist now (not on next activity)
       audit("autos_switch", undefined, autosOn ? "on" : "off");
       return json({ ok: true, autosOn });
+    }
+    if (url.pathname === "/api/autos/quiet" && req.method === "POST") {
+      const body = await readJson(req);
+      if (body?.start == null) {
+        quietHours = null;
+      } else {
+        const start = Number(body.start) | 0, end = Number(body.end) | 0;
+        if (start < 0 || start > 23 || end < 0 || end > 23 || start === end)
+          return json({ error: "start,end must be local hours 0-23 and differ" }, 400);
+        quietHours = { start, end };
+      }
+      saveState();
+      audit("autos_quiet", undefined, quietHours ? `${quietHours.start}-${quietHours.end}` : "off");
+      return json({ ok: true, quietHours });
     }
     const autoCreate = /^\/api\/slots\/(\d+)\/autos$/.exec(url.pathname);
     if (req.method === "POST" && autoCreate) {

@@ -1637,7 +1637,7 @@ await Bun.sleep(500);
 // agents are the real `claude` instead of the suite's stand-ins.
 const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
   "FLEET_OUTCOME_WINDOW_MS", "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
-  "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD"]
+  "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD"]
   .filter((k) => process.env[k])
   .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
   .join("");
@@ -1967,6 +1967,28 @@ if (auditRotExists) {
 
   // owner token is out of scope for the steward journal, same 404 as the other steward routes
   check("owner token on the steward journal route is out of scope (404)", (await get("/api/steward/journal?tail=1")).status === 404);
+
+  // --- 🧭 steward digest: compose(prior journal + slots view) → worker (FLEET_DIGEST_CMD
+  // stand-in) → clamp. The worker's verdict is advisory; the route must ALWAYS carry the
+  // deterministic payload (prior + slots) alongside it. ---
+  const digRes = await stewGet("/api/steward/digest");
+  const digJ = (await digRes.json()) as {
+    now?: number; prior?: { kind?: string } | null; slots?: { id: number }[];
+    digest?: { conditions?: Record<string, string>; changed?: string[]; attention?: string[] } | null; error?: string;
+  };
+  check("steward digest runs the worker and parses the clamped digest",
+    digRes.ok && digJ.digest?.conditions?.["1"] === "healthy-running"
+    && digJ.digest?.changed?.length === 1 && digJ.digest?.changed?.[0] === "slot 1 committed"
+    && Array.isArray(digJ.digest?.attention) && digJ.digest?.attention.length === 0,
+    JSON.stringify(digJ.digest ?? digJ.error ?? null).slice(0, 200));
+  check("steward digest carries the deterministic payload alongside the verdict",
+    Array.isArray(digJ.slots) && digJ.slots.length > 0 && digJ.prior?.kind === "rundgang" && typeof digJ.now === "number",
+    JSON.stringify({ slots: digJ.slots?.length, prior: digJ.prior?.kind }));
+  check("owner token on the steward digest route is out of scope (404)", (await get("/api/steward/digest")).status === 404);
+  // no steward slot → 404 (rename the steward slot away, probe, restore)
+  await post(`/api/slots/${lnStew.slot}/rename`, { label: "not-steward" });
+  check("steward digest without a steward slot is 404", (await stewGet("/api/steward/digest")).status === 404);
+  await post(`/api/slots/${lnStew.slot}/rename`, { label: "⚙ steward" });
 
   // rotation-immunity of the delta anchor: force the current file to .1, write again, assert
   // tail=2 reads BOTH (the first record from the rotated .1, the second from the fresh file)

@@ -61,9 +61,14 @@ touch the same code and share `claudeAlive`.
   **Still open: the send-cap `.1`-rotation miss** (Tier-0 #3).
 
 **Phase 2 — Prove impact** *(high value / effort; where the value shows)*
-- **`summaryViaSession` as the digest engine** — the Rundgang's mechanical half becomes
-  `summaryViaSession(compose(journalTail, sessions))`, which **fixes context-drain** (the
-  pulse leaves the steward's degrading conversation) with zero new machinery.
+- **`summaryViaSession` as the digest engine** — **BUILT 2026-07-22**: `GET /api/steward/digest`
+  (steward-scoped) composes prior-journal + the Tier-1 slots view server-side, runs the
+  sense+interpret pass in an ephemeral worker (`runStewardDigest`; `FLEET_DIGEST_CMD` test hook),
+  and returns a clamped ADVISORY `{conditions, changed, attention}` alongside the deterministic
+  payload — resilient (`digest:null` on worker failure, the pulse degrades to manual sensing).
+  This **fixes context-drain** (the pulse leaves the steward's degrading conversation);
+  `/rundgang`'s Sense section now runs on the one call. Judgment, emission and the journal
+  write stay in the pane — the worker holds no credential and cannot send/journal.
 - **The learning engine, v1** (`steward-intelligence.md` §8): the **Grok/web survey** (outward —
   what agents do most impactfully) **+ dream-mode v1** (inward — evaluate our structural
   prompts against the axioms, propose sharper versions). A manual v1 runs now: the two things

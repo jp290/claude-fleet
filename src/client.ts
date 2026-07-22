@@ -597,7 +597,7 @@ const sumBusy = new Set<number>();
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
-interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number }
+interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null }
 interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 // 🧹 agentic lane sweep — advisory verdicts, cached per repo. "do it" still goes through
 // the real, git-verified remove/discard endpoints — a bad verdict can only propose, never force.
@@ -761,6 +761,25 @@ async function doMergeLand(slot: number) {
     mergePending.delete(slot);
     void renderBoard();
   }
+}
+
+// ⇲ shelve — set a lane aside WITH a note ("what's left"), instead of landing it. The server
+// records the note (keyed by worktree path) and kills the slot; the worktree stays on disk as an
+// orphan, now resumable WITH context. The safe third exit beside land — no work lost, no
+// destruction. The note shows on the lanes list and clears when the lane is reopened.
+async function doShelve(slot: number) {
+  const s = fleet[slot - 1];
+  if (!s?.worktree) return;
+  const note = prompt("Shelve this lane — what's left to do? (shown when you resume it)");
+  if (note === null) return; // cancelled
+  const r = await post(`/api/slots/${slot}/shelve`, { note });
+  if (!r.ok) {
+    const j = (await r.json().catch(() => ({}))) as { error?: string };
+    alert(j.error ?? "shelve failed");
+    return;
+  }
+  for (const p of panes) if (p.slot === slot) p.assign(0);
+  await refresh();
 }
 
 // 💾 save a lane's uncommitted work — the gap land/merge (dirty-tree refusers) leave open.
@@ -1207,6 +1226,12 @@ async function renderBoard() {
             + "before anything reaches main";
         lb.onclick = () => void doLand(slot);
         land.appendChild(lb);
+        // ⇲ shelve — the safe third exit beside land: set aside WITH a note, keep the worktree.
+        const shb = el("button", "bbtn", "⇲ shelve") as HTMLButtonElement;
+        shb.disabled = !!mg?.running;
+        shb.title = "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed";
+        shb.onclick = () => void doShelve(slot);
+        land.appendChild(shb);
         if (awaitingReview && l) {
           // the agent resolved conflicts and the server verified the rebase — the owner
           // reviews the diff and lands. This is the one place a human eye is required.
@@ -1395,6 +1420,14 @@ async function renderBoard() {
             row.appendChild(close);
           }
           sec.appendChild(row);
+          // shelve note: this orphan was set aside with "what's left" — show it so resuming has
+          // context (cleared server-side when the lane is reopened, removed, or discarded)
+          if (w.note != null) {
+            const nrow = el("div", "sweepv shelved");
+            nrow.appendChild(el("span", "sweepvbadge", "⇲ shelved"));
+            nrow.appendChild(el("span", "sweepvreason", w.note || "(no note)"));
+            sec.appendChild(nrow);
+          }
           // 🧹 sweep verdict, if one was fetched for this repo — purely advisory: "do it"
           // still runs through the real remove/discard endpoints, which re-verify from git
           const verdict = sweepCache.get(wts.repo)?.verdicts.find((v) => v.path === w.path);
@@ -2188,6 +2221,7 @@ function renderSlots() {
       // the conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
       if (s.worktree) mkact("✔", "save (commit work)", () => { void doCommit(s.id, "quick"); });
       if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
+      if (s.worktree) mkact("⇲", "shelve (set aside + note)", () => { void doShelve(s.id); });
       row.appendChild(rowacts);
       row.onclick = () => showSlot(s.id);
     }

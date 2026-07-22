@@ -2789,22 +2789,110 @@ function stewardTaskView(slotId: number): { id: string; status: Task["status"]; 
   return t ? { id: t.id, status: t.status, source: t.source, text: trim(t.text, 300) } : null;
 }
 
+function stewardSlotsView(now: number) {
+  return slots.map((s) => ({
+    id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
+    git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
+    alive: aliveInfo.get(s.id) ?? null,
+    gitOp: gitOpInfo.get(s.id) ?? null,
+    idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
+    merge: stewardMergeView(s.id),
+    task: stewardTaskView(s.id),
+    mergePending: mergeLast.get(s.id)?.status === "resolved",
+  }));
+}
+
+// --- 🧭 steward digest: the Rundgang's mechanical half as an ephemeral worker
+// (automation-synergies.md Finding 3: "the steward is not his conversation"). The server
+// composes the deterministic payload — prior journal record + the Tier-1 slots view — and a
+// throwaway agent (same machinery as the summarizer) does the sense+interpret pass OUTSIDE
+// the steward's degrading pane context. The worker's verdict is ADVISORY, never a gate input
+// (facts outrank claims, steward-intelligence.md §8); judgment, emission and the journal
+// write stay in the steward pane, which is the only holder of the steward token — the
+// worker cannot send, schedule, or journal by construction (it holds no credential at all).
+// Resilient by contract: on any worker failure the route still returns {prior, slots} with
+// digest:null, so the pulse degrades to manual sensing instead of failing.
+const DIGEST_CMD = process.env.FLEET_DIGEST_CMD ?? null; // tests: subprocess stand-in
+interface StewardDigest { conditions: Record<string, string>; changed: string[]; attention: string[] }
+const DIGEST_CONDITIONS = ["healthy-running", "done-looking", "stalled-dirty", "stuck-looping", "awaiting-human", "unknown"];
+function clampDigest(v: unknown): StewardDigest | null {
+  if (typeof v !== "object" || v === null) return null;
+  const j = v as { conditions?: unknown; changed?: unknown; attention?: unknown };
+  const conditions: Record<string, string> = {};
+  if (typeof j.conditions === "object" && j.conditions !== null && !Array.isArray(j.conditions)) {
+    for (const [k, val] of Object.entries(j.conditions as Record<string, unknown>).slice(0, 16)) {
+      if (/^\d+$/.test(k) && typeof val === "string")
+        conditions[k] = DIGEST_CONDITIONS.includes(val) ? val : "unknown";
+    }
+  }
+  const strList = (x: unknown) => Array.isArray(x)
+    ? x.filter((e): e is string => typeof e === "string").slice(0, 12).map((e) => e.slice(0, 300)) : [];
+  return { conditions, changed: strList(j.changed), attention: strList(j.attention) };
+}
+async function runStewardDigest(home: Slot): Promise<{ status: number; body: Record<string, unknown> }> {
+  const now = Date.now();
+  const prior = (await readStewardJournal(1))[0] ?? null;
+  const slotsView = stewardSlotsView(now);
+  const prompt = [
+    "You are a read-only SENSING worker for a fleet steward. Below: the steward's prior journal",
+    "record (the delta anchor; null on the first run) and the current deterministic per-slot state.",
+    "Do NOT use any tools — answer directly from the input, in one single message.",
+    "For each ACTIVE slot (cwd set) EXCEPT the steward's own (label \"⚙ steward\"), assign one",
+    `condition from exactly: ${DIGEST_CONDITIONS.join(" / ")}.`,
+    "Deterministic rules, facts only: alive=false → unknown (a dead pane proves nothing else);",
+    "gitOp=true or merge.status error/blocked → awaiting-human; idle + git.dirty>0 → stalled-dirty;",
+    "idle + clean + git.ahead>0 → done-looking; recent output → healthy-running; anything",
+    "ambiguous → unknown, never a guess. You cannot see transcripts, so never claim stuck-looping",
+    "unless the prior record already flagged it.",
+    "changed: what differs vs the prior record (empty array if nothing — honesty over content).",
+    "attention: facts that need the owner (failed/blocked merge with its detail, wedged gitOp,",
+    "a dead pane). Facts verbatim, no advice, no owner-voice, no invented findings.",
+    'Respond with STRICT JSON only, no markdown fences, exactly this shape:',
+    '{"digest": {"conditions": {"<slotId>": "<condition>"}, "changed": ["..."], "attention": ["..."]}}',
+    "", "## prior journal record", JSON.stringify(prior),
+    "", "## current slots", JSON.stringify(slotsView),
+  ].join("\n");
+  let digest: StewardDigest | null = null;
+  let error: string | undefined;
+  try {
+    let out = DIGEST_CMD
+      ? await summaryViaSubprocess(DIGEST_CMD, prompt, home.cwd!)
+      : await summaryViaSession(prompt, home.cwd!, '"digest"');
+    // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
+    try {
+      const env = JSON.parse(out) as { result?: unknown };
+      if (typeof env.result === "string") out = env.result.trim();
+    } catch { /* not an envelope */ }
+    const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+    let j: { digest?: unknown };
+    try {
+      j = JSON.parse(body) as { digest?: unknown };
+    } catch {
+      const obj = extractJsonObject(out); // real model wrapped the JSON in prose/fences
+      j = obj ? (JSON.parse(obj) as { digest?: unknown }) : {};
+    }
+    digest = clampDigest(j.digest);
+    if (!digest) error = "worker returned no digest object";
+  } catch (e) {
+    error = e instanceof Error ? e.message.slice(0, 300) : "digest worker failed";
+  }
+  return { status: 200, body: { now, prior, slots: slotsView, digest, model: SUMMARY_MODEL, ...(error ? { error } : {}) } };
+}
+// concurrent pulses share one worker run (the beat is hours apart; a double-fire must not
+// spawn two agents). The shared value is a plain object — each caller gets its own Response.
+let digestInflight: Promise<{ status: number; body: Record<string, unknown> }> | null = null;
+
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     const now = Date.now();
-    return json({
-      now,
-      slots: slots.map((s) => ({
-        id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
-        git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
-        alive: aliveInfo.get(s.id) ?? null,
-        gitOp: gitOpInfo.get(s.id) ?? null,
-        idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
-        merge: stewardMergeView(s.id),
-        task: stewardTaskView(s.id),
-        mergePending: mergeLast.get(s.id)?.status === "resolved",
-      })),
-    });
+    return json({ now, slots: stewardSlotsView(now) });
+  }
+  if (url.pathname === "/api/steward/digest" && req.method === "GET") {
+    const home = stewardSlot();
+    if (!home?.cwd) return json({ error: "no steward slot active" }, 404);
+    if (!digestInflight) digestInflight = runStewardDigest(home).finally(() => { digestInflight = null; });
+    const r = await digestInflight;
+    return json(r.body, r.status);
   }
   const briefMatch = /^\/api\/steward\/slots\/(\d+)\/brief$/.exec(url.pathname);
   if (req.method === "GET" && briefMatch) {

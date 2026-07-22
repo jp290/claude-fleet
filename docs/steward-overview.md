@@ -36,6 +36,14 @@ it exists; Fleet is fully functional without it.
   (needs-decision / changed / state) + a typed journal record.* **Zero delivery: it is
   attention, never action** — anything it wants to nudge/commit/land is a decision it
   surfaces, not an act it takes (`rundgang.md`).
+- **Digest engine (2026-07-22)** — the pulse's mechanical half runs OUTSIDE the pane:
+  `GET /api/steward/digest` composes prior-journal + the slots view server-side and hands
+  it to an ephemeral worker (`runStewardDigest`, same machinery as the summarizer;
+  `FLEET_DIGEST_CMD` test hook), which returns a clamped ADVISORY
+  `{conditions, changed, attention}`. The route always carries the deterministic payload
+  alongside; on worker failure `digest` is null and the pulse senses manually — facts
+  outrank claims, and the worker holds no credential (it cannot send, schedule, or
+  journal). This is what fixes the steward's context-drain.
 - **Nudge** (the only way it moves work): `POST /api/steward/send` (`2564`) — *fixed
   server-rendered* templates (`state_relay | lifecycle_op | continue_nudge`; **free text
   rejected**, `2566`); `renderStewardMessage` refuses any `ref` that doesn't match a
@@ -153,13 +161,16 @@ reversible: the steward acts, accepting bounded harm scaled to judgment
 
 ## Next (ranked)
 
-1. **Signal-quality upgrade** (the lever above) — highest leverage, lowest risk; raises the
-   ceiling on everything else. Start with `claudeAlive` (the linchpin — cache for reads, keep
-   the gates fresh), the full `mergeLast` verdict, and `Task`/`gitOp` status; **defer the
-   `condition` classifier** (its git subset is already derivable, its real conditions need
-   `claudeAlive` first).
-2. **Watch the live beat prove out** — the real "test the steward" under the long-autonomous
-   lens (honest, quiet-when-nothing-changed, non-drifting, *uses* the owner-model's risk map).
-3. **Seed the impact library** — the Grok research → schedulable digests, proved before scheduled.
-4. **(Larger, gated) dispatch capability + per-session model** — steward files/briefs, lanes
-   run Opus/Fable quarantined, land stays owner-only. Only with review-prep, or it buries you.
+1. ~~Signal-quality upgrade~~ — **DONE 2026-07-22** (`alive`/`gitOp` cached for reads, gates
+   fresh; full `mergeLast`; `idleMs`/`task` on the steward reads). The `condition` classifier
+   stays deferred (needs a `stuck-looping` detector nobody has built).
+2. ~~Digest engine~~ — **DONE 2026-07-22** (`GET /api/steward/digest`, above): the pulse's
+   sense half runs worker-side; context-drain fixed.
+3. **Watch the live beat prove out** — the real "test the steward" under the long-autonomous
+   lens (honest, quiet-when-nothing-changed, non-drifting, *uses* the owner-model's risk map),
+   now with the digest carrying the sensing.
+4. **Learning engine v1** (manual: Grok survey + dream-mode pass) + seed the impact library —
+   proved before scheduled.
+5. **(Larger, gated) reach precursors then B** — steward-files-pending (force-`pending` in
+   code, `queue-automation.md`), `Slot.model`, then scoped operate-routes; land stays
+   owner-only. Only with review-prep, or it buries you.

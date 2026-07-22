@@ -121,12 +121,15 @@ every delivery gate still calls `claudeAlive` fresh inside `canDeliver` (`1231`)
 
 ## Tier 2 — capability enablers (the roadmap). Medium.
 
-- **`summaryViaSession` is a ready-made steward digest engine — and it fixes context-drain.**
-  **[verified stateless]** The Rundgang's mechanical half could be
-  `summaryViaSession(compose(journalTail, sessions), stewardCwd)`, moving the pulse out of the
-  steward's *degrading conversation context* (the handoff's deferred concern) with **zero new
-  machinery**. The "delta since last" needs no engine state — just the two payloads the caller
-  already holds. Also the impact-library's first real item.
+- **`summaryViaSession` is a ready-made steward digest engine — and it fixes context-drain.
+  BUILT 2026-07-22.** `GET /api/steward/digest` (steward-scoped): the server composes
+  prior-journal + the Tier-1 slots view (`stewardSlotsView`), an ephemeral worker
+  (`runStewardDigest`, `FLEET_DIGEST_CMD` stand-in in e2e) does sense+interpret outside the
+  pane's context, the verdict comes back clamped (`clampDigest`: 6-way condition whitelist,
+  list/length caps) and ADVISORY — the route always carries the deterministic payload
+  alongside, and `digest:null` on any worker failure keeps the pulse independent of the
+  worker. Concurrent pulses share one inflight run. The worker holds no token: it cannot
+  send, schedule, or journal by construction (Finding-3 guard).
 - **Per-session model selection (Opus/Fable lanes).** **[verified]** The `--model` thread and an
   `extraArgs`/`opts` extension already live at `summaryViaSession:1730` (the merge agent uses
   `extraArgs` for tool scope). A `model` opt there + a `Slot.model` field threaded into
@@ -185,8 +188,9 @@ every delivery gate still calls `claudeAlive` fresh inside `canDeliver` (`1231`)
    `claudeAlive` doubles as Tier-0 #2's gate. The `condition` classifier is **not** in this set
    (see Tier 1): its git subset is already derivable and its real conditions need a
    `stuck-looping` detector nobody has built.
-3. **Tier-2 `summaryViaSession` as the digest engine** — proves the impact-library loop on one
-   real item *and* fixes context-drain, with machinery that already exists.
+3. **Tier-2 `summaryViaSession` as the digest engine** — **DONE 2026-07-22** (`GET
+   /api/steward/digest`, see Tier 2): the impact-library loop proven on one real item, and
+   context-drain fixed.
 
 *Everything above is reversible/low-blast to build (worktree-isolated, owner reviews at land) —
 so per the 2026-07-22 doctrine it's act-freely territory to prototype; only the permanent gates

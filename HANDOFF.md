@@ -15,6 +15,7 @@ operate-routes, land stays owner-only). This arc landed A's launcher + the two F
 
 ## Verified state — what's on `main` (confirm with `git log`)
 
+- (see also the fork-resolution section below for the 2026-07-22-evening landings)
 - `eac9fee` **A: `steward-arena.sh`** — hermetic clone-arena up/down. Boot-proven live (arena boots
   on an auto-picked free port bound to Tailscale; live fleet untouched; clean teardown). Uses the
   `FLEET_ARENA_CMD=true` test hook to prove the spine without spawning skip-perms claude.
@@ -53,24 +54,31 @@ evidence → the two tracks):
    the accepted skip-perms OS-blast; §5 the prerequisites, canDeliver+fuel now DONE).
 7. `docs/steward-autonomy.md`, `docs/steward.md`, `docs/lane-autonomy-future.md` (deferred ideas).
 
-## Open forks — what's next, and their complementary relation
+## The forks — RESOLVED and largely BUILT (2026-07-22 evening, Fable-5 session)
 
-The Foundation (canDeliver + fuel) is done. The next work forks; the owner wants to pursue **both**,
-via a Fable-5 session that first understands them in complementary relation:
-- **Phase-2 "prove impact"** (the VALUE layer): the digest engine
-  (`summaryViaSession(compose(journalTail, sessions))`, also fixes context-drain) + the learning
-  engine v1 (Grok survey + dream-mode). This is what the steward *does that helps*.
-- **B-track** (the REACH layer): `Slot.model` (per-lane model) → **B** (scoped live operate-routes;
-  land owner-only). This is *how far the steward can act*.
-- **The complement (load-bearing):** per §7, reach without proven value/review-prep **buries the
-  owner (negative value)** — so value and reach are not independent: B's throughput only helps if
-  the steward prepares each result to a glance. "Facts before reach, value before autonomy."
+The complementary understanding was built, the plan derived from doctrine (serialized lanes per
+OWNER.md §3; value-before-reach per §7), and then executed. Landed to main + deployed, in order:
+- `e963307` **Tier-0 #3** (send caps span the `.1` rotation) — landed by a parallel lane.
+- `9fa3c92` **Tier-1 signal-sharing** (cached `alive`/`gitOp` for READS, gates stay fresh; full
+  `mergeLast`; `idleMs`; founding `task`) — landed by a parallel lane.
+- `15867ef` **Digest engine** — `GET /api/steward/digest`: server composes prior-journal + slots
+  view, ephemeral worker (`runStewardDigest`, `FLEET_DIGEST_CMD` test hook) senses+interprets
+  OUTSIDE the pane, clamped ADVISORY verdict, `digest:null` degrades to manual sensing; worker
+  holds no credential. `/rundgang` Sense runs on the one call. Fixes context-drain.
+- `9a18798` **Reach precursors** — `POST /api/steward/tasks` (status HARD-FORCED `pending` in
+  code, `queue` discarded, capped `FLEET_STEWARD_MAX_PENDING`=10, audited, restart-safe) +
+  `Slot.model` (charset-gated `MODEL_RE` → `slotCmd --model`, settable on lanes/open, persisted,
+  spawn-string proven in the claude-gate suite).
 
-**Two ready-to-run next lanes** (prompts were written in the prior session; regenerate from the
-docs if lost) — both reversible/act-freely, both principled-next before either fork:
-- **Tier-1 signal-sharing** (`claudeAlive` the linchpin — cache for READS, keep the GATES fresh;
-  + full `mergeLast` verdict + `idleMs`/`gitOp`/`Task`). The signal-quality lever.
-- **Tier-0 #3** — send-cap read across the `.1` rotation boundary (imitate `readStewardJournal`).
+**What remains (the plan's tail, in order):**
+1. **Watch the live beat prove out** — the next real `/rundgang` pulses now ride the digest
+   route; watch honesty/quietness/non-drift. (The worker-failure path `digest:null` is
+   code-verified only — no e2e stand-in for a malformed worker.)
+2. **Learning engine v1** (manual: Grok survey + dream-mode pass) — deliberately deferred out
+   of the build lanes; owner-model + axioms exist, run it as its own session.
+3. **Arena episodes** (`steward-arena.sh` up → observe → journal review → down; bounded,
+   never a background daemon — OS-blast is accepted-but-real, steward-arena.md §4).
+4. **B itself** (scoped operate-routes) — gated on digest-proven review-prep + the arena record.
 
 ## Lessons / gotchas (hard-won this arc)
 

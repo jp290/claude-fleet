@@ -599,15 +599,6 @@ interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subjec
   shortstat: string | null; empty: boolean }
 interface WtRow extends WtRisk { path: string; branch: string; slot: number | null; dirty: number; ahead: number; behind: number; note?: string | null }
 interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
-// 🧹 agentic lane sweep — advisory verdicts, cached per repo. "do it" still goes through
-// the real, git-verified remove/discard endpoints — a bad verdict can only propose, never force.
-interface SweepVerdict { path: string; verdict: "safe-to-remove" | "stale" | "active-work";
-  reason: string; suggestedAction: "remove" | "discard" | "none" }
-// sweep now returns an OBJECT: per-lane verdicts PLUS an "outstanding" synthesis of
-// what's still missing across the lanes ("what's really still missing").
-interface SweepData { verdicts: SweepVerdict[]; outstanding: string }
-const sweepCache = new Map<string, SweepData>(); // keyed by repo
-const sweepBusy = new Set<string>();
 // 💾 lane commit in flight, per slot — carries the MODE so the button can label itself
 // ("… saving" vs "… writing message") while the request runs.
 const commitBusy = new Map<number, "quick" | "agent">();
@@ -1289,8 +1280,7 @@ async function renderBoard() {
         nodes.push(land);
       }
 
-      // 4 — AGENTS: advisory, read-only. ✨ summarize + 🧹 sweep. The sweep's per-lane
-      // verdicts render down in LANES; its "what's still missing" synthesis renders here.
+      // 4 — AGENTS: advisory, read-only. ✨ summarize.
       // recover a server-cached summary once per slot (GET never spawns the agent)
       if (!sumCache.has(slot)) {
         sumCache.set(slot, {});
@@ -1341,41 +1331,11 @@ async function renderBoard() {
       } else if (sum?.error) {
         asec.appendChild(el("div", "bsumerr", sum.error));
       }
-      if (wts && wts.worktrees.length) {
-        const repo = wts.repo;
-        const swb = el("button", "bbtn accent", sweepBusy.has(repo) ? "… sweeping" : "🧹 sweep lanes") as HTMLButtonElement;
-        swb.title = "ask an agent which lanes look safe to clean up and what's still unfinished — advisory only, review before acting";
-        swb.disabled = sweepBusy.has(repo);
-        swb.onclick = async () => {
-          if (sweepBusy.has(repo)) return;
-          sweepBusy.add(repo);
-          void renderBoard();
-          try {
-            const r = await post(`/api/slots/${slot}/sweep`, {});
-            const j = (await r.json().catch(() => ({}))) as { verdicts?: SweepVerdict[]; outstanding?: string; error?: string };
-            if (r.ok && j.verdicts) sweepCache.set(repo, { verdicts: j.verdicts, outstanding: j.outstanding ?? "" });
-            else alert(j.error ?? "sweep failed");
-          } finally {
-            sweepBusy.delete(repo);
-            void renderBoard();
-          }
-        };
-        asec.appendChild(swb);
-        // "what's really still missing" — the sweep's cross-lane synthesis, set apart from
-        // the per-lane verdict rows below
-        const swept = sweepCache.get(repo);
-        if (swept?.outstanding) {
-          const box = el("div", "boutstanding");
-          box.appendChild(el("div", "bouthd", "what's still missing"));
-          box.appendChild(el("div", "boutbody", swept.outstanding));
-          asec.appendChild(box);
-        }
-      }
       nodes.push(asec);
 
       // 5 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
       // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
-      // per-lane sweep verdicts + ＋ new lane.
+      // ＋ new lane.
       if (wts) {
         const sec = el("div", "bsec");
         const hd = el("div", "bwthead");
@@ -1459,20 +1419,6 @@ async function renderBoard() {
             nrow.appendChild(el("span", "sweepvbadge", "⇲ shelved"));
             nrow.appendChild(el("span", "sweepvreason", w.note || "(no note)"));
             sec.appendChild(nrow);
-          }
-          // 🧹 sweep verdict, if one was fetched for this repo — purely advisory: "do it"
-          // still runs through the real remove/discard endpoints, which re-verify from git
-          const verdict = sweepCache.get(wts.repo)?.verdicts.find((v) => v.path === w.path);
-          if (verdict) {
-            const vrow = el("div", `sweepv ${verdict.verdict}`);
-            vrow.appendChild(el("span", "sweepvbadge", verdict.verdict));
-            vrow.appendChild(el("span", "sweepvreason", verdict.reason));
-            // advisory only: the single "close" action on the row above computes the safe
-            // default from git state (which the verdict's suggestedAction merely guessed at),
-            // so the verdict no longer carries its own action button — it reads as the WHY,
-            // and one action path can never diverge from a second. (slot-held lanes show no
-            // close button at all — land or kill them in the slot first, as before.)
-            sec.appendChild(vrow);
           }
           // the confirm panel is not a dialog: the consequences ARE the wait screen. The
           // destructive button unlocks only after the read window, counted from the first

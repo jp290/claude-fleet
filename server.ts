@@ -711,7 +711,7 @@ async function listWorktrees(root: string): Promise<WtEntry[]> {
 }
 
 // the real risk behind a destructive action, computed once and shared by every surface
-// that needs to show it BEFORE the click (risk preview panels, the sweep agent) and the
+// that needs to show it BEFORE the click (risk preview panels) and the
 // one that enforces it (removeWorktreeSafe). "empty" = provably safe to drop: clean tree
 // AND nothing unpushed — the destructive click becomes a no-op cleanup, not a judgment call.
 interface WorktreeRisk { dirtyFiles: string[]; unpushedCommits: CommitRow[]; shortstat: string | null; empty: boolean }
@@ -1752,123 +1752,6 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     summary: summary.slice(0, 4000), openThreads: openThreads.slice(0, 12),
     verification: verification.slice(0, 1000), model: SUMMARY_MODEL, at: Date.now(), head, dirty, raw,
   };
-}
-
-// --- 🧹 agentic lane sweep: ADVISORY ONLY. Same throwaway-session machinery as the
-// summarizer, fed the small structured worktreeRisk facts (never raw diffs) for every
-// worktree of a repo, and asked for a strict per-lane verdict. This function NEVER
-// executes a destructive git op — the client's "do it" button still goes through the
-// real, git-verified /api/worktrees/remove and /api/worktrees/discard endpoints, so a
-// wrong or injected verdict can only ever propose an action, never force it.
-const SWEEP_CMD = process.env.FLEET_SWEEP_CMD ?? null; // tests: subprocess stand-in
-interface SweepVerdict { path: string; verdict: "safe-to-remove" | "stale" | "active-work";
-  reason: string; suggestedAction: "remove" | "discard" | "none" }
-interface SweepResult { verdicts: SweepVerdict[]; outstanding: string; model: string; at: number }
-// keyed by repo root (a sweep is repo-wide, not per-slot)
-const sweepCache = new Map<string, { key: string; result: SweepResult }>();
-const sweepInflight = new Map<string, Promise<SweepResult>>();
-
-function filterVerdicts(arr: unknown): SweepVerdict[] {
-  if (!Array.isArray(arr)) return [];
-  return arr.filter((x): x is SweepVerdict =>
-    typeof x === "object" && x !== null
-    && typeof (x as SweepVerdict).path === "string"
-    && ["safe-to-remove", "stale", "active-work"].includes((x as SweepVerdict).verdict)
-    && typeof (x as SweepVerdict).reason === "string"
-    && ["remove", "discard", "none"].includes((x as SweepVerdict).suggestedAction));
-}
-
-// the agent's answer is now an OBJECT {verdicts, outstanding}; tolerate the OLD bare-array
-// shape too (safety), and a missing/oddly-typed outstanding → empty string.
-function parseSweep(body: string): { verdicts: SweepVerdict[]; outstanding: string } {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    if (Array.isArray(parsed)) return { verdicts: filterVerdicts(parsed), outstanding: "" };
-    if (parsed && typeof parsed === "object") {
-      const o = parsed as { verdicts?: unknown; outstanding?: unknown };
-      return {
-        verdicts: filterVerdicts(o.verdicts),
-        outstanding: typeof o.outstanding === "string" ? o.outstanding.slice(0, 2000) : "",
-      };
-    }
-    return { verdicts: [], outstanding: "" };
-  } catch {
-    return { verdicts: [], outstanding: "" }; // unparseable → nothing actionable
-  }
-}
-
-async function runSweep(repo: string, entries: { path: string; branch: string; risk: WorktreeRisk }[]): Promise<SweepResult> {
-  const facts = entries.map((e) => ({
-    path: e.path, branch: e.branch, dirtyFileCount: e.risk.dirtyFiles.length,
-    unpushedCommitCount: e.risk.unpushedCommits.length,
-    shortstat: e.risk.shortstat, empty: e.risk.empty,
-  }));
-  const prompt = [
-    "You are a read-only reviewer assessing which git worktree lanes are safe to clean up.",
-    "Below is small, structured, deterministic git-state data for every open lane of one repo —",
-    "no diffs, no transcripts, only facts already computed by the server.",
-    "Do NOT use any tools — answer directly from the input, in one single message.",
-    "Respond with STRICT JSON only, no markdown fences: an OBJECT exactly this shape:",
-    '{"verdicts": [{"path": "...", "verdict": "safe-to-remove"|"stale"|"active-work", "reason": "...", "suggestedAction": "remove"|"discard"|"none"}], "outstanding": "..."}',
-    "Rules for each verdict (one entry per lane):",
-    "- empty:true (no uncommitted changes, no unpushed commits) → verdict safe-to-remove, suggestedAction remove.",
-    "- non-empty but looks abandoned/superseded → verdict stale; suggestedAction remove ONLY if truly empty,",
-    "  otherwise discard (which destroys uncommitted/unpushed work) — say exactly why in reason.",
-    "- real work in progress → verdict active-work, suggestedAction none. Never suggest destroying live work.",
-    "- reason: one concise sentence citing the facts (file count, unpushed commit count, empty).",
-    "outstanding: a short synthesis across ALL lanes — which have uncommitted work to save, which have",
-    "unpushed/unlanded commits to land, which look stale — and the single most useful next action.",
-    "1-4 sentences or short bullets, plain text (no JSON, no markdown fences).",
-    "", "## lanes", JSON.stringify(facts, null, 2),
-  ].join("\n");
-  let text = SWEEP_CMD
-    ? await summaryViaSubprocess(SWEEP_CMD, prompt, repo)
-    : await summaryViaSession(prompt, repo, '"verdict"');
-  try {
-    const env = JSON.parse(text) as { result?: unknown };
-    if (typeof env.result === "string") text = env.result.trim();
-  } catch { /* not an envelope */ }
-  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  const { verdicts, outstanding } = parseSweep(body);
-  return { verdicts, outstanding, model: SUMMARY_MODEL, at: Date.now() };
-}
-
-// GET = cache lookup only, never spawns. POST = run the agent, single-flight per repo;
-// the cache key is the paths + HEAD shas of every lane, so it invalidates the instant
-// any lane's git state changes — no matter who else keeps clicking sweep meanwhile.
-async function sweepResponse(s: Slot, run: boolean): Promise<Response> {
-  if (!s.cwd) return json({ error: "slot not active" }, 400);
-  const top = await git(s.cwd, "rev-parse", "--show-toplevel");
-  if (top.code !== 0) return json({ error: "not a git repository" }, 400);
-  const repo = top.out;
-  const list = await listWorktrees(repo);
-  const primary = list.find((w) => w.primary);
-  if (!primary) return json({ error: "no worktree info" }, 400);
-  const lanes = list.filter((w) => !w.primary);
-  const shas = await Promise.all(lanes.map((w) => git(w.path, "rev-parse", "HEAD")));
-  // dirty signature folded in: sweep facts are dirty-derived, so a lane going dirty at an
-  // unchanged HEAD must invalidate its cached "safe-to-remove" verdict (as summaryResponse does)
-  const dirt = await Promise.all(lanes.map((w) => git(w.path, "status", "--porcelain")));
-  const key = lanes.map((w, i) => `${w.path}@${shas[i].out}#${Bun.hash(dirt[i].out)}`).join("|");
-  const cached = sweepCache.get(repo);
-  if (cached?.key === key) return json({ ...cached.result, repo, cached: true, stale: false });
-  if (!run) return json(cached ? { ...cached.result, repo, cached: true, stale: true } : { cached: false, repo });
-  let inflight = sweepInflight.get(repo);
-  if (!inflight) {
-    inflight = (async () => {
-      const entries = await Promise.all(
-        lanes.map(async (w) => ({ path: w.path, branch: w.branch, risk: await worktreeRisk(primary.path, w.path) })));
-      return runSweep(primary.path, entries);
-    })().finally(() => sweepInflight.delete(repo));
-    sweepInflight.set(repo, inflight);
-  }
-  try {
-    const result = await inflight;
-    sweepCache.set(repo, { key, result });
-    return json({ ...result, repo, cached: false, stale: false });
-  } catch (e) {
-    return json({ error: e instanceof Error ? e.message : "sweep failed" }, 500);
-  }
 }
 
 // --- 💾 lane commit: the load-bearing SAVE. land/merge both refuse a dirty tree, so
@@ -3511,14 +3394,6 @@ Bun.serve<WSData>({
       const s = slotFrom(sumMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return summaryResponse(s, req.method === "POST");
-    }
-    // 🧹 agentic lane sweep (the ✨/🔍 pattern applied to lane cleanup). GET = cache lookup
-    // only. POST = run the agent (single-flight per repo). Advisory only — see runSweep.
-    const swMatch = /^\/api\/slots\/(\d+)\/sweep$/.exec(url.pathname);
-    if (swMatch && (req.method === "GET" || req.method === "POST")) {
-      const s = slotFrom(swMatch[1]);
-      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      return sweepResponse(s, req.method === "POST");
     }
     // 💾 commit a lane's uncommitted work — the SAVE that land/merge (dirty-tree refusers)
     // can't do. Lanes only; commit-only (never push, never land). Serialized per slot; the

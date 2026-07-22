@@ -629,16 +629,21 @@ const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git re
 // send/dispatch sites) must keep calling claudeAlive FRESH: a 10s-stale cache could gate a
 // nudge or a bare-shell dispatch into a pane that died seconds ago.
 const aliveInfo = new Map<number, boolean>();
+// wedged merge/rebase per slot, same tick + same reads-only contract as aliveInfo: the
+// steward overview needs it fleet-wide (the per-slot brief computes it fresh), and the
+// commit/land guards keep their own fresh gitOpInProgress calls.
+const gitOpInfo = new Map<number, boolean>();
 let gitTickBusy = false;
 async function tickGit(): Promise<void> {
   if (gitTickBusy) return;
   gitTickBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); aliveInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); aliveInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading.
       aliveInfo.set(s.id, await claudeAlive(s.id));
+      gitOpInfo.set(s.id, await gitOpInProgress(s.cwd));
       const st = await git(s.cwd, "status", "--porcelain=v2", "--branch");
       if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
       let branch = "", ahead = 0, behind = 0, dirty = 0;
@@ -1012,6 +1017,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
   mergeLast.delete(s.id); // a recycled slot must never show a previous lane's merge verdict
+  aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
+  gitOpInfo.delete(s.id);
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling
@@ -2767,14 +2774,34 @@ async function readStewardJournal(tail: number): Promise<Record<string, unknown>
   return out.slice(-tail);
 }
 
+// Tier-1 signal-sharing (synergy-findings.md): the facts the server already computes, handed
+// to the steward's SENSES so the pulse reasons from them instead of re-inferring in the LLM.
+// `alive`/`gitOp` come from the ~10s tickGit caches — READS ONLY; every delivery/dispatch gate
+// (canDeliver) keeps its FRESH claudeAlive call, a stale cache must never gate a send.
+function stewardMergeView(slotId: number): { status: string; detail: string; conflicted: string[]; at: number } | null {
+  const m = mergeLast.get(slotId);
+  return m ? { status: m.status, detail: m.detail, conflicted: m.conflicted ?? [], at: m.at } : null;
+}
+// the lane's founding intent (the Task it was dispatched for) — the baseline "done-looking"
+// is judged against. detachSlotTasks/land keep slot-attribution honest, so find-by-slot is safe.
+function stewardTaskView(slotId: number): { id: string; status: Task["status"]; source: Task["source"]; text: string } | null {
+  const t = tasks.find((x) => x.slot === slotId);
+  return t ? { id: t.id, status: t.status, source: t.source, text: trim(t.text, 300) } : null;
+}
+
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
+    const now = Date.now();
     return json({
-      now: Date.now(),
+      now,
       slots: slots.map((s) => ({
         id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
         git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
         alive: aliveInfo.get(s.id) ?? null,
+        gitOp: gitOpInfo.get(s.id) ?? null,
+        idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
+        merge: stewardMergeView(s.id),
+        task: stewardTaskView(s.id),
         mergePending: mergeLast.get(s.id)?.status === "resolved",
       })),
     });
@@ -2785,7 +2812,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
     const p = await briefPayload(s);
     if (!p) return json({ error: "not a git repository" }, 400);
-    return json({ ...p, worktree: s.worktree });
+    return json({ ...p, worktree: s.worktree, merge: stewardMergeView(s.id), task: stewardTaskView(s.id) });
   }
   const trMatch = /^\/api\/steward\/slots\/(\d+)\/transcript$/.exec(url.pathname);
   if (req.method === "GET" && trMatch) {

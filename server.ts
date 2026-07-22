@@ -37,11 +37,24 @@ const PATH_EXPORT = process.env.PATH ? `export PATH='${process.env.PATH.replaceA
 const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 // when the slot actually runs claude, pin its session id so the transcript path
 // (~/.claude/projects/<cwd-slug>/<uuid>.jsonl) is known instead of guessed by mtime
-function slotCmd(sessionId: string | null, resume: boolean): string {
-  const cmd = sessionId && /^claude(\s|$)/.test(BASE_CMD)
+// model names are validated at SET time (MODEL_RE, the open/lane routes) — this string is
+// baked into a shell line, so nothing unvalidated may ever reach it
+function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null): string {
+  const claude = /^claude(\s|$)/.test(BASE_CMD);
+  let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
     : BASE_CMD;
+  if (model && claude) cmd += ` --model ${model}`;
   return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+}
+// per-slot model (synergy-findings Tier-2): strict charset because the value lands in a
+// tmux shell command — never widen without revisiting slotCmd
+const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
+function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
+  const m = body?.model;
+  if (m === undefined || m === null || m === "") return { ok: true, model: null };
+  if (typeof m === "string" && MODEL_RE.test(m)) return { ok: true, model: m };
+  return { ok: false };
 }
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
@@ -104,6 +117,7 @@ interface Slot {
   label: string | null; // user-chosen session name; falls back to cwd basename in the UI
   worktree: { repo: string; branch: string; base?: string } | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots
+  model: string | null; // per-slot claude model (--model at spawn); null = FLEET_CMD default
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
   // be self-scheduled against by a session that was talking to whatever used to live here.
@@ -129,6 +143,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   cwd: null,
   label: null,
   worktree: null,
+  model: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
   lastOutput: 0,
@@ -313,7 +328,7 @@ type AuditEvent =
   | "owner_auth_fail"
   | "self_heal_recreate"
   | "steward_send" | "steward_send_capped"
-  | "steward_journal"
+  | "steward_journal" | "steward_task"
   | "slot_shelve"
   | "repo_undo_land"
   | "autos_switch"
@@ -360,8 +375,8 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
-    worktree: { repo: string; branch: string; base?: string } | null; selfToken: string }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, selfToken: s.selfToken };
+    worktree: { repo: string; branch: string; base?: string } | null; model: string | null; selfToken: string }> = {};
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
@@ -899,10 +914,10 @@ const laneSpawn = new Set<number>();
 // worktree paths mid-attach — see the attach race note in /api/lanes
 const attachBusy = new Set<string>();
 
-async function openLaneInSlot(s: Slot, repo: string, branch: string): Promise<{ cwd: string; branch: string }> {
+async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
   const base = await integrationBranch(wt.repo);
-  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined });
+  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined }, model);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -960,7 +975,7 @@ async function ensureSlot(s: Slot): Promise<void> {
     const stewardExport = s.label === STEWARD_LABEL && stewardToken
       ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
     const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
-      `${selfExport}${stewardExport}${slotCmd(candidate, resume)}`);
+      `${selfExport}${stewardExport}${slotCmd(candidate, resume, s.model)}`);
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;
@@ -1004,7 +1019,8 @@ function expandCwd(raw: string): string {
   return t;
 }
 
-async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string } | null = null): Promise<void> {
+async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string } | null = null,
+  model: string | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   s.cwd = cwd;
@@ -1012,6 +1028,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // set BEFORE ensureSlot spawns the pane below — FLEET_SELF_TOKEN is only baked into a
   // lane's pane env, so ensureSlot must see the final worktree tag, not a later patch-up
   s.worktree = worktree;
+  s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
   s.selfToken = randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
@@ -1058,6 +1075,7 @@ async function killSlot(s: Slot): Promise<void> {
   harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
   startCache.delete(s.id);
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
+  s.model = null; // the per-slot model dies with the session it was chosen for
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
@@ -2467,7 +2485,7 @@ if (existsSync(STATE_FILE)) {
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
-        && ((x as Task).source === "owner" || (x as Task).source === "intake")
+        && ["owner", "intake", "steward"].includes((x as Task).source)
         && ["pending", "queued", "sent", "done"].includes((x as Task).status));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
@@ -2477,6 +2495,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof v.label === "string") s.label = v.label;
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
+        const pm = (v as { model?: unknown }).model;
+        if (typeof pm === "string" && MODEL_RE.test(pm)) s.model = pm;
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")
@@ -2794,7 +2814,7 @@ function stewardTaskView(slotId: number): { id: string; status: Task["status"]; 
 function stewardSlotsView(now: number) {
   return slots.map((s) => ({
     id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
-    git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
+    git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
     alive: aliveInfo.get(s.id) ?? null,
     gitOp: gitOpInfo.get(s.id) ?? null,
     idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
@@ -3248,7 +3268,7 @@ Bun.serve<WSData>({
           const sh = shares.find((x) => x.slot === s.id);
           return {
             id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
-            git: gitInfo.get(s.id) ?? null, worktree: s.worktree,
+            git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
             share: sh ? {
               id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
@@ -3497,6 +3517,8 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/lanes" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
+      const laneModel = modelOf(body);
+      if (!laneModel.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
@@ -3515,14 +3537,14 @@ Bun.serve<WSData>({
           const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === attachPath);
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
-          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: (await integrationBranch(top.out)) ?? undefined });
+          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: (await integrationBranch(top.out)) ?? undefined }, laneModel.model);
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "");
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
@@ -3956,8 +3978,10 @@ Bun.serve<WSData>({
       if (slotMatch[2] === "open") {
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
+        const mo = modelOf(body);
+        if (!mo.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
         try {
-          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~");
+          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed" }, 400);
         }
@@ -3968,9 +3992,11 @@ Bun.serve<WSData>({
         const body = await readJson(req);
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd || laneSpawn.has(s.id)) return json({ error: "slot already active — use a free slot" }, 400);
+        const mo = modelOf(body);
+        if (!mo.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "");
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model);
           return json({ ok: true, cwd: r.cwd, branch: r.branch });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);

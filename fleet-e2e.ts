@@ -1990,14 +1990,64 @@ if (auditRotExists) {
   check("steward digest without a steward slot is 404", (await stewGet("/api/steward/digest")).status === 404);
   await post(`/api/slots/${lnStew.slot}/rename`, { label: "⚙ steward" });
 
+  // --- steward files PENDING tasks (queue-automation.md item 1): observations become
+  // reviewable proposals; the pending→queued gate stays with the owner. ---
+  const stTask = await stewPost("/api/steward/tasks", { text: "steward proposal: rebase lane 3", queue: true });
+  const stTaskJ = (await stTask.json()) as { ok?: boolean; task?: { id: string; status: string; source: string } };
+  check("steward files a task and queue:true is DISCARDED — status hard-forced to pending",
+    stTask.ok && stTaskJ.task?.status === "pending" && stTaskJ.task?.source === "steward",
+    JSON.stringify(stTaskJ));
+  const sessSt = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; source: string }[] };
+  check("steward-filed task lands in the owner's queue as pending/steward",
+    sessSt.tasks.some((t) => t.id === stTaskJ.task?.id && t.status === "pending" && t.source === "steward"));
+  check("owner promotes the steward-filed task (pending → queued, the meta-gate)",
+    (await post(`/api/tasks/${stTaskJ.task?.id}/queue`, {})).ok);
+  check("steward task rejects empty text (400)", (await stewPost("/api/steward/tasks", { text: "  " })).status === 400);
+  // cap: open steward-pending tasks are bounded — fill to the cap, expect 409, then clean up
+  const capIds: string[] = [];
+  let capHit = false;
+  for (let i = 0; i < 12; i++) {
+    const r = await stewPost("/api/steward/tasks", { text: `cap probe ${i}` });
+    if (r.status === 409) { capHit = true; break; }
+    capIds.push(((await r.json()) as { task: { id: string } }).task.id);
+  }
+  check("steward pending cap refuses the overflow proposal (409)", capHit, `filed=${capIds.length}`);
+  for (const id of [...capIds, stTaskJ.task?.id]) await post(`/api/tasks/${id}/delete`, {});
+  check("owner token on the steward tasks route is out of scope (404)",
+    (await post("/api/steward/tasks", { text: "x" })).status === 404);
+
+  // --- Slot.model (synergy-findings Tier-2): per-slot claude model, validated at set time
+  // (the value is baked into the pane's shell command — charset is load-bearing), persisted
+  // on the slot and echoed on the owner + steward reads. The --model spawn-string proof
+  // lives in the claude-gate suite (FLEET_CMD=true here never appends it). ---
+  check("open rejects a bad model string (400)",
+    (await post("/api/slots/1/open", { cwd: ".", model: "bad model; rm -rf" })).status === 400);
+  check("lane create rejects a bad model string (400)",
+    (await post("/api/lanes", { repo: REPO, model: "$(evil)" })).status === 400);
+  const lnModel = (await (await post("/api/lanes", { repo: REPO, model: "sonnet-test.1" })).json()) as { slot: number };
+  const sessModel = (await (await get("/api/sessions")).json()) as { slots: { id: number; model: string | null }[] };
+  check("lane created with a model echoes it on /api/sessions",
+    sessModel.slots.find((s) => s.id === lnModel.slot)?.model === "sonnet-test.1",
+    JSON.stringify(sessModel.slots.find((s) => s.id === lnModel.slot)));
+  const stewModelJ = (await (await stewGet("/api/steward/sessions")).json()) as { slots: { id: number; model: string | null }[] };
+  check("steward sessions view carries the slot model",
+    stewModelJ.slots.find((s) => s.id === lnModel.slot)?.model === "sonnet-test.1");
+  await post(`/api/slots/${lnModel.slot}/kill`, {});
+  const sessModel2 = (await (await get("/api/sessions")).json()) as { slots: { id: number; model: string | null }[] };
+  check("the per-slot model dies with the session (kill clears it)",
+    sessModel2.slots.find((s) => s.id === lnModel.slot)?.model === null);
+
   // rotation-immunity of the delta anchor: force the current file to .1, write again, assert
   // tail=2 reads BOTH (the first record from the rotated .1, the second from the fresh file)
   renameSync("steward-journal.jsonl", "steward-journal.jsonl.1");
   await stewPost("/api/steward/journal", { counts: { "healthy-running": 4 }, decisions_surfaced: 0, changed: false });
   await Bun.sleep(200);
-  const jGet2J = (await (await stewGet("/api/steward/journal?tail=2")).json()) as { records: { decisions_surfaced?: number; changed?: boolean }[] };
+  // tail wide enough to be robust against interleaved outcome records (the 1.5s test window
+  // can close a pending send-outcome into the journal at any point around this block)
+  const jGet2J = (await (await stewGet("/api/steward/journal?tail=10")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean }[] };
   check("steward journal delta anchor survives a rotation boundary (reads across .1)",
-    jGet2J.records?.length === 2 && jGet2J.records[0]?.decisions_surfaced === 1 && jGet2J.records[1]?.changed === false,
+    jGet2J.records?.some((r) => r.kind === "rundgang" && r.decisions_surfaced === 1)
+    && jGet2J.records?.some((r) => r.kind === "rundgang" && r.counts?.["healthy-running"] === 4 && r.changed === false),
     JSON.stringify(jGet2J).slice(0, 200));
 
   // --- intervention-outcome fuel (steward-intelligence.md §4): per-send measurement + a

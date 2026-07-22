@@ -196,6 +196,8 @@ let persistedToken: string | null = null;
 const STEWARD_LABEL = "⚙ steward";
 let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
+// max OPEN steward-filed pending tasks — a looping pulse must not flood the review buffer
+const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
 // joint 5's 10-minute effect window (steward-autonomy.md) doubles as the v1 episode
 // boundary: with no sensor loop yet to detect when an intervention actually helped, an
 // "episode" for cap purposes is simply kind×slot within this window of the last send —
@@ -2920,6 +2922,28 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const home = stewardSlot();
     if (!home) return json({ error: "no steward slot active" }, 404);
     return createAutoForSlot(home, await readJson(req));
+  }
+  // steward files PENDING tasks (queue-automation.md item 1): its Rundgang observations become
+  // reviewable proposals without any action capability — same stance as intake. The owner
+  // create route fuses create+promote in one call (`body.queue === true` → queued), so for
+  // this principal the status is HARD-FORCED to "pending" and any queue field is discarded —
+  // "pending only" enforced in code, never convention (queue-automation.md "the line that must
+  // not be crossed": producers write pending; only the owner promotes, dispatch stays dumb).
+  if (url.pathname === "/api/steward/tasks" && req.method === "POST") {
+    const body = await readJson(req);
+    if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
+    // cap open steward proposals so a looping pulse can't flood the review buffer (caps are
+    // mandatory — same stance as sends/autos). Review capacity is the binding constraint.
+    const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
+    if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
+    const t: Task = {
+      id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+      source: "steward", from: null, status: "pending", created: Date.now(), slot: null, note: null,
+    };
+    tasks = capTasks([...tasks, t]);
+    saveState();
+    audit("steward_task", stewardSlot()?.id, t.id);
+    return json({ ok: true, task: t });
   }
   if (url.pathname === "/api/steward/send" && req.method === "POST")
     return handleStewardSend(await readJson(req));

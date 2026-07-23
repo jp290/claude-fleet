@@ -125,33 +125,54 @@ legibility, not authority.
   design hypothesis — plausible from the code shape, unproven. Sibling-contention prediction (§5.2)
   assumes a cheap dry-run rebase is feasible; not verified.
 
-## 8. Immediate use — the current stack (doubles as the land handoff)
+## 8. The specimen, LANDED — one full run of the manual process (2026-07-23)
 
-The live specimen at authoring time (2026-07-23). Land order is load-bearing; two independent
-tracks (G, A), free relative order between tracks.
+The five-lane stack was landed by hand the same day, owner-initiated (OWNER §4c: *the op's cost is
+set by who initiates it*). Recorded here as the worked example the feature would automate —
+**the observations below are the empirical half of §5's open questions.**
+
+Final order (ff-only, no merge commits), oldest first:
 
 ```
-main (e978c78)
-├── lane/g1  (35bd3ea)  G1 land-provenance + stale-verify   [VERIFIED]      ← land 1st (G-track)
-│   └── lane/g2  (32c7524)  G2 verify badge (client)         [VERIFIED]      ← land after g1
-└── lane/a1  (19d8578)  A1 honest-helped + attest-staleness  [VERIFIED]      ← land 1st (A-track)
-    ├── lane/a2  (…)     A2 baselineRate                      [UNDER VERIFY]  ← land after a1
-    └── lane/b1  (…)     B1 propose-outcome (server half)     [UNDER VERIFY]  ← land after a1
+917452a  G1  land provenance + stale-verify guard      (server)   ← G-track root
+9e729d4  G2  verify badge in land review               (client)   ← after G1
+2fc7c50  A1  honest helped semantics + attest staleness (server)  ← A-track root
+df260b1  A2  advisory baselineRate                     (server)   ← after A1
+f70cc7a  B1  propose-outcome from promote/dismiss      (server)   ← after A1
 ```
 
-- **G-track:** land `lane/g1`, then `lane/g2` (g2 contains g1's commit; after g1 lands, g2 rebases
-  to just its own client commit — clean).
-- **A-track:** land `lane/a1`, then `lane/a2` and `lane/b1` (siblings — see §5.2; the second to land
-  rebases over the first, low but non-zero conflict risk in the outcome/tally area).
-- `[UNDER VERIFY]` = the coordinator's diff-review + fail-at-HEAD + independent green not yet
-  complete for that lane; do not land until it is. (This flag is exactly the per-lane readiness
-  §5.3 asks who should own.)
-- **B1 also needs the owner** for its non-server half: the `/rundgang` prompt edit (a skill file /
-  `~/.claude` — shared reality, not a lane) + one live pulse to observe a task get filed.
-- **Server-touching lanes** (g1, a1, a2, b1) need the deploy step after land
-  (`tmux -L claudefleet kill-session -t srv`). g2 is client-only → `bun run build` + serve.
-- Post-land: remove each landed lane's worktree (`git worktree remove …`) — the §3/PB-3 cleanup,
-  done by hand until it exists.
+**What the manual run revealed (feeds §5):**
+- **Duplicate-parent handling is free.** Rebasing a child onto a main that already contains its
+  parent (G2 after G1; A2/B1 after A1) made git drop the duplicated parent commit by patch-id —
+  each child reduced to exactly 1 commit. PB-2 does not need to special-case this.
+- **§5.2 sibling contention did NOT materialize.** A2 and B1 both fork A1 and both touch the
+  outcome/tally area, yet the second rebased cleanly. Evidence that "touches the same region" is
+  too coarse a predictor — a useful prediction needs a dry-run rebase, not a file-overlap heuristic.
+- **§5.3 readiness had no source but attestation.** Every `[VERIFIED]` flag was a coordinator
+  judgement (diff-review vs. the findings + a non-tautology proof + a green battery **in the
+  rebased landing state**). Nothing in the system recorded it; it lived in one session's context —
+  precisely the gap §0 describes. A real board must decide where this attestation is stored.
+- **Verify each lane in its LANDING state, not as authored.** A2 and B1 were re-verified after
+  rebasing onto the moved main, not merely as their agents left them. A stack sequencer must
+  re-run verification post-rebase, or it certifies a tree that never lands.
+- **Integrated ≠ sum of verified.** G1+G2+A1 were each green alone; the run added an explicit
+  battery on merged main because G1 and A1 both touch `server.ts` and had never been exercised
+  together. PB-2 should make this integrated check a first-class step, not an afterthought.
+- **Ff-only makes the last check free.** Because each land was a fast-forward, the tested tree
+  became main verbatim — no post-land re-verification needed.
+- **Worktree placement bit.** The lanes were created *inside* the repo
+  (`<repo>/claude-fleet.worktrees/…`) instead of the sibling convention the steward uses
+  (`~/claude-fleet.worktrees/…`). The directory is not gitignored, so it showed as
+  `?? claude-fleet.worktrees/` in every status/diff of the live repo until cleanup. PB-3 (or the
+  lane-spawn path) should pin the location — or `.gitignore` it.
+- Cleanup after landing: all five worktrees removed (`git worktree remove`), branches KEPT
+  (`lane/g1`…`lane/b1`) per the fleet's own convention that a land never deletes the branch.
+
+**Still open after this run (not part of the feature):** the deploy (`bun run build` +
+`tmux -L claudefleet kill-session -t srv` + Tailscale health-check) is separately owner-gated
+(OWNER §4b: environment/lifecycle mutations); and **B1's non-server half** — the `/rundgang` prompt
+edit (a skill file under `~/.claude`, shared reality, not lane-able) plus one live pulse to observe
+a proposal actually get filed. Until that lands, B1's wiring is correct but inert.
 
 ## 9. Relation to the broader program
 

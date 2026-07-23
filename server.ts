@@ -2132,7 +2132,12 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
   detail: string; landed: boolean; branch: string; at: number; conflicted?: string[];
   // deterministic verify result against the rebased tree (design note §3). Absent when no
   // FLEET_VERIFY_CMD is configured — absence means "unverified", never silently green.
-  verify?: { cmd: string; ok: boolean; out: string; at: number; mainSha: string } }
+  // `stale` is stamped at confirm-land when main moved past `mainSha` after the verify ran
+  // (the verdict is void once main moves past it — marked, not re-run).
+  verify?: { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
+  // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
+  // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
+  landError?: string }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -2194,6 +2199,9 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
 async function recordLand(repo: string, main: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   if (!mainBefore || !mainAfter || mainBefore === mainAfter) return;
   undoLast.set(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
+  saveState(); // the undo record is persisted state — persist it AT the main-move, so it
+  // survives a restart even when a downstream saveState is skipped (e.g. the mergeJob tail's
+  // recycle guard on the slot-recycled teardown-failure sub-case).
   await writeLandNote(repo, branch, mainBefore, mainAfter, prov); // best-effort — never throws
 }
 
@@ -2368,13 +2376,18 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
           } else {
             const mainAfter = (await git(root, "rev-parse", main)).out;
+            // main HAS moved — record the land (undo record + provenance note) NOW, before
+            // the teardown: coupling it to landLane's success used to leave a moved main
+            // with neither note nor undo when teardown failed ("a note on every land that
+            // moves main" must hold). recordLand never throws (note write is best-effort).
+            await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
             // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
             const land = s.cwd === cwd && s.worktree?.branch === branch
               ? await landLane(s)
               : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
-            if (!("error" in land)) await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
             res = "error" in land
-              ? { status: "merged", landed: false, branch, at: Date.now(), verify, detail: `${r.detail} — land refused: ${land.error}`.slice(0, 600) }
+              ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
+                  detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
               : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail };
           }
         }
@@ -3881,15 +3894,28 @@ Bun.serve<WSData>({
               detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
           }
           const mainBefore = (await git(repo, "rev-parse", main)).out;
+          // stale-verify guard: `verify.mainSha` bound the verdict to the main it verified
+          // against — if main moved past it since (the replay above), the recorded green
+          // never saw the landed state. MARK it stale rather than re-running: a re-run
+          // would hold this request for the whole suite runtime (and its SIGTERM-only
+          // timeout could hang the land). Owner latitude stands — stale never blocks.
+          const rv = reviewed?.verify;
+          const verifyProv = rv && rv.mainSha !== mainBefore ? { ...rv, stale: true } : rv;
           const adv = await advanceIntegration(repo, main, branch);
           if (adv) return json({ status: "error",
             detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);
           const mainAfter = (await git(repo, "rev-parse", main)).out;
-          const land = await landLane(s);
-          if ("error" in land) return json({ error: land.error }, land.code);
+          // main HAS moved — record the land BEFORE the teardown, so a landLane failure
+          // can never leave a moved main without its note + undo record
           await recordLand(repo, main, branch, mainBefore, mainAfter, {
             conflicted: reviewed?.conflicted, resolverDetail: reviewed?.detail,
-            verify: reviewed?.verify, confirmedByHuman: true });
+            verify: verifyProv, confirmedByHuman: true });
+          const land = await landLane(s);
+          if ("error" in land) {
+            saveState(); // the undo record must survive the failed teardown
+            return json({ status: "merged", landed: false, branch, landError: land.error,
+              detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` }, land.code);
+          }
           mergeLast.delete(s.id);
           saveState();
           return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });

@@ -78,6 +78,9 @@ rotting. Two shelves, plus the steward subsystem.
 - **`synergy-findings.md`** — a producer/consumer audit (2026-07-22): deterministic
   facts computed but not shared, the "master stop" safety seams, and the enablers —
   a ranked, evidence-cited backlog to prune. Extends `automation-synergies.md`.
+- **`deep-assessment-2026-07-22.md`** — full-tree structural assessment (server +
+  client + docs + e2e): still-open findings ranked with fix sketches and
+  done-criteria, what parallel lanes already resolved, and the unassessed surface.
 - **`steward-intelligence.md`** — the capstone: autonomy and safety as one design
   (reversibility × track-record), the three models, the learning loop, the impact
   layer.

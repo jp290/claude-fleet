@@ -38,20 +38,29 @@ the bottleneck — infrastructure and doc-maintenance patterns are.** (Caveat: t
    *scheduled* library item (§7). Proves the infra-redirect by delivering value two prompt
    passes did not. Design resolved: demand-triggered bounded-wait (see the brief).
 2. **The keystone — a deterministic infra-recurrence counter.** Both passes cried for an "eval
-   set"; post-stage-2 a *prompt* hold-out is the wrong target. The right one is deterministic:
-   **count** whether a known failure-signature still occurs (socket collision across lanes,
-   doc-ref rot, digest timeout, test-fixture flake). This turns "we proposed P1" into "P1's
-   recurrence-count went to zero, verified" — the throttle-widening move that unblocks
-   promotion. **Honest correction to the earlier framing:** this is NOT the existing
+   set"; post-stage-2 a *prompt* hold-out is the wrong target. The right one is deterministic —
+   **count** whether a known failure still occurs — but HOW to count is exactly where the
+   2026-07-23 skeleton found the trap (see 2b). **Honest correction to the earlier framing:** this is NOT the existing
    effect-sensor. `measureOutcomes`/`outcomeTally` (server.ts:700/2211) classifies a steward
    *intervention's* outcome via git/output deltas — the wrong shape for signature-recurrence.
    The keystone is a *distinct, minimal* deterministic scan over the corpus (transcripts/docs/
    e2e output), a script not a framework. And it decomposes:
-   - **2a — fix the concrete infra issues first** (P1 socket, P2 doc-refs, the share-flake; P3
-     done), each a lane + a regression test. This IS the leverage — concrete, deterministic,
-     directly extends the fact layer. Do before any counter.
-   - **2b — a minimal recurrence check** (grep known signatures → counts), so "the fix held" is
-     measured not asserted. Keep it a small script; resist generalizing it.
+   - **2a — fix the concrete infra issues first.** **P1 socket collision DONE 2026-07-23**
+     (per-invocation `$$`-derived SOCK/PORT/DIR → concurrent runs never share a socket;
+     deterministically collision-free; landed 2a-only). P2 doc-refs + the share-flake next; P3
+     done. Each a lane + regression. This IS the leverage — concrete, deterministic, extends the
+     fact layer.
+   - **2b — recurrence counting: the transcript-grep approach is a PROVEN DEAD-END (empirical,
+     2026-07-23).** The P1 skeleton grepped lane transcripts for the collision signature; its
+     count *rose* 34→41 during one review with **zero** actual collisions — it measures how much
+     we *document* a problem (this doc, the review, quoted CLAUDE.md), not whether it *recurs*,
+     and by self-reference can never reach zero. Two corrections: (i) a counter for a
+     **deterministically-fixed** issue (P1) is pointless — it can't recur; a trivial
+     script-content assertion guards regression. (ii) The sensor's real domain is the
+     **non-deterministic flake class** (share-flake, pane-capture race), which *can* silently
+     recur — counted by **deterministic RUNTIME markers** (the harness emits `INFRA-FLAKE` only
+     when the failure fires at run time), never corpus mentions. **Count runtime outcomes, not
+     transcript mentions.**
    - **2c — wire recurrence into the learning loop** as the deterministic outcome-signal for
      *infra-fix* proposals (the true "unblocks promotion"). DEFER until 2a+2b exist and prove
      useful — this is where speculative-abstraction creep lives (OWNER: three lines > premature

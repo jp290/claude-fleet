@@ -1,4 +1,4 @@
-# HANDOFF — the five-lane stack landed + deployed; a findings dossier is waiting for a fresh session (2026-07-23, late eve)
+# HANDOFF — five-lane stack landed + deployed; all open work consolidated into one register (2026-07-23, late eve)
 
 *A state snapshot + pointers, NOT the knowledge itself. Treat every line as a claim to verify
 (look up commits/states before building on them; deterministic evidence beats this document).
@@ -7,10 +7,16 @@ replacement. Deliberately thin — the repo IS the handoff (`three-axes.md`).*
 
 ## Where to go first
 
-**→ `briefs/findings-dossier-2026-07-23.md`** — the open work, as findings + evidence + constraints,
-with the approach deliberately left open for the session that picks it up. Start there, run its §1
-re-ground block before trusting anything, and derive your own slicing. It supersedes the "next
-steps" list this handoff used to carry.
+**→ `BACKLOG.md` → "Execution order — THE register"** — the single roof for what is open, in
+dependency order, across BOTH tracks (the program **and** the product backlog), plus what is
+parked-with-a-trigger, what is a dead end, and what is measured-as-working and must not be
+"optimized". Status + dependency + whose call + a pointer; never the reasoning. **Start here.**
+
+**→ `briefs/findings-dossier-2026-07-23.md`** — the evidence base under the program half of that
+register: findings with re-verify commands and the constraints any answer must satisfy. Run its
+§1 re-ground block before trusting anything. Note that its §4 invites you to derive the approach —
+that derivation has since been done and lives in the register; read §4 as *the reasoning behind*
+the order, not as an open invitation to re-derive it.
 
 ## What happened since the previous handoff (which this file replaces)
 

@@ -974,16 +974,64 @@ acted on) or a gap in existing, shipped code — not part of any single feature 
 
 ---
 
-## Execution order
+## Execution order — THE register (both tracks)
 
-**Done this session** (all deployed to the live instance, all verified —
-tsc/build/e2e-isolated.sh at 112 checks, plus the new dedicated
-`e2e-claude-gate.sh`): Hardening #2 (share survives reopen), #3 (`HttpOnly`
-+ the paste-gate rewrite it required), #4 (throttled owner-token check), #5
-(watchdog PATH escaping), #7 (`Pane.dispose` leak), and e2e items 9a/c/d/e
-plus the dedicated claude-alive-gate harness (9b). The one live exposure
-found along the way (Hardening #1, slot 11's share) was revoked and verified
-in the same session, not queued.
+*This is the roof: **status, dependency, whose call, and a pointer** — never the reasoning, which
+stays in the proposal docs. If the register and the tree disagree, the tree wins (CLAUDE.md).
+Two tracks run in parallel: **A = the program** (steward / measurement / land-spine), **B = the
+product backlog** (the numbered items above). Items 14 and 17 are track A living in this file.*
+
+### Track A — the program
+
+**Shipped 2026-07-23** — all landed ff-only and deployed (srv 22:43:23, health 200); both suites
+ALL PASS on integrated main, each lane also verified in its rebased landing state:
+`f87c641` P1 e2e concurrency-safe · `a9e7cab` P2 doc symbol-anchors · `69f496a` share-flake guard ·
+`917452a` G1 land provenance + stale-verify · `9e729d4` G2 verify badge · `2fc7c50` A1 honest
+`helped` + attest staleness · `df260b1` A2 advisory `baselineRate` · `f70cc7a` B1 **server half**.
+
+**Open — in dependency order:**
+
+| # | Item | Blocked by | Whose call | Pointer |
+|---|------|-----------|-----------|---------|
+| P-1 | **B1b** — de-dup substrate: `GET /api/steward/tasks`, `ref` idempotency, digest `prior` filter, **`mute(ref)`** | — | owner greenlight | deep-dive → "Lane B1b" |
+| P-2 | **Steward freshness** — its worktree is ~19 commits behind main (recompute: `git rev-list --count <steward-HEAD>..main`; it grows), so its world-model predates the whole program | — | owner: *where* freshness belongs (`/steward` ritual, `/rundgang`, or habit) | dossier F3 |
+| P-3 | **B1 prompt half** — `/rundgang` files surfaced decisions as pending proposals | **P-1 + P-2** | Fable (a stopped session holds the context) | deep-dive → "B1 status"; `c7047a8` |
+| P-4 | **Deploy-gap fact** — nothing shows whether the live server predates `main` | check prior art first | owner: slots view / foreman / nowhere | dossier F6; `5c69417` |
+| P-5 | **Worktree placement** — pin the lane path to the sibling dir or gitignore it (cheap half only) | — | fold-in, no own lane | dossier F7; stack-land §8 |
+| P-6 | **Program board** PB-1/2/3 — lane DAG, orchestrated dependent-rebase, stack cleanup | — | owner: build or not | stack-land-program-board |
+| P-7 | **F-D minors** — digest cache invalidation, `runVerify` SIGTERM→SIGKILL, per-repo `FLEET_VERIFY_CMD` | — | fold into whichever lane touches that code | deep-dive → F-D |
+
+**Why P-1 and P-2 both precede P-3** (the load-bearing sequencing): A1's rule was *fix the
+classifier while the tally is still empty — afterwards it is a data amnesty.* The same rule
+applies to the **producer**. P-1 stops the tally from measuring the system's own duplication;
+P-2 stops it from measuring a stale steward's judgement. Both must hold **before the first real
+`propose` entry lands**, because neither is repairable afterwards.
+
+**Parked with a trigger — do not re-propose without the trigger:**
+- The 11 prompt "insurance" edits → the day the first cheap-model (Haiku-class) lane runs
+- `/sharpen` A4/A5 rewrite → needs a hold-out / eval set first
+- `catchup` #15 (ordering) → zero-risk owner one-liner, whenever
+- Recurrence sensor (runtime `INFRA-FLAKE` markers) → only when actually tackling the
+  non-deterministic flake class
+- Lane-runaway detection (one 25× outlier on disk) → a **second** runaway
+- §17 retrieval layer → decision item, deliberately parked
+- Coordination-cost concentration (2.6× orchestration vs execution) → **judged a description,
+  not a problem**: the "cost" is rate-limit/context pressure not money, much of the mass is the
+  owner's own interactive work (which is the product), and no deterministic gate would show
+  whether a "fix" improved anything
+
+**Dead ends — never retry:**
+- Transcript-grep recurrence counting (2b): the count *rose* 34→41 during one review with **zero**
+  real collisions — it measures how much a problem is documented, not whether it recurs
+- Promoting any prompt edit as an improvement while **no eval set exists**
+
+**Measured as working — an optimization pass must NOT "fix" these** (dossier F8):
+- Worker prompts (digest ≈2k tokens; summary hard-capped + cached) — together <1 % of mass
+- The merge resolver — impact × frequency ≈ 0 (2 land notes exist in total)
+- Session stability — 67 pane `created` vs **1** `resumed` across the whole audit history
+- The land spine — ff-only, ancestry re-verification, one-step undo, real provenance notes
+
+### Track B — product / feature backlog
 
 **Still open:**
 
@@ -1013,3 +1061,17 @@ in the same session, not queued.
 8. Drafts: per-device only, or server-synced for phone+desktop parallel use?
 9. File drop: server-generated filenames only, or sanitized originals?
 10. Hardening #1: move slot 6 off the fleet-repo cwd, or is that intentional?
+
+**Track A — decisions that gate program work (2026-07-23):**
+11. **B1b greenlight?** It is fully specced and blocks P-3. Brief it, or leave B1 inert for now?
+12. **`mute(ref)` semantics** (owner-raised): confirm the split — *dismiss* = "no, not this
+    instance" (counts `propose.dismissed`), *mute* = "stop proposing this" (suppression, **no
+    tally event**, listable + reversible). The no-tally rule is the load-bearing half: if muting
+    counted as a dismissal, silencing the system would depress its own quality number.
+13. **Steward freshness (P-2): where does it belong** — a step in the `/steward` load ritual, a
+    step in `/rundgang`, or your own habit? Boundary to respect: pulling `main` *into* the
+    steward worktree is not landing, but the steward must never land or merge.
+14. **Deploy-gap (P-4): a fact or a prompt?** On the slots view, in the foreman pulse, or nowhere —
+    and does the owner need to be told, or just be able to see it? Deploy stays owner-only either way.
+15. **Program board (P-6): build it at all?** It is propose-only today; one hand-run stack is the
+    entire evidence base.

@@ -9,6 +9,14 @@ HEAD `bdc1cb0`.*
 
 **Nothing here is applied. Propose-never-apply; the owner promotes and lands (OWNER §4b).**
 
+> **Update 2026-07-23, later:** the approach §4 asks you to derive **has since been derived and
+> committed** — it lives in `BACKLOG.md` → "Execution order — THE register" (track A), together
+> with the parked-with-trigger and dead-end lists. Two findings moved: **F1's "one small edit"
+> framing was falsified** by `c7047a8` (prompt-side de-dup is unsound; lane **B1b** must precede
+> the prompt edit), and **F2 was judged a description rather than a problem** and dropped with an
+> argument. This document stays the *evidence base*; the register is the *order*. Read §4 as the
+> reasoning behind that order, not as an invitation to re-derive it.
+
 ---
 
 ## 0. How to use this document

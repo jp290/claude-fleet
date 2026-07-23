@@ -92,6 +92,9 @@ rotting. Two shelves, plus the steward subsystem.
 - **`merge-review-autonomy.md`** — verification-first land pipeline: the no-build-no-test
   gap, deterministic verify in the verdict, git-note provenance at land, the resolver
   report as briefing; human lander stays. Spec for lanes V1-V3.
+- **`orchestrator-autonomy.md`** — the foreman as a stateless derive-verify-propose
+  pulse under the steward principal (`/foreman`): standing deterministic guards,
+  committed-main-only rule, verb-graded ladder climb; land+deploy never.
 - **`steward-mail.md`** — an email address as an assistant channel: inbound-only
   v1, layered against prompt injection.
 - **`automation-frontiers.md`** — speculative next levers, pressure-tested and

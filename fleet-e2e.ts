@@ -651,11 +651,13 @@ if (REPO) {
   const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/mergemode`, m);
   // merge is an async job — poll GET until the run settles; a 400 means the slot was
   // torn down (the job landed the lane), which IS the success signal for `do`
-  const waitMerge = async (slot: number): Promise<{ gone: boolean; last: { status: string; detail: string; landed: boolean } | null }> => {
+  type VerifyField = { cmd: string; ok: boolean; out: string; at: number; mainSha: string };
+  type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField };
+  const waitMerge = async (slot: number): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
     for (let i = 0; i < 100; i++) {
       const r = await get(`/api/slots/${slot}/merge`);
       if (r.status === 400) return { gone: true, last: null };
-      const j = (await r.json()) as { running: boolean; last: { status: string; detail: string; landed: boolean } | null };
+      const j = (await r.json()) as { running: boolean; last: MergeVerdict | null };
       if (!j.running) return { gone: false, last: j.last };
       await Bun.sleep(100);
     }
@@ -935,6 +937,11 @@ if (REPO) {
   const vB = await waitMerge(lnSlot);
   check("conflict → agent 'blocked' verdict passes through with detail",
     !vB.gone && vB.last?.status === "blocked" && vB.last.detail === "fake conflict", JSON.stringify(vB));
+  // V1 gate: verify runs ONLY against a git-verified rebased tree (design note §6 rule 4).
+  // A blocked verdict never rebased anything → no verify field, even though a cmd IS
+  // configured. Guards against a mutation that runs verify on a pre-rebase / non-rebased tree.
+  check("V1: a blocked verdict (no rebased tree) carries no verify field",
+    vB.last !== null && vB.last.verify === undefined, JSON.stringify(vB.last?.verify));
 
   await setMergeMode("lie");
   await settleForMerge(lnSlot);
@@ -949,6 +956,14 @@ if (REPO) {
   const vD = await waitMerge(lnSlot);
   check("agent resolves the conflict → PAUSES for review (verified, NOT landed, lane kept)",
     !vD.gone && vD.last?.status === "resolved" && exists(lnPath), JSON.stringify(vD.last));
+  // V1: verify runs on the RESOLVED (conflict) path too — server-side, against the rebased
+  // tree, its result recorded as a fact (design note §3, §6 rule 4). This -X theirs resolution
+  // leaves no VERIFYBAD marker → green. Proves the call fires on the resolved path (a kept
+  // lane whose verdict is readable, unlike a torn-down clean land) and binds mainSha.
+  check("V1: resolved verdict carries verify.ok:true against the rebased tree (mainSha bound)",
+    vD.last?.verify?.ok === true && vD.last.verify.cmd.endsWith("fakeverify")
+      && typeof vD.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vD.last.verify.mainSha),
+    JSON.stringify(vD.last?.verify));
   const preLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
   check("resolved conflict has NOT reached main before the owner confirms",
     !preLand.includes("merge work"), preLand.trim());
@@ -1094,6 +1109,68 @@ if (REPO) {
     spawnSync("git", ["-C", lnReconf.cwd, "status", "--porcelain"]).stdout.toString());
   await post(`/api/slots/${lnReconf.slot}/kill`, {});
   await post(`/api/slots/${lnStale.slot}/kill`, {}); // free the slot for the orphan tests below
+
+  // --- V1: deterministic verify in the merge verdict (design note §3). The server runs
+  // FLEET_VERIFY_CMD (here $DIR/fakeverify — a git-grep for a VERIFYBAD sabotage marker)
+  // against the REBASED tree, before any land, and records verify:{cmd,ok,out,at,mainSha}.
+  // Two CLEAN-rebase lanes (own file, no conflict → the server's script path, agent never
+  // consulted) exercise the pass and fail gates. mergemode stays "blocked" throughout: if
+  // the agent were wrongly spawned the lane would be kept, so a land here also proves the
+  // clean path ran. ---
+  await setMergeMode("blocked");
+
+  // (B first) clean rebase whose tree PASSES verify → lands as today. Run BEFORE the fail
+  // case: the fail case's owner-confirm-land (below) commits the VERIFYBAD marker onto main,
+  // which every later clean lane would then inherit — so the passing case must land first,
+  // against a still-clean main.
+  const lnVp = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnVp.cwd}/verify-pass.txt`, "clean lane work, no marker\n");
+  spawnSync("git", ["-C", lnVp.cwd, "add", "verify-pass.txt"]);
+  spawnSync("git", ["-C", lnVp.cwd, "commit", "-qm", "verify-pass lane work"]);
+  await Bun.write(`${REPO}/vp-main.txt`, "main side\n"); // different file → clean rebase, no agent
+  spawnSync("git", ["-C", REPO, "add", "vp-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "vp main work"]);
+  await settleForMerge(lnVp.slot);
+  await post(`/api/slots/${lnVp.slot}/merge`, {});
+  const vVp = await waitMerge(lnVp.slot);
+  check("V1: clean rebase that passes verify lands (verify green never blocks a clean land)", vVp.gone, JSON.stringify(vVp));
+  check("V1: passing verify lane's commit reached main",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("verify-pass lane work"));
+
+  // (A) clean rebase whose tree FAILS verify → the auto-land is downgraded to a stop-and-
+  // review "resolved" verdict (verify.ok:false), NOT landed — broken code never auto-lands.
+  const lnVf = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnVf.cwd}/verify-fail.txt`, "lane work with a VERIFYBAD marker\n"); // marker survives the rebase
+  spawnSync("git", ["-C", lnVf.cwd, "add", "verify-fail.txt"]);
+  spawnSync("git", ["-C", lnVf.cwd, "commit", "-qm", "verify-fail lane work"]);
+  await Bun.write(`${REPO}/vf-main.txt`, "main side\n"); // different file → clean rebase, no agent
+  spawnSync("git", ["-C", REPO, "add", "vf-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "vf main work"]);
+  await settleForMerge(lnVf.slot);
+  await post(`/api/slots/${lnVf.slot}/merge`, {});
+  const vVf = await waitMerge(lnVf.slot);
+  check("V1: clean rebase that fails verify does NOT auto-land (downgraded to resolved)",
+    !vVf.gone && vVf.last?.status === "resolved" && vVf.last?.landed === false && exists(lnVf.cwd), JSON.stringify(vVf.last));
+  check("V1: the verdict carries verify.ok:false with the failing command's output tail",
+    vVf.last?.verify?.ok === false && vVf.last.verify.cmd.endsWith("fakeverify")
+      && vVf.last.verify.out.includes("VERIFYBAD") && typeof vVf.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vVf.last.verify.mainSha),
+    JSON.stringify(vVf.last?.verify));
+  const vfPreLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString();
+  check("V1: verify-failed lane's commit has NOT reached main",
+    !vfPreLand.includes("verify-fail lane work"), vfPreLand.trim());
+  // owner latitude (OWNER.md §4a): confirm-land must NOT hard-block on verify.ok:false — the
+  // owner reviewed the failure and may land anyway. The clean rebase left main an ancestor,
+  // so confirm ff-lands directly.
+  await settleForMerge(lnVf.slot);
+  const vfConf = (await (await post(`/api/slots/${lnVf.slot}/merge`, { confirm: true })).json()) as { status?: string; landed?: boolean };
+  check("V1: owner may confirm-land a verify-failed resolution anyway (no hard block on ok:false)",
+    vfConf.status === "merged" && vfConf.landed === true, JSON.stringify(vfConf));
+  check("V1: after the owner's confirm the verify-failed lane's commit is on main",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("verify-fail lane work"));
+  // scrub the VERIFYBAD marker back out of main so later clean lanes (this suite reuses REPO
+  // heavily) don't inherit a red verify from this deliberately-broken confirm-land.
+  spawnSync("git", ["-C", REPO, "rm", "-q", "verify-fail.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop VERIFYBAD marker from main"]);
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
@@ -1695,6 +1772,10 @@ await Bun.sleep(500);
 // FLEET_DISPATCH_REPO + the fake-agent cmds must ride across too, or every post-restart test
 // meets a server whose dispatcher is permanently unavailable and whose merge/summary/commit
 // agents are the real `claude` instead of the suite's stand-ins.
+// FLEET_VERIFY_CMD is DELIBERATELY excluded here (do not add it): the post-restart server
+// must run with NO verify command so the V1 "no cmd → verify field absent, clean path lands
+// as today" case below is exercised against a genuinely unconfigured server (§3). The
+// configured-server verify cases run before this restart.
 const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
   "FLEET_OUTCOME_WINDOW_MS", "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
   "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD"]
@@ -1727,6 +1808,47 @@ if (restartSelfTok) {
   if (restJ.auto) await post(`/api/autos/${restJ.auto.id}/delete`, {});
   await post(`/api/slots/${restartSelfSlot}/kill`, {}); // tear the persistence lane down
 }
+
+// --- V1 case C: an UNCONFIGURED server (no FLEET_VERIFY_CMD — deliberately dropped from
+// cmdEnv above). The verify field must be ABSENT from the verdict ("unverified", never
+// silently green — design note §3), and today's clean-path behavior is otherwise unchanged.
+// A CONFLICT lane keeps its verdict readable (a clean land tears the slot down), so we can
+// assert the field's absence directly; that resolved path is exactly where verify WOULD run
+// were a command configured. ---
+{
+  const REPO_C = process.env.FLEET_E2E_REPO ?? "";
+  if (REPO_C) {
+    const { spawnSync } = await import("node:child_process"); // block-scoped import at line 624 is out of scope here
+    const modeFile = `${REPO_C.replace(/\/[^/]+$/, "")}/mergemode`;
+    await Bun.write(modeFile, "do"); // fakemerge (carried across the restart) really resolves
+    const lc = (await (await post("/api/lanes", { repo: REPO_C })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${lc.cwd}/code.txt`, "root\nnoverify-lane\n");
+    spawnSync("git", ["-C", lc.cwd, "commit", "-aqm", "noverify lane work"]);
+    await Bun.write(`${REPO_C}/code.txt`, "root\nnoverify-main\n"); // same line → conflict → agent
+    spawnSync("git", ["-C", REPO_C, "commit", "-aqm", "noverify main work"]);
+    // settle: wait until the lane pane has been idle ≥ MERGE_IDLE_MS (3s) so the land gate lets
+    // the merge start (mirrors the in-block settleForMerge, which is out of scope here)
+    for (let i = 0; i < 80; i++) {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const sl = sx.slots.find((x) => x.id === lc.slot);
+      if (sl && sx.now - sl.lastOutput >= 3000) break;
+      await Bun.sleep(150);
+    }
+    await post(`/api/slots/${lc.slot}/merge`, {});
+    let lastC: { status?: string; verify?: unknown } | null = null;
+    for (let i = 0; i < 100; i++) {
+      const j = (await (await get(`/api/slots/${lc.slot}/merge`)).json()) as
+        { running?: boolean; last: { status?: string; verify?: unknown } | null };
+      if (!j.running) { lastC = j.last; break; }
+      await Bun.sleep(100);
+    }
+    check("V1: with NO FLEET_VERIFY_CMD the resolved verdict omits the verify field (unverified, not silently green)",
+      lastC?.status === "resolved" && lastC !== null && !("verify" in lastC), JSON.stringify(lastC));
+    await post(`/api/slots/${lc.slot}/kill`, {});
+    await Bun.write(modeFile, "blocked"); // restore the default merge mode
+  }
+}
+
 const rec2 = (await (await get("/api/dirs?path=~")).json()) as { recents: string[] };
 check("after restart: recents persisted", rec2.recents.length >= 2, JSON.stringify(rec2.recents));
 const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };

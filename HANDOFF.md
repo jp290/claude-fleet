@@ -71,9 +71,16 @@ OWNER.md §3; value-before-reach per §7), and then executed. Landed to main + d
   spawn-string proven in the claude-gate suite).
 
 **What remains (the plan's tail, in order):**
-1. **Watch the live beat prove out** — the next real `/rundgang` pulses now ride the digest
-   route; watch honesty/quietness/non-drift. (The worker-failure path `digest:null` is
-   code-verified only — no e2e stand-in for a malformed worker.)
+1. **Watch the live beat prove out** — FIRST BEAT PROVEN (2026-07-23 09:16 pulse, auto
+   `3499a018`): rode `GET /api/steward/digest`, spot-checked the advisory digest against the
+   deterministic fields (overrode two worker-"unknown"s with facts), honest `changed`, quiet
+   surface (one standing escalation, nothing invented), journal written. Two observations:
+   (a) the sensing worker runs synchronously in the request — 23s wall; the steward's first
+   10s-timeout curl died and it recovered by retrying longer. Advisory: an async cache pattern
+   if the beat ever gets a tight timeout. (b) The steward worktree ffs itself at pulse start,
+   but the *skill file* is read before that ff — a skill change lands one beat late unless the
+   worktree is ff'd beforehand (done manually this once). Keep watching the next beats; the
+   worker-failure path `digest:null` remains code-verified only.
 2. **Learning engine v1** (manual: Grok survey + dream-mode pass) — deliberately deferred out
    of the build lanes; owner-model + axioms exist, run it as its own session.
 3. **Arena episodes** (`steward-arena.sh` up → observe → journal review → down; bounded,

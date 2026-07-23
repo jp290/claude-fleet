@@ -1,92 +1,74 @@
-# HANDOFF — the learning engine's first two turns + acting on the result (2026-07-23, eve)
+# HANDOFF — the five-lane stack landed + deployed; a findings dossier is waiting for a fresh session (2026-07-23, late eve)
 
 *A state snapshot + pointers, NOT the knowledge itself. Treat every line as a claim to verify
 (look up commits/states before building on them; deterministic evidence beats this document).
 The canonical knowledge lives in the committed docs — this is a MAP into them, not a
-replacement: read the primary sources, don't accept this handoff in their place. Deliberately
-thin — the repo IS the handoff (`three-axes.md`).*
+replacement. Deliberately thin — the repo IS the handoff (`three-axes.md`).*
 
-## What this session did (one paragraph)
+## Where to go first
 
-Ran the learning engine's first two turns and acted on the result. **Stage 1** (executed
-`briefs/learning-engine-v1.md`): a 9-agent workflow axiom-diagnosed the six structural prompts
-from first principles → proposal doc. The **retrieval coupling** surfaced mid-run (the parallel
-s9 session + BACKLOG §17). **Stage 2** (trace-grounded corpus pass) then **overturned stage-1's
-premise**: at strong-executor scale (0 Haiku lanes) the overhead prompts are NOT the
-bottleneck — they're already mitigated; the leverage is in **infra/behavior patterns** (P1–P3).
-Navigation synthesis: **verification-coverage is the program's throttle**; sequence
-P3 → infra-recurrence → retrieval-wire. Executed **P3** (async digest, demand-triggered
-bounded-wait) — landed + deployed + live-verified. Executed **keystone step-1 / P1** (e2e socket
-collision) — landed 2a-only after review dropped a non-functional 2b.
+**→ `briefs/findings-dossier-2026-07-23.md`** — the open work, as findings + evidence + constraints,
+with the approach deliberately left open for the session that picks it up. Start there, run its §1
+re-ground block before trusting anything, and derive your own slicing. It supersedes the "next
+steps" list this handoff used to carry.
 
-## Verified state (confirm with `git log --oneline -14`)
+## What happened since the previous handoff (which this file replaces)
 
-main clean; only worktrees = main + steward (P3/keystone lanes landed + cleaned).
-- `f87c641` **P1 LANDED** — e2e per-invocation `$$` SOCK/PORT/DIR; concurrency-safe, deterministic.
-- `e6c1897` **P3 LANDED + DEPLOYED + LIVE** — async digest; srv respawned 18:05 (was 13:34),
-  real panes survived, main-checkout = e6c1897 → new code live *by respawn* (NOT a behavioral
-  digest test — that would spend worker tokens; the next real `/rundgang` pulse is the proof).
-- `52d8980` map: P1 done + the 2b dead-end lesson · `2125ad9` keystone brief · `37a268c` keystone
-  step-2 sharpen · `7ea5a55` the navigation map · `6860fc7` stage-2 proposal · `ac334ca` stage-2
-  brief · `feab50e`/`fad6fb9` stage-1 proposal · `8e146d7` s9's BACKLOG §17 (foreign session).
+1. **The mechanism deep-dive** (`e978c78`) produced a verified five-lane program; the **stack-land /
+   program-board proposal** (`da8658d`, propose-only) captured the lane DAG the fleet cannot model.
+2. **All five lanes landed by hand**, owner-initiated, ff-only, in dependency order:
+   `917452a` G1 (land provenance survives teardown failure + stale-verify guard) · `9e729d4` G2
+   (verify badge reaches the owner's eye) · `2fc7c50` A1 (honest `helped` semantics + staleness-gated
+   harm attest) · `df260b1` A2 (advisory `baselineRate`) · `f70cc7a` B1 (propose-class outcome from
+   promote/dismiss). `77e2f31` records the run's empirical findings as §8 of the stack-land doc —
+   read it before building any stack tooling; it is the worked example.
+3. **Deployed** — srv restarted 22:43:23, so the stack is live. Health 200 on the Tailscale IP.
+4. **`bdc1cb0` corrects a location claim**: `.claude/commands/rundgang.md` is **git-tracked in this
+   repo**, not a `~/.claude` file — B1's remaining half is therefore lane-able and revertable. Do not
+   re-inherit the earlier wrong version from any doc draft.
+5. **A read-only assessment session** verified the program's state end-to-end and produced the
+   dossier above (measurement asymmetry re-confirmed with fresh numbers, cost distribution measured,
+   steward staleness, the deploy-gap fact, the dogfooding-bypass root shared with F1).
 
-## Read in this order (the map)
+## Verified state (confirm — do not trust)
 
-1. `docs/proposals/learning-engine-next-steps-2026-07.md` — **THE master map**: the redirect,
-   the throttle, the ranked sequence, P1-done, the 2b dead-end lesson, parked-with-triggers.
-2. `docs/proposals/dream-mode-corpus-2026-07.md` — stage-2 verdicts, the P-patterns, the
-   "confirmed-but-already-mitigated" class.
-3. `docs/proposals/learning-engine-v1-2026-07.md` — stage-1 axiom diagnoses + honest limits.
-4. `OWNER.md` (the bar), `docs/three-axes.md` §7 (program frame), `docs/steward-intelligence.md`
-   §8 (learning-engine doctrine). Briefs: `p3-async-digest.md` (done),
-   `keystone-infra-recurrence.md` (P1 done; P2/share-flake/2c open).
+```sh
+git log --oneline -8 && git status --short
+git worktree list                      # expect: main + steward only
+tmux -L claudefleet ls | grep srv      # srv start time = the deployed code's vintage
+```
 
-## Next steps (ordered, small — one at a time)
-
-1. **Now-due, safe:** remove the P1 workaround prose from `~/claude-fleet/CLAUDE.md`
-   (main checkout — **gitignored**, edit directly). Unblocked: P1 landed AND no old-script lanes
-   running (only steward worktree). Obsoletes the "copy to scratch with unique SOCK/PORT" note.
-2. **P2** — doc `server.ts:NNN` refs → symbol/grep anchors (small lane; maintenance debt, not a bug).
-3. **share-flake** — `fleet-e2e.ts:1814` `toUpperCase()` no-op on lowercase-free random ids;
-   one-line fixture guard.
-4. **The redirected recurrence-sensor** — runtime markers for the *non-deterministic flake class*
-   — ONLY when tackling those flakes. Not before (infra without demand = the trap we avoid).
+At writing: HEAD `bdc1cb0`, tree clean, worktrees = main + steward, srv 22:43:23, live health 200.
+Both isolated suites green at the landed HEADs — `./e2e-isolated.sh` @ `df260b1` (625 lines) and
+@ `77e2f31` (631 lines): **ALL PASS, 0 FAIL, exit 0, no pane-capture flake in either**, run
+concurrently to re-prove P1's concurrency safety.
 
 ## Load-bearing decisions + WHY (incl. deliberately NOT done — do not re-litigate)
 
-- **The redirect — infra > prompts** at strong-executor scale. WHY: stage-2 proved the prompt
-  rewrites fix failures no current executor produces. Don't spend on prompt edits.
-- **Verification-coverage is the throttle** (governor #2 operative): the binding constraint is the
-  Ground/fact-layer, not idea generation. Sequence the program by it.
-- **P3 fused design = demand-triggered bounded-wait**: the worker costs tokens, so demand-triggering
-  IS the gate (no clock loop → no §4b unattended spend). `?wait` caller-chosen, default ~30s,
-  clamp 60s; invariant `curl -m ≥ ?wait`.
-- **Keystone = fix-first, NOT a sensor framework** (anti-abstraction; three lines > premature abstraction).
-- **DEAD ENDS (don't retry):** (a) **2b transcript-grep recurrence** — count *rose* 34→41 during
-  one review with **0** collisions (self-reference); measures documentation, not recurrence, and
-  can't reach zero. A counter for a deterministically-fixed issue (P1) is pointless. (b) The **11
-  prompt "insurance" edits** — deferred, trigger = first cheap-model lane (net-negative now). (c)
-  `/sharpen` (#2/#11) not trace-mined (sharpen-corpus guard) — needs a hold-out pass. (d) **No
-  eval-set exists → no prompt edit is proven to improve outcomes**; build it before promoting any.
-- **Invariants:** propose-never-apply; **land + deploy owner-only, forever** (OWNER §4b).
+- **Invariants:** propose-never-apply; **land + deploy owner-only, forever** (OWNER §4b); producers
+  write `pending`, only the owner promotes.
+- **Infra > prompts at strong-executor scale** — stage 2 refuted most of stage 1's rewrites. Do not
+  spend on prompt edits.
+- **Verification coverage is the program's throttle** (governor #2): the binding constraint is the
+  Ground/fact layer, not idea generation.
+- **DEAD ENDS (don't retry):** transcript-grep recurrence counting (2b — the count *rose* with zero
+  actual collisions; count runtime outcomes, not corpus mentions); the 11 prompt "insurance" edits
+  (trigger = first cheap-model lane); **no eval set exists**, so no prompt edit is proven to improve
+  outcomes.
+- **Anti-abstraction is a standing bar** — a framework where a grep suffices is itself the bug.
 
 ## Non-obvious state / gotchas
 
-- **`CLAUDE.md` is gitignored** (fleet copies it into every worktree) — edits don't land via a
-  branch; edit the main-checkout copy directly. (The session-start context calling it "checked in"
-  is misleading.)
-- **Deploy ritual** (verified this session): `tmux -L claudefleet kill-session -t srv` → watchdog
-  respawns with new code, real panes survive → health-check `curl http://100.64.0.1:8790/`
-  (Tailscale IP only; 127.0.0.1 never answers). Confirm watchdog is loaded before killing srv.
-- **s9** was the retrieval session (BACKLOG §17, committed its own decision `8e146d7`); the
-  sharpen-corpus lives at `~/.claude/knowledge/sharpen-corpus/` (owner-promoted home).
-- **Model split:** this session ran on Opus (dream passes, P3 design, reviews); the P1 lane ran on
-  **Fable** (owner: strongest reasoner — brief calibrated for it: lean hand-holding, heavy
-  anti-abstraction guardrail). Small lanes (P2/share-flake) can go cheaper.
-
-## Meta (why this handoff looks like this)
-
-Written in the pattern this session's own trace-grounded pass validated (`dream-mode-corpus`
-A.3): pointer-quality over self-sufficiency, grounded against `git log` not memory,
-decisions-incl-dead-ends, session-calibrated headings — NOT the weak fixed-skeleton `/handoff`
-template (which the same pass flagged as A1/A4/A7-deficient). Self-reference operational.
+- **`CLAUDE.md` and `OWNER.md` are gitignored** (fleet copies CLAUDE.md into every worktree) — edits
+  don't land via a branch; edit the main-checkout copy directly.
+- **`.claude/commands/` IS tracked** — `/rundgang`, `/steward`, `/foreman` are in-repo and in scope
+  for a lane (see item 4 above).
+- **Deploy ritual:** `tmux -L claudefleet kill-session -t srv` → the watchdog respawns with new code,
+  real panes survive → health-check `http://100.64.0.1:8790/` (**Tailscale IP only**;
+  `127.0.0.1:8790` never answers and looks like a dead server). Confirm the watchdog is loaded first.
+- **The steward worktree is ~17 commits behind main** — its doc shelf, i.e. its model of the system,
+  predates this program. Its own 21:15 journal record ("still no worktree lanes") is the visible
+  symptom. See dossier F3.
+- **The five lanes were created inside the repo** (`<repo>/claude-fleet.worktrees/…`), not at the
+  sibling path `createWorktree` uses, and were never attached to fleet slots — which is why the
+  steward could not see them. See dossier F7; it shares a root with the measurement gap (F1).

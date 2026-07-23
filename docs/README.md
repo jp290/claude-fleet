@@ -89,6 +89,9 @@ rotting. Two shelves, plus the steward subsystem.
   the three isolation layers and the accepted skip-perms OS-blast.
 - **`lane-autonomy-future.md`** — deferred ideas for lanes that run further on their
   own; a parking lot, not a plan.
+- **`merge-review-autonomy.md`** — verification-first land pipeline: the no-build-no-test
+  gap, deterministic verify in the verdict, git-note provenance at land, the resolver
+  report as briefing; human lander stays. Spec for lanes V1-V3.
 - **`steward-mail.md`** — an email address as an assistant channel: inbound-only
   v1, layered against prompt injection.
 - **`automation-frontiers.md`** — speculative next levers, pressure-tested and

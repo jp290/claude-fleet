@@ -73,6 +73,12 @@ touch the same code and share `claudeAlive`.
   what agents do most impactfully) **+ dream-mode v1** (inward — evaluate our structural
   prompts against the axioms, propose sharper versions). A manual v1 runs now: the two things
   it needs — the owner-model and the axioms — already exist. Prove-before-schedule.
+  **2026-07-23 re-weighted to the NEXT MAJOR FOCUS** (`three-axes.md` §7): it is the memory
+  axis's first real turn, the agency axis's teaching half, and the first measurement of the
+  sharpen premise. Founding input: the steward's hardened sharpen-corpus axes model
+  (2026-07-23 mining; advisory, claims-layer caveat rides along). Correspondingly demoted:
+  foreman event-triggering (`orchestrator-autonomy.md` §6.2) to on-demand — compounding comes
+  from evaluation, not more coordination throughput (§7 review-capacity coupling).
 
 **Phase 3 — Self-model home + outcomes** *(the learning loop's fuel)*
 Grow the journal into the durable **three-model home**; record intervention **outcomes** +

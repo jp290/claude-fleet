@@ -95,6 +95,10 @@ rotting. Two shelves, plus the steward subsystem.
 - **`orchestrator-autonomy.md`** — the foreman as a stateless derive-verify-propose
   pulse under the steward principal (`/foreman`): standing deterministic guards,
   committed-main-only rule, verb-graded ladder climb; land+deploy never.
+- **`three-axes.md`** — the umbrella program frame: one capability (intent-level
+  understanding, sharpen as premise) capitalized on three axes (agency, ground, memory);
+  the three-readers simplicity norm, the governors, the sharpen-corpus evidence, and
+  the 2026-07-23 roadmap re-weighting.
 - **`steward-mail.md`** — an email address as an assistant channel: inbound-only
   v1, layered against prompt injection.
 - **`automation-frontiers.md`** — speculative next levers, pressure-tested and

@@ -290,6 +290,9 @@ class Pane {
     this.chatSource = null;
     this.toolGroup = null;
     this.notifGroup = null;
+    // un-stick the busy flag so the reassigned pane's next pollChat() isn't blocked; the
+    // old slot's in-flight fetch bails on the slot-identity guard in pollChat.
+    this.chatBusy = false;
   }
 
   // --- conversation rendering: the view exists so YOUR messages are findable.
@@ -402,11 +405,16 @@ class Pane {
 
   private async pollChat() {
     if (!this.slot || this.view !== "chat" || this.chatBusy) return;
+    // capture the slot this fetch belongs to: assign()→resetChat() can reassign the pane
+    // mid-fetch, and the old slot's entries must NOT append under the new slot's header.
+    const slot = this.slot;
     this.chatBusy = true;
     try {
-      const res = await api(`/api/slots/${this.slot}/transcript?after=${this.chatTotal}`);
+      const res = await api(`/api/slots/${slot}/transcript?after=${this.chatTotal}`);
+      if (this.slot !== slot) return; // reassigned during the fetch — this response is stale
       if (!res.ok) return;
       const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null };
+      if (this.slot !== slot) return; // reassigned during json() — still stale
       // the slot's active transcript changed (fresh claude after a self-heal, or a better
       // pinned file appeared) — start over from the top of the new file
       if (this.chatSource !== null && data.source !== this.chatSource) {
@@ -431,10 +439,14 @@ class Pane {
     } catch {
       // transient fetch error — next tick retries
     } finally {
-      this.chatBusy = false;
-      if (this.view === "chat" && this.slot) {
-        clearTimeout(this.chatTimer);
-        this.chatTimer = setTimeout(() => void this.pollChat(), 1000);
+      // only the poll that still owns the current slot manages busy/timer state; a stale
+      // (reassigned) poll must not reset the new slot's chatBusy or reschedule its timer.
+      if (this.slot === slot) {
+        this.chatBusy = false;
+        if (this.view === "chat") {
+          clearTimeout(this.chatTimer);
+          this.chatTimer = setTimeout(() => void this.pollChat(), 1000);
+        }
       }
     }
   }
@@ -799,12 +811,14 @@ async function doUndoLand(repo: string, branch: string): Promise<void> {
 // message (falls back to wip). Commit-only, reversible; the server never pushes or lands.
 async function doCommit(slot: number, mode: "quick" | "agent", activeConfirmed = false): Promise<void> {
   if (commitBusy.has(slot)) return;
-  // the session is still producing output → confirm before snapshotting a half-finished tree.
-  // main sessions already warn inside their staging preview, so they pass activeConfirmed.
-  if (!activeConfirmed && sessionActive(slot) && !(await confirmMidRun(slot))) return;
+  // reserve synchronously BEFORE the confirmMidRun await (mirrors doLand's mergePending
+  // fix) — else two near-simultaneous triggers both pass the has() check and double-commit.
   commitBusy.set(slot, mode);
   void renderBoard(); // reflect the disabled/"… writing message" state immediately
   try {
+    // the session is still producing output → confirm before snapshotting a half-finished tree.
+    // main sessions already warn inside their staging preview, so they pass activeConfirmed.
+    if (!activeConfirmed && sessionActive(slot) && !(await confirmMidRun(slot))) return;
     const r = await post(`/api/slots/${slot}/commit`, { mode });
     const j = (await r.json().catch(() => ({}))) as
       { committed?: boolean; hash?: string; subject?: string; reason?: string; error?: string };
@@ -903,8 +917,13 @@ function showCommitPreview(title: string, tracked: string[], untracked: string[]
 // lands. Closes the gap where a conflict-free rebase auto-landed with no diff ever shown —
 // "textually clean" isn't "semantically correct", so the owner gets one look before it merges.
 async function showLandReview(title: string, slot: number): Promise<boolean> {
-  const data = await api(`/api/slots/${slot}/merge-diff`).then((r) => r.json()).catch(() => ({})) as
-    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string };
+  // fail CLOSED: a dropped fetch or non-JSON/non-200 body must NEVER read as a clean empty
+  // diff — that path renders "just cleans up" with ⏏ enabled and lands agent-resolved
+  // conflicts with zero human eyes. Same posture as fetchSlotRisk's UNKNOWN_RISK.
+  const data = await api(`/api/slots/${slot}/merge-diff`)
+    .then(async (r) => (r.ok ? await r.json() : { loadFailed: true }))
+    .catch(() => ({ loadFailed: true })) as
+    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string; loadFailed?: boolean };
   return new Promise((resolve) => {
     const overlay = el("div", "overlay riskoverlay");
     overlay.style.display = "flex";
@@ -912,7 +931,10 @@ async function showLandReview(title: string, slot: number): Promise<boolean> {
     panel.appendChild(el("h2", "", title));
     panel.appendChild(el("div", "landhint",
       "This is the merge preview — everything that will land on main (main…HEAD). Committing does NOT clear it; only landing does. A clean worktree with commits ahead is exactly what a ready-to-land lane looks like."));
-    if (data.error) {
+    if (data.loadFailed) {
+      panel.appendChild(el("div", "diffstat err",
+        "couldn't load the merge preview — landing is disabled until it loads. Retry, or check the connection."));
+    } else if (data.error) {
       panel.appendChild(el("div", "diffstat", data.error));
     } else {
       const n = data.files?.length ?? 0;
@@ -930,7 +952,14 @@ async function showLandReview(title: string, slot: number): Promise<boolean> {
     cancel.onclick = () => finish(false);
     go.onclick = () => finish(true);
     overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
-    btns.append(cancel, go);
+    if (data.loadFailed) {
+      go.disabled = true; // fail closed — no land gesture without a diff that actually loaded
+      const retry = el("button", "riskbtn", "retry") as HTMLButtonElement;
+      retry.onclick = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(showLandReview(title, slot)); };
+      btns.append(cancel, retry, go);
+    } else {
+      btns.append(cancel, go);
+    }
     panel.appendChild(btns);
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
@@ -2348,9 +2377,11 @@ async function openMergeDiff(slotId: number) {
   setDrawer(false);
   diffpanel.replaceChildren(el("h2", "", "Resolved diff — what will land on main"));
   diffdlg.style.display = "flex";
-  const res = await api(`/api/slots/${slotId}/merge-diff`);
-  const data = (await res.json().catch(() => ({}))) as
-    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string };
+  const res = await api(`/api/slots/${slotId}/merge-diff`).catch(() => null);
+  const data = (res && res.ok ? await res.json().catch(() => ({ loadFailed: true })) : { loadFailed: true }) as
+    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string; loadFailed?: boolean };
+  // fail closed — a dropped fetch must not read as "no changes to land" (no ⏏ button appears either way here, but say so plainly)
+  if (data.loadFailed) { diffpanel.appendChild(el("div", "diffstat err", "couldn't load the diff — retry")); return; }
   if (data.error) { diffpanel.appendChild(el("div", "diffstat", data.error)); return; }
   const n = data.files?.length ?? 0;
   diffpanel.appendChild(el("div", "diffstat",
@@ -2379,7 +2410,7 @@ function renderQueue() {
     const drow = el("div", "diffstat");
     drow.textContent = `Dispatcher ${dispatch.on ? "ON" : "off"} · repo ${baseName(dispatch.repo)} · max ${dispatch.maxLanes} lanes — `;
     const toggle = el("button", "qbtn", dispatch.on ? "turn off" : "turn on") as HTMLButtonElement;
-    toggle.onclick = async () => { await post("/api/dispatch", { on: !dispatch.on }); await refresh(); renderQueue(); };
+    toggle.onclick = async () => { const r = await post("/api/dispatch", { on: !dispatch.on }); if (!r.ok) toast("couldn't toggle the dispatcher"); await refresh(); renderQueue(); };
     drow.appendChild(toggle);
     queuepanel.appendChild(drow);
   } else {
@@ -2393,7 +2424,8 @@ function renderQueue() {
   const addBtn = el("button", "qbtn primary", "add") as HTMLButtonElement;
   addBtn.onclick = async () => {
     if (!addIn.value.trim()) return;
-    await post("/api/tasks", { text: addIn.value, queue: false });
+    const r = await post("/api/tasks", { text: addIn.value, queue: false });
+    if (!r.ok) { toast("couldn't add the task"); return; } // keep the typed text in the box
     addIn.value = "";
     await refresh();
     renderQueue();
@@ -2424,7 +2456,7 @@ function renderQueue() {
     row.appendChild(main);
     const mkBtn = (label: string, action: string) => {
       const b = el("button", "qbtn", label) as HTMLButtonElement;
-      b.onclick = async () => { await post(`/api/tasks/${t.id}/${action}`, {}); await refresh(); renderQueue(); };
+      b.onclick = async () => { const r = await post(`/api/tasks/${t.id}/${action}`, {}); if (!r.ok) toast(`couldn't ${action} the task`); await refresh(); renderQueue(); };
       return b;
     };
     if (t.status === "pending") row.appendChild(mkBtn("queue ▸", "queue"));
@@ -2509,7 +2541,8 @@ function renderShareDlg() {
     const setMode = async (m: "view" | "interact") => {
       if (m === sh.mode) return;
       if (m === "interact" && !confirm("Switch to interactive? Guests can then type straight into YOUR shell.")) return;
-      await post(`/api/slots/${s.id}/share-mode`, { mode: m });
+      const r = await post(`/api/slots/${s.id}/share-mode`, { mode: m });
+      if (!r.ok) toast("couldn't change the share access mode");
       await refresh();
       renderShareDlg();
     };
@@ -2557,14 +2590,16 @@ function renderShareDlg() {
     const rotate = el("button", "shrbtn", "new link + password") as HTMLButtonElement;
     rotate.onclick = async () => {
       if (!confirm("Replace this share? The old link and password stop working and connected guests are kicked.")) return;
-      await post(`/api/slots/${s.id}/share`, { mode: sh.mode });
+      const r = await post(`/api/slots/${s.id}/share`, { mode: sh.mode });
+      if (!r.ok) toast("couldn't rotate the share link");
       await refresh();
       renderShareDlg();
     };
     const revoke = el("button", "shrbtn danger", "end live share") as HTMLButtonElement;
     revoke.onclick = async () => {
       if (!confirm("End this share? The link stops working and connected guests are kicked immediately.")) return;
-      await post(`/api/slots/${s.id}/unshare`, {});
+      const r = await post(`/api/slots/${s.id}/unshare`, {});
+      if (!r.ok) toast("couldn't end the share");
       await refresh();
       renderShareDlg();
     };
@@ -2613,7 +2648,8 @@ async function loadShareComments(slotId: number, target: HTMLElement) {
     const del = el("button", "shrcmtdel", "✕") as HTMLButtonElement;
     del.title = "delete this comment";
     del.onclick = async () => {
-      await post(`/api/slots/${slotId}/comments/${c.id}/delete`, {});
+      const r = await post(`/api/slots/${slotId}/comments/${c.id}/delete`, {});
+      if (!r.ok) toast("couldn't delete the comment");
       await refresh();
       renderShareDlg();
     };
@@ -2669,10 +2705,10 @@ function renderAutoDlg() {
     if (a.lastResult) row.appendChild(el("span", `autometa${a.lastResult.startsWith("skipped") ? " err" : ""}`, a.lastResult));
     const tog = el("span", "autobtnx", a.enabled ? "⏸" : "▶");
     tog.title = a.enabled ? "pause" : "resume";
-    tog.onclick = async () => { await post(`/api/autos/${a.id}/toggle`, {}); await refresh(); renderAutoDlg(); };
+    tog.onclick = async () => { const r = await post(`/api/autos/${a.id}/toggle`, {}); if (!r.ok) toast("couldn't toggle the schedule"); await refresh(); renderAutoDlg(); };
     const del = el("span", "autobtnx", "✕");
     del.title = "delete schedule";
-    del.onclick = async () => { await post(`/api/autos/${a.id}/delete`, {}); await refresh(); renderAutoDlg(); };
+    del.onclick = async () => { const r = await post(`/api/autos/${a.id}/delete`, {}); if (!r.ok) toast("couldn't delete the schedule"); await refresh(); renderAutoDlg(); };
     row.append(tog, del);
     autopanel.appendChild(row);
   }
@@ -2845,6 +2881,16 @@ async function cycleHist(dir: number) {
   ta.value = next === cyc.items.length ? cyc.draft : cyc.items[next];
   ta.selectionStart = ta.selectionEnd = ta.value.length;
   updateChips();
+}
+
+// shared one-line failure notice for the non-destructive mutation handlers (task/auto/share/
+// dispatch toggles) — their views re-derive from refresh(), so a failed POST otherwise no-ops
+// silently. Self-contained styling so it needs no CSS-file change.
+function toast(msg: string) {
+  const t = el("div", "", msg);
+  t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#f85149;color:#fff;padding:8px 14px;border-radius:6px;z-index:9999;font-size:13px;max-width:80%;box-shadow:0 2px 8px rgba(0,0,0,.4)";
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
 }
 
 // --- compose box: Enter sends (bracketed paste + Enter server-side), Shift+Enter = newline ---

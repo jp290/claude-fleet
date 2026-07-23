@@ -60,10 +60,10 @@ route are one feature ("scoped principals with typed, capped actions").
 
 ## 3. The steward is shelf + journal + identity — his workers are ephemeral
 
-**Pieces:** `summaryViaSession` (`server.ts:1432`) — spawn a throwaway
+**Pieces:** `summaryViaSession` (server.ts) — spawn a throwaway
 interactive claude, read the answer from transcript JSONL,
 subscription-covered, git-keyed cache; the ✨ enhancer already reuses exactly
-this machinery (`server.ts:1784`, "same machinery" by its own comment); the
+this machinery (server.ts, grep `✨ prompt enhancer` — "same machinery" by its own comment); the
 steward's context-degradation problem (a recurring Rundgang auto would eat his
 conversation toward the handoff cliff).
 **Synergy:** the Rundgang's mechanical half (sense + interpret over 16 slots) is
@@ -82,7 +82,7 @@ prompts into the steward pane; the steward-slot auto only delivers the digest.
 ## 4. One brief compiler for every entry channel
 
 **Pieces:** the enhancer (draft → additive directives + `/sharpen3`,
-`server.ts:1784-1830`), `/sharpen3` itself (in-session compiler), the queue
+`runEnhance` in server.ts), `/sharpen3` itself (in-session compiler), the queue
 (dispatcher injects raw task text today, `tickDispatch`), intake, steward mail
 (inbox items), and the mined two-population finding: hand-typed briefs are
 migrating toward compiled briefs.

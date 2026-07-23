@@ -48,7 +48,7 @@ touch the same code and share `claudeAlive`.
   **fresh** check inside `canDeliver` — a 10 s-stale cache can gate a send into a just-dead
   pane; e2e-proven by `fleet-e2e-claude-gate.ts` branch 4), plus the **full `mergeLast`
   verdict** (status/detail/conflicted/at — was only the `resolved` bool), `idleMs`, `gitOp`,
-  and `Task` status on `/api/steward/sessions` (`server.ts:2788`) and the per-slot `/brief`.
+  and `Task` status on `/api/steward/sessions` (server.ts, grep `/api/steward/sessions`) and the per-slot `/brief`.
   Still open in this bullet: the summarizer's **`verification`/`openThreads`** (advisory).
   **The `condition` classifier stays deferred** (corrected 2026-07-22): its git-derived subset
   is already derivable by the steward and is not the 6-way `rundgang.md:14` taxonomy — a real

@@ -47,7 +47,7 @@ bun run build
 Fleet's guards are the hierarchy applied to operations:
 
 - **Land** trusts git's own dirty/unmerged refusals plus its own unpushed check
-  (`server.ts:1343-1363`) — deterministic gates on a destructive action, with the
+  (`removeWorktreeSafe()` in server.ts) — deterministic gates on a destructive action, with the
   evidence in the error message when they refuse.
 - **Automation gates** (claude-alive, idle, slot re-verification) are deterministic
   preconditions replacing the statistical guess "it's probably fine to type here".

@@ -127,11 +127,13 @@ trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 
 tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_OUTCOME_WINDOW_MS shrinks the 10-min intervention-effect window so the outcome tests
-# can measure a send within seconds; SUSTAIN is left at its 60s default so a shrunk window can
-# never mark helped on transient output (every helped in-test is via the git signal).
+# can measure a send within seconds; FLEET_OUTCOME_SUSTAIN_MS shrinks the "still emitting at
+# close" bar to 800ms so the positive output-signal path is reachable inside the shrunk window
+# (a still-quiet slot or a lone early blip is stale by close → no-effect). FLEET_HARM_ATTEST_TTL_MS
+# shrinks the attest-freshness window to 4s so the stale-attest → not-eligible path is testable.
 # FLEET_PROMOTION_MIN_N=1 so a single helped makes a class promotion-eligible.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 for _ in $(seq 1 60); do
@@ -147,7 +149,7 @@ cd "$DIR" || exit 1
 # dropped on restart and the post-restart server would revert to the 10-min default window. Same
 # for the dispatch repo + fake-agent cmds: dropped, the post-restart dispatcher is permanently
 # unavailable and merge/summary/commit fall back to the real `claude`.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

@@ -7,10 +7,13 @@
 #   ./e2e-claude-gate.sh
 set -u
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DIR="${TMPDIR:-/tmp}/fleet-e2e-gate-instance"
-FAKEBIN="${TMPDIR:-/tmp}/fleet-e2e-gate-fakebin"
-SOCK=fleetgatetest
-PORT=8792
+# SOCK/PORT/DIR derived from $$ so concurrent runs never share a socket/port —
+# one run's kill-server can't hit another's server (same scheme as e2e-isolated.sh,
+# different port band so the two suites can't collide with each other either)
+DIR="${TMPDIR:-/tmp}/fleet-e2e-gate-instance-$$"
+FAKEBIN="${TMPDIR:-/tmp}/fleet-e2e-gate-fakebin-$$"
+SOCK="fleetgatetest$$"
+PORT=$((10800 + $$ % 2000))
 
 CC="$(command -v clang || command -v cc)"
 if [ -z "$CC" ]; then
@@ -50,6 +53,10 @@ EOF
 cp "$FAKEBIN/claude-exit" "$FAKEBIN/claude"
 chmod +x "$FAKEBIN/claude" "$FAKEBIN/claude-hang"
 
+# unique-per-run socket: without this trap an interrupted run would leak its tmux
+# server forever (no later run reuses the socket to kill it)
+trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 
 # PATH_EXPORT is read ONCE at server.ts startup and baked into every pane command for the
@@ -67,4 +74,6 @@ FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_I
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null
+# unique-per-run dirs: clean up on success, keep for post-mortem on failure
+if [ "$code" = 0 ]; then rm -rf "$DIR" "$FAKEBIN"; else echo "kept test instance for inspection: $DIR"; fi
 exit $code

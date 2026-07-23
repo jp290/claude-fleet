@@ -614,9 +614,14 @@ interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 // 💾 lane commit in flight, per slot — carries the MODE so the button can label itself
 // ("… saving" vs "… writing message") while the request runs.
 const commitBusy = new Map<number, "quick" | "agent">();
+// the server's deterministic verify verdict against the rebased tree (mirrors server.ts
+// `interface MergeLast`'s `verify`). Absent = "unverified" (no FLEET_VERIFY_CMD result on
+// record) — never render absence as green. `stale` is set at confirm-land when main moved
+// past the `mainSha` the verify ran against (the verdict is void once main moves past it).
+type VerifyVerdict = { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
 interface MergeState { running: boolean;
   last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
-    branch: string; at: number; conflicted?: string[] } | null;
+    branch: string; at: number; conflicted?: string[]; verify?: VerifyVerdict } | null;
   // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
   undoable?: { branch: string; at: number } | null }
 // slots with a merge job the client kicked off or observed — when such a slot goes
@@ -723,8 +728,15 @@ async function doLand(slot: number) {
       // finalize that into a land. A benign "nothing to commit" (a race) falls through to land.
       if (!cj.committed && /in progress|detached/i.test(cj.reason ?? "")) { alert(`Cannot land: ${cj.reason}`); return; }
     }
-    // always review the diff that will land, even on a clean auto-land (the old blind spot)
-    const proceed = await showLandReview(`Land ${s.worktree.branch} → main — review what lands`, slot);
+    // always review the diff that will land, even on a clean auto-land (the old blind spot).
+    // surface the deterministic verify verdict (if the server has one for THIS branch) so a
+    // red/stale tree is flagged before the glance-approval — informs, never disables (F-A.3).
+    const mgv = await api(`/api/slots/${slot}/merge`)
+      .then(async (r) => (r.ok ? ((await r.json()) as MergeState) : null))
+      .catch(() => null);
+    const verify = mgv && !mgv.running && mgv.last && mgv.last.branch === s.worktree.branch
+      ? mgv.last.verify : undefined;
+    const proceed = await showLandReview(`Land ${s.worktree.branch} → main — review what lands`, slot, verify);
     if (!proceed) return;
     const direct = await post(`/api/slots/${slot}/land`, {});
     if (direct.ok) {
@@ -916,7 +928,57 @@ function showCommitPreview(title: string, tracked: string[], untracked: string[]
 // pre-land review: show the diff that will land on main (main...HEAD, three-dot) BEFORE it
 // lands. Closes the gap where a conflict-free rebase auto-landed with no diff ever shown —
 // "textually clean" isn't "semantically correct", so the owner gets one look before it merges.
-async function showLandReview(title: string, slot: number): Promise<boolean> {
+// the one deterministic land signal made visible (F-A.3): did the rebased tree pass verify.
+// Four states, informational only — a red or stale badge NEVER disables land (owner latitude
+// stands; confirm-land deliberately does not block on red verify). Absence reads "unverified",
+// never a silent green.
+function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
+  if (!v) {
+    const b = el("span", "vbadge none", "unverified");
+    b.title = "no FLEET_VERIFY_CMD result on record for this rebased tree — the tree was not deterministically verified";
+    return b;
+  }
+  if (!v.ok) {
+    const b = el("span", "vbadge bad", "verify ✗");
+    b.title = `verify failed: ${v.cmd} — click to view output`;
+    b.onclick = (e) => { e.stopPropagation(); showVerifyOutput(v); };
+    return b;
+  }
+  if (v.stale) {
+    const b = el("span", "vbadge stale", "verify ⚠ stale");
+    b.title = `passed \`${v.cmd}\`, but against an older main (verdict void once main moves past it) — re-verify or land at your discretion`;
+    return b;
+  }
+  const b = el("span", "vbadge ok", "verify ✓");
+  b.title = `passed \`${v.cmd}\` against the rebased tree`;
+  return b;
+}
+
+// tail of a failing verify's captured output — reachable from the red badge, so the owner
+// can see WHY verify failed before exercising land latitude.
+function showVerifyOutput(v: VerifyVerdict): void {
+  const overlay = el("div", "overlay riskoverlay");
+  overlay.style.display = "flex";
+  const panel = el("div", "panel riskpanel");
+  panel.appendChild(el("h2", "", "verify ✗ — output"));
+  panel.appendChild(el("div", "diffstat err", `${v.cmd} · exit non-zero`));
+  const box = el("div", "difftxt");
+  box.textContent = v.out || "(no output captured)";
+  panel.appendChild(box);
+  const btns = el("div", "riskbtns");
+  const close = el("button", "riskbtn", "close") as HTMLButtonElement;
+  const finish = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); finish(); } };
+  document.addEventListener("keydown", onKey, true);
+  close.onclick = finish;
+  overlay.onclick = (e) => { if (e.target === overlay) finish(); };
+  btns.append(close);
+  panel.appendChild(btns);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
+async function showLandReview(title: string, slot: number, verify?: VerifyVerdict): Promise<boolean> {
   // fail CLOSED: a dropped fetch or non-JSON/non-200 body must NEVER read as a clean empty
   // diff — that path renders "just cleans up" with ⏏ enabled and lands agent-resolved
   // conflicts with zero human eyes. Same posture as fetchSlotRisk's UNKNOWN_RISK.
@@ -938,8 +1000,10 @@ async function showLandReview(title: string, slot: number): Promise<boolean> {
       panel.appendChild(el("div", "diffstat", data.error));
     } else {
       const n = data.files?.length ?? 0;
-      panel.appendChild(el("div", "diffstat",
-        `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""}`));
+      const stat = el("div", "diffstat",
+        `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""} `);
+      stat.appendChild(verifyBadge(verify));
+      panel.appendChild(stat);
       if (data.diff) { const box = el("div", "difftxt"); renderDiffInto(box, data.diff); panel.appendChild(box); }
       else panel.appendChild(el("div", "diffstat", "no committed changes to land — landing just cleans up the worktree"));
     }
@@ -955,7 +1019,7 @@ async function showLandReview(title: string, slot: number): Promise<boolean> {
     if (data.loadFailed) {
       go.disabled = true; // fail closed — no land gesture without a diff that actually loaded
       const retry = el("button", "riskbtn", "retry") as HTMLButtonElement;
-      retry.onclick = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(showLandReview(title, slot)); };
+      retry.onclick = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(showLandReview(title, slot, verify)); };
       btns.append(cancel, retry, go);
     } else {
       btns.append(cancel, go);
@@ -1283,8 +1347,10 @@ async function renderBoard() {
           // reviews the diff and lands. This is the one place a human eye is required.
           const n = l.conflicted?.length ?? 0;
           const note = el("div", "bmergenote review");
-          note.appendChild(el("div", "bmergehd",
-            `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land`));
+          const hd = el("div", "bmergehd",
+            `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land `);
+          hd.appendChild(verifyBadge(l.verify));
+          note.appendChild(hd);
           if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
           note.appendChild(el("div", "bmergedetail", l.detail));
           const acts = el("div", "bmergeacts");
@@ -1297,8 +1363,10 @@ async function renderBoard() {
           land.appendChild(note);
         } else if (l) {
           const cls = l.status === "merged" && l.landed ? "ok" : l.status === "blocked" ? "warn" : "err";
-          land.appendChild(el("div", `bmergenote ${cls}`,
-            `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed") : l.status}: ${l.detail}`));
+          const vn = el("div", `bmergenote ${cls}`,
+            `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed") : l.status}: ${l.detail} `);
+          vn.appendChild(verifyBadge(l.verify));
+          land.appendChild(vn);
         }
         nodes.push(land);
       }

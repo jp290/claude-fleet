@@ -6,9 +6,11 @@
 #   ./e2e-isolated.sh
 set -u
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DIR="${TMPDIR:-/tmp}/fleet-e2e-instance"
-SOCK=fleettest
-PORT=8791
+# SOCK/PORT/DIR are derived from $$ so concurrent runs (e.g. two worktree lanes)
+# never share a socket/port — one run's kill-server can't hit another's server.
+DIR="${TMPDIR:-/tmp}/fleet-e2e-instance-$$"
+SOCK="fleettest$$"
+PORT=$((8800 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
@@ -119,6 +121,10 @@ printf '{"result": "{\\"digest\\": {\\"conditions\\": {\\"1\\": \\"healthy-runni
 EOF
 chmod +x "$DIR/fakedigest"
 
+# unique-per-run socket: without this trap an interrupted run would leak its tmux
+# server forever (no later run reuses the socket to kill it)
+trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_OUTCOME_WINDOW_MS shrinks the 10-min intervention-effect window so the outcome tests
 # can measure a send within seconds; SUSTAIN is left at its 60s default so a shrunk window can
@@ -145,4 +151,6 @@ FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST 
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null
+# unique-per-run DIR: clean up on success, keep for post-mortem on failure
+if [ "$code" = 0 ]; then rm -rf "$DIR"; else echo "kept test instance for inspection: $DIR"; fi
 exit $code

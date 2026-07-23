@@ -107,10 +107,14 @@ EOF
 chmod +x "$DIR/fakecommit"
 
 # stand-in 🧭 steward-digest worker: same envelope, answers a fixed digest so the
-# compose→spawn→parse→clamp pipeline round-trips without a model.
+# compose→spawn→parse→clamp pipeline round-trips without a model. Sleeps for the seconds
+# in $DIR/digestdelay (default 0) so the P3 bounded-wait race is deterministically testable
+# ($0's dir is $DIR — same file the test writes via parent-of-REPO).
 cat > "$DIR/fakedigest" <<'EOF'
 #!/bin/sh
 cat >/dev/null
+delay="$(cat "$(dirname "$0")/digestdelay" 2>/dev/null || echo 0)"
+[ "$delay" != 0 ] && sleep "$delay"
 printf '{"result": "{\\"digest\\": {\\"conditions\\": {\\"1\\": \\"healthy-running\\"}, \\"changed\\": [\\"slot 1 committed\\"], \\"attention\\": []}}"}'
 EOF
 chmod +x "$DIR/fakedigest"

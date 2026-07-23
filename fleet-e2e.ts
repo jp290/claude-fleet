@@ -1976,7 +1976,8 @@ await Bun.sleep(500);
 // as today" case below is exercised against a genuinely unconfigured server (§3). The
 // configured-server verify cases run before this restart.
 const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
-  "FLEET_OUTCOME_WINDOW_MS", "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
+  "FLEET_OUTCOME_WINDOW_MS", "FLEET_OUTCOME_SUSTAIN_MS", "FLEET_HARM_ATTEST_TTL_MS",
+  "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
   "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD"]
   .filter((k) => process.env[k])
   .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
@@ -2261,7 +2262,7 @@ if (auditRotExists) {
   // rotation boundary. Simulate exactly appendEvent's rotation (renameSync file → file.1),
   // so the pre-rotation steward_send now lives ONLY in .1 — the caps must still see it
   // there, not reset toward zero because the live file is fresh/absent. ---
-  const { renameSync } = await import("node:fs");
+  const { renameSync, writeFileSync } = await import("node:fs");
   await Bun.sleep(300); // let the fire-and-forget audit chain flush before renaming
   renameSync(auditPath, `${auditPath}.1`);
   // stewSend1's paste echo reset the target pane's idle clock — wait it out again so the
@@ -2542,31 +2543,49 @@ if (auditRotExists) {
     }
   };
 
-  // three fresh lanes (distinct slots) so continue_nudge's per-kind×slot episode cap never collides
+  // five fresh lanes (distinct slots) so continue_nudge's per-kind×slot episode cap never collides.
+  // oc4 = dirty-delta-only (ahead unchanged), oc5 = sustained-output positive path (A1).
   const oc1 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   const oc2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   const oc3 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const oc4 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const oc5 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  // slots age their idle in parallel, so these sequential awaits total ~one MIN_IDLE window, not five
   await settleForSteward(oc1.slot); await settleForSteward(oc2.slot); await settleForSteward(oc3.slot);
+  await settleForSteward(oc4.slot); await settleForSteward(oc5.slot);
 
   const oc1send = await stewPost("/api/steward/send", { slot: oc1.slot, kind: "continue_nudge", ref: "continue" });
   check("outcome: a steward send parks a pending-outcome baseline (survives via saveState)",
     oc1send.ok && (await readOutcomes()).pending.some((p) => p.slot === oc1.slot), String(oc1send.status));
   await stewPost("/api/steward/send", { slot: oc2.slot, kind: "continue_nudge", ref: "continue" });
   await stewPost("/api/steward/send", { slot: oc3.slot, kind: "continue_nudge", ref: "continue" });
+  await stewPost("/api/steward/send", { slot: oc4.slot, kind: "continue_nudge", ref: "continue" });
+  await stewPost("/api/steward/send", { slot: oc5.slot, kind: "continue_nudge", ref: "continue" });
 
   const tally0 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
-  // oc1: a real git delta in the window → helped
+  // oc1: a real git delta (a new commit → ahead increases) in the window → helped
   spawnSync("git", ["-C", oc1.cwd, "commit", "--allow-empty", "-qm", "outcome effect delta"]);
-  // oc3: transient output that BEGINS but cannot sustain ≥60s inside a 1.5s window → still no-effect
+  // oc3: transient output that BEGINS but does not still-emit at window close → no-effect
   await tmuxOut("send-keys", "-t", `s${oc3.slot}`, "echo outcome-blip", "Enter");
+  // oc4: a DIRTY-only change — ahead unchanged, dirty count moves — must score no-effect. The old
+  // helpedGit (`dirty !== baseline.dirty`) scored this 'helped'; ahead-increase-only fixes it (F-B.1).
+  writeFileSync(`${oc4.cwd}/outcome-dirty.txt`, "uncommitted work, no new commit\n");
+  // oc5: sustained output — a loop that keeps emitting so the slot is still-emitting at window
+  // close (recency ≤ FLEET_OUTCOME_SUSTAIN_MS) → helped via the OUTPUT signal (not git). This path
+  // was unreachable before A1 (outputBaseline was never read); shrunk SUSTAIN makes it testable.
+  await tmuxOut("send-keys", "-t", `s${oc5.slot}`, "while true; do echo oc5-tick; sleep 0.1; done", "Enter");
   await awaitMeasured(oc1.slot); await awaitMeasured(oc2.slot); await awaitMeasured(oc3.slot);
+  await awaitMeasured(oc4.slot); await awaitMeasured(oc5.slot);
+  await tmuxOut("send-keys", "-t", `s${oc5.slot}`, "C-c"); // stop the loop now that it has been measured
 
   check("outcome: a git delta since baseline records 'helped'", (await outcomeFor(oc1.slot)) === "helped");
   check("outcome: no git delta and no sustained output records 'no-effect'", (await outcomeFor(oc2.slot)) === "noEffect");
-  check("outcome: transient output that did not sustain ≥60s stays 'no-effect' (conservative)", (await outcomeFor(oc3.slot)) === "noEffect");
+  check("outcome: transient output that did not sustain to window close stays 'no-effect' (conservative)", (await outcomeFor(oc3.slot)) === "noEffect");
+  check("outcome: a dirty-count change with NO new commit is 'no-effect' (ahead-increase only, not dirty-delta)", (await outcomeFor(oc4.slot)) === "noEffect");
+  check("outcome: output sustained to window close records 'helped' via the output signal", (await outcomeFor(oc5.slot)) === "helped");
   const tally1 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
-  check("outcome: 'helped' increments tally.continue_nudge.helped", tally1.helped === tally0.helped + 1, `${tally0.helped}->${tally1.helped}`);
-  check("outcome: two 'no-effect' outcomes increment tally.continue_nudge.noEffect", tally1.noEffect === tally0.noEffect + 2, `${tally0.noEffect}->${tally1.noEffect}`);
+  check("outcome: two 'helped' outcomes (git delta + sustained output) increment tally.continue_nudge.helped", tally1.helped === tally0.helped + 2, `${tally0.helped}->${tally1.helped}`);
+  check("outcome: three 'no-effect' outcomes (idle, blip, dirty-only) increment tally.continue_nudge.noEffect", tally1.noEffect === tally0.noEffect + 3, `${tally0.noEffect}->${tally1.noEffect}`);
 
   // harm-BLIND guard: continue_nudge now has helped≥N(=1) and harmed==0, but the owner harm
   // channel has never operated → NOT eligible (never promote on a record that can't show harm)
@@ -2595,6 +2614,21 @@ if (auditRotExists) {
     JSON.stringify(afterRot.tally) === beforeRot
     && (afterRot.tally.continue_nudge?.helped ?? 0) >= 1 && afterRot.tally.lifecycle_op?.harmed === 1,
     JSON.stringify(afterRot.tally).slice(0, 200));
+
+  // A1: the harm attest is a STALENESS-GATED timestamp, not a forever latch. A fresh attest makes a
+  // clean class eligible; once it ages past FLEET_HARM_ATTEST_TTL_MS the SAME class reverts to
+  // ineligible until re-attested. On the old boolean-latch code `harmChannelActive` stays true
+  // forever, so the stale check below (expects NOT eligible) fails there.
+  const attestTtlMs = Number(process.env.FLEET_HARM_ATTEST_TTL_MS ?? 4000);
+  await post("/api/steward/outcomes/harm", { attest: true }); // fresh attest (no harm label)
+  check("attest: a fresh harm attest makes a clean class (helped≥N, harmed==0) promotion-eligible",
+    (await readOutcomes()).eligibility.continue_nudge === true);
+  await Bun.sleep(attestTtlMs + 1500); // age the attest past its freshness window
+  check("attest: once the attest ages past FLEET_HARM_ATTEST_TTL_MS the class is NOT eligible (no forever-latch)",
+    (await readOutcomes()).eligibility.continue_nudge === false);
+  await post("/api/steward/outcomes/harm", { attest: true }); // re-attest inside the window
+  check("attest: re-attesting inside the window restores eligibility",
+    (await readOutcomes()).eligibility.continue_nudge === true);
 
   // --- Tier-1 signal surface (synergy-findings.md): the steward's READ routes expose the
   // deterministic facts the server already computes — cached claudeAlive, idleMs, gitOp, the

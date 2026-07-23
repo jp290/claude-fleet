@@ -225,10 +225,17 @@ const STEWARD_EPISODE_MS = 10 * 60 * 1000;
 // baseline; a window-close pass in tickGit classifies it DETERMINISTICALLY (git delta /
 // sustained output / claudeAlive) and increments a durable per-class tally. The window is
 // overridable so e2e can shrink it. SUSTAIN is the "output began inside the window and
-// sustained ≥60s" bar (steward-autonomy §5); left long so a shrunk window never marks helped
-// on transient output — every helped in a shrunk-window test is via the git signal.
+// sustained ≥60s" bar (steward-autonomy §5), measured as recency-at-close on the scalar
+// lastOutput (still emitting within SUSTAIN of the window-close read → sustained; a lone early
+// blip is stale by close). Overridable (FLEET_OUTCOME_SUSTAIN_MS) so e2e can exercise the
+// positive output path; left at 60s in prod so a real work-pause never reads as help.
 const OUTCOME_WINDOW_MS = Number(process.env.FLEET_OUTCOME_WINDOW_MS ?? 10 * 60 * 1000) | 0;
 const OUTCOME_SUSTAIN_MS = Number(process.env.FLEET_OUTCOME_SUSTAIN_MS ?? 60_000) | 0;
+// the harm attest is a STALENESS-GATED timestamp, not a forever latch: a class is only
+// promotion-eligible while the owner's last harm-channel engagement is within this window
+// (steward-intelligence §4 — a harm-blind record must never license autonomy, and "the owner
+// once clicked attest months ago" is harm-blind again). No `| 0`: windows >~24d overflow int32.
+const HARM_ATTEST_TTL_MS = Number(process.env.FLEET_HARM_ATTEST_TTL_MS ?? 14 * 24 * 60 * 60 * 1000);
 // promotion criterion N (steward-intelligence §4: "N interventions of a class with a clean
 // helped/no-harm record"). The ladder wiring itself is future — only the fuel + predicate ship.
 const PROMOTION_MIN_N = Math.max(1, Number(process.env.FLEET_PROMOTION_MIN_N ?? 5) | 0);
@@ -383,7 +390,7 @@ function saveState(): void {
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     repoBases, shelved, undoLands: Object.fromEntries(undoLast),
-    outcomePending, outcomeTally, harmCandidates, harmChannelActive }, null, 2);
+    outcomePending, outcomeTally, harmCandidates, harmAttestAt }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once)
@@ -714,12 +721,18 @@ function measureOutcomes(): void {
       if (harmCandidates.length > 20) harmCandidates.shift();
       writeStewardJournal({ kind: "harm_candidate", class: p.class, ref: p.ref, slot: p.slot });
     }
-    // helped = git delta (new commits OR a tree change) since baseline, OR output that began
-    // after the send and is still going ≥SUSTAIN later (scalar-lastOutput proxy for §5's
-    // "begins inside the window and sustains ≥60s"). Ambiguous → no-effect (conservative,
-    // mandatory). Reply-referencing is DEFERRED → `helped` under-counts (see promotionEligible).
-    const helpedGit = !!gi && (gi.ahead > p.gitBaseline.ahead || gi.dirty !== p.gitBaseline.dirty);
-    const helpedOutput = (s?.lastOutput ?? 0) > p.sentAt + OUTCOME_SUSTAIN_MS;
+    // helped = the lane moved FORWARD: strictly more commits ahead of base than at baseline.
+    // A dirty-count *change* is NOT progress — `git checkout .`/a stash drops dirty and would
+    // otherwise score helped, and any working slot dirties its tree — so ahead-increase is the
+    // only git signal (F-B.1). OR: output that BEGAN after the send (lastOutput advanced past the
+    // parked outputBaseline) AND is still emitting at window close (recency ≤ SUSTAIN — a §5
+    // "sustained ≥60s" proxy on the scalar lastOutput: a lone blip early in the window is stale
+    // by close and filtered out). Ambiguous → no-effect (conservative, mandatory). Reply-
+    // referencing is DEFERRED → `helped` under-counts (see promotionEligible).
+    const helpedGit = !!gi && gi.ahead > p.gitBaseline.ahead;
+    const outStarted = !!s && s.lastOutput > p.outputBaseline;
+    const outSustained = !!s && now - s.lastOutput <= OUTCOME_SUSTAIN_MS;
+    const helpedOutput = outStarted && outSustained;
     const outcome: "helped" | "noEffect" = helpedGit || helpedOutput ? "helped" : "noEffect";
     bumpTally(p.class, outcome);
     writeStewardJournal({ kind: "outcome", class: p.class, ref: p.ref, outcome, at: now, slot: p.slot });
@@ -2223,10 +2236,15 @@ const outcomeTally: Record<string, OutcomeCounts> = {}; // class(kind) -> counts
 // never an auto harm label (attribution is ambiguous: a coincidental crash ≠ one this send caused).
 interface HarmCandidate { slot: number; class: string; ref: string; at: number }
 const harmCandidates: HarmCandidate[] = [];
-// the record is "harm-blind" until the owner harm channel has operated at least once. No class is
+// the record is "harm-blind" until the owner harm channel has operated RECENTLY. No class is
 // promotion-eligible on a harm-blind tally — a record that structurally cannot show the harm
-// disqualifier must never license autonomy (the safety-critical half of §4).
-let harmChannelActive = false;
+// disqualifier must never license autonomy (the safety-critical half of §4). A timestamp, NOT a
+// forever-latch boolean: `harmAttestAt` is the owner's last engagement (0 = never); eligibility
+// requires it within HARM_ATTEST_TTL_MS, so a months-old attest reverts the record to harm-blind.
+let harmAttestAt = 0;
+function harmAttestFresh(): boolean {
+  return harmAttestAt > 0 && Date.now() - harmAttestAt <= HARM_ATTEST_TTL_MS;
+}
 function bumpTally(cls: string, field: keyof OutcomeCounts): void {
   const t = outcomeTally[cls] ?? { helped: 0, noEffect: 0, harmed: 0 };
   outcomeTally[cls] = { ...t, [field]: t[field] + 1 };
@@ -2238,7 +2256,7 @@ function bumpTally(cls: string, field: keyof OutcomeCounts): void {
 // enables a wrong one, so it is safe to omit (documented, not hidden).
 function promotionEligible(cls: string): boolean {
   const t = outcomeTally[cls];
-  return !!t && harmChannelActive && t.harmed === 0 && t.helped >= PROMOTION_MIN_N;
+  return !!t && harmAttestFresh() && t.harmed === 0 && t.helped >= PROMOTION_MIN_N;
 }
 
 // deterministic first attempt: most rebases don't conflict at all, and `git rebase` alone
@@ -2683,8 +2701,13 @@ if (existsSync(STATE_FILE)) {
           && typeof (v as HarmCandidate).class === "string" && typeof (v as HarmCandidate).ref === "string"
           && typeof (v as HarmCandidate).at === "number")
           harmCandidates.push({ slot: (v as HarmCandidate).slot, class: (v as HarmCandidate).class, ref: (v as HarmCandidate).ref, at: (v as HarmCandidate).at });
-    if (typeof (persisted as { harmChannelActive?: unknown }).harmChannelActive === "boolean")
-      harmChannelActive = (persisted as { harmChannelActive: boolean }).harmChannelActive;
+    // migrate the legacy forever-latch boolean → timestamp: a state file that predates the
+    // staleness gate has `harmChannelActive: true` but no `harmAttestAt`. Treat a set latch as
+    // "attested at load time" (a fresh window), NOT epoch-0 — the latter would silently mark
+    // every class harm-blind the instant a live server restarts onto the new code.
+    const paa = persisted as { harmAttestAt?: unknown; harmChannelActive?: unknown };
+    if (typeof paa.harmAttestAt === "number") harmAttestAt = paa.harmAttestAt;
+    else if (paa.harmChannelActive === true) harmAttestAt = Date.now();
   } catch {
     // keep the evidence: the unreadable file is preserved before the next saveState
     // overwrites it, so a torn write is recoverable by hand instead of erased
@@ -3129,7 +3152,8 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       pending: outcomePending.map((p) => ({ slot: p.slot, class: p.class, ref: p.ref, sentAt: p.sentAt })),
       candidates: harmCandidates,
       eligibility,
-      config: { minN: PROMOTION_MIN_N, windowMs: OUTCOME_WINDOW_MS, sustainMs: OUTCOME_SUSTAIN_MS, harmChannelActive },
+      config: { minN: PROMOTION_MIN_N, windowMs: OUTCOME_WINDOW_MS, sustainMs: OUTCOME_SUSTAIN_MS,
+        harmChannelActive: harmAttestFresh(), harmAttestAt, harmAttestTtlMs: HARM_ATTEST_TTL_MS },
       helpedUndercount: "reply-referencing deferred — a pure reply/Q&A intervention records as no-effect (conservative: delays promotion, never enables a wrong one)",
     });
   }
@@ -3528,22 +3552,22 @@ Bun.serve<WSData>({
     // auto-measured or LLM-judged. `{ class }` (optionally confirming a crash candidate) marks a
     // class harmful → harmed++. `{ attest: true }` records that the owner is operating the channel
     // WITHOUT flagging harm (e.g. dismissing a crash candidate as coincidental). Either way the
-    // channel is now "operating", which is what lets promotionEligible() ever return true — a
-    // harm-blind tally (owner has never engaged) promotes nothing.
+    // channel's freshness window (re)starts, which is what lets promotionEligible() return true —
+    // a harm-blind tally (no recent owner engagement, or none ever) promotes nothing.
     if (url.pathname === "/api/steward/outcomes/harm" && req.method === "POST") {
       const body = await readJson(req);
       if (!body) return json({ error: "invalid json" }, 400);
       if (body.attest === true && body.class === undefined) {
-        harmChannelActive = true;
+        harmAttestAt = Date.now(); // (re)start the freshness window; a stale attest reverts to harm-blind
         writeStewardJournal({ kind: "harm_channel_attest" });
         saveState();
-        return json({ ok: true, harmChannelActive });
+        return json({ ok: true, harmChannelActive: harmAttestFresh(), harmAttestAt });
       }
       const cls = body.class;
       if (typeof cls !== "string" || !cls || cls.length > 40)
         return json({ error: "class must be a non-empty string ≤40 chars (or { attest: true })" }, 400);
       bumpTally(cls, "harmed");
-      harmChannelActive = true; // the owner engaging the harm oracle is what makes the record harm-aware
+      harmAttestAt = Date.now(); // the owner engaging the harm oracle (re)freshens the record's harm-awareness
       // clear a matching unreviewed crash candidate — the owner has now ruled on it
       const ref = typeof body.ref === "string" ? body.ref : undefined;
       const slotN = typeof body.slot === "number" ? body.slot : undefined;

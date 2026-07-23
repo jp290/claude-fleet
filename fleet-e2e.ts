@@ -1811,7 +1811,8 @@ if (SHARE_HOST) {
     { headers: { host: SHARE_HOST, ...H } })).status === 404);
   check("share host: encoded-slash path does not decode into a bypass", (await fetch(BASE + `/s/${shView.id}%2f..%2fapi%2fsessions`,
     { headers: { host: SHARE_HOST, ...H } })).status === 404);
-  check("share host: uppercase share id does not bypass the lowercase-only regex", (await fetch(BASE + `/s/${shView.id.toUpperCase()}`,
+  // an all-digit id (≈2.3% of runs) has no uppercase variant — the premise doesn't exist, pass vacuously
+  check("share host: uppercase share id does not bypass the lowercase-only regex", !/[a-f]/.test(shView.id) || (await fetch(BASE + `/s/${shView.id.toUpperCase()}`,
     { headers: { host: SHARE_HOST } })).status === 404);
 }
 const unshare = await post("/api/slots/2/unshare", {});

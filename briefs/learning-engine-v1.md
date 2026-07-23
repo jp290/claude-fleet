@@ -13,6 +13,12 @@ the explicit opt-in.*
 2. `docs/prompt-axioms.md` (the bar every evaluator prompt must itself meet)
 3. `OWNER.md` (the owner-model; §4 gate calibration colors what to propose)
 4. `docs/steward-roadmap.md` Phase-2 "learning engine v1" entry (scope: manual v1, prove-before-schedule)
+5. `docs/three-axes.md` (the program frame this pass serves) — §6 carries the steward's
+   2026-07-23 sharpen-corpus axes model, this pass's FOUNDING INPUT: bidirectional drift
+   axes, OWNER.md cross-validation, and its limits (Sonnet pass-1 claims layer; ~7-8%
+   decoration-word cases; "naming lens, not a lookup"). Locate the corpus itself before
+   relying on it (its durable home was an open owner decision — ask if unresolved);
+   treat every record as a claim, per the doc's own caveat.
 
 ## The two halves
 

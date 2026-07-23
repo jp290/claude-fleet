@@ -97,9 +97,15 @@ reality outside worktree isolation).
 1. **v0 — the ritual** (zero server code): `/foreman` + a recurring auto on the steward
    slot (run-capped = the budget guard; quiet hours honored). Owner reads the report,
    promotes tasks, lands, deploys.
-2. **Server increments**, each a small lane: `key` field on the steward task route
-   (replaces text-matching convergence); next-action synthesis in the digest (per-slot
-   deterministic next step, computed server-side); the deploy-gap fact on the slots view.
+2. **Server increments**, each a small lane — the first two found EMPIRICALLY by the
+   v0 validation pulse (2026-07-23, which correctly reported both guards as not
+   executable rather than guessing):
+   - **steward-readable task queue** (read-only; today neither /sessions nor /digest
+     carries the queue → guard 6 convergence is structurally impossible);
+   - **deploy-gap fact on the slots view** (srv start time vs last server-touching
+     land — the server knows both; the pulse's worktree scope cannot);
+   - `key` field on the steward task route (replaces text-matching convergence);
+   - next-action synthesis in the digest (per-slot deterministic next step).
 3. **First act verb**: auto-rebase-if-clean at dispatch/pulse, with its own outcome
    class; conflict → surface, never resolve.
 4. **B-partition** (scoped operate routes) → foreman-to-staged under the steward, once

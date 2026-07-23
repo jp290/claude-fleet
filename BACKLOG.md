@@ -989,23 +989,63 @@ ALL PASS on integrated main, each lane also verified in its rebased landing stat
 `917452a` G1 land provenance + stale-verify · `9e729d4` G2 verify badge · `2fc7c50` A1 honest
 `helped` + attest staleness · `df260b1` A2 advisory `baselineRate` · `f70cc7a` B1 **server half**.
 
+**Two facts that constrain everything in this track** (verified 2026-07-23 — re-verify before building):
+
+1. **There is no ladder.** `promotionEligible` is read in exactly two places — the outcomes gauge
+   and the harm route's response — and **both are read-only status endpoints; nothing acts on the
+   verdict.** The code states it: *"the ladder wiring itself is future — only the fuel + predicate
+   ship."* So filling `outcomeTally` has **no consumer today**. Any B1 work justified as "fuel for
+   the ladder" rests on a consumer that does not exist. B1's real near-term value is different and
+   still genuine: steward-surfaced decisions stop evaporating in a pane and become persistent,
+   actionable queue items. Re-verify: `grep -n promotionEligible server.ts`.
+2. **The tick swallows its own errors.** `tickGit` is `try`/`finally` with **no catch**, and every
+   call site is `void tickGit().catch(() => {})`. `measureOutcomes()` (and A2's `measureControls`)
+   run as the *last* statement inside that try — so a throw there is invisible: no log line, health
+   stays 200, git badges keep updating, and only the measurement silently dies. **"No errors in
+   server.log" is not evidence that the measurement layer works** — verify it positively. Same
+   family as dossier F6: apparent health ≠ actual function.
+
+**Positive live verification (2026-07-23, post-deploy):** `GET /api/steward/outcomes` returned
+`baselineRate {rate: 0.25, samples: 12, helped: 3}` plus A1's `harmAttestAt`/`harmAttestTtlMs` — so
+A1 and A2 genuinely execute in the live tick. **First real measurement this program has produced:
+a working, un-nudged slot looks "helped" ~25 % of the time.** That is the null A2 exists to supply;
+any future nudged `helped` rate must beat it to mean anything.
+
 **Open — in dependency order:**
 
 | # | Item | Blocked by | Whose call | Pointer |
 |---|------|-----------|-----------|---------|
-| P-1 | **B1b** — de-dup substrate: `GET /api/steward/tasks`, `ref` idempotency, digest `prior` filter, **`mute(ref)`** | — | owner greenlight | deep-dive → "Lane B1b" |
+| P-1a | **digest `prior` filter** — anchor on the last `kind:"rundgang"` record, not the last record of any kind. A **real bug in deployed code**: B1-server writes `kind:"propose_outcome"` into the same journal, so an outcome landing between pulses breaks the pulse's delta baseline. Latent only while no steward task exists | — | just do it — tiny, folds into any lane | deep-dive → Lane B1b (3) |
 | P-2 | **Steward freshness** — its worktree is ~19 commits behind main (recompute: `git rev-list --count <steward-HEAD>..main`; it grows), so its world-model predates the whole program | — | owner: *where* freshness belongs (`/steward` ritual, `/rundgang`, or habit) | dossier F3 |
-| P-3 | **B1 prompt half** — `/rundgang` files surfaced decisions as pending proposals | **P-1 + P-2** | Fable (a stopped session holds the context) | deep-dive → "B1 status"; `c7047a8` |
+| P-3 | **THE FORK — probe or build?** (below) | P-1a + P-2 | **owner** | this register |
 | P-4 | **Deploy-gap fact** — nothing shows whether the live server predates `main` | check prior art first | owner: slots view / foreman / nowhere | dossier F6; `5c69417` |
 | P-5 | **Worktree placement** — pin the lane path to the sibling dir or gitignore it (cheap half only) | — | fold-in, no own lane | dossier F7; stack-land §8 |
 | P-6 | **Program board** PB-1/2/3 — lane DAG, orchestrated dependent-rebase, stack cleanup | — | owner: build or not | stack-land-program-board |
 | P-7 | **F-D minors** — digest cache invalidation, `runVerify` SIGTERM→SIGKILL, per-repo `FLEET_VERIFY_CMD` | — | fold into whichever lane touches that code | deep-dive → F-D |
 
-**Why P-1 and P-2 both precede P-3** (the load-bearing sequencing): A1's rule was *fix the
-classifier while the tally is still empty — afterwards it is a data amnesty.* The same rule
-applies to the **producer**. P-1 stops the tally from measuring the system's own duplication;
-P-2 stops it from measuring a stale steward's judgement. Both must hold **before the first real
-`propose` entry lands**, because neither is repairable afterwards.
+**P-3, the fork — stated plainly.** Nobody has ever seen a steward proposal; the route has never
+been used in production. So the open question is **not** "how do we de-dup" but **"are the
+proposals any good at all?"**
+
+- **(a) Probe first — recommended.** Ship P-1a only, then the `/rundgang` edit with a deliberately
+  conservative rule (section-1 items only, 1–2 per pulse), the existing cap of 10 as the sole
+  backstop, duplicates knowingly accepted. Cost ≈ one prompt edit. It buys the only unknown that
+  matters. The tally gets dirty — acceptable, because it **has no consumer** (fact 1) and is a
+  plain field in `fleet.json`, resettable while srv is down (there is no reset route). Then build
+  de-dup shaped by the duplicates actually observed.
+- **(b) Build B1b first.** Fully specced (GET + `ref` + `mute(ref)` + the prior filter),
+  deterministic, e2e-gated. But it is four features designed before a single real proposal exists,
+  and its strongest justification — protecting the tally — protects a number nobody reads yet.
+- **Cost of being wrong:** (a) wrong → a dirty tally you reset. (b) wrong → four features built for
+  proposals that turn out to be noise.
+
+**Superseded (do not re-derive):** an earlier version of this register made B1b a single P-1 that
+*had* to precede the prompt edit, arguing that duplication and staleness both corrupt the tally
+irreparably ("empty tally = free fix, filled tally = data amnesty"). That argument was conditional
+on the tally mattering **now**; fact 1 shows it does not yet, and a deliberate, time-boxed probe is
+not the silent multi-week accumulation the amnesty rule was written against. **P-2 survives the
+reframing and gets stronger** — a probe run against a 19-commits-stale steward measures the wrong
+steward.
 
 **Parked with a trigger — do not re-propose without the trigger:**
 - The 11 prompt "insurance" edits → the day the first cheap-model (Haiku-class) lane runs
@@ -1063,7 +1103,10 @@ P-2 stops it from measuring a stale steward's judgement. Both must hold **before
 10. Hardening #1: move slot 6 off the fleet-repo cwd, or is that intentional?
 
 **Track A — decisions that gate program work (2026-07-23):**
-11. **B1b greenlight?** It is fully specced and blocks P-3. Brief it, or leave B1 inert for now?
+11. **P-3: probe or build?** The one decision that actually gates the program. (a) ship P-1a + a
+    conservative `/rundgang` edit and *look at what the steward proposes*, accepting duplicates and
+    a dirty tally you reset afterwards; or (b) build B1b's full substrate first. Recommendation:
+    (a) — the unknown is proposal *quality*, not de-dup, and no consumer reads the tally yet.
 12. **`mute(ref)` semantics** (owner-raised): confirm the split — *dismiss* = "no, not this
     instance" (counts `propose.dismissed`), *mute* = "stop proposing this" (suppression, **no
     tally event**, listable + reversible). The no-tally rule is the load-bearing half: if muting

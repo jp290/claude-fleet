@@ -206,7 +206,16 @@ soundly prompt-side. The argument:
    last rundgang record, breaking the pulse's diff baseline whenever an outcome lands between
    pulses. Needs fixing regardless of the de-dup question.
 
-### Lane B1b — deterministic de-dup substrate  *(small server lane, BEFORE the prompt edit)*
+### Lane B1b — deterministic de-dup substrate  *(spec below is sound; its **timing** was revised — see note)*
+
+> **Revision 2026-07-23 (later):** this lane is no longer "must precede the prompt edit" as a block.
+> Two facts changed the calculus (both verified; recorded in `BACKLOG.md` → the register): (a)
+> **there is no ladder** — `promotionEligible` is read only by two read-only status endpoints, so
+> the tally this lane protects has **no consumer yet**; (b) nobody has ever seen a steward proposal,
+> so the de-dup *shape* is being designed against zero observations. **Scope item (3), the digest
+> `prior` filter, is split out as P-1a and should ship now** — it is a real bug in deployed code,
+> not de-dup. The rest (GET, `ref`, `mute`) is gated on the register's fork P-3: probe first and let
+> the observed duplicates shape it, or build it up front. The spec below stays valid either way.
 - **Scope:** (1) `GET /api/steward/tasks` → `{ open: [steward-origin pending: id, text, ref,
   created], resolved: [last ~20 steward-origin non-pending: id, text, ref, status] }` — ground
   truth for "already filed" and "owner already judged this". (2) optional `ref` on the POST

@@ -63,9 +63,10 @@ A4/A5, `sharpen` A4/A5, `handoff` A2, `catchup` A5, `steward` A4 …), find the 
 
 ## The harness (reuse, don't rebuild)
 
-The stage-1 Workflow script is at
-`~/.claude/projects/-Users-owner-claude-fleet/<session>/workflows/scripts/learning-engine-v1-dream-pass-*.js`
-(find the latest under your session dir, or author a fresh one on its pattern). Adapt it:
+The stage-1 Workflow script (reuse as the template) is at
+`~/.claude/projects/-Users-owner-claude-fleet/ec644be9-1a64-4b03-933b-230c0aca3f02/workflows/scripts/learning-engine-v1-dream-pass-wf_d5d1e7bd-ad1.js`
+— read it, then author your own on its pattern (a fresh session won't have it under its own
+session dir, so point at this absolute path). Adapt it:
 one evaluator per hypothesis (not per prompt), each given (a) the hypothesis + its stage-1
 citation, (b) the located traces for that prompt, (c) the axioms + OWNER §2, and a schema
 forcing `{hypothesis, verdict: confirmed|refuted|no-evidence, traceCitations[], revisedProposal}`.

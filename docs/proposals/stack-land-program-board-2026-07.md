@@ -171,7 +171,8 @@ f70cc7a  B1  propose-outcome from promote/dismiss      (server)   ← after A1
 **Still open after this run (not part of the feature):** the deploy (`bun run build` +
 `tmux -L claudefleet kill-session -t srv` + Tailscale health-check) is separately owner-gated
 (OWNER §4b: environment/lifecycle mutations); and **B1's non-server half** — the `/rundgang` prompt
-edit (a skill file under `~/.claude`, shared reality, not lane-able) plus one live pulse to observe
+edit (`.claude/commands/rundgang.md` — git-tracked in this repo, so it IS lane-able and revertable;
+this doc originally mis-stated it as a `~/.claude` file outside isolation) plus one live pulse to observe
 a proposal actually get filed. Until that lands, B1's wiring is correct but inert.
 
 ## 9. Relation to the broader program

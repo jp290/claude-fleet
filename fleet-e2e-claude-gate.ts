@@ -195,6 +195,55 @@ check("the pane spawn command carries --model gate-model-probe",
   startCmd.includes("--model gate-model-probe"), startCmd.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
 
+// --- branch 6: dispatcher POST-spawn re-check (server.ts tickDispatch, the fresh claudeAlive
+// gate after the 4s boot sleep). This is the highest-blast branch: the dispatcher spawns a lane
+// from FLEET_DISPATCH_REPO and, once claude is up, TYPES the (externally-sourced) task text into
+// the pane. If claude failed to boot the pane is a bare shell, so that text would EXECUTE as
+// commands — the post-spawn gate is the only thing that stops it. The main suite can never test
+// this (FLEET_CMD=true short-circuits claudeAlive to a constant true). Here the fake `claude` is
+// the immediate-exit variant, so every dispatched lane lands on a bare shell → the gate must
+// requeue the task ("dispatch held (…) — requeued") and NOTHING may reach the pane. ---
+await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-exit`).arrayBuffer());
+await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
+interface DispSlot { id: number; cwd: string | null; worktree: { branch: string } | null }
+interface DispSess { slots: DispSlot[]; tasks: { id: string; status: string; note?: string | null }[] }
+const dispSess = async (): Promise<DispSess> => (await (await get("/api/sessions")).json()) as DispSess;
+const dispTask = async (id: string) => (await dispSess()).tasks.find((t) => t.id === id);
+// slots with a worktree BEFORE we enable the dispatcher — anything new is a lane the dispatcher spawned
+const lanesBefore = new Set((await dispSess()).slots.filter((s) => s.worktree).map((s) => s.id));
+
+const dOn = await post("/api/dispatch", { on: true });
+check("dispatcher enabled (FLEET_DISPATCH_REPO set in the gate harness)", dOn.ok, String(dOn.status));
+const dispMarker = "dispatch-must-not-reach-the-bare-shell";
+const dTaskRes = await post("/api/tasks", { text: dispMarker, queue: true });
+const dTaskId = ((await dTaskRes.json()) as { task?: { id: string } }).task?.id ?? "";
+check("queue a dispatch task", dTaskRes.ok && !!dTaskId);
+
+// wait for one tick to spawn a lane (8s interval) + the 4s boot sleep + the post gate + margin
+let dispHeld = false, laneSlot = -1, dNote = "";
+for (let i = 0; i < 120; i++) { // ~36s ceiling
+  const sess = await dispSess();
+  const lane = sess.slots.find((s) => s.worktree && !lanesBefore.has(s.id));
+  if (lane) laneSlot = lane.id;
+  const t = sess.tasks.find((x) => x.id === dTaskId);
+  dNote = t?.note ?? "";
+  // the post-spawn gate requeues the task: status back to "queued" with the gate's note
+  if (t?.status === "queued" && dNote.includes("dispatch held") && dNote.includes("requeued")) { dispHeld = true; break; }
+  await Bun.sleep(300);
+}
+// stop the dispatcher immediately so it doesn't keep spawning lanes up to the cap while we assert
+await post("/api/dispatch", { on: false });
+check("dispatcher post-spawn gate requeues the task when the fresh claude died (dispatch held … requeued)",
+  dispHeld, `note=${JSON.stringify(dNote)} laneSlot=${laneSlot}`);
+check("the dispatcher actually spawned a lane (non-tautology: the gate fired AFTER spawn, not before)",
+  laneSlot > 0, `laneSlot=${laneSlot}`);
+// the whole point: the externally-sourced task text NEVER reached the bare-shell pane
+const capDisp = laneSlot > 0 ? await tmuxOut("capture-pane", "-t", `s${laneSlot}`, "-p") : { out: "", code: 1 };
+check("dispatch post-spawn gate: the task text never reached the bare shell",
+  laneSlot > 0 && !capDisp.out.includes(dispMarker), capDisp.out.slice(-160));
+// teardown: kill any lane the dispatcher spawned (worktrees stay on disk in $DIR, torn down by the wrapper)
+for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.id)) await tmuxOut("kill-session", "-t", `s${s.id}`);
+
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

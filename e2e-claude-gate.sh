@@ -23,6 +23,16 @@ mkdir -p "$DIR" "$FAKEBIN"
 cp -R "$SRC/server.ts" "$SRC/fleet-e2e-claude-gate.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
+# a throwaway git repo the dispatcher spawns lanes from — needed to exercise the
+# post-spawn re-check (server.ts tickDispatch): the gate suite's fake `claude` can die
+# after the boot sleep, so the fresh claudeAlive gate here is the ONLY thing that stops
+# externally-sourced task text being typed into a bare shell. The main suite can't test
+# this (FLEET_CMD=true short-circuits claudeAlive to a constant true).
+DISPATCH_REPO="$DIR/dispatchrepo"
+mkdir -p "$DISPATCH_REPO"
+( cd "$DISPATCH_REPO" && git init -q && git config user.email t@t && git config user.name t \
+  && printf 'root\n' > code.txt && git add code.txt && git commit -qm init )
+
 # two variants of a binary literally named `claude` (comm= must resolve to a path ending
 # in "claude", which only a real executable — not a shebang script — reliably gives us):
 # claude-exit returns immediately (simulates a crashed/finished claude, pane falls through
@@ -49,7 +59,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # it must send a steward nudge (idle gate) then let claude die inside the effect window (which the
 # window-close measurement pass reads) within the test's time budget rather than the 60s/10min defaults.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=claude FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_OUTCOME_WINDOW_MS=3000 exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_OUTCOME_WINDOW_MS=3000 exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1

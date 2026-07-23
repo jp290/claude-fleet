@@ -2944,7 +2944,21 @@ function clampDigest(v: unknown): StewardDigest | null {
     ? x.filter((e): e is string => typeof e === "string").slice(0, 12).map((e) => e.slice(0, 300)) : [];
   return { conditions, changed: strList(j.changed), attention: strList(j.attention) };
 }
-async function runStewardDigest(home: Slot): Promise<{ status: number; body: Record<string, unknown> }> {
+// P3 async digest (demand-triggered bounded-wait): only the `digest` field is cached
+// {digest, computedAt, slotCwd}; prior/slots are recomputed fresh every GET (facts outrank
+// claims, §8). A GET triggers the worker only when the cache is stale, blocks at most a
+// caller-chosen ?wait (default ~30s, clamped ≤60s), and returns fresh-if-ready else the last
+// snapshot (or null on cold cache) plus digestAt/digestAge. INVARIANT: `curl -m` must be ≥ ?wait.
+interface DigestResult { digest: StewardDigest | null; model: string; error?: string; computedAt: number; slotCwd: string }
+const DIGEST_TTL_MS = 2 * 60 * 1000;      // "fresh enough" window — a repeat GET inside it skips the worker
+const DIGEST_WAIT_DEFAULT_MS = 30_000;    // fresh-preferring: today's pulse (curl -m 45) needs no ?wait
+const DIGEST_WAIT_MAX_MS = 60_000;        // no caller can request an unbounded block
+function clampDigestWait(raw: string | null): number {
+  const n = raw === null ? NaN : Number(raw); // ?wait is in SECONDS
+  if (!Number.isFinite(n)) return DIGEST_WAIT_DEFAULT_MS;
+  return Math.max(0, Math.min(DIGEST_WAIT_MAX_MS, Math.round(n * 1000)));
+}
+async function runStewardDigest(home: Slot): Promise<DigestResult> {
   const now = Date.now();
   const prior = (await readStewardJournal(1))[0] ?? null;
   const slotsView = stewardSlotsView(now);
@@ -2991,11 +3005,12 @@ async function runStewardDigest(home: Slot): Promise<{ status: number; body: Rec
   } catch (e) {
     error = e instanceof Error ? e.message.slice(0, 300) : "digest worker failed";
   }
-  return { status: 200, body: { now, prior, slots: slotsView, digest, model: SUMMARY_MODEL, ...(error ? { error } : {}) } };
+  return { digest, model: SUMMARY_MODEL, error, computedAt: now, slotCwd: home.cwd! };
 }
 // concurrent pulses share one worker run (the beat is hours apart; a double-fire must not
-// spawn two agents). The shared value is a plain object — each caller gets its own Response.
-let digestInflight: Promise<{ status: number; body: Record<string, unknown> }> | null = null;
+// spawn two agents). On completion the run WRITES the cache, then nulls inflight.
+let digestInflight: Promise<DigestResult> | null = null;
+let digestCache: DigestResult | null = null;
 
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
@@ -3005,9 +3020,38 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   if (url.pathname === "/api/steward/digest" && req.method === "GET") {
     const home = stewardSlot();
     if (!home?.cwd) return json({ error: "no steward slot active" }, 404);
-    if (!digestInflight) digestInflight = runStewardDigest(home).finally(() => { digestInflight = null; });
-    const r = await digestInflight;
-    return json(r.body, r.status);
+    const now = Date.now();
+    const prior = (await readStewardJournal(1))[0] ?? null; // fresh every call
+    const slotsView = stewardSlotsView(now);                // fresh every call
+    const waitMs = clampDigestWait(url.searchParams.get("wait"));
+    // a cached digest is bound to one slot (cwd) — drop it if the steward slot moved
+    if (digestCache && digestCache.slotCwd !== home.cwd) digestCache = null;
+
+    const fresh = digestCache && now - digestCache.computedAt < DIGEST_TTL_MS ? digestCache : null;
+    let snapshot: DigestResult | null = fresh;
+    if (!fresh) {
+      if (!digestInflight) {
+        digestInflight = runStewardDigest(home)
+          .then((r) => { digestCache = r; return r; })
+          .finally(() => { digestInflight = null; });
+      }
+      const inflight = digestInflight;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<null>((res) => { timer = setTimeout(() => res(null), waitMs); });
+      const raced = await Promise.race([inflight, timeout]);
+      if (timer) clearTimeout(timer);
+      snapshot = raced ?? digestCache; // timeout won → serve the last snapshot (or null on cold cache)
+    }
+    const digestAt = snapshot ? snapshot.computedAt : null;
+    return json({
+      now, prior, slots: slotsView,
+      digest: snapshot?.digest ?? null,
+      digestAt,
+      digestAge: digestAt !== null ? now - digestAt : null,
+      waitMs,
+      model: snapshot?.model ?? SUMMARY_MODEL,
+      ...(snapshot?.error ? { error: snapshot.error } : {}),
+    });
   }
   const briefMatch = /^\/api\/steward\/slots\/(\d+)\/brief$/.exec(url.pathname);
   if (req.method === "GET" && briefMatch) {

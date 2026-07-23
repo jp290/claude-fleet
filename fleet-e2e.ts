@@ -651,8 +651,8 @@ if (REPO) {
   const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/mergemode`, m);
   // merge is an async job — poll GET until the run settles; a 400 means the slot was
   // torn down (the job landed the lane), which IS the success signal for `do`
-  type VerifyField = { cmd: string; ok: boolean; out: string; at: number; mainSha: string };
-  type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField };
+  type VerifyField = { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
+  type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string };
   const waitMerge = async (slot: number): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
     for (let i = 0; i < 100; i++) {
       const r = await get(`/api/slots/${slot}/merge`);
@@ -1472,6 +1472,10 @@ if (REPO) {
       Array.isArray(pcNote.json?.conflicted) && (pcNote.json?.conflicted as string[]).includes("base.txt")
       && typeof pcNote.json?.resolverDetail === "string" && (pcNote.json?.resolverDetail as string).length > 0,
       JSON.stringify(pcNote.json));
+    check("G1 control: an un-moved confirm-land note carries a FRESH verify (green, no stale marker)",
+      (pcNote.json?.verify as VerifyField | undefined)?.ok === true
+      && (pcNote.json?.verify as VerifyField | undefined)?.stale === undefined,
+      JSON.stringify(pcNote.json?.verify));
 
     // (4) a land whose NOTE-WRITE FAILS still lands (best-effort provenance, landing is the job).
     //     Sabotage: refs/notes/fleet as a FILE → `git notes add refs/notes/fleet/land` hits a
@@ -1489,6 +1493,117 @@ if (REPO) {
       pfAfter !== pfBefore && (await get(`/api/slots/${pfLane.slot}/merge`)).status === 400,
       `before=${pfBefore} after=${pfAfter}`);
     check("V2: the failed note-write left no note and did not wedge the land", readNote(pf.repo, pfAfter).ok === false);
+
+    // --- G1: land provenance survives teardown failure. recordLand must couple to the
+    // MAIN-MOVE (advanceIntegration), not the teardown: a landLane failure after a
+    // successful advance previously left main ff'd with NO note and NO undo record while
+    // the owner read "not landed" — a silent provenance hole on the human-gated action.
+    // Lever: chmod the lane worktree dir read-only — every pre-land step is a read
+    // (status/rebase-up-to-date/verify/advance-in-repo) and passes, but `git worktree
+    // remove` cannot unlink the entries and fails deterministically.
+
+    // (a1) CLEAN path (mergeJob): advance ok, landLane fails → verdict carries a distinct
+    // landError, and note + undo record exist anyway.
+    const tf = await freshRepo("teardownfail");
+    const tfLane = (await (await post("/api/lanes", { repo: tf.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${tfLane.cwd}/tf.txt`, "teardown-fail lane work\n");
+    spawnSync("git", ["-C", tfLane.cwd, "add", "tf.txt"]);
+    spawnSync("git", ["-C", tfLane.cwd, "commit", "-qm", "teardown-fail lane work"]);
+    const tfProbe = (await (await post("/api/lanes", { repo: tf.repo })).json()) as { slot: number }; // board observer for undoable
+    const tfBefore = headOf(tf.repo, tf.main);
+    spawnSync("chmod", ["555", tfLane.cwd]); // the teardown obstacle
+    await setMergeMode("blocked"); // clean rebase — agent must not be consulted
+    await settleForMerge(tfLane.slot);
+    await post(`/api/slots/${tfLane.slot}/merge`, {});
+    const tfV = await waitMerge(tfLane.slot);
+    spawnSync("chmod", ["755", tfLane.cwd]); // restore before asserting, whatever happened
+    const tfAfter = headOf(tf.repo, tf.main);
+    check("G1a setup: the obstacle held — main advanced but the lane survived on disk",
+      tfAfter !== tfBefore && exists(tfLane.cwd), `before=${tfBefore} after=${tfAfter} exists=${exists(tfLane.cwd)}`);
+    check("G1a: clean-path verdict reports the teardown failure as its own landError field (merged, landed:false)",
+      !tfV.gone && tfV.last?.status === "merged" && tfV.last.landed === false
+      && (tfV.last.landError ?? "").includes("worktree remove failed"),
+      JSON.stringify(tfV.last));
+    const tfNote = readNote(tf.repo, tfAfter);
+    check("G1a: the moved main carries its fleet/land note despite the failed teardown",
+      tfNote.ok && tfNote.json?.mainBefore === tfBefore && tfNote.json?.mainAfter === tfAfter
+      && tfNote.json?.branch === tfLane.branch && tfNote.json?.confirmedByHuman === false,
+      JSON.stringify(tfNote.json));
+    const tfUndoable = (await (await get(`/api/slots/${tfProbe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
+    check("G1a: the undo record exists despite the failed teardown (the land stays undoable)",
+      tfUndoable.undoable?.branch === tfLane.branch, JSON.stringify(tfUndoable.undoable));
+    await post(`/api/slots/${tfLane.slot}/kill`, {});
+    await post(`/api/slots/${tfProbe.slot}/kill`, {});
+
+    // (a2) CONFIRM-land path: same invariant on the human-gated route — the response
+    // reports the teardown failure distinctly instead of a bare "not landed" error.
+    const tc = await freshRepo("teardownconfirm");
+    const tcLane = (await (await post("/api/lanes", { repo: tc.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${tcLane.cwd}/base.txt`, "base\ntc-lane\n"); // conflict on base.txt → agent path
+    spawnSync("git", ["-C", tcLane.cwd, "commit", "-aqm", "tc lane work"]);
+    await Bun.write(`${tc.repo}/base.txt`, "base\ntc-main\n");
+    spawnSync("git", ["-C", tc.repo, "commit", "-aqm", "tc main work"]);
+    const tcProbe = (await (await post("/api/lanes", { repo: tc.repo })).json()) as { slot: number };
+    await setMergeMode("do");
+    await settleForMerge(tcLane.slot);
+    await post(`/api/slots/${tcLane.slot}/merge`, {});
+    const tcV = await waitMerge(tcLane.slot);
+    check("G1b setup: conflicting lane resolved + paused for review", !tcV.gone && tcV.last?.status === "resolved", JSON.stringify(tcV.last));
+    const tcBefore = headOf(tc.repo, tc.main);
+    spawnSync("chmod", ["555", tcLane.cwd]);
+    const tcConfRes = await post(`/api/slots/${tcLane.slot}/merge`, { confirm: true });
+    const tcConf = (await tcConfRes.json()) as { status?: string; landed?: boolean; landError?: string; error?: string };
+    spawnSync("chmod", ["755", tcLane.cwd]);
+    const tcAfter = headOf(tc.repo, tc.main);
+    check("G1b setup: confirm-land advanced main, lane survived on disk",
+      tcAfter !== tcBefore && exists(tcLane.cwd), `before=${tcBefore} after=${tcAfter} exists=${exists(tcLane.cwd)}`);
+    check("G1b: confirm-land reports the teardown failure as its own landError field (merged, landed:false)",
+      tcConf.status === "merged" && tcConf.landed === false
+      && (tcConf.landError ?? "").includes("worktree remove failed"),
+      `http=${tcConfRes.status} ${JSON.stringify(tcConf)}`);
+    const tcNote = readNote(tc.repo, tcAfter);
+    check("G1b: the confirm-land note exists despite the failed teardown, owned by the human",
+      tcNote.ok && tcNote.json?.mainBefore === tcBefore && tcNote.json?.mainAfter === tcAfter
+      && tcNote.json?.confirmedByHuman === true, JSON.stringify(tcNote.json));
+    const tcUndoable = (await (await get(`/api/slots/${tcProbe.slot}/merge`)).json()) as { undoable?: { branch: string } | null };
+    check("G1b: the undo record exists despite the failed teardown",
+      tcUndoable.undoable?.branch === tcLane.branch, JSON.stringify(tcUndoable.undoable));
+    await post(`/api/slots/${tcLane.slot}/kill`, {});
+    await post(`/api/slots/${tcProbe.slot}/kill`, {});
+
+    // (b) STALE-VERIFY guard: main moves between the verify (at resolve time) and the
+    // owner's confirm; the replay lands cleanly — but the recorded verify never saw the
+    // landed state ("a verdict is void once main moves past it"). The note must mark it
+    // stale, never carry a silently stale green.
+    const sv = await freshRepo("staleverify");
+    const svLane = (await (await post("/api/lanes", { repo: sv.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${svLane.cwd}/base.txt`, "base\nsv-lane\n"); // conflict → agent resolves, verify runs
+    spawnSync("git", ["-C", svLane.cwd, "commit", "-aqm", "sv lane work"]);
+    await Bun.write(`${sv.repo}/base.txt`, "base\nsv-main\n");
+    spawnSync("git", ["-C", sv.repo, "commit", "-aqm", "sv main work"]);
+    await setMergeMode("do");
+    await settleForMerge(svLane.slot);
+    await post(`/api/slots/${svLane.slot}/merge`, {});
+    const svV = await waitMerge(svLane.slot);
+    check("G1c setup: lane resolved with a green verify bound to the pre-move main",
+      !svV.gone && svV.last?.status === "resolved" && svV.last.verify?.ok === true
+      && typeof svV.last.verify.mainSha === "string", JSON.stringify(svV.last?.verify));
+    const svVerifiedSha = svV.last?.verify?.mainSha ?? "";
+    await Bun.write(`${sv.repo}/moved.txt`, "moved after verify\n"); // unrelated move → replay lands
+    spawnSync("git", ["-C", sv.repo, "add", "moved.txt"]);
+    spawnSync("git", ["-C", sv.repo, "commit", "-qm", "sv main moved after verify"]);
+    const svConf = (await (await post(`/api/slots/${svLane.slot}/merge`, { confirm: true })).json()) as { status?: string; landed?: boolean };
+    check("G1c setup: the replayed confirm-land landed", svConf.status === "merged" && svConf.landed === true, JSON.stringify(svConf));
+    const svAfter = headOf(sv.repo, sv.main);
+    const svNote = readNote(sv.repo, svAfter);
+    const svNoteVerify = svNote.json?.verify as VerifyField | undefined;
+    check("G1c: the landed note marks the outdated verify STALE (never a silently stale green)",
+      svNote.ok && svNoteVerify?.ok === true && svNoteVerify.stale === true,
+      JSON.stringify(svNoteVerify));
+    check("G1c: the stale verify still names the main it actually verified (≠ the landed mainBefore)",
+      svNoteVerify?.mainSha === svVerifiedSha && svNote.json?.mainBefore !== svVerifiedSha,
+      `verified=${svVerifiedSha} mainBefore=${String(svNote.json?.mainBefore)}`);
+
     await setMergeMode("blocked"); // restore the suite default for later tests in this scope
   }
 

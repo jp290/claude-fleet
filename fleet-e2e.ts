@@ -2274,22 +2274,68 @@ if (auditRotExists) {
   // owner token is out of scope for the steward journal, same 404 as the other steward routes
   check("owner token on the steward journal route is out of scope (404)", (await get("/api/steward/journal?tail=1")).status === 404);
 
-  // --- 🧭 steward digest: compose(prior journal + slots view) → worker (FLEET_DIGEST_CMD
-  // stand-in) → clamp. The worker's verdict is advisory; the route must ALWAYS carry the
-  // deterministic payload (prior + slots) alongside it. ---
-  const digRes = await stewGet("/api/steward/digest");
-  const digJ = (await digRes.json()) as {
+  // --- 🧭 steward digest (P3 demand-triggered bounded-wait): prior/slots are computed FRESH
+  // every call; only the `digest` field is cached {digest, computedAt}. A GET triggers the
+  // worker only on a stale cache, races it against a caller-chosen ?wait (default ~30s, clamped
+  // ≤60s), and returns fresh-if-ready else the last snapshot (or null on cold cache) + digestAt/
+  // digestAge. The slow FLEET_DIGEST_CMD stand-in sleeps $DIR/digestdelay s to bound the race. ---
+  type DigJ = {
     now?: number; prior?: { kind?: string } | null; slots?: { id: number }[];
-    digest?: { conditions?: Record<string, string>; changed?: string[]; attention?: string[] } | null; error?: string;
+    digest?: { conditions?: Record<string, string>; changed?: string[]; attention?: string[] } | null;
+    digestAt?: number | null; digestAge?: number | null; waitMs?: number; error?: string;
   };
-  check("steward digest runs the worker and parses the clamped digest",
-    digRes.ok && digJ.digest?.conditions?.["1"] === "healthy-running"
-    && digJ.digest?.changed?.length === 1 && digJ.digest?.changed?.[0] === "slot 1 committed"
-    && Array.isArray(digJ.digest?.attention) && digJ.digest?.attention.length === 0,
-    JSON.stringify(digJ.digest ?? digJ.error ?? null).slice(0, 200));
-  check("steward digest carries the deterministic payload alongside the verdict",
-    Array.isArray(digJ.slots) && digJ.slots.length > 0 && digJ.prior?.kind === "rundgang" && typeof digJ.now === "number",
-    JSON.stringify({ slots: digJ.slots?.length, prior: digJ.prior?.kind }));
+  const setDigestDelay = (s: number) => Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/digestdelay`, String(s));
+
+  // (a) cold cache + ?wait=0: returns instantly with fresh prior/slots and a null digest+age,
+  //     and STARTS the worker in the background (which will populate the cache).
+  await setDigestDelay(3);
+  const coldT = Date.now();
+  const coldRes = await stewGet("/api/steward/digest?wait=0");
+  const coldMs = Date.now() - coldT;
+  const coldJ = (await coldRes.json()) as DigJ;
+  check("steward digest ?wait=0 on a cold cache returns instantly with fresh prior/slots and a null digest",
+    coldRes.ok && coldMs < 1500 && coldJ.digest === null && coldJ.digestAt === null && coldJ.digestAge === null
+    && coldJ.waitMs === 0 && Array.isArray(coldJ.slots) && coldJ.slots.length > 0
+    && coldJ.prior?.kind === "rundgang" && typeof coldJ.now === "number",
+    JSON.stringify({ coldMs, digest: coldJ.digest, digestAt: coldJ.digestAt, slots: coldJ.slots?.length, prior: coldJ.prior?.kind }));
+
+  // (c-i) a second GET while the worker is still in flight, ?wait < worker time → joins the same
+  //       inflight (no second spawn), times out, returns the still-null snapshot bounded by wait.
+  const midT = Date.now();
+  const midJ = (await (await stewGet("/api/steward/digest?wait=1")).json()) as DigJ;
+  const midMs = Date.now() - midT;
+  check("steward digest ?wait below worker time returns the stale snapshot bounded by wait",
+    midJ.digest === null && midJ.waitMs === 1000 && midMs >= 900 && midMs < 2500,
+    JSON.stringify({ midMs, digest: midJ.digest, waitMs: midJ.waitMs }));
+
+  // (b)+(c-ii) once the in-flight worker completes it writes the cache; a later GET returns the
+  //   now-cached fresh digest INSTANTLY. digestAge >> the worker's 3s run proves it is the cached
+  //   snapshot, not a fresh run (delay is set to 0 first so a stray miss couldn't slow this call).
+  await new Promise((r) => setTimeout(r, 4500)); // 3s worker delay + spawn margin on a loaded box
+  await setDigestDelay(0);
+  const warmT = Date.now();
+  const warmJ = (await (await stewGet("/api/steward/digest?wait=30")).json()) as DigJ;
+  const warmMs = Date.now() - warmT;
+  check("steward digest returns the now-cached fresh digest instantly after the worker completes",
+    warmMs < 1500 && warmJ.digest?.conditions?.["1"] === "healthy-running"
+    && warmJ.digest?.changed?.length === 1 && warmJ.digest?.changed?.[0] === "slot 1 committed"
+    && Array.isArray(warmJ.digest?.attention) && warmJ.digest?.attention.length === 0
+    && typeof warmJ.digestAt === "number" && typeof warmJ.digestAge === "number" && (warmJ.digestAge ?? 0) >= 3000,
+    JSON.stringify({ warmMs, digest: warmJ.digest, digestAge: warmJ.digestAge }));
+  // prior is recomputed FRESH each call — its kind can legitimately differ from the cold call's
+  // (a parked outcome may resolve into the journal between the two), so assert it is carried, not
+  // its specific kind. now/slots must be fresh alongside the cached digest.
+  check("steward digest carries the deterministic payload (fresh prior + slots) alongside the cached verdict",
+    Array.isArray(warmJ.slots) && warmJ.slots.length > 0 && typeof warmJ.prior?.kind === "string" && typeof warmJ.now === "number",
+    JSON.stringify({ slots: warmJ.slots?.length, prior: warmJ.prior?.kind, now: typeof warmJ.now }));
+
+  // (d) ?wait is clamped to [0, 60s] — observable via the echoed waitMs (cache is fresh, so these
+  //     return instantly): an over-max value is capped to 60s, a non-numeric falls back to ~30s.
+  const clampJ = (await (await stewGet("/api/steward/digest?wait=9999")).json()) as DigJ;
+  check("steward digest clamps an over-max ?wait to 60s", clampJ.waitMs === 60000, JSON.stringify({ waitMs: clampJ.waitMs }));
+  const defJ = (await (await stewGet("/api/steward/digest?wait=notanumber")).json()) as DigJ;
+  check("steward digest falls back to the ~30s default on a non-numeric ?wait", defJ.waitMs === 30000, JSON.stringify({ waitMs: defJ.waitMs }));
+
   check("owner token on the steward digest route is out of scope (404)", (await get("/api/steward/digest")).status === 404);
   // no steward slot → 404 (rename the steward slot away, probe, restore)
   await post(`/api/slots/${lnStew.slot}/rename`, { label: "not-steward" });

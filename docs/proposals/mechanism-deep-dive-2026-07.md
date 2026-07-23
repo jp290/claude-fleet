@@ -154,7 +154,10 @@ pane-capture flake). Server-touching lanes need the deploy step after land (owne
   untouched; suites ALL PASS.
 
 ### Lane B1 — rundgang decisions become typed pending tasks  *(prompt + thin server, AFTER A1)*
-- **Scope:** `/rundgang` (steward worktree copy + `~/.claude/commands`) — each surfaced
+- **Scope:** `/rundgang` (`.claude/commands/rundgang.md` — **git-tracked IN this repo**, so it is
+  fully lane-able/revertable; the steward worktree holds its own checkout of the same file. An
+  earlier draft of this line said `~/.claude/commands`; that path does not exist — corrected
+  2026-07-23) — each surfaced
   decision that asks for owner action is ALSO filed via the existing self/steward task route as
   a pending task (text = one-line decision + pointer); journal note references the task id.
   Server: count owner promote/dismiss of steward-origin tasks into the outcome tally as class

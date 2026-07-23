@@ -84,6 +84,11 @@ rotting. Two shelves, plus the steward subsystem.
 - **`steward-intelligence.md`** — the capstone: autonomy and safety as one design
   (reversibility × track-record), the three models, the learning loop, the impact
   layer.
+- **`steward-arena.md`** — operating autonomy in two shapes: A the hermetic clone
+  study-arena (BUILT: `steward-arena.sh`), B the live capability partition (proposal);
+  the three isolation layers and the accepted skip-perms OS-blast.
+- **`lane-autonomy-future.md`** — deferred ideas for lanes that run further on their
+  own; a parking lot, not a plan.
 - **`steward-mail.md`** — an email address as an assistant channel: inbound-only
   v1, layered against prompt injection.
 - **`automation-frontiers.md`** — speculative next levers, pressure-tested and

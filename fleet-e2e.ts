@@ -2485,6 +2485,48 @@ if (auditRotExists) {
   check("owner token on the steward tasks route is out of scope (404)",
     (await post("/api/steward/tasks", { text: "x" })).status === 404);
 
+  // --- B1 (F-C): owner promote/dismiss of a STEWARD-origin proposal is a causally-clean
+  // `propose`-class outcome. Promote → propose.helped; dismiss → the DISTINCT propose.dismissed
+  // signal (not folded into noEffect, not harmed). Owner-source tasks never touch propose. ---
+  const readPropose = async (): Promise<{ helped: number; noEffect: number; harmed: number; dismissed: number }> => {
+    const o = (await (await stewGet("/api/steward/outcomes")).json()) as { tally: Record<string, { helped: number; noEffect: number; harmed: number; dismissed: number }> };
+    return o.tally.propose ?? { helped: 0, noEffect: 0, harmed: 0, dismissed: 0 };
+  };
+  const pBefore = await readPropose();
+  const propA = (await (await stewPost("/api/steward/tasks", { text: "propose A: promote me" })).json()) as { task: { id: string } };
+  check("B1: promoting a steward proposal is accepted", (await post(`/api/tasks/${propA.task.id}/queue`, {})).ok);
+  const pPromote = await readPropose();
+  check("B1: promote (queue) of a steward proposal records propose.helped +1 (only helped moves)",
+    pPromote.helped === pBefore.helped + 1 && pPromote.dismissed === pBefore.dismissed
+      && pPromote.harmed === pBefore.harmed && pPromote.noEffect === pBefore.noEffect,
+    JSON.stringify({ before: pBefore, after: pPromote }));
+
+  const propB = (await (await stewPost("/api/steward/tasks", { text: "propose B: dismiss me" })).json()) as { task: { id: string } };
+  check("B1: dismissing a steward proposal is accepted", (await post(`/api/tasks/${propB.task.id}/delete`, {})).ok);
+  const pDismiss = await readPropose();
+  check("B1: dismiss (delete) of a steward proposal records propose.dismissed +1 — NOT helped, NOT harmed",
+    pDismiss.dismissed === pPromote.dismissed + 1 && pDismiss.helped === pPromote.helped
+      && pDismiss.harmed === pPromote.harmed,
+    JSON.stringify({ before: pPromote, after: pDismiss }));
+
+  const ownerT = (await (await post("/api/tasks", { text: "owner task, not a proposal", queue: false })).json()) as { task: { id: string } };
+  await post(`/api/tasks/${ownerT.task.id}/queue`, {});
+  const pOwner = await readPropose();
+  check("B1: promoting an OWNER-source task does NOT touch the propose tally (source guard)",
+    pOwner.helped === pDismiss.helped && pOwner.dismissed === pDismiss.dismissed
+      && pOwner.harmed === pDismiss.harmed && pOwner.noEffect === pDismiss.noEffect,
+    JSON.stringify({ before: pDismiss, after: pOwner }));
+  await post(`/api/tasks/${ownerT.task.id}/delete`, {});
+
+  // idempotency: propA was already promoted (helped +1); deleting the now-queued proposal is
+  // cleanup, not a dismissal — the pending-only guard must make it a no-op (fire ONCE per task).
+  const pIdemBefore = await readPropose();
+  await post(`/api/tasks/${propA.task.id}/delete`, {});
+  const pIdemAfter = await readPropose();
+  check("B1 idempotency: deleting an ALREADY-promoted steward proposal does NOT double-count",
+    pIdemAfter.helped === pIdemBefore.helped && pIdemAfter.dismissed === pIdemBefore.dismissed,
+    JSON.stringify({ before: pIdemBefore, after: pIdemAfter }));
+
   // --- Slot.model (synergy-findings Tier-2): per-slot claude model, validated at set time
   // (the value is baked into the pane's shell command — charset is load-bearing), persisted
   // on the slot and echoed on the owner + steward reads. The --model spawn-string proof
@@ -2511,9 +2553,11 @@ if (auditRotExists) {
   renameSync("steward-journal.jsonl", "steward-journal.jsonl.1");
   await stewPost("/api/steward/journal", { counts: { "healthy-running": 4 }, decisions_surfaced: 0, changed: false });
   await Bun.sleep(200);
-  // tail wide enough to be robust against interleaved outcome records (the 1.5s test window
-  // can close a pending send-outcome into the journal at any point around this block)
-  const jGet2J = (await (await stewGet("/api/steward/journal?tail=10")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean }[] };
+  // tail wide enough (server max) to be robust against interleaved outcome records: the 1.5s test
+  // window can close a pending send-outcome into the journal at any point around this block, and
+  // B1's propose-outcome trail adds one record per owner promote/dismiss of a steward task — the
+  // cap-probe cleanup above dismisses ~10 in a burst, which pushed the anchor past a tail of 10.
+  const jGet2J = (await (await stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean }[] };
   check("steward journal delta anchor survives a rotation boundary (reads across .1)",
     jGet2J.records?.some((r) => r.kind === "rundgang" && r.decisions_surfaced === 1)
     && jGet2J.records?.some((r) => r.kind === "rundgang" && r.counts?.["healthy-running"] === 4 && r.changed === false),
@@ -2525,7 +2569,7 @@ if (auditRotExists) {
   // Measurement is folded into tickGit (~10s), so each awaitMeasured tolerates one tick. ---
   const { spawnSync } = await import("node:child_process");
   interface Outcomes {
-    tally: Record<string, { helped: number; noEffect: number; harmed: number }>;
+    tally: Record<string, { helped: number; noEffect: number; harmed: number; dismissed: number }>;
     pending: { slot: number; class: string }[];
     candidates: { slot: number; class: string }[];
     eligibility: Record<string, boolean>;

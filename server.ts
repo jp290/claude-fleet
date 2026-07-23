@@ -335,7 +335,7 @@ type AuditEvent =
   | "owner_auth_fail"
   | "self_heal_recreate"
   | "steward_send" | "steward_send_capped"
-  | "steward_journal" | "steward_task"
+  | "steward_journal" | "steward_task" | "steward_propose_outcome"
   | "slot_shelve"
   | "repo_undo_land"
   | "land_note_fail"
@@ -2257,7 +2257,10 @@ interface OutcomePending {
   outputBaseline: number; aliveBaseline: boolean;
 }
 const outcomePending: OutcomePending[] = [];
-interface OutcomeCounts { helped: number; noEffect: number; harmed: number }
+// `dismissed` (B1/F-C): the owner DISMISSING a steward `propose` proposal is attributable NEGATIVE
+// signal — kept DISTINCT from noEffect (which means "nudge fired, nothing moved"). It counts toward
+// neither `helped` nor `harmed`, so promotionEligible is unaffected by it (a dismissal is not harm).
+interface OutcomeCounts { helped: number; noEffect: number; harmed: number; dismissed: number }
 const outcomeTally: Record<string, OutcomeCounts> = {}; // class(kind) -> counts
 // A2 null-calibration (F-C): the tally measures NUDGED slots, which have no null baseline — a
 // working slot commits/emits anyway. `baselineRate` runs the SAME helped classifier over active
@@ -2287,7 +2290,7 @@ function harmAttestFresh(): boolean {
   return harmAttestAt > 0 && Date.now() - harmAttestAt <= HARM_ATTEST_TTL_MS;
 }
 function bumpTally(cls: string, field: keyof OutcomeCounts): void {
-  const t = outcomeTally[cls] ?? { helped: 0, noEffect: 0, harmed: 0 };
+  const t = outcomeTally[cls] ?? { helped: 0, noEffect: 0, harmed: 0, dismissed: 0 };
   outcomeTally[cls] = { ...t, [field]: t[field] + 1 };
 }
 // the promotion predicate the ladder (future) reads — NOT the ladder itself. A class promotes
@@ -2734,7 +2737,9 @@ if (existsSync(STATE_FILE)) {
         if (typeof k === "string" && k.length <= 40 && typeof v === "object" && v !== null
           && typeof (v as OutcomeCounts).helped === "number" && typeof (v as OutcomeCounts).noEffect === "number"
           && typeof (v as OutcomeCounts).harmed === "number")
-          outcomeTally[k] = { helped: (v as OutcomeCounts).helped, noEffect: (v as OutcomeCounts).noEffect, harmed: (v as OutcomeCounts).harmed };
+          // `dismissed` is additive — migrate a pre-B1 persisted triple (no `dismissed` key) to 0.
+          outcomeTally[k] = { helped: (v as OutcomeCounts).helped, noEffect: (v as OutcomeCounts).noEffect, harmed: (v as OutcomeCounts).harmed,
+            dismissed: typeof (v as OutcomeCounts).dismissed === "number" ? (v as OutcomeCounts).dismissed : 0 };
     const phc = (persisted as { harmCandidates?: unknown }).harmCandidates;
     if (Array.isArray(phc))
       for (const v of phc)
@@ -4101,10 +4106,25 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
       if (!t) return json({ error: "unknown task" }, 404);
+      // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a causally-clean,
+      // deterministic `propose`-class outcome (unlike git deltas, accept/reject is directly
+      // attributable). Fire ONCE per task, gated on the pending→ transition ONLY: promote counts
+      // helped, dismiss counts the distinct `dismissed` signal. Deleting an already-promoted
+      // (queued) proposal is cleanup, not a dismissal — the pending guard makes that a no-op, so a
+      // promoted-then-deleted task can never double-count. Read the class BEFORE mutating status.
+      const proposeOutcome: keyof OutcomeCounts | null =
+        t.source === "steward" && t.status === "pending"
+          ? (taskAct[2] === "queue" ? "helped" : taskAct[2] === "delete" ? "dismissed" : null)
+          : null;
       if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       else if (taskAct[2] === "queue") { t.status = "queued"; t.note = null; }
       else if (taskAct[2] === "unqueue") t.status = "pending";
       else t.status = "done";
+      if (proposeOutcome) {
+        bumpTally("propose", proposeOutcome);
+        writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome });
+        audit("steward_propose_outcome", stewardSlot()?.id, `${t.id}:${proposeOutcome}`);
+      }
       saveState();
       return json({ ok: true });
     }

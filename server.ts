@@ -331,6 +331,7 @@ type AuditEvent =
   | "steward_journal" | "steward_task"
   | "slot_shelve"
   | "repo_undo_land"
+  | "land_note_fail"
   | "autos_switch"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
@@ -2152,11 +2153,48 @@ function undoableFor(repo: string): { branch: string; at: number } | null {
   const r = undoLast.get(repo);
   return r ? { branch: r.branch, at: r.at } : null;
 }
+// --- provenance note (design note §4, "own your work"): on every land that MOVES main, the
+// SERVER — the trusted writer — attaches the review story to the landed tip as a git note
+// under refs/notes/fleet/land, IN THE REPO. Server-authored ONLY: §4 rejects the agent-
+// written commit-message variant (it puts UNTRUSTED claims into permanent history, authored
+// before verify even exists, and would force the resolver to rewrite commits mid-rebase).
+// Best-effort by contract: a note-write failure NEVER fails the land (landing is the job,
+// provenance is best-effort) — it is audited and swallowed. Notes alter no SHAs and dirty
+// no tree, so they can neither break an ancestry gate nor block a land. Notes are never
+// deleted: undo-land keeps the note as the record THAT the land happened. `add -f` overwrites
+// only when the SAME tip is landed twice (e.g. undo-land then re-land of identical work onto
+// the same main tip); a re-opened branch re-landed onto a NEW tip gets a fresh note there.
+// Not pushed by default (fleet is local-first) — read with `git log --notes=fleet/land`.
+interface LandProvenance {
+  conflicted?: string[];
+  resolverDetail?: string;
+  verify?: MergeLast["verify"];
+  confirmedByHuman: boolean;
+}
+async function writeLandNote(repo: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
+  const tip = mainAfter; // the fast-forwarded integration branch IS the landed commit
+  try {
+    const note = {
+      branch, mainBefore, mainAfter,
+      ...(prov.conflicted && prov.conflicted.length ? { conflicted: prov.conflicted } : {}),
+      ...(prov.resolverDetail ? { resolverDetail: prov.resolverDetail } : {}),
+      ...(prov.verify ? { verify: prov.verify } : {}),
+      confirmedByHuman: prov.confirmedByHuman,
+      at: Date.now(),
+    };
+    const r = await git(repo, "notes", "--ref=fleet/land", "add", "-f", "-m", JSON.stringify(note), tip);
+    if (r.code !== 0) audit("land_note_fail", undefined, `${basename(repo)} ${branch} ${tip.slice(0, 8)}: ${r.err.slice(0, 200)}`);
+  } catch (e) {
+    audit("land_note_fail", undefined, `${basename(repo)} ${branch}: ${e instanceof Error ? e.message : "note write threw"}`.slice(0, 240));
+  }
+}
 // record a land that moved main. Skipped when main did not advance (already-merged lands),
-// where mainBefore === mainAfter and an "undo" would be a no-op.
-function recordLand(repo: string, main: string, branch: string, mainBefore: string, mainAfter: string): void {
+// where mainBefore === mainAfter and an "undo" would be a no-op — those paths also write no
+// provenance note (no advance = no integration-history event to attach the story to).
+async function recordLand(repo: string, main: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   if (!mainBefore || !mainAfter || mainBefore === mainAfter) return;
   undoLast.set(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
+  await writeLandNote(repo, branch, mainBefore, mainAfter, prov); // best-effort — never throws
 }
 
 // --- intervention-outcome fuel (steward-intelligence.md §4). A per-send pending baseline
@@ -2334,7 +2372,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             const land = s.cwd === cwd && s.worktree?.branch === branch
               ? await landLane(s)
               : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
-            if (!("error" in land)) recordLand(root, main, branch, mainBefore, mainAfter);
+            if (!("error" in land)) await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
             res = "error" in land
               ? { status: "merged", landed: false, branch, at: Date.now(), verify, detail: `${r.detail} — land refused: ${land.error}`.slice(0, 600) }
               : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail };
@@ -3776,6 +3814,10 @@ Bun.serve<WSData>({
         // the ff-merge is safe. If main moved since the resolution the ancestry fails and we
         // send them back to re-run ⏫ (which re-rebases against the new main).
         if (body?.confirm === true) {
+          // the "resolved" verdict the human is confirming — its resolver detail, conflicted
+          // files, and verify result are the review story this land is owning. Read it BEFORE
+          // the delete below so the provenance note carries what the owner actually reviewed.
+          const reviewed = mergeLast.get(s.id);
           // atomic confirm-land: if main moved since the agent resolved, the earlier rebase is
           // stale — but the conflicts were already resolved once, so REPLAY those resolved
           // commits onto the CURRENT main and land in one step, instead of sending the owner
@@ -3801,7 +3843,9 @@ Bun.serve<WSData>({
           const mainAfter = (await git(repo, "rev-parse", main)).out;
           const land = await landLane(s);
           if ("error" in land) return json({ error: land.error }, land.code);
-          recordLand(repo, main, branch, mainBefore, mainAfter);
+          await recordLand(repo, main, branch, mainBefore, mainAfter, {
+            conflicted: reviewed?.conflicted, resolverDetail: reviewed?.detail,
+            verify: reviewed?.verify, confirmedByHuman: true });
           mergeLast.delete(s.id);
           saveState();
           return json({ status: "merged", landed: true, branch, detail: "reviewed resolution — landed" });

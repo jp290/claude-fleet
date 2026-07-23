@@ -209,14 +209,29 @@ soundly prompt-side. The argument:
 ### Lane B1b — deterministic de-dup substrate  *(small server lane, BEFORE the prompt edit)*
 - **Scope:** (1) `GET /api/steward/tasks` → `{ open: [steward-origin pending: id, text, ref,
   created], resolved: [last ~20 steward-origin non-pending: id, text, ref, status] }` — ground
-  truth for "already filed" and "owner already judged this, don't re-file unless it materially
-  changed". (2) optional `ref` on the POST (≤40-char slug, e.g. `slot3:awaiting-human`); if an
-  OPEN pending steward task carries the same ref → return that task with `dedup:true`, 200, no
-  create, no cap consumption — the deterministic backstop under fuzzy prose matching.
+  truth for "already filed" and "owner already judged this". (2) optional `ref` on the POST
+  (≤40-char slug, e.g. `slot3:awaiting-human`); if an OPEN pending steward task carries the same
+  ref → return that task with `dedup:true`, 200, no create, no cap consumption — the
+  deterministic backstop under fuzzy prose matching.
   (3) digest `prior` anchors on the last `kind:"rundgang"` record, filtered, not the last record
-  of any kind. NOT in scope: the prompt edit itself, any change to caps or the pending gate.
+  of any kind.
+  (4) **`mute(ref)` — the recurring-proposal blocker (owner-raised 2026-07-23).** A dismissal
+  answers *this instance*; a proposal whose condition persists (a lane `awaiting-human` for days)
+  would legitimately re-qualify every pulse forever. That needs an explicit owner verb, NOT an
+  inferred "has it materially changed" predicate — the latter is an LLM judgement and lands back
+  on the statistical tier this whole lane exists to leave. So: **dismiss** = "no, not this
+  instance" → counts `propose.dismissed`; **mute(ref)** = "stop proposing this" → a suppression
+  list; later POSTs with a muted ref return `suppressed:true`, no create, no cap consumption.
+  Three constraints: (a) **a mute must NOT write a tally event** — if muting counted as a
+  dismissal, the act of silencing the system would depress its own proposal-quality number, i.e.
+  the control corrupts the measurement; (b) mutes must be **listable and reversible** (unmute),
+  or proposals vanish silently and the owner gets a "why didn't it tell me about X" mystery;
+  (c) it reuses B1b's `ref` as the key — no second identity concept.
+  NOT in scope: the prompt edit itself, any change to caps or the pending gate.
 - **Done:** e2e — same-ref double POST → one task + `dedup:true`; GET shape with open/resolved
-  split; a propose_outcome write between pulses does not change digest `prior`. Suites ALL PASS.
+  split; a propose_outcome write between pulses does not change digest `prior`; a muted ref POST
+  → `suppressed:true`, no task created AND `outcomeTally.propose` byte-identical before/after;
+  unmute restores filing. Suites ALL PASS.
 - **Then** the B1 prompt edit becomes a genuinely minimal diff: read GET before filing, file
   only decisions not already open (ref as key, text as tie-break), skip decisions the owner
   already dismissed, reference filed ids in the journal note, treat 409 as "surface in prose

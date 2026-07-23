@@ -706,6 +706,123 @@ with no commits and no activity for hours gets an "unused" hint in its badge.
 
 ---
 
+## 17. Knowledge / retrieval layer — index Fleet's own work-product  `structural, phased, decision item`
+
+**Idea (2026-07-23, from a "how do we get everything out of Fleet at team/enterprise
+scale" prompt + a Grok survey of open-source RAG stacks).** Framed as a decision item:
+options + a recommendation, owner promotes — no build implied by writing this down.
+
+**The reframe first.** The Grok survey (Onyx / RAGFlow / GraphRAG / Qdrant + connectors
+for Slack/Confluence/Jira) answers the wrong question for Fleet. That stack indexes a
+company's *documents in SaaS silos*. Fleet is a **producer of agentic work-product**; the
+corpus that matters is its own accumulated experience. `steward-intelligence.md` §8 already
+states the principle — *"server.ts already IS that common service"* — and it's correct:
+**ingestion is solved, retrieval is missing.**
+
+**What exists (mapped 2026-07-23, code-cited):**
+- **No index / embedding / semantic retrieval anywhere** (tree-wide grep for
+  `embed|vector|retriev|rag|faiss|cosine|semantic|buildIndex` → only the English word
+  "semantics" in comments). The one existing query surface is `/api/prompts?q=`
+  (`server.ts:3336`): a naive O(n) full-file substring scan over prompts.jsonl for the
+  owner prompt directory — a display feature, not analysis, but **the natural route for
+  Phase 1 to slot in behind**. Every other lookup is `.filter()` or a fixed-size tail.
+- `streams/prompts.jsonl` — `{ts,slot,cwd,label,source,text}`, **uncapped, never rotated,
+  survives slot close, labeled "raw material for prompt analysis"** (`server.ts:294`).
+  ~2.170 prompts / 2.8 MB; read only by the substring scan above — the "analysis" the
+  label promises has never been built.
+- Claude's own transcripts `~/.claude/projects/**/*.jsonl` — **8.7 GB / 1835 files**; Fleet
+  reads them only as byte-slices for display / a 40 KB tail for the summarizer.
+- `steward-journal.jsonl` (7 records) — rich free-text `note` fields, read only as a tail
+  (last 1–50); the digest worker reads exactly 1 as a delta anchor. Never aggregated.
+- The learning engine / "dream mode" (`steward-intelligence.md` §8) and the arena are fully
+  *designed and brief'd* but **never run** — `docs/proposals/` and `docs/arena-episodes.md`
+  do not exist. (First-draft claim "dream mode is blocked on a retrieval substrate" was
+  wrong — see the stress-test below: v1 over the prompts corpus runs indexless.)
+
+**The load-bearing constraint (owner, 2026-07-23): no dead-end build.** Tier 1 must be a
+stepping stone toward the enterprise stack, not a throwaway. The synergy move that guarantees
+this: **separate the chunk+metadata pipeline from the storage/query backend behind one
+interface.** The durable asset is the *chunker + metadata schema*, not the store — the store
+is swappable underneath a stable `GET /api/knowledge/search → {hits:[{source,ref,score,text}]}`.
+Concretely, three things carried from day 1 make Tier 2/3 extensions rather than rewrites:
+1. **Rich, source-aware chunk metadata** (`source, id, ts, repo/cwd, principal/slot, kind, text`)
+   — Grok's one genuinely portable Cerebras lesson; cheap now, essential at Tier 3.
+2. **A permission dimension tagged on every chunk even though single-owner ignores it** —
+   Tier 3 permission-aware retrieval then adds a *filter*, not a re-tag of the whole corpus.
+   Maps onto Fleet's existing token / slot / worktree isolation, not a second auth system.
+3. **Reuse, don't add plumbing** (the within-Fleet synergies): the `appendEvent` chain + the
+   ticker family (`tickGit`/`tickHarvest`) for incremental indexing; the credential-less
+   **ephemeral-worker** pattern the digest already uses (`runStewardDigest`) for any future
+   embed/rerank step; the existing injection-scan / "retrieved = claim not fact, never gating"
+   doctrine (§8, §6.7). No peer process — the index lives *in* server.ts beside `fleet.json`.
+
+**The phased ladder (infra coupled to scale — building Tier 3 while Tier 1 is needed is the
+failure mode Fleet's doctrine explicitly guards against):**
+- **Phase 1a — FTS5 over the small corpus** (prompts.jsonl + journal notes), one query route
+  behind the swappable interface, plus a **gold-query set as the done-criterion** (~20 queries
+  with expected hits — without it, "keyword demonstrably misses" is undecidable). Deterministic,
+  auditable, no new process. **FTS5 verified working in this Bun** (`bun -e` probe, 2026-07-23:
+  virtual table + MATCH + rank OK). Effort: **1 lane, 1–2 sessions** (~300–500 lines + e2e) —
+  cheap because the corpus is ~2.8 MB and `/api/prompts` already exists to slot in behind.
+- **Phase 1b — transcript ingestion** (the part that actually needs an index). Effort: **3–5
+  lanes / 4–8 sessions**; drivers: a JSONL chunker with stable refs over nested
+  user/tool_use/tool_result records (the real work, not FTS5), incremental re-index of growing
+  files, the indexing boundary + secret policy (owner decisions, see below), e2e, doc upkeep.
+- **Phase 2 — semantic, only when the gold set proves keyword misses.** `sqlite-vec`, still
+  *inside* bun:sqlite. Two real costs, probed/derived 2026-07-23: (a) this build refuses
+  `loadExtension` (macOS system SQLite) — needs `Database.setCustomSQLite()` + a brew sqlite
+  dylib; (b) **unsolved: the embedding source.** Vectors have to come from somewhere — a local
+  embedding server is exactly the peer-process this item rejects Qdrant for, and an external
+  API collides with this machine's allowlisted-network doctrine. Until (b) has an answer that
+  survives the one-server rule, Phase 2 is parked, not scheduled. Strictly **advisory**, never
+  gating, when it does come.
+- **Phase 3 — team/enterprise only, and honestly: a product pivot.** Multi-user Fleet (auth,
+  TLS, tenants, permission-aware retrieval) dominates the cost; the RAG half is the smaller
+  half. Onyx is a multi-container *platform*, not a library — at this tier you deploy a
+  neighbor system, which is acceptable only because the one-server doctrine has already been
+  traded away by going multi-user. Not estimable now. The Phase-1 interface + metadata schema
+  is what lets this swap the backend instead of restarting.
+
+**Stress-test 2026-07-23 (against the Grok survey, own weaknesses owned) — what flipped:**
+- **The cheap part may be unnecessary: prompts.jsonl (~2.8 MB ≈ ~700K tokens) nearly fits a
+  1M context window and certainly fits a Workflow fan-out.** Dream mode v1 over the prompts
+  needs NO index. The index only becomes indispensable for the 8.7 GB transcripts — exactly
+  where chunking cost, secrets, and retention sit. So: the cheap part is skippable, the
+  necessary part isn't cheap — which flips the recommendation below.
+- **The index is a secrets concentrator.** Streams/transcripts are chmod 600/700 *because*
+  terminal output contains secrets; a full-text index over 1835 transcripts (including
+  non-Fleet projects) concentrates the most sensitive material into one queryable file.
+  Minimum: index DB mode 600, query route owner-only at first, boundary + secret policy
+  decided *before* 1b starts.
+- **Grok cross-check verdicts** (survey of open-source RAG stacks, 2026-07-23): adopted —
+  continuous ingestion, source-aware metadata, citations, BM25→dense→rerank ladder; rightly
+  dropped — Cerebras inference (external API vs. allowlisted network; we run Claude sessions),
+  GraphRAG (no consumer), agent frameworks (Fleet *is* the orchestration); wrongly glossed
+  by this item's first draft — chunking effort (understated; it's the real Phase-1b work),
+  embedding source (was silent; now Phase 2's parking reason), eval (was absent; now the
+  gold-set done-criterion), "Onyx as a component" (was glib; now honest as a product pivot).
+
+**Options for the owner (recommendation flipped by the stress-test):**
+- **A (recommended): run dream mode v1 first, indexless** — over prompts.jsonl via fan-out
+  (steward-roadmap "Next" #4 is already the learning-engine slot). This proves whether
+  retrieval is even the bottleneck *before* the 4–8-session 1b investment falls — Fleet's own
+  infrastructure-after-demand doctrine applied to itself.
+- **B: Phase 1a as by-catch** — only if a lane is in that area anyway; it's 1–2 sessions but
+  its standalone value is questionable given A.
+- **C: promote Phase 1 (a+b) as lanes now** — the first draft's recommendation; only if
+  cross-lane recall is wanted urgently enough to pre-empt the dream-mode proof, and only with
+  open question 1 answered first.
+- Phase 2 parked (embedding source unsolved), Phase 3 deferred (product pivot, not a feature).
+
+**Open questions (owner):**
+1. **Indexing boundary + secret policy for the 8.7 GB transcripts** — those are Claude's files,
+   not Fleet's, and they span non-Fleet projects. Cap to Fleet-owned cwd-slugs + an age limit,
+   and decide secret filtering, before 1b — or you index half the home dir.
+2. **Roadmap slot** — dream mode v1 (option A) vs. "prove the steward live" ordering.
+3. **prompts.jsonl retention** — once it's indexed (not just tail-displayed), does it stay uncapped?
+
+---
+
 ## Hardening — findings from the review sweep, not new features
 
 Found while designing/reviewing the above, ranked by what actually costs

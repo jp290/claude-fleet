@@ -2630,6 +2630,63 @@ if (auditRotExists) {
   check("attest: re-attesting inside the window restores eligibility",
     (await readOutcomes()).eligibility.continue_nudge === true);
 
+  // --- A2 null-calibration: `baselineRate` (F-C). The SAME helped classifier run over ACTIVE,
+  // UN-nudged slots gives the background "helped-looking" rate — a working slot commits/emits
+  // anyway — so a nudged-helped count is interpretable. It is ADVISORY: it must NEVER gate
+  // promotion and NEVER write outcomeTally. The server samples the busiest un-nudged slots each
+  // window; the shrunk FLEET_OUTCOME_WINDOW_MS turns control cohorts over in seconds. ---
+  interface BaselineOutcomes {
+    tally: Record<string, { helped: number; noEffect: number; harmed: number }>;
+    baselineRate: { rate: number | null; samples: number; helped: number };
+  }
+  const readBaseline = async (): Promise<BaselineOutcomes> =>
+    (await (await stewGet("/api/steward/outcomes")).json()) as BaselineOutcomes;
+
+  // a busy, UN-nudged active slot (no steward send): keep it emitting so it is still-emitting at
+  // window close → the control classifier scores it 'helped' via the OUTPUT signal, no nudge.
+  const bl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const blBefore = await readBaseline();
+  const tallyBefore = JSON.stringify(blBefore.tally);
+  await tmuxOut("send-keys", "-t", `s${bl.slot}`, "while true; do echo baseline-tick; sleep 0.1; done", "Enter");
+  let blBusy = blBefore; // poll ~44s (a control cohort turns over roughly every tickGit≈10s)
+  for (let i = 0; i < 220; i++) {
+    blBusy = await readBaseline();
+    if (blBusy.baselineRate.helped > blBefore.baselineRate.helped) break;
+    await Bun.sleep(200);
+  }
+  await tmuxOut("send-keys", "-t", `s${bl.slot}`, "C-c"); // stop the loop now that it's been sampled
+  check("baselineRate: a busy un-nudged slot raises the control tally (samples & helped both rose)",
+    blBusy.baselineRate.samples > blBefore.baselineRate.samples
+    && blBusy.baselineRate.helped > blBefore.baselineRate.helped,
+    `${blBefore.baselineRate.helped}/${blBefore.baselineRate.samples} -> ${blBusy.baselineRate.helped}/${blBusy.baselineRate.samples}`);
+  check("baselineRate: rate == helped/samples (advisory ratio, not truthiness)",
+    blBusy.baselineRate.rate !== null && blBusy.baselineRate.samples > 0
+    && Math.abs((blBusy.baselineRate.rate ?? 0) - blBusy.baselineRate.helped / blBusy.baselineRate.samples) < 1e-9,
+    JSON.stringify(blBusy.baselineRate));
+  check("baselineRate: the control sampler NEVER writes outcomeTally (advisory only — never gates, never tallies)",
+    JSON.stringify(blBusy.tally) === tallyBefore, `${tallyBefore} -> ${JSON.stringify(blBusy.tally)}`);
+
+  // no-effect control: after the loop stops, drain any cohort that overlapped it, then a window
+  // with NO un-nudged slot committing/emitting must record a NON-helped sample — samples rise,
+  // helped stays flat (an idle un-nudged slot correctly looks un-helped).
+  await Bun.sleep(1500 /* OUTCOME_WINDOW_MS */ + 12_000 /* one tickGit + margin, drains the loop-overlapping cohort */);
+  const blIdleStart = await readBaseline();
+  let blIdle = blIdleStart;
+  for (let i = 0; i < 120; i++) {
+    blIdle = await readBaseline();
+    if (blIdle.baselineRate.samples > blIdleStart.baselineRate.samples) break;
+    await Bun.sleep(200);
+  }
+  check("baselineRate: an idle window (no un-nudged slot committing/emitting) records a no-effect sample (samples rose, helped flat)",
+    blIdle.baselineRate.samples > blIdleStart.baselineRate.samples
+    && blIdle.baselineRate.helped === blIdleStart.baselineRate.helped,
+    `${blIdleStart.baselineRate.helped}/${blIdleStart.baselineRate.samples} -> ${blIdle.baselineRate.helped}/${blIdle.baselineRate.samples}`);
+  // NOTE: the control lane is released further down, with the other lane kills that precede the
+  // dispatch block — it counts against FLEET_DISPATCH_MAX_LANES (default 3) and would otherwise
+  // starve the dispatcher. It must NOT be killed here: the "inactive slot reads null" check below
+  // takes the first cwd-less slot, and a just-killed slot keeps stale git/alive readings until the
+  // next tickGit (≤10s) clears them (server.ts, the `if (!s.cwd)` cache-purge branch in tickGit).
+
   // --- Tier-1 signal surface (synergy-findings.md): the steward's READ routes expose the
   // deterministic facts the server already computes — cached claudeAlive, idleMs, gitOp, the
   // FULL mergeLast verdict, and the lane's founding Task. The FLEET_CMD=true suite can only
@@ -2714,6 +2771,7 @@ if (auditRotExists) {
   await post(`/api/slots/${oc2.slot}/kill`, {});
   await post(`/api/slots/${oc3.slot}/kill`, {});
   await post(`/api/slots/${lnStew.slot}/kill`, {});
+  await post(`/api/slots/${bl.slot}/kill`, {}); // A2 control lane — free its lane budget for the dispatch block
 
   // --- Task on the signal surface: dispatch a queued task and the holding lane's steward
   // view carries the founding intent (id/status/source/text) it was started for. ---

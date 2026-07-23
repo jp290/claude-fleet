@@ -739,7 +739,34 @@ function measureOutcomes(): void {
     outcomePending.splice(i, 1);
     changed = true;
   }
+  measureControls(now);
   if (changed) saveState();
+}
+
+// A2 null-calibration: classify matured controls with the SAME helpedGit/helpedOutput logic as
+// the nudged path, record helped/noEffect into the rolling ring, then re-park a fresh cohort of
+// busiest un-nudged active slots. In-memory only — never persisted, never touches outcomeTally.
+function measureControls(now: number): void {
+  const nudged = new Set(outcomePending.map((p) => p.slot));
+  for (let i = controlPending.length - 1; i >= 0; i--) {
+    const c = controlPending[i];
+    if (now - c.openedAt < OUTCOME_WINDOW_MS) continue; // window still open
+    controlPending.splice(i, 1);
+    if (nudged.has(c.slot)) continue; // got nudged mid-window → no longer a clean control, drop it
+    const gi = gitInfo.get(c.slot);
+    const s = slots[c.slot - 1];
+    const helpedGit = !!gi && gi.ahead > c.aheadBaseline;
+    const outStarted = !!s && s.lastOutput > c.outputBaseline;
+    const outSustained = !!s && now - s.lastOutput <= OUTCOME_SUSTAIN_MS;
+    baselineSamples.push(helpedGit || (outStarted && outSustained));
+    if (baselineSamples.length > BASELINE_RING_CAP) baselineSamples.shift();
+  }
+  if (controlPending.length > 0) return; // a cohort is still maturing — don't stack
+  const candidates = slots.filter((s) => s.cwd && !nudged.has(s.id))
+    .sort((a, b) => b.lastOutput - a.lastOutput) // busiest first — the honest null is a working slot
+    .slice(0, CONTROL_SAMPLE_MAX);
+  for (const s of candidates)
+    controlPending.push({ slot: s.id, openedAt: now, aheadBaseline: gitInfo.get(s.id)?.ahead ?? 0, outputBaseline: s.lastOutput });
 }
 
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
@@ -2232,6 +2259,20 @@ interface OutcomePending {
 const outcomePending: OutcomePending[] = [];
 interface OutcomeCounts { helped: number; noEffect: number; harmed: number }
 const outcomeTally: Record<string, OutcomeCounts> = {}; // class(kind) -> counts
+// A2 null-calibration (F-C): the tally measures NUDGED slots, which have no null baseline — a
+// working slot commits/emits anyway. `baselineRate` runs the SAME helped classifier over active
+// slots that got NO steward send, so a high nudged-helped count is interpretable against the
+// background "helped-looking" rate. ADVISORY ONLY — it NEVER gates promotion and NEVER writes
+// outcomeTally. A control is parked at window OPEN (mirroring the send-time baseline) and
+// classified one window later; the samples are an in-memory rolling ring (advisory number — not
+// worth the persist/restore surface). We sample the BUSIEST un-nudged slots (highest lastOutput,
+// up to CONTROL_SAMPLE_MAX) because the honest null is "a WORKING slot nobody nudged" (F-C) — an
+// idle slot trivially scores no-effect and only dilutes the denominator.
+interface ControlBaseline { slot: number; openedAt: number; aheadBaseline: number; outputBaseline: number }
+const controlPending: ControlBaseline[] = [];
+const CONTROL_SAMPLE_MAX = 3;
+const BASELINE_RING_CAP = 50; // rolling window of recent control samples
+const baselineSamples: boolean[] = []; // true = the control slot looked "helped" with no nudge
 // a deterministic claudeAlive true→false-in-window is a crash CANDIDATE escalated to the owner,
 // never an auto harm label (attribution is ambiguous: a coincidental crash ≠ one this send caused).
 interface HarmCandidate { slot: number; class: string; ref: string; at: number }
@@ -3154,6 +3195,10 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       eligibility,
       config: { minN: PROMOTION_MIN_N, windowMs: OUTCOME_WINDOW_MS, sustainMs: OUTCOME_SUSTAIN_MS,
         harmChannelActive: harmAttestFresh(), harmAttestAt, harmAttestTtlMs: HARM_ATTEST_TTL_MS },
+      // A2 null-calibration: background "helped-looking" rate of active un-nudged slots. ADVISORY —
+      // never gates promotion, never part of outcomeTally. Compare the nudged tally against this.
+      baselineRate: { rate: baselineSamples.length ? baselineSamples.filter(Boolean).length / baselineSamples.length : null,
+        samples: baselineSamples.length, helped: baselineSamples.filter(Boolean).length },
       helpedUndercount: "reply-referencing deferred — a pure reply/Q&A intervention records as no-effect (conservative: delays promotion, never enables a wrong one)",
     });
   }

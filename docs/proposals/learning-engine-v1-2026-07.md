@@ -221,8 +221,19 @@ thing slot-9's retrieval analysis and `three-axes.md` §7 point at:
   the "outcome half BUILT" gap AND corroborates the inward A4/A5 sharpen finding.
 
 **Recommendation:** this is the single most-cited adopt and it is the decision behind the
-slot-9 retrieval work (BACKLOG §17). It should anchor the *next* dream pass (over the raw
-corpus, where retrieval is actually stressed — see limitations).
+slot-9 retrieval work (BACKLOG §17, now committed + stress-tested — `8e146d7`).
+
+*Reconciliation with committed §17 — two different "retrievals," only one deferred (so the
+two docs don't actually disagree):* (a) the **learning-loop read-half** — pull the
+class-matched past *lesson* (journal, 7 records) into the next brief — is small-scale, needs
+**no index**, and is buildable now; that is this Part-B #1. (b) the **corpus search index**
+(§17's Phase 1b, over the 8.7 GB transcripts) is corpus-scale and, per s9's stress-test flip,
+**demand-driven / deferred** — prove keyword misses against a gold-query set first. So
+"read-time retrieval is the next requirement" (lessons) and "the index is deferred" (corpus)
+are both true, not in tension. This pass **empirically confirmed s9's flip**: dream mode v1
+ran indexless at prompt scale without strain (the six prompts fit trivially in the fan-out).
+The read-half should anchor the *next* dream pass over the raw corpus — where the index
+question is actually stressed (see limitations).
 
 ### B.1 — Multi-agent orchestration
 

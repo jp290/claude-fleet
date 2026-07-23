@@ -152,8 +152,10 @@ every delivery gate still calls `claudeAlive` fresh inside `canDeliver`, proven 
   send parks a persisted pending-outcome baseline (`handleStewardSend` in server.ts); a window-close
   pass folded into `tickGit` (`measureOutcomes` in server.ts) classifies it DETERMINISTICALLY — helped
   = git delta OR sustained output; else no-effect (ambiguous → no-effect, conservative) — and increments a
-  durable per-class tally `{helped,noEffect,harmed}` in persisted state (`outcomeTally`, read by the ladder,
-  NEVER a journal scan — §3). `harmed` is OWNER-supplied only via `POST /api/steward/outcomes/harm`
+  durable per-class tally `{helped,noEffect,harmed,dismissed}` in persisted state (`outcomeTally`, read by the ladder,
+  NEVER a journal scan — §3). `dismissed` is additive (B1/F-C): owner promote/dismiss of a steward-origin
+  Task in `taskAct` records the `propose` class — promote→`helped`, dismiss→`dismissed` (attributable
+  negative, folded into neither `helped` nor `harmed`, so `promotionEligible` is unaffected). `harmed` is OWNER-supplied only via `POST /api/steward/outcomes/harm`
   (server.ts, grep `/api/steward/outcomes/harm`); a deterministic `claudeAlive` true→false-in-window is a crash CANDIDATE escalated to
   the owner, never an auto harm label (§6). The promotion predicate `promotionEligible` (`server.ts`, gauge
   at `GET /api/steward/outcomes`) requires `helped ≥ N AND harmed == 0 AND` the harm channel has operated —

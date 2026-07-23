@@ -37,13 +37,25 @@ the bottleneck — infrastructure and doc-maintenance patterns are.** (Caveat: t
    deterministic. Removes the one blocker between the digest and its destiny as the first
    *scheduled* library item (§7). Proves the infra-redirect by delivering value two prompt
    passes did not. Design resolved: demand-triggered bounded-wait (see the brief).
-2. **The keystone — point the effect-sensor at the infra failure-modes.** Both passes cried
-   for an "eval set"; post-stage-2 a *prompt* hold-out is the wrong target. The right one is
-   deterministic and half-exists: have the fact layer **count** the failure-modes (does the
-   socket collision still recur across lanes? do doc-refs still rot? did the digest time out?).
-   This turns "we proposed P1" into "P1's recurrence-count went to zero, verified" — the
-   throttle-widening move that unblocks all future promotion. Phase-3 effect-sensor, aimed at
-   infra not prompts, top-of-verification-hierarchy.
+2. **The keystone — a deterministic infra-recurrence counter.** Both passes cried for an "eval
+   set"; post-stage-2 a *prompt* hold-out is the wrong target. The right one is deterministic:
+   **count** whether a known failure-signature still occurs (socket collision across lanes,
+   doc-ref rot, digest timeout, test-fixture flake). This turns "we proposed P1" into "P1's
+   recurrence-count went to zero, verified" — the throttle-widening move that unblocks
+   promotion. **Honest correction to the earlier framing:** this is NOT the existing
+   effect-sensor. `measureOutcomes`/`outcomeTally` (server.ts:700/2211) classifies a steward
+   *intervention's* outcome via git/output deltas — the wrong shape for signature-recurrence.
+   The keystone is a *distinct, minimal* deterministic scan over the corpus (transcripts/docs/
+   e2e output), a script not a framework. And it decomposes:
+   - **2a — fix the concrete infra issues first** (P1 socket, P2 doc-refs, the share-flake; P3
+     done), each a lane + a regression test. This IS the leverage — concrete, deterministic,
+     directly extends the fact layer. Do before any counter.
+   - **2b — a minimal recurrence check** (grep known signatures → counts), so "the fix held" is
+     measured not asserted. Keep it a small script; resist generalizing it.
+   - **2c — wire recurrence into the learning loop** as the deterministic outcome-signal for
+     *infra-fix* proposals (the true "unblocks promotion"). DEFER until 2a+2b exist and prove
+     useful — this is where speculative-abstraction creep lives (OWNER: three lines > premature
+     abstraction). Top-of-verification-hierarchy throughout.
 3. **The compounding wire — retrieval read-half, now concretely targeted.** Inject the
    *verified* infra failure-mode into the brief of any lane about to touch that surface (a lane
    running e2e → P1's status; a lane touching the digest → P3). Agency × Memory × Ground
@@ -56,6 +68,11 @@ the bottleneck — infrastructure and doc-maintenance patterns are.** (Caveat: t
 - The `/sharpen` A4/A5 rewrite → a separate pass grounding it against sharpen *outputs* / a
   hold-out set (not a re-mine of the sharpen-corpus).
 - P2 (symbol/grep doc anchors) → opportunistic; maintenance debt, not a bug.
+- The `toUpperCase()` share-flake (`fleet-e2e.ts:1814`) → **trivial** one-line fixture guard
+  (a random id with no lowercase makes `toUpperCase()` a no-op → the "uppercased" id equals a
+  valid id → the 404 assertion fails). Kept only as a **3rd specimen of the
+  non-deterministic-test-flake class** (with P1's socket collision + the pane-capture race) —
+  the generalization material for the recurrence-counter below, not a problem in itself.
 - `catchup` #15 (ordering) → a zero-risk owner one-liner on a barely-used prompt.
 
 ## Doctrine feedback (propose)

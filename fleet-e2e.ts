@@ -695,6 +695,41 @@ if (REPO) {
   check("worktrees map lists the lane with its holding slot",
     wm.worktrees.some((w) => w.slot === lnSlot && w.branch === ln1.branch), JSON.stringify(wm.worktrees));
 
+  // --- landGate busy block (server.ts merge route, canDeliver idleMs: MERGE_IDLE_MS): a
+  // non-confirm land is refused while the pane is ACTIVELY producing output, so an owner never
+  // lands mid-work on top of the agent's own trailing changes. Every OTHER merge test calls
+  // settleForMerge first, so deleting this gate passes them all — this is the one test that
+  // fires the merge WHILE busy. lnSlot is a fresh, clean one-click lane (nothing committed yet →
+  // no uncommitted-changes / git-op refusal fires first; the idle gate is what we reach). ---
+  {
+    // Fire the land WHILE the pane is producing output. Robust against a freshly-spawned lane
+    // whose shell isn't yet ready to accept send-keys (the probe would be dropped and the pane
+    // read idle): retry send-keys until the server's own clock reports the pane busy well inside
+    // MERGE_IDLE_MS, then POST immediately — the eval is one round-trip later, still < the gate.
+    const isBusy = async (): Promise<boolean> => {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const sl = sx.slots.find((x) => x.id === lnSlot);
+      return !!sl && sx.now - sl.lastOutput < MERGE_IDLE_MS - 1000; // ≥1s margin before the gate
+    };
+    let busyConfirmed = false;
+    let busyMerge: { status?: string; detail?: string; running?: boolean; landed?: boolean } = {};
+    for (let attempt = 0; attempt < 15 && !busyConfirmed; attempt++) {
+      await tmuxOut("send-keys", "-t", `s${lnSlot}`, `echo landgate-busy-probe-${attempt}`, "Enter");
+      for (let i = 0; i < 12; i++) { // ≤600ms for this probe's output to register (poll runs every 100ms)
+        if (await isBusy()) { busyConfirmed = true; break; }
+        await Bun.sleep(50);
+      }
+      if (busyConfirmed)
+        busyMerge = (await (await post(`/api/slots/${lnSlot}/merge`, {})).json()) as typeof busyMerge;
+    }
+    check("landgate setup: the lane pane reads BUSY before the land (non-tautology guard)", busyConfirmed);
+    check("land is BLOCKED while the pane is actively working (idle gate), never starting a job",
+      busyMerge.status === "blocked" && (busyMerge.detail ?? "").includes("actively working"), JSON.stringify(busyMerge));
+    // it must have been the gate, not a spawned job — confirm no merge job is running afterward
+    const busyAfter = (await (await get(`/api/slots/${lnSlot}/merge`)).json()) as { running?: boolean; error?: string };
+    check("the busy-blocked land started no merge job", busyAfter.running === false, JSON.stringify(busyAfter));
+  }
+
   // --- integration-branch config (/api/repo-base): overrides the branch derived from the
   // primary's HEAD, so the primary can be parked off the integration branch. Set to a decoy
   // real branch, confirm the worktrees map reports it, then clear back to derived. ---
@@ -1788,6 +1823,47 @@ if (auditRotExists) {
   check("steward token reads a lane's brief", stewBriefRes.ok, String(stewBriefRes.status));
   const stewTrRes = await stewGet(`/api/steward/slots/${lnStew.slot}/transcript`);
   check("steward token reads a lane's transcript", stewTrRes.ok, String(stewTrRes.status));
+
+  // --- transcript REDACTION value-assertions (server.ts steward transcript route): the steward
+  // is a fleet-wide reader, so its transcript view must strip claude's private thinking blocks
+  // and clamp long tool_result payloads to 400 chars — a `.ok` check alone (above) passes even
+  // if both guards are deleted. Plant a transcript with a KNOWN thinking block + an oversize
+  // tool_result into the lane cwd's claude project dir, then read it back through the route.
+  // The project dir slug matches server.ts's projDir(); the cwd is a unique throwaway worktree
+  // path, so this file cannot collide with any real project and is removed right after. ---
+  {
+    const { rmSync } = await import("node:fs");
+    const projDir = `${process.env.HOME}/.claude/projects/${lnStew.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    const THINK_MARKER = "THINKING_SECRET_MUST_BE_REDACTED_zzq";
+    const VISIBLE_MARKER = "visible-assistant-answer-marker";
+    // tool_result: head marker within the first 400 chars (kept), tail marker past 400 (trimmed off)
+    const toolContent = `TOOLHEAD_${"x".repeat(500)}_TOOLTAIL_MARKER_MUST_BE_TRIMMED_${"z".repeat(200)}`;
+    const jsonl =
+      JSON.stringify({ type: "assistant", timestamp: "2026-01-01T00:00:00Z",
+        message: { content: [{ type: "thinking", thinking: THINK_MARKER }, { type: "text", text: VISIBLE_MARKER }] } }) + "\n" +
+      JSON.stringify({ type: "user", timestamp: "2026-01-01T00:00:01Z",
+        message: { content: [{ type: "tool_result", content: toolContent }] } }) + "\n";
+    await Bun.write(`${projDir}/planted-redaction.jsonl`, jsonl);
+    try {
+      const redRes = await stewGet(`/api/steward/slots/${lnStew.slot}/transcript`);
+      const redJ = (await redRes.json()) as { entries: { role: string; blocks: { t: string; text: string }[] }[] };
+      const raw = JSON.stringify(redJ);
+      const allBlocks = redJ.entries.flatMap((e) => e.blocks);
+      // positive control: the planted entries actually flowed through (else the redaction asserts are vacuous)
+      check("redaction: planted transcript is served (positive control)",
+        redRes.ok && allBlocks.some((b) => b.t === "text" && b.text.includes(VISIBLE_MARKER)), raw.slice(0, 200));
+      // guard 1 — thinking stripped: no thinking block, and the secret text appears nowhere
+      check("steward transcript strips claude's thinking blocks (no t:thinking, secret text absent)",
+        !allBlocks.some((b) => b.t === "thinking") && !raw.includes(THINK_MARKER), raw.slice(0, 200));
+      // guard 2 — tool_result clamped: the block is trimmed to ≤ ~420 chars; the >400 tail marker is gone
+      const toolBlock = allBlocks.find((b) => b.t === "tool_result");
+      check("steward transcript clamps a long tool_result to ≤ ~420 chars (head kept, tail trimmed)",
+        !!toolBlock && toolBlock.text.length <= 420 && toolBlock.text.includes("TOOLHEAD_") && !toolBlock.text.includes("TOOLTAIL_MARKER"),
+        JSON.stringify({ len: toolBlock?.text.length, head: toolBlock?.text.slice(0, 20) }));
+    } finally {
+      rmSync(projDir, { recursive: true, force: true }); // unique throwaway dir — drop it whole
+    }
+  }
 
   // --- owner-only routes reject the steward token with 403 (wrong scope), not 401 (wrong credential) ---
   const stewKill = await stewPost(`/api/slots/${lnStew.slot}/kill`, {});

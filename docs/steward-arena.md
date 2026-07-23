@@ -12,9 +12,8 @@ from code/git semantics, not executed.*
 
 ## 1. The question, and the distinction that sharpened it
 
-The steward today can **observe + typed-send + self-schedule** (`server.ts` `handleStewardRoute`,
-~`2633-2761`); it cannot open/kill slots, spawn lanes, dispatch, land, or promote — refused
-structurally by a 403 fallback (`server.ts:2761`).
+The steward today can **observe + typed-send + self-schedule** (`server.ts` `handleStewardRoute`); it cannot open/kill slots, spawn lanes, dispatch, land, or promote — refused
+structurally by a 403 fallback (server.ts, grep `route not in scope`).
 *(Every `server.ts:NNN` in this doc has been re-anchored repeatedly as lanes A/B/C and the
 canDeliver lane each re-drifted the line numbers — treat them as grep-verify-before-relying. The
 canonical current numbers live in `synergy-findings.md`/`steward-overview.md`, re-anchored in the
@@ -40,10 +39,10 @@ freely. Two real holes:
   'sessions-vanished' class of risk)."* A second server IS that peer process (the anchor
   incident, `OWNER.md §4c`).
 - **Owner-token-on-a-real-repo arena = land-to-real-main.** State files are `import.meta.dir`-
-  derived, **not** env-overridable [verified, `server.ts:23-26`], so a second instance is a
+  derived, **not** env-overridable [verified, the `STATE_FILE` const block in server.ts], so a second instance is a
   *copy of `server.ts` run from another dir* (the `e2e-isolated.sh` pattern). But the worktrees
-  it creates are **real branches in the real repo** [verified, `createWorktree`
-  `server.ts:656`; shared `.worktrees/`]. So if the arena points at real repos and the
+  it creates are **real branches in the real repo** [verified, `createWorktree()`
+  in server.ts; shared `.worktrees/`]. So if the arena points at real repos and the
   steward holds its owner token, the steward can call the arena's `/api/slots/:id/land` →
   `advanceIntegration` ff-merges into the **real** `main` — breaking *land-stays-owner-only-
   forever* (`steward-roadmap.md:85`).
@@ -97,9 +96,9 @@ thing is isolated.**
 ## 5. Universal prerequisites (both shapes)
 
 1. **`canDeliver()` choke-point + real kill-switch** — **DONE (landed `5e653dc`, 2026-07-22).**
-   Extracted one guarded `canDeliver(s, opts)` (`server.ts:1160`) and routed all four delivery
-   paths through it — `tickAutos` (:1195), `handleStewardSend` (:2578), `tickDispatch` (:1256),
-   merge/land (:3335) — so the kill-switch (`autosOn`, :1176) + quiet-hours now reach the steward
+   Extracted one guarded `canDeliver(s, opts)` (`canDeliver()` in server.ts) and routed all four delivery
+   paths through it — `tickAutos`, `handleStewardSend`, `tickDispatch`,
+   merge/land (grep `landGate`) — so the kill-switch (`autosOn`) + quiet-hours now reach the steward
    send AND the dispatcher, and the dispatcher gets a fresh `claudeAlive`. Closed Tier-0 #1/#2.
    **Still open: Tier-0 #3** (send-cap `.1`-rotation under-count). This was the prerequisite before
    B opens any live reach — it now holds. (A's kill-switch stays cruder but total: `tmux -L

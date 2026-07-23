@@ -2,8 +2,8 @@
 
 *Design note 2026-07-21. What the queue **is** at each level, what it makes
 principally possible, and where to start so the result is safe and compounding.
-Grounded in the code (symbols are the anchor — `interface Task` at server.ts:88,
-`tickDispatch`, `capTasks`, the boot-requeue loop near server.ts:2359). Governing
+Grounded in the code (symbols are the anchor — `interface Task` in server.ts,
+`tickDispatch`, `capTasks`, the boot-requeue loop — server.ts, grep `requeued after restart`). Governing
 constraints unchanged: automation only through gates, external input never
 auto-runs, review capacity is the bottleneck, advisors inform / gates decide.*
 
@@ -19,7 +19,7 @@ auto-runs, review capacity is the bottleneck, advisors inform / gates decide.*
    `queue:true`) / intake (always pending); **queue/unqueue → owner only**;
    sent → dispatcher only (sets slot+note); done → owner, or `landLane` before
    kill; boot-requeue → sent reverts to queued if its slot no longer hosts the
-   lane (`server.ts:2359`); dispatch-fail/slot-changed → sent reverts to queued
+   lane (server.ts, grep `requeued after restart`); dispatch-fail/slot-changed → sent reverts to queued
    with a note.
 3. **Policy (the dispatcher).** `tickDispatch` is the *only* consumer of
    `queued`. Serial (a busy-lock), gated (`dispatchOn` + `FLEET_DISPATCH_REPO`,
@@ -131,8 +131,8 @@ ladder and the queue.
 
 **Hard build constraint (steward review 2026-07-21, confirmed against the
 code).** It is *not* merely "allow the route for the steward token." The single
-create endpoint `POST /api/tasks` (`interface Task` create path, near
-server.ts:3117) sets `status` from `body.queue === true` in the *same call* —
+create endpoint `POST /api/tasks` (its handler in server.ts — grep `"/api/tasks"`)
+sets `status` from `body.queue === true` in the *same call* —
 create and promote are fused there. If the steward principal is simply mapped
 onto that route, a single `queue:true` in the body self-promotes to `queued` and
 the whole pending gate is bypassed by one forgotten field. The scope check must

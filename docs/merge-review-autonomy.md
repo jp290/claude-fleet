@@ -13,7 +13,7 @@ any autonomous land, any self-land route — the human lander stays (OWNER.md §
 No land path builds or tests the tree it lands. All three verify **git-structurally
 only** (clean tree + `merge-base --is-ancestor`):
 
-- Clean path: `mergeJob` script-rebase → ff → land (`server.ts:2267-2288`). No tsc, no tests.
+- Clean path: `mergeJob` script-rebase → ff → land (`mergeJob` in server.ts). No tsc, no tests.
 - Conflict path: resolver agent → git-verified → "resolved" verdict (`:2259-2266`). The
   agent is *forbidden* to build/test (`runMerge` prompt, `:2193`) — deliberate, it keeps
   the agent surface minimal; but nobody else verifies either.

@@ -41,14 +41,15 @@ the bottleneck — infrastructure and doc-maintenance patterns are.** (Caveat: t
    set"; post-stage-2 a *prompt* hold-out is the wrong target. The right one is deterministic —
    **count** whether a known failure still occurs — but HOW to count is exactly where the
    2026-07-23 skeleton found the trap (see 2b). **Honest correction to the earlier framing:** this is NOT the existing
-   effect-sensor. `measureOutcomes`/`outcomeTally` (server.ts:700/2211) classifies a steward
+   effect-sensor. `measureOutcomes`/`outcomeTally` (both in server.ts; grep the symbols) classifies a steward
    *intervention's* outcome via git/output deltas — the wrong shape for signature-recurrence.
    The keystone is a *distinct, minimal* deterministic scan over the corpus (transcripts/docs/
    e2e output), a script not a framework. And it decomposes:
    - **2a — fix the concrete infra issues first.** **P1 socket collision DONE 2026-07-23**
      (per-invocation `$$`-derived SOCK/PORT/DIR → concurrent runs never share a socket;
-     deterministically collision-free; landed 2a-only). P2 doc-refs + the share-flake next; P3
-     done. Each a lane + regression. This IS the leverage — concrete, deterministic, extends the
+     deterministically collision-free; landed 2a-only). **P2 doc-refs + share-flake DONE
+     2026-07-23** (living docs on symbol/grep anchors; vacuous-pass guard on the uppercase
+     check). P3 done. Each a lane + regression. This IS the leverage — concrete, deterministic, extends the
      fact layer.
    - **2b — recurrence counting: the transcript-grep approach is a PROVEN DEAD-END (empirical,
      2026-07-23).** The P1 skeleton grepped lane transcripts for the collision signature; its
@@ -77,7 +78,7 @@ the bottleneck — infrastructure and doc-maintenance patterns are.** (Caveat: t
 - The `/sharpen` A4/A5 rewrite → a separate pass grounding it against sharpen *outputs* / a
   hold-out set (not a re-mine of the sharpen-corpus).
 - P2 (symbol/grep doc anchors) → opportunistic; maintenance debt, not a bug.
-- The `toUpperCase()` share-flake (`fleet-e2e.ts:1814`) → **trivial** one-line fixture guard
+- The `toUpperCase()` share-flake (fleet-e2e.ts, grep `toUpperCase`) → **trivial** one-line fixture guard
   (a random id with no lowercase makes `toUpperCase()` a no-op → the "uppercased" id equals a
   valid id → the 404 assertion fails). Kept only as a **3rd specimen of the
   non-deterministic-test-flake class** (with P1's socket collision + the pane-capture race) —

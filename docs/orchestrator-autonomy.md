@@ -45,7 +45,7 @@ catch, stale-lane-base catch = the V2 bug, doc-committed sequencing, deploy need
 Pulse safety is graded by VERB, on the §4 ladder (observe → propose → act-then-notify →
 act-silently). v0 enters at **propose**. But "propose" is only structurally propose
 under the **steward principal**: the steward task route hard-forces `pending`
-(`server.ts:3042-3054`) and the dispatcher consumes only `queued` (`:1350`) — promotion
+(server.ts, grep `HARD-FORCED`) and the dispatcher consumes only `queued` (`tickDispatch`) — promotion
 to queued is the owner's click. Under the owner token the same filing COULD be `queued`
 (= act-at-a-distance when dispatch is on), leaving only a textual leash. Structural
 beats textual, and the structural option is free → **v0 runs under the steward

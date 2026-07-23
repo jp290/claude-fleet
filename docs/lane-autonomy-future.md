@@ -5,14 +5,17 @@ deliberately chose the small version instead (see "What we built instead" at the
 Revisit only if the small version proves insufficient — and only with the calibration data
 the small version produces.
 
-*Ref note: the `server.ts:NNN` line numbers below were captured when written and have since
-drifted (lanes A/B/C + canDeliver reshaped `server.ts`) — grep-verify any anchor before relying on
-it. This is a deferred-ideas doc; the numbers are illustrative, not maintained per-lane.*
+*Ref note: code refs below are symbol/grep anchors (converted 2026-07-23 from the original
+line numbers) — grep-verify before relying. Partially overtaken by code since capture: an
+undo-land route (`/api/repos/undo-land`, with the onRemote reset-vs-revert gate described in
+component 3) and a server-run verify (`runVerify` + `FLEET_VERIFY_CMD`, downgrading a red clean
+rebase to "resolved") now exist; merge verdicts also persist across deploys (`merges:` in
+saveState), though still per-slot and dropped on recycle.*
 
 ## The shift these ideas describe
 
 Move the merge/land decision from **pre-hoc approval** ("the merge agent made a semantic
-choice → stop and ask the owner", the current `"resolved"` pause at `server.ts:2044-2045`)
+choice → stop and ask the owner", the current `"resolved"` pause in the merge path — server.ts, grep `record a reviewable "resolved" verdict`)
 to **post-hoc accountability**: the agent acts, documents facts + reasoning + which
 interpretation it chose and why, keeps the result trivially reversible, and the owner reviews
 a feed and undoes anything they disagree with. Approval becomes observation-with-undo.
@@ -38,16 +41,16 @@ own.** So the build order is forced and healthy:
 1. **Structured resolution record — verified/narrative split.** Per-conflict JSON:
    `{file, side-A intent, side-B intent, relational assessment [reconcilable | one-supersedes
    | mutually-exclusive], chosen resolution, confidence}`. Discipline (already the house style,
-   `server.ts:2115` "believe git, not the agent"): *facts* (files, hunks, SHAs, resulting code)
+   server.ts, grep `believe git, not the agent`): *facts* (files, hunks, SHAs, resulting code)
    are git-verified; *reasoning/interpretation* is the agent's narrative, labeled unverified.
    The documented rationale must never become the safety authority.
 2. **Durable land ledger.** Today the merge `detail` is in-memory/per-slot, dropped on recycle
-   (`server.ts:925, 2054`). Autonomy needs an append-only, chmod-600 ledger (reuse the
+   (the `mergeLast` map in server.ts; `mergeLast.delete` on recycle). Autonomy needs an append-only, chmod-600 ledger (reuse the
    `appendEvent` chain behind audit / steward-journal): facts, resolution records, pre-land
    `main` SHA (the reversal handle), outcome.
 3. **First-class undo.** Two tiers, chosen by git-fact: *reset* `main` to the pre-land SHA when
    main hasn't moved/pushed (clean); *revert* when it has (`onRemote` check at
-   `server.ts:716-725` tells you which is safe). Re-open the retained branch.
+   server.ts, grep `onRemote`, tells you which is safe). Re-open the retained branch.
 4. **Verified-green precondition.** Do NOT autonomously land red/unverified work — that's an
    automatic exception → pause. Needs the "land-readiness signal" (lane's own build/test status
    surfaced at the land button) built first.
@@ -82,7 +85,7 @@ arbitration are what keep the accepted risk small.
 We chose NOT to build the above. Instead, the minimal version that captures the value:
 
 - **One-gesture land** (commit-if-dirty, then land) — removes the real friction.
-- **Undo-last-land** — landing already keeps the lane branch (`server.ts:762-778` removes the
+- **Undo-last-land** — landing already keeps the lane branch (`removeWorktreeSafe` in server.ts removes the
   worktree, never the branch), and the pre-land `main` SHA is one recorded pointer away. So
   "reverse a land" = reset `main` back + reopen the branch. ~80% of the reversibility vision
   with **zero autonomy** and the human gate untouched.

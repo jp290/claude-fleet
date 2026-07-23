@@ -177,3 +177,48 @@ neighboring code, else stays parked.
 measurement (docs-level report finding #1; `learning-engine-next-steps-2026-07.md` parks it
 without a trigger — the owner should give it one); P2 symbol-anchor sweep (landed `a9e7cab` just
 before this doc — its convention is what this doc's anchors follow); the pane-capture e2e flake.
+
+---
+
+## B1 status 2026-07-23 — prompt half deliberately NOT shipped; lane B1b (server de-dup) must come first
+
+B1's server half is live (`taskAct` counts `propose.helped`/`propose.dismissed` on the
+`pending →` transition of steward-origin tasks, once each). The `/rundgang` prompt edit that
+would feed it was assessed and **stopped before editing**: per-pulse de-dup cannot be done
+soundly prompt-side. The argument:
+
+1. **The pulse cannot read ground truth.** There is no GET on `/api/steward/tasks`
+   (server.ts:3171 is POST-only) — the steward can never see its own open proposals. The only
+   prompt-side carriers are the journal `note` (≤280 chars, server.ts:3230) and
+   `GET /api/steward/journal?tail=N`, i.e. free text chained across pulses by LLM discipline.
+   Identity matching would be prose-vs-remembered-prose with no stable key.
+2. **The failure mode poisons the measurement it feeds.** A standing decision (a lane
+   `awaiting-human` for days) re-files every 2h the moment one chain link drops; duplicates
+   either 409 at `STEWARD_MAX_PENDING` forever or get dismissed by the owner — and every such
+   dismiss counts `propose.dismissed`. The tally would measure the system's own duplication,
+   not proposal quality, exactly the fuel A1 was just corrected to keep honest. A prompt-side
+   guard whose failure silently corrupts the outcome ledger is the textbook case for
+   "deterministic gates beat prompt discipline."
+3. **Found while checking: the delta anchor already has a B1-SERVER side effect.**
+   `readStewardJournal` (server.ts:2962) returns records of ANY kind, and the B1 server half now
+   writes `kind:"propose_outcome"` records (server.ts:4125) into the same journal — so the
+   digest's `prior` (server.ts:3106, tail 1) can return a propose_outcome record instead of the
+   last rundgang record, breaking the pulse's diff baseline whenever an outcome lands between
+   pulses. Needs fixing regardless of the de-dup question.
+
+### Lane B1b — deterministic de-dup substrate  *(small server lane, BEFORE the prompt edit)*
+- **Scope:** (1) `GET /api/steward/tasks` → `{ open: [steward-origin pending: id, text, ref,
+  created], resolved: [last ~20 steward-origin non-pending: id, text, ref, status] }` — ground
+  truth for "already filed" and "owner already judged this, don't re-file unless it materially
+  changed". (2) optional `ref` on the POST (≤40-char slug, e.g. `slot3:awaiting-human`); if an
+  OPEN pending steward task carries the same ref → return that task with `dedup:true`, 200, no
+  create, no cap consumption — the deterministic backstop under fuzzy prose matching.
+  (3) digest `prior` anchors on the last `kind:"rundgang"` record, filtered, not the last record
+  of any kind. NOT in scope: the prompt edit itself, any change to caps or the pending gate.
+- **Done:** e2e — same-ref double POST → one task + `dedup:true`; GET shape with open/resolved
+  split; a propose_outcome write between pulses does not change digest `prior`. Suites ALL PASS.
+- **Then** the B1 prompt edit becomes a genuinely minimal diff: read GET before filing, file
+  only decisions not already open (ref as key, text as tie-break), skip decisions the owner
+  already dismissed, reference filed ids in the journal note, treat 409 as "surface in prose
+  only". The anti-manufacture guard (rundgang.md lines 5 and 25) stays verbatim; "all clear"
+  files nothing by construction because filing is downstream of section 1, which stays empty.

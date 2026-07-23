@@ -1036,6 +1036,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
   mergeLast.delete(s.id); // a recycled slot must never show a previous lane's merge verdict
+  mergeInflight.delete(s.id); mergeStart.delete(s.id); // ...nor report the prior lane's merge JOB as running:true and 409 the new lane (the old job's finally self-checks identity, so dropping the entry here is safe)
   aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
   gitOpInfo.delete(s.id);
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
@@ -1074,6 +1075,7 @@ async function killSlot(s: Slot): Promise<void> {
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
   harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
   startCache.delete(s.id);
+  mergeInflight.delete(s.id); mergeStart.delete(s.id); // F5: a recycled slot must not inherit the prior lane's in-flight merge job as running:true (the old job's finally self-checks identity via mergeInflight.get === job, so this drop is safe)
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   s.model = null; // the per-slot model dies with the session it was chosen for
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");

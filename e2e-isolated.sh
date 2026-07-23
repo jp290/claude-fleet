@@ -57,6 +57,13 @@ cat > "$DIR/fakemerge" <<'EOF'
 cat >/dev/null
 ctl="$(dirname "$(dirname "$PWD")")/mergemode"
 mode="$(cat "$ctl" 2>/dev/null || echo blocked)"
+# hang — stay in flight (sleep) so a test can recycle the slot WHILE the merge job runs,
+# proving the job's mergeInflight/mergeStart entries are dropped on recycle (F5). No git.
+if [ "$mode" = hang ]; then
+  sleep 8
+  printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"fake hang\\"}"}'
+  exit 0
+fi
 # do/prose simulate the real agent, which only runs on a CONFLICT (clean rebases are
 # handled by the server's script pre-pass and never reach here) — so resolve with a
 # strategy that always completes, leaving a clean tree rebased onto main for the server

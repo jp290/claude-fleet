@@ -975,6 +975,31 @@ if (REPO) {
     mainLog.includes("merge work") && mainLog.includes("mainline work"), mainLog.trim());
   check("merge rejects a non-lane slot", (await post("/api/slots/2/merge", {})).status === 400);
 
+  // --- F5: merge-job state must not bleed across a slot recycle. A slot recycled while its
+  // merge job is still in flight must NOT report the OLD job as running for whatever lane
+  // takes the slot next (which would 409 the new lane's commit/merge routes until the stale
+  // job's finally fired). openSlot/killSlot now drop the slot's mergeInflight/mergeStart. ---
+  {
+    const f5 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${f5.cwd}/code.txt`, "root\nf5-lane\n");
+    spawnSync("git", ["-C", f5.cwd, "commit", "-aqm", "f5 lane work"]);
+    await Bun.write(`${REPO}/code.txt`, "root\nf5-main\n"); // same line → conflict → the agent (hang) runs
+    spawnSync("git", ["-C", REPO, "commit", "-aqm", "f5 main work"]);
+    await setMergeMode("hang"); // fakemerge sleeps, keeping the job in flight while we recycle
+    await settleForMerge(f5.slot);
+    const mgStart = (await (await post(`/api/slots/${f5.slot}/merge`, {})).json()) as { running?: boolean };
+    check("F5 setup: merge job is in flight (running:true) before the recycle", mgStart.running === true, JSON.stringify(mgStart));
+    // recycle the slot mid-job: kill, then re-open a fresh lane in the SAME slot
+    await post(`/api/slots/${f5.slot}/kill`, {});
+    const reopen = await post(`/api/slots/${f5.slot}/open-worktree`, { repo: REPO, branch: "e2e-f5-recycle" });
+    check("F5: recycled slot re-opens a fresh lane", reopen.ok, await reopen.text());
+    const mgAfter = (await (await get(`/api/slots/${f5.slot}/merge`)).json()) as { running?: boolean };
+    check("F5: recycled slot's new lane reports the stale merge job as NOT running (mergeInflight/mergeStart cleared)",
+      mgAfter.running === false, JSON.stringify(mgAfter));
+    await post(`/api/slots/${f5.slot}/kill`, {}); // free the slot; the leftover hung job self-checks identity on finish
+    await setMergeMode("blocked"); // restore default for later merge tests
+  }
+
   // script pre-pass: a conflict-FREE lane is rebased and landed by the server itself, the
   // agent is NEVER spawned. Proof: mergemode is set to "blocked" — if the agent were
   // consulted the lane would be kept, not landed.

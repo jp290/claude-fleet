@@ -1407,6 +1407,89 @@ if (REPO) {
       && (((await (await get(`/api/slots/${cfLane.slot}/merge`)).json()) as { undoable?: unknown }).undoable ?? null) === null,
       `main=${headOf(cf.repo, cf.main)} before=${cfMainBefore}`);
     await post(`/api/slots/${cfLane.slot}/kill`, {});
+
+    // --- V2: server-written git-note provenance at land ("own your work", design note §4).
+    // On every land that MOVES main, the SERVER attaches the review story to the landed tip
+    // as a note under refs/notes/fleet/land — server-authored (never the agent), best-effort
+    // (a note-write failure never fails the land), never deleted (survives undo-land). ---
+    const readNote = (repo: string, sha: string): { ok: boolean; json: Record<string, unknown> | null } => {
+      const r = spawnSync("git", ["-C", repo, "notes", "--ref=fleet/land", "show", sha]);
+      if (r.status !== 0) return { ok: false, json: null };
+      try { return { ok: true, json: JSON.parse(r.stdout.toString().trim()) as Record<string, unknown> }; }
+      catch { return { ok: false, json: null }; }
+    };
+
+    // (1) clean-path land → a note that PARSES and carries the land's own before/after +
+    //     the server verify result (green). Mutation guard: drop writeLandNote → this fails.
+    const pn = await freshRepo("provnote");
+    const pnLane = (await (await post("/api/lanes", { repo: pn.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${pnLane.cwd}/prov.txt`, "clean lane work, no marker\n");
+    spawnSync("git", ["-C", pnLane.cwd, "add", "prov.txt"]);
+    spawnSync("git", ["-C", pnLane.cwd, "commit", "-qm", "prov lane work"]);
+    const pnBefore = headOf(pn.repo, pn.main);
+    await landClean(pnLane.slot);
+    const pnAfter = headOf(pn.repo, pn.main);
+    const pnNote = readNote(pn.repo, pnAfter);
+    check("V2: a clean-path land writes a fleet/land git note on the landed tip that parses", pnNote.ok, JSON.stringify(pnNote));
+    check("V2: the note records this land's own mainBefore→mainAfter, branch, and confirmedByHuman:false",
+      pnNote.json?.mainBefore === pnBefore && pnNote.json?.mainAfter === pnAfter
+      && pnNote.json?.branch === pnLane.branch && pnNote.json?.confirmedByHuman === false,
+      `before=${pnBefore} after=${pnAfter} ${JSON.stringify(pnNote.json)}`);
+    check("V2: the note carries the SERVER verify fact (green), not an agent self-claim",
+      (pnNote.json?.verify as { ok?: boolean; mainSha?: string } | undefined)?.ok === true
+      && typeof (pnNote.json?.verify as { mainSha?: string } | undefined)?.mainSha === "string",
+      JSON.stringify(pnNote.json?.verify));
+
+    // (2) the note SURVIVES undo-land — it is the record THAT the land happened, never deleted.
+    const pnUndo = await post("/api/repos/undo-land", { repo: pn.repo });
+    check("V2 setup: undo-land succeeds on the clean-path land", pnUndo.ok === true,
+      `${pnUndo.status} main=${headOf(pn.repo, pn.main)} before=${pnBefore}`);
+    const pnNoteAfterUndo = readNote(pn.repo, pnAfter);
+    check("V2: the provenance note survives undo-land (the record of THAT it happened is never deleted)",
+      pnNoteAfterUndo.ok && pnNoteAfterUndo.json?.mainAfter === pnAfter, JSON.stringify(pnNoteAfterUndo));
+
+    // (3) confirm-land → confirmedByHuman:true, carrying the reviewed conflicted files + resolver detail.
+    const pc = await freshRepo("provconfirm");
+    const pcLane = (await (await post("/api/lanes", { repo: pc.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${pcLane.cwd}/base.txt`, "base\nlane-side\n"); // conflict on base.txt
+    spawnSync("git", ["-C", pcLane.cwd, "commit", "-aqm", "prov confirm lane work"]);
+    await Bun.write(`${pc.repo}/base.txt`, "base\nmain-side\n");    // same line on main → agent resolves
+    spawnSync("git", ["-C", pc.repo, "commit", "-aqm", "prov confirm main work"]);
+    await setMergeMode("do");
+    await settleForMerge(pcLane.slot);
+    await post(`/api/slots/${pcLane.slot}/merge`, {});
+    const pcV = await waitMerge(pcLane.slot);
+    check("V2 setup: conflicting lane resolved + paused for review", !pcV.gone && pcV.last?.status === "resolved", JSON.stringify(pcV.last));
+    const pcBefore = headOf(pc.repo, pc.main);
+    await settleForMerge(pcLane.slot);
+    const pcConf = (await (await post(`/api/slots/${pcLane.slot}/merge`, { confirm: true })).json()) as { status?: string; landed?: boolean };
+    check("V2 setup: the owner confirm-lands the reviewed resolution", pcConf.status === "merged" && pcConf.landed === true, JSON.stringify(pcConf));
+    const pcAfter = headOf(pc.repo, pc.main);
+    const pcNote = readNote(pc.repo, pcAfter);
+    check("V2: the confirm-land note records confirmedByHuman:true (the human owned this land)",
+      pcNote.ok && pcNote.json?.confirmedByHuman === true, JSON.stringify(pcNote.json));
+    check("V2: the confirm-land note carries the reviewed conflicted files + the resolver detail",
+      Array.isArray(pcNote.json?.conflicted) && (pcNote.json?.conflicted as string[]).includes("base.txt")
+      && typeof pcNote.json?.resolverDetail === "string" && (pcNote.json?.resolverDetail as string).length > 0,
+      JSON.stringify(pcNote.json));
+
+    // (4) a land whose NOTE-WRITE FAILS still lands (best-effort provenance, landing is the job).
+    //     Sabotage: refs/notes/fleet as a FILE → `git notes add refs/notes/fleet/land` hits a
+    //     D/F lock error, while refs/heads/main (the land's own ff) is untouched.
+    const pf = await freshRepo("provfail");
+    const pfLane = (await (await post("/api/lanes", { repo: pf.repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${pfLane.cwd}/pf.txt`, "clean lane work\n");
+    spawnSync("git", ["-C", pfLane.cwd, "add", "pf.txt"]);
+    spawnSync("git", ["-C", pfLane.cwd, "commit", "-qm", "provfail lane work"]);
+    await Bun.write(`${pf.repo}/.git/refs/notes/fleet`, "block\n"); // non-directory in the notes-ref path
+    const pfBefore = headOf(pf.repo, pf.main);
+    await landClean(pfLane.slot);
+    const pfAfter = headOf(pf.repo, pf.main);
+    check("V2: a land whose note-write FAILS still lands (main advanced, lane torn down)",
+      pfAfter !== pfBefore && (await get(`/api/slots/${pfLane.slot}/merge`)).status === 400,
+      `before=${pfBefore} after=${pfAfter}`);
+    check("V2: the failed note-write left no note and did not wedge the land", readNote(pf.repo, pfAfter).ok === false);
+    await setMergeMode("blocked"); // restore the suite default for later tests in this scope
   }
 
   // --- Part B3: concurrency / race-hardening regression guards ---

@@ -552,6 +552,14 @@
   .bmergebtn:disabled { opacity: 0.55; cursor: default; }
   .bmergenote { margin-top: 5px; font-size: 10.5px; line-height: 1.45; word-break: break-word; }
   .bmergenote.ok { color: #9ece6a; } .bmergenote.warn { color: #e0af68; } .bmergenote.err { color: #f7768e; }
+  /* verify badge (F-A.3): the deterministic land signal made visible — informs, never disables */
+  .vbadge { display: inline-block; font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
+    border: 1px solid; margin-left: 2px; vertical-align: middle; letter-spacing: .02em; white-space: nowrap; }
+  .vbadge.ok { color: #9ece6a; border-color: #2c5e3a; background: #12210f; }
+  .vbadge.stale { color: #e0af68; border-color: #5a4a30; background: #221b12; }
+  .vbadge.bad { color: #f7768e; border-color: #5e2c34; background: #210f12; cursor: pointer; }
+  .vbadge.bad:hover { background: #2a1216; }
+  .vbadge.none { color: #888; border-color: #333; background: #1a1a1a; }
   /* the review gate: the one place a human eye is required — give it real presence */
   .bmergenote.review { margin: 6px 0 0 6px; padding: 8px 10px; border-radius: 8px;
     border: 1px solid #5a4a30; background: #221b12; color: #d6d6dc; }

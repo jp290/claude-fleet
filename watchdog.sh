@@ -17,12 +17,20 @@ umask 077
 # out of the tmux command string and the remainder runs as shell syntax as this user
 PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 
+# deterministic merge-verify (V1, server.ts runVerify): the server runs this against the
+# REBASED lane tree at merge time. Repo-guarded — verifies the fleet repo, and in a
+# foreign-repo lane prints a recognizable "skipped" line and exits 0 (honest, never a
+# false red that would wedge a clean foreign-repo land in review). Per-repo config is the
+# clean fix later (orchestrator-autonomy.md §6.2); this global guard is the V1-era honest form.
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts'
+VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
+
 while true; do
   if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
     if tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com exec bun server.ts >> server.log 2>&1"; then
+      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

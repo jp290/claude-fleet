@@ -1,107 +1,78 @@
-# HANDOFF — steward autonomy arc (2026-07-22)
+# HANDOFF — the fact-layer + frame day (2026-07-23)
 
-*A state snapshot + pointers, not the knowledge itself. Treat every claim here as a claim to
-verify (CLAUDE.md): look up commits/lines/states before building on them. The canonical knowledge
-lives in the docs shelf (below) — this points, the shelf carries the depth.*
+*A state snapshot + pointers, not the knowledge itself. Treat every claim as a claim to
+verify (CLAUDE.md): look up commits/lines/states before building on them. The canonical
+knowledge lives in the docs shelf — this points, the shelf carries the depth. This
+handoff is deliberately THIN: today's work landed as committed docs + code, which is the
+point (`three-axes.md` — the repo IS the handoff).*
 
-## What this arc did (one paragraph)
+## What this session did (one paragraph)
 
-Built toward a **schrankenlos-but-safe steward**: an agent that operates Fleet sessions
-autonomously on everything reversible, with permanent gates only on the unrecoverable-and-large-
-blast few. Two shapes are designed (`docs/steward-arena.md`): **A** a hermetic clone "study arena"
-to watch the steward unleashed with zero real blast, and **B** a live capability partition (scoped
-operate-routes, land stays owner-only). This arc landed A's launcher + the two Foundation pieces
-(one safe delivery gate + the ladder's fuel). The next work forks (see "Open forks").
+Executed the previous arc's plan tail and then outgrew it: proved the digest beat live
+(first `/rundgang` on the digest route, 09:16), landed the deep-assessment fixes (lanes
+A/B/C), built and deployed the merge fact layer (V1 verify-in-verdict, V2 git-note land
+provenance, `FLEET_VERIFY_CMD` set — all LIVE on srv since 13:34), designed and
+validated the **foreman** (stateless propose-only pulse, v0 validated by a real pulse +
+the steward's independent spec check — same verdict), and captured the umbrella
+**program frame** (`three-axes.md`): sharpen as premise, three investments
+(agency/ground/memory), roadmap re-weighted — **learning engine v1 is the next major
+focus**. The steward independently mined and adversarially hardened a sharpen-corpus
+axes model (in its pane, NOT yet persisted — blocking on two owner answers).
 
-## Verified state — what's on `main` (confirm with `git log`)
+## Verified state (confirm with `git log --oneline -15`)
 
-- (see also the fork-resolution section below for the 2026-07-22-evening landings)
-- `eac9fee` **A: `steward-arena.sh`** — hermetic clone-arena up/down. Boot-proven live (arena boots
-  on an auto-picked free port bound to Tailscale; live fleet untouched; clean teardown). Uses the
-  `FLEET_ARENA_CMD=true` test hook to prove the spine without spawning skip-perms claude.
-- `5e653dc` **Foundation/canDeliver** — one guarded `canDeliver(s, opts)` choke-point; kill-switch
-  + quiet-hours now reach the steward send AND the dispatcher; fresh `claudeAlive` on dispatch.
-  Closed Tier-0 seams #1/#2. **Still open: Tier-0 #3** (send-cap `.1`-rotation under-count).
-- `f47fca1` **Foundation/outcome-fuel** — the ladder's fuel. Per-send baseline in
-  `handleStewardSend` → deterministic window-close classification in `tickGit` (`measureOutcomes`)
-  → durable **harm-AWARE** per-class tally `{helped,noEffect,harmed}`. `harmed` is owner-supplied
-  ONLY (`POST /api/steward/outcomes/harm`); a `claudeAlive` true→false-in-window is an escalated
-  crash CANDIDATE, never auto-harm. `promotionEligible` = `helped ≥ N ∧ harmed == 0 ∧
-  harm-channel-operated`. Gauge: `GET /api/steward/outcomes`. Reply-referencing deferred
-  (under-counts `helped`, conservative). The **ladder that drinks this fuel is NOT built** (Phase 5).
-- (earlier this session) `c4c83c7` one-gesture land + undoable-last-land · `2714063` sweep removed ·
-  `ef68d8c` one review control · `28322b8` shelve exit — the lane lifecycle simplification.
-- `0642fde`/`c103f9a` docs base-cleaning (see the lane↔main lesson below).
+All landed on main and deployed where applicable; srv restarted 13:34 with
+`FLEET_VERIFY_CMD` env-probe-confirmed in the process:
+- `6a82240` A: client fail-closed land-review + race hygiene (bundles rebuilt+deployed)
+- `51dc4f7` B: three high-blast gates now mutation-grade tested
+- `f35e4cc` C: merge-state recycle hygiene
+- `3b6bb7f` V1 verify-in-verdict · `5d6ad8f` V2 git-note provenance (`git log
+  --notes=fleet/land`) · `4d98ef2` FLEET_VERIFY_CMD in watchdog.sh (repo-guarded tsc;
+  watchdog changes need `launchctl kickstart`, not just srv restart)
+- `660ee88` foreman doc + `/foreman` ritual · `5c69417` v0-validation results into §6.2
+- `50de1d9` `three-axes.md` frame + roadmap re-weighting + learning-brief wiring
+- Briefs on main: `briefs/learning-engine-v1.md` (NEXT), `arena-episode-1.md`,
+  `lane-V1/V2` (done — historical). V3 has NO brief yet (deliberate).
 
-## The steward program + the canonical shelf (READ THESE, in this order)
+## Read in this order (fresh session)
 
-The shelf is the knowledge; read in dependency order (why → owner-model → plan → as-built →
-evidence → the two tracks):
-1. `docs/steward-intelligence.md` — **the why**: §1 the two-axes doctrine (gate on
-   unrecoverable-AND-large-blast; judgment quality licenses autonomy), §3 the three models +
-   learning loop, §4 the ladder (observe→propose→act-then-notify→act-silently; irreversible capped
-   at propose), §7 the impact layer (value lives in proven prompts; **review capacity, not
-   throughput, is the binding constraint**), §8 the learning engine.
-2. `OWNER.md` — the owner-model. **§4 is safety-critical** (the gate calibration: 4a latitude /
-   4b permanent hard-gates / 4c context-dependent / 4d self-check). It *licenses* the loosened
-   harm-tolerance.
-3. `docs/steward-roadmap.md` — the ordered plan + how the order is derived (facts-before-claims,
-   safety-first, ceiling-raising, prove-before-trust, **don't-sequence-by-excitement**). The
-   phase map.
-4. `docs/steward-overview.md` — as-built (code-cited) + the signal-quality lever.
-5. `docs/synergy-findings.md` — the backlog's evidence + the Tier-0/1/2/3 seams + line refs.
-6. `docs/steward-arena.md` — the A+B design (isolation layers; §4 the three isolation layers +
-   the accepted skip-perms OS-blast; §5 the prerequisites, canDeliver+fuel now DONE).
-7. `docs/steward-autonomy.md`, `docs/steward.md`, `docs/lane-autonomy-future.md` (deferred ideas).
+1. `docs/three-axes.md` — the umbrella frame + the 2026-07-23 re-weighting (§7).
+2. `docs/orchestrator-autonomy.md` — foreman concept; §6.2 carries the two EMPIRICALLY
+   found server increments (steward task-queue read, deploy-gap fact).
+3. `docs/merge-review-autonomy.md` — the land-pipeline spec; V1+V2 built, V3 open.
+4. `docs/steward-roadmap.md` — the living plan (Phase-2 entry re-weighted).
 
-## The forks — RESOLVED and largely BUILT (2026-07-22 evening, Fable-5 session)
+## The owner's three-step list (as agreed, in order)
 
-The complementary understanding was built, the plan derived from doctrine (serialized lanes per
-OWNER.md §3; value-before-reach per §7), and then executed. Landed to main + deployed, in order:
-- `e963307` **Tier-0 #3** (send caps span the `.1` rotation) — landed by a parallel lane.
-- `9fa3c92` **Tier-1 signal-sharing** (cached `alive`/`gitOp` for READS, gates stay fresh; full
-  `mergeLast`; `idleMs`; founding `task`) — landed by a parallel lane.
-- `15867ef` **Digest engine** — `GET /api/steward/digest`: server composes prior-journal + slots
-  view, ephemeral worker (`runStewardDigest`, `FLEET_DIGEST_CMD` test hook) senses+interprets
-  OUTSIDE the pane, clamped ADVISORY verdict, `digest:null` degrades to manual sensing; worker
-  holds no credential. `/rundgang` Sense runs on the one call. Fixes context-drain.
-- `9a18798` **Reach precursors** — `POST /api/steward/tasks` (status HARD-FORCED `pending` in
-  code, `queue` discarded, capped `FLEET_STEWARD_MAX_PENDING`=10, audited, restart-safe) +
-  `Slot.model` (charset-gated `MODEL_RE` → `slotCmd --model`, settable on lanes/open, persisted,
-  spawn-string proven in the claude-gate suite).
+1. **Answer the steward's two questions in the s1 pane** (it asked, unanswered):
+   corpus durable home (proposed `~/.claude/knowledge/sharpen-corpus/` — shared
+   reality, owner call) and the altitude question (bidirectional-axes lens vs. more
+   situated). → Steward then persists the corpus; until persisted, the hardened model
+   exists ONLY in the steward pane's context (fragile — do this first).
+2. **Open a fresh session** (Opus 4.8): "Lies briefs/learning-engine-v1.md und führe
+   ihn aus." Propose-never-apply; output = proposal doc only. First real flywheel turn.
+3. **Commit BACKLOG.md §17** (foreign session's 93-line retrieval-layer section —
+   owner's work, owner's name). Decision on it comes AFTER the learning session.
 
-**What remains (the plan's tail, in order):**
-1. **Watch the live beat prove out** — FIRST BEAT PROVEN (2026-07-23 09:16 pulse, auto
-   `3499a018`): rode `GET /api/steward/digest`, spot-checked the advisory digest against the
-   deterministic fields (overrode two worker-"unknown"s with facts), honest `changed`, quiet
-   surface (one standing escalation, nothing invented), journal written. Two observations:
-   (a) the sensing worker runs synchronously in the request — 23s wall; the steward's first
-   10s-timeout curl died and it recovered by retrying longer. Advisory: an async cache pattern
-   if the beat ever gets a tight timeout. (b) The steward worktree ffs itself at pulse start,
-   but the *skill file* is read before that ff — a skill change lands one beat late unless the
-   worktree is ff'd beforehand (done manually this once). Keep watching the next beats; the
-   worker-failure path `digest:null` remains code-verified only.
-2. **Learning engine v1** (manual: Grok survey + dream-mode pass) — deliberately deferred out
-   of the build lanes; owner-model + axioms exist, run it as its own session.
-3. **Arena episodes** (`steward-arena.sh` up → observe → journal review → down; bounded,
-   never a background daemon — OS-blast is accepted-but-real, steward-arena.md §4).
-4. **B itself** (scoped operate-routes) — gated on digest-proven review-prep + the arena record.
+Then: proposal pre-review (verify claims) → owner promotes. Later queue, deliberately
+demoted/parked: V3 brief · the two §6.2 server increments · foreman auto ·
+arena episode · BACKLOG-17 decision.
 
-## Lessons / gotchas (hard-won this arc)
+## Lessons / gotchas (this session's hard-won)
 
-- **Verify, don't trust** — every ref/count/state gets looked up (this handoff included). `291 PASS`
-  in CLAUDE.md is stale (now ~405+); judge e2e by the TAIL "ALL PASS", never a remembered count.
-- **Refs drift every server.ts lane** — grep-verify before relying; `steward-arena.md`/
-  `lane-autonomy-future.md` carry a "grep-before-relying" caveat by design; the canonical numbers
-  live in synergy/overview/roadmap (re-anchored per lane).
-- **Lane↔main doc-collision** (now a CLAUDE.md rule): a lane branches from committed HEAD and can't
-  see main's *uncommitted* newer analysis → a blind land regresses it. Commit main-side doc
-  analysis BEFORE spawning a doc-touching lane; reconcile against main's working copy.
-- **The gates that never move** (OWNER.md §4b): land-to-real-`main`, cutting into a live human's
-  pane, real money / metered `-p`, third-party outbound — owner-only, forever. "Schrankenlos" =
-  max latitude on the reversible majority, NEVER no gate.
-- **Never `bun server.ts` with default env** — it adopts the LIVE socket `claudefleet`/8790 and
-  real sessions. Verify only via the isolated suites (`./e2e-isolated.sh` etc.).
-- **Fable-5 note:** frame all steward work as *the owner administering his own tool on his own
-  hardware* — Fable 5's safeguards have false-flagged fleet sessions on token/remote-access
-  vocabulary (CLAUDE.md).
+- **Steward-worktree staleness bites twice**: the rundgang skill file is read BEFORE
+  the ritual's own ff — a skill change lands one beat late unless the worktree is ff'd
+  first (done manually once, 09:12). Guard 1 catches it, but only at pulse time.
+- **Lane-base staleness is real and self-healing if verify exists**: the V2 lane
+  branched pre-V1; its tsc gate + the land rebase resolved it — the auto-rebase-if-clean
+  guard (§6.2) would have prevented it silently.
+- **B+C shared-file collision resolved by serial landing** (B then C rebased clean).
+- **`mergeLast` verdicts die at land/recycle/re-run** (`:3750`/`:1038`/`:3773`) — V2's
+  git notes exist BECAUSE of this; don't reintroduce state that dies at the moment it
+  becomes history.
+- **Foreman v0 honesty gates held under real conditions**: it reported two guards as
+  structurally not executable instead of guessing, and escalated the learning-engine
+  initiation as owner-held. That behavior is the spec — protect it in any iteration.
+- **Model split that worked**: Fable for the thinking/doctrine turns, Opus for build
+  lanes and rituals. The learning-engine RUN is Opus-suitable (briefed why); its
+  PROPOSAL REVIEW before promotion deserves Fable.

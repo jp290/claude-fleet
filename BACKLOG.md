@@ -1011,13 +1011,25 @@ A1 and A2 genuinely execute in the live tick. **First real measurement this prog
 a working, un-nudged slot looks "helped" ~25 % of the time.** That is the null A2 exists to supply;
 any future nudged `helped` rate must beat it to mean anything.
 
+**Shipped 2026-07-24 — P-1a, the digest delta-anchor filter** (committed on `main`, **not yet
+deployed**: the running srv still has the bug until the owner restarts it). `readStewardJournal`
+takes an optional `kind`; both digest call sites now ask for the last `kind:"rundgang"` record.
+One correction to the old framing below: the anchor was **not** only poisonable by B1's
+`propose_outcome`. `measureOutcomes` writes `kind:"outcome"` (and `harm_candidate`) into the same
+journal on **every matured steward send** — a path that is live and running now. So the trigger is
+not "a steward task must exist" but "a steward send must mature". Still latent in production only
+because no steward send has ever been measured (the live journal holds 13 records, all `rundgang`;
+A2's baseline samples are in-memory controls that never journal). Regression test:
+`digest delta anchor is the last RUNDGANG record…` in `fleet-e2e.ts`, asserted while the journal's
+newest record is provably an `outcome` — pre-fix that record *was* what `prior` returned.
+
 **Open — in dependency order:**
 
 | # | Item | Blocked by | Whose call | Pointer |
 |---|------|-----------|-----------|---------|
-| P-1a | **digest `prior` filter** — anchor on the last `kind:"rundgang"` record, not the last record of any kind. A **real bug in deployed code**: B1-server writes `kind:"propose_outcome"` into the same journal, so an outcome landing between pulses breaks the pulse's delta baseline. Latent only while no steward task exists | — | just do it — tiny, folds into any lane | deep-dive → Lane B1b (3) |
-| P-2 | **Steward freshness** — its worktree is ~19 commits behind main (recompute: `git rev-list --count <steward-HEAD>..main`; it grows), so its world-model predates the whole program | — | owner: *where* freshness belongs (`/steward` ritual, `/rundgang`, or habit) | dossier F3 |
-| P-3 | **THE FORK — probe or build?** (below) | P-1a + P-2 | **owner** | this register |
+| ~~P-1a~~ | **SHIPPED (committed, NOT yet deployed)** — digest `prior` filter. See the shipped block above | — | owner: deploy | — |
+| P-2 | **Steward freshness** — its worktree is **21** commits behind main (recompute: `git rev-list --count <steward-HEAD>..main`; it grows), so its world-model predates the whole program | — | owner: *where* freshness belongs (`/steward` ritual, `/rundgang`, or habit) | dossier F3 |
+| P-3 | **THE FORK — probe or build?** (below) | P-2 (P-1a done) | **owner** | this register |
 | P-4 | **Deploy-gap fact** — nothing shows whether the live server predates `main` | check prior art first | owner: slots view / foreman / nowhere | dossier F6; `5c69417` |
 | P-5 | **Worktree placement** — pin the lane path to the sibling dir or gitignore it (cheap half only) | — | fold-in, no own lane | dossier F7; stack-land §8 |
 | P-6 | **Program board** PB-1/2/3 — lane DAG, orchestrated dependent-rebase, stack cleanup | — | owner: build or not | stack-land-program-board |

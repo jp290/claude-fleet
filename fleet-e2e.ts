@@ -2439,11 +2439,11 @@ if (auditRotExists) {
     && Array.isArray(warmJ.digest?.attention) && warmJ.digest?.attention.length === 0
     && typeof warmJ.digestAt === "number" && typeof warmJ.digestAge === "number" && (warmJ.digestAge ?? 0) >= 3000,
     JSON.stringify({ warmMs, digest: warmJ.digest, digestAge: warmJ.digestAge }));
-  // prior is recomputed FRESH each call — its kind can legitimately differ from the cold call's
-  // (a parked outcome may resolve into the journal between the two), so assert it is carried, not
-  // its specific kind. now/slots must be fresh alongside the cached digest.
+  // prior is recomputed FRESH each call, and since P-1a it is kind-FILTERED: a parked outcome
+  // resolving into the journal between the two calls can no longer move the anchor, so the kind
+  // is asserted exactly. now/slots must be fresh alongside the cached digest.
   check("steward digest carries the deterministic payload (fresh prior + slots) alongside the cached verdict",
-    Array.isArray(warmJ.slots) && warmJ.slots.length > 0 && typeof warmJ.prior?.kind === "string" && typeof warmJ.now === "number",
+    Array.isArray(warmJ.slots) && warmJ.slots.length > 0 && warmJ.prior?.kind === "rundgang" && typeof warmJ.now === "number",
     JSON.stringify({ slots: warmJ.slots?.length, prior: warmJ.prior?.kind, now: typeof warmJ.now }));
 
   // (d) ?wait is clamped to [0, 60s] — observable via the echoed waitMs (cache is fresh, so these
@@ -2630,6 +2630,18 @@ if (auditRotExists) {
   const tally1 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
   check("outcome: two 'helped' outcomes (git delta + sustained output) increment tally.continue_nudge.helped", tally1.helped === tally0.helped + 2, `${tally0.helped}->${tally1.helped}`);
   check("outcome: three 'no-effect' outcomes (idle, blip, dirty-only) increment tally.continue_nudge.noEffect", tally1.noEffect === tally0.noEffect + 3, `${tally0.noEffect}->${tally1.noEffect}`);
+
+  // P-1a: the digest's delta anchor is the last RUNDGANG record, not the last record of any kind.
+  // Deterministic here: the five outcomes just measured are the journal's newest records, while
+  // the newest rundgang is the post-rotation one from the anchor test above (healthy-running: 4).
+  // Unfiltered (the pre-fix behaviour) `prior` would be an `outcome` record and the pulse would
+  // diff against a foreign baseline. ?wait=0 → prior is recomputed fresh regardless of the cache.
+  const anchorRecs = ((await (await stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string }[] }).records;
+  const anchorJ = (await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { prior?: { counts?: Record<string, number> } | null };
+  check("digest delta anchor is the last RUNDGANG record, not a foreign record written since (P-1a)",
+    anchorRecs[anchorRecs.length - 1]?.kind === "outcome"
+    && anchorJ.prior?.kind === "rundgang" && anchorJ.prior?.counts?.["healthy-running"] === 4,
+    JSON.stringify({ lastRecord: anchorRecs[anchorRecs.length - 1]?.kind, prior: anchorJ.prior }).slice(0, 240));
 
   // harm-BLIND guard: continue_nudge now has helped≥N(=1) and harmed==0, but the owner harm
   // channel has never operated → NOT eligible (never promote on a record that can't show harm)

@@ -222,8 +222,11 @@ soundly prompt-side. The argument:
   (≤40-char slug, e.g. `slot3:awaiting-human`); if an OPEN pending steward task carries the same
   ref → return that task with `dedup:true`, 200, no create, no cap consumption — the
   deterministic backstop under fuzzy prose matching.
-  (3) digest `prior` anchors on the last `kind:"rundgang"` record, filtered, not the last record
-  of any kind.
+  (3) ~~digest `prior` anchors on the last `kind:"rundgang"` record, filtered, not the last record
+  of any kind.~~ **SHIPPED as P-1a, 2026-07-24** (`readStewardJournal(tail, kind?)`, both digest
+  call sites filtered, e2e-gated). Note for the rest of this lane: the journal is multi-kind from
+  *six* writers, and the one that fires today is `measureOutcomes` (`kind:"outcome"` per matured
+  steward send) — not only B1's `propose_outcome`.
   (4) **`mute(ref)` — the recurring-proposal blocker (owner-raised 2026-07-23).** A dismissal
   answers *this instance*; a proposal whose condition persists (a lane `awaiting-human` for days)
   would legitimately re-qualify every pulse forever. That needs an explicit owner verb, NOT an

@@ -2956,10 +2956,15 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
 // own last record) survives a rotation boundary. IMPORTANT: promotion COUNTS, when the ladder
 // lands (§4), must accrue in a durable state tally incremented on recorded outcomes — NEVER by
 // scanning this rotatable file, whose oldest lines are discarded on the second rotation.
+// The file is MULTI-KIND — outcome/harm_candidate/harm_confirmed/harm_channel_attest/
+// propose_outcome records interleave with the pulse's own — so the delta anchor must be read
+// with `kind` FILTERED. Reading "the last record" would anchor the pulse on a foreign record
+// written between two pulses, silently destroying its baseline.
+const RUNDGANG_KIND = "rundgang";
 function writeStewardJournal(rec: Record<string, unknown>): void {
   appendEvent(STEWARD_JOURNAL_FILE, { ts: Date.now(), ...rec });
 }
-async function readStewardJournal(tail: number): Promise<Record<string, unknown>[]> {
+async function readStewardJournal(tail: number, kind?: string): Promise<Record<string, unknown>[]> {
   const out: Record<string, unknown>[] = [];
   for (const f of [`${STEWARD_JOURNAL_FILE}.1`, STEWARD_JOURNAL_FILE]) { // .1 is older → chronological
     if (!existsSync(f)) continue;
@@ -2968,7 +2973,7 @@ async function readStewardJournal(tail: number): Promise<Record<string, unknown>
       try { out.push(JSON.parse(line) as Record<string, unknown>); } catch { /* skip a torn tail line */ }
     }
   }
-  return out.slice(-tail);
+  return (kind === undefined ? out : out.filter((r) => r.kind === kind)).slice(-tail);
 }
 
 // Tier-1 signal-sharing (synergy-findings.md): the facts the server already computes, handed
@@ -3042,7 +3047,7 @@ function clampDigestWait(raw: string | null): number {
 }
 async function runStewardDigest(home: Slot): Promise<DigestResult> {
   const now = Date.now();
-  const prior = (await readStewardJournal(1))[0] ?? null;
+  const prior = (await readStewardJournal(1, RUNDGANG_KIND))[0] ?? null;
   const slotsView = stewardSlotsView(now);
   const prompt = [
     "You are a read-only SENSING worker for a fleet steward. Below: the steward's prior journal",
@@ -3103,7 +3108,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const home = stewardSlot();
     if (!home?.cwd) return json({ error: "no steward slot active" }, 404);
     const now = Date.now();
-    const prior = (await readStewardJournal(1))[0] ?? null; // fresh every call
+    const prior = (await readStewardJournal(1, RUNDGANG_KIND))[0] ?? null; // fresh every call
     const slotsView = stewardSlotsView(now);                // fresh every call
     const waitMs = clampDigestWait(url.searchParams.get("wait"));
     // a cached digest is bound to one slot (cwd) — drop it if the steward slot moved
@@ -3229,7 +3234,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     if (typeof body.changed !== "boolean") return json({ error: "changed must be a boolean" }, 400);
     const note = typeof body.note === "string" ? body.note.slice(0, 280) : undefined;
     writeStewardJournal({
-      kind: "rundgang",
+      kind: RUNDGANG_KIND,
       counts: Object.fromEntries(entries) as Record<string, number>,
       decisions_surfaced: body.decisions_surfaced,
       changed: body.changed,

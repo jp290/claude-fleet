@@ -2092,6 +2092,35 @@ async function runEnhance(text: string, cwd: string): Promise<string> {
 // POST starts the run and the board's poll reads progress/result via GET.
 const MERGE_CMD = process.env.FLEET_MERGE_CMD ?? null; // tests: subprocess stand-in
 const MERGE_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_MERGE_TIMEOUT_MS ?? 480_000) | 0);
+// deterministic verify (design note §3): a per-repo command run against the REBASED tree.
+// Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
+const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
+const VERIFY_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 120_000) | 0);
+const VERIFY_OUT_CAP = 2048; // verify.out is the TAIL of stdout+stderr, byte-capped (~2KB)
+// Layer 1 of the three-layer model (§2): the authority is a SERVER-run fact, never an agent's
+// self-assessment. Runs in the lane worktree (cwd), against the rebased tree, after the rebase
+// is git-verified and before any land. No command → undefined (field absent, verdict unverified,
+// never silently green). Non-zero exit OR timeout → ok:false. `mainSha` binds the result to the
+// main the tree was rebased onto — a verdict is void once main moves past it (§6 rule 3).
+async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verify"]> {
+  if (!VERIFY_CMD) return undefined;
+  const p = Bun.spawn(["sh", "-c", VERIFY_CMD], { cwd, stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; try { p.kill(); } catch {} }, VERIFY_TIMEOUT_MS);
+  try {
+    const out = await new Response(p.stdout).text();
+    const err = await new Response(p.stderr).text();
+    const code = await p.exited;
+    const combined = timedOut
+      ? `${out}${err}\n[verify timed out after ${VERIFY_TIMEOUT_MS}ms]`
+      : `${out}${err}`;
+    // the failing lines of a build/test log live at its END — keep the tail, not the head
+    const tail = combined.length > VERIFY_OUT_CAP ? combined.slice(combined.length - VERIFY_OUT_CAP) : combined;
+    return { cmd: VERIFY_CMD, ok: !timedOut && code === 0, out: tail.trim(), at: Date.now(), mainSha };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const MERGE_TOOLS = "--permission-mode dontAsk --allowedTools "
   + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" '
   + '"Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" Read Grep Glob';
@@ -2099,7 +2128,10 @@ const MERGE_TOOLS = "--permission-mode dontAsk --allowedTools "
 // but deliberately NOT landed — it waits for the owner to review the diff and confirm.
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
 interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
-  detail: string; landed: boolean; branch: string; at: number; conflicted?: string[] }
+  detail: string; landed: boolean; branch: string; at: number; conflicted?: string[];
+  // deterministic verify result against the rebased tree (design note §3). Absent when no
+  // FLEET_VERIFY_CMD is configured — absence means "unverified", never silently green.
+  verify?: { cmd: string; ok: boolean; out: string; at: number; mainSha: string } }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -2256,36 +2288,57 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       const st = await git(cwd, "status", "--porcelain");
       const anc = await git(root, "merge-base", "--is-ancestor", main, branch);
       if (st.code !== 0 || st.out || anc.code !== 0) {
+        // nothing was successfully rebased — no tree to verify, no verdict field
         res = { status: "error", landed: false, branch, at: Date.now(),
           detail: `agent ${r.status === "unparseable" ? "answered off-contract" : "reported rebased"}, but the lane is ${st.out ? "not clean" : `not rebased onto ${main}`} — lane kept. ${r.detail}`.slice(0, 600) };
-      } else if (!pre.clean) {
-        // CONFLICT path: the agent made semantic choices resolving conflicts. The rebase is
-        // git-verified, but a human hasn't seen those choices — so we STOP here (no ff-merge,
-        // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
-        // agent left it, rebased onto main; the owner reviews the diff and confirms the land.
-        res = { status: "resolved", landed: false, branch, at: Date.now(),
-          conflicted: pre.conflicted,
-          detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"}; review the diff, then land.`.slice(0, 600) };
       } else {
-        // CLEAN path: no judgment was involved (git rebased it with zero conflicts), so there
-        // is nothing to review — land it. The state-changing step on the integration branch is
-        // the SERVER's, never the agent's: advanceIntegration ff-merges (if it's checked out,
-        // git refuses over a dirty tree) or advances the ref directly (touching no tree).
-        const mainBefore = (await git(root, "rev-parse", main)).out;
-        const adv = await advanceIntegration(root, main, branch);
-        if (adv) {
-          res = { status: "error", landed: false, branch, at: Date.now(),
-            detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
+        // The rebase is git-verified (clean OR resolved). Deterministic verify runs HERE —
+        // server-side, in the lane worktree, against the rebased tree (§6 rule 4) — BEFORE any
+        // land or verdict write, on BOTH paths. `undefined` when no FLEET_VERIFY_CMD is set:
+        // field stays absent and today's behavior is unchanged. mainSha === the main just
+        // rebased onto, reused below as mainBefore for the clean-path land.
+        const mainSha = (await git(root, "rev-parse", main)).out;
+        const verify = await runVerify(cwd, mainSha);
+        if (!pre.clean) {
+          // CONFLICT path: the agent made semantic choices resolving conflicts. The rebase is
+          // git-verified, but a human hasn't seen those choices — so we STOP here (no ff-merge,
+          // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
+          // agent left it, rebased onto main; the owner reviews the diff and confirms the land.
+          // verify rides along as advisory context for that review (it never changes the stop).
+          res = { status: "resolved", landed: false, branch, at: Date.now(),
+            conflicted: pre.conflicted, verify,
+            detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"}; review the diff, then land.`.slice(0, 600) };
+        } else if (verify && !verify.ok) {
+          // CLEAN path but verify RED: today this would auto-land, but the rebased tree does
+          // NOT pass verify — landing it lands broken code. Consciously downgrade the auto-land
+          // to a "resolved"-style stop-and-review verdict (design note §1): no ff, no land. The
+          // owner reviews the verify output and MAY still land via confirm (owner latitude,
+          // OWNER.md §4a — confirm-land never hard-blocks on ok:false). A missing verify cmd
+          // (verify === undefined) never reaches here, so today's clean-path land is preserved.
+          res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
+            detail: `clean rebase, but verify failed (${verify.cmd}) — not auto-landed; review the output, then land if intended.`.slice(0, 600) };
         } else {
-          const mainAfter = (await git(root, "rev-parse", main)).out;
-          // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
-          const land = s.cwd === cwd && s.worktree?.branch === branch
-            ? await landLane(s)
-            : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
-          if (!("error" in land)) recordLand(root, main, branch, mainBefore, mainAfter);
-          res = "error" in land
-            ? { status: "merged", landed: false, branch, at: Date.now(), detail: `${r.detail} — land refused: ${land.error}`.slice(0, 600) }
-            : { status: "merged", landed: true, branch, at: Date.now(), detail: r.detail };
+          // CLEAN path, verify green or unconfigured: no judgment was involved (git rebased it
+          // with zero conflicts) and verification passed, so there is nothing to review — land
+          // it. The state-changing step on the integration branch is the SERVER's, never the
+          // agent's: advanceIntegration ff-merges (if it's checked out, git refuses over a dirty
+          // tree) or advances the ref directly (touching no tree).
+          const mainBefore = mainSha;
+          const adv = await advanceIntegration(root, main, branch);
+          if (adv) {
+            res = { status: "error", landed: false, branch, at: Date.now(), verify,
+              detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
+          } else {
+            const mainAfter = (await git(root, "rev-parse", main)).out;
+            // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
+            const land = s.cwd === cwd && s.worktree?.branch === branch
+              ? await landLane(s)
+              : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
+            if (!("error" in land)) recordLand(root, main, branch, mainBefore, mainAfter);
+            res = "error" in land
+              ? { status: "merged", landed: false, branch, at: Date.now(), verify, detail: `${r.detail} — land refused: ${land.error}`.slice(0, 600) }
+              : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail };
+          }
         }
       }
     }

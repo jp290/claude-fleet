@@ -81,6 +81,22 @@ fi
 EOF
 chmod +x "$DIR/fakemerge"
 
+# stand-in deterministic verify (FLEET_VERIFY_CMD). cwd = the REBASED lane worktree.
+# Its result is a fact about that tree, not the agent's word (design note §2 layer 1).
+# Scans the tracked tree for a sabotage marker: present → exit 1 (verify RED, "the
+# rebased tree breaks the build"), absent → exit 0 (GREEN) — the same shape a real
+# tsc/test gate has. Tests plant/omit the marker in a lane's committed content.
+cat > "$DIR/fakeverify" <<'EOF'
+#!/bin/sh
+if git grep -qI VERIFYBAD -- . 2>/dev/null; then
+  echo "verify FAIL: VERIFYBAD marker present in the rebased tree"
+  exit 1
+fi
+echo "verify OK: no sabotage marker in the tree"
+exit 0
+EOF
+chmod +x "$DIR/fakeverify"
+
 # stand-in 💾 commit-message agent: same {"result": …} envelope, answers a fixed
 # conventional-commit message so the agent-mode commit path round-trips without a model.
 cat > "$DIR/fakecommit" <<'EOF'
@@ -105,7 +121,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # never mark helped on transient output (every helped in-test is via the git signal).
 # FLEET_PROMOTION_MIN_N=1 so a single helped makes a class promotion-eligible.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 for _ in $(seq 1 60); do
@@ -121,7 +137,7 @@ cd "$DIR" || exit 1
 # dropped on restart and the post-restart server would revert to the 10-min default window. Same
 # for the dispatch repo + fake-agent cmds: dropped, the post-restart dispatcher is permanently
 # unavailable and merge/summary/commit fall back to the real `claude`.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

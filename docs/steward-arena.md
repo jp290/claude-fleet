@@ -4,8 +4,8 @@
 steward **operate** Fleet sessions autonomously — not just dispatch isolated workers — and
 the decision to build **both** a hermetic study arena (A) and a live capability partition (B).
 Sits under `steward-intelligence.md` (the autonomy×safety theory) and `steward-autonomy.md`
-(the loop). Producer-proposes / owner-promotes: this is a proposal to reason from, not built
-code. Claims carry `file:line`; **[verified]** = read this session, **[inferred]** = reasoned
+(the loop). Producer-proposes / owner-promotes. Status: **shape A is BUILT** (`steward-arena.sh`,
+`eac9fee`, boot-proven live); **shape B remains a proposal** to reason from. Claims carry `file:line`; **[verified]** = read this session, **[inferred]** = reasoned
 from code/git semantics, not executed.*
 
 ---

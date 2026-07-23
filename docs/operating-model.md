@@ -104,10 +104,11 @@ its session — kill and recycle both close and remove it (`server.ts:891`, and 
 recycle `server.ts:858`).
 
 ### Auto
-A scheduled prompt with a **mandatory runs cap** and two gates before it fires: the
-slot must be idle and claude must actually be alive (gates in `tickAutos`,
-`server.ts:1023-1040`). Same design
-stance as the dispatcher: automation only acts through gates.
+A scheduled prompt with a **mandatory runs cap**, delivered only through the shared
+unattended-send choke-point `canDeliver()` (`server.ts`, grep the symbol): kill-switch →
+fresh claude-alive → quiet hours → idle. The same gate guards every unattended path —
+tickAutos, the dispatcher pre- and post-spawn, the steward send, and the land idle-guard.
+Same design stance throughout: automation only acts through gates.
 
 ## The invariants (the actual knowledge)
 

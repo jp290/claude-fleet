@@ -538,6 +538,17 @@
   .bsumver { color: #889978; margin: 6px 0 2px; line-height: 1.45; }
   .bsummeta { color: #555; font-size: 10px; margin-top: 5px; }
   .bsumerr { color: #f7768e; line-height: 1.45; margin: 2px 0 6px; word-break: break-word; }
+  /* 🔍 agent review — ranked findings, each pinned to a cited file:line */
+  .bfind { margin: 5px 0; padding: 5px 8px; border-radius: 6px; background: #1c1c1c; border-left: 2px solid #3a3a44; }
+  .bfind.high { border-left-color: #f7768e; }
+  .bfind.medium { border-left-color: #e0af68; }
+  .bfind.low { border-left-color: #565f89; }
+  .bfindhd { display: flex; gap: 7px; align-items: baseline; }
+  .bfindimp { flex: none; font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; color: #888; }
+  .bfindt { flex: 1; min-width: 0; color: #ddd; line-height: 1.4; }
+  .bfindcite { color: #7dcfff; font-size: 10.5px; margin-top: 2px; word-break: break-all; }
+  .bfinddet { color: #aaa; line-height: 1.45; margin-top: 3px; }
+  .bfindcost { color: #c99; font-size: 10.5px; line-height: 1.4; margin-top: 3px; }
   .bsumbtn { margin-top: 7px; padding: 5px 12px; border-radius: 7px; border: 1px solid #2c3a5e;
     background: #1c2437; color: #7aa2f7; font-size: 11.5px; font-family: inherit; cursor: pointer; }
   .bsumbtn:hover:not(:disabled) { background: #26314f; }

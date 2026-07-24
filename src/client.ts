@@ -617,6 +617,14 @@ interface SummaryInfo { summary?: string; openThreads?: string[]; verification?:
   model?: string; at?: number; head?: string | null; dirty?: number; error?: string }
 const sumCache = new Map<number, SummaryInfo>();
 const sumBusy = new Set<number>();
+// 🔍 agent review: the same click-only contract as the summary, over this slot's own code
+// changes. Owner-only (no share counterpart) and purely advisory — nothing here gates a land.
+interface ReviewFinding { title: string; file: string; line: number | null;
+  impact: "high" | "medium" | "low"; cost: string; basis: "verified" | "inferred"; detail: string }
+interface ReviewInfo { findings?: ReviewFinding[]; scope?: string; notes?: string;
+  model?: string; at?: number; head?: string | null; dirty?: number; error?: string }
+const revCache = new Map<number, ReviewInfo>();
+const revBusy = new Set<number>();
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
 interface WtRisk { dirtyFiles: string[]; unpushedCommits: { hash: string; subject: string }[];
   shortstat: string | null; empty: boolean }
@@ -1382,7 +1390,7 @@ async function renderBoard() {
         nodes.push(land);
       }
 
-      // 4 — AGENTS: advisory, read-only. ✨ summarize.
+      // 4 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review.
       // recover a server-cached summary once per slot (GET never spawns the agent)
       if (!sumCache.has(slot)) {
         sumCache.set(slot, {});
@@ -1392,6 +1400,20 @@ async function renderBoard() {
           if (j.summary) { sumCache.set(slot, j); void renderBoard(); }
         }).catch(() => { /* transient — the button still works */ });
       }
+      // same one-shot cache recovery for the review (GET is a pure cache lookup server-side)
+      if (!revCache.has(slot)) {
+        revCache.set(slot, {});
+        void api(`/api/slots/${slot}/review`).then(async (r) => {
+          if (!r.ok) return;
+          const j = (await r.json()) as ReviewInfo;
+          if (j.findings) { revCache.set(slot, j); void renderBoard(); }
+        }).catch(() => { /* transient — the button still works */ });
+      }
+      // a result is pinned to the git state it was computed on — say so when that state moved on
+      const agedOut = (head?: string | null, dirty?: number) => {
+        const c0 = brief.commits[0];
+        return (!!head && !!c0 && !head.startsWith(c0.hash)) || dirty !== brief.uncommitted;
+      };
       const asec = el("div", "bsec");
       asec.appendChild(el("h3", "", "agents"));
       asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
@@ -1419,9 +1441,8 @@ async function renderBoard() {
       asec.appendChild(sbtn);
       if (sum?.summary) {
         // visible aging: the summary is pinned to the git state it was computed on
-        const c0 = brief.commits[0];
-        const stale = (!!sum.head && !!c0 && !sum.head.startsWith(c0.hash)) || sum.dirty !== brief.uncommitted;
-        if (stale) asec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
+        if (agedOut(sum.head, sum.dirty))
+          asec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
         asec.appendChild(el("div", "bsum", sum.summary));
         if (sum.openThreads?.length) {
           asec.appendChild(el("div", "bsumhead", "open threads"));
@@ -1432,6 +1453,56 @@ async function renderBoard() {
           asec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
       } else if (sum?.error) {
         asec.appendChild(el("div", "bsumerr", sum.error));
+      }
+      // 🔍 review — a SECOND agent beside the summarizer, over this slot's code changes.
+      // Advisory only: it never gates or alters a land, a merge or a file.
+      const rev = revCache.get(slot);
+      const rbtn = el("button", "bbtn accent",
+        revBusy.has(slot) ? "… reviewing" : rev?.findings ? "🔍 re-review" : "🔍 review") as HTMLButtonElement;
+      rbtn.disabled = revBusy.has(slot);
+      rbtn.title = "run a short-lived read-only agent over this session's own code changes — one model call, advisory only";
+      rbtn.onclick = async () => {
+        if (revBusy.has(slot)) return;
+        revBusy.add(slot);
+        rbtn.disabled = true;
+        rbtn.textContent = "… reviewing";
+        try {
+          const r = await post(`/api/slots/${slot}/review`, {});
+          const j = (await r.json().catch(() => ({}))) as ReviewInfo;
+          revCache.set(slot, r.ok ? j : { error: j.error ?? "reviewer failed" });
+        } catch {
+          revCache.set(slot, { error: "reviewer failed — network error" });
+        } finally {
+          revBusy.delete(slot);
+          void renderBoard();
+        }
+      };
+      asec.appendChild(rbtn);
+      if (rev?.findings) {
+        if (agedOut(rev.head, rev.dirty))
+          asec.appendChild(el("div", "bstale", "⚠ reviewed an older state — re-run to refresh"));
+        if (!rev.findings.length) {
+          asec.appendChild(el("div", "bsumrow", "· no findings in the reviewed changes"));
+        } else {
+          asec.appendChild(el("div", "bsumhead", `findings — ${rev.findings.length}, worst first`));
+          for (const f of rev.findings) {
+            const row = el("div", `bfind ${f.impact}`);
+            const hd = el("div", "bfindhd");
+            hd.appendChild(el("span", "bfindimp", f.impact));
+            hd.appendChild(el("span", "bfindt", f.title || "(untitled)"));
+            row.appendChild(hd);
+            row.appendChild(el("div", "bfindcite", `${f.file}:${f.line} · ${f.basis}`));
+            if (f.detail) row.appendChild(el("div", "bfinddet", f.detail));
+            if (f.cost) row.appendChild(el("div", "bfindcost", `cost: ${f.cost}`));
+            asec.appendChild(row);
+          }
+        }
+        if (rev.notes) asec.appendChild(el("div", "bsumver", `not checked: ${rev.notes}`));
+        if (rev.scope) asec.appendChild(el("div", "bsummeta", rev.scope));
+        if (rev.model && rev.at)
+          asec.appendChild(el("div", "bsummeta", `${rev.model} · ${new Date(rev.at).toLocaleTimeString()}`));
+      } else if (rev?.error) {
+        asec.appendChild(el("div", "bsumerr", rev.error));
       }
       nodes.push(asec);
 

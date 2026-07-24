@@ -912,6 +912,75 @@ if (REPO) {
     check("worktrees map derives main again after clear", wmClr.main === "main" || wmClr.main === "master", wmClr.main);
   }
 
+  // --- 🔍 review agent (FLEET_REVIEW_CMD points at a stand-in). Owner-only, click-only,
+  // cached on the exact git state. The stand-in appends one line to ./reviewruns per spawn,
+  // so "served from the cache" is checked as a FACT (no second spawn), not inferred from the
+  // payload. Its answer is deliberately worst-last and carries one uncited claim — the server
+  // must rank by impact and drop the finding that cites no line. ---
+  {
+    const reviewRuns = (): number => {
+      try { return readFileSync(`${import.meta.dir}/reviewruns`, "utf8").split("\n").filter(Boolean).length; }
+      catch { return 0; }
+    };
+    interface RvFinding { title: string; file: string; line: number | null; impact: string; cost: string; basis: string }
+    const rv = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    // a lane with BOTH a committed change (base...HEAD) and uncommitted work — the review's scope
+    await Bun.write(`${rv.cwd}/review-target.txt`, "line one\n");
+    spawnSync("git", ["-C", rv.cwd, "add", "review-target.txt"]);
+    spawnSync("git", ["-C", rv.cwd, "commit", "-qm", "lane change to review"]);
+    await Bun.write(`${rv.cwd}/review-dirty.txt`, "uncommitted\n");
+    const runs0 = reviewRuns();
+    const rv0 = (await (await get(`/api/slots/${rv.slot}/review`)).json()) as { cached: boolean; findings?: unknown };
+    check("review GET before any run → cache miss", rv0.cached === false && rv0.findings === undefined, JSON.stringify(rv0));
+    check("review GET never spawns the agent", reviewRuns() === runs0, `${reviewRuns()} vs ${runs0}`);
+    const rv1res = await post(`/api/slots/${rv.slot}/review`, {});
+    const rv1 = (await rv1res.json()) as { findings: RvFinding[]; notes: string; scope: string;
+      cached: boolean; raw: boolean; head: string | null };
+    check("review POST returns findings through the stand-in",
+      rv1res.ok && rv1.raw === false && rv1.cached === false, JSON.stringify(rv1).slice(0, 160));
+    check("review spawned the agent exactly once", reviewRuns() === runs0 + 1, `${reviewRuns()} vs ${runs0}`);
+    check("review ranks findings by impact, worst first",
+      rv1.findings.map((f) => f.impact).join(",") === "high,low", JSON.stringify(rv1.findings.map((f) => f.impact)));
+    check("review drops a finding that cites no line",
+      rv1.findings.length === 2 && !rv1.findings.some((f) => f.title === "uncited claim"), JSON.stringify(rv1.findings));
+    check("every finding cites file:line and states cost + basis",
+      rv1.findings.every((f) => !!f.file && typeof f.line === "number" && !!f.cost
+        && (f.basis === "verified" || f.basis === "inferred")), JSON.stringify(rv1.findings));
+    check("review reports its scope and what it could not check",
+      rv1.scope.includes("lane") && rv1.notes === "diff truncated", `${rv1.scope} | ${rv1.notes}`);
+    check("review pins the git state it ran on", /^[0-9a-f]{40}$/.test(rv1.head ?? ""), String(rv1.head));
+    const rv2 = (await (await post(`/api/slots/${rv.slot}/review`, {})).json()) as { cached: boolean; findings: RvFinding[] };
+    check("second review POST on an unchanged tree is a cache hit",
+      rv2.cached === true && rv2.findings.length === 2, JSON.stringify(rv2).slice(0, 120));
+    check("cache hit served without a second spawn", reviewRuns() === runs0 + 1, `${reviewRuns()} vs ${runs0}`);
+    const rv3 = (await (await get(`/api/slots/${rv.slot}/review`)).json()) as { cached: boolean; stale: boolean };
+    check("review GET now serves the cache", rv3.cached === true && rv3.stale === false, JSON.stringify(rv3));
+    // an inactive slot — derived, not hardcoded: by this point in the suite the low slot ids
+    // are held by lanes the earlier blocks opened
+    const idle = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((x) => x.cwd === null);
+    check("review rejects an inactive slot",
+      !!idle && (await post(`/api/slots/${idle.id}/review`, {})).status === 400, JSON.stringify(idle));
+    // owner-only: the guest share surface has no review endpoint at all
+    const gRev = await fetch(BASE + `/s/${shInt.id}/review`, { headers: { cookie: shICookie } });
+    check("guest share has no review endpoint", !gRev.ok && gRev.status !== 200, String(gRev.status));
+    const gRevPost = await fetch(BASE + `/s/${shInt.id}/review`, { method: "POST", headers: { cookie: shICookie } });
+    check("guest share cannot POST a review either", !gRevPost.ok && gRevPost.status !== 200, String(gRevPost.status));
+    // a recycled slot must never serve the previous session's review (a leaked entry would come
+    // back as cached:true/stale:true on the new lane's first GET)
+    await post(`/api/slots/${rv.slot}/kill`, {});
+    const rvNew = await post(`/api/slots/${rv.slot}/open-worktree`, { repo: REPO, branch: "e2e-review-recycle" });
+    check("recycled slot re-opens a fresh lane", rvNew.ok, await rvNew.text());
+    const rvAfter = (await (await get(`/api/slots/${rv.slot}/review`)).json()) as { cached: boolean; findings?: unknown };
+    check("recycled slot does not serve the previous session's review",
+      rvAfter.cached === false && rvAfter.findings === undefined, JSON.stringify(rvAfter));
+    // a lane with nothing changed answers without spending a model call at all
+    const rvEmpty = (await (await post(`/api/slots/${rv.slot}/review`, {})).json()) as { findings: RvFinding[]; notes: string };
+    check("empty diff answers with no findings and no spawn",
+      rvEmpty.findings.length === 0 && reviewRuns() === runs0 + 1, `${JSON.stringify(rvEmpty.notes)} runs=${reviewRuns()}`);
+    await post(`/api/slots/${rv.slot}/kill`, {});
+  }
+
   // --- issue 2: risk/merged checks measure against the integration branch, not the primary's
   // HEAD. A lane merged into a CONFIGURED integration branch (distinct from main) must read as
   // safe-to-remove — otherwise landLane's own removeWorktreeSafe would wedge after a
@@ -2309,7 +2378,8 @@ await Bun.sleep(500);
 const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
   "FLEET_OUTCOME_WINDOW_MS", "FLEET_OUTCOME_SUSTAIN_MS", "FLEET_HARM_ATTEST_TTL_MS",
   "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
-  "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD"]
+  "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD",
+  "FLEET_REVIEW_CMD"]
   .filter((k) => process.env[k])
   .map((k) => `${k}='${process.env[k]!.replaceAll("'", "'\\''")}' `)
   .join("");

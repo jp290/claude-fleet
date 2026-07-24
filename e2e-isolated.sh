@@ -50,6 +50,18 @@ printf '{"result": "{\\"summary\\": \\"fake summary of the session\\", \\"openTh
 EOF
 chmod +x "$DIR/fakesum"
 
+# stand-in 🔍 reviewer: same envelope, answers two findings DELIBERATELY worst-last plus one
+# uncited claim — so the test proves the server ranks by impact and drops a finding without a
+# cited line. Each run appends to $DIR/reviewruns, which is how "the cache served it without a
+# second spawn" is checked as a fact rather than inferred from the payload.
+cat > "$DIR/fakereview" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+echo run >> "$(dirname "$0")/reviewruns"
+printf '{"result": "{\\"findings\\": [{\\"title\\": \\"low one\\", \\"file\\": \\"b.ts\\", \\"line\\": 7, \\"impact\\": \\"low\\", \\"cost\\": \\"slower\\", \\"basis\\": \\"inferred\\", \\"detail\\": \\"d2\\"}, {\\"title\\": \\"uncited claim\\", \\"file\\": \\"c.ts\\", \\"impact\\": \\"high\\", \\"cost\\": \\"x\\", \\"basis\\": \\"verified\\", \\"detail\\": \\"no line\\"}, {\\"title\\": \\"high one\\", \\"file\\": \\"a.ts\\", \\"line\\": 42, \\"impact\\": \\"high\\", \\"cost\\": \\"data loss\\", \\"basis\\": \\"verified\\", \\"detail\\": \\"d1\\"}], \\"notes\\": \\"diff truncated\\"}"}'
+EOF
+chmod +x "$DIR/fakereview"
+
 # stand-in ✨ enhancer: same envelope contract, answers a fixed reworked prompt
 cat > "$DIR/fakeenh" <<'EOF'
 #!/bin/sh
@@ -157,7 +169,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # shrinks the attest-freshness window to 4s so the stale-attest → not-eligible path is testable.
 # FLEET_PROMOTION_MIN_N=1 so a single helped makes a class promotion-eligible.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 for _ in $(seq 1 60); do
@@ -173,7 +185,7 @@ cd "$DIR" || exit 1
 # dropped on restart and the post-restart server would revert to the 10-min default window. Same
 # for the dispatch repo + fake-agent cmds: dropped, the post-restart dispatcher is permanently
 # unavailable and merge/summary/commit fall back to the real `claude`.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_REVIEW_CMD="$DIR/fakereview" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

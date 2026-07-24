@@ -312,7 +312,19 @@ age)? default revive target (lowest free slot, like "+ new session")?
 
 ---
 
-## 9. Audit log  `small–medium`
+## 9. Audit log  `small–medium`  `logging+endpoint SHIPPED · UI view built 2026-07-24 (pending owner deploy)`
+
+**Status (2026-07-24):** the logging core and read endpoint are live — `audit()`
+appends 22 typed event kinds to a mode-600 `AUDIT_FILE` (own write chain, not
+`console.log`), and `GET /api/audit?limit=N` serves them owner-only, newest-first
+(`server.ts` — the `audit()` def and the `/api/audit` route). The remaining half,
+the **UI view**, is now built: a global owner-only audit overlay (🛡 in the sidebar
+tools) that fetches the trail once and narrows it client-side by slot + a
+lifecycle-only toggle, with humanized timestamps, a slot badge, and category-coloured
+kind badges — answers "what happened to slot N — killed / shelved / self-healed, and
+when?". Pure client change (`src/client.ts` + `public/index.html`); no server change,
+so no new e2e. Deferred / not built: WS guest-identity plumbing (`CF-Connecting-IP` /
+`Host`), guard()/404-rejection aggregation, retention beyond the single 5 MB rotation.
 
 **Pain:** No record of who did what, when — not slot open/kill, not guest
 auth attempts (success or failure), not share create/revoke/mode-change, not

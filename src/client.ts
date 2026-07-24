@@ -1668,6 +1668,7 @@ window.addEventListener("keydown", (e) => {
     if (autodlg.style.display === "flex") closeAutoDlg();
     if (diffdlg.style.display === "flex") closeDiffDlg();
     if (queuedlg.style.display === "flex") closeQueueDlg();
+    if (audit.style.display === "flex") closeAudit();
     setDrawer(false);
   }
 });
@@ -2540,6 +2541,108 @@ function openQueue() {
   queuedlg.style.display = "flex";
   renderQueue();
 }
+
+// --- audit trail overlay (Backlog #9): owner-only read-only lens over /api/audit ---
+// A GLOBAL log, not gated behind a live slot, because the headline question is about a slot
+// that has VANISHED — its lifecycle events are unreachable from a per-slot entry point.
+// One fetch, then all narrowing (slot filter, lifecycle-only) happens client-side.
+const audit = $("audit"), auditpanel = $("auditpanel");
+interface AuditEntry { ts: number; event: string; slot?: number; detail?: string }
+// event kind → category, mirroring how the server groups them (server.ts audit() call sites).
+// Category drives the row colour and the lifecycle-only toggle. Unlisted kinds fall to "other".
+const AUDIT_CAT: Record<string, string> = {
+  slot_open: "lifecycle", slot_kill: "lifecycle", slot_shelve: "lifecycle", self_heal_recreate: "lifecycle",
+  auto_fire: "automation", auto_skip: "automation", autos_quiet: "automation", autos_switch: "automation",
+  steward_send: "steward", steward_task: "steward", steward_journal: "steward",
+  steward_propose_outcome: "steward", steward_send_capped: "steward",
+  owner_auth_fail: "security", share_auth_ok: "security", share_create: "security", share_revoke: "security",
+  share_mode_change: "security", guest_ws_connect: "security", guest_ws_disconnect: "security",
+  land_note_fail: "repo", repo_undo_land: "repo",
+};
+const LIFECYCLE_KINDS = new Set(["slot_open", "slot_kill", "slot_shelve", "self_heal_recreate"]);
+// Generic decode = show the raw detail. A per-kind formatter ONLY for the lifecycle kinds whose
+// raw string is cryptic and load-bearing (the ones that answer "what happened to slot N"). No
+// 22-kind framework — every other kind's detail is already legible enough shown plainly.
+function decodeAudit(event: string, detail?: string): string {
+  switch (event) {
+    case "slot_open": return detail ? `opened in ${baseName(detail)}` : "opened";
+    case "slot_kill": return "killed";
+    case "slot_shelve": {
+      const m = detail?.match(/^note:(\d+)$/);
+      return m ? `shelved · ${m[1]}-char note` : "shelved";
+    }
+    case "self_heal_recreate":
+      return detail === "resumed" ? "self-healed (resumed)"
+        : detail === "created" ? "self-healed (recreated fresh)"
+        : `self-healed${detail ? ` (${detail})` : ""}`;
+    default: return detail ?? "";
+  }
+}
+let auditData: AuditEntry[] = [];
+let auditSlot: number | "all" = "all";
+let auditLife = false;
+
+function renderAudit() {
+  auditpanel.replaceChildren(el("h2", "", "Audit trail — what Fleet did"));
+  const ctl = el("div", "auditctl");
+  // slot filter (the primary axis): "all" + every slot id present in the trail, ascending
+  const slots = [...new Set(auditData.map((e) => e.slot).filter((s): s is number => typeof s === "number"))]
+    .sort((a, b) => a - b);
+  const sel = el("select", "") as HTMLSelectElement;
+  const optAll = el("option", "", "all slots") as HTMLOptionElement;
+  optAll.value = "all";
+  sel.appendChild(optAll);
+  for (const s of slots) {
+    const o = el("option", "", `slot ${s}`) as HTMLOptionElement;
+    o.value = String(s);
+    sel.appendChild(o);
+  }
+  sel.value = auditSlot === "all" ? "all" : String(auditSlot);
+  sel.onchange = () => { auditSlot = sel.value === "all" ? "all" : Number(sel.value); renderAudit(); };
+  ctl.appendChild(sel);
+  const lifeBtn = el("button", `shrbtn${auditLife ? " active" : ""}`, "lifecycle only") as HTMLButtonElement;
+  lifeBtn.title = "show only slot_open / slot_kill / slot_shelve / self_heal_recreate";
+  lifeBtn.onclick = () => { auditLife = !auditLife; renderAudit(); };
+  ctl.appendChild(lifeBtn);
+  auditpanel.appendChild(ctl);
+
+  const rows = auditData.filter((e) =>
+    (auditSlot === "all" || e.slot === auditSlot) && (!auditLife || LIFECYCLE_KINDS.has(e.event)));
+  ctl.appendChild(el("span", "auditcount", `${rows.length} of ${auditData.length} shown`));
+
+  const list = el("div", "");
+  list.id = "auditlist";
+  if (!rows.length) list.appendChild(el("div", "histnone", "no events match this filter"));
+  for (const e of rows) {
+    const cat = AUDIT_CAT[e.event] ?? "other";
+    const row = el("div", `auditrow cat-${cat}`);
+    row.appendChild(el("span", "aud-ts", fmtTs(e.ts)));
+    const slotBadge = el("span", `aud-slot${typeof e.slot === "number" ? "" : " none"}`,
+      typeof e.slot === "number" ? String(e.slot) : "—");
+    row.appendChild(slotBadge);
+    row.appendChild(el("span", "aud-kind", e.event));
+    row.appendChild(el("span", "aud-detail", decodeAudit(e.event, e.detail)));
+    list.appendChild(row);
+  }
+  auditpanel.appendChild(list);
+}
+
+async function openAudit() {
+  setDrawer(false);
+  auditSlot = "all";
+  auditLife = false;
+  auditData = [];
+  const res = await api("/api/audit?limit=1000");
+  if (res.ok) {
+    const data = (await res.json()) as { events?: AuditEntry[] };
+    auditData = (data.events ?? []).filter((e): e is AuditEntry => typeof e?.ts === "number" && typeof e?.event === "string");
+  }
+  renderAudit(); // server already returns newest-first; we preserve that order
+  audit.style.display = "flex";
+}
+function closeAudit() { audit.style.display = "none"; }
+audit.addEventListener("click", (e) => { if (e.target === audit) closeAudit(); });
+$("auditbtn").onclick = () => void openAudit();
 
 function copyLine(label: string, value: string): HTMLElement {
   const row = el("div", "shrline");

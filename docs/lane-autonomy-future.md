@@ -34,9 +34,27 @@ durable **#18 recorder** (component 2), five of the six components now exist in 
 remaining autonomy move is component 5 — the graded auto-land of *conflict* resolutions** (today they
 always stop for a human); mechanism is ready to build opt-in/off, but the DOCTRINE bars enabling it
 until the ledger yields revert data. **Owner decision 2026-07-24: accumulate first, then graduate.**
-BLOCKER surfaced same day: the live ledger is **EMPTY** (`/api/lane-outcomes` total=0) — outcomes emit
-ONLY from Fleet's land/kill/shelve/undo routes, so accumulation requires agent lanes actually dispatched
-+ landed *through Fleet*, not `git merge` hand-lands. Accumulate-first is inert until that workflow runs.*
+BLOCKER surfaced same day — **RESOLVED 2026-07-24 later**: the ledger was empty because outcomes emit
+ONLY from Fleet's land/kill/shelve/undo routes while lands were going in by hand. First real entry
+recorded when `fleet/review-agent` landed *through Fleet* (`7e5c777`), lane spawned with an explicit
+model pin so the row carries `claude-opus-5[1m]` instead of an honest `null`.
+
+**That first entry immediately exposed a RECORDER DEFECT — the `landed` payload is zeroed.** For a land
+of 2 commits / 5 files / +318−7 it recorded `shortstat ""`, `commitCount 0`, `filesTouched []`,
+`e2eTouched false`, `verified null`. Two independent causes, BOTH on the clean auto-land path — the
+exact path autonomy would expand:
+- `worktree.base` is a branch NAME (`server.ts:1012`, `integrationBranch()`), re-resolved at record
+  time. Landing has already advanced main past the lane, so `base..HEAD` and `base...HEAD` compute to
+  nothing. `killed`/`shelved` rows are unaffected (main has not moved yet) — only `landed` is hit.
+- `verified` reads `mergeLast` (`server.ts:2587`), but the merge route deletes that entry before the
+  job starts (`4635`) and only re-writes it after `landLane` has already run (`2942`). It is therefore
+  structurally always `null` on the clean auto-land. The `verify` result sits in a local variable right
+  next to the `landLane` call, and `LandFacts` exists (`2506`) precisely because reading the mutable
+  `mergeLast` races the verdict-write — the mechanism is there, `verified` just doesn't use it.
+
+Accumulation now runs, but **the landed rows are not yet trustworthy — do not set any gate from them
+until the recorder fix lands.** The first row stays wrong on purpose: it could be backfilled from its
+(correct) `headSha`, but that would be reconstruction posing as recording.*
 
 ## The shift these ideas describe
 

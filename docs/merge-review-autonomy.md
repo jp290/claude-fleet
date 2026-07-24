@@ -190,10 +190,17 @@ signal for a future graded gate.
 Repair loop + tiered gate + ①a ledger + ② reviewer + existing undo-land together are the *prerequisites*
 `lane-autonomy-future.md` demands (reversibility + documentation + a calibration ledger). The one move
 that would ADD autonomy — graded auto-land of *conflict* resolutions (component 5) — is deliberately
-deferred until the ledger has revert data to set the gate from. **BUT: the live ledger is EMPTY
-(`/api/lane-outcomes` total=0; `lane-outcomes.jsonl` absent) — 9 historical `fleet/land` notes exist but
-all predate the #18 recorder, and no Fleet-managed lane has landed/killed through `landLane` since.**
-Outcomes emit ONLY from Fleet's own land/kill/shelve/undo routes — a `git merge` hand-land (or dev in the
-main checkout) records nothing. So "accumulate first" only produces data if agent lanes are actually
-dispatched and landed *through Fleet*. That is a workflow decision the owner must make before the
-accumulate→calibrate→graduate path can run.
+deferred until the ledger has revert data to set the gate from. The ledger was EMPTY through 2026-07-24
+midday — outcomes emit ONLY from Fleet's own land/kill/shelve/undo routes, so `git merge` hand-lands
+recorded nothing. **Resolved the same evening**: `fleet/review-agent` was dispatched as a lane and landed
+through Fleet (`7e5c777`), writing the first real row.
+
+**③ the `🔍 review` agent shipped in that lane (`ab59a71` + `7e5c777`)** — owner-only, click-only,
+advisory `POST/GET /api/slots/:id/review` mirroring the ✨ summarize plumbing over the slot's OWN diff;
+uncited findings are dropped server-side and `basis` never self-upgrades to `verified`. It gates nothing
+and is deliberately absent from the guest share surface.
+
+**Open defect — the landed rows are NOT yet trustworthy.** That first row zeroed its whole calibration
+payload (`commitCount 0`, `filesTouched []`, `verified null` for a 2-commit / 5-file land). Root causes
+and scope: see `lane-autonomy-future.md`, the 2026-07-24-later status note. Both sit on the clean
+auto-land path. **Do not set the graded gate from ledger data until that fix lands.**

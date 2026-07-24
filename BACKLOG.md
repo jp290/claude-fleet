@@ -96,6 +96,20 @@ its actual distinct job; its generic diff hidden there so the review state has o
 diff + one land). Two server-side gaps found while auditing that UI, deferred — see
 Hardening #10 and #11.
 
+**2026-07-24 — land-hardening program, Phase 3 (resolver briefing) shipped:** the
+conflict-resolver's mechanism map had five items; ③ **resolver briefing** is now done —
+`runMerge`'s prompt was extracted to a pure `buildMergePrompt()` (`merge-prompt.ts`) and
+given, strictly additively, (1) MAIN's intent (`git log mergeBase..main`, the "theirs" side
+it previously had to reverse-engineer), (2) three-way ours(lane)/theirs(main) orientation,
+(3) a hard scope-rule (edit ONLY between conflict markers — forecloses the whole-file mangle
+seen in a real land), and (4) verified-contract awareness (its output is git-re-verified +
+runVerify'd, auto-rejected on any dropped symbol/broken type/failed test). No control-flow,
+git-re-verification, or JSON-parsing change. The extraction is unit-tested in `fleet-e2e.ts`
+(deterministic: asserts the info is present AND the DATA-block/JSON-contract/sandbox-rule
+invariants hold) — the resolver's *actual* effect is unfakeable (real agent behind
+FLEET_MERGE_CMD) so no e2e claims to exercise it. **Remaining map follow-ups:** ②
+mechanical-conflict determinism, ⑤ verdict/staleness as the review headline.
+
 ---
 
 ## 1. Esc key on desktop  `quick win`

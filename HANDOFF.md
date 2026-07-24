@@ -200,10 +200,14 @@ model: built in one lane, and it produced a real, load-bearing finding on its se
 
 1. ~~Land the recorder fix.~~ **Done** — landed and deployed (§3). Row 3 will be the first real test
    of it; nothing else has to happen for that.
-2. **Perception before any new capability.** ①b the outcome feed (`merge-review-autonomy.md`
-   component #6) **plus** persisting review findings onto the outcome row, **plus** auto-running ③ when
-   a lane goes done-looking (§6). Today the ledger is write-only and reviews evaporate on the next
-   deploy: Fleet cannot see itself. Per `docs/README.md` §"Four capabilities", in-flight steering (c)
+2. **Perception before any new capability.** ①b the outcome feed (`lane-autonomy-future.md` item 6,
+   "Post-hoc review feed" — the earlier pointer to `merge-review-autonomy.md` component #6 was wrong;
+   that doc's §6 is "Hard rules") **plus** persisting review findings onto the outcome row, **plus**
+   auto-running ③ when a lane goes done-looking (§6). Today the ledger is write-only and reviews
+   evaporate on the next deploy: Fleet cannot see itself.
+   **Designed 2026-07-25 in `docs/perception-layer.md`** — order corrected to c → b → a (b has nothing
+   to persist until c exists), `done-looking` must become a *deterministic* predicate rather than the
+   digest worker's LLM label, and the persisted review must carry its own staleness. Per `docs/README.md` §"Four capabilities", in-flight steering (c)
    is not responsibly buildable without this — and neither is parallelism (§6.1). This is the
    ambitious-but-correct piece, and it is also the *small* one: the rows exist, the schema exists, the
    findings exist in RAM. It is wiring, not invention.

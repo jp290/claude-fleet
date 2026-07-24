@@ -1977,7 +1977,8 @@ if (REPO) {
     type Outcome = { ts: number; branch: string | null; base: string | null; headSha: string | null;
       disposition: string; model: string | null; briefHash: string | null; shortstat: string;
       commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
-      sessionMs: number | null; ownerPrompts: number };
+      sessionMs: number | null; ownerPrompts: number;
+      resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
     // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
@@ -2015,6 +2016,10 @@ if (REPO) {
       /^[0-9a-f]{40,64}$/.test(rec1?.headSha ?? "") && typeof rec1?.base === "string", JSON.stringify({ head: rec1?.headSha, base: rec1?.base }));
     check("outcome: landed record counts the owner prompt + hashes the brief (attention proxies)",
       (rec1?.ownerPrompts ?? 0) >= 1 && /^[0-9a-f]{12}$/.test(rec1?.briefHash ?? ""), JSON.stringify({ op: rec1?.ownerPrompts, bh: rec1?.briefHash }));
+    // land-shape facts: a direct ⏏ land of already-pushed work — human-confirmed, no conflict, no repair
+    check("outcome: direct ⏏ land records confirmedByHuman:true, resolvedConflict:false, repairRounds:0",
+      rec1?.confirmedByHuman === true && rec1?.resolvedConflict === false && rec1?.repairRounds === 0,
+      JSON.stringify({ c: rec1?.confirmedByHuman, rc: rec1?.resolvedConflict, rr: rec1?.repairRounds }));
 
     // (2) KILLED-DIRTY — a lane with a commit, abandoned via ✕ kill
     const oc2 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
@@ -2060,6 +2065,29 @@ if (REPO) {
     check("outcome: reverted land → reverted disposition, commitCount 1, correct file",
       rec5?.disposition === "reverted" && rec5?.commitCount === 1 && (rec5?.filesTouched ?? []).includes("reverted.txt"),
       JSON.stringify(rec5));
+
+    // (6) LANDED after a REPAIRED conflict resolution, confirm-landed by the owner — the full
+    // autonomy-calibration record: resolvedConflict:true, repairRounds>=1 (verify went red→green via
+    // today's repair loop), confirmedByHuman:true. This ties the repair-loop signal into the ledger.
+    await setMergeMode("do");
+    const ocR = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${ocR.cwd}/seed.txt`, "seed\nocR-lane VERIFYBAD\n"); // conflict + sabotage → resolution red → repaired
+    spawnSync("git", ["-C", ocR.cwd, "commit", "-aqm", "ocR lane work (sabotaged)"]);
+    await Bun.write(`${oRepo}/seed.txt`, "seed\nocR-main\n"); // same line on main → conflict → agent resolves
+    spawnSync("git", ["-C", oRepo, "commit", "-aqm", "ocR main work"]);
+    await settleForMerge(ocR.slot);
+    await post(`/api/slots/${ocR.slot}/merge`, {});
+    const vR = await waitMerge(ocR.slot);
+    check("outcome: repaired conflict resolution paused for review with repairRounds>=1",
+      !vR.gone && vR.last?.status === "resolved" && (vR.last?.repairRounds ?? 0) >= 1 && vR.last?.verify?.ok === true,
+      JSON.stringify(vR.last));
+    const rConf = await post(`/api/slots/${ocR.slot}/merge`, { confirm: true });
+    check("outcome: owner confirm-lands the repaired resolution", rConf.ok, await rConf.text());
+    const recR = forBranch(await readOutcomes(), ocR.branch);
+    check("outcome: confirm-land of a repaired conflict → resolvedConflict:true, repairRounds>=1, confirmedByHuman:true",
+      recR?.disposition === "landed" && recR?.resolvedConflict === true
+      && (recR?.repairRounds ?? 0) >= 1 && recR?.confirmedByHuman === true, JSON.stringify(recR));
+    await setMergeMode("blocked"); // restore the suite default
 
     // access model: the read route is owner-only — no token → 401 (same as /api/audit)
     check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);

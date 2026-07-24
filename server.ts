@@ -3,7 +3,7 @@ import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, 
 import { resolve, dirname, basename } from "node:path";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
-import { buildMergePrompt } from "./merge-prompt";
+import { buildMergePrompt, buildRepairPrompt } from "./merge-prompt";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -2178,6 +2178,13 @@ async function runEnhance(text: string, cwd: string): Promise<string> {
 // POST starts the run and the board's poll reads progress/result via GET.
 const MERGE_CMD = process.env.FLEET_MERGE_CMD ?? null; // tests: subprocess stand-in
 const MERGE_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_MERGE_TIMEOUT_MS ?? 480_000) | 0);
+// Bounded resolver↔verify repair loop (design note §3): when a CONFLICT resolution rebases cleanly
+// but the deterministic verify fails, feed the exact failure back to the resolver for up to N repair
+// rounds. Clamped 0..3 (0 = disabled, today's one-shot behavior). This NEVER changes what auto-lands
+// — the conflict path always stops for human review regardless (mergeJob) — it only improves the
+// verify state the human reviews (a repaired-green resolution instead of a dead-ended red one). The
+// authority every round is git + a re-run of runVerify, never the agent's word.
+const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MERGE_REPAIR_ROUNDS ?? 2) | 0));
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.
 // Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
@@ -2222,7 +2229,11 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
   verify?: { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
-  landError?: string }
+  landError?: string;
+  // how many bounded resolver↔verify repair rounds ran (conflict path only) before this verdict
+  // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
+  // to repair; `verify` above is the FINAL (post-repair) result. Absent/0 = no repair was needed.
+  repairRounds?: number }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -2543,6 +2554,31 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
   }
 }
 
+// One repair round: hand the resolver the exact verify failure and let it fix the rebased tree.
+// Invoked exactly like runMerge (same MERGE_CMD/session, timeout, tools). The returned status is
+// the agent's NARRATIVE only — mergeJob's loop re-establishes the git-verified state and re-runs
+// runVerify to decide, never trusting this word (believe git, not the agent).
+async function runRepair(cwd: string, branch: string, main: string, conflicted: string[],
+  verify: { cmd: string; out: string }): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
+  const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted });
+  let out = MERGE_CMD
+    ? await summaryViaSubprocess(MERGE_CMD, prompt, cwd, MERGE_TIMEOUT_MS)
+    : await summaryViaSession(prompt, cwd, '"status"', { extraArgs: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS });
+  try {
+    const env = JSON.parse(out) as { result?: unknown };
+    if (typeof env.result === "string") out = env.result.trim();
+  } catch { /* not an envelope */ }
+  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  try {
+    const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
+    if (j.status !== "repaired" && j.status !== "blocked")
+      return { status: "unparseable", detail: `agent answered without a status: ${body.slice(0, 200)}` };
+    return { status: j.status, detail: typeof j.detail === "string" ? j.detail.slice(0, 600) : "" };
+  } catch {
+    return { status: "unparseable", detail: `agent answer was not the JSON contract: ${body.slice(0, 200)}` };
+  }
+}
+
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
   let res: MergeLast;
   try {
@@ -2573,16 +2609,48 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // field stays absent and today's behavior is unchanged. mainSha === the main just
         // rebased onto, reused below as mainBefore for the clean-path land.
         const mainSha = (await git(root, "rev-parse", main)).out;
-        const verify = await runVerify(cwd, mainSha);
+        let verify = await runVerify(cwd, mainSha);
+        // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
+        // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
+        // than dead-end at a red verdict, feed the exact failure back to the resolver for up to
+        // MERGE_REPAIR_ROUNDS rounds. Authority every round is git + a re-run of runVerify, never the
+        // agent's word: the repair must leave a clean tree still rebased onto main, and only a fresh
+        // runVerify decides ok. This never changes what LANDS — the conflict path always stops for
+        // human review below — it only improves the verify state that review sees.
+        let repairRounds = 0;
+        if (!pre.clean && verify && !verify.ok && MERGE_REPAIR_ROUNDS > 0) {
+          for (let round = 1; round <= MERGE_REPAIR_ROUNDS; round++) {
+            const rep = await runRepair(cwd, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out });
+            if (rep.status === "blocked") break; // agent aborted, tree left pristine — nothing to re-verify
+            const rst = await git(cwd, "status", "--porcelain");
+            if (rst.code !== 0 || rst.out) {
+              // the repair left uncommitted edits (contract says commit): drop that unreviewed,
+              // unverified scratch so the human never gets a dirty (land-blocked) tree — this
+              // makes the round a no-op, exactly as if no repair had run. Scoped to the isolated
+              // lane worktree; the committed rebased resolution is untouched.
+              await git(cwd, "reset", "--hard", "HEAD");
+              break;
+            }
+            const anc2 = await git(root, "merge-base", "--is-ancestor", main, branch);
+            if (anc2.code !== 0) break; // repair broke the rebase onto main — abandon, keep prior state
+            repairRounds = round;
+            const rv = await runVerify(cwd, mainSha);
+            if (rv) verify = rv;
+            if (verify && verify.ok) break; // repaired to green — done
+          }
+        }
         if (!pre.clean) {
           // CONFLICT path: the agent made semantic choices resolving conflicts. The rebase is
           // git-verified, but a human hasn't seen those choices — so we STOP here (no ff-merge,
           // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
           // agent left it, rebased onto main; the owner reviews the diff and confirms the land.
           // verify rides along as advisory context for that review (it never changes the stop).
+          const repairNote = repairRounds > 0
+            ? ` verify ${verify?.ok ? "passed" : "still failed"} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
+            : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
-            conflicted: pre.conflicted, verify,
-            detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"}; review the diff, then land.`.slice(0, 600) };
+            conflicted: pre.conflicted, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
+            detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`.slice(0, 600) };
         } else if (verify && !verify.ok) {
           // CLEAN path but verify RED: today this would auto-land, but the rebased tree does
           // NOT pass verify — landing it lands broken code. Consciously downgrade the auto-land

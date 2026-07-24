@@ -66,9 +66,23 @@ chmod +x "$DIR/fakeenh"
 # claim rebased · prose — really resolve+rebase, then answer off-contract (in prose)
 cat > "$DIR/fakemerge" <<'EOF'
 #!/bin/sh
-cat >/dev/null
+req="$(cat)"
 ctl="$(dirname "$(dirname "$PWD")")/mergemode"
 mode="$(cat "$ctl" 2>/dev/null || echo blocked)"
+# REPAIR call: the server re-invokes this agent with a "REPAIRING" prompt when a conflict
+# resolution rebased cleanly but the deterministic verify failed. The fix here mirrors what a
+# real repair agent does — make the tree pass: scrub the VERIFYBAD sabotage marker the resolution
+# left, commit (no rebase), report repaired. The server re-verifies and decides.
+case "$req" in
+  *REPAIRING*)
+    git grep -lI VERIFYBAD -- . 2>/dev/null | while IFS= read -r f; do
+      tmp="$(mktemp)"; sed 's/VERIFYBAD//g' "$f" > "$tmp" && mv "$tmp" "$f"
+    done
+    git add -A >/dev/null 2>&1
+    git commit -qm "repair: scrub VERIFYBAD marker" >/dev/null 2>&1
+    printf '{"result": "{\\"status\\": \\"repaired\\", \\"detail\\": \\"fake repair — scrubbed the marker\\"}"}'
+    exit 0 ;;
+esac
 # hang — stay in flight (sleep) so a test can recycle the slot WHILE the merge job runs,
 # proving the job's mergeInflight/mergeStart entries are dropped on recycle (F5). No git.
 if [ "$mode" = hang ]; then

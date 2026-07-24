@@ -653,15 +653,30 @@ if (REPO) {
   // torn down (the job landed the lane), which IS the success signal for `do`
   type VerifyField = { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
   type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string };
+  // Poll the async merge job until it settles. The old bound (100×100ms = 10s) was too tight:
+  // a real-git land (rebase + verify + ff + teardown) under concurrent load can overrun 10s, and
+  // the loop then returned {gone:false,last:null} — INDISTINGUISHABLE from a legit "not landed"
+  // verdict, so a slow success read as a spurious failure (the ref-advance flake). Two-part fix:
+  //  1. Right-sized bound: WAIT_MERGE_MS is a generous test-harness ceiling. The server caps the
+  //     only genuinely-slow merge step (agent verify) at MERGE_TIMEOUT_MS (server.ts, ≥60s,
+  //     default 480s), so a legit job never runs longer than that; 60s comfortably covers the
+  //     git-under-load worst case the isolated suite actually exercises (empirically ≤~1.5s),
+  //     while staying far below the server cap so a real deadlock still surfaces quickly.
+  //  2. LOUD timeout: on exhausting the bound we THROW, not silently return null. A slow-but-
+  //     successful land just waits longer; a genuinely hung merge fails visibly and can never be
+  //     mistaken for a real verdict. That distinction is the whole point.
+  const WAIT_MERGE_MS = 60_000;
+  const WAIT_MERGE_STEP_MS = 100;
   const waitMerge = async (slot: number): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
-    for (let i = 0; i < 100; i++) {
+    const iters = Math.ceil(WAIT_MERGE_MS / WAIT_MERGE_STEP_MS);
+    for (let i = 0; i < iters; i++) {
       const r = await get(`/api/slots/${slot}/merge`);
       if (r.status === 400) return { gone: true, last: null };
       const j = (await r.json()) as { running: boolean; last: MergeVerdict | null };
       if (!j.running) return { gone: false, last: j.last };
-      await Bun.sleep(100);
+      await Bun.sleep(WAIT_MERGE_STEP_MS);
     }
-    return { gone: false, last: null };
+    throw new Error(`waitMerge timed out after ${WAIT_MERGE_MS / 1000}s for slot ${slot} — merge job never settled (genuine hang, not a verdict)`);
   };
 
   // FIX 9 adds an idle gate: a merge is refused while the pane produced output within

@@ -22,7 +22,20 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # foreign-repo lane prints a recognizable "skipped" line and exits 0 (honest, never a
 # false red that would wedge a clean foreign-repo land in review). Per-repo config is the
 # clean fix later (orchestrator-autonomy.md §6.2); this global guard is the V1-era honest form.
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts'
+# TIERED land gate (docs/merge-review-autonomy.md §7, lane-autonomy-future.md component 4): tsc alone
+# is type-total but behavior-partial — a rebase that drops a const together with its only use stays
+# type-consistent, so tsc passes and the regression reaches main (observed). e2e-claude-gate.sh is the
+# fast behavior tier: it boots the whole server.ts and drives real routes (open slot, autos, dispatch,
+# model-pin, steward sends), so anything that breaks module-load or server boot is caught here that tsc
+# misses. Honest scope boundary — it does NOT assert the share/guest or audit paths, so it is
+# total-ENOUGH, not total; the slow full audit (e2e-isolated) stays a post-land check, undo-land the
+# rollback. Deterministic (own $$ socket/dir, no known flake) and exit-codes correctly, so it hard-gates.
+# Validated 2026-07-24 to run in the runVerify context WITHOUT node_modules (the lane-worktree
+# condition — server.ts imports only node:/bun:/local, boots with no npm): ALL PASS from a
+# node_modules-less tree in ~46s. That ~46s is the per-land cost — the price of behavior-gating.
+# NOT added: e2e-isolated.sh — it carries the known ~600ms pane-capture flake; a deterministic gate
+# cannot sit on a flaky suite, so it graduates in only once that flake is fixed.
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 while true; do

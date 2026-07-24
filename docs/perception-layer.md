@@ -20,6 +20,13 @@ steering** is not responsibly buildable without perception, and neither is footp
 parallelism (a fleet you cannot observe produces a backlog of unreviewed green work — the
 expensive failure mode, not the cheap one).
 
+One precision on that claim (2026-07-25): "Fleet cannot see itself" conflates two senses.
+**Perception-of-now already exists** — `stewardSlotsView` and the digest see every live slot's
+deterministic state. What is missing is **outcome memory**: what a lane's work turned out to be
+worth, and what review said about it. (c) is gated on the *latter* — steering needs a track
+record to calibrate interventions against, not just a live view. This layer builds the memory
+half; the live half only gains the `done-looking` predicate.
+
 This note covers the three pieces that close it, and fixes their order.
 
 ## 2. Order — c → b → a, and why it is not the obvious one
@@ -87,10 +94,19 @@ review attaches there (the `reverted` record is built without a live slot and ho
 nothing).
 
 **The hard rule: a persisted review must carry whether it actually described what landed.** The
-cache is keyed on the git state it was computed for; by land time the tree may have moved. So
-the row records the review *and* the relation between them — matching key vs superseded — and a
-review computed for a different state is recorded as such or not at all. It is never silently
-presented as coverage of the landed diff.
+cache is keyed on the git state it was computed for; by land time the tree may have moved.
+
+**Corrected 2026-07-25 (the first version of this rule was wrong):** the relation must be
+**content identity, not commit identity**. The land path *rebases* the lane onto main before the
+ff-merge, so after any rebase-land the lane's HEAD differs from the reviewed HEAD even though the
+reviewed diff is byte-identical — a key comparison would mark those reviews "superseded"
+chronically, and precisely under the parallel dispatch this layer exists to enable (serial lands
+mostly no-op the rebase, which is why the defect stays latent today). The honest relation is
+`git patch-id --stable` over the reviewed diff vs the landed diff: identical content after a
+clean rebase → covered; real content drift → superseded. The *spawn dedup key* stays HEAD-based —
+cheap and correct for "at most once per git state" — only the persisted relation compares
+patch-ids. A review computed for genuinely different content is recorded as such or not at all;
+it is never silently presented as coverage of the landed diff.
 
 This is the same discipline as `LandFacts.verified` (grep the type): an explicit "we know no
 review covered this" is an **answer**, and must not be representable as a missing field that
@@ -106,6 +122,13 @@ calibrated on them.
 and structurally 404 on share hosts. Lane 2 is the reader: the ledger rendered as *what landed,
 how, and what review said about it*. `lane-autonomy-future.md` item 6 ("Post-hoc review feed")
 carries the intent, including `↩ undo` per row — **review becomes observing, not blocking.**
+
+Two honesty constraints for the renderer (they belong in lane 2's brief):
+- **Empty findings ≠ clean.** ③ is diff-bounded by construction and DP1 proved it misses defects
+  living outside the diff. A review with zero findings must render as "the diff-bounded reviewer
+  found nothing", with its `scope`/`notes`, never as a green checkmark.
+- **`↩ undo` is one-step.** Only the newest land is undoable; rendering undo on every row
+  implies a capability the land spine deliberately does not have.
 
 Note the citation: the feed is item 6 of `lane-autonomy-future.md`, **not** of
 `merge-review-autonomy.md` (whose §6 is "Hard rules"). Both HANDOFF and `README.md` carried the

@@ -1,7 +1,7 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
 import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync, renameSync, copyFileSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
@@ -24,6 +24,9 @@ const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
 const AUDIT_FILE = `${import.meta.dir}/audit.jsonl`;
 const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
+// per-lane attributed-outcome trail — one server-stamped fact per lane terminal event (see
+// buildLaneOutcome). Rotated by appendEvent at AUDIT_ROTATE_BYTES, same as AUDIT_FILE.
+const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
 const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
@@ -930,8 +933,12 @@ async function landLane(s: Slot): Promise<{ error: string; code: number } | { re
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
   const { repo, branch } = s.worktree;
   const path = s.cwd;
+  // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
+  // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
+  const landed = await buildLaneOutcome(s, "landed");
   const fail = await removeWorktreeSafe(repo, path, branch);
   if (fail) return fail;
+  emitLaneOutcome(landed);
   // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
   // (which handles aborts) sees nothing left to detach
   for (const t of tasks) {
@@ -2280,6 +2287,140 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // survives a restart even when a downstream saveState is skipped (e.g. the mergeJob tail's
   // recycle guard on the slot-recycled teardown-failure sub-case).
   await writeLandNote(repo, branch, mainBefore, mainAfter, prov); // best-effort — never throws
+}
+
+// --- per-lane attributed-outcome RECORDER. Appends ONE server-stamped fact at each of a lane's
+// terminal events (land / kill / shelve / revert), so the fleet can eventually learn which
+// model + brief + task-class produces landable work — from REAL lanes, not a synthetic eval set.
+// Deliberately a RECORDER: it never ranks, gates, promotes, or renders a verdict; analysis is a
+// LATER, higher-volume consumer. Every field is assembled SERVER-SIDE from git + slot state, so a
+// pane/client can never write into this trail (same choke-point stance as audit + the prompt log).
+// The fingerprint (shortstat/commitCount/filesTouched/e2eTouched) reuses briefPayload's base...HEAD
+// footprint computation — it doubles as the DIFFICULTY proxy that later makes cross-lane
+// comparison valid. model + briefHash are recorded as an ENTANGLED pair (a strong brief lets a
+// weak model succeed): never attribute an outcome to the model alone.
+type LaneDisposition = "landed" | "reverted" | "shelved" | "killed-dirty" | "killed-empty";
+interface LaneOutcome {
+  ts: number;
+  branch: string | null;
+  base: string | null;   // the lane's fork point (base branch tip when forked)
+  headSha: string | null;
+  disposition: LaneDisposition;
+  model: string | null;  // s.model, or null when unpinned — recorded honestly, NEVER guessed
+  briefHash: string | null; // stable short hash of the lane's FIRST owner prompt (the brief)
+  shortstat: string;
+  commitCount: number;
+  filesTouched: string[];
+  e2eTouched: boolean;   // did filesTouched include an e2e / test file
+  verified: boolean | null; // the merge verify verdict (ok) if one is on record, else null
+  sessionMs: number | null; // attention-cost proxy: terminal ts - session start
+  ownerPrompts: number;     // attention-cost proxy: owner-sourced prompts sent to this lane
+}
+// e2e/test filename heuristic (the difficulty signal "this lane touched the safety net")
+function isTestPath(p: string): boolean {
+  return /(^|\/)tests?\//i.test(p) || /(e2e|\.test\.|\.spec\.|_test\.|-test\.)/i.test(p);
+}
+// owner-sourced prompt count + first prompt for a lane, read from the durable prompt journal —
+// the only record carrying a `source` tag. Keyed by the lane's UNIQUE worktree cwd, which bounds
+// it to this lane without needing the transcript's session-start time. Best-effort: any read/parse
+// failure yields zeros, never a thrown terminal event.
+async function laneOwnerPrompts(cwd: string): Promise<{ count: number; firstText: string | null }> {
+  try {
+    if (!existsSync(PROMPT_LOG)) return { count: 0, firstText: null };
+    const text = await Bun.file(PROMPT_LOG).text();
+    let count = 0;
+    let firstText: string | null = null;
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      try {
+        const p = JSON.parse(line) as { cwd?: unknown; source?: unknown; text?: unknown };
+        if (p.source === "owner" && p.cwd === cwd) {
+          count++;
+          if (firstText === null && typeof p.text === "string") firstText = p.text;
+        }
+      } catch { /* torn mid-append line — skip */ }
+    }
+    return { count, firstText };
+  } catch {
+    return { count: 0, firstText: null };
+  }
+}
+function briefHashOf(text: string | null): string | null {
+  return text ? createHash("sha256").update(text).digest("hex").slice(0, 12) : null;
+}
+// assemble a lane's outcome from git + slot state, at a live-lane terminal event. `kind` "killed"
+// resolves to killed-dirty (HAD commits — real work abandoned) vs killed-empty (no commits) from
+// the commit count itself. Must be called while s.cwd/s.worktree are still set AND, for a land,
+// BEFORE the worktree is removed (git reads need the tree). Returns null for a non-lane slot.
+async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed"): Promise<LaneOutcome | null> {
+  if (!s.cwd || !s.worktree) return null;
+  const cwd = s.cwd;
+  const base = await laneBaseRef(s);
+  const head = await git(cwd, "rev-parse", "HEAD");
+  const headSha = head.code === 0 ? head.out : null;
+  let shortstat = "";
+  let commitCount = 0;
+  let filesTouched: string[] = [];
+  if (base) {
+    // same refs briefPayload uses: three-dot (base...HEAD) footprint so a lane behind main shows
+    // only ITS OWN changes; two-dot (base..HEAD) for the lane's own commit count.
+    const sh = await git(cwd, "diff", `${base}...HEAD`, "--shortstat", "--no-color");
+    shortstat = sh.code === 0 ? sh.out : "";
+    const cc = await git(cwd, "rev-list", "--count", `${base}..HEAD`);
+    commitCount = cc.code === 0 ? Number(cc.out) || 0 : 0;
+    const nm = await git(cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
+    filesTouched = nm.code === 0 ? nm.out.split("\n").filter(Boolean).slice(0, 200) : [];
+  }
+  const disposition: LaneDisposition = kind === "killed"
+    ? (commitCount > 0 ? "killed-dirty" : "killed-empty")
+    : kind;
+  const start = sessionStart(s);
+  const ts = Date.now();
+  const { count: ownerPrompts, firstText } = await laneOwnerPrompts(cwd);
+  return {
+    ts,
+    branch: s.worktree.branch,
+    base,
+    headSha,
+    disposition,
+    model: s.model ?? null,
+    briefHash: briefHashOf(firstText),
+    shortstat,
+    commitCount,
+    filesTouched,
+    e2eTouched: filesTouched.some(isTestPath),
+    verified: mergeLast.get(s.id)?.verify?.ok ?? null,
+    sessionMs: start !== null ? ts - start : null,
+    ownerPrompts,
+  };
+}
+// the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
+// and the undo record. The landed work is exactly mainBefore..mainAfter on the integration branch.
+// model/briefHash/session proxies are unknowable server-side here → recorded honestly as null/0.
+async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<LaneOutcome> {
+  const sh = await git(repo, "diff", `${rec.mainBefore}...${rec.mainAfter}`, "--shortstat", "--no-color");
+  const cc = await git(repo, "rev-list", "--count", `${rec.mainBefore}..${rec.mainAfter}`);
+  const nm = await git(repo, "diff", "--name-only", "--no-color", `${rec.mainBefore}...${rec.mainAfter}`);
+  const filesTouched = nm.code === 0 ? nm.out.split("\n").filter(Boolean).slice(0, 200) : [];
+  return {
+    ts: Date.now(),
+    branch: rec.branch,
+    base: rec.mainBefore,
+    headSha: rec.mainAfter,
+    disposition: "reverted",
+    model: null,
+    briefHash: null,
+    shortstat: sh.code === 0 ? sh.out : "",
+    commitCount: cc.code === 0 ? Number(cc.out) || 0 : 0,
+    filesTouched,
+    e2eTouched: filesTouched.some(isTestPath),
+    verified: null,
+    sessionMs: null,
+    ownerPrompts: 0,
+  };
+}
+function emitLaneOutcome(o: LaneOutcome | null): void {
+  if (o) appendEvent(LANE_OUTCOME_FILE, o as unknown as Record<string, unknown>);
 }
 
 // --- intervention-outcome fuel (steward-intelligence.md §4). A per-send pending baseline
@@ -3753,6 +3894,24 @@ Bun.serve<WSData>({
       events.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ events: events.slice(0, limit), total: lines.length });
     }
+    // owner-only, read-only per-lane outcome trail — EXACT same access model as /api/audit above:
+    // token-gated (past the tokenGate at the top of this block) and structurally 404 on SHARE_HOSTS
+    // (that gate rejects anything not in its share allowlist). Never writable from a client.
+    if (url.pathname === "/api/lane-outcomes" && req.method === "GET") {
+      const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
+      const text = existsSync(LANE_OUTCOME_FILE) ? await Bun.file(LANE_OUTCOME_FILE).text() : "";
+      const lines = text.split("\n").filter(Boolean);
+      const outcomes: Record<string, unknown>[] = [];
+      for (const line of lines) {
+        try {
+          outcomes.push(JSON.parse(line) as Record<string, unknown>);
+        } catch {
+          // a torn mid-append line — skip
+        }
+      }
+      outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
+      return json({ outcomes: outcomes.slice(0, limit), total: lines.length });
+    }
     // owner-only: read the steward's own scoped credential, to paste into the steward
     // pane's env (FLEET_STEWARD_TOKEN) by hand — same access model as /api/audit.
     if (url.pathname === "/api/steward/token" && req.method === "GET")
@@ -4027,6 +4186,7 @@ Bun.serve<WSData>({
       }
       const reset = await resetIntegration(top.out, rec.main, rec.mainAfter, rec.mainBefore);
       if (reset) return json({ error: reset.error }, 409); // transient (dirty holder etc.) — record kept for a retry
+      emitLaneOutcome(await buildRevertedOutcome(top.out, rec)); // strongest negative outcome — record BEFORE consuming the undo record
       undoLast.delete(top.out); // an undo can be undone once
       saveState();
       audit("repo_undo_land", undefined, `${basename(top.out)} ${rec.branch} ${rec.mainAfter.slice(0, 8)}->${rec.mainBefore.slice(0, 8)}`);
@@ -4433,9 +4593,13 @@ Bun.serve<WSData>({
         const note = typeof body?.note === "string" ? body.note.slice(0, 500).trim() : "";
         shelved[s.cwd] = { at: Date.now(), note }; // keyed by worktree path; survives the kill below
         audit("slot_shelve", s.id, `note:${note.length}`); // never the note TEXT — same hygiene as prompt logging
+        emitLaneOutcome(await buildLaneOutcome(s, "shelved")); // record BEFORE killSlot clears lane state
         await killSlot(s); // keeps the worktree on disk (as any kill does) — now WITH a note to resume from
         return json({ ok: true });
       }
+      // plain kill (fall-through): record an abandoned lane's outcome before killSlot clears its
+      // state. Gated on s.worktree — a plain (non-lane) session kill leaves no lane outcome.
+      if (s.cwd && s.worktree) emitLaneOutcome(await buildLaneOutcome(s, "killed"));
       await killSlot(s);
       return json({ ok: true });
     }

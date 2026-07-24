@@ -62,7 +62,7 @@ const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
 // unvalidated env var would be an injection vector (same rule as per-slot model). The digest/
 // summary worker keeps its own cheaper SUMMARY_MODEL — this is only the interactive tier.
 const DEFAULT_MODEL =
-  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : "claude-opus-4-8";
+  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : "claude-opus-5";
 function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
   const m = body?.model;
   if (m === undefined || m === null || m === "") return { ok: true, model: null };

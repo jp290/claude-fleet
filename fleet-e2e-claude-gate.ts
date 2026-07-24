@@ -197,7 +197,7 @@ await tmuxOut("kill-session", "-t", "s4");
 
 // --- and with NO per-slot model, slotCmd must inject the fleet's DEFAULT_MODEL — so a session
 // never silently inherits the owner's ambient /model default (the bug this closes). FLEET_MODEL
-// is unset in this harness, so the default resolves to the hard-coded claude-opus-4-8. ---
+// is unset in this harness, so the default resolves to the hard-coded claude-opus-5. ---
 const oDef = await post("/api/slots/4/open", { cwd: process.cwd() });
 check("reopen slot 4 with no per-slot model", oDef.ok, String(oDef.status));
 let startCmdDef = "";
@@ -209,7 +209,7 @@ for (let i = 0; i < 40; i++) {
   await Bun.sleep(250);
 }
 check("the pane spawn command injects the default model when the slot pins none",
-  startCmdDef.includes("--model claude-opus-4-8"), startCmdDef.slice(-160));
+  startCmdDef.includes("--model claude-opus-5"), startCmdDef.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
 
 // --- branch 6: dispatcher POST-spawn re-check (server.ts tickDispatch, the fresh claudeAlive

@@ -1035,7 +1035,21 @@ newest record is provably an `outcome` — pre-fix that record *was* what `prior
 | P-6 | **Program board** PB-1/2/3 — lane DAG, orchestrated dependent-rebase, stack cleanup | — | owner: build or not | stack-land-program-board |
 | P-7 | **F-D minors** — digest cache invalidation, `runVerify` SIGTERM→SIGKILL, per-repo `FLEET_VERIFY_CMD` | — | fold into whichever lane touches that code | deep-dive → F-D |
 
-**P-3, the fork — stated plainly.** Nobody has ever seen a steward proposal; the route has never
+**P-3 RESOLVED (2026-07-24): arm (a), the probe — with a guardrail the register did not originally
+carry.** The `/rundgang` filing edit shipped (`.claude/commands/rundgang.md`: file section-1 items
+as `pending` steward tasks, ≤2/pulse, self-contained text, honesty-gated so "all clear" files
+nothing). The owner's standing "the agent must not müll sich zu" principle reshaped arm (a): the
+"duplicates knowingly accepted" clause is sound **only while the pulse is run manually and
+watched** — prompt-side de-dup is impossible (no GET on open tasks) so an unwatched scheduled pulse
+would re-file every persistent condition and flood the review buffer. Therefore the edit itself
+binds the guardrail: **this pulse is never scheduled until server-side `ref`-dedup lands.** That
+minimal de-dup (deep-dive B1b item 2 alone — a `ref` field + idempotent-on-open-ref POST, ~15 lines
++ e2e + one deploy; it does NOT need the GET, the server checks its own open tasks) is now the
+**gate before scheduling**, not a speculative up-front build. Open sub-decision left to the owner:
+after watching a few real filed proposals, judge their quality (the actual P-3 unknown) and let the
+observed duplicates shape whether the fuller B1b (GET + `mute(ref)`) is worth it.
+
+*Original framing, kept for the reasoning:* Nobody has ever seen a steward proposal; the route has never
 been used in production. So the open question is **not** "how do we de-dup" but **"are the
 proposals any good at all?"**
 

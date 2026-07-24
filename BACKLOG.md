@@ -123,10 +123,13 @@ an unreviewed resolution), a hard-block on stale/red verify (hangs the land; own
 stands). **Autonomy relevance:** this is the calibration data `docs/lane-autonomy-future.md` asked
 for — landing is autonomy-eligible (large-blast but recoverable via undo-land), gated on a
 total+fast+flake-free verify; the finding is the gate isn't total (tsc-only) or fast (e2e) enough
-yet. **Open follow-ups:** 1-line outcome-recorder `model: s.model ?? DEFAULT_MODEL`; the tiered
-gate (fast `tsc+e2e-claude-gate` land gate + slow post-land audit) — the uncommitted `watchdog.sh`
-draft is the fast-tier start, pending validation + one kickstart; a stale-proposal reaper (the
-steward hand-does it today; `branch@headSha` makes it deterministic); ② and ⑤.
+yet. **Open follow-ups:** the tiered
+gate (fast `tsc+e2e-claude-gate` land gate + slow post-land audit) — **fast tier now SHIPPED to the
+repo (`b30c746`), validated node_modules-free in ~46s, pending only the owner `launchctl kickstart`
+to go live**; a stale-proposal reaper (the steward hand-does it today; `branch@headSha` makes it
+deterministic); ② and ⑤. (Dropped: the outcome-recorder `?? DEFAULT_MODEL` follow-up — the recorder
+deliberately records `s.model ?? null`, "recorded honestly, NEVER guessed" (`server.ts` ~2310);
+back-filling a guessed default would corrupt attribution, which is the whole point of the recorder.)
 
 ---
 

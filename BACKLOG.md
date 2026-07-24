@@ -1028,8 +1028,8 @@ newest record is provably an `outcome` — pre-fix that record *was* what `prior
 | # | Item | Blocked by | Whose call | Pointer |
 |---|------|-----------|-----------|---------|
 | ~~P-1a~~ | **SHIPPED (committed, NOT yet deployed)** — digest `prior` filter. See the shipped block above | — | owner: deploy | — |
-| P-2 | **Steward freshness** — its worktree is **21** commits behind main (recompute: `git rev-list --count <steward-HEAD>..main`; it grows), so its world-model predates the whole program | — | owner: *where* freshness belongs (`/steward` ritual, `/rundgang`, or habit) | dossier F3 |
-| P-3 | **THE FORK — probe or build?** (below) | P-2 (P-1a done) | **owner** | this register |
+| ~~P-2~~ | **DECIDED + SHIPPED (2026-07-24)** — freshness anchored as step 0 of the `/steward` load ritual (owner's call): merge main + sync the gitignored CLAUDE.md/OWNER.md copies (found stale — merges never carry them) BEFORE reading the shelf; ordering was the bug. Session declared disposable-by-design. **Remaining owner action: refresh the live steward session** (`/clear` + `/steward` in slot 1) so the running instance actually picks this up | — | owner: refresh slot 1 | docs/steward.md "Session start" |
+| P-3 | **THE FORK — probe or build?** (below) | live steward refreshed | **owner** | this register |
 | P-4 | **Deploy-gap fact** — nothing shows whether the live server predates `main` | check prior art first | owner: slots view / foreman / nowhere | dossier F6; `5c69417` |
 | P-5 | **Worktree placement** — pin the lane path to the sibling dir or gitignore it (cheap half only) | — | fold-in, no own lane | dossier F7; stack-land §8 |
 | P-6 | **Program board** PB-1/2/3 — lane DAG, orchestrated dependent-rebase, stack cleanup | — | owner: build or not | stack-land-program-board |

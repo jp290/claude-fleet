@@ -835,6 +835,41 @@ failure mode Fleet's doctrine explicitly guards against):**
 
 ---
 
+## 18. Per-lane attributed-outcome recorder  `RECORDER SHIPPED 2026-07-24 · analyzer + viewer are future items`
+
+The fleet measures per-INTERVENTION outcomes (steward nudge → helped/noEffect, item 17-adjacent)
+but never per-LANE — yet the lane is the atomic unit of real work, and where model + brief +
+difficulty actually express themselves. This closes that gap: a deterministic fact substrate so the
+fleet can eventually learn which model / brief / task-class produces landable work, from REAL lanes
+instead of a synthetic eval set.
+
+**Shipped (the RECORDER, `server.ts` `buildLaneOutcome`/`LANE_OUTCOME_FILE`):** appends ONE
+server-stamped fact at each of a lane's terminal events — land success (`landLane`), kill (dirty vs
+empty by commit count), shelve, and `repo_undo_land` (a revert = the strongest negative outcome).
+Each record: `{ ts, branch, base, headSha, disposition, model, briefHash, shortstat, commitCount,
+filesTouched, e2eTouched, verified, sessionMs, ownerPrompts }` — assembled entirely from git + slot
+state (a pane/client can never write into the trail, same choke-point stance as the audit log). The
+fingerprint (shortstat/commitCount/filesTouched/e2eTouched) reuses `briefPayload`'s `base...HEAD`
+footprint and doubles as the DIFFICULTY proxy that later makes cross-lane comparison valid. Read via
+owner-only `GET /api/lane-outcomes?limit=N` (exact access model as `/api/audit` — token-gated,
+structurally 404 on SHARE_HOSTS). Bounded/rotating through the shared `appendEvent` chain.
+
+**Deliberately a RECORDER, not an analyzer:** it never ranks, gates, promotes, or renders a verdict,
+and is uncoupled from `outcomeTally` / the steward ladder. Analysis needs VOLUME — it is a later
+consumer, not built here (anti-abstraction bar; the register parked model-eval INFRA as
+not-worth-building — this is passive attribution, not that).
+
+**Attribution prerequisite — the model-fix:** `model` is `s.model ?? null`. Until a `DEFAULT_MODEL`
+is pinned, a lane opened without an explicit `--model` records `model: null` HONESTLY (the effective
+model is unknowable server-side — never guessed). model + briefHash are recorded as an ENTANGLED
+pair (a strong brief lets a weak model succeed) so they can be disentangled later — never attribute
+to model alone. Pinning the default model is the prerequisite for model-level attribution.
+
+**Future items (separate lanes):** (a) an ANALYZER that reads the trail once volume exists; (b) a
+client VIEW over `/api/lane-outcomes` (mirrors the item-9 audit-view pattern).
+
+---
+
 ## Hardening — findings from the review sweep, not new features
 
 Found while designing/reviewing the above, ranked by what actually costs

@@ -1806,6 +1806,107 @@ if (REPO) {
     await post("/api/repo-base", { repo: fpRepo, branch: "" });
     await post(`/api/slots/${fp.slot}/kill`, {});
   }
+
+  // --- per-lane attributed-outcome RECORDER: drive a lane through each terminal event and
+  // assert the server-stamped fact reaches GET /api/lane-outcomes. Own throwaway repo so the
+  // records are precise and independent of the merge sequence above. ---
+  {
+    type Outcome = { ts: number; branch: string | null; base: string | null; headSha: string | null;
+      disposition: string; model: string | null; briefHash: string | null; shortstat: string;
+      commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
+      sessionMs: number | null; ownerPrompts: number };
+    const readOutcomes = async (): Promise<Outcome[]> =>
+      ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
+    // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
+    const forBranch = (os: Outcome[], branch: string): Outcome | undefined => os.find((o) => o.branch === branch);
+
+    const oRepo = `${REPO}.outcomes`;
+    spawnSync("git", ["init", "-q", oRepo]);
+    spawnSync("git", ["-C", oRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", oRepo, "config", "user.name", "e2e"]);
+    await Bun.write(`${oRepo}/seed.txt`, "seed\n");
+    spawnSync("git", ["-C", oRepo, "add", "seed.txt"]);
+    spawnSync("git", ["-C", oRepo, "commit", "-qm", "seed"]);
+    const oBare = `${oRepo}.remote.git`;
+    spawnSync("git", ["init", "--bare", "-q", oBare]);
+
+    // (1) LANDED with commits — a lane that touches an e2e/test file, gets an owner prompt,
+    // is committed + pushed, then landed via the simple ⏏ route (teardown of merged/pushed work).
+    const oc1 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await post("/send", { slot: oc1.slot, text: "implement the feature exactly per this brief" }); // logged as an owner prompt regardless of pane readiness
+    await Bun.write(`${oc1.cwd}/feature.e2e.ts`, "// lane test\n");
+    spawnSync("git", ["-C", oc1.cwd, "add", "feature.e2e.ts"]);
+    spawnSync("git", ["-C", oc1.cwd, "commit", "-qm", "landed lane work"]);
+    spawnSync("git", ["-C", oc1.cwd, "remote", "add", "origin", oBare]);
+    spawnSync("git", ["-C", oc1.cwd, "push", "-q", "origin", oc1.branch]);
+    const land1 = await post(`/api/slots/${oc1.slot}/land`, {});
+    check("outcome: landed lane teardown succeeds", land1.ok, await land1.text());
+    const rec1 = forBranch(await readOutcomes(), oc1.branch);
+    check("outcome: LANDED record with the right branch + disposition",
+      rec1?.disposition === "landed" && rec1?.branch === oc1.branch, JSON.stringify(rec1));
+    check("outcome: landed record carries a non-empty shortstat + commitCount 1",
+      (rec1?.shortstat ?? "").includes("1 file") && rec1?.commitCount === 1, JSON.stringify(rec1));
+    check("outcome: landed record flags e2eTouched from the .e2e.ts file",
+      rec1?.e2eTouched === true && (rec1?.filesTouched ?? []).includes("feature.e2e.ts"), JSON.stringify(rec1?.filesTouched));
+    check("outcome: landed record is server-stamped (headSha + base present)",
+      /^[0-9a-f]{40,64}$/.test(rec1?.headSha ?? "") && typeof rec1?.base === "string", JSON.stringify({ head: rec1?.headSha, base: rec1?.base }));
+    check("outcome: landed record counts the owner prompt + hashes the brief (attention proxies)",
+      (rec1?.ownerPrompts ?? 0) >= 1 && /^[0-9a-f]{12}$/.test(rec1?.briefHash ?? ""), JSON.stringify({ op: rec1?.ownerPrompts, bh: rec1?.briefHash }));
+
+    // (2) KILLED-DIRTY — a lane with a commit, abandoned via ✕ kill
+    const oc2 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${oc2.cwd}/abandoned.txt`, "wip\n");
+    spawnSync("git", ["-C", oc2.cwd, "add", "abandoned.txt"]);
+    spawnSync("git", ["-C", oc2.cwd, "commit", "-qm", "abandoned work"]);
+    await post(`/api/slots/${oc2.slot}/kill`, {});
+    const rec2 = forBranch(await readOutcomes(), oc2.branch);
+    check("outcome: killed lane WITH a commit → killed-dirty, commitCount 1",
+      rec2?.disposition === "killed-dirty" && rec2?.commitCount === 1, JSON.stringify(rec2));
+
+    // (3) KILLED-EMPTY — a lane with no commits at all
+    const oc3 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; branch: string };
+    await post(`/api/slots/${oc3.slot}/kill`, {});
+    const rec3 = forBranch(await readOutcomes(), oc3.branch);
+    check("outcome: killed lane with NO commits → killed-empty, commitCount 0",
+      rec3?.disposition === "killed-empty" && rec3?.commitCount === 0, JSON.stringify(rec3));
+
+    // (4) SHELVED — a lane set aside with a note
+    const oc4 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${oc4.cwd}/shelf.txt`, "later\n");
+    spawnSync("git", ["-C", oc4.cwd, "add", "shelf.txt"]);
+    spawnSync("git", ["-C", oc4.cwd, "commit", "-qm", "shelved work"]);
+    await post(`/api/slots/${oc4.slot}/shelve`, { note: "resume later" });
+    const rec4 = forBranch(await readOutcomes(), oc4.branch);
+    check("outcome: shelved lane → shelved disposition", rec4?.disposition === "shelved", JSON.stringify(rec4));
+
+    // (5) REVERTED — a conflict-free lane lands via the server script path (ADVANCES main), then
+    // /api/repos/undo-land reverts it. The strongest negative outcome, assembled from the undo
+    // record (no live slot) — model/briefHash are honestly null there.
+    const oc5 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${oc5.cwd}/reverted.txt`, "lands then reverts\n");
+    spawnSync("git", ["-C", oc5.cwd, "add", "reverted.txt"]);
+    spawnSync("git", ["-C", oc5.cwd, "commit", "-qm", "reverted lane work"]);
+    await setMergeMode("blocked"); // conflict-free → the server's script path lands it; the agent is never consulted
+    await settleForMerge(oc5.slot);
+    await post(`/api/slots/${oc5.slot}/merge`, {});
+    const vRev = await waitMerge(oc5.slot);
+    check("outcome: revert setup — conflict-free lane lands via the script (advances main)", vRev.gone, JSON.stringify(vRev));
+    const undo = await post("/api/repos/undo-land", { repo: oRepo });
+    check("outcome: undo-land succeeds", undo.ok, await undo.text());
+    const rec5 = forBranch(await readOutcomes(), oc5.branch);
+    check("outcome: reverted land → reverted disposition, commitCount 1, correct file",
+      rec5?.disposition === "reverted" && rec5?.commitCount === 1 && (rec5?.filesTouched ?? []).includes("reverted.txt"),
+      JSON.stringify(rec5));
+
+    // access model: the read route is owner-only — no token → 401 (same as /api/audit)
+    check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);
+    // the trail returns a total count alongside the (limited) window, newest-first
+    const finalRead = (await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[]; total: number };
+    check("lane-outcomes returns { outcomes, total } with all five dispositions present",
+      finalRead.total >= 5 && ["landed", "killed-dirty", "killed-empty", "shelved", "reverted"]
+        .every((d) => finalRead.outcomes.some((o) => o.disposition === d)),
+      JSON.stringify({ total: finalRead.total, seen: [...new Set(finalRead.outcomes.map((o) => o.disposition))] }));
+  }
 }
 
 // --- task queue (Phase D). Owner CRUD + dispatch availability ---

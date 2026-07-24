@@ -1166,6 +1166,7 @@ async function killSlot(s: Slot): Promise<void> {
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
+  reviewCache.delete(s.id); // …nor the previous session's 🔍 review
   harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
   startCache.delete(s.id);
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // F5: a recycled slot must not inherit the prior lane's in-flight merge job as running:true (the old job's finally self-checks identity via mergeInflight.get === job, so this drop is safe)
@@ -1988,6 +1989,144 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     summary: summary.slice(0, 4000), openThreads: openThreads.slice(0, 12),
     verification: verification.slice(0, 1000), model: SUMMARY_MODEL, at: Date.now(), head, dirty, raw,
   };
+}
+
+// --- 🔍 review: the third advisory agent. Same throwaway-claude machinery as ✨ summarize,
+// pointed at this slot's OWN code changes instead of its transcript: ranked findings that each
+// cite file:line. Click-only (POST), cached on the exact git state, GET never spawns. Strictly
+// advisory and OWNER-ONLY — no land/merge/commit path reads any of this, and unlike the summary
+// it is deliberately NOT on the guest share surface. Read-only by the same contract runSummary
+// uses: no tool args to summaryViaSession plus an explicit no-tools instruction. It NEVER touches
+// the tree — no reset, no checkout (unlike runCleanReview, which runs on a clean about-to-land
+// tree; this one runs on a LIVE lane that may hold hours of uncommitted work).
+// FLEET_REVIEW_CMD (tests only) switches to a plain subprocess stand-in.
+const REVIEW_CMD = process.env.FLEET_REVIEW_CMD ?? null;
+const REVIEW_TIMEOUT_MS = 240_000;
+const REVIEW_DIFF_CAP = 60_000; // per diff section — the prompt carries at most two
+const MAX_FINDINGS = 5;
+interface ReviewFinding {
+  title: string; file: string; line: number | null; impact: "high" | "medium" | "low";
+  cost: string; basis: "verified" | "inferred"; detail: string;
+}
+interface ReviewResult {
+  findings: ReviewFinding[]; scope: string; notes: string;
+  model: string; at: number; head: string | null; dirty: number; raw: boolean;
+}
+const reviewCache = new Map<number, { key: string; result: ReviewResult }>();
+const reviewInflight = new Map<number, Promise<ReviewResult>>();
+
+// same contract as summaryResponse: run=false is a pure cache lookup that never spawns,
+// run=true spawns at most one agent per slot and the HEAD+status key stops repeat spend
+// on an unchanged tree.
+async function reviewResponse(s: Slot, run: boolean): Promise<Response> {
+  const st = await git(s.cwd!, "status", "--porcelain");
+  if (st.code !== 0) return json({ error: "not a git repository" }, 400);
+  const hd = await git(s.cwd!, "rev-parse", "HEAD");
+  const head = hd.code === 0 ? hd.out : null;
+  const dirty = st.out.split("\n").filter(Boolean).length;
+  const key = `${head}:${Bun.hash(st.out)}`;
+  const cached = reviewCache.get(s.id);
+  if (cached?.key === key) return json({ ...cached.result, cached: true, stale: false });
+  if (!run) return json(cached ? { ...cached.result, cached: true, stale: true } : { cached: false });
+  let inflight = reviewInflight.get(s.id);
+  if (!inflight) {
+    inflight = runReview(s, head, dirty).finally(() => reviewInflight.delete(s.id));
+    reviewInflight.set(s.id, inflight);
+  }
+  try {
+    const result = await inflight;
+    reviewCache.set(s.id, { key, result });
+    return json({ ...result, cached: false, stale: false });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "reviewer failed" }, 500);
+  }
+}
+
+function reviewFinding(x: unknown): ReviewFinding | null {
+  if (!x || typeof x !== "object") return null;
+  const o = x as Record<string, unknown>;
+  const file = typeof o.file === "string" ? o.file.trim() : "";
+  const line = typeof o.line === "number" && Number.isFinite(o.line) ? Math.trunc(o.line) : null;
+  // the contract's hard floor: an uncited claim is not a finding, so it is dropped rather than shown
+  if (!file || line === null) return null;
+  const impact = o.impact === "high" || o.impact === "medium" || o.impact === "low" ? o.impact : "medium";
+  return {
+    title: (typeof o.title === "string" ? o.title : "").slice(0, 200),
+    file: file.slice(0, 300), line, impact,
+    cost: (typeof o.cost === "string" ? o.cost : "").slice(0, 600),
+    basis: o.basis === "verified" ? "verified" : "inferred", // never upgrade an unstated basis to verified
+    detail: (typeof o.detail === "string" ? o.detail : "").slice(0, 1200),
+  };
+}
+
+const IMPACT_ORDER = { high: 0, medium: 1, low: 2 } as const;
+
+async function runReview(s: Slot, head: string | null, dirty: number): Promise<ReviewResult> {
+  const cwd = s.cwd!;
+  // a lane's authoritative fork base gives the session-scoped diff; a non-lane slot has none,
+  // so the review falls back to the uncommitted work plus what the recent commits show
+  const base = s.worktree ? await laneBaseRef(s) : null;
+  let committed = "", scope = "";
+  if (base) {
+    const d = await git(cwd, "diff", "--no-color", `${base}...HEAD`);
+    if (d.code === 0) { committed = d.out; scope = `this lane's changes since ${base}, plus its uncommitted work`; }
+  }
+  if (!scope) scope = "uncommitted changes plus recent commits (no lane base to diff against)";
+  const un = await git(cwd, "diff", "HEAD", "--no-color");
+  const uncommitted = un.code === 0 ? un.out : "";
+  const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
+  const meta = { model: SUMMARY_MODEL, at: Date.now(), head, dirty };
+  // nothing changed → nothing to review. Answered without spawning: a model call here could
+  // only invent findings, and it would be billed for every click on an untouched tree.
+  if (!committed.trim() && !uncommitted.trim())
+    return { findings: [], scope, notes: "no code changes in scope — nothing to review", raw: false, ...meta };
+  const cut = (t: string) => (t.length > REVIEW_DIFF_CAP ? `${t.slice(0, REVIEW_DIFF_CAP)}\n… truncated` : t);
+  const truncated = committed.length > REVIEW_DIFF_CAP || uncommitted.length > REVIEW_DIFF_CAP;
+  const prompt = [
+    "You are a read-only code reviewer. The diffs below are the WHOLE subject — review them, nothing else.",
+    "Do NOT use any tools and do NOT edit any file — answer directly from the input, in one single message.",
+    "Respond with STRICT JSON only, no markdown fences, exactly this shape:",
+    '{"findings": [{"title": "...", "file": "path", "line": 12, "impact": "high|medium|low",'
+      + ' "cost": "...", "basis": "verified|inferred", "detail": "..."}], "notes": "..."}',
+    `- Rank findings by impact, most severe first, and return at most ${MAX_FINDINGS}.`
+      + " Five ranked findings beat twenty unranked ones.",
+    "- Every finding MUST cite a concrete file and a line number you can point at in the diff."
+      + " A finding without a cited line is not a finding — drop it rather than guess a line.",
+    "- cost: what concretely breaks, degrades, or becomes unmaintainable if this stands."
+      + " If you cannot state the cost, drop the finding.",
+    '- basis: "verified" only if the diff itself shows it; "inferred" if it depends on code not shown here.'
+      + " Never let an inference read as verified.",
+    "- What is MISSING matters most: at each boundary the diff touches, ask what input is unvalidated,"
+      + " what path is untested, what failure is unhandled.",
+    '- notes: one line on what you could NOT check (truncated diff, code outside it), or "" if nothing.',
+    "- An empty findings array is a valid and good answer. Never invent a finding to fill the list.",
+    "Advisory only — never say whether to commit, merge or land.",
+    "", "## scope", scope,
+    ...(truncated ? ["", "## warning", "a diff below was truncated — say so in notes"] : []),
+    "", "## recent commits", lg.code === 0 && lg.out ? lg.out : "(none)",
+    "", "## committed changes in scope", cut(committed) || "(none)",
+    "", "## uncommitted changes", cut(uncommitted) || "(clean)",
+  ].join("\n");
+  let text = REVIEW_CMD
+    ? await summaryViaSubprocess(REVIEW_CMD, prompt, cwd, REVIEW_TIMEOUT_MS)
+    : await summaryViaSession(prompt, cwd, '"findings"', { timeoutMs: REVIEW_TIMEOUT_MS });
+  try {
+    const env = JSON.parse(text) as { result?: unknown };
+    if (typeof env.result === "string") text = env.result.trim();
+  } catch { /* not an envelope — treat as the answer itself */ }
+  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  // fail-soft exactly like runSummary: an off-contract answer degrades to notes, never a 500
+  let findings: ReviewFinding[] = [], notes = body.slice(0, 2000), raw = true;
+  try {
+    const j = JSON.parse(body) as { findings?: unknown; notes?: unknown };
+    if (Array.isArray(j.findings)) {
+      findings = j.findings.map(reviewFinding).filter((f): f is ReviewFinding => f !== null)
+        .sort((a, b) => IMPACT_ORDER[a.impact] - IMPACT_ORDER[b.impact]).slice(0, MAX_FINDINGS);
+      notes = typeof j.notes === "string" ? j.notes.slice(0, 1000) : "";
+      raw = false;
+    }
+  } catch { /* keep the raw text as notes */ }
+  return { findings, scope, notes, raw, ...meta };
 }
 
 // --- 💾 lane commit: the load-bearing SAVE. land/merge both refuse a dirty tree, so
@@ -4526,6 +4665,14 @@ Bun.serve<WSData>({
       const s = slotFrom(sumMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       return summaryResponse(s, req.method === "POST");
+    }
+    // 🔍 review of the slot's own code changes (the advisory reviewer). Owner-only — it has
+    // no counterpart on the share surface. GET = cache lookup only, POST = run (single-flight).
+    const revMatch = /^\/api\/slots\/(\d+)\/review$/.exec(url.pathname);
+    if (revMatch && (req.method === "GET" || req.method === "POST")) {
+      const s = slotFrom(revMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      return reviewResponse(s, req.method === "POST");
     }
     // 💾 commit a lane's uncommitted work — the SAVE that land/merge (dirty-tree refusers)
     // can't do. Lanes only; commit-only (never push, never land). Serialized per slot; the

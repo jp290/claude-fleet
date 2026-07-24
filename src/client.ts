@@ -2579,6 +2579,7 @@ function decodeAudit(event: string, detail?: string): string {
   }
 }
 let auditData: AuditEntry[] = [];
+let auditTotal = 0; // server-reported total on disk; > auditData.length means the load was capped
 let auditSlot: number | "all" = "all";
 let auditLife = false;
 
@@ -2608,7 +2609,12 @@ function renderAudit() {
 
   const rows = auditData.filter((e) =>
     (auditSlot === "all" || e.slot === auditSlot) && (!auditLife || LIFECYCLE_KINDS.has(e.event)));
-  ctl.appendChild(el("span", "auditcount", `${rows.length} of ${auditData.length} shown`));
+  const loaded = auditData.length;
+  const capped = auditTotal > loaded;
+  const count = rows.length === loaded
+    ? capped ? `latest ${loaded} of ${auditTotal} events` : `${loaded} event${loaded === 1 ? "" : "s"}`
+    : `${rows.length} of ${capped ? `${loaded} loaded (${auditTotal} total)` : loaded}`;
+  ctl.appendChild(el("span", "auditcount", count));
 
   const list = el("div", "");
   list.id = "auditlist";
@@ -2634,8 +2640,9 @@ async function openAudit() {
   auditData = [];
   const res = await api("/api/audit?limit=1000");
   if (res.ok) {
-    const data = (await res.json()) as { events?: AuditEntry[] };
+    const data = (await res.json()) as { events?: AuditEntry[]; total?: number };
     auditData = (data.events ?? []).filter((e): e is AuditEntry => typeof e?.ts === "number" && typeof e?.event === "string");
+    auditTotal = typeof data.total === "number" ? data.total : auditData.length;
   }
   renderAudit(); // server already returns newest-first; we preserve that order
   audit.style.display = "flex";

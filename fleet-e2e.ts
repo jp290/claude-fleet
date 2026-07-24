@@ -2195,7 +2195,37 @@ if (REPO) {
     check("outcome: confirm-land of a repaired conflict → resolvedConflict:true, repairRounds>=1, confirmedByHuman:true",
       recR?.disposition === "landed" && recR?.resolvedConflict === true
       && (recR?.repairRounds ?? 0) >= 1 && recR?.confirmedByHuman === true, JSON.stringify(recR));
+    // the confirm-land moved main onto this lane too — its footprint must be the lane's OWN work
+    // (measured from the commit it was rebased onto), never the empty shape a re-resolved name gives
+    check("outcome: confirm-land record carries the lane's real footprint + verify verdict",
+      (recR?.commitCount ?? 0) >= 1 && (recR?.filesTouched ?? []).includes("seed.txt")
+      && recR?.verified === true, JSON.stringify({ cc: recR?.commitCount, f: recR?.filesTouched, v: recR?.verified }));
     await setMergeMode("blocked"); // restore the suite default
+
+    // (7) LANDED via the CLEAN AUTO-LAND path — the only unattended land, and the one the recorder
+    // used to zero out: by record time the server has already advanced main onto the lane, so
+    // re-resolving the base NAME made the merge-base HEAD and every fingerprint field collapsed to
+    // nothing; `verified` was structurally unreadable too (the merge route clears the slot's verdict
+    // before the job starts and writes the new one only after landLane returns). mergemode stays
+    // "blocked" and the lane touches its own file — a land here proves the agent was never consulted.
+    const oc7 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${oc7.cwd}/auto.e2e.ts`, "// clean auto-land lane test file\n");
+    spawnSync("git", ["-C", oc7.cwd, "add", "auto.e2e.ts"]);
+    spawnSync("git", ["-C", oc7.cwd, "commit", "-qm", "clean auto-land lane work"]);
+    await Bun.write(`${oRepo}/auto-main.txt`, "main side\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", oRepo, "add", "auto-main.txt"]);
+    spawnSync("git", ["-C", oRepo, "commit", "-qm", "auto main work"]);
+    await settleForMerge(oc7.slot);
+    await post(`/api/slots/${oc7.slot}/merge`, {});
+    const v7 = await waitMerge(oc7.slot);
+    check("outcome: clean auto-land setup — conflict-free lane lands unattended (slot torn down)", v7.gone, JSON.stringify(v7));
+    const rec7 = forBranch(await readOutcomes(), oc7.branch);
+    check("outcome: CLEAN AUTO-LAND record carries the lane's real shape (commitCount 1 + files + e2eTouched), not zeros",
+      rec7?.disposition === "landed" && rec7?.commitCount === 1 && (rec7?.shortstat ?? "").includes("1 file")
+      && (rec7?.filesTouched ?? []).includes("auto.e2e.ts") && rec7?.e2eTouched === true, JSON.stringify(rec7));
+    check("outcome: clean auto-land record carries that job's verify verdict (verified:true), not null",
+      rec7?.verified === true && rec7?.confirmedByHuman === false,
+      JSON.stringify({ verified: rec7?.verified, confirmed: rec7?.confirmedByHuman }));
 
     // access model: the read route is owner-only — no token → 401 (same as /api/audit)
     check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);
@@ -2345,6 +2375,23 @@ check("fleet.json is 600", stateMode === 0o600, stateMode.toString(8));
 const histMode = statSync(`${import.meta.dir}/streams/s2.history.json`).mode & 0o777;
 check("history file is 600", histMode === 0o600, histMode.toString(8));
 
+// --- legacy lane (forked BEFORE worktree.baseSha existed): set it up HERE, while slot 1 is still
+// occupied, so it can never take the slot the restart section asserts is empty. The field is
+// stripped from the persisted state below, between the srv kill and the restart, so the restored
+// server sees exactly a pre-field lane — which must keep recording off the base NAME, never guess. ---
+const legacyRepo = process.env.FLEET_E2E_REPO ?? "";
+let legacyLane: { slot: number; cwd: string; branch: string } | null = null;
+if (legacyRepo) {
+  const { spawnSync } = await import("node:child_process");
+  const lg = (await (await post("/api/lanes", { repo: legacyRepo })).json()) as { slot?: number; cwd?: string; branch?: string };
+  if (lg.slot && lg.cwd && lg.branch) {
+    await Bun.write(`${lg.cwd}/legacy.txt`, "work in a lane that predates baseSha\n");
+    spawnSync("git", ["-C", lg.cwd, "add", "legacy.txt"]);
+    spawnSync("git", ["-C", lg.cwd, "commit", "-qm", "legacy lane work"]);
+    legacyLane = { slot: lg.slot, cwd: lg.cwd, branch: lg.branch };
+  }
+}
+
 // --- kill semantics ---
 const k1 = await post("/api/slots/1/kill", {});
 check("kill slot 1 accepted", k1.ok);
@@ -2362,6 +2409,17 @@ check("externally-killed slot self-heals", s2back.code === 0);
 const srvKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
 await srvKill.exited;
 await Bun.sleep(500);
+// server down → the state file is quiescent: strip baseSha from the legacy lane's persisted
+// worktree record, so the restarted server restores it in its pre-field shape
+if (legacyLane) {
+  const { writeFileSync } = await import("node:fs");
+  const stFile = `${import.meta.dir}/fleet.json`;
+  const st = JSON.parse(readFileSync(stFile, "utf8")) as
+    { slots?: Record<string, { worktree?: { baseSha?: string } | null }> };
+  const wtRec = st.slots?.[String(legacyLane.slot)]?.worktree;
+  if (wtRec) delete wtRec.baseSha;
+  writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+}
 // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
 // `--dangerously-skip-permissions` would silently leave the server in unattended
 // mode after the test run, an escalation the README promises is explicit opt-in
@@ -2408,6 +2466,24 @@ if (restartSelfTok) {
     restRes.ok && restJ.auto?.slot === restartSelfSlot, `${restRes.status} ${JSON.stringify(restJ)}`);
   if (restJ.auto) await post(`/api/autos/${restJ.auto.id}/delete`, {});
   await post(`/api/slots/${restartSelfSlot}/kill`, {}); // tear the persistence lane down
+}
+
+// --- the pre-baseSha lane (set up before the kill-semantics section, field stripped from state
+// above): its outcome record must still be assembled off the base NAME — the optional field is a
+// preference, never a requirement, and an old lane must not silently record nothing. ---
+if (legacyLane) {
+  const sessL = (await (await get("/api/sessions")).json()) as
+    { slots: { id: number; worktree?: { base?: string; baseSha?: string } | null }[] };
+  const wtL = sessL.slots.find((x) => x.id === legacyLane!.slot)?.worktree;
+  check("legacy lane: restored WITHOUT baseSha (pre-field lane shape)",
+    !!wtL && wtL.baseSha === undefined && typeof wtL.base === "string", JSON.stringify(wtL));
+  await post(`/api/slots/${legacyLane.slot}/kill`, {});
+  const recL = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+    { outcomes: { branch: string | null; disposition: string; commitCount: number; base: string | null; filesTouched: string[] }[] })
+    .outcomes.find((o) => o.branch === legacyLane!.branch);
+  check("legacy lane with NO baseSha still records off the base name (unchanged fallback)",
+    recL?.disposition === "killed-dirty" && recL?.commitCount === 1
+    && typeof recL?.base === "string" && (recL?.filesTouched ?? []).includes("legacy.txt"), JSON.stringify(recL));
 }
 
 // --- V1 case C: an UNCONFIGURED server (no FLEET_VERIFY_CMD — deliberately dropped from

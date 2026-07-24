@@ -95,6 +95,11 @@ rotting. Two shelves, plus the steward subsystem.
   but never lands.
 - **`steward-autonomy.md`** — the seven joints of the management loop and the
   empirically-grounded intervention playbook.
+- **`steward-nudge.md`** — design (2026-07-25, unbuilt): the steward fires a
+  *content-free* positive trigger on a surface signal and lets the session supply
+  the correction itself. Splits the sharpen function so the steward owns only the
+  *timing* — which is what keeps THE GUARD intact. Widens playbook #3
+  `continue-nudge`; it is not a new intervention type.
 - **`queue-automation.md`** — the task queue as an automation substrate: producers
   multiply, the gate stays one.
 - **`automation-synergies.md`** — where the mechanisms are secretly one lever, and

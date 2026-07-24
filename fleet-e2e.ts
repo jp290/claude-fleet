@@ -2227,6 +2227,32 @@ if (REPO) {
       rec7?.verified === true && rec7?.confirmedByHuman === false,
       JSON.stringify({ verified: rec7?.verified, confirmed: rec7?.confirmedByHuman }));
 
+    // (8) LANDED where verify did NOT run for this land, while a STALE green verdict sits on the
+    // slot: an agent-resolved lane is left un-landed (verdict "resolved", verify.ok:true, kept for
+    // review), the owner pushes it and tears it down with the direct ⏏ land instead. That route
+    // runs no verify AND never clears mergeLast, so the record must say verified:null — reporting
+    // the earlier run's green would attribute a verification to a land that never had one.
+    await setMergeMode("do");
+    const oc8 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${oc8.cwd}/seed.txt`, "seed\noc8-lane\n"); // no VERIFYBAD → the resolution verifies GREEN
+    spawnSync("git", ["-C", oc8.cwd, "commit", "-aqm", "oc8 lane work"]);
+    await Bun.write(`${oRepo}/seed.txt`, "seed\noc8-main\n"); // same line on main → conflict → agent resolves
+    spawnSync("git", ["-C", oRepo, "commit", "-aqm", "oc8 main work"]);
+    await settleForMerge(oc8.slot);
+    await post(`/api/slots/${oc8.slot}/merge`, {});
+    const v8 = await waitMerge(oc8.slot);
+    check("outcome: stale-verdict setup — resolved lane kept for review with verify.ok:true on record",
+      !v8.gone && v8.last?.status === "resolved" && v8.last?.verify?.ok === true, JSON.stringify(v8.last));
+    spawnSync("git", ["-C", oc8.cwd, "remote", "add", "origin", oBare]);
+    spawnSync("git", ["-C", oc8.cwd, "push", "-q", "origin", oc8.branch]); // pushed → ⏏ may tear it down
+    const land8 = await post(`/api/slots/${oc8.slot}/land`, {});
+    check("outcome: direct ⏏ land of the resolved-but-unlanded lane succeeds", land8.ok, await land8.text());
+    const rec8 = forBranch(await readOutcomes(), oc8.branch);
+    check("outcome: a land that ran NO verify records verified:null even with a stale green verdict on the slot",
+      rec8?.disposition === "landed" && rec8?.verified === null,
+      JSON.stringify({ verified: rec8?.verified, confirmed: rec8?.confirmedByHuman }));
+    await setMergeMode("blocked"); // restore the suite default
+
     // access model: the read route is owner-only — no token → 401 (same as /api/audit)
     check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);
     // the trail returns a total count alongside the (limited) window, newest-first

@@ -2525,16 +2525,21 @@ interface LaneOutcome {
 // reviewed verdict's conflict + repairRounds and confirmedByHuman:true. `verified` rides along for
 // the same reason: on the clean path the merge route DELETES the mergeLast entry before the job
 // starts and only writes the verdict after landLane returns, so reading the map here always misses.
-// null = this path genuinely ran no verify — never invented as false. `baseSha` likewise: a land
-// that REBASED the lane moved its fork point onto the main it was rebased on, so the creation-time
-// fork would over-count main's own commits into the lane's footprint; the land site knows the
-// exact commit the landed work sits on (mainBefore) and hands it over.
+// null = this path genuinely ran no verify — never invented as false. It is REQUIRED, not optional,
+// precisely so no land can fall through to the mergeLast read this type exists to replace: an
+// optional field would have to be distinguished from an explicit null, and `??` cannot do that —
+// "we know no verify ran" would silently resolve to a PREVIOUS run's verdict (the ⏏ land route
+// never clears mergeLast, so a stale green sits there). Required field ⇒ the fallback is
+// unreachable from a land by construction, not by luck. `baseSha` likewise carries what only the
+// land site knows: a land that REBASED the lane moved its fork point onto the main it was rebased
+// on, so the creation-time fork would over-count main's own commits into the lane's footprint.
 type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
-  verified?: boolean | null; baseSha?: string };
-const NO_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: false };
+  verified: boolean | null; baseSha?: string };
+const NO_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: false, verified: null };
 // owner clicked ⏏ on already-integrated work (already-merged, or an empty/hand-merged lane): a human
-// owned the land, but no agent resolved a conflict and no repair ran.
-const OWNER_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: true };
+// owned the land, but no agent resolved a conflict, no repair ran, and NO verify ran for this land —
+// whatever verdict an earlier merge run left on the slot did not verify what is landing here.
+const OWNER_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: true, verified: null };
 // e2e/test filename heuristic (the difficulty signal "this lane touched the safety net")
 function isTestPath(p: string): boolean {
   return /(^|\/)tests?\//i.test(p) || /(e2e|\.test\.|\.spec\.|_test\.|-test\.)/i.test(p);
@@ -2613,9 +2618,11 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     commitCount,
     filesTouched,
     e2eTouched: filesTouched.some(isTestPath),
-    // threaded from the land site (see LandFacts); a non-land terminal event carries no facts and
-    // falls back to whatever verdict is still on record for the slot, exactly as before
-    verified: facts.verified ?? mergeLast.get(s.id)?.verify?.ok ?? null,
+    // a LAND states this fact itself (see LandFacts) — never the mergeLast read, which can hold a
+    // previous run's verdict. Only a kill/shelve, which has no land site to state it, reports
+    // whatever verdict is still on record for the slot, exactly as before. Branching on `kind`, not
+    // on the value: an explicit null from a land is an ANSWER ("no verify ran"), not a missing fact.
+    verified: kind === "landed" ? facts.verified : mergeLast.get(s.id)?.verify?.ok ?? null,
     sessionMs: start !== null ? ts - start : null,
     ownerPrompts,
     resolvedConflict: facts.resolvedConflict,
@@ -2643,12 +2650,12 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
     commitCount: cc.code === 0 ? Number(cc.out) || 0 : 0,
     filesTouched,
     e2eTouched: filesTouched.some(isTestPath),
-    verified: null,
     sessionMs: null,
     ownerPrompts: 0,
     // n/a defaults — a revert is not a land. The land-shape facts of the land being undone live on
     // its own `landed` record; join reverted→landed BY BRANCH (rec.branch) to recover them.
     ...NO_LAND_FACTS,
+    verified: null, // no verify runs for a revert — the undone land's own record carries its verdict
   };
 }
 function emitLaneOutcome(o: LaneOutcome | null): void {

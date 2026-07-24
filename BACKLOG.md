@@ -142,7 +142,17 @@ the false→true flip. Deploy = `tmux -L claudefleet kill-session -t srv` (serve
 **Proposed next (NOT built, owner decision): the clean-path advisory reviewer** — the only *unattended*
 regression risk is the clean auto-land path (no resolver, tsc+e2e total-enough-not-total). A reviewer
 that may ONLY downgrade an auto-land to stop-and-review (never upgrade) closes it without a post-land
-audit backend, keeping deterministic>statistical intact. See `docs/merge-review-autonomy.md` §7. 
+audit backend, keeping deterministic>statistical intact. See `docs/merge-review-autonomy.md` §7.
+
+**2026-07-24 — ② clean-path reviewer SHIPPED + DEPLOYED, OFF by default (`a23b1ea`, live 19:11).**
+`FLEET_CLEAN_REVIEW` (default OFF → prod unchanged, proved by e2e-isolated green with the flag unset).
+On the clean+green auto-land (the only unattended path), an opt-in reviewer may ONLY downgrade to a
+stop-and-review; `landed:true` is reachable ONLY on an explicit `{"verdict":"ok"}` — review/timeout/
+throw/unparseable/no-base all FAIL CLOSED to the stop. Read-only by contract; advisory facts, never a
+gate. Own isolated harness `e2e-clean-review.sh` proves review→stop / ok→land / broken→fail-closed.
+Enable with `FLEET_CLEAN_REVIEW=1` in watchdog.sh + a kickstart. Also landed today: ①a land-ledger
+enrichment (`626fe5d`) + the resolver↔verify repair loop (`ee4670f`). Next on the spine: ①b review-feed
+UI, ③ 🔍 review agent on lane diffs. 
 
 **2026-07-24 (later still) — land-ledger enrichment ①a shipped + deployed (`626fe5d`).** The #18 outcome recorder already IS the durable ledger (every landed/reverted outcome, append-only, correlatable by branch); the missing piece was the land-SHAPE. `landed` records now carry `{resolvedConflict, repairRounds, confirmedByHuman}` — the calibration signal a graded auto-land gate needs ("which KINDS of land get reverted?"), with today's repair-loop `repairRounds` flowing in. Threaded from the land site through `landLane(s, facts)`. Next on the spine: the review-FEED UI (component #6) + the clean-path reviewer + the `🔍 review` agent.
 

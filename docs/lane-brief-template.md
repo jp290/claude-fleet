@@ -62,3 +62,30 @@ one-line note of anything you could not resolve. No walkthrough of your reasonin
 - **Model choice** (Phase 1): the better this brief, the cheaper the model that
   will succeed with it. If you can't hand this brief to Haiku with a straight
   face, the brief — not the model — is usually what needs upgrading.
+
+## Lessons earned from real lanes (append one line per confirmed correction)
+
+Each entry below is a *defect correction*: a real fault the lane shipped, that
+every suite passed green, and that traces to a property of its brief rather than
+to the executor. That class is dense and objectively adjudicable — see
+`automation-frontiers.md` §1a for why it is tracked separately from taste.
+
+- **Name the out-of-diff neighbours the change collides with.** (2026-07-24,
+  `fleet/review-agent`) The lane introduced a timeout constant set to exactly the
+  value of a server-wide `idleTimeout` it had never seen, because that constant
+  lives outside its diff — so a long request would drop its connection instead of
+  answering. `tsc` and all three suites were green. A brief that scopes a lane to
+  a diff **must** name the adjacent constants, limits and config the change
+  interacts with; a lane cannot discover what it was never pointed at, and
+  "review your own diff" structurally cannot find it.
+- **Enumerate the CASES the tests must cover — "add a failing test" is not
+  enough.** (2026-07-24, `fleet/outcome-recorder-fix`) The brief demanded a check
+  that goes red against the old code and got exactly one — for the happy path.
+  The defect sat in the path nobody named: `??` cannot tell an explicit `null`
+  from `undefined`, so the "verify genuinely did not run" case silently fell back
+  to the very read the change existed to remove. Name the case list (happy,
+  absent, explicit-null, stale-neighbour-state), not just the red-test rule.
+- **Say which slots/fixtures a new e2e check may touch.** (2026-07-24, same lane's
+  predecessor session) A check that opens or kills a slot mid-suite reordered
+  state under the steward-send/outcome checks further down and produced 7
+  unrelated failures. Prefer assertions that mutate no slot state.

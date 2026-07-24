@@ -29,6 +29,44 @@ Why it's hard/careful: corrections are sparse and high-variance (one grumpy day
 before a correction becomes a model rule — same graduation discipline as
 autonomy expansion.
 
+### 1a. Two correction CLASSES, not one (2026-07-24 — first real instances)
+
+The sparseness caveat above holds for the class §1 was mined from, but that is
+only half the signal. Corrections split by *who corrects what*, and the halves
+have opposite statistics:
+
+- **Taste corrections** (owner → agent; "sehr schön, aber X"). Sparse,
+  high-variance, subjective. Teaches the **owner-model**. §1 as written.
+- **Defect corrections** (reviewer/steward → lane; "line N is wrong, here is the
+  failure case"). Dense, low-variance, *objectively adjudicable* — the claim is
+  either true against the code or it is not. Teaches the **brief** and measures
+  the **gate's blind spot**. Needs no N-instance graduation, because a confirmed
+  defect is not a preference.
+
+The second class only became capturable once ③ `🔍 review` existed and the
+outcome ledger started filling. First two instances, both real, both from lanes
+whose verification was fully GREEN:
+
+| lane | defect the gate could not see | brief property it traces to |
+|---|---|---|
+| `fleet/review-agent` | `REVIEW_TIMEOUT_MS` set exactly to Bun's `idleTimeout` — a long review returns a dropped connection instead of its 500 | the conflicting constant lived **outside the diff**; the brief scoped the lane to the diff |
+| `fleet/outcome-recorder-fix` | `facts.verified ?? mergeLast…` cannot tell an explicit `null` from `undefined`, so a confirm-land can inherit a **previous** run's verdict | the brief demanded a red-on-old-code test but did not name the **null path** as a case that must be covered |
+
+The load-bearing observation: **both defects were semantic, and all suites were
+green in both cases.** `tsc` + `e2e-claude-gate` prove "does not break"; they are
+structurally blind to "compiles, passes, and is wrong". That blind spot is not a
+gap to close by adding suites — it is the permanent reason a reading step exists.
+
+**Cheap capture, mostly already built.** `ownerPrompts` in the outcome record is
+already a usable intervention proxy: a lane that took its brief and landed
+unaided records 1; each mid-flight correction adds one. Both lanes above recorded
+2. What is NOT captured: the review's findings themselves. `reviewCache` is an
+in-memory `Map` — findings die on the next deploy, slot recycle, or tree change.
+Persisting the findings onto the outcome row at land time is the smallest change
+that turns 🔍 review from a tool into a data source, and it is the prerequisite
+for asking "which brief properties predict a correction?" — the question the
+prompt-logic work needs answered from evidence rather than intuition.
+
 ## 2. Review-backpressure on dispatch (new control principle)
 
 The dispatcher's budget is a fixed `DISPATCH_MAX_LANES`. But the real constraint

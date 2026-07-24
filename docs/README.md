@@ -29,6 +29,30 @@ So documentation here comes in **two shelves**, and the second matters more:
    templates). The test of "usefully documented" is not "well written" — it is
    **does a session that loads this behave more reliably?**
 
+## Four capabilities — which doc owns which (orientation, added 2026-07-24)
+
+"Autonomy" here is not one dial. It is four separable capabilities with very
+different blast radii, and most of the corpus below is about one of them. Read
+this first so the docs do not look like competing frameworks:
+
+| | Capability | Owned by | Blast radius if wrong |
+|---|---|---|---|
+| **a** | **Selection** — what should be worked on at all | `orchestrator-autonomy.md` (the foreman pulse), the task queue + dispatcher | a wasted lane |
+| **b** | **Briefing** — turning a task into a lane a session can execute | `tailored-context.md`, `lane-brief-template.md`, `prompt-axioms.md` | a wasted lane |
+| **c** | **In-flight steering** — sensing a running lane and intervening | `steward-autonomy.md` (its *seven joints* decompose exactly this), `steward-intelligence.md` | plausible-but-wrong work that passes every gate |
+| **d** | **Acceptance** — is it done, may it land | `merge-review-autonomy.md`, `lane-autonomy-future.md`, the verify gate | real damage — hence machine-checked, owner-gated |
+
+Two consequences worth stating once:
+
+- **The safe expansion order is b → a → c.** A fault in (b) or (a) costs a lane
+  and is recoverable. A fault in (c) produces work that *looks* right and clears
+  every deterministic gate, because gates test correctness, not intent. (d) is
+  already the most hardened and should stay the slowest to move.
+- **(c) is unbuildable responsibly without perception.** The outcome ledger writes
+  and nothing reads it yet; the review-feed (`merge-review-autonomy.md`,
+  component #6) is that reader. Steering a fleet you cannot observe is the failure
+  mode where everything looks busy and the work is wrong for days.
+
 ## The corpus (the shelf)
 
 One line per doc — its *purpose*, not its contents, so this index points without

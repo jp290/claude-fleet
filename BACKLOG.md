@@ -131,6 +131,19 @@ deterministic); ② and ⑤. (Dropped: the outcome-recorder `?? DEFAULT_MODEL` f
 deliberately records `s.model ?? null`, "recorded honestly, NEVER guessed" (`server.ts` ~2310);
 back-filling a guessed default would corrupt attribution, which is the whole point of the recorder.)
 
+**2026-07-24 (later) — resolver↔verify REPAIR LOOP shipped (`ee4670f`, not yet deployed).** A conflict
+resolution that rebases clean but fails the deterministic verify is now fed the exact failure and gets
+up to `FLEET_MERGE_REPAIR_ROUNDS` (default 2) bounded repair rounds, instead of dead-ending at a red
+verdict. Authority every round = git + a re-run of `runVerify`, never the agent's word; **never changes
+what auto-lands** (the conflict path always stops for human review — the loop only turns that review's
+verdict from dead-red to repaired-green). Zero-risk pure upgrade, hence shipped without owner sign-off on
+the auto-land path. `buildRepairPrompt` is pure + unit-tested; a deterministic integration test proves
+the false→true flip. Deploy = `tmux -L claudefleet kill-session -t srv` (server.ts; no kickstart).
+**Proposed next (NOT built, owner decision): the clean-path advisory reviewer** — the only *unattended*
+regression risk is the clean auto-land path (no resolver, tsc+e2e total-enough-not-total). A reviewer
+that may ONLY downgrade an auto-land to stop-and-review (never upgrade) closes it without a post-land
+audit backend, keeping deterministic>statistical intact. See `docs/merge-review-autonomy.md` §7.
+
 ---
 
 ## 1. Esc key on desktop  `quick win`

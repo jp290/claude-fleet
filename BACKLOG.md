@@ -1057,7 +1057,10 @@ would re-file every persistent condition and flood the review buffer. Therefore 
 binds the guardrail: **this pulse is never scheduled until server-side `ref`-dedup lands.** That
 minimal de-dup (deep-dive B1b item 2 alone — a `ref` field + idempotent-on-open-ref POST, ~15 lines
 + e2e + one deploy; it does NOT need the GET, the server checks its own open tasks) is now the
-**gate before scheduling**, not a speculative up-front build. Open sub-decision left to the owner:
+**gate before scheduling**, not a speculative up-front build. The commit-cursor fact layer
+(rundgang records now carry a server-stamped per-lane `{head, base, landed}` map) gives the dedup
+`ref` its natural substrate: `branch@headSha` is derivable server-side, so the scheduling gate's
+missing piece is only the idempotent-on-open-ref POST itself — a follow-up lane, not built here. Open sub-decision left to the owner:
 after watching a few real filed proposals, judge their quality (the actual P-3 unknown) and let the
 observed duplicates shape whether the fuller B1b (GET + `mute(ref)`) is worth it.
 

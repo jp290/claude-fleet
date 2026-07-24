@@ -343,6 +343,28 @@
   .histcopy:hover { background: #2c3a5e; }
   .histnone { padding: 8px; color: #555; font-size: 12px; }
 
+  /* audit trail — owner-only read-only lens over /api/audit (Backlog #9) */
+  #auditpanel { max-width: 720px; width: 92vw; }
+  .auditctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .auditctl select { background: #262626; color: #ccc; border: 1px solid #333; border-radius: 7px;
+    padding: 6px 8px; font-family: inherit; font-size: 12px; }
+  .auditctl .auditcount { margin-left: auto; color: #666; font-size: 11px; }
+  #auditlist { flex: 1; min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+  .auditrow { display: flex; gap: 8px; align-items: baseline; padding: 6px 9px; border-radius: 7px;
+    font-size: 12px; color: #ccc; background: #1c1c1c; border-left: 3px solid #666; }
+  .auditrow .aud-ts { flex: none; color: #666; font-size: 10px; width: 74px; }
+  .auditrow .aud-slot { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
+    background: #141414; border: 1px solid #333; color: #aaa; min-width: 34px; text-align: center; }
+  .auditrow .aud-slot.none { color: #555; }
+  .auditrow .aud-kind { flex: none; font-size: 10px; font-weight: 700; }
+  .auditrow .aud-detail { flex: 1; min-width: 0; color: #999; white-space: pre-wrap; word-break: break-word; }
+  .auditrow.cat-lifecycle { border-left-color: #7aa2f7; } .auditrow.cat-lifecycle .aud-kind { color: #7aa2f7; }
+  .auditrow.cat-security  { border-left-color: #f7768e; } .auditrow.cat-security .aud-kind  { color: #f7768e; }
+  .auditrow.cat-steward   { border-left-color: #e0af68; } .auditrow.cat-steward .aud-kind   { color: #e0af68; }
+  .auditrow.cat-automation{ border-left-color: #9ece6a; } .auditrow.cat-automation .aud-kind{ color: #9ece6a; }
+  .auditrow.cat-repo      { border-left-color: #bb9af7; } .auditrow.cat-repo .aud-kind      { color: #bb9af7; }
+  .auditrow.cat-other     { border-left-color: #666; }    .auditrow.cat-other .aud-kind     { color: #888; }
+
   #sharepanel { gap: 12px; }
   .shrline { display: flex; gap: 8px; align-items: center; font-size: 12px; }
   .shrline .k { flex: none; width: 70px; color: #888; }
@@ -686,6 +708,7 @@
         <button data-l="4" title="2×2 grid">⊞</button>
       </span>
       <button id="queuebtn" title="task queue">🗒</button>
+      <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
     </div>
     <div id="slots"></div>
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
@@ -772,6 +795,10 @@
 
 <div id="queuedlg" class="overlay">
   <div class="panel" id="queuepanel"></div>
+</div>
+
+<div id="audit" class="overlay">
+  <div class="panel" id="auditpanel"></div>
 </div>
 
 <div id="gate" class="overlay">

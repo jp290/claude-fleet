@@ -170,16 +170,30 @@ lanes (A/B/C) land.
   the auto-land path: it doesn't touch that path. `repairRounds` is recorded on the verdict. Deploy =
   `tmux -L claudefleet kill-session -t srv` (server.ts change; no kickstart).
 
-**Proposed next rung — the clean-path advisory reviewer (NOT built; owner decision).** The repair
-loop and the tiered gate both harden the CONFLICT path and the *deterministic* half. The remaining
-unattended-regression risk lives on the **clean auto-land path** (`mergeJob`, `pre.clean && verify.ok`
-→ `advanceIntegration` with `confirmedByHuman:false`) — the only path that reaches main with no human,
-and where no resolver runs. A lane change can interact semantically with main's new commits without
-textually conflicting; tsc + `e2e-claude-gate` are total-ENOUGH, not total, so a break on an unasserted
-path (share/audit) can auto-land. The cheap closer, honoring "no extensive post-hoc backend": a
-reviewer agent at clean-auto-land time sees the lane diff + main's new commits and may **only ever move
-the land toward MORE human attention — downgrade an auto-land to stop-and-review — never less.** That
-one asymmetry keeps *deterministic > statistical* intact (the LLM never says "safe to land"; it can
-only summon a human) and refines BACKLOG #14 Phase 2's "advisory, not blocking" into "advisory that can
-insert a human." Sensitive (it changes the live auto-land path) → build opt-in / off by default, owner
-enables. This is the piece that actually closes the total-enough gap without a slow post-land audit.
+**② clean-path advisory reviewer SHIPPED + DEPLOYED, OFF by default (`a23b1ea`, live 19:11).** Closes
+the last unattended-regression gap — the **clean auto-land path** (`mergeJob`, `pre.clean && verify.ok`
+→ `advanceIntegration` with `confirmedByHuman:false`), the only path that reaches main with no human and
+where no resolver runs. `FLEET_CLEAN_REVIEW` (default OFF → prod byte-for-byte unchanged, proved by the
+whole `e2e-isolated` suite passing with the flag unset). When ON, a reviewer agent sees the lane diff +
+main's new commits and may **only DOWNGRADE the auto-land to a stop-and-review — never land more.**
+Structural, not incidental: `landed:true` is reachable ONLY on an explicit `{"verdict":"ok"}`; every
+other outcome (review / timeout / throw / unparseable / no-base) **fails CLOSED** to the same resolved-
+stop a red verify uses, so landing is unreachable from any reviewer failure mode. Read-only by contract
+(HEAD captured + `reset --hard` after). `buildCleanReviewPrompt` pure + unit-tested; own isolated harness
+`e2e-clean-review.sh` (mirrors claude-gate) proves review→stop / ok→land / broken→fail-closed. Advisory
+FACTS on the verdict + the lane-outcome ledger, never a gate. Enable = `FLEET_CLEAN_REVIEW=1` in
+watchdog.sh + kickstart. **①a land-shape ledger enrichment also shipped (`626fe5d`)**: the `landed`
+outcome record now carries `{resolvedConflict, repairRounds, confirmedByHuman}` — the calibration
+signal for a future graded gate.
+
+**Autonomy status (2026-07-24): substrate built, NOT autonomy itself — and accumulation is stalled.**
+Repair loop + tiered gate + ①a ledger + ② reviewer + existing undo-land together are the *prerequisites*
+`lane-autonomy-future.md` demands (reversibility + documentation + a calibration ledger). The one move
+that would ADD autonomy — graded auto-land of *conflict* resolutions (component 5) — is deliberately
+deferred until the ledger has revert data to set the gate from. **BUT: the live ledger is EMPTY
+(`/api/lane-outcomes` total=0; `lane-outcomes.jsonl` absent) — 9 historical `fleet/land` notes exist but
+all predate the #18 recorder, and no Fleet-managed lane has landed/killed through `landLane` since.**
+Outcomes emit ONLY from Fleet's own land/kill/shelve/undo routes — a `git merge` hand-land (or dev in the
+main checkout) records nothing. So "accumulate first" only produces data if agent lanes are actually
+dispatched and landed *through Fleet*. That is a workflow decision the owner must make before the
+accumulate→calibrate→graduate path can run.

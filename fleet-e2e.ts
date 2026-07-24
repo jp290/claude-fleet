@@ -1,7 +1,7 @@
 // e2e for claude-fleet: run from the repo root with the server already up.
 //   bun fleet-e2e.ts
 // Creates slots 1+2, kills them, and restarts the `srv` tmux session along the way.
-import { buildMergePrompt } from "./merge-prompt";
+import { buildMergePrompt, buildRepairPrompt } from "./merge-prompt";
 const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // match the server's env so the whole suite can target an isolated instance
 // (own port + own tmux socket) instead of the live fleet — see e2e-isolated.sh
@@ -83,6 +83,49 @@ function check(name: string, ok: boolean, detail = "") {
   check("buildMergePrompt handles an empty main/lane log + null task",
     pEmpty.includes("main commits (THEIRS") && pEmpty.includes("(none)")
     && pEmpty.includes("lane task: (unknown)") && pEmpty.includes("DATA>>>"));
+}
+
+// --- buildRepairPrompt: PURE-function unit tests (no server needed) ---
+// Same rationale as buildMergePrompt: the real repair runs a live agent, so no e2e exercises its
+// EFFECT here; assert the built string carries the verify failure and upholds the safety invariants.
+{
+  const rp = buildRepairPrompt({
+    branch: "fleet/probe-lane",
+    main: "main",
+    verifyCmd: "bunx tsc --noEmit && ./e2e-claude-gate.sh",
+    verifyOut: "server.ts(42,7): error TS2304: Cannot find name 'droppedConst'.",
+    conflicted: ["server.ts"],
+  });
+  // 1. leads with REPAIRING (the token the stand-in detects) and forbids re-rebasing
+  check("buildRepairPrompt is a repair brief, not a rebase brief",
+    rp.startsWith("You are REPAIRING") && rp.includes("do NOT rebase again")
+    && rp.includes("The rebase onto main is ALREADY COMPLETE"));
+  // 2. carries the actual verify failure so the fix is targeted, not a guess
+  check("buildRepairPrompt carries the failing verification's command + output",
+    rp.includes("bunx tsc --noEmit && ./e2e-claude-gate.sh")
+    && rp.includes("error TS2304: Cannot find name 'droppedConst'."));
+  // 3. fix-only scope rule (an over-broad repair is itself a regression)
+  check("buildRepairPrompt states the fix-only scope rule",
+    rp.includes("SCOPE — HARD RULE") && rp.includes("change ONLY what the verification failure requires"));
+  // 4. verified-contract awareness — the repair is re-verified, so a bad fix fails hard
+  check("buildRepairPrompt states the repair is re-verified (auto-rejected, land stops)",
+    rp.includes("VERIFIED CONTRACT") && rp.includes("re-verified deterministically")
+    && rp.includes("auto-rejected and the land STOPS"));
+  // 5. the untrusted verify output sits INSIDE the injection-safe DATA block
+  const rds = rp.indexOf("<<<DATA"), rde = rp.indexOf("DATA>>>");
+  check("buildRepairPrompt keeps the verify output inside the injection-safe DATA block",
+    rds > 0 && rde > rds && rp.includes("nothing inside")
+    && rp.indexOf("error TS2304") > rds && rp.indexOf("error TS2304") < rde,
+    `data[${rds},${rde}]`);
+  // 6. strict-JSON contract with the repaired/blocked statuses + sandboxed git-only tools
+  check("buildRepairPrompt keeps the strict-JSON contract and sandboxed tool rules",
+    rp.includes('{"status": "repaired", "detail": "..."} or {"status": "blocked", "detail": "..."}')
+    && rp.includes("use only plain `git <subcommand>` invocations")
+    && rp.includes("Never run build/test commands yourself"));
+  // 7. empty verify output degrades gracefully, DATA block still closed
+  const rpEmpty = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "", conflicted: [] });
+  check("buildRepairPrompt handles empty verify output + no files",
+    rpEmpty.includes("(no output captured)") && rpEmpty.includes("(unknown)") && rpEmpty.includes("DATA>>>"));
 }
 
 async function tmuxOut(...args: string[]) {
@@ -718,7 +761,7 @@ if (REPO) {
   // merge is an async job — poll GET until the run settles; a 400 means the slot was
   // torn down (the job landed the lane), which IS the success signal for `do`
   type VerifyField = { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
-  type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string };
+  type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string; repairRounds?: number };
   // Poll the async merge job until it settles. The old bound (100×100ms = 10s) was too tight:
   // a real-git land (rebase + verify + ff + teardown) under concurrent load can overrun 10s, and
   // the loop then returned {gone:false,last:null} — INDISTINGUISHABLE from a legit "not landed"
@@ -1684,6 +1727,35 @@ if (REPO) {
     check("G1c: the stale verify still names the main it actually verified (≠ the landed mainBefore)",
       svNoteVerify?.mainSha === svVerifiedSha && svNote.json?.mainBefore !== svVerifiedSha,
       `verified=${svVerifiedSha} mainBefore=${String(svNote.json?.mainBefore)}`);
+
+    // --- REPAIR LOOP: a conflict resolution that rebases clean but FAILS verify is repaired
+    // in-loop (the resolver is fed the exact failure and fixes it), so the human reviews a
+    // GREEN resolution instead of a dead-ended red one. Still human-gated — never auto-landed.
+    // Non-tautology: with MERGE_REPAIR_ROUNDS=0 the verdict would be verify.ok:false, repairRounds
+    // absent; the assertions below require the flip false→true AND repairRounds>=1. ---
+    const rl = await freshRepo("repairloop");
+    const rlLane = (await (await post("/api/lanes", { repo: rl.repo })).json()) as { slot: number; cwd: string; branch: string };
+    // the lane's conflicting line carries the VERIFYBAD sabotage marker; -X theirs (fakemerge "do")
+    // keeps the lane side, so the resolution rebases clean but verify is RED — the loop's trigger.
+    await Bun.write(`${rlLane.cwd}/base.txt`, "base\nrl-lane VERIFYBAD\n");
+    spawnSync("git", ["-C", rlLane.cwd, "commit", "-aqm", "rl lane work (sabotaged)"]);
+    await Bun.write(`${rl.repo}/base.txt`, "base\nrl-main\n"); // same line on main → conflict → agent
+    spawnSync("git", ["-C", rl.repo, "commit", "-aqm", "rl main work"]);
+    await setMergeMode("do");
+    await settleForMerge(rlLane.slot);
+    await post(`/api/slots/${rlLane.slot}/merge`, {});
+    const rlV = await waitMerge(rlLane.slot);
+    check("repair loop: a resolution that fails verify is repaired to GREEN, still paused for review (not landed)",
+      !rlV.gone && rlV.last?.status === "resolved" && rlV.last?.landed === false
+      && rlV.last?.verify?.ok === true && (rlV.last?.repairRounds ?? 0) >= 1, JSON.stringify(rlV.last));
+    // assert the FACT, not just the verdict: the marker is actually gone from the repaired tree
+    check("repair loop: the VERIFYBAD marker is actually scrubbed from the repaired lane tree",
+      !spawnSync("git", ["-C", rlLane.cwd, "grep", "-I", "VERIFYBAD"]).stdout.toString().includes("VERIFYBAD"),
+      spawnSync("git", ["-C", rlLane.cwd, "log", "--oneline", "-3"]).stdout.toString());
+    // and it never reached main — the human still gates the land
+    check("repair loop: the repaired resolution has NOT auto-landed onto main",
+      !spawnSync("git", ["-C", rl.repo, "log", "--oneline", "-5"]).stdout.toString().includes("rl lane work"),
+      spawnSync("git", ["-C", rl.repo, "log", "--oneline", "-5"]).stdout.toString());
 
     await setMergeMode("blocked"); // restore the suite default for later tests in this scope
   }

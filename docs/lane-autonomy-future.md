@@ -23,6 +23,21 @@ slow full suite runs as a post-land audit with undo-land as rollback. This sharp
 more of the safety weight. See `merge-review-autonomy.md` §7 (Status 2026-07-24) for the shipped
 V1 verify / V3-input briefing / e2e-infra state that produced this data.*
 
+*2026-07-24 (later) — the SUBSTRATE is now built; autonomy itself is not, and is data-blocked.
+Shipped + deployed this session: the **tiered land gate** (fast e2e tier joins tsc), the **resolver↔
+verify repair loop** (`ee4670f` — component 4 sharper: a rejected resolution self-repairs instead of
+dead-ending), **①a ledger enrichment** (`626fe5d` — the `landed` record now carries
+`{resolvedConflict, repairRounds, confirmedByHuman}`, component 1's calibration facts), and the **②
+clean-path advisory reviewer** (`a23b1ea`, OFF by default — component 6-adjacent: a downgrade-only,
+fail-closed brake on the clean auto-land). With the pre-existing **undo-land** (component 3) and the
+durable **#18 recorder** (component 2), five of the six components now exist in some form. **The lone
+remaining autonomy move is component 5 — the graded auto-land of *conflict* resolutions** (today they
+always stop for a human); mechanism is ready to build opt-in/off, but the DOCTRINE bars enabling it
+until the ledger yields revert data. **Owner decision 2026-07-24: accumulate first, then graduate.**
+BLOCKER surfaced same day: the live ledger is **EMPTY** (`/api/lane-outcomes` total=0) — outcomes emit
+ONLY from Fleet's land/kill/shelve/undo routes, so accumulation requires agent lanes actually dispatched
++ landed *through Fleet*, not `git merge` hand-lands. Accumulate-first is inert until that workflow runs.*
+
 ## The shift these ideas describe
 
 Move the merge/land decision from **pre-hoc approval** ("the merge agent made a semantic

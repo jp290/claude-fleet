@@ -23,7 +23,7 @@ fi
 
 rm -rf "$DIR" "$FAKEBIN"
 mkdir -p "$DIR" "$FAKEBIN"
-cp -R "$SRC/server.ts" "$SRC/fleet-e2e-claude-gate.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/fleet-e2e-claude-gate.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # a throwaway git repo the dispatcher spawns lanes from — needed to exercise the

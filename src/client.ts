@@ -554,7 +554,18 @@ class Pane {
   }
 
   refit() {
+    // preserve bottom-lock across the fit. xterm only auto-follows streaming output while
+    // the viewport sits exactly at the tail (ydisp===ybase); fit() reflows the buffer and
+    // can leave it a line or two above the bottom, at which point new output lands off
+    // screen (the "stutter") and the jump pill appears — even though the user never scrolled
+    // up. If we were following before the resize, re-pin after it with the same rAF nudge
+    // connect() uses for the seed. Guarded on wasFollowing so a deliberately scrolled-up
+    // pane (reading scrollback) is left where it is. Uses the jump pill's own threshold so
+    // "following" here means exactly what "no pill" means everywhere else.
+    const b = this.term.buffer.active;
+    const wasFollowing = b.viewportY >= b.baseY - 1;
     this.fit.fit();
+    if (wasFollowing) this.pinToBottom();
     clearTimeout(this.resizeTimer);
     this.resizeTimer = setTimeout(() => this.sendResize(), 500);
   }

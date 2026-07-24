@@ -2391,6 +2391,32 @@ if (auditRotExists) {
   // owner token is out of scope for the steward journal, same 404 as the other steward routes
   check("owner token on the steward journal route is out of scope (404)", (await get("/api/steward/journal?tail=1")).status === 404);
 
+  // --- commit-cursor fact layer (step 2): every rundgang record carries a SERVER-stamped
+  // per-lane map {head, base, landed, repo} keyed by branch, plus the primary checkout keyed
+  // by ITS branch. The map is computed server-side at write time; a body-supplied `lanes` key
+  // is ignored like every other unvalidated field (never-spread). ---
+  const laneGit = (dir: string, ...a: string[]) => Bun.spawnSync(["git", "-C", dir, ...a]).stdout.toString().trim();
+  const lnStewBranch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
+    .slots.find((x) => x.id === lnStew.slot)?.worktree?.branch ?? "";
+  const jInject = await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false,
+    lanes: { evil: { head: "deadbeef", landed: true } } });
+  check("journal POST carrying a body-supplied lanes key is still accepted", jInject.ok, String(jInject.status));
+  await Bun.sleep(200);
+  type LaneRec = { kind?: string; lanes?: Record<string, { head?: string | null; base?: string | null; landed?: boolean; repo?: string }> };
+  const jLanesRec = ((await (await stewGet("/api/steward/journal?tail=1")).json()) as { records: LaneRec[] }).records?.[0];
+  check("rundgang record carries the SERVER-stamped lane map with the lane's real HEAD sha",
+    jLanesRec?.lanes?.[lnStewBranch]?.head === laneGit(lnStew.cwd, "rev-parse", "HEAD")
+    && typeof jLanesRec?.lanes?.[lnStewBranch]?.base === "string"
+    // realpath-insensitive (macOS /var → /private/var): compare the repo by its basename path
+    && (jLanesRec?.lanes?.[lnStewBranch]?.repo ?? "").endsWith("/testrepo"),
+    JSON.stringify(jLanesRec?.lanes ?? {}).slice(0, 300));
+  check("body-supplied lanes are IGNORED (no injected branch in the stored map)",
+    !!jLanesRec?.lanes && !("evil" in jLanesRec.lanes), JSON.stringify(jLanesRec?.lanes ?? {}).slice(0, 200));
+  const primaryBranch = laneGit(REPO, "rev-parse", "--abbrev-ref", "HEAD");
+  check("lane map includes the primary checkout keyed by its branch (owner-side lands observable)",
+    jLanesRec?.lanes?.[primaryBranch]?.head === laneGit(REPO, "rev-parse", "HEAD"),
+    JSON.stringify({ primaryBranch, entry: jLanesRec?.lanes?.[primaryBranch] }));
+
   // --- 🧭 steward digest (P3 demand-triggered bounded-wait): prior/slots are computed FRESH
   // every call; only the `digest` field is cached {digest, computedAt}. A GET triggers the
   // worker only on a stale cache, races it against a caller-chosen ?wait (default ~30s, clamped
@@ -2458,6 +2484,55 @@ if (auditRotExists) {
   await post(`/api/slots/${lnStew.slot}/rename`, { label: "not-steward" });
   check("steward digest without a steward slot is 404", (await stewGet("/api/steward/digest")).status === 404);
   await post(`/api/slots/${lnStew.slot}/rename`, { label: "⚙ steward" });
+
+  // --- commit-cursor fact layer (step 3): the digest serves sinceLastLook — the deterministic
+  // per-lane delta vs the prior rundgang record's stamped map. Route-computed with ?wait=0, so
+  // it never depends on the digest worker/cache being alive. ---
+  type SLL = { new: string[]; advanced: { branch: string; commits: number; shortstat: string }[];
+    landed: string[]; vanishedUnlanded: string[]; rewritten: { branch: string }[] } | null;
+  const getSLL = async (): Promise<SLL> =>
+    ((await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { sinceLastLook?: SLL }).sinceLastLook ?? null;
+  // anchor a fresh prior (stamps the lane at its current HEAD), then commit → advanced
+  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
+  await Bun.sleep(300);
+  writeFileSync(`${lnStew.cwd}/cursor-probe.txt`, "commit-cursor probe\n");
+  laneGit(lnStew.cwd, "add", "cursor-probe.txt");
+  laneGit(lnStew.cwd, "commit", "-qm", "cursor probe");
+  const sllAdv = await getSLL();
+  check("sinceLastLook.advanced names the committed lane with commit count 1 + a real shortstat",
+    sllAdv?.advanced.some((a) => a.branch === lnStewBranch && a.commits === 1 && a.shortstat.includes("1 file")) === true,
+    JSON.stringify(sllAdv).slice(0, 300));
+  // a prior record WITHOUT lanes (pre-feature) → sinceLastLook null, never a fake-empty diff
+  writeFileSync("steward-journal.jsonl",
+    `${JSON.stringify({ ts: Date.now(), kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });
+  check("a prior record without lanes yields sinceLastLook null (honest, not fake-empty)", (await getSLL()) === null);
+  // fresh prior with the commit stamped; then land the branch owner-side + open a new lane
+  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
+  await Bun.sleep(300);
+  const lv = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const lvBranch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
+    .slots.find((x) => x.id === lv.slot)?.worktree?.branch ?? "";
+  writeFileSync(`${lv.cwd}/vanish.txt`, "unlanded work\n");
+  laneGit(lv.cwd, "add", "vanish.txt");
+  laneGit(lv.cwd, "commit", "-qm", "vanish work");
+  laneGit(REPO, "merge", "-q", lnStewBranch); // owner-side land of the lane's commits into the integration branch
+  const sllLand = await getSLL();
+  check("sinceLastLook.landed reports a branch merged into the integration branch since the prior record",
+    sllLand?.landed.includes(lnStewBranch) === true, JSON.stringify(sllLand).slice(0, 300));
+  check("sinceLastLook.new reports a lane opened since the prior record",
+    sllLand?.new.includes(lvBranch) === true, JSON.stringify({ lvBranch, new: sllLand?.new }));
+  // stamp a prior that includes the unlanded lane, then tear its slot down WITHOUT merging →
+  // vanishedUnlanded (the "sessions vanished" insurance); amend the landed lane's head →
+  // rewritten (prior head no longer an ancestor), flagged honestly with no fake delta
+  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
+  await Bun.sleep(300);
+  await post(`/api/slots/${lv.slot}/kill`, {});
+  laneGit(lnStew.cwd, "commit", "--amend", "-qm", "cursor probe rewritten");
+  const sllGone = await getSLL();
+  check("sinceLastLook.vanishedUnlanded flags a gone, unmerged lane (the vanished-sessions insurance)",
+    sllGone?.vanishedUnlanded.includes(lvBranch) === true, JSON.stringify(sllGone).slice(0, 300));
+  check("sinceLastLook.rewritten flags an amended (rebased) lane honestly instead of faking a delta",
+    sllGone?.rewritten.some((r) => r.branch === lnStewBranch) === true, JSON.stringify(sllGone?.rewritten));
 
   // --- steward files PENDING tasks (queue-automation.md item 1): observations become
   // reviewable proposals; the pending→queued gate stays with the owner. ---
@@ -2630,6 +2705,34 @@ if (auditRotExists) {
   const tally1 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
   check("outcome: two 'helped' outcomes (git delta + sustained output) increment tally.continue_nudge.helped", tally1.helped === tally0.helped + 2, `${tally0.helped}->${tally1.helped}`);
   check("outcome: three 'no-effect' outcomes (idle, blip, dirty-only) increment tally.continue_nudge.noEffect", tally1.noEffect === tally0.noEffect + 3, `${tally0.noEffect}->${tally1.noEffect}`);
+
+  // --- commit-cursor fact layer (step 4): the helped-git predicate is sha-grounded.
+  // oc6 = LAND-inside-the-window: the lane's commits merge into the integration branch and the
+  // slot is torn down — the ahead-count goes backward, so the pre-sha predicate scored this
+  // noEffect; the sha baseline (parked repo + merged:false) must score it helped. oc7 = amend:
+  // history rewritten (baseline no longer an ancestor) → conservative noEffect, never a false
+  // helped (a naive rev-list baseline..HEAD would count the amended commit as new work). ---
+  const oc6 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const oc7 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const oc6Branch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
+    .slots.find((x) => x.id === oc6.slot)?.worktree?.branch ?? "";
+  writeFileSync(`${oc6.cwd}/land-me.txt`, "work that lands inside the window\n");
+  spawnSync("git", ["-C", oc6.cwd, "add", "land-me.txt"]);
+  spawnSync("git", ["-C", oc6.cwd, "commit", "-qm", "land-me"]);
+  spawnSync("git", ["-C", oc7.cwd, "commit", "--allow-empty", "-qm", "will be amended"]);
+  await settleForSteward(oc6.slot); await settleForSteward(oc7.slot);
+  await stewPost("/api/steward/send", { slot: oc6.slot, kind: "continue_nudge", ref: "continue" });
+  await stewPost("/api/steward/send", { slot: oc7.slot, kind: "continue_nudge", ref: "continue" });
+  spawnSync("git", ["-C", REPO, "merge", "-q", oc6Branch]); // owner-side merge, inside the window
+  const oc6land = await post(`/api/slots/${oc6.slot}/land`, {});
+  check("outcome setup: the nudged lane lands inside the window (slot + gitInfo torn down)", oc6land.ok, await oc6land.text());
+  spawnSync("git", ["-C", oc7.cwd, "commit", "--amend", "-qm", "amended"]); // rewrite, same ahead-count
+  await awaitMeasured(oc6.slot); await awaitMeasured(oc7.slot);
+  check("outcome: a lane whose commits LANDED inside the window records 'helped' (strongest signal — was noEffect pre-sha)",
+    (await outcomeFor(oc6.slot)) === "helped");
+  check("outcome: rewritten history (amend — baseline sha no longer an ancestor) stays 'no-effect', never a false helped",
+    (await outcomeFor(oc7.slot)) === "noEffect");
+  await post(`/api/slots/${oc7.slot}/kill`, {}); // free the lane budget (DISPATCH_MAX_LANES) for the dispatch block below
 
   // P-1a: the digest's delta anchor is the last RUNDGANG record, not the last record of any kind.
   // Deterministic here: the five outcomes just measured are the journal's newest records, while

@@ -655,7 +655,7 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
 
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
 // poll must never block on 16 git spawns, so it reads this cache instead
-interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
+interface GitInfo { branch: string; dirty: number; ahead: number; behind: number; head: string | null }
 const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
 // per-slot claude-liveness, refreshed on the same slow tick as gitInfo. This cache exists
 // ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
@@ -700,12 +700,40 @@ async function tickGit(): Promise<void> {
           if (m) { behind = Number(m[1]); ahead = Number(m[2]); }
         }
       }
-      gitInfo.set(s.id, { branch, dirty, ahead, behind });
+      // the slot's HEAD sha — the substrate of the commit-cursor fact layer (lane maps,
+      // sinceLastLook, sha-grounded outcome baselines). One cheap call on the existing tick.
+      const hd = await git(s.cwd, "rev-parse", "HEAD");
+      gitInfo.set(s.id, { branch, dirty, ahead, behind, head: hd.code === 0 && hd.out ? hd.out : null });
     }
-    measureOutcomes(); // the gitInfo/aliveInfo caches are now fresh for THIS tick — measure against them
+    await measureOutcomes(); // the gitInfo/aliveInfo caches are now fresh for THIS tick — measure against them
   } finally {
     gitTickBusy = false;
   }
+}
+
+// the sha-grounded helped-git predicate (commit-cursor layer): helped = new commits exist
+// since the parked baseline sha, OR the lane's commits LANDED (baseline sha became an ancestor
+// of the integration branch) — landing inside the window is the STRONGEST helped signal, and
+// it used to score noEffect because the ahead-count goes backward on land/teardown. Rebase
+// (baseline no longer an ancestor of HEAD) → conservative noEffect, never a false helped.
+// Baselines persisted by an older fleet.json carry no `head` → legacy ahead-count comparison,
+// never a crash, never mismeasured as helped.
+async function helpedGitSince(p: OutcomePending, gi: GitInfo | null | undefined, s: Slot | undefined): Promise<boolean> {
+  const b = p.gitBaseline;
+  if (!b.head) return !!gi && gi.ahead > b.ahead; // legacy (pre-sha) baseline
+  // landed check first — it survives the land's teardown (the repo outlives the lane).
+  // Only meaningful when the baseline sha was NOT already merged at park time.
+  if (b.repo && b.merged === false) {
+    const intRef = await integrationBranch(b.repo);
+    if (intRef && (await git(b.repo, "merge-base", "--is-ancestor", b.head, intRef)).code === 0) return true;
+  }
+  // forward progress in the still-open slot; a lane baseline only measures the SAME lane —
+  // a recycled slot (different branch) must never be measured as this send's effect
+  if (!s?.cwd || (b.branch !== undefined && s.worktree?.branch !== b.branch)) return false;
+  const anc = await git(s.cwd, "merge-base", "--is-ancestor", b.head, "HEAD");
+  if (anc.code !== 0) return false; // rebase/rewritten history → conservative noEffect
+  const rl = await git(s.cwd, "rev-list", "--count", `${b.head}..HEAD`);
+  return rl.code === 0 && Number(rl.out) > 0;
 }
 
 // window-close classification of pending steward sends (steward-autonomy.md §5). Folded into
@@ -713,7 +741,7 @@ async function tickGit(): Promise<void> {
 // caches, never a tick-stale copy. Every AUTO signal is DETERMINISTIC (git delta / sustained
 // output / claudeAlive); `harmed` is NEVER set here (owner-only). A claudeAlive true→false in
 // the window is a crash CANDIDATE escalated to the owner, not a harm verdict.
-function measureOutcomes(): void {
+async function measureOutcomes(): Promise<void> {
   const now = Date.now();
   let changed = false;
   for (let i = outcomePending.length - 1; i >= 0; i--) {
@@ -738,7 +766,7 @@ function measureOutcomes(): void {
     // "sustained ≥60s" proxy on the scalar lastOutput: a lone blip early in the window is stale
     // by close and filtered out). Ambiguous → no-effect (conservative, mandatory). Reply-
     // referencing is DEFERRED → `helped` under-counts (see promotionEligible).
-    const helpedGit = !!gi && gi.ahead > p.gitBaseline.ahead;
+    const helpedGit = await helpedGitSince(p, gi, s);
     const outStarted = !!s && s.lastOutput > p.outputBaseline;
     const outSustained = !!s && now - s.lastOutput <= OUTCOME_SUSTAIN_MS;
     const helpedOutput = outStarted && outSustained;
@@ -2262,7 +2290,12 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
 // deterministically measurable — never guessed, never LLM-judged).
 interface OutcomePending {
   slot: number; class: string; ref: string; sentAt: number;
-  gitBaseline: { ahead: number; dirty: number };
+  // head/repo/branch/merged: the sha-grounded baseline (commit-cursor layer). Optional —
+  // entries persisted by an older fleet.json have only ahead/dirty and keep the legacy
+  // ahead-count comparison. `merged` = "was the baseline sha already an ancestor of the
+  // integration branch at park time" — guards the trivial ancestor case (a zero-commit lane's
+  // fork point is always merged) so landing can be detected without a false helped.
+  gitBaseline: { ahead: number; dirty: number; head?: string; repo?: string; branch?: string; merged?: boolean };
   outputBaseline: number; aliveBaseline: boolean;
 }
 const outcomePending: OutcomePending[] = [];
@@ -2738,7 +2771,14 @@ if (existsSync(STATE_FILE)) {
           && typeof (v as OutcomePending).gitBaseline === "object" && (v as OutcomePending).gitBaseline !== null
           && typeof (v as OutcomePending).gitBaseline.ahead === "number" && typeof (v as OutcomePending).gitBaseline.dirty === "number")
           outcomePending.push({ slot: (v as OutcomePending).slot, class: (v as OutcomePending).class, ref: (v as OutcomePending).ref,
-            sentAt: (v as OutcomePending).sentAt, gitBaseline: { ahead: (v as OutcomePending).gitBaseline.ahead, dirty: (v as OutcomePending).gitBaseline.dirty },
+            sentAt: (v as OutcomePending).sentAt,
+            // sha fields ride along when present; a pre-sha fleet.json has none → the entry
+            // keeps the legacy ahead-count comparison in helpedGitSince (never mismeasured)
+            gitBaseline: { ahead: (v as OutcomePending).gitBaseline.ahead, dirty: (v as OutcomePending).gitBaseline.dirty,
+              ...(typeof (v as OutcomePending).gitBaseline.head === "string" ? { head: (v as OutcomePending).gitBaseline.head } : {}),
+              ...(typeof (v as OutcomePending).gitBaseline.repo === "string" ? { repo: (v as OutcomePending).gitBaseline.repo } : {}),
+              ...(typeof (v as OutcomePending).gitBaseline.branch === "string" ? { branch: (v as OutcomePending).gitBaseline.branch } : {}),
+              ...(typeof (v as OutcomePending).gitBaseline.merged === "boolean" ? { merged: (v as OutcomePending).gitBaseline.merged } : {}) },
             outputBaseline: (v as OutcomePending).outputBaseline, aliveBaseline: (v as OutcomePending).aliveBaseline });
     const pot = (persisted as { outcomeTally?: unknown }).outcomeTally;
     if (typeof pot === "object" && pot !== null && !Array.isArray(pot))
@@ -2947,9 +2987,27 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   // 10s cache; git/output baselines are the cheap caches (the delta, not the absolute, is what
   // matters, and measurement reads the same caches so they stay consistent).
   const gi = gitInfo.get(s.id);
+  // sha-grounded baseline (commit-cursor layer): head from the tick cache, fresh rev-parse
+  // only when the cache hasn't warmed yet. For lanes, park repo/branch (so the landed check
+  // survives teardown) and whether the sha is ALREADY merged (see helpedGitSince).
+  const gitBaseline: OutcomePending["gitBaseline"] = { ahead: gi?.ahead ?? 0, dirty: gi?.dirty ?? 0 };
+  let bHead = gi?.head ?? null;
+  if (!bHead && s.cwd) {
+    const hd = await git(s.cwd, "rev-parse", "HEAD");
+    bHead = hd.code === 0 && hd.out ? hd.out : null;
+  }
+  if (bHead) {
+    gitBaseline.head = bHead;
+    if (s.worktree) {
+      gitBaseline.repo = s.worktree.repo;
+      gitBaseline.branch = s.worktree.branch;
+      const intRef = await integrationBranch(s.worktree.repo);
+      if (intRef) gitBaseline.merged = (await git(s.worktree.repo, "merge-base", "--is-ancestor", bHead, intRef)).code === 0;
+    }
+  }
   outcomePending.push({
     slot: s.id, class: kind, ref, sentAt: ts,
-    gitBaseline: { ahead: gi?.ahead ?? 0, dirty: gi?.dirty ?? 0 },
+    gitBaseline,
     outputBaseline: s.lastOutput, aliveBaseline: await claudeAlive(s.id),
   });
   if (outcomePending.length > 200) outcomePending.shift(); // unbounded only if measurement wedges
@@ -3011,6 +3069,88 @@ function stewardSlotsView(now: number) {
     task: stewardTaskView(s.id),
     mergePending: mergeLast.get(s.id)?.status === "resolved",
   }));
+}
+
+// --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
+// The server computes ONE deterministic per-lane fact — {head, base, landed, repo} keyed by
+// branch, plus each lane repo's primary checkout keyed by ITS branch (owner-side lands become
+// observable) — and stamps it SERVER-side into every rundgang journal record. The steward's
+// have-pointer is simply its own prior record; the LLM can never write any of this (same typed
+// choke-point stance as the journal handler). head is read FRESH per call — journal writes and
+// digests are hours apart, so correctness of the fact beats reusing the 10s cache.
+interface LaneFact { head: string | null; base: string | null; landed: boolean; repo: string }
+async function laneFacts(): Promise<Record<string, LaneFact>> {
+  const out: Record<string, LaneFact> = {};
+  const repos = new Set<string>();
+  await Promise.all(slots.filter((s) => s.cwd && s.worktree).map(async (s) => {
+    const wt = s.worktree!;
+    repos.add(wt.repo);
+    const hd = await git(s.cwd!, "rev-parse", "HEAD");
+    const head = hd.code === 0 && hd.out ? hd.out : null;
+    const base = await laneBaseRef(s);
+    let landed = false;
+    if (head) {
+      const intRef = await integrationBranch(wt.repo);
+      if (intRef) landed = (await git(wt.repo, "merge-base", "--is-ancestor", head, intRef)).code === 0;
+    }
+    out[wt.branch] = { head, base, landed, repo: wt.repo };
+  }));
+  await Promise.all([...repos].map(async (repo) => {
+    const br = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    if (br.code !== 0 || !br.out || br.out === "HEAD" || out[br.out]) return;
+    const hd = await git(repo, "rev-parse", "HEAD");
+    out[br.out] = { head: hd.code === 0 && hd.out ? hd.out : null, base: null, landed: true, repo };
+  }));
+  return out;
+}
+
+// "what changed since my last look", as served data: diff the prior rundgang record's
+// server-stamped lane map against the CURRENT one. Route-computed on every digest GET — the
+// pulse never depends on the digest worker/cache being alive. A prior without lanes (an old
+// record, or no prior at all) → null, never a fake-empty diff.
+interface SinceLastLook {
+  new: string[];
+  advanced: { branch: string; commits: number; shortstat: string; from: string; to: string }[];
+  landed: string[];
+  vanishedUnlanded: string[];
+  rewritten: { branch: string; priorHead: string; head: string }[];
+}
+async function sinceLastLookView(prior: Record<string, unknown> | null): Promise<SinceLastLook | null> {
+  const pl = prior?.lanes;
+  if (typeof pl !== "object" || pl === null || Array.isArray(pl)) return null;
+  const priorLanes = pl as Record<string, { head?: unknown; landed?: unknown; repo?: unknown }>;
+  const cur = await laneFacts();
+  const d: SinceLastLook = { new: [], advanced: [], landed: [], vanishedUnlanded: [], rewritten: [] };
+  for (const b of Object.keys(cur)) if (!(b in priorLanes)) d.new.push(b);
+  for (const [b, p] of Object.entries(priorLanes)) {
+    const pHead = typeof p.head === "string" ? p.head : null;
+    const pRepo = typeof p.repo === "string" ? p.repo : null;
+    const c = cur[b];
+    if (!c) {
+      // no slot holds the branch anymore: merged into the integration branch = landed;
+      // otherwise the "sessions vanished" insurance fires (unknown repo/ref → conservative
+      // vanishedUnlanded, never a silent drop). Worktrees share the object DB, so the check
+      // runs in the primary repo even though the lane's tree is gone.
+      let merged = false;
+      if (pHead && pRepo) {
+        const intRef = await integrationBranch(pRepo);
+        if (intRef) merged = (await git(pRepo, "merge-base", "--is-ancestor", pHead, intRef)).code === 0;
+      }
+      (merged ? d.landed : d.vanishedUnlanded).push(b);
+      continue;
+    }
+    if (c.landed && p.landed !== true) { d.landed.push(b); continue; }
+    if (!pHead || !c.head || pHead === c.head) continue;
+    // head moved: forward → advanced with O(delta) range stats; history rewritten (rebase) →
+    // flagged honestly with both shas, never a fake delta
+    const anc = await git(c.repo, "merge-base", "--is-ancestor", pHead, c.head);
+    if (anc.code !== 0) { d.rewritten.push({ branch: b, priorHead: pHead, head: c.head }); continue; }
+    const rl = await git(c.repo, "rev-list", "--count", `${pHead}..${c.head}`);
+    const sh = await git(c.repo, "diff", "--shortstat", "--no-color", `${pHead}..${c.head}`);
+    d.advanced.push({ branch: b, commits: rl.code === 0 ? Number(rl.out) || 0 : 0,
+      shortstat: sh.code === 0 ? sh.out : "", from: pHead, to: c.head });
+  }
+  return d;
 }
 
 // --- 🧭 steward digest: the Rundgang's mechanical half as an ephemeral worker
@@ -3141,6 +3281,9 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const digestAt = snapshot ? snapshot.computedAt : null;
     return json({
       now, prior, slots: slotsView,
+      // deterministic per-lane delta vs the prior record's server-stamped lane map —
+      // route-computed, so it works even when the digest worker/cache is dead
+      sinceLastLook: await sinceLastLookView(prior),
       digest: snapshot?.digest ?? null,
       digestAt,
       digestAge: digestAt !== null ? now - digestAt : null,
@@ -3242,12 +3385,15 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       return json({ error: "decisions_surfaced must be a number ≥ 0" }, 400);
     if (typeof body.changed !== "boolean") return json({ error: "changed must be a boolean" }, 400);
     const note = typeof body.note === "string" ? body.note.slice(0, 280) : undefined;
+    // the per-lane commit-cursor map is SERVER-computed and SERVER-stamped — a body-supplied
+    // `lanes` key is ignored like every other unvalidated field (never-spread): fact, not claim.
     writeStewardJournal({
       kind: RUNDGANG_KIND,
       counts: Object.fromEntries(entries) as Record<string, number>,
       decisions_surfaced: body.decisions_surfaced,
       changed: body.changed,
       ...(note !== undefined ? { note } : {}),
+      lanes: await laneFacts(),
     });
     audit("steward_journal", stewardSlot()?.id, `d:${body.decisions_surfaced} c:${body.changed}`);
     return json({ ok: true, ts: Date.now() });

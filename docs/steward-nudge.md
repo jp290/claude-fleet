@@ -154,6 +154,33 @@ source of truth. For each corpus record, reconstruct the *surface state* at that
 duration, dirty tree, commits since last look, task vs commits) and ask whether a machine gate would
 have fired. Three outputs, all decision-relevant:
 
+**Corrected 2026-07-25 — this paragraph overpromised; verified against the artefacts before
+building on it:**
+- **Dirty-tree state at a past moment exists nowhere.** `gitInfo`/`aliveInfo` are in-memory maps;
+  `saveState` persists none of it; no journal writes slot state over time. Of the four gate inputs
+  above, at most two (idle-as-transcript-gap, commits-from-git-history) are reconstructible.
+- **Idle is reconstructible only as a transcript-timestamp proxy**, while a deployed gate would
+  read `lastOutput` (pane-stream, with `quietUntil` suppression) — the retro feasibility number is
+  measured on a *different signal* than the built gate would use, and does not transfer 1:1.
+- **Precision (output 2) has no data source at all**, retro or current: it needs surface state at
+  non-intervention moments, which nothing samples. The build order below is therefore partly
+  circular — part of the deciding measurement needs instrumentation first. The minimal unlock is a
+  **forward recorder**: (a) at every owner/terminal prompt, append the target slot's deterministic
+  surface (idleMs, dirty, ahead, alive) to a durable file; (b) a downsampled per-lane surface
+  sample per tick. (a) alone buys recall after N days; (b) is what makes precision computable.
+- **`ownerPrompts` is surface-confounded**: it counts only `source === "owner"` (UI-composed
+  sends); pane-typed prompts are harvested as `"terminal"` and excluded — the live journal holds
+  ~90 owner vs ~747 terminal records, and dispatcher-delivered briefs log as `"auto"`. Any §7
+  metric built on it measures which surface the owner typed in, not how often he corrected.
+- **Corpus records carry no timestamp/session ref** (`situations.jsonl`: proj, summary, quote —
+  verified across all 205); re-anchoring each record into its transcript is new mining via quote
+  matching, not a lookup, and the 7 stitched quotes will not re-anchor exactly.
+
+What §8 can honestly deliver from existing artefacts: **recall and the direction split, on the
+idle-proxy signal, minus dirty-tree conditions.** Precision needs the forward recorder plus N days
+of normal operation — which argues for shipping the recorder *early and small*, since its data
+only accrues from the day it lands.
+
 1. **Recall** — of N real sharpen moments, how many had a surface signal at all? Low recall means the
    nudge fires rarely; that is acceptable (it is additive), but it must be known, not assumed.
 2. **Precision** — how often would that gate have fired when the owner said nothing? Each such firing

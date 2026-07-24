@@ -2941,6 +2941,20 @@ if (auditRotExists) {
     (await post("/api/slots/1/open", { cwd: ".", model: "bad model; rm -rf" })).status === 400);
   check("lane create rejects a bad model string (400)",
     (await post("/api/lanes", { repo: REPO, model: "$(evil)" })).status === 400);
+  // MODEL_RE was widened for the 1M context variants (`claude-opus-5[1m]`) — the ONLY shell
+  // metacharacters it may ever admit. These pin how NARROW that widening is: the bracket group is
+  // anchored to the very end, alnum-only, and never repeatable, so it can't become a general
+  // glob/bracket-expression hole in a string that reaches a tmux shell line.
+  // reject-only by design: these provoke a 400 and mutate NO slot state. The ACCEPT half of the
+  // contract lives in the claude-gate suite, which proves it harder anyway (200 *and* the
+  // shell-quoted spawn string). Opening a real slot here reorders state under the steward-send
+  // episode/outcome checks further down — observed, 7 unrelated failures.
+  check("a bracket group NOT anchored at the end is rejected (400)",
+    (await post("/api/slots/1/open", { cwd: ".", model: "claude-5[1m]tail" })).status === 400);
+  check("an unbalanced bracket is rejected (400)",
+    (await post("/api/slots/1/open", { cwd: ".", model: "claude-5[1m" })).status === 400);
+  check("a glob character outside the suffix form is rejected (400)",
+    (await post("/api/slots/1/open", { cwd: ".", model: "claude-*" })).status === 400);
   const lnModel = (await (await post("/api/lanes", { repo: REPO, model: "sonnet-test.1" })).json()) as { slot: number };
   const sessModel = (await (await get("/api/sessions")).json()) as { slots: { id: number; model: string | null }[] };
   check("lane created with a model echoes it on /api/sessions",

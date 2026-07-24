@@ -50,19 +50,26 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
     : BASE_CMD;
   // pin the fleet's base model whenever the slot has none of its own — otherwise claude
   // inherits the owner's ambient /model default (how a lane once span up on the wrong model).
-  if (claude) cmd += ` --model ${model ?? DEFAULT_MODEL}`;
+  // single-quoted: the 1M context variants are spelled `claude-opus-5[1m]`, and tmux runs this
+  // string through default-shell — /bin/zsh here, which ABORTS on an unmatched glob ("no matches
+  // found"), so an unquoted [1m] would kill every new pane at spawn. MODEL_RE forbids `'`, so a
+  // plain single-quote wrap is closed, not merely escaped.
+  if (claude) cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
   return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
 }
 // per-slot model (synergy-findings Tier-2): strict charset because the value lands in a
 // tmux shell command — never widen without revisiting slotCmd
-const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
+// the optional bracket suffix is the context-window variant (`claude-opus-5[1m]`) and is the ONLY
+// reason a shell metacharacter may appear here — it is anchored to the end, bounded, and alnum-only,
+// and every shell interpolation of a model string is single-quoted (slotCmd, summaryViaSession).
+const MODEL_RE = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9]{1,8}\])?$/;
 // the fleet's base model for interactive/lane sessions that don't pin their own. Absent this,
 // slotCmd omits --model and claude falls back to the owner's ambient /model default. FLEET_MODEL
 // overrides, but is charset-validated first — this value is baked into a tmux shell line, so an
 // unvalidated env var would be an injection vector (same rule as per-slot model). The digest/
 // summary worker keeps its own cheaper SUMMARY_MODEL — this is only the interactive tier.
 const DEFAULT_MODEL =
-  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : "claude-opus-5";
+  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : "claude-opus-5[1m]";
 function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
   const m = body?.model;
   if (m === undefined || m === null || m === "") return { ok: true, model: null };
@@ -1778,7 +1785,12 @@ async function tickHarvest(): Promise<void> {
 // from the transcript JSONL, never scraped from the TUI.
 // FLEET_SUMMARY_CMD (tests only) switches to a plain subprocess stand-in.
 const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? null;
-const SUMMARY_MODEL = process.env.FLEET_SUMMARY_MODEL ?? "claude-sonnet-5";
+// worker tier for the throwaway agents (summarize, commit message, enhance, merge resolver,
+// ② clean review, digest). Bracket = the 1M context variant; it reaches a tmux shell line in
+// summaryViaSession, so it is single-quoted there — see the MODEL_RE note.
+const SUMMARY_MODEL =
+  process.env.FLEET_SUMMARY_MODEL && MODEL_RE.test(process.env.FLEET_SUMMARY_MODEL)
+    ? process.env.FLEET_SUMMARY_MODEL : "claude-sonnet-5[1m]";
 const SUMMARY_TIMEOUT_MS = 180_000;
 interface SummaryResult {
   summary: string; openThreads: string[]; verification: string;
@@ -1843,7 +1855,7 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summa
   const name = `sum-${sid.slice(0, 8)}`;
   const started = Date.now();
   const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
-    `${PATH_EXPORT}claude --session-id ${sid} --model ${SUMMARY_MODEL}${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`);
+    `${PATH_EXPORT}claude --session-id ${sid} --model '${SUMMARY_MODEL}'${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`);
   if (sp.code !== 0) throw new Error("summarizer session failed to start");
   const file = `${projDir(cwd)}/${sid}.jsonl`;
   try {

@@ -70,6 +70,21 @@ every suite passed green, and that traces to a property of its brief rather than
 to the executor. That class is dense and objectively adjudicable — see
 `automation-frontiers.md` §1a for why it is tracked separately from taste.
 
+**Read these as instances, NOT as a growing checklist.** (Correction 2026-07-25,
+owner-prompted.) Both faults below were *discoverable inside the repo*: the
+colliding constant was one grep away, the `??` sat in the lane's own diff. So
+they were **attention-allocation failures, not information failures** — and a
+rule of the form "enumerate more neighbours in the brief" does not scale, because
+it requires the briefer to foresee everything. What scales is the habit the
+sharpen discipline already installs: *derive what most needs checking from this
+task, and name what your conclusion would silently rest on.* A brief's job is
+only the residue — **what the lane cannot discover by reading, because it exists
+only in the conversation**: a decision and its reason, a hazard and why the
+obvious precedent does not apply here, the owner's ranking between two goods.
+Everything discoverable should be *found*, not listed. The entries below are kept
+because they are evidence of where attention failed, not because a longer list
+would have prevented them.
+
 - **Name the out-of-diff neighbours the change collides with.** (2026-07-24,
   `fleet/review-agent`) The lane introduced a timeout constant set to exactly the
   value of a server-wide `idleTimeout` it had never seen, because that constant

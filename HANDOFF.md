@@ -1,107 +1,61 @@
-# HANDOFF — five-lane stack landed + deployed; all open work consolidated into one register (2026-07-23, late eve)
+# HANDOFF — 2026-07-24 session (DEPLOYED)
 
-*A state snapshot + pointers, NOT the knowledge itself. Treat every line as a claim to verify
-(look up commits/states before building on them; deterministic evidence beats this document).
-The canonical knowledge lives in the committed docs — this is a MAP into them, not a
-replacement. Deliberately thin — the repo IS the handoff (`three-axes.md`).*
+*A thin map, NOT the knowledge — the durable findings live in the docs/BACKLOG/memory homes
+below. Treat every line as a claim to verify (look up commits/states before building on them).*
 
-## Where to go first
+## State: everything landed AND deployed
 
-**→ `BACKLOG.md` → "Execution order — THE register"** — the single roof for what is open, in
-dependency order, across BOTH tracks (the program **and** the product backlog), plus what is
-parked-with-a-trigger, what is a dead end, and what is measured-as-working and must not be
-"optimized". Status + dependency + whose call + a pointer; never the reasoning. **Start here.**
+`srv` restarted 2026-07-24 15:38 (positively verified — new routes answer, not just health 200).
+Main HEAD `c8cc5f6`. Live now: audit view + honest count (#9), `DEFAULT_MODEL` spawn-pin, the
+commit-cursor fact layer (`sinceLastLook`, sha-grounded outcomes), the per-lane outcome recorder
+(`/api/lane-outcomes`, #18), both e2e flake fixes, and the V3-input resolver briefing.
 
-**The one decision that gates the program is the register's fork P-3: probe or build?** Everything
-else in track A is either tiny (P-1a), owner-placement (P-2), or optional. Do not start work in
-this track without reading fact 1 and fact 2 at the top of it — they invalidate the framing most of
-the older docs still use.
+Verify state: `git log --oneline -8 && tmux -L claudefleet ls | grep srv && curl -s -o /dev/null
+-w '%{http_code}' http://100.64.0.1:8790/`.
 
-**→ `briefs/findings-dossier-2026-07-23.md`** — the evidence base under the program half of that
-register: findings with re-verify commands and the constraints any answer must satisfy. Run its
-§1 re-ground block before trusting anything. Note that its §4 invites you to derive the approach —
-that derivation has since been done and lives in the register; read §4 as *the reasoning behind*
-the order, not as an open invitation to re-derive it.
+## Where the knowledge lives (go here, not to a fat handoff)
 
-## What happened since the previous handoff (which this file replaces)
+- **`docs/merge-review-autonomy.md` §7 "Status 2026-07-24"** — the canonical **land-hardening
+  program** state: V1 verify shipped; V3 briefing input-half done / output-contract + hunk-capture
+  remain; the **tiered-gate finding** (e2e-isolated is deterministic now but >2min > the 120s
+  verify timeout → fast-tier gates + slow-tier audits, NOT "add e2e to the verify").
+- **`docs/lane-autonomy-future.md`** — the merge/land **autonomy doctrine** (reversibility-primary
+  graded gate, six components, the ladder). The 2026-07-24 note there = the first concrete
+  gate-fitness data it asked for. Landing is autonomy-*eligible* (recoverable via undo-land),
+  gated on a total+fast+flake-free verify — which this session showed we don't yet have.
+- **`BACKLOG.md`** — the register (land-hardening entry + "full session DEPLOYED + program state"
+  note): retired ideas (rerere, hard-block — don't re-propose), open follow-ups.
+- **memory/** — cross-session gotchas: `project-fleet-land-hardening`,
+  `project-fleet-landing-autonomy`, `project-fleet-steward-watched-probe`.
 
-1. **The mechanism deep-dive** (`e978c78`) produced a verified five-lane program; the **stack-land /
-   program-board proposal** (`da8658d`, propose-only) captured the lane DAG the fleet cannot model.
-2. **All five lanes landed by hand**, owner-initiated, ff-only, in dependency order:
-   `917452a` G1 (land provenance survives teardown failure + stale-verify guard) · `9e729d4` G2
-   (verify badge reaches the owner's eye) · `2fc7c50` A1 (honest `helped` semantics + staleness-gated
-   harm attest) · `df260b1` A2 (advisory `baselineRate`) · `f70cc7a` B1 (propose-class outcome from
-   promote/dismiss). `77e2f31` records the run's empirical findings as §8 of the stack-land doc —
-   read it before building any stack tooling; it is the worked example.
-3. **Deployed** — srv restarted 22:43:23, so the stack is live. Health 200 on the Tailscale IP.
-4. **`bdc1cb0` corrects a location claim**: `.claude/commands/rundgang.md` is **git-tracked in this
-   repo**, not a `~/.claude` file — B1's remaining half is therefore lane-able and revertable. Do not
-   re-inherit the earlier wrong version from any doc draft.
-5. **A read-only assessment session** verified the program's state end-to-end and produced the
-   dossier above (measurement asymmetry re-confirmed with fresh numbers, cost distribution measured,
-   steward staleness, the deploy-gap fact, the dogfooding-bypass root shared with F1).
-6. **B1's prompt half was assessed and deliberately NOT shipped** (`c7047a8`): prompt-side de-dup is
-   unsound — the pulse cannot read its own open proposals (no GET on `/api/steward/tasks`). Lane
-   **B1b** was specced instead, then **revised** once two facts surfaced: **there is no ladder**
-   (nothing consumes `outcomeTally`) and no steward proposal has ever existed, so B1b's de-dup shape
-   is designed against zero observations. B1b's real-bug part is split out as **P-1a**; the rest is
-   behind the fork. See the register's fact 1/fact 2 and the revision note on the B1b spec.
+## Immediate follow-ups (all in BACKLOG's 2026-07-24 program note)
 
-## Verified state (confirm — do not trust)
+1. 1-line: outcome recorder `model: s.model ?? DEFAULT_MODEL` (attribution now possible + pinned).
+2. The **tiered gate**: the uncommitted `watchdog.sh` draft (`tsc && e2e-claude-gate`) is the
+   fast-tier start — validate it runs in the runVerify context, commit, ONE `kickstart`. The slow
+   full suite becomes a post-land audit (design work).
+3. Stale-proposal reaper (steward hand-does it; `branch@headSha` makes it deterministic).
+4. Map follow-ups ② (mechanical-conflict determinism) + ⑤ (verdict/staleness as review headline).
 
-```sh
-git log --oneline -8 && git status --short
-git worktree list                      # expect: main + steward only
-tmux -L claudefleet ls | grep srv      # srv start time = the deployed code's vintage
-```
+## Steward — P-3 RESOLVED
 
-At writing: tree clean, worktrees = main + steward, srv 22:43:23, live health 200. Both isolated
-suites green at the landed HEADs — `./e2e-isolated.sh` @ `df260b1` (625 lines) and @ `77e2f31`
-(631 lines): **ALL PASS, 0 FAIL, exit 0, no pane-capture flake in either**, run concurrently to
-re-prove P1's concurrency safety.
+Fed a real done lane, the steward filed the **first real proposal ever** (`afcf3eac`) and correctly
+displayed-not-re-filed it. "No steward proposal has ever existed" is now FALSE — do not rebuild on
+it. `afcf3eac` is now stale (its lane landed) → dismiss it. See `project-fleet-steward-watched-probe`.
 
-**The deploy was verified POSITIVELY, not by absence of errors** — this matters, because the tick
-swallows its own exceptions (register fact 2), so a dead measurement layer looks identical to a
-healthy one. `GET /api/steward/outcomes` (Bearer = `stewardToken` from `fleet.json`) returned
-`baselineRate {rate: 0.25, samples: 12, helped: 3}` and A1's `harmAttestAt`/`harmAttestTtlMs`,
-proving A1 and A2 actually execute in the live tick. **Reusable check** — and the program's first
-real number: a working, un-nudged slot looks "helped" ~25 % of the time. Any future nudged `helped`
-rate has to beat that to mean anything.
+## Load-bearing gotchas (full detail in memory)
 
-## Load-bearing decisions + WHY (incl. deliberately NOT done — do not re-litigate)
+- **`git merge` of a lane SILENTLY drops newer main work** (proved); the fleet lands by **rebase**
+  which preserves it — NEVER hand-`merge` a lane branch. Trust `verify.ok` + `git show`, not the
+  (mangle-prone) diff viewer.
+- **`e2e-isolated` runs >2min** — too slow for the 120s land-verify timeout (the tiered-gate driver).
+- **Desktop `bg-pty-host` sessions can hijack a fleet pane** via stray owner input; fresh lanes with
+  new worktrees are isolated. Don't kill `bg-pty-host` procs to fix a slot (owner's desktop app).
+- Leftover to clean: the abandoned `fleet-flake-waitmerge` worktree (superseded by `-v2`, landed).
 
-- **Invariants:** propose-never-apply; **land + deploy owner-only, forever** (OWNER §4b); producers
-  write `pending`, only the owner promotes.
-- **Infra > prompts at strong-executor scale** — stage 2 refuted most of stage 1's rewrites. Do not
-  spend on prompt edits.
-- **Verification coverage is the program's throttle** (governor #2): the binding constraint is the
-  Ground/fact layer, not idea generation.
-- **DEAD ENDS (don't retry):** transcript-grep recurrence counting (2b — the count *rose* with zero
-  actual collisions; count runtime outcomes, not corpus mentions); the 11 prompt "insurance" edits
-  (trigger = first cheap-model lane); **no eval set exists**, so no prompt edit is proven to improve
-  outcomes.
-- **Anti-abstraction is a standing bar** — a framework where a grep suffices is itself the bug.
+## Deploy ritual (owner-only)
 
-## Non-obvious state / gotchas
-
-- **`CLAUDE.md` and `OWNER.md` are gitignored** (fleet copies CLAUDE.md into every worktree) — edits
-  don't land via a branch; edit the main-checkout copy directly.
-- **`.claude/commands/` IS tracked** — `/rundgang`, `/steward`, `/foreman` are in-repo and in scope
-  for a lane (see item 4 above).
-- **Deploy ritual:** `tmux -L claudefleet kill-session -t srv` → the watchdog respawns with new code,
-  real panes survive → health-check `http://100.64.0.1:8790/` (**Tailscale IP only**;
-  `127.0.0.1:8790` never answers and looks like a dead server). Confirm the watchdog is loaded first.
-- **The steward worktree is ~19 commits behind main** (recompute — it grows:
-  `git rev-list --count $(git -C ~/claude-fleet.worktrees/steward rev-parse HEAD)..main`).
-  Its doc shelf, i.e. its model of the system, predates this program; its own 21:15 journal record
-  ("still no worktree lanes") is the visible symptom. See dossier F3 / register P-2.
-- **`tickGit` hides its own failures.** `try`/`finally` with no catch, and every call site is
-  `void tickGit().catch(() => {})`. `measureOutcomes`/`measureControls` are the last statements
-  inside that try — a throw there produces **no log line**, health stays 200 and the git badges keep
-  refreshing while the measurement layer is dead. Never conclude "it works" from a clean
-  `server.log`; query `/api/steward/outcomes` instead.
-- **Docs collide across concurrent sessions.** `HANDOFF.md` was rewritten by another session mid-way
-  through this one. Read a doc immediately before editing it; do not edit from a remembered version.
-- **The five lanes were created inside the repo** (`<repo>/claude-fleet.worktrees/…`), not at the
-  sibling path `createWorktree` uses, and were never attached to fleet slots — which is why the
-  steward could not see them. See dossier F7; it shares a root with the measurement gap (F1).
+`tmux -L claudefleet kill-session -t srv` → watchdog respawns (5s poll — wait >5s before health-
+checking) → `curl http://100.64.0.1:8790/` (Tailscale IP only). Client changes need `bun run
+build` first. Watchdog.sh changes additionally need `launchctl kickstart -k
+gui/$(id -u)/com.claude-fleet.watchdog`.

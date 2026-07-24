@@ -145,6 +145,16 @@ lanes (A/B/C) land.
   "phase 2" is not "add e2e to the gate"; it is a **TIERED gate**: a fast-deterministic tier
   (tsc + the quick `e2e-claude-gate`) gates the land; the slow full suite runs as a *post-land
   audit* (or async), with undo-land as the rollback. Grep `VERIFY_TIMEOUT_MS`.
+  **2026-07-24 — fast tier SHIPPED to the repo (`b30c746`, `watchdog.sh` `VERIFY_CMD` now
+  `tsc && ./e2e-claude-gate.sh`), NOT yet deployed** (needs the owner `launchctl kickstart` —
+  a running watchdog doesn't re-read its own file). Validated to run in `runVerify`'s context
+  WITHOUT `node_modules` (the lane-worktree condition — `server.ts` imports only `node:`/`bun:`/
+  local, so it boots with no npm): ALL PASS from a `node_modules`-less tree in **~46 s** (< the
+  120 s timeout). Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
+  dispatch/model/steward routes, so module-load/boot regressions tsc misses are caught — but it
+  does NOT assert the share/guest or audit paths, so it is **total-ENOUGH, not total**. That gap
+  is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stays OUT of the
+  gate (its ~600 ms pane-capture flake bars a deterministic gate) until that flake is fixed.
 - **§6 hard-rule #1 live-confirmed:** the flake and resolver lanes both touched `fleet-e2e.ts`;
   verified their hunks don't overlap (~653 vs ~1–90) before landing in order. The harness-conflict
   trap is real; disjoint-region checks are the mitigation until `conflictTouchesHarness` exists.

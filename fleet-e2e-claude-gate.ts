@@ -181,7 +181,11 @@ check("nothing was typed into the bare shell despite the stale cache", !cap3.out
 // --- Slot.model reaches the spawn string: FLEET_CMD here IS `claude` (the fake binary),
 // so slotCmd must append `--model <m>` to the pane command — the main suite (FLEET_CMD=true)
 // can never prove this, the append is claude-gated by design. ---
-const oM = await post("/api/slots/4/open", { cwd: process.cwd(), model: "gate-model-probe" });
+// the probe deliberately carries the 1M-variant bracket suffix: [ ] are glob metacharacters and
+// tmux runs the pane command through default-shell (/bin/zsh on the live socket), which ABORTS on
+// an unmatched glob — so this asserts the SHELL-QUOTED form, the thing that keeps a 1M-model pane
+// from dying at spawn. An unquoted regression here is invisible to tsc and fatal in production.
+const oM = await post("/api/slots/4/open", { cwd: process.cwd(), model: "gate-model-probe[1m]" });
 check("open slot 4 with a per-slot model", oM.ok, String(oM.status));
 let startCmd = "";
 for (let i = 0; i < 40; i++) {
@@ -191,13 +195,13 @@ for (let i = 0; i < 40; i++) {
   }
   await Bun.sleep(250);
 }
-check("the pane spawn command carries --model gate-model-probe",
-  startCmd.includes("--model gate-model-probe"), startCmd.slice(-160));
+check("the pane spawn command carries the per-slot model, shell-quoted",
+  startCmd.includes("--model 'gate-model-probe[1m]'"), startCmd.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
 
 // --- and with NO per-slot model, slotCmd must inject the fleet's DEFAULT_MODEL — so a session
 // never silently inherits the owner's ambient /model default (the bug this closes). FLEET_MODEL
-// is unset in this harness, so the default resolves to the hard-coded claude-opus-5. ---
+// is unset in this harness, so the default resolves to the hard-coded claude-opus-5[1m]. ---
 const oDef = await post("/api/slots/4/open", { cwd: process.cwd() });
 check("reopen slot 4 with no per-slot model", oDef.ok, String(oDef.status));
 let startCmdDef = "";
@@ -209,7 +213,7 @@ for (let i = 0; i < 40; i++) {
   await Bun.sleep(250);
 }
 check("the pane spawn command injects the default model when the slot pins none",
-  startCmdDef.includes("--model claude-opus-5"), startCmdDef.slice(-160));
+  startCmdDef.includes("--model 'claude-opus-5[1m]'"), startCmdDef.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
 
 // --- branch 6: dispatcher POST-spawn re-check (server.ts tickDispatch, the fresh claudeAlive

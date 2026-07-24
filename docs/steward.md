@@ -45,12 +45,23 @@ primitive plus three conventions:
 The steward's value is that its concepts are **read, not assumed**. On spawn or
 after a context reset, run `/steward` (project command), which:
 
-1. Reads the shelf in order: `operating-model.md` → `interaction-modes.md` →
+1. **Freshens first** — merges `main` into the steward branch and syncs the two
+   gitignored files no merge carries (`CLAUDE.md`, `OWNER.md`) from the main
+   checkout. Ordering is load-bearing: reading precedes nothing; a shelf read
+   before the merge is a stale world-model dressed as a fresh one (this is how
+   the branch once drifted 22 commits behind).
+2. Reads the shelf in order: `operating-model.md` → `interaction-modes.md` →
    `tailored-context.md` → `verification.md` → this file.
-2. Spot-verifies the claims it is about to rely on (a handful of the line
+3. Spot-verifies the claims it is about to rely on (a handful of the line
    references against the current tree) — the shelf's claims are treated as
    claims, per CLAUDE.md.
-3. Then converses: planning partner, brief compiler, automation designer.
+4. Then converses: planning partner, brief compiler, automation designer.
+
+The session itself is **disposable by design**: the journal holds its durable
+memory, the shelf its durable knowledge. A long-lived pane accumulating context
+is the failure mode; the cheap rebuild via this ritual is the feature. When
+context has grown long, the steward says so and asks for a `/clear` + reload
+rather than degrading quietly.
 
 ## Voice
 

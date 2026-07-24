@@ -3,7 +3,7 @@ import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, 
 import { resolve, dirname, basename } from "node:path";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
-import { buildMergePrompt, buildRepairPrompt } from "./merge-prompt";
+import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -2185,6 +2185,14 @@ const MERGE_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_MERGE_TIMEOUT
 // verify state the human reviews (a repaired-green resolution instead of a dead-ended red one). The
 // authority every round is git + a re-run of runVerify, never the agent's word.
 const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MERGE_REPAIR_ROUNDS ?? 2) | 0));
+// OPT-IN clean-path advisory reviewer (design note §7). Default OFF → production behaviour is
+// byte-for-byte unchanged until the owner sets FLEET_CLEAN_REVIEW. When ON, a reviewer agent looks at
+// a clean+green lane about to AUTO-LAND and may ONLY downgrade it to a stop-and-review — never approve
+// a land that would not otherwise happen. The auto-land proceeds ONLY on an explicit "ok" verdict;
+// every other outcome (review / error / timeout / unparseable / no fork base) fails CLOSED to a stop.
+const CLEAN_REVIEW = /^(1|true|on|yes)$/i.test(process.env.FLEET_CLEAN_REVIEW ?? "");
+const CLEAN_REVIEW_CMD = process.env.FLEET_CLEAN_REVIEW_CMD ?? null; // tests: subprocess stand-in
+const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_REVIEW_TIMEOUT_MS ?? 180_000) | 0);
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.
 // Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
@@ -2233,7 +2241,11 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
   // how many bounded resolver↔verify repair rounds ran (conflict path only) before this verdict
   // settled. >0 means the resolution's first verify was RED and the resolver was fed the failure
   // to repair; `verify` above is the FINAL (post-repair) result. Absent/0 = no repair was needed.
-  repairRounds?: number }
+  repairRounds?: number;
+  // OPT-IN clean-path advisory reviewer verdict (present only when FLEET_CLEAN_REVIEW ran on the clean
+  // auto-land path). "review" DOWNGRADED an auto-land to a stop-and-review; "ok" rode along on a land.
+  // Advisory FACTS for the human, never a gate — the deterministic verify stays the authority.
+  cleanReview?: { verdict: "ok" | "review"; reason: string } }
 const mergeInflight = new Map<number, Promise<void>>();
 // slots whose merge POST is still in its pre-flight guards: the `has(inflight)` check and
 // the `set` are separated by several awaits, so without this SYNCHRONOUS reservation two
@@ -2601,6 +2613,51 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
   }
 }
 
+// OPT-IN clean-path advisory reviewer. Runs only when FLEET_CLEAN_REVIEW is on, only on the clean+green
+// auto-land path, and can ONLY downgrade that auto-land to a stop-and-review — it never lands anything.
+// FAIL-CLOSED: only an explicit {"verdict":"ok"} returns "ok"; every other outcome (a "review" verdict,
+// a timeout/throw, an unparseable answer, a missing fork base) returns "review", so the auto-land is
+// unreachable from any of the reviewer's failure modes. The reviewer is read-only by contract; HEAD is
+// captured and hard-reset afterwards so any stray edit/commit it made can never reach the landing tree.
+async function runCleanReview(cwd: string, branch: string, main: string, base: string | null): Promise<{ verdict: "ok" | "review"; reason: string }> {
+  if (!base) return { verdict: "review", reason: "no fork base to compare against — stopping for a human look" };
+  const lf = await git(cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
+  const ls = await git(cwd, "diff", "--shortstat", "--no-color", `${base}...HEAD`);
+  const ml = await git(cwd, "log", "--no-color", "--oneline", `${base}..${main}`);
+  const mf = await git(cwd, "diff", "--name-only", "--no-color", `${base}..${main}`);
+  const prompt = buildCleanReviewPrompt({
+    branch, main,
+    laneFiles: lf.code === 0 ? lf.out.split("\n").filter(Boolean).slice(0, 100) : [],
+    laneStat: ls.code === 0 ? ls.out : "",
+    mainLog: ml.code === 0 ? ml.out : "",
+    mainFiles: mf.code === 0 ? mf.out.split("\n").filter(Boolean).slice(0, 100) : [],
+  });
+  const preHead = await git(cwd, "rev-parse", "HEAD");
+  let out = "";
+  try {
+    out = CLEAN_REVIEW_CMD
+      ? await summaryViaSubprocess(CLEAN_REVIEW_CMD, prompt, cwd, CLEAN_REVIEW_TIMEOUT_MS)
+      : await summaryViaSession(prompt, cwd, '"verdict"', { extraArgs: MERGE_TOOLS, timeoutMs: CLEAN_REVIEW_TIMEOUT_MS });
+  } catch { /* timeout / spawn failure → out stays "" → parsed as fail-closed below */ }
+  // enforce read-only: restore the tree to exactly what it was before the reviewer ran (it is about to land)
+  if (preHead.code === 0 && preHead.out) await git(cwd, "reset", "--hard", preHead.out);
+  let text = out;
+  try {
+    const env = JSON.parse(text) as { result?: unknown };
+    if (typeof env.result === "string") text = env.result.trim();
+  } catch { /* not an envelope */ }
+  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  try {
+    const j = JSON.parse(body) as { verdict?: unknown; reason?: unknown };
+    const reason = typeof j.reason === "string" ? j.reason.slice(0, 400) : "";
+    if (j.verdict === "ok") return { verdict: "ok", reason };
+    if (j.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look" };
+    return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look` };
+  } catch {
+    return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look" };
+  }
+}
+
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
   let res: MergeLast;
   try {
@@ -2683,33 +2740,39 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
             detail: `clean rebase, but verify failed (${verify.cmd}) — not auto-landed; review the output, then land if intended.`.slice(0, 600) };
         } else {
-          // CLEAN path, verify green or unconfigured: no judgment was involved (git rebased it
-          // with zero conflicts) and verification passed, so there is nothing to review — land
-          // it. The state-changing step on the integration branch is the SERVER's, never the
-          // agent's: advanceIntegration ff-merges (if it's checked out, git refuses over a dirty
-          // tree) or advances the ref directly (touching no tree).
-          const mainBefore = mainSha;
-          const adv = await advanceIntegration(root, main, branch);
-          if (adv) {
-            res = { status: "error", landed: false, branch, at: Date.now(), verify,
-              detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
+          // CLEAN path, verify green or unconfigured: git rebased with zero conflicts and verification
+          // passed. This is the ONLY unattended land. Off by default it auto-lands (inner else). When the
+          // OPT-IN advisory reviewer is on it looks for a cross-change collision the gate can't see and may
+          // ONLY downgrade this to a stop-and-review — `landed: true` is reachable ONLY on an explicit
+          // "ok". runCleanReview fails CLOSED, so a "review"/timeout/unparseable/no-base verdict all route
+          // to the stop branch here, never to advanceIntegration/landLane.
+          const cleanReview = CLEAN_REVIEW ? await runCleanReview(cwd, branch, main, await laneBaseRef(s)) : null;
+          if (cleanReview && cleanReview.verdict !== "ok") {
+            res = { status: "resolved", landed: false, branch, at: Date.now(), verify, cleanReview,
+              detail: `clean rebase + green verify, but the advisory reviewer flagged a look: ${cleanReview.reason} — not auto-landed; review the diff, then land.`.slice(0, 600) };
           } else {
-            const mainAfter = (await git(root, "rev-parse", main)).out;
-            // main HAS moved — record the land (undo record + provenance note) NOW, before
-            // the teardown: coupling it to landLane's success used to leave a moved main
-            // with neither note nor undo when teardown failed ("a note on every land that
-            // moves main" must hold). recordLand never throws (note write is best-effort).
-            await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
-            // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
-            const land = s.cwd === cwd && s.worktree?.branch === branch
-              // clean rebase + green verify, auto-landed with no human — the land-shape facts are the
-              // n/a defaults (no conflict, no repair, not human-confirmed). This is the ONLY unattended land.
-              ? await landLane(s, NO_LAND_FACTS)
-              : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
-            res = "error" in land
-              ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
-                  detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
-              : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail };
+            // land it — the state-changing step on the integration branch is the SERVER's, never the
+            // agent's: advanceIntegration ff-merges (git refuses over a dirty tree) or advances the ref.
+            const mainBefore = mainSha;
+            const adv = await advanceIntegration(root, main, branch);
+            if (adv) {
+              res = { status: "error", landed: false, branch, at: Date.now(), verify,
+                detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
+            } else {
+              const mainAfter = (await git(root, "rev-parse", main)).out;
+              // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
+              // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
+              await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
+              // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
+              const land = s.cwd === cwd && s.worktree?.branch === branch
+                ? await landLane(s, NO_LAND_FACTS) // clean auto-land — n/a land-shape facts (the ONLY unattended land)
+                : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
+              res = "error" in land
+                ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
+                    detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
+                : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail,
+                    ...(cleanReview ? { cleanReview } : {}) };
+            }
           }
         }
       }

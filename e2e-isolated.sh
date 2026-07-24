@@ -5,6 +5,16 @@
 # instead of claude.
 #   ./e2e-isolated.sh
 set -u
+# Hermetic isolation: this suite is often launched from INSIDE a Fleet worktree lane (the
+# land-verify gate runs there), whose pane env carries the scoped FLEET_SELF_TOKEN /
+# FLEET_SELF_SLOT (and, for a steward pane, FLEET_STEWARD_TOKEN). The throwaway tmux server
+# below inherits this env and tmux bakes it into EVERY pane it spawns — including plain,
+# non-lane slots. That contaminates the "FLEET_SELF_TOKEN absent for a non-lane slot" check:
+# a plain slot's shell would falsely report a token it never got from the server. Strip the
+# ambient creds so the test server's spawn env is clean and the server's OWN selfExport logic
+# (server.ts: baked only when s.worktree is set) is the only thing that can put a self-token
+# into a pane — which is exactly what that check is asserting about.
+unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_STEWARD_TOKEN
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR are derived from $$ so concurrent runs (e.g. two worktree lanes)
 # never share a socket/port — one run's kill-server can't hit another's server.

@@ -44,12 +44,21 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
     : BASE_CMD;
-  if (model && claude) cmd += ` --model ${model}`;
+  // pin the fleet's base model whenever the slot has none of its own — otherwise claude
+  // inherits the owner's ambient /model default (how a lane once span up on the wrong model).
+  if (claude) cmd += ` --model ${model ?? DEFAULT_MODEL}`;
   return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
 }
 // per-slot model (synergy-findings Tier-2): strict charset because the value lands in a
 // tmux shell command — never widen without revisiting slotCmd
 const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
+// the fleet's base model for interactive/lane sessions that don't pin their own. Absent this,
+// slotCmd omits --model and claude falls back to the owner's ambient /model default. FLEET_MODEL
+// overrides, but is charset-validated first — this value is baked into a tmux shell line, so an
+// unvalidated env var would be an injection vector (same rule as per-slot model). The digest/
+// summary worker keeps its own cheaper SUMMARY_MODEL — this is only the interactive tier.
+const DEFAULT_MODEL =
+  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : "claude-opus-4-8";
 function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
   const m = body?.model;
   if (m === undefined || m === null || m === "") return { ok: true, model: null };

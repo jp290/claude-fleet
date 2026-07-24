@@ -135,6 +135,13 @@ the verification suffix; `[steward]`-prefixed).
    done-looking + not awaiting-human. Template: the owner's own proven nudge
    form (short imperative + discipline suffix). Cap: 1 per lane per task, then
    escalate — a second identical nudge never helped in the corpus either.
+   *Proposed widening (2026-07-25, unbuilt): `steward-nudge.md` — trigger on a
+   momentum signal (commit rhythm, founding task vs what was committed) rather
+   than idle alone, and make the message strictly **content-free** so a false
+   positive stays free. The steward supplies only the timing; the session
+   supplies the correction from its own brief + state, which is what keeps the
+   sharpen-corpus GUARD intact. Directional limit: it can only ever mean "more" —
+   `stuck-looping` and `awaiting-human` keep the "stop/narrow" half.*
 4. **verification-suffix** — not an intervention: a static line in every
    template and every compiled brief ("Verifiziere dein Ergebnis, bevor du
    fertig meldest").

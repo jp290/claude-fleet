@@ -110,6 +110,24 @@ invariants hold) — the resolver's *actual* effect is unfakeable (real agent be
 FLEET_MERGE_CMD) so no e2e claims to exercise it. **Remaining map follow-ups:** ②
 mechanical-conflict determinism, ⑤ verdict/staleness as the review headline.
 
+**2026-07-24 — full session DEPLOYED + program state.** `srv` restarted 15:38; live now: audit
+view (#9), DEFAULT_MODEL spawn-pin, the commit-cursor fact layer (`sinceLastLook`, sha-grounded
+outcomes), the per-lane outcome recorder (`/api/lane-outcomes`, #18), both e2e flake fixes, and
+the V3-input resolver briefing above. Positively verified (new routes answer, not just health
+200). **Land-hardening = `docs/merge-review-autonomy.md` §7 "Status 2026-07-24"** — the canonical
+program state (V1 verify shipped; V3 output-contract + hunk-capture remain; the **tiered-gate
+finding**: `e2e-isolated` is deterministic now but runs >2min > the 120s verify timeout, so the
+gate must be fast-tier-gates + slow-tier-audits, NOT "add e2e to the verify"). **Retired ideas —
+do NOT re-propose** (each already a considered decision): rerere in the pre-pass (silent replay of
+an unreviewed resolution), a hard-block on stale/red verify (hangs the land; owner latitude
+stands). **Autonomy relevance:** this is the calibration data `docs/lane-autonomy-future.md` asked
+for — landing is autonomy-eligible (large-blast but recoverable via undo-land), gated on a
+total+fast+flake-free verify; the finding is the gate isn't total (tsc-only) or fast (e2e) enough
+yet. **Open follow-ups:** 1-line outcome-recorder `model: s.model ?? DEFAULT_MODEL`; the tiered
+gate (fast `tsc+e2e-claude-gate` land gate + slow post-land audit) — the uncommitted `watchdog.sh`
+draft is the fast-tier start, pending validation + one kickstart; a stale-proposal reaper (the
+steward hand-does it today; `branch@headSha` makes it deterministic); ② and ⑤.
+
 ---
 
 ## 1. Esc key on desktop  `quick win`
@@ -326,7 +344,7 @@ age)? default revive target (lowest free slot, like "+ new session")?
 
 ---
 
-## 9. Audit log  `small–medium`  `logging+endpoint SHIPPED · UI view built 2026-07-24 (pending owner deploy)`
+## 9. Audit log  `small–medium`  `✅ SHIPPED + DEPLOYED 2026-07-24 (logging + endpoint + owner-only UI view + honest count)`
 
 **Status (2026-07-24):** the logging core and read endpoint are live — `audit()`
 appends 22 typed event kinds to a mode-600 `AUDIT_FILE` (own write chain, not

@@ -12,6 +12,17 @@ component 3) and a server-run verify (`runVerify` + `FLEET_VERIFY_CMD`, downgrad
 rebase to "resolved") now exist; merge verdicts also persist across deploys (`merges:` in
 saveState), though still per-slot and dropped on recycle.*
 
+*2026-07-24 — first concrete gate-fitness data (the calibration this note asked for). Component 4
+(verified-green precondition) met real numbers: the live verify is **tsc-only** — NOT total, so
+the §"tradeoff" line "green ≠ semantically correct" is even sharper (a `git merge` dropping a
+const AND its only use is type-consistent → tsc-green → only e2e catches it; observed). And
+`e2e-isolated` runs **>2 min, past the ~120 s verify timeout** — so a total gate cannot simply
+be "add e2e to the verify"; it must be **tiered**: a fast-deterministic tier gates the land, the
+slow full suite runs as a post-land audit with undo-land as rollback. This sharpens component 5
+(reversibility-primary): when the pre-land gate is fast-but-partial, reversibility carries even
+more of the safety weight. See `merge-review-autonomy.md` §7 (Status 2026-07-24) for the shipped
+V1 verify / V3-input briefing / e2e-infra state that produced this data.*
+
 ## The shift these ideas describe
 
 Move the merge/land decision from **pre-hoc approval** ("the merge agent made a semantic

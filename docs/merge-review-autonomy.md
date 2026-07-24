@@ -123,3 +123,28 @@ Track-record wiring (does the briefing predict well enough to earn a ladder rung
 outcome-fuel pattern applied to briefing accuracy) is deliberately deferred until V1-V3
 have lived. Status 2026-07-23: nothing built; V1 is the next lane after the assessment
 lanes (A/B/C) land.
+
+**Status 2026-07-24 (verify before trusting — grep the symbols):**
+- **V1 verify SHIPPED + DEPLOYED.** `runVerify` + `FLEET_VERIFY_CMD` (the CLAUDE.md tsc line)
+  runs server-side against the rebased tree on both paths; a red clean-rebase downgrades to
+  `"resolved"` (owner latitude stands, §4a). `mainSha` staleness is stamped, not blocked (a
+  re-run would hang the land on the suite runtime — a *considered* decision; don't "fix" it to
+  a hard block). This is live on `srv` as of 2026-07-24 15:38.
+- **V3 briefing — INPUT half shipped, OUTPUT half remains.** `runMerge`'s prompt was extracted
+  to a pure `buildMergePrompt()` (`merge-prompt.ts`) and given main's intent (`git log
+  mergeBase..main` — the "theirs" side it used to reverse-engineer), ours/theirs orientation, a
+  hard *edit-only-conflict-hunks* scope-rule (forecloses a real whole-file mangle), and
+  verified-contract awareness — strictly additive, unit-tested for presence + the DATA-block/JSON
+  invariants (the agent's *effect* is unfakeable behind `FLEET_MERGE_CMD`, so no e2e claims it).
+  STILL TODO for V3: the structured `resolutions[]` output contract + conflict-hunk capture (§5)
+  + the land-overlay render. V2 provenance note is ALSO shipped (`git notes --ref=fleet/land`).
+- **e2e-verify infra — the two blocking flakes are dead** (self-token pane-capture race +
+  `waitMerge` load-timeout, both fixed & deployed), so `e2e-isolated` is now deterministic. **But
+  a hard new finding blocks it as a pre-land gate: `e2e-isolated` runs >2 min, past the ~120 s
+  `VERIFY_TIMEOUT_MS` — adding it to `FLEET_VERIFY_CMD` would time-out every land.** So §3's
+  "phase 2" is not "add e2e to the gate"; it is a **TIERED gate**: a fast-deterministic tier
+  (tsc + the quick `e2e-claude-gate`) gates the land; the slow full suite runs as a *post-land
+  audit* (or async), with undo-land as the rollback. Grep `VERIFY_TIMEOUT_MS`.
+- **§6 hard-rule #1 live-confirmed:** the flake and resolver lanes both touched `fleet-e2e.ts`;
+  verified their hunks don't overlap (~653 vs ~1–90) before landing in order. The harness-conflict
+  trap is real; disjoint-region checks are the mitigation until `conflictTouchesHarness` exists.

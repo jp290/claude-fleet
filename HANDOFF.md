@@ -22,9 +22,12 @@ Main HEAD at write time: **`79f024c`**, tree clean. Live `srv` restarted **00:16
 | Lane-lesson framing correction · steward-nudge design | `eedb1fb`, `79f024c` | committed (§9) |
 
 **Independently verified on landed main** (2026-07-25, not taken from the lane's own claim):
-`tsc` 0 errors · `bun run build` ok · `e2e-claude-gate.sh` **ALL PASS** 0 FAIL ·
-`e2e-clean-review.sh` **ALL PASS** 0 FAIL. This mattered: both recorder commits reached main while
-the owner landed and were, until this pass, covered only by the lane's own assertion.
+`tsc` 0 errors · `bun run build` ok · `e2e-isolated.sh` **ALL PASS**, 595 checks, 0 FAIL ·
+`e2e-claude-gate.sh` **ALL PASS** 0 FAIL · `e2e-clean-review.sh` **ALL PASS** 0 FAIL. This mattered:
+both recorder commits reached main while the owner landed and were, until this pass, covered only by
+the lane's own assertion. The known `e2e-isolated` pane-capture flake did not fire — as it has not on
+any run this session, which is now ~6 clean runs (a datapoint toward letting it into the land gate,
+still not a proof).
 
 **Model tiers.** `DEFAULT_MODEL` = `claude-opus-5[1m]` (every session + lane without its own pin),
 `SUMMARY_MODEL` = `claude-sonnet-5[1m]` (the throwaway workers: summarize, commit-message, enhance,

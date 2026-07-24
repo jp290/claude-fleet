@@ -158,3 +158,28 @@ lanes (A/B/C) land.
 - **§6 hard-rule #1 live-confirmed:** the flake and resolver lanes both touched `fleet-e2e.ts`;
   verified their hunks don't overlap (~653 vs ~1–90) before landing in order. The harness-conflict
   trap is real; disjoint-region checks are the mitigation until `conflictTouchesHarness` exists.
+- **Resolver↔verify REPAIR LOOP shipped (`ee4670f`), not yet deployed.** When a CONFLICT resolution
+  rebases clean but the deterministic verify fails, the resolver is now fed the exact failure and
+  gets up to `FLEET_MERGE_REPAIR_ROUNDS` (default 2) bounded repair rounds instead of dead-ending at
+  a red verdict. `buildRepairPrompt()` (pure, unit-tested) leads with `REPAIRING`, forbids re-rebase,
+  carries the verify output as injection-safe DATA, hard-scopes to the reported failure. Authority
+  every round is git + a re-run of `runVerify`, never the agent's word; an uncommitted repair is
+  `reset --hard`'d away so the human never gets a dirty tree. **This never changes what auto-lands** —
+  the conflict path always stops for human review (`landed:false`); the loop only turns the reviewed
+  verdict from dead-red to repaired-green. That is *why* it was safe to ship without owner sign-off on
+  the auto-land path: it doesn't touch that path. `repairRounds` is recorded on the verdict. Deploy =
+  `tmux -L claudefleet kill-session -t srv` (server.ts change; no kickstart).
+
+**Proposed next rung — the clean-path advisory reviewer (NOT built; owner decision).** The repair
+loop and the tiered gate both harden the CONFLICT path and the *deterministic* half. The remaining
+unattended-regression risk lives on the **clean auto-land path** (`mergeJob`, `pre.clean && verify.ok`
+→ `advanceIntegration` with `confirmedByHuman:false`) — the only path that reaches main with no human,
+and where no resolver runs. A lane change can interact semantically with main's new commits without
+textually conflicting; tsc + `e2e-claude-gate` are total-ENOUGH, not total, so a break on an unasserted
+path (share/audit) can auto-land. The cheap closer, honoring "no extensive post-hoc backend": a
+reviewer agent at clean-auto-land time sees the lane diff + main's new commits and may **only ever move
+the land toward MORE human attention — downgrade an auto-land to stop-and-review — never less.** That
+one asymmetry keeps *deterministic > statistical* intact (the LLM never says "safe to land"; it can
+only summon a human) and refines BACKLOG #14 Phase 2's "advisory, not blocking" into "advisory that can
+insert a human." Sensitive (it changes the live auto-land path) → build opt-in / off by default, owner
+enables. This is the piece that actually closes the total-enough gap without a slow post-land audit.

@@ -2001,7 +2001,11 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
 // tree; this one runs on a LIVE lane that may hold hours of uncommitted work).
 // FLEET_REVIEW_CMD (tests only) switches to a plain subprocess stand-in.
 const REVIEW_CMD = process.env.FLEET_REVIEW_CMD ?? null;
-const REVIEW_TIMEOUT_MS = 240_000;
+// must stay UNDER Bun.serve's idleTimeout (240s) with real headroom — same reason
+// SUMMARY_TIMEOUT_MS is 180s: at parity the agent's own timeout races the socket's, and the
+// owner gets a dropped connection instead of the intended 500 + "reviewer failed". Raising
+// this without raising idleTimeout first re-breaks that.
+const REVIEW_TIMEOUT_MS = 180_000;
 const REVIEW_DIFF_CAP = 60_000; // per diff section — the prompt carries at most two
 const MAX_FINDINGS = 5;
 interface ReviewFinding {

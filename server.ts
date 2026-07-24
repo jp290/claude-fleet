@@ -930,13 +930,13 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string): P
 // deterministic lane teardown: safety-checked worktree removal FIRST, while the slot is
 // still intact — a failed remove leaves the lane fully recoverable instead of a torn-down
 // slot pointing at an orphaned tree. Shared by the ⏏ land endpoint and the merge agent.
-async function landLane(s: Slot): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
+async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
   const { repo, branch } = s.worktree;
   const path = s.cwd;
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
   // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
-  const landed = await buildLaneOutcome(s, "landed");
+  const landed = await buildLaneOutcome(s, "landed", facts);
   const fail = await removeWorktreeSafe(repo, path, branch);
   if (fail) return fail;
   emitLaneOutcome(landed);
@@ -2327,7 +2327,23 @@ interface LaneOutcome {
   verified: boolean | null; // the merge verify verdict (ok) if one is on record, else null
   sessionMs: number | null; // attention-cost proxy: terminal ts - session start
   ownerPrompts: number;     // attention-cost proxy: owner-sourced prompts sent to this lane
+  // --- land-shape facts (the autonomy-calibration signal): meaningful ONLY on disposition:"landed".
+  // They answer "which KINDS of land get reverted?" — the exact question a graded auto-land gate needs.
+  // For every non-landed disposition (killed/shelved/reverted) they are the honest n/a defaults
+  // (false/0/false); a `reverted` record joins back to its `landed` record BY BRANCH to recover them.
+  resolvedConflict: boolean; // did an agent resolve conflicts (vs a clean rebase git replayed itself)?
+  repairRounds: number;      // bounded resolver↔verify repair rounds that ran before this landed (0 = none)
+  confirmedByHuman: boolean; // did the owner confirm-land it (true) or did it auto-land clean+green (false)?
 }
+// the land-shape facts a caller hands to buildLaneOutcome for a "landed" record. Assembled at the
+// land SITE (not read from the mutable mergeLast map, which the verdict-write races) so each fact is
+// exactly what that path knows: the clean auto-land is {false,0,false}; a confirm-land carries the
+// reviewed verdict's conflict + repairRounds and confirmedByHuman:true.
+type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean };
+const NO_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: false };
+// owner clicked ⏏ on already-integrated work (already-merged, or an empty/hand-merged lane): a human
+// owned the land, but no agent resolved a conflict and no repair ran.
+const OWNER_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: true };
 // e2e/test filename heuristic (the difficulty signal "this lane touched the safety net")
 function isTestPath(p: string): boolean {
   return /(^|\/)tests?\//i.test(p) || /(e2e|\.test\.|\.spec\.|_test\.|-test\.)/i.test(p);
@@ -2364,7 +2380,7 @@ function briefHashOf(text: string | null): string | null {
 // resolves to killed-dirty (HAD commits — real work abandoned) vs killed-empty (no commits) from
 // the commit count itself. Must be called while s.cwd/s.worktree are still set AND, for a land,
 // BEFORE the worktree is removed (git reads need the tree). Returns null for a non-lane slot.
-async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed"): Promise<LaneOutcome | null> {
+async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", facts: LandFacts = NO_LAND_FACTS): Promise<LaneOutcome | null> {
   if (!s.cwd || !s.worktree) return null;
   const cwd = s.cwd;
   const base = await laneBaseRef(s);
@@ -2404,6 +2420,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed"):
     verified: mergeLast.get(s.id)?.verify?.ok ?? null,
     sessionMs: start !== null ? ts - start : null,
     ownerPrompts,
+    resolvedConflict: facts.resolvedConflict,
+    repairRounds: facts.repairRounds,
+    confirmedByHuman: facts.confirmedByHuman,
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
@@ -2429,6 +2448,9 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
     verified: null,
     sessionMs: null,
     ownerPrompts: 0,
+    // n/a defaults — a revert is not a land. The land-shape facts of the land being undone live on
+    // its own `landed` record; join reverted→landed BY BRANCH (rec.branch) to recover them.
+    ...NO_LAND_FACTS,
   };
 }
 function emitLaneOutcome(o: LaneOutcome | null): void {
@@ -2680,7 +2702,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
             // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
             const land = s.cwd === cwd && s.worktree?.branch === branch
-              ? await landLane(s)
+              // clean rebase + green verify, auto-landed with no human — the land-shape facts are the
+              // n/a defaults (no conflict, no repair, not human-confirmed). This is the ONLY unattended land.
+              ? await landLane(s, NO_LAND_FACTS)
               : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
             res = "error" in land
               ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
@@ -4356,7 +4380,12 @@ Bun.serve<WSData>({
           await recordLand(repo, main, branch, mainBefore, mainAfter, {
             conflicted: reviewed?.conflicted, resolverDetail: reviewed?.detail,
             verify: verifyProv, confirmedByHuman: true });
-          const land = await landLane(s);
+          // the owner reviewed an agent-resolved conflict and confirm-landed it — record that shape:
+          // resolvedConflict from the verdict's conflicted files, repairRounds it carried, human-confirmed.
+          const land = await landLane(s, {
+            resolvedConflict: (reviewed?.conflicted?.length ?? 0) > 0,
+            repairRounds: reviewed?.repairRounds ?? 0,
+            confirmedByHuman: true });
           if ("error" in land) {
             saveState(); // the undo record must survive the failed teardown
             return json({ status: "merged", landed: false, branch, landError: land.error,
@@ -4370,7 +4399,7 @@ Bun.serve<WSData>({
         // Against the integration branch, not the primary's HEAD (which may be parked off it).
         const done = await git(repo, "branch", "--merged", main, "--list", branch);
         if (done.out.trim()) {
-          const land = await landLane(s);
+          const land = await landLane(s, OWNER_LAND_FACTS);
           if ("error" in land) return json({ error: land.error }, land.code);
           return json({ status: "merged", landed: true, branch, detail: "already merged — landed without the agent" });
         }
@@ -4635,7 +4664,7 @@ Bun.serve<WSData>({
         }
       }
       if (slotMatch[2] === "land") {
-        const land = await landLane(s);
+        const land = await landLane(s, OWNER_LAND_FACTS);
         if ("error" in land) return json({ error: land.error }, land.code);
         return json({ ok: true, ...land });
       }

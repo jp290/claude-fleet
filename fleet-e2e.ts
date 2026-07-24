@@ -1706,9 +1706,19 @@ if (REPO) {
     !!tokMatch && Number(tokMatch[2]) === lnTok.slot, capTok.out.slice(-200));
   const selfTok = tokMatch?.[1] ?? "";
   await tmuxOut("send-keys", "-t", "s2", `printf 'SELFTOK=[%s]\\n' "$FLEET_SELF_TOKEN"`, "Enter");
-  await Bun.sleep(600);
-  const capTok2 = await tmuxOut("capture-pane", "-t", "s2", "-p");
-  check("FLEET_SELF_TOKEN absent for a non-lane slot", capTok2.out.includes("SELFTOK=[]"), capTok2.out.slice(-200));
+  // Poll capture-pane until the printf's OUTPUT line has rendered, instead of racing a fixed
+  // sleep (the 600ms sleep intermittently captured a prior command's output). The command ECHO
+  // shows `SELFTOK=[%s]`; the OUTPUT shows `SELFTOK=[]` (absent) or `SELFTOK=[<hex>]` (present) —
+  // the [0-9a-f]* class matches only the latter two, so the poll waits for real output, never the
+  // echo. The assertion below then inspects that settled output: it still FAILS if a non-lane slot
+  // ever carried a token, since the rendered line would read `SELFTOK=[<hex>]`, not `SELFTOK=[]`.
+  let capTok2 = "";
+  for (let i = 0; i < 40; i++) { // up to ~4s (poll every 100ms)
+    capTok2 = (await tmuxOut("capture-pane", "-t", "s2", "-p")).out;
+    if (/SELFTOK=\[[0-9a-f]*\]/.test(capTok2)) break;
+    await Bun.sleep(100);
+  }
+  check("FLEET_SELF_TOKEN absent for a non-lane slot", capTok2.includes("SELFTOK=[]"), capTok2.slice(-200));
 
   const selfAuto = (opts: { token?: string; body?: unknown }) => fetch(BASE + "/api/self/autos", {
     method: "POST",

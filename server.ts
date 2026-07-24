@@ -135,8 +135,10 @@ interface Slot {
   id: number;
   cwd: string | null; // null = slot not activated; self-heal only touches activated slots
   label: string | null; // user-chosen session name; falls back to cwd basename in the UI
-  worktree: { repo: string; branch: string; base?: string } | null; // set when Fleet created this slot's
-  // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots
+  worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; // set when Fleet created this slot's
+  // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
+  // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
+  // create/attach time — optional, because lanes forked before it existed have none.
   model: string | null; // per-slot claude model (--model at spawn); null = FLEET_CMD default
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
@@ -403,7 +405,7 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
-    worktree: { repo: string; branch: string; base?: string } | null; model: string | null; selfToken: string }> = {};
+    worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null; selfToken: string }> = {};
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
@@ -554,6 +556,17 @@ async function laneBaseRef(s: Slot): Promise<string | null> {
   if (ib) return ib;
   const sha = await git(s.worktree.repo, "rev-parse", "HEAD");
   return sha.code === 0 && sha.out ? sha.out : null;
+}
+// the lane's fork point as an immutable COMMIT, resolved ONCE at create/attach time while the
+// fork is still the fork. `base` is a branch name by design (it must track the tip), but that
+// makes it useless AFTER a land: the integration branch has been advanced past the lane, so
+// merge-base(base, HEAD) is HEAD itself and the lane's whole footprint computes to nothing.
+// undefined when the base is unresolvable (no integration branch, a deleted/rewritten base ref,
+// a tree with no commits) — callers then fall back to the name, which is all they can honestly do.
+async function laneForkSha(tree: string, base: string | null): Promise<string | undefined> {
+  if (!base) return undefined;
+  const mb = await git(tree, "merge-base", base, "HEAD");
+  return mb.code === 0 && mb.out ? mb.out : undefined;
 }
 // session-scoped changed-files list, porcelain-shaped ("M  path") so the client renders
 // both scopes the same way; untracked files ride along from live status
@@ -1010,7 +1023,8 @@ const attachBusy = new Set<string>();
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
   const base = await integrationBranch(wt.repo);
-  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined }, model);
+  const baseSha = await laneForkSha(wt.path, base);
+  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha }, model);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -1112,7 +1126,7 @@ function expandCwd(raw: string): string {
   return t;
 }
 
-async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string } | null = null,
+async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null = null,
   model: string | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
@@ -1451,7 +1465,10 @@ async function tickDispatch(): Promise<void> {
     laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
     try {
       const wt = await createWorktree(DISPATCH_REPO, "");
-      await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch });
+      // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
+      // commit is still captured — the outcome record needs it after the land moves main
+      await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
+        baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) });
       free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
       next.status = "sent";
       next.slot = free.id;
@@ -2505,8 +2522,15 @@ interface LaneOutcome {
 // the land-shape facts a caller hands to buildLaneOutcome for a "landed" record. Assembled at the
 // land SITE (not read from the mutable mergeLast map, which the verdict-write races) so each fact is
 // exactly what that path knows: the clean auto-land is {false,0,false}; a confirm-land carries the
-// reviewed verdict's conflict + repairRounds and confirmedByHuman:true.
-type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean };
+// reviewed verdict's conflict + repairRounds and confirmedByHuman:true. `verified` rides along for
+// the same reason: on the clean path the merge route DELETES the mergeLast entry before the job
+// starts and only writes the verdict after landLane returns, so reading the map here always misses.
+// null = this path genuinely ran no verify — never invented as false. `baseSha` likewise: a land
+// that REBASED the lane moved its fork point onto the main it was rebased on, so the creation-time
+// fork would over-count main's own commits into the lane's footprint; the land site knows the
+// exact commit the landed work sits on (mainBefore) and hands it over.
+type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
+  verified?: boolean | null; baseSha?: string };
 const NO_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: false };
 // owner clicked ⏏ on already-integrated work (already-merged, or an empty/hand-merged lane): a human
 // owned the land, but no agent resolved a conflict and no repair ran.
@@ -2550,7 +2574,12 @@ function briefHashOf(text: string | null): string | null {
 async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", facts: LandFacts = NO_LAND_FACTS): Promise<LaneOutcome | null> {
   if (!s.cwd || !s.worktree) return null;
   const cwd = s.cwd;
-  const base = await laneBaseRef(s);
+  // the fork point as a COMMIT: handed over by the land site when a rebase moved it, else the one
+  // captured when the lane was created/attached. Never the base NAME on a land — by record time
+  // main has already been advanced onto this lane, so the name's merge-base is HEAD itself and
+  // every fingerprint field below computes to zero. A lane forked before baseSha existed has
+  // neither → fall back to the name (unchanged behaviour).
+  const base = facts.baseSha ?? s.worktree.baseSha ?? await laneBaseRef(s);
   const head = await git(cwd, "rev-parse", "HEAD");
   const headSha = head.code === 0 ? head.out : null;
   let shortstat = "";
@@ -2584,7 +2613,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     commitCount,
     filesTouched,
     e2eTouched: filesTouched.some(isTestPath),
-    verified: mergeLast.get(s.id)?.verify?.ok ?? null,
+    // threaded from the land site (see LandFacts); a non-land terminal event carries no facts and
+    // falls back to whatever verdict is still on record for the slot, exactly as before
+    verified: facts.verified ?? mergeLast.get(s.id)?.verify?.ok ?? null,
     sessionMs: start !== null ? ts - start : null,
     ownerPrompts,
     resolvedConflict: facts.resolvedConflict,
@@ -2920,7 +2951,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
               // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
               const land = s.cwd === cwd && s.worktree?.branch === branch
-                ? await landLane(s, NO_LAND_FACTS) // clean auto-land — n/a land-shape facts (the ONLY unattended land)
+                // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
+                // verdict this job just produced is the local truth the record needs
+                ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore })
                 : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
               res = "error" in land
                 ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
@@ -3146,7 +3179,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")
           s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch,
-            ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}) };
+            ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}),
+            ...(typeof (wt as { baseSha?: unknown }).baseSha === "string" ? { baseSha: (wt as { baseSha: string }).baseSha } : {}) };
       }
     }
     // dispatcher toggle survives deploys — queued tasks persist, so the thing that
@@ -4374,7 +4408,9 @@ Bun.serve<WSData>({
           const wt = (await listWorktrees(top.out)).find((w) => !w.primary && w.path === attachPath);
           if (!wt) return json({ error: "not a worktree of this repo" }, 400);
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
-          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: (await integrationBranch(top.out)) ?? undefined }, laneModel.model);
+          const attachBase = await integrationBranch(top.out);
+          await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
+            baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model);
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();
@@ -4603,7 +4639,9 @@ Bun.serve<WSData>({
           const land = await landLane(s, {
             resolvedConflict: (reviewed?.conflicted?.length ?? 0) > 0,
             repairRounds: reviewed?.repairRounds ?? 0,
-            confirmedByHuman: true });
+            confirmedByHuman: true,
+            verified: verifyProv ? verifyProv.ok : null,
+            baseSha: mainBefore }); // the lane is rebased onto exactly this commit — its true fork point
           if ("error" in land) {
             saveState(); // the undo record must survive the failed teardown
             return json({ status: "merged", landed: false, branch, landError: land.error,

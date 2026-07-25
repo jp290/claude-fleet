@@ -548,6 +548,10 @@ broken, and the set had since decayed further. A doc entry is not a fix.
 
 **Class:** D8 (a record cannot answer the question it exists for). **Fix:** documentation — flagged
 in `perception-layer.md` §6 (`b0b0e6a`); a real fix is a write-side schema change.
+**RESOLVED 2026-07-25 (`9c1ffbe`, the outcome-feed lane):** `outcomeReview` now persists
+`scope`/`notes`/`raw`; a non-parsing reviewer is no longer byte-identical to a clean review.
+Rows written before the fix stay ambiguous forever — the feed renders them as such, it cannot
+reconstruct what was dropped.
 
 **Claim:** `perception-layer.md` §6, written as lane (a)'s brief — *"**Empty findings ≠ clean.** …
 A review with zero findings must render as 'the diff-bounded reviewer found nothing', **with its

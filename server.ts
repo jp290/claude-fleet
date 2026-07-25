@@ -3434,6 +3434,31 @@ function failStrike(id: string): boolean {
   f.count++;
   return f.count > 50; // locked for the rest of the hour
 }
+// A wrong share COOKIE is a password guess like any other. /s/<id>/auth throttles every guess
+// (400ms flat) and locks the share after 50, but the cookie path used to answer an unlimited
+// number of guesses at full request rate — the same secret, a cheaper oracle, no lockout. Since
+// an interact share is keystrokes into a live session, that made a weak owner-chosen password
+// (the route floor is 8 chars) brute-forceable in the open. Every non-/auth share surface routes
+// its credential check through here so both paths feed ONE counter.
+// Two deliberate asymmetries:
+//  - an ABSENT cookie is not a guess (a guest who hasn't logged in yet, or the share page's own
+//    first load) and never consumes a strike — otherwise any stranger could lock a share by
+//    loading its URL 51 times.
+//  - a VALID cookie is answered before the lock is consulted, so a lockout silences guessers
+//    without evicting the authenticated guest (/auth's pre-check does refuse even a correct
+//    password while locked — that stays, it is the path a guesser uses).
+function shareCookieOffered(req: Request, sh: Share): boolean {
+  const cookie = req.headers.get("cookie");
+  return !!cookie && new RegExp(`(?:^|;\\s*)share_${sh.id}=`).test(cookie); // id is [a-z0-9], regex-safe
+}
+async function shareGate(req: Request, sh: Share): Promise<Response | null> {
+  if (shareAuthed(req, sh)) return null;
+  if (!shareCookieOffered(req, sh)) return json({ error: "unauthorized" }, 401);
+  const locked = failStrike(sh.id);
+  audit(locked ? "share_auth_lock" : "share_auth_fail", sh.slot); // never the guessed secret
+  await Bun.sleep(400); // flat cost per wrong guess, same as /auth
+  return json({ error: locked ? "too many attempts — try again later" : "unauthorized" }, locked ? 429 : 401);
+}
 function closeShareClients(s: Slot, shareId: string, code = 4001, reason = "share revoked"): void {
   for (const ws of s.clients) if (ws.data.share === shareId) ws.close(code, reason);
 }
@@ -4547,7 +4572,8 @@ Bun.serve<WSData>({
           },
         });
       }
-      if (!shareAuthed(req, sh)) return json({ error: "unauthorized" }, 401);
+      const shGate = await shareGate(req, sh);
+      if (shGate) return shGate;
       if (shareApi[2] === "info") {
         // live pane size, never the cache alone: the guest builds its whole terminal
         // grid from this answer — cache fallback only if the pane is briefly gone
@@ -4640,7 +4666,11 @@ Bun.serve<WSData>({
     const wsShare = /^\/ws-share\/([a-z0-9]+)$/.exec(url.pathname);
     if (wsShare) {
       const sh = shareBy(wsShare[1]);
-      if (!sh || !shareAuthed(req, sh)) return json({ error: "unauthorized" }, 401);
+      if (!sh) return json({ error: "unauthorized" }, 401);
+      // same one counter as the HTTP share surfaces — a socket handshake is the cheapest
+      // guess oracle of all if it is left out (no body to send, no response to parse)
+      const wsGate = await shareGate(req, sh);
+      if (wsGate) return wsGate;
       const s = slots[sh.slot - 1];
       if (!s.cwd) return json({ error: "session gone" }, 404);
       // guests never pass cols/rows: they must not resize the owner's pty, so they

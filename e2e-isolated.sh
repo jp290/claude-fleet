@@ -24,7 +24,7 @@ PORT=$((8800 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/fleet-e2e.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # a throwaway git repo the worktree/dispatch tests spawn lanes from
@@ -52,12 +52,20 @@ chmod +x "$DIR/fakesum"
 
 # stand-in 🔍 reviewer: same envelope, answers two findings DELIBERATELY worst-last plus one
 # uncited claim — so the test proves the server ranks by impact and drops a finding without a
-# cited line. Each run appends to $DIR/reviewruns, which is how "the cache served it without a
-# second spawn" is checked as a fact rather than inferred from the payload.
+# cited line. Each run appends its cwd (= the reviewed lane's worktree) to $DIR/reviewruns, which
+# is how "the cache served it without a second spawn" is checked as a fact rather than inferred
+# from the payload. Per-LANE lines, not a bare counter: auto-③ reviews other lanes on its own
+# schedule, so a global count would make every spawn assertion a race.
+# $DIR/reviewdelay (seconds, default 0) keeps a run in flight so the identity/inflight races are
+# deterministically testable; $DIR/reviewfail makes it exit non-zero, which is how "a failed
+# review is a non-event — one attempt per git state, no retry storm" is checked.
 cat > "$DIR/fakereview" <<'EOF'
 #!/bin/sh
 cat >/dev/null
-echo run >> "$(dirname "$0")/reviewruns"
+echo "$PWD" >> "$(dirname "$0")/reviewruns"
+delay="$(cat "$(dirname "$0")/reviewdelay" 2>/dev/null || echo 0)"
+[ "$delay" != 0 ] && sleep "$delay"
+[ -f "$(dirname "$0")/reviewfail" ] && exit 1
 printf '{"result": "{\\"findings\\": [{\\"title\\": \\"low one\\", \\"file\\": \\"b.ts\\", \\"line\\": 7, \\"impact\\": \\"low\\", \\"cost\\": \\"slower\\", \\"basis\\": \\"inferred\\", \\"detail\\": \\"d2\\"}, {\\"title\\": \\"uncited claim\\", \\"file\\": \\"c.ts\\", \\"impact\\": \\"high\\", \\"cost\\": \\"x\\", \\"basis\\": \\"verified\\", \\"detail\\": \\"no line\\"}, {\\"title\\": \\"high one\\", \\"file\\": \\"a.ts\\", \\"line\\": 42, \\"impact\\": \\"high\\", \\"cost\\": \\"data loss\\", \\"basis\\": \\"verified\\", \\"detail\\": \\"d1\\"}], \\"notes\\": \\"diff truncated\\"}"}'
 EOF
 chmod +x "$DIR/fakereview"
@@ -150,7 +158,9 @@ chmod +x "$DIR/fakecommit"
 # ($0's dir is $DIR — same file the test writes via parent-of-REPO).
 cat > "$DIR/fakedigest" <<'EOF'
 #!/bin/sh
-cat >/dev/null
+# keep the prompt: the done-looking rule the worker is handed is GENERATED from the same clause
+# list the deterministic predicate iterates, and the test asserts that here (anti-drift, §3)
+cat > "$(dirname "$0")/digestprompt"
 delay="$(cat "$(dirname "$0")/digestdelay" 2>/dev/null || echo 0)"
 [ "$delay" != 0 ] && sleep "$delay"
 printf '{"result": "{\\"digest\\": {\\"conditions\\": {\\"1\\": \\"healthy-running\\"}, \\"changed\\": [\\"slot 1 committed\\"], \\"attention\\": []}}"}'
@@ -169,7 +179,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # shrinks the attest-freshness window to 4s so the stale-attest → not-eligible path is testable.
 # FLEET_PROMOTION_MIN_N=1 so a single helped makes a class promotion-eligible.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 for _ in $(seq 1 60); do
@@ -185,7 +195,7 @@ cd "$DIR" || exit 1
 # dropped on restart and the post-restart server would revert to the 10-min default window. Same
 # for the dispatch repo + fake-agent cmds: dropped, the post-restart dispatcher is permanently
 # unavailable and merge/summary/commit fall back to the real `claude`.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_REVIEW_CMD="$DIR/fakereview" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_REVIEW_CMD="$DIR/fakereview" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

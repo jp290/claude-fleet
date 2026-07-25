@@ -168,6 +168,66 @@ correct next move is (1) — executable — not a sixth.
 
 ---
 
+## E. Second pass, empirical stance (same day, later)
+
+*Method note, because it is the point:* every sweep in §A–§C used one stance — read the
+artifact, compare it to its stated intent. All of them were static; none executed anything,
+none read the record of how Fleet is actually **used**, and none tried to refute its own
+author. This pass inverts all three. Two of my own headline claims did not survive it (E2, E3).
+
+**E1 — The stated bottleneck is wrong, and the real one is measured at zero.** `HANDOFF.md`
+§3.4 says *"The bottleneck is data velocity now, not build velocity."* Data velocity is fine:
+18 ledger rows, 12 of them in one day. What is not fine, VERIFIED:
+
+- `dispositions.jsonl` holds **one record in its entire lifetime** — and it is
+  `{worker: "enhance", disposition: "ignored"}`, which `src/client.ts:3616-3619` writes
+  **automatically** when the compose box is cleared. So the number of *deliberate* owner
+  judgements ever recorded is **zero**. No land row has ever been labeled ✓/✗; no ③ review has
+  ever been labeled nützlich/falsch.
+- `outcomeTally` is `{}` and `harmAttestAt` is `0` (unchanged since they were built).
+- Three of the four graduation criteria **terminate in an owner label**: §1's "0 wrong-class
+  dispositions", §2's "≥1 would-have-stopped verdict the owner labels a real catch", §4's
+  `promotionEligible` (needs tally + fresh harm-attest). At the observed rate they are not
+  slow — they are **unreachable**.
+- Meanwhile production continues: 3 steward proposals pending, two of them **28.3 h and 18.3 h
+  old and referring to lanes that no longer exist** (`commit-cursor`, `review-agent` — neither
+  is in `git worktree list`). Nothing ages, reaps, or flags a stale proposal; `capTasks` evicts
+  only at 200.
+
+So the queue of things awaiting owner judgement grows monotonically while the consumption rate
+is zero, and the autonomy programme is gated on the empty side of that ledger. This is the
+project's own **unfed-mechanism** defect applied to its scarcest resource: the
+owner-attention-budget axiom was *written* (`steward-pulse-v2.md`) and never *instrumented*.
+Every new consumer of owner attention shipped without measuring whether there was any left.
+
+**E2 — Correction to my own framing: the rollback is NOT untested.** I was on my way to
+claiming that undo-land — the mechanism the whole "risk concentrates at a reversible boundary"
+argument rests on — had never been exercised, since `disposition:"reverted"` has never been
+written. VERIFIED false as a mechanism claim: `e2e/land-provenance.ts` carries **ten** checks,
+including exact-SHA reset, branch preservation, one-shot behaviour, both refusal paths
+(main moved / already on a remote), that a refused undo leaves main untouched, and that the
+provenance note survives the undo. The mechanism is well covered. The honest, narrower claim:
+its **human half** has never occurred, so "0 undos" in criterion §1 is not evidence that
+nothing needed undoing — with zero labels and zero undos, it is equally consistent with nobody
+having looked. It is a measurement of owner activity, read as a measurement of quality.
+
+**E3 — Steelman against my own §B1 (gate coverage).** The gate is a floor, not the ceiling:
+every lane that landed today ran the full suite **by hand** before landing (each report quotes
+3–5 suites green, and `e2e-split` quotes three consecutive `e2e-isolated` runs). So the
+*effective* verification per land has been far above what the gate enforces, and my framing
+overstated present-tense risk. The correct statement is future-tense and, if anything, more
+pointed: the hand-run is exactly what autonomy removes. The gap becomes real at the moment
+component 5 or any unattended land lands work nobody ran the suite against — which is the
+same moment the criteria would license it.
+
+**E4 — What to build instead of a seventh document.** Consistent with §C: the answer to E1 is
+not prose. Perception before autonomy, applied to the owner rather than the machine — one
+deterministic fact layer beside `deployGap`: *unlabeled rows*, *oldest pending proposal age*,
+*proposals referring to lanes that no longer exist*, and *deliberate labels in the last 7 days*.
+Rendered where the owner already looks. That converts "the criteria are unreachable" from an
+argument into a number the system reports about itself, and it is the same
+record→display→advise ladder every other mechanism climbed.
+
 ## D. What each sweep said it did NOT examine
 
 Recorded so partial coverage never reads as complete: the share/guest surface and WS internals;

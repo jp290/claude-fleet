@@ -157,10 +157,13 @@ rotting. Two shelves, plus the steward subsystem.
 - **`briefs/`** — the *filled* lane briefs, tracked (so they never dirty a worktree,
   `tailored-context.md` §6). The worked examples behind `lane-brief-template.md`: read
   the closest one before writing a new brief.
-- **`docs/proposals/`** — proposals and study passes that fed the backlog (dream-mode
-  corpus, learning-engine v1 + next steps, mechanism deep-dive, the stack/land program
-  board). Check here before proposing; the reasoning lives in these, the register only
-  points.
+- **`docs/proposals/`** — dated proposal / decision records that fed the backlog, owner-promoted
+  into the roadmap rather than read as standing knowledge: the two learning-engine dream passes
+  (`learning-engine-v1-2026-07.md`, `dream-mode-corpus-2026-07.md`,
+  `learning-engine-next-steps-2026-07.md`), `mechanism-deep-dive-2026-07.md`, and
+  `stack-land-program-board-2026-07.md` (propose-only). Check here before proposing; the
+  reasoning lives in these, the register only points. Listed here from 2026-07-25 — the shelf
+  above had never pointed at them.
 
 *(A "right-tab-agents" design-note entry — "the board's agentic surfaces: inventory and the open
 advisory-vs-acts axis" — stood here until 2026-07-25 and was cited by `steward.md` too. It was

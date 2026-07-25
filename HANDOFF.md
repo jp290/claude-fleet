@@ -131,14 +131,42 @@ from reality (L1). **Perception is the missing closing edge, not merely a featur
    plus "does any of those commits touch code" is ~15 lines. No longer theoretical: **four** strikes
    in two days (ledger rows 2, 3 and 4, plus the fast-tier gate believed undeployed for a day), each
    costing trust in a row that looked right.
-4. **Provenance honesty (one lane, one root cause).** The outcome row's provenance reads **one of
+4. **The ✨ enhance button — make it additive instead of narrowing** (owner's ask, 2026-07-25).
+   Diagnosis: it is not written timidly, it is **starved**. `/api/enhance` resolves the Slot
+   (`server.ts:4498` `slotFrom(body.slot)`) and then throws it away, passing only `s?.cwd ?? HOME` —
+   while `briefPayload` (`server.ts:619`) already computes branch, `laneScoped`, `laneBase`,
+   ahead/behind, `uncommitted` + files, the committed footprint, `shortstat`, commits with subjects
+   and `gitOp` for exactly that slot. So `ENHANCE_PROMPT`'s honest line *"du siehst diese Session
+   NICHT"* is true **because nothing is passed**, not because the facts are missing — the
+   `synergy-findings.md` pattern (*deterministic facts computed but not shared*) and the same thin
+   case as the dispatcher (`knowledge-layers.md` §4). The visible symptom is the
+   "under ~12 words → return unchanged" rule: the roughest drafts, which most need thickening, get
+   nothing.
+   **The boundary that makes this safe** — add *facts*, never *diagnoses*. Pass the fact layer so the
+   prompt thickens where thickness is grounded (this is `tailored-context.md`'s ENVIRONMENT section,
+   the lever on review cost); and **drop the three work directives**, which are a surface-keyed
+   corrective table (Fix→verify, Design→think-first, big→own-it) — the error THE GUARD names, picked
+   blind here while `/sharpen3` picks it *sighted* inside the target session ("by expected failure,
+   not from a list"). Right directive = redundant, wrong directive = conformed to
+   (`steward-nudge.md`: a diagnosis gets conformed to even when wrong). Keep the whole INVARIANTE,
+   including "never resolve session references" — git facts do not say what "der letzte Fix" means.
+   **Scope:** pass `briefPayload` into `runEnhance` as a DATA block (pattern: `buildMergePrompt`);
+   delete the directive bullet **and its two examples** (few-shot beats instruction — half-done, the
+   examples win); rewrite the 12-word exception; extract `ENHANCE_PROMPT` to `enhance-prompt.ts` and
+   make the invariants assertable, because today only the stand-in string is checked
+   (`fleet-e2e.ts:238`) and the prompt text is untested — exactly `buildMergePrompt`'s history.
+   **OPEN DECISION, owner's:** the ✨ result replaces the compose box (`src/client.ts:3245`) and is
+   then journaled as `source: "owner"` (`server.ts:5173`), so model-written text is indistinguishable
+   from what the owner typed — in the corpus §8 later mines. The more additive the button, the worse
+   this gets. Does that rider ride along here (touches client + schema) or move to item 5?
+5. **Provenance honesty (one lane, one root cause).** The outcome row's provenance reads **one of
    five source tags**. `laneOwnerPrompts` keeps only `source === "owner"`, so pane-typed prompts
    (`"terminal"`, 755 of 2441 live journal lines) are invisible and dispatcher-delivered briefs
    (`"auto"`) make `briefHash` null or the hash of a later follow-up — measured: **25 of 49 live
    lanes null, 5 hashing a later prompt, 19 correct** (`discrepancy-audit.md` F3). Ride along here:
    the ledger riders `repo` and a `filesTouched`-truncated flag, and F6 (the ledger rotates; its only
    reader reads one generation while both sibling readers span).
-5. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
+6. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
    "unbuilt" about a symbol `server.ts` defines (`knowledge-layers.md` §7.3). Rides along with any
    docs-touching lane; the only item that prevents its own class of failure from recurring.
    **Verified first-hand rather than taken from the report** (slot 9 reported "four further hits"):
@@ -150,9 +178,9 @@ from reality (L1). **Perception is the missing closing edge, not merely a featur
    **must not be a bare grep for the word**; it has to pair the word with a claim about a named
    symbol, or it will train its readers to ignore it — the same failure mode the tombstone in
    `docs/README.md` was deliberately worded around.
-6. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
+7. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
    listed dead end ("promoting a prompt edit as an improvement while no eval set exists").
-7. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
+8. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
    the direction split only**, on an idle *proxy* signal, minus every dirty-tree condition.
    Precision needs a small **forward recorder** (surface state at each owner/terminal prompt +
    downsampled per-lane samples) plus N days — so if wanted at all, that recorder ships early,

@@ -2186,13 +2186,31 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   // so the review falls back to the uncommitted work plus what the recent commits show
   const base = s.worktree ? await laneBaseRef(s) : null;
   let committed = "", scope = "";
+  // A git read that FAILED is not a diff that was EMPTY. Both used to collapse into "" here, and
+  // with a clean tree that reached the early return below as a fully successful, non-raw, empty
+  // review — byte-identical to a real clean one, cached by startReview and filed by outcomeReview
+  // as `superseded` coverage. One transient git failure then recorded "reviewed, nothing found"
+  // about a lane nobody reviewed. Same defect class as the ② shadow row's `raw` and as
+  // LandFacts.verified: empty ≠ clean, and unknown ≠ zero (A4).
+  let readFailed = "";
   if (base) {
     const d = await git(cwd, "diff", "--no-color", `${base}...HEAD`);
     if (d.code === 0) { committed = d.out; scope = `this lane's changes since ${base}, plus its uncommitted work`; }
+    // NOT the same as having no base at all: the fallback scope string below would misdescribe this
+    // as "(no lane base to diff against)" while a perfectly good base sat in s.worktree.base.
+    else readFailed = `git diff ${base}...HEAD exited ${d.code}: ${(d.err || d.out).slice(0, 200)}`;
   }
   if (!scope) scope = "uncommitted changes plus recent commits (no lane base to diff against)";
   const un = await git(cwd, "diff", "HEAD", "--no-color");
+  if (un.code !== 0 && !readFailed) readFailed = `git diff HEAD exited ${un.code}: ${(un.err || un.out).slice(0, 200)}`;
   const uncommitted = un.code === 0 ? un.out : "";
+  // THROW rather than degrade: a review is advisory, and this project's rule for it is already
+  // "a failed review is a non-event — it caches nothing and changes no state" (tickAutoReview's
+  // one-attempt-per-git-state note). A partial review would be worse than none, because its scope
+  // line would name a subject it did not actually read. Throwing keeps startReview's `.then` from
+  // running, so nothing is cached, the outcome row honestly says `none`, and an owner click gets a
+  // 500 naming the git failure instead of a silent "nothing to review".
+  if (readFailed) throw new Error(`review could not read this tree — ${readFailed}`);
   const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
   // the id of the diff text BELOW, taken HERE and stored with the findings: an owner click on a
   // dirty tree reviews uncommitted work that no later read can reconstruct, so the relation the

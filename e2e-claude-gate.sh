@@ -23,7 +23,7 @@ fi
 
 rm -rf "$DIR" "$FAKEBIN"
 mkdir -p "$DIR" "$FAKEBIN"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/fleet-e2e-claude-gate.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e-claude-gate.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # a throwaway git repo the dispatcher spawns lanes from — needed to exercise the
@@ -65,8 +65,11 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_STEWARD_MIN_IDLE_MS + FLEET_OUTCOME_WINDOW_MS are shrunk for the crash-candidate branch:
 # it must send a steward nudge (idle gate) then let claude die inside the effect window (which the
 # window-close measurement pass reads) within the test's time budget rather than the 60s/10min defaults.
+# FLEET_AUTO_REVIEW_MS=0 turns the auto-③ tick OFF here: this harness configures no
+# FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
+# claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_OUTCOME_WINDOW_MS=3000 exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_OUTCOME_WINDOW_MS=3000 exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1

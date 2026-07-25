@@ -2,6 +2,7 @@
 //   bun fleet-e2e.ts
 // Creates slots 1+2, kills them, and restarts the `srv` tmux session along the way.
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
+import { laneDoneLooking, DONE_LOOKING_RULES, DONE_LOOKING_PROSE, type LaneSignalView } from "./lane-signals";
 const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // match the server's env so the whole suite can target an isolated instance
 // (own port + own tmux socket) instead of the live fleet — see e2e-isolated.sh
@@ -166,6 +167,47 @@ function check(name: string, ok: boolean, detail = "") {
   check("buildCleanReviewPrompt handles empty change-sets",
     crEmpty.includes("(none)") && crEmpty.includes("DATA>>>"));
 }
+
+// --- `done-looking` as a DETERMINISTIC predicate (docs/perception-layer.md §3): PURE-function
+// unit tests, no server needed. This is what auto-③ fires on, so every clause is asserted by its
+// NEGATION separately — a predicate that is only tested on its happy path would fire on a dead
+// pane, a wedged rebase or a dirty tree and nobody would notice until an agent spawned there. ---
+{
+  const OK: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 0, ahead: 2 }, gitOp: false, merge: null };
+  const T = 1000; // idle threshold
+  check("done-looking: true on idle + clean + git.ahead>0", laneDoneLooking(OK, T) === true);
+  check("done-looking: false on a DIRTY tree",
+    laneDoneLooking({ ...OK, git: { dirty: 1, ahead: 2 } }, T) === false);
+  check("done-looking: false when NOT idle (below the threshold)",
+    laneDoneLooking({ ...OK, idleMs: 999 }, T) === false);
+  check("done-looking: false at git.ahead=0 (nothing to review)",
+    laneDoneLooking({ ...OK, git: { dirty: 0, ahead: 0 } }, T) === false);
+  check("done-looking: false on a DEAD pane", laneDoneLooking({ ...OK, alive: false }, T) === false);
+  check("done-looking: false while a git merge/rebase is in progress",
+    laneDoneLooking({ ...OK, gitOp: true }, T) === false);
+  check("done-looking: false while a merge is blocked or errored",
+    laneDoneLooking({ ...OK, merge: { status: "blocked" } }, T) === false
+    && laneDoneLooking({ ...OK, merge: { status: "error" } }, T) === false);
+  // an UNKNOWN fact is not permission to spawn — nulls read as not-done-looking, never as true
+  check("done-looking: false on unknown facts (null alive / null git / null idleMs)",
+    laneDoneLooking({ ...OK, alive: null }, T) === false
+    && laneDoneLooking({ ...OK, git: null }, T) === false
+    && laneDoneLooking({ ...OK, idleMs: null }, T) === false);
+  // the digest worker's prose rule is GENERATED from the same clause list the predicate iterates
+  check("done-looking: the digest's prose rule is composed from every clause of the predicate",
+    DONE_LOOKING_RULES.every((r) => DONE_LOOKING_PROSE.includes(r.prose))
+    && DONE_LOOKING_PROSE.endsWith("→ done-looking"), DONE_LOOKING_PROSE);
+}
+
+// how many times the 🔍 review stand-in ran WITH THIS cwd — it appends its working directory
+// (the reviewed lane's worktree) per spawn, so "the cache served it" / "auto-③ fired once" /
+// "this slot was never reviewed" are all checked as facts, per lane, immune to what the auto
+// path is doing on other lanes at the same moment.
+const reviewRunsFor = (cwd: string): number => {
+  try {
+    return readFileSync(`${import.meta.dir}/reviewruns`, "utf8").split("\n").filter((l) => l === cwd).length;
+  } catch { return 0; }
+};
 
 async function tmuxOut(...args: string[]) {
   const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -918,12 +960,11 @@ if (REPO) {
   // payload. Its answer is deliberately worst-last and carries one uncited claim — the server
   // must rank by impact and drop the finding that cites no line. ---
   {
-    const reviewRuns = (): number => {
-      try { return readFileSync(`${import.meta.dir}/reviewruns`, "utf8").split("\n").filter(Boolean).length; }
-      catch { return 0; }
-    };
     interface RvFinding { title: string; file: string; line: number | null; impact: string; cost: string; basis: string }
     const rv = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    // spawns are counted FOR THIS LANE (the stand-in logs its cwd): auto-③ reviews other
+    // done-looking lanes on its own schedule, so a global count would race
+    const reviewRuns = (): number => reviewRunsFor(rv.cwd);
     // a lane with BOTH a committed change (base...HEAD) and uncommitted work — the review's scope
     await Bun.write(`${rv.cwd}/review-target.txt`, "line one\n");
     spawnSync("git", ["-C", rv.cwd, "add", "review-target.txt"]);
@@ -970,15 +1011,138 @@ if (REPO) {
     // back as cached:true/stale:true on the new lane's first GET)
     await post(`/api/slots/${rv.slot}/kill`, {});
     const rvNew = await post(`/api/slots/${rv.slot}/open-worktree`, { repo: REPO, branch: "e2e-review-recycle" });
-    check("recycled slot re-opens a fresh lane", rvNew.ok, await rvNew.text());
+    const rvNewBody = await rvNew.text();
+    check("recycled slot re-opens a fresh lane", rvNew.ok, rvNewBody);
+    let rvNewCwd = "";
+    try { rvNewCwd = (JSON.parse(rvNewBody) as { cwd?: string }).cwd ?? ""; } catch { /* asserted above */ }
     const rvAfter = (await (await get(`/api/slots/${rv.slot}/review`)).json()) as { cached: boolean; findings?: unknown };
     check("recycled slot does not serve the previous session's review",
       rvAfter.cached === false && rvAfter.findings === undefined, JSON.stringify(rvAfter));
     // a lane with nothing changed answers without spending a model call at all
     const rvEmpty = (await (await post(`/api/slots/${rv.slot}/review`, {})).json()) as { findings: RvFinding[]; notes: string };
     check("empty diff answers with no findings and no spawn",
-      rvEmpty.findings.length === 0 && reviewRuns() === runs0 + 1, `${JSON.stringify(rvEmpty.notes)} runs=${reviewRuns()}`);
+      rvEmpty.findings.length === 0 && reviewRunsFor(rvNewCwd) === 0,
+      `${JSON.stringify(rvEmpty.notes)} runs=${reviewRunsFor(rvNewCwd)}`);
     await post(`/api/slots/${rv.slot}/kill`, {});
+  }
+
+  // --- auto-③ (docs/perception-layer.md §4): the server runs the reviewer ITSELF on a lane that
+  // has gone done-looking, so findings exist before the owner looks. Advisory: nothing reads the
+  // result to decide anything. The guard rails are the design, so each is asserted as a FACT via
+  // the stand-in's per-cwd spawn log — lanes only, never ⚙ steward, at most one spawn per git
+  // state. The harness shrinks the idle gate (FLEET_AUTO_REVIEW_IDLE_MS) and the tick
+  // (FLEET_AUTO_REVIEW_MS) so this is observable inside the suite's budget. ---
+  {
+    // (A) the subject: a lane that commits, then goes quiet — clean tree, ahead of its base
+    const ar = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${ar.cwd}/auto-review.txt`, "work the server should review by itself\n");
+    spawnSync("git", ["-C", ar.cwd, "add", "auto-review.txt"]);
+    spawnSync("git", ["-C", ar.cwd, "commit", "-qm", "auto-review lane work"]);
+    // (B) an identical lane wearing the ⚙ steward label — a planning pane's diff is not lane work
+    const as = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${as.cwd}/steward-side.txt`, "planning pane, not lane work\n");
+    spawnSync("git", ["-C", as.cwd, "add", "steward-side.txt"]);
+    spawnSync("git", ["-C", as.cwd, "commit", "-qm", "steward-labelled lane work"]);
+    await post(`/api/slots/${as.slot}/rename`, { label: "⚙ steward" });
+    // (C) a NON-lane slot that otherwise satisfies every clause: a clone with an upstream, one
+    // commit ahead, clean tree. No worktree → no lane diff to review, so ③ must never fire.
+    const plainRepo = `${REPO}.autoplain`;
+    spawnSync("git", ["clone", "-q", REPO, plainRepo]);
+    spawnSync("git", ["-C", plainRepo, "config", "user.email", "t@t"]);
+    spawnSync("git", ["-C", plainRepo, "config", "user.name", "t"]);
+    await Bun.write(`${plainRepo}/plain.txt`, "ahead of origin\n");
+    spawnSync("git", ["-C", plainRepo, "add", "plain.txt"]);
+    spawnSync("git", ["-C", plainRepo, "commit", "-qm", "plain slot work"]);
+    const freeSlot = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((x) => x.cwd === null);
+    const openPlain = freeSlot ? await post(`/api/slots/${freeSlot.id}/open`, { cwd: plainRepo }) : null;
+    check("auto-③ setup: a non-lane slot sits on a clean repo one commit ahead of its upstream",
+      !!openPlain?.ok, `${freeSlot?.id} ${openPlain?.status}`);
+
+    // the git fact cache refreshes on the 10s tickGit, so the first auto-③ can only land after it
+    let arCached = false;
+    for (let i = 0; i < 40 && !arCached; i++) {
+      await Bun.sleep(1000);
+      arCached = ((await (await get(`/api/slots/${ar.slot}/review`)).json()) as { cached: boolean }).cached === true;
+    }
+    check("auto-③ reviewed the done-looking lane with no owner click at all", arCached,
+      `runs=${reviewRunsFor(ar.cwd)}`);
+    check("auto-③ spawned the reviewer exactly once for that git state", reviewRunsFor(ar.cwd) === 1,
+      String(reviewRunsFor(ar.cwd)));
+    // the served predicate agrees with what the trigger did — same function, one source.
+    // doneLooking rides on the steward view, which is steward-token-scoped (owner token → 403).
+    const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+    const sv = (await (await fetch(BASE + "/api/steward/sessions",
+      { headers: { authorization: `Bearer ${svTok}` } })).json()) as
+      { slots: { id: number; doneLooking: boolean }[] };
+    const dl = (id: number): boolean | undefined => sv.slots.find((x) => x.id === id)?.doneLooking;
+    check("done-looking is served as a fact: true for the lane, false for ⚙ steward and the non-lane slot",
+      dl(ar.slot) === true && dl(as.slot) === false && dl(freeSlot?.id ?? -1) === false,
+      JSON.stringify({ lane: dl(ar.slot), steward: dl(as.slot), plain: dl(freeSlot?.id ?? -1) }));
+    // several more ticks on an UNCHANGED tree: the cache key, not a timer, decides
+    await Bun.sleep(5000);
+    check("auto-③ does not spawn again while the git state is unchanged", reviewRunsFor(ar.cwd) === 1,
+      String(reviewRunsFor(ar.cwd)));
+    check("auto-③ never runs on the ⚙ steward slot", reviewRunsFor(as.cwd) === 0, String(reviewRunsFor(as.cwd)));
+    check("auto-③ never runs on a non-lane slot", reviewRunsFor(plainRepo) === 0, String(reviewRunsFor(plainRepo)));
+
+    // (D) the terminal outcome row carries the review AND whether it described what ended up here:
+    // killed straight away → the auto-review's key still matches the tree it ran on
+    await post(`/api/slots/${ar.slot}/kill`, {});
+    const arRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string | null; review?: { state?: string; findings?: unknown[]; head?: string | null } }[] })
+      .outcomes.find((o) => o.branch === ar.branch);
+    check("outcome row of an auto-reviewed lane carries the review with state:covered",
+      arRec?.review?.state === "covered" && (arRec.review.findings?.length ?? 0) === 2
+      && /^[0-9a-f]{40}$/.test(arRec.review.head ?? ""), JSON.stringify(arRec?.review ?? null).slice(0, 200));
+    await post(`/api/slots/${as.slot}/kill`, {});
+    if (freeSlot) await post(`/api/slots/${freeSlot.id}/kill`, {});
+
+    // (E) IDENTITY: a review that finishes AFTER its slot was recycled must not be filed under the
+    // lane that now holds the slot. killSlot clears the cache, but the write happens later — so the
+    // job freezes {cwd, branch, key} at start and re-checks them before writing. Same bug class as
+    // the mergeInflight identity check. Also asserts the honest terminal state for a lane that ends
+    // WHILE a review runs: "inflight" — not awaited (a land must not block on an advisory agent),
+    // not collapsed into "none".
+    const ctl = REPO.replace(/\/[^/]+$/, "");
+    await Bun.write(`${ctl}/reviewdelay`, "6"); // the stand-in stays in flight for 6s
+    const idl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${idl.cwd}/identity.txt`, "reviewed while the slot gets recycled\n");
+    spawnSync("git", ["-C", idl.cwd, "add", "identity.txt"]);
+    spawnSync("git", ["-C", idl.cwd, "commit", "-qm", "identity-case lane work"]);
+    void post(`/api/slots/${idl.slot}/review`, {}); // deliberately NOT awaited — it is still running below
+    await Bun.sleep(1500);
+    await post(`/api/slots/${idl.slot}/kill`, {}); // recycle the slot out from under the running review
+    const idlRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string | null; review?: { state: string } }[] })
+      .outcomes.find((o) => o.branch === idl.branch);
+    check("outcome: a lane that ends while a review is running records review.state \"inflight\"",
+      idlRec?.review?.state === "inflight", JSON.stringify(idlRec?.review ?? null));
+    const idlNew = (await (await post(`/api/slots/${idl.slot}/open-worktree`,
+      { repo: REPO, branch: "e2e-review-identity" })).json()) as { cwd?: string };
+    await Bun.sleep(8000); // the first review completes in here, against a slot that moved on
+    const idlAfter = (await (await get(`/api/slots/${idl.slot}/review`)).json()) as { cached: boolean };
+    check("a review completing after a slot recycle is NOT filed under the new lane",
+      idlAfter.cached === false, `${JSON.stringify(idlAfter)} newCwd=${idlNew.cwd}`);
+    await post(`/api/slots/${idl.slot}/kill`, {});
+    await Bun.write(`${ctl}/reviewdelay`, "0");
+
+    // (F) A FAILED review is a NON-EVENT: the predicate is level-triggered (a finished lane stays
+    // idle+clean+ahead forever), so without a per-git-state attempt cap a broken reviewer would
+    // spawn a fresh agent every tick, on every done-looking lane at once. Exactly one attempt.
+    await Bun.write(`${ctl}/reviewfail`, "1");
+    const fl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    await Bun.write(`${fl.cwd}/failing.txt`, "the reviewer will fail on this\n");
+    spawnSync("git", ["-C", fl.cwd, "add", "failing.txt"]);
+    spawnSync("git", ["-C", fl.cwd, "commit", "-qm", "failing-review lane work"]);
+    for (let i = 0; i < 30 && reviewRunsFor(fl.cwd) === 0; i++) await Bun.sleep(1000);
+    await Bun.sleep(6000); // several more auto ticks on the SAME unchanged git state
+    check("auto-③ attempts a failing review exactly once per git state (no retry storm)",
+      reviewRunsFor(fl.cwd) === 1, String(reviewRunsFor(fl.cwd)));
+    const flGet = (await (await get(`/api/slots/${fl.slot}/review`)).json()) as { cached: boolean };
+    check("a failed auto-③ caches nothing and changes no state", flGet.cached === false, JSON.stringify(flGet));
+    await post(`/api/slots/${fl.slot}/kill`, {});
+    spawnSync("rm", ["-f", `${ctl}/reviewfail`]);
   }
 
   // --- issue 2: risk/merged checks measure against the integration branch, not the primary's
@@ -2086,7 +2250,9 @@ if (REPO) {
       disposition: string; model: string | null; briefHash: string | null; shortstat: string;
       commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
       sessionMs: number | null; ownerPrompts: number;
-      resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean };
+      resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
+      review?: { state: string; findings?: unknown[]; model?: string; head?: string | null;
+        patchId?: string | null; landedPatchId?: string | null } };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
     // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
@@ -2252,6 +2418,74 @@ if (REPO) {
       rec8?.disposition === "landed" && rec8?.verified === null,
       JSON.stringify({ verified: rec8?.verified, confirmed: rec8?.confirmedByHuman }));
     await setMergeMode("blocked"); // restore the suite default
+
+    // (9) THE STALENESS RULE (docs/perception-layer.md §5): a persisted review must carry whether
+    // it actually described what reached the terminal event. Three lanes, three answers — and the
+    // un-covered case is a state word, never a missing field, so no consumer can read findings
+    // without reading what they covered.
+    const ocRv = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${ocRv.cwd}/reviewed.txt`, "reviewed then shelved\n");
+    spawnSync("git", ["-C", ocRv.cwd, "add", "reviewed.txt"]);
+    spawnSync("git", ["-C", ocRv.cwd, "commit", "-qm", "reviewed lane work"]);
+    check("staleness setup: the owner's ③ click populates the cache for this tree",
+      (await post(`/api/slots/${ocRv.slot}/review`, {})).ok);
+    await post(`/api/slots/${ocRv.slot}/shelve`, { note: "reviewed, then set aside" });
+    const recRv = forBranch(await readOutcomes(), ocRv.branch);
+    check("outcome: a review of the exact content that ended up shelved is recorded as covered",
+      recRv?.review?.state === "covered" && (recRv?.review?.findings?.length ?? 0) === 2
+      && typeof recRv?.review?.model === "string", JSON.stringify(recRv?.review ?? null).slice(0, 200));
+
+    // the tree MOVES after the review — the row must say so rather than present stale findings
+    // as coverage of what was actually abandoned
+    const ocSup = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${ocSup.cwd}/superseded.txt`, "first state\n");
+    spawnSync("git", ["-C", ocSup.cwd, "add", "superseded.txt"]);
+    spawnSync("git", ["-C", ocSup.cwd, "commit", "-qm", "state the review saw"]);
+    await post(`/api/slots/${ocSup.slot}/review`, {});
+    await Bun.write(`${ocSup.cwd}/superseded.txt`, "second state — the review never saw this\n");
+    spawnSync("git", ["-C", ocSup.cwd, "commit", "-aqm", "state the review never saw"]);
+    await post(`/api/slots/${ocSup.slot}/kill`, {});
+    const recSup = forBranch(await readOutcomes(), ocSup.branch);
+    check("outcome: a review computed for an EARLIER git state is recorded as superseded, not as coverage",
+      recSup?.review?.state === "superseded" && (recSup?.review?.findings?.length ?? 0) === 2,
+      JSON.stringify(recSup?.review ?? null).slice(0, 200));
+
+    // (10) THE REBASE CASE — the reason the relation is content identity and not commit identity:
+    // the land path rebases the lane onto main before the ff-merge, so the landed commit is NEVER
+    // the reviewed commit on a clean land. The diff is byte-identical, so the review DID describe
+    // what landed and the row must say covered. A sha/cache-key comparison fails exactly here.
+    const ocReb = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${ocReb.cwd}/rebased.txt`, "reviewed before the rebase\n");
+    spawnSync("git", ["-C", ocReb.cwd, "add", "rebased.txt"]);
+    spawnSync("git", ["-C", ocReb.cwd, "commit", "-qm", "rebase-case lane work"]);
+    const rebRev = (await (await post(`/api/slots/${ocReb.slot}/review`, {})).json()) as { head: string | null };
+    check("rebase-case setup: the lane is reviewed BEFORE main moves", /^[0-9a-f]{40}$/.test(rebRev.head ?? ""), String(rebRev.head));
+    await Bun.write(`${oRepo}/rebase-main.txt`, "main side\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", oRepo, "add", "rebase-main.txt"]);
+    spawnSync("git", ["-C", oRepo, "commit", "-qm", "main work under the reviewed lane"]);
+    await settleForMerge(ocReb.slot);
+    await post(`/api/slots/${ocReb.slot}/merge`, {});
+    const vReb = await waitMerge(ocReb.slot);
+    check("rebase-case setup: the lane rebases onto main and auto-lands", vReb.gone, JSON.stringify(vReb));
+    const recReb = forBranch(await readOutcomes(), ocReb.branch);
+    check("outcome: a REBASED land whose diff is unchanged is covered, not superseded (content id, not sha)",
+      recReb?.review?.state === "covered" && recReb?.review?.patchId === recReb?.review?.landedPatchId
+      && typeof recReb?.review?.patchId === "string",
+      JSON.stringify(recReb?.review ?? null).slice(0, 220));
+    check("outcome: the rebase really did move the commit (the sha comparison would have said superseded)",
+      !!recReb?.headSha && !!recReb?.review?.head && recReb.headSha !== recReb.review.head,
+      JSON.stringify({ landed: recReb?.headSha, reviewed: recReb?.review?.head }));
+
+    // never reviewed at all → an explicit answer, not an absent field
+    const ocNone = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; branch: string };
+    await post(`/api/slots/${ocNone.slot}/kill`, {});
+    const recNone = forBranch(await readOutcomes(), ocNone.branch);
+    check("outcome: a never-reviewed lane records review.state \"none\" (an answer, not a missing field)",
+      recNone?.review?.state === "none" && !("findings" in (recNone?.review ?? {})),
+      JSON.stringify(recNone?.review));
+    check("outcome: every disposition carries the review relation, including reverted",
+      (await readOutcomes()).slice(0, 12).every((o) => typeof o.review?.state === "string"),
+      JSON.stringify((await readOutcomes()).slice(0, 12).map((o) => o.review?.state)));
 
     // access model: the read route is owner-only — no token → 401 (same as /api/audit)
     check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);
@@ -2462,6 +2696,9 @@ if (legacyLane) {
 const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
   "FLEET_OUTCOME_WINDOW_MS", "FLEET_OUTCOME_SUSTAIN_MS", "FLEET_HARM_ATTEST_TTL_MS",
   "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
+  // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
+  // auto-③ can be observed inside the suite's budget
+  "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
   "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD",
   "FLEET_REVIEW_CMD"]
   .filter((k) => process.env[k])
@@ -2974,6 +3211,15 @@ if (auditRotExists) {
   check("steward digest carries the deterministic payload (fresh prior + slots) alongside the cached verdict",
     Array.isArray(warmJ.slots) && warmJ.slots.length > 0 && warmJ.prior?.kind === "rundgang" && typeof warmJ.now === "number",
     JSON.stringify({ slots: warmJ.slots?.length, prior: warmJ.prior?.kind, now: typeof warmJ.now }));
+
+  // (c2) anti-drift (docs/perception-layer.md §3): the worker is handed the done-looking rule in
+  // prose, and auto-③ fires on a deterministic predicate. The prompt line is COMPOSED from the
+  // same clause list the predicate iterates, so the specification cannot drift away from the
+  // implementation without this failing — asserted against the prompt the worker actually got.
+  const digestPrompt = await Bun.file(`${REPO.replace(/\/[^/]+$/, "")}/digestprompt`).text();
+  check("the digest worker's done-looking rule is the predicate's own clause list, verbatim",
+    digestPrompt.includes(DONE_LOOKING_PROSE),
+    JSON.stringify(digestPrompt.split("\n").find((l) => l.includes("done-looking")) ?? ""));
 
   // (d) ?wait is clamped to [0, 60s] — observable via the echoed waitMs (cache is fresh, so these
   //     return instantly): an over-max value is capped to 60s, a non-numeric falls back to ~30s.

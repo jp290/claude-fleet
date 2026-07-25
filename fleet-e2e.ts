@@ -4096,9 +4096,13 @@ if (auditRotExists) {
   // anyway — so a nudged-helped count is interpretable. It is ADVISORY: it must NEVER gate
   // promotion and NEVER write outcomeTally. The server samples the busiest un-nudged slots each
   // window; the shrunk FLEET_OUTCOME_WINDOW_MS turns control cohorts over in seconds. ---
+  // The ring is CAPPED (server.ts, BASELINE_RING_CAP): once it saturates, `samples` is pinned at
+  // the cap and a shift can cancel an incoming helped — so "a sample was recorded" must be read
+  // off the lifetime counters `seen`/`seenHelped`, never off the ring's length. The ring is still
+  // asserted about, as a ring: its own rate identity, and the cap it must respect.
   interface BaselineOutcomes {
     tally: Record<string, { helped: number; noEffect: number; harmed: number }>;
-    baselineRate: { rate: number | null; samples: number; helped: number };
+    baselineRate: { rate: number | null; samples: number; helped: number; cap: number; seen: number; seenHelped: number };
   }
   const readBaseline = async (): Promise<BaselineOutcomes> =>
     (await (await stewGet("/api/steward/outcomes")).json()) as BaselineOutcomes;
@@ -4112,36 +4116,43 @@ if (auditRotExists) {
   let blBusy = blBefore; // poll ~44s (a control cohort turns over roughly every tickGit≈10s)
   for (let i = 0; i < 220; i++) {
     blBusy = await readBaseline();
-    if (blBusy.baselineRate.helped > blBefore.baselineRate.helped) break;
+    if (blBusy.baselineRate.seenHelped > blBefore.baselineRate.seenHelped) break;
     await Bun.sleep(200);
   }
   await tmuxOut("send-keys", "-t", `s${bl.slot}`, "C-c"); // stop the loop now that it's been sampled
-  check("baselineRate: a busy un-nudged slot raises the control tally (samples & helped both rose)",
-    blBusy.baselineRate.samples > blBefore.baselineRate.samples
-    && blBusy.baselineRate.helped > blBefore.baselineRate.helped,
-    `${blBefore.baselineRate.helped}/${blBefore.baselineRate.samples} -> ${blBusy.baselineRate.helped}/${blBusy.baselineRate.samples}`);
+  check("baselineRate: a busy un-nudged slot raises the control tally (a sample was taken and it scored helped)",
+    blBusy.baselineRate.seen > blBefore.baselineRate.seen
+    && blBusy.baselineRate.seenHelped > blBefore.baselineRate.seenHelped,
+    `${blBefore.baselineRate.seenHelped}/${blBefore.baselineRate.seen} -> ${blBusy.baselineRate.seenHelped}/${blBusy.baselineRate.seen}`);
   check("baselineRate: rate == helped/samples (advisory ratio, not truthiness)",
     blBusy.baselineRate.rate !== null && blBusy.baselineRate.samples > 0
     && Math.abs((blBusy.baselineRate.rate ?? 0) - blBusy.baselineRate.helped / blBusy.baselineRate.samples) < 1e-9,
+    JSON.stringify(blBusy.baselineRate));
+  // the ring stays a RING: bounded by its cap, and never claiming more than the lifetime counters
+  // (which is what makes the length-based reading unusable once saturated — asserted, not assumed).
+  check("baselineRate: the rolling ring stays bounded by its cap and never exceeds the lifetime counts",
+    blBusy.baselineRate.samples <= blBusy.baselineRate.cap && blBusy.baselineRate.cap > 0
+    && blBusy.baselineRate.samples <= blBusy.baselineRate.seen
+    && blBusy.baselineRate.helped <= blBusy.baselineRate.seenHelped,
     JSON.stringify(blBusy.baselineRate));
   check("baselineRate: the control sampler NEVER writes outcomeTally (advisory only — never gates, never tallies)",
     JSON.stringify(blBusy.tally) === tallyBefore, `${tallyBefore} -> ${JSON.stringify(blBusy.tally)}`);
 
   // no-effect control: after the loop stops, drain any cohort that overlapped it, then a window
-  // with NO un-nudged slot committing/emitting must record a NON-helped sample — samples rise,
-  // helped stays flat (an idle un-nudged slot correctly looks un-helped).
+  // with NO un-nudged slot committing/emitting must record a NON-helped sample — seen rises,
+  // seenHelped stays flat (an idle un-nudged slot correctly looks un-helped).
   await Bun.sleep(1500 /* OUTCOME_WINDOW_MS */ + 12_000 /* one tickGit + margin, drains the loop-overlapping cohort */);
   const blIdleStart = await readBaseline();
   let blIdle = blIdleStart;
   for (let i = 0; i < 120; i++) {
     blIdle = await readBaseline();
-    if (blIdle.baselineRate.samples > blIdleStart.baselineRate.samples) break;
+    if (blIdle.baselineRate.seen > blIdleStart.baselineRate.seen) break;
     await Bun.sleep(200);
   }
-  check("baselineRate: an idle window (no un-nudged slot committing/emitting) records a no-effect sample (samples rose, helped flat)",
-    blIdle.baselineRate.samples > blIdleStart.baselineRate.samples
-    && blIdle.baselineRate.helped === blIdleStart.baselineRate.helped,
-    `${blIdleStart.baselineRate.helped}/${blIdleStart.baselineRate.samples} -> ${blIdle.baselineRate.helped}/${blIdle.baselineRate.samples}`);
+  check("baselineRate: an idle window (no un-nudged slot committing/emitting) records a no-effect sample (a sample was taken, none scored helped)",
+    blIdle.baselineRate.seen > blIdleStart.baselineRate.seen
+    && blIdle.baselineRate.seenHelped === blIdleStart.baselineRate.seenHelped,
+    `${blIdleStart.baselineRate.seenHelped}/${blIdleStart.baselineRate.seen} -> ${blIdle.baselineRate.seenHelped}/${blIdle.baselineRate.seen}`);
   // NOTE: the control lane is released further down, with the other lane kills that precede the
   // dispatch block — it counts against FLEET_DISPATCH_MAX_LANES (default 3) and would otherwise
   // starve the dispatcher. It must NOT be killed here: the "inactive slot reads null" check below

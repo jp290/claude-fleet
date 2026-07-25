@@ -652,6 +652,10 @@
   .vbadge.bad { color: #f7768e; border-color: #5e2c34; background: #210f12; cursor: pointer; }
   .vbadge.bad:hover { background: #2a1216; }
   .vbadge.none { color: #888; border-color: #333; background: #1a1a1a; }
+  /* skipped: the gate declined to run. Its own hue on purpose — not the green of a pass, not the
+     red/amber of a gate that ran and complained, not the gray of "no gate configured". */
+  .vbadge.skip { color: #bb9af7; border-color: #3c3160; background: #191428; cursor: pointer; }
+  .vbadge.skip:hover { background: #1f1930; }
   /* the review gate: the one place a human eye is required — give it real presence */
   .bmergenote.review { margin: 6px 0 0 6px; padding: 8px 10px; border-radius: 8px;
     border: 1px solid #5a4a30; background: #221b12; color: #d6d6dc; }

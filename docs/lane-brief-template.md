@@ -77,7 +77,10 @@ one-line note of anything you could not resolve. No walkthrough of your reasonin
 - **Footprint must name the *other* producer, not just your own files.** With three
   lanes live, "fleet-e2e.ts, insert next to related checks, never at EOF" plus *which
   region a sibling holds* is what actually prevented collisions. Naming only your own
-  allowance does not.
+  allowance does not. (Since 2026-07-25 the suite is split: the checks live in
+  `e2e/<family>.ts` and `fleet-e2e.ts` is a runner. The rule is unchanged in substance —
+  "insert next to related checks in the right family module" — but the collision surface
+  is now per-family, so name the *module*, not the file.)
 - **Gate coverage steers what a lane may own.** The land gate is tsc + e2e-claude-gate:
   server-side behavior is covered, **client code is asserted only at source-string level
   (no DOM harness)**. So a lane whose value lives in rendering carries risk the gate

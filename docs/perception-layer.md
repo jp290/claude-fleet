@@ -132,7 +132,17 @@ review covered this" is an **answer**, and must not be representable as a missin
 be unreachable-by-construction, not guarded.
 
 Rows 1–2 of the ledger stay untouched. They are not backfilled (HANDOFF §3), and nothing may be
-calibrated on them.
+calibrated on them. **Corrected 2026-07-25: it is rows 1–3** — the `perception-write` lane landed
+its own row before its code was deployed — *and on all three the `review` key is **absent**, not
+`{state:"none"}`*, so lane (a) must guard the missing-field case that this section calls
+unreachable-by-construction:
+
+```
+$ bun -e '…dump branch/disposition/keys of every row in lane-outcomes.jsonl…'
+fleet/review-agent          landed  NO review key
+fleet/outcome-recorder-fix  landed  NO review key
+perception-write            landed  NO review key
+```
 
 ## 6. The feed (lane 2)
 
@@ -145,6 +155,10 @@ Two honesty constraints for the renderer (they belong in lane 2's brief):
 - **Empty findings ≠ clean.** ③ is diff-bounded by construction and DP1 proved it misses defects
   living outside the diff. A review with zero findings must render as "the diff-bounded reviewer
   found nothing", with its `scope`/`notes`, never as a green checkmark.
+  **Blocked as written (2026-07-25, `discrepancy-audit.md` F3):** `OutcomeReview` persists neither
+  `scope`, `notes` nor `raw`, so a reviewer whose answer did not parse is written to the row as
+  `{state:"covered", findings:[]}` — byte-identical to a real clean review. Lane (a) cannot honor
+  this constraint from the ledger alone; the fields have to be added on the write side first.
 - **`↩ undo` is one-step.** Only the newest land is undoable; rendering undo on every row
   implies a capability the land spine deliberately does not have.
 

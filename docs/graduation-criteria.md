@@ -94,3 +94,12 @@ to ② shadow and any future judge.
 - 2026-07-25 (later): added "What the numbers are — and are not" (intent clarification, no
   threshold changes) and the judge fire-drill norm. Written after looking at rows 6–11 —
   flagged per the pre-registration rule; both additions tighten rather than loosen.
+- 2026-07-25 (fire-drill #1, auto-③): throwaway lane `label-clamp` (ledger row: `killed`,
+  branch discarded at `cffe8e4`), two planted type-clean defects, ground truth sealed before
+  the run. Result: **location-sensitivity 2/2, semantic depth 0/2** — ③ (claude-sonnet-5[1m])
+  flagged both defective lines but read an inverted guard as a cosmetic off-by-one (graded
+  `low`, basis `"verified"`) and a wrong-field render as an empty-string edge case. Bar was
+  "names D1's behavior" → **not met.** Consequences: `review: covered` attests that a review
+  RAN, not that the code is sound; K2/③ columns keep display-trust only with that reading;
+  one drill is N=1 — further drills across defect classes before any reviewer-prompt tuning
+  (tuning now would overfit to a single seeded pair).

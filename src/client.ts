@@ -2929,25 +2929,37 @@ function reviewBody(r: OutcomeReviewRow): HTMLElement[] {
 // during which no land happened) and never over-counts. It also excludes the four pre-review-field
 // legacy rows for free, since they precede this anchor.
 const K1_ANCHOR_BRANCH = "f9-verify-deps";
-type KProgress = { anchored: boolean; k1: number; clean: number; undos: number; k2: number };
+type KProgress = { anchored: boolean; k1: number; clean: number; unknown: number; undos: number; k2: number };
 // rows arrive newest-first; the streak is a chronological walk, so sort ascending here rather than
 // relying on the feed's display order.
 function kProgress(rows: OutcomeRow[]): KProgress {
   const asc = [...rows].sort((a, b) => a.ts - b.ts);
+  // §2 counts recorded shadow verdicts and asks for NO anchor — K1's anchor is about the F9 verify
+  // fix's deploy boundary and says nothing about ②. So K2 is walked over the whole ledger, before
+  // and independently of the anchor lookup below; an unanchorable ledger still reports it.
+  let k2 = 0;
+  for (const o of asc)
+    if (o.cleanReviewShadow && (o.cleanReviewShadow.verdict === "pass" || o.cleanReviewShadow.verdict === "would_stop")) k2++;
   const anchor = asc.findIndex((o) => o.branch === K1_ANCHOR_BRANCH);
-  if (anchor < 0) return { anchored: false, k1: 0, clean: 0, undos: 0, k2: 0 };
+  if (anchor < 0) return { anchored: false, k1: 0, clean: 0, unknown: 0, undos: 0, k2 };
   const after = asc.slice(anchor + 1);
-  let k1 = 0, clean = 0, undos = 0, k2 = 0;
+  let k1 = 0, clean = 0, unknown = 0, undos = 0;
   for (const o of after) {
     // an undo is `disposition:"reverted"` — the only thing /api/repos/undo-land writes (server.ts,
     // buildRevertedOutcome). It breaks the CONSECUTIVE streak the criterion asks for, and is also
     // reported on its own, so a reset streak never silently reads as "no undo ever happened".
-    if (o.disposition === "reverted") { undos++; k1 = 0; clean = 0; }
-    else if (o.disposition === "landed") { k1++; if (!o.confirmedByHuman) clean++; }
+    if (o.disposition === "reverted") { undos++; k1 = 0; clean = 0; unknown = 0; }
+    else if (o.disposition === "landed") {
+      k1++;
+      // `confirmedByHuman` is OPTIONAL on the row: absent (or null) means the writer recorded
+      // nothing, not that no human confirmed. Only an explicit `false` is evidence of a clean
+      // auto-land; anything else is counted as unknown and reported, never folded into `clean`.
+      if (o.confirmedByHuman === false) clean++;
+      else if (typeof o.confirmedByHuman !== "boolean") unknown++;
+    }
     // shelved / killed-* are not lands at all — they neither count nor break the streak.
-    if (o.cleanReviewShadow && (o.cleanReviewShadow.verdict === "pass" || o.cleanReviewShadow.verdict === "would_stop")) k2++;
   }
-  return { anchored: true, k1, clean, undos, k2 };
+  return { anchored: true, k1, clean, unknown, undos, k2 };
 }
 
 let outcomeData: OutcomeRow[] = [];
@@ -2999,8 +3011,9 @@ function renderOutcomes() {
     kel.id = "ockrit";
     if (!k.anchored) {
       kel.appendChild(chip(`criteria progress: no '${K1_ANCHOR_BRANCH}' row in this ledger`, "warn",
-        `counting starts after the F9 fix's own land (branch ${K1_ANCHOR_BRANCH}); without that row`
-        + " the deploy boundary cannot be placed, so nothing is counted rather than counted wrong."));
+        `§1 counting starts after the F9 fix's own land (branch ${K1_ANCHOR_BRANCH}); without that`
+        + " row the deploy boundary cannot be placed, so §1 counts nothing rather than counting"
+        + " wrong. §2 asks for no anchor and is counted regardless."));
     } else {
       kel.appendChild(el("span", "", "criteria:"));
       kel.appendChild(chip(`K1 ${k.k1}/20`, k.k1 >= 20 ? "ok" : "",
@@ -3008,14 +3021,24 @@ function renderOutcomes() {
         + ` (counted from the row after the '${K1_ANCHOR_BRANCH}' land; an undo resets the streak).`
         + " Counting only — the graduation decision is the owner's, made by reading this number."));
       kel.appendChild(chip(`davon ${k.clean}/10 clean`, k.clean >= 10 ? "ok" : "",
-        "of that streak, the ones that auto-landed clean+green (confirmedByHuman false)."));
+        "of that streak, the ones whose row explicitly records confirmedByHuman:false — a clean"
+        + " auto-land. Rows that record nothing are NOT counted here; they are reported as unknown."));
+      // the unknown count is shown only when there is one, but it is never silently dropped: a
+      // "davon N/10 clean" read as N-of-the-streak would otherwise be a claim about rows the
+      // ledger never made a statement about.
+      if (k.unknown) kel.appendChild(chip(`${k.unknown} unknown`, "warn",
+        "lands in the streak whose row carries no confirmedByHuman value at all. Unknown is not"
+        + " zero: they are excluded from the clean count rather than counted as clean auto-lands."));
       kel.appendChild(chip(`Undos ${k.undos}`, k.undos ? "warn" : "ok",
         "owner undos since the anchor, counted as disposition:\"reverted\" rows — the only thing"
         + " /api/repos/undo-land writes. §1 requires 0 across the 20."));
-      kel.appendChild(chip(`K2 ${k.k2}/25`, k.k2 >= 25 ? "ok" : "",
-        "graduation-criteria §2 — recorded ② shadow verdicts. A row whose shadow verdict is null"
-        + " (the reviewer produced no explicit verdict) is a failed measurement and does not count."));
     }
+    // OUTSIDE the anchored branch on purpose: §2 has no anchor requirement, so a shadow verdict
+    // counts whether or not §1's deploy boundary can be placed.
+    kel.appendChild(chip(`K2 ${k.k2}/25`, k.k2 >= 25 ? "ok" : "",
+      "graduation-criteria §2 — recorded ② shadow verdicts, counted across the whole ledger. A row"
+      + " whose shadow verdict is null (the reviewer produced no explicit verdict) is a failed"
+      + " measurement and does not count."));
     outcomepanel.appendChild(kel);
   }
 

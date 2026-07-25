@@ -173,7 +173,9 @@ lanes (A/B/C) land.
   *auto*-land whose verify demonstrably ran, so "the step cannot run in a lane" is too strong. But
   *why* it ran is unrecoverable (the worktree is torn down at land), and nothing in Fleet creates
   `node_modules`: `createWorktree` copies only `.env`, `CLAUDE.md`, `.claude/settings.local.json`,
-  and 3 of the 5 worktrees on this box have none. So the gate's first step turns on a state nothing
+  and a lane worktree has none unless its agent installed one. *(An earlier "3 of the 5 worktrees"
+  ratio was measured over directories, not `git worktree list`, and it moves with every land — the
+  durable fact is that nothing in Fleet creates it.)* So the gate's first step turns on a state nothing
   establishes — its green is **luck-dependent and unexplainable after the fact**, which is worse
   than simply broken. Full adjudication incl. the refuted mechanism: `discrepancy-audit.md` F9.
   Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/

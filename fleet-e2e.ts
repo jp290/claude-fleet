@@ -2745,6 +2745,25 @@ await Bun.sleep(4500);
 const s2back = await tmuxOut("has-session", "-t", "s2");
 check("externally-killed slot self-heals", s2back.code === 0);
 
+// --- deploy-gap fact (P-4) setup, consumed in the steward + digest sections below.
+// The dir this suite runs from is a throwaway COPY of the repo (e2e-isolated.sh) and not a git
+// repo at all, so the server is pointed at a dedicated throwaway repo via FLEET_REPO_DIR. It
+// must be its OWN repo, not FLEET_E2E_REPO: the checks commit into it, and the lane/merge tests
+// own the content of that one. Created here because it has to exist BEFORE the server that
+// stamps its boot HEAD — the env rides both restarts below.
+const { rmSync: gapRm, writeFileSync: gapWrite } = await import("node:fs");
+const GAP_REPO = `${process.env.TMPDIR ?? "/tmp"}/fleet-e2e-gaprepo-${process.pid}`;
+const gapGit = (...a: string[]) => Bun.spawnSync(["git", "-C", GAP_REPO, ...a]);
+gapRm(GAP_REPO, { recursive: true, force: true });
+Bun.spawnSync(["mkdir", "-p", GAP_REPO]);
+gapGit("init", "-q");
+gapGit("config", "user.email", "t@t");
+gapGit("config", "user.name", "t");
+gapWrite(`${GAP_REPO}/server.ts`, "// the build the server boots from\n");
+gapGit("add", "-A");
+gapGit("commit", "-qm", "init");
+const gapEnv = `FLEET_REPO_DIR='${GAP_REPO}' `;
+
 // --- restart persistence ---
 const srvKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
 await srvKill.exited;
@@ -2788,7 +2807,7 @@ const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_
 // e2e-isolated.sh runs, the repo itself when run against the live instance),
 // carrying the port/socket so the restarted server is the same instance we tested
 const srvStart = Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
-  `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}exec bun server.ts >> server.log 2>&1`]);
+  `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}${gapEnv}exec bun server.ts >> server.log 2>&1`]);
 await srvStart.exited;
 await Bun.sleep(3000);
 const api = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };
@@ -2951,7 +2970,7 @@ const rotKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
 await rotKill.exited;
 await Bun.sleep(500);
 const rotStart = Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
-  `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}FLEET_AUDIT_ROTATE_BYTES=${auditSizeBeforeRotate} exec bun server.ts >> server.log 2>&1`]);
+  `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}${gapEnv}FLEET_AUDIT_ROTATE_BYTES=${auditSizeBeforeRotate} exec bun server.ts >> server.log 2>&1`]);
 await rotStart.exited;
 await Bun.sleep(3000);
 // one cheap, deterministic audit event: a failed owner-token request (no state mutated)
@@ -2986,6 +3005,30 @@ if (auditRotExists) {
   check("steward token reads /api/steward/sessions", stewSessRes.ok && Array.isArray(stewSessJ.slots), JSON.stringify(stewSessJ).slice(0, 200));
   check("steward sessions payload carries no share secret field",
     !JSON.stringify(stewSessJ).includes("password"));
+
+  // --- deploy-gap fact (P-4): landing is NOT deploying. The server stamped GAP_REPO's HEAD at
+  //     its own boot; every read compares it against that repo's CURRENT head, so a commit that
+  //     lands after boot is visible as a gap without anyone having to remember to look. ---
+  type Gap = { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null };
+  const readGap = async (path: string) => ((await (await stewGet(path)).json()) as { deployGap?: Gap }).deployGap;
+  const gap0 = await readGap("/api/steward/sessions");
+  check("deploy-gap: a just-booted server is level with its repo (behind 0, no code behind)",
+    !!gap0 && /^[0-9a-f]{40}$/.test(gap0.bootHead ?? "") && gap0.head === gap0.bootHead
+      && gap0.behindCount === 0 && gap0.codeBehind === false, JSON.stringify(gap0));
+  gapWrite(`${GAP_REPO}/HANDOFF.md`, "docs-only change\n");
+  gapGit("add", "-A");
+  gapGit("commit", "-qm", "docs: handoff");
+  const gap1 = await readGap("/api/steward/sessions");
+  check("deploy-gap: a docs-only commit after boot counts as behind but NOT code-behind",
+    gap1?.behindCount === 1 && gap1.codeBehind === false && gap1.head !== gap1.bootHead,
+    JSON.stringify(gap1));
+  gapWrite(`${GAP_REPO}/server.ts`, "// changed after the server booted\n");
+  gapGit("add", "-A");
+  gapGit("commit", "-qm", "feat: touch server.ts");
+  const gap2 = await readGap("/api/steward/sessions");
+  check("deploy-gap: a commit touching code flips codeBehind (bootHead stays pinned to boot)",
+    gap2?.behindCount === 2 && gap2.codeBehind === true && gap2.bootHead === gap0?.bootHead,
+    JSON.stringify(gap2));
   const stewBriefRes = await stewGet(`/api/steward/slots/${lnStew.slot}/brief`);
   check("steward token reads a lane's brief", stewBriefRes.ok, String(stewBriefRes.status));
   const stewTrRes = await stewGet(`/api/steward/slots/${lnStew.slot}/transcript`);
@@ -3291,6 +3334,21 @@ if (auditRotExists) {
   check("steward digest carries the deterministic payload (fresh prior + slots) alongside the cached verdict",
     Array.isArray(warmJ.slots) && warmJ.slots.length > 0 && warmJ.prior?.kind === "rundgang" && typeof warmJ.now === "number",
     JSON.stringify({ slots: warmJ.slots?.length, prior: warmJ.prior?.kind, now: typeof warmJ.now }));
+  // the deploy-gap fact rides the digest too, and like sinceLastLook it is ROUTE-computed: it
+  // must be the same fact the sessions route served, not something the worker could shape.
+  const gapDigest = await readGap("/api/steward/digest?wait=0");
+  check("steward digest serves the same route-computed deploy-gap as the sessions route",
+    gapDigest?.behindCount === 2 && gapDigest.codeBehind === true
+    && gapDigest.head === gap2?.head && gapDigest.bootHead === gap0?.bootHead,
+    JSON.stringify(gapDigest));
+  // the unknown direction is the load-bearing one: with the repo unreadable the counts must go
+  // NULL ("cannot tell"), never fall back to 0/false, which would read as "deployed"
+  gapRm(`${GAP_REPO}/.git`, { recursive: true, force: true });
+  const gapUnknown = await readGap("/api/steward/sessions");
+  check("deploy-gap: an unreadable repo yields nulls, never a false 'deployed'",
+    gapUnknown?.behindCount === null && gapUnknown.codeBehind === null && gapUnknown.head === null
+    && gapUnknown.bootHead === gap0?.bootHead, JSON.stringify(gapUnknown));
+  gapRm(GAP_REPO, { recursive: true, force: true });
 
   // (c2) anti-drift (docs/perception-layer.md §3): the worker is handed the done-looking rule in
   // prose, and auto-③ fires on a deterministic predicate. The prompt line is COMPOSED from the

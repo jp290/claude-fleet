@@ -38,6 +38,17 @@ criteria require. One-line doc fix; high harm until made.
 already rescued to the session scratchpad; apply after that lane lands. Full account:
 `ungoverned-artifacts.md` §2.
 
+**A4 — the gate can silently become empty, and still record `verified: true`.** Found by the
+`arch-review` lane (its F1), VERIFIED by me on both halves: `watchdog.sh:49` opens with
+`[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }`, and
+`runVerify` (`server.ts:2492`) records `ok: !timedOut && code === 0`. So **a lane that renames
+or moves `fleet-e2e.ts` makes its own land report a green gate that never ran tsc or any
+suite** — the exact inverse of what the F9 anchor fix was for, on the one boundary the program
+calls hard. Not hypothetical this week: the in-flight `e2e-split` lane is restructuring that
+very file (VERIFIED it kept a root `fleet-e2e.ts` runner, so *this* lane is safe — by luck of
+its design choice, not by any check). Fix is a tri-state verify (`skipped` ≠ `ok`) so a skip can
+never be recorded as a pass. The owner is already acting on this one.
+
 ---
 
 ## B. Structural findings, ranked by cost

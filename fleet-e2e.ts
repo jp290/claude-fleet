@@ -2,7 +2,7 @@
 //   bun fleet-e2e.ts
 // Creates slots 1+2, kills them, and restarts the `srv` tmux session along the way.
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
-import { laneDoneLooking, DONE_LOOKING_RULES, DONE_LOOKING_PROSE, type LaneSignalView } from "./lane-signals";
+import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE, type LaneSignalView } from "./lane-signals";
 import { buildEnhancePrompt } from "./enhance-prompt";
 const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // match the server's env so the whole suite can target an isolated instance
@@ -194,6 +194,32 @@ function check(name: string, ok: boolean, detail = "") {
     laneDoneLooking({ ...OK, alive: null }, T) === false
     && laneDoneLooking({ ...OK, git: null }, T) === false
     && laneDoneLooking({ ...OK, idleMs: null }, T) === false);
+  // --- tier 2 (laneQuietSince): the facts are in, only the clock is still running. It must be
+  // EARLIER than the boolean's flip (that is the whole point) and it must stay conservative:
+  // every clause that makes doneLooking false — except the idle clock — also makes this null.
+  const NOW = 1_000_000;
+  check("quiet-since: reports when the pane went quiet, well before the threshold is reached",
+    laneQuietSince({ ...OK, idleMs: 5000 }, NOW) === NOW - 5000
+    && laneDoneLooking({ ...OK, idleMs: 5000 }, 60_000) === false,
+    String(laneQuietSince({ ...OK, idleMs: 5000 }, NOW)));
+  check("quiet-since: still reported once the predicate itself has flipped (same instant, one source)",
+    laneQuietSince({ ...OK, idleMs: 120_000 }, NOW) === NOW - 120_000
+    && laneDoneLooking({ ...OK, idleMs: 120_000 }, 60_000) === true);
+  check("quiet-since: null on every NON-clock clause the predicate rejects",
+    laneQuietSince({ ...OK, git: { dirty: 1, ahead: 2 } }, NOW) === null
+    && laneQuietSince({ ...OK, git: { dirty: 0, ahead: 0 } }, NOW) === null
+    && laneQuietSince({ ...OK, alive: false }, NOW) === null
+    && laneQuietSince({ ...OK, gitOp: true }, NOW) === null
+    && laneQuietSince({ ...OK, merge: { status: "blocked" } }, NOW) === null);
+  check("quiet-since: null on unknown facts — an unknown is never a timestamp either",
+    laneQuietSince({ ...OK, alive: null }, NOW) === null
+    && laneQuietSince({ ...OK, git: null }, NOW) === null
+    && laneQuietSince({ ...OK, idleMs: null }, NOW) === null);
+  // exactly one clause is the clock — if a second ever gets flagged, tier 2 silently stops
+  // waiting on a real fact
+  check("quiet-since: the clock is exactly one clause of the list, and it is the idle one",
+    DONE_LOOKING_RULES.filter((r) => r.clock).length === 1
+    && DONE_LOOKING_RULES.find((r) => r.clock)?.prose === "idle");
   // the digest worker's prose rule is GENERATED from the same clause list the predicate iterates
   check("done-looking: the digest's prose rule is composed from every clause of the predicate",
     DONE_LOOKING_RULES.every((r) => DONE_LOOKING_PROSE.includes(r.prose))
@@ -1139,11 +1165,18 @@ if (REPO) {
     const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
     const sv = (await (await fetch(BASE + "/api/steward/sessions",
       { headers: { authorization: `Bearer ${svTok}` } })).json()) as
-      { slots: { id: number; doneLooking: boolean }[] };
+      { slots: { id: number; doneLooking: boolean; doneLookingSince: number | null }[] };
     const dl = (id: number): boolean | undefined => sv.slots.find((x) => x.id === id)?.doneLooking;
+    const dls = (id: number): number | null | undefined => sv.slots.find((x) => x.id === id)?.doneLookingSince;
     check("done-looking is served as a fact: true for the lane, false for ⚙ steward and the non-lane slot",
       dl(ar.slot) === true && dl(as.slot) === false && dl(freeSlot?.id ?? -1) === false,
       JSON.stringify({ lane: dl(ar.slot), steward: dl(as.slot), plain: dl(freeSlot?.id ?? -1) }));
+    // tier 2 rides alongside: a timestamp in the past for the lane the trigger fired on, null for
+    // the slots the predicate does not classify at all
+    check("done-looking-since is served next to it: a past timestamp for the lane, null for ⚙ steward / non-lane",
+      typeof dls(ar.slot) === "number" && (dls(ar.slot) as number) <= Date.now()
+      && dls(as.slot) === null && dls(freeSlot?.id ?? -1) === null,
+      JSON.stringify({ lane: dls(ar.slot), steward: dls(as.slot), plain: dls(freeSlot?.id ?? -1) }));
     // several more ticks on an UNCHANGED tree: the cache key, not a timer, decides
     await Bun.sleep(5000);
     check("auto-③ does not spawn again while the git state is unchanged", reviewRunsFor(ar.cwd) === 1,

@@ -150,8 +150,10 @@ cmd_up() {
     || die "git worktree add failed"
 
   # --- stand up the isolated instance (e2e-isolated pattern) -----------------
-  cp -R "$SRC/server.ts" "$SRC/public" "$SRC/package.json" "$ARENA_DIR/" \
-    || die "failed to copy server.ts/public/package.json into ARENA_DIR"
+  # every local import of server.ts must ride along — `bun server.ts` dies at module
+  # resolution otherwise, before it ever binds a port. Keep in sync with `from "./` in server.ts.
+  cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/lane-signals.ts" "$SRC/public" "$SRC/package.json" "$ARENA_DIR/" \
+    || die "failed to copy server.ts + its local modules/public/package.json into ARENA_DIR"
   ln -s "$SRC/node_modules" "$ARENA_DIR/node_modules"
 
   local token; token="$(openssl rand -hex 24)"

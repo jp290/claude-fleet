@@ -95,7 +95,10 @@ const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: Merg
 
 // the lane's outcome row (lane-outcomes.jsonl via the owner-only read endpoint), looked up by the
 // lane's branch — the shadow verdict's only home.
-type ShadowRow = { verdict: string | null; at: number; model: string; notes: string; raw: boolean };
+type ShadowRow = { verdict: string | null; at: number; model: string; notes: string; raw: boolean;
+  rawAnswer?: string };
+// mirrors server.ts SHADOW_RAW_ANSWER_MAX — the cap on the persisted copy of a contract-missing answer
+const RAW_ANSWER_MAX = 2000;
 type OutcomeRow = { branch: string | null; disposition: string; cleanReviewShadow?: ShadowRow };
 const outcomeFor = async (branch: string): Promise<OutcomeRow | null> => {
   const j = (await (await get("/api/lane-outcomes?limit=300")).json()) as { outcomes: OutcomeRow[] };
@@ -126,6 +129,10 @@ if (PHASE === "shadow") {
   check("shadow: the ok verdict is recorded as verdict:'pass', raw:false",
     eRow?.cleanReviewShadow?.verdict === "pass" && eRow.cleanReviewShadow.raw === false,
     JSON.stringify(eRow?.cleanReviewShadow));
+  // a healthy row keeps its old shape exactly — the raw-answer copy is failure bookkeeping, not bloat
+  check("shadow: a raw:false row carries NO rawAnswer field at all",
+    eRow?.cleanReviewShadow !== undefined && !("rawAnswer" in eRow.cleanReviewShadow),
+    JSON.stringify(eRow?.cleanReviewShadow));
 
   // (F) fail direction INVERTED vs gate mode: nothing is gated, so a broken reviewer is a FAILED
   // MEASUREMENT (verdict null, raw true) — never a fabricated pass, and never a stop either.
@@ -138,6 +145,33 @@ if (PHASE === "shadow") {
     fRow?.cleanReviewShadow !== undefined && fRow.cleanReviewShadow.verdict === null
       && fRow.cleanReviewShadow.raw === true,
     JSON.stringify(fRow?.cleanReviewShadow));
+  // …and the answer it failed on is persisted, so the contract-miss is diagnosable from the journal
+  // alone (both real production shadow verdicts were raw:true and left only a generic note behind).
+  check("shadow: a broken reviewer persists the raw answer text it failed to parse",
+    fRow?.cleanReviewShadow?.rawAnswer === "not json at all — exercises the server fail-closed path",
+    JSON.stringify(fRow?.cleanReviewShadow?.rawAnswer));
+
+  // (G) an over-long non-JSON answer is persisted TRUNCATED — one bad run can't bloat the journal.
+  await setReviewMode("flood");
+  const G = await cleanLaneMerge("golf");
+  const gRow = await outcomeFor(G.branch);
+  check("shadow: an over-long raw answer is truncated at the cap",
+    gRow?.cleanReviewShadow?.rawAnswer?.length === RAW_ANSWER_MAX
+      && /^X+$/.test(gRow.cleanReviewShadow.rawAnswer ?? ""),
+    `${gRow?.cleanReviewShadow?.rawAnswer?.length}`);
+
+  // (H) NO answer at all (spawn failure / timeout): the field is PRESENT and EMPTY. "the reviewer
+  // said nothing" and "the reviewer said the wrong thing" must stay distinguishable in the journal.
+  await setReviewMode("silent");
+  const H = await cleanLaneMerge("hotel");
+  const hRow = await outcomeFor(H.branch);
+  check("shadow: a reviewer that answers nothing still lands and records a failed measurement",
+    H.gone && mainLog().includes("hotel lane work") && hRow?.cleanReviewShadow?.verdict === null
+      && hRow.cleanReviewShadow.raw === true, JSON.stringify(hRow?.cleanReviewShadow));
+  check("shadow: an empty answer records rawAnswer PRESENT and empty — not absent",
+    hRow?.cleanReviewShadow !== undefined && "rawAnswer" in hRow.cleanReviewShadow
+      && hRow.cleanReviewShadow.rawAnswer === "",
+    JSON.stringify(hRow?.cleanReviewShadow));
 
   console.log(results.join("\n"));
   console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");

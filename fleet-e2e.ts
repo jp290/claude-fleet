@@ -260,9 +260,20 @@ check("200 with token", authed.status === 200);
 // --- ✨ enhance (FLEET_ENHANCE_CMD stand-in): draft in → reworked prompt out ---
 check("enhance rejects empty text", (await post("/api/enhance", { text: "  " })).status === 400);
 const enhRes = await post("/api/enhance", { slot: 1, text: "mach mal x" });
-const enhJ = (await enhRes.json()) as { prompt?: string };
+const enhJ = (await enhRes.json()) as { prompt?: string; draftId?: string };
 check("enhance returns reworked prompt via stand-in",
   enhRes.ok && enhJ.prompt === "enhanced prompt. own your work! /sharpen3", JSON.stringify(enhJ));
+// the disposition rail's join key for this draft, stamped server-side so it cannot drift between
+// the answer and the label the client later files under it (server.ts, grep `DISPOSITION rail`).
+{
+  const { createHash } = await import("node:crypto");
+  const want = createHash("sha256").update(enhJ.prompt ?? "").digest("hex").slice(0, 16);
+  check("enhance stamps a draftId = sha256(prompt)[0:16] — the rail's join key, computed server-side",
+    enhJ.draftId === want && want.length === 16, `${enhJ.draftId} vs ${want}`);
+  const enhAgain = (await (await post("/api/enhance", { slot: 1, text: "mach mal x" })).json()) as { draftId?: string };
+  check("enhance: identical output yields an identical draftId (the label is about the CONTENT ruled on)",
+    enhAgain.draftId === enhJ.draftId, `${enhAgain.draftId} vs ${enhJ.draftId}`);
+}
 // --- buildEnhancePrompt: PURE-function unit tests against the REAL prompt module ---
 // The stand-in check above only proves the ROUTE plumbs a subprocess answer through; the
 // prompt text itself was untested — exactly buildMergePrompt's pre-extraction history. The
@@ -2624,6 +2635,27 @@ if (REPO) {
       /r\.raw === true/.test(cliSrc) && /did not parse — this is NOT a review/.test(cliSrc)
       && /not a clean bill of/.test(cliSrc), "reviewBody in src/client.ts");
 
+    // (9e) THE DISPOSITION RAIL, CLIENT HALF. Same method and same limits as (9d): asserted over
+    // the client SOURCE because this suite has no DOM harness — weaker than a render test, named
+    // so, and it catches the two regressions that would silently corrupt the label evidence.
+    // First: an outcome row with no owner label must render as UNLABELED. If someone ever defaults
+    // the missing case to a verdict, every unjudged land silently becomes evidence.
+    check("client: an outcome row with no owner label renders \"unlabeled\", never a default verdict",
+      /const cur = dispoOf\("land", ref\)/.test(cliSrc)
+      && /cur \? `your label: \$\{DISPO_WORD_UI\[cur\]\}` : "unlabeled"/.test(cliSrc),
+      "the land label strip in renderOutcomes (src/client.ts)");
+    // Second: the ✨ flow's three deterministic cases. `accepted` iff what was SENT is byte-equal to
+    // what the enhancer returned, `edited` iff it was sent changed, `ignored` iff the box was
+    // cleared by hand — and nothing at all in any other case (reload, re-run, auto-schedule).
+    check("client: the ✨ flow writes accepted/edited from the SEND and ignored from a hand-cleared box",
+      /text === p\.text\.trim\(\) \? "accepted" : "edited"/.test(cliSrc)
+      && /ta\.value\.trim\(\) === ""[\s\S]{0,200}?labelDisposition\("enhance", p\.draftId, "ignored"\)/.test(cliSrc),
+      "doSend + the ta input listener (src/client.ts)");
+    check("client: a ✨ result dropped as stale arms no disposition watch (nothing was shown to rule on)",
+      /pendingEnhance = j\.draftId \? \{ draftId: j\.draftId, text: j\.prompt \} : null/.test(cliSrc)
+      && cliSrc.indexOf("pendingEnhance = j.draftId") > cliSrc.indexOf("if (ta.value.trim() === text &&"),
+      "the enhance handler (src/client.ts)");
+
     // (10) THE REBASE CASE — the reason the relation is content identity and not commit identity:
     // the land path rebases the lane onto main before the ff-merge, so the landed commit is NEVER
     // the reviewed commit on a clean land. The diff is byte-identical, so the review DID describe
@@ -3787,6 +3819,124 @@ if (auditRotExists) {
   await post("/api/steward/outcomes/harm", { attest: true }); // re-attest inside the window
   check("attest: re-attesting inside the window restores eligibility",
     (await readOutcomes()).eligibility.continue_nudge === true);
+
+  // --- the OWNER DISPOSITION RAIL (server.ts, grep `DISPOSITION rail`): the one label channel for
+  // advisory worker output. It lives here, immediately after the attest checks, because its
+  // safety-critical coupling is to harmAttestAt — labeling IS the owner operating the harm channel,
+  // and that claim is only provable next to the machinery that reads it. ---
+  {
+    interface DispoRead { dispositions: { at: number; worker: string; ref: string; disposition: string; source: string }[]; total: number }
+    // the rail's append is fire-and-forget by design (a wedged disk must never block the request
+    // path — appendEvent's contract), so the POST can return before the line reaches the file.
+    // Every read-back therefore settles first; without this the round-trip checks race the flush.
+    const readDispos = async (): Promise<DispoRead> => {
+      await Bun.sleep(250);
+      return (await (await get("/api/dispositions?limit=2000")).json()) as DispoRead;
+    };
+    const attestAt = async (): Promise<number> =>
+      ((await (await stewGet("/api/steward/outcomes")).json()) as { config: { harmAttestAt: number } }).config.harmAttestAt;
+
+    // ref shape 1 — `land`: `<branch>@<ts>` of a REAL outcome row (ts is the only field every row
+    // carries; headSha is null on legacy rows and on a kill that could not resolve HEAD).
+    const anyOutcome = ((await (await get("/api/lane-outcomes?limit=5")).json()) as
+      { outcomes: { ts: number; branch: string | null }[] }).outcomes[0];
+    const landRef = `${anyOutcome?.branch ?? "(branch not recorded)"}@${anyOutcome?.ts ?? 0}`;
+    check("disposition setup: a real outcome row exists to label", !!anyOutcome && typeof anyOutcome.ts === "number", landRef);
+
+    const before = await attestAt();
+    await Bun.sleep(1100); // the write must be strictly later, and Date.now() is ms-granular
+    const wr = await post("/api/dispositions", { worker: "land", ref: landRef, disposition: "accepted" });
+    const wrJ = (await wr.json()) as { ok?: boolean; record?: { source?: string; at?: number }; harmAttestAt?: number };
+    check("disposition: an owner write is accepted and stamps source \"owner\" (never read from the body)",
+      wr.ok && wrJ.ok === true && wrJ.record?.source === "owner", `${wr.status} ${JSON.stringify(wrJ)}`);
+    const rt = await readDispos();
+    const landRow = rt.dispositions.find((d) => d.worker === "land" && d.ref === landRef);
+    check("disposition: the owner write round-trips through the append-only rail (worker/ref/verdict/source)",
+      landRow?.disposition === "accepted" && landRow?.source === "owner" && typeof landRow?.at === "number"
+      && rt.total >= 1, JSON.stringify(landRow ?? null));
+    check("disposition: labeling advances harmAttestAt — labeling IS the harm channel operating",
+      (await attestAt()) > before, `${before} -> ${await attestAt()}`);
+
+    // …and that advance is not cosmetic: a rail write RESTORES promotion eligibility on its own,
+    // exactly as an explicit attest does. This is the whole reason the rail is wired to the
+    // harm channel — the machinery was structurally unfeedable before it existed.
+    await Bun.sleep(attestTtlMs + 1500); // age it back out
+    check("disposition: eligibility really did go stale again before the rail write (control)",
+      (await readOutcomes()).eligibility.continue_nudge === false);
+    await post("/api/dispositions", { worker: "land", ref: landRef, disposition: "wrong" });
+    check("disposition: an owner label alone (no explicit attest) restores promotion eligibility",
+      (await readOutcomes()).eligibility.continue_nudge === true);
+    // append-only + newest-wins: the re-label does NOT rewrite the first row, it supersedes it
+    const relabeled = (await readDispos()).dispositions.filter((d) => d.worker === "land" && d.ref === landRef);
+    check("disposition: a changed mind APPENDS (both rows on the rail, newest first) — nothing is rewritten",
+      relabeled.length === 2 && relabeled[0].disposition === "wrong" && relabeled[1].disposition === "accepted",
+      JSON.stringify(relabeled.map((d) => d.disposition)));
+
+    // ref shapes 2 and 3 — review3 (patchId, content identity) and enhance (draftId).
+    await post("/api/dispositions", { worker: "review3", ref: "deadbeefcafe0001", disposition: "wrong" });
+    for (const v of ["accepted", "edited", "ignored"])
+      await post("/api/dispositions", { worker: "enhance", ref: `draft-${v}`, disposition: v });
+    const all = await readDispos();
+    check("disposition: all three workers and all four verdicts are accepted on one rail",
+      ["land", "review3", "enhance"].every((w) => all.dispositions.some((d) => d.worker === w))
+      && ["accepted", "edited", "ignored", "wrong"].every((v) => all.dispositions.some((d) => d.disposition === v)),
+      JSON.stringify(all.dispositions.slice(0, 6)));
+    check("disposition: the three ✨ verdicts land under their own draft refs",
+      ["accepted", "edited", "ignored"].every((v) =>
+        all.dispositions.some((d) => d.worker === "enhance" && d.ref === `draft-${v}` && d.disposition === v)),
+      JSON.stringify(all.dispositions.filter((d) => d.worker === "enhance")));
+
+    // the shape gate: an unknown worker/verdict or an empty ref is a 400, never a silently
+    // recorded row — a rail that accepts junk is not evidence.
+    check("disposition: an unknown worker is rejected (400)",
+      (await post("/api/dispositions", { worker: "summarize", ref: "x", disposition: "accepted" })).status === 400);
+    check("disposition: an unknown verdict is rejected (400)",
+      (await post("/api/dispositions", { worker: "land", ref: "x", disposition: "great" })).status === 400);
+    check("disposition: an empty ref is rejected (400)",
+      (await post("/api/dispositions", { worker: "land", ref: "   ", disposition: "accepted" })).status === 400);
+
+    // THE HARD RULE, asserted as a NEGATIVE: a lane must never label its own work. The per-slot
+    // FLEET_SELF_TOKEN is a valid credential with the wrong scope → 403 (not the generic 401 that
+    // would hide why), whether it is offered in its own header or as if it were the owner token.
+    // The token is read from the persisted state rather than captured from a pane: deterministic,
+    // no ~600ms capture race (the known flake in the SELF_TOKEN pane checks).
+    const stSlots = (JSON.parse(readFileSync(`${import.meta.dir}/fleet.json`, "utf8")) as
+      { slots: Record<string, { selfToken?: string }> }).slots;
+    const someSelfTok = Object.values(stSlots).map((v) => v.selfToken).find((t): t is string => !!t) ?? "";
+    check("disposition setup: an active slot's selfToken is readable from state", someSelfTok.length === 32, `len=${someSelfTok.length}`);
+    const selfHdr = await fetch(BASE + "/api/dispositions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": someSelfTok },
+      body: JSON.stringify({ worker: "land", ref: landRef, disposition: "accepted" }),
+    });
+    check("disposition: a lane's selfToken CANNOT write the rail (403 — a lane never labels its own work)",
+      selfHdr.status === 403, String(selfHdr.status));
+    const selfAsOwner = await fetch(BASE + "/api/dispositions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + someSelfTok },
+      body: JSON.stringify({ worker: "land", ref: landRef, disposition: "accepted" }),
+    });
+    check("disposition: a selfToken offered AS the owner token is still refused (403, not a 401 that hides why)",
+      selfAsOwner.status === 403, String(selfAsOwner.status));
+    const totalAfterRefusals = (await readDispos()).total;
+    check("disposition: the refused writes recorded NOTHING on the rail",
+      totalAfterRefusals === all.total, `${totalAfterRefusals} vs ${all.total}`);
+
+    // access model: no credential at all is the usual 401; the steward principal READS but never writes
+    check("disposition: the rail requires a credential (401 unauthenticated)",
+      (await fetch(BASE + "/api/dispositions")).status === 401);
+    const stewRead = await stewGet("/api/dispositions?limit=5");
+    check("disposition: the steward token may READ the rail",
+      stewRead.ok && ((await stewRead.json()) as DispoRead).dispositions.length > 0, String(stewRead.status));
+    check("disposition: the steward token may NOT write the rail (out of scope, 403)",
+      (await stewPost("/api/dispositions", { worker: "land", ref: landRef, disposition: "accepted" })).status === 403);
+
+    // the rail is a secret-adjacent append-only log like its neighbours: mode 600, never 644
+    await Bun.sleep(250); // same flush settle as readDispos above
+    const dispoMode = statSync(`${import.meta.dir}/dispositions.jsonl`).mode & 0o777;
+    check("disposition: dispositions.jsonl is mode 600 (same discipline as audit.jsonl)",
+      dispoMode === 0o600, dispoMode.toString(8));
+  }
 
   // --- A2 null-calibration: `baselineRate` (F-C). The SAME helped classifier run over ACTIVE,
   // UN-nudged slots gives the background "helped-looking" rate — a working slot commits/emits

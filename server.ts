@@ -30,6 +30,9 @@ const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
 // per-lane attributed-outcome trail — one server-stamped fact per lane terminal event (see
 // buildLaneOutcome). Rotated by appendEvent at AUDIT_ROTATE_BYTES, same as AUDIT_FILE.
 const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
+// the owner disposition rail — one append-only label per advisory output the owner ruled on
+// (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
+const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
 // one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
 const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
@@ -2909,6 +2912,79 @@ function promotionEligible(cls: string): boolean {
   return !!t && harmAttestFresh() && t.harmed === 0 && t.helped >= PROMOTION_MIN_N;
 }
 
+// --- DISPOSITION rail: the owner's label channel for advisory output (docs/graduation-criteria.md
+// needs owner labels as ground truth, and Fleet's throwaway workers had none). One append-only
+// record per ruling, same discipline as the audit/outcome logs it sits beside: appendEvent's write
+// chain, mode 600, one JSON line, single-generation rotation.
+//
+// Two properties this rail must keep, or the labels are worthless as evidence:
+//   · the OWNER is the only writer. A lane must never label its own work, so the per-slot
+//     FLEET_SELF_TOKEN is refused at the route (403, told apart from an unknown credential's 401)
+//     and `source` is hard-stamped "owner" — never read from the body.
+//   · absence is not approval. Nothing is written unless the owner acted; an unlabeled ref stays
+//     unlabeled forever, and the renderer says so rather than defaulting to accepted.
+//
+// `ref` shapes — chosen per worker so a label JOINS back to the thing it judges:
+//   · land    `<branch>@<ts>` of the outcome row. `ts` is the only field EVERY row carries
+//     (headSha is null on a legacy row and on a kill that could not resolve HEAD); branch
+//     disambiguates and stays readable. Never headSha alone.
+//   · review3 the review's `patchId` — CONTENT identity of the reviewed diff, the same key the
+//     outcome row's coverage relation uses. It survives the land-path rebase, which a sha does
+//     not. A review with a null patchId is deliberately NOT labelable (no honest join key).
+//   · enhance `draftId` = sha256(enhanced prompt).slice(0,16), stamped by /api/enhance and echoed
+//     back by the client. Server-side so the join key cannot drift, and so the client needs no
+//     crypto.subtle (unavailable on the plain-http Tailscale origin).
+type DispositionWorker = "land" | "review3" | "enhance";
+type DispositionVerdict = "accepted" | "edited" | "ignored" | "wrong";
+const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance"];
+const DISPOSITION_VERDICTS: DispositionVerdict[] = ["accepted", "edited", "ignored", "wrong"];
+const MAX_DISPOSITION_REF = 200;
+interface DispositionRecord {
+  at: number; worker: DispositionWorker; ref: string; disposition: DispositionVerdict; source: "owner";
+}
+// async like the audit/outcome readers it sits beside — a request-path file read must not block
+// the event loop, however small this file is today
+async function readDispositions(limit: number): Promise<{ dispositions: Record<string, unknown>[]; total: number }> {
+  const text = existsSync(DISPOSITION_FILE) ? await Bun.file(DISPOSITION_FILE).text() : "";
+  const lines = text.split("\n").filter(Boolean);
+  const rows: Record<string, unknown>[] = [];
+  for (const line of lines) {
+    try {
+      rows.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      // a torn mid-append line — skip, same as the audit/outcome readers
+    }
+  }
+  rows.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
+  return { dispositions: rows.slice(0, limit), total: lines.length };
+}
+// the owner write. Returns the Response so both the validation and the harm-channel coupling live
+// in one place: LABELING IS the harm-channel engagement (steward-intelligence.md §4 — the channel
+// must be shown to OPERATE, not merely to exist), so every accepted write refreshes harmAttestAt.
+// The harm-SPECIFIC path stays /api/steward/outcomes/harm: a `wrong` label on a nudge-class output
+// is still reportable there, and that route is untouched by this one.
+function writeDisposition(body: Record<string, unknown> | null): Response {
+  if (!body) return json({ error: "invalid json" }, 400);
+  const worker = body.worker;
+  const disposition = body.disposition;
+  const ref = typeof body.ref === "string" ? body.ref.trim() : "";
+  if (typeof worker !== "string" || !DISPOSITION_WORKERS.includes(worker as DispositionWorker))
+    return json({ error: `worker must be one of ${DISPOSITION_WORKERS.join(", ")}` }, 400);
+  if (typeof disposition !== "string" || !DISPOSITION_VERDICTS.includes(disposition as DispositionVerdict))
+    return json({ error: `disposition must be one of ${DISPOSITION_VERDICTS.join(", ")}` }, 400);
+  if (!ref || ref.length > MAX_DISPOSITION_REF)
+    return json({ error: `ref must be a non-empty string ≤${MAX_DISPOSITION_REF} chars` }, 400);
+  const rec: DispositionRecord = {
+    at: Date.now(), worker: worker as DispositionWorker, ref,
+    disposition: disposition as DispositionVerdict,
+    source: "owner", // stamped, never read from the body — this route has exactly one principal
+  };
+  appendEvent(DISPOSITION_FILE, rec as unknown as Record<string, unknown>);
+  harmAttestAt = rec.at; // the owner ruling on worker output IS the channel operating
+  saveState();
+  return json({ ok: true, record: rec, harmAttestAt });
+}
+
 // deterministic first attempt: most rebases don't conflict at all, and `git rebase` alone
 // handles those completely — spawning a model session for that is minutes and money for
 // nothing. Clean → the agent is never spawned. Conflict → abort (lane exactly as found)
@@ -4070,6 +4146,11 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       })).filter((e) => e.blocks.length),
     });
   }
+  // the disposition rail, READ-ONLY for this principal: the steward reasons about what the owner
+  // ruled on, and must never produce a label itself (a self-scored record is not evidence). A POST
+  // here is not matched, so it falls through to the caller's "route not in scope" 403.
+  if (url.pathname === "/api/dispositions" && req.method === "GET")
+    return json(await readDispositions(Math.min(2000, Math.max(1, Number(url.searchParams.get("limit") ?? 500) | 0))));
   if (url.pathname === "/api/steward/autos" && req.method === "POST") {
     const home = stewardSlot();
     if (!home) return json({ error: "no steward slot active" }, 404);
@@ -4199,6 +4280,18 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
+    }
+
+    // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a
+    // lane's credential with a generic 401 and hide WHY. A lane must never label its own work: a
+    // recognized per-slot FLEET_SELF_TOKEN on this path — sent either as its own header or offered
+    // as if it were the owner token — is a valid credential with the wrong scope, so 403, the same
+    // distinction the steward gate draws below. Scoped to this one path on purpose: every other
+    // route keeps its existing self-token behaviour untouched.
+    if (url.pathname === "/api/dispositions") {
+      const offered = [req.headers.get("x-fleet-self-token") ?? "", tokenFrom(req) ?? ""].filter(Boolean);
+      if (offered.some((t) => slots.some((x) => x.cwd && x.selfToken && secretEq(t, x.selfToken))))
+        return json({ error: "self token: the disposition rail is owner-only — a lane cannot label its own work" }, 403);
     }
 
     // steward principal: same placement rationale as self/autos above — sits AFTER the
@@ -4527,6 +4620,14 @@ Bun.serve<WSData>({
       outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ outcomes: outcomes.slice(0, limit), total: lines.length });
     }
+    // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
+    // two trails above; POST is the ONLY writer, and it is owner-only by construction — a lane's
+    // self token is rejected with 403 before the owner gate (see the block above /api/self/autos),
+    // and the steward token can only ever reach the GET (handleStewardRoute).
+    if (url.pathname === "/api/dispositions" && req.method === "GET")
+      return json(await readDispositions(Math.min(2000, Math.max(1, Number(url.searchParams.get("limit") ?? 500) | 0))));
+    if (url.pathname === "/api/dispositions" && req.method === "POST")
+      return writeDisposition(await readJson(req));
     // owner-only: read the steward's own scoped credential, to paste into the steward
     // pane's env (FLEET_STEWARD_TOKEN) by hand — same access model as /api/audit.
     if (url.pathname === "/api/steward/token" && req.method === "GET")
@@ -4578,7 +4679,12 @@ Bun.serve<WSData>({
       // than silently emitting an empty block
       const facts = s?.cwd ? await briefPayload(s) : null;
       try {
-        return json({ prompt: await runEnhance(body.text.trim(), s?.cwd ?? HOME, facts) });
+        const prompt = await runEnhance(body.text.trim(), s?.cwd ?? HOME, facts);
+        // draftId: the disposition rail's join key for this draft (see the DISPOSITION region).
+        // Stamped here, not client-side — the key must not drift, and the plain-http Tailscale
+        // origin has no crypto.subtle. Identical output → identical id, which is correct: the
+        // label is about the CONTENT the owner ruled on.
+        return json({ prompt, draftId: createHash("sha256").update(prompt).digest("hex").slice(0, 16) });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "enhance failed" }, 502);
       }

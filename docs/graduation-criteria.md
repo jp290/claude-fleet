@@ -7,9 +7,9 @@ looking at data accrued since the last change. This is the mechanical guard agai
 `baselineRate` failure mode (an anecdote from one boot window sold as a null) and against
 post-hoc rationalization ("the data we got is the data we needed").
 
-Labels come from the owner disposition rail (planned; until it exists, `↩ undo` usage and
-explicit owner statements in-session are the only valid label sources). Per-boot in-memory
-numbers are never admissible evidence.
+Labels come from the owner disposition rail — BUILT (`dispositions.jsonl`, owner-only write;
+server.ts, grep `DISPOSITION rail`), alongside `↩ undo` usage and explicit owner statements
+in-session. Per-boot in-memory numbers are never admissible evidence.
 
 ## 1. Component 5 — graded auto-land of conflict resolutions
 

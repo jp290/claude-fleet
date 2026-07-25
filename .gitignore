@@ -9,6 +9,8 @@ steward-journal.jsonl
 steward-journal.jsonl.1
 lane-outcomes.jsonl
 lane-outcomes.jsonl.1
+dispositions.jsonl
+dispositions.jsonl.1
 *.log
 public/app.js
 .playwright-mcp/

@@ -58,6 +58,39 @@ This entry exists to record: **that machinery is currently unfed** (`outcomeTall
 `harmAttestAt` 0 as of 2026-07-25) — its criterion counts only once the disposition rail
 feeds it. Do not lower `PROMOTION_MIN_N` to compensate for starvation.
 
+## What the numbers are — and are not
+
+Added 2026-07-25 (same day, after the first 6 rows accrued — so this note is *clarification
+of intent*, not a criterion change; no threshold moves). Three honesty notes:
+
+1. **The Ns are anti-impatience gates, not statistical proof.** "0 undos in 20" passes with
+   ~36 % probability even if the true undo-worthy rate were 5 % (cf. the baselineRate lesson:
+   real power needs ~100+ samples per arm, which this ledger will not have for months).
+   Meeting a criterion therefore *permits* the owner to enable a step; it never *obliges*.
+   The final call is the owner's, every time.
+2. **K1's first rows are homogeneous** — rows 6–11 are one author's lanes, one day, one repo,
+   briefed by the same session that wrote these criteria. A criterion met on a homogeneous
+   burst is weaker evidence than the same N spread over days/repos/authors. Recorded here so
+   the eventual enable-decision weighs it; the threshold itself stays unchanged (changing it
+   now would itself be a post-hoc move).
+3. **Independence caveat:** the calibration assumes the labeler (owner) is independent of the
+   lander. A session-agent that both drives lands and effectively self-confirms (it happened
+   once, row 10) erodes that. Rule since 2026-07-25: stop-and-review confirms are the owner's,
+   or per-case explicitly delegated — never self-granted.
+
+## Judge fire-drills (norm, added 2026-07-25)
+
+**No judging instance gets even display-trust before a seeded-defect test.** Rationale: after
+7 lands, auto-③ has answered `covered` 7/7 times — a reviewer that always passes has unknown
+sensitivity, and its column carries no information until a planted defect proves it can fire.
+Procedure: a throwaway lane commits a realistic change containing known defects (ground truth
+recorded beforehand, commit message neutral, branch never lands), ③ reviews it, findings are
+adjudicated against ground truth, lane is discarded. Results land in this log. Applies equally
+to ② shadow and any future judge.
+
 ## Amendment log
 
 - 2026-07-25: initial version (criteria 1–4).
+- 2026-07-25 (later): added "What the numbers are — and are not" (intent clarification, no
+  threshold changes) and the judge fire-drill norm. Written after looking at rows 6–11 —
+  flagged per the pre-registration rule; both additions tighten rather than loosen.

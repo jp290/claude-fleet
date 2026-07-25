@@ -75,6 +75,15 @@ First trials: owner picks the mission, steward compiles the brief (sharpen disci
 files, context, done-criterion, footprint). Graduation of *steward-picked* missions is a
 later criteria entry, written before its data like everything else.
 
+## The owner-attention budget (axiom, added 2026-07-25)
+
+**Owner attention is the system's scarcest resource — every design that spends it has a
+budget.** Labels are one tap, never a form. Nothing the owner must read to keep the system
+safe; reading is always optional, acting on defaults always safe. The nudge dose (phase A)
+counts against the same budget: caps are machine-enforced, and a nudge that costs the owner
+more attention than it saves the session is `harmed`, not merely `unnötig`. Every new
+consumer of owner attention names its cost here before shipping.
+
 ## What graduates, and on what
 
 Phase A nudges: the existing `promotionEligible` predicate (criteria doc §4) — fed by

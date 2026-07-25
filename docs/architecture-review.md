@@ -112,8 +112,9 @@ reads the current file only.
 The two files that read one generation are exactly the two the criteria depend on:
 `graduation-criteria.md` §1 measures review coverage "by the outcome feed, not asserted", and its
 labels "come from the owner disposition rail". Worse, the client's K1 counter is anchored on a
-*specific row* (`K1_ANCHOR_BRANCH = "f9-verify-deps"`, client.ts:2920–2936); when that row falls
-off, `kProgress` returns `anchored:false` and the panel counts nothing.
+*specific row* (`K1_ANCHOR_BRANCH = "f9-verify-deps"`, client.ts, grep `K1_ANCHOR_BRANCH`); when
+that row falls off, `kProgress` returns `anchored:false` and the panel counts nothing for §1 (K2
+survives the rotation — since 2026-07-25 it is counted independently of the anchor).
 **Cost:** at rotation, owner-recorded evidence silently becomes never-happened — a disposition
 whose row rotated away renders as `unlabeled`, which the renderer *correctly* treats as missing
 evidence, so the reading is wrong in the safe-looking direction. Rows are large (findings are

@@ -638,9 +638,10 @@ interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 const commitBusy = new Map<number, "quick" | "agent">();
 // the server's deterministic verify verdict against the rebased tree (mirrors server.ts
 // `interface MergeLast`'s `verify`). Absent = "unverified" (no FLEET_VERIFY_CMD result on
-// record) — never render absence as green. `stale` is set at confirm-land when main moved
+// record); `ok: null` = the command DECLINED to verify this tree (skipped) — neither absence
+// nor a skip may ever render as green. `stale` is set at confirm-land when main moved
 // past the `mainSha` the verify ran against (the verdict is void once main moves past it).
-type VerifyVerdict = { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
+type VerifyVerdict = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean };
 interface MergeState { running: boolean;
   last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
     branch: string; at: number; conflicted?: string[]; verify?: VerifyVerdict } | null;
@@ -951,13 +952,20 @@ function showCommitPreview(title: string, tracked: string[], untracked: string[]
 // lands. Closes the gap where a conflict-free rebase auto-landed with no diff ever shown —
 // "textually clean" isn't "semantically correct", so the owner gets one look before it merges.
 // the one deterministic land signal made visible (F-A.3): did the rebased tree pass verify.
-// Four states, informational only — a red or stale badge NEVER disables land (owner latitude
-// stands; confirm-land deliberately does not block on red verify). Absence reads "unverified",
-// never a silent green.
+// Informational only — a red, skipped or stale badge NEVER disables land (owner latitude
+// stands; confirm-land deliberately does not block on a non-green verify). The two ways of
+// having no verdict are told apart and neither reads green: no command CONFIGURED reads
+// "unverified", a command that DECLINED to run reads "skipped".
 function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
   if (!v) {
     const b = el("span", "vbadge none", "unverified");
     b.title = "no FLEET_VERIFY_CMD result on record for this rebased tree — the tree was not deterministically verified";
+    return b;
+  }
+  if (v.ok === null) {
+    const b = el("span", "vbadge skip", "verify — skipped");
+    b.title = `\`${v.cmd}\` declined to verify this tree (it verified NOTHING — not a pass) — click to view what it said`;
+    b.onclick = (e) => { e.stopPropagation(); showVerifyOutput(v); };
     return b;
   }
   if (!v.ok) {
@@ -976,14 +984,17 @@ function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
   return b;
 }
 
-// tail of a failing verify's captured output — reachable from the red badge, so the owner
-// can see WHY verify failed before exercising land latitude.
+// tail of a non-green verify's captured output — reachable from the red and the skipped badge,
+// so the owner can see WHY it failed, or what the command said as it declined, before
+// exercising land latitude.
 function showVerifyOutput(v: VerifyVerdict): void {
+  const skipped = v.ok === null;
   const overlay = el("div", "overlay riskoverlay");
   overlay.style.display = "flex";
   const panel = el("div", "panel riskpanel");
-  panel.appendChild(el("h2", "", "verify ✗ — output"));
-  panel.appendChild(el("div", "diffstat err", `${v.cmd} · exit non-zero`));
+  panel.appendChild(el("h2", "", skipped ? "verify — skipped, output" : "verify ✗ — output"));
+  panel.appendChild(el("div", `diffstat ${skipped ? "warn" : "err"}`,
+    `${v.cmd} · ${skipped ? "declined to verify this tree — nothing was checked" : "exit non-zero"}`));
   const box = el("div", "difftxt");
   box.textContent = v.out || "(no output captured)";
   panel.appendChild(box);
@@ -3045,7 +3056,9 @@ function renderOutcomes() {
       : o.verified === false ? chip("verify red", "warn",
           "the merge verify did not pass. It also reports red when the gate could not RUN"
           + " at all (a lane with no installed deps) — this is not by itself a claim the change is unsound.")
-      : chip("no verify ran", "dim", "no deterministic verify verdict is on record for this outcome"));
+      : chip("no verify ran", "dim", "no deterministic verify verdict is on record for this outcome —"
+          + " either no verify command was configured, or one ran and DECLINED to verify this tree"
+          + " (skipped). The row cannot say which; the lane's merge verdict can."));
     if (dispo === "landed") {
       facts.appendChild(o.confirmedByHuman ? chip("owner-confirmed land") : chip("auto-landed clean+green"));
       if (o.resolvedConflict) facts.appendChild(chip("agent resolved conflicts", "warn"));

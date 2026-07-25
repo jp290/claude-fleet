@@ -19,9 +19,17 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 
 # deterministic merge-verify (V1, server.ts runVerify): the server runs this against the
 # REBASED lane tree at merge time. Repo-guarded — verifies the fleet repo, and in a
-# foreign-repo lane prints a recognizable "skipped" line and exits 0 (honest, never a
-# false red that would wedge a clean foreign-repo land in review). Per-repo config is the
-# clean fix later (orchestrator-autonomy.md §6.2); this global guard is the V1-era honest form.
+# foreign-repo lane prints a recognizable "skipped" line and exits VERIFY_SKIP_EXIT=42
+# (server.ts, grep VERIFY_SKIP_EXIT), which records the verdict as SKIPPED — a state of its own,
+# never a pass and never a false red. It used to `exit 0` here, which the server could not tell
+# apart from "ran the whole gate, all green": a foreign-repo lane — or a FLEET lane that moved or
+# renamed fleet-e2e.ts — auto-landed with `verified: true` behind a gate that executed nothing.
+# The cost of the fix, taken deliberately: a skipped verify no longer auto-lands, so a lane in a
+# repo this command does not know stops for one owner click instead of landing unattended.
+# Per-repo config is the clean fix later (orchestrator-autonomy.md §6.2); this global guard is the
+# V1-era honest form. NOTE: this string is baked into the srv-spawn line below and only reloads on
+# `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart keeps the
+# OLD string running, which is why server.ts also honours the legacy "verify skipped:" marker line.
 # TIERED land gate (docs/merge-review-autonomy.md §7, lane-autonomy-future.md component 4): tsc alone
 # is type-total but behavior-partial — a rebase that drops a const together with its only use stays
 # type-consistent, so tsc passes and the regression reaches main (observed). e2e-claude-gate.sh is the
@@ -46,7 +54,7 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # TS2688 — the types field NAMES a package, it cannot substitute for one). Costs ~30ms from bun's
 # global cache; --frozen-lockfile keeps it read-only w.r.t. bun.lock, and a failure exits non-zero
 # with a named reason instead of masquerading as a type error.
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 while true; do

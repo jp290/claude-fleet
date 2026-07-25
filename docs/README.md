@@ -133,7 +133,8 @@ rotting. Two shelves, plus the steward subsystem.
   trials cheap. Feeds the starving §4 tally.
 - **`judge-calibration.md`** — how judging instances earn trust: the fire-drill procedure
   (sealed ground truth, evidence-horizon rule), per-judge calibration state (③ misses
-  in-diff semantics; ② misses its JSON contract in production), instrument-check method.
+  in-diff semantics; ②'s production `raw: true` run was a PARSER giving up on prose-wrapped
+  JSON, not a model missing its contract — corrected 2026-07-25), instrument-check method.
 - **`adversarial-2026-07-25.md`** — the ranked index of the 2026-07-25 adversarial pass (seven
   sweeps): what needed an owner decision and how each was disposed, the structural findings
   B1–B12, and §E's empirical pass — including the measurement that the binding constraint is

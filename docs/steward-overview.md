@@ -95,7 +95,11 @@ shipped fields; 1 (deferred by design), 4, and 7 remain:*
 1. **Lane CONDITION is LLM-derived every pulse — but this ranked too high (corrected 2026-07-22).**
    `rundgang.md:14` orders the steward to *classify* each lane (`healthy-running / stalled-dirty /
    stuck-looping / awaiting-human / done-looking / unknown`). The server has **no** such classifier
-   (grep-verified). But two things sink an early fix: the git-derived 3-way it might compute
+   (grep-verified). *Precision 2026-07-25 (`600d401`): one of the six is no longer LLM-derived.
+   `lane-signals.ts:laneDoneLooking` decides `done-looking` deterministically and
+   `stewardSlotsView` ships it as the `doneLooking` field — but only for lanes, and it is the
+   auto-③ trigger's own answer, not a 6-way classifier. The other five stand as written.*
+   But two things sink an early fix: the git-derived 3-way it might compute
    (`editing/ready/clean`) is **already derivable by the steward** — `/api/steward/sessions` ships
    the full `git` object (`stewardSlotsView()` in server.ts) — and it is **not** the 6-way taxonomy above, none of
    which fall out of git alone. *Standing plan: no early classifier; the withheld inputs

@@ -2656,6 +2656,65 @@ if (REPO) {
       && cliSrc.indexOf("pendingEnhance = j.draftId") > cliSrc.indexOf("if (ta.value.trim() === text &&"),
       "the enhance handler (src/client.ts)");
 
+    // (9f) CRITERIA PROGRESS (docs/graduation-criteria.md §1 + §2). Unlike (9d)/(9e) this is not a
+    // regex over the source: the counting rules are the whole point, so the REAL `kProgress` is cut
+    // out of src/client.ts, transpiled (it is TS, and the browser bundle is the only other consumer)
+    // and run against synthetic ledgers carrying every row shape. What stays unproved is the
+    // rendering around it — this suite has no DOM harness — so the header's own gates are asserted
+    // by regex right after.
+    const kSrc = cliSrc.slice(cliSrc.indexOf("const K1_ANCHOR_BRANCH"), cliSrc.indexOf("let outcomeData"));
+    check("client: the criteria counter is extractable as a pure function (no DOM in kProgress)",
+      kSrc.includes("function kProgress") && !/document|el\(|chip\(/.test(kSrc), kSrc.slice(0, 80));
+    const kProgress = new Function(
+      new Bun.Transpiler({ loader: "ts" }).transformSync(kSrc) + "\nreturn kProgress;")() as
+      (rows: unknown[]) => { anchored: boolean; k1: number; clean: number; undos: number; k2: number };
+    const kRow = (o: Record<string, unknown>): Record<string, unknown> =>
+      ({ disposition: "landed", confirmedByHuman: false, ...o });
+    // newest-first on purpose — that is the order the route serves, and the counter must sort itself.
+    const kLedger = [
+      kRow({ ts: 900, branch: "later-clean-2", cleanReviewShadow: { verdict: "would_stop" } }),
+      kRow({ ts: 800, branch: "shadow-failed", cleanReviewShadow: { verdict: null, raw: true } }),
+      kRow({ ts: 700, branch: "confirm-land", confirmedByHuman: true }),
+      kRow({ ts: 600, branch: "killed-lane", disposition: "killed-dirty" }),
+      kRow({ ts: 500, branch: "later-clean-1", cleanReviewShadow: { verdict: "pass" } }),
+      kRow({ ts: 400, branch: "f9-verify-deps" }),                       // the anchor itself: excluded
+      kRow({ ts: 300, branch: "legacy/pre-review-field" }),              // rows 1–4 shape: excluded
+      kRow({ ts: 200, branch: "legacy-2", confirmedByHuman: true }),
+    ];
+    const k = kProgress(kLedger);
+    check("criteria: K1 counts only lands AFTER the f9-verify-deps anchor — legacy rows and the anchor itself are out",
+      k.anchored && k.k1 === 4, JSON.stringify(k));
+    check("criteria: a confirm-land counts toward K1 but NOT toward the clean sub-count",
+      k.clean === 3, JSON.stringify(k));
+    check("criteria: a killed lane neither counts as a land nor breaks the streak",
+      JSON.stringify(kProgress(kLedger.filter((o) => o.branch !== "killed-lane"))) === JSON.stringify(k),
+      JSON.stringify(k));
+    check("criteria: K2 counts recorded shadow verdicts; verdict null (failed measurement) is not one",
+      k.k2 === 2, JSON.stringify(k));
+    check("criteria: no undo in this ledger reads as 0 undos", k.undos === 0, JSON.stringify(k));
+    // an undo is disposition:"reverted" (server.ts buildRevertedOutcome) — it breaks the CONSECUTIVE
+    // streak §1 asks for, and is reported separately so a reset never reads as "nothing happened".
+    const kUndo = kProgress([...kLedger, kRow({ ts: 650, branch: "confirm-land", disposition: "reverted" })]);
+    check("criteria: an undo (disposition reverted) resets the K1 streak and is counted on its own",
+      kUndo.k1 === 3 && kUndo.clean === 2 && kUndo.undos === 1, JSON.stringify(kUndo));
+    check("criteria: an undo does not retroactively drop shadow verdicts from K2", kUndo.k2 === 2, JSON.stringify(kUndo));
+    check("criteria: an empty ledger is unanchored — nothing is counted, no zeros are claimed",
+      JSON.stringify(kProgress([])) === JSON.stringify({ anchored: false, k1: 0, clean: 0, undos: 0, k2: 0 }),
+      JSON.stringify(kProgress([])));
+    check("criteria: a ledger without the anchor row counts nothing rather than counting from row 1",
+      kProgress(kLedger.filter((o) => o.branch !== "f9-verify-deps")).anchored === false);
+    check("client: the criteria header is gated on there being rows at all (empty ledger → no header)",
+      /if \(outcomeData\.length\) \{\s*\n\s*const k = kProgress\(outcomeData\);/.test(cliSrc),
+      "the criteria block in renderOutcomes (src/client.ts)");
+    // the negative half is scoped to the header block on purpose: a phrase like "criterion met" is
+    // legitimate PROSE anywhere else in the file, and only a verdict RENDERED here would be the
+    // regression (the client counting toward a criterion and then declaring it satisfied).
+    const kBlock = cliSrc.slice(cliSrc.indexOf("if (outcomeData.length) {"),
+      cliSrc.indexOf("const rows = outcomeData.filter"));
+    check("client: the criteria header counts and does not evaluate (no met/passed banner)",
+      /K1 \$\{k\.k1\}\/20/.test(kBlock) && /K2 \$\{k\.k2\}\/25/.test(kBlock)
+      && !/criterion met|criteria met|graduated|erfüllt/i.test(kBlock), kBlock.slice(0, 60));
+
     // (10) THE REBASE CASE — the reason the relation is content identity and not commit identity:
     // the land path rebases the lane onto main before the ff-merge, so the landed commit is NEVER
     // the reviewed commit on a clean land. The diff is byte-identical, so the review DID describe

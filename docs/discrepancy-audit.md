@@ -108,6 +108,7 @@ cost, and either the fix commit or what a fix would require.*
 ### 2026-07-25 — F9: the deployed land gate's first step runs only if the lane already installed deps
 
 **Class:** D1 + D3 (a number measured on the wrong object). **Fixed (doc):** `8452185`.
+**Fixed (mechanism):** `watchdog.sh:38` — see *Resolution* at the end of this entry.
 
 **Claim:** `merge-review-autonomy.md` §7 — *"fast tier SHIPPED to the repo (`b30c746`) … **NOT
 yet deployed** … Validated to run in `runVerify`'s context **WITHOUT `node_modules`** (the
@@ -208,6 +209,75 @@ calibration input for the graded auto-land gate. So the ledger is already accumu
 nothing on the row to tell the two apart. Any future gate calibrated on `verified` learns the wrong
 thing — and the fail-closed direction that makes this safe today is exactly what makes it
 data-poisoning tomorrow.
+
+### Resolution (2026-07-25) — and both fixes this entry proposed are dead
+
+The fix is a `bun install --frozen-lockfile` prelude as the gate's first step after the repo guard
+(`watchdog.sh:38`). **Not** either candidate named above — both were tested in a
+`git worktree add`-fresh tree and both fail:
+
+```
+$ git worktree add $SP/probe1 HEAD && cd $SP/probe1 && ls node_modules
+ls: node_modules: No such file or directory
+
+# candidate A — drop --types bun
+$ bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler \
+      src/client.ts src/share.ts server.ts fleet-e2e.ts
+fleet-e2e.ts(6,12):   error TS2591: Cannot find name 'process'.
+fleet-e2e.ts(208,40): error TS2339: Property 'dir' does not exist on type 'ImportMeta'.
+fleet-e2e.ts(213,13): error TS2868: Cannot find name 'Bun'.
+                                          … 20+ more, the code genuinely uses these
+
+# candidate B — a checked-in tsconfig carrying "types": ["bun"]
+$ bunx tsc --noEmit -p tsconfig.probe.json
+error TS2688: Cannot find type definition file for 'bun'.
+```
+
+Candidate B fails **identically to the bug it was meant to fix**, and for a reason that was
+knowable without the experiment: `types` *names* a package to load from `node_modules/@types` — it
+cannot substitute for one. A checked-in tsconfig moves the flag, not the dependency. So the only
+fix is the one the entry dismissed as "cost: every lane pays it" — and that cost was mis-estimated:
+bun hardlinks from its global cache, so it is **~30 ms**, not an install.
+
+**Reproduction, both directions, each from a worktree that has never been built in**, running the
+`VERIFY_CMD` string extracted verbatim from `watchdog.sh` with
+`sed -n "s/^VERIFY_CMD='\(.*\)'$/\1/p"`:
+
+```
+$ git worktree add $SP/probe2 HEAD; cd $SP/probe2; ls -d node_modules
+ls: node_modules: No such file or directory
+$ sh -c "$V"                              # clean tree
+bun install v1.3.9 … + @types/bun@1.3.14 … 9 packages installed [31.00ms]
+ALL PASS
+POSITIVE exit=0
+
+$ git worktree add $SP/probe3 HEAD; cd $SP/probe3; ls -d node_modules
+ls: node_modules: No such file or directory
+$ printf '\nconst f9DeliberateTypeError: number = "not a number";\n' >> server.ts
+$ sh -c "$V"                              # sabotaged tree — the gate must still gate
+9 packages installed [31.00ms]
+server.ts(5301,7): error TS2322: Type 'string' is not assignable to type 'number'.
+NEGATIVE exit=1
+```
+
+The negative direction is the load-bearing half: an install prelude that made the gate pass
+unconditionally would be strictly worse than the bug, since a vacuous green lands unsound code
+while the bug only ever refused sound code.
+
+Two properties worth recording because they were checked, not assumed. `git status --short` in
+probe2 after a full verify run is **empty** — `--frozen-lockfile` cannot rewrite `bun.lock` and
+`node_modules/` is gitignored, so the gate leaves the lane landable (untracked files block `land`).
+And the prelude introduces **no new dependency class**: `bunx tsc` already resolved a package from
+the same cache-then-network path on every single run (`Resolving dependencies / Resolved,
+downloaded and extracted [2]`, visible in every transcript in this entry). If installation is
+impossible the gate now exits 1 on a named line — `verify failed: bun install could not establish
+node_modules` — instead of on a type error that misattributes an environment fault to the code.
+
+**Still open after this fix.** The line is in `watchdog.sh` but **not deployed**: the running `srv`
+carries the old `FLEET_VERIFY_CMD` in its env until a `launchctl kickstart` of the watchdog (a
+`kill-session -t srv` alone does **not** re-read `watchdog.sh`). And `merge-review-autonomy.md` §7
+still asserts *"validated … WITHOUT `node_modules`"* of the whole `&&` chain; that sentence is true
+only of `e2e-claude-gate.sh`, its second half.
 
 ### 2026-07-25 — F10: two crash-time copies of `fleet.json` are untracked, and undo-land refuses on untracked
 

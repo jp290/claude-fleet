@@ -30,12 +30,23 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # misses. Honest scope boundary — it does NOT assert the share/guest or audit paths, so it is
 # total-ENOUGH, not total; the slow full audit (e2e-isolated) stays a post-land check, undo-land the
 # rollback. Deterministic (own $$ socket/dir, no known flake) and exit-codes correctly, so it hard-gates.
-# Validated 2026-07-24 to run in the runVerify context WITHOUT node_modules (the lane-worktree
-# condition — server.ts imports only node:/bun:/local, boots with no npm): ALL PASS from a
-# node_modules-less tree in ~46s. That ~46s is the per-land cost — the price of behavior-gating.
+# e2e-claude-gate.sh itself was validated 2026-07-24 to run WITHOUT node_modules (server.ts imports
+# only node:/bun:/local): ALL PASS from a node_modules-less tree in ~46s — that is the per-land cost.
 # NOT added: e2e-isolated.sh — it carries the known ~600ms pane-capture flake; a deterministic gate
 # cannot sit on a flaky suite, so it graduates in only once that flake is fixed.
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
+# The `bun install` prelude is the FIRST step, and it is what makes this gate deterministic (F9,
+# docs/discrepancy-audit.md): the tsc step needs @types/bun, which lives in gitignored node_modules,
+# and NOTHING in Fleet establishes it in a lane — createWorktree copies only .env/CLAUDE.md/settings,
+# `git worktree add` installs nothing, and bunx does not populate node_modules. Without the prelude
+# the gate's verdict depends on whether that lane's agent happened to install: it dies in ~2s on
+# "error TS2688: Cannot find type definition file for 'bun'" and never reaches the behavior tier, so a
+# sound rebase is downgraded to stop-for-human and `verified:false` pollutes the outcome ledger.
+# Proven-dead alternatives (do not re-propose): dropping --types bun (the code genuinely uses Bun/
+# process/import.meta.dir — 20+ errors), and a checked-in tsconfig with "types": ["bun"] (identical
+# TS2688 — the types field NAMES a package, it cannot substitute for one). Costs ~30ms from bun's
+# global cache; --frozen-lockfile keeps it read-only w.r.t. bun.lock, and a failure exits non-zero
+# with a named reason instead of masquerading as a type error.
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 0; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 while true; do

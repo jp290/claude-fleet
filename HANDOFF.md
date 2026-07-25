@@ -213,6 +213,11 @@ model: built in one lane, and it produced a real, load-bearing finding on its se
    is not responsibly buildable without this — and neither is parallelism (§6.1). This is the
    ambitious-but-correct piece, and it is also the *small* one: the rows exist, the schema exists, the
    findings exist in RAM. It is wiring, not invention.
+   **Status 2026-07-25 (`600d401`): the write side is BUILT** — auto-③ on a deterministic
+   `done-looking` (`lane-signals.ts:laneDoneLooking`, `server.ts:tickAutoReview`) and the review
+   persisted onto the outcome row with its own staleness relation (`server.ts:outcomeReview`).
+   What remains of this item is **only** the feed (a): the ledger still has no reader, so the
+   "write-only" half of the sentence above still holds and the "reviews evaporate" half no longer does.
 3. **The steward-nudge measurement** — `docs/steward-nudge.md` §8, and read §9 below first. It is pure
    analysis over artefacts that already exist, touches nothing live, and it *decides* whether the
    mechanism is worth building. This replaces the vaguer "prompt-logic session": the prompt corpus and

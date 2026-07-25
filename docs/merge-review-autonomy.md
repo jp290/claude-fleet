@@ -170,12 +170,13 @@ lanes (A/B/C) land.
   the outcome ledger — so the cost is a red that means nothing and land-calibration data that
   silently depends on whether a lane happened to install. **Both directions are on record:** ledger
   row 3 (`perception-write`) shows `verified: true` with `confirmedByHuman: false` — a clean
-  *auto*-land whose verify ran, because that lane had run the CLAUDE.md verify line, `bun run
-  build` and `e2e-isolated.sh` and so owned a `node_modules` by land time. A lane that never
-  verifies itself has none, and `createWorktree` copies only `.env`, `CLAUDE.md`,
-  `.claude/settings.local.json`. So the gate's first step measures whether the lane did its own
-  homework, not whether the code is sound — strongest exactly where it is least needed. See
-  `discrepancy-audit.md` F9. Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
+  *auto*-land whose verify demonstrably ran, so "the step cannot run in a lane" is too strong. But
+  *why* it ran is unrecoverable (the worktree is torn down at land), and nothing in Fleet creates
+  `node_modules`: `createWorktree` copies only `.env`, `CLAUDE.md`, `.claude/settings.local.json`,
+  and 3 of the 5 worktrees on this box have none. So the gate's first step turns on a state nothing
+  establishes — its green is **luck-dependent and unexplainable after the fact**, which is worse
+  than simply broken. Full adjudication incl. the refuted mechanism: `discrepancy-audit.md` F9.
+  Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
   dispatch/model/steward routes, so module-load/boot regressions tsc misses are caught — but it
   does NOT assert the share/guest or audit paths, so it is **total-ENOUGH, not total**. That gap
   is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stays OUT of the

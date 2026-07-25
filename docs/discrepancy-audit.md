@@ -138,39 +138,46 @@ good rebase is downgraded to stop-for-human, and if the owner then confirm-lands
 enters the outcome ledger that `lane-autonomy-future.md` says the graded-auto-land decision will
 be calibrated on.
 
-**Corrected 2026-07-25, same day — the original title ("cannot run its own first step in a lane")
-was too absolute and contradicted the ledger.** Row 3 of `lane-outcomes.jsonl` records
-`branch: perception-write`, `verified: true`, `confirmedByHuman: false` — a clean **auto**-land
-whose verify demonstrably ran. Both facts are true, and the reconciliation is the real finding:
+**Counter-argument considered, and it splits.** *Ledger row 3 (`perception-write`) records
+`verified: true` with `confirmedByHuman: false` — a clean **auto**-land, so the gate works.*
 
-- `node_modules` is **not** provided by anything Fleet does — `createWorktree` copies only
-  `.env`, `CLAUDE.md`, `.claude/settings.local.json`, and the module-resolution walk does not
-  rescue it (`~/node_modules` exists but holds only `@xterm`, `fsevents`,
-  `playwright`, `playwright-core` — no `bun-types`). Verified by re-running the probe above.
-- A lane acquires `node_modules` **as a side effect of verifying itself**: the CLAUDE.md verify
-  line, `bun run build`, and `e2e-isolated.sh`'s `ln -s "$SRC/node_modules"` all require or
-  create it. `perception-write` ran all three, so by land time the gate's tsc step passed.
+- It **wins about the title.** "Cannot run its own first step in a lane" is falsified deductively:
+  `verified: true` means the whole `VERIFY_CMD` exited 0 inside a real lane worktree, so the tsc
+  step *can* pass. The heading was rewritten for this reason.
+- It **loses about the verdict**, on proof rule 2: that worktree was torn down at land, so *why* it
+  passed is no longer establishable — and an unexplainable green is not evidence that a gate works.
 
-So the honest statement: **the land gate's first step does not check the code — it checks whether
-the lane did its own homework.** For a disciplined lane it passes trivially (the lane already
-proved the same thing). For a lane that never verified, it fails closed in ~2 s, which makes the
-unattended clean auto-land effectively unreachable for exactly the lanes nobody has read. That is
-a safe failure direction and a badly-placed one — the gate is strongest where it is least needed.
+**A second correction, this one to the correction** *(2026-07-25, same day)*: the mechanism first
+offered here — *"a lane acquires `node_modules` as a side effect of verifying itself; the CLAUDE.md
+verify line, `bun run build` and `e2e-isolated.sh`'s `ln -s "$SRC/node_modules"` all require or
+create it"* — is **wrong in its one checkable part and unverifiable in the rest**:
 
-**What a fix requires:** either an install step in `createWorktree` (cost: every lane pays an
-install), or dropping `--types bun` from the gate's tsc invocation in favour of a tsconfig the
-worktree carries, or accepting the coupling and stating it — but stating it in
-`merge-review-autonomy.md`, since the "validated without `node_modules`" sentence is what made it
-invisible.
-Whether a lane passes therefore depends on whether its agent happened to run `bun install`.
+```
+$ ln -s $T/src/node_modules $T/dst/node_modules; [ -e $T/src/node_modules ] && echo JA || echo NEIN
+NEIN                       # a symlink to a missing target creates nothing; it just dangles
+```
 
-**Counter-argument considered:** *ledger row 3 (`perception-write`) has `verified:true`, so it
-works.* It loses under rule 2: that lane's worktree is torn down at land, so *why* it passed is
-now unverifiable — and it makes the outcome luck-dependent, not correct. Nothing in the land path
-creates `node_modules`, and 3 of the 5 worktrees on this box have none.
+`bunx tsc` does not populate `node_modules` either — that is precisely how the TS2688 above was
+produced. The only thing that would have created it is an explicit `bun install`, and whether that
+lane's agent ran one cannot be recovered.
 
-**A fix would require** either dropping `--types bun` from the gate's tsc invocation, or an
-install step before verify. Verification: the reproduction above must exit 0.
+**So the finding, sharper than either half:** the gate's first step depends on a state **nothing in
+Fleet establishes** — not `createWorktree`, not the land path, not the verify command itself.
+Its verdict is therefore **luck-dependent and unexplainable after the fact**, which is worse than
+simply broken: a green you cannot account for is not a gate, it is a coin-flip that happens to fail
+closed.
+
+```
+$ for d in claude-fleet claude-fleet.worktrees/*; do … done
+claude-fleet          HAT          discrepancy-audit  hat-nicht
+fleet-flake-waitmerge HAT          steward            hat-nicht
+```
+
+**What a fix requires:** drop `--types bun` from the gate's tsc invocation in favour of a tsconfig
+the worktree carries, or add an install step before verify (cost: every lane pays it). Either way
+the sentence that made this invisible — *"validated … WITHOUT `node_modules`"* — has to be corrected
+in `merge-review-autonomy.md` too. **Verification:** the reproduction above must exit 0 from a
+freshly created lane worktree that has never been built in.
 
 ### 2026-07-25 — F10: two crash-time copies of `fleet.json` are untracked, and undo-land refuses on untracked
 

@@ -4,7 +4,7 @@ import { resolve, dirname, basename } from "node:path";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
-import { laneDoneLooking, DONE_LOOKING_PROSE } from "./lane-signals";
+import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
@@ -3772,6 +3772,12 @@ function stewardSlotsView(now: number) {
       // trigger's own answer, and it is what auto-③ acts on.
       doneLooking: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
         && laneDoneLooking(sig, AUTO_REVIEW_IDLE_MS),
+      // second tier (lane-signals.ts): the epoch ms at which every non-clock clause already held
+      // and the pane went quiet — null when a fact is unknown or this is not a reviewable lane.
+      // `doneLooking` flips AUTO_REVIEW_IDLE_MS after this; nothing acts on it, it exists so a
+      // poller can tell "just went quiet" from "quiet for minutes" without lowering the trigger.
+      doneLookingSince: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
+        ? laneQuietSince(sig, now) : null,
     };
   });
 }

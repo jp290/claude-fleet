@@ -115,7 +115,28 @@ pull.
 
 The feeder already exists: **`ownerPrompts`** is recorded on every outcome row and is the
 intervention proxy (1 = took its brief and landed unaided; each mid-flight correction adds one).
-Record the current distribution *before* shipping §4.1 and compare after. Secondary, also
-already recorded: `behind` at land time, and the incidence of lanes re-running suites the gate
-does not require. If situating lanes does not reduce mid-flight corrections, the hypothesis is
-wrong and the endpoint should not grow further.
+
+**Baseline, measured before writing any code (n = 18 landed rows): `{1: 15, 2: 2, 3: 1}`,
+median 1.** Stated plainly because it *weakens the case above*: 83 % of lanes already take their
+brief and land with no owner correction at all. On this metric there is almost no headroom, and
+a proposal justified by "lanes are under-situated" must not quietly ignore that most of them
+cope.
+
+Two honest consequences:
+
+1. **`ownerPrompts` is the wrong primary metric** — it measures corrections the *owner* had to
+   make, not cost the lane absorbed silently: minutes lost re-running suites the gate does not
+   require, drifting to `behind: 4` unnoticed, near-miss collisions, an `index.lock` race.
+   Those are real (§3) and invisible to this counter. The correct primary metric is **lane
+   wall-clock and token spend per landed change** — which, per `trust-perimeter.md`, the system
+   does not record at all. *That instrument should exist before this endpoint is justified on
+   efficiency grounds.*
+2. **A secondary metric I proposed does not exist:** `behind`-at-land is not a recorded field on
+   the outcome row (checked). Either add it with §4.1 or drop the claim.
+
+So the honest status of this note: the **asymmetry in §1 is a verified fact** and the folklore
+problem in §2.2 is a verified defect worth fixing on correctness grounds alone (a lane cannot
+learn what will gate it). The broader "lanes are starved" argument is **plausible but not yet
+evidenced** — 15 of 18 lanes landed unaided. Build §4.1's `gate` and `rulebook` fields first,
+because those close verified defects; hold `siblings` and `main` until the cost instrument
+exists to show they pay for themselves.

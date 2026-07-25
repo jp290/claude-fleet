@@ -205,7 +205,9 @@ model: built in one lane, and it produced a real, load-bearing finding on its se
    that doc's §6 is "Hard rules") **plus** persisting review findings onto the outcome row, **plus**
    auto-running ③ when a lane goes done-looking (§6). Today the ledger is write-only and reviews
    evaporate on the next deploy: Fleet cannot see itself.
-   **Designed 2026-07-25 in `docs/perception-layer.md`** — order corrected to c → b → a (b has nothing
+   **Designed 2026-07-25 in `docs/perception-layer.md`; write half BUILT the same day (`600d401`) —
+   (c)+(b) are in `server.ts`, (a) the feed is still open, and no row carries a review yet
+   (`docs/knowledge-layers.md` §5).** Order corrected to c → b → a (b has nothing
    to persist until c exists), `done-looking` must become a *deterministic* predicate rather than the
    digest worker's LLM label, and the persisted review must carry its own staleness. Per `docs/README.md` §"Four capabilities", in-flight steering (c)
    is not responsibly buildable without this — and neither is parallelism (§6.1). This is the

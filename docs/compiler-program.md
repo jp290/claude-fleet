@@ -18,9 +18,10 @@ substrate:
 
 Shared design law: **facts, never diagnoses** (THE GUARD) — already encoded in
 `enhance-prompt.ts` (diagnoses banned, DATA block untrusted) and in the pulse format
-(`steward-pulse-v2.md`). Shared machinery candidate: the pulse `DATA` block and the enhancer's
-`factLines` both render the same deterministic fact layer (`briefPayload`) — a typed
-`kind:"pulse"` should reuse it, not re-derive it.
+(`steward-pulse-v2.md`). Shared machinery, now actual: the pulse `DATA` block and the enhancer's
+`factLines` render the same deterministic fact layer (`briefPayload`) — `kind:"pulse"` reuses it
+rather than re-deriving it, and its e2e asserts the DATA line against the brief route's own
+payload so the two cannot drift apart silently.
 
 Shared defect class to guard against: **built-but-unfed**. Verified today: `dispositions.jsonl`
 does not exist — the enhance measurement loop has recorded ZERO datapoints since the rail
@@ -33,18 +34,24 @@ Evidence from today (verified in-session):
   (transcriptFact.mtime), protocol-perfect composed nudge, refused the raw-tmux bypass,
   honest blocked-trial report. Land-adjudication #1 — verified/trusted split, caught the
   report's 5-vs-4 check undercount, own tsc spot-check, residue-checked.
-- **Capability blocked:** `handleStewardSend` hard-refuses free text; the 3 typed kinds cannot
-  carry a pulse → phase A impossible without the typed `kind:"pulse"` (steward's own analysis;
-  its lane brief for this already exists in its pane). `steward-pulse-v2.md`'s "no new code for
-  phase A" is falsified.
+- **Capability blocked → unblocked:** `handleStewardSend` hard-refuses free text; the 3 typed kinds
+  could not carry a pulse → phase A was impossible without a typed `kind:"pulse"` (steward's own
+  analysis). `steward-pulse-v2.md`'s "no new code for phase A" was falsified, and is now retracted
+  there: the kind landed 2026-07-26 (rung 1 below). The free-text refusal itself is unchanged — a
+  `text` field is still a 400 for every kind, `question` is the one scaffolded exception.
 
 Rungs, in order (ladder: record → display → advise → gate → act):
 
-1. **Pulse-kind lane** (after e2e-split lands; steward's brief + the moment-detection
-   conjunction caveat in `steward-pulse-v2.md`): server renders DATA + prelude + `[pulse-reply]`
-   from references, ONE bounded composed question field. Feeder included by design:
-   `[pulse-reply]` harvested from transcript JSONL → rail → `outcomeTally` →
-   `promotionEligible` (machinery exists, starving).
+1. **Pulse-kind lane** — ✅ LANDED (2026-07-26). `kind:"pulse"` renders DATA + prelude +
+   `[pulse-reply]` server-side from `briefPayload`/`transcriptFact`, with ONE bounded composed
+   `question` (one line, ≤240 chars, refused not repaired). It rides the existing gates/caps
+   untouched, carries no verify-suffix, and has NO auto-trigger (phase A stays watched; the
+   conjunction rule of `steward-pulse-v2.md` is what a future trigger owes). The tally feeder is
+   live: a sent pulse parks `class:"pulse"` → `measureOutcomes` (class-generic) →
+   `outcomeTally["pulse"]` → `promotionEligible("pulse")`. STILL OPEN, the fast-follow: the
+   `[pulse-reply]` harvest from transcript JSONL → rail (the existing harvester reads USER
+   entries only, so replies are not yet captured; `falsch` must surface as a harm CANDIDATE,
+   never an auto `harmed`).
 2. **Make land-adjudication routine** (docs + habit, no code): every lane land gets a steward
    `[land-adjudication]` before the operator lands; the row records verdict, gate result, owner
    label. This is the steward's "advise" rung on the land path — complementary to ② (which

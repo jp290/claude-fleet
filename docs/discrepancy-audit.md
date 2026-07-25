@@ -105,7 +105,7 @@ and reliably over-report. Give each agent the proof rules above verbatim, and re
 *Newest first. Each entry: class, the claim, the reality, the command + output that proved it, the
 cost, and either the fix commit or what a fix would require.*
 
-### 2026-07-25 — F9: the deployed land gate cannot run its own first step in a lane
+### 2026-07-25 — F9: the deployed land gate's first step runs only if the lane already installed deps
 
 **Class:** D1 + D3 (a number measured on the wrong object). **Fixed (doc):** `8452185`.
 
@@ -134,8 +134,34 @@ exit=1 elapsed=2s
 
 **Cost:** the gate short-circuits in ~2 s and never reaches `e2e-claude-gate.sh`, so "~46 s < the
 120 s timeout" describes a run that does not happen. It fails **closed** — no bad land — but a
-good rebase is downgraded to stop-for-human, and `verified:false` is written into the outcome
-ledger that `lane-autonomy-future.md` says the graded-auto-land decision will be calibrated on.
+good rebase is downgraded to stop-for-human, and if the owner then confirm-lands, `verified:false`
+enters the outcome ledger that `lane-autonomy-future.md` says the graded-auto-land decision will
+be calibrated on.
+
+**Corrected 2026-07-25, same day — the original title ("cannot run its own first step in a lane")
+was too absolute and contradicted the ledger.** Row 3 of `lane-outcomes.jsonl` records
+`branch: perception-write`, `verified: true`, `confirmedByHuman: false` — a clean **auto**-land
+whose verify demonstrably ran. Both facts are true, and the reconciliation is the real finding:
+
+- `node_modules` is **not** provided by anything Fleet does — `createWorktree` copies only
+  `.env`, `CLAUDE.md`, `.claude/settings.local.json`, and the module-resolution walk does not
+  rescue it (`~/node_modules` exists but holds only `@xterm`, `fsevents`,
+  `playwright`, `playwright-core` — no `bun-types`). Verified by re-running the probe above.
+- A lane acquires `node_modules` **as a side effect of verifying itself**: the CLAUDE.md verify
+  line, `bun run build`, and `e2e-isolated.sh`'s `ln -s "$SRC/node_modules"` all require or
+  create it. `perception-write` ran all three, so by land time the gate's tsc step passed.
+
+So the honest statement: **the land gate's first step does not check the code — it checks whether
+the lane did its own homework.** For a disciplined lane it passes trivially (the lane already
+proved the same thing). For a lane that never verified, it fails closed in ~2 s, which makes the
+unattended clean auto-land effectively unreachable for exactly the lanes nobody has read. That is
+a safe failure direction and a badly-placed one — the gate is strongest where it is least needed.
+
+**What a fix requires:** either an install step in `createWorktree` (cost: every lane pays an
+install), or dropping `--types bun` from the gate's tsc invocation in favour of a tsconfig the
+worktree carries, or accepting the coupling and stating it — but stating it in
+`merge-review-autonomy.md`, since the "validated without `node_modules`" sentence is what made it
+invisible.
 Whether a lane passes therefore depends on whether its agent happened to run `bun install`.
 
 **Counter-argument considered:** *ledger row 3 (`perception-write`) has `verified:true`, so it

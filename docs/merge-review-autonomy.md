@@ -168,7 +168,14 @@ lanes (A/B/C) land.
   `e2e-claude-gate.sh`; "~46 s < the 120 s timeout" describes a run that does not happen. It
   fails **closed** — a good rebase is downgraded to stop-for-human and `verified:false` enters
   the outcome ledger — so the cost is a red that means nothing and land-calibration data that
-  silently depends on whether a lane happened to install. See `discrepancy-audit.md` F9. Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
+  silently depends on whether a lane happened to install. **Both directions are on record:** ledger
+  row 3 (`perception-write`) shows `verified: true` with `confirmedByHuman: false` — a clean
+  *auto*-land whose verify ran, because that lane had run the CLAUDE.md verify line, `bun run
+  build` and `e2e-isolated.sh` and so owned a `node_modules` by land time. A lane that never
+  verifies itself has none, and `createWorktree` copies only `.env`, `CLAUDE.md`,
+  `.claude/settings.local.json`. So the gate's first step measures whether the lane did its own
+  homework, not whether the code is sound — strongest exactly where it is least needed. See
+  `discrepancy-audit.md` F9. Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
   dispatch/model/steward routes, so module-load/boot regressions tsc misses are caught — but it
   does NOT assert the share/guest or audit paths, so it is **total-ENOUGH, not total**. That gap
   is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stays OUT of the

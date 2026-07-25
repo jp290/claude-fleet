@@ -57,6 +57,22 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
+# --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------
+# The gate above is the FAST tier and is partial on purpose. Tier 2 is the slow half the tiered
+# design always named and never had: after every land that moves main, the server runs this command
+# against a scratch snapshot of the integration tip, off the land path — one run at a time, bursts
+# coalesced, result green/red/unknown on post-land-audits.jsonl (GET /api/post-land-audits) plus a
+# loud server.log line and /api/sessions. It GATES NOTHING and UNDOES NOTHING; ↩ undo-land stays the
+# rollback. Unset = the tier does not exist, which is today's behaviour.
+# To turn it on: uncomment both lines below, add FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' to the srv-spawn
+# line, and `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart
+# keeps the old spawn line, exactly as with VERIFY_CMD.
+# Cost, so the decision is made with it in view: ~2+ min of a full e2e-isolated run per land burst,
+# on the same box the fleet's sessions live on. Repo-guarded like VERIFY_CMD — exit 42 in a foreign
+# repo records UNKNOWN (a non-measurement), never a false green and never a false red.
+# AUDIT_CMD='[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "audit skipped: could not establish node_modules"; exit 42; }; ./e2e-isolated.sh'
+# AUDIT_Q=$(printf '%s' "$AUDIT_CMD" | sed "s/'/'\\\\''/g")
+
 while true; do
   if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux

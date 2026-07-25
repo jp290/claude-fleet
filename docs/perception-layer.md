@@ -1,19 +1,21 @@
-# The perception layer — design note (2026-07-25)
+# The perception layer — design note (2026-07-25; write side BUILT, the feed is not)
 
 *What Fleet needs before it may steer anything. Written on main **before** the lane that
 implements it, so the lane has a target it did not have to invent. Treat the line refs as
 claims: they drift — grep the symbol.*
 
-**Status (2026-07-25, after `600d401` "make Fleet observable to itself on the write side"):
-the write half is built, the reader is not.** (c) the deterministic `done-looking` predicate
-and auto-③ on it, and (b) the review persisted onto the outcome row with the patch-id
-staleness relation — all in `server.ts` (grep `tickAutoReview`, `patchIdOf`, `outcomeReview`).
-**(a) the feed is still unbuilt**, so the ledger remains write-only *in effect* and (b) has so
-far produced **zero** rows carrying a review. The sections below stay as written — they are the
-design the lane was held to; `knowledge-layers.md` §5 records what the as-built state proves
-and what it still leaves unmeasured.
+**Build status (2026-07-25, commit `600d401` "feat(perception): make Fleet observable to itself
+on the write side"): the write half is built, the reader is not.** Pieces **(c)** auto-③ on a
+deterministic `done-looking` (`lane-signals.ts:laneDoneLooking`, `server.ts:tickAutoReview`) and
+**(b)** the review persisted onto the outcome row with the patch-id staleness relation
+(`server.ts:outcomeReview`, the `OutcomeReview` union) are **built**. Piece **(a)**, the feed, is
+**not** — the ledger still has no reader, so it remains write-only *in effect* and (b) has so far
+produced **zero** rows carrying a review. §§1, 3 and 5 below were written against the
+pre-`600d401` world and are marked where they no longer describe today; they stay as written
+because they are the design the lane was held to. `knowledge-layers.md` §5 records what the
+as-built state proves and what it still leaves unmeasured.
 
-## 1. The gap, stated as a fact about today
+## 1. The gap, stated as a fact about today *(as of writing; half of it is now closed — see the build status above)*
 
 Two mechanisms produce judgement about lane work, and **neither is observable**:
 
@@ -23,6 +25,9 @@ Two mechanisms produce judgement about lane work, and **neither is observable**:
 - The **③ `🔍 review`** findings live in `reviewCache`, an in-memory `Map`. They die on the next
   deploy, slot recycle, or tree change. Nothing persists them, and ③ is *click-only* — so the
   normal path is that a lane lands having never been reviewed at all.
+  **No longer true since `600d401`:** ③ also fires unprompted on a done-looking lane, and what it
+  said is copied onto the outcome row at land time. The cache is still in-memory — the *ledger
+  row* is the durable copy, and only for lanes that reach `buildLaneOutcome`.
 
 `docs/README.md` §"Four capabilities" states the consequence: capability **(c) in-flight
 steering** is not responsibly buildable without perception, and neither is footprint-disjoint
@@ -60,6 +65,10 @@ two simultaneous diffs spend the one resource that is actually scarce — review
 
 ## 3. `done-looking` must become a deterministic predicate
 
+*(Built in `600d401` as `lane-signals.ts:DONE_LOOKING_RULES` / `laneDoneLooking`; the digest's prose
+rule is now composed from the same clause list, so the two cannot drift. The paragraph below is the
+pre-build statement of the problem, kept as the rationale.)*
+
 **Today the term exists only as an LLM label.** `DIGEST_CONDITIONS` (grep it in `server.ts`)
 lists `done-looking` as one of six conditions a *throwaway digest worker* assigns, and the
 prompt hands that worker the rule in prose: *"idle + clean + git.ahead>0 → done-looking"*.
@@ -96,7 +105,7 @@ non-lane slots the predicate does not care about.
 - **Cost.** ③ runs on a throwaway subscription session (`SUMMARY_MODEL`), so the price is
   latency and attention, not metered tokens. That is what makes firing it unprompted acceptable.
 
-## 5. The review on the outcome row — the staleness rule
+## 5. The review on the outcome row — the staleness rule *(built in `600d401` as the `OutcomeReview` union: `covered` / `superseded` / `inflight` / `none`)*
 
 `buildLaneOutcome` is the single assembly point for `landed` / `shelved` / `killed`, so the
 review attaches there (the `reverted` record is built without a live slot and honestly gets

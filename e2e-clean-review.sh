@@ -15,7 +15,7 @@ PORT=$((13000 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e-clean-review.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e-clean-review.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # green verify stand-in (no sabotage marker → clean+green → the reviewer is what decides the land)

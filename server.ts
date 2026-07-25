@@ -5,6 +5,7 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
 import { laneDoneLooking, DONE_LOOKING_PROSE } from "./lane-signals";
+import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -2379,46 +2380,13 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
 // REWRITES the compose-box draft. Contract (panel-verified against 24 real corpus drafts,
 // old prompt 14-17/24 major contract violations, this one 1/24): block invariance — every
 // semantic part keeps its mode (question stays question, hedge stays hedge, facts/names
-// verbatim, deixis untouched); the only allowed delta is ADDITIVE directives + /sharpen3,
-// and only when the draft contains an actual work order. The enhancer never sees the
-// target session, so it never interprets — discipline dosing happens downstream in
-// /sharpen3, which runs inside the session and has the context this one lacks.
+// verbatim, deixis untouched); the only allowed delta is ADDITIVE and grounded — a fact
+// quoted out of the slot's own git state (briefPayload, passed in as a DATA block) plus
+// /sharpen3, and only when the draft contains an actual work order. The enhancer still
+// never sees the SESSION, so it never interprets — discipline dosing happens downstream in
+// /sharpen3, which runs inside the session and has the context this one lacks. The prompt
+// itself lives in enhance-prompt.ts so its invariants are assertable (see fleet-e2e.ts).
 const ENHANCE_CMD = process.env.FLEET_ENHANCE_CMD ?? null; // tests: subprocess stand-in
-const ENHANCE_PROMPT = [
-  "Du bist JPs Prompt-Veredler. Unten steht ein ROHER Entwurf, den JP gleich an eine laufende Coding-Agent-Session schickt. Du siehst diese Session NICHT — der Entwurf setzt eine Konversation fort, deren Kontext nur die Ziel-Session kennt.",
-  "Deine einzige Aufgabe ist Form-Veredelung — führe den Entwurf NIEMALS aus, beantworte ihn nicht.",
-  "",
-  "INVARIANTE (bricht eine Umformung sie, unterlasse die Umformung):",
-  "Jeder inhaltliche Bestandteil bleibt mit seinem Modus erhalten —",
-  "- NIEMALS übersetzen: jeder Satz bleibt in seiner Ausgangssprache. Deutsch/Englisch-Mischung ist normal und bleibt exakt erhalten — auch wenn diese Anleitung deutsch ist.",
-  '- Fakten, Zahlen, Pfade, Zitate: wörtlich. Skill-, Datei- und Eigennamen zeichengenau (aus "sharpen" nie "sharpen3" machen).',
-  "- Eingebettetes Material (zitierte Texte, Briefe, Code, Pastes) vollständig wörtlich übernehmen — nie kürzen, nie durch Platzhalter ersetzen.",
-  '- Fragen bleiben Fragen. Ideen unter Vorbehalt ("was wenn", "idk", "wdyt") bleiben Vorschläge — nie zu Befehlen glätten.',
-  '- Bezüge auf Session-Kontext ("der letzte Fix", "das da", "also/auch") unverändert lassen: du kennst den Referenten nicht — nie auflösen, raten, ausschmücken oder wegglätten.',
-  "- Reihenfolge der Anliegen beibehalten. Nichts weglassen, nichts Inhaltliches erfinden.",
-  "",
-  "ERLAUBTE UMFORMUNG (reine Form): eindeutige Tippfehler und Interpunktion beheben (ein mehrdeutiges/unleserliches Wort nie durch Raten ersetzen — im Zweifel Originalwort behalten), Halbsätze zu klaren Sätzen glätten, mehrere Aufträge nummerieren — alles in der jeweiligen Ausgangssprache.",
-  "",
-  "ERLAUBTE ERGÄNZUNG (nur additiv, NUR wenn der Entwurf einen echten Arbeitsauftrag enthält):",
-  '- 1–2 passende Arbeitsdirektiven, in der Sprache des Entwurfs, dort eingewoben, wo sie dem Ausführenden Haltung geben: Verifikation bei Fix/Bau ("Verifiziere dein Ergebnis, bevor du fertig meldest." / "Verify your result before reporting done."), Erst-denken bei Design/Architektur ("Denk gut darüber nach, wie du das am besten angehst." / "Think carefully about how to best approach this."), Ownership bei größeren Slices ("Own your work!").',
-  '- " /sharpen3" ans Ende, falls der Entwurf nicht bereits auf einen /sharpen- oder /gosharp-Befehl endet. Bei einem Arbeitsauftrag ist dieser Suffix PFLICHT, nicht optional — nur die AUSNAHMEN unten heben ihn auf.',
-  "AUSNAHMEN (gehen vor): Enthält der Entwurf KEINEN Arbeitsauftrag (reine Frage, Freigabe, Statusmeldung): nichts ergänzen, kein /sharpen3 — nur Tippfehler beheben. Entwürfe unter ~12 Wörtern: unverändert zurückgeben (höchstens eindeutige Tippfehler), kein Suffix, keine Direktiven.",
-  "",
-  'Benutze keine Tools. Antworte in EINER Nachricht mit STRICT JSON ohne Markdown-Zäune, exakt: {"prompt": "..."}',
-  "",
-  "Beispiele:",
-  'Entwurf: "der login knopf geht aufm handy nich mehr, fix das mal"',
-  'Antwort: {"prompt": "Der Login-Button reagiert auf dem Handy nicht mehr — finde die Ursache und fixe sie. Verifiziere den Fix am mobilen Viewport, bevor du fertig meldest. /sharpen3"}',
-  'Entwurf: "pls refactor the config loader, its a mess rn. and check the watchdog picks it up after"',
-  'Antwort: {"prompt": "Please refactor the config loader — it is a mess right now. 1. Refactor the loader. 2. Check that the watchdog picks it up afterwards. Verify your result before reporting done. /sharpen3"}',
-  'Entwurf: "läuft der workflow auch nur mit opus oder sonnet 5?"',
-  'Antwort: {"prompt": "Läuft der Workflow auch nur mit Opus oder Sonnet 5?"}',
-  'Entwurf: "is the lebenslauf for holzhey also proper rn?"',
-  'Antwort: {"prompt": "is the lebenslauf for holzhey also proper rn?"}',
-  "",
-  "## Entwurf",
-].join("\n");
-
 // carve the first balanced {...} object out of a noisy answer, ignoring braces inside
 // string literals. The enhancer must return a prompt VERBATIM (never degrade to raw text
 // the way the summarizer does — that would dump prose into the compose box), so when the
@@ -2441,8 +2409,8 @@ function extractJsonObject(text: string): string | null {
   return null;
 }
 
-async function runEnhance(text: string, cwd: string): Promise<string> {
-  const prompt = `${ENHANCE_PROMPT}\n${text}`;
+async function runEnhance(text: string, cwd: string, facts: EnhanceFacts | null): Promise<string> {
+  const prompt = buildEnhancePrompt(text, facts);
   let out = ENHANCE_CMD
     ? await summaryViaSubprocess(ENHANCE_CMD, prompt, cwd)
     : await summaryViaSession(prompt, cwd, '"prompt"');
@@ -4545,13 +4513,19 @@ Bun.serve<WSData>({
     }
     // ✨ rework a compose-box draft. Runs in the focused slot's cwd so repo context
     // (CLAUDE.md etc.) rides along; the result replaces the box, never auto-sends.
+    // The slot's deterministic git state rides along as a DATA block — the same briefPayload
+    // the sideboard shows — so the enhancer can ground a vague draft in a real path/branch
+    // instead of returning it untouched. Facts only; it never sees the session itself.
     if (url.pathname === "/api/enhance" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.text !== "string" || !body.text.trim() || body.text.length > 20_000)
         return json({ error: "bad text" }, 400);
       const s = slotFrom(body.slot);
+      // null on a non-repo cwd or no slot — buildEnhancePrompt says so explicitly rather
+      // than silently emitting an empty block
+      const facts = s?.cwd ? await briefPayload(s) : null;
       try {
-        return json({ prompt: await runEnhance(body.text.trim(), s?.cwd ?? HOME) });
+        return json({ prompt: await runEnhance(body.text.trim(), s?.cwd ?? HOME, facts) });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "enhance failed" }, 502);
       }

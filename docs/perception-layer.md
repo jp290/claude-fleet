@@ -1,16 +1,19 @@
-# The perception layer — design note (2026-07-25; write side BUILT, the feed is not)
+# The perception layer — design note (2026-07-25; write side BUILT, feed BUILT)
 
 *What Fleet needs before it may steer anything. Written on main **before** the lane that
 implements it, so the lane has a target it did not have to invent. Treat the line refs as
 claims: they drift — grep the symbol.*
 
 **Build status (2026-07-25, commit `600d401` "feat(perception): make Fleet observable to itself
-on the write side"): the write half is built, the reader is not.** Pieces **(c)** auto-③ on a
+on the write side"): the write half is built.** Pieces **(c)** auto-③ on a
 deterministic `done-looking` (`lane-signals.ts:laneDoneLooking`, `server.ts:tickAutoReview`) and
 **(b)** the review persisted onto the outcome row with the patch-id staleness relation
 (`server.ts:outcomeReview`, the `OutcomeReview` union) are **built**. Piece **(a)**, the feed, is
-**not** — the ledger still has no reader, so it remains write-only *in effect* and (b) has so far
-produced **zero** rows carrying a review. §§1, 3 and 5 below were written against the
+**built too (this lane)**: `src/client.ts:renderOutcomes` behind the 🧾 button, plus the write-side
+fix §6 called for — `OutcomeReview` now carries `scope`/`notes`/`raw`, so a reviewer answer that did
+not parse is no longer indistinguishable from a clean review (`discrepancy-audit.md` F5, closed).
+What the feed cannot repair is the past: rows written before those fields existed stay ambiguous,
+and it renders them as such rather than resolving them either way. §§1, 3 and 5 below were written against the
 pre-`600d401` world and are marked where they no longer describe today; they stay as written
 because they are the design the lane was held to. `knowledge-layers.md` §5 records what the
 as-built state proves and what it still leaves unmeasured.
@@ -144,7 +147,7 @@ fleet/outcome-recorder-fix  landed  NO review key
 perception-write            landed  NO review key
 ```
 
-## 6. The feed (lane 2)
+## 6. The feed (lane 2) *(BUILT — `src/client.ts:renderOutcomes` / `openOutcomes`, the 🧾 button)*
 
 `GET /api/lane-outcomes` already returns the rows newest-first with a clamped `limit`, owner-only
 and structurally 404 on share hosts. Lane 2 is the reader: the ledger rendered as *what landed,
@@ -155,12 +158,27 @@ Two honesty constraints for the renderer (they belong in lane 2's brief):
 - **Empty findings ≠ clean.** ③ is diff-bounded by construction and DP1 proved it misses defects
   living outside the diff. A review with zero findings must render as "the diff-bounded reviewer
   found nothing", with its `scope`/`notes`, never as a green checkmark.
-  **Blocked as written (2026-07-25, `discrepancy-audit.md` F3):** `OutcomeReview` persists neither
-  `scope`, `notes` nor `raw`, so a reviewer whose answer did not parse is written to the row as
-  `{state:"covered", findings:[]}` — byte-identical to a real clean review. Lane (a) cannot honor
-  this constraint from the ledger alone; the fields have to be added on the write side first.
+  ~~**Blocked as written (2026-07-25, `discrepancy-audit.md` F3):**~~ **Unblocked 2026-07-25** (the
+  finding is F5, not F3 — corrected here): `OutcomeReview` now persists `scope`, `notes` and `raw`
+  alongside the findings, so a reviewer answer that did not parse carries `raw: true` and its own
+  text and is rendered as **not a review at all**. Rows written before that change carry none of the
+  three and cannot be told apart retroactively — the feed renders them as *ambiguous*, never resolved.
 - **`↩ undo` is one-step.** Only the newest land is undoable; rendering undo on every row
-  implies a capability the land spine deliberately does not have.
+  implies a capability the land spine deliberately does not have. **As built:** the feed offers no
+  undo affordance at all and says so in a footer line; the board's single undo button stays the only
+  one.
+- **Two more the build added, from the same discipline.** `verified: false` also fires when the gate
+  could not RUN (F9), so it is worded *"verify red"* and never as a claim the change is unsound; and
+  a row with no commits, no files and an empty shortstat renders as *"footprint not recorded"* —
+  rows 1–2 are unmeasured, while an owner ⏏ land of already-integrated work is legitimately empty,
+  and the row cannot tell those apart (`knowledge-layers.md` §5 gap 4).
+
+**What the feed is FOR, and the number it exists to produce.** `knowledge-layers.md` §5 gap 3 argues
+a prompt land structurally beats auto-③ (60s idle + ≤15s tick + ≤180s agent), so the modal row may
+permanently carry no review — and nothing revealed that while the ledger had no reader. The panel
+header therefore carries a ③-coverage tally over all loaded rows (covered / superseded / inflight /
+none / not measured) and a "not covered by ③" filter. That tally is the measurement; the rest is
+presentation.
 
 Note the citation: the feed is item 6 of `lane-autonomy-future.md`, **not** of
 `merge-review-autonomy.md` (whose §6 is "Hard rules"). Both HANDOFF and `README.md` carried the

@@ -2645,10 +2645,20 @@ type LaneDisposition = "landed" | "reverted" | "shelved" | "killed-dirty" | "kil
 // covered, and "we know nothing covered this" is an ANSWER that is always present. Same discipline
 // as LandFacts.verified — the un-covered case is unreachable by construction, not guarded, so no
 // `??` can ever resolve it to something older.
+// `scope`/`notes`/`raw` ride along with the findings and are NOT decoration (discrepancy-audit F5):
+// `runReview` fails soft, so an off-contract answer — prose, an error, a refusal — keeps `raw: true`
+// and puts the model's text in `notes` while `findings` stays empty. Persisting findings alone made
+// that byte-identical to a real clean review, i.e. every reviewer FAILURE was recorded as coverage.
+// `scope` is the second half: it is what distinguishes a review of the lane's own diff from the
+// fallback "uncommitted changes plus recent commits (no lane base to diff against)" — a review of a
+// different subject. A reader cannot honour perception-layer.md §6 ("empty findings ≠ clean")
+// without all three, and rows written before this existed carry none of them: they are ambiguous
+// forever, which is exactly what the feed renders them as.
 type OutcomeReview =
   | { state: "none" | "inflight" }
   | { state: "covered" | "superseded"; at: number; model: string; head: string | null;
-      dirty: number; patchId: string | null; landedPatchId: string | null; findings: ReviewFinding[] };
+      dirty: number; patchId: string | null; landedPatchId: string | null;
+      scope: string; notes: string; raw: boolean; findings: ReviewFinding[] };
 interface LaneOutcome {
   ts: number;
   branch: string | null;
@@ -2745,7 +2755,8 @@ async function outcomeReview(s: Slot, cwd: string, base: string | null): Promise
   return {
     state: result.patchId !== null && result.patchId === landedPatchId ? "covered" : "superseded",
     at: result.at, model: result.model, head: result.head, dirty: result.dirty,
-    patchId: result.patchId, landedPatchId, findings: result.findings,
+    patchId: result.patchId, landedPatchId,
+    scope: result.scope, notes: result.notes, raw: result.raw, findings: result.findings,
   };
 }
 function briefHashOf(text: string | null): string | null {

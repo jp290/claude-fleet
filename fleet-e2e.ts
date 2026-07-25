@@ -2252,7 +2252,10 @@ if (REPO) {
       sessionMs: number | null; ownerPrompts: number;
       resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
       review?: { state: string; findings?: unknown[]; model?: string; head?: string | null;
-        patchId?: string | null; landedPatchId?: string | null } };
+        patchId?: string | null; landedPatchId?: string | null;
+        // optional here on purpose: rows written before discrepancy-audit F5 was fixed carry none
+        // of the three, and the feed's "cannot tell whether this parsed" case depends on that
+        scope?: string; notes?: string; raw?: boolean } };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
     // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
@@ -2450,6 +2453,79 @@ if (REPO) {
       recSup?.review?.state === "superseded" && (recSup?.review?.findings?.length ?? 0) === 2,
       JSON.stringify(recSup?.review ?? null).slice(0, 200));
 
+    // (9b) F5 — an OFF-CONTRACT reviewer answer must not reach the ledger as a clean review.
+    // `runReview` fails soft: prose, an error or a refusal keeps `raw: true` and puts the model's
+    // text in `notes` with `findings` empty. Persisting the findings ALONE made that byte-identical
+    // to a real clean review — so every reviewer FAILURE was recorded as coverage
+    // (discrepancy-audit.md F5). The stand-in is wrapped to answer prose for THIS lane's worktree
+    // only, matched on the branch slug in $PWD rather than on a marker file written after the lane
+    // exists: auto-③ can review a done-looking lane before the click below, and would then serve a
+    // parsed result from cache and quietly void the test.
+    const oCtl = REPO.replace(/\/[^/]+$/, "");
+    await Bun.write(`${oCtl}/fakereview.orig`, await Bun.file(`${oCtl}/fakereview`).text());
+    spawnSync("chmod", ["+x", `${oCtl}/fakereview.orig`]);
+    await Bun.write(`${oCtl}/fakereview`, ["#!/bin/sh",
+      'case "$PWD" in',
+      '  *raw-review*) cat >/dev/null; echo "$PWD" >> "$(dirname "$0")/reviewruns";',
+      '    printf "I cannot review this diff — there is no JSON here at all."; exit 0 ;;',
+      "esac",
+      'exec "$(dirname "$0")/fakereview.orig"', ""].join("\n"));
+    spawnSync("chmod", ["+x", `${oCtl}/fakereview`]);
+    const ocRaw = (await (await post("/api/lanes", { repo: oRepo, branch: "raw-review" })).json()) as
+      { slot: number; cwd: string; branch: string };
+    await Bun.write(`${ocRaw.cwd}/unparsed.txt`, "the reviewer will answer prose about this\n");
+    spawnSync("git", ["-C", ocRaw.cwd, "add", "unparsed.txt"]);
+    spawnSync("git", ["-C", ocRaw.cwd, "commit", "-qm", "work the reviewer fails to parse"]);
+    check("raw-review setup: the ③ click returns, off-contract answer and all (fail-soft, never a 500)",
+      (await post(`/api/slots/${ocRaw.slot}/review`, {})).ok);
+    await post(`/api/slots/${ocRaw.slot}/kill`, {});
+    const recRaw = forBranch(await readOutcomes(), ocRaw.branch);
+    check("outcome: a reviewer answer that did NOT parse is persisted as raw:true carrying its text — not as a clean review",
+      recRaw?.review?.state === "covered" && recRaw?.review?.raw === true
+      && (recRaw?.review?.findings?.length ?? 0) === 0
+      && (recRaw?.review?.notes ?? "").includes("no JSON here at all"),
+      JSON.stringify(recRaw?.review ?? null).slice(0, 240));
+    // the other half of F5: without this the two rows above and below are the SAME row on disk.
+    check("outcome: a review that DID parse persists raw:false plus its scope — a failed review is distinguishable from a clean one",
+      recRv?.review?.raw === false && (recRv?.review?.scope ?? "").length > 0,
+      JSON.stringify({ raw: recRv?.review?.raw, scope: recRv?.review?.scope }));
+    await Bun.write(`${oCtl}/fakereview`, await Bun.file(`${oCtl}/fakereview.orig`).text());
+    spawnSync("chmod", ["+x", `${oCtl}/fakereview`]);
+
+    // (9c) THE SECOND ROW SHAPE. Rows written before the review field existed (rows 1–3 of the live
+    // ledger) have NO `review` key at all — not `{state:"none"}`. The feed renders that as "not
+    // measured", which is only reachable if the route hands the absence through untouched: a reader
+    // that defaults it would turn "nobody measured this" into "we measured, nothing covered it".
+    const { appendFileSync, realpathSync } = await import("node:fs");
+    const { dirname } = await import("node:path");
+    appendFileSync(`${oCtl}/lane-outcomes.jsonl`,
+      JSON.stringify({ ts: Date.now(), branch: "legacy/pre-review-field", base: null, headSha: null,
+        disposition: "landed", model: null, briefHash: null, shortstat: "", commitCount: 0,
+        filesTouched: [], e2eTouched: false, verified: null, sessionMs: null, ownerPrompts: 0,
+        resolvedConflict: false, repairRounds: 0, confirmedByHuman: false }) + "\n");
+    const recLegacy = forBranch(await readOutcomes(), "legacy/pre-review-field");
+    check("outcome: a pre-review-field row survives /api/lane-outcomes with NO review key at all (never defaulted to none)",
+      !!recLegacy && !("review" in recLegacy), JSON.stringify(recLegacy ?? null).slice(0, 200));
+
+    // (9d) …and the renderer keeps the two shapes apart. Asserted over the CLIENT SOURCE, not a
+    // rendered DOM: this suite has no DOM harness, so what is proved here is that the classifier
+    // has an "unmeasured" case distinct from "none" and that raw:true is worded as not-a-review.
+    // Weaker than a render test and named so — it catches the regression that matters (someone
+    // collapsing the missing-key case into "none", or calling zero findings clean).
+    // the suite runs from a scratch copy that carries server.ts + public/ but NOT src/ — the only
+    // link back to the checkout is the node_modules symlink e2e-isolated.sh makes, so the real
+    // source is its realpath's parent. Read the SOURCE rather than public/app.js on purpose: the
+    // bundle is minified, so a regex over it would assert about the minifier as much as the code.
+    const cliSrc = readFileSync(
+      `${dirname(realpathSync(`${import.meta.dir}/node_modules`))}/src/client.ts`, "utf8");
+    check("client: the outcome renderer classifies an absent review as 'unmeasured', a case distinct from 'none'",
+      /function reviewRel[\s\S]{0,400}?return[\s\S]{0,200}?"unmeasured"/.test(cliSrc)
+      && /unmeasured:\s*"review not measured/.test(cliSrc) && /none:\s*"no ③ review on record/.test(cliSrc),
+      "reviewRel / REL_WORD in src/client.ts");
+    check("client: the outcome renderer words raw:true as not-a-review and empty findings as not-clean",
+      /r\.raw === true/.test(cliSrc) && /did not parse — this is NOT a review/.test(cliSrc)
+      && /not a clean bill of/.test(cliSrc), "reviewBody in src/client.ts");
+
     // (10) THE REBASE CASE — the reason the relation is content identity and not commit identity:
     // the land path rebases the lane onto main before the ff-merge, so the landed commit is NEVER
     // the reviewed commit on a clean land. The diff is byte-identical, so the review DID describe
@@ -2483,9 +2559,13 @@ if (REPO) {
     check("outcome: a never-reviewed lane records review.state \"none\" (an answer, not a missing field)",
       recNone?.review?.state === "none" && !("findings" in (recNone?.review ?? {})),
       JSON.stringify(recNone?.review));
-    check("outcome: every disposition carries the review relation, including reverted",
-      (await readOutcomes()).slice(0, 12).every((o) => typeof o.review?.state === "string"),
-      JSON.stringify((await readOutcomes()).slice(0, 12).map((o) => o.review?.state)));
+    // …and every row the SERVER wrote does. The one synthetic row appended by (9c) is excluded by
+    // branch: it is the deliberately hand-written pre-review-field shape, and its whole point is
+    // that the key is missing — asserting it here would contradict the check it exists for.
+    const written = (await readOutcomes()).filter((o) => o.branch !== "legacy/pre-review-field").slice(0, 12);
+    check("outcome: every disposition the server wrote carries the review relation, including reverted",
+      written.every((o) => typeof o.review?.state === "string"),
+      JSON.stringify(written.map((o) => o.review?.state)));
 
     // access model: the read route is owner-only — no token → 401 (same as /api/audit)
     check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);

@@ -263,6 +263,55 @@ export async function run(lc: LaneCtx): Promise<void> {
   spawnSync("git", ["-C", REPO, "rm", "-q", "verify-fail.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop VERIFYBAD marker from main"]);
 
+  // (C) clean rebase whose verify command DECLINES to verify the tree (server.ts VERIFY_SKIP_EXIT).
+  // This is the hole the tri-state closes: the guard used to `exit 0`, which recorded ok:true and
+  // auto-landed behind a gate that executed nothing — a foreign repo, or a fleet lane that moved
+  // the file the guard tests for. A skip is now its own state (ok:null) and never auto-lands.
+  // Two lanes, one per half of the contract: the reserved exit code, and the legacy marker line at
+  // exit 0 (which a running-but-not-yet-kickstarted watchdog still emits). Neither is confirm-
+  // landed: their markers must not reach main, so each is killed and discarded instead.
+  for (const [marker, name, label] of [
+    ["VERIFYSKIP42", "exit-42", "the reserved skip exit code"],
+    ["VERIFYSKIPZERO", "legacy-marker", "the legacy 'verify skipped:' line at exit 0"],
+  ] as const) {
+    const lnVs = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnVs.cwd}/verify-skip-${name}.txt`, `lane work carrying a ${marker} marker\n`);
+    spawnSync("git", ["-C", lnVs.cwd, "add", `verify-skip-${name}.txt`]);
+    // retried + asserted: the server polls lane git state on a timer, and a poll holding
+    // `index.lock` makes a one-shot commit fail — a lane with no marker committed would verify
+    // GREEN and land, i.e. report the exact failure this case exists to catch, for the wrong reason
+    let committed = false;
+    for (let i = 0; i < 20 && !committed; i++) {
+      committed = spawnSync("git", ["-C", lnVs.cwd, "commit", "-qm", `verify-skip ${name} lane work`]).status === 0;
+      if (!committed) await Bun.sleep(150);
+    }
+    check(`V1 setup: the ${label} lane committed its marker (precondition for the skip below)`,
+      committed, spawnSync("git", ["-C", lnVs.cwd, "status", "--porcelain"]).stdout.toString().trim());
+    await Bun.write(`${REPO}/vs-main-${name}.txt`, "main side\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", REPO, "add", `vs-main-${name}.txt`]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", `vs main work ${name}`]);
+    await settleForMerge(lnVs.slot);
+    await post(`/api/slots/${lnVs.slot}/merge`, {});
+    const vVs = await waitMerge(lnVs.slot);
+    check(`V1: a verify that skips itself via ${label} records ok:null — SKIPPED, never a pass`,
+      vVs.last?.verify?.ok === null && vVs.last.verify.cmd.endsWith("fakeverify")
+        && vVs.last.verify.out.includes("verify skipped:")
+        && typeof vVs.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vVs.last.verify.mainSha),
+      JSON.stringify(vVs.last?.verify));
+    check(`V1: a skipped verify (${label}) does NOT clean-auto-land (downgraded to resolved)`,
+      !vVs.gone && vVs.last?.status === "resolved" && vVs.last?.landed === false && exists(lnVs.cwd),
+      JSON.stringify(vVs.last));
+    check(`V1: the skipped verdict (${label}) says SKIPPED, not failed and not verified`,
+      (vVs.last?.detail ?? "").includes("SKIPPED"), JSON.stringify(vVs.last?.detail));
+    const vsLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+    check(`V1: the skipped lane's commit (${label}) has NOT reached main`,
+      !vsLog.includes(`verify-skip ${name} lane work`), vsLog.trim());
+    // discard rather than land: the marker must never reach main (every later clean lane in this
+    // suite would inherit it and skip too), and discard leaves no orphan behind either.
+    await post(`/api/slots/${lnVs.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: REPO, path: lnVs.cwd, branch: lnVs.branch });
+  }
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

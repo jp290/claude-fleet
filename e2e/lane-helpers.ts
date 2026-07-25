@@ -8,7 +8,10 @@ export const exists = (p: string): boolean => { try { statSync(p); return true; 
 export const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/mergemode`, m);
 // merge is an async job — poll GET until the run settles; a 400 means the slot was
 // torn down (the job landed the lane), which IS the success signal for `do`
-export type VerifyField = { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
+// `ok: null` is the SKIPPED state — the command declined to verify this tree (server.ts,
+// VERIFY_SKIP_EXIT). Distinct from ok:false (ran, failed) and from an absent field (no command
+// configured), and the type has to carry it or the checks below cannot tell a skip from a pass.
+export type VerifyField = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean };
 export type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string; repairRounds?: number };
 // Poll the async merge job until it settles. The old bound (100×100ms = 10s) was too tight:
 // a real-git land (rebase + verify + ff + teardown) under concurrent load can overrun 10s, and

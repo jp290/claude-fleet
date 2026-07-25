@@ -203,6 +203,59 @@ export async function run(ctx: Ctx): Promise<void> {
       check("V1: with NO FLEET_VERIFY_CMD the resolved verdict omits the verify field (unverified, not silently green)",
         lastC?.status === "resolved" && lastC !== null && !("verify" in lastC), JSON.stringify(lastC));
       await post(`/api/slots/${lc.slot}/kill`, {});
+
+      // The OTHER half of case C, and the counterweight to the tri-state skip gate: "no verify
+      // command configured" must keep BOTH halves of its existing shape — no verify field, and a
+      // clean rebase still auto-lands unattended. That is the owner's deployment-wide decision and
+      // the skip fix deliberately does not touch it (server.ts, grep VERIFY_SKIP_EXIT); only a
+      // CONFIGURED command that declines to run loses the auto-land. The ledger row must still say
+      // `verified: null` — an unverified land is recorded as unverified, never as green.
+      const lu = (await (await post("/api/lanes", { repo: REPO_C })).json()) as { slot: number; cwd: string; branch: string };
+      await Bun.write(`${lu.cwd}/noverify-clean.txt`, "clean lane work, no verify command anywhere\n");
+      spawnSync("git", ["-C", lu.cwd, "add", "noverify-clean.txt"]);
+      // RETRY, and assert: the server polls every lane worktree's git state on a timer (lane
+      // signals, auto-③), and a poll holding `index.lock` makes a one-shot `git commit` fail —
+      // observed here, leaving a lane with nothing to land and turning the land check into a
+      // false red about the server. A committed lane is this check's PRECONDITION, so it is
+      // waited for and asserted rather than assumed.
+      let committedU = false;
+      for (let i = 0; i < 20 && !committedU; i++) {
+        committedU = spawnSync("git", ["-C", lu.cwd, "commit", "-qm", "noverify clean lane work"]).status === 0;
+        if (!committedU) await Bun.sleep(150);
+      }
+      check("V1 setup: the unconfigured-verify lane committed its work (precondition for the land below)",
+        committedU, spawnSync("git", ["-C", lu.cwd, "status", "--porcelain"]).stdout.toString().trim());
+      await Bun.write(`${REPO_C}/noverify-main.txt`, "main side\n"); // different file → clean rebase, no agent
+      spawnSync("git", ["-C", REPO_C, "add", "noverify-main.txt"]);
+      spawnSync("git", ["-C", REPO_C, "commit", "-qm", "noverify main work"]);
+      for (let i = 0; i < 80; i++) {
+        const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+        const sl = sx.slots.find((x) => x.id === lu.slot);
+        if (sl && sx.now - sl.lastOutput >= 3000) break;
+        await Bun.sleep(150);
+      }
+      await post(`/api/slots/${lu.slot}/merge`, {});
+      let landedU = false;
+      for (let i = 0; i < 200; i++) {
+        const r = await get(`/api/slots/${lu.slot}/merge`);
+        if (r.status === 400) { landedU = true; break; } // slot torn down = the lane landed
+        if (!((await r.json()) as { running?: boolean }).running) break;
+        await Bun.sleep(100);
+      }
+      check("V1: with NO FLEET_VERIFY_CMD a clean rebase still auto-lands (unconfigured ≠ skipped)",
+        landedU && spawnSync("git", ["-C", REPO_C, "log", "--oneline", "-3"]).stdout.toString()
+          .includes("noverify clean lane work"),
+        spawnSync("git", ["-C", REPO_C, "log", "--oneline", "-3"]).stdout.toString().trim());
+      const ouAll = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+        { outcomes: { branch: string | null; disposition: string; verified: boolean | null }[] }).outcomes;
+      const ou = ouAll.find((o) => o.branch === lu.branch);
+      check("V1: the unconfigured-verify auto-land records verified:null (no verify ran — never green)",
+        ou?.disposition === "landed" && ou.verified === null, JSON.stringify(ou));
+      // a land tears the slot down; if anything above went sideways it did NOT, and a lane left
+      // sitting in a slot breaks later sections that expect that slot free. Unconditional cleanup:
+      // this check must fail alone, never take the sections after it down with it.
+      if (!landedU) await post(`/api/slots/${lu.slot}/kill`, {});
+
       await Bun.write(modeFile, "blocked"); // restore the default merge mode
     }
   }

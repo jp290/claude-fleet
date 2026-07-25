@@ -124,10 +124,26 @@ to ② shadow and any future judge.
      suite is NOT in the gate, and the post-land audit tier that was designed to cover the
      difference (`merge-review-autonomy.md:146`) was never built. §1's "so `verified` is honest"
      means honest-about-tier-1.
-     Worse, until fixed: `watchdog.sh:49` opens with `[ -f fleet-e2e.ts ] || exit 0`, and
+     ~~Worse, until fixed: `watchdog.sh:49` opens with `[ -f fleet-e2e.ts ] || exit 0`, and
      `runVerify` records `ok: code === 0` — so a lane that MOVES that file records a green gate
-     that ran nothing. A tri-state verify (`skipped` ≠ `ok`) is a precondition for trusting any
-     row's `verified`.
+     that ran nothing.~~ **FIXED 2026-07-25 (branch `verify-tristate`)**, and the fix changes what
+     this field can mean, so read every row against its date:
+     - `verify.ok` is now three-valued. `null` = the command DECLINED to verify this tree (it
+       exits `VERIFY_SKIP_EXIT` 42, or prints the legacy `verify skipped:` line) — SKIPPED, which
+       is neither a pass nor a failure. A skipped verify can no longer clean-auto-land; it is
+       downgraded to a stop-and-review exactly like a red one.
+     - **`verified: true` therefore now means a gate actually ran and passed** (still tier 1 only —
+       the paragraph above still stands). Rows written BEFORE this land cannot distinguish
+       "passed" from "declined to run", so a pre-fix `verified: true` remains the weaker claim
+       "exit 0", and K1's count over those rows keeps the old, weaker warrant.
+     - `verified: null` now covers TWO cases, both honestly non-evidence: no verify command
+       configured at all, and a command that skipped itself. Which one it was stays on the merge
+       verdict (`verify` field absent vs. `verify.ok === null`), not on the ledger row — the
+       ledger's question is "was this verified", and both answers are no. Neither counts as
+       verified anywhere, so no counter changes.
+     - Deliberately unchanged: a deployment with NO `FLEET_VERIFY_CMD` still auto-lands a clean
+       rebase. That is the owner's standing configuration decision, not a runtime guess about an
+       unknown tree — the reasoning is at `VERIFY_SKIP_EXIT` in `server.ts`.
   2. **`confirmedByHuman: false` ≠ unattended.** The merge route is owner-token-gated (a lane's
      self-token is 403'd), so all 17 rows are owner-initiated merges; the flag means "no SECOND
      human step". §1 would license unattended landing on a population with zero unattended lands.

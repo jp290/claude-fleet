@@ -100,8 +100,11 @@ thing is isolated.**
    paths through it — `tickAutos`, `handleStewardSend`, `tickDispatch`,
    merge/land (grep `landGate`) — so the kill-switch (`autosOn`) + quiet-hours now reach the steward
    send AND the dispatcher, and the dispatcher gets a fresh `claudeAlive`. Closed Tier-0 #1/#2.
-   **Still open: Tier-0 #3** (send-cap `.1`-rotation under-count). This was the prerequisite before
-   B opens any live reach — it now holds. (A's kill-switch stays cruder but total: `tmux -L
+   **Tier-0 #3** (send-cap `.1`-rotation under-count) — *listed here as "still open" until
+   2026-07-25; it was already **CLOSED** 2026-07-22.* `stewardRecentSends` spans
+   `[audit.jsonl.1, audit.jsonl]`, with the seam named in its own comment, and a mid-window
+   rotation is simulated in `fleet-e2e.ts` (`synergy-findings.md` Tier-0 #3). So the
+   prerequisite before B opens any live reach holds. (A's kill-switch stays cruder but total: `tmux -L
    fleetarena kill-server`.)
 2. **Journal-outcome fuel** — **DONE (landed `f47fca1`, 2026-07-22).** Per-send baseline in
    `handleStewardSend` → deterministic window-close classification in `tickGit` (`measureOutcomes`)

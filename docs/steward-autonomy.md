@@ -19,15 +19,20 @@ only interventions that demonstrably occur.
 
 ### 1. Sensing — what state exists?
 Today: the owner scans badges and opens panes. Optimal: the steward senses only
-through the owner-read API surface — `/api/sessions` (idle via `lastOutput`, git
-facts, task/merge state), `/api/slots/:id/brief`, `/api/slots/:id/transcript` —
-never `capture-pane` from his own pane (raw bytes, and a habit that bypasses the
-server's gates). Deterministic triple per lane: idle duration × git delta since
+through the server's gated read surface — never `capture-pane` from his own pane
+(raw bytes, and a habit that bypasses the server's gates). *Corrected 2026-07-25: the
+paths named here were the **owner** routes `/api/sessions`, `/api/slots/:id/brief`,
+`/api/slots/:id/transcript`. A steward token is intercepted before the owner gate and
+served only by `handleStewardRoute`, so those three answer `403 steward token: route not
+in scope`. The steward's actual paths are `/api/steward/sessions`,
+`/api/steward/slots/:id/brief`, `/api/steward/slots/:id/transcript`.* Deterministic triple per lane: idle duration × git delta since
 last look × task state. Known blind spot, inherited from the tool: a pane waiting
 on a permission prompt is invisible in the transcript (BACKLOG #6 Phase-1
-finding) — "idle" never implies "done" (`interaction-modes.md`). Missing piece
+finding) — "idle" never implies "done" (`interaction-modes.md`). ~~Missing piece
 worth building later, not first: an aggregated deterministic lane-state endpoint;
-v1 composes from what exists.
+v1 composes from what exists.~~ **Built:** `/api/steward/sessions` is exactly that
+endpoint (`stewardSlotsView` over `laneSignalView`, one row per slot with
+`alive`/`idleMs`/`git`/`gitOp`/`merge`/`task`/`doneLooking`).
 
 ### 2. Interpreting — what does this lane need?
 A small, named condition vocabulary, so every judgment is auditable and the same

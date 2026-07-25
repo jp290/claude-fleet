@@ -114,19 +114,29 @@ resolutions · `merge-review-autonomy.md` §7 FIXED note · `lane-signals.ts` he
    repaint resets + poll interval). Fixed additively (`doneLookingSince`), trigger untouched.
    Epoch-0 caveat: a never-spoke slot reads as quiet-since-epoch — pollers must special-case it.
 
-## 6. Known structural flakes (both verified at HEAD by two independent lanes)
+## 6. Known structural flakes — ALL CLOSED (2026-07-25, the e2e-split lane)
 
-- `FLEET_SELF_TOKEN absent for a non-lane slot` — pane-capture race (~600ms), pre-existing.
-- baselineRate ring-saturation (`fleet-e2e.ts` ~3603): `samples > start.samples` unsatisfiable
-  once the 50-ring saturates. Structural; belongs to the cleanup lane.
+- `FLEET_SELF_TOKEN absent for a non-lane slot` — pane-capture race. Closed: `paneEnv()`
+  (`e2e/harness.ts`) retries the `send-keys` until a unique, line-anchored marker renders, so
+  neither a dropped keystroke nor a half-rendered line can be read as an answer.
+- baselineRate ring-saturation — closed earlier (`96fe66c`): read off the lifetime counters.
+- auto-③ vs. review-state checks (reported, not attributed). Root cause found and fixed
+  server-side: `killSlot` leaves `gitInfo` for `tickGit` to reap ≤10 s later, so a slot recycled
+  inside that window served the PREVIOUS lane's `{dirty:0, ahead:N}` — and with `lastOutput`
+  reset to 0 the idle clause read "quiet forever", making a brand-new empty lane `done-looking`.
+  auto-③ then filed a `no code changes in scope` review against it, which surfaced later as
+  `review.state:"superseded"`. `openSlot` now drops the entry (one line), so the fact is UNKNOWN
+  until the tick computes it, and an unknown is never permission to act.
 
 ## 7. Open items, in intended order
 
 1. **Criteria-progress view** (small lane, client now free): feed header shows "K1 n/20 · K2
    n/25 · undos 0". Closes the last loop — progress toward autonomy becomes perceptible.
-2. **Cleanup lane:** split `fleet-e2e.ts` (3.9k lines, the one collision point of every lane
-   pair) into `e2e/*.ts` + fix both §6 flakes + possibly collapse the 7 `FLEET_*_CMD` stand-in
-   pairs. Do NOT start while any other lane is in flight.
+2. ~~**Cleanup lane:** split `fleet-e2e.ts` …~~ **DONE 2026-07-25.** `fleet-e2e.ts` is now a
+   ~90-line runner over 23 `e2e/*.ts` check-family modules + `e2e/harness.ts` / `e2e/ctx.ts`;
+   702 check names unchanged and in the same order. Both §6 flakes fixed. The `FLEET_*_CMD`
+   stand-in collapse was NOT done — the stand-ins live in `e2e-isolated.sh`, not the suite, and
+   each has a different contract; only the pane-probe scaffolding was deduplicated (`paneEnv`).
 3. **Steward-pulse phase A first watched trial** — when normal work sessions exist again.
    Protocol in `steward-pulse-v2.md`; caps already machine-enforced.
 4. **Parked owner idea (2026-07-25):** a faster one-sentence communication layer inside the

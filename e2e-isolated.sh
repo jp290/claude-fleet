@@ -135,6 +135,17 @@ chmod +x "$DIR/fakemerge"
 # tsc/test gate has. Tests plant/omit the marker in a lane's committed content.
 cat > "$DIR/fakeverify" <<'EOF'
 #!/bin/sh
+# A real verify command may DECLINE to verify the tree in front of it (watchdog.sh's repo guard).
+# Both halves of the skip contract are exercised: the reserved exit code, and the legacy
+# "verify skipped:" marker line at exit 0 that a not-yet-kickstarted watchdog still emits.
+if git grep -qI VERIFYSKIP42 -- . 2>/dev/null; then
+  echo "verify skipped: this stand-in does not know how to verify that tree"
+  exit 42
+fi
+if git grep -qI VERIFYSKIPZERO -- . 2>/dev/null; then
+  echo "verify skipped: legacy exit-0 form, this stand-in verified nothing"
+  exit 0
+fi
 if git grep -qI VERIFYBAD -- . 2>/dev/null; then
   echo "verify FAIL: VERIFYBAD marker present in the rebased tree"
   exit 1

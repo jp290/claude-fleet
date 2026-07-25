@@ -46,8 +46,10 @@ Most are the project's own, earned. Three (A5, A7, A10) carry corrections earned
 - **Producing well:** 19 ledger rows, K1 12/20 with 11 clean auto-lands, 0 undos, three
   structural e2e flakes closed, deploy loop tight and self-reporting (`deployGap`,
   `bundleStale`).
-- **Measuring poorly:** `verified: true` attests tier 1 only; `kProgress` counts a row missing
-  `confirmedByHuman` as a clean auto-land; K2 has 1 valid verdict of 6 attempts.
+- **Measuring poorly:** `verified: true` attests tier 1 only; K2 has 1 valid verdict of 6
+  attempts. (`kProgress` counting a row missing `confirmedByHuman` as a clean auto-land was
+  fixed 2026-07-25, branch `kprogress-honesty` — such rows now count as `unknown`, shown
+  separately in the header.)
 - **Not consuming at all:** one disposition record in the rail's lifetime, and it was written
   automatically. Three of four criteria terminate in a label that has never been produced.
 
@@ -63,7 +65,8 @@ each is a gate.
 1. `verify-tristate` lands: a skipped verify can never read as a pass. *(in flight)*
 2. ② JSON extraction — reuse the existing `extractJsonObject` (`server.ts:2411`), which
    `runEnhance` already uses on exactly this failure mode. Cheap; unblocks K2 measurement.
-3. `kProgress` fail-green fix (`src/client.ts:2935`).
+3. ~~`kProgress` fail-green fix (`src/client.ts:2935`).~~ **DONE 2026-07-25** (branch
+   `kprogress-honesty`): unknown `confirmedByHuman` is its own count, K2 no longer anchor-gated.
 4. **≥10 deliberate owner dispositions**, which also constitutes the first production test of the
    land-class write path.
 **Exit:** every counter means what its name says, and the rail has run in production.

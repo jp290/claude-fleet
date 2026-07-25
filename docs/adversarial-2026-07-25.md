@@ -96,10 +96,13 @@ rewrote the verify command. One repo, one author, ~2 h of wall-clock for the who
 `graduation-criteria.md` already flags homogeneity; the self-reference is sharper than that
 note and belongs in the amendment log.
 
-**B5 — Degraded input biases green.** VERIFIED: `src/client.ts:2935` is
-`if (!o.confirmedByHuman) clean++` against an **optional** field (`:2833`) — a row missing the
-field counts as a *clean auto-land*. This is the project's own "unknown ≠ zero" rule violated
-in the function that computes the autonomy counters.
+**B5 — Degraded input biases green.** VERIFIED: `src/client.ts` (grep `kProgress`) was
+`if (!o.confirmedByHuman) clean++` against an **optional** field — a row missing the
+field counted as a *clean auto-land*. This is the project's own "unknown ≠ zero" rule violated
+in the function that computes the autonomy counters. **FIXED 2026-07-25** (branch
+`kprogress-honesty`): only an explicit `false` counts as clean, anything else is an `unknown`
+count rendered beside it. The same land un-gated K2 from §1's anchor — a ledger without the
+anchor row used to report `k2: 0` for verdicts it had actually recorded.
 
 **B6 — Goodhart, mechanically.** REPORTED (derivation checked, not executed): the full K1 streak
 is purchasable with ~10 doc-only lanes in ~20 minutes — docs break neither `tsc` nor

@@ -157,9 +157,22 @@ to ② shadow and any future judge.
      itself (`server.ts`/`src/client.ts`/`fleet-e2e*`/`watchdog.sh`/`e2e-*.sh`) — including the
      lane that wrote `kProgress` and the lane that rewrote the verify command. Sharper than the
      homogeneity caveat above; weigh it at the enable-decision.
-  5. **`kProgress` biases green on degraded input:** `if (!o.confirmedByHuman) clean++` against
+  5. ~~**`kProgress` biases green on degraded input:** `if (!o.confirmedByHuman) clean++` against
      an optional field — a row missing it counts as a clean auto-land. This violates the
-     project's own "unknown ≠ zero" rule inside the autonomy counter. Fix before K1 is read as met.
+     project's own "unknown ≠ zero" rule inside the autonomy counter. Fix before K1 is read as
+     met.~~ **FIXED 2026-07-25 (branch `kprogress-honesty`)**, and it changes how the clean
+     sub-count reads:
+     - Only an explicit `confirmedByHuman: false` counts toward `clean`. A row that carries no
+       value (or `null`) is counted as **unknown** — reported as its own number next to
+       "davon N/10 clean" in the criteria header, never folded into it. Unknown is not zero:
+       the clean count is now a floor, and the header shows how many rows it is silent about.
+     - Same land: **K2 no longer depends on §1's anchor.** It was computed inside the anchored
+       branch, so a ledger without the `f9-verify-deps` row reported `k2: 0` — a measurement
+       claim about shadow verdicts that had in fact been recorded. §2 asks for no anchor
+       (K1's is about the F9 verify fix's deploy boundary), so shadow verdicts are counted
+       across the whole ledger and the K2 chip renders whether or not §1 can be anchored.
+     - No threshold moved. The counter got stricter, so K1's clean sub-count may READ lower
+       than it did before this land on the same rows; that is the correction, not a regression.
   6. **Judge independence is role-only, not statistical:** one `SUMMARY_MODEL` runs ②, ③, the
      resolver, the enhancer and the digest; lanes, steward and operator are all Claude. The
      independence caveat above covers labeler-vs-lander only. Record each judge's model with its

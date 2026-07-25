@@ -85,6 +85,12 @@ rotting. Two shelves, plus the steward subsystem.
   read by the `/steward` load ritual. See `steward-intelligence.md` §3.
 - **`/steward`** (`.claude/commands/steward.md`) — the steward's load ritual: read
   the shelf, spot-verify its claims, then operate.
+- **`discrepancy-audit.md`** — the claim-vs-reality hunt made provable: eight
+  discrepancy classes, each with a confirmed instance and the command that proved
+  it, plus the proof discipline (paste the output, not the word "verified"; a
+  correction must address the same object as the claim; never re-litigate a trade
+  the code already owns). Load it before auditing the corpus against the code.
+  Carries its own findings log.
 
 **Steward (the workhorse agent — an optional Fleet subsystem):**
 - **`steward-overview.md`** — the entry map: what the steward *is*, what it can *do

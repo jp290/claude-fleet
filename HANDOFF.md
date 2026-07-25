@@ -1,161 +1,127 @@
-# HANDOFF — 2026-07-25 (session 5: seven lands in one day — the calibration phase begins)
+# HANDOFF — 2026-07-25 (session 6: the adversarial day — four lands, seven sweeps, one reframe)
 
-> **LATE-DAY ADDENDUM (written ~15:00, supersedes stale parts below).** After §1–§8 were
-> written, the day continued:
-> - **Two more lands** (`fc32fc9` criteria-progress header, `0f7fa06` transcriptFact +
->   bundleStale), both deployed + built. **K1: 8/20**, streak intact.
-> - **② shadow's first two production verdicts: both `raw: true`** — the real model misses
->   the JSON contract; gate mode would have (fail-closed) stopped both clean auto-lands.
->   Shadow proved its purpose on day one. Raw answer NOT persisted → diagnosis blocked
->   (fix candidate #1). K2: 0/25 valid.
-> - **Fire-drill #1 on auto-③** (+ re-adjudication after reading ③'s spec): in-diff
->   semantic defect MISSED (inverted guard read as cosmetic, stamped "verified"); second
->   item was an invalid test (needed forbidden context). Operational reading:
->   `review: covered` = "a review ran", NOT "code is sound". Canonical home:
->   **`docs/judge-calibration.md`** (procedure, per-judge state, instrument-check rules);
->   dated entries in `graduation-criteria.md`'s amendment log; portable kernel in
->   `~/.claude/knowledge/judge-calibration.md`.
-> - **Criteria doc amendments** (`33d919a`): Ns = anti-impatience gates, not statistics;
->   K1 homogeneity caveat; confirm-lands are the OWNER's (row 10 was the one self-granted
->   exception, now a written rule). Owner-attention budget axiom in `steward-pulse-v2.md`.
->   CLAUDE.md: fails-identically-at-HEAD proof required for any flake claim.
-> - **Two autonomy trials IN FLIGHT at handoff time:** mission lane `flake-mission`
->   (slot 2 — picks one of the two §6 flakes itself, fixes it) and **steward-pulse phase A
->   trial #1** (slot 1 briefed to compose ONE facts+question nudge for slot 2 at a
->   self-chosen moment). Check their outcomes FIRST: pane reports, whether the steward
->   sent (its send is capped + journaled), the lane's `[pulse-reply]` line, and the
->   mission lane's land. Stop-and-review cases go to the owner.
-> - Fresh instrument lessons (full text `judge-calibration.md`): deployGap is NESTED in
->   the sessions payload (a top-level read produced a phantom "regression" that a
->   same-instrument scratch test "confirmed"); `killed-dirty` = killed with unlanded
->   commits (server.ts:2784).
+*A thin map, NOT the knowledge. Every line is a claim to verify. **This file quotes no counter
+it cannot justify**: the previous handoff was wrong by 6 ledger rows within a day of being
+written (`adversarial-2026-07-25.md` §C finding 10), so state below is a COMMAND, not a number.*
 
-*A thin map, NOT the knowledge. Durable findings live in `docs/` (§4 names owners). **Treat every
-line as a claim to verify.** This session's own instrument-error (§5.1) is the freshest reason.*
+## 1. Recompute state before believing anything
 
----
-
-## 1. State — verified at write time, not remembered
-
-```
-git log --oneline -5 && tmux -L claudefleet list-sessions | grep srv \
-  && curl -s -H "Authorization: Bearer <stewardToken>" http://100.64.0.1:8790/api/steward/sessions \
-     | python3 -c "import json,sys; print(json.load(sys.stdin)['deployGap'])" \
-  && wc -l lane-outcomes.jsonl
+```sh
+cd ~/claude-fleet && git log --oneline -3
+python3 -c "
+import json
+rows=[json.loads(l) for l in open('lane-outcomes.jsonl')]; rows.sort(key=lambda r: r.get('ts') or 0)
+a=[i for i,r in enumerate(rows) if r.get('branch')=='f9-verify-deps']; s=a[0]+1 if a else 0
+k1=cl=un=k2=0
+for r in rows[s:]:
+    d=r.get('disposition')
+    if d=='reverted': un+=1; k1=cl=0
+    elif d=='landed':
+        k1+=1
+        if not r.get('confirmedByHuman'): cl+=1
+    sh=r.get('cleanReviewShadow') or {}
+    if sh.get('verdict') in ('pass','would_stop'): k2+=1
+print('rows %d | K1 %d/20 | clean %d/10 | undos %d | K2 %d/25'%(len(rows),k1,cl,un,k2))"
+curl -s -H "Authorization: Bearer $(python3 -c "import json;print(json.load(open('fleet.json'))['stewardToken'])")" \
+  http://100.64.0.1:8790/api/steward/sessions | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['deployGap'], d.get('bundleStale'))"
 ```
 
-- `main` = `9032845`, srv up 13:00:52 **carrying exactly that commit** — proven by the served
-  `deployGap: {behindCount: 0, codeBehind: false}` (the fact now proves its own deployment).
-- **deployGap is NESTED** under its own key in the sessions payload. Reading top-level keys
-  returns nulls that look like "boot git call failed" — this session lost 20 minutes to that (§5.1).
-- Ledger: **11 rows.** Rows 5–11 all carry `review: covered`; rows 6–11 landed through the
-  F9-fixed gate. `cleanReviewShadow` is `None` everywhere yet — the shadow flag went live only
-  with the 13:00 srv; **the first clean auto-land after 13:00 is the first shadow verdict.**
-- `dispositions.jsonl` does not exist yet — created by the first owner label. Not a bug.
-- Client bundles rebuilt 13:03 (they were **stale since 00:50** — see §5.3).
-- Worktrees: only `steward` + the orphaned `fleet-flake-waitmerge` (owner decision pending).
+At 15:50 this read `rows 19 | K1 12/20 | clean 11/10 | undos 0 | K2 1/25`. **`deployGap` is
+NESTED**; `codeBehind:false` with `behindCount>0` = docs-only drift, no deploy needed.
 
-## 2. What landed today (all deployed, srv 13:00:52)
+## 2. The reframe — read this before choosing what to build
 
-| commit | what | proof status |
-|---|---|---|
-| `cffa4a5` | F9: land verify deterministic (`bun install --frozen-lockfile` prelude in `watchdog.sh` VERIFY_CMD) | proven both directions in fresh worktree; then in production: rows 7–8 verified green with no node_modules |
-| `9c1ffbe` | outcome feed (🧾 renderOutcomes) + F5 write-side (`scope`/`notes`/`raw` on OutcomeReview) | row shapes both-handled; F5 fields in the union type at HEAD |
-| `7983c3a` | P-4 deploy-gap fact (`bootHead` vs HEAD, nested `deployGap` on sessions+digest) | self-confirmed live; correctly ignored docs-only commits (`codeBehind: false` at behind=2) |
-| `def5cbf` | ✨ enhance: `briefPayload` DATA block, directive table deleted, `enhance-prompt.ts` with real prompt tests | e2e asserts the real module |
-| `1789389` | ② shadow mode (`FLEET_CLEAN_REVIEW=shadow`): runs on clean auto-lands, records `cleanReviewShadow`, **never gates**; errored run = `verdict null, raw true`, never a fabricated pass | e2e-clean-review has a shadow phase; no live verdict yet |
-| `3e9f7b2` | `doneLookingSince` — additive second tier, trigger unchanged, one-edit clause-list property kept | landed via **first resolver-conflict confirm-land** (§5.4) |
-| `16468a2` | disposition rail: `dispositions.jsonl` (owner-only write, self-token 403 proven, labels advance `harmAttestAt`), ✓/✗ on feed rows, ③ nützlich/falsch, ✨ auto-disposition (accepted/edited/ignored) | negatives e2e-proven; ref shapes: land=`branch@ts`, review3=patchId, enhance=draftId |
-| `9032845` | `FLEET_CLEAN_REVIEW=shadow` into the watchdog srv-spawn env | spawn line committed; live env inferred from restart order, not read from the process |
+**The stated bottleneck ("data velocity", last handoff §3.4) is wrong.** Data velocity is fine.
+The binding constraint is **owner adjudication, measured at zero**: `dispositions.jsonl` holds
+exactly ONE record in its lifetime and it was written *automatically* by the compose box
+(`src/client.ts:3616`), so deliberate owner judgements ever = **0**. Three of the four
+graduation criteria terminate in such a label (§1 wrong-class, §2 owner-confirmed catch, §4
+`promotionEligible`) — at the observed rate they are not slow, they are **unreachable**.
+Meanwhile the queue grows: 3 steward proposals pending, two of them 18–28 h old and pointing at
+lanes that no longer exist, with nothing that ages or reaps them.
+Evidence + argument: `adversarial-2026-07-25.md` §E1.
 
-Docs landed: `graduation-criteria.md` (pre-registered numbers, amendment rule),
-`steward-pulse-v2.md` (nudge trials protocol), F5/F9 resolutions at their claim sites (`424affa`).
+Corollary worth acting on: **the land-class disposition write path has never executed in
+production.** The first ✓/✗ on a feed row is both the unblocking action and the rail's first
+real test.
 
-## 3. The frame that ordered everything (owner-endorsed)
+## 3. What landed today (all deployed; srv restarted twice, health-checked both times)
 
-1. **Unfed mechanisms are Fleet's recurring defect** — enhance was starved, `outcomeTally`/
-   `harmAttestAt` never fed, `baselineSamples` per-boot, the ledger reader missing. Rule: no new
-   judging/measuring layer without its feeder in the same move.
-2. **The authority ladder: record → display → advise → gate → act.** Every judging instance
-   climbs by measured hits, never by being built. ② is at "record" (shadow). The criteria doc
-   holds the rungs' numbers.
-3. **Risk concentrates at the land gate; upstream may loosen.** Since today the gate is
-   deterministic (F9), observed (feed), reversible (undo-land), measured (ledger). That is what
-   makes steward-pulse trials cheap: a wrong upstream decision at worst produces a lane the gate
-   stops. (`steward-pulse-v2.md` — phases A/B/C, THE GUARD honored via facts+one-question.)
-4. **The bottleneck is data velocity now, not build velocity.** Criterion 1 progress at this
-   writing: **6/20 lands** (rows 6–11), 0 undos, 5 clean autos. K2: 0/25 shadow verdicts.
-   Everything lands through Fleet from now on — a hand-land is a lost ledger row.
+| commit | what |
+|---|---|
+| `b12052a` | ② shadow persists `rawAnswer` on `raw:true` rows — the K2 blindness fix; first steward-adjudicated land |
+| `96fe66c` | baselineRate flake killed via monotone `seen`/`seenHelped` lifetime counters |
+| `0531817` | `fleet-e2e.ts` split into 23 `e2e/*` modules + `e2e/harness.ts`/`e2e/ctx.ts` (702 names preserved — verified by name-diff — plus 3 new); pane-capture flake fixed via `paneEnv()` |
+| `e7559db` | **real server bug** that lane found: `openSlot` now drops a recycled slot's stale `gitInfo`, so a fresh empty lane can no longer read `done-looking` off the previous lane's facts and draw a phantom auto-③ review |
+| `8502c72` | `docs/architecture-review.md` — 12 ranked architecture findings |
 
-## 4. Doc owners for what's new
+**All three known structural flakes are CLOSED** (detail in `adversarial-2026-07-25.md` and the
+lane reports). Consequence: a failing check is now YOURS until proven fails-identically-at-HEAD.
 
-`graduation-criteria.md` (the numbers + amendment log) · `steward-pulse-v2.md` (nudge trials)
-· `perception-layer.md` (feed built-status updated by lane) · `discrepancy-audit.md` F5/F9
-resolutions · `merge-review-autonomy.md` §7 FIXED note · `lane-signals.ts` header (doneLookingSince).
+Docs landed: `adversarial-2026-07-25.md` (**the index — start there**), `gate-coverage.md`,
+`ungoverned-artifacts.md`, `trust-perimeter.md`, `compiler-program.md`, the criteria amendment,
+the `rundgang.md` scheduling amendment. All are now listed in `docs/README.md`.
 
-## 5. Method lessons — this session's own errors, freshest first
+## 4. In flight
 
-1. **An instrument error double-confirmed is still an instrument error.** `deployGap` was read at
-   top level (it is nested) → nulls; the scratch "reproduction" used the same wrong read and
-   "confirmed" a nonexistent regression. One unnecessary srv restart before the actual fix: read
-   the payload. Rule: before debugging a "regression", diff your measurement against the last
-   measurement that "worked" — the difference was in my python, not in the server.
-2. **F9 fires on your own lands.** The land order (F9 lane first → deploy → rest) existed because
-   the un-fixed gate would have downgraded the sibling lanes. Sequencing against your own
-   in-flight fixes is part of the plan, not an afterthought.
-3. **Client bundles are a deploy step.** `public/*.js` is gitignored; landing client code changes
-   NOTHING until `bun run build` runs in the main checkout. The feed shipped at 12:19 and was
-   invisible until 13:03. (Candidate mechanical fix: build-on-boot or a bundle-mtime vs
-   src-mtime fact next to deployGap.)
-4. **First resolver-conflict land is on record (row 10):** 2 import-line conflicts resolved by
-   the agent, verify green through the new gate, diff reviewed first-hand, confirm-landed. This
-   is exactly the class component 5 would auto-land once K1 is met.
-5. **done-looking is recall-sound but latency-loses vs a human** (~minutes: 60s threshold +
-   repaint resets + poll interval). Fixed additively (`doneLookingSince`), trigger untouched.
-   Epoch-0 caveat: a never-spoke slot reads as quiet-since-epoch — pollers must special-case it.
+- **Lane `verify-tristate` (slot 2)** — the highest-severity finding: `watchdog.sh:49` opens with
+  `[ -f fleet-e2e.ts ] || { …; exit 0; }` while `runVerify` records `ok: code===0`, so a lane
+  that moves that file records a **green gate that ran nothing**. Briefed to make a skip
+  structurally unable to read as a pass, to decide deliberately what that implies for non-fleet
+  repos (the guard exists so they can still land), and to carry the `graduation-criteria.md`
+  amendment in the same lane. May need an owner `launchctl kickstart` — it was told to say so,
+  never to run it.
+- `⚙ steward` idle; its `CLAUDE.md` is a spawn-time snapshot from 07-24, **9 lines stale**.
 
-## 6. Known structural flakes — ALL CLOSED (2026-07-25, the e2e-split lane)
+## 5. Owner decision queue (nothing was done unilaterally)
 
-- `FLEET_SELF_TOKEN absent for a non-lane slot` — pane-capture race. Closed: `paneEnv()`
-  (`e2e/harness.ts`) retries the `send-keys` until a unique, line-anchored marker renders, so
-  neither a dropped keystroke nor a half-rendered line can be read as an answer.
-- baselineRate ring-saturation — closed earlier (`96fe66c`): read off the lifetime counters.
-- auto-③ vs. review-state checks (reported, not attributed). Root cause found and fixed
-  server-side: `killSlot` leaves `gitInfo` for `tickGit` to reap ≤10 s later, so a slot recycled
-  inside that window served the PREVIOUS lane's `{dirty:0, ahead:N}` — and with `lastOutput`
-  reset to 0 the idle clause read "quiet forever", making a brand-new empty lane `done-looking`.
-  auto-③ then filed a `no code changes in scope` review against it, which surfaced later as
-  `review.state:"superseded"`. `openSlot` now drops the entry (one line), so the fact is UNKNOWN
-  until the tick computes it, and an unknown is never permission to act.
+1. **Label some rows** — §2. Highest leverage available, and it exercises an untested path.
+2. **Backup.** The remote is **PUBLIC** and unpushed since 2026-07-13, so pushing now would
+   newly publish every doc in `docs/`. The untracked layer (rulebook, owner model, 4 trails) has
+   no version control or off-machine copy at all. Recommended: a **private** mirror. Not done —
+   outward-facing and irreversible. `ungoverned-artifacts.md` §4–5.
+3. **`/rundgang` schedule** — decided on measured evidence (kept, plus two tripwires); reverse it
+   if you disagree: `.claude/commands/rundgang.md`.
+4. Still open from session 5: 3 leaked `bun server.ts` (Jul 18/21/23) + ~235 stale
+   `/private/tmp/tmux-501` sockets; fate of the orphaned `fleet-flake-waitmerge` worktree.
 
-## 7. Open items, in intended order
+## 6. Build queue, in the order the evidence supports
 
-1. **Criteria-progress view** (small lane, client now free): feed header shows "K1 n/20 · K2
-   n/25 · undos 0". Closes the last loop — progress toward autonomy becomes perceptible.
-2. ~~**Cleanup lane:** split `fleet-e2e.ts` …~~ **DONE 2026-07-25.** `fleet-e2e.ts` is now a
-   ~90-line runner over 23 `e2e/*.ts` check-family modules + `e2e/harness.ts` / `e2e/ctx.ts`;
-   702 check names unchanged and in the same order. Both §6 flakes fixed. The `FLEET_*_CMD`
-   stand-in collapse was NOT done — the stand-ins live in `e2e-isolated.sh`, not the suite, and
-   each has a different contract; only the pane-probe scaffolding was deduplicated (`paneEnv`).
-3. **Steward-pulse phase A first watched trial** — when normal work sessions exist again.
-   Protocol in `steward-pulse-v2.md`; caps already machine-enforced.
-4. **Parked owner idea (2026-07-25):** a faster one-sentence communication layer inside the
-   nudge process — deliberately NOT designed yet; revisit after phase A data exists.
-5. **Owner decisions pending:** clean 3 leaked `bun server.ts` (Jul 18/21/23) + ~235 stale
-   `/private/tmp/tmux-501` sockets; fate of orphaned `fleet-flake-waitmerge` worktree.
-6. **Provenance lane** (F3: briefHash null on 25/49; plus the ✨ `source:"owner"` rider moved
-   here) — after the above.
-7. Rotation policy for `dispositions.jsonl` (rail report §1: evidence should not silently
-   rotate at 5MB like an audit log does).
+1. **② JSON extraction** (cheap, unblocks K2). 5 of 6 shadow answers wrapped valid JSON in a
+   prose preamble; the 6th — a short answer — parsed and became K2's first valid verdict. So the
+   fix is *extract the first JSON object from the body*, not reprompting.
+2. **`kProgress` fail-green** — `src/client.ts:2935` is `if (!o.confirmedByHuman) clean++`
+   against an **optional** field, so a row missing it counts as a clean auto-land. "Unknown ≠
+   zero" violated inside the autonomy counter itself.
+3. **Owner-perception fact layer** (§E4): unlabeled rows, oldest pending proposal, proposals
+   pointing at dead lanes, deliberate labels in 7 days — rendered where the owner already looks.
+   Turns §2 from an argument into a number the system reports about itself.
+4. **Doc-claims check wired into `e2e-claude-gate.sh`** (§C): a doc may name an env var / route /
+   constant only by symbol, else the gate fails. The executable answer to doc rot, which prose
+   discipline has now failed to prevent four times.
+5. Then: `runWorker` extraction (`architecture-review.md`), the post-land audit tier
+   (`gate-coverage.md` §5), steward-pulse phase A, provenance lane (F3 `briefHash`).
+
+## 7. Traps this session paid for
+
+1. **Never commit to main while a land is in flight.** Cost a full verify cycle: the lane rebases
+   onto main-at-T0, verify runs ~a minute, ff then fails with "Diverging branches". The gate
+   failed *closed* and kept the lane — correct behaviour, self-inflicted trigger.
+2. **A lane cannot update `CLAUDE.md`.** Gitignored + copied at spawn ⇒ the edit is invisible to
+   `git status` and dies with the worktree. `e2e-split`'s rulebook update was rescued by hand.
+   Lanes must report rulebook changes as TEXT. (`ungoverned-artifacts.md`)
+3. **Verify a subagent's claim before repeating it.** Two of four sweeps needed correction, and
+   my own "the rollback is untested" was wrong — `e2e/land-provenance.ts` has 10 undo checks;
+   the honest claim is that its *human* half has never run.
+4. **`grep` on `src/client.ts` needs `LC_ALL=C grep -a`** — a plain grep silently returns
+   nothing, which produced a wrong "the sparkle button doesn't exist" conclusion.
+5. `/api/slots/:id/land` is teardown only and refuses unmerged branches; the **gate** is
+   `POST /api/slots/:id/merge`.
 
 ## 8. A fresh session's first five minutes
 
-1. Run §1's state command. If `deployGap.behindCount > 0` with `codeBehind: true` — deploy first,
-   nothing measured before it means anything. Remember: the field is NESTED.
-2. `python3 -c ...` the last ledger rows: any `cleanReviewShadow` yet? First one = K2 has begun;
-   judge its `verdict` against the actual land before trusting the counter.
-3. Check `dispositions.jsonl` existence — first labels = the rail is being used; if the owner has
-   labeled, `harmAttestAt` in fleet.json should be non-zero (promotion machinery now feedable).
-4. Two producers rule (unchanged): `git worktree list` + `git status` before touching `docs/`.
-5. `docs/README.md` → `graduation-criteria.md` → `steward-pulse-v2.md` is the shortest path to
-   the current program.
+1. Run §1. If `codeBehind: true` — deploy first; nothing measured before that means anything.
+2. Read `adversarial-2026-07-25.md` §E first, then §A dispositions. It is the current map.
+3. `git worktree list` + `git status` before touching `docs/` (two-producers rule).
+4. Check whether any deliberate disposition exists yet (§2) — that single number decides whether
+   the programme is advancing or only accumulating.

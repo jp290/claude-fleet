@@ -134,6 +134,22 @@ rotting. Two shelves, plus the steward subsystem.
 - **`judge-calibration.md`** — how judging instances earn trust: the fire-drill procedure
   (sealed ground truth, evidence-horizon rule), per-judge calibration state (③ misses
   in-diff semantics; ② misses its JSON contract in production), instrument-check method.
+- **`adversarial-2026-07-25.md`** — the ranked index of the 2026-07-25 adversarial pass (seven
+  sweeps): what needed an owner decision and how each was disposed, the structural findings
+  B1–B12, and §E's empirical pass — including the measurement that the binding constraint is
+  owner adjudication (one auto-written label in the rail's lifetime), plus two corrections of
+  its own earlier claims. **Read this before acting on any of the four docs below.**
+- **`gate-coverage.md`** — what the land gate actually verifies (tsc + 26 claudeAlive checks;
+  the 703-check suite is not in it), the post-land audit tier that was designed and never
+  built, and why role separation between ②/③/resolver is not statistical independence when
+  one model runs all of them.
+- **`ungoverned-artifacts.md`** — `CLAUDE.md`/`OWNER.md`/the four `.jsonl` trails are untracked,
+  copied per-lane at spawn, and unbacked-up: why a lane cannot fulfil Wissenspflege for the
+  rulebook, the measured per-worktree drift, and the fix ladder under a public remote.
+- **`compiler-program.md`** — the three prompt-compilers (✨ enhance, /sharpen3, steward) as one
+  substrate, the steward's autonomy rungs, and why ✨ needs feeding before tuning.
+- **`architecture-review.md`** — the `arch-review` lane's 12 ranked architecture findings with
+  costs, three things to protect unchanged, and one structural recommendation (`runWorker`).
 - **`graduation-criteria.md`** — pre-registered numbers each autonomy step must meet
   before it may be enabled (component-5 auto-land, ② shadow→gate, deploy pilot, nudge
   promotion). Written before the data on purpose; amendments only with a rationale

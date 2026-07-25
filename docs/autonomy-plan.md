@@ -150,21 +150,13 @@ path. Today's evidence says brief quality is the dominant variable in whether a 
 unaided. An autonomous dispatcher that briefs badly produces work that passes the gate and
 misses the point — the most expensive failure mode available, because it is invisible.
 
-### Gap 4 — No metering, and the scarce resource is not money
-Nothing measures what a lane consumes, and no budget bounds the fleet
-(`architecture-review.md` F10: only auto-③'s cap of 2 exists). `sessionMs` is recorded and read
-by nothing; tokens are not recorded at all, though `lane-cost-study.md` proved them derivable
-from the transcripts (~32 M cache-read tokens per lane, cache-read = 75.7 % of the total).
-
-**Corrected 2026-07-25 after checking the billing path:** Fleet makes no API calls — every model
-call spawns the Claude Code CLI against a `claude_max` subscription, so the study's dollars are
-notional. The binding limit is therefore **plan capacity and rate-limit headroom**, not spend.
-Two consequences: (a) an autonomous fleet's failure mode is *exhausting the plan and stalling
-every session, including the owner's*, which no current mechanism can see coming; (b) the one
-real-money path is the account's `hasExtraUsageEnabled` flag, which converts exhaustion into
-metered billing instead of a stop. Metering should therefore target **token throughput per unit
-time against plan headroom**, not a dollar budget — and the "can I leave it running overnight"
-question is answered by that number.
+### Gap 4 — Metering: DEFERRED (owner decision, 2026-07-25)
+Nothing meters consumption, and nothing bounds the fleet beyond auto-③'s cap of 2. Two facts are
+worth keeping and nothing more: Fleet makes **no API calls** (every model call spawns the CLI
+against a `claude_max` subscription, so `lane-cost-study.md`'s dollars are notional), and the
+only real limit is plan/rate-limit headroom. **Owner ruling: optimisation comes after autonomy —
+this is explicitly off the critical path.** Do not re-derive it, do not gate any step on it. The
+cost study's measurements stay useful as a baseline for whenever that work is picked up.
 
 ### Gap 5 — Attention routing, not attention removal
 Autonomy is not zero human; it is the human on the right things. Today everything either needs
@@ -172,17 +164,20 @@ the owner or nothing does: 3 steward proposals pending (two stale, pointing at l
 longer exist), ~20 unlabeled rows, no aging, no priority, no reaper. Before the system can hold
 more work it must be able to say *these two need you, the other forty do not.*
 
-### The order that follows
-1. Owner labels + `label-taxonomy.md` (unblocks every criterion; ~10 minutes).
-2. Post-land audit tier (Gap 2) — because Gap 1(b) is built on it.
-3. Defect-escape attribution (Gap 1b) — the automatic wrong-signal.
-4. Cost meter + fleet budget (Gap 4) — pending the cost study's verdict.
-5. Dispatcher briefing, P-9 (Gap 3).
-6. Attention routing (Gap 5), then component 5 and upstream autonomy become safe.
+### The critical path (metering removed by owner ruling)
+1. **Owner labels** + `label-taxonomy.md` — unblocks every criterion; ~10 minutes of owner time.
+2. **Post-land audit tier** (Gap 2) — run the full suite after a land, red → owner-visible alarm
+   with `undo-land` as the rollback. Precondition for step 3, and the ceiling the gate lacks.
+3. **Defect-escape attribution** (Gap 1b) — attribute a red audit back to the land that caused
+   it. This is the automatic wrong-signal, and it is the step that changes the system's
+   *category*: from a machine that does work unattended to one that can tell whether the work
+   was any good.
+4. **Dispatcher briefing, P-9** (Gap 3) — work can then enter and be executed without a human
+   composing each brief.
+5. **Attention routing** (Gap 5) — the system says *these two need you, the other forty do not*.
 
-Steps 1–3 are the ones that change the system's *category*: from a machine that does work
-unattended to a machine that can tell whether the work was any good. Everything above Part 3's
-Stage 3 is gated on that, and should stay gated.
+Then component 5 and upstream autonomy are safe to enable. Steps 2–3 are the ones that matter;
+everything in Part 3 above Stage 3 stays gated on them.
 
 ## Part 5 — The ✨ button, and what it is for
 

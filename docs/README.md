@@ -127,6 +127,10 @@ rotting. Two shelves, plus the steward subsystem.
   the three isolation layers and the accepted skip-perms OS-blast.
 - **`lane-autonomy-future.md`** — deferred ideas for lanes that run further on their
   own; a parking lot, not a plan.
+- **`graduation-criteria.md`** — pre-registered numbers each autonomy step must meet
+  before it may be enabled (component-5 auto-land, ② shadow→gate, deploy pilot, nudge
+  promotion). Written before the data on purpose; amendments only with a rationale
+  committed before looking at new data.
 - **`perception-layer.md`** — design (2026-07-25; **write side built in `600d401`**, the feed
   is not): the three pieces that make Fleet observable to itself — a deterministic
   `done-looking` predicate, auto-③ on it, the review persisted onto the outcome row, the

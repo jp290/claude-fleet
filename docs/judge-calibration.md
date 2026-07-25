@@ -38,9 +38,18 @@ Norm (2026-07-25): **no judging instance gets even display-trust before a seeded
   spec-valid semantic item MISSED** — an inverted guard read as a cosmetic off-by-one and
   stamped `verified`. The other item was invalid (needed forbidden context; ③ spec-conformly
   marked it `inferred` and named the limit).
-- Operational reading until further drills: **`review: covered` attests a review RAN — not
-  that the code is sound.** The `verified` basis-tag can itself be wrong; treat it as the
-  model's claim, not a fact.
+- **Drill #2 (2026-07-25, `outcome-summary`, sonnet-5[1m]): location 2/2, semantic 2/2,
+  0 false positives.** Both spec-fair in-diff defects fully named: the inverted window
+  filter (D1, the class drill #1 missed — this time with the contradicting intent-comment
+  in the same hunk) incl. the correct fix (`>= cutoff`), and the wrong-counter response
+  wiring (D2, new class). Both graded `verified`, correctly. A third out-of-diff auth
+  question was spec-conformly marked `inferred` with its limit named. Ground truth sealed
+  pre-run (session scratchpad); ledger row 15 `killed-dirty`, branch discarded at `4be8238`.
+- Operational reading after drills #1–#2: **`review: covered` attests a review RAN — not
+  that the code is sound.** ③ can deliver full semantic depth (drill #2) and can miss it
+  while stamping `verified` (drill #1) — the difference may be how much intent evidence the
+  diff itself carries (drill #2's D1 had the contradicting comment in-hunk). N=2; the
+  reading softens only with more drills, and the `verified` tag stays the model's claim.
 
 ### ② clean-review (shadow since 2026-07-25)
 - Spec: ONE narrow question — do the lane's changes and main's new commits collide

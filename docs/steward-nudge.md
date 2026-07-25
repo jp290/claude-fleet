@@ -175,6 +175,14 @@ building on it:**
 - **Corpus records carry no timestamp/session ref** (`situations.jsonl`: proj, summary, quote —
   verified across all 205); re-anchoring each record into its transcript is new mining via quote
   matching, not a lookup, and the 7 stitched quotes will not re-anchor exactly.
+- **The journal changes regime mid-corpus** (added 2026-07-25, counted first-hand — see
+  `discrepancy-audit.md` F1 for the commands). Both the journal and the terminal harvester were
+  introduced 2026-07-19 (`3f70922`, `ec1ad26`), so 1573 of 2441 records are retroactively
+  reconstructed by a script that is not in the repo, tagged with a `backfill` source that
+  `logPrompt`'s own type union does not contain. Reconstructed `owner` records exist (earliest
+  `owner` ts predates the journal itself) and are indistinguishable from native ones. **Hard
+  boundary for the retrospective: use only records from 2026-07-19 onward, and treat
+  `ownerPrompts` on any lane whose cwd predates that date as unusable.**
 
 What §8 can honestly deliver from existing artefacts: **recall and the direction split, on the
 idle-proxy signal, minus dirty-tree conditions.** Precision needs the forward recorder plus N days

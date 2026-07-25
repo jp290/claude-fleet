@@ -105,4 +105,49 @@ and reliably over-report. Give each agent the proof rules above verbatim, and re
 *Newest first. Each entry: class, the claim, the reality, the command + output that proved it, the
 cost, and either the fix commit or what a fix would require.*
 
-- (empty — the first audit appends here)
+### 2026-07-25 — F1: the prompt journal changes regime mid-corpus, and reconstructed records are indistinguishable from native ones
+
+**Class:** D4 + D5 (compound). **Found while** verifying a figure this very doc asserted — the
+`ownerPrompts` counts had been taken from an agent report and never counted first-hand.
+
+**Claim in the corpus:** `steward-nudge.md` §8 treats the prompt journal as the durable source for a
+retrospective over owner interventions; `ownerPrompts` is read as "every human correction adds one".
+
+**Reality:** the journal has **three regimes** and one undocumented writer.
+
+```
+$ bun -e '…count by source over streams/prompts.jsonl…'
+Zeilen: 2441 | unparsebar: 0
+backfill: 1573      2026-07-05T15:38 .. 2026-07-19T15:28
+terminal:  755      2026-07-19T16:28 .. 2026-07-25T07:19
+owner:      91      2026-07-18T21:42 .. 2026-07-24T23:44
+auto:       22
+
+$ git log -S'PROMPT_LOG' -- server.ts | tail -2      → 3f70922  2026-07-19  (journal introduced)
+$ git log -S'logPrompt(s, t, "terminal"' -- server.ts → ec1ad26  2026-07-19  (harvester introduced)
+$ grep -n backfill server.ts                         → only a comment at :4195, no writer
+```
+
+Three facts follow, each load-bearing:
+
+1. **`backfill` is not in `logPrompt`'s type union** (`server.ts:335` lists
+   `owner|share|auto|terminal|steward`) and no writer for it exists in the repo — 1573 of 2441
+   records, the largest source, were written by a one-off script that is not checked in. Their
+   provenance is unreproducible.
+2. **The journal only has native records from 2026-07-19.** Both the journal and the terminal
+   harvester were introduced that day, so every record with an earlier `ts` is reconstructed.
+3. **Therefore reconstructed `owner` records exist and cannot be told apart from native ones** — the
+   earliest `owner` ts (2026-07-18T21:42Z) predates the journal's own introduction. `laneOwnerPrompts`
+   counts both identically.
+
+**Cost:** any analysis over the journal that does not segment by regime compares incomparable
+periods — and §8's retrospective is exactly such an analysis. This is a *third* confound on
+`ownerPrompts`, on top of the surface confound (owner-UI vs pane-typed) already recorded in §8: a
+lane whose cwd predates 2026-07-19 has a structurally different count from one after, and no field
+on the record says which.
+
+**Fix:** documentation only — the data cannot be repaired retroactively, and backfilling provenance
+would be reconstruction posing as recording (the ledger's own rule, HANDOFF §3). Recorded in
+`steward-nudge.md` §8 as a hard boundary on the retrospective: **use only records from
+2026-07-19 onward, and treat `ownerPrompts` on pre-2026-07-19 lanes as unusable.** A forward fix
+(adding a provenance field) would only help records not yet written.

@@ -127,6 +127,10 @@ rotting. Two shelves, plus the steward subsystem.
   the three isolation layers and the accepted skip-perms OS-blast.
 - **`lane-autonomy-future.md`** — deferred ideas for lanes that run further on their
   own; a parking lot, not a plan.
+- **`steward-pulse-v2.md`** — nudge test runs as the first upstream-autonomy trials:
+  facts+one-question nudges whose mandated one-line reply is its own label, the
+  handoff-recycle ritual, mission sessions; why the hardened land gate makes upstream
+  trials cheap. Feeds the starving §4 tally.
 - **`graduation-criteria.md`** — pre-registered numbers each autonomy step must meet
   before it may be enabled (component-5 auto-land, ② shadow→gate, deploy pilot, nudge
   promotion). Written before the data on purpose; amendments only with a rationale

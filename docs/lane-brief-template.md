@@ -63,6 +63,30 @@ one-line note of anything you could not resolve. No walkthrough of your reasonin
   will succeed with it. If you can't hand this brief to Haiku with a straight
   face, the brief — not the model — is usually what needs upgrading.
 
+## Norms earned by writing eight briefs in one day (2026-07-25)
+
+- **Never paste the gate command into a brief.** It changed twice that day (the F9
+  `bun install` prelude, then `merge-prompt.ts` joining the tsc file list), and every
+  copy in a live brief is a silent drift source. Write *"run the Verify line in the
+  lane's CLAUDE.md"* — the lane has that file, and it is the single source.
+- **No blanket flake amnesty.** "Two known flakes may fire, neither is yours" became a
+  standing free pass under which a *new* fail of the same signature could hide. The
+  brief says instead: any failing check is yours unless you prove
+  fails-identically-at-HEAD in a fresh worktree, with the run quoted. (Also in CLAUDE.md,
+  so it rides into every lane.)
+- **Footprint must name the *other* producer, not just your own files.** With three
+  lanes live, "fleet-e2e.ts, insert next to related checks, never at EOF" plus *which
+  region a sibling holds* is what actually prevented collisions. Naming only your own
+  allowance does not.
+- **Gate coverage steers what a lane may own.** The land gate is tsc + e2e-claude-gate:
+  server-side behavior is covered, **client code is asserted only at source-string level
+  (no DOM harness)**. So a lane whose value lives in rendering carries risk the gate
+  cannot see — say so in the brief, and prefer server-side scope for anything
+  autonomy-adjacent until a DOM harness exists.
+- **A calibration lane is told it is one.** Deceive the judge under test, never the
+  worker planting the material (`judge-calibration.md`), and give it an explicit
+  "then STOP" — a lane that helpfully fixes the seeded defect destroys the experiment.
+
 ## Lessons earned from real lanes (append one line per confirmed correction)
 
 Each entry below is a *defect correction*: a real fault the lane shipped, that

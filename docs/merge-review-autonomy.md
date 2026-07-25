@@ -184,7 +184,11 @@ lanes (A/B/C) land.
   lanes landed `verified: true` through the new gate the same hour.
   Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
   dispatch/model/steward routes, so module-load/boot regressions tsc misses are caught — but it
-  does NOT assert the share/guest or audit paths, so it is **total-ENOUGH, not total**. That gap
+  does NOT assert the share/guest or audit paths — **nor any rendering: there is no DOM harness,
+  so client changes are asserted only by regex over `src/client.ts` source** (three lanes said so
+  independently 2026-07-25). Client-heavy work therefore carries risk no tier of this gate can
+  see; keep autonomy-adjacent scope server-side until a DOM harness exists. So it is
+  **total-ENOUGH, not total**. That gap
   is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stays OUT of the
   gate (its ~600 ms pane-capture flake bars a deterministic gate) until that flake is fixed.
 - **§6 hard-rule #1 live-confirmed:** the flake and resolver lanes both touched `fleet-e2e.ts`;

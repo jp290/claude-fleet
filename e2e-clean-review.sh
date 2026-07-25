@@ -38,7 +38,9 @@ EOF
 chmod +x "$DIR/fakemerge"
 
 # clean-review stand-in: a mode file next to the test repo steers the verdict per run.
-#   ok (default) — {"verdict":"ok"} · review — {"verdict":"review"} · garbage — non-JSON (fail-closed).
+#   ok (default) — {"verdict":"ok"} · review — {"verdict":"review"} · garbage — non-JSON (fail-closed)
+#   flood — a non-JSON answer far longer than the persisted-answer cap (truncation)
+#   silent — no answer at all + nonzero exit (the timeout/spawn-failure shape)
 cat > "$DIR/fakecleanreview" <<'EOF'
 #!/bin/sh
 cat >/dev/null
@@ -47,6 +49,8 @@ mode="$(cat "$ctl" 2>/dev/null || echo ok)"
 case "$mode" in
   review)  printf '{"result": "{\\"verdict\\": \\"review\\", \\"reason\\": \\"lane removed renderWidget which main now calls\\"}"}' ;;
   garbage) printf 'not json at all — exercises the server fail-closed path' ;;
+  flood)   i=0; while [ $i -lt 600 ]; do printf 'XXXXXXXXXX'; i=$((i+1)); done ;;
+  silent)  exit 1 ;;
   *)       printf '{"result": "{\\"verdict\\": \\"ok\\", \\"reason\\": \\"no cross-change collision found\\"}"}' ;;
 esac
 EOF

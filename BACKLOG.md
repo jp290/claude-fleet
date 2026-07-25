@@ -810,13 +810,15 @@ states the principle — *"server.ts already IS that common service"* — and it
   reads them only as byte-slices for display / a 40 KB tail for the summarizer.
 - `steward-journal.jsonl` (7 records) — rich free-text `note` fields, read only as a tail
   (last 1–50); the digest worker reads exactly 1 as a delta anchor. Never aggregated.
-- The learning engine / "dream mode" (`steward-intelligence.md` §8) and the arena are fully
+- ~~The learning engine / "dream mode" (`steward-intelligence.md` §8) and the arena are fully
   *designed and brief'd* but **never run** — `docs/proposals/` and `docs/arena-episodes.md`
-  do not exist. (First-draft claim "dream mode is blocked on a retrieval substrate" was
-  wrong — see the stress-test below: v1 over the prompts corpus runs indexless.)
-  **Stale as of 2026-07-25:** `docs/proposals/` now holds five documents (dream-mode corpus,
-  learning-engine v1 + next steps, mechanism deep-dive, stack/land program board) and the
-  dream-mode passes have run — `docs/arena-episodes.md` is still the part that does not exist.
+  do not exist.~~ **Corrected 2026-07-25: half of this was already false when written.** The
+  learning engine HAS run — both dream passes, output committed to `docs/proposals/`
+  (`feab50e` 15:52, `6860fc7` 16:45, `7ea5a55`, five files / 1180 lines), and `feab50e` predates
+  this very bullet (`8e146d7`, 16:08) by 16 minutes. Still true: **the arena** has never run an
+  episode — `docs/arena-episodes.md` does not exist, and `briefs/arena-episode-1.md` still says
+  "create on first episode". (First-draft claim "dream mode is blocked on a retrieval substrate"
+  was wrong — see the stress-test below: v1 over the prompts corpus runs indexless.)
   The corpus this item wants to index has meanwhile grown a second unindexed class: `briefs/`.
 
 **The load-bearing constraint (owner, 2026-07-23): no dead-end build.** Tier 1 must be a

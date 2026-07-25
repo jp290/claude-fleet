@@ -253,4 +253,60 @@ export async function run(ctx: Ctx): Promise<void> {
       reviewRunsFor(rcCwd) === 0 && rcRev.cached === false, `runs=${reviewRunsFor(rcCwd)} ${JSON.stringify(rcRev)}`);
     await post(`/api/slots/${donor.slot}/kill`, {});
   }
+
+  // --- (H) A FAILED GIT READ IS NOT "NOTHING TO REVIEW". runReview reads the lane's diff with two
+  // git calls; both used to collapse a NON-ZERO EXIT into the same value as a genuinely empty diff
+  // (`committed`/`uncommitted` stay ""), and the empty-tree early return then answered a fully
+  // successful, non-raw, EMPTY review — byte-identical to a real clean one. startReview caches it,
+  // and outcomeReview files it on the lane's row as `superseded` coverage. So one transient git
+  // failure permanently records "reviewed, nothing found" about a lane nobody reviewed.
+  // That is this suite's known intermittent signature (section G's comment) reached by a SECOND
+  // route: G fixed the phantom TRIGGER (a recycled slot's stale git facts); this is the phantom
+  // PAYLOAD, and it needs no race at all — any failing read does it.
+  // Made deterministic by breaking exactly the ref the lane recorded as its base, AFTER the lane
+  // has committed real work: `git diff <base>...HEAD` then exits non-zero on a clean tree with a
+  // real diff, which is the observed failure's fingerprint (fallback scope + dirty:0 + a resolvable
+  // base at kill time). Own repo — renaming the shared REPO's branch would break later sections.
+  {
+    const hbRepo = `${REPO}.reviewbase`;
+    spawnSync("git", ["init", "-q", "-b", "main", hbRepo]);
+    spawnSync("git", ["-C", hbRepo, "config", "user.email", "t@t"]);
+    spawnSync("git", ["-C", hbRepo, "config", "user.name", "t"]);
+    spawnSync("git", ["-C", hbRepo, "config", "commit.gpgsign", "false"]);
+    await Bun.write(`${hbRepo}/seed.txt`, "seed\n");
+    spawnSync("git", ["-C", hbRepo, "add", "seed.txt"]);
+    spawnSync("git", ["-C", hbRepo, "commit", "-qm", "seed"]);
+    const hb = (await (await post("/api/lanes", { repo: hbRepo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${hb.cwd}/real-work.txt`, "real committed work the reviewer must not call empty\n");
+    spawnSync("git", ["-C", hb.cwd, "add", "real-work.txt"]);
+    for (let i = 0; i < 12; i++) {
+      spawnSync("git", ["-C", hb.cwd, "commit", "-qm", "reviewbase lane work"]);
+      if (spawnSync("git", ["-C", hb.cwd, "log", "--oneline", "-1"]).stdout.toString().includes("reviewbase lane work")) break;
+      await Bun.sleep(300);
+    }
+    // the lane recorded base "main" at creation; rename it so that ONE read fails while the tree
+    // itself stays clean and its diff stays real
+    spawnSync("git", ["-C", hbRepo, "branch", "-m", "main", "gone-main"]);
+    const hbRunsBefore = reviewRunsFor(hb.cwd);
+    const hbPost = await post(`/api/slots/${hb.slot}/review`, {});
+    const hbBody = (await hbPost.json()) as { error?: string; notes?: string; findings?: unknown[]; scope?: string };
+    check("a review whose base diff FAILS is not answered as an empty clean review",
+      hbPost.status === 500 && (hbBody.error ?? "").length > 0
+      && hbBody.notes === undefined && hbBody.findings === undefined,
+      `${hbPost.status} ${JSON.stringify(hbBody).slice(0, 240)}`);
+    check("...and it spawns no reviewer either (a tree it could not read is not a subject)",
+      reviewRunsFor(hb.cwd) === hbRunsBefore, `${hbRunsBefore} -> ${reviewRunsFor(hb.cwd)}`);
+    const hbGet = (await (await get(`/api/slots/${hb.slot}/review`)).json()) as { cached: boolean; notes?: string };
+    check("a failed read caches NOTHING — the next reader is told there is no review, not an empty one",
+      hbGet.cached === false, JSON.stringify(hbGet).slice(0, 240));
+    // the outcome row is where the phantom did its damage: it must say "nothing covered this",
+    // never a `superseded` row carrying findings:[] that reads as a clean review
+    spawnSync("git", ["-C", hbRepo, "branch", "-m", "gone-main", "main"]); // restore, so the row's own base reads work
+    await post(`/api/slots/${hb.slot}/kill`, {});
+    const hbRec = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string | null; review?: { state: string; notes?: string } }[] })
+      .outcomes.find((o) => o.branch === hb.branch);
+    check("a failed read never becomes coverage on the outcome row (state:none, no phantom superseded)",
+      hbRec?.review?.state === "none", JSON.stringify(hbRec?.review ?? null).slice(0, 240));
+  }
 }

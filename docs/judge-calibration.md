@@ -55,11 +55,20 @@ Norm (2026-07-25): **no judging instance gets even display-trust before a seeded
 - Spec: ONE narrow question — do the lane's changes and main's new commits collide
   semantically despite a clean rebase + green gate; `ok`/`review` strict-JSON; explicitly
   false-flag-averse. Gate mode is downgrade-only + fail-closed (proven by e2e-clean-review.sh).
-- **Production state: 2/2 verdicts `raw: true` — the real model misses the JSON contract**
-  (stand-in suites could never see this; only production shadow could). Had gate mode been on,
-  fail-closed would have stopped BOTH clean auto-lands. The ladder worked exactly as designed.
-- **Known gap: the raw answer is NOT persisted** on `raw: true` records (only the failure
-  note) — contract-miss diagnosis is impossible from the ledger. Fix candidate #1.
+- **Corrected diagnosis (2026-07-25): it was the PARSER, not the model.** The earlier reading
+  here ("the real model misses the JSON contract", from 2/2 then 6/7 `raw: true` rows) was wrong.
+  Once `rawAnswer` was persisted, all three diagnosable raw rows showed the same shape: a valid
+  `{"verdict": "ok", …}` object behind a one-sentence prose preamble, thrown away by a
+  `JSON.parse`-or-give-up parser. `runCleanReview` now falls back to `extractJsonObject` (the
+  rescue `runEnhance` already had), so a prose-wrapped verdict is a real measurement.
+  Extraction only rescues a WELL-FORMED answer: no object, or a verdict value outside
+  `ok`/`review`, still yields `raw: true` and the gate still fails closed
+  (e2e-clean-review.sh covers both directions, in gate AND shadow phase).
+- Method note: the `raw: true` count was a real signal but a misattributed one — the fix that
+  made it diagnosable (persisting the answer) is what overturned the diagnosis drawn from it.
+  Counting failures told us nothing until one failing artifact was kept.
+- Standing production state: **7 shadow rows, 1 valid verdict (`pass`)** before the parser fix;
+  the K2 series restarts from the first row recorded with extraction in place.
 - K2 counts only `verdict !== null` — raw failures are honest non-measurements.
 
 ### Merge-resolver (the ⏫ conflict agent)

@@ -137,6 +137,10 @@ That soft-failure is right, and it is also the blindness: `judge-calibration.md`
 server.ts:3139–3141 confirms it in code ("both production shadow verdicts so far were `raw: true`
 and undiagnosable from the journal without it"). Graduation criterion 2 needs N ≥ 25 verdicts with
 `verdict !== null`; a substrate that never parses produces a counter that stays at 0 forever.
+(2026-07-25 correction, and the argument's best evidence: the cause was the PARSER, not the
+model — `runCleanReview` gave up on a valid verdict object wrapped in a prose preamble. Six of
+the first seven shadow rows were `raw: true`, and the diagnosis only became visible once one
+failing answer was persisted. `judge-calibration.md` carries the corrected reading.)
 **Cost:** "the judge has not run enough times yet" and "the judge's harness is broken" are the same
 observation from the criteria's point of view, and nothing raises the second. The same silence
 covers a future Claude Code change to paste behaviour or transcript layout: all six workers degrade

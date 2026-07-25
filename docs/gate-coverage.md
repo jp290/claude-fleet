@@ -50,9 +50,12 @@ alone.
 for a deterministic tier** — against the project's own hierarchy (deterministic >
 semi-deterministic > statistical, CLAUDE.md/global rules) and against its own ladder doctrine.
 
-The substitution's current state, measured: ② has produced **4 verdicts, 4 × `raw: true`** —
-zero usable output, not even at display trust (`judge-calibration.md`). The replacement for
-the missing deterministic tier is, today, an empty set.
+The substitution's current state, measured: ② has produced **7 verdicts, 6 × `raw: true`** —
+near-zero usable output, not even at display trust (`judge-calibration.md`). The replacement
+for the missing deterministic tier is, today, an all-but-empty set. **2026-07-25: the cause was
+the PARSER** — a prose-wrapped but valid verdict object was discarded; `runCleanReview` now
+extracts it. The set should start filling from the next shadow row; until it does, this
+section's argument stands unchanged.
 
 ## 4. Why this poisons the numbers, not just the safety story
 

@@ -234,7 +234,9 @@ FACTS on the verdict + the lane-outcome ledger, never a gate.
 line, commit `9032845`) — so the "default OFF → prod byte-for-byte unchanged" sentence above
 describes a state that ended on 2026-07-25 13:00. Setting `=1` promotes it to a live gate **and
 terminates the K2 shadow collection** that graduation-criteria §2 requires (N≥25; as of
-2026-07-25: 0 valid, 4 × `raw:true`). Enabling the gate is therefore a graduation decision, not
+2026-07-25: 1 valid, 6 × `raw:true` — and those raw rows were a PARSER bug, fixed the same day
+by extracting prose-wrapped JSON, so the series should now accumulate). Enabling the gate is
+therefore a graduation decision, not
 a config toggle. **①a land-shape ledger enrichment also shipped (`626fe5d`)**: the `landed`
 outcome record now carries `{resolvedConflict, repairRounds, confirmedByHuman}` — the calibration
 signal for a future graded gate.

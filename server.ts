@@ -1,6 +1,7 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync, renameSync, copyFileSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
@@ -33,6 +34,9 @@ const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
 const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
+// the post-land audit trail (verification tier 2) — one row per full-suite run against the
+// integration branch after a land. Same appendEvent discipline/rotation as the trails above.
+const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
 // one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
 const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
@@ -366,6 +370,7 @@ type AuditEvent =
   | "slot_shelve"
   | "repo_undo_land"
   | "land_note_fail"
+  | "postland_audit"
   | "autos_switch"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
@@ -2647,6 +2652,273 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // survives a restart even when a downstream saveState is skipped (e.g. the mergeJob tail's
   // recycle guard on the slot-recycled teardown-failure sub-case).
   await writeLandNote(repo, branch, mainBefore, mainAfter, prov); // best-effort — never throws
+  // VERIFICATION TIER 2 — main moved, so there is something new on the integration branch that the
+  // fast land gate did not fully check. This is the one choke point every main-MOVING land funnels
+  // through (mergeJob's clean auto-land + the confirm-land route), which is exactly the right
+  // trigger: a land that did not move main (already-merged / empty lane) integrates nothing new and
+  // has nothing to audit. Synchronous by contract — it queues and returns before any await, so the
+  // land path's latency is unchanged. See the region below for what it deliberately does NOT do.
+  schedulePostLandAudit(repo, main, branch, mainAfter);
+}
+
+// --- VERIFICATION TIER 2: the post-land audit (gate-coverage.md §5, autonomy-plan.md Gap 2) -----
+// The land gate is fast and PARTIAL by design (tsc + the 26 claudeAlive checks of
+// e2e-claude-gate.sh). The tiered design always named a second half — run the FULL suite after the
+// land, against the integration branch, off the land path, with ↩ undo-land as the rollback — and
+// only the fast tier was ever built. Autonomous landing has no hand to run the suite by hand. This
+// is that hand.
+//
+// WHAT IT DOES NOT DO — the decision, stated at the decision site:
+//   · it does not gate. Nothing waits for it; no land, merge, dispatch or review path reads its
+//     result. It cannot stop a land (the land already happened) and cannot delay one.
+//   · it does not auto-undo. A machine that both lands AND un-lands unattended moves main in two
+//     directions with no human in either — a strictly bigger step than "make the slow tier run at
+//     all", and not this one. Rollback stays the owner's ↩ undo-land (/api/repos/undo-land).
+//   · it does not block the server. One detached child, bounded, in a scratch dir outside the repo.
+// It records a fact and surfaces it. That is the whole job.
+//
+// DEFAULT OFF — `FLEET_POSTLAND_AUDIT_CMD` unset means tier 2 does not exist, and the land path is
+// byte-for-byte what it is today. Same shape and same reasoning as FLEET_VERIFY_CMD, where the
+// command IS the flag: (a) turning it on is a deployment decision the owner makes once, in
+// watchdog.sh's srv-spawn line, with full knowledge of what a full suite costs on this box;
+// (b) the stand-in hook every harness needs is the same knob — a harness points it at a fake
+// script, and a harness that sets NOTHING can never launch a real nested suite by accident, which
+// is the property that matters most for a feature whose payload is "boot a server and run 705
+// checks"; (c) the server keeps no fleet-specific knowledge — `./e2e-isolated.sh` is the owner's
+// command, not a default compiled into the server.
+const POSTLAND_AUDIT_CMD = process.env.FLEET_POSTLAND_AUDIT_CMD ?? null;
+// Generous on purpose: the suite this tier exists to run takes minutes, and NOTHING waits on it —
+// the only cost of a long ceiling is a late row. A timeout is a failed MEASUREMENT (unknown), not
+// a failure — see the classification below.
+const POSTLAND_AUDIT_TIMEOUT_MS = Math.max(10_000, Number(process.env.FLEET_POSTLAND_AUDIT_TIMEOUT_MS ?? 1_800_000) | 0);
+const POSTLAND_AUDIT_OUT_CAP = 4096; // tail of stdout+stderr, byte-capped like verify.out
+const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL, on the timeout path
+// the lands one audit run followed — a run is coalesced (below), so it can cover more than one
+interface AuditCover { branch: string; mainAfter: string; at: number }
+// The durable row. `mainSha` is the integration tip actually audited and `covers` names every land
+// since the previous run, so the two questions this tier exists to answer are plain joins over the
+// trail: "which land was the last GREEN audit" = the newest green row's covers/mainSha, and "which
+// lands came after a RED one" = every cover in every row after that red row (plus the red row's own).
+// `result` is TRI-STATE, and the third state is load-bearing (A4, unknown ≠ zero): an audit that
+// timed out, could not be started, or declined to run is `unknown` — never green, and never red
+// either (a failed measurement is not evidence of a defect).
+interface PostLandAuditRow {
+  at: number;          // when the run finished (row time)
+  startedAt: number;
+  ms: number;
+  repo: string;        // git toplevel — joins to the LandRecord / the fleet/land note's repo
+  main: string;        // integration branch name
+  mainSha: string;     // the tip the audit actually ran against — joins to a note's `mainAfter`
+  result: "green" | "red" | "unknown";
+  reason?: string;     // present on `unknown` only: WHY no measurement happened
+  cmd: string;
+  exitCode: number | null;
+  out: string;         // byte-capped TAIL of stdout+stderr (the failing lines of a suite are at its end)
+  covers: AuditCover[];
+}
+// the newest row, for the board. In memory for the poll path, but REHYDRATED from the trail at boot
+// (see the boot block): a red audit is typically followed within minutes by the deploy that restarts
+// srv, and an alarm that a restart erases is not an alarm.
+let lastPostLandAudit: PostLandAuditRow | null = null;
+// pending work, per repo. `auditDraining` is the ONE-AT-A-TIME lock: a second land while a suite
+// runs never spawns a second suite — it appends to this queue and the drain loop picks it up when
+// the current run finishes.
+const auditQueue = new Map<string, { main: string; covers: AuditCover[] }>();
+let auditDraining = false;
+// COALESCED, not per-land. Three lands arrived within ~110s on 2026-07-25; running three full
+// suites back to back would cost ~3× the machine for strictly less information, because the suite
+// is a property of a TREE, not of a diff — auditing the newest tip subsumes every land folded into
+// it. So: the run in flight is never interrupted, everything that lands while it runs is folded
+// into exactly ONE follow-up run against the then-current tip, and that run's `covers` names every
+// land it stands for. Nothing is silently dropped: a land is either covered by the run in flight's
+// successor or by the run it triggered.
+function schedulePostLandAudit(repo: string, main: string, branch: string, mainAfter: string): void {
+  if (!POSTLAND_AUDIT_CMD) return; // tier 2 not configured — this is today's behaviour, unchanged
+  const q = auditQueue.get(repo) ?? { main, covers: [] };
+  q.main = main;
+  q.covers.push({ branch, mainAfter, at: Date.now() });
+  auditQueue.set(repo, q);
+  if (auditDraining) return; // the loop below will pick this up — never a second concurrent suite
+  auditDraining = true;
+  void drainPostLandAudits();
+}
+async function drainPostLandAudits(): Promise<void> {
+  try {
+    // one repo at a time, and one run at a time across ALL repos: the audit's payload boots a server
+    // and drives tmux, so parallelism here buys latency and pays in load and cross-talk.
+    while (auditQueue.size) {
+      const [repo, q] = [...auditQueue.entries()][0];
+      auditQueue.delete(repo);
+      await runPostLandAudit(repo, q.main, q.covers); // never throws — every failure is a row
+    }
+  } finally {
+    // released INSIDE the loop's own frame, not from a `.finally` on the caller: a microtask
+    // queued between "the queue looked empty" and "the flag went false" would enqueue a land that
+    // nothing would ever drain, and that land's audit would simply never happen. Here no other
+    // microtask can interleave — the loop's failing condition and this line are one turn.
+    auditDraining = false;
+  }
+}
+// The audit runs against a CONTENT SNAPSHOT of the integration tip, extracted with `git archive`
+// into a scratch dir outside the repo. Three reasons this rather than a git worktree:
+//   · it is exactly the landed tree, not the primary checkout's working copy (which may carry
+//     uncommitted work, or be parked on another branch entirely);
+//   · it touches no working tree of the repo — the primary checkout is only ever READ;
+//   · it registers nothing with git. A `worktree add` would show up in `git worktree list`, which
+//     the lane map, the orphan surfaces and advanceIntegration all read — a crashed audit would
+//     leave visible fleet-wide state behind. A stray directory in TMPDIR is inert.
+// The cost, stated: the snapshot is a tree, not a repository, so an audit command that needs git
+// HISTORY cannot run here. `./e2e-isolated.sh` does not — it copies files and builds its own
+// throwaway repo (verified 2026-07-25).
+async function snapshotIntegrationTree(repo: string, sha: string, dir: string): Promise<string | null> {
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return `could not create the audit scratch dir: ${e instanceof Error ? e.message : "mkdir failed"}`;
+  }
+  // sequential `&&`, not a pipe: a pipeline's exit status is the LAST command's, so a failing
+  // `git archive` feeding a happy `tar` would report success over an empty tree. Positional args
+  // ($1..$3), never interpolation — repo paths carry spaces.
+  const script = 'git -C "$1" archive --format=tar "$2" > "$3/.fleet-audit.tar"'
+    + ' && tar -xf "$3/.fleet-audit.tar" -C "$3" && rm -f "$3/.fleet-audit.tar"';
+  const p = Bun.spawn(["sh", "-c", script, "sh", repo, sha, dir], { stdout: "pipe", stderr: "pipe" });
+  const err = await new Response(p.stderr).text();
+  await new Response(p.stdout).text();
+  if ((await p.exited) !== 0) return `git archive/extract failed: ${err.trim().slice(0, 200)}`;
+  // installed dependencies are not tracked content, and re-installing per audit would dominate the
+  // run. Link the repo's own node_modules in, exactly as e2e-isolated.sh does for its copy. Removed
+  // as a LINK before the scratch dir is deleted, so the repo's real tree is never in reach of the rm.
+  try {
+    if (existsSync(`${repo}/node_modules`) && !existsSync(`${dir}/node_modules`))
+      symlinkSync(`${repo}/node_modules`, `${dir}/node_modules`);
+  } catch { /* no deps to link — the command decides whether it can run without them */ }
+  return null;
+}
+// The child's environment is the server's, minus EVERY `FLEET_*` variable. Not a list of known-bad
+// names — a rule, because the payload of this command is "boot another fleet server", and every
+// knob this one was configured with is wrong for that one:
+//   · FLEET_POSTLAND_AUDIT_CMD would make the inner server audit its OWN lands, recursively,
+//     forever. One level deep by construction, not by the command's good manners.
+//   · the credentials (owner token, the scoped per-lane and steward tokens) must not reach it, for
+//     the same reason e2e-isolated.sh unsets them: tmux bakes its server's env into every pane.
+//   · the production BEHAVIOUR knobs are the subtle one. The live srv runs with
+//     FLEET_CLEAN_REVIEW=shadow and a real FLEET_VERIFY_CMD; e2e-isolated.sh overrides much of the
+//     env but not all of it, so an inherited `shadow` (with no stand-in reviewer configured) would
+//     have the nested suite spawn REAL model sessions on every clean land inside the audit.
+// The one thing this rule does NOT buy is socket safety: dropping FLEET_SOCK/FLEET_PORT lands the
+// inner server on the server's own DEFAULTS, which are the live socket and the live port. That is
+// equally true if they were inherited, so it is stated rather than faked — THE AUDIT COMMAND OWNS
+// ITS ISOLATION. ./e2e-isolated.sh derives socket, port and scratch dir from `$$` and sets all
+// three explicitly on the inner server (verified first-hand 2026-07-25), so concurrent runs cannot
+// collide and none of them can reach socket `claudefleet`.
+function auditChildEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env))
+    if (typeof v === "string" && !k.startsWith("FLEET_")) env[k] = v;
+  return env;
+}
+async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]): Promise<void> {
+  const cmd = POSTLAND_AUDIT_CMD;
+  if (!cmd) return;
+  const startedAt = Date.now();
+  const dir = `${tmpdir()}/fleet-postland-audit-${randomBytes(6).toString("hex")}`;
+  let mainSha = "";
+  let result: PostLandAuditRow["result"] = "unknown";
+  let reason: string | undefined = "audit did not run";
+  let exitCode: number | null = null;
+  let out = "";
+  try {
+    // the CURRENT tip, not the triggering land's mainAfter: coalescing means this run stands for
+    // every land folded into it, and the row must name the tree it actually measured.
+    const tip = await git(repo, "rev-parse", main);
+    mainSha = tip.code === 0 && tip.out ? tip.out : (covers[covers.length - 1]?.mainAfter ?? "");
+    if (!mainSha) {
+      reason = `could not resolve ${main} — nothing to audit`;
+    } else {
+      const snapErr = await snapshotIntegrationTree(repo, mainSha, dir);
+      if (snapErr) {
+        reason = snapErr;
+      } else {
+        const p = Bun.spawn(["sh", "-c", cmd], { cwd: dir, env: auditChildEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        // Read the pipes as PROMISES and race the EXIT against the deadline — never `await` the
+        // streams first. A suite is a process TREE (it boots a server, drives tmux), and the pipe's
+        // write end stays open while any descendant holds it: awaiting the text of a wedged child
+        // would hang this function forever, which would also stall the drain loop and silently kill
+        // tier 2 for every later land. Bounded by construction instead. (runVerify can await its
+        // streams — it holds a land, so something upstream always notices.)
+        const outP = new Response(p.stdout).text().catch(() => "");
+        const errP = new Response(p.stderr).text().catch(() => "");
+        let timedOut = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<"timeout">((res) => {
+          timer = setTimeout(() => { timedOut = true; res("timeout"); }, POSTLAND_AUDIT_TIMEOUT_MS);
+        });
+        try {
+          const settled = await Promise.race([p.exited, deadline]);
+          if (settled === "timeout") {
+            // SIGTERM, then SIGKILL after a grace period: a shell blocked in `wait` acts on the term
+            // only once its foreground child returns. Residual, stated honestly: grandchildren can
+            // still outlive both signals, so a timed-out audit may leave its own throwaway tmux
+            // socket behind — a scratch resource on the owner's box, and the reason the ceiling is
+            // generous rather than tight. What is NOT residual is the server: it stops waiting here.
+            try { p.kill(); } catch { /* already gone */ }
+            setTimeout(() => { try { p.kill(9); } catch { /* already gone */ } }, POSTLAND_AUDIT_KILL_GRACE_MS);
+          } else {
+            exitCode = settled;
+          }
+          // best-effort output, bounded: on a timeout the pipes may never close, so give them a
+          // moment and take what came out rather than waiting on a process we just killed
+          const grab = (pr: Promise<string>): Promise<string> =>
+            timedOut ? Promise.race([pr, Bun.sleep(1000).then(() => "")]) : pr;
+          const combined = `${await grab(outP)}${await grab(errP)}`;
+          out = (combined.length > POSTLAND_AUDIT_OUT_CAP ? combined.slice(combined.length - POSTLAND_AUDIT_OUT_CAP) : combined).trim();
+          // CLASSIFICATION. The fail direction here is the INVERSE of runVerify's, and deliberately:
+          // runVerify gates a land, so its timeout must read as "do not land" (red). This gates
+          // nothing, so its failure modes must read as "no measurement happened" (unknown) — a
+          // fabricated red would send the owner hunting a defect that was never observed, and a
+          // fabricated green would be the one thing A4 forbids.
+          // 126/127 are the shell's "could not execute / not found": a command that never ran is a
+          // non-measurement, not a failing suite. A real suite reports its failures with its own code.
+          if (timedOut) { reason = `audit timed out after ${POSTLAND_AUDIT_TIMEOUT_MS}ms — no verdict`; }
+          else if (exitCode === VERIFY_SKIP_EXIT) { reason = `the audit command declined to run (exit ${VERIFY_SKIP_EXIT})`; }
+          else if (exitCode === 126 || exitCode === 127) { reason = `the audit command could not be started (exit ${exitCode})`; }
+          else if (exitCode === 0) { result = "green"; reason = undefined; }
+          else { result = "red"; reason = undefined; }
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
+  } catch (e) {
+    reason = `audit could not run: ${e instanceof Error ? e.message : "spawn failed"}`.slice(0, 200);
+  } finally {
+    // unlink the LINK first (an rm -rf that followed it would be standing in the repo's node_modules)
+    try { rmSync(`${dir}/node_modules`, { force: true }); } catch { /* never existed */ }
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* leave the scratch dir; it is inert */ }
+  }
+  const row: PostLandAuditRow = {
+    at: Date.now(), startedAt, ms: Date.now() - startedAt,
+    repo, main, mainSha, result, ...(reason ? { reason } : {}),
+    cmd, exitCode, out, covers,
+  };
+  lastPostLandAudit = row;
+  appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  const named = covers.map((c) => c.branch).join(", ").slice(0, 120);
+  audit("postland_audit", undefined,
+    `${result} ${basename(repo)} ${main}@${mainSha.slice(0, 8)} after ${named}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
+  // a non-green audit is the alarm this tier exists to raise: loud in the server log, on the audit
+  // trail, on its own durable trail, and on the board's poll payload — and it always NAMES the
+  // land(s) it followed, because "something is red" without "after which land" is not actionable.
+  if (result !== "green")
+    console.log(`POST-LAND AUDIT ${result.toUpperCase()}: ${main}@${mainSha.slice(0, 8)} in ${basename(repo)} after landing ${named}`
+      + `${reason ? ` (${reason})` : ""} — this audit gates nothing; ↩ undo-land is the rollback.`);
+}
+// the compact projection the board polls (the full row, minus the byte-heavy suite output — that
+// lives on the trail at /api/post-land-audits)
+function postLandAuditSummary(): Record<string, unknown> | null {
+  const r = lastPostLandAudit;
+  return r ? { at: r.at, ms: r.ms, result: r.result, repo: basename(r.repo), main: r.main,
+    mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}) } : null;
 }
 
 // --- per-lane attributed-outcome RECORDER. Appends ONE server-stamped fact at each of a lane's
@@ -3770,6 +4042,19 @@ for (const s of slots) {
   }
 }
 
+// rehydrate the newest post-land audit row (tier 2). A red audit is typically followed within
+// minutes by the deploy that restarts srv — an alarm a restart erases is not an alarm. The TRAIL
+// is the durable record either way; this only restores what the board polls.
+if (existsSync(POSTLAND_AUDIT_FILE)) {
+  try {
+    const lines = (await Bun.file(POSTLAND_AUDIT_FILE).text()).split("\n").filter(Boolean);
+    const last = lines[lines.length - 1];
+    if (last) lastPostLandAudit = JSON.parse(last) as PostLandAuditRow;
+  } catch {
+    console.log("post-land audit trail: last row unreadable — the board starts without it");
+  }
+}
+
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch(() => {}), 5000);
 setInterval(() => void tickGit().catch(() => {}), 10_000);
@@ -4722,6 +5007,10 @@ Bun.serve<WSData>({
         autosOn,
         quietHours,
         intake: !!INTAKE_SECRET,
+        // verification tier 2: the newest post-land audit, or null when none has run (tier 2 off,
+        // or no land since boot). Advisory FACT for the owner — it gates nothing; the client's job
+        // is to make a `red`/`unknown` result impossible to miss and to name the land it followed.
+        postLandAudit: postLandAuditSummary(),
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {
@@ -4844,6 +5133,24 @@ Bun.serve<WSData>({
       }
       outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ outcomes: outcomes.slice(0, limit), total: lines.length });
+    }
+    // owner-only, read-only post-land audit trail (verification tier 2) — EXACT same access model
+    // as /api/lane-outcomes above. Newest first, so "which land was the last green audit, and which
+    // lands came after a red one" is answered by walking this list from the top.
+    if (url.pathname === "/api/post-land-audits" && req.method === "GET") {
+      const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 100) | 0));
+      const text = existsSync(POSTLAND_AUDIT_FILE) ? await Bun.file(POSTLAND_AUDIT_FILE).text() : "";
+      const lines = text.split("\n").filter(Boolean);
+      const audits: Record<string, unknown>[] = [];
+      for (const line of lines) {
+        try {
+          audits.push(JSON.parse(line) as Record<string, unknown>);
+        } catch {
+          // a torn mid-append line — skip, same as the audit/outcome readers
+        }
+      }
+      audits.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
+      return json({ audits: audits.slice(0, limit), total: lines.length, configured: !!POSTLAND_AUDIT_CMD });
     }
     // the owner disposition rail (see the DISPOSITION region). GET is the same read model as the
     // two trails above; POST is the ONLY writer, and it is owner-only by construction — a lane's

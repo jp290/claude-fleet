@@ -144,6 +144,11 @@ rotting. Two shelves, plus the steward subsystem.
   the 703-check suite is not in it), the post-land audit tier that was designed and never
   built, and why role separation between ②/③/resolver is not statistical independence when
   one model runs all of them.
+- **`verify-tiering.md`** — measured (2026-07-25): what a green gate actually *attests*, with every
+  candidate suite priced by wall-clock on a contended box — including the observed run where the
+  759-check suite flipped red on an unchanged tree, which is what disqualifies it as a hard pre-land
+  gate at any timeout. Ends in one concrete gate proposal (typecheck the three unimported harnesses,
+  add `./e2e-clean-review.sh`) with its measured cost. Read before proposing to gate on a suite.
 - **`ungoverned-artifacts.md`** — `CLAUDE.md`/`OWNER.md`/the four `.jsonl` trails are untracked,
   copied per-lane at spawn, and unbacked-up: why a lane cannot fulfil Wissenspflege for the
   rulebook, the measured per-worktree drift, and the fix ladder under a public remote.
@@ -155,12 +160,28 @@ rotting. Two shelves, plus the steward subsystem.
   before it may be enabled (component-5 auto-land, ② shadow→gate, deploy pilot, nudge
   promotion). Written before the data on purpose; amendments only with a rationale
   committed before looking at new data.
+- **`autonomy-trial-1.md`** — the pre-registered protocol for the first dispatcher-driven run
+  (2026-07-25): exactly which steps the machine takes and which stay on the owner's hand — selection
+  and briefing only, *no new land authority* — four questions each with the measurement that answers
+  it, and four stop conditions checkable without judgment. Written before the trial ran, so its
+  result cannot be re-narrated afterwards. `graduation-criteria.md`'s rule applied to a single run.
 - **`perception-layer.md`** — design (2026-07-25; **write side built in `600d401`**, the feed
   is not): the three pieces that make Fleet observable to itself — a deterministic
   `done-looking` predicate, auto-③ on it, the review persisted onto the outcome row, the
   ledger rendered as a feed. Why the order is c → b → a, and the staleness rule that keeps
   a persisted review honest. The precondition capability (c) is gated on. See
   `knowledge-layers.md` §5 for what the half-built state means in practice.
+- **`state-reality-divergence.md`** — the register for one error class: a fact the server records
+  about a slot or lane stops being true of the world, and a *later automatic decision* reads the
+  record instead of the world. All 16 recorded facts enumerated with writer and automatic consumer,
+  findings D1–D6 ranked by the *direction* of the divergence (reads-as-quiet/ready/done is dangerous
+  because the automation acts; reads-as-unknown is safe because it declines). Read it before wiring a
+  new tick to a stored signal.
+- **`outcome-ledger-audit.md`** — what the outcome ledger actually says, read row by row at 27 rows:
+  which fields carry information, which are structurally broken and by what code path, and the
+  finding that `graduation-criteria.md` §1 reads MET only because a reviewer answer that never parsed
+  is counted as review coverage. Read before believing any number derived from the ledger, and before
+  building the first consumer of it (§7 names the smallest honest one).
 - **`knowledge-layers.md`** — assessment (2026-07-25): the three places a lane looks
   things up — the shelf, the brief, outcome memory — measured against each layer's own
   stated bar, with the gaps ranked and code-cited. Why no fourth mechanism (and no

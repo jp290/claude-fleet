@@ -3176,15 +3176,26 @@ async function runCleanReview(cwd: string, branch: string, main: string, base: s
     if (typeof env.result === "string") text = env.result.trim();
   } catch { /* not an envelope */ }
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  try {
-    const j = JSON.parse(body) as { verdict?: unknown; reason?: unknown };
-    const reason = typeof j.reason === "string" ? j.reason.slice(0, 400) : "";
-    if (j.verdict === "ok") return { verdict: "ok", reason, raw: false, answer: body };
-    if (j.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look", raw: false, answer: body };
-    return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look`, raw: true, answer: body };
-  } catch {
-    return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look", raw: true, answer: body };
-  }
+  // the real model routinely wraps a perfectly valid verdict object in a one-sentence preamble
+  // (5 of the first 6 production shadow rows) — so on a parse failure, carve the object out the
+  // same way runEnhance does before giving up. This RESCUES a well-formed answer; it can never
+  // manufacture one: an extraction that yields no object, or an object whose verdict is neither
+  // "ok" nor "review", still falls through to raw + "review" and the gate still fails CLOSED.
+  const parsed = ((): { verdict?: unknown; reason?: unknown } | null => {
+    for (const cand of [body, extractJsonObject(body)]) {
+      if (cand === null) continue;
+      try {
+        const j = JSON.parse(cand) as unknown;
+        if (j && typeof j === "object") return j as { verdict?: unknown; reason?: unknown };
+      } catch { /* try the extracted object next */ }
+    }
+    return null;
+  })();
+  if (!parsed) return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look", raw: true, answer: body };
+  const reason = typeof parsed.reason === "string" ? parsed.reason.slice(0, 400) : "";
+  if (parsed.verdict === "ok") return { verdict: "ok", reason, raw: false, answer: body };
+  if (parsed.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look", raw: false, answer: body };
+  return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look`, raw: true, answer: body };
 }
 // the shadow projection of a reviewer run, as persisted on the outcome row. `raw: true` (no explicit
 // verdict came back) forces `verdict: null` — the measurement failed and says so, rather than

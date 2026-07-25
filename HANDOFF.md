@@ -35,14 +35,30 @@ hypothetical** — that reply, if persisted at a terminal event, would be stored
 
 > ### The lesson that outlives the restart
 > The live `srv` had been up since 00:16:54 and predated `600d401`, so auto-③ and the whole `review`
-> field were inert while the code sat in `main`. **This trap fired three times in two days** (ledger
-> row 2, ledger row 3, and the fast-tier gate believed undeployed for a day). *Landing is not
-> deploying.* Closing it mechanically is `BACKLOG.md` P-4 — which is why P-4 outranks its size.
+> field were inert while the code sat in `main`. **This trap fired four times in two days** — ledger
+> rows 2, 3 *and* 4 all written by a build that lacked the field being recorded, plus the fast-tier
+> gate believed undeployed for a day. *Landing is not deploying.* Closing it mechanically is
+> `BACKLOG.md` P-4 (roadmap §3.3), which is why P-4 outranks its size.
 
-**Still open, and it is the first thing to check next session:** no ledger row carries a `review`
-object yet. Rows 1–3 never will (they predate the deploy). **Row 4 — the next lane to reach a
-terminal event — is the first real test of the write side end to end.** If it comes back with
-`review` absent or `state: "none"`, that is a finding, not a deploy accident.
+**Still open, and the first thing to check next session:** no ledger row carries a `review` object
+yet. Row 4 (this audit lane) was written **08:41:18Z, 3m44s before the 08:45:02Z restart** — so it
+too predates the deploy and has no `review` key. **Row 5 is the first real test of the write side end
+to end.** If it comes back with `review` absent, that is a finding, not a deploy accident.
+
+**Row 4 is load-bearing for a different reason: F9 fired in production, on the lane that documented
+it.** It records `verified: false` with `confirmedByHuman: true` — and `verified: false` cannot come
+from a plain ⏏ land (`OWNER_LAND_FACTS` sets `null`, `server.ts:2696`), so a verify ran, failed, the
+clean auto-land was downgraded to stop-and-review, and the owner confirm-landed through it. **That
+downgrade is the overlay the owner reported as "the dispute."** The cause is an inference, not a
+captured output (the verdict lived in `mergeLast`, the slot is recycled) but the elimination is
+tight: the diff touched **zero `.ts` files**, so tsc had to produce main's result and main is clean —
+a red verify with no code change is only explicable by the missing `node_modules`, which was measured
+while that worktree still existed. **The new cost this exposes:** the ledger is now accumulating
+`verified: false` on lanes whose code is *fine*, with nothing on the row distinguishing "the gate
+could not run" from "the change is unsound" — and `lane-autonomy-future.md` designates `verified` as
+a calibration input for the graded auto-land gate. Fixing F9 is therefore no longer cosmetic; every
+land until then poisons the column the next autonomy step reads. Full entry:
+`discrepancy-audit.md` F9.
 
 ---
 
@@ -104,17 +120,25 @@ from reality (L1). **Perception is the missing closing edge, not merely a featur
    `scope`, `notes` nor `raw`, so a reviewer whose answer did not parse is stored as
    `{state:"covered", findings:[]}`, byte-identical to a real clean review. §6's first honesty
    constraint is **not satisfiable from the ledger alone** until those fields are added write-side.
-2. **P-4 — the deploy-gap fact.** The server knows its boot time and its HEAD; `rev-list --count`
-   plus "does any of those commits touch code" is ~15 lines. No longer theoretical: three strikes in
-   two days, each costing trust in a row that looked right.
-3. **Provenance honesty (one lane, one root cause).** The outcome row's provenance reads **one of
+2. **F9 — the land gate's `node_modules` coupling. Promoted above P-4 by row 4's evidence.** Until
+   it is fixed, every lane that did not install deps has its clean auto-land downgraded and lands
+   with `verified: false` on a sound change — actively poisoning the one column
+   `lane-autonomy-future.md` designates as the graded-gate's calibration input. Two candidate fixes
+   in `discrepancy-audit.md` F9; the cheap one is dropping `--types bun` in favour of a tsconfig the
+   worktree already carries. Done-criterion: the F9 reproduction exits 0 in a freshly created lane
+   worktree that has never been built in.
+3. **P-4 — the deploy-gap fact.** The server knows its boot time and its HEAD; `rev-list --count`
+   plus "does any of those commits touch code" is ~15 lines. No longer theoretical: **four** strikes
+   in two days (ledger rows 2, 3 and 4, plus the fast-tier gate believed undeployed for a day), each
+   costing trust in a row that looked right.
+4. **Provenance honesty (one lane, one root cause).** The outcome row's provenance reads **one of
    five source tags**. `laneOwnerPrompts` keeps only `source === "owner"`, so pane-typed prompts
    (`"terminal"`, 755 of 2441 live journal lines) are invisible and dispatcher-delivered briefs
    (`"auto"`) make `briefHash` null or the hash of a later follow-up — measured: **25 of 49 live
    lanes null, 5 hashing a later prompt, 19 correct** (`discrepancy-audit.md` F3). Ride along here:
    the ledger riders `repo` and a `filesTouched`-truncated flag, and F6 (the ledger rotates; its only
    reader reads one generation while both sibling readers span).
-4. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
+5. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
    "unbuilt" about a symbol `server.ts` defines (`knowledge-layers.md` §7.3). Rides along with any
    docs-touching lane; the only item that prevents its own class of failure from recurring.
    **Verified first-hand rather than taken from the report** (slot 9 reported "four further hits"):
@@ -126,9 +150,9 @@ from reality (L1). **Perception is the missing closing edge, not merely a featur
    **must not be a bare grep for the word**; it has to pair the word with a claim about a named
    symbol, or it will train its readers to ignore it — the same failure mode the tombstone in
    `docs/README.md` was deliberately worded around.
-5. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
+6. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
    listed dead end ("promoting a prompt edit as an improvement while no eval set exists").
-6. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
+7. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
    the direction split only**, on an idle *proxy* signal, minus every dirty-tree condition.
    Precision needs a small **forward recorder** (surface state at each owner/terminal prompt +
    downsampled per-lane samples) plus N days — so if wanted at all, that recorder ships early,

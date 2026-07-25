@@ -1893,6 +1893,16 @@ async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, ti
   return out.trim();
 }
 
+// Tool floor for the five throwaway TEXT-ONLY agents (summary, review, commit message, enhance,
+// steward digest). Each of their prompts already says "do NOT use any tools" — that is prose
+// addressed to a model that, without this, holds the owner's whole interactive allow list.
+// `--tools ""` cuts the built-in tools out of the session entirely; being a capability cut rather
+// than a permission rule, it is the one form ~/.claude/settings.json cannot widen (an --allowedTools
+// list would just be unioned with the owner's bare `Read`). --strict-mcp-config drops the owner's
+// MCP connectors with no --mcp-config to replace them, and dontAsk makes anything left auto-DENY
+// instead of a permission prompt that would hang the pane until the timeout.
+const TEXT_ONLY_TOOLS = '--tools "" --strict-mcp-config --permission-mode dontAsk';
+
 // production path: throwaway INTERACTIVE claude in its own tmux session on the
 // server socket — runs on the subscription, not the metered API. Session id is
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
@@ -2019,7 +2029,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
   ].join("\n");
   let text = SUMMARY_CMD
     ? await summaryViaSubprocess(SUMMARY_CMD, prompt, cwd)
-    : await summaryViaSession(prompt, cwd);
+    : await summaryViaSession(prompt, cwd, '"summary"', { extraArgs: TEXT_ONLY_TOOLS });
   // the test stand-in answers in a {"result": "..."} envelope — unwrap it; the
   // contract JSON itself has no string `result`, so this is a no-op for real runs
   try {
@@ -2250,7 +2260,8 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   ].join("\n");
   let text = REVIEW_CMD
     ? await summaryViaSubprocess(REVIEW_CMD, prompt, cwd, REVIEW_TIMEOUT_MS)
-    : await summaryViaSession(prompt, cwd, '"findings"', { timeoutMs: REVIEW_TIMEOUT_MS });
+    : await summaryViaSession(prompt, cwd, '"findings"',
+      { extraArgs: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS });
   try {
     const env = JSON.parse(text) as { result?: unknown };
     if (typeof env.result === "string") text = env.result.trim();
@@ -2359,7 +2370,7 @@ async function agentCommitMessage(cwd: string): Promise<string> {
   ].join("\n");
   let text = COMMIT_CMD
     ? await summaryViaSubprocess(COMMIT_CMD, prompt, cwd)
-    : await summaryViaSession(prompt, cwd, '"message"');
+    : await summaryViaSession(prompt, cwd, '"message"', { extraArgs: TEXT_ONLY_TOOLS });
   try {
     const env = JSON.parse(text) as { result?: unknown };
     if (typeof env.result === "string") text = env.result.trim();
@@ -2452,7 +2463,7 @@ async function runEnhance(text: string, cwd: string, facts: EnhanceFacts | null)
   const prompt = buildEnhancePrompt(text, facts);
   let out = ENHANCE_CMD
     ? await summaryViaSubprocess(ENHANCE_CMD, prompt, cwd)
-    : await summaryViaSession(prompt, cwd, '"prompt"');
+    : await summaryViaSession(prompt, cwd, '"prompt"', { extraArgs: TEXT_ONLY_TOOLS });
   // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
   try {
     const env = JSON.parse(out) as { result?: unknown };
@@ -2576,9 +2587,15 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
     clearTimeout(timer);
   }
 }
-const MERGE_TOOLS = "--permission-mode dontAsk --allowedTools "
+// --setting-sources "" is load-bearing, not tidiness: --allowedTools is ADDITIVE to the owner's
+// ~/.claude/settings.json allow list, where a bare `Read`/`Grep`/`Glob` (no parentheses) means
+// EVERY file on the machine. Anchoring the patterns alone is inert — verified empirically: with
+// the owner's settings loaded, `Read(**)` still read a canary outside the worktree; with the
+// sources dropped the same read comes back "Permission to use Read has been denied". So the
+// anchors below only bind because this process no longer inherits that list.
+const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools '
   + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" '
-  + '"Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" Read Grep Glob';
+  + '"Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
 // "resolved" = the agent had to make semantic conflict choices; the rebase is git-verified
 // but deliberately NOT landed — it waits for the owner to review the diff and confirm.
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
@@ -4567,7 +4584,7 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
   try {
     let out = DIGEST_CMD
       ? await summaryViaSubprocess(DIGEST_CMD, prompt, home.cwd!)
-      : await summaryViaSession(prompt, home.cwd!, '"digest"');
+      : await summaryViaSession(prompt, home.cwd!, '"digest"', { extraArgs: TEXT_ONLY_TOOLS });
     // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
     try {
       const env = JSON.parse(out) as { result?: unknown };

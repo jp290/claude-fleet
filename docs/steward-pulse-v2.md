@@ -36,9 +36,12 @@ Rules (each one is a lesson already paid for):
 - **Facts + one question. Never a diagnosis, never a directive.** THE GUARD
   (`steward-nudge.md` §9): a diagnosis gets conformed to even when wrong. The receiver is
   sighted; the steward is not.
-- **The mandated reply IS the label.** `[pulse-reply]` lines are harvestable from the pane
-  (terminal-prompt harvester already journals pane activity) and mirror the disposition
-  vocabulary (hilfreich→accepted, unnötig→ignored, falsch→wrong). The loop labels itself.
+- **The mandated reply IS the label.** In watched phase A the owner reads the reply and
+  labels via the disposition rail — no code needed. If phase A graduates, `[pulse-reply]`
+  lines are harvestable DETERMINISTICALLY from the transcript JSONL's assistant entries
+  (same ground-truth file the terminal-prompt harvester reads for typed prompts — NOT pane
+  parsing; the existing harvester itself only captures user entries, corrected 2026-07-25).
+  Vocabulary maps onto the rail: hilfreich→accepted, unnötig→ignored, falsch→wrong.
 - **Skepsis-Prelude ist Pflichtteil des Nudges**, nicht Höflichkeit: sie entwertet falsche
   Nudges billig (eine Zeile) statt teuer (befolgte Fehl-Diagnose).
 - **One nudge per session per work-episode.** The caps enforce the rate; the steward's

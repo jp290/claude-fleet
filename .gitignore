@@ -1,6 +1,8 @@
 node_modules/
 streams/
 fleet.json
+fleet.json.bak
+fleet.json.tmp
 audit.jsonl
 audit.jsonl.1
 steward-journal.jsonl

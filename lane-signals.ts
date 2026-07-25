@@ -28,6 +28,8 @@ const MERGE_BLOCKING = ["blocked", "error"];
 export interface DoneLookingRule {
   readonly prose: string;
   readonly holds: (v: LaneSignalView, idleThresholdMs: number) => boolean;
+  // the ONE clause that is a clock rather than a fact — see laneQuietSince
+  readonly clock?: true;
 }
 
 // Every clause is required (an AND), and every one of them is a NEGATION test the ③ trigger must
@@ -35,7 +37,7 @@ export interface DoneLookingRule {
 // never as permission to spawn.
 export const DONE_LOOKING_RULES: readonly DoneLookingRule[] = [
   { prose: "alive", holds: (v) => v.alive === true },
-  { prose: "idle", holds: (v, t) => v.idleMs !== null && v.idleMs >= t },
+  { prose: "idle", holds: (v, t) => v.idleMs !== null && v.idleMs >= t, clock: true },
   { prose: "no git op in progress", holds: (v) => v.gitOp !== true },
   { prose: "no blocked/errored merge", holds: (v) => !MERGE_BLOCKING.includes(v.merge?.status ?? "") },
   { prose: "clean tree", holds: (v) => v.git !== null && v.git.dirty === 0 },
@@ -48,4 +50,19 @@ export const DONE_LOOKING_PROSE =
 
 export function laneDoneLooking(v: LaneSignalView, idleThresholdMs: number): boolean {
   return DONE_LOOKING_RULES.every((r) => r.holds(v, idleThresholdMs));
+}
+
+// --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already
+// holding? `doneLooking` answers "quiet long enough to act on" and is what auto-③ fires on; this
+// answers "the facts are in, only the clock is still running — since when". A poller reading a
+// lane that has committed and printed its report sees a timestamp here minutes before the boolean
+// flips, and picks its own tolerance, without the trigger's threshold moving at all.
+//
+// Same conservative direction: it iterates the SAME clause list (one edit keeps prose, predicate
+// and this in step), and any unknown fact — null alive, null git, un-ticked idleMs — returns null,
+// never a timestamp. null means "no answer", exactly as false does for the predicate.
+export function laneQuietSince(v: LaneSignalView, now: number): number | null {
+  if (v.idleMs === null) return null;
+  if (!DONE_LOOKING_RULES.every((r) => r.clock || r.holds(v, 0))) return null;
+  return now - v.idleMs;
 }

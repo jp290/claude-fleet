@@ -15,7 +15,7 @@ PORT=$((13000 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/fleet-e2e-clean-review.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e-clean-review.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # green verify stand-in (no sabotage marker → clean+green → the reviewer is what decides the land)
@@ -54,8 +54,11 @@ chmod +x "$DIR/fakecleanreview"
 trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 tmux -L "$SOCK" kill-server 2>/dev/null
 
+# FLEET_AUTO_REVIEW_MS=0 turns the auto-③ tick OFF here: this harness configures no
+# FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
+# claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 sleep 2
 
 cd "$DIR" || exit 1

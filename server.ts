@@ -4,6 +4,7 @@ import { resolve, dirname, basename } from "node:path";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
+import { laneDoneLooking, DONE_LOOKING_PROSE } from "./lane-signals";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -1181,6 +1182,7 @@ async function killSlot(s: Slot): Promise<void> {
   s.label = null;
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
   reviewCache.delete(s.id); // …nor the previous session's 🔍 review
+  reviewAutoTried.delete(s.id); // …and the next lane in this slot gets its own auto-③ budget
   harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
   startCache.delete(s.id);
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // F5: a recycled slot must not inherit the prior lane's in-flight merge job as running:true (the old job's finally self-checks identity via mergeInflight.get === job, so this drop is safe)
@@ -1584,7 +1586,14 @@ async function listDirs(raw: string) {
 // slot they describe — without these guards the newest-by-mtime fallback below hands the
 // board/chat view the summarizer's own prompt as "your prompt". Live runs are tracked in
 // summarizerSids; strays from crashed runs are caught by sniffing the prompt's marker text.
+// ONE mark per background prompt that runs in a SLOT's project dir. The 🔍 review is in this list
+// because auto-③ made "a deploy interrupts a review" routine rather than rare: the sids of live
+// runs are dropped from process memory on restart, so the ONLY thing left to recognize the stray
+// transcript by is its prompt text. A mark missing here means that transcript can be served as the
+// adopted slot's own conversation — keep this list in step with every prompt run via summaryViaSession.
 const SUMMARIZER_MARK = "read-only reviewer summarizing the state of a coding session";
+const REVIEW_MARK = "read-only code reviewer. The diffs below are the WHOLE subject";
+const BACKGROUND_MARKS = [SUMMARIZER_MARK, REVIEW_MARK];
 const sniffedSummarizer = new Set<string>(); // positive verdicts only — a marker can't un-happen
 function sniffSummarizer(path: string): boolean {
   if (sniffedSummarizer.has(path)) return true;
@@ -1593,7 +1602,8 @@ function sniffSummarizer(path: string): boolean {
     const buf = Buffer.alloc(16_384);
     const n = readSync(fd, buf, 0, buf.length, 0);
     closeSync(fd);
-    if (!buf.toString("utf8", 0, n).includes(SUMMARIZER_MARK)) return false;
+    const headText = buf.toString("utf8", 0, n);
+    if (!BACKGROUND_MARKS.some((m) => headText.includes(m))) return false;
     sniffedSummarizer.add(path);
     return true;
   } catch {
@@ -2032,32 +2042,77 @@ interface ReviewFinding {
 interface ReviewResult {
   findings: ReviewFinding[]; scope: string; notes: string;
   model: string; at: number; head: string | null; dirty: number; raw: boolean;
+  // CONTENT identity of the diff this review actually read (`git patch-id --stable`), which is
+  // what the outcome row's staleness relation compares — never the sha. The land path REBASES a
+  // lane onto main before the ff-merge, so the landed HEAD is a different commit than the reviewed
+  // one on every clean land while the diff is byte-identical: a sha/key comparison would mark
+  // exactly those reviews stale, and worst under the parallelism this layer exists for.
+  // null = not computable (no lane base, or git could not id the patch) — never treated as a match.
+  patchId: string | null;
 }
 const reviewCache = new Map<number, { key: string; result: ReviewResult }>();
-const reviewInflight = new Map<number, Promise<ReviewResult>>();
+// An inflight review carries the IDENTITY it was started for, not just its promise. Two bugs live
+// in "await, then write the cache" without it, and auto-③ makes both routine:
+//   · the key was computed by whichever request STARTED the join, so a second caller arriving on a
+//     changed tree would file a result computed for the older state under ITS key (same class as
+//     the mergeInflight identity check — grep the F5 note at killSlot);
+//   · a review that finishes AFTER the slot was recycled would file lane A's findings under lane
+//     B, since killSlot's cache delete happens BEFORE the write.
+// So the job freezes {key, cwd, branch} at START and the write re-checks them.
+interface ReviewJob { key: string; cwd: string; branch: string | null; p: Promise<ReviewResult> }
+const reviewInflight = new Map<number, ReviewJob>();
+// git states the AUTO path has already spawned for (see tickAutoReview). Separate from
+// reviewCache because a FAILED review caches nothing: without this the auto path would re-spawn
+// on every tick for the same unchanged tree — the retry storm §4 forbids.
+const reviewAutoTried = new Map<number, string>();
+
+// the exact git state a review is computed FOR, and the cache key derived from it. One source for
+// the owner's click, the auto path and the outcome row's staleness relation — three readers of
+// "which tree did this describe" that must not each derive it their own way. null = not a repo.
+async function reviewState(cwd: string): Promise<{ key: string; head: string | null; dirty: number } | null> {
+  const st = await git(cwd, "status", "--porcelain");
+  if (st.code !== 0) return null;
+  const hd = await git(cwd, "rev-parse", "HEAD");
+  const head = hd.code === 0 ? hd.out : null;
+  return { key: `${head}:${Bun.hash(st.out)}`, head, dirty: st.out.split("\n").filter(Boolean).length };
+}
+
+// the ONE place a reviewer is ever spawned — owner click and auto-③ both come through here, which
+// is what makes "at most one agent per slot" true rather than true-per-caller. The cache write is
+// the job's own (frozen key, re-checked identity), never the caller's view of the tree.
+function startReview(s: Slot, rs: { key: string; head: string | null; dirty: number }): ReviewJob {
+  const job = {
+    key: rs.key, cwd: s.cwd!, branch: s.worktree?.branch ?? null,
+  } as ReviewJob;
+  job.p = runReview(s, rs.head, rs.dirty).then((result) => {
+    // the slot must still hold the SAME lane this review was started for; a recycle in between
+    // means these findings describe a tree nobody is looking at anymore — drop them
+    if (s.cwd === job.cwd && (s.worktree?.branch ?? null) === job.branch)
+      reviewCache.set(s.id, { key: job.key, result });
+    return result;
+  }).finally(() => {
+    if (reviewInflight.get(s.id) === job) reviewInflight.delete(s.id);
+  });
+  reviewInflight.set(s.id, job);
+  return job;
+}
 
 // same contract as summaryResponse: run=false is a pure cache lookup that never spawns,
 // run=true spawns at most one agent per slot and the HEAD+status key stops repeat spend
 // on an unchanged tree.
 async function reviewResponse(s: Slot, run: boolean): Promise<Response> {
-  const st = await git(s.cwd!, "status", "--porcelain");
-  if (st.code !== 0) return json({ error: "not a git repository" }, 400);
-  const hd = await git(s.cwd!, "rev-parse", "HEAD");
-  const head = hd.code === 0 ? hd.out : null;
-  const dirty = st.out.split("\n").filter(Boolean).length;
-  const key = `${head}:${Bun.hash(st.out)}`;
+  const rs = await reviewState(s.cwd!);
+  if (!rs) return json({ error: "not a git repository" }, 400);
+  const { key } = rs;
   const cached = reviewCache.get(s.id);
   if (cached?.key === key) return json({ ...cached.result, cached: true, stale: false });
   if (!run) return json(cached ? { ...cached.result, cached: true, stale: true } : { cached: false });
-  let inflight = reviewInflight.get(s.id);
-  if (!inflight) {
-    inflight = runReview(s, head, dirty).finally(() => reviewInflight.delete(s.id));
-    reviewInflight.set(s.id, inflight);
-  }
+  const job = reviewInflight.get(s.id) ?? startReview(s, rs);
   try {
-    const result = await inflight;
-    reviewCache.set(s.id, { key, result });
-    return json({ ...result, cached: false, stale: false });
+    const result = await job.p;
+    // joining a review that was started for an EARLIER tree answers honestly: these findings are
+    // real, they just are not about the state this caller asked about
+    return json({ ...result, cached: false, stale: job.key !== key });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "reviewer failed" }, 500);
   }
@@ -2082,6 +2137,27 @@ function reviewFinding(x: unknown): ReviewFinding | null {
 
 const IMPACT_ORDER = { high: 0, medium: 1, low: 2 } as const;
 
+// the content identity of a lane's whole diff — its own commits (base...HEAD) plus whatever is
+// uncommitted. Callers pass the diff TEXT they are working from (runReview passes the exact
+// strings that go into the prompt, so the id is of what the reviewer read, never of a re-read
+// tree that may have moved since). `git patch-id --stable` normalizes what a rebase changes
+// (commit shas, line offsets, hunk order) and hashes what it does not — which is exactly the
+// question "did the review describe this diff". Deliberately NOT insensitive to context lines:
+// if main edited within the ±3 lines around a lane hunk, the id changes, and it should — that is
+// the case where the review never saw the interaction with main's neighbouring edit.
+// Returns null when it cannot be established — never a value that could compare equal.
+async function patchIdOf(cwd: string, committed: string, uncommitted: string): Promise<string | null> {
+  const text = `${committed}\n${uncommitted}`;
+  if (!text.trim()) return null; // an empty diff has no content to be covered
+  const p = Bun.spawn(["git", "-C", cwd, "patch-id", "--stable"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  p.stdin.write(text);
+  await p.stdin.end();
+  const out = await new Response(p.stdout).text();
+  if (await p.exited !== 0) return null;
+  const id = out.trim().split(/\s+/)[0] ?? "";
+  return /^[0-9a-f]{40,64}$/.test(id) ? id : null;
+}
+
 async function runReview(s: Slot, head: string | null, dirty: number): Promise<ReviewResult> {
   const cwd = s.cwd!;
   // a lane's authoritative fork base gives the session-scoped diff; a non-lane slot has none,
@@ -2096,7 +2172,11 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   const un = await git(cwd, "diff", "HEAD", "--no-color");
   const uncommitted = un.code === 0 ? un.out : "";
   const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
-  const meta = { model: SUMMARY_MODEL, at: Date.now(), head, dirty };
+  // the id of the diff text BELOW, taken HERE and stored with the findings: an owner click on a
+  // dirty tree reviews uncommitted work that no later read can reconstruct, so the relation the
+  // outcome row records is only honest if it is frozen at review time
+  const meta = { model: SUMMARY_MODEL, at: Date.now(), head, dirty,
+    patchId: await patchIdOf(cwd, committed, uncommitted) };
   // nothing changed → nothing to review. Answered without spawning: a model call here could
   // only invent findings, and it would be billed for every click on an untouched tree.
   if (!committed.trim() && !uncommitted.trim())
@@ -2148,6 +2228,58 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
     }
   } catch { /* keep the raw text as notes */ }
   return { findings, scope, notes, raw, ...meta };
+}
+
+// --- auto-③: run the reviewer on a lane that has gone done-looking, so findings exist BEFORE the
+// owner looks (docs/perception-layer.md §4). Automating WHEN ③ runs changes nothing about what it
+// may do — it is not wired to land/merge/dispatch, and nothing reads its result to decide anything.
+// It removes a WAIT, never a CHECK.
+// Guard rails, each one load-bearing:
+//   · LANES ONLY, never the ⚙ steward (a planning pane's diff is not lane work).
+//   · ONCE PER GIT STATE — the existing HEAD+status cache key, not a timer. An unchanged tree
+//     never re-spawns; a failure is remembered by KEY so it is a non-event, not a retry storm.
+//   · Never a second concurrent agent: an inflight review (the owner's own click, or ours)
+//     is left alone.
+//   · Idle-gated through the shared done-looking predicate — one env knob shifts both.
+// Cost is latency + attention (throwaway SUMMARY_MODEL session, reaped at boot like every other
+// `sum-` background agent), which is what makes firing it unprompted acceptable.
+const AUTO_REVIEW_MS = Number(process.env.FLEET_AUTO_REVIEW_MS ?? 15_000) | 0; // 0 disables the tick
+const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_000) | 0;
+// the predicate is LEVEL-triggered — a finished lane stays idle+clean+ahead forever — so the
+// trigger needs a ceiling in both directions: one attempt per git state (reviewAutoTried, written
+// BEFORE the spawn so a failure is remembered too) and this cap on how many throwaway sessions
+// auto-③ may hold open at once fleet-wide. summaryViaSession has no limit of its own.
+const AUTO_REVIEW_MAX_CONCURRENT = 2;
+let autoReviewRunning = 0;
+let autoReviewBusy = false;
+async function tickAutoReview(): Promise<void> {
+  if (autoReviewBusy) return;
+  autoReviewBusy = true;
+  try {
+    const now = Date.now();
+    for (const s of slots) {
+      if (autoReviewRunning >= AUTO_REVIEW_MAX_CONCURRENT) break;
+      if (!s.cwd || !s.worktree) continue;          // a non-lane slot has no lane diff to review
+      if (s.label === STEWARD_LABEL) continue;      // the planning pane is not lane work
+      if (reviewInflight.has(s.id)) continue;       // one agent per slot, whoever started it
+      if (!laneDoneLooking(laneSignalView(s, now), AUTO_REVIEW_IDLE_MS)) continue;
+      // the predicate reads the ~10s gitOp cache; a merge/commit/rebase that STARTED since then
+      // would have the reviewer read a half-rewritten tree and cache that as findings. Fresh reads.
+      if (mergeInflight.has(s.id) || mergeStart.has(s.id) || commitInflight.has(s.id)) continue;
+      if (await gitOpInProgress(s.cwd)) continue;
+      const rs = await reviewState(s.cwd);
+      if (!rs) continue;
+      if (reviewCache.get(s.id)?.key === rs.key) continue;   // already reviewed THIS tree
+      if (reviewAutoTried.get(s.id) === rs.key) continue;    // this state already got its one spawn
+      reviewAutoTried.set(s.id, rs.key);
+      autoReviewRunning++;
+      // fire-and-forget: the tick must never hold its own busy flag across a 180s agent run, and
+      // a failed auto-review is a non-event — no retry, no state change, nothing raised
+      void startReview(s, rs).p.catch(() => {}).finally(() => { autoReviewRunning--; });
+    }
+  } finally {
+    autoReviewBusy = false;
+  }
 }
 
 // --- 💾 lane commit: the load-bearing SAVE. land/merge both refuse a dirty tree, so
@@ -2496,6 +2628,27 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
 // comparison valid. model + briefHash are recorded as an ENTANGLED pair (a strong brief lets a
 // weak model succeed): never attribute an outcome to the model alone.
 type LaneDisposition = "landed" | "reverted" | "shelved" | "killed-dirty" | "killed-empty";
+// what ③ said about this lane, AND whether it described the diff that reached the terminal event
+// (docs/perception-layer.md §5). The relation is CONTENT identity, not commit identity: the land
+// path rebases the lane onto main before the ff-merge, so on a clean land the reviewed commit is
+// never the landed commit even though the diff is byte-identical. Comparing shas/cache keys would
+// mark those reviews stale — chronically, and hardest under the parallelism this layer is for.
+// So both sides are `git patch-id --stable` over the lane's own diff:
+//   covered    — same content: the review described what landed, rebase or not
+//   superseded — a review exists but the content moved (or cannot be shown identical): honest,
+//                and never presented as coverage
+//   inflight   — a review was running when this lane ended: NOT captured. Recorded as its own
+//                answer rather than awaited (a land must not block up to REVIEW_TIMEOUT_MS on an
+//                advisory agent) and rather than silently collapsed into "none"
+//   none       — no review on record for this lane at all
+// A UNION, not an optional field: findings are unreachable without the word that says what they
+// covered, and "we know nothing covered this" is an ANSWER that is always present. Same discipline
+// as LandFacts.verified — the un-covered case is unreachable by construction, not guarded, so no
+// `??` can ever resolve it to something older.
+type OutcomeReview =
+  | { state: "none" | "inflight" }
+  | { state: "covered" | "superseded"; at: number; model: string; head: string | null;
+      dirty: number; patchId: string | null; landedPatchId: string | null; findings: ReviewFinding[] };
 interface LaneOutcome {
   ts: number;
   branch: string | null;
@@ -2518,6 +2671,7 @@ interface LaneOutcome {
   resolvedConflict: boolean; // did an agent resolve conflicts (vs a clean rebase git replayed itself)?
   repairRounds: number;      // bounded resolver↔verify repair rounds that ran before this landed (0 = none)
   confirmedByHuman: boolean; // did the owner confirm-land it (true) or did it auto-land clean+green (false)?
+  review: OutcomeReview;     // what ③ said + whether it described THIS diff (never one without the other)
 }
 // the land-shape facts a caller hands to buildLaneOutcome for a "landed" record. Assembled at the
 // land SITE (not read from the mutable mergeLast map, which the verdict-write races) so each fact is
@@ -2569,6 +2723,31 @@ async function laneOwnerPrompts(cwd: string): Promise<{ count: number; firstText
     return { count: 0, firstText: null };
   }
 }
+// the review on record for a lane at its terminal event, with the staleness relation resolved
+// against the tree AS IT IS NOW. Read-only and never awaited-on: a review still inflight (the
+// owner clicked ③ seconds ago) contributes nothing rather than delaying a land — "none" then is
+// the honest answer, and the next state change is not this row's business.
+async function outcomeReview(s: Slot, cwd: string, base: string | null): Promise<OutcomeReview> {
+  const cached = reviewCache.get(s.id);
+  // a review still running when the lane ends is stated as such — never awaited (that would put an
+  // advisory agent on the land path's critical section) and never rounded down to "none"
+  if (!cached) return { state: reviewInflight.has(s.id) ? "inflight" : "none" };
+  const { result } = cached;
+  // `base` is the outcome record's own fork point — after a rebase-land that is the commit the
+  // lane was replayed onto, so this diff is the lane's OWN work in both cases and the two ids are
+  // comparable. Two nulls are not a match: unprovable coverage is superseded, never covered.
+  let landedPatchId: string | null = null;
+  if (base) {
+    const cd = await git(cwd, "diff", "--no-color", `${base}...HEAD`);
+    const ud = await git(cwd, "diff", "HEAD", "--no-color");
+    if (cd.code === 0) landedPatchId = await patchIdOf(cwd, cd.out, ud.code === 0 ? ud.out : "");
+  }
+  return {
+    state: result.patchId !== null && result.patchId === landedPatchId ? "covered" : "superseded",
+    at: result.at, model: result.model, head: result.head, dirty: result.dirty,
+    patchId: result.patchId, landedPatchId, findings: result.findings,
+  };
+}
 function briefHashOf(text: string | null): string | null {
   return text ? createHash("sha256").update(text).digest("hex").slice(0, 12) : null;
 }
@@ -2606,6 +2785,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
   const start = sessionStart(s);
   const ts = Date.now();
   const { count: ownerPrompts, firstText } = await laneOwnerPrompts(cwd);
+  const review = await outcomeReview(s, cwd, base);
   return {
     ts,
     branch: s.worktree.branch,
@@ -2628,6 +2808,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     resolvedConflict: facts.resolvedConflict,
     repairRounds: facts.repairRounds,
     confirmedByHuman: facts.confirmedByHuman,
+    review,
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
@@ -2656,6 +2837,9 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
     // its own `landed` record; join reverted→landed BY BRANCH (rec.branch) to recover them.
     ...NO_LAND_FACTS,
     verified: null, // no verify runs for a revert — the undone land's own record carries its verdict
+    // no live slot here (the lane landed and was torn down) → no review cache to read. Recorded as
+    // the explicit "nothing covered this", never as a missing field.
+    review: { state: "none" },
   };
 }
 function emitLaneOutcome(o: LaneOutcome | null): void {
@@ -3359,6 +3543,8 @@ setInterval(() => void tickGit().catch(() => {}), 10_000);
 void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch(() => {}), 8000);
 setInterval(() => void tickHarvest().catch(() => {}), 5000);
+// auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
+if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch(() => {}), AUTO_REVIEW_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
@@ -3534,17 +3720,34 @@ function stewardTaskView(slotId: number): { id: string; status: Task["status"]; 
   return t ? { id: t.id, status: t.status, source: t.source, text: trim(t.text, 300) } : null;
 }
 
-function stewardSlotsView(now: number) {
-  return slots.map((s) => ({
-    id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
-    git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+// the deterministic inputs the done-looking predicate reads (lane-signals.ts). Built HERE, by the
+// one function both readers go through — the steward view that reports the label and the auto-③
+// tick that acts on it can never be looking at differently-assembled facts.
+function laneSignalView(s: Slot, now: number) {
+  return {
+    git: gitInfo.get(s.id) ?? null,
     alive: aliveInfo.get(s.id) ?? null,
     gitOp: gitOpInfo.get(s.id) ?? null,
     idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
     merge: stewardMergeView(s.id),
-    task: stewardTaskView(s.id),
-    mergePending: mergeLast.get(s.id)?.status === "resolved",
-  }));
+  };
+}
+
+function stewardSlotsView(now: number) {
+  return slots.map((s) => {
+    const sig = laneSignalView(s, now);
+    return {
+      id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
+      ...sig, worktree: s.worktree, model: s.model,
+      task: stewardTaskView(s.id),
+      mergePending: mergeLast.get(s.id)?.status === "resolved",
+      // the deterministic label, served as a FACT next to the facts it is computed from — the
+      // digest worker gets the same rule in prose and may still disagree; this one is the
+      // trigger's own answer, and it is what auto-③ acts on.
+      doneLooking: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
+        && laneDoneLooking(sig, AUTO_REVIEW_IDLE_MS),
+    };
+  });
 }
 
 // --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
@@ -3682,7 +3885,9 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
     `condition from exactly: ${DIGEST_CONDITIONS.join(" / ")}.`,
     "Deterministic rules, facts only: alive=false → unknown (a dead pane proves nothing else);",
     "gitOp=true or merge.status error/blocked → awaiting-human; idle + git.dirty>0 → stalled-dirty;",
-    "idle + clean + git.ahead>0 → done-looking; recent output → healthy-running; anything",
+    // generated from DONE_LOOKING_RULES — the worker's prose rule and the deterministic predicate
+    // auto-③ fires on are the SAME source, so they cannot drift apart silently (§3)
+    `${DONE_LOOKING_PROSE}; recent output → healthy-running; anything`,
     "ambiguous → unknown, never a guess. You cannot see transcripts, so never claim stuck-looping",
     "unless the prior record already flagged it.",
     "changed: what differs vs the prior record (empty array if nothing — honesty over content).",

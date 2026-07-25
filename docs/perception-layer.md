@@ -1,8 +1,17 @@
-# The perception layer — design note (2026-07-25, unbuilt)
+# The perception layer — design note (2026-07-25)
 
 *What Fleet needs before it may steer anything. Written on main **before** the lane that
 implements it, so the lane has a target it did not have to invent. Treat the line refs as
 claims: they drift — grep the symbol.*
+
+**Status (2026-07-25, after `600d401` "make Fleet observable to itself on the write side"):
+the write half is built, the reader is not.** (c) the deterministic `done-looking` predicate
+and auto-③ on it, and (b) the review persisted onto the outcome row with the patch-id
+staleness relation — all in `server.ts` (grep `tickAutoReview`, `patchIdOf`, `outcomeReview`).
+**(a) the feed is still unbuilt**, so the ledger remains write-only *in effect* and (b) has so
+far produced **zero** rows carrying a review. The sections below stay as written — they are the
+design the lane was held to; `knowledge-layers.md` §5 records what the as-built state proves
+and what it still leaves unmeasured.
 
 ## 1. The gap, stated as a fact about today
 

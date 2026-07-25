@@ -814,6 +814,10 @@ states the principle — *"server.ts already IS that common service"* — and it
   *designed and brief'd* but **never run** — `docs/proposals/` and `docs/arena-episodes.md`
   do not exist. (First-draft claim "dream mode is blocked on a retrieval substrate" was
   wrong — see the stress-test below: v1 over the prompts corpus runs indexless.)
+  **Stale as of 2026-07-25:** `docs/proposals/` now holds five documents (dream-mode corpus,
+  learning-engine v1 + next steps, mechanism deep-dive, stack/land program board) and the
+  dream-mode passes have run — `docs/arena-episodes.md` is still the part that does not exist.
+  The corpus this item wants to index has meanwhile grown a second unindexed class: `briefs/`.
 
 **The load-bearing constraint (owner, 2026-07-23): no dead-end build.** Tier 1 must be a
 stepping stone toward the enterprise stack, not a throwaway. The synergy move that guarantees
@@ -1145,6 +1149,9 @@ newest record is provably an `outcome` — pre-fix that record *was* what `prior
 | P-5 | **Worktree placement** — pin the lane path to the sibling dir or gitignore it (cheap half only) | — | fold-in, no own lane | dossier F7; stack-land §8 |
 | P-6 | **Program board** PB-1/2/3 — lane DAG, orchestrated dependent-rebase, stack cleanup | — | owner: build or not | stack-land-program-board |
 | P-7 | **F-D minors** — digest cache invalidation, `runVerify` SIGTERM→SIGKILL, per-repo `FLEET_VERIFY_CMD` | — | fold into whichever lane touches that code | deep-dive → F-D |
+| P-8 | **Perception (a) — the outcome feed.** The write half landed (`600d401`); nothing reads the ledger, so (b) has produced **zero** rows carrying a review and the "does a prompt land beat auto-③" question is unmeasurable. First reader before more writers | — | owner: build | perception-layer §6; knowledge-layers §5, §7 |
+| P-9 | **The dispatcher does not brief.** `tickDispatch` sends the raw queue text; the template + enhancer exist but sit off that path. Also fix the provenance so `briefHash`/`ownerPrompts` describe the injected brief instead of rounding to `null` | P-8 (else unprovable — see the listed dead end) | owner: build | knowledge-layers §4 |
+| P-10 | **L1 rot detector** — two mechanical checks: every `docs/*.md` pointer in the index resolves; no doc calls "unbuilt" what `server.ts` defines. Both would have caught the 2026-07-25 findings outright | — | fold into whichever lane touches `docs/` | knowledge-layers §3 |
 
 **P-3 RESOLVED (2026-07-24): arm (a), the probe — with a guardrail the register did not originally
 carry.** The `/rundgang` filing edit shipped (`.claude/commands/rundgang.md`: file section-1 items

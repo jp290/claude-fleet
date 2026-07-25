@@ -150,11 +150,21 @@ path. Today's evidence says brief quality is the dominant variable in whether a 
 unaided. An autonomous dispatcher that briefs badly produces work that passes the gate and
 misses the point — the most expensive failure mode available, because it is invisible.
 
-### Gap 4 — No economics
-Nothing measures what a lane costs, and no budget bounds the fleet (`architecture-review.md`
-F10: only auto-③'s cap of 2 exists). `sessionMs` is recorded and read by nothing; tokens are not
-recorded at all, though they are derivable (the `lane-cost-study` lane is testing exactly this).
-"Can I leave it running overnight" is an economic question before it is a safety question.
+### Gap 4 — No metering, and the scarce resource is not money
+Nothing measures what a lane consumes, and no budget bounds the fleet
+(`architecture-review.md` F10: only auto-③'s cap of 2 exists). `sessionMs` is recorded and read
+by nothing; tokens are not recorded at all, though `lane-cost-study.md` proved them derivable
+from the transcripts (~32 M cache-read tokens per lane, cache-read = 75.7 % of the total).
+
+**Corrected 2026-07-25 after checking the billing path:** Fleet makes no API calls — every model
+call spawns the Claude Code CLI against a `claude_max` subscription, so the study's dollars are
+notional. The binding limit is therefore **plan capacity and rate-limit headroom**, not spend.
+Two consequences: (a) an autonomous fleet's failure mode is *exhausting the plan and stalling
+every session, including the owner's*, which no current mechanism can see coming; (b) the one
+real-money path is the account's `hasExtraUsageEnabled` flag, which converts exhaustion into
+metered billing instead of a stop. Metering should therefore target **token throughput per unit
+time against plan headroom**, not a dollar budget — and the "can I leave it running overnight"
+question is answered by that number.
 
 ### Gap 5 — Attention routing, not attention removal
 Autonomy is not zero human; it is the human on the right things. Today everything either needs

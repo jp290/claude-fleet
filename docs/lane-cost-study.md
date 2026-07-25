@@ -43,6 +43,17 @@ Cost = US$, Opus 5 rates, verified today via the `claude-api` skill: input \$5/M
 output \$25/MTok, cache **write 1 h** = 2× input = \$10/MTok, cache **read** = 0.1× = \$0.50/MTok.
 Transcripts carry `cache_creation.ephemeral_1h_input_tokens`, so the 1 h (2×) write rate applies.
 
+> **These dollars are NOTIONAL, not billed** (verified 2026-07-25, after this study landed).
+> Fleet contains no Anthropic SDK, no `api.anthropic.com` call and no `ANTHROPIC_API_KEY` in the
+> srv process env, `.env`, or the launchd plist — every model call spawns the **Claude Code CLI**
+> (`BASE_CMD = process.env.FLEET_CMD ?? "claude"`), which authenticates against an account whose
+> `billingType` is `stripe_subscription` on `claude_max` (`default_claude_max_20x`). So the
+> figures below are an **API-equivalent valuation** of real token counts — correct for comparing
+> lanes against each other, wrong if read as an invoice. **The scarce resource is plan capacity
+> and rate-limit headroom, not dollars** — with one exception: the account has
+> `hasExtraUsageEnabled`, so usage beyond plan limits *can* bill at metered rates. That flag, not
+> this table, is where real money would appear.
+
 ### 1.3 Per-field threshold (governs the RE-SCOPE branch)
 
 A field is worth building **iff ≥ 1/3 of landed lanes (≥ 6 of 18) make at least one call whose

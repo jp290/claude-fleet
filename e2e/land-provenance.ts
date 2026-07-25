@@ -356,10 +356,12 @@ export async function run(): Promise<void> {
     // as it was: no audit spawned, no trail, nothing on the board. The ON behaviour lives in its
     // own harness (./e2e-postland-audit.sh), which is also why an accidental nested suite run is
     // structurally impossible here: with no command set there is nothing to spawn.
-    const pla = (await (await get("/api/post-land-audits")).json()) as
-      { audits: unknown[]; total: number; configured: boolean };
+    // tolerate a non-JSON body (a server without the route answers 404/HTML): this must fail as
+    // ONE check, not abort the suite at the parse — the checks after it are unrelated
+    const pla = (await (await get("/api/post-land-audits")).json().catch(() => ({}))) as
+      { audits?: unknown[]; total?: number; configured?: boolean };
     check("tier 2 default OFF: no command configured, so none of this suite's lands audited anything",
-      pla.configured === false && pla.total === 0 && pla.audits.length === 0, JSON.stringify(pla));
+      pla.configured === false && pla.total === 0 && pla.audits?.length === 0, JSON.stringify(pla));
     check("tier 2 default OFF: the board's poll payload carries no audit result",
       (((await (await get("/api/sessions")).json()) as { postLandAudit: unknown }).postLandAudit ?? null) === null);
 

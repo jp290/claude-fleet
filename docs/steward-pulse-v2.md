@@ -46,6 +46,15 @@ Rules (each one is a lesson already paid for):
   Nudges billig (eine Zeile) statt teuer (befolgte Fehl-Diagnose).
 - **One nudge per session per work-episode.** The caps enforce the rate; the steward's
   judgment picks the moment (post-`done-looking` or long-idle — never mid-burst).
+- **Moment-detection caveat (trial #1, 2026-07-25):** for a continuously-working,
+  not-yet-committing lane BOTH named triggers are unreachable — `idleMs` stays ~0 (the
+  working pane repaints) and `doneLooking` needs `ahead>0`. `transcriptFact.mtime` is the
+  better signal but NOT sufficient alone: the transcript also goes quiet for the whole
+  length of a long-running tool call (observed: 10-min background e2e loops), so
+  transcript-quiet-≥N alone can fire mid-burst. A real moment-trigger needs the
+  conjunction (transcript quiet AND pane visibly at the input prompt / claude idle), or a
+  commit event. Any typed `kind:"pulse"` implementation must encode this, not the naive
+  mtime rule.
 - Watched: owner reads the exchange in the transcript. Nothing here is autonomous yet —
   it is a TEST RUN producing the tally the promotion predicate needs
   (`PROMOTION_MIN_N` helps, zero harm, harm-attest fresh — fed by the disposition rail).

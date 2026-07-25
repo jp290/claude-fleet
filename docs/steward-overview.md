@@ -17,8 +17,10 @@ One durable session in a labelled slot (`⚙ steward`), living in its own worktr
 can never touch `fleet.json`/the owner token. On `/steward` it loads its **three-model
 mind**: the *system* (docs shelf), *you* (`OWNER.md`), and *itself* (the journal). It
 **plans, never lands** — its output is understanding and briefs, not patches
-(`steward.md`). It is a convention, not a server feature: zero code in `server.ts` knows
-it exists; Fleet is fully functional without it.
+(`steward.md`). It is a convention rather than a slot type, and Fleet is fully functional
+without it — but *not* invisible to `server.ts` any more: `STEWARD_LABEL` is hard-coded and
+the label decides whether a pane gets `FLEET_STEWARD_TOKEN` at spawn (`steward.md`,
+correction 2026-07-25).
 
 ## What it can do today (AS-BUILT)
 

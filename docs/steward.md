@@ -1,9 +1,16 @@
 # Steward — the workhorse agent as a Fleet convention
 
-*The persistent planning/conversation agent for Fleet work. A usage pattern, not a
-server feature: zero code in `server.ts` knows about it, and Fleet is fully
-functional without it. Decided 2026-07-21 (JP): Fleet-native, convention-first,
-optional, clearly recognizable.*
+*The persistent planning/conversation agent for Fleet work. A usage pattern first, not a
+slot type or UI mode, and Fleet is fully functional without it. Decided 2026-07-21 (JP):
+Fleet-native, convention-first, optional, clearly recognizable.*
+
+**Correction 2026-07-25 — "zero code in `server.ts` knows about it" was true when written
+and is not true now.** `server.ts:STEWARD_LABEL` hard-codes `⚙ steward` and four sites branch
+on it: `stewardSlot()`, the auto-③ exclusion, the `doneLooking` field, and — load-bearing —
+the credential export at spawn (`const stewardExport = s.label === STEWARD_LABEL && stewardToken`).
+**Labelling a slot `⚙ steward` is therefore not cosmetic: on that pane's next (re)spawn it is
+handed `FLEET_STEWARD_TOKEN` and can self-serve `/api/steward/*`.** The convention is still a
+convention — nothing forces a steward to exist — but the label is now a security-relevant name.
 
 ---
 

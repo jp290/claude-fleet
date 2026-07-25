@@ -131,6 +131,9 @@ rotting. Two shelves, plus the steward subsystem.
   facts+one-question nudges whose mandated one-line reply is its own label, the
   handoff-recycle ritual, mission sessions; why the hardened land gate makes upstream
   trials cheap. Feeds the starving §4 tally.
+- **`judge-calibration.md`** — how judging instances earn trust: the fire-drill procedure
+  (sealed ground truth, evidence-horizon rule), per-judge calibration state (③ misses
+  in-diff semantics; ② misses its JSON contract in production), instrument-check method.
 - **`graduation-criteria.md`** — pre-registered numbers each autonomy step must meet
   before it may be enabled (component-5 auto-land, ② shadow→gate, deploy pilot, nudge
   promotion). Written before the data on purpose; amendments only with a rationale

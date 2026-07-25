@@ -3,6 +3,9 @@
 // auto-land; THIS harness boots with the flag ON + a stand-in reviewer and proves the ON behaviour:
 // a "review" verdict downgrades a clean+green auto-land to a stop-and-review, "ok" lets it land, and a
 // BROKEN reviewer fails CLOSED (stops, never lands). Run via ./e2e-clean-review.sh — never a live fleet.
+// The same file runs a second time under FLEET_CR_PHASE=shadow against a server booted with
+// FLEET_CLEAN_REVIEW=shadow: there the reviewer is POWERLESS — every verdict lands and is only
+// RECORDED on the lane's outcome row (`cleanReviewShadow`).
 import { spawnSync } from "node:child_process";
 const IP = "127.0.0.1";
 const PORT = Number(process.env.FLEET_PORT ?? 8790);
@@ -62,7 +65,7 @@ spawnSync("git", ["-C", REPO, "commit", "-qm", "seed"]);
 // create a lane that rebases CLEANLY (its own file → no conflict, the merge agent is never consulted),
 // commit its work, drive its merge, return the settled verdict. This is exactly the clean+green
 // auto-land path the reviewer guards.
-const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
+const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: MergeVerdict | null; branch: string }> => {
   const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   await Bun.write(`${ln.cwd}/${name}.txt`, `${name} work\n`);
   spawnSync("git", ["-C", ln.cwd, "add", `${name}.txt`]);
@@ -87,9 +90,61 @@ const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: Merg
     if (j.running || j.last !== null) break; // job started (or already settled)
     await Bun.sleep(800);
   }
-  return waitMerge(ln.slot);
+  return { ...(await waitMerge(ln.slot)), branch: ln.branch };
 };
 
+// the lane's outcome row (lane-outcomes.jsonl via the owner-only read endpoint), looked up by the
+// lane's branch — the shadow verdict's only home.
+type ShadowRow = { verdict: string | null; at: number; model: string; notes: string; raw: boolean };
+type OutcomeRow = { branch: string | null; disposition: string; cleanReviewShadow?: ShadowRow };
+const outcomeFor = async (branch: string): Promise<OutcomeRow | null> => {
+  const j = (await (await get("/api/lane-outcomes?limit=300")).json()) as { outcomes: OutcomeRow[] };
+  return j.outcomes.find((o) => o.branch === branch) ?? null;
+};
+
+const PHASE = process.env.FLEET_CR_PHASE ?? "gate";
+if (PHASE === "shadow") {
+  // ---- SHADOW PHASE (server booted with FLEET_CLEAN_REVIEW=shadow) ----
+  // (D) the assertion that matters most: a "would_stop" verdict must NOT gate. The land happens
+  // exactly as if ② were off, and the verdict is recorded on the outcome row instead.
+  await setReviewMode("review");
+  const D = await cleanLaneMerge("delta");
+  const dRow = await outcomeFor(D.branch);
+  check("shadow: a would_stop verdict does NOT gate — the clean lane still auto-lands", D.gone, JSON.stringify(D));
+  check("shadow: the would_stop lane's commit DID reach main", mainLog().includes("delta lane work"), mainLog());
+  check("shadow: the would_stop verdict is recorded on the outcome row",
+    dRow?.disposition === "landed" && dRow.cleanReviewShadow?.verdict === "would_stop"
+      && dRow.cleanReviewShadow.raw === false && dRow.cleanReviewShadow.notes.length > 0
+      && dRow.cleanReviewShadow.at > 0 && typeof dRow.cleanReviewShadow.model === "string",
+    JSON.stringify(dRow?.cleanReviewShadow));
+
+  // (E) an "ok" verdict lands (as it would anyway) and is recorded as a pass.
+  await setReviewMode("ok");
+  const E = await cleanLaneMerge("echo");
+  const eRow = await outcomeFor(E.branch);
+  check("shadow: an ok verdict lands", E.gone && mainLog().includes("echo lane work"), JSON.stringify(E));
+  check("shadow: the ok verdict is recorded as verdict:'pass', raw:false",
+    eRow?.cleanReviewShadow?.verdict === "pass" && eRow.cleanReviewShadow.raw === false,
+    JSON.stringify(eRow?.cleanReviewShadow));
+
+  // (F) fail direction INVERTED vs gate mode: nothing is gated, so a broken reviewer is a FAILED
+  // MEASUREMENT (verdict null, raw true) — never a fabricated pass, and never a stop either.
+  await setReviewMode("garbage");
+  const F = await cleanLaneMerge("foxtrot");
+  const fRow = await outcomeFor(F.branch);
+  check("shadow: a broken reviewer still lands (shadow gates nothing)",
+    F.gone && mainLog().includes("foxtrot lane work"), JSON.stringify(F));
+  check("shadow: a broken reviewer records verdict:null + raw:true, NOT a pass",
+    fRow?.cleanReviewShadow !== undefined && fRow.cleanReviewShadow.verdict === null
+      && fRow.cleanReviewShadow.raw === true,
+    JSON.stringify(fRow?.cleanReviewShadow));
+
+  console.log(results.join("\n"));
+  console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
+  process.exit(failed ? 1 : 0);
+}
+
+// ---- GATE PHASE (server booted with FLEET_CLEAN_REVIEW=1) ----
 // (A) reviewer "review" → the clean+green auto-land is DOWNGRADED to a stop-and-review, NOT landed.
 await setReviewMode("review");
 const A = await cleanLaneMerge("alpha");
@@ -103,6 +158,10 @@ await setReviewMode("ok");
 const B = await cleanLaneMerge("bravo");
 check("reviewer 'ok' lets a clean+green lane auto-land (slot torn down)", B.gone, JSON.stringify(B));
 check("the ok'd lane's commit reached main", mainLog().includes("bravo lane work"), mainLog());
+// gate mode records no shadow verdict — the two modes' records must not blur into each other
+const bRow = await outcomeFor(B.branch);
+check("gate mode writes NO cleanReviewShadow on the landed row",
+  bRow?.disposition === "landed" && bRow.cleanReviewShadow === undefined, JSON.stringify(bRow));
 
 // (C) a BROKEN reviewer (non-JSON) → FAIL CLOSED: the auto-land is stopped, never landed. This is the
 // safety property under reviewer failure — a bug can only ever cost a click, never land something unseen.

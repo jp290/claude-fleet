@@ -2462,7 +2462,15 @@ const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MER
 // a clean+green lane about to AUTO-LAND and may ONLY downgrade it to a stop-and-review — never approve
 // a land that would not otherwise happen. The auto-land proceeds ONLY on an explicit "ok" verdict;
 // every other outcome (review / error / timeout / unparseable / no fork base) fails CLOSED to a stop.
-const CLEAN_REVIEW = /^(1|true|on|yes)$/i.test(process.env.FLEET_CLEAN_REVIEW ?? "");
+// Third state `shadow` (graduation-criteria.md §2): the reviewer runs on every clean auto-land exactly
+// as in gate mode — same prompt, same timeout, same read-only reset — but its verdict NEVER changes the
+// outcome; the land proceeds as if the reviewer were off. The verdict is persisted onto the lane's
+// outcome row (`cleanReviewShadow`) as the dataset that would justify graduating to gate mode. The
+// fail direction is deliberately INVERTED here: nothing is gated, so an errored/unparseable run must
+// record "measurement failed" (verdict null, raw true), never a fabricated pass.
+const CLEAN_REVIEW_MODE: "off" | "gate" | "shadow" =
+  /^shadow$/i.test(process.env.FLEET_CLEAN_REVIEW ?? "") ? "shadow"
+  : /^(1|true|on|yes)$/i.test(process.env.FLEET_CLEAN_REVIEW ?? "") ? "gate" : "off";
 const CLEAN_REVIEW_CMD = process.env.FLEET_CLEAN_REVIEW_CMD ?? null; // tests: subprocess stand-in
 const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_REVIEW_TIMEOUT_MS ?? 180_000) | 0);
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.
@@ -2650,7 +2658,15 @@ interface LaneOutcome {
   repairRounds: number;      // bounded resolver↔verify repair rounds that ran before this landed (0 = none)
   confirmedByHuman: boolean; // did the owner confirm-land it (true) or did it auto-land clean+green (false)?
   review: OutcomeReview;     // what ③ said + whether it described THIS diff (never one without the other)
+  // FLEET_CLEAN_REVIEW=shadow only: what the ② clean-path reviewer WOULD have said about this land,
+  // recorded while gating nothing. Absent = shadow did not run for this row (off/gate mode, or any
+  // disposition other than a clean auto-land). Absence is a non-measurement, never a pass.
+  cleanReviewShadow?: CleanReviewShadow;
 }
+// `verdict: null` + `raw: true` = the reviewer produced no explicit verdict (error/timeout/unparseable
+// /no fork base) — the measurement failed. A "pass" is only ever an explicit {"verdict":"ok"}.
+type CleanReviewShadow = { verdict: "pass" | "would_stop" | null; at: number; model: string;
+  notes: string; raw: boolean };
 // the land-shape facts a caller hands to buildLaneOutcome for a "landed" record. Assembled at the
 // land SITE (not read from the mutable mergeLast map, which the verdict-write races) so each fact is
 // exactly what that path knows: the clean auto-land is {false,0,false}; a confirm-land carries the
@@ -2666,7 +2682,10 @@ interface LaneOutcome {
 // land site knows: a land that REBASED the lane moved its fork point onto the main it was rebased
 // on, so the creation-time fork would over-count main's own commits into the lane's footprint.
 type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
-  verified: boolean | null; baseSha?: string };
+  verified: boolean | null; baseSha?: string;
+  // set ONLY by the clean auto-land site under FLEET_CLEAN_REVIEW=shadow — the powerless verdict this
+  // land ignored. Optional because every other land path genuinely has no such measurement.
+  cleanReviewShadow?: CleanReviewShadow };
 const NO_LAND_FACTS: LandFacts = { resolvedConflict: false, repairRounds: 0, confirmedByHuman: false, verified: null };
 // owner clicked ⏏ on already-integrated work (already-merged, or an empty/hand-merged lane): a human
 // owned the land, but no agent resolved a conflict, no repair ran, and NO verify ran for this land —
@@ -2788,6 +2807,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     repairRounds: facts.repairRounds,
     confirmedByHuman: facts.confirmedByHuman,
     review,
+    // only a land carries a shadow verdict, and only the clean auto-land site states it
+    ...(kind === "landed" && facts.cleanReviewShadow ? { cleanReviewShadow: facts.cleanReviewShadow } : {}),
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
@@ -2975,8 +2996,12 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
 // a timeout/throw, an unparseable answer, a missing fork base) returns "review", so the auto-land is
 // unreachable from any of the reviewer's failure modes. The reviewer is read-only by contract; HEAD is
 // captured and hard-reset afterwards so any stray edit/commit it made can never reach the landing tree.
-async function runCleanReview(cwd: string, branch: string, main: string, base: string | null): Promise<{ verdict: "ok" | "review"; reason: string }> {
-  if (!base) return { verdict: "review", reason: "no fork base to compare against — stopping for a human look" };
+// `raw` marks an answer that carried NO explicit verdict (no fork base, timeout/throw, unparseable,
+// or a verdict field that is neither "ok" nor "review"). Gate mode ignores it — every such case is
+// already a stop. Shadow mode needs it: an unmeasurable run must be recorded as unmeasured, never as
+// a pass (F5's lesson: empty/unparseable ≠ pass).
+async function runCleanReview(cwd: string, branch: string, main: string, base: string | null): Promise<{ verdict: "ok" | "review"; reason: string; raw: boolean }> {
+  if (!base) return { verdict: "review", reason: "no fork base to compare against — stopping for a human look", raw: true };
   const lf = await git(cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
   const ls = await git(cwd, "diff", "--shortstat", "--no-color", `${base}...HEAD`);
   const ml = await git(cwd, "log", "--no-color", "--oneline", `${base}..${main}`);
@@ -3006,12 +3031,24 @@ async function runCleanReview(cwd: string, branch: string, main: string, base: s
   try {
     const j = JSON.parse(body) as { verdict?: unknown; reason?: unknown };
     const reason = typeof j.reason === "string" ? j.reason.slice(0, 400) : "";
-    if (j.verdict === "ok") return { verdict: "ok", reason };
-    if (j.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look" };
-    return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look` };
+    if (j.verdict === "ok") return { verdict: "ok", reason, raw: false };
+    if (j.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look", raw: false };
+    return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look`, raw: true };
   } catch {
-    return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look" };
+    return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look", raw: true };
   }
+}
+// the shadow projection of a reviewer run, as persisted on the outcome row. `raw: true` (no explicit
+// verdict came back) forces `verdict: null` — the measurement failed and says so, rather than
+// collapsing into a pass and inflating the graduation dataset with fabricated agreement.
+function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean }): CleanReviewShadow {
+  return {
+    verdict: r.raw ? null : r.verdict === "ok" ? "pass" : "would_stop",
+    at: Date.now(), model: SUMMARY_MODEL, raw: r.raw,
+    // the reason strings are written for the GATE ("— stopping for a human look"); in shadow nothing
+    // stopped, so that tail would misdescribe the row the owner reads. Drop it, keep the substance.
+    notes: r.reason.replace(/ — stopping for a human look$/, "").slice(0, 400),
+  };
 }
 
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
@@ -3102,9 +3139,15 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // ONLY downgrade this to a stop-and-review — `landed: true` is reachable ONLY on an explicit
           // "ok". runCleanReview fails CLOSED, so a "review"/timeout/unparseable/no-base verdict all route
           // to the stop branch here, never to advanceIntegration/landLane.
-          const cleanReview = CLEAN_REVIEW ? await runCleanReview(cwd, branch, main, await laneBaseRef(s)) : null;
-          if (cleanReview && cleanReview.verdict !== "ok") {
-            res = { status: "resolved", landed: false, branch, at: Date.now(), verify, cleanReview,
+          // shadow: the reviewer runs identically but is POWERLESS — its verdict is recorded on the
+          // outcome row and the land proceeds exactly as if ② were off (the gate branch below is
+          // unreachable in shadow mode, by the explicit mode check, not by the verdict's value).
+          const cleanReview = CLEAN_REVIEW_MODE !== "off" ? await runCleanReview(cwd, branch, main, await laneBaseRef(s)) : null;
+          const shadow = CLEAN_REVIEW_MODE === "shadow" && cleanReview ? shadowOf(cleanReview) : undefined;
+          if (CLEAN_REVIEW_MODE === "gate" && cleanReview && cleanReview.verdict !== "ok") {
+            // `raw` is shadow-mode bookkeeping — the gate verdict's persisted shape stays what it was
+            res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
+              cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason },
               detail: `clean rebase + green verify, but the advisory reviewer flagged a look: ${cleanReview.reason} — not auto-landed; review the diff, then land.`.slice(0, 600) };
           } else {
             // land it — the state-changing step on the integration branch is the SERVER's, never the
@@ -3123,13 +3166,17 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               const land = s.cwd === cwd && s.worktree?.branch === branch
                 // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
                 // verdict this job just produced is the local truth the record needs
-                ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore })
+                ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
+                    ...(shadow ? { cleanReviewShadow: shadow } : {}) })
                 : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
               res = "error" in land
                 ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
                     detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
                 : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail,
-                    ...(cleanReview ? { cleanReview } : {}) };
+                    // gate mode only: `cleanReview` on a landed verdict means "the gate let this
+                    // through". A shadow verdict gated nothing and lives on the outcome row instead.
+                    ...(CLEAN_REVIEW_MODE === "gate" && cleanReview
+                      ? { cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason } } : {}) };
             }
           }
         }

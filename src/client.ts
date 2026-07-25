@@ -2830,7 +2830,11 @@ interface OutcomeRow { ts: number; branch?: string | null; base?: string | null;
   disposition?: string; model?: string | null; briefHash?: string | null; shortstat?: string;
   commitCount?: number; filesTouched?: string[]; e2eTouched?: boolean; verified?: boolean | null;
   sessionMs?: number | null; ownerPrompts?: number; resolvedConflict?: boolean; repairRounds?: number;
-  confirmedByHuman?: boolean; review?: OutcomeReviewRow }
+  confirmedByHuman?: boolean; review?: OutcomeReviewRow;
+  // FLEET_CLEAN_REVIEW=shadow only. `verdict: null` = the reviewer produced no explicit verdict
+  // (the measurement failed) — it is NOT a recorded verdict and must not count toward criterion 2.
+  cleanReviewShadow?: { verdict?: "pass" | "would_stop" | null; at?: number; model?: string;
+    notes?: string; raw?: boolean } }
 
 // the coverage relation as the RENDERER sees it — the server's four states plus the one the server
 // cannot express: a row from before the field existed. "unmeasured" is not a server state and must
@@ -2902,6 +2906,39 @@ function reviewBody(r: OutcomeReviewRow): HTMLElement[] {
   return out;
 }
 
+// --- graduation-criteria progress (docs/graduation-criteria.md §1 + §2) -------------------------
+// The criteria are pre-registered numbers; this counts PROGRESS toward them and evaluates nothing.
+// Whether a criterion has been satisfied stays the owner's call, made by reading these numbers —
+// never a verdict the client draws.
+//
+// JUDGMENT CALL, made visible on purpose: criterion 1 counts lands recorded "after the F9 fix is
+// deployed", and the ledger carries no deploy timestamp — a row cannot say which server build wrote
+// it. The closest fact ON the ledger is the F9 fix's own land, so that row is the anchor and counting
+// starts at the row AFTER it. This slightly UNDER-counts (the deploy followed its land by minutes,
+// during which no land happened) and never over-counts. It also excludes the four pre-review-field
+// legacy rows for free, since they precede this anchor.
+const K1_ANCHOR_BRANCH = "f9-verify-deps";
+type KProgress = { anchored: boolean; k1: number; clean: number; undos: number; k2: number };
+// rows arrive newest-first; the streak is a chronological walk, so sort ascending here rather than
+// relying on the feed's display order.
+function kProgress(rows: OutcomeRow[]): KProgress {
+  const asc = [...rows].sort((a, b) => a.ts - b.ts);
+  const anchor = asc.findIndex((o) => o.branch === K1_ANCHOR_BRANCH);
+  if (anchor < 0) return { anchored: false, k1: 0, clean: 0, undos: 0, k2: 0 };
+  const after = asc.slice(anchor + 1);
+  let k1 = 0, clean = 0, undos = 0, k2 = 0;
+  for (const o of after) {
+    // an undo is `disposition:"reverted"` — the only thing /api/repos/undo-land writes (server.ts,
+    // buildRevertedOutcome). It breaks the CONSECUTIVE streak the criterion asks for, and is also
+    // reported on its own, so a reset streak never silently reads as "no undo ever happened".
+    if (o.disposition === "reverted") { undos++; k1 = 0; clean = 0; }
+    else if (o.disposition === "landed") { k1++; if (!o.confirmedByHuman) clean++; }
+    // shelved / killed-* are not lands at all — they neither count nor break the streak.
+    if (o.cleanReviewShadow && (o.cleanReviewShadow.verdict === "pass" || o.cleanReviewShadow.verdict === "would_stop")) k2++;
+  }
+  return { anchored: true, k1, clean, undos, k2 };
+}
+
 let outcomeData: OutcomeRow[] = [];
 let outcomeTotal = 0;
 let outcomeDispo: string | "all" = "all";
@@ -2941,6 +2978,35 @@ function renderOutcomes() {
   for (const k of ["covered", "superseded", "inflight", "none", "unmeasured"] as RvRel[])
     tal.appendChild(chip(`${tally[k]} ${k}`, `rel-${k}`, REL_WORD[k]));
   outcomepanel.appendChild(tal);
+
+  // criteria progress — counted over ALL loaded rows like the tally above, never the filtered view.
+  // No rows at all ⇒ no header: an empty ledger has nothing to say, and "0/20" would state a
+  // measurement that was never made.
+  if (outcomeData.length) {
+    const k = kProgress(outcomeData);
+    const kel = el("div", "octally ockrit");
+    kel.id = "ockrit";
+    if (!k.anchored) {
+      kel.appendChild(chip(`criteria progress: no '${K1_ANCHOR_BRANCH}' row in this ledger`, "warn",
+        `counting starts after the F9 fix's own land (branch ${K1_ANCHOR_BRANCH}); without that row`
+        + " the deploy boundary cannot be placed, so nothing is counted rather than counted wrong."));
+    } else {
+      kel.appendChild(el("span", "", "criteria:"));
+      kel.appendChild(chip(`K1 ${k.k1}/20`, k.k1 >= 20 ? "ok" : "",
+        "graduation-criteria §1 — consecutive Fleet-routed lands recorded after the F9 fix"
+        + ` (counted from the row after the '${K1_ANCHOR_BRANCH}' land; an undo resets the streak).`
+        + " Counting only — the graduation decision is the owner's, made by reading this number."));
+      kel.appendChild(chip(`davon ${k.clean}/10 clean`, k.clean >= 10 ? "ok" : "",
+        "of that streak, the ones that auto-landed clean+green (confirmedByHuman false)."));
+      kel.appendChild(chip(`Undos ${k.undos}`, k.undos ? "warn" : "ok",
+        "owner undos since the anchor, counted as disposition:\"reverted\" rows — the only thing"
+        + " /api/repos/undo-land writes. §1 requires 0 across the 20."));
+      kel.appendChild(chip(`K2 ${k.k2}/25`, k.k2 >= 25 ? "ok" : "",
+        "graduation-criteria §2 — recorded ② shadow verdicts. A row whose shadow verdict is null"
+        + " (the reviewer produced no explicit verdict) is a failed measurement and does not count."));
+    }
+    outcomepanel.appendChild(kel);
+  }
 
   const rows = outcomeData.filter((o) =>
     (outcomeDispo === "all" || o.disposition === outcomeDispo)

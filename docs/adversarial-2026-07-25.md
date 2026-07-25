@@ -12,6 +12,22 @@ own re-derivation are marked VERIFIED and say so.
 
 ---
 
+## Disposition of §A (updated 2026-07-25, later — decisions taken)
+
+- **A1 — decided: keep the schedule, lift the prohibition.** The "NEVER scheduled" line entered
+  07-24 08:27 (`f626edb`), two days AFTER the schedule was created (07-22 11:09) — written blind
+  to it, never an owner override. Measured since the filing arm landed: 13 firings → 3 filings →
+  0 duplicates, and one condition survived 5 consecutive pulses un-refiled. Amended
+  `.claude/commands/rundgang.md` with the evidence and two tripwires (cap reached, or any
+  duplicate filing) that return it to manual. Server-side dedup still wanted, no longer urgent.
+- **A2 — decided: fixed.** `CLAUDE.md` and `merge-review-autonomy.md` now state the flag is
+  three-valued, that `shadow` is live, and that `=1` is a graduation decision that would end the
+  K2 collection.
+- **A3 — done.** The rescued rulebook edit was applied to the main checkout after `e2e-split`
+  landed (`0531817`), plus a new `CLAUDE.md` clause telling future lanes that rulebook edits must
+  be reported as text because they cannot be committed.
+- **A4 — in flight** as lane `verify-tristate`.
+
 ## A. Live, needs an owner decision (nothing was changed)
 
 **A1 — `/rundgang` is scheduled perpetually against its own file's explicit prohibition.**

@@ -3761,6 +3761,46 @@ function stewardSlotsView(now: number) {
   });
 }
 
+// --- deploy-gap fact: LANDING IS NOT DEPLOYING. The running process is a build of exactly one
+// commit; `main` moves on without it, and the trap fired four times in two days — three ledger
+// rows written by a build that lacked the very field being recorded, plus a gate believed
+// undeployed for a day (HANDOFF 2026-07-25, BACKLOG P-4). So the server stamps its OWN HEAD at
+// boot and every steward read compares it against the repo's CURRENT HEAD.
+// Two rules carry the honesty of this fact:
+//   1. every unknown is `null`, never a zero — a failed git call must read as "cannot tell",
+//      NEVER as "deployed". bootHead is captured once, so it survives the repo being moved away.
+//   2. codeBehind is the NET tree diff bootHead..HEAD, not a per-commit path walk: `git log
+//      --name-only` lists NO paths for a true merge commit, which would hide real code behind a
+//      false `false`. Anything that is not a `*.md` file counts as code — an unrecognized path
+//      must flag a gap, not hide one (docs/*.md, HANDOFF.md, BACKLOG.md are the docs-only set).
+// FLEET_REPO_DIR exists because the server's own dir is the repo in production but not in a
+// throwaway test copy; unset it and the fact is about the code actually running.
+const REPO_DIR = process.env.FLEET_REPO_DIR || import.meta.dir;
+let BOOT_HEAD: string | null = null;
+const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
+  .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })
+  .catch(() => { BOOT_HEAD = null; }); // a boot-time throw must leave the fact unknown, not kill the server
+interface DeployGap { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
+async function deployGap(): Promise<DeployGap> {
+  await bootHeadReady;
+  const unknown: DeployGap = { bootHead: BOOT_HEAD, head: null, behindCount: null, codeBehind: null };
+  if (!BOOT_HEAD) return unknown;
+  const hd = await git(REPO_DIR, "rev-parse", "HEAD");
+  if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out)) return unknown;
+  const head = hd.out;
+  if (head === BOOT_HEAD) return { bootHead: BOOT_HEAD, head, behindCount: 0, codeBehind: false };
+  const [cnt, names] = await Promise.all([
+    git(REPO_DIR, "rev-list", "--count", `${BOOT_HEAD}..${head}`),
+    git(REPO_DIR, "diff", "--name-only", BOOT_HEAD, head),
+  ]);
+  const n = Number(cnt.out);
+  if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head };
+  return {
+    bootHead: BOOT_HEAD, head, behindCount: n,
+    codeBehind: names.out.split("\n").filter(Boolean).some((p) => !p.endsWith(".md")),
+  };
+}
+
 // --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
 // The server computes ONE deterministic per-lane fact — {head, base, landed, repo} keyed by
 // branch, plus each lane repo's primary checkout keyed by ITS branch (owner-side lands become
@@ -3943,7 +3983,7 @@ let digestCache: DigestResult | null = null;
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     const now = Date.now();
-    return json({ now, slots: stewardSlotsView(now) });
+    return json({ now, slots: stewardSlotsView(now), deployGap: await deployGap() });
   }
   if (url.pathname === "/api/steward/digest" && req.method === "GET") {
     const home = stewardSlot();
@@ -3976,6 +4016,9 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // deterministic per-lane delta vs the prior record's server-stamped lane map —
       // route-computed, so it works even when the digest worker/cache is dead
       sinceLastLook: await sinceLastLookView(prior),
+      // is the process serving this digest still the code that is on disk? route-computed for
+      // the same reason as sinceLastLook — it must not depend on the digest worker being alive
+      deployGap: await deployGap(),
       digest: snapshot?.digest ?? null,
       digestAt,
       digestAge: digestAt !== null ? now - digestAt : null,

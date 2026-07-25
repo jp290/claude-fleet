@@ -350,6 +350,19 @@ export async function run(): Promise<void> {
       !spawnSync("git", ["-C", rl.repo, "log", "--oneline", "-5"]).stdout.toString().includes("rl lane work"),
       spawnSync("git", ["-C", rl.repo, "log", "--oneline", "-5"]).stdout.toString());
 
+    // --- VERIFICATION TIER 2, DEFAULT OFF: the post-land audit is configured by a command
+    // (FLEET_POSTLAND_AUDIT_CMD), and this suite sets none. Every land above — clean-path,
+    // confirm-land, teardown-failure, stale-verify — therefore has to leave the land path exactly
+    // as it was: no audit spawned, no trail, nothing on the board. The ON behaviour lives in its
+    // own harness (./e2e-postland-audit.sh), which is also why an accidental nested suite run is
+    // structurally impossible here: with no command set there is nothing to spawn.
+    const pla = (await (await get("/api/post-land-audits")).json()) as
+      { audits: unknown[]; total: number; configured: boolean };
+    check("tier 2 default OFF: no command configured, so none of this suite's lands audited anything",
+      pla.configured === false && pla.total === 0 && pla.audits.length === 0, JSON.stringify(pla));
+    check("tier 2 default OFF: the board's poll payload carries no audit result",
+      (((await (await get("/api/sessions")).json()) as { postLandAudit: unknown }).postLandAudit ?? null) === null);
+
     await setMergeMode("blocked"); // restore the suite default for later tests in this scope
   }
 }

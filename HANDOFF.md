@@ -1,5 +1,35 @@
 # HANDOFF — 2026-07-25 (session 5: seven lands in one day — the calibration phase begins)
 
+> **LATE-DAY ADDENDUM (written ~15:00, supersedes stale parts below).** After §1–§8 were
+> written, the day continued:
+> - **Two more lands** (`fc32fc9` criteria-progress header, `0f7fa06` transcriptFact +
+>   bundleStale), both deployed + built. **K1: 8/20**, streak intact.
+> - **② shadow's first two production verdicts: both `raw: true`** — the real model misses
+>   the JSON contract; gate mode would have (fail-closed) stopped both clean auto-lands.
+>   Shadow proved its purpose on day one. Raw answer NOT persisted → diagnosis blocked
+>   (fix candidate #1). K2: 0/25 valid.
+> - **Fire-drill #1 on auto-③** (+ re-adjudication after reading ③'s spec): in-diff
+>   semantic defect MISSED (inverted guard read as cosmetic, stamped "verified"); second
+>   item was an invalid test (needed forbidden context). Operational reading:
+>   `review: covered` = "a review ran", NOT "code is sound". Canonical home:
+>   **`docs/judge-calibration.md`** (procedure, per-judge state, instrument-check rules);
+>   dated entries in `graduation-criteria.md`'s amendment log; portable kernel in
+>   `~/.claude/knowledge/judge-calibration.md`.
+> - **Criteria doc amendments** (`33d919a`): Ns = anti-impatience gates, not statistics;
+>   K1 homogeneity caveat; confirm-lands are the OWNER's (row 10 was the one self-granted
+>   exception, now a written rule). Owner-attention budget axiom in `steward-pulse-v2.md`.
+>   CLAUDE.md: fails-identically-at-HEAD proof required for any flake claim.
+> - **Two autonomy trials IN FLIGHT at handoff time:** mission lane `flake-mission`
+>   (slot 2 — picks one of the two §6 flakes itself, fixes it) and **steward-pulse phase A
+>   trial #1** (slot 1 briefed to compose ONE facts+question nudge for slot 2 at a
+>   self-chosen moment). Check their outcomes FIRST: pane reports, whether the steward
+>   sent (its send is capped + journaled), the lane's `[pulse-reply]` line, and the
+>   mission lane's land. Stop-and-review cases go to the owner.
+> - Fresh instrument lessons (full text `judge-calibration.md`): deployGap is NESTED in
+>   the sessions payload (a top-level read produced a phantom "regression" that a
+>   same-instrument scratch test "confirmed"); `killed-dirty` = killed with unlanded
+>   commits (server.ts:2784).
+
 *A thin map, NOT the knowledge. Durable findings live in `docs/` (§4 names owners). **Treat every
 line as a claim to verify.** This session's own instrument-error (§5.1) is the freshest reason.*
 

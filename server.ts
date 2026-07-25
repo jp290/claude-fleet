@@ -3835,6 +3835,27 @@ function laneSignalView(s: Slot, now: number) {
   };
 }
 
+// --- context-size proxy (docs/steward-pulse-v2.md phase B): the steward can see that a session
+// is running but not how full its context is. The deterministic stand-in is the session's own
+// transcript JSONL — it grows monotonically with the conversation, one stat per slot per read.
+// Two things this fact deliberately does NOT claim:
+//   1. bytes are a PROXY, not a token count — tool_result payloads and thinking blocks inflate
+//      the file far past what the model holds. It ranks a session against its own history and
+//      against its peers; it can never be turned into a percentage.
+//   2. PINNED slots only. transcriptFile()'s newest-by-mtime fallback can flap between files when
+//      several sessions share a cwd (see the harvester's note), and a fact that silently swaps
+//      subject is worse than no fact — unpinned slot → null, "cannot tell". Same for a slot whose
+//      transcript does not exist yet (claude writes it on the first prompt): null, never 0.
+function transcriptFact(s: Slot): { bytes: number; mtime: number } | null {
+  if (!s.cwd || !s.sessionId) return null;
+  try {
+    const st = statSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`);
+    return { bytes: st.size, mtime: Math.round(st.mtimeMs) };
+  } catch {
+    return null;
+  }
+}
+
 function stewardSlotsView(now: number) {
   return slots.map((s) => {
     const sig = laneSignalView(s, now);
@@ -3854,6 +3875,8 @@ function stewardSlotsView(now: number) {
       // poller can tell "just went quiet" from "quiet for minutes" without lowering the trigger.
       doneLookingSince: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
         ? laneQuietSince(sig, now) : null,
+      // context-size proxy — {bytes, mtime} of this session's transcript, null when unknowable
+      transcriptFact: transcriptFact(s),
     };
   });
 }
@@ -3896,6 +3919,65 @@ async function deployGap(): Promise<DeployGap> {
     bootHead: BOOT_HEAD, head, behindCount: n,
     codeBehind: names.out.split("\n").filter(Boolean).some((p) => !p.endsWith(".md")),
   };
+}
+
+// --- bundle-staleness fact: LANDING IS NOT BUILDING, the deploy-gap's twin. public/*.js are
+// gitignored BUILD ARTIFACTS, so landed client code is invisible in the browser until someone
+// runs `bun run build` — on 2026-07-25 client code landed at 12:19 against a bundle built at
+// 00:50 and the UI stayed an hour behind until a manual rebuild at 13:03, with nothing in any
+// view saying so. Same two honesty rules as deployGap:
+//   1. every unknown is `null`, never `false` — a missing bundle or an unreadable src/ must read
+//      as "cannot tell", NEVER as "fresh". `stale: false` may only be said after BOTH sides were
+//      actually stat'd.
+//   2. it compares MTIMES, not content: a rebuild producing identical bytes still reads fresh,
+//      and `touch src/client.ts` alone reads stale. That is the direction the incident needed —
+//      the fact answers "was a build run after the last source change", not "does the bundle
+//      match the source", which no mtime can decide.
+// Judgment call: newest mtime under src/ ANYWHERE counts, including files no bundle imports
+// (a false stale is a cheap rebuild; a false fresh is another invisible hour). Same dir as the
+// deploy-gap fact — in production the repo the server serves public/ from IS the repo it
+// stamped its HEAD from.
+const BUNDLES = ["app.js", "share.js"] as const;
+interface BundleStale { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null }
+function newestMtime(dir: string): number | null {
+  let newest: number | null = null;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null; // src/ absent or unreadable — unknown, and unknown poisons the whole fact
+  }
+  for (const e of entries) {
+    const p = `${dir}/${e.name}`;
+    if (e.isDirectory()) {
+      const sub = newestMtime(p);
+      if (sub !== null && (newest === null || sub > newest)) newest = sub;
+      continue;
+    }
+    try {
+      const m = statSync(p).mtimeMs;
+      if (newest === null || m > newest) newest = m;
+    } catch { /* raced away mid-walk — one file's mtime, not the fact */ }
+  }
+  return newest;
+}
+function bundleMtime(file: string): number | null {
+  try {
+    return Math.round(statSync(`${REPO_DIR}/public/${file}`).mtimeMs);
+  } catch {
+    return null; // never built, or a public/ that isn't this repo's
+  }
+}
+function bundleStale(): BundleStale {
+  const appJsMtime = bundleMtime(BUNDLES[0]);
+  const shareJsMtime = bundleMtime(BUNDLES[1]);
+  const srcRaw = newestMtime(`${REPO_DIR}/src`);
+  const srcNewestMtime = srcRaw === null ? null : Math.round(srcRaw);
+  const bundles = [appJsMtime, shareJsMtime].filter((m): m is number => m !== null);
+  const stale = srcNewestMtime === null || bundles.length !== BUNDLES.length
+    ? null
+    : !bundles.every((m) => m >= srcNewestMtime);
+  return { appJsMtime, shareJsMtime, srcNewestMtime, stale };
 }
 
 // --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
@@ -4080,7 +4162,7 @@ let digestCache: DigestResult | null = null;
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     const now = Date.now();
-    return json({ now, slots: stewardSlotsView(now), deployGap: await deployGap() });
+    return json({ now, slots: stewardSlotsView(now), deployGap: await deployGap(), bundleStale: bundleStale() });
   }
   if (url.pathname === "/api/steward/digest" && req.method === "GET") {
     const home = stewardSlot();
@@ -4116,6 +4198,9 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // is the process serving this digest still the code that is on disk? route-computed for
       // the same reason as sinceLastLook — it must not depend on the digest worker being alive
       deployGap: await deployGap(),
+      // deployGap's twin: landed client code is invisible until the bundle is rebuilt.
+      // Route-computed for the same reason — it must not depend on the digest worker.
+      bundleStale: bundleStale(),
       digest: snapshot?.digest ?? null,
       digestAt,
       digestAge: digestAt !== null ? now - digestAt : null,

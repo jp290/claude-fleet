@@ -2968,6 +2968,22 @@ if (legacyLane) {
   if (wtRec) delete wtRec.baseSha;
   writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
 }
+// --- context-size proxy setup (consumed in the steward section below): the fact is PINNED-slot
+// only, and this suite runs with FLEET_CMD=true, so no slot ever gets a session uuid pinned at
+// pane creation (server.ts: only a claude BASE_CMD pins one). The one legitimate way in is the
+// same door the server itself uses on a deploy — restore from the state file — so a uuid is
+// planted for the surviving slot 2 while the server is down, and the transcript that uuid names
+// is written after the restart (its cwd is only known from the API).
+const PLANTED_SID = "e2e0feed-0000-4000-8000-000000000001";
+{
+  const { writeFileSync } = await import("node:fs");
+  const stFile = `${import.meta.dir}/fleet.json`;
+  const st = JSON.parse(readFileSync(stFile, "utf8")) as
+    { slots?: Record<string, { cwd?: string; sessionId?: string }> };
+  const rec = st.slots?.["2"];
+  if (rec) rec.sessionId = PLANTED_SID;
+  writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+}
 // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
 // `--dangerously-skip-permissions` would silently leave the server in unattended
 // mode after the test run, an escalation the README promises is explicit opt-in
@@ -3003,6 +3019,13 @@ const api = (await (await get("/api/sessions")).json()) as { slots: { id: number
 check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
 check("after restart: slot 1 still empty", api.slots[0].cwd === null);
 check("after restart: label persisted", api.slots[1].label === "research-agent");
+// the planted uuid rode the restore, so slot 2 is now a PINNED slot: give it a transcript of a
+// KNOWN byte size, which the context-size-proxy checks in the steward section read back.
+const PLANTED_TR_BYTES = 4097;
+const PLANTED_TR = api.slots[1].cwd
+  ? `${process.env.HOME}/.claude/projects/${api.slots[1].cwd.replace(/[^a-zA-Z0-9]/g, "-")}/${PLANTED_SID}.jsonl`
+  : null;
+if (PLANTED_TR) await Bun.write(PLANTED_TR, "x".repeat(PLANTED_TR_BYTES - 1) + "\n");
 // guards fix A: the lane's selfToken must survive the restart. The lane pane still holds
 // the token baked at spawn; the restarted server must restore the SAME token from state,
 // so a /api/self/autos call authed with the pre-restart token still succeeds.
@@ -3218,6 +3241,71 @@ if (auditRotExists) {
   check("deploy-gap: a commit touching code flips codeBehind (bootHead stays pinned to boot)",
     gap2?.behindCount === 2 && gap2.codeBehind === true && gap2.bootHead === gap0?.bootHead,
     JSON.stringify(gap2));
+  // --- context-size proxy (docs/steward-pulse-v2.md phase B): how full is a session? The
+  //     deterministic stand-in is its transcript JSONL's size. Slot 2 carries the uuid planted
+  //     through the state file at the restart above plus a transcript of a known size; the fresh
+  //     steward lane is UNPINNED (FLEET_CMD=true pins nothing) and must therefore read null —
+  //     the newest-by-mtime fallback is deliberately NOT used here, a flapping subject would be
+  //     worse than no fact. ---
+  type TFact = { bytes: number; mtime: number } | null;
+  const tfSlots = ((await (await stewGet("/api/steward/sessions")).json()) as
+    { slots: { id: number; cwd: string | null; transcriptFact: TFact }[] }).slots;
+  const tfPinned = tfSlots.find((s) => s.id === 2)?.transcriptFact;
+  check("transcript fact: a pinned slot reports its transcript's exact bytes + a plausible mtime",
+    tfPinned?.bytes === PLANTED_TR_BYTES && typeof tfPinned.mtime === "number"
+      && Math.abs(Date.now() - tfPinned.mtime) < 10 * 60_000, JSON.stringify(tfPinned));
+  const tfUnpinned = tfSlots.find((s) => s.id === lnStew.slot)?.transcriptFact;
+  check("transcript fact: an UNPINNED active slot is null (no mtime-fallback guess), never a 0",
+    tfUnpinned === null, JSON.stringify(tfUnpinned));
+  check("transcript fact: an empty slot is null and the field is present on every slot",
+    tfSlots.every((s) => "transcriptFact" in s) && tfSlots.filter((s) => !s.cwd).every((s) => s.transcriptFact === null),
+    JSON.stringify(tfSlots.map((s) => [s.id, s.transcriptFact?.bytes ?? null])));
+  if (PLANTED_TR) (await import("node:fs")).rmSync(PLANTED_TR, { force: true });
+
+  // --- bundle-staleness fact: deployGap's twin. public/*.js are gitignored BUILD artifacts, so
+  //     landed client code stays invisible in the UI until `bun run build` runs (it cost an hour
+  //     on 2026-07-25). Exercised against GAP_REPO (FLEET_REPO_DIR), which starts with neither a
+  //     public/ nor a src/ — i.e. in the cannot-tell state. ---
+  type Bundle = { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null };
+  const readBundle = async (path: string) =>
+    ((await (await stewGet(path)).json()) as { bundleStale?: Bundle }).bundleStale;
+  const { mkdirSync: bMkdir, utimesSync: bTouch, rmSync: bRm } = await import("node:fs");
+  const bSet = (rel: string, secs: number) => bTouch(`${GAP_REPO}/${rel}`, secs, secs);
+  const T = Math.floor(Date.now() / 1000);
+  const bs0 = await readBundle("/api/steward/sessions");
+  check("bundle-staleness: no bundle and no src/ reads as cannot-tell (all null, never 'fresh')",
+    bs0?.appJsMtime === null && bs0.shareJsMtime === null && bs0.srcNewestMtime === null
+      && bs0.stale === null, JSON.stringify(bs0));
+  bMkdir(`${GAP_REPO}/public`, { recursive: true });
+  bMkdir(`${GAP_REPO}/src`, { recursive: true });
+  gapWrite(`${GAP_REPO}/src/client.ts`, "// source\n");
+  gapWrite(`${GAP_REPO}/public/app.js`, "// bundle\n");
+  gapWrite(`${GAP_REPO}/public/share.js`, "// bundle\n");
+  bSet("src/client.ts", T - 100);
+  bSet("public/app.js", T - 50);
+  bSet("public/share.js", T - 50);
+  const bs1 = await readBundle("/api/steward/sessions");
+  check("bundle-staleness: bundles built AFTER the newest source read fresh (stale=false)",
+    bs1?.stale === false && bs1.appJsMtime === (T - 50) * 1000 && bs1.shareJsMtime === (T - 50) * 1000
+      && bs1.srcNewestMtime === (T - 100) * 1000, JSON.stringify(bs1));
+  // a NESTED source file flips it — the walk is recursive, so a change in src/<subdir>/ cannot
+  // hide behind an untouched top level (the whole point: a false 'fresh' costs another blind hour)
+  bMkdir(`${GAP_REPO}/src/sub`, { recursive: true });
+  gapWrite(`${GAP_REPO}/src/sub/deep.ts`, "// landed after the last build\n");
+  bSet("src/sub/deep.ts", T - 10);
+  const bs2 = await readBundle("/api/steward/sessions");
+  check("bundle-staleness: a nested src file newer than the bundles flips stale to true",
+    bs2?.stale === true && bs2.srcNewestMtime === (T - 10) * 1000, JSON.stringify(bs2));
+  // the unknown direction, as with deploy-gap: a MISSING bundle must go null, not report the
+  // one bundle it can see and call the answer complete
+  bRm(`${GAP_REPO}/public/app.js`, { force: true });
+  const bs3 = await readBundle("/api/steward/sessions");
+  check("bundle-staleness: an absent bundle yields nulls, never a verdict from the other bundle",
+    bs3?.appJsMtime === null && bs3.stale === null && bs3.shareJsMtime === (T - 50) * 1000
+      && bs3.srcNewestMtime === (T - 10) * 1000, JSON.stringify(bs3));
+  gapWrite(`${GAP_REPO}/public/app.js`, "// bundle\n");
+  bSet("public/app.js", T - 50); // leave it STALE for the digest-mirror check below
+
   const stewBriefRes = await stewGet(`/api/steward/slots/${lnStew.slot}/brief`);
   check("steward token reads a lane's brief", stewBriefRes.ok, String(stewBriefRes.status));
   const stewTrRes = await stewGet(`/api/steward/slots/${lnStew.slot}/transcript`);
@@ -3530,6 +3618,12 @@ if (auditRotExists) {
     gapDigest?.behindCount === 2 && gapDigest.codeBehind === true
     && gapDigest.head === gap2?.head && gapDigest.bootHead === gap0?.bootHead,
     JSON.stringify(gapDigest));
+  // same for the bundle-staleness twin: route-computed, so the digest serves the identical fact
+  // (the sessions section left GAP_REPO's bundles older than its newest source)
+  const bundleDigest = await readBundle("/api/steward/digest?wait=0");
+  check("steward digest serves the same route-computed bundle-staleness as the sessions route",
+    bundleDigest?.stale === true && bundleDigest.appJsMtime === bs3?.shareJsMtime
+      && bundleDigest.srcNewestMtime === bs3?.srcNewestMtime, JSON.stringify(bundleDigest));
   // the unknown direction is the load-bearing one: with the repo unreadable the counts must go
   // NULL ("cannot tell"), never fall back to 0/false, which would read as "deployed"
   gapRm(`${GAP_REPO}/.git`, { recursive: true, force: true });

@@ -179,6 +179,36 @@ the sentence that made this invisible — *"validated … WITHOUT `node_modules`
 in `merge-review-autonomy.md` too. **Verification:** the reproduction above must exit 0 from a
 freshly created lane worktree that has never been built in.
 
+### It then fired in production — on the lane that documented it
+
+Ledger **row 4** is this very audit lane (`branch: discrepancy-audit`, `headSha 35a91c8`):
+
+```
+"verified": false,  "confirmedByHuman": true,  "resolvedConflict": false,  "repairRounds": 0
+```
+
+`verified: false` cannot come from a plain ⏏ land — `OWNER_LAND_FACTS` sets `verified: null`
+(`server.ts:2696`) — so a verify **ran and failed**, the clean auto-land was downgraded to
+stop-and-review, and the owner confirm-landed through it. **That downgrade is the overlay the owner
+reported as "the dispute".**
+
+**Labelled honestly: this is an inference from three verified facts, not a captured output.** The
+verify text lived in `mergeLast` (in-memory) and the slot has been recycled, so *why* it failed is
+as unrecoverable here as *why* it passed for row 3 — the same asymmetry this entry is about. What
+makes the inference strong is elimination: the lane's diff touched **zero `.ts` files**
+(`git diff --name-only 8bd7b98..35a91c8 | grep -c '\.ts$'` → `0`), so tsc on the rebased tree had to
+produce main's result, and main is clean; `e2e-claude-gate.sh` also passes on main. A red verify with
+no code change is therefore only explicable by the environment — and the worktree was measured as
+having no `node_modules` while it still existed. No other cause is in evidence.
+
+**A cost this entry had not yet named, and it is the worst one.** Row 4 now carries
+`verified: false` for a lane whose code is fine. `lane-autonomy-future.md` designates `verified` as a
+calibration input for the graded auto-land gate. So the ledger is already accumulating rows where
+`verified: false` means *"the gate could not run"* rather than *"the change is unsound"*, with
+nothing on the row to tell the two apart. Any future gate calibrated on `verified` learns the wrong
+thing — and the fail-closed direction that makes this safe today is exactly what makes it
+data-poisoning tomorrow.
+
 ### 2026-07-25 — F10: two crash-time copies of `fleet.json` are untracked, and undo-land refuses on untracked
 
 **Class:** D6 (incomplete set). **Fixed:** `8452185`.

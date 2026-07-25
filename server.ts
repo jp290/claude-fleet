@@ -4123,21 +4123,93 @@ setInterval(() => {
   for (const s of slots) void ensureSlot(s).catch(() => {});
 }, 2000);
 
-type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge";
+type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge" | "pulse";
 // static suffix every intervention template carries (steward-autonomy.md joint 5's
 // "verification-suffix" item — not itself an intervention, just a constant line).
 const STEWARD_VERIFY_SUFFIX = " Verifiziere dein Ergebnis, bevor du fertig meldest.";
+
+// --- kind:"pulse" (docs/steward-pulse-v2.md phase A). The ONE steward kind that carries a
+// composed text field — `question`. That is a deliberate exception to the free-text refusal, and
+// four properties keep it from re-opening the hole the typed kinds closed:
+//   1. the DATA block is rendered FROM the deterministic fact layer (briefPayload +
+//      transcriptFact + lastOutput), never from the caller. The steward can ask ABOUT a state,
+//      it can never assert one — and a slot whose facts are unreadable is refused outright
+//      (400), the same "no trust-me path" renderStewardMessage's refs already enforce.
+//   2. `question` is ONE line, capped at PULSE_QUESTION_MAX, control characters refused. It is
+//      interpolated INSIDE the fixed scaffold, so it can neither forge a DATA line nor append
+//      an instruction after the reply template.
+//   3. the skepsis-prelude and the [pulse-reply] line are mandatory scaffold, not politeness:
+//      they make a WRONG question cheap to discard (one line) instead of expensive to obey.
+//      THE GUARD (steward-nudge.md §9, steward-pulse-v2.md): facts and one question — never a
+//      diagnosis, because a diagnosis gets conformed to even when it is wrong. The receiver is
+//      sighted; the steward is not.
+//   4. phase A is WATCHED. Nothing fires this endpoint on its own — no auto-trigger is wired to
+//      it, deliberately (the naive transcript-mtime rule fires mid-burst; a real moment-trigger
+//      needs transcript-quiet AND pane-idle, steward-pulse-v2.md). And a pulse carries NO
+//      STEWARD_VERIFY_SUFFIX: it is a question, not a work order.
+const PULSE_QUESTION_MAX = 240;
+const PULSE_QUOTE_MAX = 200;
+const PULSE_TAIL_BYTES = 128 * 1024;
+// the "letzte sichtbare Ausgabe" fact: the session's own last assistant text, read from the
+// transcript JSONL — the same ground truth the prompt harvester reads, never a pane capture
+// (which repaints and drifts). Tail-read: a transcript runs to megabytes and a pulse must not
+// slurp one. The quote is flattened to a single line and its [pulse-reply] marker is defused —
+// the session's own output is echoed back into its own prompt, so it must not be able to forge
+// a scaffold line or a reply that a later harvest would read as this session's verdict.
+async function pulseLastOutput(s: Slot): Promise<string> {
+  const file = transcriptFile(s);
+  if (!file) return "unbekannt";
+  try {
+    const f = Bun.file(file);
+    const text = f.size > PULSE_TAIL_BYTES ? await f.slice(f.size - PULSE_TAIL_BYTES).text() : await f.text();
+    const lines = text.split("\n").filter((l) => l.trim() !== "");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let e: TEntry | null = null;
+      try { e = viewEntry(JSON.parse(lines[i]), i + 1); } catch { continue; } // torn line (sliced head, partial tail)
+      if (!e || e.role !== "assistant") continue;
+      const said = e.blocks.filter((b) => b.t === "text").map((b) => b.text).join(" ").replace(/\s+/g, " ").trim();
+      if (said) return trim(said.replaceAll("[pulse-reply]", "(pulse-reply)"), PULSE_QUOTE_MAX);
+    }
+    return "unbekannt";
+  } catch {
+    return "unbekannt";
+  }
+}
 
 // The hardening from automation-synergies.md finding 2: the server renders the FULL
 // message from its own template plus deterministic server-side facts (mergeLast, gitInfo)
 // — the caller supplies only `kind` + `ref`, selecting which template/fact, never text.
 // A `ref` that doesn't match a real, currently-true deterministic fact is rejected outright
 // (no "trust me, that's the state" path) — this is what makes mislabeling structurally
-// impossible rather than merely audited after the fact.
-function renderStewardMessage(kind: StewardKind, ref: string, s: Slot): { text: string } | { error: string } {
+// impossible rather than merely audited after the fact. `kind:"pulse"` is the one kind that also
+// takes a composed `question` — still no caller-supplied FACTS, only a caller-supplied QUESTION,
+// bounded and rendered inside the fixed scaffold (see the pulse block above for why that holds).
+async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, question: string):
+  Promise<{ text: string } | { error: string }> {
   if (kind === "continue_nudge") {
     if (ref !== "continue") return { error: "continue_nudge takes ref 'continue' only" };
     return { text: `[steward] Mach weiter.${STEWARD_VERIFY_SUFFIX}` };
+  }
+  if (kind === "pulse") {
+    // the DATA block comes from the shared fact layer, never re-derived here (compiler-program.md:
+    // the pulse and the ✨ enhancer render the SAME briefPayload facts). No facts → no pulse.
+    const p = await briefPayload(s);
+    if (!p) return { error: "no deterministic git facts for this slot — a pulse never ships an unfactual DATA block" };
+    const tf = transcriptFact(s);
+    const subjects = p.commits.slice(0, 2).map((c) => c.subject).join(" · ") || "keine";
+    return { text: [
+      "[steward-pulse] DATA:",
+      `- branch/commits: ${p.branch ?? "unbekannt"} · +${p.ahead}/-${p.behind} · ${subjects}`,
+      `- letzte sichtbare Ausgabe: ${await pulseLastOutput(s)}`,
+      // lastOutput 0 = this pane's output was never observed (nothing has streamed since the slot
+      // opened). That is "cannot tell", not "idle since the epoch" — the same honesty rule the
+      // deploy-gap/transcript facts follow: an unknown renders unbekannt, never a fabricated number.
+      `- idle: ${s.lastOutput ? `${Math.round(Math.max(0, Date.now() - s.lastOutput) / 1000)}s` : "unbekannt"} · Kontext-Indiz: ${
+        tf ? `${Math.round(tf.bytes / 1024)} KB Transkript` : "unbekannt"}`,
+      `FRAGE: ${question}`,
+      "Prüfe kritisch, ob diese Frage dir gerade hilft. Antworte mir in EINER Zeile:",
+      "[pulse-reply] hilfreich | unnötig | falsch — <halber Satz warum>. Dann arbeite weiter.",
+    ].join("\n") };
   }
   if (kind === "lifecycle_op") {
     if (ref === "commit") {
@@ -4176,12 +4248,26 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   if (!body) return json({ error: "expected application/json" }, 400);
   if ("text" in body) return json({ error: "free text not accepted — send kind + ref, the server renders the message" }, 400);
   const kind = body.kind;
-  if (kind !== "state_relay" && kind !== "lifecycle_op" && kind !== "continue_nudge")
-    return json({ error: "kind must be state_relay | lifecycle_op | continue_nudge" }, 400);
-  const ref = typeof body.ref === "string" ? body.ref : "";
+  if (kind !== "state_relay" && kind !== "lifecycle_op" && kind !== "continue_nudge" && kind !== "pulse")
+    return json({ error: "kind must be state_relay | lifecycle_op | continue_nudge | pulse" }, 400);
+  // pulse's one composed field (see PULSE_QUESTION_MAX). Refused, never silently repaired: a
+  // truncated or de-newlined question is a DIFFERENT question, and the steward must learn that
+  // its send did not go out rather than discover a mangled one in the transcript.
+  let question = "";
+  if (kind === "pulse") {
+    if (typeof body.question !== "string") return json({ error: "pulse requires { question }" }, 400);
+    question = body.question.trim();
+    if (!question) return json({ error: "empty question" }, 400);
+    if (question.length > PULSE_QUESTION_MAX)
+      return json({ error: `question must be one line of at most ${PULSE_QUESTION_MAX} chars` }, 400);
+    if (/[\u0000-\u001f\u007f]/.test(question)) return json({ error: "question must be a single line" }, 400);
+  }
+  // one pulse template, so its ref is server-fixed and a body ref is ignored — same stance as
+  // /api/steward/autos ignoring a spoofed `slot`. It still rides the outcome row as class:"pulse".
+  const ref = kind === "pulse" ? "pulse" : typeof body.ref === "string" ? body.ref : "";
   const s = slotFrom(body.slot);
   if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-  const rendered = renderStewardMessage(kind, ref, s);
+  const rendered = await renderStewardMessage(kind, ref, s, question);
   if ("error" in rendered) return json({ error: rendered.error }, 400);
   // the shared delivery choke-point: the master stop (autosOn) and quiet hours now reach the
   // steward's own send, not just scheduled autos (was synergy-findings.md Tier-0 #1) — plus the

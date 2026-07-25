@@ -2668,8 +2668,15 @@ interface LaneOutcome {
 }
 // `verdict: null` + `raw: true` = the reviewer produced no explicit verdict (error/timeout/unparseable
 // /no fork base) — the measurement failed. A "pass" is only ever an explicit {"verdict":"ok"}.
+// `rawAnswer` rides along on `raw: true` rows ONLY — the reviewer's own answer text (post-envelope,
+// truncated), so a contract-miss is diagnosable from the journal instead of leaving a generic note
+// behind. Present-and-empty is itself the diagnosis ("no answer at all": timeout/spawn failure/no
+// fork base); absent means the row is not a failed measurement, so healthy rows carry no bloat.
 type CleanReviewShadow = { verdict: "pass" | "would_stop" | null; at: number; model: string;
-  notes: string; raw: boolean };
+  notes: string; raw: boolean; rawAnswer?: string };
+// how much of a contract-missing answer is kept on the outcome row — enough to see the shape that
+// broke, bounded so one bad reviewer run can't bloat the journal.
+const SHADOW_RAW_ANSWER_MAX = 2000;
 // the land-shape facts a caller hands to buildLaneOutcome for a "landed" record. Assembled at the
 // land SITE (not read from the mutable mergeLast map, which the verdict-write races) so each fact is
 // exactly what that path knows: the clean auto-land is {false,0,false}; a confirm-land carries the
@@ -3075,9 +3082,11 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
 // `raw` marks an answer that carried NO explicit verdict (no fork base, timeout/throw, unparseable,
 // or a verdict field that is neither "ok" nor "review"). Gate mode ignores it — every such case is
 // already a stop. Shadow mode needs it: an unmeasurable run must be recorded as unmeasured, never as
-// a pass (F5's lesson: empty/unparseable ≠ pass).
-async function runCleanReview(cwd: string, branch: string, main: string, base: string | null): Promise<{ verdict: "ok" | "review"; reason: string; raw: boolean }> {
-  if (!base) return { verdict: "review", reason: "no fork base to compare against — stopping for a human look", raw: true };
+// a pass (F5's lesson: empty/unparseable ≠ pass). `answer` carries the reviewer's post-envelope text
+// so a raw run stays DIAGNOSABLE downstream; "" is the honest answer whenever no text came back at
+// all (no fork base — the reviewer never ran; timeout/spawn failure — it ran and said nothing).
+async function runCleanReview(cwd: string, branch: string, main: string, base: string | null): Promise<{ verdict: "ok" | "review"; reason: string; raw: boolean; answer: string }> {
+  if (!base) return { verdict: "review", reason: "no fork base to compare against — stopping for a human look", raw: true, answer: "" };
   const lf = await git(cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
   const ls = await git(cwd, "diff", "--shortstat", "--no-color", `${base}...HEAD`);
   const ml = await git(cwd, "log", "--no-color", "--oneline", `${base}..${main}`);
@@ -3107,20 +3116,24 @@ async function runCleanReview(cwd: string, branch: string, main: string, base: s
   try {
     const j = JSON.parse(body) as { verdict?: unknown; reason?: unknown };
     const reason = typeof j.reason === "string" ? j.reason.slice(0, 400) : "";
-    if (j.verdict === "ok") return { verdict: "ok", reason, raw: false };
-    if (j.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look", raw: false };
-    return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look`, raw: true };
+    if (j.verdict === "ok") return { verdict: "ok", reason, raw: false, answer: body };
+    if (j.verdict === "review") return { verdict: "review", reason: reason || "flagged for a human look", raw: false, answer: body };
+    return { verdict: "review", reason: `reviewer returned no clean verdict (${body.slice(0, 120)}) — stopping for a human look`, raw: true, answer: body };
   } catch {
-    return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look", raw: true };
+    return { verdict: "review", reason: "reviewer answer was not the JSON contract — stopping for a human look", raw: true, answer: body };
   }
 }
 // the shadow projection of a reviewer run, as persisted on the outcome row. `raw: true` (no explicit
 // verdict came back) forces `verdict: null` — the measurement failed and says so, rather than
 // collapsing into a pass and inflating the graduation dataset with fabricated agreement.
-function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean }): CleanReviewShadow {
+// A failed measurement also persists the answer it failed on (truncated) — both production shadow
+// verdicts so far were raw:true and undiagnosable from the journal without it. A healthy row keeps
+// exactly its previous shape: no rawAnswer key at all.
+function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; answer: string }): CleanReviewShadow {
   return {
     verdict: r.raw ? null : r.verdict === "ok" ? "pass" : "would_stop",
     at: Date.now(), model: SUMMARY_MODEL, raw: r.raw,
+    ...(r.raw ? { rawAnswer: r.answer.slice(0, SHADOW_RAW_ANSWER_MAX) } : {}),
     // the reason strings are written for the GATE ("— stopping for a human look"); in shadow nothing
     // stopped, so that tail would misdescribe the row the owner reads. Drop it, keep the substance.
     notes: r.reason.replace(/ — stopping for a human look$/, "").slice(0, 400),

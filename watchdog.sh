@@ -64,21 +64,27 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 # coalesced, result green/red/unknown on post-land-audits.jsonl (GET /api/post-land-audits) plus a
 # loud server.log line and /api/sessions. It GATES NOTHING and UNDOES NOTHING; ↩ undo-land stays the
 # rollback. Unset = the tier does not exist, which is today's behaviour.
-# To turn it on: uncomment both lines below, add FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' to the srv-spawn
-# line, and `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart
+# TURNED ON 2026-07-25 (docs/autonomy-trial-1.md, Q3): the two lines below are live and the
+# srv-spawn line carries FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'. Takes effect only on
+# `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart
 # keeps the old spawn line, exactly as with VERIFY_CMD.
 # Cost, so the decision is made with it in view: ~2+ min of a full e2e-isolated run per land burst,
 # on the same box the fleet's sessions live on. Repo-guarded like VERIFY_CMD — exit 42 in a foreign
 # repo records UNKNOWN (a non-measurement), never a false green and never a false red.
-# AUDIT_CMD='[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "audit skipped: could not establish node_modules"; exit 42; }; ./e2e-isolated.sh'
-# AUDIT_Q=$(printf '%s' "$AUDIT_CMD" | sed "s/'/'\\\\''/g")
+AUDIT_CMD='[ -f fleet-e2e.ts ] || { echo "audit skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "audit skipped: could not establish node_modules"; exit 42; }; ./e2e-isolated.sh'
+AUDIT_Q=$(printf '%s' "$AUDIT_CMD" | sed "s/'/'\\\\''/g")
 
 while true; do
   if ! tmux -L claudefleet has-session -t '=srv' 2>/dev/null; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
+    #
+    # FLEET_DISPATCH_REPO makes the dispatcher AVAILABLE, it does not switch it on: `dispatchOn`
+    # (server.ts, grep `let dispatchOn`) is a separate persisted runtime flag, default false, and
+    # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
+    # this is a watched first run (docs/autonomy-trial-1.md), not maximum throughput.
     if tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_CLEAN_REVIEW=shadow exec bun server.ts >> server.log 2>&1"; then
+      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=shadow FLEET_DISPATCH_REPO=~/claude-fleet FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

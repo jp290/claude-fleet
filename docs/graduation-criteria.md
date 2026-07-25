@@ -103,3 +103,13 @@ to ② shadow and any future judge.
   RAN, not that the code is sound; K2/③ columns keep display-trust only with that reading;
   one drill is N=1 — further drills across defect classes before any reviewer-prompt tuning
   (tuning now would overfit to a single seeded pair).
+- 2026-07-25 (fire-drill #1 RE-ADJUDICATED after reading ③'s actual prompt — a step the
+  first adjudication skipped): ③ is spec-bound to the DIFF TEXT ONLY ("Do NOT use any
+  tools… answer directly from the input", server.ts ~2191). **D2 required reading
+  surrounding code the spec forbids — an invalid test item**, and ③ handled it exactly per
+  spec (marked `inferred`, named the limit in notes). **D1 stands**: fully in-diff, misread
+  while claiming `verified` — the one valid item was missed, so the headline verdict
+  survives on N=1-of-1 valid, weaker than first published. Drill-design norm added: seeded
+  defects must lie INSIDE the judge's specified evidence horizon, or they test the
+  spec, not the judge. (Side-verified: contamination risk ~nil — the spec denies ③ tool
+  access, so it cannot read the lane transcript/ground truth.)

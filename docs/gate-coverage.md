@@ -19,8 +19,11 @@ bun install --frozen-lockfile && bunx tsc --noEmit --strict … && ./e2e-claude-
   refusal, crash-candidate recording, per-slot model quoting, and the dispatcher's post-spawn
   gate. **Zero** checks touch merge/land, the outcome ledger, the disposition rail, the judges,
   worktree safety, autos, or the client.
-- `fleet-e2e.ts` — **703 checks** — is NOT in the gate. It runs only when a human or a lane
-  runs `./e2e-isolated.sh` by hand.
+- `fleet-e2e.ts` — **703 checks** — is NOT in the gate, and never will be (it runs >2 min, past
+  `VERIFY_TIMEOUT_MS`). Until 2026-07-25 it ran only when a human or a lane ran
+  `./e2e-isolated.sh` by hand. **Tier 2 now exists** and can run it unattended after a land —
+  see §5, and note it is default-OFF, so on a deployment that has not set
+  `FLEET_POSTLAND_AUDIT_CMD` this sentence still reads exactly as it did.
 
 So a lane that breaks `landLane`, `emitLaneOutcome`, `runCleanReview`, `worktreeRisk`, or the
 rail's owner-only guard passes the gate green, provided it typechecks and leaves `claudeAlive`
@@ -30,10 +33,13 @@ alone.
 
 - `merge-review-autonomy.md:192`: the gate's known gap "is exactly what the post-land
   `e2e-isolated` audit **still covers**."
-  **FALSE.** There is no post-land audit. Verified: no such code in `server.ts` (no `post-land`,
-  no `e2e-isolated` reference), no launchd job beyond the watchdog, no crontab (empty), no auto.
-  The sentence describes a component that was designed (`lane-autonomy-future.md:21`,
-  `merge-review-autonomy.md:146`) and never built.
+  **WAS FALSE when written (2026-07-25 morning)**, and the finding stands as the reason the tier
+  was built: there was no post-land audit anywhere — no code in `server.ts`, no launchd job beyond
+  the watchdog, no crontab, no auto. The sentence described a component that was designed
+  (`lane-autonomy-future.md:21`, `merge-review-autonomy.md:146`) and never built.
+  **Built 2026-07-25** (`server.ts`, grep `POSTLAND_AUDIT_CMD`). The sentence is now true *only in
+  the present tense of a deployment that has configured it* — the tier is default-OFF, so on an
+  unconfigured fleet the gap is still uncovered. Both docs now say which.
 - `lane-brief-template.md:81`: "The land gate is tsc + e2e-claude-gate: **server-side behavior
   is covered**, client code is asserted only at source-string level."
   **Overstated in the half that matters.** The client caveat is right and useful; the
@@ -80,13 +86,39 @@ including the decision to loosen upstream autonomy *because* the gate is hard.
    carry the command's identity, so the number can never drift from its meaning. Add one line to
    `graduation-criteria.md` stating what K1's `verified` attests — an amendment, written before
    more data accrues (the doc's own rule).
-3. **Build the second tier — now unblocked.** The stated blocker was the ~600 ms pane-capture
-   flake plus `e2e-isolated` exceeding `VERIFY_TIMEOUT_MS` (120 s, `server.ts:2485`). The
-   `e2e-split` lane is fixing that flake today. Two viable shapes, both cheap:
-   - **post-land audit:** after a land, run `e2e-isolated` async; red → owner-visible alarm +
-     the existing `undo-land` as the rollback (this was the original design).
-   - **or gate tier 2** with a raised timeout for autonomy-adjacent diffs only.
-   Either restores "deterministic > statistical" instead of leaning on ②.
+3. **Build the second tier.** ~~now unblocked~~ **DONE 2026-07-25** — the post-land shape, not the
+   raised-timeout gate shape: after a land, run the full suite async; red → owner-visible alarm +
+   the existing `undo-land` as the rollback (the original design). It restores
+   "deterministic > statistical" instead of leaning on ②. What exists, as built
+   (`server.ts`, grep `POSTLAND_AUDIT_CMD`; e2e `./e2e-postland-audit.sh`):
+   - **Trigger:** `recordLand` — the one choke point every *main-moving* land funnels through
+     (clean auto-land + confirm-land). A land that did not move main integrates nothing new and
+     is not audited. The call is synchronous and returns before any await: **land latency and
+     land behaviour are unchanged**.
+   - **Where:** a `git archive` content snapshot of the integration tip, extracted into a scratch
+     dir under `TMPDIR`, with the repo's `node_modules` symlinked in. Not a git worktree — a
+     `worktree add` would register in `git worktree list`, which the lane map and
+     `advanceIntegration` read. The primary checkout is only ever *read*. `./e2e-isolated.sh`
+     itself derives socket/port/dir from `$$` (re-verified first-hand 2026-07-25) and so cannot
+     touch socket `claudefleet`, port 8790, or another run.
+   - **Concurrency:** exactly one suite at a time, globally. Lands arriving during a run are
+     **coalesced** into one follow-up against the then-current tip — three lands inside ~110 s is
+     a real pattern (2026-07-25), and the suite is a property of a *tree*, not of a diff, so the
+     newest tip subsumes them. The row's `covers[]` names every land it stands for; nothing is
+     silently dropped.
+   - **Result:** TRI-STATE. `green` / `red` / `unknown`, where timeout, exit 42 (declined),
+     exit 126/127 (could not start), a failed snapshot and a throw are all `unknown` — never
+     green (A4), and never a fabricated red either. The fail direction is deliberately the
+     INVERSE of `runVerify`'s: that one gates a land, this one gates nothing.
+   - **Record:** its own append-only trail `post-land-audits.jsonl` (`GET /api/post-land-audits`),
+     not an extra field on the outcome row — outcome rows are written at land time and are
+     append-only, and a coalesced audit belongs to *several* lands, so it has no single row to
+     live on. Joins to the ledger and to the `fleet/land` note by `mainSha`/branch.
+   - **Surfaced:** the trail, an `audit("postland_audit")` line, a loud server-log line on any
+     non-green result, and `postLandAudit` on `/api/sessions` (rehydrated at boot, because the
+     deploy that follows a land would otherwise erase the alarm). Client rendering is still to do.
+   - **It does not gate, does not auto-undo, does not block.** Rollback stays the owner's
+     ↩ undo-land. Default OFF (`FLEET_POSTLAND_AUDIT_CMD` unset → the tier does not exist).
 4. **Only then** should component 5 (auto-land of resolutions) be considered: it is the one
    step that removes the human from the path the thin gate cannot see.
 

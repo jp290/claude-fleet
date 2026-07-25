@@ -109,6 +109,71 @@ inverts the axiom that makes it cheap.
 - The queue of unlabeled rows growing for another week: that is A7 failing, and it invalidates
   the evidentiary basis of every criterion.
 
+## Part 6 — What is actually still missing for autonomy
+
+Added 2026-07-25, owner's question: *what is it that's still missing?* Answered from the day's
+measurements, not from ambition.
+
+**In one sentence: Fleet can already do the work unattended; what it cannot do is find out
+whether the work was good.** Every path to the judgement "that was wrong" terminates in a human
+who has never once said it.
+
+### What is NOT missing (so we stop re-solving it)
+Isolation (worktrees, per-slot scoped credentials), deterministic land mechanics (ancestry gates,
+ff-only, record-before-teardown, no double-move on replay), reversibility (`undo-land`, 10 e2e
+checks), machine self-perception (`deployGap`, `bundleStale`, `transcriptFact`, `doneLooking`),
+and lane competence (15 of 18 landed rows took their brief and landed with no correction).
+**Clean auto-land already happens** — 12 rows with `confirmedByHuman: false`. The mechanical loop
+is essentially built.
+
+### Gap 1 — There is no automatic negative signal *(the binding one)*
+A system that cannot detect its own failures cannot be given more rope, however good its gate.
+Today the only channels that can say "wrong" are the owner's ✗ and the owner's ↩ undo — both at
+zero, forever, unless the owner acts. So no judge can graduate and no criterion can be met.
+**What closes it:** (a) the owner labels — cheap, immediate, and now well-defined
+(`label-taxonomy.md`); and, the real unlock, (b) **defect-escape attribution** — a machine signal
+that a *landed* change was bad. It is computable from artifacts we already have: a later lane's
+verify going red on code it never touched, or a post-land audit failing, attributed back to the
+land that introduced it. That converts "was this right?" from a question only a human can answer
+into one the system answers about itself. Nothing else on this list matters as much.
+
+### Gap 2 — The verification floor has no ceiling above it
+The gate is `tsc` + 26 `claudeAlive` checks; the 703-check suite runs only because humans and
+lanes run it by hand. **Autonomous operation has no hand.** The tiered design named a slow
+post-land audit with `undo-land` as its rollback; only the fast tier was built
+(`gate-coverage.md`). For unattended landing this is not an improvement, it is a precondition —
+and it is also the mechanism Gap 1(b) needs.
+
+### Gap 3 — Autonomous work needs autonomous briefing
+P-9: `tickDispatch` sends the raw queue text; the brief template and the enhancer sit off that
+path. Today's evidence says brief quality is the dominant variable in whether a lane succeeds
+unaided. An autonomous dispatcher that briefs badly produces work that passes the gate and
+misses the point — the most expensive failure mode available, because it is invisible.
+
+### Gap 4 — No economics
+Nothing measures what a lane costs, and no budget bounds the fleet (`architecture-review.md`
+F10: only auto-③'s cap of 2 exists). `sessionMs` is recorded and read by nothing; tokens are not
+recorded at all, though they are derivable (the `lane-cost-study` lane is testing exactly this).
+"Can I leave it running overnight" is an economic question before it is a safety question.
+
+### Gap 5 — Attention routing, not attention removal
+Autonomy is not zero human; it is the human on the right things. Today everything either needs
+the owner or nothing does: 3 steward proposals pending (two stale, pointing at lanes that no
+longer exist), ~20 unlabeled rows, no aging, no priority, no reaper. Before the system can hold
+more work it must be able to say *these two need you, the other forty do not.*
+
+### The order that follows
+1. Owner labels + `label-taxonomy.md` (unblocks every criterion; ~10 minutes).
+2. Post-land audit tier (Gap 2) — because Gap 1(b) is built on it.
+3. Defect-escape attribution (Gap 1b) — the automatic wrong-signal.
+4. Cost meter + fleet budget (Gap 4) — pending the cost study's verdict.
+5. Dispatcher briefing, P-9 (Gap 3).
+6. Attention routing (Gap 5), then component 5 and upstream autonomy become safe.
+
+Steps 1–3 are the ones that change the system's *category*: from a machine that does work
+unattended to a machine that can tell whether the work was any good. Everything above Part 3's
+Stage 3 is gated on that, and should stay gated.
+
 ## Part 5 — The ✨ button, and what it is for
 
 Tested live 2026-07-25 with a rough owner-style draft. It returned the draft with typos and

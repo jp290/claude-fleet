@@ -17,8 +17,20 @@ feature ideas to, which show up in your dashboard queue.
 - **Disabled by default.** No `FLEET_INTAKE_SECRET` → `/intake` returns 404.
 - **Only ever creates `pending` tasks.** There is no path from intake to a
   running session. Promotion to `queued`, and any dispatch, is owner-only.
-- **Caps:** text is truncated to 20 000 chars; max 30 submissions per rolling
-  hour (429 after that); the queue keeps the newest 200 tasks.
+- **Caps:** text is truncated to 20 000 chars (`MAX_TASK_TEXT`); max 30 submissions
+  per rolling hour (429 after that). **Corrected 2026-07-25 — read the two caveats
+  before exposing this endpoint:**
+  - *The 200-task queue cap does not bind intake tasks.* `capTasks` evicts only
+    `status === "done"` ("a still-pending/queued/sent task must never be evicted"),
+    and intake always writes `status: "pending"`. `queue-automation.md` states it
+    correctly ("keeps all live + newest done"); this line had dropped the qualifier.
+    So the retained-state bound on intake is not 200 — it is however many pending
+    tasks the owner has not dispositioned, each one persisted in `fleet.json` and
+    rewritten in full on every `saveState`.
+  - *The hourly limit is per boot.* `intakeStrikes` is an in-memory array and is not
+    in `saveState`'s body, so the window resets to zero on every server restart —
+    unlike the steward's send caps, which are deliberately re-derived from
+    `audit.jsonl` (`stewardRecentSends`) precisely to avoid a restart-fragile counter.
 - **Reachable on the share host** (exact path `/intake` only) — it does not
   widen the share-host allowlist to anything else.
 

@@ -146,11 +146,29 @@ lanes (A/B/C) land.
   (tsc + the quick `e2e-claude-gate`) gates the land; the slow full suite runs as a *post-land
   audit* (or async), with undo-land as the rollback. Grep `VERIFY_TIMEOUT_MS`.
   **2026-07-24 — fast tier SHIPPED to the repo (`b30c746`, `watchdog.sh` `VERIFY_CMD` now
-  `tsc && ./e2e-claude-gate.sh`), NOT yet deployed** (needs the owner `launchctl kickstart` —
-  a running watchdog doesn't re-read its own file). Validated to run in `runVerify`'s context
-  WITHOUT `node_modules` (the lane-worktree condition — `server.ts` imports only `node:`/`bun:`/
-  local, so it boots with no npm): ALL PASS from a `node_modules`-less tree in **~46 s** (< the
-  120 s timeout). Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
+  `tsc && ./e2e-claude-gate.sh`), ~~NOT yet deployed~~ DEPLOYED** — corrected 2026-07-25: the
+  live `srv` (started 2026-07-25 00:16:54) carries a `FLEET_VERIFY_CMD` identical to
+  `watchdog.sh:38`, so the kickstart happened.
+  ~~Validated to run in `runVerify`'s context WITHOUT `node_modules` (the lane-worktree
+  condition — `server.ts` imports only `node:`/`bun:`/local, so it boots with no npm): ALL PASS
+  from a `node_modules`-less tree in ~46 s (< the 120 s timeout).~~
+  **Refuted 2026-07-25 — the validation covered only the second half of the `&&`.** `--types bun`
+  needs `@types/bun`, a devDependency living in gitignored `node_modules`; a lane is created by
+  `git worktree add` alone, with no install step, and `runVerify` runs with `cwd` = that lane
+  worktree. Reproduced on the tracked files at HEAD with no `node_modules`:
+
+  ```
+  $ git archive HEAD | tar -x -C $S && cd $S
+  $ sh -c 'bunx tsc --noEmit --strict … --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts'
+  error TS2688: Cannot find type definition file for 'bun'.
+  exit=1 elapsed=2s
+  ```
+
+  So in a lane without `node_modules` the gate short-circuits in ~2 s and never reaches
+  `e2e-claude-gate.sh`; "~46 s < the 120 s timeout" describes a run that does not happen. It
+  fails **closed** — a good rebase is downgraded to stop-for-human and `verified:false` enters
+  the outcome ledger — so the cost is a red that means nothing and land-calibration data that
+  silently depends on whether a lane happened to install. See `discrepancy-audit.md` F9. Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
   dispatch/model/steward routes, so module-load/boot regressions tsc misses are caught — but it
   does NOT assert the share/guest or audit paths, so it is **total-ENOUGH, not total**. That gap
   is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stays OUT of the

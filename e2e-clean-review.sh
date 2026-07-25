@@ -41,6 +41,9 @@ chmod +x "$DIR/fakemerge"
 #   ok (default) — {"verdict":"ok"} · review — {"verdict":"review"} · garbage — non-JSON (fail-closed)
 #   flood — a non-JSON answer far longer than the persisted-answer cap (truncation)
 #   silent — no answer at all + nonzero exit (the timeout/spawn-failure shape)
+# The prose* modes are the SHAPE THE REAL MODEL PRODUCES (5 of the first 6 production shadow rows): a
+# valid verdict object wrapped in a one-sentence preamble. proseok/prosereview must be rescued;
+# prosejunk (wrapped object, verdict value not in the contract) must still fail closed.
 cat > "$DIR/fakecleanreview" <<'EOF'
 #!/bin/sh
 cat >/dev/null
@@ -51,6 +54,9 @@ case "$mode" in
   garbage) printf 'not json at all — exercises the server fail-closed path' ;;
   flood)   i=0; while [ $i -lt 600 ]; do printf 'XXXXXXXXXX'; i=$((i+1)); done ;;
   silent)  exit 1 ;;
+  proseok) printf '{"result": "Confirmed: main gained no commits since this lane forked.\\n\\n{\\"verdict\\": \\"ok\\", \\"reason\\": \\"no second side to collide with\\"}"}' ;;
+  prosereview) printf '{"result": "One thing stands out on a closer read.\\n\\n{\\"verdict\\": \\"review\\", \\"reason\\": \\"lane deletes a helper main still calls\\"}\\n\\nWorth a human look."}' ;;
+  prosejunk) printf '{"result": "I could not settle this one.\\n\\n{\\"verdict\\": \\"maybe\\", \\"reason\\": \\"unsure\\"}"}' ;;
   *)       printf '{"result": "{\\"verdict\\": \\"ok\\", \\"reason\\": \\"no cross-change collision found\\"}"}' ;;
 esac
 EOF

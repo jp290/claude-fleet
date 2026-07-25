@@ -173,6 +173,36 @@ if (PHASE === "shadow") {
       && hRow.cleanReviewShadow.rawAnswer === "",
     JSON.stringify(hRow?.cleanReviewShadow));
 
+  // (I)+(J) the production shape: a valid verdict object wrapped in a prose preamble. The parser
+  // extracts it, so the run is a REAL measurement (raw:false) with the model's own verdict — the
+  // 5-of-6 `raw: true` production rows were a parser giving up, not a model missing the contract.
+  await setReviewMode("proseok");
+  const I = await cleanLaneMerge("kilo");
+  const iRow = await outcomeFor(I.branch);
+  check("shadow: a prose-wrapped ok is rescued — verdict:'pass', raw:false, no rawAnswer",
+    iRow?.cleanReviewShadow?.verdict === "pass" && iRow.cleanReviewShadow.raw === false
+      && !("rawAnswer" in iRow.cleanReviewShadow)
+      && iRow.cleanReviewShadow.notes === "no second side to collide with",
+    JSON.stringify(iRow?.cleanReviewShadow));
+
+  await setReviewMode("prosereview");
+  const J = await cleanLaneMerge("lima");
+  const jRow = await outcomeFor(J.branch);
+  check("shadow: a prose-wrapped review is rescued — verdict:'would_stop', raw:false",
+    jRow?.cleanReviewShadow?.verdict === "would_stop" && jRow.cleanReviewShadow.raw === false
+      && jRow.cleanReviewShadow.notes === "lane deletes a helper main still calls",
+    JSON.stringify(jRow?.cleanReviewShadow));
+
+  // (K) extraction rescues a WELL-FORMED answer only: an object that carries a verdict value outside
+  // the contract stays a failed measurement, exactly as before — the fail-closed floor is unmoved.
+  await setReviewMode("prosejunk");
+  const K = await cleanLaneMerge("mike");
+  const kRow = await outcomeFor(K.branch);
+  check("shadow: a prose-wrapped object with a junk verdict is still verdict:null + raw:true",
+    kRow?.cleanReviewShadow?.verdict === null && kRow.cleanReviewShadow.raw === true
+      && (kRow.cleanReviewShadow.rawAnswer ?? "").includes('"maybe"'),
+    JSON.stringify(kRow?.cleanReviewShadow));
+
   console.log(results.join("\n"));
   console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
   process.exit(failed ? 1 : 0);
@@ -197,6 +227,13 @@ const bRow = await outcomeFor(B.branch);
 check("gate mode writes NO cleanReviewShadow on the landed row",
   bRow?.disposition === "landed" && bRow.cleanReviewShadow === undefined, JSON.stringify(bRow));
 
+// (B2) the production answer shape — a valid {"verdict":"ok"} behind a prose preamble — reaches the
+// GATE's land decision too: it is an explicit ok, so it lands, instead of being discarded as garbage.
+await setReviewMode("proseok");
+const B2 = await cleanLaneMerge("india");
+check("gate: a prose-wrapped ok verdict is rescued and lets the lane auto-land",
+  B2.gone && mainLog().includes("india lane work"), JSON.stringify(B2));
+
 // (C) a BROKEN reviewer (non-JSON) → FAIL CLOSED: the auto-land is stopped, never landed. This is the
 // safety property under reviewer failure — a bug can only ever cost a click, never land something unseen.
 await setReviewMode("garbage");
@@ -205,6 +242,16 @@ check("a broken reviewer FAILS CLOSED — clean+green land is stopped, not lande
   !C.gone && C.last?.status === "resolved" && C.last?.landed === false && C.last?.cleanReview?.verdict === "review",
   JSON.stringify(C.last));
 check("the fail-closed lane's commit did NOT reach main", !mainLog().includes("charlie lane work"), mainLog());
+
+// (C2) the fail-closed floor under extraction: an extracted object whose verdict is outside the
+// contract is NOT an explicit ok, so the gate still stops. `landed: true` stays reachable from
+// {"verdict":"ok"} alone — extraction rescues well-formed answers, it never manufactures one.
+await setReviewMode("prosejunk");
+const C2 = await cleanLaneMerge("juliett");
+check("gate: an extracted object with a junk verdict still FAILS CLOSED (not landed)",
+  !C2.gone && C2.last?.status === "resolved" && C2.last?.landed === false
+    && C2.last?.cleanReview?.verdict === "review", JSON.stringify(C2.last));
+check("the junk-verdict lane's commit did NOT reach main", !mainLog().includes("juliett lane work"), mainLog());
 
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");

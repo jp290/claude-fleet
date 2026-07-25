@@ -369,6 +369,23 @@ export async function run(): Promise<void> {
       /K1 \$\{k\.k1\}\/20/.test(kBlock) && /K2 \$\{k\.k2\}\/25/.test(kBlock)
       && !/criterion met|criteria met|graduated|erfüllt/i.test(kBlock), kBlock.slice(0, 60));
 
+    // (9g) THE VERIFY BADGE'S FOUR STATES. Same method and same limits as (9d)/(9e) — a regex over
+    // the client SOURCE, no DOM harness — and it lives here because this is the only module that
+    // reads that source; the behaviour it guards is the merge/land family's (e2e/merge.ts, V1).
+    // The regression that matters: the skipped state (verify.ok === null) collapsing back into a
+    // boolean, which would render a gate that ran NOTHING as either green or red. It must be its
+    // own branch, tested BEFORE the falsy `!v.ok` one, and the four states must stay four.
+    const vbBlock = cliSrc.slice(cliSrc.indexOf("function verifyBadge"), cliSrc.indexOf("function showVerifyOutput"));
+    check("client: the verify badge carries a skipped state of its own, checked before the red one",
+      /ok: boolean \| null/.test(cliSrc)
+      && /if \(v\.ok === null\)/.test(vbBlock) && /vbadge skip/.test(vbBlock)
+      && vbBlock.indexOf("v.ok === null") < vbBlock.indexOf("if (!v.ok)"),
+      "verifyBadge in src/client.ts");
+    check("client: the verify badge renders all four states and only the passing one reads green",
+      /vbadge none/.test(vbBlock) && /vbadge skip/.test(vbBlock) && /vbadge bad/.test(vbBlock)
+      && /vbadge ok/.test(vbBlock) && (vbBlock.match(/vbadge ok/g) ?? []).length === 1,
+      "verifyBadge in src/client.ts");
+
     // (10) THE REBASE CASE — the reason the relation is content identity and not commit identity:
     // the land path rebases the lane onto main before the ff-merge, so the landed commit is NEVER
     // the reviewed commit on a clean land. The diff is byte-identical, so the review DID describe

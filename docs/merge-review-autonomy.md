@@ -138,8 +138,14 @@ lanes (A/B/C) land.
   invariants (the agent's *effect* is unfakeable behind `FLEET_MERGE_CMD`, so no e2e claims it).
   STILL TODO for V3: the structured `resolutions[]` output contract + conflict-hunk capture (§5)
   + the land-overlay render. V2 provenance note is ALSO shipped (`git notes --ref=fleet/land`).
-- **e2e-verify infra — the two blocking flakes are dead** (self-token pane-capture race +
-  `waitMerge` load-timeout, both fixed & deployed), so `e2e-isolated` is now deterministic. **But
+- **e2e-verify infra — the blocking flakes are dead** (self-token pane-capture race +
+  `waitMerge` load-timeout). *Correction, 2026-07-25:* the self-token fix claimed here was the
+  fixed-sleep→poll change, which narrowed the window but did not close it — a dropped `send-keys`
+  still left the probe with nothing to read. It is closed now by `paneEnv()` (`e2e/harness.ts`),
+  which retries the send until a unique line-anchored marker renders. Same date: the last
+  structural race (auto-③ reviewing a just-recycled slot off the *previous* lane's cached git
+  facts, filing an empty "no code changes in scope" review that later read as `superseded`) is
+  fixed server-side in `openSlot`. So `e2e-isolated` is now deterministic. **But
   a hard new finding blocks it as a pre-land gate: `e2e-isolated` runs >2 min, past the ~120 s
   `VERIFY_TIMEOUT_MS` — adding it to `FLEET_VERIFY_CMD` would time-out every land.** So §3's
   "phase 2" is not "add e2e to the gate"; it is a **TIERED gate**: a fast-deterministic tier
@@ -189,8 +195,13 @@ lanes (A/B/C) land.
   independently 2026-07-25). Client-heavy work therefore carries risk no tier of this gate can
   see; keep autonomy-adjacent scope server-side until a DOM harness exists. So it is
   **total-ENOUGH, not total**. That gap
-  is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stays OUT of the
-  gate (its ~600 ms pane-capture flake bars a deterministic gate) until that flake is fixed.
+  is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stayed OUT of the
+  gate while its ~600 ms pane-capture flake barred a deterministic gate. **That flake is fixed
+  (2026-07-25** — `paneEnv()` in `e2e/harness.ts` retries the send-keys and matches a unique,
+  line-anchored marker; the auto-③-on-a-just-recycled-slot race that produced the other
+  intermittent review-state failures is fixed in `openSlot` by dropping the stale `gitInfo`
+  entry**)**, so the "flaky" objection to gating on it no longer holds. What still bars it is
+  RUNTIME, not determinism: the suite is minutes long and the gate is meant to be fast.
 - **§6 hard-rule #1 live-confirmed:** the flake and resolver lanes both touched `fleet-e2e.ts`;
   verified their hunks don't overlap (~653 vs ~1–90) before landing in order. The harness-conflict
   trap is real; disjoint-region checks are the mitigation until `conflictTouchesHarness` exists.

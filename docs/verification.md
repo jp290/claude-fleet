@@ -37,6 +37,11 @@ bun run build
   claim from a handoff, "ALL PASS" at the end of *this* run is a signal.
 - `e2e-isolated.sh` refuses the live socket, so it is safe anywhere — including
   inside a lane. Raw `bun fleet-e2e.ts` is blocked without `FLEET_E2E_ALLOW_LIVE=1`.
+- **Where a check goes:** `fleet-e2e.ts` is a runner; the checks live in `e2e/<family>.ts`
+  (slots, autos, share, merge, outcomes, steward-…). Shared plumbing is `e2e/harness.ts`;
+  cross-section fixtures travel through `e2e/ctx.ts`. Naming `fleet-e2e.ts` on the `tsc` line
+  still typechecks all of it — tsc follows the imports. Reading a pane's env goes through
+  `paneEnv()`, never a hand-rolled send-keys/sleep/capture (that shape was the last flake).
 - Client bundles are gitignored build artifacts — a client change without
   `bun run build` deploys stale code that *looks* verified.
 - For UI changes, the semi-deterministic tier is the browser itself (the e2e suite

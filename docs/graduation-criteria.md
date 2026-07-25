@@ -116,3 +116,12 @@ to ② shadow and any future judge.
   defects must lie INSIDE the judge's specified evidence horizon, or they test the
   spec, not the judge. (Side-verified: contamination risk ~nil — the spec denies ③ tool
   access, so it cannot read the lane transcript/ground truth.)
+- 2026-07-25 (fire-drill #2, auto-③): throwaway lane `outcome-summary` (ledger row 15
+  `killed-dirty`, branch discarded at `4be8238`), two spec-fair in-diff defects, ground
+  truth sealed before the run. Result: **location 2/2, semantic 2/2, 0 false positives** —
+  ③ named the inverted window filter with the correct fix (`r.ts >= cutoff`) and the
+  wrong-counter response wiring (`landed` wired to `cleanAuto`), both graded `verified`
+  correctly; an out-of-diff auth question was properly `inferred` with its limit named.
+  Note: D1 repeated drill #1's missed class but carried the contradicting intent-comment
+  inside the same hunk — the pass may be evidence-density-dependent, not a retraction of
+  drill #1. Living state: `judge-calibration.md`.

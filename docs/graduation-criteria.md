@@ -116,6 +116,38 @@ to ② shadow and any future judge.
   defects must lie INSIDE the judge's specified evidence horizon, or they test the
   spec, not the judge. (Side-verified: contamination risk ~nil — the spec denies ③ tool
   access, so it cannot read the lane transcript/ground truth.)
+- 2026-07-25 (adversarial pass — **what the counters attest, stated before more data accrues**).
+  No threshold moves; this is disclosure, and every item tightens the reading. Detail and
+  evidence: `adversarial-2026-07-25.md`, `gate-coverage.md`.
+  1. **`verified: true` attests tier 1 only** — `bun install` + `tsc` + `./e2e-claude-gate.sh`
+     (26 checks, all about `claudeAlive`/send-gating/dispatch). The 703-check `fleet-e2e.ts`
+     suite is NOT in the gate, and the post-land audit tier that was designed to cover the
+     difference (`merge-review-autonomy.md:146`) was never built. §1's "so `verified` is honest"
+     means honest-about-tier-1.
+     Worse, until fixed: `watchdog.sh:49` opens with `[ -f fleet-e2e.ts ] || exit 0`, and
+     `runVerify` records `ok: code === 0` — so a lane that MOVES that file records a green gate
+     that ran nothing. A tri-state verify (`skipped` ≠ `ok`) is a precondition for trusting any
+     row's `verified`.
+  2. **`confirmedByHuman: false` ≠ unattended.** The merge route is owner-token-gated (a lane's
+     self-token is 403'd), so all 17 rows are owner-initiated merges; the flag means "no SECOND
+     human step". §1 would license unattended landing on a population with zero unattended lands.
+  3. **Three of §1's four clauses cannot currently produce a failing value.** "0 undos":
+     `undoLast` is one slot per repo, overwritten by the next land (observed cadence 50–110 s),
+     and `disposition:"reverted"` has never been written. "0 wrong-class dispositions":
+     `kProgress` does not read `dispositions.jsonl` at all. "≥80 % coverage": coverage is
+     patch-id identity, so a reviewer answer that did not parse still counts as covered (row 11).
+     Only K1 carries information, and it counts events, not outcomes.
+  4. **Self-reference, measured:** 10 of 10 counted lands touched the measurement machinery
+     itself (`server.ts`/`src/client.ts`/`fleet-e2e*`/`watchdog.sh`/`e2e-*.sh`) — including the
+     lane that wrote `kProgress` and the lane that rewrote the verify command. Sharper than the
+     homogeneity caveat above; weigh it at the enable-decision.
+  5. **`kProgress` biases green on degraded input:** `if (!o.confirmedByHuman) clean++` against
+     an optional field — a row missing it counts as a clean auto-land. This violates the
+     project's own "unknown ≠ zero" rule inside the autonomy counter. Fix before K1 is read as met.
+  6. **Judge independence is role-only, not statistical:** one `SUMMARY_MODEL` runs ②, ③, the
+     resolver, the enhancer and the digest; lanes, steward and operator are all Claude. The
+     independence caveat above covers labeler-vs-lander only. Record each judge's model with its
+     drill results, and treat counters as per-judge-per-model.
 - 2026-07-25 (fire-drill #2, auto-③): throwaway lane `outcome-summary` (ledger row 15
   `killed-dirty`, branch discarded at `4be8238`), two spec-fair in-diff defects, ground
   truth sealed before the run. Result: **location 2/2, semantic 2/2, 0 false positives** —

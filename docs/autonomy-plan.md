@@ -72,9 +72,12 @@ each is a gate.
 **Exit:** every counter means what its name says, and the rail has run in production.
 
 ### Stage 1 — Make the gate real
-5. The post-land audit tier that was designed and never built: run the full suite after a land,
-   red → owner-visible alarm + `undo-land` as the rollback (`gate-coverage.md` §5). The flake
-   that blocked it is fixed as of today.
+5. ~~The post-land audit tier that was designed and never built~~ **BUILT 2026-07-25**: the full
+   suite runs after a land, red → owner-visible alarm + `undo-land` as the rollback
+   (`gate-coverage.md` §5 carries the built contract). The flake that blocked it was fixed the
+   same day. **Remaining for this item:** set `FLEET_POSTLAND_AUDIT_CMD` in `watchdog.sh` +
+   `launchctl kickstart` (it is default-OFF), and give the trail a consumer — until then the tier
+   runs nowhere and is read by nobody.
 6. Doc-claims check wired into `e2e-claude-gate.sh` — docs may name constants/routes/env only by
    symbol. The executable answer to a rot class prose has failed to stop four times.
 **Exit:** a semantic regression that passes tier 1 is caught by machine within one land, and
@@ -140,12 +143,25 @@ verify going red on code it never touched, or a post-land audit failing, attribu
 land that introduced it. That converts "was this right?" from a question only a human can answer
 into one the system answers about itself. Nothing else on this list matters as much.
 
-### Gap 2 — The verification floor has no ceiling above it
-The gate is `tsc` + 26 `claudeAlive` checks; the 703-check suite runs only because humans and
-lanes run it by hand. **Autonomous operation has no hand.** The tiered design named a slow
+### Gap 2 — The verification floor has no ceiling above it *(mechanism built 2026-07-25)*
+The gate is `tsc` + 26 `claudeAlive` checks; the 703-check suite ran only because humans and
+lanes ran it by hand. **Autonomous operation has no hand.** The tiered design named a slow
 post-land audit with `undo-land` as its rollback; only the fast tier was built
 (`gate-coverage.md`). For unattended landing this is not an improvement, it is a precondition —
 and it is also the mechanism Gap 1(b) needs.
+
+**Status:** the tier now exists (`server.ts`, grep `POSTLAND_AUDIT_CMD`; contract + reasoning in
+`gate-coverage.md` §5). After every land that moves main it runs the full suite against a snapshot
+of the integration tip, off the land path, one run at a time, coalescing bursts; the result is
+`green`/`red`/`unknown` on an append-only trail (`GET /api/post-land-audits`) that names the lands
+each run covers. It gates nothing and undoes nothing — rollback stays the owner's ↩ undo-land.
+
+**The gap is not closed until two things follow, and neither is done:**
+1. It is **default OFF**. `FLEET_POSTLAND_AUDIT_CMD` must be set in `watchdog.sh`'s srv-spawn line
+   (to `./e2e-isolated.sh`) and picked up by `launchctl kickstart` before a single production land
+   is audited. A built mechanism nobody enabled is this project's own `unfed mechanism` class.
+2. Nothing **reads** the trail yet. A red row is durable, logged and on `/api/sessions`, but no
+   client renders it and no consumer attributes it — which is exactly the Gap 1(b) step below.
 
 ### Gap 3 — Autonomous work needs autonomous briefing
 P-9: `tickDispatch` sends the raw queue text; the brief template and the enhancer sit off that

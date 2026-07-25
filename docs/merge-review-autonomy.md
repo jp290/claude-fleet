@@ -195,7 +195,12 @@ lanes (A/B/C) land.
   independently 2026-07-25). Client-heavy work therefore carries risk no tier of this gate can
   see; keep autonomy-adjacent scope server-side until a DOM harness exists. So it is
   **total-ENOUGH, not total**. That gap
-  is exactly what the post-land `e2e-isolated` audit still covers. `e2e-isolated` stayed OUT of the
+  is what the post-land `e2e-isolated` audit covers — **which did not exist when this sentence was
+  written** (`gate-coverage.md` §2 caught it as a false present tense on 2026-07-25). It exists
+  now (`server.ts`, grep `POSTLAND_AUDIT_CMD`; contract in `gate-coverage.md` §5), but it is
+  **default-OFF**: read this sentence as true only of a deployment that has set
+  `FLEET_POSTLAND_AUDIT_CMD` and kickstarted the watchdog. On an unconfigured fleet the gap is
+  still uncovered. `e2e-isolated` stayed OUT of the
   gate while its ~600 ms pane-capture flake barred a deterministic gate. **That flake is fixed
   (2026-07-25** — `paneEnv()` in `e2e/harness.ts` retries the send-keys and matches a unique,
   line-anchored marker; the auto-③-on-a-just-recycled-slot race that produced the other

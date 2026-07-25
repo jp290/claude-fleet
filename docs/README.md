@@ -48,12 +48,13 @@ Two consequences worth stating once:
   and is recoverable. A fault in (c) produces work that *looks* right and clears
   every deterministic gate, because gates test correctness, not intent. (d) is
   already the most hardened and should stay the slowest to move.
-- **(c) is unbuildable responsibly without perception.** The outcome ledger writes
-  and nothing reads it yet; the post-hoc review feed (`lane-autonomy-future.md`
+- **(c) is unbuildable responsibly without perception.** The outcome ledger still
+  writes and **nothing reads it**; the post-hoc review feed (`lane-autonomy-future.md`
   item 6 — *not* `merge-review-autonomy.md` §6, which is "Hard rules"; that
-  mis-citation stood until 2026-07-25) is that reader. `perception-layer.md` is
-  the design that closes it. Steering a fleet you cannot observe is the failure
-  mode where everything looks busy and the work is wrong for days.
+  mis-citation stood until 2026-07-25) is that reader, and it is the one piece of
+  `perception-layer.md` still unbuilt — its write side landed in `600d401`.
+  Steering a fleet you cannot observe is the failure mode where everything looks
+  busy and the work is wrong for days.
 
 ## The corpus (the shelf)
 
@@ -126,11 +127,17 @@ rotting. Two shelves, plus the steward subsystem.
   the three isolation layers and the accepted skip-perms OS-blast.
 - **`lane-autonomy-future.md`** — deferred ideas for lanes that run further on their
   own; a parking lot, not a plan.
-- **`perception-layer.md`** — design (2026-07-25, unbuilt): the three pieces that make
-  Fleet observable to itself — a deterministic `done-looking` predicate, auto-③ on it,
-  the review persisted onto the outcome row, the ledger rendered as a feed. Why the
-  order is c → b → a, and the staleness rule that keeps a persisted review honest.
-  The precondition capability (c) is gated on.
+- **`perception-layer.md`** — the three pieces that make Fleet observable to itself:
+  a deterministic `done-looking` predicate, auto-③ on it, the review persisted onto
+  the outcome row, the ledger rendered as a feed. Why the order is c → b → a, and the
+  staleness rule that keeps a persisted review honest. The precondition capability (c)
+  is gated on. **Status: the write side (c + b) is built (`600d401`); the feed (a) is
+  not** — see `knowledge-layers.md` §5 for what that means in practice.
+- **`knowledge-layers.md`** — assessment (2026-07-25): the three places a lane looks
+  things up — the shelf, the brief, outcome memory — measured against each layer's own
+  stated bar, with the gaps ranked and code-cited. Why no fourth mechanism (and no
+  service) is the answer, and why the layers' failures form a loop that perception
+  closes. Read it before proposing a new knowledge store.
 - **`merge-review-autonomy.md`** — verification-first land pipeline: the no-build-no-test
   gap, deterministic verify in the verdict, git-note provenance at land, the resolver
   report as briefing; human lander stays. Spec for lanes V1-V3.
@@ -146,9 +153,19 @@ rotting. Two shelves, plus the steward subsystem.
 - **`automation-frontiers.md`** — speculative next levers, pressure-tested and
   dependency-ordered: a backlog to prune with evidence, not a plan to extend.
 
-**Design notes:**
-- **`right-tab-agents.md`** — the board's agentic surfaces: inventory and the open
-  advisory-vs-acts axis.
+**Not docs, but part of the shelf — a lane looking for precedent should find these:**
+- **`briefs/`** — the *filled* lane briefs, tracked (so they never dirty a worktree,
+  `tailored-context.md` §6). The worked examples behind `lane-brief-template.md`: read
+  the closest one before writing a new brief.
+- **`docs/proposals/`** — proposals and study passes that fed the backlog (dream-mode
+  corpus, learning-engine v1 + next steps, mechanism deep-dive, the stack/land program
+  board). Check here before proposing; the reasoning lives in these, the register only
+  points.
+
+*(A "right-tab-agents" design-note entry stood here until 2026-07-25 — that file has never
+existed. Every pointer in this index must resolve to a file; that is the cheapest check that
+keeps the shelf honest, so this tombstone deliberately writes no filename with an extension —
+a check that trips over its own gravestone is one people learn to ignore.)*
 
 ## The bar
 

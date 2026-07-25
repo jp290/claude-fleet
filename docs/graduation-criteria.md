@@ -80,6 +80,9 @@ of intent*, not a criterion change; no threshold moves). Three honesty notes:
 
 ## Judge fire-drills (norm, added 2026-07-25)
 
+*Canonical home for the procedure and each judge's living calibration state:
+`judge-calibration.md`. The dated drill entries below stay in this log unchanged.*
+
 **No judging instance gets even display-trust before a seeded-defect test.** Rationale: after
 7 lands, auto-③ has answered `covered` 7/7 times — a reviewer that always passes has unknown
 sensitivity, and its column carries no information until a planted defect proves it can fire.

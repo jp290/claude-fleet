@@ -26,7 +26,7 @@ curl -s -H "Authorization: Bearer $(python3 -c "import json;print(json.load(open
   http://100.64.0.1:8790/api/steward/sessions | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['deployGap'], d.get('bundleStale'))"
 ```
 
-At 15:50 this read `rows 19 | K1 12/20 | clean 11/10 | undos 0 | K2 1/25`. **`deployGap` is
+At 16:20 this read `rows 20 | K1 13/20 | clean 12/10 | undos 0 | K2 1/25` — recompute, do not quote. **`deployGap` is
 NESTED**; `codeBehind:false` with `behindCount>0` = docs-only drift, no deploy needed.
 
 ## 2. The reframe — read this before choosing what to build
@@ -62,16 +62,20 @@ Docs landed: `adversarial-2026-07-25.md` (**the index — start there**), `gate-
 `ungoverned-artifacts.md`, `trust-perimeter.md`, `compiler-program.md`, the criteria amendment,
 the `rundgang.md` scheduling amendment. All are now listed in `docs/README.md`.
 
-## 4. In flight
+## 4. In flight — nothing. Session closed clean.
 
-- **Lane `verify-tristate` (slot 2)** — the highest-severity finding: `watchdog.sh:49` opens with
-  `[ -f fleet-e2e.ts ] || { …; exit 0; }` while `runVerify` records `ok: code===0`, so a lane
-  that moves that file records a **green gate that ran nothing**. Briefed to make a skip
-  structurally unable to read as a pass, to decide deliberately what that implies for non-fleet
-  repos (the guard exists so they can still land), and to carry the `graduation-criteria.md`
-  amendment in the same lane. May need an owner `launchctl kickstart` — it was told to say so,
-  never to run it.
-- `⚙ steward` idle; its `CLAUDE.md` is a spawn-time snapshot from 07-24, **9 lines stale**.
+**`verify-tristate` LANDED** (`c48c344` + `e0e69ef`, ledger row 20) and is deployed
+(srv `e0e69ef`, health 200, bundles rebuilt). The highest-severity finding is closed: verify is
+now **four-valued** — `verify` absent = no command configured (still auto-lands, *unconfigured ≠
+skipped*), `ok:null` = the command declined to verify (**never** auto-lands), `false`/`true` =
+actually ran. Recognised via a reserved `exit 42` **and** the legacy `verify skipped:` marker,
+so the hole closed at the srv restart rather than waiting on `launchctl kickstart`.
+Evidence: 720 PASS on all three suites plus a red-at-HEAD proof with 9 relevant failures.
+
+**Owner step still open (optional):** `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog`
+activates the `exit 42` guard in `watchdog.sh`. Not required — the marker path already covers it.
+
+`⚙ steward` idle; its `CLAUDE.md` is a spawn-time snapshot from 07-24, **9 lines stale**.
 
 ## 5. Owner decision queue (nothing was done unilaterally)
 

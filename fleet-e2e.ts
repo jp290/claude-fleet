@@ -32,6 +32,7 @@ import * as intake from "./e2e/intake";
 import * as restart from "./e2e/restart";
 import * as stewardCore from "./e2e/steward-core";
 import * as stewardOutcomes from "./e2e/steward-outcomes";
+import * as security from "./e2e/security";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
 // hit the live fleet by accident. The isolated wrappers set FLEET_SOCK to their own socket.
@@ -84,6 +85,10 @@ await restart.run(ctx);
 {
   const sc = await stewardCore.run(ctx);
   await stewardOutcomes.run(sc);
+  // --- the security perimeter: the pre-auth route pin, the principal × dangerous-route denial
+  // matrix, credential revocation, and secret hygiene. Runs LAST — it needs every principal the
+  // suite has minted (guest cookie, lane selfToken, steward token) alive at once.
+  await security.run(ctx, sc);
 }
 
 console.log(results.join("\n"));

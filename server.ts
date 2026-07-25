@@ -2494,11 +2494,42 @@ const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
 const VERIFY_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 120_000) | 0);
 const VERIFY_OUT_CAP = 2048; // verify.out is the TAIL of stdout+stderr, byte-capped (~2KB)
+// --- the SKIP contract, and the decision behind it -------------------------------------------
+// A verify command may be repo-guarded: one FLEET_VERIFY_CMD string serves every repo a lane can
+// live in, so it opens by asking "is this the repo I know how to verify?" and declines otherwise
+// (watchdog.sh's `[ -f fleet-e2e.ts ] || …`). Declining used to mean `exit 0` — indistinguishable
+// from "ran the whole gate, everything passed", so a lane in a foreign repo, OR a fleet lane that
+// MOVED fleet-e2e.ts, recorded `verify.ok:true` and auto-landed behind a gate that executed
+// nothing (graduation-criteria.md, 2026-07-25 adversarial pass, item 1).
+//
+// DECISION: a self-declared skip is its own state (`ok: null`) and NEVER auto-lands; "no verify
+// command configured at all" (`verify === undefined`) keeps auto-landing exactly as before.
+// The two look alike — no gate ran either way — but they differ in WHO decided and on what
+// evidence. An unset FLEET_VERIFY_CMD is the OWNER's deployment-wide decision, made once, with
+// full knowledge that this fleet has no deterministic gate; the autonomy contract in that
+// deployment is "clean rebase = land", and breaking it would turn every lane in every such
+// deployment into a stop-and-review for a policy the owner already settled. A skip is decided at
+// RUNTIME by the command itself, from a guess about the tree in front of it — and that guess is
+// precisely what a moved/renamed sentinel file fools. It cannot be trusted to mean "this tree is
+// fine unverified", so it buys no autonomy. The honest cost is real and accepted: until per-repo
+// verify config exists (orchestrator-autonomy.md §6.2), a lane in a foreign repo no longer
+// auto-lands under a repo-guarded command — it stops for one owner click, with "verify skipped"
+// on the row saying why. Both states record `verified: null` in the ledger: neither is evidence.
+const VERIFY_SKIP_EXIT = 42; // the command's way of saying "I verified nothing" — reserved, no real gate uses it
+// Legacy half of the contract: watchdog.sh's VERIFY_CMD string is baked into the srv-spawn line and
+// only reloads on `launchctl kickstart` — a server-only deploy keeps an older, `exit 0`-on-skip
+// string running. Honouring the marker line that string already prints closes the hole at the
+// server deploy instead of at the owner's next kickstart. Only consulted on exit 0 (a non-zero exit
+// is already not a pass), and a false positive can only ever cost an auto-land, never grant one.
+const VERIFY_SKIP_MARK = /^verify skipped:/m;
 // Layer 1 of the three-layer model (§2): the authority is a SERVER-run fact, never an agent's
 // self-assessment. Runs in the lane worktree (cwd), against the rebased tree, after the rebase
 // is git-verified and before any land. No command → undefined (field absent, verdict unverified,
-// never silently green). Non-zero exit OR timeout → ok:false. `mainSha` binds the result to the
-// main the tree was rebased onto — a verdict is void once main moves past it (§6 rule 3).
+// never silently green). Non-zero exit OR timeout → ok:false; a self-declared skip (VERIFY_SKIP_EXIT,
+// or the legacy marker at exit 0) → ok:null, which is neither a pass nor a failure but "no
+// measurement happened" — same vocabulary as LandFacts.verified and CleanReviewShadow.verdict.
+// `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
+// moves past it (§6 rule 3).
 async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verify"]> {
   if (!VERIFY_CMD) return undefined;
   const p = Bun.spawn(["sh", "-c", VERIFY_CMD], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -2513,7 +2544,11 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
       : `${out}${err}`;
     // the failing lines of a build/test log live at its END — keep the tail, not the head
     const tail = combined.length > VERIFY_OUT_CAP ? combined.slice(combined.length - VERIFY_OUT_CAP) : combined;
-    return { cmd: VERIFY_CMD, ok: !timedOut && code === 0, out: tail.trim(), at: Date.now(), mainSha };
+    // the skip test runs over the FULL output, not the byte-capped tail: a command that declines
+    // early and then prints past the cap would otherwise have its own declaration truncated away
+    const skipped = !timedOut && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(combined)));
+    return { cmd: VERIFY_CMD, ok: skipped ? null : !timedOut && code === 0,
+      out: tail.trim(), at: Date.now(), mainSha };
   } finally {
     clearTimeout(timer);
   }
@@ -2526,11 +2561,16 @@ const MERGE_TOOLS = "--permission-mode dontAsk --allowedTools "
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
 interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
   detail: string; landed: boolean; branch: string; at: number; conflicted?: string[];
-  // deterministic verify result against the rebased tree (design note §3). Absent when no
-  // FLEET_VERIFY_CMD is configured — absence means "unverified", never silently green.
+  // deterministic verify result against the rebased tree (design note §3). FOUR states, and the
+  // owner-facing surfaces name all four:
+  //   field absent      — no FLEET_VERIFY_CMD configured ("unverified", never silently green)
+  //   ok: true          — the gate ran and passed
+  //   ok: false         — the gate ran and failed (or timed out)
+  //   ok: null          — the command declined to verify (VERIFY_SKIP_EXIT / marker): SKIPPED.
+  //                       Not a pass, not a failure — nothing was measured. Never auto-lands.
   // `stale` is stamped at confirm-land when main moved past `mainSha` after the verify ran
   // (the verdict is void once main moves past it — marked, not re-run).
-  verify?: { cmd: string; ok: boolean; out: string; at: number; mainSha: string; stale?: boolean };
+  verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
@@ -2823,6 +2863,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // previous run's verdict. Only a kill/shelve, which has no land site to state it, reports
     // whatever verdict is still on record for the slot, exactly as before. Branching on `kind`, not
     // on the value: an explicit null from a land is an ANSWER ("no verify ran"), not a missing fact.
+    // A SKIPPED verify (verify.ok === null) collapses into the same null here, and correctly so:
+    // the ledger's question is "was this verified", and a skip's answer is no. Which flavour of
+    // "no" it was — no command configured, or a command that declined — stays on the merge verdict.
     verified: kind === "landed" ? facts.verified : mergeLast.get(s.id)?.verify?.ok ?? null,
     sessionMs: start !== null ? ts - start : null,
     ownerPrompts,
@@ -3198,8 +3241,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // agent's word: the repair must leave a clean tree still rebased onto main, and only a fresh
         // runVerify decides ok. This never changes what LANDS — the conflict path always stops for
         // human review below — it only improves the verify state that review sees.
+        // `ok === false` explicitly, not `!ok`: a SKIPPED verify (ok:null) reports no failure to
+        // repair, and feeding the resolver "verify skipped: not the fleet repo" as if it were a
+        // build error would spend agent rounds editing a tree against a phantom defect.
         let repairRounds = 0;
-        if (!pre.clean && verify && !verify.ok && MERGE_REPAIR_ROUNDS > 0) {
+        if (!pre.clean && verify && verify.ok === false && MERGE_REPAIR_ROUNDS > 0) {
           for (let round = 1; round <= MERGE_REPAIR_ROUNDS; round++) {
             const rep = await runRepair(cwd, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out });
             if (rep.status === "blocked") break; // agent aborted, tree left pristine — nothing to re-verify
@@ -3226,13 +3272,27 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
           // agent left it, rebased onto main; the owner reviews the diff and confirms the land.
           // verify rides along as advisory context for that review (it never changes the stop).
+          // three-way, because a repair CAN produce a skip: a resolution that moves or deletes the
+          // file the verify command guards on makes the very next run decline. "still failed"
+          // would hide that the gate stopped running at all.
+          const repairVerdict = verify?.ok === true ? "passed" : verify?.ok === null ? "skipped itself" : "still failed";
           const repairNote = repairRounds > 0
-            ? ` verify ${verify?.ok ? "passed" : "still failed"} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
+            ? ` verify ${repairVerdict} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
             : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
             conflicted: pre.conflicted, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
             detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`.slice(0, 600) };
-        } else if (verify && !verify.ok) {
+        } else if (verify && verify.ok === null) {
+          // CLEAN path but verify SKIPPED — the decision site (see VERIFY_SKIP_EXIT above). A
+          // configured gate declined to run on this tree, so this land would be as unverified as a
+          // red one, while LOOKING greener than an unconfigured fleet. The auto-land is downgraded
+          // to the same stop-and-review a red verify gets: the owner keeps full latitude (confirm-
+          // land never hard-blocks), but no tree reaches main unattended behind a gate that ran
+          // nothing. A fleet with NO verify command at all is untouched — `verify === undefined`
+          // never reaches here, and that deployment's auto-land is the owner's standing decision.
+          res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
+            detail: `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`.slice(0, 600) };
+        } else if (verify && verify.ok === false) {
           // CLEAN path but verify RED: today this would auto-land, but the rebased tree does
           // NOT pass verify — landing it lands broken code. Consciously downgrade the auto-land
           // to a "resolved"-style stop-and-review verdict (design note §1): no ff, no land. The
@@ -3243,7 +3303,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             detail: `clean rebase, but verify failed (${verify.cmd}) — not auto-landed; review the output, then land if intended.`.slice(0, 600) };
         } else {
           // CLEAN path, verify green or unconfigured: git rebased with zero conflicts and verification
-          // passed. This is the ONLY unattended land. Off by default it auto-lands (inner else). When the
+          // passed — or no verify command is configured at all, the owner's standing decision (the
+          // SKIPPED case is NOT here: a command that declined to run is caught by the branch above).
+          // This is the ONLY unattended land. Off by default it auto-lands (inner else). When the
           // OPT-IN advisory reviewer is on it looks for a cross-change collision the gate can't see and may
           // ONLY downgrade this to a stop-and-review — `landed: true` is reachable ONLY on an explicit
           // "ok". runCleanReview fails CLOSED, so a "review"/timeout/unparseable/no-base verdict all route

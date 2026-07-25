@@ -127,12 +127,12 @@ rotting. Two shelves, plus the steward subsystem.
   the three isolation layers and the accepted skip-perms OS-blast.
 - **`lane-autonomy-future.md`** — deferred ideas for lanes that run further on their
   own; a parking lot, not a plan.
-- **`perception-layer.md`** — the three pieces that make Fleet observable to itself:
-  a deterministic `done-looking` predicate, auto-③ on it, the review persisted onto
-  the outcome row, the ledger rendered as a feed. Why the order is c → b → a, and the
-  staleness rule that keeps a persisted review honest. The precondition capability (c)
-  is gated on. **Status: the write side (c + b) is built (`600d401`); the feed (a) is
-  not** — see `knowledge-layers.md` §5 for what that means in practice.
+- **`perception-layer.md`** — design (2026-07-25; **write side built in `600d401`**, the feed
+  is not): the three pieces that make Fleet observable to itself — a deterministic
+  `done-looking` predicate, auto-③ on it, the review persisted onto the outcome row, the
+  ledger rendered as a feed. Why the order is c → b → a, and the staleness rule that keeps
+  a persisted review honest. The precondition capability (c) is gated on. See
+  `knowledge-layers.md` §5 for what the half-built state means in practice.
 - **`knowledge-layers.md`** — assessment (2026-07-25): the three places a lane looks
   things up — the shelf, the brief, outcome memory — measured against each layer's own
   stated bar, with the gaps ranked and code-cited. Why no fourth mechanism (and no
@@ -162,10 +162,13 @@ rotting. Two shelves, plus the steward subsystem.
   board). Check here before proposing; the reasoning lives in these, the register only
   points.
 
-*(A "right-tab-agents" design-note entry stood here until 2026-07-25 — that file has never
-existed. Every pointer in this index must resolve to a file; that is the cheapest check that
-keeps the shelf honest, so this tombstone deliberately writes no filename with an extension —
-a check that trips over its own gravestone is one people learn to ignore.)*
+*(A "right-tab-agents" design-note entry — "the board's agentic surfaces: inventory and the open
+advisory-vs-acts axis" — stood here until 2026-07-25 and was cited by `steward.md` too. It was
+never written; `git log --all` over its path is empty. The advisory-never-gates norm it was
+supposed to carry lives in `perception-layer.md` §7, and no inventory of the board's agentic
+surfaces exists anywhere. Every pointer in this index must resolve to a file — the cheapest check
+that keeps the shelf honest — so this tombstone deliberately writes no filename with an
+extension: a check that trips over its own gravestone is one people learn to ignore.)*
 
 ## The bar
 

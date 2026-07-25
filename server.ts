@@ -1154,6 +1154,16 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // ...nor report the prior lane's merge JOB as running:true and 409 the new lane (the old job's finally self-checks identity, so dropping the entry here is safe)
   aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
   gitOpInfo.delete(s.id);
+  // ...nor its GIT facts. killSlot leaves gitInfo behind for tickGit's `if (!s.cwd)` branch to
+  // reap (≤10s later), so a slot recycled inside that window would otherwise serve the PREVIOUS
+  // lane's {dirty:0, ahead:N} for the new one. That is not cosmetic: `done-looking` is computed
+  // from exactly these facts (laneSignalView), killSlot resets lastOutput to 0 so the idle clause
+  // reads "quiet forever", and aliveInfo/gitOpInfo are refreshed BEFORE gitInfo inside a single
+  // tickGit pass — so a brand-new, empty lane could read done-looking and auto-③ would file a
+  // review of a diff that does not exist yet ("no code changes in scope") against it. Dropping
+  // the entry makes the fact UNKNOWN until the tick computes it for this cwd, and an unknown is
+  // never permission to act (lane-signals.ts: null git → not done-looking).
+  gitInfo.delete(s.id);
   detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   // a share must not outlive its session (same invariant killSlot enforces) — recycling

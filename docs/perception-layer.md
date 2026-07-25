@@ -107,6 +107,17 @@ non-lane slots the predicate does not care about.
   retry storm, no terminal event, no state change.
 - **Cost.** ③ runs on a throwaway subscription session (`SUMMARY_MODEL`), so the price is
   latency and attention, not metered tokens. That is what makes firing it unprompted acceptable.
+- **An unknown fact is not permission to fire** (added 2026-07-25, after a real miss). The trigger
+  reads `laneSignalView` — the *cached* `gitInfo`/`aliveInfo`/`gitOpInfo` plus `lastOutput`.
+  `killSlot` used to leave `gitInfo` behind for the next `tickGit` (≤10 s) to reap, so a slot
+  recycled inside that window served the **previous** lane's `{dirty:0, ahead:N}`; `lastOutput`
+  is reset to 0 on kill, so the idle clause read "quiet forever" too. Net effect: a brand-new,
+  empty lane could read `done-looking` and get an auto-③ that reviewed a diff which did not exist
+  yet ("no code changes in scope") — which then surfaced on the outcome row as `superseded`.
+  `openSlot` now drops `gitInfo` alongside `aliveInfo`/`gitOpInfo`, so the fact is *unknown* until
+  the tick computes it for the new cwd, and `laneDoneLooking` already treats unknown as false.
+  The general rule: every cache the predicate reads must be dropped at the identity change, not
+  swept later — a stale fact about a *different* lane is worse than no fact.
 
 ## 5. The review on the outcome row — the staleness rule *(built in `600d401` as the `OutcomeReview` union: `covered` / `superseded` / `inflight` / `none`)*
 

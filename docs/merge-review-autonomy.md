@@ -178,6 +178,10 @@ lanes (A/B/C) land.
   durable fact is that nothing in Fleet creates it.)* So the gate's first step turns on a state nothing
   establishes — its green is **luck-dependent and unexplainable after the fact**, which is worse
   than simply broken. Full adjudication incl. the refuted mechanism: `discrepancy-audit.md` F9.
+  **FIXED 2026-07-25 (`cffa4a5`, deployed same day):** `VERIFY_CMD` now prepends
+  `bun install --frozen-lockfile`, proven in both directions in a fresh never-built worktree
+  (exit 0 clean / exit 1 on a planted type error) and in production — two `node_modules`-less
+  lanes landed `verified: true` through the new gate the same hour.
   Honest scope: `e2e-claude-gate` boots the whole server + drives slots/autos/
   dispatch/model/steward routes, so module-load/boot regressions tsc misses are caught — but it
   does NOT assert the share/guest or audit paths, so it is **total-ENOUGH, not total**. That gap

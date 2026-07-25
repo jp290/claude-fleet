@@ -15,23 +15,34 @@ git log --oneline -4 && tmux -L claudefleet list-sessions -F '#{session_name} #{
 
 | what | commit | state |
 |---|---|---|
-| Perception **write side** — deterministic `done-looking`, auto-③, review-on-row | `600d401` | landed, **NOT yet deployed** |
+| Perception **write side** — deterministic `done-looking`, auto-③, review-on-row | `600d401` | **landed + DEPLOYED** (srv 10:45:02) |
 | `knowledge-layers.md` — the three-layer assessment + L1 rot corrections | `8bd7b98` | landed |
-| Discrepancy audit — 13 findings, 8 doc/config fixes, the arena repair | this lane | lands with this file |
+| Discrepancy audit — 13 findings (7 fixed, 6 documented), the arena repair | `35a91c8` | landed + deployed |
 | CLAUDE.md → Deploy: the auto-③ flag contract | (gitignored) | on disk |
 
-> ### ⚠️ `tmux -L claudefleet kill-session -t srv`
-> The live `srv` has been up since **2026-07-25 00:16:54** and therefore predates `600d401`.
-> **auto-③ and the whole `review` field are inert until it restarts.** Not housekeeping: this is
-> what makes the write side produce its first datum. Ledger row 3 is the proof of cost — it carries
-> **no `review` key at all** because the code that writes it had landed but never loaded.
->
-> **This trap fired three times in two days** (ledger row 2, ledger row 3, and the fast-tier gate
-> believed undeployed for a day). *Landing is not deploying.* Closing it mechanically is
-> `BACKLOG.md` P-4 — which is why P-4 outranks its size.
+**Deploy verified positively, not inferred from a 200.** `srv` restarted 10:45:02; all five occupied
+slots survived; and `GET /api/steward/sessions` now serves a **`doneLooking`** field per slot — a key
+only `600d401` can produce. That is the deterministic proof the new build is live. `FLEET_AUTO_REVIEW_*`
+are absent from the running env, i.e. auto-③ is on its documented defaults (15 s tick / 60 s idle).
 
-After the restart, verify the write side actually runs rather than assuming it: the **next** landed
-lane's row must contain a `review` object (`GET /api/lane-outcomes?limit=2`). Rows 1–3 never will.
+**The ③ path was then smoke-tested against the real `claude`** — the one thing no suite can cover,
+since `e2e-isolated.sh` drives a stand-in. `POST /api/slots/1/review` returned
+`model: claude-sonnet-5[1m]`, **`raw: false`** (the real model answered *in contract*; the prompt
+works with Sonnet 5), and the fallback `scope` for a slot with no lane base. Two conclusions: the
+`[1m]` model string survives the tmux/zsh command line in this path too, and **F5 is not
+hypothetical** — that reply, if persisted at a terminal event, would be stored as
+`{state: …, findings: []}` with its `scope` dropped, i.e. indistinguishable from a real clean review.
+
+> ### The lesson that outlives the restart
+> The live `srv` had been up since 00:16:54 and predated `600d401`, so auto-③ and the whole `review`
+> field were inert while the code sat in `main`. **This trap fired three times in two days** (ledger
+> row 2, ledger row 3, and the fast-tier gate believed undeployed for a day). *Landing is not
+> deploying.* Closing it mechanically is `BACKLOG.md` P-4 — which is why P-4 outranks its size.
+
+**Still open, and it is the first thing to check next session:** no ledger row carries a `review`
+object yet. Rows 1–3 never will (they predate the deploy). **Row 4 — the next lane to reach a
+terminal event — is the first real test of the write side end to end.** If it comes back with
+`review` absent or `state: "none"`, that is a finding, not a deploy accident.
 
 ---
 
@@ -104,11 +115,17 @@ from reality (L1). **Perception is the missing closing edge, not merely a featur
    the ledger riders `repo` and a `filesTouched`-truncated flag, and F6 (the ledger rotates; its only
    reader reads one generation while both sibling readers span).
 4. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
-   "unbuilt" about a symbol `server.ts` defines (`knowledge-layers.md` §7.3). It already has a
-   backlog: slot 9 ran both by hand and reports **four further "unbuilt" hits** (steward-nudge, the
-   stuck-looping detector in overview/roadmap), deliberately left because it had not read those
-   docs. Rides along with any docs-touching lane; the only item that prevents its own class of
-   failure from recurring.
+   "unbuilt" about a symbol `server.ts` defines (`knowledge-layers.md` §7.3). Rides along with any
+   docs-touching lane; the only item that prevents its own class of failure from recurring.
+   **Verified first-hand rather than taken from the report** (slot 9 reported "four further hits"):
+   the grep finds **seven** occurrences outside the two audit docs, of which the genuine ones are
+   `steward-nudge` (README:107, steward-autonomy:143 — really unbuilt), the `stuck-looping` detector
+   (steward-overview:110, steward-roadmap:55) and the per-worker `model` opt (synergy-findings:139).
+   **And one is a false positive that constrains the design:** `merge-review-autonomy.md:23` reads
+   *"The human reviews an **unbuilt diff**"* — the word in a different sense entirely. So the check
+   **must not be a bare grep for the word**; it has to pair the word with a claim about a named
+   symbol, or it will train its readers to ignore it — the same failure mode the tombstone in
+   `docs/README.md` was deliberately worded around.
 5. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
    listed dead end ("promoting a prompt edit as an improvement while no eval set exists").
 6. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
@@ -126,6 +143,20 @@ slots look helped" as *the null any future nudge must beat*. It is a per-boot ar
 session: **6.7 % (1/15)** vs 25 % (3/12) — **Fisher exact p = 0.294**, indistinguishable. Detecting
 a 15→30 pp lift needs **≈121 samples per arm**; the ring holds 50 and empties on every restart, and
 the nudged arm stands at **0**. Never set a done-criterion of "nudged rate beats `baselineRate`".
+
+**And then this session proved it on itself.** The `srv` restart above — a routine, necessary deploy —
+wiped the ring 40 minutes after the 6.7 % reading was taken:
+
+```
+$ curl -s .../api/steward/outcomes | …baselineRate
+{"rate":null,"samples":0,"helped":0}
+```
+
+So the honest status of that null is: **there is none, and every deploy destroys any that
+accumulates.** Both the 25 % and the 6.7 % should be read as anecdotes about a single boot window,
+never as a property of the system. If a control arm is ever wanted, `baselineSamples` has to be
+persisted first — and that is a design decision the code currently, and deliberately, declines
+("advisory number — not worth the persist/restore surface").
 
 ---
 
@@ -202,16 +233,25 @@ Statements about *working method*, not about Fleet. Each is a worked example ins
 - **The land gate's first step is luck-dependent** (`discrepancy-audit.md` F9). `bunx tsc
   --types bun` needs `node_modules`; `createWorktree` copies only
   `.env`/`CLAUDE.md`/`.claude/settings.local.json`; the resolution walk does not rescue it
-  (`~/node_modules` holds 4 packages, no `bun-types`); 3 of 5 worktrees have none. Row 3 proves it
-  *can* pass, but not why — and an unexplainable green is not a gate.
+  (`~/node_modules` holds 4 packages, no `bun-types`). Row 3 proves it *can* pass, but not why — and
+  an unexplainable green is not a gate. *(The "3 of 5 worktrees have none" ratio first recorded here
+  was measured over directories under `claude-fleet.worktrees/`, not over `git worktree list`, and it
+  moves with every land anyway. The durable fact is the one that matters: **nothing in Fleet creates
+  `node_modules` in a lane** — no ratio needed.)*
 
 ---
 
 ## 7. Outside the repo — reported, not touched
 
 Shared reality per CLAUDE.md: **3 leaked `bun server.ts` from prior sessions** (pids 51871 Jul 18,
-57507 Jul 21, 23907 Jul 23 + its tmux server 23906) and **216 stale socket files** in
-`/private/tmp/tmux-501/`. Owner's call; cleanup command on request.
+57507 Jul 21, 23907 Jul 23 + its tmux server 23906 — all four re-confirmed alive at 10:50) and the
+stale socket files in `/private/tmp/tmux-501/`.
+
+**Record the socket count as a rate, not a snapshot** — it was 193 in session 3, 216 earlier today,
+**235 after this session's three suite runs**. Each isolated e2e run leaks one socket file; the
+`trap … kill-server EXIT` in the suites kills the server but leaves the socket inode. So the number
+in any handoff is stale the moment a suite runs, and quoting it as a state is a D3 error against this
+document's own rule. Owner's call to clean; a command on request.
 
 `FLEET_CLEAN_REVIEW` stays **off**, auto-dispatch stays **off** — both are autonomy expansions and
 owner decisions.
@@ -220,10 +260,16 @@ owner decisions.
 
 ## 8. A fresh session's first five minutes
 
-1. Run the state command in §1. If `srv` still predates the newest code commit, **that is the first
-   task** — nothing measured before it means anything.
-2. `docs/README.md` for the map, then `docs/knowledge-layers.md` §7 for the ordering and
+1. Run the state command in §1. **If `srv` predates the newest code commit, that is the first task**
+   — nothing measured before it means anything. As of this writing it does not (srv 10:45:02 carries
+   `35a91c8`), but the gap reopens with every land.
+2. **`wc -l lane-outcomes.jsonl` and read the last row's `review` key.** If a row has appeared since
+   this handoff and carries a `review` object, the write side has run in production for the first
+   time — read it and judge whether `state` matches reality. If a row appeared *without* the key,
+   something is wrong with the deploy, not with the design.
+3. `docs/README.md` for the map, then `docs/knowledge-layers.md` §7 for the ordering and
    `docs/discrepancy-audit.md` for the proof discipline. Those three make this file mostly
    redundant, which is the intent.
-3. Check whether any ledger row carries a `review` object yet. That single fact says whether the
-   perception write side has ever run in production.
+4. Before writing anything into `docs/`, check for a second producer: `git worktree list` plus
+   `git status` in the main checkout. Two producers on `docs/` at once is what cost this session a
+   three-way conflict resolution (§6).

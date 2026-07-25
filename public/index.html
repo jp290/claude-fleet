@@ -365,6 +365,50 @@
   .auditrow.cat-repo      { border-left-color: #bb9af7; } .auditrow.cat-repo .aud-kind      { color: #bb9af7; }
   .auditrow.cat-other     { border-left-color: #666; }    .auditrow.cat-other .aud-kind     { color: #888; }
 
+  /* outcome feed — the lane-outcome ledger rendered (docs/perception-layer.md §6).
+     Reuses the audit overlay's control row (.auditctl) and the board's finding rows (.bfind*)
+     rather than growing a second vocabulary for the same two things. */
+  #outcomepanel { max-width: 820px; width: 94vw; }
+  #outcomelist { flex: 1; min-height: 90px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .octally { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 10.5px;
+    color: #888; margin-bottom: 6px; }
+  .occhip { flex: none; font-size: 10.5px; color: #aaa; background: #1c1c1c; border: 1px solid #2e2e2e;
+    border-radius: 6px; padding: 1px 6px; }
+  .occhip.ok { color: #9ece6a; border-color: #2c3a24; }
+  .occhip.warn { color: #e0af68; border-color: #3a3020; }
+  .occhip.dim { color: #777; }
+  .occhip.rel-covered { color: #9ece6a; } .occhip.rel-superseded { color: #e0af68; }
+  .occhip.rel-inflight { color: #7dcfff; } .occhip.rel-none { color: #888; }
+  .occhip.rel-unmeasured { color: #bb9af7; }
+  .ocrow { padding: 8px 10px; border-radius: 8px; background: #1a1a1a; border: 1px solid #242424;
+    border-left: 3px solid #666; font-size: 12px; }
+  .ocrow.dis-landed { border-left-color: #9ece6a; }
+  .ocrow.dis-reverted { border-left-color: #f7768e; }
+  .ocrow.dis-shelved { border-left-color: #7aa2f7; }
+  .ocrow.dis-killed-dirty { border-left-color: #e0af68; }
+  .ocrow.dis-killed-empty { border-left-color: #555; }
+  .ochd { display: flex; gap: 8px; align-items: baseline; }
+  .ocdispo { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: #ccc; }
+  .ocbranch { flex: 1; min-width: 0; color: #7dcfff; font-size: 11.5px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .ocfacts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+  .ocrev { margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: #151515;
+    border-left: 2px solid #3a3a44; }
+  .ocrev.rel-covered { border-left-color: #9ece6a; }
+  .ocrev.rel-superseded { border-left-color: #e0af68; }
+  .ocrev.rel-inflight { border-left-color: #7dcfff; }
+  .ocrev.rel-unmeasured { border-left-color: #bb9af7; }
+  .ocrel { font-size: 11px; color: #ccc; }
+  .ocsub { font-size: 10.5px; color: #888; margin-top: 5px; }
+  .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }
+  .ocwarn { font-size: 11px; color: #e0af68; line-height: 1.45; margin-top: 4px; }
+  .ocraw { font-size: 10.5px; color: #999; background: #101010; border: 1px solid #262626;
+    border-radius: 6px; padding: 5px 7px; margin-top: 4px; white-space: pre-wrap;
+    word-break: break-word; max-height: 140px; overflow: auto; }
+  .ocmeta { font-size: 10.5px; color: #777; margin-top: 4px; word-break: break-word; }
+  .ochint { font-size: 10.5px; color: #666; line-height: 1.5; margin-top: 6px; }
+
   #sharepanel { gap: 12px; }
   .shrline { display: flex; gap: 8px; align-items: center; font-size: 12px; }
   .shrline .k { flex: none; width: 70px; color: #888; }
@@ -720,6 +764,7 @@
       </span>
       <button id="queuebtn" title="task queue">🗒</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
+      <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
     </div>
     <div id="slots"></div>
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
@@ -810,6 +855,10 @@
 
 <div id="audit" class="overlay">
   <div class="panel" id="auditpanel"></div>
+</div>
+
+<div id="outcomes" class="overlay">
+  <div class="panel" id="outcomepanel"></div>
 </div>
 
 <div id="gate" class="overlay">

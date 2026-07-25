@@ -1751,6 +1751,7 @@ window.addEventListener("keydown", (e) => {
     if (diffdlg.style.display === "flex") closeDiffDlg();
     if (queuedlg.style.display === "flex") closeQueueDlg();
     if (audit.style.display === "flex") closeAudit();
+    if (outcomes.style.display === "flex") closeOutcomes();
     setDrawer(false);
   }
 });
@@ -2732,6 +2733,231 @@ async function openAudit() {
 function closeAudit() { audit.style.display = "none"; }
 audit.addEventListener("click", (e) => { if (e.target === audit) closeAudit(); });
 $("auditbtn").onclick = () => void openAudit();
+
+// --- outcome feed (docs/perception-layer.md §6): the lane-outcome ledger rendered — what landed,
+// how, and what ③ said about it. A read-only lens over GET /api/lane-outcomes, same access model as
+// the audit trail above (owner-token gated, structurally 404 on share hosts).
+// The point is MEASUREMENT, not UI: `knowledge-layers.md` §5 gap 3 argues a prompt land structurally
+// beats auto-③ (60s idle + ≤15s tick + ≤180s agent), so the modal row may permanently carry no
+// review — and nothing reveals that without a reader. Hence the coverage tally in the header.
+// Every honesty constraint lives HERE, in the renderer, because the ledger is append-only and its
+// older rows cannot be repaired:
+//   · a row with NO `review` key (rows 1–3, written before the field existed) is "not measured" —
+//     never "no findings", never clean. A missing measurement and a measured zero are not the same
+//     fact, and only the renderer still knows which one it has.
+//   · `raw: true` means the reviewer's answer did not PARSE. Its empty findings say nothing about
+//     the code, so the row renders as not-a-review. Rows written before `raw` was persisted
+//     (discrepancy-audit F5) cannot be told apart retroactively → rendered as ambiguous, not resolved.
+//   · zero findings on a parsed review is "the diff-bounded reviewer found nothing in the diff it was
+//     given", with its scope — ③ never saw code outside that diff (DP1 proved defects live there).
+//   · `verified: false` also fires when the gate could not RUN at all (F9: a lane without installed
+//     deps), so the wording is "verify red", never "unsound".
+//   · `sessionMs` is the lane's LIFETIME, not work time — labelled as such, never as effort.
+//   · `↩ undo` is one-step (only the newest land is undoable), so it is deliberately NOT offered
+//     per row; the board's single undo button stays the only affordance.
+const outcomes = $("outcomes"), outcomepanel = $("outcomepanel");
+// Every field optional: this parses ROWS ON DISK, written by older server builds. The renderer
+// distinguishes absent from present-and-empty everywhere it matters, so nothing may be defaulted in.
+interface OutcomeReviewRow { state?: string; at?: number; model?: string; head?: string | null;
+  dirty?: number; patchId?: string | null; landedPatchId?: string | null;
+  scope?: string; notes?: string; raw?: boolean; findings?: ReviewFinding[] }
+interface OutcomeRow { ts: number; branch?: string | null; base?: string | null; headSha?: string | null;
+  disposition?: string; model?: string | null; briefHash?: string | null; shortstat?: string;
+  commitCount?: number; filesTouched?: string[]; e2eTouched?: boolean; verified?: boolean | null;
+  sessionMs?: number | null; ownerPrompts?: number; resolvedConflict?: boolean; repairRounds?: number;
+  confirmedByHuman?: boolean; review?: OutcomeReviewRow }
+
+// the coverage relation as the RENDERER sees it — the server's four states plus the one the server
+// cannot express: a row from before the field existed. "unmeasured" is not a server state and must
+// never be collapsed into "none" ("we know nothing covered this" is a measurement; this is not).
+type RvRel = "covered" | "superseded" | "inflight" | "none" | "unmeasured";
+function reviewRel(o: OutcomeRow): RvRel {
+  const s = o.review?.state;
+  return s === "covered" || s === "superseded" || s === "inflight" || s === "none" ? s : "unmeasured";
+}
+const REL_WORD: Record<RvRel, string> = {
+  covered: "③ reviewed this exact content",
+  superseded: "③ reviewed different content — not coverage of what ended up here",
+  inflight: "③ was still running when the lane ended — not captured",
+  none: "no ③ review on record for this lane",
+  unmeasured: "review not measured — this row predates the review field",
+};
+const DISPO_WORD: Record<string, string> = {
+  landed: "landed", reverted: "reverted", shelved: "shelved",
+  "killed-dirty": "killed with work", "killed-empty": "killed empty",
+};
+
+function fmtDur(ms: number): string {
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h}h ${min % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+function chip(text: string, cls = "", title = ""): HTMLElement {
+  const c = el("span", `occhip${cls ? ` ${cls}` : ""}`, text);
+  if (title) c.title = title;
+  return c;
+}
+
+// what ③ actually said, under the constraints above. Returns the body rows for one outcome.
+function reviewBody(r: OutcomeReviewRow): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const findings = r.findings ?? [];
+  if (r.raw === true) {
+    out.push(el("div", "ocwarn", "the reviewer's answer did not parse — this is NOT a review."
+      + " Its empty findings say nothing about the code; the raw answer is below."));
+    if (r.notes) out.push(el("div", "ocraw", r.notes));
+    return out;
+  }
+  if (r.raw === undefined)
+    out.push(el("div", "ocwarn", "written before scope/notes/raw were persisted — whether the"
+      + " reviewer's answer parsed at all cannot be told from this row."));
+  if (!findings.length)
+    out.push(el("div", "ocnote", r.raw === false
+      ? "the diff-bounded reviewer found nothing in the diff it was given — not a clean bill of"
+        + " health: it never saw code outside that diff."
+      : "zero findings here are ambiguous, not clean."));
+  else {
+    out.push(el("div", "ocsub", `findings — ${findings.length}, worst first`));
+    for (const f of findings) {
+      const row = el("div", `bfind ${f.impact}`);
+      const hd = el("div", "bfindhd");
+      hd.appendChild(el("span", "bfindimp", f.impact));
+      hd.appendChild(el("span", "bfindt", f.title || "(untitled)"));
+      row.appendChild(hd);
+      row.appendChild(el("div", "bfindcite", `${f.file}:${f.line} · ${f.basis}`));
+      if (f.detail) row.appendChild(el("div", "bfinddet", f.detail));
+      if (f.cost) row.appendChild(el("div", "bfindcost", `cost: ${f.cost}`));
+      out.push(row);
+    }
+  }
+  if (r.scope) out.push(el("div", "ocmeta", `scope: ${r.scope}`));
+  if (r.notes && r.raw === false) out.push(el("div", "ocmeta", `not checked: ${r.notes}`));
+  if (r.model && r.at) out.push(el("div", "ocmeta", `${r.model} · ${fmtTs(r.at)}`));
+  return out;
+}
+
+let outcomeData: OutcomeRow[] = [];
+let outcomeTotal = 0;
+let outcomeDispo: string | "all" = "all";
+let outcomeUncovered = false; // the gap-3 question: which rows landed without ③ having covered them
+
+function renderOutcomes() {
+  outcomepanel.replaceChildren(el("h2", "", "Outcome feed — what landed, and what review said"));
+  const ctl = el("div", "auditctl");
+  const dispos = [...new Set(outcomeData.map((o) => o.disposition).filter((d): d is string => !!d))].sort();
+  const sel = el("select", "") as HTMLSelectElement;
+  const optAll = el("option", "", "all outcomes") as HTMLOptionElement;
+  optAll.value = "all";
+  sel.appendChild(optAll);
+  for (const d of dispos) {
+    const o = el("option", "", DISPO_WORD[d] ?? d) as HTMLOptionElement;
+    o.value = d;
+    sel.appendChild(o);
+  }
+  sel.value = outcomeDispo;
+  sel.onchange = () => { outcomeDispo = sel.value; renderOutcomes(); };
+  ctl.appendChild(sel);
+  const unc = el("button", `shrbtn${outcomeUncovered ? " active" : ""}`, "not covered by ③") as HTMLButtonElement;
+  unc.title = "rows whose review did not describe what ended up here — superseded / inflight / none / not measured";
+  unc.onclick = () => { outcomeUncovered = !outcomeUncovered; renderOutcomes(); };
+  ctl.appendChild(unc);
+  const capped = outcomeTotal > outcomeData.length;
+  ctl.appendChild(el("span", "auditcount",
+    capped ? `latest ${outcomeData.length} of ${outcomeTotal} rows` : `${outcomeData.length} rows`));
+  outcomepanel.appendChild(ctl);
+
+  // the coverage tally — the whole reason the feed exists. Counted over ALL loaded rows, not the
+  // filtered view, so narrowing the list never changes the number the tally reports.
+  const tally = { covered: 0, superseded: 0, inflight: 0, none: 0, unmeasured: 0 };
+  for (const o of outcomeData) tally[reviewRel(o)]++;
+  const tal = el("div", "octally");
+  tal.appendChild(el("span", "", "③ coverage:"));
+  for (const k of ["covered", "superseded", "inflight", "none", "unmeasured"] as RvRel[])
+    tal.appendChild(chip(`${tally[k]} ${k}`, `rel-${k}`, REL_WORD[k]));
+  outcomepanel.appendChild(tal);
+
+  const rows = outcomeData.filter((o) =>
+    (outcomeDispo === "all" || o.disposition === outcomeDispo)
+    && (!outcomeUncovered || reviewRel(o) !== "covered"));
+  const list = el("div", "");
+  list.id = "outcomelist";
+  if (!rows.length) list.appendChild(el("div", "histnone", "no outcomes match this filter"));
+  for (const o of rows) {
+    const rel = reviewRel(o);
+    const dispo = o.disposition ?? "unknown";
+    const row = el("div", `ocrow dis-${dispo}`);
+    const hd = el("div", "ochd");
+    hd.appendChild(el("span", "aud-ts", fmtTs(o.ts)));
+    hd.appendChild(el("span", "ocdispo", DISPO_WORD[dispo] ?? dispo));
+    hd.appendChild(el("span", "ocbranch", (o.branch ?? "(branch not recorded)").replace(/^fleet\//, "")));
+    list.appendChild(row);
+    row.appendChild(hd);
+
+    const facts = el("div", "ocfacts");
+    // a footprint of exactly nothing is NOT rendered as "0 files changed": rows 1–2 of the ledger
+    // are rows of zeros the recorder never measured, and an owner ⏏ land of already-integrated work
+    // is legitimately empty. The row cannot tell those apart, so neither does the wording.
+    const noFootprint = !o.shortstat && !o.commitCount && !(o.filesTouched?.length);
+    if (noFootprint) {
+      facts.appendChild(chip("footprint not recorded", "warn",
+        "no commits, files or shortstat on this row — either nothing was there to land"
+        + " (an already-integrated ⏏ land) or the recorder never measured it. The row cannot say which."));
+    } else {
+      if (o.shortstat) facts.appendChild(chip(o.shortstat));
+      facts.appendChild(chip(`${o.commitCount ?? 0} commit${o.commitCount === 1 ? "" : "s"}`));
+      facts.appendChild(chip(`${o.filesTouched?.length ?? 0} file${o.filesTouched?.length === 1 ? "" : "s"}`,
+        "", (o.filesTouched ?? []).join("\n")));
+      if (o.e2eTouched) facts.appendChild(chip("touched the safety net", "ok"));
+    }
+    facts.appendChild(o.verified === true ? chip("verify green", "ok")
+      : o.verified === false ? chip("verify red", "warn",
+          "the merge verify did not pass. It also reports red when the gate could not RUN"
+          + " at all (a lane with no installed deps) — this is not by itself a claim the change is unsound.")
+      : chip("no verify ran", "dim", "no deterministic verify verdict is on record for this outcome"));
+    if (dispo === "landed") {
+      facts.appendChild(o.confirmedByHuman ? chip("owner-confirmed land") : chip("auto-landed clean+green"));
+      if (o.resolvedConflict) facts.appendChild(chip("agent resolved conflicts", "warn"));
+      if (o.repairRounds) facts.appendChild(chip(`${o.repairRounds} repair round${o.repairRounds === 1 ? "" : "s"}`, "warn"));
+    }
+    facts.appendChild(typeof o.sessionMs === "number"
+      ? chip(`lane lifetime ${fmtDur(o.sessionMs)}`, "dim",
+          "wall-clock from session start to this terminal event — NOT time spent working, and not an effort measure")
+      : chip("lifetime not recorded", "dim"));
+    facts.appendChild(chip(`${o.ownerPrompts ?? 0} owner prompt${o.ownerPrompts === 1 ? "" : "s"}`, "dim"));
+    facts.appendChild(o.model ? chip(o.model, "dim") : chip("model not pinned", "dim"));
+    row.appendChild(facts);
+
+    const rv = el("div", `ocrev rel-${rel}`);
+    rv.appendChild(el("div", "ocrel", REL_WORD[rel]));
+    if ((rel === "covered" || rel === "superseded") && o.review)
+      for (const n of reviewBody(o.review)) rv.appendChild(n);
+    row.appendChild(rv);
+  }
+  outcomepanel.appendChild(list);
+  outcomepanel.appendChild(el("div", "ochint",
+    "↩ undo is one step — only the newest land can be reverted, from the board. It is deliberately"
+    + " not offered per row here: rendering it on every row would imply a capability the land spine"
+    + " does not have."));
+}
+
+async function openOutcomes() {
+  setDrawer(false);
+  outcomeDispo = "all";
+  outcomeUncovered = false;
+  outcomeData = [];
+  const res = await api("/api/lane-outcomes?limit=1000");
+  if (res.ok) {
+    const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number };
+    outcomeData = (data.outcomes ?? []).filter((o): o is OutcomeRow => typeof o?.ts === "number");
+    outcomeTotal = typeof data.total === "number" ? data.total : outcomeData.length;
+  }
+  renderOutcomes(); // server already returns newest-first; we preserve that order
+  outcomes.style.display = "flex";
+}
+function closeOutcomes() { outcomes.style.display = "none"; }
+outcomes.addEventListener("click", (e) => { if (e.target === outcomes) closeOutcomes(); });
+$("outcomebtn").onclick = () => void openOutcomes();
 
 function copyLine(label: string, value: string): HTMLElement {
   const row = el("div", "shrline");

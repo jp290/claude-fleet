@@ -393,6 +393,20 @@
   .ocbranch { flex: 1; min-width: 0; color: #7dcfff; font-size: 11.5px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
   .ocfacts { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+  /* owner disposition rail — the label strip under an outcome row and under a ③ review. The
+     unlabeled state is deliberately DIM and wordy ("unlabeled"), never a neutral-looking blank:
+     absence of a label must read as missing evidence, not as approval. */
+  .ocdispo-row { display: flex; gap: 6px; align-items: center; margin-top: 7px; font-size: 10.5px; }
+  .ocdispo-state { color: #777; }
+  .ocdispo-state.is-accepted { color: #9ece6a; }
+  .ocdispo-state.is-edited { color: #e0af68; }
+  .ocdispo-state.is-ignored { color: #888; }
+  .ocdispo-state.is-wrong { color: #f7768e; }
+  .ocdispo-btn { font: inherit; font-size: 10.5px; color: #aaa; background: #1c1c1c;
+    border: 1px solid #2e2e2e; border-radius: 6px; padding: 1px 8px; cursor: pointer; }
+  .ocdispo-btn:hover { border-color: #4a4a4a; color: #ddd; }
+  .ocdispo-btn.active { border-color: #7aa2f7; color: #7aa2f7; }
+  .ocdispo-btn:disabled { opacity: 0.5; cursor: default; }
   .ocrev { margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: #151515;
     border-left: 2px solid #3a3a44; }
   .ocrev.rel-covered { border-left-color: #9ece6a; }

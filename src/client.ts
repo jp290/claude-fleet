@@ -622,7 +622,10 @@ const sumBusy = new Set<number>();
 interface ReviewFinding { title: string; file: string; line: number | null;
   impact: "high" | "medium" | "low"; cost: string; basis: "verified" | "inferred"; detail: string }
 interface ReviewInfo { findings?: ReviewFinding[]; scope?: string; notes?: string;
-  model?: string; at?: number; head?: string | null; dirty?: number; error?: string }
+  model?: string; at?: number; head?: string | null; dirty?: number; error?: string;
+  // content identity of the reviewed diff — the disposition rail's join key for a review label
+  // (null = not computable, and then the review is deliberately not labelable)
+  patchId?: string | null }
 const revCache = new Map<number, ReviewInfo>();
 const revBusy = new Set<number>();
 // lane map + ⏫ merge agent (async job on the server; the board's 3s poll carries state)
@@ -1501,6 +1504,27 @@ async function renderBoard() {
         if (rev.scope) asec.appendChild(el("div", "bsummeta", rev.scope));
         if (rev.model && rev.at)
           asec.appendChild(el("div", "bsummeta", `${rev.model} · ${new Date(rev.at).toLocaleTimeString()}`));
+        // was this review worth anything? One tap, owner-only, joined by patchId (content identity,
+        // so the label survives the land-path rebase). A review with no patchId gets no buttons —
+        // there is no honest key to file the label under, and a guessed one is worse than none.
+        if (rev.patchId) {
+          const rref = rev.patchId;
+          const rcur = dispoOf("review3", rref);
+          const rlab = el("div", "ocdispo-row");
+          rlab.appendChild(el("span", "ocdispo-state" + (rcur ? ` is-${rcur}` : " is-none"),
+            rcur ? `dein Urteil: ${DISPO_WORD_UI[rcur]}` : "unbewertet"));
+          for (const [verdict, word] of [["accepted", "nützlich"], ["wrong", "falsch"]] as [DispoVerdict, string][]) {
+            const b = el("button", `ocdispo-btn${rcur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
+            b.title = `label this review — records an owner \`${verdict}\` disposition on the rail`;
+            b.onclick = async () => {
+              b.disabled = true;
+              if (await labelDisposition("review3", rref, verdict)) void renderBoard();
+              else b.disabled = false;
+            };
+            rlab.appendChild(b);
+          }
+          asec.appendChild(rlab);
+        }
       } else if (rev?.error) {
         asec.appendChild(el("div", "bsumerr", rev.error));
       }
@@ -2734,6 +2758,47 @@ function closeAudit() { audit.style.display = "none"; }
 audit.addEventListener("click", (e) => { if (e.target === audit) closeAudit(); });
 $("auditbtn").onclick = () => void openAudit();
 
+// --- the owner disposition rail: the one label channel for every advisory worker output
+// (server.ts, grep `DISPOSITION rail`). The rule the UI must not break is that ABSENCE IS NOT
+// APPROVAL — an unlabeled ref renders as unlabeled, never as accepted, so no view may default a
+// missing label into a verdict. The map is a read cache of the append-only rail: newest wins,
+// which is exactly "the owner changed their mind" and needs no server-side mutation.
+type DispoVerdict = "accepted" | "edited" | "ignored" | "wrong";
+interface DispoRow { at?: number; worker?: string; ref?: string; disposition?: string }
+const dispoByRef = new Map<string, DispoVerdict>();
+const DISPO_VERDICTS: DispoVerdict[] = ["accepted", "edited", "ignored", "wrong"];
+// the join keys, mirroring the server's documented ref shapes. `land` is branch@ts because ts is
+// the only field EVERY outcome row carries; a row whose branch was never recorded still joins.
+const landRef = (o: { branch?: string | null; ts: number }) => `${o.branch ?? "(branch not recorded)"}@${o.ts}`;
+const dispoKey = (worker: string, ref: string) => `${worker} ${ref}`;
+function dispoOf(worker: string, ref: string | null | undefined): DispoVerdict | null {
+  return ref ? dispoByRef.get(dispoKey(worker, ref)) ?? null : null;
+}
+async function loadDispositions(): Promise<void> {
+  const res = await api("/api/dispositions?limit=2000");
+  if (!res.ok) return;
+  const data = (await res.json().catch(() => ({}))) as { dispositions?: DispoRow[] };
+  dispoByRef.clear();
+  // newest-first from the server → the FIRST row for a ref is the current verdict; later
+  // (older) rows for the same ref are superseded history and must not overwrite it
+  for (const d of data.dispositions ?? []) {
+    if (typeof d.worker !== "string" || typeof d.ref !== "string" || !d.ref) continue;
+    if (!DISPO_VERDICTS.includes(d.disposition as DispoVerdict)) continue;
+    const k = dispoKey(d.worker, d.ref);
+    if (!dispoByRef.has(k)) dispoByRef.set(k, d.disposition as DispoVerdict);
+  }
+}
+// one write. Returns whether it stuck: a failed label must never render as a label.
+async function labelDisposition(worker: string, ref: string, disposition: DispoVerdict): Promise<boolean> {
+  const res = await post("/api/dispositions", { worker, ref, disposition });
+  if (!res.ok) { toast(`labeling failed (${res.status}) — nothing recorded`); return false; }
+  dispoByRef.set(dispoKey(worker, ref), disposition);
+  return true;
+}
+const DISPO_WORD_UI: Record<DispoVerdict, string> = {
+  accepted: "✓ accepted", edited: "✎ edited", ignored: "· ignored", wrong: "✗ wrong",
+};
+
 // --- outcome feed (docs/perception-layer.md §6): the lane-outcome ledger rendered — what landed,
 // how, and what ③ said about it. A read-only lens over GET /api/lane-outcomes, same access model as
 // the audit trail above (owner-token gated, structurally 404 on share hosts).
@@ -2933,6 +2998,29 @@ function renderOutcomes() {
     if ((rel === "covered" || rel === "superseded") && o.review)
       for (const n of reviewBody(o.review)) rv.appendChild(n);
     row.appendChild(rv);
+
+    // the owner label for this land. Two actions, no third: ✓ this land was right, ✗ it was wrong.
+    // NO DEFAULT — an unlabeled row says "unlabeled", because the graduation criteria read a
+    // missing label as missing evidence, not as approval.
+    const ref = landRef(o);
+    const lab = el("div", "ocdispo-row");
+    const cur = dispoOf("land", ref);
+    lab.appendChild(el("span", "ocdispo-state" + (cur ? ` is-${cur}` : " is-none"),
+      cur ? `your label: ${DISPO_WORD_UI[cur]}` : "unlabeled"));
+    for (const [verdict, glyph, title] of [
+      ["accepted", "✓", "this outcome was right — records an owner `accepted` disposition"],
+      ["wrong", "✗", "this outcome was wrong — records an owner `wrong` disposition"],
+    ] as [DispoVerdict, string, string][]) {
+      const b = el("button", `ocdispo-btn${cur === verdict ? " active" : ""}`, glyph) as HTMLButtonElement;
+      b.title = title;
+      b.onclick = async () => {
+        b.disabled = true;
+        if (await labelDisposition("land", ref, verdict)) renderOutcomes();
+        else b.disabled = false;
+      };
+      lab.appendChild(b);
+    }
+    row.appendChild(lab);
   }
   outcomepanel.appendChild(list);
   outcomepanel.appendChild(el("div", "ochint",
@@ -2946,6 +3034,7 @@ async function openOutcomes() {
   outcomeDispo = "all";
   outcomeUncovered = false;
   outcomeData = [];
+  await loadDispositions(); // labels before rows: a row must never render for an instant as unlabeled when it is not
   const res = await api("/api/lane-outcomes?limit=1000");
   if (res.ok) {
     const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number };
@@ -3393,6 +3482,13 @@ async function doSend() {
   try {
     const res = await post("/send", { slot, text, submit: true });
     if (!res.ok) throw new Error(`send failed: ${res.status}`);
+    // the ✨ draft's verdict, decided by what actually went out (see pendingEnhance). Written only
+    // after the send SUCCEEDED — a failed send leaves the text in the box and nothing labeled.
+    if (pendingEnhance) {
+      const p = pendingEnhance;
+      pendingEnhance = null;
+      void labelDisposition("enhance", p.draftId, text === p.text.trim() ? "accepted" : "edited");
+    }
     ta.value = "";
     cyc = null;
     updateChips();
@@ -3440,8 +3536,22 @@ function togglePrefix(cmd: string) {
   updateChips();
   ta.focus();
 }
+// the ✨ draft currently sitting in the box, awaiting the owner's next move. This is consumer 2 of
+// the disposition rail and it is ZERO-UI on purpose: the compose box already tells us, deterministic-
+// ally, what the owner did with the rework — sending it unchanged is `accepted`, editing then
+// sending is `edited`, clearing it away is `ignored`. Only those three are written. Everything else
+// (a page reload, a second ✨ over the same draft, scheduling it as an auto) is AMBIGUOUS, so the
+// pending draft is simply dropped and NOTHING is written — a guessed label is worse than no label.
+let pendingEnhance: { draftId: string; text: string } | null = null;
 ta.addEventListener("input", () => {
   cyc = null; // real typing (not our programmatic recall) ends a history cycle
+  // cleared to empty by hand: the rework was thrown away. Programmatic clears (send, auto-schedule)
+  // fire no `input` event, so this can only ever be the owner actually emptying the box.
+  if (pendingEnhance && ta.value.trim() === "") {
+    const p = pendingEnhance;
+    pendingEnhance = null;
+    void labelDisposition("enhance", p.draftId, "ignored");
+  }
   updateChips();
 });
 
@@ -3463,12 +3573,17 @@ enhBtn.onclick = async () => {
   }, 20_000);
   try {
     const res = await post("/api/enhance", { slot, text });
-    const j = (await res.json().catch(() => ({}))) as { prompt?: string; error?: string };
+    const j = (await res.json().catch(() => ({}))) as { prompt?: string; draftId?: string; error?: string };
     if (!res.ok || !j.prompt) throw new Error(j.error ?? "enhance failed");
     // the wait can run up to 3min — if the draft moved on (edited, sent, pane switched)
     // in the meantime, dropping the stale result silently beats clobbering new work
     if (ta.value.trim() === text && (panes[focused]?.slot ?? 0) === slot) {
       ta.value = j.prompt;
+      // arm the disposition watch for THIS draft. A result that was dropped as stale above is
+      // never armed — nothing was put in front of the owner, so there is nothing to rule on.
+      // A previous pending draft is superseded here without a label: replaced-by-a-re-run is
+      // not one of the three deterministic cases.
+      pendingEnhance = j.draftId ? { draftId: j.draftId, text: j.prompt } : null;
       updateChips();
       ta.focus();
     }
@@ -3486,6 +3601,7 @@ enhBtn.onclick = async () => {
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 void (async () => {
   await refresh();
+  void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"
   let view: { layout?: number; panes?: number[]; focused?: number } = {};
   try {
     view = JSON.parse(localStorage.getItem("fleet.view") ?? "{}") as typeof view;

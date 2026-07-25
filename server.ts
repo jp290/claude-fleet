@@ -824,8 +824,11 @@ function measureControls(now: number): void {
     const helpedGit = !!gi && gi.ahead > c.aheadBaseline;
     const outStarted = !!s && s.lastOutput > c.outputBaseline;
     const outSustained = !!s && now - s.lastOutput <= OUTCOME_SUSTAIN_MS;
-    baselineSamples.push(helpedGit || (outStarted && outSustained));
+    const controlHelped = helpedGit || (outStarted && outSustained);
+    baselineSamples.push(controlHelped);
     if (baselineSamples.length > BASELINE_RING_CAP) baselineSamples.shift();
+    baselineSeen++;
+    if (controlHelped) baselineSeenHelped++;
   }
   if (controlPending.length > 0) return; // a cohort is still maturing — don't stack
   const candidates = slots.filter((s) => s.cwd && !nudged.has(s.id))
@@ -2892,6 +2895,13 @@ const controlPending: ControlBaseline[] = [];
 const CONTROL_SAMPLE_MAX = 3;
 const BASELINE_RING_CAP = 50; // rolling window of recent control samples
 const baselineSamples: boolean[] = []; // true = the control slot looked "helped" with no nudge
+// …and, beside the ring, the LIFETIME counts of control samples ever classified. The ring answers
+// "what is the recent background rate" (deliberately forgetful); these answer "was a sample taken
+// at all", which the ring stops being able to report once it saturates at BASELINE_RING_CAP — its
+// length is pinned and a shift can even cancel an incoming helped. Same in-memory-only discipline
+// as the ring: advisory, never persisted, never part of outcomeTally.
+let baselineSeen = 0;
+let baselineSeenHelped = 0;
 // a deterministic claudeAlive true→false-in-window is a crash CANDIDATE escalated to the owner,
 // never an auto harm label (attribution is ambiguous: a coincidental crash ≠ one this send caused).
 interface HarmCandidate { slot: number; class: string; ref: string; at: number }
@@ -4294,8 +4304,12 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
         harmChannelActive: harmAttestFresh(), harmAttestAt, harmAttestTtlMs: HARM_ATTEST_TTL_MS },
       // A2 null-calibration: background "helped-looking" rate of active un-nudged slots. ADVISORY —
       // never gates promotion, never part of outcomeTally. Compare the nudged tally against this.
+      // `rate`/`samples`/`helped` describe the rolling ring (capped at BASELINE_RING_CAP);
+      // `seen`/`seenHelped` are the lifetime counters, monotone and cap-free, so "did the sampler
+      // record anything" stays answerable after the ring saturates.
       baselineRate: { rate: baselineSamples.length ? baselineSamples.filter(Boolean).length / baselineSamples.length : null,
-        samples: baselineSamples.length, helped: baselineSamples.filter(Boolean).length },
+        samples: baselineSamples.length, helped: baselineSamples.filter(Boolean).length,
+        cap: BASELINE_RING_CAP, seen: baselineSeen, seenHelped: baselineSeenHelped },
       helpedUndercount: "reply-referencing deferred — a pure reply/Q&A intervention records as no-effect (conservative: delays promotion, never enables a wrong one)",
     });
   }

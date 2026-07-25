@@ -1,327 +1,121 @@
-# HANDOFF — 2026-07-25 (session 4: the perception write side · the discrepancy hunt · four own errors)
+# HANDOFF — 2026-07-25 (session 5: seven lands in one day — the calibration phase begins)
 
-*A thin map, NOT the knowledge. Durable findings live in `docs/` and are named below with their
-owner-doc. **Treat every line here as a claim to verify** — look up commits, states and counts before
-building on them. Three of this session's four own errors were exactly that failure (§5).*
+*A thin map, NOT the knowledge. Durable findings live in `docs/` (§4 names owners). **Treat every
+line as a claim to verify.** This session's own instrument-error (§5.1) is the freshest reason.*
 
 ---
 
-## 1. State — and the ONE thing that must happen first
+## 1. State — verified at write time, not remembered
 
 ```
-git log --oneline -4 && tmux -L claudefleet list-sessions -F '#{session_name} #{t:session_created}' | grep srv \
-  && curl -s -o /dev/null -w '%{http_code}\n' http://100.64.0.1:8790/ && wc -l lane-outcomes.jsonl
+git log --oneline -5 && tmux -L claudefleet list-sessions | grep srv \
+  && curl -s -H "Authorization: Bearer <stewardToken>" http://100.64.0.1:8790/api/steward/sessions \
+     | python3 -c "import json,sys; print(json.load(sys.stdin)['deployGap'])" \
+  && wc -l lane-outcomes.jsonl
 ```
 
-| what | commit | state |
+- `main` = `9032845`, srv up 13:00:52 **carrying exactly that commit** — proven by the served
+  `deployGap: {behindCount: 0, codeBehind: false}` (the fact now proves its own deployment).
+- **deployGap is NESTED** under its own key in the sessions payload. Reading top-level keys
+  returns nulls that look like "boot git call failed" — this session lost 20 minutes to that (§5.1).
+- Ledger: **11 rows.** Rows 5–11 all carry `review: covered`; rows 6–11 landed through the
+  F9-fixed gate. `cleanReviewShadow` is `None` everywhere yet — the shadow flag went live only
+  with the 13:00 srv; **the first clean auto-land after 13:00 is the first shadow verdict.**
+- `dispositions.jsonl` does not exist yet — created by the first owner label. Not a bug.
+- Client bundles rebuilt 13:03 (they were **stale since 00:50** — see §5.3).
+- Worktrees: only `steward` + the orphaned `fleet-flake-waitmerge` (owner decision pending).
+
+## 2. What landed today (all deployed, srv 13:00:52)
+
+| commit | what | proof status |
 |---|---|---|
-| Perception **write side** — deterministic `done-looking`, auto-③, review-on-row | `600d401` | **landed + DEPLOYED** (srv 10:45:02) |
-| `knowledge-layers.md` — the three-layer assessment + L1 rot corrections | `8bd7b98` | landed |
-| Discrepancy audit — 13 findings (7 fixed, 6 documented), the arena repair | `35a91c8` | landed + deployed |
-| CLAUDE.md → Deploy: the auto-③ flag contract | (gitignored) | on disk |
+| `cffa4a5` | F9: land verify deterministic (`bun install --frozen-lockfile` prelude in `watchdog.sh` VERIFY_CMD) | proven both directions in fresh worktree; then in production: rows 7–8 verified green with no node_modules |
+| `9c1ffbe` | outcome feed (🧾 renderOutcomes) + F5 write-side (`scope`/`notes`/`raw` on OutcomeReview) | row shapes both-handled; F5 fields in the union type at HEAD |
+| `7983c3a` | P-4 deploy-gap fact (`bootHead` vs HEAD, nested `deployGap` on sessions+digest) | self-confirmed live; correctly ignored docs-only commits (`codeBehind: false` at behind=2) |
+| `def5cbf` | ✨ enhance: `briefPayload` DATA block, directive table deleted, `enhance-prompt.ts` with real prompt tests | e2e asserts the real module |
+| `1789389` | ② shadow mode (`FLEET_CLEAN_REVIEW=shadow`): runs on clean auto-lands, records `cleanReviewShadow`, **never gates**; errored run = `verdict null, raw true`, never a fabricated pass | e2e-clean-review has a shadow phase; no live verdict yet |
+| `3e9f7b2` | `doneLookingSince` — additive second tier, trigger unchanged, one-edit clause-list property kept | landed via **first resolver-conflict confirm-land** (§5.4) |
+| `16468a2` | disposition rail: `dispositions.jsonl` (owner-only write, self-token 403 proven, labels advance `harmAttestAt`), ✓/✗ on feed rows, ③ nützlich/falsch, ✨ auto-disposition (accepted/edited/ignored) | negatives e2e-proven; ref shapes: land=`branch@ts`, review3=patchId, enhance=draftId |
+| `9032845` | `FLEET_CLEAN_REVIEW=shadow` into the watchdog srv-spawn env | spawn line committed; live env inferred from restart order, not read from the process |
 
-**Deploy verified positively, not inferred from a 200.** `srv` restarted 10:45:02; all five occupied
-slots survived; and `GET /api/steward/sessions` now serves a **`doneLooking`** field per slot — a key
-only `600d401` can produce. That is the deterministic proof the new build is live. `FLEET_AUTO_REVIEW_*`
-are absent from the running env, i.e. auto-③ is on its documented defaults (15 s tick / 60 s idle).
+Docs landed: `graduation-criteria.md` (pre-registered numbers, amendment rule),
+`steward-pulse-v2.md` (nudge trials protocol), F5/F9 resolutions at their claim sites (`424affa`).
 
-**The ③ path was then smoke-tested against the real `claude`** — the one thing no suite can cover,
-since `e2e-isolated.sh` drives a stand-in. `POST /api/slots/1/review` returned
-`model: claude-sonnet-5[1m]`, **`raw: false`** (the real model answered *in contract*; the prompt
-works with Sonnet 5), and the fallback `scope` for a slot with no lane base. Two conclusions: the
-`[1m]` model string survives the tmux/zsh command line in this path too, and **F5 is not
-hypothetical** — that reply, if persisted at a terminal event, would be stored as
-`{state: …, findings: []}` with its `scope` dropped, i.e. indistinguishable from a real clean review.
+## 3. The frame that ordered everything (owner-endorsed)
 
-> ### The lesson that outlives the restart
-> The live `srv` had been up since 00:16:54 and predated `600d401`, so auto-③ and the whole `review`
-> field were inert while the code sat in `main`. **This trap fired four times in two days** — ledger
-> rows 2, 3 *and* 4 all written by a build that lacked the field being recorded, plus the fast-tier
-> gate believed undeployed for a day. *Landing is not deploying.* Closing it mechanically is
-> `BACKLOG.md` P-4 (roadmap §3.3), which is why P-4 outranks its size.
+1. **Unfed mechanisms are Fleet's recurring defect** — enhance was starved, `outcomeTally`/
+   `harmAttestAt` never fed, `baselineSamples` per-boot, the ledger reader missing. Rule: no new
+   judging/measuring layer without its feeder in the same move.
+2. **The authority ladder: record → display → advise → gate → act.** Every judging instance
+   climbs by measured hits, never by being built. ② is at "record" (shadow). The criteria doc
+   holds the rungs' numbers.
+3. **Risk concentrates at the land gate; upstream may loosen.** Since today the gate is
+   deterministic (F9), observed (feed), reversible (undo-land), measured (ledger). That is what
+   makes steward-pulse trials cheap: a wrong upstream decision at worst produces a lane the gate
+   stops. (`steward-pulse-v2.md` — phases A/B/C, THE GUARD honored via facts+one-question.)
+4. **The bottleneck is data velocity now, not build velocity.** Criterion 1 progress at this
+   writing: **6/20 lands** (rows 6–11), 0 undos, 5 clean autos. K2: 0/25 shadow verdicts.
+   Everything lands through Fleet from now on — a hand-land is a lost ledger row.
 
-**Still open, and the first thing to check next session:** no ledger row carries a `review` object
-yet. Row 4 (this audit lane) was written **08:41:18Z, 3m44s before the 08:45:02Z restart** — so it
-too predates the deploy and has no `review` key. **Row 5 is the first real test of the write side end
-to end.** If it comes back with `review` absent, that is a finding, not a deploy accident.
+## 4. Doc owners for what's new
 
-**Row 4 is load-bearing for a different reason: F9 fired in production, on the lane that documented
-it.** It records `verified: false` with `confirmedByHuman: true` — and `verified: false` cannot come
-from a plain ⏏ land (`OWNER_LAND_FACTS` sets `null`, `server.ts:2696`), so a verify ran, failed, the
-clean auto-land was downgraded to stop-and-review, and the owner confirm-landed through it. **That
-downgrade is the overlay the owner reported as "the dispute."** The cause is an inference, not a
-captured output (the verdict lived in `mergeLast`, the slot is recycled) but the elimination is
-tight: the diff touched **zero `.ts` files**, so tsc had to produce main's result and main is clean —
-a red verify with no code change is only explicable by the missing `node_modules`, which was measured
-while that worktree still existed. **The new cost this exposes:** the ledger is now accumulating
-`verified: false` on lanes whose code is *fine*, with nothing on the row distinguishing "the gate
-could not run" from "the change is unsound" — and `lane-autonomy-future.md` designates `verified` as
-a calibration input for the graded auto-land gate. Fixing F9 is therefore no longer cosmetic; every
-land until then poisons the column the next autonomy step reads. Full entry:
-`discrepancy-audit.md` F9.
+`graduation-criteria.md` (the numbers + amendment log) · `steward-pulse-v2.md` (nudge trials)
+· `perception-layer.md` (feed built-status updated by lane) · `discrepancy-audit.md` F5/F9
+resolutions · `merge-review-autonomy.md` §7 FIXED note · `lane-signals.ts` header (doneLookingSince).
 
----
+## 5. Method lessons — this session's own errors, freshest first
 
-## 2. What `600d401` built (grep the symbols — line refs drift)
+1. **An instrument error double-confirmed is still an instrument error.** `deployGap` was read at
+   top level (it is nested) → nulls; the scratch "reproduction" used the same wrong read and
+   "confirmed" a nonexistent regression. One unnecessary srv restart before the actual fix: read
+   the payload. Rule: before debugging a "regression", diff your measurement against the last
+   measurement that "worked" — the difference was in my python, not in the server.
+2. **F9 fires on your own lands.** The land order (F9 lane first → deploy → rest) existed because
+   the un-fixed gate would have downgraded the sibling lanes. Sequencing against your own
+   in-flight fixes is part of the plan, not an afterthought.
+3. **Client bundles are a deploy step.** `public/*.js` is gitignored; landing client code changes
+   NOTHING until `bun run build` runs in the main checkout. The feed shipped at 12:19 and was
+   invisible until 13:03. (Candidate mechanical fix: build-on-boot or a bundle-mtime vs
+   src-mtime fact next to deployGap.)
+4. **First resolver-conflict land is on record (row 10):** 2 import-line conflicts resolved by
+   the agent, verify green through the new gate, diff reviewed first-hand, confirm-landed. This
+   is exactly the class component 5 would auto-land once K1 is met.
+5. **done-looking is recall-sound but latency-loses vs a human** (~minutes: 60s threshold +
+   repaint resets + poll interval). Fixed additively (`doneLookingSince`), trigger untouched.
+   Epoch-0 caveat: a never-spoke slot reads as quiet-since-epoch — pollers must special-case it.
 
-`lane-signals.ts` — `DONE_LOOKING_RULES` / `laneDoneLooking`: `done-looking` as a deterministic
-predicate. Its clause list **generates** the digest worker's prose rule (`DONE_LOOKING_PROSE`), so
-spec and implementation cannot drift without one edit touching both. Unknown facts (null
-alive/git/idleMs) read as *not* done-looking — never as permission to spawn.
+## 6. Known structural flakes (both verified at HEAD by two independent lanes)
 
-`server.ts` — `tickAutoReview` (lanes only, never `⚙ steward`, one attempt per git state via
-`reviewAutoTried` written **before** the spawn so failures are remembered too, max 2 concurrent,
-fire-and-forget outside the busy guard, fresh `gitOpInProgress` rather than the 10 s cache);
-`startReview` (freezes `{key, cwd, branch}` and re-checks before the cache write — makes two real
-bugs unreachable rather than unlikely); `patchIdOf` + `outcomeReview` (the `OutcomeReview` union
-`covered | superseded | inflight | none`).
+- `FLEET_SELF_TOKEN absent for a non-lane slot` — pane-capture race (~600ms), pre-existing.
+- baselineRate ring-saturation (`fleet-e2e.ts` ~3603): `samples > start.samples` unsatisfiable
+  once the 50-ring saturates. Structural; belongs to the cleanup lane.
 
-**Independently verified on `git archive` of the lane commit** — not taken from the lane's claim:
-`tsc` 0 errors · `bun run build` exit 0 · `e2e-isolated.sh` **ALL PASS, 626 checks, 0 FAIL** ·
-`e2e-claude-gate.sh` ALL PASS · `e2e-clean-review.sh` ALL PASS. The known pane-capture flake did not
-fire.
+## 7. Open items, in intended order
 
-**Two places the lane beat its own spec — keep as the pattern:** it made spec/implementation drift
-*structurally impossible* rather than merely unlikely, and it turned two states into four
-(`inflight` and `none` as explicit answers instead of a missing field).
-
-**auto-③ is ON by default** (`FLEET_AUTO_REVIEW_MS` 15 s tick, `FLEET_AUTO_REVIEW_IDLE_MS` 60 s;
-`=0` disables). Owner decision 2026-07-25: keep it on, document it — done in CLAUDE.md → Deploy.
-Expect after the restart: real throwaway claude sessions spawning unprompted on done-looking lanes.
-A harness with no `FLEET_REVIEW_CMD` stand-in **must** set `FLEET_AUTO_REVIEW_MS=0`;
-`e2e-claude-gate.sh` and `e2e-clean-review.sh` do.
-
-**Ledger row 3 is the first healthy row.** `commitCount: 1`, all 6 `filesTouched`, `shortstat`
-present, `verified: true`, `confirmedByHuman: false` (clean auto-land), `base` = the land site's
-`mainBefore`, `ownerPrompts: 3` (brief + two corrections — the counter measuring exactly what it
-should). Rows 1–2 stay zeroed on purpose. **`sessionMs` is lane *lifetime*, not work time** (row 3:
-8.4 h for ~1 h of work) — never read it as effort.
-
----
-
-## 3. The roadmap, merged from two independent passes
-
-`knowledge-layers.md` §6 supplies the frame that reorders everything: the three knowledge layers
-**sabotage each other in a loop** — L1's stale index misleads the briefer (L2), the un-briefed
-dispatch path poisons the provenance fields (L3), and with no reader nothing ever corrects the docs
-from reality (L1). **Perception is the missing closing edge, not merely a feature of L3.**
-
-1. **Lane (a) — the outcome feed.** Client-only (`src/client.ts` + `public/index.html`), footprint-
-   disjoint from everything else. **The reason is measurement, not UI:** `knowledge-layers.md` §5
-   gap 3 shows a prompt land structurally beats auto-③ (60 s idle + ≤15 s tick + ≤180 s agent), so
-   the modal row may permanently be review-less — and nothing can reveal that without a reader.
-   Its brief is already assembled across three docs plus one fact only this session knows:
-   `perception-layer.md` §6's two honesty constraints (*empty findings ≠ clean*; `↩ undo` is
-   one-step only), `knowledge-layers.md` §5 gap 4 (rows 1–2 must render as *not measured*, never as
-   *measured zero*), and — **rows 1–3 have no `review` key at all while row 4+ will have
-   `{state: …}`**, so the renderer must carry both shapes and lane 1's e2e assertion "every
-   disposition carries the review relation" holds only for rows written after the restart.
-   **Blocker to fix first or accept:** `discrepancy-audit.md` F5 — `OutcomeReview` persists neither
-   `scope`, `notes` nor `raw`, so a reviewer whose answer did not parse is stored as
-   `{state:"covered", findings:[]}`, byte-identical to a real clean review. §6's first honesty
-   constraint is **not satisfiable from the ledger alone** until those fields are added write-side.
-2. **F9 — the land gate's `node_modules` coupling. Promoted above P-4 by row 4's evidence.** Until
-   it is fixed, every lane that did not install deps has its clean auto-land downgraded and lands
-   with `verified: false` on a sound change — actively poisoning the one column
-   `lane-autonomy-future.md` designates as the graded-gate's calibration input. Two candidate fixes
-   in `discrepancy-audit.md` F9; the cheap one is dropping `--types bun` in favour of a tsconfig the
-   worktree already carries. Done-criterion: the F9 reproduction exits 0 in a freshly created lane
-   worktree that has never been built in.
-3. **P-4 — the deploy-gap fact.** The server knows its boot time and its HEAD; `rev-list --count`
-   plus "does any of those commits touch code" is ~15 lines. No longer theoretical: **four** strikes
-   in two days (ledger rows 2, 3 and 4, plus the fast-tier gate believed undeployed for a day), each
-   costing trust in a row that looked right.
-4. **The ✨ enhance button — make it additive instead of narrowing** (owner's ask, 2026-07-25).
-   Diagnosis: it is not written timidly, it is **starved**. `/api/enhance` resolves the Slot
-   (`server.ts:4498` `slotFrom(body.slot)`) and then throws it away, passing only `s?.cwd ?? HOME` —
-   while `briefPayload` (`server.ts:619`) already computes branch, `laneScoped`, `laneBase`,
-   ahead/behind, `uncommitted` + files, the committed footprint, `shortstat`, commits with subjects
-   and `gitOp` for exactly that slot. So `ENHANCE_PROMPT`'s honest line *"du siehst diese Session
-   NICHT"* is true **because nothing is passed**, not because the facts are missing — the
-   `synergy-findings.md` pattern (*deterministic facts computed but not shared*) and the same thin
-   case as the dispatcher (`knowledge-layers.md` §4). The visible symptom is the
-   "under ~12 words → return unchanged" rule: the roughest drafts, which most need thickening, get
-   nothing.
-   **The boundary that makes this safe** — add *facts*, never *diagnoses*. Pass the fact layer so the
-   prompt thickens where thickness is grounded (this is `tailored-context.md`'s ENVIRONMENT section,
-   the lever on review cost); and **drop the three work directives**, which are a surface-keyed
-   corrective table (Fix→verify, Design→think-first, big→own-it) — the error THE GUARD names, picked
-   blind here while `/sharpen3` picks it *sighted* inside the target session ("by expected failure,
-   not from a list"). Right directive = redundant, wrong directive = conformed to
-   (`steward-nudge.md`: a diagnosis gets conformed to even when wrong). Keep the whole INVARIANTE,
-   including "never resolve session references" — git facts do not say what "der letzte Fix" means.
-   **Scope:** pass `briefPayload` into `runEnhance` as a DATA block (pattern: `buildMergePrompt`);
-   delete the directive bullet **and its two examples** (few-shot beats instruction — half-done, the
-   examples win); rewrite the 12-word exception; extract `ENHANCE_PROMPT` to `enhance-prompt.ts` and
-   make the invariants assertable, because today only the stand-in string is checked
-   (`fleet-e2e.ts:238`) and the prompt text is untested — exactly `buildMergePrompt`'s history.
-   **OPEN DECISION, owner's:** the ✨ result replaces the compose box (`src/client.ts:3245`) and is
-   then journaled as `source: "owner"` (`server.ts:5173`), so model-written text is indistinguishable
-   from what the owner typed — in the corpus §8 later mines. The more additive the button, the worse
-   this gets. Does that rider ride along here (touches client + schema) or move to item 5?
-5. **Provenance honesty (one lane, one root cause).** The outcome row's provenance reads **one of
-   five source tags**. `laneOwnerPrompts` keeps only `source === "owner"`, so pane-typed prompts
-   (`"terminal"`, 755 of 2441 live journal lines) are invisible and dispatcher-delivered briefs
-   (`"auto"`) make `briefHash` null or the hash of a later follow-up — measured: **25 of 49 live
-   lanes null, 5 hashing a later prompt, 19 correct** (`discrepancy-audit.md` F3). Ride along here:
-   the ledger riders `repo` and a `filesTouched`-truncated flag, and F6 (the ledger rotates; its only
-   reader reads one generation while both sibling readers span).
-6. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
-   "unbuilt" about a symbol `server.ts` defines (`knowledge-layers.md` §7.3). Rides along with any
-   docs-touching lane; the only item that prevents its own class of failure from recurring.
-   **Verified first-hand rather than taken from the report** (slot 9 reported "four further hits"):
-   the grep finds **seven** occurrences outside the two audit docs, of which the genuine ones are
-   `steward-nudge` (README:107, steward-autonomy:143 — really unbuilt), the `stuck-looping` detector
-   (steward-overview:110, steward-roadmap:55) and the per-worker `model` opt (synergy-findings:139).
-   **And one is a false positive that constrains the design:** `merge-review-autonomy.md:23` reads
-   *"The human reviews an **unbuilt diff**"* — the word in a different sense entirely. So the check
-   **must not be a bare grep for the word**; it has to pair the word with a claim about a named
-   symbol, or it will train its readers to ignore it — the same failure mode the tombstone in
-   `docs/README.md` was deliberately worded around.
-7. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
-   listed dead end ("promoting a prompt edit as an improvement while no eval set exists").
-8. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
-   the direction split only**, on an idle *proxy* signal, minus every dirty-tree condition.
-   Precision needs a small **forward recorder** (surface state at each owner/terminal prompt +
-   downsampled per-lane samples) plus N days — so if wanted at all, that recorder ships early,
-   because its data only accrues from the day it lands.
-
-**Deliberately parked:** footprint-disjoint parallel dispatch (capacity was never the constraint;
-review is) and any prompt writer (THE GUARD, `steward-nudge.md` §9).
-
-**A number that must not be trusted as it stands.** `BACKLOG.md` Track A records "~25 % of un-nudged
-slots look helped" as *the null any future nudge must beat*. It is a per-boot artefact:
-`baselineSamples` is an in-memory ring (cap 50), absent from `fleet.json`. Live re-read this
-session: **6.7 % (1/15)** vs 25 % (3/12) — **Fisher exact p = 0.294**, indistinguishable. Detecting
-a 15→30 pp lift needs **≈121 samples per arm**; the ring holds 50 and empties on every restart, and
-the nudged arm stands at **0**. Never set a done-criterion of "nudged rate beats `baselineRate`".
-
-**And then this session proved it on itself.** The `srv` restart above — a routine, necessary deploy —
-wiped the ring 40 minutes after the 6.7 % reading was taken:
-
-```
-$ curl -s .../api/steward/outcomes | …baselineRate
-{"rate":null,"samples":0,"helped":0}
-```
-
-So the honest status of that null is: **there is none, and every deploy destroys any that
-accumulates.** Both the 25 % and the 6.7 % should be read as anecdotes about a single boot window,
-never as a property of the system. If a control arm is ever wanted, `baselineSamples` has to be
-persisted first — and that is a design decision the code currently, and deliberately, declines
-("advisory number — not worth the persist/restore surface").
-
----
-
-## 4. New durable knowledge — which doc owns what
-
-- **`docs/knowledge-layers.md`** (new, `8bd7b98`) — the three layers measured against their own
-  stated bars, the sabotage loop, §7's ordering. Read before proposing any knowledge store: the
-  answer to "does Fleet need a lookup service" is **no**, because the recurring defect is currency,
-  not findability.
-- **`docs/discrepancy-audit.md`** (new) — **operative.** Eight discrepancy classes each with a
-  confirmed instance and the command that proved it; five proof rules; fix-vs-document; five sweep
-  axes; hard limits; findings log F1–F13. Load it before auditing the corpus against the code.
-- **`docs/perception-layer.md`** — the design, with its build status, and §5's corrected staleness
-  rule: **content identity via `git patch-id --stable`, not commit identity** (the land path
-  rebases, so a key comparison would mark reviews superseded chronically — worst under the
-  parallelism the layer exists for). Empirically: patch-id survives a rebase whose main-side edits
-  are far from the lane hunks and changes when main edited inside the ±3 context lines, which is the
-  honest answer because that is the interaction the review never saw.
-- **`docs/merge-review-autonomy.md`** — the fast-tier gate **is deployed** (believed otherwise for a
-  day), and F9's adjudication in both directions.
-- **`CLAUDE.md` → Deploy** — the auto-③ flag contract (gitignored; Fleet copies it into every lane).
-
----
-
-## 5. Method lessons — including four of this session's own errors
-
-Statements about *working method*, not about Fleet. Each is a worked example inside
-`discrepancy-audit.md`, which is why its proof rules read the way they do.
-
-1. **Running a check is not reading its output.** A `patch-id` experiment was reported as
-   "empirically verified" while `fatal: invalid upstream 'master'` sat visibly in the same output —
-   the rebase under test never ran. The conclusion happened to be right; the evidence was worthless,
-   and it was handed to a lane as proven.
-2. **A correction must address the same object as the claim.** "9 slots were free all day" (about
-   2026-07-24) was "corrected" with a measurement taken 2026-07-25 — and the fact is *unknowable*,
-   since historical slot occupancy is never persisted. Retracted.
-3. **Judging a diff by its TypeScript.** "I read the whole diff" had skipped the three shell
-   scripts — which is exactly where both real findings were (auto-③ ON by default in production;
-   harnesses must disable it). The land gate lives in a shell script.
-4. **Editing a section after reading part of it.** The F9 correction was written after reading 30
-   lines of a 67-line entry, so it landed beside the lane's own counter-argument — which had already
-   *rejected* the objection the correction *accepted*. Result: two contradictory paragraphs in the
-   land preview. Same class as (3), one level finer. **This is what the owner saw as "the dispute".**
-   Adjudicated in `40c4611`: the objection wins about the title (row 3 falsifies "cannot" deductively)
-   and loses about the verdict (proof rule 2 — the worktree is gone, so *why* it passed is
-   unrecoverable), and the mechanism offered was refuted in its one checkable part.
-5. **Read the surrounding comment before calling something wrong.** This codebase documents its
-   deliberate trades in place. When the code owns the trade, the finding is not "this is a defect"
-   but "a doc elsewhere uses it as if the trade did not exist." The audit lane applied this and
-   **dropped 14 of 27 candidates** with that as the dominant cluster; dropping is a result.
-6. **Delegation gives breadth, not verdicts.** Five dedicated agents produced the map that made this
-   session's findings possible — and one of their headline findings (F9) was too absolute and
-   contradicted a ledger row. Every agent finding is a candidate until re-proven first-hand.
-7. **The reviewer is the author.** For anything designed in this session, the owner's read is the
-   only independent check; the "gib dir Mühe" rounds are the only mechanism compensating for it.
-   There is ③ for lane diffs and nothing adversarial for specs and briefs.
-
----
-
-## 6. Traps that bit, with mitigations
-
-- **Landing ≠ deploying** — 3×. Mitigation: §1's box; mechanically P-4.
-- **Doc collision lane ↔ main checkout** — fired live: slot 9 committed `8bd7b98` touching the same
-  four docs the audit lane had already edited → three real conflicts. It failed *loudly* only
-  because slot 9 committed rather than leaving work uncommitted. Both sides were real work and were
-  merged by hand keeping each side's unique insight — main's tombstone deliberately carries no
-  filename-with-extension so the planned pointer-check cannot trip over its own gravestone; the
-  lane's carried the proof and where the norm moved. **Rule: two producers on `docs/` at once needs
-  the second's footprint known up front, or the first landed.**
-- **A claim I retracted:** that running a suite inside a lane worktree leaves untracked files and
-  blocks `land`. **False** — `e2e-isolated.sh` copies the tree to a `$$`-derived `$DIR` and the
-  stand-ins write there. Concurrent verification *is* possible; the `git archive` copy used this
-  session was unnecessary caution with a false rationale.
-- **The land gate's first step is luck-dependent** (`discrepancy-audit.md` F9). `bunx tsc
-  --types bun` needs `node_modules`; `createWorktree` copies only
-  `.env`/`CLAUDE.md`/`.claude/settings.local.json`; the resolution walk does not rescue it
-  (`~/node_modules` holds 4 packages, no `bun-types`). Row 3 proves it *can* pass, but not why — and
-  an unexplainable green is not a gate. *(The "3 of 5 worktrees have none" ratio first recorded here
-  was measured over directories under `claude-fleet.worktrees/`, not over `git worktree list`, and it
-  moves with every land anyway. The durable fact is the one that matters: **nothing in Fleet creates
-  `node_modules` in a lane** — no ratio needed.)*
-
----
-
-## 7. Outside the repo — reported, not touched
-
-Shared reality per CLAUDE.md: **3 leaked `bun server.ts` from prior sessions** (pids 51871 Jul 18,
-57507 Jul 21, 23907 Jul 23 + its tmux server 23906 — all four re-confirmed alive at 10:50) and the
-stale socket files in `/private/tmp/tmux-501/`.
-
-**Record the socket count as a rate, not a snapshot** — it was 193 in session 3, 216 earlier today,
-**235 after this session's three suite runs**. Each isolated e2e run leaks one socket file; the
-`trap … kill-server EXIT` in the suites kills the server but leaves the socket inode. So the number
-in any handoff is stale the moment a suite runs, and quoting it as a state is a D3 error against this
-document's own rule. Owner's call to clean; a command on request.
-
-`FLEET_CLEAN_REVIEW` stays **off**, auto-dispatch stays **off** — both are autonomy expansions and
-owner decisions.
-
----
+1. **Criteria-progress view** (small lane, client now free): feed header shows "K1 n/20 · K2
+   n/25 · undos 0". Closes the last loop — progress toward autonomy becomes perceptible.
+2. **Cleanup lane:** split `fleet-e2e.ts` (3.9k lines, the one collision point of every lane
+   pair) into `e2e/*.ts` + fix both §6 flakes + possibly collapse the 7 `FLEET_*_CMD` stand-in
+   pairs. Do NOT start while any other lane is in flight.
+3. **Steward-pulse phase A first watched trial** — when normal work sessions exist again.
+   Protocol in `steward-pulse-v2.md`; caps already machine-enforced.
+4. **Parked owner idea (2026-07-25):** a faster one-sentence communication layer inside the
+   nudge process — deliberately NOT designed yet; revisit after phase A data exists.
+5. **Owner decisions pending:** clean 3 leaked `bun server.ts` (Jul 18/21/23) + ~235 stale
+   `/private/tmp/tmux-501` sockets; fate of orphaned `fleet-flake-waitmerge` worktree.
+6. **Provenance lane** (F3: briefHash null on 25/49; plus the ✨ `source:"owner"` rider moved
+   here) — after the above.
+7. Rotation policy for `dispositions.jsonl` (rail report §1: evidence should not silently
+   rotate at 5MB like an audit log does).
 
 ## 8. A fresh session's first five minutes
 
-1. Run the state command in §1. **If `srv` predates the newest code commit, that is the first task**
-   — nothing measured before it means anything. As of this writing it does not (srv 10:45:02 carries
-   `35a91c8`), but the gap reopens with every land.
-2. **`wc -l lane-outcomes.jsonl` and read the last row's `review` key.** If a row has appeared since
-   this handoff and carries a `review` object, the write side has run in production for the first
-   time — read it and judge whether `state` matches reality. If a row appeared *without* the key,
-   something is wrong with the deploy, not with the design.
-3. `docs/README.md` for the map, then `docs/knowledge-layers.md` §7 for the ordering and
-   `docs/discrepancy-audit.md` for the proof discipline. Those three make this file mostly
-   redundant, which is the intent.
-4. Before writing anything into `docs/`, check for a second producer: `git worktree list` plus
-   `git status` in the main checkout. Two producers on `docs/` at once is what cost this session a
-   three-way conflict resolution (§6).
+1. Run §1's state command. If `deployGap.behindCount > 0` with `codeBehind: true` — deploy first,
+   nothing measured before it means anything. Remember: the field is NESTED.
+2. `python3 -c ...` the last ledger rows: any `cleanReviewShadow` yet? First one = K2 has begun;
+   judge its `verdict` against the actual land before trusting the counter.
+3. Check `dispositions.jsonl` existence — first labels = the rail is being used; if the owner has
+   labeled, `harmAttestAt` in fleet.json should be non-zero (promotion machinery now feedable).
+4. Two producers rule (unchanged): `git worktree list` + `git status` before touching `docs/`.
+5. `docs/README.md` → `graduation-criteria.md` → `steward-pulse-v2.md` is the shortest path to
+   the current program.

@@ -321,7 +321,8 @@ export async function run(): Promise<void> {
       kSrc.includes("function kProgress") && !/document|el\(|chip\(/.test(kSrc), kSrc.slice(0, 80));
     const kProgress = new Function(
       new Bun.Transpiler({ loader: "ts" }).transformSync(kSrc) + "\nreturn kProgress;")() as
-      (rows: unknown[]) => { anchored: boolean; k1: number; clean: number; undos: number; k2: number };
+      (rows: unknown[]) => { anchored: boolean; k1: number; clean: number; unknown: number;
+        undos: number; k2: number };
     const kRow = (o: Record<string, unknown>): Record<string, unknown> =>
       ({ disposition: "landed", confirmedByHuman: false, ...o });
     // newest-first on purpose — that is the order the route serves, and the counter must sort itself.
@@ -353,10 +354,43 @@ export async function run(): Promise<void> {
       kUndo.k1 === 3 && kUndo.clean === 2 && kUndo.undos === 1, JSON.stringify(kUndo));
     check("criteria: an undo does not retroactively drop shadow verdicts from K2", kUndo.k2 === 2, JSON.stringify(kUndo));
     check("criteria: an empty ledger is unanchored — nothing is counted, no zeros are claimed",
-      JSON.stringify(kProgress([])) === JSON.stringify({ anchored: false, k1: 0, clean: 0, undos: 0, k2: 0 }),
+      JSON.stringify(kProgress([]))
+      === JSON.stringify({ anchored: false, k1: 0, clean: 0, unknown: 0, undos: 0, k2: 0 }),
       JSON.stringify(kProgress([])));
-    check("criteria: a ledger without the anchor row counts nothing rather than counting from row 1",
-      kProgress(kLedger.filter((o) => o.branch !== "f9-verify-deps")).anchored === false);
+
+    // UNKNOWN ≠ ZERO, inside the counter that would license autonomy. `confirmedByHuman` is
+    // OPTIONAL on OutcomeRow, so a row that records nothing must not be read as "no human
+    // confirmed it" — that is the one direction of error that flatters the criterion.
+    const kUnknown = kProgress([
+      kRow({ ts: 400, branch: "f9-verify-deps" }),
+      { ts: 500, branch: "no-flag-at-all", disposition: "landed" },          // (a) field absent
+      { ts: 550, branch: "explicit-null", disposition: "landed", confirmedByHuman: null }, // absent's JSON twin
+      kRow({ ts: 600, branch: "auto-clean" }),                               // (b) explicit false
+      kRow({ ts: 700, branch: "owner-confirmed", confirmedByHuman: true }),  // (c) explicit true
+    ]);
+    check("criteria: a land with NO confirmedByHuman counts toward K1 but NOT toward clean — unknown is not false",
+      kUnknown.k1 === 4 && kUnknown.clean === 1, JSON.stringify(kUnknown));
+    check("criteria: the unknown lands are counted on their own, never silently dropped (absent and null alike)",
+      kUnknown.unknown === 2, JSON.stringify(kUnknown));
+    check("criteria: an explicit confirmedByHuman:false is still a clean auto-land, an explicit true still is not",
+      kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }), kRow({ ts: 500, branch: "auto" })]).clean === 1
+      && kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }),
+        kRow({ ts: 500, branch: "owner", confirmedByHuman: true })]).clean === 0,
+      JSON.stringify(kUnknown));
+    check("criteria: an undo resets the unknown count with the rest of the streak",
+      kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }),
+        { ts: 500, branch: "no-flag", disposition: "landed" },
+        kRow({ ts: 600, branch: "confirm-land", disposition: "reverted" })]).unknown === 0);
+
+    // §2 (`docs/graduation-criteria.md`) carries NO anchor requirement — the anchor is about the F9
+    // verify fix's deploy boundary and says nothing about ② shadow verdicts. A ledger that cannot
+    // be anchored must still report the verdicts it recorded.
+    const kNoAnchor = kProgress(kLedger.filter((o) => o.branch !== "f9-verify-deps"));
+    check("criteria: without the anchor row §1 counts nothing rather than counting from row 1",
+      kNoAnchor.anchored === false && kNoAnchor.k1 === 0 && kNoAnchor.clean === 0
+      && kNoAnchor.unknown === 0 && kNoAnchor.undos === 0, JSON.stringify(kNoAnchor));
+    check("criteria: K2 counts recorded shadow verdicts even when the ledger has no anchor row (§2 has none)",
+      kNoAnchor.k2 === 2, JSON.stringify(kNoAnchor));
     check("client: the criteria header is gated on there being rows at all (empty ledger → no header)",
       /if \(outcomeData\.length\) \{\s*\n\s*const k = kProgress\(outcomeData\);/.test(cliSrc),
       "the criteria block in renderOutcomes (src/client.ts)");
@@ -368,6 +402,21 @@ export async function run(): Promise<void> {
     check("client: the criteria header counts and does not evaluate (no met/passed banner)",
       /K1 \$\{k\.k1\}\/20/.test(kBlock) && /K2 \$\{k\.k2\}\/25/.test(kBlock)
       && !/criterion met|criteria met|graduated|erfüllt/i.test(kBlock), kBlock.slice(0, 60));
+    // the header must not read as a claim the counter cannot support: whenever any land in the
+    // streak recorded no confirmedByHuman, the "davon N/10 clean" chip is accompanied by the
+    // unknown count. Source-level like the rest of (9d)–(9f) — no DOM harness here.
+    check("client: the criteria header surfaces the unknown lands next to the clean count",
+      /davon \$\{k\.clean\}\/10 clean/.test(kBlock)
+      && /if \(k\.unknown\) kel\.appendChild\(chip\(`\$\{k\.unknown\} unknown`, "warn"/.test(kBlock),
+      kBlock.slice(kBlock.indexOf("davon"), kBlock.indexOf("davon") + 60));
+    // and the K2 chip sits OUTSIDE the anchored branch, matching the counter: §2 asks for no anchor,
+    // so an unanchorable ledger still shows its shadow verdicts instead of hiding them behind §1.
+    check("client: the K2 chip is rendered outside the anchored branch (§2 needs no anchor)",
+      // indentation IS the structure here: the §1 chips sit six-deep inside `else {`, the K2 chip
+      // four-deep beside the whole if/else — that is what "shown even when unanchored" looks like.
+      /\n {4}kel\.appendChild\(chip\(`K2 \$\{k\.k2\}\/25`/.test(kBlock)
+      && /\n {6}kel\.appendChild\(chip\(`K1 \$\{k\.k1\}\/20`/.test(kBlock),
+      kBlock.slice(kBlock.indexOf("OUTSIDE the anchored branch"), kBlock.indexOf("OUTSIDE the anchored branch") + 60));
 
     // (9g) THE VERIFY BADGE'S FOUR STATES. Same method and same limits as (9d)/(9e) — a regex over
     // the client SOURCE, no DOM harness — and it lives here because this is the only module that

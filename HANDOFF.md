@@ -1,323 +1,229 @@
-# HANDOFF — 2026-07-24/25 (session 3: model tiers · ③ review agent · the ledger's first rows · the sharpen-corpus correction)
+# HANDOFF — 2026-07-25 (session 4: the perception write side · the discrepancy hunt · four own errors)
 
-*A thin map, NOT the knowledge — durable findings live in docs/BACKLOG/memory, and this session moved
-several of them there deliberately. Treat every line here as a claim to verify: look up commits,
-states and counts before building on them.*
+*A thin map, NOT the knowledge. Durable findings live in `docs/` and are named below with their
+owner-doc. **Treat every line here as a claim to verify** — look up commits, states and counts before
+building on them. Three of this session's four own errors were exactly that failure (§5).*
 
 ---
 
-## 1. State — shipped, deployed, verified
+## 1. State — and the ONE thing that must happen first
 
-Main HEAD at write time: **`79f024c`**, tree clean. Live `srv` restarted **00:16:54**,
-`curl http://100.64.0.1:8790/` → 200. The running build includes every code commit below
-(`3442a26` was committed 23:49, srv started after it). Re-check with:
-`git log --oneline -5 && tmux -L claudefleet ls | grep srv && curl -s -o /dev/null -w '%{http_code}' http://100.64.0.1:8790/`
+```
+git log --oneline -4 && tmux -L claudefleet list-sessions -F '#{session_name} #{t:session_created}' | grep srv \
+  && curl -s -o /dev/null -w '%{http_code}\n' http://100.64.0.1:8790/ && wc -l lane-outcomes.jsonl
+```
 
 | what | commit | state |
 |---|---|---|
-| Both model tiers → the 1M variants | `3406b2d`, `1566727` | deployed |
-| ③ `🔍 review` advisory agent | `ab59a71` + `7e5c777` | deployed, live |
-| Docs/ledger status + `.gitignore` | `1783d84` | committed |
-| Recorder fix — fork `baseSha` + `verified` via `LandFacts` | `fdfae3a` + `3442a26` | **landed + deployed** (§3) |
-| Lane-lesson framing correction · steward-nudge design | `eedb1fb`, `79f024c` | committed (§9) |
+| Perception **write side** — deterministic `done-looking`, auto-③, review-on-row | `600d401` | landed, **NOT yet deployed** |
+| `knowledge-layers.md` — the three-layer assessment + L1 rot corrections | `8bd7b98` | landed |
+| Discrepancy audit — 13 findings, 8 doc/config fixes, the arena repair | this lane | lands with this file |
+| CLAUDE.md → Deploy: the auto-③ flag contract | (gitignored) | on disk |
 
-**Independently verified on landed main** (2026-07-25, not taken from the lane's own claim):
-`tsc` 0 errors · `bun run build` ok · `e2e-isolated.sh` **ALL PASS**, 595 checks, 0 FAIL ·
-`e2e-claude-gate.sh` **ALL PASS** 0 FAIL · `e2e-clean-review.sh` **ALL PASS** 0 FAIL. This mattered:
-both recorder commits reached main while the owner landed and were, until this pass, covered only by
-the lane's own assertion. The known `e2e-isolated` pane-capture flake did not fire — as it has not on
-any run this session, which is now ~6 clean runs (a datapoint toward letting it into the land gate,
-still not a proof).
+> ### ⚠️ `tmux -L claudefleet kill-session -t srv`
+> The live `srv` has been up since **2026-07-25 00:16:54** and therefore predates `600d401`.
+> **auto-③ and the whole `review` field are inert until it restarts.** Not housekeeping: this is
+> what makes the write side produce its first datum. Ledger row 3 is the proof of cost — it carries
+> **no `review` key at all** because the code that writes it had landed but never loaded.
+>
+> **This trap fired three times in two days** (ledger row 2, ledger row 3, and the fast-tier gate
+> believed undeployed for a day). *Landing is not deploying.* Closing it mechanically is
+> `BACKLOG.md` P-4 — which is why P-4 outranks its size.
 
-**Model tiers.** `DEFAULT_MODEL` = `claude-opus-5[1m]` (every session + lane without its own pin),
-`SUMMARY_MODEL` = `claude-sonnet-5[1m]` (the throwaway workers: summarize, commit-message, enhance,
-merge resolver, ② clean review, digest). Both ids were probed against the installed CLI before being
-set. Running sessions keep whatever they spawned with — the model is baked at spawn time.
-
-**③ `🔍 review`.** Owner-only, click-only, advisory `POST/GET /api/slots/:id/review`, mirroring the
-✨ summarize plumbing over a slot's OWN diff. Findings without a cited `file:line` are dropped
-server-side; `basis` never self-upgrades from `inferred` to `verified`; no `git reset` (unlike ②,
-this runs on a LIVE lane that may hold uncommitted work). Absent from the guest share surface.
+After the restart, verify the write side actually runs rather than assuming it: the **next** landed
+lane's row must contain a `review` object (`GET /api/lane-outcomes?limit=2`). Rows 1–3 never will.
 
 ---
 
-## 2. The load-bearing gotcha of this session
+## 2. What `600d401` built (grep the symbols — line refs drift)
 
-The 1M model ids are spelled `claude-opus-5[1m]`, and `[ ]` are **glob metacharacters**. The model
-string is baked into the tmux pane command; `tmux -L claudefleet` runs `default-shell /bin/zsh`, which
-**aborts** on an unmatched glob (`no matches found`). Unquoted, this change would have killed **every
-new session at spawn** — invisible to `tsc`, fatal in production, and it was found by testing the
-hazard (`zsh -c 'echo a[1m]'` → exit 1), not by luck.
+`lane-signals.ts` — `DONE_LOOKING_RULES` / `laneDoneLooking`: `done-looking` as a deterministic
+predicate. Its clause list **generates** the digest worker's prose rule (`DONE_LOOKING_PROSE`), so
+spec and implementation cannot drift without one edit touching both. Unknown facts (null
+alive/git/idleMs) read as *not* done-looking — never as permission to spawn.
 
-Therefore: `MODEL_RE` widened by exactly one end-anchored, alnum, bounded bracket group, and **every**
-shell interpolation of a model string single-quoted (`slotCmd`, `summaryViaSession`).
-`e2e-claude-gate.sh` asserts the quoted form for both the per-slot and the default model. Rule lives in
-`CLAUDE.md` → Deploy. Also closed on the way past: `FLEET_SUMMARY_MODEL` was the one model-bearing env
-var reaching a shell line unvalidated; it now goes through `MODEL_RE` like `FLEET_MODEL` always did.
+`server.ts` — `tickAutoReview` (lanes only, never `⚙ steward`, one attempt per git state via
+`reviewAutoTried` written **before** the spawn so failures are remembered too, max 2 concurrent,
+fire-and-forget outside the busy guard, fresh `gitOpInProgress` rather than the 10 s cache);
+`startReview` (freezes `{key, cwd, branch}` and re-checks before the cache write — makes two real
+bugs unreachable rather than unlikely); `patchIdOf` + `outcomeReview` (the `OutcomeReview` union
+`covered | superseded | inflight | none`).
 
----
+**Independently verified on `git archive` of the lane commit** — not taken from the lane's claim:
+`tsc` 0 errors · `bun run build` exit 0 · `e2e-isolated.sh` **ALL PASS, 626 checks, 0 FAIL** ·
+`e2e-claude-gate.sh` ALL PASS · `e2e-clean-review.sh` ALL PASS. The known pane-capture flake did not
+fire.
 
-## 3. The ledger: unblocked, then immediately proven defective
+**Two places the lane beat its own spec — keep as the pattern:** it made spec/implementation drift
+*structurally impossible* rather than merely unlikely, and it turned two states into four
+(`inflight` and `none` as explicit answers instead of a missing field).
 
-`lane-outcomes.jsonl` exists. First row (`fleet/review-agent`, `landed`, `model claude-opus-5[1m]`,
-`briefHash 419bf857`, `ownerPrompts 2`, `sessionMs` ≈98 min) — **but its calibration payload zeroed**
-(`commitCount 0`, `filesTouched []`, `e2eTouched false`, `verified null` for a 2-commit / 5-file /
-+318−7 land). Two independent causes, **both only on the clean auto-land path** (`killed`/`shelved`
-rows were and are correct):
+**auto-③ is ON by default** (`FLEET_AUTO_REVIEW_MS` 15 s tick, `FLEET_AUTO_REVIEW_IDLE_MS` 60 s;
+`=0` disables). Owner decision 2026-07-25: keep it on, document it — done in CLAUDE.md → Deploy.
+Expect after the restart: real throwaway claude sessions spawning unprompted on done-looking lanes.
+A harness with no `FLEET_REVIEW_CMD` stand-in **must** set `FLEET_AUTO_REVIEW_MS=0`;
+`e2e-claude-gate.sh` and `e2e-clean-review.sh` do.
 
-- `worktree.base` is a branch NAME (`server.ts:1012`), re-resolved at record time — landing has
-  already advanced main past the lane, so `base..HEAD` computes to nothing.
-- `verified` reads `mergeLast` (`server.ts:2587`), which the merge route deletes before the job starts
-  (`4635`) and only rewrites after `landLane` has run (`2942`) — structurally always null.
-
-Diagnosis with line refs: `docs/lane-autonomy-future.md` (2026-07-24-later note).
-
-**FIXED and deployed** (`fdfae3a` + `3442a26`, live since 00:16). Read the shape, because the lane
-chose a stronger fix than the one it was briefed with:
-
-- `laneForkSha()` (`server.ts:566`) captures `merge-base <base> HEAD` **at lane creation/attach**, and
-  all three creation paths store it (`1026` manual, `1471` dispatcher, `4420` attach). The recorder
-  resolves `facts.baseSha ?? s.worktree.baseSha ?? laneBaseRef(s)` (`2587`) — the land site's own
-  `mainBefore` first (the exact commit the lane was rebased onto), then the stored fork commit, then
-  today's behaviour for lanes forked before the field existed. It never guesses.
-- `verified` was made **non-optional** in `LandFacts` (`2536`), so every construction site must supply
-  it and both constants set `verified: null` explicitly — the `mergeLast` fallback is unreachable from
-  a land **by construction**, not by a guard. That is the stronger of the two options offered in the
-  correction, and it is why `kind === "landed" ? facts.verified : …` (`2625`) is safe.
-
-**Both existing rows stay zeroed, for two different and honest reasons.** Row 1 (`fleet/review-agent`)
-was written by code that had the bug. Row 2 (`fleet/outcome-recorder-fix`) was written by a server
-still running the **pre-fix build** — it landed 23:50 while `srv` had been up since 21:56; the fix was
-in `main` and had never been loaded. **Row 3 is the first real test.** Neither is backfilled: it could
-be reconstructed from the (correct) `headSha`, but that would be reconstruction posing as recording.
-**Do not calibrate any gate on rows 1–2.**
-
-*Deploy lesson, worth generalising: landing is not deploying. A landed fix that changes recording
-behaviour is inert — and silently so — until `srv` is restarted.*
+**Ledger row 3 is the first healthy row.** `commitCount: 1`, all 6 `filesTouched`, `shortstat`
+present, `verified: true`, `confirmedByHuman: false` (clean auto-land), `base` = the land site's
+`mainBefore`, `ownerPrompts: 3` (brief + two corrections — the counter measuring exactly what it
+should). Rows 1–2 stay zeroed on purpose. **`sessionMs` is lane *lifetime*, not work time** (row 3:
+8.4 h for ~1 h of work) — never read it as effort.
 
 ---
 
-## 4. Evidence on ③ — two data points, and what they actually mean
+## 3. The roadmap, merged from two independent passes
 
-| | lane | what review found | what it missed |
-|---|---|---|---|
-| DP1 | `fleet/review-agent` (its own diff) | 3 findings, all real, all cited, 0 hallucinations | the one defect this diff *introduced* — the constant it collided with lived outside the diff |
-| DP2 | `fleet/outcome-recorder-fix` | a **new, high-impact** defect in the change itself (`??` cannot tell explicit `null` from `undefined`), surfaced before a human read the diff | — (its `notes` correctly declared it could not verify bodies outside the diff) |
+`knowledge-layers.md` §6 supplies the frame that reorders everything: the three knowledge layers
+**sabotage each other in a loop** — L1's stale index misleads the briefer (L2), the un-briefed
+dispatch path poisons the provenance fields (L3), and with no reader nothing ever corrects the docs
+from reality (L1). **Perception is the missing closing edge, not merely a feature of L3.**
 
-**Both lanes were fully GREEN on every suite while carrying a real defect.** That is the durable
-lesson, not a fact about this tool: `tsc` + `e2e-claude-gate` prove *does not break*; they are
-structurally blind to *compiles, passes, and is wrong*. That blind spot is not closed by adding suites.
+1. **Lane (a) — the outcome feed.** Client-only (`src/client.ts` + `public/index.html`), footprint-
+   disjoint from everything else. **The reason is measurement, not UI:** `knowledge-layers.md` §5
+   gap 3 shows a prompt land structurally beats auto-③ (60 s idle + ≤15 s tick + ≤180 s agent), so
+   the modal row may permanently be review-less — and nothing can reveal that without a reader.
+   Its brief is already assembled across three docs plus one fact only this session knows:
+   `perception-layer.md` §6's two honesty constraints (*empty findings ≠ clean*; `↩ undo` is
+   one-step only), `knowledge-layers.md` §5 gap 4 (rows 1–2 must render as *not measured*, never as
+   *measured zero*), and — **rows 1–3 have no `review` key at all while row 4+ will have
+   `{state: …}`**, so the renderer must carry both shapes and lane 1's e2e assertion "every
+   disposition carries the review relation" holds only for rows written after the restart.
+   **Blocker to fix first or accept:** `discrepancy-audit.md` F5 — `OutcomeReview` persists neither
+   `scope`, `notes` nor `raw`, so a reviewer whose answer did not parse is stored as
+   `{state:"covered", findings:[]}`, byte-identical to a real clean review. §6's first honesty
+   constraint is **not satisfiable from the ledger alone** until those fields are added write-side.
+2. **P-4 — the deploy-gap fact.** The server knows its boot time and its HEAD; `rev-list --count`
+   plus "does any of those commits touch code" is ~15 lines. No longer theoretical: three strikes in
+   two days, each costing trust in a row that looked right.
+3. **Provenance honesty (one lane, one root cause).** The outcome row's provenance reads **one of
+   five source tags**. `laneOwnerPrompts` keeps only `source === "owner"`, so pane-typed prompts
+   (`"terminal"`, 755 of 2441 live journal lines) are invisible and dispatcher-delivered briefs
+   (`"auto"`) make `briefHash` null or the hash of a later follow-up — measured: **25 of 49 live
+   lanes null, 5 hashing a later prompt, 19 correct** (`discrepancy-audit.md` F3). Ride along here:
+   the ledger riders `repo` and a `filesTouched`-truncated flag, and F6 (the ledger rotates; its only
+   reader reads one generation while both sibling readers span).
+4. **The L1 rot detector.** Two mechanical checks — every index pointer resolves; no doc says
+   "unbuilt" about a symbol `server.ts` defines (`knowledge-layers.md` §7.3). It already has a
+   backlog: slot 9 ran both by hand and reports **four further "unbuilt" hits** (steward-nudge, the
+   stuck-looping detector in overview/roadmap), deliberately left because it had not read those
+   docs. Rides along with any docs-touching lane; the only item that prevents its own class of
+   failure from recurring.
+5. **The dispatcher brief** — after (1), per its own argument: without measurement it repeats the
+   listed dead end ("promoting a prompt edit as an improvement while no eval set exists").
+6. **`steward-nudge.md` §8, honestly shrunk.** From existing artefacts it can deliver **recall and
+   the direction split only**, on an idle *proxy* signal, minus every dirty-tree condition.
+   Precision needs a small **forward recorder** (surface state at each owner/terminal prompt +
+   downsampled per-lane samples) plus N days — so if wanted at all, that recorder ships early,
+   because its data only accrues from the day it lands.
 
-Honest limits: DP1's findings were all inherited from the plumbing ③ was told to mirror, and review is
-**diff-bounded** by construction. So its correct use is narrow:
+**Deliberately parked:** footprint-disjoint parallel dispatch (capacity was never the constraint;
+review is) and any prompt writer (THE GUARD, `steward-nudge.md` §9).
 
-| situation | move |
-|---|---|
-| small/mechanical lane, gate green | just merge — undo-land exists |
-| lane touches something **load-bearing or persistent** — a state shape, the land path, auth, shell interpolation, anything written to disk or to main | **read it before merging.** There "green but wrong" is not a revert, it is silent data corruption — which is exactly what DP2 caught |
-| the merge itself **failed** | read the failure output, **not** a review. A conflict is about main's side, which the reviewer never sees; a red verify already gives the exact error. When something deterministic has spoken, it wins |
-
-Review is for when the deterministic layer stayed *silent*. It costs no metered tokens (throwaway
-claude on the subscription), so the price is latency and attention — the question is only whether it
-changes the decision.
-
-**Reviews are ephemeral.** `reviewCache` is an in-memory `Map` — findings die on the next deploy, slot
-recycle, or tree change. Nothing persists them. Retrieve one at any time without spending a model call:
-`GET /api/slots/<n>/review` (pure cache lookup; POST is what spawns).
-
----
-
-## 5. Nothing is in flight — both lanes landed
-
-Both lanes of this session are landed and their worktrees removed; the only remaining worktrees are
-`steward` and `flake-waitmerge` (pre-existing). No slot holds a lane. Auto-dispatch is off, so nothing
-starts on its own.
-
-The recorder lane's own working method is worth keeping as the template: it ran all three suites, then
-**proved its new check goes red against the pre-fix code** before claiming done — the requirement its
-brief carried, because a check that is green before and after proves nothing.
-
-**One process lesson from how this landed.** The owner landed both lanes while the assistant was
-writing docs, so the code reached `main` covered only by the lane's own claim; the independent
-verification happened afterwards (§1) and passed. That order worked, but it worked by luck: the land
-gate runs only `tsc && ./e2e-claude-gate.sh`, which is *narrower* than the three suites a lane runs
-itself. If independent verification is wanted before a land, it has to start when the lane reports —
-not after.
-
----
-
-## 6. Throughput — real, but explicitly subordinate
-
-Owner's ranking, stated 2026-07-24 and load-bearing for everything below: **sensible and effective
-comes first; "as fast as possible" is a distant second.** Read this section as *where time is lost*,
-not as a mandate to go faster — several of the levers here are deliberately parked behind §7.
-
-The uncomfortable observation stands on its own:
-
-> **9 slots were free all day and we ran exactly one lane at a time.**
-
-Fleet is built for parallelism — 16 slots, worktree isolation, and three e2e suites that derive
-socket/port/dir from `$$` specifically so they can run concurrently. We drove it as a serial pipeline.
-Ranked by cost, the real waits were:
-
-1. **Serialization (largest by clock, NOT the first thing to fix).** Not caused by slots or by safety —
-   by **change locality**: both lanes touched `server.ts` and would have collided on land. The
-   constraint is the *file footprint*, not the lane count. The unlock would be **footprint-disjoint
-   dispatch**, whose input is `filesTouched` in the outcome row — precisely what §5 is fixing.
-   **But it must not be taken yet**, and the reason is the whole point of this project's operating
-   model: machine capacity was never the constraint — **review is** (`operating-model.md` Invariant 5).
-   Three concurrent lanes produce three diffs that must each be read carefully, and this session's
-   evidence is that the careful read is exactly what catches what the gates cannot (§4). Parallelism
-   ahead of perception does not buy throughput; it buys a backlog of unreviewed green work, which is
-   the expensive failure mode, not the cheap one. Park it behind §7.2.
-2. **Re-verification serialized after the lane already verified.** Both times my independent run agreed
-   with the lane's claim. n=2 is far too small to stop verifying — the value of a check is in the case
-   where the lane errs, not the expected case — but it should run **concurrently** with reading the
-   diff and the review, and should not duplicate what the land gate will run anyway.
-3. **Correction round-trips.** Each costs a full re-verify cycle. Both of this session's corrections
-   trace to a *namable* brief gap, now written into `lane-brief-template.md` → "Lessons earned".
-4. **Waiting for the owner to land.** This is the designed gate. It stays.
-
-**Speed comes from removing human *waits*, not human *checks*.** The two are constantly confused, and
-under the owner's ranking only the first is ever on the table.
-
-One lever that is about *effectiveness*, not speed, and is therefore worth taking early: **auto-run ③
-when a lane goes done-looking**
-(`automation-frontiers.md` §3, "verify-before-surface"). It spends only a subscription call, it cannot
-gate anything, and the existing git-state cache key makes "fire once per state" nearly free to
-implement correctly. By the time the owner looks, the findings are already there — a wait removed
-without a check removed.
+**A number that must not be trusted as it stands.** `BACKLOG.md` Track A records "~25 % of un-nudged
+slots look helped" as *the null any future nudge must beat*. It is a per-boot artefact:
+`baselineSamples` is an in-memory ring (cap 50), absent from `fleet.json`. Live re-read this
+session: **6.7 % (1/15)** vs 25 % (3/12) — **Fisher exact p = 0.294**, indistinguishable. Detecting
+a 15→30 pp lift needs **≈121 samples per arm**; the ring holds 50 and empties on every restart, and
+the nudged arm stands at **0**. Never set a done-criterion of "nudged rate beats `baselineRate`".
 
 ---
 
-## 7. What I would do next, in order
+## 4. New durable knowledge — which doc owns what
 
-**The selection principle, from this project's own critique.** `automation-frontiers.md` carries a
-section titled *"Discipline check — the theory is ahead of the build"*, and that remains the standing
-risk: this corpus holds far more analysis than shipped mechanism. So the ordering rule is —
-**prefer the small thing that closes a loop over the large thing that extends the map.** ③ is the
-model: built in one lane, and it produced a real, load-bearing finding on its second use (§4/DP2).
-
-1. ~~Land the recorder fix.~~ **Done** — landed and deployed (§3). Row 3 will be the first real test
-   of it; nothing else has to happen for that.
-2. **Perception before any new capability.** ①b the outcome feed (`lane-autonomy-future.md` item 6,
-   "Post-hoc review feed" — the earlier pointer to `merge-review-autonomy.md` component #6 was wrong;
-   that doc's §6 is "Hard rules") **plus** persisting review findings onto the outcome row, **plus**
-   auto-running ③ when a lane goes done-looking (§6). Today the ledger is write-only and reviews
-   evaporate on the next deploy: Fleet cannot see itself.
-   **Designed 2026-07-25 in `docs/perception-layer.md`; write half BUILT the same day (`600d401`) —
-   (c)+(b) are in `server.ts`, (a) the feed is still open, and no row carries a review yet
-   (`docs/knowledge-layers.md` §5).** Order corrected to c → b → a (b has nothing
-   to persist until c exists), `done-looking` must become a *deterministic* predicate rather than the
-   digest worker's LLM label, and the persisted review must carry its own staleness. Per `docs/README.md` §"Four capabilities", in-flight steering (c)
-   is not responsibly buildable without this — and neither is parallelism (§6.1). This is the
-   ambitious-but-correct piece, and it is also the *small* one: the rows exist, the schema exists, the
-   findings exist in RAM. It is wiring, not invention.
-   **Status 2026-07-25 (`600d401`): the write side is BUILT** — auto-③ on a deterministic
-   `done-looking` (`lane-signals.ts:laneDoneLooking`, `server.ts:tickAutoReview`) and the review
-   persisted onto the outcome row with its own staleness relation (`server.ts:outcomeReview`).
-   What remains of this item is **only** the feed (a): the ledger still has no reader, so the
-   "write-only" half of the sentence above still holds and the "reviews evaporate" half no longer does.
-3. **The steward-nudge measurement** — `docs/steward-nudge.md` §8, and read §9 below first. It is pure
-   analysis over artefacts that already exist, touches nothing live, and it *decides* whether the
-   mechanism is worth building. This replaces the vaguer "prompt-logic session": the prompt corpus and
-   its derived model already exist and are done (§9), so the open question is no longer *what* the
-   owner corrects but **whether a machine could have known when**.
-   The cheap instrumentation is already in place: `ownerPrompts` in the outcome row is an intervention
-   proxy (a lane that landed unaided records 1; each correction adds one — both of this session's lanes
-   recorded 2), `briefHash` correlates a brief to its outcome, and steward sends are their own
-   prompt-journal source, currently **0**, so every future nudge is unambiguously attributable.
-4. **Footprint-disjoint parallel dispatch** — explicitly **gated behind (2)**. Capacity is not the
-   constraint; review is. Revisit only once the feed makes unreviewed work visible.
-5. **Opportunistic:** the two shared-plumbing defects in §8; `e2e-isolated.sh` graduating into the land
-   gate (it ran clean every time this session — a datapoint, not a proof).
-
-**Guardrails that must not move while doing any of it:** the land gate stays machine-checked and the
-owner holds the token; autonomy expands only where the blast radius is "wasted lane"; an advisory
-agent may only ever *downgrade* an auto-land, never widen it.
+- **`docs/knowledge-layers.md`** (new, `8bd7b98`) — the three layers measured against their own
+  stated bars, the sabotage loop, §7's ordering. Read before proposing any knowledge store: the
+  answer to "does Fleet need a lookup service" is **no**, because the recurring defect is currency,
+  not findability.
+- **`docs/discrepancy-audit.md`** (new) — **operative.** Eight discrepancy classes each with a
+  confirmed instance and the command that proved it; five proof rules; fix-vs-document; five sweep
+  axes; hard limits; findings log F1–F13. Load it before auditing the corpus against the code.
+- **`docs/perception-layer.md`** — the design, with its build status, and §5's corrected staleness
+  rule: **content identity via `git patch-id --stable`, not commit identity** (the land path
+  rebases, so a key comparison would mark reviews superseded chronically — worst under the
+  parallelism the layer exists for). Empirically: patch-id survives a rebase whose main-side edits
+  are far from the lane hunks and changes when main edited inside the ±3 context lines, which is the
+  honest answer because that is the interaction the review never saw.
+- **`docs/merge-review-autonomy.md`** — the fast-tier gate **is deployed** (believed otherwise for a
+  day), and F9's adjudication in both directions.
+- **`CLAUDE.md` → Deploy** — the auto-③ flag contract (gitignored; Fleet copies it into every lane).
 
 ---
 
-## 8. Known-real, deliberately unfixed
+## 5. Method lessons — including four of this session's own errors
 
-- **Shared-plumbing pair (affects ✨ summarize AND 🔍 review identically).** (i) Both cache the awaited
-  single-flight result under the **second** caller's key — a racing POST can store a result computed
-  for a different git state. (ii) The cache key omits the lane base ref. Fixing only the review half
-  would leave the two asymmetric and hide a shared defect; they belong in one change touching both.
-- **Both existing ledger rows stay zeroed** (§3) — row 1 by the bug, row 2 by the un-deployed fix.
-  Neither is backfilled, on purpose.
-- **Leaked test servers from PRIOR sessions:** pids `23906/23907` (Jul 23), `57507` (Jul 21), `51871`
-  (Jul 18), plus ~193 stale tmux socket files in `/private/tmp/tmux-501/`. Outside the repo = shared
-  reality; reported, not touched. This session's own suite runs cleaned up after themselves.
-- **Auto-dispatch is OFF** (`dispatch: false`, `FLEET_DISPATCH_REPO` unset). Lanes are spawned
-  explicitly; turning it on is an autonomy expansion and an owner decision.
+Statements about *working method*, not about Fleet. Each is a worked example inside
+`discrepancy-audit.md`, which is why its proof rules read the way they do.
 
----
-
-## 9. The sharpen-corpus findings — read this before designing any prompt mechanism
-
-Late in the session the owner pointed at `~/.claude/knowledge/sharpen-corpus/` (205 mined `/sharpen`
-situations, 182 resolved, a derived model, an adversarial and a completeness evidence pass, and
-`rebuild.py` to regenerate from the durable transcripts). **It changes what a prompt mechanism here
-may be, and two claims made earlier in this very session were wrong because of it:**
-
-- **`/sharpen` is a drift-correction operator, not intent-clarification.** The activating word ("gib
-  dir Mühe", "denk gut nach", "own your work") is **content-free** — it precedes *opposite* operations
-  at #0/#38/#51. The content comes from the gap between the situation and the owner's running
-  intention, reconstructed by the receiver.
-- **THE GUARD (binding).** A correction is `f(situation, running intention)`, and the second coordinate
-  **is not a surface feature** — #92 vs #191/#192 resolve to opposite corrections from an identical
-  visible surface. A table keyed on the surface therefore *fails*, and flattening the axes into
-  `situation-type → mechanism` is named as "the specific error this corpus exists to prevent".
-  `situations.jsonl` is ground truth; the axis model is an index into it.
-- **Corrected in this handoff:** the earlier line "the prompt corpus is thin — only 87 owner rows" used
-  the wrong file and the wrong measure. `streams/prompts.jsonl` is a raw send log; the actual corpus is
-  the 205 situated records, already analysed, and **cross-validated against OWNER.md** — its three
-  dominant drift-corrections are exactly OWNER.md §2's top three, from two independently built
-  artefacts. It is not thin and it is not raw. It is done.
-- **Also corrected:** the "lessons earned" entries in `lane-brief-template.md` were first written as a
-  growing checklist. Both defects were discoverable *inside the repo*, so they were
-  attention-allocation failures, not information failures — and "enumerate more neighbours" does not
-  scale. The framing was fixed in `eedb1fb`; a brief's job is only the residue that exists **solely in
-  the conversation**.
-
-**What follows from it — `docs/steward-nudge.md` (designed, NOT built).** The owner's proposal: the
-steward fires a short, **content-free**, purely positive trigger at a lane on a surface signal, and the
-*session* supplies the correction from its own brief and state. This splits the function at the only
-seam that survives THE GUARD — **steward owns the timing, never the content** — so no lookup ever
-forms. It widens playbook #3 `continue-nudge` (which already carries the manually-proven predecessor
-the doctrine requires); it is not a new intervention type. Two things not to lose:
-
-- **"Purely positive" is a safety property, not a tone.** The corpus's boundary condition (*no gap →
-  sharpen idles, harmless when nothing changed*) holds only for a content-free trigger. A message
-  carrying a diagnosis gets conformed to **even when the diagnosis is wrong** — told it was shallow, a
-  capable model digs deeper and invents a problem. Free false positives are what make the mechanism
-  deployable unattended; give that up and it needs a human again.
-- **It can only ever mean "more".** The axes are bidirectional; `ASK→ACT`, `scope-creep→discipline` and
-  the stop cases must stay with `stuck-looping` / `awaiting-human` (*escalate, never improvise*). A lane
-  five rounds into a structural problem, told "gib dir Mühe", digs further in.
-
-**Do not build a prompt writer.** The corpus's own finding is that the corrective *type* is largely
-stock; this design deliberately does not instantiate. A small fixed vocabulary is the ceiling THE GUARD
-imposes, and it is enough — put the intelligence budget into the *timing* decision.
+1. **Running a check is not reading its output.** A `patch-id` experiment was reported as
+   "empirically verified" while `fatal: invalid upstream 'master'` sat visibly in the same output —
+   the rebase under test never ran. The conclusion happened to be right; the evidence was worthless,
+   and it was handed to a lane as proven.
+2. **A correction must address the same object as the claim.** "9 slots were free all day" (about
+   2026-07-24) was "corrected" with a measurement taken 2026-07-25 — and the fact is *unknowable*,
+   since historical slot occupancy is never persisted. Retracted.
+3. **Judging a diff by its TypeScript.** "I read the whole diff" had skipped the three shell
+   scripts — which is exactly where both real findings were (auto-③ ON by default in production;
+   harnesses must disable it). The land gate lives in a shell script.
+4. **Editing a section after reading part of it.** The F9 correction was written after reading 30
+   lines of a 67-line entry, so it landed beside the lane's own counter-argument — which had already
+   *rejected* the objection the correction *accepted*. Result: two contradictory paragraphs in the
+   land preview. Same class as (3), one level finer. **This is what the owner saw as "the dispute".**
+   Adjudicated in `40c4611`: the objection wins about the title (row 3 falsifies "cannot" deductively)
+   and loses about the verdict (proof rule 2 — the worktree is gone, so *why* it passed is
+   unrecoverable), and the mechanism offered was refuted in its one checkable part.
+5. **Read the surrounding comment before calling something wrong.** This codebase documents its
+   deliberate trades in place. When the code owns the trade, the finding is not "this is a defect"
+   but "a doc elsewhere uses it as if the trade did not exist." The audit lane applied this and
+   **dropped 14 of 27 candidates** with that as the dominant cluster; dropping is a result.
+6. **Delegation gives breadth, not verdicts.** Five dedicated agents produced the map that made this
+   session's findings possible — and one of their headline findings (F9) was too absolute and
+   contradicted a ledger row. Every agent finding is a candidate until re-proven first-hand.
+7. **The reviewer is the author.** For anything designed in this session, the owner's read is the
+   only independent check; the "gib dir Mühe" rounds are the only mechanism compensating for it.
+   There is ③ for lane diffs and nothing adversarial for specs and briefs.
 
 ---
 
-## 10. Where the durable knowledge went this session
+## 6. Traps that bit, with mitigations
 
-- `docs/README.md` — **new**: the four-capability map (a/b/c/d), which doc owns which, and why the safe
-  expansion order is b → a → c. Read it before treating the autonomy docs as competing frameworks.
-- `docs/automation-frontiers.md` §1a — **new**: corrections split into *taste* (sparse, high-variance,
-  teaches the owner-model) vs *defect* (dense, objectively adjudicable, teaches the **brief** and
-  measures the gate's blind spot), with this session's two instances as the first real data.
-- `docs/lane-brief-template.md` — **new** "Lessons earned from real lanes", framed as *instances, not a
-  checklist* (see §9): the scaling rule is the habit sharpen installs, and a brief carries only the
-  residue that exists solely in the conversation.
-- `docs/steward-nudge.md` — **new**: the content-free nudge design, why it survives THE GUARD, its
-  direction-bias limit, and the measurement that gates it. Anchored from `docs/README.md`, from
-  playbook #3 in `docs/steward-autonomy.md`, and from `BACKLOG.md`.
-- `docs/lane-autonomy-future.md` — the recorder-defect diagnosis with line refs.
-- `docs/merge-review-autonomy.md` §7 — ③ shipped; ledger unblocked; landed rows not yet trustworthy.
-- `CLAUDE.md` → Deploy — the model tiers and the zsh-glob quoting rule (on disk, gitignored; Fleet
-  copies it into every lane worktree).
-- memory `project-fleet-landing-autonomy` — "a row of zeros looks like data and is worse than no row."
+- **Landing ≠ deploying** — 3×. Mitigation: §1's box; mechanically P-4.
+- **Doc collision lane ↔ main checkout** — fired live: slot 9 committed `8bd7b98` touching the same
+  four docs the audit lane had already edited → three real conflicts. It failed *loudly* only
+  because slot 9 committed rather than leaving work uncommitted. Both sides were real work and were
+  merged by hand keeping each side's unique insight — main's tombstone deliberately carries no
+  filename-with-extension so the planned pointer-check cannot trip over its own gravestone; the
+  lane's carried the proof and where the norm moved. **Rule: two producers on `docs/` at once needs
+  the second's footprint known up front, or the first landed.**
+- **A claim I retracted:** that running a suite inside a lane worktree leaves untracked files and
+  blocks `land`. **False** — `e2e-isolated.sh` copies the tree to a `$$`-derived `$DIR` and the
+  stand-ins write there. Concurrent verification *is* possible; the `git archive` copy used this
+  session was unnecessary caution with a false rationale.
+- **The land gate's first step is luck-dependent** (`discrepancy-audit.md` F9). `bunx tsc
+  --types bun` needs `node_modules`; `createWorktree` copies only
+  `.env`/`CLAUDE.md`/`.claude/settings.local.json`; the resolution walk does not rescue it
+  (`~/node_modules` holds 4 packages, no `bun-types`); 3 of 5 worktrees have none. Row 3 proves it
+  *can* pass, but not why — and an unexplainable green is not a gate.
+
+---
+
+## 7. Outside the repo — reported, not touched
+
+Shared reality per CLAUDE.md: **3 leaked `bun server.ts` from prior sessions** (pids 51871 Jul 18,
+57507 Jul 21, 23907 Jul 23 + its tmux server 23906) and **216 stale socket files** in
+`/private/tmp/tmux-501/`. Owner's call; cleanup command on request.
+
+`FLEET_CLEAN_REVIEW` stays **off**, auto-dispatch stays **off** — both are autonomy expansions and
+owner decisions.
+
+---
+
+## 8. A fresh session's first five minutes
+
+1. Run the state command in §1. If `srv` still predates the newest code commit, **that is the first
+   task** — nothing measured before it means anything.
+2. `docs/README.md` for the map, then `docs/knowledge-layers.md` §7 for the ordering and
+   `docs/discrepancy-audit.md` for the proof discipline. Those three make this file mostly
+   redundant, which is the intent.
+3. Check whether any ledger row carries a `review` object yet. That single fact says whether the
+   perception write side has ever run in production.

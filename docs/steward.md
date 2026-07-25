@@ -93,7 +93,7 @@ the judgment").
 
 - Not a server feature, slot type, or UI mode — revisit only if the convention
   proves insufficient in real use.
-- Not a gate: like every advisory agent (right-tab-agents.md), its judgment never
+- Not a gate: like every advisory agent (`perception-layer.md` §7), its judgment never
   blocks or triggers anything mechanically.
 - Not cross-project: Fleet-only for now. Generalize the pattern elsewhere only
   after it has proven itself here.

@@ -62,6 +62,19 @@ esac
 EOF
 chmod +x "$DIR/fakecleanreview"
 
+# Reap servers a SIGKILLed earlier run left behind — the one abort path the EXIT trap cannot
+# cover, keyed on owner-PID liveness so a concurrent run is never touched. Full rationale (and
+# the measurements for the signals the trap DOES handle) at the same block in e2e-isolated.sh.
+TMUX_SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+for _s in "$TMUX_SOCKDIR"/fleetcrtest*; do
+  [ -S "$_s" ] || continue
+  _own="${_s##*/fleetcrtest}"
+  case "$_own" in ''|*[!0-9]*) continue ;; esac
+  [ "$_own" = "$$" ] && continue
+  kill -0 "$_own" 2>/dev/null && continue
+  tmux -L "fleetcrtest$_own" kill-server 2>/dev/null
+done
+
 # unique-per-run socket: without this trap an interrupted run would leak its tmux server forever
 trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 tmux -L "$SOCK" kill-server 2>/dev/null

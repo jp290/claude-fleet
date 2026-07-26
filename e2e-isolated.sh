@@ -179,6 +179,32 @@ printf '{"result": "{\\"digest\\": {\\"conditions\\": {\\"1\\": \\"healthy-runni
 EOF
 chmod +x "$DIR/fakedigest"
 
+# ORPHAN REAP — the complement to the trap below, for the one abort path the trap cannot cover.
+# Measured 2026-07-26, so the negative half is on the record too: the EXIT trap DOES run on TERM,
+# on HUP, on a real terminal Ctrl-C (group SIGINT), and on tmux's kill-session teardown of a lane
+# pane — those paths already clean up and need no extra trap specs. SIGKILL is the escape: the
+# shell dies without running anything, and because the socket name carries this wrapper's own PID,
+# no later run ever reuses that socket to collect it. Reproduced: `kill -9` on the wrapper left
+# `tmux -L fleettest<pid>` alive with its ORIGINAL start time (so, never re-created — simply never
+# killed), the scratch dir behind, and the suite child reparented to init still driving the socket.
+# That is the shape of the orphan found in the wild, whose node_modules symlink pointed at a lane
+# worktree that no longer existed.
+# So: reap at START, keyed on whether the socket's OWNER PID is still alive. Deliberately NOT the
+# age heuristic ("kill fleettest servers older than N hours") — these wrappers are expressly run
+# concurrently and a live run's owner PID is alive BY DEFINITION, so liveness cannot shoot down a
+# neighbour the way an age cutoff could. The residual failure is the safe direction: if a dead
+# owner's PID has since been recycled by an unrelated process, the reap is skipped and the socket
+# just survives to the next run. Killing a live run would be worse than the leak.
+TMUX_SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+for _s in "$TMUX_SOCKDIR"/fleettest*; do
+  [ -S "$_s" ] || continue                        # no glob match → the pattern itself; not a socket
+  _own="${_s##*/fleettest}"
+  case "$_own" in ''|*[!0-9]*) continue ;; esac    # only fleettest<pid>, never fleettestlane…
+  [ "$_own" = "$$" ] && continue
+  kill -0 "$_own" 2>/dev/null && continue          # owner alive → a live run, hands off
+  tmux -L "fleettest$_own" kill-server 2>/dev/null
+done
+
 # unique-per-run socket: without this trap an interrupted run would leak its tmux
 # server forever (no later run reuses the socket to kill it)
 trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT

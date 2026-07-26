@@ -15,6 +15,7 @@ import * as dirsPins from "./e2e/dirs-pins";
 import * as slots from "./e2e/slots";
 import * as history from "./e2e/history";
 import * as summary from "./e2e/summary";
+import * as transport from "./e2e/transport";
 import * as autos from "./e2e/autos";
 import * as share from "./e2e/share";
 import * as lanesBasic from "./e2e/lanes-basic";
@@ -52,6 +53,11 @@ await dirsPins.run();
 await slots.run();
 await history.run();
 await summary.run();
+
+// --- transport: gzip, the app.js cache-buster chain, the per-connection byte ledger.
+// Needs an active slot 1 (for the ws.send half) and leaves no state behind — it restores the
+// bundle fixture it writes into this instance's public/ copy.
+await transport.run();
 
 // --- scheduled prompts: one-shots, perpetuals, the kill-switch, quiet hours ---
 await autos.run(ctx);

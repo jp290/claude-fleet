@@ -323,6 +323,12 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
 - 32 checks in `fleet-e2e-postland-audit.ts` plus 2 default-off non-regression checks in the main
   suite. Coalescing, non-overlap, non-blocking, the joins, the scratch-dir isolation, env scrubbing,
   and all three `unknown` shapes are each pinned.
+- **Since 2026-07-26 the PENDING queue is durable as well** (`post-land-audit-queue.json`, written
+  synchronously on every mutation, resumed at boot against the current tip; the entry is consumed
+  only after its row exists, so an in-flight audit survives the death of its own process). It closes
+  the gap measured in `mining-2026-07-26.md` finding 1 — the deploy ritual (`land → kill-session -t
+  srv`) had raced and erased every audit it triggered. 17 further checks, sections E–G of the same
+  file; the count above is now 49.
 
 **What it does not solve** (its own docs say the first two; the rest are mine):
 

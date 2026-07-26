@@ -39,6 +39,10 @@ const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
 // the post-land audit trail (verification tier 2) — one row per full-suite run against the
 // integration branch after a land. Same appendEvent discipline/rotation as the trails above.
 const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
+// the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
+// (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
+// every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
+const POSTLAND_AUDIT_QUEUE_FILE = `${import.meta.dir}/post-land-audit-queue.json`;
 // one rotation generation (audit.jsonl -> audit.jsonl.1, oldest overwritten) — override for tests
 const AUDIT_ROTATE_BYTES = Number(process.env.FLEET_AUDIT_ROTATE_BYTES ?? 5_000_000) | 0;
 const HOME = process.env.HOME!;
@@ -2876,6 +2880,34 @@ let lastPostLandAudit: PostLandAuditRow | null = null;
 // the current run finishes.
 const auditQueue = new Map<string, { main: string; covers: AuditCover[] }>();
 let auditDraining = false;
+// ...and its DURABLE mirror. Measured gap (docs/mining-2026-07-26.md finding 1): four lands
+// between 18:31 and 18:37 on 2026-07-26 were followed by a watchdog respawn at 18:37:52, and every
+// pending audit died with the old process — no row, no `unknown` marker, nothing that could be
+// told apart from "nothing landed". The trigger is not exotic: the documented deploy ritual for
+// server-touching work IS land-then-`kill-session -t srv`, so tier 2 structurally missed exactly
+// the lands that precede a deploy. A sensor a restart erases is not a sensor, the same argument
+// that already rehydrates `lastPostLandAudit` at boot — this is the pending half of it.
+// SYNCHRONOUS on purpose, unlike saveState's promise chain: the event this must survive is a kill
+// milliseconds after the mutation, and a queued microtask does not survive that. The payload is a
+// handful of entries, so the write costs less than the git call the land path just made.
+// tmp + rename for the same reason saveState does it — a torn file reads as "nothing pending",
+// which is precisely the failure being fixed.
+function savePostLandAuditQueue(): void {
+  try {
+    if (!auditQueue.size) {
+      rmSync(POSTLAND_AUDIT_QUEUE_FILE, { force: true }); // absent = nothing pending
+      return;
+    }
+    const tmp = `${POSTLAND_AUDIT_QUEUE_FILE}.tmp`;
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(auditQueue), null, 2), { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, POSTLAND_AUDIT_QUEUE_FILE);
+  } catch (e) {
+    // never throws into the land path: a queue that cannot be persisted still works in memory for
+    // as long as this process lives, which is strictly today's behaviour and no worse.
+    console.log(`post-land audit queue save failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
 // COALESCED, not per-land. Three lands arrived within ~110s on 2026-07-25; running three full
 // suites back to back would cost ~3× the machine for strictly less information, because the suite
 // is a property of a TREE, not of a diff — auditing the newest tip subsumes every land folded into
@@ -2889,6 +2921,7 @@ function schedulePostLandAudit(repo: string, main: string, branch: string, mainA
   q.main = main;
   q.covers.push({ branch, mainAfter, at: Date.now() });
   auditQueue.set(repo, q);
+  savePostLandAuditQueue(); // durable BEFORE the land path returns — see the file's comment
   if (auditDraining) return; // the loop below will pick this up — never a second concurrent suite
   auditDraining = true;
   void drainPostLandAudits();
@@ -2899,8 +2932,22 @@ async function drainPostLandAudits(): Promise<void> {
     // and drives tmux, so parallelism here buys latency and pays in load and cross-talk.
     while (auditQueue.size) {
       const [repo, q] = [...auditQueue.entries()][0];
-      auditQueue.delete(repo);
-      await runPostLandAudit(repo, q.main, q.covers); // never throws — every failure is a row
+      // FROZEN before the run, not deleted: the covers this run stands for are exactly the ones
+      // queued now, while a land that arrives DURING the suite appends to the same entry and must
+      // be folded into the next run (the coalescing contract above) rather than retired by this
+      // run's bookkeeping.
+      const covers = q.covers.slice();
+      await runPostLandAudit(repo, q.main, covers); // never throws — every failure is a row
+      // ...and only NOW is the entry consumed. Deleting first — today's order — means a process
+      // death mid-run loses the audit even with a durable mirror, because the mirror would already
+      // say "nothing pending". An entry outlives its run and dies with the ROW: queued and
+      // in-flight-at-death are the same state on disk, and both re-enter the drain at boot.
+      // Residual, stated: the gap between the row and this write is AT-LEAST-ONCE. A death inside
+      // it re-audits the same tip once more after boot — one extra row, never a missing one. The
+      // direction is chosen: a duplicate row is visible and cheap, a silent miss is the bug.
+      q.covers.splice(0, covers.length);
+      if (!q.covers.length) auditQueue.delete(repo);
+      savePostLandAuditQueue();
     }
   } finally {
     // released INSIDE the loop's own frame, not from a `.finally` on the caller: a microtask
@@ -4466,6 +4513,45 @@ if (existsSync(POSTLAND_AUDIT_FILE)) {
     if (last) lastPostLandAudit = JSON.parse(last) as PostLandAuditRow;
   } catch {
     console.log("post-land audit trail: last row unreadable — the board starts without it");
+  }
+}
+// ...and resume the PENDING side of it. Everything still on the queue file is a land whose audit
+// never produced a row: queued behind a running suite, or in flight when the process died. Both
+// re-enter the drain here, against the CURRENT integration tip — which is not a compromise but the
+// coalescing rule already stated above: the suite measures a TREE, not a diff, so auditing the
+// newest tip subsumes every land folded into it, and `covers` still names them all. A restart is
+// just a longer fold-up.
+if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
+  try {
+    const parsed: unknown = JSON.parse(await Bun.file(POSTLAND_AUDIT_QUEUE_FILE).text());
+    const resumed: [string, { main: string; covers: AuditCover[] }][] = [];
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [repo, v] of Object.entries(parsed as Record<string, unknown>)) {
+        const e = v as { main?: unknown; covers?: unknown };
+        if (typeof e.main !== "string" || !Array.isArray(e.covers)) continue;
+        const covers = e.covers.filter((c): c is AuditCover =>
+          !!c && typeof c === "object" && typeof (c as AuditCover).branch === "string"
+          && typeof (c as AuditCover).mainAfter === "string" && typeof (c as AuditCover).at === "number");
+        if (covers.length) resumed.push([repo, { main: e.main, covers }]);
+      }
+    }
+    const pending = resumed.reduce((n, [, q]) => n + q.covers.length, 0);
+    if (pending && !POSTLAND_AUDIT_CMD) {
+      // UNCONFIGURED ≠ SKIPPED, the verify gate's three-valued stance: a server booted without a
+      // tier-2 command has not decided these lands are fine, it simply cannot measure them. So the
+      // file is left byte-for-byte alone (nothing above loaded it into `auditQueue`, and nothing
+      // can mutate it while the command is unset) — configure the command, restart, and it drains.
+      console.log(`post-land audit queue: ${pending} pending land(s) across ${resumed.length} repo(s), but`
+        + " FLEET_POSTLAND_AUDIT_CMD is unset — left on disk, unaudited (unconfigured is not skipped).");
+    } else if (pending) {
+      for (const [repo, q] of resumed) auditQueue.set(repo, q);
+      console.log(`post-land audit queue: resuming ${pending} pending land(s) after restart — `
+        + resumed.map(([repo, q]) => `${basename(repo)}: ${q.covers.map((c) => c.branch).join(", ")}`).join(" | ").slice(0, 300));
+      auditDraining = true; // nothing can be draining yet — this is boot
+      void drainPostLandAudits();
+    }
+  } catch (e) {
+    console.log(`post-land audit queue unreadable — pending audits are lost, the trail is unaffected: ${e instanceof Error ? e.message : e}`);
   }
 }
 

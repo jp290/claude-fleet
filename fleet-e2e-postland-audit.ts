@@ -3,9 +3,10 @@
 // THIS harness boots with the flag pointed at a stand-in suite and proves the ON behaviour: a land
 // triggers an audit against the LANDED tree without blocking the land, its result is recorded durably
 // and joinably, a red is surfaced, an audit that cannot produce a verdict records UNKNOWN (never
-// green), and a burst of lands never spawns two concurrent suites.
+// green), a burst of lands never spawns two concurrent suites, and — sections E–G, which restart the
+// server and therefore run last — a pending audit survives the death of the process that owed it.
 // Run via ./e2e-postland-audit.sh — never against a live fleet.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const IP = "127.0.0.1";
 const PORT = Number(process.env.FLEET_PORT ?? 8790);
@@ -89,6 +90,60 @@ const waitRows = async (n: number, timeoutMs = 60_000): Promise<AuditRow[]> => {
   }
 };
 const newest = (rows: AuditRow[], i = 0): AuditRow => rows[i] ?? NO_ROW;
+// the trail read straight off disk — the durability section asserts things about moments when
+// there is no server to ask
+const trailRows = (): AuditRow[] => {
+  try {
+    return readFileSync(`${import.meta.dir}/post-land-audits.jsonl`, "utf8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l) as AuditRow);
+  } catch { return []; }
+};
+// poll the stand-in's evidence log until `n` runs of a given mode have STARTED (it writes its line
+// before doing anything else). Returns the count it saw, so a timeout fails the caller's own check.
+const waitRunMode = async (mode: string, n: number, timeoutMs = 30_000): Promise<number> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const c = (await runLog()).filter((l) => l.includes(`mode=${mode}`)).length;
+    if (c >= n || Date.now() >= deadline) return c;
+    await Bun.sleep(100);
+  }
+};
+// the PENDING queue's durable mirror. Absent file = nothing pending, which is the assertion in
+// several checks below, so "missing" must be a distinguishable value rather than an exception.
+type QueueEntry = { main: string; covers: { branch: string; mainAfter: string; at: number }[] };
+const QUEUE_FILE = `${import.meta.dir}/post-land-audit-queue.json`;
+const readQueueRaw = async (): Promise<string> => {
+  try { return await Bun.file(QUEUE_FILE).text(); } catch { return ""; }
+};
+const readQueueFile = async (): Promise<Record<string, QueueEntry> | null> => {
+  const raw = await readQueueRaw();
+  if (!raw.trim()) return null;
+  try { return JSON.parse(raw) as Record<string, QueueEntry>; } catch { return null; }
+};
+
+// --- srv restart, rebuilt from the env the harness script exported (same pattern as e2e/restart.ts,
+// so the restarted server is the same instance under test rather than a differently-configured one).
+// `audit:false` boots WITHOUT FLEET_POSTLAND_AUDIT_CMD — the unconfigured case, which has to be a
+// genuinely unconfigured server, not a server pointed at a stand-in that declines.
+const envArg = (k: string, v: string | undefined): string =>
+  v === undefined ? "" : `${k}='${v.replaceAll("'", "'\\''")}' `;
+const killSrv = async (): Promise<void> => {
+  await Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]).exited;
+  await Bun.sleep(500);
+};
+const startSrv = async (opts: { audit: boolean }): Promise<boolean> => {
+  const env = ["FLEET_CMD", "FLEET_AUTO_REVIEW_MS", "FLEET_VERIFY_CMD", "FLEET_MERGE_CMD",
+    "FLEET_CLEAN_REVIEW", "FLEET_CLEAN_REVIEW_CMD", "FLEET_POSTLAND_AUDIT_TIMEOUT_MS",
+    ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]
+    .map((k) => envArg(k, process.env[k])).join("");
+  await Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
+    `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${env}exec bun server.ts >> server.log 2>&1`]).exited;
+  for (let i = 0; i < 120; i++) {
+    try { if ((await get("/api/sessions")).ok) return true; } catch { /* not bound yet */ }
+    await Bun.sleep(250);
+  }
+  return false;
+};
 
 // throwaway repo the lanes fork from
 const REPO = `${import.meta.dir}/testrepo`;
@@ -287,6 +342,88 @@ check("the trail answers 'which lands came after a red one'",
   firstRedIdx >= 0 && all.slice(0, firstRedIdx + 1).flatMap((r) => r.covers.map((c) => c.branch)).join(",")
     === [hotel.branch, golf.branch, fox.branch, echoLane.branch].join(","),
   JSON.stringify(all.slice(0, firstRedIdx + 1).flatMap((r) => r.covers.map((c) => c.branch))));
+
+// ===== (E) THE PENDING QUEUE SURVIVES THE SERVER — the deploy ritual raced the audit ============
+// Measured incident (docs/mining-2026-07-26.md finding 1): four lands, then a srv restart seconds
+// later, then nothing — no rows, no unknowns, indistinguishable from "nothing landed". The queue
+// was in memory only, and land-then-deploy is the COMMON case for server-touching lanes. Everything
+// below runs LAST on purpose: it restarts the server, and the sections above assert exact row counts.
+await setAuditMode("crash"); // 25s — long enough to kill srv with the audit demonstrably in flight
+const rowsBeforeCrash = (await auditRows()).length;
+const india = await makeLane("india");
+const iLanded = await landLane(india);
+// wait for the suite to actually START before killing the server: the point of this case is a
+// death MID-RUN, and the drain spends a moment on rev-parse + git archive before spawning
+const crashRun = await waitRunMode("crash", 1);
+const queuedOnDisk = await readQueueFile();
+check("a land's pending audit is written to the durable queue file, naming the land and its repo",
+  iLanded.gone && queuedOnDisk !== null
+    && Object.values(queuedOnDisk).some((q) => q.covers.some((c) => c.branch === india.branch)),
+  JSON.stringify(queuedOnDisk));
+await killSrv();
+const rowsAtDeath = trailRows(); // read from the file — there is no server to ask
+check("setup: the audit was still in flight when the server died (no row was written)",
+  crashRun === 1 && rowsAtDeath.length === rowsBeforeCrash,
+  `runsStarted=${crashRun} rowsBefore=${rowsBeforeCrash} rowsAtDeath=${rowsAtDeath.length}`);
+// the entry OUTLIVES its own run: an in-flight-at-death audit is still pending on disk, which is
+// the ordering fix (the drain used to consume the entry before running the suite)
+const queuedAfterDeath = await readQueueFile();
+check("an audit that died MID-RUN is still pending on disk — the entry outlives its run, not vice versa",
+  queuedAfterDeath !== null
+    && Object.values(queuedAfterDeath).some((q) => q.covers.some((c) => c.branch === india.branch)),
+  JSON.stringify(queuedAfterDeath));
+
+await setAuditMode("green");
+check("the restarted server came back up", await startSrv({ audit: true }));
+const iRows = await waitRows(rowsBeforeCrash + 1, 60_000);
+const i = newest(iRows);
+check("the restarted server RESUMES the lost audit — a row appears for the land it never audited",
+  i.result === "green" && i.covers.some((c) => c.branch === india.branch),
+  JSON.stringify(i).slice(0, 300));
+check("the resumed audit ran against the CURRENT integration tip (the fold-up rule, across a restart)",
+  i.mainSha === headOf(), `audited=${i.mainSha} head=${headOf()}`);
+check("the queue file is emptied once the row exists (absent = nothing pending)",
+  (await readQueueFile()) === null, JSON.stringify(await readQueueFile()));
+
+// ===== (F) A CLEAN RESTART AUDITS NOTHING — exactly one row per land, no double-audit ===========
+const rowsBeforeCleanRestart = (await auditRows()).length;
+await killSrv();
+check("the server came back up from a clean (empty-queue) shutdown", await startSrv({ audit: true }));
+await Bun.sleep(3000); // give a (wrong) resumed run time to appear before asserting there is none
+const afterClean = await auditRows();
+check("a restart with nothing pending starts NO audit (the queue is a work list, not a trigger)",
+  afterClean.length === rowsBeforeCleanRestart, `before=${rowsBeforeCleanRestart} after=${afterClean.length}`);
+check("the resumed land was audited exactly ONCE across the whole run — no double-audit",
+  afterClean.filter((r) => r.covers.some((c) => c.branch === india.branch)).length === 1,
+  JSON.stringify(afterClean.filter((r) => r.covers.some((c) => c.branch === india.branch)).map((r) => r.covers)));
+
+// ===== (G) UNCONFIGURED ≠ SKIPPED — a boot without a tier-2 command leaves the queue alone =======
+// Same three-valued stance as the verify gate: a server that cannot measure has not decided the
+// lands are fine. It must not quietly drop them, and it must not fabricate a row either.
+await setAuditMode("crash");
+const rowsBeforeUnconf = (await auditRows()).length;
+const juliett = await makeLane("juliett");
+await landLane(juliett);
+await waitRunMode("crash", 2);
+await killSrv();
+const queueBytesAtDeath = await readQueueRaw();
+check("setup: the second crash left the juliett land pending on disk",
+  queueBytesAtDeath.includes(juliett.branch), queueBytesAtDeath.slice(0, 200));
+check("the server came back up WITHOUT a tier-2 command", await startSrv({ audit: false }));
+await Bun.sleep(3000);
+check("a boot with FLEET_POSTLAND_AUDIT_CMD unset leaves the queue file BYTE-FOR-BYTE untouched",
+  (await readQueueRaw()) === queueBytesAtDeath, (await readQueueRaw()).slice(0, 200));
+check("...and fabricates no row for it (unconfigured is not a verdict)",
+  (await auditRows()).length === rowsBeforeUnconf, `before=${rowsBeforeUnconf} after=${(await auditRows()).length}`);
+await setAuditMode("green");
+await killSrv();
+check("the server came back up with tier 2 configured again", await startSrv({ audit: true }));
+const jRows = await waitRows(rowsBeforeUnconf + 1, 60_000);
+const j = newest(jRows);
+check("configuring the command and restarting DRAINS what the unconfigured boot preserved",
+  j.result === "green" && j.covers.some((c) => c.branch === juliett.branch), JSON.stringify(j).slice(0, 300));
+check("the queue file is gone once that row exists too", (await readQueueFile()) === null,
+  JSON.stringify(await readQueueFile()));
 
 console.log(results.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");

@@ -1147,11 +1147,36 @@ function expandCwd(raw: string): string {
 }
 
 async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null = null,
-  model: string | null = null): Promise<void> {
+  model: string | null = null, label: string | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  // Detach before the teardown below, so a recycled slot's tasks carry THIS reason —
+  // killSlot's own detach would otherwise get there first and file the abort under
+  // "lane closed before landing".
+  detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
+  // a share must not outlive its session (same invariant killSlot enforces) — recycling
+  // an active slot onto a different cwd must not leave an old guest link/password
+  // pointed at whatever the slot becomes next. Also BEFORE the teardown below, and for the
+  // same reason as the detach: killSlot closes guest sockets with its default 4001, which the
+  // guest UI renders as "this share was revoked" (src/share.ts). A recycle is a session END —
+  // close them here with 4000 so the guest is told the truth.
+  const oldShare = shares.find((x) => x.slot === s.id);
+  if (oldShare) closeShareClients(s, oldShare.id, 4000, "session ended");
+  shares = shares.filter((x) => x.slot !== s.id);
+  // Recycling an ACTIVE slot: ensureSlot below only builds a pane when none exists, so without
+  // this teardown every write in this function (cwd, model, the rotated selfToken, the cleared
+  // history) would be state-only fiction laid over a pane that keeps running in the OLD directory
+  // with the OLD env baked in. Observed live 2026-07-25: the board reported the new cwd while
+  // `pane_current_path` was still the old one, and the session's self-scheduling route 401'd
+  // against its stale FLEET_SELF_TOKEN. The pane is the ground truth, so PROBE THE PANE rather
+  // than s.cwd — state and tmux can disagree (an adopted pane, a kill that failed). Deliberately
+  // placed after the cwd validation: a bad path must never destroy a running session.
+  if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s);
   s.cwd = cwd;
-  s.label = null; // a fresh session gets a fresh identity
+  // a fresh session gets a fresh identity — but the caller may name it AT SPAWN, which is the
+  // only moment a label-keyed env export (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in;
+  // open-then-rename always arrives after the pane's env is fixed
+  s.label = label;
   // set BEFORE ensureSlot spawns the pane below — FLEET_SELF_TOKEN is only baked into a
   // lane's pane env, so ensureSlot must see the final worktree tag, not a later patch-up
   s.worktree = worktree;
@@ -1176,14 +1201,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // the entry makes the fact UNKNOWN until the tick computes it for this cwd, and an unknown is
   // never permission to act (lane-signals.ts: null git → not done-looking).
   gitInfo.delete(s.id);
-  detachSlotTasks(s.id, "slot recycled before landing"); // recycling an active slot is a teardown too
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
-  // a share must not outlive its session (same invariant killSlot enforces) — recycling
-  // an active slot onto a different cwd must not leave an old guest link/password
-  // pointed at whatever the slot becomes next
-  const oldShare = shares.find((x) => x.slot === s.id);
-  if (oldShare) closeShareClients(s, oldShare.id, 4000, "session ended");
-  shares = shares.filter((x) => x.slot !== s.id);
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
@@ -5981,13 +5999,19 @@ Bun.serve<WSData>({
         if (!body) return json({ error: "expected application/json" }, 400);
         const mo = modelOf(body);
         if (!mo.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
+        // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
+        // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
+        // baked in by naming the slot here — open-then-rename is always too late.
+        if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
+          return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
+        const label = typeof body.label === "string" ? body.label.trim() || null : null;
         try {
-          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model);
+          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed" }, 400);
         }
         void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
-        return json({ ok: true, cwd: s.cwd });
+        return json({ ok: true, cwd: s.cwd, label: s.label });
       }
       if (slotMatch[2] === "open-worktree") {
         const body = await readJson(req);

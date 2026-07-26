@@ -1,6 +1,6 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, and HTML/txt export
 // (including the real-metacharacter escaping regression).
-import { IP, PORT, TOKEN, check, get, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
+import { IP, PORT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
 import { exists } from "./lane-helpers";
 
 export async function run(): Promise<void> {
@@ -17,6 +17,57 @@ export async function run(): Promise<void> {
   const s2 = await tmuxOut("has-session", "-t", "s2");
   check("tmux s1 exists", s1.code === 0);
   check("tmux s2 exists", s2.code === 0);
+
+  // --- regression: re-opening an ACTIVE slot must move the PANE, not just the state row.
+  // ensureSlot builds a pane only when none exists, so openSlot has to tear the running one
+  // down first. Without that the API answered with the new cwd while the session kept running
+  // in the OLD directory and kept the OLD (by then rotated) FLEET_SELF_TOKEN in its env —
+  // observed live 2026-07-25 on the steward slot. Slot 3 is free here (its open was rejected
+  // above) and is killed again at the end of this block. ---
+  const HOME = process.env.HOME ?? "";
+  const panePath = async (target: string, want: string): Promise<string> => {
+    let seen = "";
+    for (let i = 0; i < 60; i++) { // the shell's cwd, polled — never a fixed sleep
+      seen = (await tmuxOut("display-message", "-p", "-t", target, "#{pane_current_path}")).out.trim();
+      if (seen === want) return seen;
+      await Bun.sleep(100);
+    }
+    return seen;
+  };
+  const rcA = await post("/api/slots/3/open", { cwd: "~" });
+  check("recycle fixture: slot 3 opens at ~", rcA.ok, JSON.stringify(await rcA.json()));
+  check("recycle fixture: the fresh pane runs in the opened cwd", (await panePath("s3", HOME)) === HOME);
+  await tmuxOut("send-keys", "-t", "s3", "export FLEET_E2E_RECYCLE_MARK=stale", "Enter");
+  check("recycle fixture: the pane carries a marker before the recycle",
+    (await paneEnv("s3", "FLEET_E2E_RECYCLE_MARK")) === "stale");
+  const rcB = await post("/api/slots/3/open", { cwd: "~/claude-fleet" });
+  const rcBJ = (await rcB.json()) as { cwd?: string };
+  check("re-open of an ACTIVE slot answers with the new cwd", rcB.ok && rcBJ.cwd === `${HOME}/claude-fleet`,
+    JSON.stringify(rcBJ));
+  const rcPath = await panePath("s3", `${HOME}/claude-fleet`);
+  check("re-opening an active slot moves the tmux pane to the new cwd, not just the state row",
+    rcPath === `${HOME}/claude-fleet`, rcPath);
+  const rcMark = await paneEnv("s3", "FLEET_E2E_RECYCLE_MARK");
+  check("...and the pane is a NEW process: the recycled session inherits no env from the old one",
+    rcMark === "", `[${rcMark}]`);
+
+  // --- a label may be set AT SPAWN: the pane's env is fixed the moment tmux creates it, so a
+  // label-keyed export (FLEET_STEWARD_TOKEN) can only be baked in by naming the slot on open.
+  // Open-then-rename is always too late, which is what made the ⚙ steward slot impossible to
+  // reproduce from the board (steward-core.ts has to kill the pane to observe the same bake). ---
+  const stewTok = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+  const rcC = await post("/api/slots/3/open", { cwd: "~", label: "⚙ steward" });
+  const rcCJ = (await rcC.json()) as { label?: string | null };
+  check("open takes a label at spawn and answers with it", rcC.ok && rcCJ.label === "⚙ steward", JSON.stringify(rcCJ));
+  const rcBaked = await paneEnv("s3", "FLEET_STEWARD_TOKEN");
+  check("a slot opened WITH the steward label has FLEET_STEWARD_TOKEN baked into its pane env",
+    rcBaked === stewTok && stewTok.length === 32, `[${rcBaked}]`);
+  const rcLong = await post("/api/slots/3/open", { cwd: "~", label: "x".repeat(41) });
+  check("open rejects a 41-char label", rcLong.status === 400);
+  check("a rejected open leaves the running session untouched (validation precedes the teardown)",
+    (await (await get("/api/sessions")).json() as { slots: { id: number; label: string | null; cwd: string | null }[] })
+      .slots.find((x) => x.id === 3)?.label === "⚙ steward");
+  await post("/api/slots/3/kill", {});
 
   // --- rename ---
   const rn = await post("/api/slots/2/rename", { label: "research-agent" });

@@ -48,9 +48,9 @@ pane can drive itself.
 | # | Fact | Writer | Automatic consumer | Can diverge? | Direction | Cost |
 |---|------|--------|--------------------|--------------|-----------|------|
 | 1 | `s.lastOutput` | `poll` 1561 only; `killSlot` → 0 (1219); **not persisted** (411-420) | `laneSignalView.idleMs` 3964 → both lane-signals clauses; `canDeliver` busy gate 1382 (autos, steward send, land gate 5180); outcome `outputBaseline` 3906 | **YES — every srv restart** | **DANGEROUS** (reads "quiet forever") | D1 |
-| 2 | `s.cwd` | `openSlot` 1141 | `tickGit` 704-735 (all git facts), `ensureSlot`, `reviewState`, `transcriptFile` | YES — `openSlot` on an ACTIVE slot never respawns the pane (1071) | **DANGEROUS** (git facts of a dir nobody works in) | D2 |
-| 3 | `s.selfToken` | `openSlot` 1147 (rotate) | `/api/self/autos` 4500 | YES, same path as #2 — pane env is spawn-time (1084) | SAFE (fail-closed 401) | D2 note |
-| 4 | `s.sessionId` | `ensureSlot` 1097 only `if (created.code === 0)` | `tickHarvest` 1757, `transcriptFact` 3981, `sessionStart` 490 | YES, same path as #2 (stays `null` forever) | SAFE (facts go absent) | D2 note |
+| 2 | `s.cwd` | `openSlot` 1141 | `tickGit` 704-735 (all git facts), `ensureSlot`, `reviewState`, `transcriptFile` | ~~YES — `openSlot` on an ACTIVE slot never respawns the pane (1071)~~ **CLOSED 2026-07-26** (see D2) | **DANGEROUS** (git facts of a dir nobody works in) | D2 |
+| 3 | `s.selfToken` | `openSlot` 1147 (rotate) | `/api/self/autos` 4500 | ~~YES, same path as #2 — pane env is spawn-time (1084)~~ **CLOSED with #2** | SAFE (fail-closed 401) | D2 note |
+| 4 | `s.sessionId` | `ensureSlot` 1097 only `if (created.code === 0)` | `tickHarvest` 1757, `transcriptFact` 3981, `sessionStart` 490 | ~~YES, same path as #2 (stays `null` forever)~~ **CLOSED with #2** | SAFE (facts go absent) | D2 note |
 | 5 | `s.label` | `openLaneInSlot` 1040, rename route 5521 | `tickAutoReview` skip 2280, `stewardSlotsView.doneLooking` 4001, steward-token bake 1090 | YES — relabel is instant, the pane's env is not | **DANGEROUS** (authority outlives the role) | D5 |
 | 6 | `s.worktree.base` | `openLaneInSlot` 1035 (set); `tickDispatch` 1489 (**deliberately absent**) | `laneBaseRef` 555 → `tickGit` ahead/behind 724-731, `buildLaneOutcome` 2827 — but **NOT** the land target (5182) | YES — two answers for "this lane's base" | **DANGEROUS** (lands onto a branch it never forked from) | D3 |
 | 7 | `s.worktree.baseSha` | `laneForkSha` 571 at create/attach | `buildLaneOutcome` 2827 | No divergence found (immutable, absent→honest fallback) | SAFE | — |
@@ -144,6 +144,28 @@ Note the direction is only *dangerous* for a plain session — `openSlot` sets `
 and `doneLooking` requires `!!s.worktree` (4001), so no lane automation fires on it.
 
 **Proposal:** either refuse (mirror 5541) or make it a real recycle (`killSlot` then open).
+
+**FIXED 2026-07-26** — the second option. `openSlot` now probes `tmux has-session` for its own
+slot and, when a pane is there, runs the full `killSlot` teardown before `ensureSlot` (grep the
+comment *"Recycling an ACTIVE slot"*). The probe is on the PANE, not `s.cwd`, because state and
+tmux can disagree, and it sits *after* the cwd validation so a bad path can never destroy a
+running session. Riders that close with it: the pane is respawned, so the rotated
+`FLEET_SELF_TOKEN` is the one in its env again, `s.sessionId` gets pinned by the create branch,
+and `s.model`/`s.worktree` describe the process that actually started. Regression checks live in
+`e2e/slots.ts` (`re-opening an active slot moves the tmux pane to the new cwd, not just the state
+row` + the marker probe proving the pane is a NEW process).
+
+Two consequences of the fix worth knowing. (a) Recycling is now genuinely destructive — the
+running claude session dies, where before it survived (unseen) in the old directory. The UI never
+reaches this path (`openPicker` is bound only to the `!s.cwd` empty-slot row, `src/client.ts`), so
+it costs an API caller a session, not a mis-click. (b) `killSlot` closes attached owner sockets
+with 4000; the client reconnects 1.5s later if its cached `fleet` row still shows a cwd
+(`src/client.ts` `ws.onclose`). The ~50ms window in which `s.cwd` is null could, if a 2s poll
+lands exactly inside it, leave the terminal disconnected until a reload — a cosmetic residue, not
+a state lie.
+
+Still true, and NOT changed here: the route has no active-slot guard, so recycling remains a
+single unconfirmed call. That is deliberate — it is now honest about what it does.
 
 ---
 
@@ -247,6 +269,12 @@ attracting unattended reviewers.
 
 **Proposal:** rotate `stewardToken` whenever the steward label moves, and re-derive authority from
 the *current* steward slot rather than from a global secret.
+
+**Unchanged 2026-07-26, but one half of the asymmetry is now addressable:** `openSlot` takes an
+optional `label`, so a pane can be spawned *with* the steward label and get the token honestly in
+one call (`docs/steward.md`) instead of only via a kill-and-self-heal. That closes "the steward
+slot is not reproducibly creatable"; it does not touch D5's hazard, which is the token surviving
+the label it was keyed on.
 
 ---
 

@@ -12,6 +12,23 @@ the credential export at spawn (`const stewardExport = s.label === STEWARD_LABEL
 handed `FLEET_STEWARD_TOKEN` and can self-serve `/api/steward/*`.** The convention is still a
 convention — nothing forces a steward to exist — but the label is now a security-relevant name.
 
+**How to actually create one (2026-07-26).** Because the export is baked at spawn, open-then-rename
+never produced a steward pane — the label arrives after tmux has fixed the pane's env, and
+`openSlot` used to clear the label to `null` right before spawning anyway. `POST /api/slots/:id/open`
+therefore takes an optional `label`, applied *before* the spawn:
+
+```
+curl -X POST http://<host>:<port>/api/slots/<id>/open -H 'authorization: Bearer <owner token>' \
+  -H 'content-type: application/json' \
+  -d '{"cwd":"<repo>.worktrees/steward","label":"⚙ steward"}'
+```
+
+That is a single reproducible call, and it is destructive by design: an active slot's pane is torn
+down and respawned (see `state-reality-divergence.md` D2). The **board's** picker still sends only
+`{cwd}` and is reachable only for empty slots, so the label path is API-only for now. Renaming a
+live slot to `⚙ steward` still does NOT hand it the token until its pane respawns — that gap (and
+the reverse one, authority outliving the label) is D5, unchanged.
+
 ---
 
 ## What it is

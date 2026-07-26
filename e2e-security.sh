@@ -33,6 +33,19 @@ for r in testrepo dispatchrepo; do
     && printf 'root\n' > code.txt && git add code.txt && git commit -qm init )
 done
 
+# Reap servers a SIGKILLed earlier run left behind — the one abort path the EXIT trap cannot
+# cover, keyed on owner-PID liveness so a concurrent run is never touched. Full rationale (and
+# the measurements for the signals the trap DOES handle) at the same block in e2e-isolated.sh.
+TMUX_SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+for _s in "$TMUX_SOCKDIR"/fleetsectest*; do
+  [ -S "$_s" ] || continue
+  _own="${_s##*/fleetsectest}"
+  case "$_own" in ''|*[!0-9]*) continue ;; esac
+  [ "$_own" = "$$" ] && continue
+  kill -0 "$_own" 2>/dev/null && continue
+  tmux -L "fleetsectest$_own" kill-server 2>/dev/null
+done
+
 trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 tmux -L "$SOCK" kill-server 2>/dev/null
 

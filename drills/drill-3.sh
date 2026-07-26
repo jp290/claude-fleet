@@ -12,7 +12,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="${1:-$(cd "$HERE/.." && pwd)}"
 DIR="${TMPDIR:-/tmp}/fleet-drill3-$$"
 SOCK="fleetdrill$$"
-PORT=$((15000 + $$ % 2000))
+# Port band 17400-19399, clear of every suite's: isolated 8800-10799, claude-gate 10800-12799,
+# clean-review 13000-14999, security 15200-17199. This started at 15000 and OVERLAPPED security
+# by 1800 ports — harmless while security ran nowhere, and live the moment it entered the gate
+# (58203f2), because the gate runs on every lane verify while a drill takes minutes.
+PORT=$((17400 + $$ % 2000))
 
 [ -f "$SRC/server.ts" ] || { echo "not a fleet checkout: $SRC"; exit 2; }
 rm -rf "$DIR"; mkdir -p "$DIR"

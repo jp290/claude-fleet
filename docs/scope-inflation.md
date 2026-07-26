@@ -122,13 +122,29 @@ korrekt.
 verrannt, und ihre Diffs stapeln sich bis auf zwei triviale additive Konflikte. Das
 Werkzeug hat funktioniert. Falsch war, wie viel Arbeit hineingegeben wurde.
 
-## 6 — Offen
+## 6 — Ausgang, nachgetragen am selben Abend
 
-Der Fall ist **nicht abgeschlossen**. C und D laufen noch. Ob sie sich lohnen, ist
-**ungemessen** — genau das ist der Punkt: A landet, dann wird gemessen, und erst
-dann entscheidet sich, ob C und D in `server.ts` gehören oder in die Ablage. Wenn
-dieses Dokument später gelesen wird und die Frage immer noch offen ist, ist das ein
-eigener Befund.
+Alle vier sind gelandet (`bc4e975`, `da0857e`, `7722de4`, `f323fb4`) und live. Gemessen am
+laufenden Server, dieselbe Messung wie in §1: `/api/sessions` **112 410 B → 7 479 B roh, 1 907 B
+auf der Leitung** — 3,37 MB/min → 57 KB/min, also 67 MB → 1,1 MB in zwanzig Minuten.
+
+Was das für die These dieses Dokuments heißt, in beide Richtungen ehrlich:
+
+- **Die Vorgabe erfüllt Punkt ① allein.** Die 8 KB sind A; die 1,9 KB auf der Leitung sind A+B.
+  Die Latte lag bei 80–90 %, A allein liefert ~93 %, A+B 98,3 %. C und D stehen **außerhalb** der
+  Vorgabe, wie §2 behauptet hatte.
+- **C und D sind trotzdem nicht wertlos** — C deckelt den einzigen unbegrenzten Posten im Budget
+  (bis 2 MB pro Reconnect), D macht den Rest schaltbar. Sie sind gute Arbeit an einer Frage, die
+  niemand gestellt hatte. Genau das ist „zu gut gemeint", und es sieht im Nachhinein nicht wie ein
+  Fehler aus — deshalb braucht es ein Maß und keinen Vorwurf.
+- **Ein Befund, den nur das Landen zutage fördern konnte:** Cs Owner-Reseed-Pfad landete mit der
+  nackten Konstante `SEED_LINES`, sodass Ds Sparbudget genau dort wirkungslos geblieben wäre — auf
+  dem Pfad, der im Datensparmodus am meisten kostet. Beim Auflösen des Merge-Konflikts gefunden und
+  auf `seedLines` gezogen. Zwei Lanes, die einander an einer Zeile verfehlen, ist ein Preis der
+  Aufteilung, den §4 nicht auf der Rechnung hatte.
+
+Was das Landen zusätzlich gekostet hat, steht nicht hier, sondern in `verify-tiering.md` §11: vier
+Suite-Läufe für eine Attribution, wo einer gereicht hätte.
 
 ## 7 — Vorschlag für `CLAUDE.md` (nicht eingetragen)
 

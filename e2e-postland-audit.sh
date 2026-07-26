@@ -14,7 +14,8 @@ PORT=$((15000 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e-postland-audit.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
+  "$SRC/continuity.ts" "$SRC/fleet-e2e-postland-audit.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # green verify stand-in (no sabotage marker → clean+green → the lane auto-lands, which is what the
@@ -54,6 +55,9 @@ chmod +x "$DIR/fakemerge"
 #   green (default) — exit 0 · red — a failure tail + exit 1 · slow — 6s, for the coalescing test
 #   decline — the reserved skip exit (42) · notrunnable — exec a missing binary (exit 127)
 #   hang — 30s, longer than FLEET_POSTLAND_AUDIT_TIMEOUT_MS, so the server's kill path is exercised
+#   crash — 25s, for the durability section: long enough that the suite can kill srv with the audit
+#           demonstrably still in flight. It drops the busy lock immediately (an ORPHANED run
+#           outliving its dead server must not make the next run look like an OVERLAP)
 cat > "$DIR/fakeaudit" <<'EOF'
 #!/bin/sh
 d="$(dirname "$0")"
@@ -67,6 +71,7 @@ case "$mode" in
   notrunnable) rm -f "$d/auditbusy"; exec "$d/no-such-audit-binary" ;;
   slow)        sleep 6 ;;
   hang)        sleep 30 ;;
+  crash)       rm -f "$d/auditbusy"; sleep 25 ;;
 esac
 rm -f "$d/auditbusy"
 echo "ALL PASS"
@@ -116,7 +121,14 @@ done
 sleep 0.5
 
 cd "$DIR" || exit 1
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun fleet-e2e-postland-audit.ts
+# the durability section restarts srv itself (kill mid-audit → boot again), so the same env the
+# srv-spawn line above uses is exported to the harness process, which rebuilds that line from
+# process.env — same pattern as e2e/restart.ts. FLEET_HOST/PORT/SOCK ride along too.
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true \
+  FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_MERGE_CMD="$DIR/fakemerge" \
+  FLEET_POSTLAND_AUDIT_CMD="$DIR/fakeaudit" FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 \
+  FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD="$DIR/fakecleanreview" \
+  bun fleet-e2e-postland-audit.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

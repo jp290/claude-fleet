@@ -54,17 +54,84 @@ The server binds **only** the Tailscale IP — `127.0.0.1:8790` never answers an
 
 ## 2. Do this next, in this order — the order is the content
 
-1. **Deploy.** main has moved a lot (§6) and none of it is live. `pgrep` first (above): an srv
+1. **`launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog`, then an srv restart.** The
+   new pre-land gate (§2a) is committed and **not live**: `VERIFY_CMD` is baked into the srv spawn
+   line, and the running `sh` does not re-read `watchdog.sh` mid-loop. `pgrep` first (§1) — a
    restart inside a running audit discards it silently, no row, no log line (`babbf719`).
-2. **Fire-drill #3** — `./drills/drill-3.sh`, on a QUIET machine. Not beside an audit, a suite, or
-   a fresh lane: measured 2026-07-26, concurrent `e2e-isolated.sh` runs manufacture failures on
-   *both* trees with *different* signatures, so such a pair proves nothing. `DRILL_SMOKE=1` first
-   if you changed the harness — it exercises the mechanics with a stand-in and tells you nothing
-   about the judge, which is the point.
+   **Do not read `codeBehind:true` as "the server is stale".** Right now it is true because
+   `watchdog.sh` and two harnesses moved; `git diff --name-only <bootHead>..HEAD` shows no
+   `server.ts`. Check the file list before spending a restart.
+2. **Fire-drill #3** — `./drills/drill-3.sh`, on a QUIET machine. Still unrun. Not beside an audit,
+   a suite, or a fresh lane: measured 2026-07-26, concurrent `e2e-isolated.sh` runs manufacture
+   failures on *both* trees with *different* signatures, so such a pair proves nothing.
+   `DRILL_SMOKE=1` first if you changed the harness — it exercises the mechanics with a stand-in
+   and tells you nothing about the judge, which is the point.
 3. **`7319e7ad`** — a filed task cannot be corrected. This is the queue's metabolism (§7).
 4. **`639e35ff`** (`landInitiatedBy`) — the ledger axis a gate needs before it exists.
 
 Nothing here is a burn-down item. The queue is not a list to empty (§7).
+
+Machine hygiene, both learned the hard way: count contention with
+`ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh'` — a bare `grep e2e-isolated.sh` counts zsh
+wrappers and reports contention that is not there. Serialise suites with
+`until mkdir /tmp/fleet-e2e.lock 2>/dev/null; do sleep 20; done` … `rmdir`.
+
+## 2a. The pre-land gate changed today (`07be94d`) — committed, NOT live
+
+`verify-tiering.md` §8 steps 1+2 are applied. `tsc` now covers seven files instead of four (the
+three single-file harnesses were imported by nothing the checker saw), and `./e2e-clean-review.sh`
+joins the gate ahead of `./e2e-claude-gate.sh` — **the first land-path coverage the gate has ever
+had**. `FLEET_VERIFY_TIMEOUT_MS=300000` rides along; verified the server actually reads it
+(`server.ts`, grep `VERIFY_TIMEOUT_MS`).
+
+**Step 2b is in too** (`58203f2`), after the burn-in §8 asks for and that had never actually
+happened: 10/10 `ALL PASS`, 47 checks each, **34–35 s, variance under a second** — markedly more
+deterministic than `./e2e-isolated.sh` managed in three runs. The earlier "10 runs" were void
+because the suite was broken (§2b).
+
+§8 measured the parts. Measured here for the first time, twice, exactly as the server will run it:
+**three-part gate exit 0 in 69 s** (§8 predicted 65.6 s median / 73.8 s worst) and **four-part gate
+exit 0 in 101 s** (§8 predicted 100.0 s with 2b folded in). The 300 s timeout is 2.97× the latter.
+Ordered cheapest-first so it fails fast: tsc 1.6 → clean-review 19 → security 35 → claude-gate 45.
+
+Deliberately still out: `./e2e-isolated.sh` (§5 — non-deterministic under load; it stays tier 2,
+*after* the land).
+
+## 2b. A suite that runs in no gate rots silently — twice in one evening
+
+The same mechanism twice, by two different lanes, and neither was noticed until a human ran the
+suite by hand. This is the strongest argument for §8 that this day produced — stronger than §8's
+own numbers.
+
+- **A foreign lane broke it.** `13c5728` (continuity) added `server.ts`'s fourth relative import and
+  pulled `continuity.ts` into three e2e wrappers — not `e2e-security.sh`. From that land on the
+  suite aborted in ~3 s at `Cannot find module './continuity'`, ran **zero** checks, exited 1.
+  Fixed: `d146e74`.
+- **Its own lane broke it.** The data-saver land replaced the 2 s poll's task list with digests, so
+  `fleet-e2e-security.ts` §5 — which matched its task by `text` against `/api/sessions` — got
+  `undefined` and four checks fell as dominos behind one broken join. Fixed: `e5e5e80`, using the
+  id-join pattern `e2e/intake.ts` already had to adopt. That lane never saw this harness because it
+  is a single file **outside** the `e2e/` structure.
+
+Two things worth carrying, neither obvious from the fixes:
+
+- The digest sheds **more than text** — null-valued fields are omitted entirely. So the spoof
+  assertions now read the STORED record via `GET /api/tasks`, where a rejected `slot` is an
+  explicit `null`; against the digest they would have had to assert an *absent key*, a weaker claim
+  about a different object. Porting the id-join alone would have quietly downgraded a security check.
+- The join now has its **own named check**, so the next payload change fails at the join instead of
+  reporting four unrelated security checks as broken.
+
+**Resolved on the way:** the suite's runtime had grown 34 s → 90 s and the handover flagged it
+uninvestigated. It was the broken §5 poll burning its full 60 × 1 s budget. After the fix, ten runs
+at 34–35 s — back on §8's numbers. No second defect underneath.
+
+**The lesson that outlives both fixes:** a burn-in certifies only what it actually exercised, and
+"how many checks ran" is not visible in the exit code or the tail. The import failure was loud
+(exit 1 after 3 s), but the §5 breakage was not — the suite still ran, still ended, and reported
+42/4 with four *named security checks* dark. So count the checks per run
+(`grep -c '^PASS'` — it is why the burn-in log above carries `checks=47` on every line, not just a
+tail). A run whose check count silently drops is the shape that gets mistaken for a burn-in.
 
 ## 3. Settled — do not re-derive
 
@@ -137,12 +204,34 @@ the §2 amendment · `f009a31` openSlot moves the pane · `da5186d` e2e teardown
 **`da8b09f` SEC-4** (the ② reviewer is read-only by capability, not by prompt) ·
 **`884ba29`** the dispatcher stop survives a restart and leaves a trail · `3e30cfe` per-slot
 mission · `13c5728` continuity fact · `83a25b2` the drill harness + sealed ground truth.
-Two of these were briefed by the dispatcher, not by a human. A **data-saver program** is running on
-separate lanes (`22390c4`, `8a2951d`) — not this session's work; read its own commits.
+Two of these were briefed by the dispatcher, not by a human.
 
-`CLAUDE.md` was updated in the main checkout (gitignored, so it never shows in a catchup diff):
-the "concurrency-safe" claim now says explicitly that it covers socket/port/dir and **not machine
-load**, and that a fails-identically-at-HEAD proof must run serially or it is worthless.
+**The data-saver program landed AND is deployed** (`bc4e975` payload · `da0857e` transport ·
+`7722de4` reconnect · `f323fb4` mode) — separate lanes, not this session's work; read its own
+commits and `docs/data-saver.md`. Measured on the running server: `/api/sessions` 112 410 B →
+7 479 B raw, **1 907 B on the wire** (gzip); 3.37 MB/min → 57 KB/min. Verified here that the server
+did boot on it (`bootHead f323fb4`).
+
+Then, from the slot-8 handover: `d146e74` + `e5e5e80` (§2b) and **`07be94d`** the pre-land gate
+(§2a). `docs/scope-inflation.md` is new and `docs/verify-tiering.md` §11 is extended — a fourth
+flake family (merge/resolver) and a corrected proof method: **repeating the SAME tree beats a fresh
+HEAD worktree**, because a green HEAD run cannot separate "our regress" from "the flake did not
+fire this time". §11.6 was retracted by its own author and §11.6c rejects file-based check
+selection with numbers — do not re-open either.
+
+`CLAUDE.md` was updated in the main checkout (gitignored, so it never shows in a catchup diff — a
+lane cannot do this, it must report the text and someone applies it by hand):
+
+- "concurrency-safe" now says explicitly that it covers socket/port/dir and **not machine load**.
+- **The flake-proof order is inverted, and this replaces the old rule.** Re-run the SAME tree
+  first; green on a re-run proves non-determinism directly and you are done. The fresh HEAD
+  worktree is the *fallback* for a tree that keeps failing identically — because a *green* HEAD run
+  proves nothing (it cannot separate "our regress" from "the flake did not fire this time") while
+  reading like a conviction.
+- Four known flake families, not two: §5b's three plus **merge/resolver**.
+- The quiet-machine check and the `/tmp/fleet-e2e.lock` serialisation idiom.
+- Before a finding becomes a programme: quote the owner's instruction verbatim and cut the ranking
+  where it is satisfied (`docs/scope-inflation.md` §7).
 
 ## 7. The queue is not a list to empty
 
@@ -179,6 +268,14 @@ The value of this section is that it is the part that does not survive a compact
   correction produced a *better* design: the field is not broken and must not be touched, so
   `landInitiatedBy` is purely additive. Also found on the way: `confirmedByHuman` lives in TWO
   places — the ledger row and the git note written by `writeLandNote`. Change one, they diverge.
+- **A handover is a claim set too** (added when slot 8 handed over). Two of its statements needed
+  correcting before use, and both would have cost a wrong action:
+  - *"HANDOFF §2 point 1 (Deploy) is done — please strike it."* Half true. The data-saver deploy
+    did happen, but main was already 7 commits ahead again and the gate change specifically needs a
+    kickstart. Striking "deploy" outright would have hidden a required step.
+  - *"fix it, 46 checks"* — the proposed fix (port the id-join) would have left a security
+    assertion silently weakened, because the digest omits null fields as well as text. The suite is
+    47 checks now, not 46; the extra one is the join itself.
 - **`confirmedByHuman` is procedural, not approval.** It answers "was there a SECOND human step",
   and every land so far is an owner-initiated merge. §1 of the criteria would license unattended
   landing on a population containing zero unattended lands. That is B3's finding, not this

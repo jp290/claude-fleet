@@ -642,6 +642,45 @@ Root-causing the merge/resolver family (§11.2) ranks *below* this, counter-intu
 a tier that gates nothing, so fixing it widens no gate. It only recovers the alarm value §7
 finding 6 already names as compromised.
 
+### 11.6c Change-aware check selection — examined, rejected, with the numbers
+
+Asked 2026-07-26: could the gate be smarter by running only the checks that a change's files or
+dependencies imply? Test-impact analysis. Measured before answering, not assumed:
+
+- **16 of the last 23 code commits touch `server.ts`** (doc-only commits excluded). At 387 KB it is
+  also the hub of the import graph, so a dependency-based rule collapses onto the same file. A
+  file→check map would say "run everything" for seven changes in ten. The granularity that makes
+  selection pay does not exist in this tree.
+- **The ceiling is minutes per day.** The remaining ~30 % are client- or e2e-only. Skipping ~60 s of
+  §8's 65.6 s median gate on those, at today's ~7 lands, is **~2 minutes a day**. The one expensive
+  suite (`e2e-isolated.sh`, ~6.5 min) is already tier 2 and asynchronous — selection saves nothing
+  there that anyone waits on.
+- **The failure direction is wrong.** A skipped check fails *silently*; 30 extra seconds fail
+  visibly. The map is a second source of truth beside the code, and a missing entry means "not
+  run" with nobody noticing — the class of rot `ungoverned-artifacts.md` exists for.
+- **Inside the suite it is blocked anyway** — §8, the mutable `LaneCtx` and its load-bearing order.
+  Suite-level selection is possible today without a refactor; it is the two minutes above.
+
+**When the idea is right, and it is:** TIA pays when the suite is long *and* the change surface is
+fine-grained. Here the long suite is already async and the surface is 70 % one file. Both fail.
+
+**The half that survives — same map, opposite direction.** Do not *skip* checks; *weight* a red.
+`filesTouched` is already on every outcome row (verified: `data-saver-c-reconnect` carries all six
+of its paths), and the failing check names are already in the audit output. Joining them answers
+"does this red concern this lane?" — which is exactly what §11.1's four runs were spent on. Today's
+four lanes touched payload, transport, the websocket seed and the mode switch; the red was
+`G1b`/`FIX1`/`outcome:`, all merge path. One second instead of twenty-five minutes.
+
+It never reduces coverage — every check still runs — so it fails safe, unlike selection. Two honest
+limits: the reliable signal is the *negative* one ("touched no `server.ts` at all"), because
+region-level attribution inside that file needs hunk ranges that rot; and it is a prior, not a
+proof — a client change can break the merge path through a shared helper, so it may say "look here
+last", never "ignore this".
+
+**Ranking:** both of these sit *downstream* of §8 being unapplied. Optimising which checks run is
+premature while the gate is 47 s and covers neither the land path nor the security suite for
+anyone.
+
 ### 11.7 Rulebook lines proposed (text, not entered — `CLAUDE.md` is gitignored)
 
 1. Replace "prove it fails-identically-at-HEAD (fresh HEAD worktree)" with: **re-run the same tree

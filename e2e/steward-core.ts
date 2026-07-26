@@ -4,7 +4,8 @@
 import { DONE_LOOKING_PROSE } from "../lane-signals";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { BASE, REPO, check, get, paneEnv, post, readText, tmuxOut } from "./harness";
+import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type ContinuitySummary } from "../continuity";
+import { BASE, REPO, check, get, paneEnv, plogRead, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 import { settleForMerge } from "./lane-helpers";
 
@@ -428,6 +429,40 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("steward digest serves the same route-computed bundle-staleness as the sessions route",
     bundleDigest?.stale === true && bundleDigest.appJsMtime === bs3?.shareJsMtime
       && bundleDigest.srcNewestMtime === bs3?.srcNewestMtime, JSON.stringify(bundleDigest));
+
+  // --- the CONTINUITY fact on the digest (continuity.ts holds the derivation + its unit tests):
+  // per-slot time-to-next-action over a bounded window and which surface resolved each wait.
+  // Route-computed like its two neighbours above — a FACT, so it must survive a dead digest
+  // worker and must not be shapeable by the model. Display rung: nothing consumes it.
+  // The journal is read on both sides of the GET because an auto can log a prompt mid-call, so
+  // the accounting identity is asserted as a RANGE rather than a racy equality. ---
+  const plogBefore = await plogRead();
+  const contJ = (await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { continuity?: ContinuitySummary };
+  const plogAfter = await plogRead();
+  const c = contJ.continuity;
+  const liveCount = (rs: { ts: number; source: string }[]) =>
+    rs.filter((e) => e.ts >= CONTINUITY_REGIME_START && (CONTINUITY_SOURCES as readonly string[]).includes(e.source)).length;
+  const liveSlots = (rs: { ts: number; slot: number; source: string }[]) =>
+    new Set(rs.filter((e) => e.ts >= CONTINUITY_REGIME_START && (CONTINUITY_SOURCES as readonly string[]).includes(e.source))
+      .map((e) => e.slot)).size;
+  check("steward digest serves the route-computed continuity summary (7d window, per-source + per-slot)",
+    !!c && c.windowMs === CONTINUITY_WINDOW_MS && c.regimeStart === CONTINUITY_REGIME_START
+    && c.from === c.now - c.windowMs && typeof c.now === "number"
+    && CONTINUITY_SOURCES.every((s) => typeof c.bySource?.[s]?.n === "number")
+    && Array.isArray(c.slots) && c.slots.every((s) => typeof s.slot === "number" && s.n > 0 && s.medianMs !== null),
+    JSON.stringify({ windowMs: c?.windowMs, from: c?.from, now: c?.now, slots: c?.slots?.length, bySource: c?.bySource }));
+  // EVERY live journal record is accounted for exactly once — measured, or named as an exclusion.
+  // A record that silently disappeared would make the fleet look more continuous than it is.
+  check("continuity on the digest accounts for every live journal record (measured + excluded, none dropped)",
+    !!c && c.overall.n + c.excluded.total >= liveCount(plogBefore) && c.overall.n + c.excluded.total <= liveCount(plogAfter)
+    && c.excluded.total === c.excluded.noPrior + c.excluded.quietHours,
+    JSON.stringify({ n: c?.overall.n, excluded: c?.excluded, live: [liveCount(plogBefore), liveCount(plogAfter)] }));
+  // this suite's journal is written fresh this run, so each slot's FIRST record is the one gap
+  // nobody can know — one unknown per slot, excluded and counted, never a 0ms response
+  check("continuity on the digest excludes each slot's first record as unknown, never as a zero gap",
+    !!c && c.excluded.noPrior >= liveSlots(plogBefore) && c.excluded.noPrior <= liveSlots(plogAfter)
+    && c.outOfScope.preRegime === 0 && c.outOfScope.nonLiveSource === 0 && c.outOfScope.malformed === 0,
+    JSON.stringify({ noPrior: c?.excluded.noPrior, slots: [liveSlots(plogBefore), liveSlots(plogAfter)], outOfScope: c?.outOfScope }));
   // the unknown direction is the load-bearing one: with the repo unreadable the counts must go
   // NULL ("cannot tell"), never fall back to 0/false, which would read as "deployed"
   rmSync(`${ctx.gapRepo}/.git`, { recursive: true, force: true });

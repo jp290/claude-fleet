@@ -46,6 +46,17 @@ correction 2026-07-25).
   alongside; on worker failure `digest` is null and the pulse senses manually — facts
   outrank claims, and the worker holds no credential (it cannot send, schedule, or
   journal). This is what fixes the steward's context-drain.
+- **The continuity fact (2026-07-26)** — the only measurement here that scores *movement*
+  rather than a judge's hit-rate on an event: for every prompt in the append-only journal
+  over a 7-day window, how long that slot had been sitting since its previous activity, and
+  which surface (`owner|share|auto|terminal|steward`) ended the wait. Rides the digest as
+  `continuity`, route-computed like `deployGap`/`sinceLastLook` (a fact the worker cannot
+  shape). Derivation + its unit tests: `continuity.ts`, `continuitySummary`. **Display rung
+  only** — nothing consumes it, there is no threshold and no alarm. Two things it deliberately
+  refuses: an unknowable gap (regime edge, journal hole, a slot's first activity) is EXCLUDED
+  AND COUNTED, never averaged in as a 0 — and records before 2026-07-19 are hard-excluded by
+  TIME, because that half of the journal is an out-of-repo reconstruction whose mislabelled
+  `owner` records are indistinguishable from native ones (`steward-nudge.md` §8).
 - **Nudge** (the only way it moves work): `POST /api/steward/send` — *fixed
   server-rendered* templates (`state_relay | lifecycle_op | continue_nudge`; **free text
   rejected**, grep `free text not accepted`); `renderStewardMessage` refuses any `ref` that doesn't match a

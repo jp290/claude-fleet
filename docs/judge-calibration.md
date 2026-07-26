@@ -85,9 +85,33 @@ Norm (2026-07-25): **no judging instance gets even display-trust before a seeded
 - **② has never once returned `would_stop` — 0 of 23, across both regimes.** Reliability and
   discrimination are different properties, and only the first is measured. A judge stuck at
   `pass` and a judge correctly seeing nothing wrong write byte-identical ledgers.
-- **Never drilled.** Everything above is a parser/reliability diagnosis, not a seeded-defect
-  test. Fire-drill #3 is designed and its ground truth sealed (2026-07-26); it runs after SEC-4
-  lands, so the configuration measured is the one that will actually run. Note ②'s evidence
+- **Fire-drill #3 RAN 2026-07-26 and produced NO MEASUREMENT — twice.** Both runs:
+  `verdict: null, raw: true, rawAnswer: ""`. Per the bar sealed before the run
+  (`drills/drill-3-sealed-ground-truth.md`), an empty answer is a non-measurement, **not a miss** —
+  so nothing may be concluded about ②'s discrimination in either direction. It is still undrilled
+  in the only sense that matters.
+  - Run 2 was unchanged and deliberately so: a non-measurement reveals nothing about the judge's
+    judgment, so re-running is not the contaminated case (that would be a re-run against a fixture
+    whose *verdict* had been seen). The timeout was NOT raised — that would measure a different
+    configuration than production's, and such a deviation belongs in the sealed file before a run,
+    not as a reaction to a disappointing one.
+  - **This is a finding of its own: 2 of 2 in the harness against ~1 in 14 in production.** Whatever
+    causes the empty answer is far more likely in the drill context. That is a lead for `cc913fe1`,
+    which owns this failure mode.
+  - Narrowed, not root-caused (measured): **no transcript was written anywhere** under
+    `~/.claude/projects` for either run, and `summaryViaSession` creates it once the first prompt
+    lands — so the reviewer never got as far as answering, which is a different failure from
+    "answered off-contract". A minimal repro showed `claude` starts fine in the drill's cwd (no
+    trust prompt), and `claudeAliveAt` (`server.ts:1341-1346`) accepts both the pane process and a
+    child, so readiness detection is not the gap. The 182 s between `slot_open` and the shadow row
+    is *consistent* with the 180 s timeout but is not evidence — that window also contains the
+    fixture build. Timeout and failed initialisation are swallowed by the same `catch`.
+  - What was NOT checked: why the session produced no transcript. That needs the tmux server kept
+    alive past the run; the harness trap tears it down.
+- **The premise held, and for the first time it was actually verified.** `tsc` on the composed tree
+  is clean, so the seeded defects really are invisible to the type gate. Note the check that
+  reported this on the *first* smoke run could not fail (`tsc … | head && echo clean` takes the
+  pipeline's status from `head`); fixed in `a261bb6` before these runs. Note ②'s evidence
   horizon is far wider than ③'s: it is told to use tools and to "READ the actual code to
   confirm" (`merge-prompt.ts:169-175`), so a spec-fair seeded defect may live anywhere in the
   rebased worktree — but it must NOT be one tsc or the gate would catch, since the prompt

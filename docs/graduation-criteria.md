@@ -223,3 +223,18 @@ to ② shadow and any future judge.
   **What this cannot do:** one drill is N=1 (`judge-calibration.md:28`). A single drill
   satisfies the "≥1 demonstrated catch" bullet and nothing else; it licenses no prompt or
   model tuning, and it does not shorten N≥25.
+- 2026-07-26 (fire-drill #3, ② clean-review — **RAN, NO MEASUREMENT, twice**). Ground truth sealed
+  and committed BEFORE the run (`83a25b2`, `drills/drill-3-sealed-ground-truth.md`); harness
+  committed alongside it so the pre-registration carries a timestamp rather than an assurance.
+  Both runs returned `verdict: null, raw: true, rawAnswer: ""`. The sealed bar classes an empty
+  answer as a **non-measurement, not a miss**, so **§2's "≥1 demonstrated catch" bullet is NOT
+  satisfied and nothing is concluded about ②'s discrimination.** The 2026-07-26 amendment above
+  opened the drill path; it has not yet been walked.
+  Not adjusted afterwards: the bar, the fixture, and the 180 s timeout all stand exactly as sealed.
+  Raising the timeout would measure a configuration production does not run, and a deviation
+  introduced in response to an unwelcome result is the failure mode pre-registration exists to
+  prevent. If a third run is attempted with a different timeout, that deviation gets written into
+  the sealed file first, with its rationale, before the run.
+  The separate finding: **2 of 2 empty answers in the harness against ~1 in 14 in production**
+  (`judge-calibration.md` carries the narrowing — no transcript written at all, so the reviewer
+  never reached the answering stage). That belongs to `cc913fe1`, not to §2.

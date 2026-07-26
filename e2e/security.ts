@@ -107,6 +107,9 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/autos/quiet", method: "POST", body: { start: 99, end: 99 }, ownerSafe: true },
   { path: "/api/dispositions", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/tasks", method: "POST", body: {}, ownerSafe: true },
+  // GET /api/tasks serves the full prompt texts (intake mail included) that the 2 s poll no
+  // longer carries — a read route, but the most content-bearing one the queue has
+  { path: "/api/tasks", method: "GET", ownerSafe: true },
   { path: "/api/dispatch", method: "POST", body: {} },
   { path: "/api/sessions", method: "GET", ownerSafe: true },
   { path: "/api/audit", method: "GET", ownerSafe: true },

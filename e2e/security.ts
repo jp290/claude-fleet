@@ -94,6 +94,7 @@ const dangerous = (slot: number): Probe[] => [
   { path: `/api/slots/${slot}/share`, method: "POST", body: { password: "short" }, ownerSafe: true },
   { path: `/api/slots/${slot}/unshare`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/slots/${slot}/rename`, method: "POST", body: { label: "sec" }, ownerSafe: true },
+  { path: `/api/slots/${slot}/mission`, method: "POST", body: { mission: "sec" }, ownerSafe: true },
   { path: `/api/slots/${slot}/land`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/slots/${slot}/merge`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/slots/${slot}/shelve`, method: "POST", body: {}, ownerSafe: true },

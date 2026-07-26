@@ -110,6 +110,17 @@ Founding task versus what has actually been committed is a real, surface-level d
 the intention in the owner's head — but the written one, and divergence from it is visible without
 anyone guessing.
 
+*Precision 2026-07-26:* the first bullet used to hold only for **lanes** — a plain checkout slot
+(the owner's own main session) had no externalized intention at all; its running intent lived in
+pane scrollback and died at `/clear`. `Slot.mission` closes that gap: an owner-settable string
+(≤300 chars, `POST /api/slots/:id/mission`, persisted like `label`, cleared on open/kill because a
+new session inherits no anchor), served verbatim as the `mission` field of `stewardSlotsView`
+alongside `task`. Two properties are deliberate and must survive any consumer built on it: the
+**owner is the only writer** (the steward token 403s on the route — a producer that can author the
+anchor its own drift is measured against is grading itself), and **`null` means unknown intent**,
+never "no intent" — absence is not permission to infer one. Nothing consumes it yet; it is display
+only, exactly like the facts above it.
+
 ## 6. Guard rails (inherited, non-negotiable)
 
 - **Cap 1 per lane per condition episode, then escalate.** Empirical, not cautious: "a second

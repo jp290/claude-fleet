@@ -21,9 +21,23 @@ PORT=$((17400 + $$ % 2000))
 [ -f "$SRC/server.ts" ] || { echo "not a fleet checkout: $SRC"; exit 2; }
 rm -rf "$DIR"; mkdir -p "$DIR"
 cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
-      "$SRC/public" "$SRC/package.json" "$DIR/"
+      "$SRC/continuity.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
 cp "$HERE/drill-3-clean-review.ts" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
+
+# A hand-maintained copy list rots the moment server.ts gains a relative import, and the symptom is
+# a boot failure that reads like anything else. It has now happened three times in one evening:
+# e2e-security.sh (d146e74), this harness, and it is why fleet-e2e-security.ts's own §5 broke too.
+# So the list is CHECKED rather than trusted — derived from server.ts itself, every run.
+missing=""
+for m in $(grep -oE 'from "\./[A-Za-z0-9_-]+"' "$SRC/server.ts" | sed 's|from "\./||; s|"||' | sort -u); do
+  [ -f "$DIR/$m.ts" ] || missing="$missing $m.ts"
+done
+if [ -n "$missing" ]; then
+  echo "FATAL: server.ts imports these, and the drill instance does not have them:$missing"
+  echo "Add them to the cp list above. The drill is VOID until then — the server cannot boot."
+  exit 2
+fi
 
 cat > "$DIR/fakeverify" <<'EOF'
 #!/bin/sh
@@ -72,11 +86,21 @@ code=$?
 
 echo
 echo "--- premise check: is the composed tree really type-clean? ---"
-echo "(if this reports errors, the seeded defects were NOT gate-invisible and the drill is void)"
-bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler \
-  "$DIR/drillrepo/src/policy.ts" "$DIR/drillrepo/src/rules.ts" "$DIR/drillrepo/src/state.ts" \
-  "$DIR/drillrepo/src/extra-rules.ts" "$DIR/drillrepo/src/report.ts" 2>&1 | head -20 \
-  && echo "tsc: clean (exit 0) — the defects are invisible to the type gate, as designed"
+# This check MUST be able to fail. It could not: the previous form piped tsc through `head` and
+# then `&& echo clean`, and a pipeline's status is the LAST command's — so `head` returning 0 made
+# it print "clean" unconditionally, directly underneath five TS6053 errors. A premise check that
+# cannot fail is worse than no premise check, because it is quoted as evidence.
+if bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler \
+     "$DIR/drillrepo/src/policy.ts" "$DIR/drillrepo/src/rules.ts" "$DIR/drillrepo/src/state.ts" \
+     "$DIR/drillrepo/src/extra-rules.ts" "$DIR/drillrepo/src/report.ts" > "$DIR/tsc.log" 2>&1; then
+  echo "tsc: clean (exit 0) — the seeded defects are invisible to the type gate, as designed"
+else
+  echo "tsc: FAILED (exit $?) — THE DRILL IS VOID, do not adjudicate its verdict."
+  echo "Either the seeded defects are NOT gate-invisible (so they test the gate, not the judge),"
+  echo "or the fixture never got built. First 20 lines:"
+  head -20 "$DIR/tsc.log"
+  code=2
+fi
 
 echo
 echo "--- reviewer transcript hint ---"

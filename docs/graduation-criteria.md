@@ -27,14 +27,20 @@ Enable opt-in, reconcilable-only, non-high-stakes-zone auto-land iff ALL of:
 
 ## 2. ② clean-review — from shadow to gate
 
-Prerequisite: shadow mode exists (runs on clean auto-lands, records verdict, gates nothing).
+Prerequisites: shadow mode exists (runs on clean auto-lands, records verdict, gates nothing)
+AND ② has passed a seeded-defect drill — the fire-drill norm below says it "applies equally
+to ② shadow", and until 2026-07-26 nothing in this section made that blocking. It is now.
 
 Enable `FLEET_CLEAN_REVIEW=1` (downgrade-only) iff ALL of:
 
 - **N ≥ 25** shadow verdicts recorded.
 - Its would-have-stopped rate is **≤ 20 %** (a brake that fires constantly is a new
   human gate, not a safety net).
-- **≥ 1** would-have-stopped verdict that the owner, on reading it, labels a real catch.
+- **≥ 1** demonstrated catch, from EITHER source: a production would-have-stopped verdict
+  the owner labels a real catch, OR a fire-drill in which ② returns `review` **and names the
+  seeded collision's symbol/file and mechanism** (a bare `review`, or one whose reason misses
+  the planted defect, is not a catch — see the 2026-07-26 amendment for why the drill path
+  was opened and what it costs).
 - **0** cases where a shadow stop-verdict was demonstrably wrong AND would have blocked
   a time-critical land (measured, not imagined).
 
@@ -186,3 +192,34 @@ to ② shadow and any future judge.
   Note: D1 repeated drill #1's missed class but carried the contradicting intent-comment
   inside the same hunk — the pass may be evidence-density-dependent, not a retraction of
   drill #1. Living state: `judge-calibration.md`.
+- 2026-07-26 (§2 amended — rationale written BEFORE the drill it enables, and before any
+  post-amendment data existed; the sealed ground truth for that drill was written after this
+  entry and independently of it).
+  **Measurement that forced it** (`lane-outcomes.jsonl`, recomputed 2026-07-26, 23 shadow
+  rows): 15 valid verdicts, **all `pass`**, **zero `would_stop` ever recorded**. Split at the
+  parser fix `7e385e4` (2026-07-25 17:26, confirmed live: it is an ancestor of the running
+  server's bootHead): before it 9 rows / 2 valid; after it 14 rows / 13 valid `pass` / 1 empty
+  answer / **0 contract misses**. Two consequences, and they point opposite ways:
+  1. The contract-miss failure mode is FIXED, not open. Any claim resting on the older
+     "8 of 14 runs miss the contract" number is regime-mixed — it counts the first 14 rows,
+     which are almost all pre-fix. The one surviving failure mode is the empty answer (1/14),
+     i.e. no response at all, and in gate mode that fails closed onto a human.
+  2. The instrument is reliable and **entirely undiscriminated**. A judge stuck at `pass` and
+     a judge correctly seeing nothing wrong write byte-identical ledgers.
+  **The structural problem:** §2's third criterion asked for a production would-have-stopped
+  verdict. ② asks exactly one question — semantic collision between a lane and main's new
+  commits *despite* a clean rebase and a green gate. That event is rare by construction; 23
+  rows produced none. It is not impossible, and this entry does not claim it is — but at the
+  current land rate, waiting for one is not a plan, and N≥25 would then be reached with a
+  column that has never once fired.
+  **What changed, stated as a loosening because that is what it is:** the discrimination
+  evidence may now come from a seeded-defect drill instead of only from production. Two
+  compensating tightenings ride along: the drill bar is stricter than the production bar (the
+  verdict must NAME the planted collision — symbol/file and mechanism; a bare `review` fails),
+  and the fire-drill norm, which already said it "applies equally to ② shadow" but was wired
+  to nothing, becomes a BLOCKING prerequisite of §2. **No threshold moved**: N≥25 and the
+  ≤20 % stop-rate stand untouched, and they still measure availability, which is all they ever
+  measured.
+  **What this cannot do:** one drill is N=1 (`judge-calibration.md:28`). A single drill
+  satisfies the "≥1 demonstrated catch" bullet and nothing else; it licenses no prompt or
+  model tuning, and it does not shorten N≥25.

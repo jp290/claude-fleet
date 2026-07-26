@@ -21,7 +21,7 @@ mkdir -p "$DIR"
 # src/ comes along for the static client-invariant checks (§7) — they must read the REAL
 # sources, and the harness resolves everything relative to its own directory.
 cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
-  "$SRC/fleet-e2e-security.ts" "$SRC/src" "$SRC/public" "$SRC/package.json" "$DIR/"
+  "$SRC/continuity.ts" "$SRC/fleet-e2e-security.ts" "$SRC/src" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # two throwaway repos: one the lane/branch checks fork from, one the dispatcher spawns from

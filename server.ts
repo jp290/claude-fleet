@@ -5060,6 +5060,71 @@ async function continuityView(now: number): Promise<ContinuitySummary> {
   return continuitySummary(records, { now, malformed, inQuietHours });
 }
 
+// --- the two ledgers the Rundgang was structurally blind to (docs/mining-2026-07-26.md finding 5:
+// the only two RED post-land audits ever recorded were seen by nobody, because the pulse's single
+// gathering call carried no audit result, no outcome row and no shadow verdict). Both trails keep
+// their owner-only routes untouched; this is a WHITELIST projection for the steward principal —
+// result/timing/branch facts only, never the audit's suite output, the brief hash, the touched
+// files or the reviewers' prose. Route-computed and anchored on the SAME prior journal record as
+// sinceLastLook, so "what fired since my last look" stays served data rather than remembered
+// narrative, and it survives a dead digest worker.
+const LEDGER_ROW_CAP = 20;   // hard per-trail cap: a burst of lands cannot inflate the pulse payload
+const LEDGER_COLD_ROWS = 5;  // no usable anchor (first pulse, or a rotated-away prior): last few rows, not a fake delta
+interface LedgerAudit { at: number; result: string; main: string; mainSha: string; covers: string[]; reason?: string }
+interface LedgerOutcome { ts: number; branch: string; disposition: string; verified: boolean | null;
+  confirmedByHuman: boolean; shadow: { verdict: string | null; at: number; raw: boolean } | null }
+interface LedgersView { since: number | null; auditConfigured: boolean; audits: LedgerAudit[]; outcomes: LedgerOutcome[] }
+async function readJsonlRows(file: string): Promise<Record<string, unknown>[]> {
+  const text = existsSync(file) ? await Bun.file(file).text() : "";
+  const rows: Record<string, unknown>[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      rows.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      // a torn mid-append line — skip, same as the audit/outcome/disposition readers
+    }
+  }
+  return rows;
+}
+async function ledgersView(prior: Record<string, unknown> | null): Promise<LedgersView> {
+  const since = typeof prior?.ts === "number" ? prior.ts : null;
+  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const sinceWindow = (rows: Record<string, unknown>[], key: string): Record<string, unknown>[] => {
+    const sorted = [...rows].sort((a, b) => num(b[key]) - num(a[key]));
+    return (since === null ? sorted.slice(0, LEDGER_COLD_ROWS) : sorted.filter((r) => num(r[key]) > since))
+      .slice(0, LEDGER_ROW_CAP);
+  };
+  return {
+    since,
+    // whether tier 2 is armed at all: without it, "no audit row" means nothing — with it, a land
+    // that never grew a row is the silent-gap signature (finding 1: the queue dies with srv).
+    auditConfigured: !!POSTLAND_AUDIT_CMD,
+    audits: sinceWindow(await readJsonlRows(POSTLAND_AUDIT_FILE), "at").map((r) => {
+      const covers = Array.isArray(r.covers) ? (r.covers as unknown[]) : [];
+      return {
+        at: num(r.at), result: str(r.result) || "unknown", main: str(r.main), mainSha: str(r.mainSha),
+        covers: covers.map((c) => str((c as { branch?: unknown } | null)?.branch)).filter(Boolean).slice(0, 12),
+        ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
+      };
+    }),
+    outcomes: sinceWindow(await readJsonlRows(LANE_OUTCOME_FILE), "ts").map((r) => {
+      const sh = r.cleanReviewShadow;
+      const shadow = typeof sh === "object" && sh !== null ? sh as { verdict?: unknown; at?: unknown; raw?: unknown } : null;
+      return {
+        ts: num(r.ts), branch: str(r.branch), disposition: str(r.disposition),
+        verified: typeof r.verified === "boolean" ? r.verified : null,
+        confirmedByHuman: r.confirmedByHuman === true,
+        // absent shadow = the measurement did not run (off/gate mode, or a non-clean land) — null,
+        // never a manufactured pass. `raw: true` means ② produced no explicit verdict at all.
+        shadow: shadow ? { verdict: typeof shadow.verdict === "string" ? shadow.verdict : null,
+          at: num(shadow.at), raw: shadow.raw === true } : null,
+      };
+    }),
+  };
+}
+
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     const now = Date.now();
@@ -5106,6 +5171,10 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // resolved each wait. Route-computed for the same reason as its neighbours above. DISPLAY
       // ONLY — nothing reads it, nothing gates on it, there is no threshold.
       continuity: await continuityView(now),
+      // the two ledgers the pulse used to be blind to: post-land audit results and terminal lane
+      // outcomes (incl. the powerless ② shadow verdict), delta'd against the SAME prior record.
+      // Route-computed for the same reason as its neighbours above — a fact, not a worker's claim.
+      ledgers: await ledgersView(prior),
       digest: snapshot?.digest ?? null,
       digestAt,
       digestAge: digestAt !== null ? now - digestAt : null,

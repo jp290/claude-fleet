@@ -65,8 +65,18 @@ spawnSync("git", ["-C", REPO, "commit", "-qm", "seed"]);
 // create a lane that rebases CLEANLY (its own file → no conflict, the merge agent is never consulted),
 // commit its work, drive its merge, return the settled verdict. This is exactly the clean+green
 // auto-land path the reviewer guards.
-const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: MergeVerdict | null; branch: string }> => {
-  const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+type Lane = { slot: number; cwd: string; branch: string };
+// open a lane, optionally give it an owner BRIEF (logged to the prompt journal — what ② is told the
+// lane was asked to do), and commit one file so it has real in-flight work.
+const openLane = async (name: string, brief?: string): Promise<Lane> => {
+  const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
+  // the brief is logged as an OWNER prompt regardless of pane readiness (same route e2e/outcomes.ts
+  // uses) — reported as its own check rather than thrown, so a send failure names itself instead of
+  // taking the rest of the suite down with an unhandled rejection
+  if (brief) {
+    const sent = await post("/send", { slot: ln.slot, text: brief });
+    check(`the owner brief for lane ${name} is accepted (and journalled)`, sent.ok, `${sent.status} ${await sent.text()}`);
+  }
   await Bun.write(`${ln.cwd}/${name}.txt`, `${name} work\n`);
   spawnSync("git", ["-C", ln.cwd, "add", `${name}.txt`]);
   // a freshly-created lane worktree can briefly hold a git index lock (fleet's tickGit polls it right
@@ -77,6 +87,9 @@ const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: Merg
     if (spawnSync("git", ["-C", ln.cwd, "log", "--oneline", "-1"]).stdout.toString().includes(`${name} lane work`)) break;
     await Bun.sleep(300);
   }
+  return ln;
+};
+const driveMerge = async (ln: Lane, name: string): Promise<{ gone: boolean; last: MergeVerdict | null; branch: string }> => {
   // the idle gate can refuse the FIRST merge attempt on a freshly-spawned pane — retry until the job
   // actually starts (running) or the slot is gone (landed) or a verdict appears, so waitMerge never
   // reads a never-started merge as a null verdict.
@@ -92,6 +105,8 @@ const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: Merg
   }
   return { ...(await waitMerge(ln.slot)), branch: ln.branch };
 };
+const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: MergeVerdict | null; branch: string }> =>
+  driveMerge(await openLane(name), name);
 
 // the lane's outcome row (lane-outcomes.jsonl via the owner-only read endpoint), looked up by the
 // lane's branch — the shadow verdict's only home.
@@ -233,6 +248,46 @@ await setReviewMode("proseok");
 const B2 = await cleanLaneMerge("india");
 check("gate: a prose-wrapped ok verdict is rescued and lets the lane auto-land",
   B2.gone && mainLog().includes("india lane work"), JSON.stringify(B2));
+
+// (B3) THE ENRICHED PROMPT, END-TO-END (docs/mining-2026-07-26.md findings 3+4). e2e/prompts.ts proves
+// the builder RENDERS the three sections; only the server can prove it FILLS them from reality. Set up
+// so the non-degenerate case is the one under test: the reviewed lane forks FIRST, another lane lands
+// after it (so main genuinely moved since the fork), and a sibling lane stays open with work in flight.
+{
+  await setReviewMode("ok");
+  const BRIEF = "brief for the reviewed lane: keep the change inside sierra.txt";
+  const reviewed = await openLane("sierra", BRIEF);          // forks from main HERE
+  const sibling = await openLane("tango");                   // stays OPEN — the concurrent-lane picture
+  const moved = await cleanLaneMerge("uniform");             // lands → main moves PAST sierra's fork
+  check("enrichment setup: a second lane landed, so main really moved since the reviewed lane forked",
+    moved.gone && mainLog().includes("uniform lane work"), mainLog());
+  const R = await driveMerge(reviewed, "sierra");
+  check("enrichment setup: the reviewed lane still auto-lands (the prompt change gates nothing)",
+    R.gone, JSON.stringify(R.last));
+  const p = await Bun.file(`${import.meta.dir}/lastcleanreviewprompt`).text();
+  const ds = p.indexOf("<<<DATA"), de = p.indexOf("DATA>>>");
+  // 1. the fork fact is COMPUTED and TRUE. Before this change the server asked git for `base..main`
+  //    with `base` a branch NAME equal to `main` — literally `main..main`, empty for every lane ever,
+  //    which is why every recorded shadow verdict argued "main gained zero commits since the fork".
+  //    Here main demonstrably gained one, so a "0 commits / SETTLED" prompt is a regression, not a pass.
+  check("enrichment: the prompt states main's REAL commit count since the fork (1), not a hard-wired 0",
+    p.includes("GIT-COMPUTED FACT: main gained 1 commit since this lane forked")
+    && !p.includes("SETTLED BY CONSTRUCTION"),
+    p.split("\n").find((l) => l.startsWith("GIT-COMPUTED FACT")) ?? "(no fact line)");
+  check("enrichment: main's new commit is carried in the DATA block (the second side is visible at all)",
+    p.indexOf("uniform lane work") > ds && p.indexOf("uniform lane work") < de,
+    `data[${ds},${de}] idx=${p.indexOf("uniform lane work")}`);
+  // 2. the lane's brief travels from the prompt journal into the DATA block
+  check("enrichment: the lane's owner brief reaches the prompt, inside the injection-safe DATA block",
+    p.indexOf(BRIEF) > ds && p.indexOf(BRIEF) < de && p.includes("what this lane was ASKED to do"),
+    `data[${ds},${de}] idx=${p.indexOf(BRIEF)}`);
+  // 3. the concurrent-lane picture is real (branch + in-flight file) and EXCLUDES the reviewed lane
+  const sect = p.slice(p.indexOf("other lanes currently open on this repo"), de);
+  check("enrichment: the sibling lane's branch + in-flight files are listed, and the reviewed lane is not",
+    sect.includes(sibling.branch) && sect.includes("tango.txt") && !sect.includes(reviewed.branch),
+    sect.slice(0, 300));
+  await post(`/api/slots/${sibling.slot}/kill`, {}); // leave the fleet as this section found it
+}
 
 // (C) a BROKEN reviewer (non-JSON) → FAIL CLOSED: the auto-land is stopped, never landed. This is the
 // safety property under reviewer failure — a bug can only ever cost a click, never land something unseen.

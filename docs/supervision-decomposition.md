@@ -72,12 +72,18 @@ this document does not decide.
 ## The concrete facts a fresh mind will need
 
 **What ② is given today** (`merge-prompt.ts`, `buildCleanReviewPrompt`; assembled in `server.ts`,
-grep `runCleanReview`) — four things, inside a `<<<DATA` block marked untrusted:
-lane changed-file list · lane shortstat · `base..main --oneline` · main's changed-file list.
-Plus tool access to the rebased worktree.
+grep `runCleanReview`) — inside a `<<<DATA` block marked untrusted: lane changed-file list · lane
+shortstat · main's commits since the fork · main's changed-file list · **(2026-07-26)** the lane's
+brief · the other lanes open on this repo with their in-flight files. Plus, outside the block as a
+server-computed fact, **how many commits main gained since the fork** — stated rather than asked,
+because every recorded verdict spent itself re-deriving it. Plus tool access to the rebased worktree.
 
-**What it is NOT given:** the lane's brief (what it was asked to do) · what other lanes are
-touching · the outcome-ledger history · anything the owner said this session.
+**Read this before treating any past shadow verdict as evidence:** until 2026-07-26 the main-side
+feed was `main..main` (a branch name compared with itself) and was therefore empty for every land ever
+recorded — see the correction under `mining-2026-07-26.md` finding 3. ② has still never been shown a
+real second side.
+
+**What it is NOT given:** the outcome-ledger history · anything the owner said this session.
 
 **Where reversibility actually stands** — this reorders the ladder and deserves attack:
 `undoLast` is a `Map<repo, LandRecord>`, **one** record per repo, overwritten by `recordLand` on

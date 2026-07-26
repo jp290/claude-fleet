@@ -82,7 +82,9 @@ C: deckelt den einzigen unbegrenzten Posten im Budget.
 
 ## 5 — Ergebnisse
 
-_(Jede Lane trägt hier beim Abschluss ihre Vorher/Nachher-Zahl ein.)_
+Die Vorher/Nachher-Zahl jeder Lane gehört in **ihre Commit-Message**, nicht hierher:
+vier Lanes, die denselben Absatz anfassen, sind ein Vier-Wege-Konflikt für null Gegenwert.
+Diese Liste wird beim Landen aus den Commit-Messages gefüllt.
 
 - A —
 - B —

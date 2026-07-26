@@ -543,5 +543,68 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("sinceLastLook.rewritten flags an amended (rebased) lane honestly instead of faking a delta",
     sllGone?.rewritten.some((r) => r.branch === lnStewBranch) === true, JSON.stringify(sllGone?.rewritten));
 
+  // --- the LEDGER delta on the digest (docs/mining-2026-07-26.md finding 5: the two red post-land
+  // audits were seen by nobody because the pulse's one gathering call carried neither trail). Same
+  // anchor as sinceLastLook — the prior rundgang record — and a WHITELIST projection: the owner-only
+  // trails keep their own routes, the steward sees result/timing/branch facts and nothing else. ---
+  type LedgersJ = { since: number | null; auditConfigured: boolean;
+    audits: { at: number; result: string; mainSha: string; covers: string[]; reason?: string }[];
+    outcomes: { ts: number; branch: string; disposition: string; verified: boolean | null;
+      shadow: { verdict: string | null; raw: boolean } | null }[] } | undefined;
+  const getLedgers = async (): Promise<LedgersJ> =>
+    ((await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { ledgers?: LedgersJ }).ledgers;
+  const staleAt = Date.now() - 5000; // written BEFORE the anchor → must not appear in the delta
+  writeFileSync("post-land-audits.jsonl", `${JSON.stringify({ at: staleAt, startedAt: staleAt, ms: 1,
+    repo: REPO, main: "main", mainSha: "staleshaaaa", result: "green", cmd: "x", exitCode: 0,
+    out: "STALE SUITE OUTPUT", covers: [{ branch: "stale-lane" }] })}\n`, { flag: "a" });
+  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
+  await Bun.sleep(50);
+  const freshAt = Date.now();
+  writeFileSync("post-land-audits.jsonl", `${JSON.stringify({ at: freshAt, startedAt: freshAt, ms: 2,
+    repo: REPO, main: "main", mainSha: "freshshaaaa", result: "red", cmd: "./e2e-isolated.sh", exitCode: 1,
+    out: "6 FAILURES IN THE SUITE TAIL", covers: [{ branch: "ledger-lane" }] })}\n`, { flag: "a" });
+  writeFileSync("lane-outcomes.jsonl", `${JSON.stringify({ ts: freshAt, branch: "ledger-lane", base: "b",
+    headSha: "h", disposition: "landed", model: null, briefHash: "briefhashsecret", shortstat: "",
+    commitCount: 1, filesTouched: ["server.ts"], e2eTouched: false, verified: true, sessionMs: null,
+    ownerPrompts: 0, resolvedConflict: false, repairRounds: 0, confirmedByHuman: false,
+    review: { state: "none" },
+    cleanReviewShadow: { verdict: "would_stop", at: freshAt, model: "m", notes: "n", raw: false } })}\n`, { flag: "a" });
+  const led = await getLedgers();
+  check("the digest carries a ledger delta anchored on the prior rundgang record (audits + outcomes)",
+    !!led && typeof led.since === "number" && led.audits.length === 1 && led.audits[0].result === "red"
+    && led.audits[0].mainSha === "freshshaaaa" && led.audits[0].covers[0] === "ledger-lane"
+    // the delta property, asserted rather than a row count: a terminal row still being assembled by
+    // an earlier section must never appear either, and NOTHING older than the anchor may
+    && led.outcomes.every((o) => o.ts > (led.since ?? 0))
+    && led.outcomes.some((o) => o.branch === "ledger-lane" && o.disposition === "landed"),
+    JSON.stringify(led).slice(0, 400));
+  const ledLane = led?.outcomes.find((o) => o.branch === "ledger-lane");
+  check("the ledger delta reports the ② shadow verdict (a would_stop is the pulse's section-1 signature)",
+    ledLane?.shadow?.verdict === "would_stop" && ledLane.shadow?.raw === false && ledLane.verified === true,
+    JSON.stringify(ledLane));
+  // the projection is a WHITELIST: neither the audit's byte-heavy suite tail nor the outcome row's
+  // brief hash / touched files may ride through to this principal — those stay owner-only.
+  check("the ledger projection carries no suite output, brief hash or file list (owner-only fields stay owner-only)",
+    !!led && !JSON.stringify(led).includes("6 FAILURES") && !JSON.stringify(led).includes("briefhashsecret")
+    && !JSON.stringify(led).includes("filesTouched"), JSON.stringify(led).slice(0, 400));
+  // tier 2 is unconfigured in this suite → the flag says so, so the pulse's "land with no audit row"
+  // rule stays honestly disarmed instead of firing on an unarmed sensor
+  check("the ledger delta states whether the post-land audit is configured at all",
+    led?.auditConfigured === false, JSON.stringify({ auditConfigured: led?.auditConfigured }));
+  // an unusable anchor (a prior whose ts is not a number) → since:null + the last few rows, never a
+  // fake-empty delta. Same honesty stance as sinceLastLook's null.
+  writeFileSync("steward-journal.jsonl",
+    `${JSON.stringify({ ts: "not-a-number", kind: "rundgang", counts: {}, decisions_surfaced: 0, changed: false })}\n`, { flag: "a" });
+  const coldLed = await getLedgers();
+  check("an unusable anchor yields since:null and the last few rows, never a fake-empty ledger delta",
+    coldLed?.since === null && coldLed.audits.length === 2 && coldLed.audits.some((a) => a.mainSha === "staleshaaaa"),
+    JSON.stringify({ since: coldLed?.since, audits: coldLed?.audits.map((a) => a.mainSha) }));
+  await stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
+  // the trails themselves stay owner-only — the digest projection is the steward's ONLY view of them
+  check("steward token on the post-land audit trail is still out of scope (403)",
+    (await stewGet("/api/post-land-audits")).status === 403);
+  check("steward token on the lane-outcome trail is still out of scope (403)",
+    (await stewGet("/api/lane-outcomes")).status === 403);
+
   return { token: STEW, stewGet, stewPost, slot: lnStew.slot, cwd: lnStew.cwd, settleForSteward };
 }

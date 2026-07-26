@@ -67,8 +67,31 @@ Norm (2026-07-25): **no judging instance gets even display-trust before a seeded
 - Method note: the `raw: true` count was a real signal but a misattributed one — the fix that
   made it diagnosable (persisting the answer) is what overturned the diagnosis drawn from it.
   Counting failures told us nothing until one failing artifact was kept.
-- Standing production state: **7 shadow rows, 1 valid verdict (`pass`)** before the parser fix;
-  the K2 series restarts from the first row recorded with extraction in place.
+- Standing production state, recomputed 2026-07-26 from `lane-outcomes.jsonl` (23 shadow rows),
+  split at the parser fix `7e385e4` — confirmed live, it is an ancestor of the running server's
+  bootHead:
+  | | rows | valid `pass` | contract miss | empty answer | `would_stop` |
+  |---|---|---|---|---|---|
+  | before 17:26 | 9 | 2 | 4 | 3 | 0 |
+  | after | 14 | 13 | **0** | 1 | 0 |
+  **The parser fix held**: zero contract misses in 14 subsequent rows. That every post-fix row
+  ran on post-fix code is *inferred* (commit time + the clean break in failure mode) — the
+  earlier srv instance's bootHead is not recoverable. Any reading built on the older
+  "8 of 14 runs miss the contract" is regime-mixed: it counts the first 14 rows, which are
+  almost all pre-fix.
+- **The one open failure mode is the empty answer** (1/14 post-fix): the reviewer runs and says
+  nothing, presumably a timeout under load. Gate mode fails closed onto a human; today, with the
+  gate off, it costs a measurement.
+- **② has never once returned `would_stop` — 0 of 23, across both regimes.** Reliability and
+  discrimination are different properties, and only the first is measured. A judge stuck at
+  `pass` and a judge correctly seeing nothing wrong write byte-identical ledgers.
+- **Never drilled.** Everything above is a parser/reliability diagnosis, not a seeded-defect
+  test. Fire-drill #3 is designed and its ground truth sealed (2026-07-26); it runs after SEC-4
+  lands, so the configuration measured is the one that will actually run. Note ②'s evidence
+  horizon is far wider than ③'s: it is told to use tools and to "READ the actual code to
+  confirm" (`merge-prompt.ts:169-175`), so a spec-fair seeded defect may live anywhere in the
+  rebased worktree — but it must NOT be one tsc or the gate would catch, since the prompt
+  explicitly forbids flagging those.
 - K2 counts only `verdict !== null` — raw failures are honest non-measurements.
 
 ### Merge-resolver (the ⏫ conflict agent)

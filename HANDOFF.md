@@ -4,10 +4,16 @@
 not a number** — session 7's handoff was wrong by six ledger rows within a day, and this one will
 rot the same way. Numbers below appear only where a command cannot express them.*
 
-**The single most important thing: fire-drill #3 is pre-registered, committed, and NOT YET RUN
-(`83a25b2`). Its ground truth is sealed in `drills/drill-3-sealed-ground-truth.md`. Read that file
-before the drill, and again before adjudicating — do not read the fixture first and reason
-backwards.** Second: the dispatcher is OFF and that off is on disk (§5).
+**The single most important thing: fire-drill #3 RAN, twice, and measured NOTHING (§2c).** Both
+runs returned an empty answer, which the pre-sealed bar calls a non-measurement rather than a miss —
+so ②'s discrimination is still entirely unmeasured, and `cc913fe1` (the reviewer does not answer)
+is now the top of the ladder, not a P1. Ground truth and harness are in `drills/`, committed before
+the run; read the sealed file before any re-run and again before adjudicating, and do not read the
+fixture first and reason backwards.
+
+**Second: §9 reorders the autonomy ladder** — reversibility, not the judge, is the weakest link, and
+one of the graduation gate's three conditions has no code at all. Third: the dispatcher is OFF and
+that off is on disk (§5). Fourth: the new pre-land gate is committed and **not live** (§2 item 1).
 
 ## 1. Recompute state before believing anything
 

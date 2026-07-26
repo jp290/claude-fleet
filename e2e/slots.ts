@@ -1,6 +1,6 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, and HTML/txt export
 // (including the real-metacharacter escaping regression).
-import { IP, PORT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
+import { BASE, IP, PORT, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
 import { exists } from "./lane-helpers";
 
 export async function run(): Promise<void> {
@@ -80,6 +80,73 @@ export async function run(): Promise<void> {
   check("reject rename of inactive slot", rnInactive.status === 400);
   const rnClear = await post("/api/slots/1/rename", { label: "  " });
   check("blank label clears to null", rnClear.ok && ((await rnClear.json()) as { label: string | null }).label === null);
+
+  // --- mission: the OWNER's standing intention for a session, externalized. A lane already has
+  // one (its founding task, on stewardTaskView); a plain checkout slot's running intent lives only
+  // in pane scrollback and dies at /clear. Three properties are load-bearing and each is checked
+  // against a real write: it is served VERBATIM (a reader judges it against the git/idle facts
+  // beside it), the steward CANNOT write it (a producer must not author the anchor its own drift
+  // is measured against), and it is per SESSION — a re-opened slot inherits nothing. ---
+  const MISSION = `hold the "<b>x</b>" refactor — no new deps`;
+  // a route that does not exist answers with a non-JSON body — parse defensively so a missing
+  // route FAILS these checks (which is what proves they bite) instead of throwing and taking the
+  // rest of the suite down with it
+  const msJson = async (r: Response): Promise<{ mission?: unknown; error?: unknown }> => {
+    const t = await r.text();
+    try { return JSON.parse(t) as { mission?: unknown; error?: unknown }; } catch { return { error: t }; }
+  };
+  const stewMission = async (id: number): Promise<string | null | undefined> => {
+    const res = await fetch(`${BASE}/api/steward/sessions`, { headers: { authorization: `Bearer ${stewTok}` } });
+    const j = (await res.json()) as { slots: { id: number; mission?: string | null }[] };
+    return j.slots.find((x) => x.id === id)?.mission;
+  };
+  const msSet = await post("/api/slots/2/mission", { mission: MISSION });
+  const msSetJ = await msJson(msSet);
+  check("owner sets a mission on an active slot", msSet.ok && msSetJ.mission === MISSION, JSON.stringify(msSetJ));
+  const msView = await stewMission(2);
+  check("stewardSlotsView serves the mission VERBATIM (no trim, no escaping, no summary)",
+    msView === MISSION, JSON.stringify(msView));
+  // persisted like the label: the session survives a restart, so its standing intention must too
+  let msPersisted: string | null | undefined;
+  for (let i = 0; i < 40; i++) { // saveState writes on a chain — poll, never a fixed sleep
+    msPersisted = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+      { slots?: Record<string, { mission?: string | null }> }).slots?.["2"]?.mission;
+    if (msPersisted === MISSION) break;
+    await Bun.sleep(50);
+  }
+  check("the mission is persisted to fleet.json", msPersisted === MISSION, JSON.stringify(msPersisted));
+  const msLong = await post("/api/slots/2/mission", { mission: "x".repeat(301) });
+  check("reject a 301-char mission", msLong.status === 400);
+  const msType = await post("/api/slots/2/mission", { mission: 7 });
+  check("reject a non-string, non-null mission", msType.status === 400);
+  const msInactive = await post("/api/slots/4/mission", { mission: "nope" });
+  check("reject a mission on an inactive slot", msInactive.status === 400);
+  check("...and none of the three rejections touched the stored mission", (await stewMission(2)) === MISSION);
+  const msSteward = await fetch(`${BASE}/api/slots/2/mission`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${stewTok}` },
+    body: JSON.stringify({ mission: "steward-authored anchor" }),
+  });
+  const msStewardJ = await msJson(msSteward);
+  check("the steward token is denied the mission write (403, out of scope — it reads the anchor, never writes it)",
+    msSteward.status === 403 && String(msStewardJ.error ?? "").includes("not in scope"),
+    `${msSteward.status} ${JSON.stringify(msStewardJ)}`);
+  check("...and the denied steward write left the owner's mission intact", (await stewMission(2)) === MISSION);
+  const msClear = await post("/api/slots/2/mission", { mission: null });
+  check("explicit null clears the mission", msClear.ok
+    && (await msJson(msClear)).mission === null && (await stewMission(2)) === null);
+  // per-session, not per-slot: slot 3 is free here (killed above, re-opened later by the export
+  // fixture), so this recycle is blast-radius-free
+  const msOpen = await post("/api/slots/3/open", { cwd: "~" });
+  check("mission fixture: slot 3 opens", msOpen.ok, JSON.stringify(await msJson(msOpen)));
+  await post("/api/slots/3/mission", { mission: "the previous occupant's intention" });
+  check("mission fixture: slot 3 carries a mission before the recycle",
+    (await stewMission(3)) === "the previous occupant's intention");
+  const msReopen = await post("/api/slots/3/open", { cwd: "~" });
+  check("mission fixture: slot 3 re-opens", msReopen.ok);
+  check("re-opening a slot clears the mission — a new session inherits no standing intention",
+    (await stewMission(3)) === null, JSON.stringify(await stewMission(3)));
+  await post("/api/slots/3/kill", {});
 
   // --- streaming + input ---
   await Bun.sleep(6000);

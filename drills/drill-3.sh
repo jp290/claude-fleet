@@ -1,0 +1,82 @@
+#!/bin/sh
+# FIRE-DRILL #3 — ② clean-review, seeded-defect test.
+# Cribbed from e2e-clean-review.sh, with ONE deliberate difference: no FLEET_CLEAN_REVIEW_CMD.
+# That makes server.ts:3500-3502 fall through to summaryViaSession(... MERGE_TOOLS ...), i.e. the
+# REAL model through the REAL prompt/parser. Everything else stays isolated: own $$ socket/port/dir,
+# FLEET_CMD=true (lane panes are inert), FLEET_AUTO_REVIEW_MS=0 (no auto-③ spawning agents),
+# green verify stand-in (so the reviewer is the only thing deciding anything).
+#   ./drill-3.sh /path/to/claude-fleet
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# lives in <checkout>/drills/, so the checkout is one level up — an explicit arg still wins
+SRC="${1:-$(cd "$HERE/.." && pwd)}"
+DIR="${TMPDIR:-/tmp}/fleet-drill3-$$"
+SOCK="fleetdrill$$"
+PORT=$((15000 + $$ % 2000))
+
+[ -f "$SRC/server.ts" ] || { echo "not a fleet checkout: $SRC"; exit 2; }
+rm -rf "$DIR"; mkdir -p "$DIR"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
+      "$SRC/public" "$SRC/package.json" "$DIR/"
+cp "$HERE/drill-3-clean-review.ts" "$DIR/"
+ln -s "$SRC/node_modules" "$DIR/node_modules"
+
+cat > "$DIR/fakeverify" <<'EOF'
+#!/bin/sh
+echo "verify OK"
+exit 0
+EOF
+chmod +x "$DIR/fakeverify"
+
+# clean lands never consult the merge agent; this only stops an accidental conflict from
+# spawning a real resolver.
+cat > "$DIR/fakemerge" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"no resolver in the drill harness\\"}"}'
+EOF
+chmod +x "$DIR/fakemerge"
+
+# DRILL_SMOKE=1 → MECHANICS ONLY. A stand-in reviewer that always answers "ok" replaces the real
+# model, so this run proves the fixture builds, the rebase is CLEAN, the merge drives and the
+# outcome row is written — and reveals NOTHING about the judge. Deliberate: discovering a harness
+# bug mid-drill would mean re-running against a fixture I had already seen the judge react to,
+# which is how pre-registration dies. The smoke verdict is not drill data and is never adjudicated.
+REVIEW_ENV=""
+if [ "${DRILL_SMOKE:-}" = "1" ]; then
+  cat > "$DIR/fakecleanreview" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"verdict\\": \\"ok\\", \\"reason\\": \\"SMOKE STAND-IN — not a judgment\\"}"}'
+EOF
+  chmod +x "$DIR/fakecleanreview"
+  REVIEW_ENV="FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview'"
+  echo "*** SMOKE MODE — stand-in reviewer, mechanics only, NOT the drill ***"
+fi
+
+trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
+tmux -L "$SOCK" kill-server 2>/dev/null
+
+echo "drill instance: $DIR  (socket $SOCK, port $PORT)"
+tmux -L "$SOCK" new-session -d -s srv \
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow $REVIEW_ENV exec bun server.ts >> server.log 2>&1"
+sleep 3
+
+cd "$DIR" || exit 1
+FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun drill-3-clean-review.ts
+code=$?
+
+echo
+echo "--- premise check: is the composed tree really type-clean? ---"
+echo "(if this reports errors, the seeded defects were NOT gate-invisible and the drill is void)"
+bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler \
+  "$DIR/drillrepo/src/policy.ts" "$DIR/drillrepo/src/rules.ts" "$DIR/drillrepo/src/state.ts" \
+  "$DIR/drillrepo/src/extra-rules.ts" "$DIR/drillrepo/src/report.ts" 2>&1 | head -20 \
+  && echo "tsc: clean (exit 0) — the defects are invisible to the type gate, as designed"
+
+echo
+echo "--- reviewer transcript hint ---"
+echo "server log: $DIR/server.log"
+echo "kept for inspection: $DIR"
+tmux -L "$SOCK" kill-server 2>/dev/null
+exit $code

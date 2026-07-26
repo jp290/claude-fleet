@@ -61,13 +61,16 @@ The server binds **only** the Tailscale IP — `127.0.0.1:8790` never answers an
    **Do not read `codeBehind:true` as "the server is stale".** Right now it is true because
    `watchdog.sh` and two harnesses moved; `git diff --name-only <bootHead>..HEAD` shows no
    `server.ts`. Check the file list before spending a restart.
-2. **Fire-drill #3** — `./drills/drill-3.sh`, on a QUIET machine. Still unrun. Not beside an audit,
-   a suite, or a fresh lane: measured 2026-07-26, concurrent `e2e-isolated.sh` runs manufacture
-   failures on *both* trees with *different* signatures, so such a pair proves nothing.
-   `DRILL_SMOKE=1` first if you changed the harness — it exercises the mechanics with a stand-in
-   and tells you nothing about the judge, which is the point.
-3. **`7319e7ad`** — a filed task cannot be corrected. This is the queue's metabolism (§7).
-4. **`639e35ff`** (`landInitiatedBy`) — the ledger axis a gate needs before it exists.
+2. **`cc913fe1`** — ② produces no answer at all. This is now the **top** of the ladder, not a P1:
+   fire-drill #3 ran twice and measured nothing (§2c), so no statement about semantic safety is
+   currently measurable. Everything downstream waits on a sensor that responds.
+3. **`252c01c2`** (undo depth) and mechanising S1 — the two safety items §9 argues must precede any
+   unattended land, not follow it.
+4. **`7319e7ad`** — a filed task cannot be corrected. This is the queue's metabolism (§7).
+5. **`639e35ff`** (`landInitiatedBy`) — the ledger axis a gate needs before it exists.
+
+Re-running the drill: `./drills/drill-3.sh` on a QUIET machine, `DRILL_SMOKE=1` first **whenever the
+harness or `server.ts`'s imports changed** — that rule is not ceremony, see §2c.
 
 Nothing here is a burn-down item. The queue is not a list to empty (§7).
 
@@ -132,6 +135,44 @@ at 34–35 s — back on §8's numbers. No second defect underneath.
 42/4 with four *named security checks* dark. So count the checks per run
 (`grep -c '^PASS'` — it is why the burn-in log above carries `checks=47` on every line, not just a
 tail). A run whose check count silently drops is the shape that gets mistaken for a burn-in.
+
+## 2c. Fire-drill #3 ran — and measured nothing, twice
+
+Both runs: `verdict: null, raw: true, rawAnswer: ""`. The bar sealed **before** the run
+(`drills/drill-3-sealed-ground-truth.md`) classes an empty answer as a **non-measurement, not a
+miss** — so nothing may be concluded about ②'s discrimination in either direction. It is still
+undrilled in the only sense that counts, and §2's "≥1 demonstrated catch" is unsatisfied.
+
+Nothing was adjusted afterwards. Bar, fixture and the 180 s timeout stand as sealed. Raising the
+timeout is the obvious move and is refused on purpose: it would measure a configuration production
+does not run, and a deviation introduced in response to a disappointing result is exactly what
+pre-registration exists to prevent. Run 2 was unchanged and legitimate for a stated reason — a
+non-measurement reveals nothing about the judge's judgment, so it is not the contaminated case.
+
+**The finding the drill did produce: 2 of 2 empty answers in the harness against ~1 in 14 in
+production.** Narrowed, not root-caused: no transcript was written anywhere under
+`~/.claude/projects` for either run, and `summaryViaSession` creates one as soon as the first
+prompt lands — so the reviewer never reached the answering stage, a different failure from
+answering off-contract. A minimal repro rules out a trust prompt in the drill's cwd, and
+`claudeAliveAt` (`server.ts:1341-1346`) accepts both the pane process and a child, so readiness
+detection is not the gap. That lead belongs to `cc913fe1`.
+
+**Four of my own errors, found by a second pass rather than a test — two had already been quoted to
+the owner as evidence:**
+
+- `drills/drill-3.sh` used port band 15000–16999, overlapping `e2e-security.sh`'s 15200–17199.
+  Harmless while that suite ran nowhere — **live the moment I put it in the gate myself**.
+- `docs/verify-tiering.md` described §8 as unapplied in four places after I had applied it.
+  Wissenspflege means the doc moves with the change; I updated HANDOFF and forgot §8's own home.
+- **The harness carried the same `continuity.ts` rot it was built to study.** continuity landed
+  15:51:37, the harness was committed 15:54:48 — three minutes. The smoke run had passed *before*
+  continuity landed and I committed on its strength. **A smoke test validates the tree it ran on,
+  not the tree you commit.** Fixed structurally: the copy list is now derived from `server.ts`'s
+  actual relative imports every run, proven to fire and not to false-alarm.
+- **The `tsc` premise check could not fail.** `tsc … | head && echo clean` takes the pipeline's
+  status from `head`, so it printed "clean (exit 0)" directly under five `TS6053` errors — and I
+  had cited that line as proof the premise held. A check that cannot fail is worse than none,
+  because it gets quoted.
 
 ## 3. Settled — do not re-derive
 
@@ -280,3 +321,80 @@ The value of this section is that it is the part that does not survive a compact
   and every land so far is an owner-initiated merge. §1 of the criteria would license unattended
   landing on a population containing zero unattended lands. That is B3's finding, not this
   session's; it is repeated here because it is the reason `639e35ff` exists.
+
+## 9. What is actually missing for autonomy — scored against the code, not the backlog
+
+The word is **possibility**: not what we want to build, but what must be true before a *first
+unattended land* is even permissible. `lane-autonomy-future.md` already names six components; this
+is each one measured against `server.ts` rather than against its own description.
+
+| # | component | state |
+|---|---|---|
+| 2 | durable land ledger | **done** — `lane-outcomes.jsonl` + the git note from `writeLandNote` |
+| 4 | verified-green precondition | **done, and stronger since today** — `verify.ok` is three-valued, a skipped verify cannot auto-land, and the gate now covers the land path (§2a) |
+| 1 | structured resolution record | partial — `resolvedConflict`/`repairRounds` land on the row; the per-conflict relational assessment does not |
+| 6 | post-hoc review feed | partial — outcome rows render, **a red tier-2 audit renders nowhere** (`grep -a postLandAudit src/client.ts` → empty) |
+| 3 | first-class undo | **weak, and this is the surprise** |
+| 5 | graded autonomy gate | **blocked, and one of its three conditions has no code at all** |
+
+**Component 3 is the weakest link, not the judge.** Verified: `undoLast` is a
+`Map<repo, LandRecord>` — **one** record per repo, overwritten by `recordLand` on every land that
+moves main (`server.ts:2755`, `:2801`). And `onRemote` (`:5949-5952`) makes undo **refuse outright**
+once the land reached a remote: *"revert it by hand instead."* So the reset tier exists and the
+revert tier is delegated to a human. Component 5 says the gate must be **reversibility-primary, not
+confidence-primary** — and reversibility is one land deep and void on push. This whole session, me
+included, treated the judge as the blocker. Fleet's own design says otherwise.
+
+**Component 5 cannot be satisfied as written.** It requires "not in a high-stakes zone
+(migrations/auth/config)", and `graduation-criteria.md` §1 conditions graduation on
+*non-high-stakes-zone* auto-land. `grep -n "high-stakes\|highStakes\|zone" server.ts` → **nothing**.
+There are no zones. Meeting §1 on its numbers alone would mean skipping a condition, not satisfying
+it. Two of its three conditions ARE computable today (clean-vs-resolved from `tryScriptRebase`;
+reversibility from `undoLast`) — the third is unbuilt.
+
+**The instrument that would catch what the deterministic gate structurally cannot does not answer.**
+Component 5 names the sharp edge itself: *green tests ≠ semantically correct*. ② is the only thing
+aimed at that edge, it has never returned `would_stop` in any production row, and the drill got 2/2
+non-measurements (§2c). Until `cc913fe1` lands, **no statement about semantic safety is measurable
+at all** — which is why it moved to the top of §2.
+
+**The brake has no mechanism.** Nothing in the codebase ever sets `dispatchOn = false`
+automatically (`grep -n dispatchOn server.ts` → init, boot-reload, POST route). No tick reads the
+audit trail. Trial-1's stop condition S1 is a sentence in a document, enforced by a human noticing
+a JSON route that has no UI.
+
+### The part no criterion can fix
+
+`graduation-criteria.md` B3: every land in the ledger is an **owner-initiated** merge;
+`confirmedByHuman:false` means "no *second* human step", not "unattended". B4: 10 of 10 counted
+lands touched the measurement machinery itself. And `FLEET_DISPATCH_REPO` is a single string
+(`server.ts:252`) — that repo is Fleet. So the evidence base is **Fleet modifying Fleet, attended,
+every time**.
+
+**No number of attended lands can license an unattended one.** Attended lands measure the pipeline —
+does the rebase classify correctly, does verify hold, does the gate catch things. They cannot
+measure the absence of the human, because the human was there. §1's N is met (recompute it in §1)
+and has been for a while; what blocks graduation is not a number and never was.
+
+So the next step is **not another criterion — it is the smallest bounded experiment**, and the
+bound has to be mechanical, because "we'll be careful" is exactly the prose-vs-capability failure
+this project keeps re-discovering. In order, and each blocking the next:
+
+1. **`cc913fe1`** — a sensor that answers. Flying with a dead one is worse than flying blind,
+   because a null reads like a pass to anything that averages.
+2. **Zones (component 5's missing third)** — make "bounded blast radius" a git-computable predicate
+   over changed paths, not a promise. This is the item nobody has filed.
+3. **`252c01c2`** — undo that survives a burst, plus the revert tier for the on-remote case.
+   Reversibility is the gate's primary criterion by design; today it is its weakest.
+4. **Mechanise S1** — a red tier-2 audit sets `dispatchOn = false`, writes an audit line, and
+   surfaces. Pure downside protection with no upside, which is precisely why it keeps sliding.
+5. **`639e35ff`** — so the first unattended land is legible in the ledger instead of looking like
+   a clean auto-land.
+
+Then, and only then: **one** unattended land, in the narrowest zone, with quiet hours restored so
+it happens while someone is awake, and with the undo verified beforehand rather than assumed.
+
+Name the trade every time, as `lane-autonomy-future.md` demands: autonomy exchanges *"nothing wrong
+ever reaches main"* for *"wrong-but-reversible-and-documented may reach main briefly."* Both of the
+words carrying that bargain — **reversible** and **briefly** — are today the two least-built parts
+of the system.

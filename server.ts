@@ -7,6 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
+import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -4773,6 +4774,26 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
 let digestInflight: Promise<DigestResult> | null = null;
 let digestCache: DigestResult | null = null;
 
+// The continuity fact, read straight off the append-only prompt journal (continuity.ts holds the
+// derivation and the direction discipline). Route-computed like sinceLastLook/deployGap — it is a
+// FACT and must not depend on the digest worker being alive, nor be shapeable by a model. Read on
+// demand rather than cached: the pulse is hours apart, and this is one pass over the same file
+// /api/prompts already re-reads per request.
+async function continuityView(now: number): Promise<ContinuitySummary> {
+  const text = existsSync(PROMPT_LOG) ? await Bun.file(PROMPT_LOG).text() : "";
+  const records: ContinuityRecord[] = [];
+  let malformed = 0;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      records.push(JSON.parse(line) as ContinuityRecord);
+    } catch {
+      malformed++; // a torn mid-append line — a hole, and reported as one
+    }
+  }
+  return continuitySummary(records, { now, malformed, inQuietHours });
+}
+
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     const now = Date.now();
@@ -4815,6 +4836,10 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // deployGap's twin: landed client code is invisible until the bundle is rebuilt.
       // Route-computed for the same reason — it must not depend on the digest worker.
       bundleStale: bundleStale(),
+      // the continuity fact: per-slot time-to-next-action over the last 7 days and which surface
+      // resolved each wait. Route-computed for the same reason as its neighbours above. DISPLAY
+      // ONLY — nothing reads it, nothing gates on it, there is no threshold.
+      continuity: await continuityView(now),
       digest: snapshot?.digest ?? null,
       digestAt,
       digestAge: digestAt !== null ? now - digestAt : null,

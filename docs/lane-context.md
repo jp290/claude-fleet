@@ -9,7 +9,7 @@ which is rich, and not the steward's, which is richer than the lane's.
 | principal | credential | can READ | can WRITE |
 |---|---|---|---|
 | owner (browser) | owner token | everything — sessions, brief, diff, transcript, outcomes, dispositions, audit, merge verdicts | everything |
-| ⚙ steward | `stewardToken`, keyed on the slot **label** (`server.ts:1090`) | all slots' deterministic facts, `deployGap`, `bundleStale`, `sinceLastLook`, the digest, **any lane's brief and transcript** | typed sends, proposals, journal, own autos |
+| ⚙ steward | `stewardToken`, keyed on the slot **label** (`server.ts:1090`) | all slots' deterministic facts, `deployGap`, `bundleStale`, `sinceLastLook`, `continuity`, the digest, **any lane's brief and transcript** | typed sends, proposals, journal, own autos |
 | **lane** | `selfToken`, keyed on `s.worktree` (`server.ts:1084`) | **nothing** | its own autos only (`POST /api/self/autos`) |
 | plain session | **none** — the export is gated on `s.worktree` | nothing | nothing |
 

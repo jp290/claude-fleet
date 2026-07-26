@@ -1,5 +1,8 @@
-// Slots: open/reject/rename, WS streaming + input, the width-aware reseed, and HTML/txt export
-// (including the real-metacharacter escaping regression).
+// Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
+// seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
+// regression).
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { BASE, IP, PORT, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
@@ -283,6 +286,82 @@ export async function run(): Promise<void> {
   check("reconnect backoff caps and stays capped", reconnectDelay(4) === RECONNECT_MAX_MS && reconnectDelay(50) === RECONNECT_MAX_MS,
     `${reconnectDelay(4)},${reconnectDelay(50)}`);
   check("reconnect backoff never returns 0 or a negative wait", reconnectDelay(-3) === 1500 && RECONNECT_MAX_MS > 1500);
+  // --- data-saver seed budget: ?seed=N caps the scrollback the server hands a reconnecting
+  // client. Measured on the live fleet, the full 3000-line seed is 6.8–173 KB PER reconnect
+  // and mobile reconnects a lot, so this is the switch's largest single item. Contract: a
+  // client can only ever ask for LESS than SEED_LINES, never more.
+  // send-keys rather than /send on purpose — /send writes prompt history + the prompt log,
+  // which later families read; this fixture must only touch the pane. Same cols/rows as the
+  // pane already has (force=1 does the reseeding), so s2's size is left exactly as found.
+  await tmuxOut("send-keys", "-t", "s2", "seq 1 900", "Enter");
+  await Bun.sleep(1500);
+  // first frame only: the seed is always the first frame on open, and everything after it is
+  // live output, which would make the comparison a race instead of a measurement
+  const seedFrame = (q: string): Promise<number> => new Promise((resolve) => {
+    let first = -1;
+    const ws = new WebSocket(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}&force=1${q}`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (e) => { if (first < 0) first = (e.data as ArrayBuffer).byteLength; };
+    ws.onopen = () => setTimeout(() => { ws.close(); resolve(first); }, 1500);
+    ws.onerror = () => resolve(first);
+  });
+  const seedFull = await seedFrame("");
+  const seedSmall = await seedFrame("&seed=200");
+  check("WS ?seed=N shrinks the reconnect seed (the data-saver scrollback budget)",
+    seedFull > 900 && seedSmall > 0 && seedSmall < seedFull / 2, `${seedFull} -> ${seedSmall} bytes`);
+  const seedOverAsk = await seedFrame("&seed=99999");
+  check("WS ?seed is clamped to SEED_LINES — a client can ask for LESS scrollback, never more",
+    seedOverAsk >= seedFull * 0.9 && seedOverAsk <= seedFull * 1.1, `${seedFull} vs ${seedOverAsk} bytes`);
+  const seedFloor = await seedFrame("&seed=1");
+  check("WS ?seed has a floor — seed=1 still seeds a usable screen, not one line",
+    seedFloor > 100 && seedFloor < seedSmall, `${seedFloor} bytes`);
+
+  // --- the client half of the data-saver switch. Same method and same limits as the client
+  // checks in e2e/outcomes.ts: this suite has no DOM harness, so the DECISION is cut out of
+  // src/client.ts and run for real, while the WIRING around it is asserted by shape. What
+  // stays unproved here is that the browser honours the plan — that was verified by hand
+  // against a throwaway server (see the commit); what these checks defend is the contract.
+  // The scratch copy carries server.ts + public/ but not src/ — the link back to the checkout
+  // is the node_modules symlink, so the real source is its realpath's parent (as in outcomes).
+  const cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+  const planSrc = cliSrc.slice(cliSrc.indexOf("const SAVER = {"), cliSrc.indexOf("let dataSaver"));
+  check("client: the data-saver plan is extractable as a pure function (no DOM in pollPlan)",
+    planSrc.includes("function pollPlan") && !/document|localStorage|el\(/.test(planSrc.replace(/^\s*\/\/.*$/gm, "")),
+    planSrc.slice(0, 60));
+  const pollPlan = new Function(
+    new Bun.Transpiler({ loader: "ts" }).transformSync(planSrc) + "\nreturn pollPlan;")() as
+      (hidden: boolean, saver: boolean) => { pollMs: number; chatMs: number; boardMs: number; seed: number };
+  const visible = pollPlan(false, false), saver = pollPlan(false, true);
+  check("data saver off = today's behaviour, unchanged (2s poll, 1s chat, 3s brief, server-default seed)",
+    visible.pollMs === 2000 && visible.chatMs === 1000 && visible.boardMs === 3000 && visible.seed === 0,
+    JSON.stringify(visible));
+  check("data saver on stretches every poll and caps the scrollback seed",
+    saver.pollMs > visible.pollMs && saver.chatMs > visible.chatMs && saver.boardMs > visible.boardMs
+    && saver.seed > 0, JSON.stringify(saver));
+  // the whole point of the hidden branch: a tab nobody is looking at polls NOTHING. 0 means
+  // "no timer at all", not "a slower timer" — armPolls() arms nothing for a 0.
+  for (const on of [false, true]) {
+    const hidden = pollPlan(true, on);
+    check(`hidden tab polls nothing at all (data saver ${on ? "on" : "off"})`,
+      hidden.pollMs === 0 && hidden.chatMs === 0 && hidden.boardMs === 0, JSON.stringify(hidden));
+  }
+  check("the seed budget survives hidden — it is read at connect time, not on a timer",
+    pollPlan(true, true).seed === saver.seed, JSON.stringify(pollPlan(true, true)));
+  // wiring: exactly ONE place arms the recurring polls, and it goes through the plan. A bare
+  // interval sneaking back in is the regression that would silently un-pause a hidden tab.
+  check("client: every recurring poll is armed by the pump, none by a bare literal interval",
+    /function armPolls\(\)[\s\S]{0,400}?p\.pollMs[\s\S]{0,200}?p\.boardMs/.test(cliSrc)
+    && !/setInterval\(\(\) => void (refresh|renderBoard)\(\),\s*\d/.test(cliSrc),
+    "armPolls in src/client.ts");
+  check("client: a visibility flip re-arms the pump and the chat chain, and fires one catch-up round",
+    /visibilitychange[\s\S]{0,400}?armPolls\(\)[\s\S]{0,200}?chatPump\(\)[\s\S]{0,200}?document\.hidden\) return;[\s\S]{0,200}?void refresh\(\)/.test(cliSrc),
+    "the visibilitychange handler in src/client.ts");
+  check("client: the chat chain is CLEARED on the way out, not merely left to stop re-arming",
+    /chatPump\(\) \{\s*clearTimeout\(this\.chatTimer\);\s*if \(this\.view === "chat" && plan\(\)\.chatMs\)/.test(cliSrc),
+    "Pane.chatPump in src/client.ts");
+  check("client: the switch is persisted per device and read back at boot",
+    /localStorage\.setItem\("fleet\.datasaver"/.test(cliSrc)
+    && /localStorage\.getItem\("fleet\.datasaver"\) === "1"/.test(cliSrc), "setSaver / dataSaver in src/client.ts");
 
   const wsNoTok = await new Promise<boolean>((resolve) => {
     let opened = false;

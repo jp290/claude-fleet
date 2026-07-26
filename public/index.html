@@ -242,9 +242,11 @@
   .qbtn:hover { background: #2c3a5e; }
   .qbtn.primary { background: #7aa2f7; border-color: #7aa2f7; color: #10131c; font-weight: 700; padding: 4px 16px; }
   .qbtn.primary:hover { background: #6a92e7; }
-  #queuebtn { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid #333;
+  #queuebtn, #saverbtn { flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid #333;
     background: #262626; color: #888; font-size: 13px; font-family: inherit; cursor: pointer; }
-  #queuebtn:hover { color: #ccc; } #queuebtn.hot { color: #e0af68; border-color: #5a4a2a; }
+  #queuebtn:hover, #saverbtn:hover { color: #ccc; } #queuebtn.hot { color: #e0af68; border-color: #5a4a2a; }
+  /* on = amber, same "this is engaged" vocabulary as #live.on / #queuebtn.hot */
+  #saverbtn.active { color: #e0af68; border-color: #5a4a2a; }
   #input { flex: 1; min-height: 38px; max-height: 140px; resize: none; padding: 9px 12px;
     border-radius: 10px; border: 1px solid #333; background: #262626; color: #eee;
     font-size: 13px; font-family: inherit; line-height: 1.4; }
@@ -754,6 +756,9 @@
     #input { font-size: 16px; min-height: 44px; max-height: 110px; }
     #send { height: 44px; width: 56px; }
     #histbtn, #autobtn, #enhbtn { width: 44px; height: 44px; font-size: 17px; }
+    /* the phone is the only device this switch is for — give it a finger-sized target
+       in the drawer instead of the 26px desktop chip */
+    #saverbtn { width: 40px; height: 40px; font-size: 17px; }
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
     .pkrow { padding: 11px 9px; font-size: 13px; }
@@ -784,6 +789,10 @@
       <button id="queuebtn" title="task queue">🗒</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
       <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
+      <!-- lives in the sidebar on purpose: #sidetools is NOT hidden by the mobile media
+           query, so the ☰ drawer makes this reachable on the phone, which is the only
+           device the switch is for. The live title is written by applySaver(). -->
+      <button id="saverbtn" title="data saver">🐢</button>
     </div>
     <div id="slots"></div>
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>

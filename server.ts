@@ -101,6 +101,7 @@ type WSData = {
   // stream position this socket's capture-pane seed already covers: anything before it must
   // not be sent again (websocket.open sets it; afterSeed consumes it). 0 = nothing to skip.
   seedUntil: number;
+  seed?: number; // client's scrollback budget for the connect seed; 0/absent = SEED_LINES
   share?: string; // set on guest connections: the share id this socket belongs to
   mode?: "view" | "interact";
 };
@@ -5483,7 +5484,13 @@ Bun.serve<WSData>({
       // which does nothing if the client's width already happens to match; force skips that
       // check so "reload" reliably re-derives from tmux's current state either way
       const force = url.searchParams.get("force") === "1";
-      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols, rows, force } })) return;
+      // seed = how many lines of scrollback this client is willing to be handed on connect
+      // (the data-saver switch sends it; a normal client omits it). Clamped rather than
+      // trusted: it is a tmux capture-pane argument, and the ceiling stays SEED_LINES so a
+      // client can only ever ask for LESS than the server already sends, never more.
+      const seedParam = Number(url.searchParams.get("seed") ?? 0) | 0;
+      const seed = seedParam > 0 ? Math.min(SEED_LINES, Math.max(50, seedParam)) : 0;
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols, rows, force, seed } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/sessions") {
@@ -6456,6 +6463,10 @@ Bun.serve<WSData>({
       s.clients.add(ws);
       if (ws.data.share) audit("guest_ws_connect", s.id, ws.data.share);
       const { cols, rows, force } = ws.data;
+      // both seed paths below honour the client's scrollback budget when it sent one
+      // (data-saver mode); 0/absent keeps the full SEED_LINES capture. Already clamped
+      // to [50, SEED_LINES] at the upgrade, so this can only ever shrink the seed.
+      const seedLines = ws.data.seed || SEED_LINES;
       const name = sess(s.id);
       if (cols && rows && (force || cols !== s.cols || rows !== s.rows)) {
         // this client's width doesn't match the pane's current width (or the client
@@ -6480,7 +6491,7 @@ Bun.serve<WSData>({
           // garbling this reseed exists to fix. Plain text reflows correctly; the
           // trade-off is old scrollback loses color after a width change, which is
           // preferable to it being unreadable. Live output stays fully colored.
-          const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
+          const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${seedLines}`);
           ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
           try {
             s.offset = (await stat(streamPath(s.id))).size;
@@ -6504,7 +6515,7 @@ Bun.serve<WSData>({
         // same as the owner reseed path. No -e (see that path): the styled-run cursor
         // jumps it bakes in would re-garble a narrower guest; history goes monochrome,
         // live output stays fully colored.
-        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
+        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${seedLines}`);
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
         // Owner reconnect at a width that already matches the pane — the common case, since a
@@ -6536,7 +6547,7 @@ Bun.serve<WSData>({
         } catch {
           // stream file briefly missing during recreate — skip nothing, replay what arrives
         }
-        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
+        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${seedLines}`);
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       }
       ws.data.ready = true;

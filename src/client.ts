@@ -21,6 +21,24 @@ const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "4": 4 };
 const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
 const isMobile = () => MOBILE_MQ.matches;
 
+// --- data saver: ONE per-device switch, and the only thing in Fleet that trades freshness
+// for bytes. What it does NOT touch is the terminal: live output and typing ride the
+// WebSocket, so they stay exactly as fast either way. What it slows are the metadata polls
+// (sidebar/queue, chat, session brief) and what it shrinks is the scrollback the server
+// seeds on reconnect. Per-number cost/gain is measured in the commit that added this.
+const SAVER = { pollMs: 10_000, chatMs: 3_000, boardMs: 10_000, seed: 500 };
+const NORMAL = { pollMs: 2_000, chatMs: 1_000, boardMs: 3_000, seed: 0 }; // seed 0 = server's SEED_LINES
+// pure on purpose, and kept clear of the DOM/localStorage lines below it: the e2e suite has
+// no DOM harness, so it cuts this function out and runs it for real. pollMs/chatMs/boardMs
+// === 0 means "no timer at all" — a hidden tab polls NOTHING, in either mode. seed is
+// deliberately unaffected by hidden: it is read at connect time, which only happens visible.
+function pollPlan(hidden: boolean, saver: boolean): { pollMs: number; chatMs: number; boardMs: number; seed: number } {
+  const t = saver ? SAVER : NORMAL;
+  return hidden ? { pollMs: 0, chatMs: 0, boardMs: 0, seed: t.seed } : { ...t };
+}
+let dataSaver = localStorage.getItem("fleet.datasaver") === "1";
+const plan = () => pollPlan(document.hidden, dataSaver);
+
 const mdot = $("mdot"), mtitle = $("mtitle");
 function setConn(on: boolean) {
   for (const d of [dot, mdot]) d.className = `dot ${on ? "on" : "off"}`;
@@ -448,12 +466,25 @@ class Pane {
       // (reassigned) poll must not reset the new slot's chatBusy or reschedule its timer.
       if (this.slot === slot) {
         this.chatBusy = false;
-        if (this.view === "chat") {
+        // chatMs === 0 means the tab went hidden mid-fetch: stop the chain rather than
+        // re-arm it. chatPump() (driven by the poll pump on the way back) restarts it.
+        const ms = plan().chatMs;
+        if (this.view === "chat" && ms) {
           clearTimeout(this.chatTimer);
-          this.chatTimer = setTimeout(() => void this.pollChat(), 1000);
+          this.chatTimer = setTimeout(() => void this.pollChat(), ms);
         }
       }
     }
+  }
+
+  // the poll pump drives this on every visibility flip and every flip of the switch: drop
+  // the pending tick first (pollChat() only declines to RE-arm, so one already-scheduled
+  // poll would still fire into a hidden tab), then restart the chain if the plan still
+  // wants one. Restarting costs a single request, not a backlog — the fetch is a delta
+  // (after=chatTotal), so an hour spent hidden is still one catch-up.
+  chatPump() {
+    clearTimeout(this.chatTimer);
+    if (this.view === "chat" && plan().chatMs) void this.pollChat();
   }
 
   sendRaw(s: string) {
@@ -474,8 +505,12 @@ class Pane {
     // force (set only by reconnect(), i.e. the reload/refresh button) skips the server's
     // width-mismatch check — otherwise "reload" is a silent no-op whenever this client's
     // width already happens to match the pane's, which is the common case
+    // seed = how many lines of scrollback we're willing to be handed on connect. Sent only
+    // in data-saver mode; absent means the server's own SEED_LINES, i.e. today's behaviour.
+    // Read at connect time, so flipping the switch takes effect on the NEXT reconnect.
+    const seed = plan().seed;
     const ws = new WebSocket(
-      `${proto}://${location.host}/ws/${this.slot}?cols=${this.term.cols}&rows=${this.term.rows}${force ? "&force=1" : ""}`,
+      `${proto}://${location.host}/ws/${this.slot}?cols=${this.term.cols}&rows=${this.term.rows}${force ? "&force=1" : ""}${seed ? `&seed=${seed}` : ""}`,
     );
     this.ws = ws;
     ws.binaryType = "arraybuffer";
@@ -1735,7 +1770,8 @@ async function renderBoard() {
 }
 $("boardclose").onclick = () => setBoard(false);
 applyBoard();
-setInterval(() => void renderBoard(), 3000);
+// the board's own 3s interval used to live here — it is armed by the poll pump now (grep
+// armPolls), together with refresh(), so document.hidden is handled in exactly one place.
 
 function focusPane(index: number) {
   const changed = focused !== index;
@@ -2512,7 +2548,46 @@ async function refresh() {
     // server briefly unreachable — WS dot already shows disconnect
   }
 }
-setInterval(() => void refresh(), 2000);
+// --- the poll pump: every recurring fetch this page makes is armed HERE, so there is
+// exactly one place that knows about document.hidden and one place the data-saver switch
+// has to reach. A hidden tab polls nothing at all — it has no viewer, and on a phone
+// "hidden" is the normal state (screen off, app switched away) while the socket lives on.
+// Coming back fires one immediate catch-up round, never a backlog of missed ticks:
+// refresh() is a full-state read (the last one wins) and pollChat() is a delta read.
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+let boardTimer: ReturnType<typeof setInterval> | undefined;
+function armPolls() {
+  clearInterval(pollTimer); pollTimer = undefined;
+  clearInterval(boardTimer); boardTimer = undefined;
+  const p = plan();
+  if (p.pollMs) pollTimer = setInterval(() => void refresh(), p.pollMs);
+  if (p.boardMs) boardTimer = setInterval(() => void renderBoard(), p.boardMs);
+}
+document.addEventListener("visibilitychange", () => {
+  armPolls();
+  for (const p of panes) p.chatPump(); // stops the chat chain on the way out, restarts it on the way back
+  if (document.hidden) return;
+  void refresh(); // the sidebar is stale by exactly the time we spent hidden — fix it now
+  void renderBoard();
+});
+
+// --- the data-saver switch itself (persisted per device, like the board/histall toggles) ---
+const saverBtn = $("saverbtn") as HTMLButtonElement;
+const SAVER_TITLE = "data saver — slower polls (sidebar/chat/brief lag a few seconds) and a"
+  + " shorter scrollback seed on reconnect. The terminal itself is unaffected.";
+function applySaver() {
+  saverBtn.classList.toggle("active", dataSaver);
+  saverBtn.title = `${SAVER_TITLE}\ncurrently: ${dataSaver ? "ON" : "off"}`;
+  armPolls();
+  for (const p of panes) p.chatPump(); // pick up the new chat interval without waiting out the old one
+}
+function setSaver(on: boolean) {
+  dataSaver = on;
+  localStorage.setItem("fleet.datasaver", on ? "1" : "0");
+  applySaver();
+}
+saverBtn.onclick = () => setSaver(!dataSaver);
+applySaver(); // also the initial arm of the pump
 
 // --- share dialog: create/inspect/revoke the one share a slot can have ---
 const sharedlg = $("sharedlg"), sharepanel = $("sharepanel");

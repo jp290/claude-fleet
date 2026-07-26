@@ -2,6 +2,7 @@
 // (including the real-metacharacter escaping regression).
 import { BASE, IP, PORT, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
 import { exists } from "./lane-helpers";
+import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -154,15 +155,29 @@ export async function run(): Promise<void> {
   // Bun's WebSocket client accepts { headers } as a second arg — the DOM lib types don't
   const wsWithHeaders = (url: string, headers: Record<string, string>): WebSocket =>
     new (WebSocket as unknown as new (u: string, opts: { headers: Record<string, string> }) => WebSocket)(url, { headers });
-  const replayBytes = await new Promise<number>((resolve) => {
-    let n = 0;
+  // give the pane a line of its own to replay. The seed is a plain (un-escaped) capture of the
+  // pane, so a bare shell prompt is a few dozen visible bytes — the byte count alone stopped
+  // being the interesting assertion once the seed stopped being a slice of the raw stream and
+  // its escape-sequence noise. Assert the content instead, and keep the byte floor beside it.
+  await tmuxOut("send-keys", "-t", "s1", "printf 'ws-replay-fixture-line-%s\\n' 1 2 3 4 5", "Enter");
+  for (let i = 0; i < 60; i++) {
+    // -5 only ever exists as real output; the command echo above carries the %s, not a digit
+    if ((await tmuxOut("capture-pane", "-t", "s1", "-p")).out.includes("ws-replay-fixture-line-5")) break;
+    await Bun.sleep(100);
+  }
+  const replay = await new Promise<{ n: number; text: string }>((resolve) => {
+    let n = 0, text = "";
     const ws = new WebSocket(wsUrl(1));
     ws.binaryType = "arraybuffer";
-    ws.onmessage = (e) => { n += (e.data as ArrayBuffer).byteLength; };
-    ws.onopen = () => setTimeout(() => { ws.close(); resolve(n); }, 2000);
-    ws.onerror = () => resolve(-1);
+    ws.onmessage = (e) => {
+      n += (e.data as ArrayBuffer).byteLength;
+      text += new TextDecoder().decode(e.data as ArrayBuffer);
+    };
+    ws.onopen = () => setTimeout(() => { ws.close(); resolve({ n, text }); }, 2000);
+    ws.onerror = () => resolve({ n: -1, text });
   });
-  check("WS replay for slot 1 non-empty", replayBytes > 100, `${replayBytes} bytes`);
+  check("WS replay for slot 1 non-empty", replay.n > 100, `${replay.n} bytes`);
+  check("WS replay carries the pane's actual content", replay.text.includes("ws-replay-fixture-line-3"), `${replay.n} bytes`);
 
   // --- width-aware reseed: a client's cols/rows on connect should resize the tmux window
   // (tmux reflows history on resize, which is what fixes cross-width scrollback wrapping) ---
@@ -186,6 +201,88 @@ export async function run(): Promise<void> {
   check("WS connect with cols/rows reseeds tmux window", winSize.out.trim() === `${reseedCols} ${reseedRows}`, winSize.out.trim());
   const rszSame = await post("/resize", { slot: 2, cols: reseedCols, rows: reseedRows });
   check("/resize accepts matching size (no-op)", rszSame.ok);
+
+  // --- the owner reseed at a MATCHING width (no cols/rows on the URL → server.ts's third
+  // websocket.open branch). It used to answer with a tail of the raw stream capped at 2 MB,
+  // which bound at its full value on every live pane whose stream had outgrown it. It now
+  // answers with the same capture-pane seed the guest path takes. Two things have to hold:
+  // the seed is small relative to the stream it replaced, and the client's byte stream across
+  // the reconnect is still exactly the pane's output — no line twice, none missing. ---
+  {
+    const marks = (t: string) => [...t.matchAll(/SEEDMARK-(\d+)\b/g)].map((m) => Number(m[1]));
+    // collect from an owner reconnect until mark `target` has arrived, or the deadline passes.
+    // Deliberately NOT a fixed window: this box runs four lanes at once, and a window sized for
+    // an idle machine reports "no live output" when the pane's loop is merely being slow.
+    const seedFrame = (slot: number, target: number, timeoutMs: number): Promise<{ bytes: number; seed: string; all: string }> =>
+      new Promise((resolve) => {
+        let bytes = 0, seed = "", all = "";
+        const ws = new WebSocket(wsUrl(slot)); // deliberately no cols/rows: the owner-reseed path
+        ws.binaryType = "arraybuffer";
+        const fin = () => { clearTimeout(timer); ws.close(); resolve({ bytes, seed, all }); };
+        const timer = setTimeout(fin, timeoutMs);
+        ws.onmessage = (e) => {
+          const b = new Uint8Array(e.data as ArrayBuffer);
+          const t = new TextDecoder().decode(b);
+          if (!bytes) { bytes = b.byteLength; seed = t; }
+          all += t;
+          const m = marks(all);
+          if (target > 0 && m.length > 0 && m[m.length - 1] >= target) fin();
+        };
+        ws.onerror = () => fin();
+      });
+
+    // 1) size. Flood the pane so the raw stream is far bigger than one screenful of history,
+    // then wait for it to stop growing (never a fixed sleep) before measuring.
+    await tmuxOut("send-keys", "-t", "s2", "seq 1 30000", "Enter");
+    const rawPath = `${ROOT}/streams/s2.raw`;
+    let raw = 0;
+    for (let i = 0; i < 100; i++) {
+      const n = Bun.file(rawPath).size;
+      if (n > 100_000 && n === raw) break;
+      raw = n;
+      await Bun.sleep(150);
+    }
+    const flood = await seedFrame(2, 0, 400);
+    check("owner reseed at matching width is a capture, not a tail of the raw stream",
+      flood.bytes > 100 && flood.bytes * 4 < raw, `seed ${flood.bytes} B vs stream ${raw} B`);
+
+    // 2) continuity. Drip uniquely numbered lines slowly (one line per pipe read, so the raw
+    // file's write boundaries stay line-aligned) and reconnect WHILE they flow — that is the
+    // state the seed has to get right: poll() lags its 100 ms tick, so bytes sit in the file
+    // (hence in the capture) that this client has not been sent yet and are still on their way.
+    await tmuxOut("send-keys", "-t", "s2", "for i in $(seq 1 60); do echo SEEDMARK-$i; sleep 0.05; done", "Enter");
+    for (let i = 0; i < 300; i++) { // connect once there is real scrollback to seed FROM
+      const m = marks((await tmuxOut("capture-pane", "-t", "s2", "-p")).out);
+      if (m.length > 0 && m[m.length - 1] >= 15) break;
+      await Bun.sleep(50);
+    }
+    const live = await seedFrame(2, 40, 20_000);
+    const nums = marks(live.all), seeded = marks(live.seed);
+    // the seed carries the scrollback, so the run starts at 1 and every step is exactly +1:
+    // a resent overlap shows up as a step back, a dropped range as a step bigger than 1
+    const contiguous = nums.length > 0 && nums[0] === 1 && nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
+    check("reseed + live bytes are the pane's output exactly once — no duplicated, no missing line",
+      nums.length >= 40 && contiguous, `${nums.length} marks, ${nums[0]}..${nums[nums.length - 1]}`);
+    // and the split is real: the history arrived in the seed frame, the rest live after it —
+    // without that this would also pass on a client that got the whole run from live bytes
+    check("the reseed frame carries the scrollback, the live stream carries the rest",
+      seeded.length >= 10 && seeded[0] === 1 && nums[nums.length - 1] > seeded[seeded.length - 1],
+      `seed ${seeded[0]}..${seeded[seeded.length - 1]} of ${live.bytes} B, live to ${nums[nums.length - 1]}`);
+    for (let i = 0; i < 100; i++) { // let the loop finish before the next section types into s2
+      if ((await tmuxOut("capture-pane", "-t", "s2", "-p")).out.includes("SEEDMARK-60")) break;
+      await Bun.sleep(100);
+    }
+  }
+
+  // --- the client half (src/backoff.ts): a reconnect costs a seed, so a phone on a dead radio
+  // must not keep buying one every 1.5 s. Pure function, asserted directly — the browser loop
+  // that calls it is not reachable from here. ---
+  check("reconnect backoff: the first retry is still fast", reconnectDelay(0) === 1500, `${reconnectDelay(0)}`);
+  check("reconnect backoff escalates", reconnectDelay(1) === 3000 && reconnectDelay(2) === 6000 && reconnectDelay(3) === 12_000,
+    [1, 2, 3].map(reconnectDelay).join(","));
+  check("reconnect backoff caps and stays capped", reconnectDelay(4) === RECONNECT_MAX_MS && reconnectDelay(50) === RECONNECT_MAX_MS,
+    `${reconnectDelay(4)},${reconnectDelay(50)}`);
+  check("reconnect backoff never returns 0 or a negative wait", reconnectDelay(-3) === 1500 && RECONNECT_MAX_MS > 1500);
 
   const wsNoTok = await new Promise<boolean>((resolve) => {
     let opened = false;

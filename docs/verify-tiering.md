@@ -375,6 +375,20 @@ run — so the *class* of problem is excluded, not the specific run.
 
 Ranked. Steps 1 and 2 are the proposal; 3 is the sibling lane's, listed so the tiering is whole.
 
+> **STATUS 2026-07-26: APPLIED — steps 1, 2 AND 2b are in `watchdog.sh`** (`07be94d`, `58203f2`),
+> together with `FLEET_VERIFY_TIMEOUT_MS=300000`. Step 3 was already live. **Not active until
+> `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` plus an srv restart** — an owner
+> action. The prose below is left in its proposal voice on purpose; it is the record of the
+> reasoning, and rewriting it into the past tense would erase what was argued before the fact.
+> Two things this section could not know:
+> - **Step 2b's original burn-in was void.** `./e2e-security.sh` had been aborting at import since
+>   `13c5728` and later lost four checks to the digest change; the runs that were counted measured
+>   a broken suite. Re-run after `d146e74` + `e5e5e80`: **10/10 ALL PASS, 47 checks each, 34–35 s,
+>   variance under a second** — which is why 2b went in rather than staying withheld.
+> - **The composed string had never been run**, only its parts. Measured as the server runs it:
+>   three-part **69 s** (predicted 65.6 median / 73.8 worst), four-part **101 s** (predicted 100.0).
+>   The estimates held.
+
 **Step 1 — free, and removes a blind spot in the checker itself.** Add the three unimported
 harnesses to the `tsc` list. Measured cost: 1.5 s → 1.538 s, no new errors (§4).
 
@@ -414,8 +428,9 @@ It is isolation-safe on the same pattern (own port band 15200+, `FLEET_CMD=true`
 honest recommendation is to run it ~10× first and then add it; with the timeout at 300 s the budget
 is there (median would go 65.6 → 100.0 s, worst case 73.8 → 108.3 s).
 
-**Proposed `watchdog.sh` `VERIFY_CMD` (owner-applied; needs `launchctl kickstart -k
-gui/$(id -u)/com.claude-fleet.watchdog`, and I did not edit the file):**
+**Proposed `watchdog.sh` `VERIFY_CMD`** — this was written before the edit; the file now carries
+this string **plus `&& ./e2e-security.sh`** between the two suites (step 2b, cheapest-first).
+Still needs `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` and an srv restart:
 
 ```sh
 VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts && ./e2e-clean-review.sh && ./e2e-claude-gate.sh'
@@ -468,8 +483,9 @@ belongs (§5, §6).
   price it (~90 ms). The closest thing that exists is `fleet-e2e-security.ts:293–325`, which
   asserts *source-level* invariants — no HTML/eval sink in `src/*.ts` beyond one reviewed static-icon
   exception, no inline script in the served `public/*.html`, `src/md.ts` uses `textContent` — i.e.
-  exactly the "asserted only at source-string level" caveat `lane-brief-template.md:81` names, and
-  it runs in no gate today.
+  exactly the "asserted only at source-string level" caveat `lane-brief-template.md:81` names.
+  It ran in no gate when this was written; since 2026-07-26 (`58203f2`) it is in the pre-land gate,
+  so the caveat about *what* it asserts stands while "runs nowhere" no longer does.
 - **I did not root-cause the `e2e/review.ts:177` failure** (§5b) — I established what was recorded
   and that the stand-in never ran, not why `laneBaseRef` produced no base on that run. It may be a
   harness race, and it may be adjacent to the defect the sibling lane's commit `e47313e`
@@ -633,10 +649,12 @@ the registry is already refuted in §8 — `fleet-e2e.ts:63-75` threads one muta
 `lanesBasic → lanesLifecycle → merge` with a load-bearing order, so slicing the suite is a fixture
 refactor, not a config change.
 
-**State of §8 as of today** (read from `watchdog.sh`, not assumed): Step 3 (the post-land audit) is
-live. Step 1, Step 2, Step 2b and `FLEET_VERIFY_TIMEOUT_MS` are **not applied** — the gate is `tsc`
-over four files plus `./e2e-claude-gate.sh`, so the clean-land path and the 46-check security
-regression suite still run in no gate at all. That, not a registry, is the open item.
+**State of §8 when this was written** (read from `watchdog.sh`, not assumed): Step 3 (the post-land
+audit) live; Steps 1, 2, 2b and `FLEET_VERIFY_TIMEOUT_MS` **not applied** — the gate was `tsc` over
+four files plus `./e2e-claude-gate.sh`, so the clean-land path and the security regression suite ran
+in no gate at all. That was the open item, and it is **closed as of 2026-07-26** (`07be94d`,
+`58203f2`): all of §8 is now in `watchdog.sh`, pending only the owner's `launchctl kickstart` and an
+srv restart. The suite is 47 checks, not 46 — `e5e5e80` added the id-join check.
 
 Root-causing the merge/resolver family (§11.2) ranks *below* this, counter-intuitively: it lives in
 a tier that gates nothing, so fixing it widens no gate. It only recovers the alarm value §7
@@ -677,11 +695,17 @@ region-level attribution inside that file needs hunk ranges that rot; and it is 
 proof — a client change can break the merge path through a shared helper, so it may say "look here
 last", never "ignore this".
 
-**Ranking:** both of these sit *downstream* of §8 being unapplied. Optimising which checks run is
-premature while the gate is 47 s and covers neither the land path nor the security suite for
-anyone.
+**Ranking:** both of these sat *downstream* of §8 being unapplied — optimising which checks run was
+premature while the gate was 47 s and covered neither the land path nor the security suite.
+**§8 is applied since 2026-07-26** (see the STATUS banner there), so that particular objection has
+expired. The ranking does not change on its own account: the gate is now 101 s against a 300 s
+timeout, so there is no cost pressure to optimise away, and §11.6c's numeric rejection of
+file-based check selection stands untouched.
 
-### 11.7 Rulebook lines proposed (text, not entered — `CLAUDE.md` is gitignored)
+### 11.7 Rulebook lines — proposed here, ENTERED in `CLAUDE.md` on 2026-07-26
+
+*(A lane cannot enter them: `CLAUDE.md` is gitignored and only copied at spawn. All three below are
+now in the main checkout's copy, item 1 replacing the old rule rather than sitting beside it.)*
 
 1. Replace "prove it fails-identically-at-HEAD (fresh HEAD worktree)" with: **re-run the same tree
    first**; a tree that passes on a re-run has proven the flake. The HEAD worktree is the fallback

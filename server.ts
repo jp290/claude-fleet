@@ -88,6 +88,7 @@ function modelOf(body: Record<string, unknown> | null): { ok: true; model: strin
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
+const MAX_MISSION = 300; // one sentence of standing intent, not a brief — see Slot.mission
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
 type WSData = {
@@ -144,6 +145,12 @@ interface Slot {
   id: number;
   cwd: string | null; // null = slot not activated; self-heal only touches activated slots
   label: string | null; // user-chosen session name; falls back to cwd basename in the UI
+  mission: string | null; // the OWNER's standing intention for this session, externalized. A lane
+  // has one already — its founding task rides stewardTaskView, and every drift/nudge read anchors
+  // on it; a plain checkout slot has nothing equivalent, because its running intent lives in pane
+  // scrollback and dies at /clear. Owner-written only (the steward gate never reaches the route:
+  // a producer must not author the anchor it is later judged against), and per SESSION, not per
+  // slot — openSlot/killSlot clear it with the label.
   worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
@@ -173,6 +180,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   id: i + 1,
   cwd: null,
   label: null,
+  mission: null,
   worktree: null,
   model: null,
   selfToken: randomBytes(16).toString("hex"),
@@ -415,9 +423,9 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 // writes are serialized: overlapping fire-and-forget writes to the same file can interleave
 let saveChain: Promise<unknown> = Promise.resolve();
 function saveState(): void {
-  const active: Record<string, { cwd: string; label: string | null; sessionId: string | null;
+  const active: Record<string, { cwd: string; label: string | null; mission: string | null; sessionId: string | null;
     worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null; selfToken: string }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
@@ -1178,7 +1186,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // only moment a label-keyed env export (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in;
   // open-then-rename always arrives after the pane's env is fixed
   s.label = label;
-  // set BEFORE ensureSlot spawns the pane below — FLEET_SELF_TOKEN is only baked into a
+  s.mission = null; // a re-opened slot is a NEW session: the previous occupant's standing
+  // intention must never read as this one's (it is the anchor staleness is judged against)
+  // worktree is set BEFORE ensureSlot spawns the pane below — FLEET_SELF_TOKEN is only baked into a
   // lane's pane env, so ensureSlot must see the final worktree tag, not a later patch-up
   s.worktree = worktree;
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
@@ -1228,6 +1238,7 @@ async function killSlot(s: Slot): Promise<void> {
   audit("slot_kill", s.id);
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
+  s.mission = null; // dies with the session it was written for, same as the label
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
   reviewCache.delete(s.id); // …nor the previous session's 🔍 review
   reviewAutoTried.delete(s.id); // …and the next lane in this slot gets its own auto-③ budget
@@ -3959,6 +3970,10 @@ if (existsSync(STATE_FILE)) {
       if (s && typeof v?.cwd === "string") {
         s.cwd = v.cwd;
         if (typeof v.label === "string") s.label = v.label;
+        // the session survives a restart, so its standing intention must too. Capped on the way
+        // back IN as well: the state file is on disk and a hand-edit must not widen the field.
+        const pmi = (v as { mission?: unknown }).mission;
+        if (typeof pmi === "string") s.mission = pmi.slice(0, MAX_MISSION) || null;
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const pm = (v as { model?: unknown }).model;
@@ -4457,6 +4472,11 @@ function stewardSlotsView(now: number) {
       id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
       ...sig, worktree: s.worktree, model: s.model,
       task: stewardTaskView(s.id),
+      // the owner's standing intention for this session, verbatim — the non-lane counterpart of
+      // `task` above. Served as written (never trimmed or summarized) so a reader can judge it
+      // against the git/idle facts next to it; null means the owner never wrote one, which is
+      // "unknown intent", not "no intent".
+      mission: s.mission,
       mergePending: mergeLast.get(s.id)?.status === "resolved",
       // the deterministic label, served as a FACT next to the facts it is computed from — the
       // digest worker gets the same rule in prose and may still disagree; this one is the
@@ -5952,7 +5972,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|share|unshare|share-mode|land|shelve)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|share|unshare|share-mode|land|shelve)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -6008,6 +6028,21 @@ Bun.serve<WSData>({
         s.label = body.label.trim() || null; // empty clears back to the cwd-basename default
         saveState();
         return json({ ok: true, label: s.label });
+      }
+      // the owner writes this slot's standing intention (Slot.mission). Owner-only by
+      // CONSTRUCTION, not by an extra check: the steward gate above intercepts its own token
+      // before this chain and default-denies anything handleStewardRoute doesn't claim, and it
+      // must stay that way here — a producer that can write the anchor it is judged against is
+      // grading its own drift. Explicit `null` clears; a blank string clears the same way.
+      if (slotMatch[2] === "mission") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        const body = await readJson(req);
+        const m = body?.mission;
+        if (!body || !(m === null || typeof m === "string") || (typeof m === "string" && m.length > MAX_MISSION))
+          return json({ error: `mission must be null or a string of at most ${MAX_MISSION} chars` }, 400);
+        s.mission = typeof m === "string" ? m.trim() || null : null;
+        saveState();
+        return json({ ok: true, mission: s.mission });
       }
       if (slotMatch[2] === "open") {
         const body = await readJson(req);

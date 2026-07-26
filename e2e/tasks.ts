@@ -1,6 +1,7 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
-import { check, get, post } from "./harness";
+import { readFileSync } from "node:fs";
+import { check, get, post, ROOT } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -15,8 +16,29 @@ export async function run(ctx: Ctx): Promise<void> {
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
   check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
+  // the dispatch switch carries the same contract as /api/autos/switch: the dangerous direction is
+  // OFF, because a stop that lives only in memory is silently re-armed by the next srv respawn
+  // (boot reloads `dispatch` from fleet.json and the dispatcher spawns lanes again).
+  // Non-tautological: `dispatch` starts out false on disk, so the stop is only observable if the
+  // file says TRUE first — dispatch is turned on and that ON is pinned into fleet.json through an
+  // UNRELATED saveState (a task create+delete), which a switch that never persists cannot fake.
+  const dispPersisted = (): boolean | undefined =>
+    (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { dispatch?: boolean }).dispatch;
+  await post("/api/dispatch", { on: true });
+  const pin = (await (await post("/api/tasks", { text: "dispatch-persist-pin", queue: false })).json()) as { task: { id: string } };
+  await post(`/api/tasks/${pin.task.id}/delete`, {});
+  await Bun.sleep(150);
+  check("control: the persisted state reads dispatch:true right before the stop (so the check below can fail)",
+    dispPersisted() === true, `dispatch=${dispPersisted()}`);
   const dispOff = await post("/api/dispatch", { on: false });
-  check("dispatch toggle endpoint works", dispOff.ok);
+  check("dispatch toggle endpoint works", dispOff.ok && ((await dispOff.json()) as { on?: boolean }).on === false);
+  await Bun.sleep(150); // let the route's saveState land
+  check("the dispatch stop is persisted immediately (so a restart stays stopped)",
+    dispPersisted() === false, `dispatch=${dispPersisted()}`);
+  const dispAudit = ((await (await get("/api/audit?limit=100")).json()) as { events: { event?: string; detail?: string }[] })
+    .events.find((e) => e.event === "dispatch_switch");
+  check("the dispatch stop leaves an audit entry recording the direction",
+    dispAudit?.detail === "off", JSON.stringify(dispAudit));
 
   // --- Tier-0 (synergy-findings.md #1): the master stop + quiet hours reach the DISPATCHER too,
   // not just scheduled autos. MUST run before the restart section below — that restart respawns srv

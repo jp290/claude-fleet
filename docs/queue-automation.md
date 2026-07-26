@@ -25,7 +25,11 @@ auto-runs, review capacity is the bottleneck, advisors inform / gates decide.*
    `queued`. Serial (a busy-lock), gated (`dispatchOn` + `FLEET_DISPATCH_REPO`,
    off by default), budgeted (`DISPATCH_MAX_LANES`), one task per tick, FIFO by
    array order. It creates a worktree, opens a slot, **injects `text` verbatim**,
-   re-verifying the slot is still its lane before sending.
+   re-verifying the slot is still its lane before sending. `POST /api/dispatch`
+   persists the new value immediately and audits it (`dispatch_switch`, detail
+   `on`/`off`) — same contract as `/api/autos/switch`, because an OFF that lived
+   only in memory would be re-armed by the next srv respawn reloading
+   `dispatch: true` from fleet.json (fixed 2026-07-26).
 4. **Invariant.** The queue is a **review buffer, not a work buffer**. Its whole
    purpose is the human gate between "something wants doing" (pending) and "a
    lane may run it unattended" (queued). Intake proves the stance: external text

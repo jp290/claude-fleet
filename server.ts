@@ -372,6 +372,7 @@ type AuditEvent =
   | "land_note_fail"
   | "postland_audit"
   | "autos_switch"
+  | "dispatch_switch"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
@@ -5905,6 +5906,8 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!DISPATCH_REPO) return json({ error: "dispatcher unavailable — set FLEET_DISPATCH_REPO" }, 400);
       dispatchOn = body?.on === true;
+      saveState(); // same rule as the autos kill-switch below: a stop must survive an immediate restart
+      audit("dispatch_switch", undefined, dispatchOn ? "on" : "off");
       return json({ ok: true, on: dispatchOn });
     }
     if (url.pathname === "/api/autos/switch" && req.method === "POST") {

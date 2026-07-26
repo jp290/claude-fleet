@@ -2640,6 +2640,17 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
 const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools '
   + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" '
   + '"Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
+// The ② clean reviewer's whole job is a verdict STRING — it inspects and answers, it never writes.
+// It runs on the one path nobody watches (FLEET_CLEAN_REVIEW on a clean auto-land) and, by design,
+// reads lane code another agent wrote — so it must not hold the resolver's write+exec primitives.
+// Dropped vs MERGE_TOOLS: Edit/Write and `git add`/`git rm`/`git checkout`/`git rebase` — the last
+// being arbitrary command execution via `git rebase -x`, which the post-run `git reset --hard` can
+// never undo (it restores the tree, not network calls or writes outside the worktree). Kept: the
+// three read-only git subcommands its prompt names plus anchored Read/Grep/Glob. `--setting-sources ""`
+// carries the same load as above — without it the anchors are inert and this list only ADDS to the
+// owner's allow list, which would hand the write tools straight back.
+const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools '
+  + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Read(**)" "Grep(**)" "Glob(**)"';
 // "resolved" = the agent had to make semantic conflict choices; the rebase is git-verified
 // but deliberately NOT landed — it waits for the owner to review the diff and confirm.
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
@@ -3491,8 +3502,9 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
 // auto-land path, and can ONLY downgrade that auto-land to a stop-and-review — it never lands anything.
 // FAIL-CLOSED: only an explicit {"verdict":"ok"} returns "ok"; every other outcome (a "review" verdict,
 // a timeout/throw, an unparseable answer, a missing fork base) returns "review", so the auto-land is
-// unreachable from any of the reviewer's failure modes. The reviewer is read-only by contract; HEAD is
-// captured and hard-reset afterwards so any stray edit/commit it made can never reach the landing tree.
+// unreachable from any of the reviewer's failure modes. The reviewer is read-only by CAPABILITY
+// (REVIEW_TOOLS — no Edit/Write, no exec-bearing git), not merely by prompt; HEAD is still captured and
+// hard-reset afterwards as defence in depth, so any stray commit can never reach the landing tree.
 // `raw` marks an answer that carried NO explicit verdict (no fork base, timeout/throw, unparseable,
 // or a verdict field that is neither "ok" nor "review"). Gate mode ignores it — every such case is
 // already a stop. Shadow mode needs it: an unmeasurable run must be recorded as unmeasured, never as
@@ -3517,7 +3529,7 @@ async function runCleanReview(cwd: string, branch: string, main: string, base: s
   try {
     out = CLEAN_REVIEW_CMD
       ? await summaryViaSubprocess(CLEAN_REVIEW_CMD, prompt, cwd, CLEAN_REVIEW_TIMEOUT_MS)
-      : await summaryViaSession(prompt, cwd, '"verdict"', { extraArgs: MERGE_TOOLS, timeoutMs: CLEAN_REVIEW_TIMEOUT_MS });
+      : await summaryViaSession(prompt, cwd, '"verdict"', { extraArgs: REVIEW_TOOLS, timeoutMs: CLEAN_REVIEW_TIMEOUT_MS });
   } catch { /* timeout / spawn failure → out stays "" → parsed as fail-closed below */ }
   // enforce read-only: restore the tree to exactly what it was before the reviewer ran (it is about to land)
   if (preHead.code === 0 && preHead.out) await git(cwd, "reset", "--hard", preHead.out);

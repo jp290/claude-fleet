@@ -2781,7 +2781,7 @@ const DISPO_VERDICTS: DispoVerdict[] = ["accepted", "edited", "ignored", "wrong"
 // the join keys, mirroring the server's documented ref shapes. `land` is branch@ts because ts is
 // the only field EVERY outcome row carries; a row whose branch was never recorded still joins.
 const landRef = (o: { branch?: string | null; ts: number }) => `${o.branch ?? "(branch not recorded)"}@${o.ts}`;
-const dispoKey = (worker: string, ref: string) => `${worker} ${ref}`;
+const dispoKey = (worker: string, ref: string) => `${worker}\u0000${ref}`;
 function dispoOf(worker: string, ref: string | null | undefined): DispoVerdict | null {
   return ref ? dispoByRef.get(dispoKey(worker, ref)) ?? null : null;
 }

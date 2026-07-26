@@ -16,6 +16,29 @@ export async function run(ctx: Ctx): Promise<void> {
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
   check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
+
+  // --- payload budget (docs/data-saver.md §1, lane A). /api/sessions is polled every 2 s by every
+  // open tab, so a queue of long prompts must not ride along: measured on the live fleet 2026-07-26,
+  // 107 521 B of a 112 410 B response were the 39 task texts. The poll carries digests; the text
+  // stays reachable behind GET /api/tasks, which is what the queue overlay reads. Non-tautological:
+  // the probe task is proven PRESENT in the same payload that is proven small. ---
+  {
+    const MARK = "payload-budget-probe";
+    const big = `${MARK} ${"x".repeat(15_000 - MARK.length - 1)}`;
+    const bigT = (await (await post("/api/tasks", { text: big, queue: false })).json()) as { task: { id: string } };
+    const raw = await (await get("/api/sessions")).text();
+    const bytes = Buffer.byteLength(raw);
+    const dig = (JSON.parse(raw) as { tasks: { id: string; text?: string }[] }).tasks.find((t) => t.id === bigT.task.id);
+    check("control: the 15 KB task IS in the polled payload (so the size check below can fail)", !!dig, `${bytes} B`);
+    check("the sessions poll carries a task digest, never the prompt text",
+      !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
+    check("the sessions payload stays under 10 KB with a 15 KB task in the queue", bytes < 10 * 1024, `${bytes} B`);
+    const fullT = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
+      .tasks.find((t) => t.id === bigT.task.id);
+    check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",
+      fullT?.text === big, `${fullT?.text.length ?? -1} of ${big.length} chars`);
+    await post(`/api/tasks/${bigT.task.id}/delete`, {});
+  }
   // the dispatch switch carries the same contract as /api/autos/switch: the dangerous direction is
   // OFF, because a stop that lives only in memory is silently re-armed by the next srv respawn
   // (boot reloads `dispatch` from fleet.json and the dispatcher spawns lanes again).

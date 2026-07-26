@@ -223,6 +223,22 @@ function capTasks(list: Task[]): Task[] {
   return list.filter((t) => live.has(t) || keptDone.has(t));
 }
 const MAX_TASK_TEXT = 20_000;
+// What a task looks like on /api/sessions. The prompt `text` is deliberately absent: that
+// endpoint is polled every 2 s by every open tab, and the texts dominated it — measured on the
+// live fleet 2026-07-26, 107 521 B of a 112 410 B response were the 39 task texts (the largest
+// one alone 14 738 chars), against 3 648 B for `slots`, the endpoint's actual purpose. Nothing
+// on the poll path reads the text (the queue button reads status+source); the queue overlay
+// fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
+// null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
+type TaskDigest = Pick<Task, "id" | "source" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note">>;
+function taskDigest(t: Task): TaskDigest {
+  return {
+    id: t.id, source: t.source, status: t.status, created: t.created,
+    ...(t.from ? { from: t.from } : {}),
+    ...(t.slot ? { slot: t.slot } : {}),
+    ...(t.note ? { note: t.note } : {}),
+  };
+}
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
@@ -5225,7 +5241,8 @@ Bun.serve<WSData>({
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),
         autos,
-        tasks,
+        // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
+        tasks: tasks.map(taskDigest),
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
         autosOn,
         quietHours,
@@ -5921,6 +5938,9 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true, task: t });
     }
+    // the full prompt texts, kept off the 2 s poll (see TaskDigest). The queue overlay fetches
+    // this when it opens; a task's text never changes after creation, so the client caches by id.
+    if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks });
     const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);

@@ -221,12 +221,22 @@ if (INTAKE && DISPATCH_REPO) {
     headers: { "content-type": "application/json", "x-intake-secret": INTAKE },
     body: JSON.stringify({ text: marker, from: "outsider", status: "queued", queue: true, source: "owner", slot: 1 }) });
   check("§5 intake accepts the submission", inj.ok);
-  const taskOf = async (): Promise<{ id: string; status: string; source: string; slot: number | null } | undefined> => {
-    const j = (await (await get("/api/sessions")).json()) as
-      { tasks: { id: string; text: string; status: string; source: string; slot: number | null }[] };
-    return j.tasks.find((t) => t.text === marker);
+  // The 2 s poll carries DIGESTS only (server.ts, grep `TaskDigest`): `text` is gone from it and
+  // null-valued fields are omitted entirely. So resolve the id ONCE against the full list, assert
+  // the STORED record there — where a rejected `slot` is an explicit null rather than an absent
+  // key — and use the digest for the one thing it is for, polling `status`. Joining by id keeps
+  // this harness working whatever the digest sheds next; matching on text did not.
+  const fullTask = async (): Promise<{ id: string; text: string; status: string; source: string; slot: number | null } | undefined> =>
+    ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; text: string; status: string; source: string; slot: number | null }[] })
+      .tasks.find((t) => t.text === marker);
+  const t0 = await fullTask();
+  // its own named check, so a broken join fails HERE instead of toppling the three below as dominos
+  check("§5 the intake task is findable by its marker", !!t0?.id, JSON.stringify(t0));
+  const taskOf = async (): Promise<{ id: string; status: string } | undefined> => {
+    const j = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] };
+    return j.tasks.find((t) => t.id === t0?.id);
   };
-  const t0 = await taskOf();
   check("§5 a spoofed status/queue/source/slot in the intake body is ignored — pending, source intake",
     t0?.status === "pending" && t0?.source === "intake" && t0?.slot === null, JSON.stringify(t0));
   const laneCount = async (): Promise<number> => {

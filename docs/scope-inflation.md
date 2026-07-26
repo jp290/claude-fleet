@@ -140,3 +140,28 @@ Zur Übernahme im Haupt-Checkout vorgeschlagen, eine Zeile:
 > und die Rangliste dort abschneiden, wo sie erfüllt ist. Was danach kommt, ist ein
 > separater Vorschlag, keine Lane. Billige Parallelität macht Über-Scoping beim Spawn
 > gratis und erst beim Review teuer (`scope-inflation.md`).
+
+## 8 — The grouping key, and the axis someone else already found there
+
+§3 asks what would have made this visible. The answer is one field, and it is not new ground:
+**`HANDOFF.md:105` (2026-07-26) already records that lane creation keeps no requester** —
+`slot_open` and `self_heal_recreate` look identical whether a human clicked or the dispatcher
+spawned — and files it as "the same missing axis as `landInitiatedBy`, one step earlier"
+(task `639e35ff`).
+
+Same missing place, different question. That note asks **who** spawned the lane (human vs
+dispatcher), an autonomy-accounting axis. This case needs **which request** the lane came from, so
+that four lanes out of one asking are countable at all. Every other quantity is already recorded:
+`LaneOutcome` carries `shortstat`, `commitCount`, `filesTouched`, `sessionMs`, `ownerPrompts`, and
+`briefHash` — but `briefHash` hashes each lane's OWN brief, and four lanes have four briefs. Nothing
+joins them.
+
+**One field can serve both** if lane creation records an origin *reference* and not merely an actor
+type. That is the reason to note this here rather than file a competing task: two tasks against the
+same missing field would produce two half-answers and a merge conflict.
+
+Why no existing layer could see it, stated once because it is the transferable part: every layer's
+unit of analysis is one lane, and each of these four lanes was individually clean — proportional
+diff, verified, e2e green, scope kept. The ledger would have graded all four as good lands. **The
+mistake was in the ratio between one request and four lanes, and no row in the system has the
+request as its unit.**

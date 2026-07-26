@@ -89,6 +89,20 @@ slot; wait ~14 s for claude to boot; `POST /send {"slot":N,"text":"<brief>"}`. T
 - **`src/client.ts` holds a raw NUL byte** (offset 141046): `grep` silently returns nothing for every
   pattern, exit 1. Use `grep -a`. Fix queued; until it lands, every grep of that file lies.
 
+### 3a. Deploy and tier 2 contend — check before you restart srv
+
+A land that touches `server.ts` does two things at once: it flips `deployGap.codeBehind` to `true`
+(so you want to restart srv) **and** it starts the post-land audit, which runs 5–7 minutes. The
+auditor's queue and drain lock live in process memory (`auditQueue`, `auditDraining`) with no
+rehydration of pending work at boot — only the last finished row is restored. **A restart inside
+that window loses the measurement silently: no row, no log line, no sign anything was missing.**
+
+```sh
+pgrep -f 'audit skipped: not the fleet repo'   # non-empty → an audit is running, wait
+```
+
+Filed as `babbf719`. Until it is fixed, run that check before every `kill-session -t srv`.
+
 ## 4. Where autonomy actually stops
 
 ```sh
@@ -114,7 +128,17 @@ currently broken (queued). Do not wire it on a hunch.
    `POST /api/autos/quiet {"start":23,"end":8}`.
 2. **A 2-day-old orphan test server** outside the repo: `tmux -L fleettest23870 kill-server`. No lane
    and no session should touch `/private/tmp` unasked; the cause is queued as a fix.
-3. **Stop the trial any time**: `POST /api/dispatch {"on":false}` — one reversible call, no deploy.
+3. **Stopping the trial is NOT durable — corrected 2026-07-26, this file said otherwise.**
+   `POST /api/dispatch {"on":false}` sets `dispatchOn` in memory and calls **neither `saveState()`
+   nor `audit()`** (`server.ts`, and compare its immediate neighbour `/api/autos/switch`, which does
+   both and carries the comment *"a kill must survive an immediate restart"*). `saveState` does write
+   `dispatch: dispatchOn`, so an off survives only if some *other* path happens to save before the
+   next srv restart — otherwise boot reloads `true` and the dispatcher re-arms. The asymmetry is
+   dangerous in exactly one direction: turning it **on** failing to persist is harmless.
+   **Consequence: all four of trial-1's stop conditions terminate in this switch, so none of them is
+   durably enforceable until it is fixed.** Filed and queued as `47691f80`. To stop it *reliably*
+   today: set it off, then force a save by touching any other state (e.g. queue/unqueue a task), and
+   confirm `python3 -c "import json;print(json.load(open('fleet.json'))['dispatch'])"` reads `False`.
 4. `docs/autonomy-trial-1.md` is the **pre-registered** protocol. Q1 (does dispatch deliver) and Q3
    (does an unattended land survive the full suite) are answered *yes*, with data. Q2 and Q4 need
    rows. Amend only with a rationale written **before** looking at new data.
@@ -148,3 +172,13 @@ The lanes refuted the orchestrator three times, and each correction is load-bear
   rebase independently. Only the detail *string* misled. Do not cite it as a wrong decision.
 
 Prior handoffs' ② shadow numbers are stale in both directions — recompute with §1.
+
+**And one this session caused, recorded because a corrupted measurement must not be silent:**
+`outcomeTally.propose` reads `helped 6 / dismissed 2`, and **one of those two dismissals is false**.
+`b32458bc` was `delete`d on 2026-07-25 because its own successor task asked for it — but `delete` on
+a *pending steward-origin* task writes `bumpTally("propose","dismissed")`. The task was superseded,
+not rejected. The evidence row is in the steward journal (`{"ref":"b32458bc","outcome":"dismissed"}`).
+The tally was **not** hand-edited: silently adjusting a measurement is worse than a known error in
+it. Use `done`, never `delete`, to retire a steward proposal — `done` and `unqueue` write nothing.
+The structural gap (no way to amend a filed task without either lying in the log or corrupting the
+tally) is queued as `7319e7ad`.

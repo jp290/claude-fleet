@@ -3559,6 +3559,28 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
   }
 }
 
+// The concurrent-lane picture ② gets: every OTHER activated lane holding a worktree on the SAME repo,
+// with the files it has in flight right now. The reviewed lane is excluded by CWD (a worktree path is
+// unique per lane), not by slot id. Best-effort per lane and deliberately asymmetric: a lane whose git
+// read fails, or that has no resolvable fork point, is SKIPPED rather than listed with an empty file
+// list — "changed nothing yet" and "could not be read" must not look identical to the reviewer. Both
+// the lane count and each file list are capped so a busy fleet cannot flood the prompt.
+const OTHER_LANES_MAX = 8;
+const OTHER_LANE_FILES_MAX = 40;
+async function otherOpenLanes(cwd: string, repo: string): Promise<{ branch: string; files: string[] }[]> {
+  const out: { branch: string; files: string[] }[] = [];
+  for (const s of slots) {
+    if (out.length >= OTHER_LANES_MAX) break;
+    const w = s.worktree;
+    if (!w || w.repo !== repo || !s.cwd || s.cwd === cwd) continue;
+    const base = w.baseSha ?? w.base;
+    if (!base) continue;
+    const d = await git(s.cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
+    if (d.code !== 0) continue;
+    out.push({ branch: w.branch, files: d.out.split("\n").filter(Boolean).slice(0, OTHER_LANE_FILES_MAX) });
+  }
+  return out;
+}
 // OPT-IN clean-path advisory reviewer. Runs only when FLEET_CLEAN_REVIEW is on, only on the clean+green
 // auto-land path, and can ONLY downgrade that auto-land to a stop-and-review — it never lands anything.
 // FAIL-CLOSED: only an explicit {"verdict":"ok"} returns "ok"; every other outcome (a "review" verdict,
@@ -3572,18 +3594,35 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
 // a pass (F5's lesson: empty/unparseable ≠ pass). `answer` carries the reviewer's post-envelope text
 // so a raw run stays DIAGNOSABLE downstream; "" is the honest answer whenever no text came back at
 // all (no fork base — the reviewer never ran; timeout/spawn failure — it ran and said nothing).
-async function runCleanReview(cwd: string, branch: string, main: string, base: string | null): Promise<{ verdict: "ok" | "review"; reason: string; raw: boolean; answer: string }> {
+async function runCleanReview(cwd: string, root: string, branch: string, main: string, base: string | null, forkSha: string | null): Promise<{ verdict: "ok" | "review"; reason: string; raw: boolean; answer: string }> {
   if (!base) return { verdict: "review", reason: "no fork base to compare against — stopping for a human look", raw: true, answer: "" };
   const lf = await git(cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
   const ls = await git(cwd, "diff", "--shortstat", "--no-color", `${base}...HEAD`);
-  const ml = await git(cwd, "log", "--no-color", "--oneline", `${base}..${main}`);
-  const mf = await git(cwd, "diff", "--name-only", "--no-color", `${base}..${main}`);
+  // THE MAIN SIDE ANCHORS ON THE FORK COMMIT, NOT ON `base`. `base` is a branch NAME that tracks the
+  // tip (laneBaseRef) and the merge route's `main` is that same branch — so the old `${base}..${main}`
+  // was `main..main`: EMPTY for every lane, always, no matter what main gained. That is why all 25
+  // recorded shadow verdicts argued "main gained zero commits since the fork" (docs/mining-2026-07-26.md
+  // finding 3 read that as degenerate traffic; it is the feed). `baseSha` is the immutable commit the
+  // lane forked at, so `${forkSha}..${main}` is main's real new work. Without one (lanes forked before
+  // baseSha existed, or an unresolvable fork) the main side is UNKNOWN and is rendered as unknown —
+  // never as a settled zero, which would tell the reviewer to stand down on false grounds.
+  const forkRef = forkSha ?? (base === main ? null : base);
+  const ml = forkRef ? await git(cwd, "log", "--no-color", "--oneline", `${forkRef}..${main}`) : null;
+  const mf = forkRef ? await git(cwd, "diff", "--name-only", "--no-color", `${forkRef}..${main}`) : null;
   const prompt = buildCleanReviewPrompt({
     branch, main,
     laneFiles: lf.code === 0 ? lf.out.split("\n").filter(Boolean).slice(0, 100) : [],
     laneStat: ls.code === 0 ? ls.out : "",
-    mainLog: ml.code === 0 ? ml.out : "",
-    mainFiles: mf.code === 0 ? mf.out.split("\n").filter(Boolean).slice(0, 100) : [],
+    mainLog: ml?.code === 0 ? ml.out : "",
+    mainFiles: mf?.code === 0 ? mf.out.split("\n").filter(Boolean).slice(0, 100) : [],
+    // the count is the SAME read as mainLog, so it can never disagree with the log the prompt shows:
+    // an unread or unanchorable log is null (unknown), never 0 — the prompt's n===0 branch settles the
+    // whole cross-change question, and an unknown must not be allowed to settle anything.
+    mainCommitCount: ml?.code === 0 ? ml.out.split("\n").filter(Boolean).length : null,
+    // what the owner ASKED this lane to do, from the durable prompt journal (best-effort: any
+    // read failure yields null, which the prompt states as "(unknown)")
+    laneBrief: (await laneOwnerPrompts(cwd)).firstText,
+    otherLanes: await otherOpenLanes(cwd, root),
   });
   const preHead = await git(cwd, "rev-parse", "HEAD");
   let out = "";
@@ -3748,7 +3787,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // shadow: the reviewer runs identically but is POWERLESS — its verdict is recorded on the
           // outcome row and the land proceeds exactly as if ② were off (the gate branch below is
           // unreachable in shadow mode, by the explicit mode check, not by the verdict's value).
-          const cleanReview = CLEAN_REVIEW_MODE !== "off" ? await runCleanReview(cwd, branch, main, await laneBaseRef(s)) : null;
+          const cleanReview = CLEAN_REVIEW_MODE !== "off"
+            ? await runCleanReview(cwd, root, branch, main, await laneBaseRef(s), s.worktree?.baseSha ?? null) : null;
           const shadow = CLEAN_REVIEW_MODE === "shadow" && cleanReview ? shadowOf(cleanReview) : undefined;
           if (CLEAN_REVIEW_MODE === "gate" && cleanReview && cleanReview.verdict !== "ok") {
             // `raw` is shadow-mode bookkeeping — the gate verdict's persisted shape stays what it was

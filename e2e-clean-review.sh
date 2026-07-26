@@ -44,9 +44,12 @@ chmod +x "$DIR/fakemerge"
 # The prose* modes are the SHAPE THE REAL MODEL PRODUCES (5 of the first 6 production shadow rows): a
 # valid verdict object wrapped in a one-sentence preamble. proseok/prosereview must be rescued;
 # prosejunk (wrapped object, verdict value not in the contract) must still fail closed.
+# It also DUMPS the prompt it received next to the mode file: the pure-function tests prove the builder
+# renders its sections, but only the received prompt proves the SERVER filled them from reality (the
+# git-computed fork fact, the lane's brief, the other lanes in flight).
 cat > "$DIR/fakecleanreview" <<'EOF'
 #!/bin/sh
-cat >/dev/null
+cat > "$(dirname "$(dirname "$PWD")")/lastcleanreviewprompt"
 ctl="$(dirname "$(dirname "$PWD")")/cleanreviewmode"
 mode="$(cat "$ctl" 2>/dev/null || echo ok)"
 case "$mode" in

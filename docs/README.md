@@ -75,6 +75,10 @@ rotting. Two shelves, plus the steward subsystem.
 - **`prompt-axioms.md`** — what makes a prompt good, derived from what a prompt
   *is*: one root axiom, four axes, and the cost-clamp that allocates them. The
   theory under `tailored-context.md` and `/sharpen`.
+- **`scope-inflation.md`** — the step from a finding to a *program*, and how it
+  inflates: a ranked list without a cut line is a portfolio, not a plan. Worked
+  case (`data-saver.md`): one measured field justified one lane, four were spawned.
+  Names why cheap parallelism hides this — the cost lands at review, not at spawn.
 
 **Operative (the discipline *made loadable* — changes how a session behaves):**
 - **`lane-brief-template.md`** — the per-task foolproof framing passed at launch

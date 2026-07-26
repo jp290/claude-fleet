@@ -25,7 +25,7 @@ PORT=$((8800 + $$ % 2000))
 rm -rf "$DIR"
 mkdir -p "$DIR"
 # fleet-e2e.ts is the runner; the checks live in e2e/*.ts and are imported relative to it
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/fleet-e2e.ts" "$SRC/e2e" "$SRC/public" "$SRC/package.json" "$DIR/"
+cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/continuity.ts" "$SRC/fleet-e2e.ts" "$SRC/e2e" "$SRC/public" "$SRC/package.json" "$DIR/"
 ln -s "$SRC/node_modules" "$DIR/node_modules"
 
 # a throwaway git repo the worktree/dispatch tests spawn lanes from

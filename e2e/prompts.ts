@@ -1,7 +1,9 @@
-// PURE-function unit tests — no server needed: the merge/repair/clean-review prompt builders
-// and the `done-looking` predicate (lane-signals.ts), each clause asserted by its negation.
+// PURE-function unit tests — no server needed: the merge/repair/clean-review prompt builders,
+// the `done-looking` predicate (lane-signals.ts) and the continuity derivation (continuity.ts),
+// each clause asserted by its negation.
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "../merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE, type LaneSignalView } from "../lane-signals";
+import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
 import { check } from "./harness";
 
 export async function run(): Promise<void> {
@@ -207,5 +209,120 @@ export async function run(): Promise<void> {
     check("done-looking: the digest's prose rule is composed from every clause of the predicate",
       DONE_LOOKING_RULES.every((r) => DONE_LOOKING_PROSE.includes(r.prose))
       && DONE_LOOKING_PROSE.endsWith("→ done-looking"), DONE_LOOKING_PROSE);
+  }
+
+  // --- the CONTINUITY fact (continuity.ts): per-slot time-to-next-action, bucketed by the surface
+  // that resolved it. PURE-function unit tests against a synthetic journal, so every number below
+  // is arithmetic, not a sample. The load-bearing property is the DIRECTION of the unknowns: a gap
+  // nobody can know (regime boundary, a `backfill` record, a slot's very first activity) must be
+  // EXCLUDED AND COUNTED, never folded in as zero — a zero would make the fleet read as maximally
+  // continuous exactly where the record is thinnest. Each exclusion is therefore asserted twice:
+  // that it did not become a measurement, and that it was reported as an exclusion. ---
+  {
+    const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
+    const R = CONTINUITY_REGIME_START;      // 2026-07-19, the journal's regime boundary
+    const NOW = R + 6 * DAY;                // 7-day window opens a day BEFORE the boundary…
+    const QUIET = R + 4 * HOUR;             // …so nothing here is out-of-window by accident
+    const isQuiet = (ts: number) => ts === QUIET; // the injected policy, marking exactly one instant
+    const journal: ContinuityRecord[] = [
+      // slot 1 — a pre-regime record (the reconstructed regime), then a live run
+      { ts: R - HOUR, slot: 1, source: "owner", label: "lane-a" },
+      { ts: R + HOUR, slot: 1, source: "terminal", label: "lane-a" },
+      { ts: R + HOUR + 5 * MIN, slot: 1, source: "auto", label: "lane-a" },
+      { ts: R + HOUR + 25 * MIN, slot: 1, source: "owner", label: "lane-a" },
+      { ts: R + HOUR + 55 * MIN, slot: 1, source: "owner", label: "lane-a" },
+      // slot 2 — a `backfill` record (a source logPrompt's union does not contain), then quiet hours
+      { ts: R + 2 * HOUR, slot: 2, source: "backfill", label: "lane-b" },
+      { ts: R + 3 * HOUR, slot: 2, source: "steward", label: "lane-b" },
+      { ts: R + 3 * HOUR + 10 * MIN, slot: 2, source: "auto", label: "lane-b" },
+      { ts: QUIET, slot: 2, source: "owner", label: "lane-b" },
+      { ts: R + 5 * HOUR, slot: 2, source: "owner", label: "lane-b" },
+      { ts: R + 6 * HOUR, slot: 2, source: "owner", label: "lane-b" },
+      // slot 3 — one lone record: a slot with no prior activity at all
+      { ts: R + 2 * DAY, slot: 3, source: "owner", label: "lane-c" },
+      // a torn line the parser DID hand over but cannot place in time
+      { ts: "not-a-number", slot: 4, source: "owner" },
+    ];
+    // records are handed over in file order on purpose: file order stopped being time order once
+    // backfill entries landed, so the derivation must sort rather than assume
+    const shuffled = [journal[4], journal[0], journal[9], journal[2], journal[12], journal[1],
+      journal[7], journal[11], journal[3], journal[5], journal[10], journal[6], journal[8]];
+    const c = continuitySummary(shuffled, { now: NOW, inQuietHours: isQuiet, malformed: 2 });
+
+    // (1) the measurements themselves: five knowable gaps, and the median/max are the real ones
+    check("continuity: measures the gap to each slot's previous activity (fleet-wide median/max)",
+      c.overall.n === 5 && c.overall.medianMs === 20 * MIN && c.overall.maxMs === 60 * MIN,
+      JSON.stringify(c.overall));
+    // (2) bucketed by the surface that RESOLVED the wait — the "who picked it up" half
+    check("continuity: buckets each resolved gap by its source (owner/auto), with per-source median+max",
+      c.bySource.owner.n === 3 && c.bySource.owner.medianMs === 30 * MIN && c.bySource.owner.maxMs === 60 * MIN
+      && c.bySource.auto.n === 2 && c.bySource.auto.medianMs === 450_000 && c.bySource.auto.maxMs === 10 * MIN,
+      JSON.stringify(c.bySource));
+    // a source that resolved nothing is listed at n:0 with NULL stats — a real count of zero
+    // resolutions, never an unknown wearing a zero
+    check("continuity: a source that resolved nothing is n:0 with null median/max, and every live source is listed",
+      CONTINUITY_SOURCES.every((s) => s in c.bySource)
+      && c.bySource.terminal.n === 0 && c.bySource.terminal.medianMs === null && c.bySource.terminal.maxMs === null
+      && c.bySource.share.n === 0 && c.bySource.steward.n === 0,
+      JSON.stringify(c.bySource));
+    // (3) per slot, with its own resolution counts
+    check("continuity: per-slot median/max and per-slot resolution counts by source",
+      c.slots.length === 2 && c.slots[0].slot === 1 && c.slots[0].label === "lane-a"
+      && c.slots[0].n === 3 && c.slots[0].medianMs === 20 * MIN && c.slots[0].maxMs === 30 * MIN
+      && c.slots[0].bySource.owner === 2 && c.slots[0].bySource.auto === 1
+      && c.slots[1].slot === 2 && c.slots[1].n === 2 && c.slots[1].medianMs === 35 * MIN
+      && c.slots[1].maxMs === 60 * MIN && c.slots[1].bySource.owner === 1 && c.slots[1].bySource.auto === 1
+      && c.slotsOmitted === 0,
+      JSON.stringify(c.slots));
+
+    // --- the exclusions, each asserted as "not a zero" AND "counted" ---
+    // three unknowable gaps: across the regime boundary (slot 1), across the backfill hole
+    // (slot 2), and a slot whose first activity this is (slot 3). Had any been counted as 0 the
+    // fleet-wide n would be 8 and its median would fall to 15min — both asserted above.
+    check("continuity: an unknowable gap is EXCLUDED and counted, never zero (regime edge, journal hole, first activity)",
+      c.excluded.noPrior === 3 && c.excluded.total === 5
+      && c.overall.n === 5 && (c.overall.medianMs ?? 0) === 20 * MIN,
+      JSON.stringify(c.excluded));
+    // a slot whose ONLY record is unknowable contributes no row at all — it can never appear as a
+    // slot with a 0ms gap
+    check("continuity: a slot with no prior activity yields no gap row (it is an exclusion, not a 0)",
+      !c.slots.some((s) => s.slot === 3), JSON.stringify(c.slots.map((s) => s.slot)));
+    // quiet hours excluded at BOTH endpoints: the record inside the window, and the next record
+    // whose wait STARTED inside it (that one would otherwise read as a 60min-slow fleet response)
+    check("continuity: quiet hours excluded at both endpoints of the gap, and counted",
+      c.excluded.quietHours === 2 && c.bySource.owner.n === 3, JSON.stringify(c.excluded));
+    // scope filters are reported separately from exclusions — they are not data loss
+    check("continuity: pre-regime, non-live-source and unparseable records are reported as out of scope",
+      c.outOfScope.preRegime === 1 && c.outOfScope.nonLiveSource === 1
+      && c.outOfScope.malformed === 3 && c.outOfScope.beforeWindow === 0,
+      JSON.stringify(c.outOfScope));
+    // the backfill record is excluded as a RESOLVER too — it never buckets anywhere
+    check("continuity: a backfill record resolves nothing (no bucket, no gap)",
+      !("backfill" in c.bySource) && c.bySource.steward.n === 0, JSON.stringify(c.bySource));
+
+    // (4) window discipline: a record OUTSIDE the window is not measured, but it still ANCHORS the
+    // first in-window gap. Anchoring is not measuring — the alternative (dropping it) would turn a
+    // perfectly knowable gap into a fake `noPrior`.
+    const narrow = continuitySummary(journal, {
+      now: NOW, windowMs: NOW - (R + HOUR + 10 * MIN), inQuietHours: isQuiet,
+    });
+    check("continuity: an out-of-window record still anchors the first measured gap (anchor ≠ measurement)",
+      narrow.from === R + HOUR + 10 * MIN
+      && narrow.outOfScope.beforeWindow === 2   // slot 1's terminal + auto records
+      && narrow.slots.find((s) => s.slot === 1)?.n === 2
+      && narrow.slots.find((s) => s.slot === 1)?.medianMs === 25 * MIN, // 20min and 30min
+      JSON.stringify({ from: narrow.from, outOfScope: narrow.outOfScope, slots: narrow.slots }));
+    // and with no quiet-hours policy at all, the two quiet exclusions become real measurements —
+    // proving the exclusion above is the POLICY, not an accident of the data
+    const noQuiet = continuitySummary(journal, { now: NOW });
+    check("continuity: without a quiet-hours policy the two quiet gaps are measured instead of excluded",
+      noQuiet.excluded.quietHours === 0 && noQuiet.excluded.noPrior === 3
+      && noQuiet.overall.n === 7 && noQuiet.bySource.owner.n === 5,
+      JSON.stringify({ excluded: noQuiet.excluded, overall: noQuiet.overall }));
+    // an empty journal is nulls, never zeros
+    const empty = continuitySummary([], { now: NOW });
+    check("continuity: an empty journal reports null median/max, not 0",
+      empty.overall.n === 0 && empty.overall.medianMs === null && empty.overall.maxMs === null
+      && empty.excluded.total === 0 && empty.slots.length === 0, JSON.stringify(empty.overall));
   }
 }

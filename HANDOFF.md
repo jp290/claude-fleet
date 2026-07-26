@@ -404,3 +404,43 @@ Name the trade every time, as `lane-autonomy-future.md` demands: autonomy exchan
 ever reaches main"* for *"wrong-but-reversible-and-documented may reach main briefly."* Both of the
 words carrying that bargain — **reversible** and **briefly** — are today the two least-built parts
 of the system.
+
+## 10. The owner's counter-question, and who should answer it
+
+Raised 2026-07-26, after §9: **could supervision be simulated by giving the agent the situational
+and background knowledge it needs?** Not "trust the agent more" — *give it what the human has, and
+find out how much of the human's contribution was knowledge all along.*
+
+It is the project's own thesis pointed at its own boundary (perception before autonomy), and it is
+not naive. It also has to survive three things, and the third is a measurement rather than an
+argument:
+
+1. Context raises judgment quality but does not change category — statistical stays statistical,
+   and a gate is a check that can FAIL legibly, not a better opinion.
+2. Exposure does not transfer. Knowledge is copyable; consequence is not.
+3. **② is not context-starved and still says nothing.** It holds tools and is told to read the
+   code; it has returned `would_stop` zero times ever, and the drill got 2/2 non-measurements. No
+   enrichment would have moved one of those rows. Related and unflattering: three of this session's
+   four self-corrections were reading errors *with full access* — the bottleneck was looking, not
+   having.
+
+The reframe that may be the real answer: enrichment probably does not **replace** supervision, it
+**shrinks the domain** where supervision is required — which, stated mechanically, is exactly the
+zone predicate §9 found missing from the code.
+
+And it is an empirical claim, so it is testable rather than arguable: **same drill fixture, two
+prompts** — one context-poor as today, one carrying the lane's brief and the concurrent-lane
+picture. Blocked behind `cc913fe1` like everything else: a richer prompt measures nothing while the
+reviewer answers nothing.
+
+**Handed to a fresh mind on purpose.** The full brief is `docs/supervision-decomposition.md` — self
+contained, embeds what ② is and is not given, states what must not be re-derived, and ends with six
+questions rather than a plan. The most valuable one is the adversarial one: *what would make this
+whole line of thinking wrong?*
+
+The owner intends to run it as a **Fable 5** session. Two operational notes for that, from
+`CLAUDE.md`: Fable 5's safeguards have false-flagged fleet sessions on token/remote-access
+vocabulary (3× on 2026-07-11), so the brief is deliberately a **design question with no operational
+vocabulary** — no tmux, no tokens, no remote-control content. If a turn dies to a safeguard flag
+anyway, rephrase or `/model opus`. And it is a *thinking* session, not a lane: it should return
+reasoning, not a diff.

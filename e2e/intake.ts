@@ -12,8 +12,11 @@ export async function run(ctx: Ctx): Promise<void> {
     check("intake with wrong secret is 401", wrongSecret.status === 401);
     const ok = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "CEO wants dark mode", from: "ceo@acme.co" }) });
     check("intake with secret accepts", ok.ok);
-    const sessI = (await (await get("/api/sessions")).json()) as { tasks: { text: string; source: string; from: string | null; status: string }[]; intake: boolean };
-    const it = sessI.tasks.find((t) => t.text === "CEO wants dark mode");
+    const sessI = (await (await get("/api/sessions")).json()) as { tasks: { id: string; source: string; from?: string; status: string }[]; intake: boolean };
+    // the poll carries digests only (server.ts TaskDigest) — join the text back over the id
+    const itId = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
+      .tasks.find((t) => t.text === "CEO wants dark mode")?.id;
+    const it = sessI.tasks.find((t) => t.id === itId);
     check("intake task lands as pending from intake source", !!it && it.status === "pending" && it.source === "intake" && it.from === "ceo@acme.co", JSON.stringify(it));
     check("sessions reports intake enabled", sessI.intake === true);
     check("intake rejects empty text", (await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "   " }) })).status === 400);

@@ -119,8 +119,11 @@ interface GitInfo { branch: string; dirty: number; ahead: number; behind: number
 interface WorktreeInfo { repo: string; branch: string }
 interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number;
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean }
-interface TaskInfo { id: string; text: string; source: "owner" | "intake" | "steward"; from: string | null;
-  status: "pending" | "queued" | "sent" | "done"; created: number; slot: number | null; note: string | null }
+// what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
+// bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
+// The optional fields are absent, not null, when unset.
+interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
+  status: "pending" | "queued" | "sent" | "done"; created: number; slot?: number; note?: string }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -2589,8 +2592,36 @@ function closeQueueDlg() { queuedlg.style.display = "none"; }
 queuedlg.addEventListener("click", (e) => { if (e.target === queuedlg) closeQueueDlg(); });
 $("queuebtn").onclick = () => openQueue();
 
+// Prompt texts, cached by task id. They are not on the 2 s poll (server.ts TaskDigest) — this
+// pulls them once per id-set, only while the overlay is actually open, and a task's text never
+// changes after creation, so a cached entry stays valid until the id disappears.
+const taskText = new Map<string, string>();
+let taskTextKey = ""; // the id-set the cache was last filled for
+let taskTextBusy = false;
+async function loadTaskTexts() {
+  const key = tasksList.map((t) => t.id).join(",");
+  if (taskTextBusy || key === taskTextKey) return;
+  taskTextBusy = true;
+  let filled = false;
+  try {
+    const res = await api("/api/tasks");
+    if (res.ok) {
+      const data = (await res.json()) as { tasks: { id: string; text: string }[] };
+      taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
+      for (const t of data.tasks) taskText.set(t.id, t.text);
+      taskTextKey = key;
+      filled = true;
+    }
+  } catch {
+    // server briefly unreachable — rows keep the placeholder, the next poll retries
+  }
+  taskTextBusy = false;
+  if (filled) renderQueue();
+}
+
 function renderQueue() {
   if (queuedlg.style.display !== "flex") return;
+  void loadTaskTexts(); // no-op unless the visible task set changed
   queuepanel.replaceChildren(el("h2", "", intakeOn ? "Task queue · ✉ intake on" : "Task queue"));
 
   if (dispatch.available) {
@@ -2639,7 +2670,7 @@ function renderQueue() {
       meta.appendChild(el("span", "qintake", "⚙ steward"));
     } else meta.append("owner");
     main.appendChild(meta);
-    main.appendChild(el("div", "", t.text));
+    main.appendChild(el("div", "", taskText.get(t.id) ?? "…")); // "…" until loadTaskTexts answers
     row.appendChild(main);
     const mkBtn = (label: string, action: string) => {
       const b = el("button", "qbtn", label) as HTMLButtonElement;

@@ -13,6 +13,9 @@ export async function run(lc: LaneCtx): Promise<void> {
   const wtDir = `${REPO}.worktrees/e2e-lane`;
   check("worktree dir materialized on disk", statSync(wtDir).isDirectory());
   check("untracked .env copied into the worktree", statSync(`${wtDir}/.env`).isFile());
+  // SEC-12: the copy is the one path that deliberately carries .env into every lane, so it must
+  // land 0600 regardless of the source's mode (the live source was 0644 when this was written)
+  check("copied .env is owner-only (0600)", (statSync(`${wtDir}/.env`).mode & 0o777) === 0o600, (statSync(`${wtDir}/.env`).mode & 0o777).toString(8));
   const wtRefused = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
   check("open-worktree on an active slot is refused", wtRefused.status === 400);
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };

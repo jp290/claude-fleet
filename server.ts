@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, openSync, readSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -878,7 +878,14 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
     if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`)) continue;
     if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
     if (f.includes("/")) mkdirSync(dirname(`${path}/${f}`), { recursive: true });
-    await Bun.write(`${path}/${f}`, Bun.file(`${root}/${f}`));
+    // 0600 at creation, NOT "preserve the source's mode": .env is *the* documented place for a
+    // secret, and the source is itself 0644 today — copying its mode faithfully would fan that
+    // bug out into every lane. The same floor covers all three files: they are owner-only
+    // scaffolding, read by the lane's own session under the same uid, so 0600 costs nothing.
+    // `mode` on create (never a chmod on a world-readable file) means the copy has no 0644
+    // window; the chmod after only pins the exact bits, since `mode` is masked by the umask.
+    writeFileSync(`${path}/${f}`, readFileSync(`${root}/${f}`), { mode: 0o600 });
+    chmodSync(`${path}/${f}`, 0o600);
   }
   return { repo: root, path, branch };
 }

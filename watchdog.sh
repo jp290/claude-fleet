@@ -54,7 +54,17 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # TS2688 — the types field NAMES a package, it cannot substitute for one). Costs ~30ms from bun's
 # global cache; --frozen-lockfile keeps it read-only w.r.t. bun.lock, and a failure exits non-zero
 # with a named reason instead of masquerading as a type error.
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts && ./e2e-claude-gate.sh'
+# tsc covers SEVEN files, not four (verify-tiering.md §4, §8 Step 1): the three single-file
+# harnesses were unimported by anything the checker saw, so the type checker had a blind spot
+# exactly where the suites that guard the land path live. Measured 2026-07-26: 1.62 s, no new
+# errors. ./e2e-clean-review.sh is the gate's FIRST land-path coverage ever (§8 Step 2) — it
+# drives tryScriptRebase → runVerify → advanceIntegration → recordLand → landLane end to end and
+# is the only suite exercising runCleanReview, which is live in shadow mode on this fleet. It is
+# ordered cheapest-first so the gate fails fast. NOT here: ./e2e-isolated.sh (§5 — measurably
+# non-deterministic under load, which is why it is tier 2 AFTER the land, not a gate), and
+# ./e2e-security.sh (§8 Step 2b — eligible only after a burn-in, and its first burn-in was void
+# because the suite itself was broken; see d146e74/e5e5e80).
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts && ./e2e-clean-review.sh && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 # --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------
@@ -84,7 +94,7 @@ while true; do
     # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
     # this is a watched first run (docs/autonomy-trial-1.md), not maximum throughput.
     if tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=shadow FLEET_DISPATCH_REPO=~/claude-fleet FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
+      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=shadow FLEET_DISPATCH_REPO=~/claude-fleet FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

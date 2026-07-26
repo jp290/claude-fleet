@@ -608,6 +608,40 @@ usable if the row carries the *tree* and the *count*, so "failed once ever, on y
 differently from "failed 9× across 5 trees". And it only helps once populated: the first session to
 meet a new family still pays full price, exactly as I did.
 
+### 11.6b Retraction, after re-reading §8 (same day)
+
+§11.6 above is **demoted, by its own author, on the strength of §8**. Two reasons, both of which I
+should have found before writing it rather than after:
+
+- **It optimises the wrong side of the trade.** A registry lowers the cost of *living with* a flake.
+  §8 raises the *value of the gate*. And the triage it speeds up belongs to tier 2, where a red
+  gates nothing and reverts nothing — so it buys attention, not safety. The four runs it was
+  reacting to were only needed because the full suite was being used as a pre-land gate, which is
+  precisely what §5b and §8 argue against. The proposal generalised from a self-inflicted cost.
+- **It is downstream of something better.** §8 makes gate-eligibility a *measured* property: a suite
+  qualifies by burning in clean over N runs (`e2e-clean-review.sh` 8/8; `e2e-security.sh` parked at
+  n=2 pending ~10). **Burn-in runs produce the per-check history a registry would hold, for free.**
+  The registry is the exhaust of burn-in, not a project.
+
+The currency is therefore run-minutes, and the comparison is unflattering: the four triage runs
+recorded in §11.1 cost ~25 minutes and settled one lane's attribution. **Ten burn-in runs of
+`e2e-security.sh` cost ~5.8 minutes (10 × 34.5 s, §8) and would widen the gate by 46 checks,
+permanently.**
+
+Also noted while re-reading: the check-level determinism split I was about to propose in place of
+the registry is already refuted in §8 — `fleet-e2e.ts:63-75` threads one mutable `LaneCtx` through
+`lanesBasic → lanesLifecycle → merge` with a load-bearing order, so slicing the suite is a fixture
+refactor, not a config change.
+
+**State of §8 as of today** (read from `watchdog.sh`, not assumed): Step 3 (the post-land audit) is
+live. Step 1, Step 2, Step 2b and `FLEET_VERIFY_TIMEOUT_MS` are **not applied** — the gate is `tsc`
+over four files plus `./e2e-claude-gate.sh`, so the clean-land path and the 46-check security
+regression suite still run in no gate at all. That, not a registry, is the open item.
+
+Root-causing the merge/resolver family (§11.2) ranks *below* this, counter-intuitively: it lives in
+a tier that gates nothing, so fixing it widens no gate. It only recovers the alarm value §7
+finding 6 already names as compromised.
+
 ### 11.7 Rulebook lines proposed (text, not entered — `CLAUDE.md` is gitignored)
 
 1. Replace "prove it fails-identically-at-HEAD (fresh HEAD worktree)" with: **re-run the same tree

@@ -499,3 +499,127 @@ tmux server — the residual the sibling lane names honestly for its timeout pat
 may leave its own throwaway tmux socket behind"). At today's by-hand frequency that produced one
 live leak; a per-land tier runs the same script far more often. Not touched — this is outside the
 repo and therefore shared reality, not a lane's to clean (CLAUDE.md).
+
+## 11. A second, independent confirmation of §5b — and a fourth flake family (2026-07-26)
+
+*Added while landing the data-saver program (four lanes, `bc4e975`…`f323fb4`). Not a new study —
+§5b's finding reproduced by accident, at cost, plus one thing §5b could not know.*
+
+### 11.1 The four runs
+
+All serial on the same machine, each holding a `mkdir /tmp/fleet-e2e.lock` mutex, no foreign suite
+live. Durations are lock-to-lock gaps (~6–7 min each), not instrumented — the suite prints no
+elapsed time, which is itself worth noting.
+
+| tree | checks | result |
+|---|---|---|
+| `main` @ `c27c5fb` | 823 | ALL PASS |
+| `main` + lanes A+B | 850 | 3 FAIL — `outcome:` family |
+| `main` + A+B+C+D (`d105877`) | 872 | 6 FAIL — `G1b` (5), `FIX1` (1) |
+| **the identical `d105877`, run again** | 872 | **ALL PASS** |
+
+The last row is the proof §5b names as the strongest — *the same tree passing and failing* — and it
+is the only one of the four that settled anything. The three before it produced two confident and
+opposite attributions, both wrong: first "pre-existing" (killed by the green HEAD run), then "our
+regression" (killed by the green second run).
+
+Note the shape §5b predicts: failures grow with suite length (823 → 850 → 872 checks), and the
+membership of the failing set *moves* while the family stays put.
+
+### 11.2 A fourth flake family, not among the three §5b names
+
+All nine failures across the two red runs share one root — the stub resolver reports success while
+the lane tree is still unmerged:
+
+- `"agent reported rebased, but the lane is not clean — lane kept. fake rebased"`, with `UU base.txt`
+  left unresolved, and the sibling variant `"… but the lane is not rebased onto main"`.
+- Affected: `G1b setup: conflicting lane resolved…`, `G1b: confirm-land …` (4 more),
+  `FIX1: concurrent merges settle to a single clean resolution`, and
+  `outcome: repaired conflict resolution … / confirm-land …` (3).
+
+This is the merge/resolver family and it is distinct from §5b's three (`e2e/review.ts:177`, the
+steward send-cap 429/409, and its audit consequence). **Not root-caused** — same state §5b left
+`e2e/review.ts:177` in. Recorded so the next person does not re-derive it: nothing in the four
+landed lanes touches the merge path, and the same checks pass on the same tree on a re-run.
+
+### 11.3 Correction to the prescribed proof method
+
+`CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,
+serial**. On this evidence that prescription is both weaker and more expensive than re-running the
+same tree:
+
+- **Weaker.** A green HEAD run cannot distinguish "our regression" from "a flake that did not fire
+  this time". Mine was green and I concluded regression — wrongly, and with the whole land blocked
+  on it.
+- **More expensive.** It needs a second checkout and a second `bun install`; the same-tree re-run
+  needs neither.
+
+Same-tree-twice should be the primary instrument, the HEAD worktree the fallback for when the
+same-tree re-run keeps failing identically — which is the case where it genuinely is yours.
+
+### 11.4 The measurement that nearly voided the proof
+
+`ps aux | grep -c "[e]2e-isolated.sh"` counts the **zsh wrappers whose command line contains the
+script**, not the runs. It reported "2 foreign suites" while exactly one real suite was live. The
+filter that answers the question asked:
+
+```sh
+ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh'
+```
+
+Lane C hit this and, on its strength, disowned a proof that had in fact been serial — the right
+conclusion ("not proven") from a wrong measurement. Two lanes were also reported as running the
+suite without taking the lock; the lock is a convention carried in each brief, so any lane that is
+briefed without it silently breaks everyone else's serial proof.
+
+### 11.5 What is script here, and what is judgment
+
+Of the four steps this triage took, three are mechanical and one is not: taking the mutex, deciding
+the machine is quiet, and re-running the same tree are scripts with no judgment in them — and two of
+the three were done wrong on the first attempt, by two different sessions. Reading nine failures and
+asking whether they share a root is the only step that needed a person.
+
+That ratio is the whole finding: **the expensive part of this session was not the thinking, it was
+three mechanical steps that had no canonical form.**
+
+### 11.6 The one datum that would have collapsed four runs into one
+
+A **flake registry keyed by check name**: for every check that has ever failed, how often, on which
+tree sha, at what suite length. Triage would then start with a lookup instead of a run — "these six
+have failed 4× in the last month, on three different trees, one of them with no code change" is an
+answer, and it takes a second.
+
+It would have worked *in this exact case*: lane C hit this same family hours before I did and
+reported it. A registry populated by C's run answers my question on my first red, and three runs
+never happen.
+
+Who reads it, and when — the question `README.md` raises against the outcome ledger, which "writes
+and nothing reads it": the reader is whoever is staring at a red suite, at the moment they are
+staring at it. That is a reader with a live need, not a hoped-for one.
+
+**Cut line.** Two smaller things are real and are *not* part of this: having `e2e-isolated.sh` take
+the lock itself (so no lane can forget), and recording each run's duration (so the load-sensitivity
+curve in §5b becomes visible rather than re-derived). Both are cheaper than the registry; neither
+answers the attribution question, which is the one that cost the time. Separate proposals.
+
+**What will not work about it.** A registry can launder a real regression as "known flaky" — the
+mirror image of today's failure, and the more dangerous one, because it fails silent. It is only
+usable if the row carries the *tree* and the *count*, so "failed once ever, on your tree" reads
+differently from "failed 9× across 5 trees". And it only helps once populated: the first session to
+meet a new family still pays full price, exactly as I did.
+
+### 11.7 Rulebook lines proposed (text, not entered — `CLAUDE.md` is gitignored)
+
+1. Replace "prove it fails-identically-at-HEAD (fresh HEAD worktree)" with: **re-run the same tree
+   first**; a tree that passes on a re-run has proven the flake. The HEAD worktree is the fallback
+   for a tree that keeps failing identically.
+2. The quiet-machine check is `ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh'` — a plain
+   `grep e2e-isolated.sh` counts shell wrappers and reads as contention that is not there.
+3. Name the merge/resolver family (`"agent reported rebased, but the lane is not clean"`) as a
+   fourth known flake alongside §5b's three.
+
+### 11.8 §10 confirmed at scale
+
+`/private/tmp/tmux-501` currently holds ~200 stale `fleettest*` socket files. §10 predicted this
+from one leak; at four hand-runs in an evening it is visibly accumulating. Still outside the repo,
+still not touched.

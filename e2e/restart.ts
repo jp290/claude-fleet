@@ -288,15 +288,27 @@ export async function run(ctx: Ctx): Promise<void> {
   check("after restart: perpetual auto persisted with its flag intact",
     sess3.autos.some((a) => a.id === ctx.aPerpPersistId && a.enabled && a.perpetual === true),
     JSON.stringify(sess3.autos.find((a) => a.id === ctx.aPerpPersistId)));
-  const replay2 = await new Promise<number>((resolve) => {
-    let n = 0;
+  // the seed is a plain capture of the pane, so this asks for content, not a byte count: a
+  // recycled slot's fresh shell is a prompt and little else (81 bytes, measured), which is a
+  // correct seed of an empty pane and says nothing about whether the socket streams.
+  await tmuxOut("send-keys", "-t", "s2", "printf 'post-restart-replay-%s\\n' 1 2 3 4 5", "Enter");
+  for (let i = 0; i < 60; i++) {
+    if ((await tmuxOut("capture-pane", "-t", "s2", "-p")).out.includes("post-restart-replay-5")) break;
+    await Bun.sleep(100);
+  }
+  const replay2 = await new Promise<{ n: number; text: string }>((resolve) => {
+    let n = 0, text = "";
     const ws = new WebSocket(wsUrl(2));
     ws.binaryType = "arraybuffer";
-    ws.onmessage = (e) => { n += (e.data as ArrayBuffer).byteLength; };
-    ws.onopen = () => setTimeout(() => { ws.close(); resolve(n); }, 2000);
-    ws.onerror = () => resolve(-1);
+    ws.onmessage = (e) => {
+      n += (e.data as ArrayBuffer).byteLength;
+      text += new TextDecoder().decode(e.data as ArrayBuffer);
+    };
+    ws.onopen = () => setTimeout(() => { ws.close(); resolve({ n, text }); }, 2000);
+    ws.onerror = () => resolve({ n: -1, text });
   });
-  check("after restart: WS replay for slot 2 non-empty", replay2 > 100, `${replay2} bytes`);
+  check("after restart: WS replay for slot 2 non-empty", replay2.n > 100, `${replay2.n} bytes`);
+  check("after restart: WS replay carries the pane's content", replay2.text.includes("post-restart-replay-3"), `${replay2.n} bytes`);
   const ws404 = await get("/ws/1");
   check("WS route rejects inactive slot", ws404.status === 404);
 

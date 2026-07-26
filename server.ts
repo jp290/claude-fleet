@@ -18,10 +18,11 @@ const PORT = Number(process.env.FLEET_PORT ?? 8790);
 // run its own s1..sN sessions without touching the live fleet's
 const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
 const MAX_SLOTS = 16; // fixed places — the sidebar always shows all of them
-const REPLAY_TAIL = 2_000_000;
-// lines of scrollback to re-seed from a fresh capture-pane when a client's width
-// doesn't match the pane's current width (tmux reflows history on resize-window,
-// so this replays correctly-wrapped text instead of the raw stream's stale wrapping)
+// lines of scrollback every WS connect is seeded with, from a fresh capture-pane. Capture
+// output is line-aligned and already reflowed to the pane's width, so it can neither begin
+// mid-escape-sequence nor replay the raw stream's stale wrapping — and it costs a few KB
+// where a tail of the raw stream cost up to megabytes (see websocket.open). This is the
+// only knob on what a reconnect costs, so a data-saver mode belongs here.
 const SEED_LINES = 3000;
 const MAX_RECENTS = 8;
 const MAX_PINS = 20;
@@ -93,7 +94,13 @@ const MAX_MISSION = 300; // one sentence of standing intent, not a brief — see
 const CLEAR = new TextEncoder().encode("\x1b[3J\x1b[2J\x1b[H");
 
 type WSData = {
-  slot: number; queue: Uint8Array[]; ready: boolean; cols: number; rows: number; force: boolean;
+  slot: number; ready: boolean; cols: number; rows: number; force: boolean;
+  // buffered until the seed has been sent (ready). `from` is each chunk's absolute offset in
+  // the slot's stream file, carried so afterSeed can tell seed-overlap from new output.
+  queue: { from: number; chunk: Uint8Array }[];
+  // stream position this socket's capture-pane seed already covers: anything before it must
+  // not be sent again (websocket.open sets it; afterSeed consumes it). 0 = nothing to skip.
+  seedUntil: number;
   share?: string; // set on guest connections: the share id this socket belongs to
   mode?: "view" | "interact";
 };
@@ -1594,10 +1601,33 @@ async function tickDispatch(): Promise<void> {
   }
 }
 
-function broadcast(s: Slot, chunk: Uint8Array): void {
+// A freshly seeded socket has already seen part of what is about to be broadcast to it: its
+// capture-pane seed reflects the stream up to a position AHEAD of the shared cursor s.offset
+// (see websocket.open), so the bytes below ws.data.seedUntil are a replay of lines it already
+// shows. Returns the genuinely-new part of a chunk, or null if the chunk is all overlap.
+// Applies wherever a chunk reaches the socket — the queue flush in open() and, once ready,
+// every later broadcast: the overlapping bytes may not have been queued yet when open()
+// finished, since poll() only runs every 100 ms.
+// Compares ABSOLUTE positions rather than counting bytes off a snapshot of s.offset: the
+// resize reseed and slot adoption both move that cursor without broadcasting, and a
+// count-based skip would then eat live output — a gap, i.e. the failure this exists to avoid.
+function afterSeed(ws: ServerWebSocket<WSData>, from: number, chunk: Uint8Array): Uint8Array | null {
+  if (ws.data.seedUntil <= 0) return chunk;
+  // from < 0 marks a non-stream chunk: CLEAR, broadcast when the stream was truncated
+  // (session recreated). Positions restart at 0, so the seed covers nothing that follows.
+  if (from < 0) { ws.data.seedUntil = 0; return chunk; }
+  if (from + chunk.length <= ws.data.seedUntil) return null;
+  const drop = Math.max(0, ws.data.seedUntil - from);
+  ws.data.seedUntil = 0; // this chunk crosses the horizon — from here on everything is new
+  return drop > 0 ? chunk.subarray(drop) : chunk;
+}
+
+// `from` = the chunk's offset in the slot's stream file, or -1 for a synthetic control chunk
+function broadcast(s: Slot, from: number, chunk: Uint8Array): void {
   for (const ws of s.clients) {
-    if (ws.data.ready) ws.send(chunk);
-    else ws.data.queue.push(chunk);
+    if (!ws.data.ready) { ws.data.queue.push({ from, chunk }); continue; }
+    const fresh = afterSeed(ws, from, chunk);
+    if (fresh) ws.send(fresh);
   }
 }
 
@@ -1610,15 +1640,16 @@ async function poll(): Promise<void> {
         if (size < s.offset) {
           s.offset = 0;
           // stream was truncated (session recreated) — clear stale scrollback on connected clients
-          broadcast(s, CLEAR);
+          broadcast(s, -1, CLEAR);
         }
         if (size > s.offset) {
           const buf = await Bun.file(streamPath(s.id)).slice(s.offset, size).arrayBuffer();
+          const from = s.offset;
           s.offset = size;
           // output during a quiet window is a repaint we caused (resize jiggle),
           // not the session doing work — stream it, but don't light the activity dot
           if (Date.now() > s.quietUntil) s.lastOutput = Date.now();
-          broadcast(s, new Uint8Array(buf));
+          broadcast(s, from, new Uint8Array(buf));
         }
       } catch {
         // stream file briefly missing during recreate — next tick picks it up
@@ -5425,7 +5456,7 @@ Bun.serve<WSData>({
       if (!s.cwd) return json({ error: "session gone" }, 404);
       // guests never pass cols/rows: they must not resize the owner's pty, so they
       // take the plain replay-tail path and render at the session's current size
-      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, cols: 0, rows: 0, force: false, share: sh.id, mode: sh.mode } }))
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols: 0, rows: 0, force: false, share: sh.id, mode: sh.mode } }))
         return;
       return new Response("upgrade failed", { status: 400 });
     }
@@ -5452,7 +5483,7 @@ Bun.serve<WSData>({
       // which does nothing if the client's width already happens to match; force skips that
       // check so "reload" reliably re-derives from tmux's current state either way
       const force = url.searchParams.get("force") === "1";
-      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, cols, rows, force } })) return;
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols, rows, force } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/api/sessions") {
@@ -6465,9 +6496,10 @@ Bun.serve<WSData>({
         // can't take the resize+capture reseed above. Seed them from a plain capture-pane
         // at the pane's CURRENT size instead of slicing the raw stream: capture output is
         // line-aligned and already-reflowed, so it can't begin mid-escape-sequence and
-        // it's a few KB rather than up to REPLAY_TAIL bytes pushed to a phone on every
+        // it's a few KB rather than the megabytes a raw tail pushed to a phone on every
         // reconnect — the raw-tail path desynced guest terminals (partial escapes stacked
         // onto un-reset scrollback) after the frequent WS drops mobile connections see.
+        // (The owner path below now takes the same seed, for the same two reasons.)
         // Live bytes after this keep flowing from the shared offset via poll()/broadcast,
         // same as the owner reseed path. No -e (see that path): the styled-run cursor
         // jumps it bakes in would re-garble a narrower guest; history goes monochrome,
@@ -6475,15 +6507,43 @@ Bun.serve<WSData>({
         const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
-        const upTo = s.offset;
-        const start = Math.max(0, upTo - REPLAY_TAIL);
-        if (upTo > start) {
-          const buf = await Bun.file(streamPath(s.id)).slice(start, upTo).arrayBuffer();
-          ws.send(new Uint8Array(buf));
+        // Owner reconnect at a width that already matches the pane — the common case, since a
+        // phone reconnecting after a WS drop is the same client at the same size. This used to
+        // slice REPLAY_TAIL bytes out of the raw stream; it now takes the same line-aligned
+        // capture-pane seed the guest path above takes, for the same reasons spelled out there.
+        // Measured on the 12 live panes (2026-07-26): 5 634–173 282 B instead of
+        // 149 822–2 000 000 B, 15.2× less in aggregate — and the 2 MB cap was not a rare
+        // worst case, it bound at its full value on every pane whose stream had outgrown it
+        // (3 of 12, streams run 2.3–4.9 MB). No -e, for the reason the resize path gives.
+        //
+        // Continuity is the delicate part. The raw slice ended exactly at s.offset, so the next
+        // broadcast continued seamlessly. A capture instead reflects the pane as of whatever the
+        // stream file already held, which is AHEAD of s.offset — poll() lags by up to its 100 ms
+        // tick — so the bytes in [s.offset, seedUntil) are in this client's seed AND still on
+        // their way to it. Sending them again duplicates lines. Advancing s.offset instead is
+        // not an option: it is the SHARED broadcast cursor, and moving it would punch that same
+        // range out of every other connected client's stream (the resize path above may do that
+        // only because its repaint() redraws everyone). So the overlap is dropped for this one
+        // socket, by afterSeed(), on its way out.
+        // The position is read BEFORE the capture on purpose: bytes already in the file were fed
+        // through tmux before they were piped out, so the capture is guaranteed to include them —
+        // reading it after would risk skipping bytes the capture does NOT show, and a gap is
+        // worse than an overlap (a dropped line never comes back). Bytes written during the
+        // capture itself may be in it and get resent: that residual window is one capture-pane
+        // spawn wide instead of a poll tick, and it is inherent to every capture-based seed here.
+        try {
+          ws.data.seedUntil = (await stat(streamPath(s.id))).size;
+        } catch {
+          // stream file briefly missing during recreate — skip nothing, replay what arrives
         }
+        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${SEED_LINES}`);
+        ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       }
       ws.data.ready = true;
-      for (const chunk of ws.data.queue) ws.send(chunk);
+      for (const q of ws.data.queue) {
+        const fresh = afterSeed(ws, q.from, q.chunk);
+        if (fresh) ws.send(fresh);
+      }
       ws.data.queue = [];
     },
     close(ws) {

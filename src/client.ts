@@ -4,6 +4,7 @@ import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebglAddon } from "@xterm/addon-webgl";
 import qrcode from "qrcode-generator";
 import { mdInto } from "./md";
+import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -148,6 +149,7 @@ class Pane {
   slot = 0; // 0 = unassigned
   private gen = 0; // bump to suppress a stale socket's reconnect loop
   private pinPending = false; // pin the viewport to the bottom once the next seed lands
+  private retries = 0; // consecutive failed/flapping reconnects — indexes reconnectDelay()
   private ws: WebSocket | null = null;
   private lastCols = 0;
   private lastRows = 0;
@@ -477,12 +479,14 @@ class Pane {
     );
     this.ws = ws;
     ws.binaryType = "arraybuffer";
+    let openedAt = 0;
     ws.onopen = () => {
+      openedAt = Date.now();
       if (focused === this.index) setConn(true);
       this.sendResize(true);
     };
     ws.onmessage = (e) => {
-      // the seed (scrollback capture or raw-tail replay) is always the first frame the
+      // the seed (a scrollback capture, on every path) is always the first frame the
       // server sends on open. Once it's parsed, the buffer sits at ydisp===ybase, but
       // xterm's DOM viewport can be parked at row 0 — its Viewport refresh multiplies
       // ydisp by a rowHeight that is 0 until the pane element is measured/visible, so a
@@ -495,15 +499,21 @@ class Pane {
     ws.onclose = () => {
       if (g !== this.gen) return; // superseded by a reassign or dispose
       if (focused === this.index) setConn(false);
+      // every successful open costs a scrollback seed, so a socket that keeps opening and
+      // dropping is as expensive as one that never opens — only a socket that STAYED up
+      // earns the fast first retry back (see src/backoff.ts)
+      if (openedAt && Date.now() - openedAt >= RECONNECT_SETTLED_MS) this.retries = 0;
+      const wait = reconnectDelay(this.retries++);
       setTimeout(() => {
         if (g === this.gen && fleet[this.slot - 1]?.cwd) this.connect();
-      }, 1500);
+      }, wait);
     };
   }
 
   assign(slot: number) {
     if (slot === this.slot) { this.focus(); return; }
     this.slot = slot;
+    this.retries = 0; // a different pane: the old one's backoff says nothing about this one
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
     this.term.reset();
@@ -533,6 +543,7 @@ class Pane {
   // nothing about the size changed, i.e. the exact case this button exists to fix
   reconnect() {
     if (!this.slot) return;
+    this.retries = 0; // an explicit ask: honour it now, don't serve it out of the backoff
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
     this.term.reset();

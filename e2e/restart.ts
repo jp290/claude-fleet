@@ -2,7 +2,7 @@
 // prompt log, shares, schedules, a lane's selfToken) and the audit log with its rotation.
 // Sets up the deploy-gap repo and the env line the steward section is measured against.
 import { spawnSync } from "node:child_process";
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText, tmuxOut, wsUrl } from "./harness";
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
@@ -353,6 +353,17 @@ export async function run(ctx: Ctx): Promise<void> {
   const rotKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
   await rotKill.exited;
   await Bun.sleep(500);
+  // --- single-instance lock, half 1: a STALE pidfile must not wedge the restart. This is the
+  // failure mode that would be worse than the one the lock fixes — every deploy restarts srv with
+  // `tmux kill-session` and the watchdog respawns blind, so a lock that survives its owner's death
+  // takes the fleet down permanently. Plant a pid that is definitely dead (a process we ran and
+  // reaped) and let the ordinary restart below be the test: if it wedges, every rotation check
+  // that follows fails too.
+  const deadProc = Bun.spawn(["true"]);
+  await deadProc.exited;
+  const deadPid = deadProc.pid;
+  const pidPath = `${ROOT}/fleet.pid`;
+  writeFileSync(pidPath, `${deadPid}\n`);
   const rotStart = Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
     `cd '${ROOT}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}${gapEnv}FLEET_AUDIT_ROTATE_BYTES=${auditSizeBeforeRotate} exec bun server.ts >> server.log 2>&1`]);
   await rotStart.exited;
@@ -368,6 +379,104 @@ export async function run(ctx: Ctx): Promise<void> {
     const freshSize = statSync(auditPath).size;
     check("post-rotation audit.jsonl starts fresh, smaller than what rotated out", freshSize < auditSizeBeforeRotate, `${freshSize} vs ${auditSizeBeforeRotate}`);
   }
+
+  // --- rotation VISIBILITY: what the routes still show once .1 exists. Rotation is single-
+  // generation and silent — no error, no log line — so a reader that opens only the live file
+  // reports a near-empty ledger that looks young rather than truncated. audit.jsonl genuinely
+  // rotated three lines above, so this is measured against the real mechanism, not a fixture:
+  // every event the suite produced before now lives in .1 and must still come back.
+  const postRot = (await (await get("/api/audit?limit=1000")).json()) as
+    { events: { event?: string }[]; total: number };
+  check("audit route still shows pre-rotation events after the log rotated to .1",
+    postRot.events.some((e) => e.event === "slot_open"),
+    `${postRot.events.length} events / total ${postRot.total} after rotation`);
+  check("audit route's total spans both generations after rotation",
+    postRot.total >= auditAll.length, `${postRot.total} vs ${auditAll.length} pre-rotation lines`);
+
+  // The other three trails rotate through the SAME appendEvent and are read by the same kind of
+  // route, but driving each one over 5 MB inside the suite would cost minutes — so plant the .1
+  // generation directly and assert the route reads it. Old timestamps keep the planted rows at the
+  // BOTTOM of every newest-first response, so no later check that takes "the most recent row" can
+  // pick one up; the files are removed again immediately after.
+  const planted: { file: string; route: string; key: string; marker: string; row: Record<string, unknown> }[] = [
+    { file: `${ROOT}/lane-outcomes.jsonl`, route: "/api/lane-outcomes", key: "outcomes", marker: "rotation-probe-outcome",
+      row: { ts: 1000, slot: 9, branch: "rotation-probe-outcome", disposition: "landed" } },
+    { file: `${ROOT}/post-land-audits.jsonl`, route: "/api/post-land-audits", key: "audits", marker: "rotation-probe-audit",
+      row: { at: 1000, repo: "rotation-probe-audit", result: "green" } },
+    { file: `${ROOT}/dispositions.jsonl`, route: "/api/dispositions", key: "dispositions", marker: "rotation-probe-disposition",
+      row: { at: 1000, worker: "land", ref: "rotation-probe-disposition", disposition: "accepted", source: "owner" } },
+  ];
+  for (const p of planted) writeFileSync(`${p.file}.1`, `${JSON.stringify(p.row)}\n`);
+  for (const p of planted) {
+    const body = (await (await get(`${p.route}?limit=1000`)).json()) as Record<string, unknown>;
+    const rows = (body[p.key] ?? []) as Record<string, unknown>[];
+    check(`${p.route} reads the rotated-out .1 generation`,
+      rows.some((r) => JSON.stringify(r).includes(p.marker)),
+      `${rows.length} rows, total ${String(body.total)}`);
+  }
+  for (const p of planted) rmSync(`${p.file}.1`, { force: true });
+
+  // --- single-instance lock, half 2 (the plant is above, before the restart) ---
+  // absent/unreadable reads answer 0 rather than throwing: a check module that throws takes the
+  // whole run's results down with it, and "the file isn't there" is a FAIL to report, not a crash
+  const readPid = (): number => { try { return Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10) || 0; } catch { return 0; } };
+  const modeOf = (p: string): number => { try { return statSync(p).mode & 0o777; } catch { return -1; } };
+  const pidNow = readPid();
+  check("stale pidfile did not block the restart — the live server took it over",
+    pidNow > 0 && pidNow !== deadPid, `pidfile ${pidNow}, planted dead pid ${deadPid}`);
+  check("pidfile is 600", modeOf(pidPath) === 0o600, modeOf(pidPath).toString(8));
+
+  // A second server over the SAME directory must refuse: STATE_FILE follows import.meta.dir, so a
+  // different FLEET_PORT/FLEET_SOCK isolates nothing and both would write this fleet.json. Given a
+  // distinct port AND socket here precisely so nothing but the directory lock can be what stops it.
+  // the token, not the bytes: the LIVE server may legitimately save state at any moment here, so
+  // a byte comparison would be a race. What the refusal has to protect is that this file stays
+  // parseable and keeps its credentials — an unparseable one makes the next boot mint a new owner
+  // token and kill every bookmark, share link and lane token at once.
+  const tokenOf = (): string | null => { try {
+    const t = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { token?: unknown }).token;
+    return typeof t === "string" ? t : null;
+  } catch { return null; } };
+  const tokenBefore = tokenOf();
+  const second = Bun.spawn(["bun", "server.ts"], {
+    cwd: ROOT, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, FLEET_HOST: IP, FLEET_PORT: String(PORT + 1), FLEET_SOCK: `${SOCK}x2`,
+      FLEET_CMD: "true", FLEET_AUTO_REVIEW_MS: "0" },
+  });
+  // BOUNDED wait, and the bound is not paranoia: an unguarded server does not fail here, it SUCCEEDS
+  // and runs forever, so `await second.exited` would hang the whole suite rather than fail a check.
+  // (Measured against HEAD while proving this section red: the second instance came up, adopted this
+  // fleet.json and began opening slot sessions on its own socket.) The lock refuses within its 5s
+  // grace, so 25s is slack, not a race — and killing a survivor is what keeps the failure a FAIL.
+  const secondCode = await Promise.race([second.exited, Bun.sleep(25_000).then(() => null)]);
+  if (secondCode === null) {
+    second.kill("SIGKILL");
+    await second.exited;
+    // it got past the lock, so it also started its own tmux server and began adopting slots —
+    // reap that too, or a failing run leaks a live server with real sessions in it
+    Bun.spawnSync(["tmux", "-L", `${SOCK}x2`, "kill-server"]);
+  }
+  const secondOut = await new Response(second.stdout).text() + await new Response(second.stderr).text();
+  check("a second server against the same directory refuses to start",
+    secondCode !== null && secondCode !== 0, secondCode === null ? "still running after 25s — killed" : `exit ${secondCode}`);
+  check("the refusal names the running server, not a port clash",
+    /REFUSING TO START/.test(secondOut) && secondOut.includes(String(pidNow)), secondOut.slice(0, 300));
+  check("the refused second server left fleet.json parseable with the same owner token",
+    tokenBefore !== null && tokenOf() === tokenBefore);
+  check("the refused second server left the pidfile pointing at the live server", readPid() === pidNow);
+
+  // --- the state file's own durability: .bak is the LAST GOOD state, written at rename time.
+  // Boot used to make it instead, by copying the file it had just failed to parse — which
+  // preserved the damage and destroyed the only readable copy at the moment it was needed.
+  const bak = `${ROOT}/fleet.json.bak`;
+  check("fleet.json.bak exists and parses — it is the last GOOD state, not a copy of a broken one",
+    ((): boolean => { try { return typeof (JSON.parse(readFileSync(bak, "utf8")) as { token?: string }).token === "string"; }
+      catch { return false; } })());
+  check("fleet.json.bak is 600", modeOf(bak) === 0o600, modeOf(bak).toString(8));
+  check("no fixed-name fleet.json.tmp is left behind (unique temp names, cleaned on rename)",
+    !existsSync(`${ROOT}/fleet.json.tmp`)
+    && readdirSync(ROOT).filter((f) => f.startsWith("fleet.json.") && f.endsWith(".tmp")).length === 0,
+    readdirSync(ROOT).filter((f) => f.startsWith("fleet.json.")).join(","));
 
   ctx.cmdEnv = cmdEnv;
   ctx.gapEnv = gapEnv;

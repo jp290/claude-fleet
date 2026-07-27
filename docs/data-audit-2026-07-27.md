@@ -178,7 +178,14 @@ unwritable: `readEventLog` (`server.ts:436`) sits next to `appendEvent` as the r
 contract, and **all six** readers now go through it — the four that were blind and the two that
 had their own correct copy. A seventh ledger cannot reintroduce this without deliberately not
 calling it. `total` now counts both generations too, so the published row count no longer collapses
-at rotation either. Pinned by `e2e/restart.ts` — one check
+at rotation either.
+
+Measured red before the fix (same checks, `server.ts` at the pre-fix commit): after the suite's own
+real rotation of `audit.jsonl`, `/api/audit?limit=1000` answered **1 event where the trail held 314
+lines** — no error, no log line, just a ledger that looks one event old. The other three answered
+`0 rows, total 0` and `78 rows, total 78` against a planted `.1` they never opened.
+
+Pinned by `e2e/restart.ts` — one check
 against the REAL rotation (the suite already drives `audit.jsonl` over the threshold) and three
 against a planted `.1` for the trails that would take minutes to fill.
 
@@ -204,6 +211,14 @@ srv pane is a child of the *tmux server*, the same inheritance gap the file alre
 `PATH`. Proof on disk: `server.log` is `-rw-r--r--`.
 
 **FIXED 2026-07-27**, in the four places the chain runs through:
+
+The second-instance half of this item was reproduced, not just argued. With the guard absent, the
+check's second `bun server.ts` — given its own `FLEET_PORT` and its own `FLEET_SOCK`, so nothing but
+the directory could stop it — **did not fail. It came up, adopted the instance's `fleet.json`, and
+started resuming slot sessions** (`slot 2: resumed claude session … in 's2'`), then ran until the
+check killed it at 25 s. That is the 2026-07-19 incident shape, on demand. Note what it did *not*
+do in that one run: `fleet.json` stayed parseable with its owner token intact. Interleaving two
+writers is a race, not a certainty — which is exactly why the fix is a lock and not a repair.
 
 - **Second instance.** `claimInstanceLock` (`server.ts:4265`) claims an O_EXCL pidfile next to
   `STATE_FILE` before boot touches anything, and refuses with a named reason. It is deliberately

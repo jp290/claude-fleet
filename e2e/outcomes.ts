@@ -568,10 +568,25 @@ export async function run(): Promise<void> {
     // access model: the read route is owner-only — no token → 401 (same as /api/audit)
     check("lane-outcomes route requires the owner token", (await fetch(BASE + "/api/lane-outcomes")).status === 401);
     // the trail returns a total count alongside the (limited) window, newest-first
-    const finalRead = (await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[]; total: number };
+    const finalRead = (await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: Outcome[]; total: number; malformed: number };
     check("lane-outcomes returns { outcomes, total } with all five dispositions present",
       finalRead.total >= 5 && ["landed", "killed-dirty", "killed-empty", "shelved", "reverted"]
         .every((d) => finalRead.outcomes.some((o) => o.disposition === d)),
       JSON.stringify({ total: finalRead.total, seen: [...new Set(finalRead.outcomes.map((o) => o.disposition))] }));
+    // the counts must be separable even on a HEALTHY file: `total` is what parsed, `malformed` is
+    // the hole. Reporting only one number is what let a torn row hide behind the cap message
+    // (the torn-file proof itself is in land-provenance.ts, on the one trail nothing here writes).
+    check("lane-outcomes reports malformed separately from total (0 on an intact trail)",
+      finalRead.malformed === 0 && finalRead.total === finalRead.outcomes.length,
+      JSON.stringify({ total: finalRead.total, malformed: finalRead.malformed, rows: finalRead.outcomes.length }));
+    const auditShape = (await (await get("/api/audit?limit=1000")).json()) as { events: unknown[]; total: number; malformed: number };
+    check("audit trail reports malformed separately from total too (same reader, same contract)",
+      auditShape.malformed === 0 && auditShape.total >= auditShape.events.length,
+      JSON.stringify({ total: auditShape.total, malformed: auditShape.malformed, rows: auditShape.events.length }));
+    const dispoShape = (await (await get("/api/dispositions")).json()) as { dispositions: unknown[]; total: number; malformed: number };
+    check("disposition rail reports malformed separately from total too",
+      dispoShape.malformed === 0 && dispoShape.total === dispoShape.dispositions.length,
+      JSON.stringify({ total: dispoShape.total, malformed: dispoShape.malformed, rows: dispoShape.dispositions.length }));
   }
 }

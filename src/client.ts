@@ -2890,9 +2890,15 @@ function decodeAudit(event: string, detail?: string): string {
   }
 }
 let auditData: AuditEntry[] = [];
-let auditTotal = 0; // server-reported total on disk; > auditData.length means the load was capped
+let auditTotal = 0; // server-reported PARSED rows on disk; > auditData.length means the load was capped
+let auditMalformed = 0;
 let auditSlot: number | "all" = "all";
 let auditLife = false;
+// A ledger route now reports the rows it could not parse SEPARATELY from the total, so a torn
+// mid-append row cannot masquerade as the benign "capped" message (the total used to count lines
+// the response had already dropped). Absent/zero → the count line reads exactly as before.
+const tornNote = (malformed: number): string =>
+  malformed > 0 ? ` · ⚠ ${malformed} unreadable row${malformed === 1 ? "" : "s"} on disk` : "";
 
 function renderAudit() {
   auditpanel.replaceChildren(el("h2", "", "Audit trail — what Fleet did"));
@@ -2922,9 +2928,9 @@ function renderAudit() {
     (auditSlot === "all" || e.slot === auditSlot) && (!auditLife || LIFECYCLE_KINDS.has(e.event)));
   const loaded = auditData.length;
   const capped = auditTotal > loaded;
-  const count = rows.length === loaded
+  const count = (rows.length === loaded
     ? capped ? `latest ${loaded} of ${auditTotal} events` : `${loaded} event${loaded === 1 ? "" : "s"}`
-    : `${rows.length} of ${capped ? `${loaded} loaded (${auditTotal} total)` : loaded}`;
+    : `${rows.length} of ${capped ? `${loaded} loaded (${auditTotal} total)` : loaded}`) + tornNote(auditMalformed);
   ctl.appendChild(el("span", "auditcount", count));
 
   const list = el("div", "");
@@ -2951,9 +2957,10 @@ async function openAudit() {
   auditData = [];
   const res = await api("/api/audit?limit=1000");
   if (res.ok) {
-    const data = (await res.json()) as { events?: AuditEntry[]; total?: number };
+    const data = (await res.json()) as { events?: AuditEntry[]; total?: number; malformed?: number };
     auditData = (data.events ?? []).filter((e): e is AuditEntry => typeof e?.ts === "number" && typeof e?.event === "string");
     auditTotal = typeof data.total === "number" ? data.total : auditData.length;
+    auditMalformed = typeof data.malformed === "number" ? data.malformed : 0;
   }
   renderAudit(); // server already returns newest-first; we preserve that order
   audit.style.display = "flex";
@@ -3161,6 +3168,7 @@ function kProgress(rows: OutcomeRow[]): KProgress {
 
 let outcomeData: OutcomeRow[] = [];
 let outcomeTotal = 0;
+let outcomeMalformed = 0; // rows the server could not parse — a HOLE in the trail, never folded into the total
 let outcomeDispo: string | "all" = "all";
 let outcomeUncovered = false; // the gap-3 question: which rows landed without ③ having covered them
 
@@ -3186,7 +3194,8 @@ function renderOutcomes() {
   ctl.appendChild(unc);
   const capped = outcomeTotal > outcomeData.length;
   ctl.appendChild(el("span", "auditcount",
-    capped ? `latest ${outcomeData.length} of ${outcomeTotal} rows` : `${outcomeData.length} rows`));
+    (capped ? `latest ${outcomeData.length} of ${outcomeTotal} rows` : `${outcomeData.length} rows`)
+    + tornNote(outcomeMalformed)));
   outcomepanel.appendChild(ctl);
 
   // the coverage tally — the whole reason the feed exists. Counted over ALL loaded rows, not the
@@ -3375,9 +3384,10 @@ async function openOutcomes() {
   await loadDispositions(); // labels before rows: a row must never render for an instant as unlabeled when it is not
   const res = await api("/api/lane-outcomes?limit=1000");
   if (res.ok) {
-    const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number };
+    const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number; malformed?: number };
     outcomeData = (data.outcomes ?? []).filter((o): o is OutcomeRow => typeof o?.ts === "number");
     outcomeTotal = typeof data.total === "number" ? data.total : outcomeData.length;
+    outcomeMalformed = typeof data.malformed === "number" ? data.malformed : 0;
   }
   renderOutcomes(); // server already returns newest-first; we preserve that order
   outcomes.style.display = "flex";

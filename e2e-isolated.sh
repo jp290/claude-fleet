@@ -161,6 +161,19 @@ if git grep -qI VERIFYBAD -- . 2>/dev/null; then
   echo "verify FAIL: VERIFYBAD marker present in the rebased tree"
   exit 1
 fi
+# The shape a REAL suite has, and the one the old tail-slice could not survive: hundreds of
+# result lines, the failing one buried among them, only the COUNT at the end — plus a noisy
+# stderr big enough that concatenate-then-tail-slice kept nothing but stderr. A red run that
+# cannot name its failing check is the defect this exercises.
+if git grep -qI VERIFYNOISY -- . 2>/dev/null; then
+  i=0; while [ $i -lt 400 ]; do echo "PASS  filler check $i"; i=$((i+1)); done
+  echo "FAIL  §9 the needle check that actually broke"
+  i=0; while [ $i -lt 400 ]; do echo "PASS  trailing filler $i"; i=$((i+1)); done
+  i=0; while [ $i -lt 400 ]; do echo "noise: deprecation warning $i" >&2; i=$((i+1)); done
+  echo ""
+  echo "1 FAILURES"
+  exit 1
+fi
 echo "verify OK: no sabotage marker in the tree"
 exit 0
 EOF

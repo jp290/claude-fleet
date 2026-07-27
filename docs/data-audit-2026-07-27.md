@@ -141,6 +141,15 @@ machine.** The same defect sits in `VERIFY_OUT_CAP` (`server.ts:2685`) — and *
 lands. Both also build `combined` as `out + err` and tail-slice it, so a large stderr would
 silently displace the entire verdict.
 
+**Fixed in lane `fleet/260727071703-83d3`** (not deployed; takes effect on the first srv restart
+after landing). Both sites now go through one `retainRunOutput` helper (`server.ts`, grep the
+name): failure-shaped lines are kept first (at most half the budget), then the tail, with every
+gap marked `… [N lines elided]`; stdout and stderr are separate labelled sections, so a stderr
+flood can no longer displace the stdout verdict; the budget is counted in BYTES and every cut
+lands on a line or UTF-8 sequence boundary. Reproduced first: with the old code a 400-PASS /
+1-FAIL / 400-PASS log plus a noisy stderr retained **zero** stdout and named nothing. What this
+does **not** do is recover the 07-26 rows — those remain unrecoverable.
+
 ### 7. Losing `reviewCache` writes a false "never reviewed" into the permanent ledger
 
 `reviewCache` (`server.ts:2181`) is not persisted. `outcomeReview` returns `{state:"none"}` when it
@@ -205,7 +214,15 @@ spawns zero subprocesses and is ~8 KB now):
 **Reader traps — the `rawAnswer` class** (agent 2):
 - Every ledger route returns `total: lines.length`, counting rows the response dropped; the client
   renders that as a benign "latest 51 of 52" cap message. `continuityView` already does this right
-  (`malformed` counter) — the pattern was just never applied.
+  (`malformed` counter) — the pattern was just never applied. **Fixed in lane
+  `fleet/260727071703-83d3`** (not deployed): one `readLedger` helper (`server.ts`, next to
+  `appendEvent`) serves all five readers — `/api/prompts`, `/api/audit`, `/api/lane-outcomes`,
+  `/api/post-land-audits`, `readDispositions` — returning `{rows, total, malformed}` where `total`
+  is what actually parsed. The audit and lane-outcome panels render the hole (`tornNote`).
+  `/api/prompts` additionally splits its three counts: `total` (the journal), `matched` (the `q`
+  filter) and the returned window; it used to report the unfiltered line count next to a filtered
+  list. **Still unfixed:** `readJsonlRows` (the steward's `ledgersView` projection) is a sixth
+  reader with the same silent skip — it reports no count at all, so there is no total to inflate.
 - `src/client.ts:3203` renders an **absent** `confirmedByHuman` as "auto-landed clean+green" — the
   strongest positive claim in the feed, from no data. The same file gets it right for `verified`
   130 lines earlier.

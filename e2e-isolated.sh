@@ -117,8 +117,17 @@ fi
 # handled by the server's script pre-pass and never reach here) — so resolve with a
 # strategy that always completes, leaving a clean tree rebased onto main for the server
 # to verify. -X theirs keeps the lane's side on conflict.
-if [ "$mode" = do ] || [ "$mode" = prose ]; then
+if [ "$mode" = do ] || [ "$mode" = prose ] || [ "$mode" = dohang ]; then
   git rebase -X theirs -q main >/dev/null 2>&1
+fi
+# dohang — really resolve+rebase (so the lane now carries agent-chosen resolutions, committed and
+# rebased onto main) and then STAY IN FLIGHT, so a test can kill the server in the window between
+# "the lane was rewritten" and "a verdict was recorded". That window is the whole defect; the
+# rebase above is the deterministic signal a test polls for before pulling the plug.
+if [ "$mode" = dohang ]; then
+  sleep 25
+  printf '{"result": "{\\"status\\": \\"rebased\\", \\"detail\\": \\"fake rebased after hanging\\"}"}'
+  exit 0
 fi
 if [ "$mode" = blocked ]; then
   printf '{"result": "{\\"status\\": \\"blocked\\", \\"detail\\": \\"fake conflict\\"}"}'

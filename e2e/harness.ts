@@ -38,6 +38,31 @@ export const post = (path: string, body: unknown, headers: Record<string, string
   fetch(BASE + path, { method: "POST", headers, body: JSON.stringify(body) });
 export const get = (path: string): Promise<Response> => fetch(BASE + path, { headers: H });
 
+// Restart the srv session this suite is testing, carrying the server's env forward, and wait until
+// it answers again. The wrapper exports every FLEET_* knob into THIS process too, so the whitelist
+// is simply "every FLEET_* key we did not compute ourselves" — a new knob in e2e-isolated.sh rides
+// along without a second list to keep in sync. `extra` wins over the inherited value (it is
+// appended last), which is how a check turns a server-side fault-injection knob on for exactly one
+// restart and off again for the next. Not used by restart.ts, which builds its own env line for
+// reasons of its own (it deliberately DROPS FLEET_VERIFY_CMD) — see that file.
+export async function restartSrv(extra: Record<string, string> = {}): Promise<void> {
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const own = new Set(["FLEET_HOST", "FLEET_PORT", "FLEET_SOCK", "FLEET_TOKEN"]);
+  const env = Object.entries(process.env)
+    .filter(([k, v]) => k.startsWith("FLEET_") && !k.startsWith("FLEET_E2E_") && !own.has(k) && !(k in extra) && v)
+    .concat(Object.entries(extra))
+    .map(([k, v]) => `${k}='${String(v).replaceAll("'", "'\\''")}' `).join("");
+  await tmuxOut("new-session", "-d", "-s", "srv",
+    `cd '${ROOT}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${env}exec bun server.ts >> server.log 2>&1`);
+  for (let i = 0; i < 160; i++) {
+    const ok = await get("/api/sessions").then((r) => r.ok).catch(() => false);
+    if (ok) return;
+    await Bun.sleep(250);
+  }
+  throw new Error("srv never came back after restartSrv — the rest of this run would be meaningless");
+}
+
 export const wsUrl = (slot: number): string => `ws://${IP}:${PORT}/ws/${slot}?token=${TOKEN}`;
 // Bun's WebSocket client accepts { headers } as a second arg — the DOM lib types don't
 export const wsWithHeaders = (url: string, headers: Record<string, string>): WebSocket =>

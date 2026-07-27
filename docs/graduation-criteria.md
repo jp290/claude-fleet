@@ -19,6 +19,18 @@ Enable opt-in, reconcilable-only, non-high-stakes-zone auto-land iff ALL of:
 
 - **N ≥ 20** consecutive Fleet-routed lands recorded after the F9 fix is deployed (so
   `verified` is honest), of which **≥ 10** were clean auto-lands.
+
+> **Measurement note, 2026-07-27** (`data-audit-2026-07-27.md` item 4; the criterion itself is
+> UNCHANGED — this records what the available measurement can and cannot show). The board's
+> sub-count for the "≥ 10" clause counts rows whose `confirmedByHuman` is explicitly `false`, and
+> that field records exactly one thing: whether the land needed a second confirm click. `mergeJob`
+> has exactly one caller — `POST /api/slots/:id/merge`, an owner route — so **every** land on the
+> ledger was started by an owner request, and `Counter({False: 42, True: 4})` describes
+> confirmation depth, not attendance. The chip is therefore labelled *"ohne Confirm-Schritt"* and
+> the counter's field is `noConfirmStep`; neither says "clean auto-land" any more. Consequence: as
+> long as no land path exists that an owner request does not start, this clause cannot be satisfied
+> by the ledger no matter how the number grows. Closing that is a server-side question (what gets
+> recorded), not a relabelling.
 - **0** owner undos and **0** `wrong`-class dispositions across those 20.
 - Review coverage across those 20: **≥ 80 %** of rows carry a `review` object
   (measured by the outcome feed, not asserted).
@@ -168,10 +180,13 @@ to ② shadow and any future judge.
      project's own "unknown ≠ zero" rule inside the autonomy counter. Fix before K1 is read as
      met.~~ **FIXED 2026-07-25 (branch `kprogress-honesty`)**, and it changes how the clean
      sub-count reads:
-     - Only an explicit `confirmedByHuman: false` counts toward `clean`. A row that carries no
-       value (or `null`) is counted as **unknown** — reported as its own number next to
-       "davon N/10 clean" in the criteria header, never folded into it. Unknown is not zero:
-       the clean count is now a floor, and the header shows how many rows it is silent about.
+     - Only an explicit `confirmedByHuman: false` counts toward the sub-count. A row that carries
+       no value (or `null`) is counted as **unknown** — reported as its own number next to the
+       sub-count chip in the criteria header, never folded into it. Unknown is not zero: the
+       sub-count is now a floor, and the header shows how many rows it is silent about.
+       (The chip and the counter field were called `clean` / "davon N/10 clean" until
+       **2026-07-27**, when both were renamed to `noConfirmStep` / "davon N/10 ohne
+       Confirm-Schritt" — see the measurement note under §1 for why the old word was wrong.)
      - Same land: **K2 no longer depends on §1's anchor.** It was computed inside the anchored
        branch, so a ledger without the `f9-verify-deps` row reported `k2: 0` — a measurement
        claim about shadow verdicts that had in fact been recorded. §2 asks for no anchor

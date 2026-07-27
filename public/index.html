@@ -26,6 +26,25 @@
 
   #mhead { display: none; }
   #shade { display: none; position: fixed; inset: 0; background: #0009; z-index: 29; }
+  /* verification tier 2 — the post-land audit alarm. Fixed, full width and above every overlay on
+     purpose: this tier gates nothing, so being SEEN is the entire mechanism. Red = the suite failed
+     on the integration tip; amber = no measurement happened at all. Green never renders. */
+  .plaudit { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+    align-items: flex-start; gap: 12px; padding: 8px 12px; font-size: 12px; line-height: 1.45;
+    border-bottom: 2px solid #f85149; background: #3a1416; color: #ffd7d5;
+    box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  .plaudit.unknown { border-bottom-color: #e0af68; background: #38290f; color: #ffe6b8; }
+  .plaudit .plabody { flex: 1; min-width: 0; }
+  .plaudit .plahd { font-weight: bold; letter-spacing: .3px; }
+  .plaudit .plawhere { color: #ffb9b6; word-break: break-word; }
+  .plaudit.unknown .plawhere { color: #f0d3a0; }
+  .plaudit .planote { color: #c09795; }
+  .plaudit.unknown .planote { color: #b39a68; }
+  .plaudit .plaack { flex: none; padding: 5px 10px; border-radius: 6px; border: 1px solid #7a3b38;
+    background: #2a0f11; color: #ffd7d5; font-family: inherit; font-size: 11px; cursor: pointer; }
+  .plaudit.unknown .plaack { border-color: #7a6238; background: #2a2210; color: #ffe6b8; }
+  .plaudit .plaack:hover { background: #431a1c; }
+  .plaudit.unknown .plaack:hover { background: #43371a; }
   /* terminal key row: hidden only where a hardware Esc exists (fine-pointer desktop).
      Any touchscreen device shows it — that includes an iPad in the DESKTOP layout,
      whose Magic Keyboard has no Esc key */
@@ -768,6 +787,7 @@
 </style>
 </head>
 <body>
+<div id="plaudit" class="plaudit"></div>
 <div id="app">
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>

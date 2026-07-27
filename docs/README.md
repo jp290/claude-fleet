@@ -153,6 +153,11 @@ rotting. Two shelves, plus the steward subsystem.
   759-check suite flipped red on an unchanged tree, which is what disqualifies it as a hard pre-land
   gate at any timeout. Ends in one concrete gate proposal (typecheck the three unimported harnesses,
   add `./e2e-clean-review.sh`) with its measured cost. Read before proposing to gate on a suite.
+- **`e2e-trail.md`** — the suite's per-check trail (2026-07-27): `check()` built ~870 structured
+  results per run and printed them away, so "is this check flaky?" cost a seven-minute re-run
+  instead of a query. The row shape, why the trail lives in the main checkout's `e2e-trail/` and
+  not in the instance dir the wrapper deletes on green, why one file per run, and why the timing
+  field is called `msSincePrev` and not a duration. Read before querying or extending it.
 - **`ungoverned-artifacts.md`** — `CLAUDE.md`/`OWNER.md`/the four `.jsonl` trails are untracked,
   copied per-lane at spawn, and unbacked-up: why a lane cannot fulfil Wissenspflege for the
   rulebook, the measured per-worktree drift, and the fix ladder under a public remote.

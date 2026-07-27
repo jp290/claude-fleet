@@ -173,6 +173,15 @@ Measured horizons: post-land-audits ≈ 63 days, lane-outcomes ≈ 81 days. On t
 and the K1 anchor drop out of the response with no error and no log line, and the criteria
 re-earn work already done.
 
+**FIXED 2026-07-27.** Not by patching four call sites but by making the one-generation read
+unwritable: `readEventLog` (`server.ts:436`) sits next to `appendEvent` as the read half of its
+contract, and **all six** readers now go through it — the four that were blind and the two that
+had their own correct copy. A seventh ledger cannot reintroduce this without deliberately not
+calling it. `total` now counts both generations too, so the published row count no longer collapses
+at rotation either. Pinned by `e2e/restart.ts` — one check
+against the REAL rotation (the suite already drives `audit.jsonl` over the threshold) and three
+against a planted `.1` for the trails that would take minutes to fill.
+
 ### 9. Nothing prevents a second server from corrupting `fleet.json` — and corruption means a token lockout
 
 `STATE_FILE` derives from `import.meta.dir` (`server.ts:30`), so any `bun server.ts` in the main
@@ -193,6 +202,33 @@ containing the owner token, the steward token, every lane `selfToken`, and every
 `umask 077` in `watchdog.sh:13` never reaches the server — it is set in the watchdog loop, but the
 srv pane is a child of the *tmux server*, the same inheritance gap the file already documents for
 `PATH`. Proof on disk: `server.log` is `-rw-r--r--`.
+
+**FIXED 2026-07-27**, in the four places the chain runs through:
+
+- **Second instance.** `claimInstanceLock` (`server.ts:4265`) claims an O_EXCL pidfile next to
+  `STATE_FILE` before boot touches anything, and refuses with a named reason. It is deliberately
+  weak in the safe direction, because the opposite failure is worse: every deploy restarts srv with
+  `tmux kill-session` and the watchdog respawns blind, so a lock outliving its owner would take the
+  fleet down permanently. A dead pid is taken over; a *recycled* pid is taken over too
+  (`ps -o command=` is what makes that decidable); only a pid that is alive AND a `server.ts`
+  refuses, after a 5 s grace for a predecessor still exiting.
+- **Torn/interleaved writes.** The temp file carries pid + sequence, is created with
+  `openSync(tmp, "wx", 0o600)`, is fsynced before the rename, and the directory is fsynced after
+  (`server.ts:499-515`). Deliberately NOT extended to the `.jsonl` ledgers: a torn tail line there
+  costs one row and every reader already skips it, which is not true of this file.
+- **The 0644 window.** Closed by mode-at-creation rather than by chmod-after. See
+  `security-model.md` S-6, whose stated mitigation (the `watchdog.sh` umask) was the thing this
+  item disproved.
+- **The `.bak` inversion.** `.bak` is now written by `saveState` at rename time, from the file that
+  last *parsed* (`server.ts:508`). Boot no longer manufactures it: the damaged file is moved aside
+  as `.corrupt` (`server.ts:4460`) — moved, not copied, because leaving it at `STATE_FILE` for even
+  one save would have the new `.bak` copy overwrite the good one, which is this bug again.
+
+What is NOT fixed, and is a decision rather than an oversight: boot still starts empty and mints a
+new owner token when the state file will not parse. Auto-restoring from `.bak` would remove the
+lockout, but a `.bak` is by construction one save stale and silently reviving it could resurrect a
+revoked share or a killed lane's token. The recovery is now a one-line manual copy, and the boot
+log line names the file and the command.
 
 ---
 

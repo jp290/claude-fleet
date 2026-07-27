@@ -58,8 +58,15 @@ export async function run(): Promise<void> {
 
   // the tree under test, resolved from inside a throwaway copy that has no .git of its own —
   // without it a row cannot say WHICH code a check failed on, which is the whole query
-  check("trail: rows name the tree under test as a git sha",
-    !!TRAIL_TREE && /^[0-9a-f]{40}$/.test(TRAIL_TREE), `tree=${TRAIL_TREE} dirty=${TRAIL_DIRTY}`);
+  // Both branches of the emit's own contract, because both occur in production: a run under
+  // e2e-isolated.sh resolves a tree, but the POST-LAND AUDIT runs against a `git archive` snapshot
+  // that is a tree and not a repository (server.ts, snapshotIntegrationTree) — there `tree` is
+  // legitimately null and the row "claims nothing". Asserting only the happy path made every audit
+  // red (measured 2026-07-27, tip d6d77a8). When no tree resolves, `dirty` must be null too — that
+  // pairing IS the claims-nothing invariant, and it was previously untested.
+  check("trail: rows name the tree under test as a git sha, or null when no repo is resolvable",
+    TRAIL_TREE === null ? TRAIL_DIRTY === null : /^[0-9a-f]{40}$/.test(TRAIL_TREE),
+    `tree=${TRAIL_TREE} dirty=${TRAIL_DIRTY}`);
 
   // detail is the only unbounded field: kept for a failing check, capped, dropped for a pass
   const long = trailRow("x", false, "d".repeat(TRAIL_DETAIL_MAX + 500), 5, 1);

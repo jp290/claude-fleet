@@ -692,7 +692,10 @@ const commitBusy = new Map<number, "quick" | "agent">();
 // past the `mainSha` the verify ran against (the verdict is void once main moves past it).
 type VerifyVerdict = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean };
 interface MergeState { running: boolean;
-  last: { status: "merged" | "blocked" | "error" | "resolved"; detail: string; landed: boolean;
+  // "interrupted" is the durable marker a merge run leaves about itself before it starts: a run
+  // that never came back (the server was killed mid-job) is reported as such instead of as no
+  // verdict at all. Rendered by the plain verdict note below, like every other non-resolved state.
+  last: { status: "merged" | "blocked" | "error" | "resolved" | "interrupted"; detail: string; landed: boolean;
     branch: string; at: number; conflicted?: string[]; verify?: VerifyVerdict } | null;
   // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
   undoable?: { branch: string; at: number } | null }
@@ -1388,7 +1391,11 @@ async function renderBoard() {
         const land = el("div", "bsec");
         land.appendChild(el("h3", "", "land"));
         const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
-        const awaitingReview = l?.status === "resolved";
+        // an INTERRUPTED run that had already handed the conflicts to the agent needs the same
+        // eye as a settled "resolved" verdict: the resolutions may be committed in the lane and
+        // nobody — not even the server — ever saw a verdict for them (server.ts, needsMergeReview)
+        const awaitingReview = l?.status === "resolved"
+          || (l?.status === "interrupted" && (l.conflicted?.length ?? 0) > 0);
         // no standalone "± view diff" here: it opened the same working diff (openDiff) already
         // reachable by clicking a file row in WORK — a second button for an identical source.
         // The working diff lives on the file rows (one consistent affordance); the resolved
@@ -1429,8 +1436,9 @@ async function renderBoard() {
           // reviews the diff and lands. This is the one place a human eye is required.
           const n = l.conflicted?.length ?? 0;
           const note = el("div", "bmergenote review");
-          const hd = el("div", "bmergehd",
-            `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land `);
+          const hd = el("div", "bmergehd", l.status === "interrupted"
+            ? `merge INTERRUPTED while resolving${n ? ` ${n} file${n === 1 ? "" : "s"}` : ""} — no verdict was ever recorded; review, then land `
+            : `conflicts resolved${n ? ` in ${n} file${n === 1 ? "" : "s"}` : ""} — review, then land `);
           hd.appendChild(verifyBadge(l.verify));
           note.appendChild(hd);
           if (l.conflicted?.length) note.appendChild(el("div", "bmergefiles", l.conflicted.join(", ")));
@@ -2398,7 +2406,7 @@ function renderSlots() {
       if (s.mergePending) {
         // a resolved conflict waiting for review — discoverable without opening the board
         const rb = el("span", "revb", "⏸");
-        rb.title = "conflicts resolved — review & land (open the board)";
+        rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
         row.appendChild(rb);
       }

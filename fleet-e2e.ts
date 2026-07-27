@@ -28,6 +28,7 @@ import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
 import * as refAdvance from "./e2e/ref-advance";
 import * as outcomes from "./e2e/outcomes";
+import * as landDurability from "./e2e/land-durability";
 import * as tasks from "./e2e/tasks";
 import * as intake from "./e2e/intake";
 import * as restart from "./e2e/restart";
@@ -78,6 +79,11 @@ if (REPO) {
   await selfToken.run(ctx);
   await refAdvance.run();
   await outcomes.run();
+  // what the merge/land path can still say after the process running it was killed. Last in the
+  // lane block on purpose: it restarts srv several times, so it must not sit between two sections
+  // that share a live fixture — and it runs after outcomes.run() so its terminal rows never land
+  // inside another module's ledger reads.
+  await landDurability.run();
 }
 
 // --- task queue + dispatch gates, intake, the public share host ---

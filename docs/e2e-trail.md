@@ -37,7 +37,8 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `detail` | only on `ok:false`, capped at `TRAIL_DETAIL_MAX` = 2000 chars + `…[truncated]` |
 
 `detail` is the only unbounded input (a check may hand `check()` a whole transcript), hence the
-cap. Everything else is bounded by construction, so a row is ~150 bytes and a run ~130 KB.
+cap. Everything else is bounded by construction. Measured 2026-07-27: 887 rows, 220 440 bytes —
+~250 bytes per row, ~220 KB per run.
 
 `dirty` is not decoration: two runs on the same sha with different uncommitted work are different
 code, and that is exactly the distinction a flake query turns on.
@@ -68,8 +69,8 @@ exactly one writer per file: no locking, no torn rows, and a killed run keeps wh
 file is opened `O_APPEND` and each row is a single `writeSync`, so rows are on disk immediately —
 a crash mid-run loses nothing that was already checked).
 
-**Growth is unbounded and unmanaged.** ~130 KB × ~20 runs/day. Retention belongs with the query
-layer that will read it; until then, `rm` old files by hand if it matters.
+**Growth is unbounded and unmanaged.** ~220 KB × ~20 runs/day ≈ 4.4 MB/day. Retention belongs with
+the query layer that will read it; until then, `rm` old files by hand if it matters.
 
 ## 4. `msSincePrev` is not a per-check duration
 

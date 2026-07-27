@@ -116,7 +116,14 @@ including the decision to loosen upstream autonomy *because* the gate is hard.
      live on. Joins to the ledger and to the `fleet/land` note by `mainSha`/branch.
    - **Surfaced:** the trail, an `audit("postland_audit")` line, a loud server-log line on any
      non-green result, and `postLandAudit` on `/api/sessions` (rehydrated at boot, because the
-     deploy that follows a land would otherwise erase the alarm). Client rendering is still to do.
+     deploy that follows a land would otherwise erase the alarm). Client rendering **landed
+     2026-07-27**: `postLandAlarm` + `renderPostLandAudit` in `src/client.ts` raise a fixed
+     full-width bar above every overlay for `red` and (in its own tone) `unknown`, naming the
+     land(s) covered; `green` renders nothing. The bar survives until the owner acknowledges
+     *that* audit — the ack is keyed to its `at`, so the next non-green result raises it again —
+     or until the server's newest audit comes back green. Until that shipped, the field was
+     polled 30×/minute by a client that never read it, and the two red audits of 2026-07-26
+     went unread as the direct consequence.
    - **It does not gate, does not auto-undo, does not block.** Rollback stays the owner's
      ↩ undo-land. Default OFF (`FLEET_POSTLAND_AUDIT_CMD` unset → the tier does not exist).
 4. **Only then** should component 5 (auto-land of resolutions) be considered: it is the one

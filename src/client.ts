@@ -2502,6 +2502,69 @@ function armReload() {
   });
 }
 
+// --- verification tier 2 on the board: the post-land audit alarm --------------------------------
+// The server runs the full suite AFTER every land that moves main and gates NOTHING on the outcome
+// (server.ts, runPostLandAudit). Rendering it is therefore the entire safety net — an audit nobody
+// reads is an audit that never ran. The result rode the 2s poll payload for a client that had no
+// reader at all, and two RED audits on 2026-07-26 went unread as the direct consequence.
+//
+// Three rules, which is why this is a pure classifier rather than a branch inside refresh():
+//  · GREEN says nothing. The expected case earns no chrome.
+//  · RED and UNKNOWN are both alarms and stay DISTINCT. Red is a measured failure; unknown is a
+//    measurement that never happened (timed out / could not start / declined to run). Folding
+//    unknown into green would fabricate a pass; folding it into red would fabricate a defect.
+//  · The alarm NAMES the land(s) it followed — "something is red" without "after which land" is not
+//    actionable — and survives until the owner acknowledges THAT audit (the ack is keyed to its
+//    `at`) or the server's newest audit comes back green, which is what supersedes it here: this
+//    payload carries the newest row only.
+const PLA_ACK_KEY = "fleet.plaudit.ack";
+// the compact projection postLandAuditSummary() ships. Tolerant on the wire by design: an older
+// server, or a row written before a field existed, must degrade to "not recorded" — never to a claim.
+interface PostLandAuditInfo { at: number; ms?: number; result: string; repo?: string; main?: string;
+  mainSha?: string; covers?: string[]; reason?: string }
+interface PlaAlarm { tone: "red" | "unknown"; headline: string; where: string; note: string }
+function postLandAlarm(a: PostLandAuditInfo | null, ackedAt: number): PlaAlarm | null {
+  if (!a || a.result === "green") return null;
+  if (a.at === ackedAt) return null;
+  // anything that is neither of the two known non-green states is still an alarm, and it is NOT
+  // called red: from here an unrecognised result is a measurement this client cannot read.
+  const tone: PlaAlarm["tone"] = a.result === "red" ? "red" : "unknown";
+  const covered = a.covers ?? [];
+  const where = [
+    `${a.repo ?? "(repo not recorded)"} ${a.main ?? "?"}@${(a.mainSha ?? "").slice(0, 8) || "????????"}`,
+    covered.length ? `after landing ${covered.join(", ")}` : "which land it followed is NOT recorded on this audit",
+    ...(a.reason ? [a.reason] : []),
+  ].join(" · ");
+  return tone === "red"
+    ? { tone, where, headline: "POST-LAND AUDIT FAILED — the full suite is failing on the integration tip",
+        note: "This audit gates nothing and nothing was rolled back. ↩ undo-land reverses only the NEWEST land." }
+    : { tone, where, headline: "POST-LAND AUDIT DID NOT MEASURE — no verdict exists for this land",
+        note: "A measurement that did not happen is not a pass. Nothing about the integration tip has been checked." };
+}
+let postLandAudit: PostLandAuditInfo | null = null;
+function renderPostLandAudit() {
+  const bar = $("plaudit");
+  const al = postLandAlarm(postLandAudit, Number(localStorage.getItem(PLA_ACK_KEY) ?? 0));
+  if (!al) {
+    bar.replaceChildren();
+    bar.style.display = "none";
+    return;
+  }
+  const body = el("div", "plabody");
+  body.appendChild(el("div", "plahd", al.headline));
+  body.appendChild(el("div", "plawhere", al.where));
+  body.appendChild(el("div", "planote", `${fmtTs(postLandAudit?.at ?? 0)} · ${al.note}`));
+  const ack = el("button", "plaack", "acknowledge") as HTMLButtonElement;
+  ack.title = "hide this alarm. The dismissal is keyed to THIS audit — the next non-green one raises it again.";
+  ack.onclick = () => {
+    localStorage.setItem(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
+    renderPostLandAudit();
+  };
+  bar.className = `plaudit ${al.tone}`;
+  bar.replaceChildren(body, ack);
+  bar.style.display = "flex";
+}
+
 let chipCmds: string[] = [];
 let lastRender = "";
 async function refresh() {
@@ -2509,7 +2572,8 @@ async function refresh() {
     const res = await api("/api/sessions");
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
-      v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean };
+      v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
+      postLandAudit?: PostLandAuditInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
       else if (data.v !== bundleV) armReload();
@@ -2526,6 +2590,10 @@ async function refresh() {
     tasksList = data.tasks ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
     intakeOn = data.intake ?? false;
+    // tier 2's only reader. Rendered on every poll rather than behind the render-key diff below:
+    // that key is about the slot tiles, and an alarm must not wait on an unrelated change to appear.
+    postLandAudit = data.postLandAudit ?? null;
+    renderPostLandAudit();
     serverNow = data.now;
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
@@ -3054,7 +3122,11 @@ function reviewBody(r: OutcomeReviewRow): HTMLElement[] {
 // during which no land happened) and never over-counts. It also excludes the four pre-review-field
 // legacy rows for free, since they precede this anchor.
 const K1_ANCHOR_BRANCH = "f9-verify-deps";
-type KProgress = { anchored: boolean; k1: number; clean: number; unknown: number; undos: number; k2: number };
+// `noConfirmStep`, not `clean`: the field it counts (`confirmedByHuman:false`) records that the land
+// needed no second confirm click. It does NOT record that nobody was attending — mergeJob has exactly
+// one caller and it is an owner route — and §1 is about UNATTENDED lands. The name says what is
+// counted so the criterion's word cannot creep back in through the identifier.
+type KProgress = { anchored: boolean; k1: number; noConfirmStep: number; unknown: number; undos: number; k2: number };
 // rows arrive newest-first; the streak is a chronological walk, so sort ascending here rather than
 // relying on the feed's display order.
 function kProgress(rows: OutcomeRow[]): KProgress {
@@ -3066,25 +3138,25 @@ function kProgress(rows: OutcomeRow[]): KProgress {
   for (const o of asc)
     if (o.cleanReviewShadow && (o.cleanReviewShadow.verdict === "pass" || o.cleanReviewShadow.verdict === "would_stop")) k2++;
   const anchor = asc.findIndex((o) => o.branch === K1_ANCHOR_BRANCH);
-  if (anchor < 0) return { anchored: false, k1: 0, clean: 0, unknown: 0, undos: 0, k2 };
+  if (anchor < 0) return { anchored: false, k1: 0, noConfirmStep: 0, unknown: 0, undos: 0, k2 };
   const after = asc.slice(anchor + 1);
-  let k1 = 0, clean = 0, unknown = 0, undos = 0;
+  let k1 = 0, noConfirmStep = 0, unknown = 0, undos = 0;
   for (const o of after) {
     // an undo is `disposition:"reverted"` — the only thing /api/repos/undo-land writes (server.ts,
     // buildRevertedOutcome). It breaks the CONSECUTIVE streak the criterion asks for, and is also
     // reported on its own, so a reset streak never silently reads as "no undo ever happened".
-    if (o.disposition === "reverted") { undos++; k1 = 0; clean = 0; unknown = 0; }
+    if (o.disposition === "reverted") { undos++; k1 = 0; noConfirmStep = 0; unknown = 0; }
     else if (o.disposition === "landed") {
       k1++;
       // `confirmedByHuman` is OPTIONAL on the row: absent (or null) means the writer recorded
-      // nothing, not that no human confirmed. Only an explicit `false` is evidence of a clean
-      // auto-land; anything else is counted as unknown and reported, never folded into `clean`.
-      if (o.confirmedByHuman === false) clean++;
+      // nothing, not that no confirm step happened. Only an explicit `false` says the land needed
+      // no confirm click; anything else is counted as unknown and reported, never folded in here.
+      if (o.confirmedByHuman === false) noConfirmStep++;
       else if (typeof o.confirmedByHuman !== "boolean") unknown++;
     }
     // shelved / killed-* are not lands at all — they neither count nor break the streak.
   }
-  return { anchored: true, k1, clean, unknown, undos, k2 };
+  return { anchored: true, k1, noConfirmStep, unknown, undos, k2 };
 }
 
 let outcomeData: OutcomeRow[] = [];
@@ -3145,15 +3217,18 @@ function renderOutcomes() {
         "graduation-criteria §1 — consecutive Fleet-routed lands recorded after the F9 fix"
         + ` (counted from the row after the '${K1_ANCHOR_BRANCH}' land; an undo resets the streak).`
         + " Counting only — the graduation decision is the owner's, made by reading this number."));
-      kel.appendChild(chip(`davon ${k.clean}/10 clean`, k.clean >= 10 ? "ok" : "",
-        "of that streak, the ones whose row explicitly records confirmedByHuman:false — a clean"
-        + " auto-land. Rows that record nothing are NOT counted here; they are reported as unknown."));
-      // the unknown count is shown only when there is one, but it is never silently dropped: a
-      // "davon N/10 clean" read as N-of-the-streak would otherwise be a claim about rows the
-      // ledger never made a statement about.
+      kel.appendChild(chip(`davon ${k.noConfirmStep}/10 ohne Confirm-Schritt`, k.noConfirmStep >= 10 ? "ok" : "",
+        "of that streak, the lands whose row explicitly records confirmedByHuman:false — they needed"
+        + " no second confirm click. This is NOT evidence of an unattended land: mergeJob has exactly"
+        + " one caller (POST /api/slots/:id/merge), so an owner request started every land on this"
+        + " ledger. §1 asks for unattended landing, and this number cannot supply it — it measures"
+        + " confirmation depth. Rows that record nothing are excluded and reported as unknown."));
+      // the unknown count is shown only when there is one, but it is never silently dropped: an
+      // "N/10" read as N-of-the-streak would otherwise be a claim about rows the ledger never made
+      // a statement about.
       if (k.unknown) kel.appendChild(chip(`${k.unknown} unknown`, "warn",
         "lands in the streak whose row carries no confirmedByHuman value at all. Unknown is not"
-        + " zero: they are excluded from the clean count rather than counted as clean auto-lands."));
+        + " zero: they are excluded from the sub-count rather than counted as needing no confirm."));
       kel.appendChild(chip(`Undos ${k.undos}`, k.undos ? "warn" : "ok",
         "owner undos since the anchor, counted as disposition:\"reverted\" rows — the only thing"
         + " /api/repos/undo-land writes. §1 requires 0 across the 20."));
@@ -3208,16 +3283,52 @@ function renderOutcomes() {
           + " either no verify command was configured, or one ran and DECLINED to verify this tree"
           + " (skipped). The row cannot say which; the lane's merge verdict can."));
     if (dispo === "landed") {
-      facts.appendChild(o.confirmedByHuman ? chip("owner-confirmed land") : chip("auto-landed clean+green"));
-      if (o.resolvedConflict) facts.appendChild(chip("agent resolved conflicts", "warn"));
-      if (o.repairRounds) facts.appendChild(chip(`${o.repairRounds} repair round${o.repairRounds === 1 ? "" : "s"}`, "warn"));
+      // ABSENT ≠ FALSE, and the label must describe the field it has. Two separate defects lived
+      // here: the missing case rendered a positive "landed clean and green" claim — the strongest
+      // statement in the feed, produced from no data — and `false` was worded as if nobody was present.
+      // It does not: `mergeJob` has exactly one caller (POST /api/slots/:id/merge, an owner route),
+      // so every land on this ledger was started by an owner request. What the field records is the
+      // CONFIRM STEP: did the land need a second confirm click, or not.
+      facts.appendChild(o.confirmedByHuman === true
+        ? chip("owner confirmed this land", "", "the owner confirmed a reviewed resolution, or ⏏-landed"
+            + " already-integrated work — this land carries an explicit second confirmation.")
+        : o.confirmedByHuman === false
+          ? chip("no confirm step", "", "this land needed no second confirm click (clean rebase + green"
+              + " verify). NOT evidence that it was unattended: mergeJob has exactly one caller"
+              + " (POST /api/slots/:id/merge), so an owner request started this land too.")
+          : chip("confirm step not recorded", "dim", "this row carries no confirmedByHuman value at all."
+              + " Whether a confirm step happened is unknown — never assumed either way."));
+      if (o.resolvedConflict === true) facts.appendChild(chip("agent resolved conflicts", "warn"));
+      else if (typeof o.resolvedConflict !== "boolean")
+        facts.appendChild(chip("conflict resolution not recorded", "dim",
+          "no resolvedConflict value on this row — whether an agent chose the resolutions is unknown, not \"no\"."));
+      if (typeof o.repairRounds !== "number")
+        facts.appendChild(chip("repair rounds not recorded", "dim",
+          "no repairRounds value on this row — \"zero repair rounds ran\" and \"nobody counted\" are different facts."));
+      else if (o.repairRounds)
+        facts.appendChild(chip(`${o.repairRounds} repair round${o.repairRounds === 1 ? "" : "s"}`, "warn"));
     }
     facts.appendChild(typeof o.sessionMs === "number"
       ? chip(`lane lifetime ${fmtDur(o.sessionMs)}`, "dim",
           "wall-clock from session start to this terminal event — NOT time spent working, and not an effort measure")
       : chip("lifetime not recorded", "dim"));
-    facts.appendChild(chip(`${o.ownerPrompts ?? 0} owner prompt${o.ownerPrompts === 1 ? "" : "s"}`, "dim"));
+    facts.appendChild(typeof o.ownerPrompts === "number"
+      ? chip(`${o.ownerPrompts} owner prompt${o.ownerPrompts === 1 ? "" : "s"}`, "dim")
+      : chip("owner prompts not recorded", "dim",
+          "no ownerPrompts value on this row — \"nobody prompted this lane\" and \"nobody counted\" are"
+          + " different facts, and a row without the field states only the second."));
     facts.appendChild(o.model ? chip(o.model, "dim") : chip("model not pinned", "dim"));
+    // model and briefHash are an ENTANGLED pair (server.ts, the LaneOutcome header): a strong brief
+    // lets a weak model succeed, so the model is never the whole story. And the null case is a trap:
+    // 14 rows on the live ledger carry `briefHash: null` (a dispatcher- or terminal-briefed lane logs
+    // no owner prompt), and all 14 nulls compare EQUAL — so absence must never render as a value that
+    // could read as "these rows share a brief".
+    facts.appendChild(o.briefHash
+      ? chip(`brief ${o.briefHash}`, "dim", "stable hash of this lane's FIRST owner prompt — two rows"
+          + " carrying the same hash were briefed with the same text.")
+      : chip("no brief on record", "dim", "this row has no briefHash — the lane was briefed by a route"
+          + " that logs no owner prompt (dispatcher/terminal), or nothing was recorded. An ABSENT value,"
+          + " never a hash: rows showing this were NOT briefed alike, they are simply uncounted."));
     row.appendChild(facts);
 
     const rv = el("div", `ocrev rel-${rel}`);

@@ -321,7 +321,7 @@ export async function run(): Promise<void> {
       kSrc.includes("function kProgress") && !/document|el\(|chip\(/.test(kSrc), kSrc.slice(0, 80));
     const kProgress = new Function(
       new Bun.Transpiler({ loader: "ts" }).transformSync(kSrc) + "\nreturn kProgress;")() as
-      (rows: unknown[]) => { anchored: boolean; k1: number; clean: number; unknown: number;
+      (rows: unknown[]) => { anchored: boolean; k1: number; noConfirmStep: number; unknown: number;
         undos: number; k2: number };
     const kRow = (o: Record<string, unknown>): Record<string, unknown> =>
       ({ disposition: "landed", confirmedByHuman: false, ...o });
@@ -339,8 +339,8 @@ export async function run(): Promise<void> {
     const k = kProgress(kLedger);
     check("criteria: K1 counts only lands AFTER the f9-verify-deps anchor — legacy rows and the anchor itself are out",
       k.anchored && k.k1 === 4, JSON.stringify(k));
-    check("criteria: a confirm-land counts toward K1 but NOT toward the clean sub-count",
-      k.clean === 3, JSON.stringify(k));
+    check("criteria: a confirm-land counts toward K1 but NOT toward the no-confirm-step sub-count",
+      k.noConfirmStep === 3, JSON.stringify(k));
     check("criteria: a killed lane neither counts as a land nor breaks the streak",
       JSON.stringify(kProgress(kLedger.filter((o) => o.branch !== "killed-lane"))) === JSON.stringify(k),
       JSON.stringify(k));
@@ -351,11 +351,11 @@ export async function run(): Promise<void> {
     // streak §1 asks for, and is reported separately so a reset never reads as "nothing happened".
     const kUndo = kProgress([...kLedger, kRow({ ts: 650, branch: "confirm-land", disposition: "reverted" })]);
     check("criteria: an undo (disposition reverted) resets the K1 streak and is counted on its own",
-      kUndo.k1 === 3 && kUndo.clean === 2 && kUndo.undos === 1, JSON.stringify(kUndo));
+      kUndo.k1 === 3 && kUndo.noConfirmStep === 2 && kUndo.undos === 1, JSON.stringify(kUndo));
     check("criteria: an undo does not retroactively drop shadow verdicts from K2", kUndo.k2 === 2, JSON.stringify(kUndo));
     check("criteria: an empty ledger is unanchored — nothing is counted, no zeros are claimed",
       JSON.stringify(kProgress([]))
-      === JSON.stringify({ anchored: false, k1: 0, clean: 0, unknown: 0, undos: 0, k2: 0 }),
+      === JSON.stringify({ anchored: false, k1: 0, noConfirmStep: 0, unknown: 0, undos: 0, k2: 0 }),
       JSON.stringify(kProgress([])));
 
     // UNKNOWN ≠ ZERO, inside the counter that would license autonomy. `confirmedByHuman` is
@@ -368,14 +368,14 @@ export async function run(): Promise<void> {
       kRow({ ts: 600, branch: "auto-clean" }),                               // (b) explicit false
       kRow({ ts: 700, branch: "owner-confirmed", confirmedByHuman: true }),  // (c) explicit true
     ]);
-    check("criteria: a land with NO confirmedByHuman counts toward K1 but NOT toward clean — unknown is not false",
-      kUnknown.k1 === 4 && kUnknown.clean === 1, JSON.stringify(kUnknown));
+    check("criteria: a land with NO confirmedByHuman counts toward K1 but NOT toward the sub-count — unknown is not false",
+      kUnknown.k1 === 4 && kUnknown.noConfirmStep === 1, JSON.stringify(kUnknown));
     check("criteria: the unknown lands are counted on their own, never silently dropped (absent and null alike)",
       kUnknown.unknown === 2, JSON.stringify(kUnknown));
-    check("criteria: an explicit confirmedByHuman:false is still a clean auto-land, an explicit true still is not",
-      kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }), kRow({ ts: 500, branch: "auto" })]).clean === 1
+    check("criteria: an explicit confirmedByHuman:false is still a no-confirm-step land, an explicit true still is not",
+      kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }), kRow({ ts: 500, branch: "auto" })]).noConfirmStep === 1
       && kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }),
-        kRow({ ts: 500, branch: "owner", confirmedByHuman: true })]).clean === 0,
+        kRow({ ts: 500, branch: "owner", confirmedByHuman: true })]).noConfirmStep === 0,
       JSON.stringify(kUnknown));
     check("criteria: an undo resets the unknown count with the rest of the streak",
       kProgress([kRow({ ts: 400, branch: "f9-verify-deps" }),
@@ -387,7 +387,7 @@ export async function run(): Promise<void> {
     // be anchored must still report the verdicts it recorded.
     const kNoAnchor = kProgress(kLedger.filter((o) => o.branch !== "f9-verify-deps"));
     check("criteria: without the anchor row §1 counts nothing rather than counting from row 1",
-      kNoAnchor.anchored === false && kNoAnchor.k1 === 0 && kNoAnchor.clean === 0
+      kNoAnchor.anchored === false && kNoAnchor.k1 === 0 && kNoAnchor.noConfirmStep === 0
       && kNoAnchor.unknown === 0 && kNoAnchor.undos === 0, JSON.stringify(kNoAnchor));
     check("criteria: K2 counts recorded shadow verdicts even when the ledger has no anchor row (§2 has none)",
       kNoAnchor.k2 === 2, JSON.stringify(kNoAnchor));
@@ -403,12 +403,21 @@ export async function run(): Promise<void> {
       /K1 \$\{k\.k1\}\/20/.test(kBlock) && /K2 \$\{k\.k2\}\/25/.test(kBlock)
       && !/criterion met|criteria met|graduated|erfüllt/i.test(kBlock), kBlock.slice(0, 60));
     // the header must not read as a claim the counter cannot support: whenever any land in the
-    // streak recorded no confirmedByHuman, the "davon N/10 clean" chip is accompanied by the
-    // unknown count. Source-level like the rest of (9d)–(9f) — no DOM harness here.
-    check("client: the criteria header surfaces the unknown lands next to the clean count",
-      /davon \$\{k\.clean\}\/10 clean/.test(kBlock)
+    // streak recorded no confirmedByHuman, the sub-count chip is accompanied by the unknown count.
+    // Source-level like the rest of (9d)–(9f) — no DOM harness here.
+    check("client: the criteria header surfaces the unknown lands next to the sub-count",
+      /davon \$\{k\.noConfirmStep\}\/10/.test(kBlock)
       && /if \(k\.unknown\) kel\.appendChild\(chip\(`\$\{k\.unknown\} unknown`, "warn"/.test(kBlock),
       kBlock.slice(kBlock.indexOf("davon"), kBlock.indexOf("davon") + 60));
+    // TRUTH IN LABELS. `confirmedByHuman:false` records that no second confirm click was needed; it
+    // is NOT evidence that nobody was attending, because mergeJob has exactly one caller and it is
+    // an owner route. §1 wants UNATTENDED lands, so the chip that counts toward it must not use the
+    // word the criterion uses for a property this data cannot show.
+    check("client: the sub-count chip names the confirm step and never claims an unattended land",
+      /ohne Confirm-Schritt|no confirm step/i.test(kBlock)
+      && /nicht|not evidence|NOT evidence/.test(kBlock)
+      && /one caller|POST \/api\/slots\/:id\/merge/.test(kBlock)
+      && !/clean auto-land/.test(kBlock), kBlock.slice(kBlock.indexOf("davon"), kBlock.indexOf("davon") + 120));
     // and the K2 chip sits OUTSIDE the anchored branch, matching the counter: §2 asks for no anchor,
     // so an unanchorable ledger still shows its shadow verdicts instead of hiding them behind §1.
     check("client: the K2 chip is rendered outside the anchored branch (§2 needs no anchor)",
@@ -434,6 +443,86 @@ export async function run(): Promise<void> {
       /vbadge none/.test(vbBlock) && /vbadge skip/.test(vbBlock) && /vbadge bad/.test(vbBlock)
       && /vbadge ok/.test(vbBlock) && (vbBlock.match(/vbadge ok/g) ?? []).length === 1,
       "verifyBadge in src/client.ts");
+
+    // (9h) THE POST-LAND AUDIT ALARM, CLIENT HALF. Tier 2 gates nothing, so RENDERING its result is
+    // the entire safety net — a red audit nobody sees is a red audit that never happened (two went
+    // unread on 2026-07-26, when the field was shipped 30×/minute to a client with no reader at
+    // all). The classifier is cut out of src/client.ts and RUN, like kProgress above: the rules
+    // (green is silent, red ≠ unknown, an ack is keyed to one audit) are the whole point and a
+    // regex would only prove the words are present. The rendering around it stays regex-asserted —
+    // no DOM harness here — and the ON-path server behaviour lives in ./e2e-postland-audit.sh.
+    const plaSrc = cliSrc.slice(cliSrc.indexOf("const PLA_ACK_KEY"), cliSrc.indexOf("function renderPostLandAudit"));
+    type PlaAudit = { at: number; result: string; repo: string; main: string; mainSha: string;
+      covers: string[]; reason?: string };
+    type PlaAlarm = { tone: string; headline: string; where: string; note: string } | null;
+    let postLandAlarm: ((a: PlaAudit | null, ackedAt: number) => PlaAlarm) | null = null;
+    try {
+      postLandAlarm = new Function(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(plaSrc) + "\nreturn postLandAlarm;")() as
+        (a: PlaAudit | null, ackedAt: number) => PlaAlarm;
+    } catch { postLandAlarm = null; } // absent/unextractable → every check below fails, loudly
+    check("client: the post-land audit alarm is extractable as a pure classifier (no DOM in postLandAlarm)",
+      !!postLandAlarm && plaSrc.includes("function postLandAlarm") && !/document|el\(|chip\(/.test(plaSrc),
+      plaSrc.slice(0, 80) || "no PLA_ACK_KEY…renderPostLandAudit block in src/client.ts");
+    const plaRow = (o: Partial<PlaAudit>): PlaAudit =>
+      ({ at: 1000, result: "red", repo: "claude-fleet", main: "main",
+        mainSha: "abcdef0123456789", covers: ["fleet/lane-a"], ...o });
+    const plaCall = (a: PlaAudit | null, acked = 0): PlaAlarm => {
+      try { return postLandAlarm ? postLandAlarm(a, acked) : null; } catch { return null; }
+    };
+    check("alarm: a GREEN audit raises nothing — a passing suite is the expected case",
+      plaCall(plaRow({ result: "green" })) === null && plaCall(null) === null,
+      JSON.stringify(plaCall(plaRow({ result: "green" }))));
+    const plaRed = plaCall(plaRow({ covers: ["fleet/lane-a", "fleet/lane-b"] }));
+    check("alarm: a RED audit raises an alarm that NAMES the land(s) it covers",
+      plaRed?.tone === "red" && plaRed.where.includes("fleet/lane-a") && plaRed.where.includes("fleet/lane-b")
+      && plaRed.where.includes("abcdef01"), JSON.stringify(plaRed));
+    // unknown ≠ red and unknown ≠ green (A4): a measurement that never happened is neither a pass
+    // nor a defect, and its REASON is the only thing that says which non-measurement it was.
+    const plaUnk = plaCall(plaRow({ result: "unknown", reason: "audit timed out after 1800000ms — no verdict" }));
+    check("alarm: an UNKNOWN audit is its own tone and carries the reason (a non-measurement, not a defect)",
+      plaUnk?.tone === "unknown" && plaUnk.where.includes("timed out")
+      && !/\bred\b/i.test(plaUnk.headline), JSON.stringify(plaUnk));
+    // the ack is keyed to ONE audit's `at`. A sticky "dismissed" flag would swallow the next alarm.
+    check("alarm: acknowledging THIS audit silences it — and only it",
+      plaCall(plaRow({}), 1000) === null && plaCall(plaRow({ at: 2000 }), 1000)?.tone === "red",
+      JSON.stringify(plaCall(plaRow({ at: 2000 }), 1000)));
+    check("alarm: an audit naming no lane says so — coverage-not-recorded never reads as 'after nothing'",
+      /not recorded|no lane/i.test(plaCall(plaRow({ covers: [] }))?.where ?? ""),
+      JSON.stringify(plaCall(plaRow({ covers: [] }))));
+    check("client: the poll payload's postLandAudit is read on every refresh and rendered",
+      /postLandAudit\?:/.test(cliSrc) && /postLandAudit = data\.postLandAudit \?\? null/.test(cliSrc)
+      && /renderPostLandAudit\(\)/.test(cliSrc), "refresh() in src/client.ts");
+    check("client: the ack button records THIS audit's `at`, so a later alarm is not pre-dismissed",
+      /localStorage\.setItem\(PLA_ACK_KEY, String\(postLandAudit\?\.at \?\? 0\)\)/.test(cliSrc),
+      "renderPostLandAudit in src/client.ts");
+
+    // (9i) ABSENT ≠ FALSE at the land-shape render sites. `confirmedByHuman` is OPTIONAL on the row,
+    // and the renderer used to print the strongest positive claim in the whole feed ("auto-landed
+    // clean+green") for a row that recorded NOTHING. Its neighbours have the same shape. And the
+    // wording itself: `confirmedByHuman:false` means "no confirm step", never "no human involved" —
+    // mergeJob has exactly one caller (POST /api/slots/:id/merge), so every land on the ledger was
+    // started by an owner request.
+    const ocBlock = cliSrc.slice(cliSrc.indexOf('if (dispo === "landed") {'),
+      cliSrc.indexOf("row.appendChild(facts);"));
+    check("client: an absent confirmedByHuman renders as not-recorded, never as a positive land claim",
+      /o\.confirmedByHuman === true/.test(ocBlock) && /o\.confirmedByHuman === false/.test(ocBlock)
+      && /not recorded/.test(ocBlock) && !/auto-landed clean\+green/.test(cliSrc), ocBlock.slice(0, 200));
+    check("client: the confirm chip says what the field measures (confirm step), not who was attending",
+      /confirm step/i.test(ocBlock) && /one caller|POST \/api\/slots\/:id\/merge/.test(ocBlock),
+      ocBlock.slice(0, 200));
+    check("client: resolvedConflict / repairRounds distinguish a recorded 'no' from no record at all",
+      /o\.resolvedConflict === true/.test(ocBlock) && /o\.resolvedConflict !== "boolean"|typeof o\.resolvedConflict/.test(ocBlock)
+      && /typeof o\.repairRounds/.test(ocBlock), ocBlock.slice(0, 300));
+    // and the null-collision one file over: `briefHash: null` is carried by every lane briefed
+    // through a route that logs no owner prompt, and all those nulls compare equal. Absence must not
+    // render as an identifier, or two unbriefed rows read as "briefed alike".
+    check("client: an absent briefHash renders as no-brief-on-record, never as an identity two rows share",
+      /o\.briefHash\s*$/m.test(ocBlock) && /no brief on record/.test(ocBlock)
+      && /ABSENT value/.test(ocBlock) && /never a hash/.test(ocBlock), ocBlock.slice(0, 200));
+    check("client: an absent ownerPrompts is not rendered as a measured zero",
+      !/\$\{o\.ownerPrompts \?\? 0\}/.test(cliSrc) && /typeof o\.ownerPrompts === "number"/.test(cliSrc),
+      "the owner-prompt chip in renderOutcomes (src/client.ts)");
 
     // (10) THE REBASE CASE — the reason the relation is content identity and not commit identity:
     // the land path rebases the lane onto main before the ff-merge, so the landed commit is NEVER

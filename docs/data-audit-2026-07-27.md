@@ -51,6 +51,20 @@ between 07-14 and 07-26** (~10/day). This is the exact failure the boot comment 
 `server.ts:4270` believes persisting `mergeLast` fixed; persisting closed "a deploy wipes a
 written verdict" and left "a deploy during the run that would have written it" open.
 
+**Fixed in lane `fleet/260727071703-a341` — and first EXECUTED there, not only read.** `mergeJob`
+now writes a fifth `MergeLast` status, `interrupted`, about itself before its first await, and
+upgrades it with `conflicted: pre.conflicted` the instant `tryScriptRebase` reports conflicts —
+i.e. before the resolver agent can rewrite anything. Both writes go through a new awaitable
+`saveStateNow()`, so the marker beats the risky step to disk instead of sitting in a microtask.
+Boot restores it; the ⏸ re-run guard and the board's `mergePending` both read one
+`needsMergeReview()` so the refusal and the badge cannot disagree. An interrupted run that never
+got past the *script* pre-pass carries no `conflicted` and is deliberately NOT refused: no agent
+judgment is in that tree, and a re-run redoes rebase + verify + review from scratch. The
+reproduction ran against HEAD first and failed six checks there — `last: null`, `{"running":true}`
+on the re-run, and main moved to `378487e9`, i.e. the re-run really did auto-land the agent's
+unreviewed resolution — and passes on the fix. `e2e/land-durability.ts` §A. (The `server.ts` line
+numbers cited above are the pre-fix ones and no longer resolve.)
+
 ### 3. A restart mid-land moves `main` with zero provenance — and recovery is impossible
 
 `advanceIntegration` moves main at `server.ts:3762`; `recordLand` (undo record, land note, tier-2
@@ -60,6 +74,29 @@ Re-running does not repair it: `recordLand` returns early when `mainBefore === m
 (`server.ts:2800`), so the second pass creates none of it either.
 
 Silent, and it destroys the one property the whole autonomy argument rests on — reversibility.
+
+**Fixed in lane `fleet/260727071703-a341`.** A `landPending` marker (repo → `{main, branch,
+mainBefore, laneTip, prov}`) is written and *flushed* before `advanceIntegration` at both land
+sites, and cleared only after `recordLand` has written the undo record, the note and the tier-2
+trigger — clearing last, so a death anywhere inside replays the whole idempotent record at boot
+(at-least-once, the direction b5e6 chose for the audit queue). `finishLandsInFlight()` runs at
+boot and decides from git alone, never from a guess: main still at `mainBefore` → the advance
+never happened, drop it; main exactly at `laneTip` → the advance happened, write the record late
+(`land_recovered`); anything else → `land_recover_fail` on the audit trail and no fabricated undo
+pair, because an undo record naming the wrong commits would reset past work nobody recorded.
+`laneTip` is what makes that a decision rather than an inference. The reproduction needed a
+fault-injection knob (`FLEET_TEST_LAND_PAUSE_MS`, absent = 0 = today's path byte-for-byte): the
+window is a few ms of straight-line code and cannot be hit from outside, and an unproven fix for
+it would be worth nothing. Against HEAD + that knob alone: `undoable` named a *different* lane's
+land (and was plain `null` on the first proof run), `git notes show` on the landed tip exited 1
+with no output, and no `land_recovered` event existed. `e2e/land-durability.ts` §B/§C. (Pre-fix
+line numbers above, as in item 2.)
+
+Still open from this item: the **outcome row**. Recovery restores note + undo + audit, not the
+`lane-outcomes` row, which only `landLane` can write while the worktree still exists. The owner's
+follow-up ⏫ on such a lane takes the already-merged path and files it as a landed row with
+`confirmedByHuman: true` — checked, but it is a *different* row than the interrupted auto-land
+would have written.
 
 ### 4. `confirmedByHuman: false` does not mean unattended, and the graduation criterion reads it as if it does
 

@@ -407,6 +407,9 @@ type AuditEvent =
   | "slot_shelve"
   | "repo_undo_land"
   | "land_note_fail"
+  // a land that was interrupted between "main moved" and "the land is recorded", settled at boot:
+  // recovered (note + undo record + tier-2 audit written late) or unaccountable (audited, dropped)
+  | "land_recovered" | "land_recover_fail"
   | "postland_audit"
   | "autos_switch"
   | "dispatch_switch"
@@ -459,7 +462,7 @@ function saveState(): void {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
-    repoBases, shelved, undoLands: Object.fromEntries(undoLast),
+    repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
     outcomePending, outcomeTally, harmCandidates, harmAttestAt }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
@@ -470,6 +473,16 @@ function saveState(): void {
     .then(() => chmodSync(tmp, 0o600))
     .then(() => renameSync(tmp, STATE_FILE))
     .catch((e: unknown) => console.log(`state save failed: ${e instanceof Error ? e.message : e}`));
+}
+// saveState, but AWAITABLE — the write is on disk when this resolves. saveState alone queues the
+// write on a promise chain, which is right for the fire-and-forget callers but not for the two
+// places that persist an INTENT immediately before doing something irreversible (advancing the
+// integration branch, starting a merge run). There the whole value of the record is that it beats
+// the risky step to disk: a `tmux kill-session -t srv` lands ~10×/day (the deploy ritual), and a
+// marker still sitting in a microtask when that arrives is exactly the marker that was needed.
+function saveStateNow(): Promise<void> {
+  saveState();
+  return saveChain.then(() => undefined, () => undefined);
 }
 
 // --- git: lane (worktree) support. All git runs through the array-form spawn — nothing
@@ -2665,6 +2678,12 @@ const VERIFY_SKIP_EXIT = 42; // the command's way of saying "I verified nothing"
 // server deploy instead of at the owner's next kickstart. Only consulted on exit 0 (a non-zero exit
 // is already not a pass), and a false positive can only ever cost an auto-land, never grant one.
 const VERIFY_SKIP_MARK = /^verify skipped:/m;
+// TEST-ONLY fault injection, 0 (absent) in every real deployment: widen the window between
+// "the integration branch moved" and "the land is recorded" so a suite can kill the server
+// inside it deterministically. The window is a few milliseconds of real code and cannot be hit
+// by timing from the outside — and an unproven fix for it would be worth nothing, so the hole
+// gets a handle. Nothing but the sleep changes; the land path is byte-identical when unset.
+const LAND_PAUSE_MS = Math.max(0, Number(process.env.FLEET_TEST_LAND_PAUSE_MS ?? 0) | 0);
 // Layer 1 of the three-layer model (§2): the authority is a SERVER-run fact, never an agent's
 // self-assessment. Runs in the lane worktree (cwd), against the rebased tree, after the rebase
 // is git-verified and before any land. No command → undefined (field absent, verdict unverified,
@@ -2719,7 +2738,10 @@ const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTo
 // "resolved" = the agent had to make semantic conflict choices; the rebase is git-verified
 // but deliberately NOT landed — it waits for the owner to review the diff and confirm.
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
-interface MergeLast { status: "merged" | "blocked" | "error" | "resolved";
+// "interrupted" is not a verdict a merge run PRODUCES — it is the durable INTENT marker a run
+// writes about itself before it starts, and the only status that can still be on record after the
+// process that owed a verdict died. Everything else here is a settled outcome.
+interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "interrupted";
   detail: string; landed: boolean; branch: string; at: number; conflicted?: string[];
   // deterministic verify result against the rebased tree (design note §3). FOUR states, and the
   // owner-facing surfaces name all four:
@@ -2748,6 +2770,15 @@ const mergeInflight = new Map<number, Promise<void>>();
 // quick POSTs would both start a job — two concurrent `git rebase`s on one worktree
 const mergeStart = new Set<number>();
 const mergeLast = new Map<number, MergeLast>();
+// the ⏸ board signal: this lane holds agent-chosen conflict resolutions that no human has seen.
+// Two shapes qualify — a settled "resolved" verdict, and an INTERRUPTED run that had already
+// handed the conflicts to the agent (same discriminator the ⏫ re-run guard uses, kept in one
+// place so the badge and the refusal can never disagree about which lanes need an eye).
+function needsMergeReview(id: number): boolean {
+  if (mergeInflight.has(id) || mergeStart.has(id)) return false; // a RUNNING job is not awaiting an eye
+  const m = mergeLast.get(id);
+  return m?.status === "resolved" || (m?.status === "interrupted" && (m.conflicted?.length ?? 0) > 0);
+}
 
 // --- ↩ undo-last-land: the one reversible pointer for the one action that mutates main.
 // On every land that ADVANCED the integration branch we record where main was before and
@@ -2757,6 +2788,19 @@ const mergeLast = new Map<number, MergeLast>();
 // land, so a reset leaves the work fully recoverable by reopening the lane.
 interface LandRecord { repo: string; main: string; branch: string; mainBefore: string; mainAfter: string; at: number }
 const undoLast = new Map<string, LandRecord>(); // repo toplevel -> its most recent undoable land
+// --- the land-in-flight marker: the durable half of "main is about to move".
+// `advanceIntegration` moves main; `recordLand` writes the undo record, the provenance note and
+// the tier-2 audit trigger — and everything between the two is a hole. A restart there (the
+// deploy ritual, ~10×/day) leaves main advanced with NO undo record, NO note, NO audit and no
+// trace that anything happened, and a retry cannot repair it: `recordLand` returns early on
+// `mainBefore === mainAfter`, so the second pass creates none of it either. Reversibility is the
+// property the whole autonomy argument rests on, and this window silently deletes it.
+// So the intent goes to disk BEFORE the advance, carrying everything recordLand would need to
+// finish the job afterwards — including `laneTip`, the commit main is being advanced TO, which is
+// what lets boot tell "the advance happened" from "it never did" without guessing.
+interface LandPending { repo: string; main: string; branch: string; mainBefore: string; laneTip: string;
+  at: number; prov: LandProvenance }
+const landPending = new Map<string, LandPending>(); // repo toplevel -> the land it is in the middle of
 // what the board needs to show/hide the undo button for a lane's repo — nulled once undone
 function undoableFor(repo: string): { branch: string; at: number } | null {
   const r = undoLast.get(repo);
@@ -2797,11 +2841,26 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
     audit("land_note_fail", undefined, `${basename(repo)} ${branch}: ${e instanceof Error ? e.message : "note write threw"}`.slice(0, 240));
   }
 }
+// Declare the land BEFORE the integration branch moves, and wait for that declaration to be on
+// disk. Everything recordLand needs to finish afterwards rides along, so a process that dies in
+// the window can be finished by the next one instead of leaving an unattributed commit on main.
+// Keyed by repo, one in flight at a time — the same shape (and the same assumption of one land
+// per repo at a time) `undoLast` already has.
+async function markLandIntent(repo: string, main: string, branch: string, mainBefore: string,
+  laneTip: string, prov: LandProvenance): Promise<void> {
+  landPending.set(repo, { repo, main, branch, mainBefore, laneTip, at: Date.now(), prov });
+  await saveStateNow();
+}
+// the advance did not happen (it failed, or was refused) — the intent is void, not pending
+function clearLandIntent(repo: string): void {
+  if (!landPending.delete(repo)) return;
+  saveState();
+}
 // record a land that moved main. Skipped when main did not advance (already-merged lands),
 // where mainBefore === mainAfter and an "undo" would be a no-op — those paths also write no
 // provenance note (no advance = no integration-history event to attach the story to).
 async function recordLand(repo: string, main: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
-  if (!mainBefore || !mainAfter || mainBefore === mainAfter) return;
+  if (!mainBefore || !mainAfter || mainBefore === mainAfter) { clearLandIntent(repo); return; }
   undoLast.set(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
   saveState(); // the undo record is persisted state — persist it AT the main-move, so it
   // survives a restart even when a downstream saveState is skipped (e.g. the mergeJob tail's
@@ -2814,6 +2873,50 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   // has nothing to audit. Synchronous by contract — it queues and returns before any await, so the
   // land path's latency is unchanged. See the region below for what it deliberately does NOT do.
   schedulePostLandAudit(repo, main, branch, mainAfter);
+  // ...and only now is the land fully recorded. Clearing LAST, after the note and the audit
+  // trigger, is deliberate: a death anywhere above leaves the marker, boot re-runs this whole
+  // function, and every step of it is idempotent (`undoLast.set` of the identical record, a
+  // `notes add -f`, one extra audit row — b5e6's at-least-once direction). Clearing first would
+  // trade a rare duplicate row for a silent miss, which is the bug being fixed.
+  clearLandIntent(repo);
+}
+// BOOT: finish (or discard) every land the previous process declared but never recorded. Called
+// once, after the state restore, before the server starts serving. Three outcomes, decided by
+// git and never by guesswork — `laneTip` is the commit main was being advanced TO, so the
+// integration branch's own position says which side of the advance the process died on:
+//   · main is still at mainBefore  → the advance never happened. Nothing to record; drop it.
+//   · main is exactly at laneTip   → the advance happened and the record is owed. Write it.
+//   · anything else                → main moved somewhere this server cannot account for (a hand
+//     merge, another writer, an undo). We do NOT invent a mainAfter: an undo record pointing at
+//     the wrong pair is worse than none, because ↩ would silently reset past someone else's work.
+//     Say so loudly on the audit trail and drop the marker rather than retry it forever.
+async function finishLandsInFlight(): Promise<void> {
+  for (const [repo, p] of [...landPending.entries()]) {
+    const cur = await git(repo, "rev-parse", p.main);
+    if (cur.code !== 0) {
+      audit("land_recover_fail", undefined, `${basename(repo)} ${p.branch}: cannot read ${p.main} — marker dropped`);
+      landPending.delete(repo);
+      saveState();
+      continue;
+    }
+    if (cur.out === p.mainBefore) {
+      console.log(`land recovery: ${basename(repo)} ${p.branch} — ${p.main} never moved, the interrupted land had not happened yet`);
+      landPending.delete(repo);
+      saveState();
+      continue;
+    }
+    if (cur.out !== p.laneTip) {
+      audit("land_recover_fail", undefined,
+        `${basename(repo)} ${p.branch}: ${p.main} is at ${cur.out.slice(0, 8)}, neither the pre-land ${p.mainBefore.slice(0, 8)} nor the landed ${p.laneTip.slice(0, 8)} — this land is UNRECORDED and not undoable; inspect by hand`);
+      console.log(`land recovery: ${basename(repo)} ${p.branch} — ${p.main} is at an unaccounted ${cur.out.slice(0, 8)}; refusing to invent an undo record (audited)`);
+      landPending.delete(repo);
+      saveState();
+      continue;
+    }
+    console.log(`land recovery: ${basename(repo)} ${p.branch} — ${p.main} advanced to ${cur.out.slice(0, 8)} but the land was never recorded; recording it now`);
+    audit("land_recovered", undefined, `${basename(repo)} ${p.branch} ${p.mainBefore.slice(0, 8)}->${cur.out.slice(0, 8)} (interrupted after the advance)`);
+    await recordLand(repo, p.main, p.branch, p.mainBefore, cur.out, p.prov); // clears the marker itself
+  }
 }
 
 // --- VERIFICATION TIER 2: the post-land audit (gate-coverage.md §5, autonomy-plan.md Gap 2) -----
@@ -3726,10 +3829,29 @@ function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; a
 
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
   let res: MergeLast;
+  // DURABLE INTENT, written before the first await and before anything touches the lane. The
+  // route just deleted this slot's previous verdict and persisted the deletion; without this the
+  // window from here to the verdict write at the tail is a hole in the record, and a restart
+  // inside it (the deploy ritual is `kill-session -t srv`, ~10×/day) leaves NO verdict at all —
+  // not a bad one, none. The ⏸ guard keys on a verdict, so a re-run then sails through the clean
+  // path (the branch is already rebased, `tryScriptRebase` exits 0) and auto-lands whatever the
+  // dead run left behind. `conflicted` is filled in below the moment we know an agent will make
+  // semantic choices; that field is what boot reads to decide whether a re-run may proceed.
+  mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: Date.now(),
+    detail: "a merge run started here and never produced a verdict — the server was interrupted mid-run." });
+  await saveStateNow();
   try {
     // script first, agent only for what needs judgment: a conflict-free rebase is done
     // right here and the model never spawns
     const pre = await tryScriptRebase(cwd, main);
+    if (!pre.clean) {
+      // From here the AGENT resolves conflicts — semantic choices no human has seen, committed
+      // into the lane by a rebase. Record that in the marker BEFORE runMerge spawns anything, so
+      // an interrupted run is distinguishable at boot from one that only ever did a script rebase.
+      mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: Date.now(), conflicted: pre.conflicted,
+        detail: `a merge run started resolving ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.` });
+      await saveStateNow();
+    }
     const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
     const r = pre.clean
       ? { status: "rebased" as const, detail: "clean rebase — no conflicts, agent not needed" }
@@ -3846,15 +3968,21 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // land it — the state-changing step on the integration branch is the SERVER's, never the
             // agent's: advanceIntegration ff-merges (git refuses over a dirty tree) or advances the ref.
             const mainBefore = mainSha;
+            // declare the land before making it — the marker is on disk before main moves, so a
+            // restart in the advance→record window is finishable at boot instead of unrecoverable
+            const prov: LandProvenance = { verify, confirmedByHuman: false };
+            await markLandIntent(root, main, branch, mainBefore, (await git(root, "rev-parse", branch)).out, prov);
             const adv = await advanceIntegration(root, main, branch);
             if (adv) {
+              clearLandIntent(root); // main never moved — the declaration is void, not pending
               res = { status: "error", landed: false, branch, at: Date.now(), verify,
                 detail: `rebase ok, but fast-forwarding ${main} failed: ${adv.error} — lane kept` };
             } else {
               const mainAfter = (await git(root, "rev-parse", main)).out;
+              if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
               // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
               // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
-              await recordLand(root, main, branch, mainBefore, mainAfter, { verify, confirmedByHuman: false });
+              await recordLand(root, main, branch, mainBefore, mainAfter, prov);
               // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
               const land = s.cwd === cwd && s.worktree?.branch === branch
                 // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
@@ -4361,7 +4489,7 @@ if (existsSync(STATE_FILE)) {
       for (const [k, v] of Object.entries(pm as Record<string, unknown>)) {
         const s = slotFrom(k);
         if (s?.worktree && typeof v === "object" && v !== null
-          && ["merged", "blocked", "error", "resolved"].includes((v as MergeLast).status)
+          && ["merged", "blocked", "error", "resolved", "interrupted"].includes((v as MergeLast).status)
           && typeof (v as MergeLast).detail === "string" && typeof (v as MergeLast).branch === "string"
           && (v as MergeLast).branch === s.worktree.branch)
           mergeLast.set(s.id, v as MergeLast);
@@ -4383,6 +4511,19 @@ if (existsSync(STATE_FILE)) {
           && typeof (v as LandRecord).at === "number")
           undoLast.set(k, { repo: k, main: (v as LandRecord).main, branch: (v as LandRecord).branch,
             mainBefore: (v as LandRecord).mainBefore, mainAfter: (v as LandRecord).mainAfter, at: (v as LandRecord).at });
+    // ...and so does the land that was still IN FLIGHT. Restored here, resolved against git a few
+    // lines below (finishLandsInFlight) — the restore only reads the file.
+    const plp = (persisted as { landPending?: unknown }).landPending;
+    if (typeof plp === "object" && plp !== null && !Array.isArray(plp))
+      for (const [k, v] of Object.entries(plp as Record<string, unknown>))
+        if (typeof k === "string" && typeof v === "object" && v !== null
+          && typeof (v as LandPending).main === "string" && typeof (v as LandPending).branch === "string"
+          && typeof (v as LandPending).mainBefore === "string" && typeof (v as LandPending).laneTip === "string"
+          && typeof (v as LandPending).at === "number"
+          && typeof (v as LandPending).prov === "object" && (v as LandPending).prov !== null)
+          landPending.set(k, { repo: k, main: (v as LandPending).main, branch: (v as LandPending).branch,
+            mainBefore: (v as LandPending).mainBefore, laneTip: (v as LandPending).laneTip,
+            at: (v as LandPending).at, prov: (v as LandPending).prov });
     // intervention-outcome fuel survives deploys — a pending baseline whose window is still
     // open must be measured after a restart, and the per-class tally is the ladder's promotion
     // record (§3: it CANNOT be re-derived by scanning the rotatable journal). Backward-compatible:
@@ -4436,6 +4577,10 @@ if (existsSync(STATE_FILE)) {
     console.log(`fleet.json unreadable — starting with empty state (original kept as ${STATE_FILE}.bak)`);
   }
 }
+// a deploy that killed srv between "main moved" and "the land is recorded" owes a note, an undo
+// record and a tier-2 audit for a commit already on the integration branch. Settle that before
+// anything else can move main again.
+await finishLandsInFlight();
 // a deploy that killed srv mid-land can strand a lane in rebase/merge state. We do NOT
 // auto-abort — the session's OWN in-progress rebase is indistinguishable from a strayed Fleet
 // one, and aborting the owner's work would be worse than the wedge. Log it so it's visible on
@@ -4666,7 +4811,12 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
     if (ref === "handoff")
       return { text: `[steward] Kontext nähert sich der Grenze — schreib ein /handoff.${STEWARD_VERIFY_SUFFIX}` };
     if (ref === "verify") {
-      if (!mergeLast.get(s.id)) return { error: "no merge verdict on record for this lane" };
+      // presence, not status — a known-dangerous read (state-reality-divergence.md row 11: it can
+      // say "Lane gelandet" to a lane that did not land) that this lane does not fix. But it must
+      // not be WIDENED: an "interrupted" marker is a run that started, never a verdict, so it is
+      // excluded explicitly and the four settled statuses behave exactly as before.
+      const mv = mergeLast.get(s.id);
+      if (!mv || mv.status === "interrupted") return { error: "no merge verdict on record for this lane" };
       return { text: `[steward] Lane gelandet — führe deine Verifikation aus und melde das Ergebnis.${STEWARD_VERIFY_SUFFIX}` };
     }
     return { error: "unknown lifecycle_op ref" };
@@ -4870,7 +5020,7 @@ function stewardSlotsView(now: number) {
       // against the git/idle facts next to it; null means the owner never wrote one, which is
       // "unknown intent", not "no intent".
       mission: s.mission,
-      mergePending: mergeLast.get(s.id)?.status === "resolved",
+      mergePending: needsMergeReview(s.id),
       // the deterministic label, served as a FACT next to the facts it is computed from — the
       // digest worker gets the same rule in prose and may still disagree; this one is the
       // trigger's own answer, and it is what auto-③ acts on.
@@ -5719,7 +5869,7 @@ Bun.serve<WSData>({
             } : null,
             // a conflict resolution waiting for the owner to review + land — cheap in-memory
             // lookup (no git), so the tile can flag it without the board being open
-            mergePending: mergeLast.get(s.id)?.status === "resolved",
+            mergePending: needsMergeReview(s.id),
           };
         }),
       });
@@ -6257,15 +6407,21 @@ Bun.serve<WSData>({
           // timeout could hang the land). Owner latitude stands — stale never blocks.
           const rv = reviewed?.verify;
           const verifyProv = rv && rv.mainSha !== mainBefore ? { ...rv, stale: true } : rv;
+          const prov: LandProvenance = { conflicted: reviewed?.conflicted, resolverDetail: reviewed?.detail,
+            verify: verifyProv, confirmedByHuman: true };
+          // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
+          await markLandIntent(repo, main, branch, mainBefore, (await git(repo, "rev-parse", branch)).out, prov);
           const adv = await advanceIntegration(repo, main, branch);
-          if (adv) return json({ status: "error",
-            detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);
+          if (adv) {
+            clearLandIntent(repo);
+            return json({ status: "error",
+              detail: `fast-forwarding ${main} failed: ${adv.error} — lane kept` }, 409);
+          }
           const mainAfter = (await git(repo, "rev-parse", main)).out;
+          if (LAND_PAUSE_MS) await Bun.sleep(LAND_PAUSE_MS); // TEST-ONLY, 0 in production
           // main HAS moved — record the land BEFORE the teardown, so a landLane failure
           // can never leave a moved main without its note + undo record
-          await recordLand(repo, main, branch, mainBefore, mainAfter, {
-            conflicted: reviewed?.conflicted, resolverDetail: reviewed?.detail,
-            verify: verifyProv, confirmedByHuman: true });
+          await recordLand(repo, main, branch, mainBefore, mainAfter, prov);
           // the owner reviewed an agent-resolved conflict and confirm-landed it — record that shape:
           // resolvedConflict from the verdict's conflicted files, repairRounds it carried, human-confirmed.
           const land = await landLane(s, {
@@ -6296,11 +6452,23 @@ Bun.serve<WSData>({
         // onto main, a plain re-run would sail through the clean path and LAND them
         // unreviewed — refuse and point back at review. Only when main has moved on is
         // the verdict genuinely stale; then a fresh run (which re-rebases) is the fix.
-        if (mergeLast.get(s.id)?.status === "resolved") {
+        // The SAME guard covers an INTERRUPTED run that had already handed the conflicts to the
+        // agent (`conflicted` set — see mergeJob's marker): the resolutions may be committed in
+        // the lane and nobody, not even the server, ever saw a verdict for them. Ancestry is the
+        // same discriminator as above — main still an ancestor means the rebase stands, so a
+        // re-run would take the clean path and land unreviewed work. An interrupted run that
+        // never got past the script pre-pass carries NO `conflicted` and is deliberately not
+        // caught here: no agent judgment is in that tree, and a fresh run redoes rebase, verify
+        // and review from scratch, which is strictly the honest outcome.
+        const pend = mergeLast.get(s.id);
+        if (pend?.status === "resolved" || (pend?.status === "interrupted" && (pend.conflicted?.length ?? 0) > 0)) {
           const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code === 0)
-            return json({ running: false, last: mergeLast.get(s.id),
-              status: "resolved", detail: "conflict resolution awaits your review — open the board and land it from there" });
+            return json({ running: false, last: pend, status: pend.status,
+              detail: pend.status === "resolved"
+                ? "conflict resolution awaits your review — open the board and land it from there"
+                : "a merge run was interrupted while an agent was resolving conflicts here, and the lane is rebased on top of "
+                  + `${main} with those resolutions — nobody has seen them and no verdict was ever recorded. Review the diff and land it from the board, or discard the lane.` });
         }
         mergeLast.delete(s.id); // a new run supersedes the previous verdict
         saveState();

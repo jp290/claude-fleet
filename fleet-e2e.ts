@@ -35,6 +35,7 @@ import * as restart from "./e2e/restart";
 import * as stewardCore from "./e2e/steward-core";
 import * as stewardOutcomes from "./e2e/steward-outcomes";
 import * as security from "./e2e/security";
+import * as trail from "./e2e/trail";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
 // hit the live fleet by accident. The isolated wrappers set FLEET_SOCK to their own socket.
@@ -102,6 +103,10 @@ await restart.run(ctx);
   // suite has minted (guest cookie, lane selfToken, steward token) alive at once.
   await security.run(ctx, sc);
 }
+
+// --- the run's own per-check trail. Last on purpose: it compares its row count against every
+// check the suite has recorded, so it must see all of them.
+await trail.run();
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

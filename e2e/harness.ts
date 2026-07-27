@@ -2,6 +2,7 @@
 // imports from here). Everything in this file is infrastructure — no checks live here.
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import { writeTrailRow } from "./trail-emit";
 
 export const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // match the server's env so the whole suite can target an isolated instance
@@ -19,9 +20,18 @@ export const results: string[] = [];
 let failed = 0;
 export const failures = (): number => failed;
 
+// wall clock at the previous check's return — module init is suite start, so the first row
+// measures from there (see trail-emit.ts on why this is msSincePrev and not a duration)
+let prevCheck = Date.now();
+
 export function check(name: string, ok: boolean, detail = ""): void {
+  const ts = Date.now();
   results.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
   if (!ok) failed++;
+  // the choke point is also the trail's only emit site: every check, exactly one durable row,
+  // no call site able to opt out (docs/e2e-trail.md). It never throws — see writeTrailRow.
+  writeTrailRow(name, ok, detail, ts - prevCheck, ts);
+  prevCheck = ts;
 }
 
 export async function tmuxOut(...args: string[]): Promise<{ out: string; code: number }> {

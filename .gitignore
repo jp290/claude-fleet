@@ -15,6 +15,7 @@ post-land-audits.jsonl
 post-land-audits.jsonl.1
 post-land-audit-queue.json
 post-land-audit-queue.json.tmp
+e2e-trail/
 *.log
 public/app.js
 .playwright-mcp/

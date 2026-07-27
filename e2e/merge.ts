@@ -312,6 +312,51 @@ export async function run(lc: LaneCtx): Promise<void> {
     await post("/api/worktrees/discard", { repo: REPO, path: lnVs.cwd, branch: lnVs.branch });
   }
 
+  // (D) a red verify whose log has the SHAPE a real suite's has: the failing check named once,
+  // buried among hundreds of PASS lines, only the count at the end, and a noisy stderr alongside.
+  // The stored `verify.out` used to be `(stdout + stderr).slice(-2048)`, which on exactly this
+  // shape kept stderr and nothing else — measured on the two red post-land audit rows of
+  // 2026-07-26 (data-audit-2026-07-27 item 6: 33 retained result lines, all PASS, zero FAIL
+  // names, and which checks failed is unrecoverable). A gate result that cannot say what failed
+  // is not a gate result, so retention keeps the failure lines, keeps the tail, marks the gap,
+  // and keeps stderr in its own labelled section that cannot displace the stdout verdict.
+  const lnVn = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnVn.cwd}/verify-noisy.txt`, "lane work carrying a VERIFYNOISY marker\n");
+  spawnSync("git", ["-C", lnVn.cwd, "add", "verify-noisy.txt"]);
+  let vnCommitted = false;
+  for (let i = 0; i < 20 && !vnCommitted; i++) {
+    vnCommitted = spawnSync("git", ["-C", lnVn.cwd, "commit", "-qm", "verify-noisy lane work"]).status === 0;
+    if (!vnCommitted) await Bun.sleep(150);
+  }
+  check("V1 setup: the noisy-verify lane committed its marker (precondition for the retention checks)",
+    vnCommitted, spawnSync("git", ["-C", lnVn.cwd, "status", "--porcelain"]).stdout.toString().trim());
+  await Bun.write(`${REPO}/vn-main.txt`, "main side\n"); // different file → clean rebase, no agent
+  spawnSync("git", ["-C", REPO, "add", "vn-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "vn main work"]);
+  await settleForMerge(lnVn.slot);
+  await post(`/api/slots/${lnVn.slot}/merge`, {});
+  const vVn = await waitMerge(lnVn.slot);
+  const vnOut = vVn.last?.verify?.out ?? "";
+  check("V1: a red verify NAMES its failing check, not just the pass lines around it",
+    vVn.last?.verify?.ok === false && vnOut.includes("FAIL  §9 the needle check that actually broke"),
+    JSON.stringify(vnOut.slice(0, 300)));
+  check("V1: the red verify's tail survives too — the failure COUNT is still in the retained output",
+    vnOut.includes("1 FAILURES") && vnOut.includes("PASS  trailing filler 399"), JSON.stringify(vnOut.slice(-200)));
+  check("V1: a flooding stderr cannot displace the stdout verdict — it is kept in its own section",
+    vnOut.includes("--- stderr ---") && vnOut.includes("noise: deprecation warning 399"),
+    JSON.stringify(vnOut.slice(-200)));
+  check("V1: retention marks the lines it dropped instead of closing the gap silently",
+    /… \[\d+ lines elided\]/.test(vnOut), JSON.stringify(vnOut.slice(0, 120)));
+  // the cap is in BYTES, which is what the constant's comment always claimed
+  check("V1: the retained output honours the 2048-BYTE cap (not 2048 UTF-16 units)",
+    new TextEncoder().encode(vnOut).length <= 2048,
+    `${new TextEncoder().encode(vnOut).length} bytes / ${vnOut.length} units`);
+  const vnLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+  check("V1: the noisy-verify lane's commit has NOT reached main", !vnLog.includes("verify-noisy lane work"), vnLog.trim());
+  // discard: the VERIFYNOISY marker must never reach main, or every later clean lane inherits it
+  await post(`/api/slots/${lnVn.slot}/kill`, {});
+  await post("/api/worktrees/discard", { repo: REPO, path: lnVn.cwd, branch: lnVn.branch });
+
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed
   const ln2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

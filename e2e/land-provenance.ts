@@ -1,7 +1,8 @@
 // One-gesture land, ↩ undo-land and its refusals, V2 git-note provenance, the G1 guarantees that
 // provenance survives a failed teardown or a stale verify, and the resolver↔verify repair loop.
 import { spawnSync } from "node:child_process";
-import { REPO, check, get, post } from "./harness";
+import { rmSync } from "node:fs";
+import { REPO, ROOT, check, get, post } from "./harness";
 import { VerifyField, exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(): Promise<void> {
@@ -364,6 +365,24 @@ export async function run(): Promise<void> {
       pla.configured === false && pla.total === 0 && pla.audits?.length === 0, JSON.stringify(pla));
     check("tier 2 default OFF: the board's poll payload carries no audit result",
       (((await (await get("/api/sessions")).json()) as { postLandAudit: unknown }).postLandAudit ?? null) === null);
+
+    // A TORN row must read as a hole, not as a cap. Every ledger route used to answer
+    // `total: lines.length` while the array excluded whatever it could not parse, so one
+    // half-written mid-append line arrived at the client as the benign "latest 1 of 2" message —
+    // a lost row rendered as a display limit. This trail is the one ledger nothing in this suite
+    // writes (tier 2 is OFF here), so it can be planted deterministically and removed again.
+    const plaFile = `${ROOT}/post-land-audits.jsonl`;
+    await Bun.write(plaFile, `${JSON.stringify({ at: 1, result: "green", covers: [] })}\n`
+      + `{"at":2,"result":"red","cove\n`  // a mid-append tear: the writer died between bytes
+      + `${JSON.stringify({ at: 3, result: "green", covers: [] })}\n`);
+    const plaTorn = (await (await get("/api/post-land-audits")).json().catch(() => ({}))) as
+      { audits?: unknown[]; total?: number; malformed?: number };
+    check("ledger read: a torn row is COUNTED as malformed, never folded into the total",
+      plaTorn.malformed === 1 && plaTorn.total === 2 && plaTorn.audits?.length === 2, JSON.stringify(plaTorn));
+    rmSync(plaFile, { force: true });
+    check("ledger read: the planted trail is gone again (tier 2 stays OFF for the rest of the suite)",
+      (((await (await get("/api/post-land-audits")).json()) as { total?: number; malformed?: number }).total === 0)
+      && ((await (await get("/api/post-land-audits")).json()) as { malformed?: number }).malformed === 0);
 
     await setMergeMode("blocked"); // restore the suite default for later tests in this scope
   }

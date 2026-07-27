@@ -437,6 +437,28 @@ function appendEvent(file: string, obj: Record<string, unknown>): void {
       console.log(`event log write failed, further failures suppressed: ${e instanceof Error ? e.message : e}`);
     });
 }
+// The READ counterpart of appendEvent, and the one place a torn line is counted instead of
+// swallowed. Every ledger route used to drop unparseable lines silently and then answer
+// `total: lines.length` — counting rows it had just discarded — so a torn mid-append row reached
+// the client as a benign "latest 51 of 52, capped" instead of "one row is a hole". `total` is now
+// what was actually PARSED and `malformed` is the hole, reported separately; that is the same
+// discipline continuityView already applies to this same prompt journal (continuity.ts, the
+// `outOfScope.malformed` counter) — copied, not re-invented.
+interface Ledger<T> { rows: T[]; total: number; malformed: number }
+async function readLedger<T>(file: string): Promise<Ledger<T>> {
+  const text = existsSync(file) ? await Bun.file(file).text() : "";
+  const rows: T[] = [];
+  let malformed = 0;
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      rows.push(JSON.parse(line) as T);
+    } catch {
+      malformed++; // a torn mid-append line — a hole, and reported as one
+    }
+  }
+  return { rows, total: rows.length, malformed };
+}
 function audit(event: AuditEvent, slot?: number, detail?: string): void {
   appendEvent(AUDIT_FILE, {
     ts: Date.now(), event,
@@ -2649,7 +2671,84 @@ const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_
 // Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
 const VERIFY_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 120_000) | 0);
-const VERIFY_OUT_CAP = 2048; // verify.out is the TAIL of stdout+stderr, byte-capped (~2KB)
+const VERIFY_OUT_CAP = 2048; // verify.out is a byte-capped RETENTION of stdout+stderr (~2KB) — see retainRunOutput
+// --- what a capped run log must still be able to SAY -------------------------------------------
+// Both places that store a command's output (this gate's `verify.out` and the post-land audit
+// row's `out`) used to build `out + err` and keep the last N *chars*. Measured cost of that on the
+// only two RED audit rows on record (2026-07-26, data-audit-2026-07-27 item 6): 4096 chars kept,
+// 33 result lines, ALL of them PASS, plus the trailing "6 FAILURES". The suite prints `FAIL <name>`
+// interleaved among ~860 checks and only the COUNT at the end, so a tail-slice keeps the 4% that
+// says nothing — WHICH checks failed on that run is unrecoverable from any artifact. The same
+// defect sat on the verify gate, where a red run that cannot name its failing check is worse.
+// So retention here is signal-first, not position-first:
+//   · stdout and stderr are kept as SEPARATE labelled sections. Concatenate-then-tail-slice let a
+//     chatty stderr silently displace the entire stdout verdict, and nothing enforces a quiet
+//     stderr — a stderr flood is exactly what a broken run produces.
+//   · inside a section the failure-shaped lines are taken FIRST (newest first, at most half the
+//     budget), then the tail — a verdict/summary lives at the end. Gaps are MARKED, never closed
+//     silently: a reader must be able to tell a whole log from a retained window.
+//   · the budget is counted in BYTES, which is what the comments always claimed (String.length is
+//     UTF-16 code units), and every cut lands on a line or a UTF-8 sequence boundary, so a blind
+//     slice can no longer split a surrogate pair.
+const FAIL_LINE = /\b(FAIL|FAILED|FAILURES?|ERROR|AssertionError|not ok)\b|^\s*(✗|✘|×|error:)/;
+const ELIDE_COST = 32; // an "… [N lines elided]" marker, charged up front so markers cannot bust the cap
+const STDERR_MARK = "--- stderr ---";
+const utf8 = new TextEncoder();
+const utf8Dec = new TextDecoder();
+const byteLen = (s: string): number => utf8.encode(s).length;
+// last `budget` BYTES of s, rewound off any continuation byte (0b10xxxxxx) so the cut never lands
+// inside a multi-byte sequence — the only place a raw byte slice is still used
+function tailBytes(s: string, budget: number): string {
+  if (budget <= 0) return "";
+  const b = utf8.encode(s);
+  if (b.length <= budget) return s;
+  let start = b.length - budget;
+  while (start < b.length && (b[start]! & 0xc0) === 0x80) start++;
+  return utf8Dec.decode(b.subarray(start));
+}
+function retainSection(text: string, budget: number): string {
+  if (budget <= 0) return "";
+  if (byteLen(text) <= budget) return text;
+  const lines = text.split("\n");
+  const cost = lines.map((l) => byteLen(l) + 1); // +1: the newline that rejoins it
+  const keep = new Set<number>();
+  let used = ELIDE_COST; // the one gap the tail always leaves under the failure lines
+  const take = (i: number, reserveGap: boolean): boolean => {
+    if (keep.has(i)) return true;
+    if (used + cost[i]! + (reserveGap ? ELIDE_COST : 0) > budget) return false;
+    keep.add(i);
+    used += cost[i]! + (reserveGap ? ELIDE_COST : 0);
+    return true;
+  };
+  const half = Math.floor(budget / 2);
+  for (let i = lines.length - 1; i >= 0 && used < half; i--) if (FAIL_LINE.test(lines[i]!)) take(i, true);
+  for (let i = lines.length - 1; i >= 0; i--) if (!take(i, false)) break;
+  const idx = [...keep].sort((a, b) => a - b);
+  if (!idx.length) return tailBytes(text, budget); // one line longer than the whole budget
+  const elide = (n: number): string => `… [${n} line${n === 1 ? "" : "s"} elided]`;
+  const parts: string[] = [];
+  let prev = -1;
+  for (const i of idx) {
+    if (i > prev + 1) parts.push(elide(i - prev - 1));
+    parts.push(lines[i]!);
+    prev = i;
+  }
+  if (prev < lines.length - 1) parts.push(elide(lines.length - 1 - prev));
+  return parts.join("\n");
+}
+// The one retention both capture sites use. Returns a single string (the stored field stays a
+// string), but stdout and stderr are separated by a marker line instead of run together.
+function retainRunOutput(out: string, err: string, cap: number): string {
+  if (!err.trim()) return retainSection(out, cap);
+  if (!out.trim()) return retainSection(err, cap);
+  const budget = Math.max(0, cap - byteLen(STDERR_MARK) - 2);
+  // stderr gets a QUARTER of the budget unless it is smaller; whatever stdout does not use flows
+  // back to it. The asymmetry is the point: the verdict is on stdout.
+  const errBudget = Math.min(byteLen(err), Math.max(Math.floor(budget / 4), Math.min(256, budget)));
+  const keptOut = retainSection(out, budget - errBudget);
+  const keptErr = retainSection(err, budget - byteLen(keptOut));
+  return `${keptOut}\n${STDERR_MARK}\n${keptErr}`;
+}
 // --- the SKIP contract, and the decision behind it -------------------------------------------
 // A verify command may be repo-guarded: one FLEET_VERIFY_CMD string serves every repo a lane can
 // live in, so it opens by asking "is this the repo I know how to verify?" and declines otherwise
@@ -2701,16 +2800,15 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
     const out = await new Response(p.stdout).text();
     const err = await new Response(p.stderr).text();
     const code = await p.exited;
-    const combined = timedOut
-      ? `${out}${err}\n[verify timed out after ${VERIFY_TIMEOUT_MS}ms]`
-      : `${out}${err}`;
-    // the failing lines of a build/test log live at its END — keep the tail, not the head
-    const tail = combined.length > VERIFY_OUT_CAP ? combined.slice(combined.length - VERIFY_OUT_CAP) : combined;
-    // the skip test runs over the FULL output, not the byte-capped tail: a command that declines
+    // a fact about the RUN, not a line of its log — reserved out of the budget so it can never
+    // itself be the thing retention drops
+    const note = timedOut ? `\n[verify timed out after ${VERIFY_TIMEOUT_MS}ms]` : "";
+    // the skip test runs over the FULL output, not the retained window: a command that declines
     // early and then prints past the cap would otherwise have its own declaration truncated away
-    const skipped = !timedOut && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(combined)));
+    const skipped = !timedOut && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(`${out}${err}`)));
+    const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
     return { cmd: VERIFY_CMD, ok: skipped ? null : !timedOut && code === 0,
-      out: tail.trim(), at: Date.now(), mainSha };
+      out: `${kept}${note}`.trim(), at: Date.now(), mainSha };
   } finally {
     clearTimeout(timer);
   }
@@ -2949,7 +3047,7 @@ const POSTLAND_AUDIT_CMD = process.env.FLEET_POSTLAND_AUDIT_CMD ?? null;
 // the only cost of a long ceiling is a late row. A timeout is a failed MEASUREMENT (unknown), not
 // a failure — see the classification below.
 const POSTLAND_AUDIT_TIMEOUT_MS = Math.max(10_000, Number(process.env.FLEET_POSTLAND_AUDIT_TIMEOUT_MS ?? 1_800_000) | 0);
-const POSTLAND_AUDIT_OUT_CAP = 4096; // tail of stdout+stderr, byte-capped like verify.out
+const POSTLAND_AUDIT_OUT_CAP = 4096; // byte budget for the retained stdout/stderr, same helper as verify.out
 const POSTLAND_AUDIT_KILL_GRACE_MS = 5_000; // SIGTERM → this long → SIGKILL, on the timeout path
 // the lands one audit run followed — a run is coalesced (below), so it can cover more than one
 interface AuditCover { branch: string; mainAfter: string; at: number }
@@ -3171,8 +3269,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
           // moment and take what came out rather than waiting on a process we just killed
           const grab = (pr: Promise<string>): Promise<string> =>
             timedOut ? Promise.race([pr, Bun.sleep(1000).then(() => "")]) : pr;
-          const combined = `${await grab(outP)}${await grab(errP)}`;
-          out = (combined.length > POSTLAND_AUDIT_OUT_CAP ? combined.slice(combined.length - POSTLAND_AUDIT_OUT_CAP) : combined).trim();
+          const gotOut = await grab(outP);
+          const gotErr = await grab(errP);
+          out = retainRunOutput(gotOut, gotErr, POSTLAND_AUDIT_OUT_CAP).trim();
           // CLASSIFICATION. The fail direction here is the INVERSE of runVerify's, and deliberately:
           // runVerify gates a land, so its timeout must read as "do not land" (red). This gates
           // nothing, so its failure modes must read as "no measurement happened" (unknown) — a
@@ -3587,19 +3686,10 @@ interface DispositionRecord {
 }
 // async like the audit/outcome readers it sits beside — a request-path file read must not block
 // the event loop, however small this file is today
-async function readDispositions(limit: number): Promise<{ dispositions: Record<string, unknown>[]; total: number }> {
-  const text = existsSync(DISPOSITION_FILE) ? await Bun.file(DISPOSITION_FILE).text() : "";
-  const lines = text.split("\n").filter(Boolean);
-  const rows: Record<string, unknown>[] = [];
-  for (const line of lines) {
-    try {
-      rows.push(JSON.parse(line) as Record<string, unknown>);
-    } catch {
-      // a torn mid-append line — skip, same as the audit/outcome readers
-    }
-  }
+async function readDispositions(limit: number): Promise<{ dispositions: Record<string, unknown>[]; total: number; malformed: number }> {
+  const { rows, total, malformed } = await readLedger<Record<string, unknown>>(DISPOSITION_FILE);
   rows.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
-  return { dispositions: rows.slice(0, limit), total: lines.length };
+  return { dispositions: rows.slice(0, limit), total, malformed };
 }
 // the owner write. Returns the Response so both the validation and the harm-channel coupling live
 // in one place: LABELING IS the harm-channel engagement (steward-intelligence.md §4 — the channel
@@ -5929,74 +6019,43 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/prompts" && req.method === "GET") {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
-      const text = existsSync(PROMPT_LOG) ? await Bun.file(PROMPT_LOG).text() : "";
-      const lines = text.split("\n").filter(Boolean);
-      const all: { ts?: unknown; text?: unknown; label?: unknown; cwd?: unknown }[] = [];
-      for (const line of lines) {
-        try {
-          const e = JSON.parse(line) as (typeof all)[number];
-          if (q && !`${e.text} ${e.label ?? ""} ${e.cwd ?? ""}`.toLowerCase().includes(q)) continue;
-          all.push(e);
-        } catch {
-          // a torn mid-append line — skip
-        }
-      }
+      const { rows, total, malformed } =
+        await readLedger<{ ts?: unknown; text?: unknown; label?: unknown; cwd?: unknown }>(PROMPT_LOG);
+      // three different counts, and this route is the only one where they can all differ:
+      // `total` = rows in the journal, `matched` = rows this q kept, `prompts.length` = the window.
+      // They used to be one number (`lines.length`) reported next to a q-FILTERED list, so a search
+      // that matched two rows still answered "total 4212" — read as "capped", never as "filtered".
+      const all = rows.filter((e) => !q || `${e.text} ${e.label ?? ""} ${e.cwd ?? ""}`.toLowerCase().includes(q));
       all.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
-      return json({ prompts: all.slice(0, limit), total: lines.length });
+      return json({ prompts: all.slice(0, limit), total, matched: all.length, malformed });
     }
     // owner-only read of the audit trail — same access model as /api/prompts (token-gated
     // above, structurally unreachable on SHARE_HOSTS since that block 404s anything not in
     // its own allowlist before this line is ever reached). Last N lines, newest first.
     if (url.pathname === "/api/audit" && req.method === "GET") {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
-      const text = existsSync(AUDIT_FILE) ? await Bun.file(AUDIT_FILE).text() : "";
-      const lines = text.split("\n").filter(Boolean);
-      const events: { ts?: unknown; event?: unknown; slot?: unknown; detail?: unknown }[] = [];
-      for (const line of lines) {
-        try {
-          events.push(JSON.parse(line) as (typeof events)[number]);
-        } catch {
-          // a torn mid-append line — skip
-        }
-      }
+      const { rows: events, total, malformed } =
+        await readLedger<{ ts?: unknown; event?: unknown; slot?: unknown; detail?: unknown }>(AUDIT_FILE);
       events.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
-      return json({ events: events.slice(0, limit), total: lines.length });
+      return json({ events: events.slice(0, limit), total, malformed });
     }
     // owner-only, read-only per-lane outcome trail — EXACT same access model as /api/audit above:
     // token-gated (past the tokenGate at the top of this block) and structurally 404 on SHARE_HOSTS
     // (that gate rejects anything not in its share allowlist). Never writable from a client.
     if (url.pathname === "/api/lane-outcomes" && req.method === "GET") {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
-      const text = existsSync(LANE_OUTCOME_FILE) ? await Bun.file(LANE_OUTCOME_FILE).text() : "";
-      const lines = text.split("\n").filter(Boolean);
-      const outcomes: Record<string, unknown>[] = [];
-      for (const line of lines) {
-        try {
-          outcomes.push(JSON.parse(line) as Record<string, unknown>);
-        } catch {
-          // a torn mid-append line — skip
-        }
-      }
+      const { rows: outcomes, total, malformed } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
       outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
-      return json({ outcomes: outcomes.slice(0, limit), total: lines.length });
+      return json({ outcomes: outcomes.slice(0, limit), total, malformed });
     }
     // owner-only, read-only post-land audit trail (verification tier 2) — EXACT same access model
     // as /api/lane-outcomes above. Newest first, so "which land was the last green audit, and which
     // lands came after a red one" is answered by walking this list from the top.
     if (url.pathname === "/api/post-land-audits" && req.method === "GET") {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 100) | 0));
-      const text = existsSync(POSTLAND_AUDIT_FILE) ? await Bun.file(POSTLAND_AUDIT_FILE).text() : "";
-      const lines = text.split("\n").filter(Boolean);
-      const audits: Record<string, unknown>[] = [];
-      for (const line of lines) {
-        try {
-          audits.push(JSON.parse(line) as Record<string, unknown>);
-        } catch {
-          // a torn mid-append line — skip, same as the audit/outcome readers
-        }
-      }
+      const { rows: audits, total, malformed } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
       audits.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
-      return json({ audits: audits.slice(0, limit), total: lines.length, configured: !!POSTLAND_AUDIT_CMD });
+      return json({ audits: audits.slice(0, limit), total, malformed, configured: !!POSTLAND_AUDIT_CMD });
     }
     // the transport ledger (see the TRANSPORT region): bytes actually sent since boot, per peer
     // and per path. Its OWN route on purpose — /api/sessions is the endpoint being shrunk and is

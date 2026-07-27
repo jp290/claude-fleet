@@ -29,8 +29,17 @@ export async function run(): Promise<void> {
   check("prompt directory includes closed-slot prompts", pd.prompts.some((e) => e.slot === 3 && e.text.includes("__pwn=1")));
   const pdLim = (await (await get("/api/prompts?limit=1")).json()) as { prompts: unknown[]; total: number };
   check("prompt directory respects limit", pdLim.prompts.length === 1 && pdLim.total === pd.total);
-  const pdQ = (await (await get("/api/prompts?q=compose-box")).json()) as { prompts: { text: string }[] };
+  const pdQ = (await (await get("/api/prompts?q=compose-box")).json()) as
+    { prompts: { text: string }[]; total: number; matched: number; malformed: number };
   check("prompt directory filters by q", pdQ.prompts.length >= 1 && pdQ.prompts.every((e) => e.text.includes("compose-box")));
+  // `total` used to be the UNFILTERED line count reported next to a q-filtered list, so a search
+  // that matched two rows still answered "total 4212" — indistinguishable from "capped at 300".
+  // Three separate numbers now: the journal, the match set, and the returned window.
+  check("prompt directory separates the journal total from the q match count",
+    pdQ.total === pd.total && pdQ.matched === pdQ.prompts.length && pdQ.matched < pdQ.total,
+    JSON.stringify({ total: pdQ.total, matched: pdQ.matched, rows: pdQ.prompts.length }));
+  check("prompt directory reports malformed rows separately (0 on an intact journal)",
+    pdQ.malformed === 0 && pd.total === plog1.length, `${pdQ.malformed} / ${pd.total} vs ${plog1.length}`);
   const pdNone = (await (await get("/api/prompts?q=zz-no-such-prompt-zz")).json()) as { prompts: unknown[] };
   check("prompt directory q with no hits is empty", pdNone.prompts.length === 0);
 

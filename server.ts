@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -28,6 +28,9 @@ const MAX_RECENTS = 8;
 const MAX_PINS = 20;
 const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
+// the single-instance lock (see claimInstanceLock). Lives next to STATE_FILE because the thing
+// being protected is the DIRECTORY, which is what STATE_FILE and every ledger below derive from.
+const PID_FILE = `${import.meta.dir}/fleet.pid`;
 const AUDIT_FILE = `${import.meta.dir}/audit.jsonl`;
 const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
 // per-lane attributed-outcome trail — one server-stamped fact per lane terminal event (see
@@ -313,26 +316,16 @@ const PROMOTION_MIN_N = Math.max(1, Number(process.env.FLEET_PROMOTION_MIN_N ?? 
 // second, restart-fragile copy of the same fact. Cost is one file read per send; sends are
 // capped at STEWARD_SENDS_PER_HOUR, so this is deliberately cheap enough not to matter.
 // The caps are a safety invariant (synergy-findings.md Tier-0 #3): appendEvent rotates
-// AUDIT_FILE to .1 at AUDIT_ROTATE_BYTES, so this must span both generations — the same
-// two-file read readStewardJournal does — or the counters reset toward zero right after
-// a rotation. Bounded: exactly two files, each capped at the rotation threshold.
+// AUDIT_FILE to .1 at AUDIT_ROTATE_BYTES, so this must span both generations or the counters
+// reset toward zero right after a rotation. readEventLog is that two-file read, for every
+// ledger reader at once.
 async function stewardRecentSends(): Promise<{ ts: number; kind: string; ref: string; slot: number }[]> {
   const out: { ts: number; kind: string; ref: string; slot: number }[] = [];
-  for (const f of [`${AUDIT_FILE}.1`, AUDIT_FILE]) {
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
-      if (!line) continue;
-      try {
-        const e = JSON.parse(line) as { event?: unknown; ts?: unknown; slot?: unknown; detail?: unknown };
-        if (e.event === "steward_send" && typeof e.ts === "number" && typeof e.slot === "number"
-          && typeof e.detail === "string") {
-          const [kind, ref] = e.detail.split(":");
-          out.push({ ts: e.ts, kind: kind ?? "", ref: ref ?? "", slot: e.slot });
-        }
-      } catch {
-        // a torn mid-append line — skip, same stance as every other audit/prompt-log reader
-      }
-    }
+  for (const e of (await readEventLog(AUDIT_FILE)).rows) {
+    if (e.event !== "steward_send" || typeof e.ts !== "number" || typeof e.slot !== "number"
+      || typeof e.detail !== "string") continue;
+    const [kind, ref] = e.detail.split(":");
+    out.push({ ts: e.ts, kind: kind ?? "", ref: ref ?? "", slot: e.slot });
   }
   return out;
 }
@@ -437,27 +430,39 @@ function appendEvent(file: string, obj: Record<string, unknown>): void {
       console.log(`event log write failed, further failures suppressed: ${e instanceof Error ? e.message : e}`);
     });
 }
-// The READ counterpart of appendEvent, and the one place a torn line is counted instead of
-// swallowed. Every ledger route used to drop unparseable lines silently and then answer
+// The READ counterpart of appendEvent, rotation-aware (a single-file reader is invisible to
+// rotation: at AUDIT_ROTATE_BYTES the whole history becomes `x.jsonl.1` and `x.jsonl` restarts
+// empty, so it would return a near-empty answer with NO error — the ledger looks young rather
+// than truncated; data-audit-2026-07-27 item 8) and the one place a torn line is counted instead
+// of swallowed. Every ledger route used to drop unparseable lines silently and then answer
 // `total: lines.length` — counting rows it had just discarded — so a torn mid-append row reached
 // the client as a benign "latest 51 of 52, capped" instead of "one row is a hole". `total` is now
-// what was actually PARSED and `malformed` is the hole, reported separately; that is the same
-// discipline continuityView already applies to this same prompt journal (continuity.ts, the
-// `outOfScope.malformed` counter) — copied, not re-invented.
+// what was actually PARSED across BOTH generations and `malformed` is the hole, reported
+// separately; that is the same discipline continuityView already applies to this same prompt
+// journal (continuity.ts, the `outOfScope.malformed` counter) — copied, not re-invented.
+// Bounded by construction: exactly two files, each capped at the rotation threshold.
 interface Ledger<T> { rows: T[]; total: number; malformed: number }
 async function readLedger<T>(file: string): Promise<Ledger<T>> {
-  const text = existsSync(file) ? await Bun.file(file).text() : "";
   const rows: T[] = [];
   let malformed = 0;
-  for (const line of text.split("\n")) {
-    if (!line) continue;
-    try {
-      rows.push(JSON.parse(line) as T);
-    } catch {
-      malformed++; // a torn mid-append line — a hole, and reported as one
+  for (const f of [`${file}.1`, file]) { // .1 is the OLDER generation → this order is chronological
+    if (!existsSync(f)) continue;
+    for (const line of (await Bun.file(f).text()).split("\n")) {
+      if (!line) continue;
+      try {
+        rows.push(JSON.parse(line) as T);
+      } catch {
+        malformed++; // a torn mid-append line — a hole, and reported as one
+      }
     }
   }
   return { rows, total: rows.length, malformed };
+}
+// same rotation-safe read, for the callers that only ever cared about `rows` (chronological,
+// oldest generation first) and never adopted the malformed-count contract above.
+async function readEventLog(file: string): Promise<{ rows: Record<string, unknown>[]; total: number }> {
+  const { rows, total } = await readLedger<Record<string, unknown>>(file);
+  return { rows, total };
 }
 function audit(event: AuditEvent, slot?: number, detail?: string): void {
   appendEvent(AUDIT_FILE, {
@@ -476,6 +481,7 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 
 // writes are serialized: overlapping fire-and-forget writes to the same file can interleave
 let saveChain: Promise<unknown> = Promise.resolve();
+let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the pid makes it unique across
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; mission: string | null; sessionId: string | null;
     worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null; selfToken: string }> = {};
@@ -488,13 +494,43 @@ function saveState(): void {
     outcomePending, outcomeTally, harmCandidates, harmAttestAt }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
-  // new truth (which would eat every share, task, lane tag and session pin at once)
-  const tmp = `${STATE_FILE}.tmp`;
+  // new truth (which would eat every share, task, lane tag and session pin at once).
+  //
+  // Four properties this file needs that a plain write+rename does not give (data-audit-2026-07-27
+  // item 9), all of them because THIS file is the credential store — owner token, steward token,
+  // every lane selfToken, every share secret — and losing it is a total lockout, not a lost setting:
+  //  1. UNIQUE tmp name. A fixed `fleet.json.tmp` is a shared target: two servers over the same
+  //     import.meta.dir interleave into one temp file and both rename it over the state. The
+  //     pidfile guard at boot is the primary defence; this is the one that holds if it is defeated.
+  //  2. Mode 0600 AT CREATION (`wx`, O_EXCL|O_CREAT), not chmod-after — the old order left every
+  //     credential in the file world-readable for the window between write and chmod.
+  //  3. fsync the temp before the rename, and the DIRECTORY after it. Without the first, a power
+  //     loss can order the rename ahead of the data and leave exactly the zero-length file the
+  //     temp+rename design exists to rule out; without the second the rename itself can be lost.
+  //     Deliberately NOT extended to the .jsonl ledgers: those are append-only trails where a
+  //     torn tail line costs one row and every reader already skips it, so paying two fsyncs per
+  //     event there would be real cost against a loss this file's readers cannot absorb.
+  //  4. The PREVIOUS GOOD file is kept as .bak here, at rename time, while it is still known-good.
+  //     Boot used to make the .bak — from the already-corrupt file it had just failed to parse,
+  //     which preserves the damage and overwrites the last readable state with it.
+  const tmp = `${STATE_FILE}.${process.pid}.${stateSeq++}.tmp`;
   saveChain = saveChain
-    .then(() => Bun.write(tmp, body))
-    .then(() => chmodSync(tmp, 0o600))
-    .then(() => renameSync(tmp, STATE_FILE))
-    .catch((e: unknown) => console.log(`state save failed: ${e instanceof Error ? e.message : e}`));
+    .then(() => {
+      const fd = openSync(tmp, "wx", 0o600);
+      try {
+        writeSync(fd, body);
+        fsyncSync(fd);
+      } finally { closeSync(fd); }
+      // best-effort: an unreadable/absent current state is not a reason to fail the save
+      try { copyFileSync(STATE_FILE, `${STATE_FILE}.bak`); } catch { /* first save, or no prior file */ }
+      renameSync(tmp, STATE_FILE);
+      const dir = openSync(import.meta.dir, "r");
+      try { fsyncSync(dir); } finally { closeSync(dir); }
+    })
+    .catch((e: unknown) => {
+      try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* nothing more to do about the temp */ }
+      console.log(`state save failed: ${e instanceof Error ? e.message : e}`);
+    });
 }
 // saveState, but AWAITABLE — the write is on disk when this resolves. saveState alone queues the
 // write on a promise chain, which is right for the fire-and-forget callers but not for the two
@@ -4495,7 +4531,74 @@ async function handleIntake(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
-// --- startup: restore persisted state, adopt stray fleet sessions, seed offsets ---
+// --- startup: claim the directory, restore persisted state, adopt stray sessions, seed offsets ---
+
+// A second server over the same import.meta.dir is the corruption case data-audit-2026-07-27 item 9
+// names. STATE_FILE and every ledger derive from the DIRECTORY, not from FLEET_PORT/FLEET_SOCK, so
+// "I gave it its own port" isolates nothing: both processes write fleet.json, and CLAUDE.md records
+// a 2026-07-19 incident where an instance started in the main checkout adopted the live state and
+// respawned real sessions as duplicates.
+//
+// The failure mode to design AGAINST is the opposite one: a pidfile left behind by a killed server
+// must never wedge a legitimate start. Every deploy restarts srv with `tmux kill-session`, and the
+// watchdog respawns blind — a fleet that will not come back up is worse than the problem being
+// fixed. So the lock is deliberately weak in the safe direction and only ever refuses when it can
+// SEE a live server:
+//   pid dead                        → stale, taken over, logged
+//   pid alive but not a `server.ts` → the pid was recycled; taken over, logged. `ps -o command=`
+//                                     is what makes that decidable — without it a recycled pid
+//                                     locks the fleet out permanently
+//   pid alive AND a `server.ts`     → wait REFUSE_GRACE_MS (kill-session immediately followed by a
+//                                     respawn means the predecessor is often still exiting), then
+//                                     refuse and exit non-zero
+// Residual, stated rather than hidden: two servers cold-starting on the SAME stale file can both
+// take it over. The read-back below makes the loser stand down in the common interleaving, but
+// O_EXCL cannot exclude against a file that is being removed. Nothing in Fleet starts two servers
+// in one directory (the watchdog is a single loop; each e2e wrapper uses its own $$ scratch dir).
+function pidIsLiveFleetServer(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  const p = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
+  if (p.exitCode !== 0) return false; // no such process
+  return new TextDecoder().decode(p.stdout).includes("server.ts");
+}
+function readPidFile(): number {
+  try { return Number.parseInt(readFileSync(PID_FILE, "utf8").trim(), 10) || 0; } catch { return 0; }
+}
+async function claimInstanceLock(): Promise<void> {
+  const REFUSE_GRACE_MS = 5000;
+  const deadline = Date.now() + REFUSE_GRACE_MS;
+  for (;;) {
+    try {
+      const fd = openSync(PID_FILE, "wx", 0o600);
+      try { writeSync(fd, `${process.pid}\n`); fsyncSync(fd); } finally { closeSync(fd); }
+      if (readPidFile() === process.pid) return;
+      console.log(`REFUSING TO START: lost the race for ${PID_FILE} to pid ${readPidFile()} — it owns ${import.meta.dir}.`);
+      process.exit(1);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    const holder = readPidFile();
+    if (!pidIsLiveFleetServer(holder)) {
+      console.log(`stale ${PID_FILE} (pid ${holder || "unreadable"} is not a running fleet server) — taking it over`);
+      try { unlinkSync(PID_FILE); } catch { /* someone else got there first; the next pass re-reads */ }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      console.log(`REFUSING TO START: fleet server pid ${holder} is already running against ${import.meta.dir}.`
+        + ` A second one would write the same ${STATE_FILE} — the state file follows the DIRECTORY,`
+        + ` not FLEET_PORT/FLEET_SOCK. Stop it first, or run a test instance from a scratch copy`
+        + ` (pattern: e2e-isolated.sh).`);
+      process.exit(1);
+    }
+    await Bun.sleep(100);
+  }
+}
+await claimInstanceLock();
+// release only what is still OURS — a lock we lost must not be unlinked out from under its owner
+process.on("exit", () => {
+  try { if (readPidFile() === process.pid) unlinkSync(PID_FILE); } catch { /* nothing left to release */ }
+});
+
 mkdirSync(STREAM_DIR, { recursive: true });
 chmodSync(STREAM_DIR, 0o700);
 await tmux("start-server");
@@ -4661,10 +4764,18 @@ if (existsSync(STATE_FILE)) {
     if (typeof paa.harmAttestAt === "number") harmAttestAt = paa.harmAttestAt;
     else if (paa.harmChannelActive === true) harmAttestAt = Date.now();
   } catch {
-    // keep the evidence: the unreadable file is preserved before the next saveState
-    // overwrites it, so a torn write is recoverable by hand instead of erased
-    try { copyFileSync(STATE_FILE, `${STATE_FILE}.bak`); } catch { /* fleet.json gone entirely */ }
-    console.log(`fleet.json unreadable — starting with empty state (original kept as ${STATE_FILE}.bak)`);
+    // Keep the evidence — but under its OWN name. `.bak` is now written by saveState from the
+    // last file that PARSED, so it is the recovery source; copying the damaged file over it here
+    // (as this did) destroyed the only good copy at exactly the moment it was needed. Empty state
+    // means the token below is minted fresh: every bookmarked URL, share link and lane selfToken
+    // dies at once, so the log line has to name the file that gets them back.
+    // MOVE, not copy: the next saveState copies whatever is at STATE_FILE into .bak, so leaving the
+    // damaged file in place for even one save would overwrite the good .bak with it — the very
+    // regression being fixed. Gone from STATE_FILE, that copy fails harmlessly and .bak survives.
+    try { renameSync(STATE_FILE, `${STATE_FILE}.corrupt`); } catch { /* fleet.json gone entirely */ }
+    console.log(`fleet.json unreadable — starting with empty state and a NEW owner token.`
+      + ` The damaged file is kept as ${STATE_FILE}.corrupt; the last state that parsed is ${STATE_FILE}.bak —`
+      + ` stop the server and copy that over ${STATE_FILE} to recover the existing tokens and shares.`);
   }
 }
 // a deploy that killed srv between "main moved" and "the land is recorded" owes a note, an undo
@@ -4741,6 +4852,11 @@ for (const s of slots) {
 // rehydrate the newest post-land audit row (tier 2). A red audit is typically followed within
 // minutes by the deploy that restarts srv — an alarm a restart erases is not an alarm. The TRAIL
 // is the durable record either way; this only restores what the board polls.
+// NOTE (2026-07-27): this is the one remaining single-generation ledger read. It belongs on
+// readEventLog like every other — a boot landing just after a rotation finds the live file empty
+// and shows the board no alarm at all — but the lines it would rewrite sit inside the boot hunk
+// lane b5e6 owns and has not landed yet, so it is left alone deliberately rather than merged
+// blind. Bounded blast: the TRAIL is unaffected, only what the board rehydrates.
 if (existsSync(POSTLAND_AUDIT_FILE)) {
   try {
     const lines = (await Bun.file(POSTLAND_AUDIT_FILE).text()).split("\n").filter(Boolean);
@@ -5038,15 +5154,8 @@ function writeStewardJournal(rec: Record<string, unknown>): void {
   appendEvent(STEWARD_JOURNAL_FILE, { ts: Date.now(), ...rec });
 }
 async function readStewardJournal(tail: number, kind?: string): Promise<Record<string, unknown>[]> {
-  const out: Record<string, unknown>[] = [];
-  for (const f of [`${STEWARD_JOURNAL_FILE}.1`, STEWARD_JOURNAL_FILE]) { // .1 is older → chronological
-    if (!existsSync(f)) continue;
-    for (const line of (await Bun.file(f).text()).split("\n")) {
-      if (!line) continue;
-      try { out.push(JSON.parse(line) as Record<string, unknown>); } catch { /* skip a torn tail line */ }
-    }
-  }
-  return (kind === undefined ? out : out.filter((r) => r.kind === kind)).slice(-tail);
+  const { rows } = await readEventLog(STEWARD_JOURNAL_FILE); // both generations, chronological
+  return (kind === undefined ? rows : rows.filter((r) => r.kind === kind)).slice(-tail);
 }
 
 // Tier-1 signal-sharing (synergy-findings.md): the facts the server already computes, handed
@@ -5440,19 +5549,6 @@ interface LedgerAudit { at: number; result: string; main: string; mainSha: strin
 interface LedgerOutcome { ts: number; branch: string; disposition: string; verified: boolean | null;
   confirmedByHuman: boolean; shadow: { verdict: string | null; at: number; raw: boolean } | null }
 interface LedgersView { since: number | null; auditConfigured: boolean; audits: LedgerAudit[]; outcomes: LedgerOutcome[] }
-async function readJsonlRows(file: string): Promise<Record<string, unknown>[]> {
-  const text = existsSync(file) ? await Bun.file(file).text() : "";
-  const rows: Record<string, unknown>[] = [];
-  for (const line of text.split("\n")) {
-    if (!line) continue;
-    try {
-      rows.push(JSON.parse(line) as Record<string, unknown>);
-    } catch {
-      // a torn mid-append line — skip, same as the audit/outcome/disposition readers
-    }
-  }
-  return rows;
-}
 async function ledgersView(prior: Record<string, unknown> | null): Promise<LedgersView> {
   const since = typeof prior?.ts === "number" ? prior.ts : null;
   const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -5467,7 +5563,7 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
     // whether tier 2 is armed at all: without it, "no audit row" means nothing — with it, a land
     // that never grew a row is the silent-gap signature (finding 1: the queue dies with srv).
     auditConfigured: !!POSTLAND_AUDIT_CMD,
-    audits: sinceWindow(await readJsonlRows(POSTLAND_AUDIT_FILE), "at").map((r) => {
+    audits: sinceWindow((await readEventLog(POSTLAND_AUDIT_FILE)).rows, "at").map((r) => {
       const covers = Array.isArray(r.covers) ? (r.covers as unknown[]) : [];
       return {
         at: num(r.at), result: str(r.result) || "unknown", main: str(r.main), mainSha: str(r.mainSha),
@@ -5475,7 +5571,7 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
         ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
       };
     }),
-    outcomes: sinceWindow(await readJsonlRows(LANE_OUTCOME_FILE), "ts").map((r) => {
+    outcomes: sinceWindow((await readEventLog(LANE_OUTCOME_FILE)).rows, "ts").map((r) => {
       const sh = r.cleanReviewShadow;
       const shadow = typeof sh === "object" && sh !== null ? sh as { verdict?: unknown; at?: unknown; raw?: unknown } : null;
       return {
@@ -6044,6 +6140,8 @@ Bun.serve<WSData>({
     // (that gate rejects anything not in its share allowlist). Never writable from a client.
     if (url.pathname === "/api/lane-outcomes" && req.method === "GET") {
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
+      // both generations: the K1 anchor and the K2 shadow series live in this file and must not
+      // vanish the day it rotates (data-audit-2026-07-27 item 8) — see readLedger
       const { rows: outcomes, total, malformed } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
       outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ outcomes: outcomes.slice(0, limit), total, malformed });

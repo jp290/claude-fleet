@@ -8,8 +8,12 @@ FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The server bakes ITS OWN PATH into every pane command, so what's missing here is
 # missing inside every new claude session too.
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-# everything this loop creates (server.log via the pane redirect) stays owner-only —
-# the log carries cwd paths and, if the isTTY gate is ever defeated, the token
+# everything this LOOP creates stays owner-only. Note what that is and is not: it does NOT
+# cover the srv pane or anything the server writes. The pane's shell is a child of the tmux
+# SERVER, not of this loop, so it inherits neither this umask nor this PATH — the same
+# inheritance gap already documented for PATH a few lines up, and the reason the pane command
+# below sets its own `umask 077`. Measured proof that this line never reached the server:
+# server.log, created by that pane's own redirect, was -rw-r--r-- (data-audit-2026-07-27 item 9).
 umask 077
 
 # single-quoted PATH interpolation below needs embedded ' escaped (server.ts does the same
@@ -94,7 +98,7 @@ while true; do
     # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
     # this is a watched first run (docs/autonomy-trial-1.md), not maximum throughput.
     if tmux -L claudefleet new-session -d -s srv \
-      "export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=shadow FLEET_DISPATCH_REPO=~/claude-fleet FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=shadow FLEET_DISPATCH_REPO=~/claude-fleet FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

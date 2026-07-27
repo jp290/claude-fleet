@@ -85,7 +85,7 @@ The owner's sense that "there'd be more of such things needed" is right, and her
 `discrepancy-audit.md` later has to police. "Check X failed on tree Y at time Z" is an observation:
 permanently true, and any reader can re-derive the current conclusion from it.
 
-The suite is the clean example. `check()` (`e2e/harness.ts:22`) builds **867 structured results per
+The suite is the clean example. `check()` (`e2e/harness.ts:27`) builds **867 structured results per
 run** — name, pass/fail, detail — pushes them into an array, prints them, and **throws them away**.
 Every run of every suite, in every lane, all night. The data that would answer "is this check
 flaky?" in milliseconds is produced ~20 times a day and discarded ~20 times a day, and in its place
@@ -107,6 +107,12 @@ the smallest.
 
 It is also not a dead end for item 17: structured rows with source-aware metadata are precisely the
 durable asset that item names (the chunker and metadata schema, not the store).
+
+> **Built 2026-07-27** — the emit only: `e2e/trail-emit.ts` writes one row per `check()` call to
+> `<main checkout>/e2e-trail/<run>.jsonl`, `e2e/trail.ts` asserts it (including that a green run's
+> trail survives the wrapper's `rm -rf`). Contract and the three decisions it turns on:
+> `docs/e2e-trail.md`. **No query, no flake ranking, no route yet** — that is (b) below, and it now
+> has data to read.
 
 **(b) A lane read surface.** A lane today has exactly **one** route: `POST /api/self/autos`. It can
 schedule work on itself and cannot ask the server a single question. Add a read companion —

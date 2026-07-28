@@ -2872,7 +2872,7 @@ const AUDIT_CAT: Record<string, string> = {
   slot_open: "lifecycle", slot_kill: "lifecycle", slot_shelve: "lifecycle", self_heal_recreate: "lifecycle",
   auto_fire: "automation", auto_skip: "automation", autos_quiet: "automation", autos_switch: "automation",
   steward_send: "steward", steward_task: "steward", steward_journal: "steward",
-  steward_propose_outcome: "steward", steward_send_capped: "steward",
+  steward_propose_outcome: "steward", steward_send_capped: "steward", steward_journal_capped: "steward",
   owner_auth_fail: "security", share_auth_ok: "security", share_create: "security", share_revoke: "security",
   share_mode_change: "security", guest_ws_connect: "security", guest_ws_disconnect: "security",
   land_note_fail: "repo", repo_undo_land: "repo",

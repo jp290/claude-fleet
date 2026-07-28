@@ -2,8 +2,8 @@
 // intervention outcomes and the harm/attest machinery, the owner disposition rail, the
 // baselineRate null-calibration, and the Tier-1 signal surface.
 import { spawnSync } from "node:child_process";
-import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { BASE, ROOT, REPO, check, get, post, tmuxOut } from "./harness";
+import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, tmuxOut } from "./harness";
 import type { StewardCtx } from "./ctx";
 import type { DigJ } from "./steward-core";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
@@ -248,6 +248,15 @@ export async function run(sc: StewardCtx): Promise<void> {
     const puTallyBefore = (await readOutcomes()).tally.pulse;
     check("pulse: the class starts unmeasured (the tally it feeds is empty before the first pulse)",
       puTallyBefore === undefined, JSON.stringify(puTallyBefore));
+    // the quote's subject-swap guard: oc4 is UNPINNED (FLEET_CMD=true pins no session id), and a
+    // FOREIGN transcript now sits in its cwd's project dir as the only — hence newest — file there.
+    // pulseLastOutput used to reach it through transcriptFile()'s newest-by-mtime fallback and would
+    // have read this stranger's sentence back to oc4 as its own last output. Pinned-only ⇒ unbekannt.
+    const puProjDir = `${process.env.HOME}/.claude/projects/${oc4.cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    const PU_FOREIGN = "FOREIGN_SESSION_SENTENCE_MUST_NOT_BE_QUOTED_q7x";
+    await Bun.write(`${puProjDir}/foreign-session.jsonl`,
+      `${JSON.stringify({ type: "assistant", timestamp: "2026-01-01T00:00:00Z",
+        message: { content: [{ type: "text", text: PU_FOREIGN }] } })}\n`);
     await sc.settleForSteward(oc4.slot); // the earlier continue_nudge paste reset its idle clock
     const puRes = await sc.stewPost("/api/steward/send", { slot: oc4.slot, kind: "pulse", question: PU_Q });
     const puJ = (await puRes.json()) as { ok?: boolean; text?: string; error?: string };
@@ -280,6 +289,13 @@ export async function run(sc: StewardCtx): Promise<void> {
       puLines[2] === "- letzte sichtbare Ausgabe: unbekannt" && puLines[3].endsWith("Kontext-Indiz: unbekannt")
       && !/idle: 17\d{8}s/.test(puLines[3] ?? ""),
       `${puLines[2]} | ${puLines[3]}`);
+    // the load-bearing half of that line: a newer FOREIGN transcript in the same project dir must
+    // not be mistaken for this session's output. transcriptFact already refuses the mtime fallback
+    // ("silently swaps subject"); the quote now refuses it too, instead of guessing.
+    check("pulse: a foreign transcript in the same project dir is NEVER quoted — an unpinned slot's last output stays 'unbekannt'",
+      puLines[2] === "- letzte sichtbare Ausgabe: unbekannt" && !(puJ.text ?? "").includes(PU_FOREIGN),
+      `${puLines[2]} | foreignQuoted=${(puJ.text ?? "").includes(PU_FOREIGN)}`);
+    rmSync(puProjDir, { recursive: true, force: true }); // unique throwaway dir — drop it whole
     check("pulse: carries NO verification suffix — it is a question, not a work order",
       !(puJ.text ?? "").includes("Verifiziere dein Ergebnis"), JSON.stringify(puJ.text));
     check("pulse: the send parks an outcome baseline of class 'pulse' (the starving tally's feeder)",
@@ -614,6 +630,27 @@ export async function run(sc: StewardCtx): Promise<void> {
   const sigBrief = (await (await sc.stewGet(`/api/steward/slots/${oc2.slot}/brief`)).json()) as { merge?: { status?: string } | null };
   check("the steward brief carries the same merge verdict", sigBrief.merge?.status === "blocked", JSON.stringify(sigBrief.merge));
 
+  // --- the land CLAIM is gated on the land FACT (server.ts renderStewardMessage, ref "verify").
+  // oc2's merge was REFUSED, so "Lane gelandet" would hand it a premise that is FALSE and the lane
+  // would then verify against it. Probed with the master stop OFF, because renderStewardMessage runs
+  // BEFORE canDeliver: a 400 is the RENDERER refusing, a 409 "paused" means the render succeeded and
+  // only delivery was stopped. That tells the two apart without spending a send from the hourly cap,
+  // without waiting out the idle gate, and without pasting anything into the pane. ---
+  await post("/api/autos/switch", { on: false });
+  const vBlocked = await sc.stewPost("/api/steward/send", { slot: oc2.slot, kind: "lifecycle_op", ref: "verify" });
+  const vBlockedJ = (await vBlocked.json()) as { error?: string; text?: string };
+  check("a BLOCKED lane is never told 'Lane gelandet' — lifecycle_op/verify is refused (400) and names the status",
+    vBlocked.status === 400 && (vBlockedJ.error ?? "").includes("did not land")
+    && (vBlockedJ.error ?? "").includes("blocked") && !JSON.stringify(vBlockedJ).includes("gelandet"),
+    `${vBlocked.status} ${JSON.stringify(vBlockedJ)}`);
+  // …and the blocked verdict is not swallowed along with the land claim: it still has its own
+  // truthful surface, which must reach the RENDERER (409 at the master stop), not a 400.
+  const vRelay = await sc.stewPost("/api/steward/send", { slot: oc2.slot, kind: "state_relay", ref: "merge_blocked" });
+  const vRelayJ = (await vRelay.json()) as { error?: string };
+  check("the same blocked lane keeps its truthful surface — state_relay/merge_blocked renders (409 at the master stop, not a refusal)",
+    vRelay.status === 409 && (vRelayJ.error ?? "").includes("paused"), `${vRelay.status} ${JSON.stringify(vRelayJ)}`);
+  await post("/api/autos/switch", { on: true });
+
   // gitOp: wedge a real mid-rebase conflict in the lane → the cached flag flips true
   const sigMain = spawnSync("git", ["-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
   spawnSync("git", ["-C", oc2.cwd, "rebase", sigMain]); // stops on the sig.txt conflict
@@ -653,5 +690,108 @@ export async function run(sc: StewardCtx): Promise<void> {
     await post("/api/dispatch", { on: false });
     if (sigLaneSlot) await post(`/api/slots/${sigLaneSlot}/kill`, {});
     await post(`/api/tasks/${sigTid}/delete`, {});
+  }
+
+  // --- the land claim's POSITIVE half: only a verdict whose `landed` is TRUE may render it.
+  // Reaching that branch takes a forged verdict, and that IS the finding worth encoding: `landed:
+  // true` is written at exactly one site in mergeJob, immediately before landLane→killSlot frees the
+  // slot, and the send route refuses an inactive slot — so on the live path the claim is renderable
+  // only for a verdict RESTORED onto a still-active lane. Both rows below carry status "merged" and
+  // differ in NOTHING but `landed`, which is what makes the pair decisive: an implementation reading
+  // the status (the predecessor read `status !== "interrupted"`) passes the first and fails the
+  // second; one that refuses unconditionally fails the first. ---
+  {
+    const flA = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; branch: string };
+    const flB = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; branch: string };
+    // saveState is fire-and-forget, so wait until BOTH lanes are actually on disk before killing the
+    // writer — a kill inside that window would drop them and the forged rows would restore onto
+    // slots with no worktree, which the restore silently ignores (and this block would read as a
+    // render bug instead of a lost write)
+    for (let i = 0; i < 60; i++) {
+      const st = JSON.parse(await readText(`${ROOT}/fleet.json`)) as { slots?: Record<string, unknown> };
+      if (st.slots?.[flA.slot] && st.slots?.[flB.slot]) break;
+      await Bun.sleep(100);
+    }
+    await tmuxOut("kill-session", "-t", "srv"); // patch the state file while nothing can rewrite it
+    await Bun.sleep(500);
+    const flState = JSON.parse(await readText(`${ROOT}/fleet.json`)) as { merges?: Record<string, unknown> };
+    flState.merges = { ...(flState.merges ?? {}),
+      [flA.slot]: { status: "merged", landed: true, branch: flA.branch, at: Date.now(),
+        detail: "forged: clean rebase, landed on main" },
+      // the one live shape where main DID advance and the lane survives: teardown failed. The land
+      // did not COMPLETE, so `landed` is false and the claim is refused — fail-closed by design.
+      [flB.slot]: { status: "merged", landed: false, branch: flB.branch, at: Date.now(),
+        landError: "worktree remove failed", detail: "forged: landed on main, but lane teardown failed" } };
+    await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(flState, null, 2));
+    await restartSrv();
+    const flVerdict = async (slot: number) =>
+      ((await (await get(`/api/slots/${slot}/merge`)).json()) as { last?: { status?: string; landed?: boolean } }).last;
+    const [flAV, flBV] = [await flVerdict(flA.slot), await flVerdict(flB.slot)];
+    check("setup: both forged merge verdicts are restored onto their live lanes (same status, opposite `landed`)",
+      flAV?.status === "merged" && flAV.landed === true && flBV?.status === "merged" && flBV.landed === false,
+      JSON.stringify({ a: flAV, b: flBV }));
+    await post("/api/autos/switch", { on: false }); // same render-vs-deliver discriminator as above
+    const flLanded = await sc.stewPost("/api/steward/send", { slot: flA.slot, kind: "lifecycle_op", ref: "verify" });
+    const flLandedJ = (await flLanded.json()) as { error?: string };
+    const flNot = await sc.stewPost("/api/steward/send", { slot: flB.slot, kind: "lifecycle_op", ref: "verify" });
+    const flNotJ = (await flNot.json()) as { error?: string };
+    await post("/api/autos/switch", { on: true });
+    check("a landed:true verdict DOES render the land claim (409 at the master stop = past the renderer)",
+      flLanded.status === 409 && (flLandedJ.error ?? "").includes("paused"),
+      `${flLanded.status} ${JSON.stringify(flLandedJ)}`);
+    check("the SAME status 'merged' with landed:false is refused (400) — `landed` is the discriminator, not the status",
+      flNot.status === 400 && (flNotJ.error ?? "").includes("did not land"),
+      `${flNot.status} ${JSON.stringify(flNotJ)}`);
+    await post(`/api/slots/${flA.slot}/kill`, {});
+    await post(`/api/slots/${flB.slot}/kill`, {});
+  }
+
+  // --- journal POST rate cap. Every ACCEPTED rundgang record fans out laneFacts() — git
+  // subprocesses per active lane — and appends to the same rotatable file the pulse reads its own
+  // delta anchor from, so an unbounded loop both burns the box and rotates its anchor out of the .1
+  // generation. LAST in the suite on purpose: the cap is a one-way door inside its hour, so every
+  // other journal POST of this run must already have happened when it closes. ---
+  {
+    const CAP = Math.max(1, Number(process.env.FLEET_STEWARD_JOURNAL_PER_HOUR ?? 6) | 0);
+    // counted off the ledger itself with the SERVER's own predicate (kind + numeric ts inside the
+    // hour) — a count derived any other way would not be evidence about the cap the server applies.
+    // BOTH generations, because this suite has rotated the journal twice by now (above): a live-file
+    // count would run low right after a rotation, which is exactly the way a cap silently resets
+    // toward zero (synergy-findings.md Tier-0 #3, the same boundary the send caps must span).
+    const rundgangInHour = async (): Promise<number> => {
+      let n = 0;
+      for (const f of [`${ROOT}/steward-journal.jsonl.1`, `${ROOT}/steward-journal.jsonl`])
+        n += (await readText(f)).split("\n").filter(Boolean)
+          .map((l) => { try { return JSON.parse(l) as { kind?: string; ts?: unknown }; } catch { return null; } })
+          .filter((r) => r?.kind === "rundgang" && typeof r.ts === "number" && Date.now() - r.ts < 3_600_000).length;
+      return n;
+    };
+    const jcPre = await rundgangInHour();
+    let jcOk = 0;
+    let jcCapped: Response | null = null;
+    for (let i = 0; i < CAP + 2; i++) {
+      const r = await sc.stewPost("/api/steward/journal", { counts: { "healthy-running": 1 }, decisions_surfaced: 0, changed: false });
+      if (r.status === 429) { jcCapped = r; break; }
+      if (r.ok) jcOk++;
+      await Bun.sleep(60);
+    }
+    const jcErr = jcCapped ? ((await jcCapped.json()) as { error?: string }).error ?? "" : "";
+    check("journal POST is rate-capped per hour — a loop is refused with 429 naming the cap, never silently accepted",
+      !!jcCapped && jcErr.includes("hourly") && jcErr.includes(String(CAP)), `capped=${!!jcCapped} err=${jcErr}`);
+    check("the cap is a ceiling, not a blanket refusal — records below it still land (positive control)",
+      jcOk >= 1 && jcOk === CAP - jcPre, `accepted=${jcOk} pre=${jcPre} cap=${CAP}`);
+    await Bun.sleep(300); // the route acks without awaiting the append chain
+    const jcAtCap = await rundgangInHour();
+    check("the refused POST wrote nothing — rundgang records in the window stop exactly at the cap (counted across the rotation boundary)",
+      jcAtCap === CAP, `${jcAtCap} vs cap ${CAP}`);
+    const jcAgain = await sc.stewPost("/api/steward/journal", { counts: { x: 1 }, decisions_surfaced: 0, changed: false });
+    await Bun.sleep(300);
+    const jcAfter = await rundgangInHour();
+    check("the cap does not drift open — the next POST inside the same window is refused too and adds no record",
+      jcAgain.status === 429 && jcAfter === CAP, `${jcAgain.status} count=${jcAfter}`);
+    const jcAudit = ((await (await get("/api/audit?limit=1000")).json()) as { events: { event?: string; detail?: string }[] }).events;
+    check("a capped journal POST is audited (steward_journal_capped) — the refusal is not silent",
+      jcAudit.some((e) => e.event === "steward_journal_capped" && (e.detail ?? "") === `hourly:${CAP}`),
+      JSON.stringify(jcAudit.filter((e) => (e.event ?? "").startsWith("steward_journal")).slice(-3)));
   }
 }

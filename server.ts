@@ -8,6 +8,14 @@ import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./m
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
+// the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
+// for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
+import {
+  WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark,
+  DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
+  type GitInfo, type PostLandAuditInfo, type WorkerName,
+  type DispositionWorker, type DispositionVerdict,
+} from "./src/protocol";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access
@@ -87,7 +95,7 @@ const MODEL_RE = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9]{1,8}\])?$/;
 // unvalidated env var would be an injection vector (same rule as per-slot model). The digest/
 // summary worker keeps its own cheaper SUMMARY_MODEL — this is only the interactive tier.
 const DEFAULT_MODEL =
-  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : "claude-opus-5[1m]";
+  process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : FLEET_DEFAULT_MODEL;
 function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
   const m = body?.model;
   if (m === undefined || m === null || m === "") return { ok: true, model: null };
@@ -798,8 +806,10 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
 
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
 // poll must never block on 16 git spawns, so it reads this cache instead
-interface GitInfo { branch: string; dirty: number; ahead: number; behind: number; head: string | null }
-const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
+// the wire shape (src/protocol.ts GitInfo) plus the one field that stays here: `head` feeds
+// helpedGitSince and never goes on /api/sessions, so it extends rather than redeclares
+interface ServerGitInfo extends GitInfo { head: string | null }
+const gitInfo = new Map<number, ServerGitInfo | null>(); // null = cwd is not a git repo
 // per-slot claude-liveness, refreshed on the same slow tick as gitInfo. This cache exists
 // ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
 // spawns inline on the 100ms sessions poll. The delivery/dispatch GATES (claudeAlive at the
@@ -861,7 +871,7 @@ async function tickGit(): Promise<void> {
 // (baseline no longer an ancestor of HEAD) → conservative noEffect, never a false helped.
 // Baselines persisted by an older fleet.json carry no `head` → legacy ahead-count comparison,
 // never a crash, never mismeasured as helped.
-async function helpedGitSince(p: OutcomePending, gi: GitInfo | null | undefined, s: Slot | undefined): Promise<boolean> {
+async function helpedGitSince(p: OutcomePending, gi: ServerGitInfo | null | undefined, s: Slot | undefined): Promise<boolean> {
   const b = p.gitBaseline;
   if (!b.head) return !!gi && gi.ahead > b.ahead; // legacy (pre-sha) baseline
   // landed check first — it survives the land's teardown (the repo outlives the lane).
@@ -1769,14 +1779,19 @@ async function listDirs(raw: string) {
 // slot they describe — without these guards the newest-by-mtime fallback below hands the
 // board/chat view the summarizer's own prompt as "your prompt". Live runs are tracked in
 // summarizerSids; strays from crashed runs are caught by sniffing the prompt's marker text.
-// ONE mark per background prompt that runs in a SLOT's project dir. The 🔍 review is in this list
-// because auto-③ made "a deploy interrupts a review" routine rather than rare: the sids of live
+// ONE mark per background prompt that runs in a SLOT's project dir. Every one of them, because
+// auto-③ made "a deploy interrupts a background run" routine rather than rare: the sids of live
 // runs are dropped from process memory on restart, so the ONLY thing left to recognize the stray
 // transcript by is its prompt text. A mark missing here means that transcript can be served as the
-// adopted slot's own conversation — keep this list in step with every prompt run via summaryViaSession.
-const SUMMARIZER_MARK = "read-only reviewer summarizing the state of a coding session";
-const REVIEW_MARK = "read-only code reviewer. The diffs below are the WHOLE subject";
-const BACKGROUND_MARKS = [SUMMARIZER_MARK, REVIEW_MARK];
+// adopted slot's own conversation.
+//
+// This list is DERIVED, and that is the fix. It used to be two hand-maintained constants against
+// runWorker's eight call sites, and it had been wrong for as long as there were more than two
+// workers: commit-message, ✨ enhance, ⏫ merge resolver, its repair round, ② clean review and the
+// 🧭 steward digest all wrote unmarked transcripts into the slot directories they ran in. Now the
+// mark is a required field of each worker's contract (src/protocol.ts), so a worker that has no
+// mark does not compile and a mark that exists is in this list by construction.
+const BACKGROUND_MARKS = Object.values(WORKER_CONTRACTS).map((c) => c.mark);
 const sniffedSummarizer = new Set<string>(); // positive verdicts only — a marker can't un-happen
 function sniffSummarizer(path: string): boolean {
   if (sniffedSummarizer.has(path)) return true;
@@ -2147,15 +2162,25 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
 // What is NOT collapsed: what each caller does with the answer (strict JSON, prose-tolerant, or
 // fail-closed) stays at the call site — those differences are real contracts, not duplication.
 interface WorkerSpec {
+  worker: WorkerName;      // names this worker's contract (src/protocol.ts): its prompt mark AND
+                           // its done-mark. Required, and keyed on the contract table — a new call
+                           // site that names nothing does not compile, which is what closed the
+                           // six-of-eight unmarked-transcript hole.
   cmd: string | null;      // FLEET_*_CMD subprocess stand-in; null in production → the session path
   tools: ToolProfile;      // capability floor for the session path (see ToolProfile)
-  doneMark: string;        // the substring that marks the JSONL answer as complete
   timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on BOTH paths, same as before
 }
 async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise<string> {
+  const contract = WORKER_CONTRACTS[spec.worker];
+  // the last hole tsc cannot close: the contract is named here, the mark is interpolated over in the
+  // prompt builder, and nothing types the two together. Checked before the spawn, so the cost of a
+  // prompt that lost its mark is a loud failure of THIS worker (every caller either reports it or
+  // fails closed) instead of a stray transcript quietly served as a slot's own conversation.
+  if (!prompt.includes(contract.mark))
+    throw new Error(`worker "${spec.worker}": prompt does not carry its background mark`);
   const text = spec.cmd
     ? await summaryViaSubprocess(spec.cmd, prompt, cwd, spec.timeoutMs)
-    : await summaryViaSession(prompt, cwd, spec.doneMark, { tools: spec.tools, timeoutMs: spec.timeoutMs });
+    : await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs });
   // the test stand-in answers in a {"result": "..."} envelope — unwrap it; no contract JSON in
   // this file has a string `result`, so this is a no-op for real runs
   try {
@@ -2209,7 +2234,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     if (m) landability = `${m[2]} commit(s) ahead of, ${m[1]} behind ${laneBase}`;
   }
   const prompt = [
-    "You are a read-only reviewer summarizing the state of a coding session for its owner.",
+    `You are a ${WORKER_CONTRACTS.summary.mark} for its owner.`,
     "Below: recent commits, the uncommitted diff, and the tail of the session transcript.",
     "Do NOT use any tools — answer directly from the input, in one single message.",
     "Evidence only — never advise whether to commit, merge or land.",
@@ -2229,13 +2254,13 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",
-    '{"summary": "...", "openThreads": ["..."], "verification": "..."}',
+    `{${doneMark(WORKER_CONTRACTS.summary)}: "...", "openThreads": ["..."], "verification": "..."}`,
     "- summary: 2-3 sentences on what was actually done.",
     "- openThreads: things started or mentioned but not finished (empty array if none).",
     '- verification: which checks/tests/builds ran and their results, or "none seen".',
   ].join("\n");
   const text = await runWorker(
-    { cmd: SUMMARY_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"summary"' }, prompt, cwd);
+    { worker: "summary", cmd: SUMMARY_CMD, tools: TEXT_ONLY_TOOLS }, prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   let summary = body, openThreads: string[] = [], verification = "", raw = true;
   try {
@@ -2434,7 +2459,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   const cut = (t: string) => (t.length > REVIEW_DIFF_CAP ? `${t.slice(0, REVIEW_DIFF_CAP)}\n… truncated` : t);
   const truncated = committed.length > REVIEW_DIFF_CAP || uncommitted.length > REVIEW_DIFF_CAP;
   const prompt = [
-    "You are a read-only code reviewer. The diffs below are the WHOLE subject — review them, nothing else.",
+    `You are a ${WORKER_CONTRACTS.review.mark} — review them, nothing else.`,
     "Do NOT use any tools and do NOT edit any file — answer directly from the input, in one single message.",
     "Advisory only — never say whether to commit, merge or land.",
     "", "## scope", scope,
@@ -2452,7 +2477,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",
-    '{"findings": [{"title": "...", "file": "path", "line": 12, "impact": "high|medium|low",'
+    `{${doneMark(WORKER_CONTRACTS.review)}: [{"title": "...", "file": "path", "line": 12, "impact": "high|medium|low",`
       + ' "cost": "...", "basis": "verified|inferred", "detail": "..."}], "notes": "..."}',
     `- Rank findings by impact, most severe first, and return at most ${MAX_FINDINGS}.`
       + " Five ranked findings beat twenty unranked ones.",
@@ -2468,7 +2493,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
     "- An empty findings array is a valid and good answer. Never invent a finding to fill the list.",
   ].join("\n");
   const text = await runWorker(
-    { cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"findings"', timeoutMs: REVIEW_TIMEOUT_MS },
+    { worker: "review", cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS },
     prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // fail-soft exactly like runSummary: an off-contract answer degrades to notes, never a 500
@@ -2563,9 +2588,9 @@ async function agentCommitMessage(cwd: string): Promise<string> {
   const sh = await git(cwd, "diff", "--cached", "--shortstat", "--no-color");
   const stat = await git(cwd, "diff", "--cached", "--stat", "--no-color");
   const prompt = [
-    "You are writing ONE git commit message for the uncommitted work in a worktree.",
+    `You are ${WORKER_CONTRACTS.commitMsg.mark}.`,
     "Do NOT use any tools — answer ONLY from the diff/status below, in one single message.",
-    'Respond with STRICT JSON only, no markdown fences, exactly: {"message": "<type(scope): summary>"}',
+    `Respond with STRICT JSON only, no markdown fences, exactly: {${doneMark(WORKER_CONTRACTS.commitMsg)}: "<type(scope): summary>"}`,
     "- a single line, a lowercase conventional-commit type (feat/fix/chore/refactor/docs/test), <= 80 chars.",
     "", "## shortstat", sh.code === 0 && sh.out ? sh.out : "(none)",
     "", "## per-file stat", stat.code === 0 && stat.out ? stat.out : "(none)",
@@ -2573,7 +2598,7 @@ async function agentCommitMessage(cwd: string): Promise<string> {
     "", "## diff (truncated)", (d.code === 0 ? d.out.slice(0, 30_000) : "") || "(none)",
   ].join("\n");
   const text = await runWorker(
-    { cmd: COMMIT_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"message"' }, prompt, cwd);
+    { worker: "commitMsg", cmd: COMMIT_CMD, tools: TEXT_ONLY_TOOLS }, prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { message?: unknown };
@@ -2661,7 +2686,7 @@ function extractJsonObject(text: string): string | null {
 async function runEnhance(text: string, cwd: string, facts: EnhanceFacts | null): Promise<string> {
   const prompt = buildEnhancePrompt(text, facts);
   const out = await runWorker(
-    { cmd: ENHANCE_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"prompt"' }, prompt, cwd);
+    { worker: "enhance", cmd: ENHANCE_CMD, tools: TEXT_ONLY_TOOLS }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   let j: { prompt?: unknown };
   try {
@@ -3366,7 +3391,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
 }
 // the compact projection the board polls (the full row, minus the byte-heavy suite output — that
 // lives on the trail at /api/post-land-audits)
-function postLandAuditSummary(): Record<string, unknown> | null {
+function postLandAuditSummary(): PostLandAuditInfo | null {
   const r = lastPostLandAudit;
   return r ? { at: r.at, ms: r.ms, result: r.result, repo: basename(r.repo), main: r.main,
     mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}) } : null;
@@ -3727,10 +3752,7 @@ function promotionEligible(cls: string): boolean {
 //   · enhance `draftId` = sha256(enhanced prompt).slice(0,16), stamped by /api/enhance and echoed
 //     back by the client. Server-side so the join key cannot drift, and so the client needs no
 //     crypto.subtle (unavailable on the plain-http Tailscale origin).
-type DispositionWorker = "land" | "review3" | "enhance";
-type DispositionVerdict = "accepted" | "edited" | "ignored" | "wrong";
-const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance"];
-const DISPOSITION_VERDICTS: DispositionVerdict[] = ["accepted", "edited", "ignored", "wrong"];
+// the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both
 const MAX_DISPOSITION_REF = 200;
 interface DispositionRecord {
   at: number; worker: DispositionWorker; ref: string; disposition: DispositionVerdict; source: "owner";
@@ -3803,7 +3825,7 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
     mainLog: mlg.code === 0 ? mlg.out : "",
   });
   const out = await runWorker(
-    { cmd: MERGE_CMD, tools: MERGE_TOOLS, doneMark: '"status"', timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
+    { worker: "merge", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // the JSON is the agent's NARRATIVE, never the authority — a correct rebase answered in
   // prose must not be thrown away (seen live: agent ignored an injected commit subject,
@@ -3827,7 +3849,7 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
   verify: { cmd: string; out: string }): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted });
   const out = await runWorker(
-    { cmd: MERGE_CMD, tools: MERGE_TOOLS, doneMark: '"status"', timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
+    { worker: "repair", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
@@ -3911,7 +3933,7 @@ async function runCleanReview(cwd: string, root: string, branch: string, main: s
   let out = "";
   try {
     out = await runWorker(
-      { cmd: CLEAN_REVIEW_CMD, tools: REVIEW_TOOLS, doneMark: '"verdict"', timeoutMs: CLEAN_REVIEW_TIMEOUT_MS },
+      { worker: "cleanReview", cmd: CLEAN_REVIEW_CMD, tools: REVIEW_TOOLS, timeoutMs: CLEAN_REVIEW_TIMEOUT_MS },
       prompt, cwd);
   } catch { /* timeout / spawn failure → out stays "" → parsed as fail-closed below */ }
   // enforce read-only: restore the tree to exactly what it was before the reviewer ran (it is about to land)
@@ -5466,7 +5488,7 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
   const prior = (await readStewardJournal(1, RUNDGANG_KIND))[0] ?? null;
   const slotsView = stewardSlotsView(now);
   const prompt = [
-    "You are a read-only SENSING worker for a fleet steward. Below: the steward's prior journal",
+    `You are a ${WORKER_CONTRACTS.digest.mark}. Below: the steward's prior journal`,
     "record (the delta anchor; null on the first run) and the current deterministic per-slot state.",
     "Do NOT use any tools — answer directly from the input, in one single message.",
     "For each ACTIVE slot (cwd set) EXCEPT the steward's own (label \"⚙ steward\"), assign one",
@@ -5482,7 +5504,7 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
     "attention: facts that need the owner (failed/blocked merge with its detail, wedged gitOp,",
     "a dead pane). Facts verbatim, no advice, no owner-voice, no invented findings.",
     'Respond with STRICT JSON only, no markdown fences, exactly this shape:',
-    '{"digest": {"conditions": {"<slotId>": "<condition>"}, "changed": ["..."], "attention": ["..."]}}',
+    `{${doneMark(WORKER_CONTRACTS.digest)}: {"conditions": {"<slotId>": "<condition>"}, "changed": ["..."], "attention": ["..."]}}`,
     "", "## prior journal record", JSON.stringify(prior),
     "", "## current slots", JSON.stringify(slotsView),
   ].join("\n");
@@ -5490,7 +5512,7 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
   let error: string | undefined;
   try {
     const out = await runWorker(
-      { cmd: DIGEST_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"digest"' }, prompt, home.cwd!);
+      { worker: "digest", cmd: DIGEST_CMD, tools: TEXT_ONLY_TOOLS }, prompt, home.cwd!);
     const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
     let j: { digest?: unknown };
     try {
@@ -7087,7 +7109,7 @@ Bun.serve<WSData>({
       if (ws.data.share && shareBy(ws.data.share)?.mode !== "interact") return;
       const s = slots[ws.data.slot - 1];
       const bytes = typeof msg === "string" ? new TextEncoder().encode(msg) : new Uint8Array(msg);
-      if (bytes.length === 0 || bytes.length > 1024) return;
+      if (bytes.length === 0 || bytes.length > WS_INPUT_MAX_BYTES) return;
       const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0"));
       s.inputChain = s.inputChain.then(() => tmux("send-keys", "-t", sess(s.id), "-H", ...hex)).catch(() => {});
     },

@@ -18,6 +18,7 @@
 // the per-check trail's single emit site, so this suite's checks now leave durable rows
 // (docs/e2e-trail.md); ./e2e-claude-gate.sh stamps them with FLEET_E2E_SUITE=claude-gate.
 import { BASE, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
+import { FLEET_DEFAULT_MODEL } from "./src/protocol";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
 interface AutoInfo { id: string; slot: number; lastResult: string | null }
@@ -196,8 +197,11 @@ for (let i = 0; i < 40; i++) {
   }
   await Bun.sleep(250);
 }
+// the model name is IMPORTED, not spelled again: this assertion is about the SHELL FORM (the
+// single quotes zsh needs for the [1m] suffix, without which every spawn dies), and a private copy
+// of the name would have kept passing after server.ts's default moved on.
 check("the pane spawn command injects the default model when the slot pins none",
-  startCmdDef.includes("--model 'claude-opus-5[1m]'"), startCmdDef.slice(-160));
+  startCmdDef.includes(`--model '${FLEET_DEFAULT_MODEL}'`), startCmdDef.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
 
 // --- branch 6: dispatcher POST-spawn re-check (server.ts tickDispatch, the fresh claudeAlive

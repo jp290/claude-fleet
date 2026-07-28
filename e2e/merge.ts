@@ -201,6 +201,57 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${lnReconf.slot}/kill`, {});
   await post(`/api/slots/${lnStale.slot}/kill`, {}); // free the slot for the orphan tests below
 
+  // ⏸ has to survive a RE-RUN. The pause-for-review guard keys on main still being an ancestor of
+  // the lane branch, so it lapses the moment main moves on — by design, because the stored verdict
+  // is then a stale statement about a rebase. But the agent's resolutions are not stale: they are
+  // committed in this lane and still unreviewed, and because they were resolved once already the
+  // fresh run's pre-pass replays them onto the new main with NO conflict. That put them on the
+  // clean auto-land path, which landed conflict resolutions no human had ever seen. M3's "the
+  // conflict path always stops" must hold across the re-run, not just within one run.
+  const lnFt = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnFt.cwd}/code.txt`, "root\nft-lane\n");
+  spawnSync("git", ["-C", lnFt.cwd, "commit", "-aqm", "fallthrough lane work"]);
+  await Bun.write(`${REPO}/code.txt`, "root\nft-main\n"); // same line → conflict → the agent resolves
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "fallthrough main work"]);
+  await setMergeMode("do");
+  await settleForMerge(lnFt.slot);
+  await post(`/api/slots/${lnFt.slot}/merge`, {});
+  const vFt1 = await waitMerge(lnFt.slot);
+  check("(setup) fall-through lane's conflict is agent-resolved and paused for review",
+    vFt1.last?.status === "resolved" && (vFt1.last.conflicted ?? []).includes("code.txt"), JSON.stringify(vFt1.last));
+  // the half that never changed: while main is STILL an ancestor, a re-run is refused outright
+  await settleForMerge(lnFt.slot);
+  const ftGuard = (await (await post(`/api/slots/${lnFt.slot}/merge`, {})).json()) as { status?: string; detail?: string };
+  check("⏸ a re-run is refused while the resolution is still rebased onto main (guard unchanged)",
+    ftGuard.status === "resolved" && (ftGuard.detail ?? "").includes("review"), JSON.stringify(ftGuard));
+  // main moves on an UNRELATED file → the guard lapses and the resolution replays with no conflict
+  await Bun.write(`${REPO}/ft-moved.txt`, "moved\n");
+  spawnSync("git", ["-C", REPO, "add", "ft-moved.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "ft main moved after resolution"]);
+  // "blocked": if the re-run consulted the agent at all the verdict would be blocked, not resolved
+  // — so this also proves the stop comes from the CARRIED resolution, not from a fresh conflict.
+  await setMergeMode("blocked");
+  await settleForMerge(lnFt.slot);
+  await post(`/api/slots/${lnFt.slot}/merge`, {});
+  const vFt2 = await waitMerge(lnFt.slot);
+  check("re-run after main moved STOPS for review instead of auto-landing the carried resolution",
+    !vFt2.gone && vFt2.last?.status === "resolved" && vFt2.last.landed === false && exists(lnFt.cwd),
+    JSON.stringify(vFt2.last));
+  check("the stop names the carried resolution as its reason (no conflict occurred on this run)",
+    (vFt2.last?.conflicted ?? []).includes("code.txt") && (vFt2.last?.detail ?? "").includes("unreviewed"),
+    JSON.stringify(vFt2.last?.detail));
+  const ftLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+  check("the unreviewed resolution has NOT reached main", !ftLog.includes("fallthrough lane work"), ftLog.trim());
+  // the stop is a pause, never a block: the owner reviews and lands it deliberately
+  await settleForMerge(lnFt.slot);
+  const ftConf = (await (await post(`/api/slots/${lnFt.slot}/merge`, { confirm: true })).json()) as
+    { status?: string; landed?: boolean };
+  check("the owner can still confirm-land the carried resolution after reviewing it",
+    ftConf.status === "merged" && ftConf.landed === true, JSON.stringify(ftConf));
+  check("after the owner's confirm the carried resolution IS on main",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("fallthrough lane work"),
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
+
   // --- V1: deterministic verify in the merge verdict (design note §3). The server runs
   // FLEET_VERIFY_CMD (here $DIR/fakeverify — a git-grep for a VERIFYBAD sabotage marker)
   // against the REBASED tree, before any land, and records verify:{cmd,ok,out,at,mainSha}.
@@ -374,7 +425,19 @@ export async function run(lc: LaneCtx): Promise<void> {
     att.ok && attJ.branch === ln2.branch, JSON.stringify(attJ));
   check("attach refuses a worktree already open in a slot",
     (await post("/api/lanes", { repo: REPO, attach: ln2.cwd })).status === 409);
-  check("reattached orphan lands (clean, merged)", (await post(`/api/slots/${attJ.slot}/land`, {})).ok);
+  // `.ok` alone proved only that the route answered. A land is a claim about DISK and GIT, so it is
+  // asserted there too (the lanes-basic.ts pattern): the worktree is gone, git's own worktree
+  // registry no longer carries it (an rm -rf without a prune leaves a stale entry behind), and the
+  // slot it was reattached into is free again.
+  const attLand = await post(`/api/slots/${attJ.slot}/land`, {});
+  check("reattached orphan lands (clean, merged)", attLand.ok, await attLand.clone().text());
+  check("landed orphan is gone from disk AND from git's worktree registry",
+    !exists(ln2.cwd)
+      && !spawnSync("git", ["-C", REPO, "worktree", "list", "--porcelain"]).stdout.toString().includes(ln2.cwd),
+    spawnSync("git", ["-C", REPO, "worktree", "list", "--porcelain"]).stdout.toString().trim());
+  check("landed orphan's slot is free again",
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((x) => x.id === attJ.slot)?.cwd === null, `slot ${attJ.slot}`);
 
   // removal path: dirty orphan refused, clean orphan dropped; slot-held worktree refused
   const ln3 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };

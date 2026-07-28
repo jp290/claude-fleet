@@ -553,8 +553,9 @@ function saveStateNow(): Promise<void> {
 
 // --- git: lane (worktree) support. All git runs through the array-form spawn — nothing
 // user-controlled ever reaches a shell string ---
-async function git(dir: string, ...args: string[]): Promise<{ out: string; err: string; code: number }> {
-  const p = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+interface GitResult { out: string; err: string; code: number }
+async function gitWith(env: Record<string, string | undefined> | undefined, dir: string, args: string[]): Promise<GitResult> {
+  const p = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe", ...(env ? { env } : {}) });
   const timer = setTimeout(() => { try { p.kill(); } catch {} }, GIT_TIMEOUT_MS);
   try {
     const out = await new Response(p.stdout).text();
@@ -565,12 +566,32 @@ async function git(dir: string, ...args: string[]): Promise<{ out: string; err: 
     clearTimeout(timer);
   }
 }
+async function git(dir: string, ...args: string[]): Promise<GitResult> {
+  return gitWith(undefined, dir, args);
+}
+// Fleet POLLS git in worktrees whose git it does not own the timing of — the lane's own session
+// runs git there, and so does a merge job. `git status` and `git diff` take .git/index.lock for
+// exactly ONE reason: to write back the index they just refreshed. That write is the collider.
+// Measured here (two status pollers against a worktree rebasing in a loop, 60 rounds): 16 of the
+// job's `rebase --abort`s failed on the lock and 15 left the tree WEDGED mid-rebase; with the
+// optional lock disabled, 0 and 0. A wedged lane answers landed:false on every route from then on,
+// and the verdict blames the agent for it ("reported rebased, but the lane is not clean").
+// What a caller SEES is unchanged: git still refreshes the index in core, it just does not persist
+// the refresh — a stat-dirty, content-identical file still reports clean (verified).
+// READS ONLY. A mutating op's index lock is not optional and this variable never suppresses it.
+const GIT_READ_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+async function gitRead(dir: string, ...args: string[]): Promise<GitResult> {
+  return gitWith(GIT_READ_ENV, dir, args);
+}
 // git status --porcelain, columns PRESERVED. The trim in git() strips the leading space of
 // the first entry (an unstaged " M path" becomes "M path"), which silently corrupts the
 // status-code column and truncates the first filename. Every column-accurate status parse
 // (uncommitted-files display, diff status list) must read through here, never git().out.
+// Read-only, so it runs lock-free (GIT_READ_ENV) — every caller is a display/guard read on a cwd
+// whose git Fleet shares with a live session.
 async function statusLines(cwd: string): Promise<{ code: number; lines: string[] }> {
-  const p = Bun.spawn(["git", "-C", cwd, "status", "--porcelain"], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["git", "-C", cwd, "status", "--porcelain"],
+    { stdout: "pipe", stderr: "pipe", env: GIT_READ_ENV });
   const timer = setTimeout(() => { try { p.kill(); } catch {} }, GIT_TIMEOUT_MS);
   try {
     const out = await new Response(p.stdout).text();
@@ -580,8 +601,11 @@ async function statusLines(cwd: string): Promise<{ code: number; lines: string[]
     clearTimeout(timer);
   }
 }
-// a mutating git op (add/commit) in a lane races the live session's OWN git — if it holds
-// .git/index.lock we back off and retry rather than fail. Initial attempt + up to 5 retries.
+// a mutating git op (add/commit, and the merge pre-pass's rebase/abort) in a lane races the live
+// session's OWN git — if it holds .git/index.lock we back off and retry rather than fail. Initial
+// attempt + up to 5 retries. GIT_READ_ENV removes Fleet's own polls from the field of colliders;
+// this is what remains for the ones Fleet does not own, and a failed `rebase --abort` here is the
+// difference between a re-runnable lane and a lane wedged mid-rebase (see tryScriptRebase).
 async function gitRetry(dir: string, ...args: string[]): Promise<{ out: string; err: string; code: number }> {
   let r = await git(dir, ...args);
   for (let i = 0; i < 5 && r.code !== 0 && /index\.lock|another git process/i.test(r.err); i++) {
@@ -715,11 +739,13 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
   diff: string; truncated: boolean; sessionScoped: boolean } | null> {
   const st = await statusLines(cwd); // column-preserving — see statusLines
   if (st.code !== 0) return null; // not a git repository
-  const d = await git(cwd, "diff", base ?? "HEAD", "--no-color");
+  // gitRead, not git: a diff with a WORKTREE side refreshes the index exactly like `status` does,
+  // and this payload is served on polled surfaces against live lane worktrees. See GIT_READ_ENV.
+  const d = await gitRead(cwd, "diff", base ?? "HEAD", "--no-color");
   const diff = d.code === 0 ? d.out : ""; // e.g. repo with no commits yet
   let status: string[];
   if (base) {
-    const ns = await git(cwd, "diff", "--name-status", "--no-color", base);
+    const ns = await gitRead(cwd, "diff", "--name-status", "--no-color", base);
     status = sessionFiles(ns.code === 0 ? ns.out : "", st.lines.join("\n"));
   } else {
     status = st.lines.slice(0, 500);
@@ -784,10 +810,12 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   // non-lane session: no branch boundary → keep the transcript-time-scoped heuristic
   const start = sessionStart(s);
   const base = start ? await sessionBase(s.cwd!, start) : null;
-  const sh = await git(s.cwd!, "diff", base ?? "HEAD", "--shortstat", "--no-color");
+  // worktree-side diffs → gitRead (they refresh the index); the lane branch above uses a
+  // commit-to-commit three-dot diff, which never touches it. See GIT_READ_ENV.
+  const sh = await gitRead(s.cwd!, "diff", base ?? "HEAD", "--shortstat", "--no-color");
   let files: string[];
   if (base) {
-    const ns = await git(s.cwd!, "diff", "--name-status", "--no-color", base);
+    const ns = await gitRead(s.cwd!, "diff", "--name-status", "--no-color", base);
     files = sessionFiles(ns.code === 0 ? ns.out : "", st.lines.join("\n")).slice(0, 200);
   } else {
     files = uncommittedFiles.slice(0, 200);
@@ -830,8 +858,15 @@ async function tickGit(): Promise<void> {
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading.
       aliveInfo.set(s.id, await claudeAlive(s.id));
+      // A merge/land job OWNS this worktree's git for its whole lifetime — rebase, abort, ff-merge.
+      // Every value below is a DISPLAY cache (the badges); every gate that acts on git state calls
+      // gitOpInProgress fresh at its own site. So hold the last reading for the job's duration
+      // rather than run half a dozen git spawns against a tree that is being rewritten. This is
+      // belt to gitRead's braces: it removes Fleet's own contention outright, while gitRead covers
+      // the pollers this guard cannot reach (the lane's own session, another worktree's reader).
+      if (mergeInflight.has(s.id) || mergeStart.has(s.id)) continue;
       gitOpInfo.set(s.id, await gitOpInProgress(s.cwd));
-      const st = await git(s.cwd, "status", "--porcelain=v2", "--branch");
+      const st = await gitRead(s.cwd, "status", "--porcelain=v2", "--branch");
       if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
       let branch = "", ahead = 0, behind = 0, dirty = 0;
       for (const line of st.out.split("\n")) {
@@ -1120,7 +1155,11 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ er
 async function advanceIntegration(repo: string, main: string, branch: string): Promise<{ error: string } | null> {
   const holder = (await listWorktrees(repo)).find((w) => w.branch === main);
   if (holder) {
-    const ff = await git(holder.path, "merge", "--ff-only", branch);
+    // gitRetry: this is the one irreversible step, and it runs in the PRIMARY checkout — a tree
+    // whose git Fleet shares with whatever session the owner has open there. Losing main's
+    // fast-forward to a transient .git/index.lock is a spurious lost land. The exit code is still
+    // the authority (below): a retry only stops the lock from deciding.
+    const ff = await gitRetry(holder.path, "merge", "--ff-only", branch);
     return ff.code === 0 ? null : { error: (ff.err || ff.out).slice(0, 300) };
   }
   const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
@@ -1137,12 +1176,12 @@ async function advanceIntegration(repo: string, main: string, branch: string): P
 async function resetIntegration(repo: string, main: string, mainAfter: string, mainBefore: string): Promise<{ error: string } | null> {
   const holder = (await listWorktrees(repo)).find((w) => w.branch === main);
   if (holder) {
-    const st = await git(holder.path, "status", "--porcelain");
+    const st = await gitRead(holder.path, "status", "--porcelain"); // a guard READ — see GIT_READ_ENV
     if (st.code !== 0) return { error: `cannot read the ${main} checkout at ${holder.path}` };
     if (st.out) return { error: `${main} is checked out at ${holder.path} with uncommitted changes — undo would discard them; commit or stash there first` };
     const cur = await git(holder.path, "rev-parse", "HEAD");
     if (cur.out !== mainAfter) return { error: `${main} moved since this land — nothing safely undoable` };
-    const rs = await git(holder.path, "reset", "--hard", mainBefore);
+    const rs = await gitRetry(holder.path, "reset", "--hard", mainBefore); // same lock exposure as the ff above
     return rs.code === 0 ? null : { error: (rs.err || rs.out).slice(0, 300) };
   }
   const anc = await git(repo, "merge-base", "--is-ancestor", mainBefore, mainAfter);
@@ -3796,15 +3835,36 @@ function writeDisposition(body: Record<string, unknown> | null): Response {
 // nothing. Clean → the agent is never spawned. Conflict → abort (lane exactly as found)
 // and hand the agent the conflict surface we just discovered, so it starts working
 // instead of exploring.
-async function tryScriptRebase(cwd: string, main: string): Promise<{ clean: boolean; conflicted: string[] }> {
+// This pre-pass is also the one place where FLEET's OWN git can wedge a lane. Both calls below
+// race whatever else touches this worktree (the lane's session; before gitRead, Fleet's own polls),
+// and `.git/index.lock` contention makes them fail: measured at 16 failed aborts / 15 wedged trees
+// per 60 rounds under a status-poll storm. The abort's exit code used to be discarded, so the job
+// walked on into runMerge with the lane still mid-rebase, and the verdict then blamed the AGENT for
+// a state Fleet had created ("reported rebased, but the lane is not clean").
+// Two changes: both calls go through gitRetry's index.lock backoff, and `halted` reports the two
+// outcomes that are NOT "a conflict for the agent to resolve" but used to be treated as one.
+async function tryScriptRebase(cwd: string, main: string): Promise<{ clean: boolean; conflicted: string[]; halted: string | null }> {
   // rerere.enabled would silently replay recorded resolutions and exit 0, landing an
   // unreviewed conflict resolution — disable it just for this pre-pass so exit 0 means
   // genuinely no conflicts to review.
-  const rb = await git(cwd, "-c", "rerere.enabled=false", "rebase", main);
-  if (rb.code === 0) return { clean: true, conflicted: [] };
-  const files = await git(cwd, "diff", "--name-only", "--diff-filter=U");
-  await git(cwd, "rebase", "--abort");
-  return { clean: false, conflicted: files.code === 0 ? files.out.split("\n").filter(Boolean).slice(0, 50) : [] };
+  const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", main);
+  if (rb.code === 0) return { clean: true, conflicted: [], halted: null };
+  const files = await gitRead(cwd, "diff", "--name-only", "--diff-filter=U"); // read WHILE mid-rebase
+  const ab = await gitRetry(cwd, "rebase", "--abort");
+  const conflicted = files.code === 0 ? files.out.split("\n").filter(Boolean).slice(0, 50) : [];
+  const why = (t: string): string => t.split("\n").filter(Boolean)[0]?.slice(0, 200) ?? "no reason reported";
+  // GIT decides whether the lane is wedged, not the abort's exit code: `--abort` legitimately
+  // exits non-zero with "no rebase in progress" when the rebase never started one.
+  if (await gitOpInProgress(cwd))
+    return { clean: false, conflicted,
+      halted: `\`git rebase --abort\` could not undo it (${why(ab.err)}) — this lane is left mid-rebase` };
+  // The rebase failed, produced NO conflict surface, and left nothing in progress: it never got
+  // started (index.lock contention is the case measured here). There is nothing for an agent to
+  // resolve, and handing it the lane anyway ends in a verdict that blames the agent for a git
+  // failure — "reported rebased, but the lane is not rebased onto main".
+  if (!conflicted.length)
+    return { clean: false, conflicted, halted: `it did not start, and left no conflict to resolve (${why(rb.err)})` };
+  return { clean: false, conflicted, halted: null };
 }
 
 async function runMerge(cwd: string, branch: string, main: string, conflicted: string[], laneTask: string | null): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
@@ -3936,8 +3996,10 @@ async function runCleanReview(cwd: string, root: string, branch: string, main: s
       { worker: "cleanReview", cmd: CLEAN_REVIEW_CMD, tools: REVIEW_TOOLS, timeoutMs: CLEAN_REVIEW_TIMEOUT_MS },
       prompt, cwd);
   } catch { /* timeout / spawn failure → out stays "" → parsed as fail-closed below */ }
-  // enforce read-only: restore the tree to exactly what it was before the reviewer ran (it is about to land)
-  if (preHead.code === 0 && preHead.out) await git(cwd, "reset", "--hard", preHead.out);
+  // enforce read-only: restore the tree to exactly what it was before the reviewer ran (it is about
+  // to land). gitRetry, because THIS is the call that makes "the reviewer cannot change the tree"
+  // true — losing it to a transient index.lock would let a reviewer edit ride into the land.
+  if (preHead.code === 0 && preHead.out) await gitRetry(cwd, "reset", "--hard", preHead.out);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // the real model routinely wraps a perfectly valid verdict object in a one-sentence preamble
   // (5 of the first 6 production shadow rows) — so on a parse failure, carve the object out the
@@ -3977,7 +4039,11 @@ function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; a
   };
 }
 
-async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string): Promise<void> {
+// `carried` = conflict files whose agent-chosen resolution is ALREADY committed in this lane and
+// has never been reviewed, taken from the verdict this re-run supersedes (see the ⏸ guard in the
+// merge route). Empty for a first run.
+async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
+  carried: string[] = []): Promise<void> {
   let res: MergeLast;
   // DURABLE INTENT, written before the first await and before anything touches the lane. The
   // route just deleted this slot's previous verdict and persisted the deletion; without this the
@@ -3994,12 +4060,33 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     // script first, agent only for what needs judgment: a conflict-free rebase is done
     // right here and the model never spawns
     const pre = await tryScriptRebase(cwd, main);
-    if (!pre.clean) {
-      // From here the AGENT resolves conflicts — semantic choices no human has seen, committed
-      // into the lane by a rebase. Record that in the marker BEFORE runMerge spawns anything, so
-      // an interrupted run is distinguishable at boot from one that only ever did a script rebase.
-      mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: Date.now(), conflicted: pre.conflicted,
-        detail: `a merge run started resolving ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.` });
+    // The pre-pass produced no decidable outcome: it wedged the lane mid-rebase, or it never got
+    // off the ground. Either way there is no conflict for an agent to resolve, so stop — no agent,
+    // no land — and say which of the two it was. Thrown rather than branched because the catch
+    // below is exactly the funnel this needs (status "error", landed:false, the message as detail),
+    // and because walking on is what produced the FIX1 flake's misattributed verdict. Fleet does
+    // not force its way out of a wedge: a second abort under the same contention is what failed in
+    // the first place, and `--abort` discards resolution work a session may already have in the tree.
+    if (pre.halted)
+      throw new Error(`the pre-pass rebase onto ${main} halted: ${pre.halted}. No agent was started and nothing was landed — resolve it in the session, then re-run ⏫.`);
+    // Files whose resolution NO HUMAN HAS SEEN. Either this run is about to hand them to the agent
+    // (`pre.conflicted`), or an earlier run already did and its resolutions are still sitting in
+    // this lane's commits (`carried`). The second case is the one the ⏸ re-run guard cannot hold:
+    // that guard keys on main still being an ancestor, so it LAPSES the moment main moves on — and
+    // the agent's resolutions then replay onto the new main cleanly, making `pre.clean` true. Left
+    // at `!pre.clean`, the clean auto-land branch below would land them unattended, which is the
+    // exact inverse of M3's "the conflict path always stops".
+    const unreviewed = pre.clean ? carried : pre.conflicted;
+    if (unreviewed.length) {
+      // The AGENT's semantic choices — made by the run about to start, or carried in from an
+      // earlier one — are what the marker has to record BEFORE anything else runs. `conflicted` is
+      // the field boot and the ⏸ guard read to refuse a blind re-run, so it must be set on BOTH
+      // paths: a carried lane whose re-rebase is clean spawns no agent at all and used to leave a
+      // marker claiming there was no agent judgment in the tree.
+      mergeLast.set(s.id, { status: "interrupted", landed: false, branch, at: Date.now(), conflicted: unreviewed,
+        detail: pre.clean
+          ? `a merge run started re-rebasing ${unreviewed.length} unreviewed conflict resolution${unreviewed.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.`
+          : `a merge run started resolving ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"} here and never produced a verdict — the server was interrupted mid-run.` });
       await saveStateNow();
     }
     const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
@@ -4048,7 +4135,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // unverified scratch so the human never gets a dirty (land-blocked) tree — this
               // makes the round a no-op, exactly as if no repair had run. Scoped to the isolated
               // lane worktree; the committed rebased resolution is untouched.
-              await git(cwd, "reset", "--hard", "HEAD");
+              await gitRetry(cwd, "reset", "--hard", "HEAD"); // dropping the scratch must not lose to a lock
               break;
             }
             const anc2 = await git(root, "merge-base", "--is-ancestor", main, branch);
@@ -4059,12 +4146,15 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             if (verify && verify.ok) break; // repaired to green — done
           }
         }
-        if (!pre.clean) {
-          // CONFLICT path: the agent made semantic choices resolving conflicts. The rebase is
+        if (unreviewed.length) {
+          // CONFLICT path: an agent made semantic choices resolving conflicts. The rebase is
           // git-verified, but a human hasn't seen those choices — so we STOP here (no ff-merge,
           // no land) and record a reviewable "resolved" verdict. The lane stays exactly as the
           // agent left it, rebased onto main; the owner reviews the diff and confirms the land.
           // verify rides along as advisory context for that review (it never changes the stop).
+          // Reached on TWO paths now: this run resolved the conflicts, or this run cleanly
+          // re-rebased resolutions an earlier run made and nobody reviewed (`carried`). Both are
+          // "agent judgment in the tree, unseen", which is the only thing this branch is about.
           // three-way, because a repair CAN produce a skip: a resolution that moves or deletes the
           // file the verify command guards on makes the very next run decline. "still failed"
           // would hide that the gate stopped running at all.
@@ -4073,8 +4163,10 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             ? ` verify ${repairVerdict} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
             : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
-            conflicted: pre.conflicted, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
-            detail: `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`.slice(0, 600) };
+            conflicted: unreviewed, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
+            detail: (pre.clean
+              ? `${main} moved on, so this lane re-rebased with no conflicts — but it still carries an agent's unreviewed resolution of ${unreviewed.length} conflict${unreviewed.length === 1 ? "" : "s"} from an earlier run. Review the diff, then land.`
+              : `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`).slice(0, 600) };
         } else if (verify && verify.ok === null) {
           // CLEAN path but verify SKIPPED — the decision site (see VERIFY_SKIP_EXIT above). A
           // configured gate declined to run on this tree, so this land would be as unverified as a
@@ -4154,8 +4246,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       }
     }
   } catch (e) {
+    // `conflicted` rides along on the failure too. It is not decoration: it is the ONLY record
+    // that this lane holds agent-chosen resolutions nobody reviewed, and the next run reads it
+    // straight off this verdict (`carried`). Dropping it on an error — a wedged pre-pass, a
+    // thrown worker — would let the run after that one auto-land them.
     res = { status: "error", detail: (e instanceof Error ? e.message : "merge agent failed").slice(0, 600),
-      landed: false, branch, at: Date.now() };
+      landed: false, branch, at: Date.now(), ...(carried.length ? { conflicted: carried } : {}) };
   }
   // a slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared
   // by openSlot — don't write this lane's verdict onto whatever lives there now
@@ -6564,11 +6660,18 @@ Bun.serve<WSData>({
           // to ⏫. rerere off: never silently replay a recorded resolution and land it unseen.
           let anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code !== 0) {
-            const rb = await git(cwd, "-c", "rerere.enabled=false", "rebase", main);
+            // Same plumbing, same hazard as the merge pre-pass (see tryScriptRebase): index.lock
+            // contention makes these fail, so both go through gitRetry's backoff — and the abort's
+            // exit code cannot be discarded here either. "Re-run ⏫" is only sound advice if the
+            // lane is actually back where it started; a lane left mid-rebase bounces off the
+            // gitOpInProgress guard on every future attempt, so it has to be told the truth instead.
+            const rb = await gitRetry(cwd, "-c", "rerere.enabled=false", "rebase", main);
             if (rb.code !== 0) {
-              await git(cwd, "rebase", "--abort");
+              await gitRetry(cwd, "rebase", "--abort");
               return json({ status: "blocked",
-                detail: `${main} moved and the resolution no longer replays cleanly onto it — re-run ⏫ merge to resolve against the new ${main}.` });
+                detail: await gitOpInProgress(cwd)
+                  ? `${main} moved, the resolution no longer replays cleanly onto it, and \`git rebase --abort\` could not undo the attempt — this lane is left mid-rebase. Finish or abort the rebase in the session first.`
+                  : `${main} moved and the resolution no longer replays cleanly onto it — re-run ⏫ merge to resolve against the new ${main}.` });
             }
             anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
             if (anc.code !== 0) return json({ status: "error",
@@ -6645,9 +6748,15 @@ Bun.serve<WSData>({
                 : "a merge run was interrupted while an agent was resolving conflicts here, and the lane is rebased on top of "
                   + `${main} with those resolutions — nobody has seen them and no verdict was ever recorded. Review the diff and land it from the board, or discard the lane.` });
         }
+        // The VERDICT is superseded; the FACT it recorded is not. If it held agent-chosen conflict
+        // resolutions, those commits are still in this lane and still unreviewed — and the only
+        // way to reach this line with such a verdict is the guard above LAPSING because main moved
+        // on, which is precisely when the fresh run's pre-pass rebases them cleanly. Carry them, or
+        // the clean auto-land branch lands work no human has seen (`unreviewed` in mergeJob).
+        const carried = (pend?.conflicted ?? []).slice(0, 50);
         mergeLast.delete(s.id); // a new run supersedes the previous verdict
         saveState();
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main)
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carried)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
         return json({ running: true });

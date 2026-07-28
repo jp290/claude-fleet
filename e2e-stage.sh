@@ -29,6 +29,30 @@
 # staging time, naming the file and the import — not forty lines later as a module-resolution
 # error inside a tmux pane, in a server.log nobody reads.
 
+# --- machine-wide suite mutex (owner decision 2026-07-28). Suites are serial on this box: two
+# concurrent instances reliably poison each other's runs (docs/suite-contention.md; measured again
+# 2026-07-28 — three owner interventions in one afternoon because the serialization lived only in
+# CLAUDE.md prose). Sourcing this file IS starting a suite, so the lock is taken HERE — one place,
+# every wrapper inherits it, no per-wrapper trap surgery.
+#   - Lock = mkdir (atomic). The holder records its pid.
+#   - Release is IMPLICIT: no EXIT trap (the wrappers own theirs, and a sourced trap would collide).
+#     The next contender reaps a lock whose recorded pid is dead. A lock dir existing therefore
+#     does NOT mean a suite is running — the pid file decides.
+#   - A pid-LESS lock dir is a manual hold (a human parked the machine) and is never reaped.
+#   - The reap re-checks the pid VALUE before removing, shrinking the reap/re-acquire race to
+#     microseconds; two pollers at 15s cadence cannot practically collide inside it.
+FLEET_SUITE_LOCK="${FLEET_SUITE_LOCK:-/tmp/fleet-e2e.lock}"
+while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
+  _st_hp=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null)
+  if [ -n "$_st_hp" ] && ! kill -0 "$_st_hp" 2>/dev/null; then
+    [ "$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null)" = "$_st_hp" ] \
+      && rm -f "$FLEET_SUITE_LOCK/pid" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null
+    continue
+  fi
+  sleep 15
+done
+echo "$$" > "$FLEET_SUITE_LOCK/pid"
+
 # normalize a relative path in place: `e2e/../src/backoff` → `src/backoff`
 _stage_norm() {
   printf '%s' "$1" | awk -F/ '{

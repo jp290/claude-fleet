@@ -198,6 +198,12 @@ rotting. Two shelves, plus the steward subsystem.
 - **`ungoverned-artifacts.md`** — `CLAUDE.md`/`OWNER.md`/the four `.jsonl` trails are untracked,
   copied per-lane at spawn, and unbacked-up: why a lane cannot fulfil Wissenspflege for the
   rulebook, the measured per-worktree drift, and the fix ladder under a public remote.
+- *Not published: `trust-perimeter.md`, `security-model.md`, `security-review-2026-07-25.md`
+  and `security-findings.md` — internal security working documents whose status markers track a
+  live deployment and are stale in places. Other docs still cite them by name; those references
+  are intentionally dead here. What they produced IS public: the regression suite `./e2e-security.sh`
+  and the hardening in the code (closed tool profiles, delimited agent input, 0600 lane copies).*
+
 - **`compiler-program.md`** — the three prompt-compilers (✨ enhance, /sharpen3, steward) as one
   substrate, the steward's autonomy rungs, and why ✨ needs feeding before tuning.
 - **`architecture-review.md`** — the `arch-review` lane's 12 ranked architecture findings with

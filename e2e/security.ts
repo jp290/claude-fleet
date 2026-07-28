@@ -80,6 +80,21 @@ const unrecognized = (src: string): string[] =>
   (src.match(/.*url\.pathname.*/g) ?? []).map((l) => l.trim()).filter((l) =>
     !/url\.pathname === "/.test(l) && !/\.(?:exec|test)\(url\.pathname\)/.test(l)
     && !/\]\.includes\(url\.pathname\)/.test(l) && !/STATIC\[url\.pathname\]/.test(l));
+// THE ALIAS GAP. Both functions above key on the literal text `url.pathname`, so a route that
+// reads the path under any other name — `const { pathname } = url`, `const p = url.pathname` —
+// is invisible to BOTH: it routes, `routeSet` never sees it, `unrecognized` never flags it, and
+// the allowlist check passes while an unauthenticated route exists. That is the file's own
+// premise (see the header: "every syntactic form that reaches a route must be one the extractor
+// recognizes") turned against it, so the alias is banned outright in the pinned regions rather
+// than taught to the extractor: one recognized spelling is what makes the pin legible at all.
+// Two shapes — the binding itself, and a use in routing position under any other name (in case
+// the binding came from elsewhere, e.g. a destructured parameter).
+const PATH_ALIAS_BINDING = /(?:const|let|var)\s*(?:\{[^}]*\bpathname\b[^}]*\}\s*=|[A-Za-z_$][\w$]*\s*=\s*url\.pathname)/g;
+const PATH_ALIAS_USE = /(?<!\.)\bpathname\b\s*(?:===|!==)|\.(?:exec|test)\(\s*(?!url\.pathname\s*\))[\w$.]*[Pp]ath[\w$]*\s*\)/g;
+const pathAliases = (src: string): string[] => [
+  ...[...src.matchAll(PATH_ALIAS_BINDING)].map((m) => m[0].trim()),
+  ...[...src.matchAll(PATH_ALIAS_USE)].map((m) => m[0].trim()),
+];
 
 // --- §2 fixtures: the dangerous owner surface ------------------------------------------------
 // `ownerSafe` marks the probes whose invalid-body owner call is provably side-effect-free, so the
@@ -135,6 +150,17 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const stray = unrecognized(preAuth);
   check("§1 every pre-auth pathname match uses a form the extractor reads (a new form cannot slip past the pin)",
     stray.length === 0, stray.join(" | "));
+  // The pin's blind spot, closed and then PROVEN blind: a destructured route is a working route
+  // that neither `routeSet` nor `unrecognized` can see. The negative control is the point — if
+  // this ever passes without the alias detector firing, the detector has stopped working and the
+  // two checks below it would go quietly vacuous.
+  const ALIAS_PROBE = 'const { pathname } = url;\n  if (pathname === "/api/back-door") return json({ ok: true });';
+  check("§1 the alias detector fires on a destructured route that both older extractors are blind to",
+    pathAliases(ALIAS_PROBE).length > 0 && routeSet(ALIAS_PROBE).length === 0 && unrecognized(ALIAS_PROBE).length === 0,
+    `aliases=[${pathAliases(ALIAS_PROBE).join(" | ")}] routes=[${routeSet(ALIAS_PROBE).join(" | ")}] stray=[${unrecognized(ALIAS_PROBE).join(" | ")}]`);
+  const preAlias = pathAliases(preAuth);
+  check("§1 the pre-auth region routes on `url.pathname` only — no alias the allowlist pin cannot see",
+    preAlias.length === 0, preAlias.join(" | "));
   const found = routeSet(preAuth);
   check("§1 the pre-auth route set equals the reviewed allowlist",
     found.join("\n") === [...PRE_AUTH_ROUTES].sort().join("\n"),
@@ -145,9 +171,10 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const stewSrc = src.slice(src.indexOf("async function handleStewardRoute"), src.indexOf("Bun.serve<WSData>"));
   const stewStray = unrecognized(stewSrc);
   const stewFound = routeSet(stewSrc);
+  const stewAlias = pathAliases(stewSrc);
   check("§1 the steward principal's route set equals the reviewed allowlist, in a form the extractor reads",
-    stewStray.length === 0 && stewFound.join("\n") === [...STEWARD_ROUTES].sort().join("\n"),
-    `stray: [${stewStray.join(" | ")}] unexpected: [${stewFound.filter((r) => !STEWARD_ROUTES.includes(r)).join(", ")}]`);
+    stewStray.length === 0 && stewAlias.length === 0 && stewFound.join("\n") === [...STEWARD_ROUTES].sort().join("\n"),
+    `stray: [${stewStray.join(" | ")}] alias: [${stewAlias.join(" | ")}] unexpected: [${stewFound.filter((r) => !STEWARD_ROUTES.includes(r)).join(", ")}]`);
   // the steward gate is default-deny: an unmatched path must fall to a 403, never to the owner
   // chain below it. If this `?? json(…403)` ever becomes a fallthrough, every owner route opens.
   check("§1 the steward gate ends in a default-deny (an unmatched path 403s, never falls through)",

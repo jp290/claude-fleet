@@ -15,7 +15,9 @@ export const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/,
 export type VerifyField = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean };
 // `cleanReview` is the ② advisory reviewer's verdict, present only when FLEET_CLEAN_REVIEW gates
 // (fleet-e2e-clean-review.ts's gate phase). Optional, so the modules that never see it are unaffected.
-export type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string; repairRounds?: number; cleanReview?: { verdict: string; reason: string } };
+// `conflicted` is the files whose resolution no human has seen yet — set on the conflict path, and
+// carried forward onto a re-run's verdict when main moved and the resolution replayed cleanly.
+export type MergeVerdict = { status: string; detail: string; landed: boolean; verify?: VerifyField; landError?: string; repairRounds?: number; conflicted?: string[]; cleanReview?: { verdict: string; reason: string } };
 // Poll the async merge job until it settles. The old bound (100×100ms = 10s) was too tight:
 // a real-git land (rebase + verify + ff + teardown) under concurrent load can overrun 10s, and
 // the loop then returned {gone:false,last:null} — INDISTINGUISHABLE from a legit "not landed"

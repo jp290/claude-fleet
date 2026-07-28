@@ -427,8 +427,13 @@ timeout moves in the same change.
 gate at all.** `./e2e-security.sh` (46 checks) is what `docs/security-model.md:7–8` names as the
 regression suite for the whole perimeter document, and `docs/README.md:157` repeats it. It is in no
 gate, in no CLAUDE.md verify list, and its harness is one of the three files `tsc` never sees (§4).
-It is isolation-safe on the same pattern (own port band 15200+, `FLEET_CMD=true`,
+It is isolation-safe on the same pattern (own port band, `FLEET_CMD=true`,
 `FLEET_AUTO_REVIEW_MS=0` — `e2e-security.sh:12–17,41–52`). Measured 34.2 / 34.5 s, both green.
+*Superseded 2026-07-28 on two points: it has since entered the pre-land gate (`watchdog.sh:71`
+runs `./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh`, and that same line's
+`tsc` covers all three harnesses, so §4's "files tsc never sees" is closed too); and its band was
+15200+ here, which overlapped the post-land audit's 15000–16999 by 1800 ports — every band is now
+listed in one table, in `e2e-isolated.sh`.*
 **I am not folding it into the recommended string**, for one reason: **n = 2 is not a burn-in**, and
 §5b is precisely the lesson that a suite's eligibility is decided by repeated runs, not by two. The
 honest recommendation is to run it ~10× first and then add it; with the timeout at 300 s the budget

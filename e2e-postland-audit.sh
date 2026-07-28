@@ -6,8 +6,8 @@
 #   ./e2e-postland-audit.sh
 set -u
 SRC="$(cd "$(dirname "$0")" && pwd)"
-# SOCK/PORT/DIR derived from $$ so concurrent runs never collide (own port band, distinct from the
-# other three suites so none of them can hit each other either)
+# SOCK/PORT/DIR derived from $$ so concurrent runs never collide. The port base comes from the
+# PORT BAND TABLE in e2e-isolated.sh — never pick one here.
 DIR="${TMPDIR:-/tmp}/fleet-e2e-postland-instance-$$"
 SOCK="fleetplatest$$"
 PORT=$((15000 + $$ % 2000))

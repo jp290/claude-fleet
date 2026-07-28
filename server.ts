@@ -292,6 +292,16 @@ let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
 // max OPEN steward-filed pending tasks — a looping pulse must not flood the review buffer
 const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
+// max rundgang records the journal POST accepts per hour. Unlike the read routes this one is
+// neither cheap nor idempotent: each accepted record fans out laneFacts() — several git
+// subprocesses per ACTIVE lane — and appends to the very file the pulse reads its own delta
+// anchor from. A looping caller therefore burns the box AND, once the log crosses
+// AUDIT_ROTATE_BYTES twice, rotates its own anchor off the end of the .1 generation.
+// 6/h is one per 10 minutes: the same granularity STEWARD_EPISODE_MS already treats as one work
+// episode, and far above the Rundgang's human cadence (it is a watched patrol, not a stream). At
+// that rate the ~1 KB records need weeks to fill one 5 MB generation; an unbounded loop fills two
+// in minutes, and it is the SECOND rotation that discards the anchor.
+const STEWARD_JOURNAL_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_JOURNAL_PER_HOUR ?? 6) | 0);
 // joint 5's 10-minute effect window (steward-autonomy.md) doubles as the v1 episode
 // boundary: with no sensor loop yet to detect when an intervention actually helped, an
 // "episode" for cap purposes is simply kind×slot within this window of the last send —
@@ -404,7 +414,7 @@ type AuditEvent =
   | "owner_auth_fail"
   | "self_heal_recreate"
   | "steward_send" | "steward_send_capped"
-  | "steward_journal" | "steward_task" | "steward_propose_outcome"
+  | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
   | "slot_shelve"
   | "repo_undo_land"
   | "land_note_fail"
@@ -5073,9 +5083,15 @@ const PULSE_TAIL_BYTES = 128 * 1024;
 // slurp one. The quote is flattened to a single line and its [pulse-reply] marker is defused —
 // the session's own output is echoed back into its own prompt, so it must not be able to forge
 // a scaffold line or a reply that a later harvest would read as this session's verdict.
+// PINNED slots only, and NOT via transcriptFile(): its newest-by-mtime fallback hands back
+// whatever file in this cwd's project dir was touched last, which is another session's transcript
+// whenever several slots share a cwd. transcriptFact one region below refuses that fallback for
+// exactly this reason ("a fact that silently swaps subject is worse than no fact") — and a QUOTE
+// swapping subject is worse still: the pulse would read a stranger's sentence back to this
+// session as its own last output. Unpinned, or no transcript on disk yet → "unbekannt".
 async function pulseLastOutput(s: Slot): Promise<string> {
-  const file = transcriptFile(s);
-  if (!file) return "unbekannt";
+  if (!s.cwd || !s.sessionId) return "unbekannt";
+  const file = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
   try {
     const f = Bun.file(file);
     const text = f.size > PULSE_TAIL_BYTES ? await f.slice(f.size - PULSE_TAIL_BYTES).text() : await f.text();
@@ -5137,12 +5153,17 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
     if (ref === "handoff")
       return { text: `[steward] Kontext nähert sich der Grenze — schreib ein /handoff.${STEWARD_VERIFY_SUFFIX}` };
     if (ref === "verify") {
-      // presence, not status — a known-dangerous read (state-reality-divergence.md row 11: it can
-      // say "Lane gelandet" to a lane that did not land) that this lane does not fix. But it must
-      // not be WIDENED: an "interrupted" marker is a run that started, never a verdict, so it is
-      // excluded explicitly and the four settled statuses behave exactly as before.
+      // the land CLAIM is gated on the land FACT — `landed`, the one field of MergeLast that says
+      // this merge actually completed. The predecessor read "a verdict exists and is not
+      // interrupted", which rendered "Lane gelandet" for blocked/error/resolved just as readily
+      // (state-reality-divergence.md row 11): the receiver then verifies against a premise that is
+      // FALSE, which is strictly worse than no send at all. A non-landed verdict is not silently
+      // swallowed either — the refusal names the status, and blocked/error keep their own truthful
+      // surface in state_relay/merge_blocked, which relays the verdict's real detail verbatim.
       const mv = mergeLast.get(s.id);
-      if (!mv || mv.status === "interrupted") return { error: "no merge verdict on record for this lane" };
+      if (!mv?.landed)
+        return { error: mv ? `this lane did not land (merge status: ${mv.status}) — no land claim to make`
+          : "no merge verdict on record for this lane" };
       return { text: `[steward] Lane gelandet — führe deine Verifikation aus und melde das Ergebnis.${STEWARD_VERIFY_SUFFIX}` };
     }
     return { error: "unknown lifecycle_op ref" };
@@ -5861,6 +5882,18 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       return json({ error: "decisions_surfaced must be a number ≥ 0" }, 400);
     if (typeof body.changed !== "boolean") return json({ error: "changed must be a boolean" }, 400);
     const note = typeof body.note === "string" ? body.note.slice(0, 280) : undefined;
+    // rate cap, LAST of the guards so a malformed body still gets its own 400 and costs nothing.
+    // Counted the way the send caps are counted: off the durable ledger itself (readStewardJournal
+    // spans both generations), never an in-memory counter a restart would reset toward zero. Only
+    // the last cap-many rundgang records can matter — if every one of them is inside the window,
+    // the window is full. A record with a non-numeric ts is not evidence of a recent write and is
+    // dropped here exactly as the anchor readers drop it.
+    const recentJournal = (await readStewardJournal(STEWARD_JOURNAL_PER_HOUR, RUNDGANG_KIND))
+      .filter((r) => typeof r.ts === "number" && Date.now() - r.ts < 3_600_000);
+    if (recentJournal.length >= STEWARD_JOURNAL_PER_HOUR) {
+      audit("steward_journal_capped", stewardSlot()?.id, `hourly:${STEWARD_JOURNAL_PER_HOUR}`);
+      return json({ error: `hourly steward journal cap (${STEWARD_JOURNAL_PER_HOUR}) reached` }, 429);
+    }
     // the per-lane commit-cursor map is SERVER-computed and SERVER-stamped — a body-supplied
     // `lanes` key is ignored like every other unvalidated field (never-spread): fact, not claim.
     writeStewardJournal({

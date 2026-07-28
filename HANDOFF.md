@@ -12,19 +12,19 @@ side. Treat those verdicts as a NEW series; do not continue the old count.
 
 ## Status
 
-**Recompute before believing anything below:**
+**Recompute before believing anything below — do not read past this line without running it:**
 ```sh
-cd ~/claude-fleet && git log --oneline -12 && git worktree list
-python3 -c "
-import json;from collections import Counter
-r=[json.loads(l) for l in open('lane-outcomes.jsonl')]
-s=[x for x in r if x.get('cleanReviewShadow')]
-print('outcomes',len(r),'| shadow',len(s),
-      '| would_stop EVER',sum(1 for x in s if (x['cleanReviewShadow'] or {}).get('verdict')=='would_stop'))
-a=[json.loads(l) for l in open('post-land-audits.jsonl')];print('audits',Counter(x.get('result') for x in a))"
-for p in $(pgrep -f 'bun server.ts'); do ps -o lstart=,pid= -p $p; lsof -a -p $p -d cwd -Fn|grep ^n; done
-ls /private/tmp/tmux-501/ | grep -c fleet    # leaked e2e sockets — see Hygiene
+./state.sh
 ```
+`state.sh` derives HEAD, what landed since this handoff, lanes on disk, the ledger counts, whether
+the running server is the code on disk, and machine hygiene. It is a script and not a paragraph on
+purpose: this file's job is the RESIDUE git cannot carry (intent, what is in flight, corrections,
+the order of next steps and why) — not state, which rots between writing and reading.
+
+**What happened is in git, not here.** The commit BODIES are this project's finding record — see
+`69e4b8d` for the shape: measurement, what was traced vs executed, mechanism, components. Read
+`git log <last handoff>..HEAD` rather than trusting a summary. `refs/notes/fleet/land` carries
+structured integration provenance per land (`git notes --ref=fleet/land show <sha>`).
 
 **Accomplished.** Mined the five ledgers; ran a six-agent read-only audit of the data layer;
 root-caused the merge/resolver flake; wrote the structural plan; briefed and landed **eight lanes**;

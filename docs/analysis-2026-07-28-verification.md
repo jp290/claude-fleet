@@ -1,0 +1,147 @@
+# Session 11 — Verifikation gegen HEAD, vor der Ausführung
+
+**2026-07-28, HEAD 9d3944f** (= 5e33d59 + Template-Fix; server.ts/src/client.ts/alle .sh identisch).
+Begleitband zu `analysis-2026-07-28-findings.md` (Session 10). Hier stehen nur **am Baum
+verifizierte Low-Level-Fakten** — drei read-only Agenten + Hauptsession, jede Zeile mit Anker.
+Nichts hiervon ist Plan; die Reihenfolge-Entscheidungen stehen als gemessene Kollisionen da.
+
+## 0. Funktionsprüfung: alle sechs Stufen grün auf diesem Baum
+
+Ausgeführt seriell unter `/tmp/fleet-e2e.lock`, 2026-07-28 vormittags:
+tsc über 9 Dateien (7 Gate-Dateien + postland-Harness + merge-prompt) OK ·
+`./e2e-clean-review.sh` ALL PASS · `./e2e-security.sh` ALL PASS · `./e2e-claude-gate.sh` ALL PASS ·
+`./e2e-isolated.sh` ALL PASS (Trail-Rows geschrieben, tree=5e33d59… gestempelt) ·
+`./e2e-postland-audit.sh` ALL PASS. Der Land-Pfad und Tier-2 sind damit auf diesem Baum
+deterministisch bewiesen.
+
+## 1. Must-agree-Paare (Agent 1): 34 verifiziert, Klassifikation, Brüche
+
+**Heute gebrochen (jeder Anker gelesen):**
+- `BACKGROUND_MARKS` `server.ts:1779` = 2 Marker (`:1777/:1778`), aber `runWorker` (`:2155`,
+  einzige `summaryViaSession`-Aufrufstelle `:2158`) hat **8 Aufrufstellen**: `:2237` summary ✓Mark,
+  `:2470` review ✓Mark, `:2575` commit-msg, `:2663` enhance, `:3805` merge-resolver, `:3829`
+  repair, `:3913` ② clean-review, `:5492` digest — **6 unmarkiert**. Produktion nimmt an allen 8
+  den Session-Pfad (watchdog.sh:101 setzt keine `FLEET_*_CMD`-Stand-ins). Fix-Form: Pflichtfeld in
+  `WorkerSpec` `:2149-2154`.
+- Render-Key `src/client.ts:2604-2607` listet `branch, dirty, ahead` — **`behind` fehlt**,
+  gerendert in `renderSlots` bei `:2386`; `:1268` nutzt `behind` zusätzlich im Brief-Pfad.
+- `steward-arena.sh:155` kopiert 2 von 4 lokalen server.ts-Imports (`server.ts:7-10`:
+  merge-prompt, lane-signals, enhance-prompt, continuity — es fehlen die letzten beiden);
+  `:153-154` formuliert selbst die verletzte Invariante.
+- `docs/verify-tiering.md:321-322/:335-336/:359-360` behauptet Tier-2 auskommentiert/off —
+  `watchdog.sh:81-88,:101` fährt es live.
+- **NEU** `watchdog.sh:67-70` Kommentar „NOT here: … ./e2e-security.sh" ↔ `:71` fährt genau diese
+  Suite im Gate (Register A2.5).
+- **NEU** tsc-Liste `watchdog.sh:71` (7 Dateien) ↔ 5× `fleet-e2e*.ts` auf Platte:
+  `fleet-e2e-postland-audit.ts` fehlt (Register A2.6).
+- NUL-Byte in `src/client.ts`: **GEFIXT** (0 von 205.340 Bytes; Commit `688d22e`). Die CLAUDE.md-
+  Regel dazu war veraltet und ist heute entfernt.
+
+**Klassifikation (Auswahl mit beiden Ankern):** protocol.ts-Klasse (TS↔TS): `MAX_CHUNK=1000`
+`src/client.ts:17` ↔ WS-Cap 1024 `server.ts:7090` (stiller Drop!); `DISPO_VERDICTS`
+`src/client.ts:2980` ↔ `DISPOSITION_VERDICTS` `server.ts:3733`; Worker-Literale `src/client.ts:1589/
+:3365/:3838/:3901` ↔ `DISPOSITION_WORKERS` `server.ts:3730-3732`; `GitInfo` doppelt definiert
+`src/client.ts:137` ↔ `server.ts:801`; `PostLandAuditInfo` `src/client.ts:2523` ↔ Projektion
+`server.ts:3369-3372`; Modell-Literal `server.ts:90` ↔ `fleet-e2e-claude-gate.ts:220`; doneMark↔
+Contract-Key ×8 (u. a. `server.ts:3806`↔`merge-prompt.ts:70`, `:3914`↔`merge-prompt.ts:262`).
+pins.ts-Klasse (.sh/.md-Seite): cp-Listen ×6 ↔ `server.ts:7-10`; `VERIFY_SKIP_EXIT=42`
+`server.ts:2822` ↔ `watchdog.sh:71/:88`; `VERIFY_SKIP_MARK` `server.ts:2828` ↔ watchdog-Echo;
+Port-Band-Tabelle `e2e-isolated.sh:22-40` ↔ 6 `PORT=`-Zeilen (heute deckungsgleich, security auf
+21400 umgelegt); `FLEET_CLEAN_REVIEW`-Parse-Menge `server.ts:2715-2716` ↔ watchdog `shadow`.
+
+**Platzierungs-Folgen (entscheidet Lane-Reihenfolge):**
+- `src/protocol.ts` mit server.ts-Import → Pflicht-Edit an **5** cp-Listen (clean-review,
+  claude-gate, postland, steward-arena, drill-3); isolated+security kopieren `src/` bereits.
+- Top-Level `protocol.ts` → alle 7 Listen.
+- `e2e/pins.ts` als Runner-Modul → `fleet-e2e.ts:10-38` MUSS editiert werden (explizite
+  Registrierung); als Standalone-Skript (`bun e2e/pins.ts` im Baum, nicht im Scratch) → kein
+  Runner-Edit, keine cp-Listen-Abhängigkeit.
+- `drills/drill-3.sh:33-41` ist der einzige abgeleitete cp-Guard; seine Regex `:34`
+  (`from "\./[A-Za-z0-9_-]+"`) **matcht keine Subpfade** — `./src/protocol` wäre unsichtbar.
+
+## 2. Harness-Fold (Agent 2): Zahlen und Divergenzen
+
+- cp-Listen: nur `e2e-isolated.sh:49` kopiert `e2e/`. Die 4 Einzeldatei-Harnesse haben **0 lokale
+  Imports** — nur deshalb booten sie ohne `e2e/`.
+- Dupliziertes Plumbing gegen existierende geteilte Module: claude-gate ≈24 Z., clean-review ≈45,
+  security ≈21, postland ≈40 → **≈130**; plus Paar-Duplikation clean-review↔postland ohne
+  geteiltes Modul (Seeding cr:56-63↔pla:149-156, openLane cr:68-91↔pla:160-175, driveMerge
+  cr:92-107↔pla:176-187) ≈32-40; Shell-Blöcke ×5 Wrapper (Reap-Loop, Bind-Wait, trap, Teardown)
+  ≈90. **−260 trägt nur TS+Shell zusammen; TS allein ≈150 netto.**
+- **4 Divergenzen sind Entscheidungen, kein Drift:** (a) `waitMerge` pollt in cr/pla bei
+  `!running && last===null` weiter, `e2e/lane-helpers.ts:36` returnt (cr trägt Begründung);
+  (b) `FLEET_TOKEN`-Env honorieren harness.ts:45+security, die 3 anderen nicht; (c) SOCK/PORT-
+  Defaults: harness.ts:10-11 = LIVE `claudefleet`/8790, Harnesse eigene Bänder; (d) Live-Socket-
+  Refusal: unbedingt in allen 4 Harnessen, Escape-Hatch im Runner (fleet-e2e.ts:42-43), **fehlt
+  in harness.ts komplett**.
+- Trail: `writeTrailRow` `e2e/trail-emit.ts:121-132`, einziger Importeur `e2e/harness.ts:5`.
+  `FLEET_E2E_SUITE` wird **nirgends** gesetzt (einziger Leser trail-emit.ts:62, Default
+  "isolated") — auch gefaltete Harnesse stempeln falsch, bis ihre Wrapper sie setzen. Die
+  `node_modules`-Symlinks für `sourceTree()` setzen alle 4 Wrapper bereits.
+- Laufzeit-Gate ≈104 Checks (cr läuft 2×: Gate- + Shadow-Phase, e2e-clean-review.sh:107/120);
+  statisch 154 in den 4 Dateien. Die „158" aus Session 10 wurde nicht reproduziert.
+
+## 3. Intervention-Outcome (Agent 3): Session-10-Claim korrigiert
+
+- **`outcomeTally` hat VIER Schreiber, nicht einen:** measureOutcomes `server.ts:917` (nie
+  gelaufen — `grep -c steward_send audit.jsonl` = 0, Log unrotiert seit 21.07.), Harm-Route
+  `:6190` (nie), **propose-Pfad `:6745` (lief 11×** — `steward_propose_outcome`=11, live-Tally
+  propose {helped:7, dismissed:4}), Boot-Restore `:4752`.
+- **`promotionEligible("propose")` `server.ts:3703-3706` wäre heute TRUE** (7≥5, harmed 0,
+  Attest 25.07. + 14d TTL frisch bis 08.08.) — gespeist nur vom propose-Pfad, nie von der
+  Send-Messung. Leser: exakt 2 (GET-Route `:5706`, Harm-Response `:6202`); **Client: 0 Treffer.**
+- Bestand server.ts **318 Zeilen**: :294-312 Konstanten, :494 saveState-Felder, :851 Aufruf,
+  :857-880 helpedGitSince, :882-924 measureOutcomes, :926-953 measureControls, :3638-3706
+  Deklarationen+Prädikat, :4722-4767 Boot-Restore, :5108-5137 Produzent, :5700-5723 GET,
+  :6171-6203 Harm-POST. e2e: `e2e/steward-outcomes.ts` ~278 von 657, `fleet-e2e-claude-gate.ts:
+  79-117` ~39, `e2e/security.ts:66` Pin, Wrapper-Knobs `e2e-isolated.sh:273`/`e2e-claude-gate.sh:
+  85`. Gesamt ≈645 berührte Zeilen.
+- Persistenz: `fleet.json` trägt heute outcomePending:[] :102, outcomeTally :103-110,
+  harmCandidates:[] :111, harmAttestAt :112. Nach Löschung: Restore liest Keys defensiv einzeln →
+  unbekannte Keys ignoriert, Felder verschwinden beim **ersten saveState nach Restart**.
+- Zwei falsche dismissed-Rows: nur als Aggregat in fleet.json:103-110 (nicht unterscheidbar),
+  roh in audit.jsonl (ts 1785224757396/1785224759044) + steward-journal.jsonl. Nach Löschung
+  liest **niemand** mehr den Zähler → Reparatur gegenstandslos. **Offene Teilentscheidung:**
+  propose-Block `server.ts:6730-6748` — `audit()`-Call ist der einzige Lösch-Trail für
+  Steward-Tasks (behalten), `bumpTally`-Write verliert sein Ziel (kappen).
+- NICHT mit weg: handleStewardSend :5051-5107+:5139-5140, stewardRecentSends :322-331,
+  Lane-Outcome-Ledger (Namensvetter, :3412-3439 u. a.), Dispositions-Rail :3708-3770 (nur
+  `:3767` schreibt harmAttestAt), Journal-Infrastruktur :5155-5160/:5725-5760. e2e-Kopplungen
+  brauchen Umbau statt Schnitt: Digest-Anker steward-outcomes.ts:308-318, Tier-1-Block :549-656
+  nutzt Fixture oc2 (:156), security.ts:66-Pin muss editiert werden (Paritäts-Check :147-150).
+
+## 4. Gemessene Kollisionsflächen → erzwungene Serialisierung
+
+- protocol-Lane ↔ fold-Lane: 5 Wrapper-cp-Listen (wenn src/protocol.ts vor der Ableitung landet).
+- protocol-Lane ↔ delete-Lane: `fleet-e2e.ts:10-38` (Runner-Registrierung, falls pins als Modul)
+  + server.ts-Deklarationsregionen (:294-312, :3638-3706 werden gelöscht).
+- fold-Lane ↔ delete-Lane: `e2e-isolated.sh:273` (SRV_ENV-Zeile mit Outcome-Knobs),
+  `e2e-claude-gate.sh:85` (Spawn-Zeile), `fleet-e2e-claude-gate.ts:79-117` (Branch 3 ruft
+  `/api/steward/outcomes`).
+- Konsequenz: **fold → protocol → delete, strikt seriell**; die Ableitung zuerst macht die
+  protocol-Platzierung wrapper-frei (Akzeptanztest der Ableitung: ein späterer
+  `./src/protocol`-Import reitet ohne Wrapper-Edit mit — Subpfad-Regex-Falle aus §1 beachten).
+
+## 5. Merge-Pfad-Defekt am Baum bestätigt (Autonomie-Blocker)
+
+`tryScriptRebase` `server.ts:3777-3786`: `await git(cwd, "rebase", "--abort")` `:3784` —
+**Exit-Code verworfen**. Schlägt der Abort fehl (z. B. index.lock einer parallelen git-Operation),
+bleibt die Lane mid-rebase; `pre.clean` ist fortan false, jede Route `landed:false`.
+`tickGit` (Kommentar :809-812) *erkennt* wedged state (`gitOpInProgress`), verhindert ihn aber
+nicht; `gitRetry` `:577` (index.lock-Backoff) ist nur an die Commit-Route `:2603/:2616`
+verdrahtet, nicht an rebase/abort. Cross-Run-Fall-Through (HANDOFF-Korrektur 4): Durable-Intent-
+Marker :3960-3974 deckt Restart-mid-run; der Lapse-Pfad über bewegtes main ist **nicht** hier
+verifiziert — als Claim an die Härtungs-Lane.
+
+## 6. Aufgeräumt / Nebenbefunde (Hauptsession)
+
+- Orphan-Worktrees `a0fa`/`6883`: je **0 Commits vor main** (58/46 dahinter), Trees sauber →
+  Worktrees + Branches entfernt, nichts verloren.
+- Stash vom 21.07. („parked to clean main for landing") ist **nicht überholt**: will
+  `klaus.example.com` aus FLEET_ALLOWED_HOSTS/FLEET_SHARE_HOSTS (watchdog.sh:101 trägt
+  beide noch) + Emoji-Wechsel in share.html:298. Owner-Entscheid; unangetastet.
+- Hygiene: **693** geleakte `fleet*`-Sockets entfernt (Glob matcht `claudefleet` nicht;
+  live-Socket danach verifiziert: 7 Sessions, Server 200), **109** Scratch-Verzeichnisse
+  (~800 MB) gelöscht. `$TMPDIR/fleet-e2e-trail` bewusst behalten (Audit-Trail-Daten).
+  Wachstums-Mechanismus bleibt (Register A5.3: Wrapper behalten Scratch bei Fehler, kein Reaper).
+- Live-Gate-Beschreibung in `docs/lane-brief-template.md:84` gefixt (`9d3944f`).

@@ -259,8 +259,20 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # (a still-quiet slot or a lone early blip is stale by close → no-effect). FLEET_HARM_ATTEST_TTL_MS
 # shrinks the attest-freshness window to 4s so the stale-attest → not-eligible path is testable.
 # FLEET_PROMOTION_MIN_N=1 so a single helped makes a class promotion-eligible.
+#
+# ONE list, used TWICE: for the srv spawn below and for the harness process further down. The
+# suite restarts srv mid-run and rebuilds the server env from a whitelist of process.env keys, so
+# a knob set on only one of the two lines silently REVERTS at that restart (the post-restart server
+# would fall back to the 10-min outcome window, lose the dispatch repo, and run the real `claude`
+# instead of the stand-ins). Two hand-kept copies could drift; one string cannot.
+# Values are single-quoted for the inner shell tmux runs, which is why the harness invocation goes
+# through `eval` — assignments that arrive by expansion are not assignments to the parser, and only
+# a re-parse both recognises them and strips these quotes.
+# FLEET_HOST stays OUT of the list on purpose: it is a server-side bind knob, and the harness
+# hardcodes 127.0.0.1 (e2e/harness.ts's IP) rather than reading it.
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 for _ in $(seq 1 60); do
@@ -271,12 +283,8 @@ done
 sleep 0.5
 
 cd "$DIR" || exit 1
-# the outcome-window/N overrides must also be in the TEST's env: the suite restarts srv mid-run
-# and rebuilds the server env from a whitelist of process.env keys — without these here they'd be
-# dropped on restart and the post-restart server would revert to the 10-min default window. Same
-# for the dispatch repo + fake-agent cmds: dropped, the post-restart dispatcher is permanently
-# unavailable and merge/summary/commit fall back to the real `claude`.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST FLEET_INTAKE_SECRET=$INTAKE FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_HARM_ATTEST_TTL_MS=4000 FLEET_PROMOTION_MIN_N=1 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_DISPATCH_REPO="$REPO" FLEET_SUMMARY_CMD="$DIR/fakesum" FLEET_ENHANCE_CMD="$DIR/fakeenh" FLEET_MERGE_CMD="$DIR/fakemerge" FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_COMMIT_CMD="$DIR/fakecommit" FLEET_REVIEW_CMD="$DIR/fakereview" FLEET_DIGEST_CMD="$DIR/fakedigest" bun fleet-e2e.ts
+# the SAME env the srv spawn got — see the SRV_ENV comment above for why the two must be one string
+eval "$SRV_ENV bun fleet-e2e.ts"
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

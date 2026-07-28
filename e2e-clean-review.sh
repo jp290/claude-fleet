@@ -82,12 +82,26 @@ done
 trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 tmux -L "$SOCK" kill-server 2>/dev/null
 
+# wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
+# this suite runs in the pre-land gate, where a slow boot would read as a red gate. ANY HTTP status
+# means it's listening (401 without a token still proves the port is up). A function, not an inline
+# loop: this harness boots srv TWICE (gate phase, then the shadow-phase restart) and the two waits
+# must not be able to drift. `_hc`, not `code` — `code` carries the harness's exit status.
+wait_bound() {
+  for _ in $(seq 1 60); do
+    _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+    [ "$_hc" != "000" ] && break
+    sleep 0.5
+  done
+  sleep 0.5
+}
+
 # FLEET_AUTO_REVIEW_MS=0 turns the auto-③ tick OFF here: this harness configures no
 # FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
-sleep 2
+wait_bound
 
 cd "$DIR" || exit 1
 echo "--- phase: gate (FLEET_CLEAN_REVIEW=1) ---"
@@ -102,7 +116,7 @@ if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-session -t srv 2>/dev/null
   tmux -L "$SOCK" new-session -d -s srv \
     "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
-  sleep 2
+  wait_bound
   echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
   FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
   code=$?

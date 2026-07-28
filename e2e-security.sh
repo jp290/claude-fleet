@@ -65,7 +65,15 @@ tmux -L "$SOCK" new-session -d -s srv \
    FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST \
    FLEET_DISPATCH_REPO='$DIR/dispatchrepo' FLEET_DISPATCH_MAX_LANES=8 \
    exec bun server.ts >> server.log 2>&1"
-sleep 2
+# wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
+# this suite runs in the pre-land gate, where a slow boot would read as a red gate.
+# ANY HTTP status means it's listening (401 without a token still proves the port is up).
+for _ in $(seq 1 60); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+  [ "$code" != "000" ] && break
+  sleep 0.5
+done
+sleep 0.5
 
 cd "$DIR" || exit 1
 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_TOKEN=$TOKEN FLEET_INTAKE_SECRET=$INTAKE \

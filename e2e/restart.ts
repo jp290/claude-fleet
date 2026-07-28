@@ -95,9 +95,9 @@ export async function run(ctx: Ctx): Promise<void> {
   // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
   // `--dangerously-skip-permissions` would silently leave the server in unattended
   // mode after the test run, an escalation the README promises is explicit opt-in
-  // FLEET_OUTCOME_WINDOW_MS / FLEET_PROMOTION_MIN_N must ride across the restart too, or the
-  // post-restart server reverts to the 10-min default window and the outcome tests (which run
-  // after this section) can never measure a send inside the test's time budget.
+  // FLEET_OUTCOME_WINDOW_MS / FLEET_OUTCOME_SUSTAIN_MS must ride across the restart too, or the
+  // post-restart server reverts to the 10-min default window and the baselineRate tests (which run
+  // after this section) can never turn a control cohort over inside the test's time budget.
   // FLEET_DISPATCH_REPO + the fake-agent cmds must ride across too, or every post-restart test
   // meets a server whose dispatcher is permanently unavailable and whose merge/summary/commit
   // agents are the real `claude` instead of the suite's stand-ins.
@@ -106,8 +106,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // as today" case below is exercised against a genuinely unconfigured server (§3). The
   // configured-server verify cases run before this restart.
   const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
-    "FLEET_OUTCOME_WINDOW_MS", "FLEET_OUTCOME_SUSTAIN_MS", "FLEET_HARM_ATTEST_TTL_MS",
-    "FLEET_PROMOTION_MIN_N", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
+    "FLEET_OUTCOME_WINDOW_MS", "FLEET_OUTCOME_SUSTAIN_MS", "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",

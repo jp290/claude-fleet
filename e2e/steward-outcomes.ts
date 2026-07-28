@@ -1,8 +1,7 @@
-// The steward principal, second half: filed proposals and the propose tally, per-slot model,
-// intervention outcomes and the harm/attest machinery, the owner disposition rail, the
-// baselineRate null-calibration, and the Tier-1 signal surface.
+// The steward principal, second half: filed proposals, per-slot model, the owner disposition
+// rail, the A2 null-calibration baselineRate, and the Tier-1 signal surface.
 import { spawnSync } from "node:child_process";
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, tmuxOut } from "./harness";
 import type { StewardCtx } from "./ctx";
 import type { DigJ } from "./steward-core";
@@ -35,48 +34,6 @@ export async function run(sc: StewardCtx): Promise<void> {
   check("owner token on the steward tasks route is out of scope (404)",
     (await post("/api/steward/tasks", { text: "x" })).status === 404);
 
-  // --- B1 (F-C): owner promote/dismiss of a STEWARD-origin proposal is a causally-clean
-  // `propose`-class outcome. Promote → propose.helped; dismiss → the DISTINCT propose.dismissed
-  // signal (not folded into noEffect, not harmed). Owner-source tasks never touch propose. ---
-  const readPropose = async (): Promise<{ helped: number; noEffect: number; harmed: number; dismissed: number }> => {
-    const o = (await (await sc.stewGet("/api/steward/outcomes")).json()) as { tally: Record<string, { helped: number; noEffect: number; harmed: number; dismissed: number }> };
-    return o.tally.propose ?? { helped: 0, noEffect: 0, harmed: 0, dismissed: 0 };
-  };
-  const pBefore = await readPropose();
-  const propA = (await (await sc.stewPost("/api/steward/tasks", { text: "propose A: promote me" })).json()) as { task: { id: string } };
-  check("B1: promoting a steward proposal is accepted", (await post(`/api/tasks/${propA.task.id}/queue`, {})).ok);
-  const pPromote = await readPropose();
-  check("B1: promote (queue) of a steward proposal records propose.helped +1 (only helped moves)",
-    pPromote.helped === pBefore.helped + 1 && pPromote.dismissed === pBefore.dismissed
-      && pPromote.harmed === pBefore.harmed && pPromote.noEffect === pBefore.noEffect,
-    JSON.stringify({ before: pBefore, after: pPromote }));
-
-  const propB = (await (await sc.stewPost("/api/steward/tasks", { text: "propose B: dismiss me" })).json()) as { task: { id: string } };
-  check("B1: dismissing a steward proposal is accepted", (await post(`/api/tasks/${propB.task.id}/delete`, {})).ok);
-  const pDismiss = await readPropose();
-  check("B1: dismiss (delete) of a steward proposal records propose.dismissed +1 — NOT helped, NOT harmed",
-    pDismiss.dismissed === pPromote.dismissed + 1 && pDismiss.helped === pPromote.helped
-      && pDismiss.harmed === pPromote.harmed,
-    JSON.stringify({ before: pPromote, after: pDismiss }));
-
-  const ownerT = (await (await post("/api/tasks", { text: "owner task, not a proposal", queue: false })).json()) as { task: { id: string } };
-  await post(`/api/tasks/${ownerT.task.id}/queue`, {});
-  const pOwner = await readPropose();
-  check("B1: promoting an OWNER-source task does NOT touch the propose tally (source guard)",
-    pOwner.helped === pDismiss.helped && pOwner.dismissed === pDismiss.dismissed
-      && pOwner.harmed === pDismiss.harmed && pOwner.noEffect === pDismiss.noEffect,
-    JSON.stringify({ before: pDismiss, after: pOwner }));
-  await post(`/api/tasks/${ownerT.task.id}/delete`, {});
-
-  // idempotency: propA was already promoted (helped +1); deleting the now-queued proposal is
-  // cleanup, not a dismissal — the pending-only guard must make it a no-op (fire ONCE per task).
-  const pIdemBefore = await readPropose();
-  await post(`/api/tasks/${propA.task.id}/delete`, {});
-  const pIdemAfter = await readPropose();
-  check("B1 idempotency: deleting an ALREADY-promoted steward proposal does NOT double-count",
-    pIdemAfter.helped === pIdemBefore.helped && pIdemAfter.dismissed === pIdemBefore.dismissed,
-    JSON.stringify({ before: pIdemBefore, after: pIdemAfter }));
-
   // --- Slot.model (synergy-findings Tier-2): per-slot claude model, validated at set time
   // (the value is baked into the pane's shell command — charset is load-bearing), persisted
   // on the slot and echoed on the owner + steward reads. The --model spawn-string proof
@@ -92,7 +49,7 @@ export async function run(sc: StewardCtx): Promise<void> {
   // reject-only by design: these provoke a 400 and mutate NO slot state. The ACCEPT half of the
   // contract lives in the claude-gate suite, which proves it harder anyway (200 *and* the
   // shell-quoted spawn string). Opening a real slot here reorders state under the steward-send
-  // episode/outcome checks further down — observed, 7 unrelated failures.
+  // episode-cap-sensitive checks further down — observed, 7 unrelated failures.
   check("a bracket group NOT anchored at the end is rejected (400)",
     (await post("/api/slots/1/open", { cwd: ".", model: "claude-5[1m]tail" })).status === 400);
   check("an unbalanced bracket is rejected (400)",
@@ -117,116 +74,40 @@ export async function run(sc: StewardCtx): Promise<void> {
   renameSync("steward-journal.jsonl", "steward-journal.jsonl.1");
   await sc.stewPost("/api/steward/journal", { counts: { "healthy-running": 4 }, decisions_surfaced: 0, changed: false });
   await Bun.sleep(200);
-  // tail wide enough (server max) to be robust against interleaved outcome records: the 1.5s test
-  // window can close a pending send-outcome into the journal at any point around this block, and
-  // B1's propose-outcome trail adds one record per owner promote/dismiss of a steward task — the
-  // cap-probe cleanup above dismisses ~10 in a burst, which pushed the anchor past a tail of 10.
+  // tail wide enough (server max) to be robust against interleaved records: the propose-outcome
+  // trail adds one record per owner promote/dismiss of a steward task — the cap-probe cleanup
+  // above dismisses ~10 in a burst, which pushed the anchor past a tail of 10.
   const jGet2J = (await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string; counts?: Record<string, number>; decisions_surfaced?: number; changed?: boolean }[] };
   check("steward journal delta anchor survives a rotation boundary (reads across .1)",
     jGet2J.records?.some((r) => r.kind === "rundgang" && r.decisions_surfaced === 1)
     && jGet2J.records?.some((r) => r.kind === "rundgang" && r.counts?.["healthy-running"] === 4 && r.changed === false),
     JSON.stringify(jGet2J).slice(0, 200));
 
-  // --- intervention-outcome fuel (steward-intelligence.md §4): per-send measurement + a
-  // HARM-AWARE durable per-class tally, read from STATE (never a journal scan, §3). The server
-  // runs with FLEET_OUTCOME_WINDOW_MS=1500 + FLEET_PROMOTION_MIN_N=1 so this measures in seconds.
-  // Measurement is folded into tickGit (~10s), so each awaitMeasured tolerates one tick. ---
-  interface Outcomes {
-    tally: Record<string, { helped: number; noEffect: number; harmed: number; dismissed: number }>;
-    pending: { slot: number; class: string }[];
-    candidates: { slot: number; class: string }[];
-    eligibility: Record<string, boolean>;
-    config: { minN: number; windowMs: number; harmChannelActive: boolean };
-  }
-  const readOutcomes = async (): Promise<Outcomes> => (await (await sc.stewGet("/api/steward/outcomes")).json()) as Outcomes;
-  const outcomeFor = async (slot: number): Promise<string | undefined> => {
-    const recs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: Record<string, unknown>[] }).records;
-    return recs.filter((x) => x.kind === "outcome" && x.slot === slot).map((x) => x.outcome as string).pop();
-  };
-  const awaitMeasured = async (slot: number): Promise<void> => {
-    for (let i = 0; i < 140; i++) { // ~28s: window (1.5s) + one tickGit (≤10s) + margin
-      if (!(await readOutcomes()).pending.some((p) => p.slot === slot)) return;
-      await Bun.sleep(200);
-    }
-  };
+  // digest's delta anchor must be the last RUNDGANG record, not the last record of ANY kind
+  // (P-1a) — proved using a still-live non-rundgang journal writer: promoting/dismissing a
+  // steward proposal appends kind:"propose_outcome" (server.ts, the /api/tasks/:id/queue|delete
+  // route) independently of the deleted intervention-outcome tally
+  // (docs/analysis-2026-07-28-verification.md §3).
+  const anchorProp = (await (await sc.stewPost("/api/steward/tasks", { text: "propose: digest anchor probe" })).json()) as { task: { id: string } };
+  await post(`/api/tasks/${anchorProp.task.id}/queue`, {});
+  await Bun.sleep(200); // writeStewardJournal's appendEvent write is fire-and-forget — settle before reading
+  const anchorRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string }[] }).records;
+  const anchorJ = (await (await sc.stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { prior?: { counts?: Record<string, number> } | null };
+  check("digest delta anchor is the last RUNDGANG record, not a foreign record written since (P-1a)",
+    anchorRecs[anchorRecs.length - 1]?.kind === "propose_outcome"
+    && anchorJ.prior?.kind === "rundgang" && anchorJ.prior?.counts?.["healthy-running"] === 4,
+    JSON.stringify({ lastRecord: anchorRecs[anchorRecs.length - 1]?.kind, prior: anchorJ.prior }).slice(0, 240));
+  await post(`/api/tasks/${anchorProp.task.id}/delete`, {});
 
-  // five fresh lanes (distinct slots) so continue_nudge's per-kind×slot episode cap never collides.
-  // oc4 = dirty-delta-only (ahead unchanged), oc5 = sustained-output positive path (A1).
-  const oc1 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  // oc2/oc4: fixtures reused below — oc2 by the Tier-1 signal surface checks, oc4 by the
+  // pulse-scaffold checks. The intervention-outcome measurement these lanes used to also
+  // exercise was removed with the outcome subsystem (docs/analysis-2026-07-28-verification.md §3).
   const oc2 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  const oc3 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   const oc4 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  const oc5 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  // slots age their idle in parallel, so these sequential awaits total ~one MIN_IDLE window, not five
-  await sc.settleForSteward(oc1.slot); await sc.settleForSteward(oc2.slot); await sc.settleForSteward(oc3.slot);
-  await sc.settleForSteward(oc4.slot); await sc.settleForSteward(oc5.slot);
-
-  const oc1send = await sc.stewPost("/api/steward/send", { slot: oc1.slot, kind: "continue_nudge", ref: "continue" });
-  check("outcome: a steward send parks a pending-outcome baseline (survives via saveState)",
-    oc1send.ok && (await readOutcomes()).pending.some((p) => p.slot === oc1.slot), String(oc1send.status));
-  await sc.stewPost("/api/steward/send", { slot: oc2.slot, kind: "continue_nudge", ref: "continue" });
-  await sc.stewPost("/api/steward/send", { slot: oc3.slot, kind: "continue_nudge", ref: "continue" });
-  await sc.stewPost("/api/steward/send", { slot: oc4.slot, kind: "continue_nudge", ref: "continue" });
-  await sc.stewPost("/api/steward/send", { slot: oc5.slot, kind: "continue_nudge", ref: "continue" });
-
-  const tally0 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
-  // oc1: a real git delta (a new commit → ahead increases) in the window → helped
-  spawnSync("git", ["-C", oc1.cwd, "commit", "--allow-empty", "-qm", "outcome effect delta"]);
-  // oc3: transient output that BEGINS but does not still-emit at window close → no-effect
-  await tmuxOut("send-keys", "-t", `s${oc3.slot}`, "echo outcome-blip", "Enter");
-  // oc4: a DIRTY-only change — ahead unchanged, dirty count moves — must score no-effect. The old
-  // helpedGit (`dirty !== baseline.dirty`) scored this 'helped'; ahead-increase-only fixes it (F-B.1).
-  writeFileSync(`${oc4.cwd}/outcome-dirty.txt`, "uncommitted work, no new commit\n");
-  // oc5: sustained output — a loop that keeps emitting so the slot is still-emitting at window
-  // close (recency ≤ FLEET_OUTCOME_SUSTAIN_MS) → helped via the OUTPUT signal (not git). This path
-  // was unreachable before A1 (outputBaseline was never read); shrunk SUSTAIN makes it testable.
-  await tmuxOut("send-keys", "-t", `s${oc5.slot}`, "while true; do echo oc5-tick; sleep 0.1; done", "Enter");
-  await awaitMeasured(oc1.slot); await awaitMeasured(oc2.slot); await awaitMeasured(oc3.slot);
-  await awaitMeasured(oc4.slot); await awaitMeasured(oc5.slot);
-  await tmuxOut("send-keys", "-t", `s${oc5.slot}`, "C-c"); // stop the loop now that it has been measured
-
-  check("outcome: a git delta since baseline records 'helped'", (await outcomeFor(oc1.slot)) === "helped");
-  check("outcome: no git delta and no sustained output records 'no-effect'", (await outcomeFor(oc2.slot)) === "noEffect");
-  check("outcome: transient output that did not sustain to window close stays 'no-effect' (conservative)", (await outcomeFor(oc3.slot)) === "noEffect");
-  check("outcome: a dirty-count change with NO new commit is 'no-effect' (ahead-increase only, not dirty-delta)", (await outcomeFor(oc4.slot)) === "noEffect");
-  check("outcome: output sustained to window close records 'helped' via the output signal", (await outcomeFor(oc5.slot)) === "helped");
-  const tally1 = (await readOutcomes()).tally.continue_nudge ?? { helped: 0, noEffect: 0, harmed: 0 };
-  check("outcome: two 'helped' outcomes (git delta + sustained output) increment tally.continue_nudge.helped", tally1.helped === tally0.helped + 2, `${tally0.helped}->${tally1.helped}`);
-  check("outcome: three 'no-effect' outcomes (idle, blip, dirty-only) increment tally.continue_nudge.noEffect", tally1.noEffect === tally0.noEffect + 3, `${tally0.noEffect}->${tally1.noEffect}`);
-
-  // --- commit-cursor fact layer (step 4): the helped-git predicate is sha-grounded.
-  // oc6 = LAND-inside-the-window: the lane's commits merge into the integration branch and the
-  // slot is torn down — the ahead-count goes backward, so the pre-sha predicate scored this
-  // noEffect; the sha baseline (parked repo + merged:false) must score it helped. oc7 = amend:
-  // history rewritten (baseline no longer an ancestor) → conservative noEffect, never a false
-  // helped (a naive rev-list baseline..HEAD would count the amended commit as new work). ---
-  const oc6 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  const oc7 = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  const oc6Branch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
-    .slots.find((x) => x.id === oc6.slot)?.worktree?.branch ?? "";
-  writeFileSync(`${oc6.cwd}/land-me.txt`, "work that lands inside the window\n");
-  spawnSync("git", ["-C", oc6.cwd, "add", "land-me.txt"]);
-  spawnSync("git", ["-C", oc6.cwd, "commit", "-qm", "land-me"]);
-  spawnSync("git", ["-C", oc7.cwd, "commit", "--allow-empty", "-qm", "will be amended"]);
-  await sc.settleForSteward(oc6.slot); await sc.settleForSteward(oc7.slot);
-  await sc.stewPost("/api/steward/send", { slot: oc6.slot, kind: "continue_nudge", ref: "continue" });
-  await sc.stewPost("/api/steward/send", { slot: oc7.slot, kind: "continue_nudge", ref: "continue" });
-  spawnSync("git", ["-C", REPO, "merge", "-q", oc6Branch]); // owner-side merge, inside the window
-  const oc6land = await post(`/api/slots/${oc6.slot}/land`, {});
-  check("outcome setup: the nudged lane lands inside the window (slot + gitInfo torn down)", oc6land.ok, await oc6land.text());
-  spawnSync("git", ["-C", oc7.cwd, "commit", "--amend", "-qm", "amended"]); // rewrite, same ahead-count
-  await awaitMeasured(oc6.slot); await awaitMeasured(oc7.slot);
-  check("outcome: a lane whose commits LANDED inside the window records 'helped' (strongest signal — was noEffect pre-sha)",
-    (await outcomeFor(oc6.slot)) === "helped");
-  check("outcome: rewritten history (amend — baseline sha no longer an ancestor) stays 'no-effect', never a false helped",
-    (await outcomeFor(oc7.slot)) === "noEffect");
-  await post(`/api/slots/${oc7.slot}/kill`, {}); // free the lane budget (DISPATCH_MAX_LANES) for the dispatch block below
 
   // --- kind:"pulse" (docs/steward-pulse-v2.md phase A): the one steward kind carrying a composed
-  // field. Everything around that field is SERVER-rendered scaffold, and the pulse rides the same
-  // gates/caps/outcome machinery as the typed kinds — a sent pulse must land as class:"pulse" in
-  // the tally, which is the whole point (the feeder for promotionEligible("pulse")).
-  // Target: oc4 — already settled, and its continue_nudge episode does not bound a DIFFERENT kind.
+  // field. Everything around that field is SERVER-rendered scaffold.
+  // Target: oc4 — settled right before the first pulse send below.
   {
     const PU_Q = "Ist der aktuelle Ansatz noch der kuerzeste Weg zum Done-Kriterium?";
     // the free-text refusal (the invariant every typed kind exists for) holds for pulse too:
@@ -245,9 +126,6 @@ export async function run(sc: StewardCtx): Promise<void> {
 
     const oc4Branch = ((await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] })
       .slots.find((x) => x.id === oc4.slot)?.worktree?.branch ?? "";
-    const puTallyBefore = (await readOutcomes()).tally.pulse;
-    check("pulse: the class starts unmeasured (the tally it feeds is empty before the first pulse)",
-      puTallyBefore === undefined, JSON.stringify(puTallyBefore));
     // the quote's subject-swap guard: oc4 is UNPINNED (FLEET_CMD=true pins no session id), and a
     // FOREIGN transcript now sits in its cwd's project dir as the only — hence newest — file there.
     // pulseLastOutput used to reach it through transcriptFile()'s newest-by-mtime fallback and would
@@ -257,7 +135,7 @@ export async function run(sc: StewardCtx): Promise<void> {
     await Bun.write(`${puProjDir}/foreign-session.jsonl`,
       `${JSON.stringify({ type: "assistant", timestamp: "2026-01-01T00:00:00Z",
         message: { content: [{ type: "text", text: PU_FOREIGN }] } })}\n`);
-    await sc.settleForSteward(oc4.slot); // the earlier continue_nudge paste reset its idle clock
+    await sc.settleForSteward(oc4.slot); // the fresh lane's own startup output keeps it non-idle until settled
     const puRes = await sc.stewPost("/api/steward/send", { slot: oc4.slot, kind: "pulse", question: PU_Q });
     const puJ = (await puRes.json()) as { ok?: boolean; text?: string; error?: string };
     const puLines = (puJ.text ?? "").split("\n");
@@ -298,9 +176,6 @@ export async function run(sc: StewardCtx): Promise<void> {
     rmSync(puProjDir, { recursive: true, force: true }); // unique throwaway dir — drop it whole
     check("pulse: carries NO verification suffix — it is a question, not a work order",
       !(puJ.text ?? "").includes("Verifiziere dein Ergebnis"), JSON.stringify(puJ.text));
-    check("pulse: the send parks an outcome baseline of class 'pulse' (the starving tally's feeder)",
-      (await readOutcomes()).pending.some((p) => p.slot === oc4.slot && p.class === "pulse"),
-      JSON.stringify((await readOutcomes()).pending));
     // a second pulse to the same slot inside the episode window is capped by the SAME per-kind×slot
     // rule the other kinds use — one pulse per session per work-episode (steward-pulse-v2.md).
     // The re-settle is load-bearing: the first pulse's own paste echo reset the pane's idle clock,
@@ -311,75 +186,10 @@ export async function run(sc: StewardCtx): Promise<void> {
     check("pulse: a second pulse to the same slot inside the episode window is capped (429) — one per session per episode",
       puDup.status === 429 && !puDupJ.ok && (puDupJ.error ?? "").includes("episode"),
       `${puDup.status} ${JSON.stringify(puDupJ)}`);
-
-    await awaitMeasured(oc4.slot);
-    const puTally = (await readOutcomes()).tally.pulse;
-    check("pulse: the measured send increments outcomeTally['pulse'] — class-generic measurement, no per-kind feeder code",
-      !!puTally && puTally.helped + puTally.noEffect === 1 && puTally.harmed === 0,
-      JSON.stringify(puTally));
-    check("pulse: promotion eligibility is computed for the new class like any other (harm-blind here → false)",
-      (await readOutcomes()).eligibility.pulse === false, JSON.stringify((await readOutcomes()).eligibility));
   }
 
-  // P-1a: the digest's delta anchor is the last RUNDGANG record, not the last record of any kind.
-  // Deterministic here: the five outcomes just measured are the journal's newest records, while
-  // the newest rundgang is the post-rotation one from the anchor test above (healthy-running: 4).
-  // Unfiltered (the pre-fix behaviour) `prior` would be an `outcome` record and the pulse would
-  // diff against a foreign baseline. ?wait=0 → prior is recomputed fresh regardless of the cache.
-  const anchorRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string }[] }).records;
-  const anchorJ = (await (await sc.stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { prior?: { counts?: Record<string, number> } | null };
-  check("digest delta anchor is the last RUNDGANG record, not a foreign record written since (P-1a)",
-    anchorRecs[anchorRecs.length - 1]?.kind === "outcome"
-    && anchorJ.prior?.kind === "rundgang" && anchorJ.prior?.counts?.["healthy-running"] === 4,
-    JSON.stringify({ lastRecord: anchorRecs[anchorRecs.length - 1]?.kind, prior: anchorJ.prior }).slice(0, 240));
-
-  // harm-BLIND guard: continue_nudge now has helped≥N(=1) and harmed==0, but the owner harm
-  // channel has never operated → NOT eligible (never promote on a record that can't show harm)
-  check("promotion: helped≥N but a harm-BLIND record (channel never operated) is NOT eligible",
-    (await readOutcomes()).eligibility.continue_nudge === false);
-  // owner marks a DIFFERENT class harmful — the ONLY writer of `harmed`, never auto/LLM-judged
-  const harmRes = await post("/api/steward/outcomes/harm", { class: "lifecycle_op", ref: "commit", slot: oc1.slot });
-  const harmJ = (await harmRes.json()) as { ok?: boolean; tally?: { harmed: number }; eligible?: boolean };
-  check("harm-label: an owner harm-label increments tally[class].harmed", harmRes.ok && harmJ.tally?.harmed === 1, JSON.stringify(harmJ));
-  check("harm-label: the harmed class is not promotion-eligible", harmJ.eligible === false);
-  const afterHarm = await readOutcomes();
-  check("harm-label: harmed is recorded in state and blocks that class (helped==0, harmed==1)",
-    afterHarm.tally.lifecycle_op?.harmed === 1 && afterHarm.eligibility.lifecycle_op === false, JSON.stringify(afterHarm.tally.lifecycle_op));
-  check("promotion: once the harm channel has operated, a clean class (helped≥N, harmed==0) IS eligible",
-    afterHarm.eligibility.continue_nudge === true && afterHarm.config.harmChannelActive === true);
-
-  // owner token is out of scope for the steward outcomes GET (steward-scoped, like the journal)
-  check("owner token on the steward outcomes route is out of scope (404)", (await get("/api/steward/outcomes")).status === 404);
-
-  // the tally lives in STATE, never the rotatable journal (§3): rotating the journal file must
-  // not touch the counts. Simulate the 2nd rotation that would discard the oldest outcome lines.
-  const beforeRot = JSON.stringify((await readOutcomes()).tally);
-  renameSync("steward-journal.jsonl", "steward-journal.jsonl.1"); // discards the prior .1, rotates current out
-  const afterRot = await readOutcomes();
-  check("tally survives a journal rotation (read from state, never a journal scan — §3)",
-    JSON.stringify(afterRot.tally) === beforeRot
-    && (afterRot.tally.continue_nudge?.helped ?? 0) >= 1 && afterRot.tally.lifecycle_op?.harmed === 1,
-    JSON.stringify(afterRot.tally).slice(0, 200));
-
-  // A1: the harm attest is a STALENESS-GATED timestamp, not a forever latch. A fresh attest makes a
-  // clean class eligible; once it ages past FLEET_HARM_ATTEST_TTL_MS the SAME class reverts to
-  // ineligible until re-attested. On the old boolean-latch code `harmChannelActive` stays true
-  // forever, so the stale check below (expects NOT eligible) fails there.
-  const attestTtlMs = Number(process.env.FLEET_HARM_ATTEST_TTL_MS ?? 4000);
-  await post("/api/steward/outcomes/harm", { attest: true }); // fresh attest (no harm label)
-  check("attest: a fresh harm attest makes a clean class (helped≥N, harmed==0) promotion-eligible",
-    (await readOutcomes()).eligibility.continue_nudge === true);
-  await Bun.sleep(attestTtlMs + 1500); // age the attest past its freshness window
-  check("attest: once the attest ages past FLEET_HARM_ATTEST_TTL_MS the class is NOT eligible (no forever-latch)",
-    (await readOutcomes()).eligibility.continue_nudge === false);
-  await post("/api/steward/outcomes/harm", { attest: true }); // re-attest inside the window
-  check("attest: re-attesting inside the window restores eligibility",
-    (await readOutcomes()).eligibility.continue_nudge === true);
-
   // --- the OWNER DISPOSITION RAIL (server.ts, grep `DISPOSITION rail`): the one label channel for
-  // advisory worker output. It lives here, immediately after the attest checks, because its
-  // safety-critical coupling is to harmAttestAt — labeling IS the owner operating the harm channel,
-  // and that claim is only provable next to the machinery that reads it. ---
+  // advisory worker output. ---
   {
     interface DispoRead { dispositions: { at: number; worker: string; ref: string; disposition: string; source: string }[]; total: number }
     // the rail's append is fire-and-forget by design (a wedged disk must never block the request
@@ -389,8 +199,6 @@ export async function run(sc: StewardCtx): Promise<void> {
       await Bun.sleep(250);
       return (await (await get("/api/dispositions?limit=2000")).json()) as DispoRead;
     };
-    const attestAt = async (): Promise<number> =>
-      ((await (await sc.stewGet("/api/steward/outcomes")).json()) as { config: { harmAttestAt: number } }).config.harmAttestAt;
 
     // ref shape 1 — `land`: `<branch>@<ts>` of a REAL outcome row (ts is the only field every row
     // carries; headSha is null on legacy rows and on a kill that could not resolve HEAD).
@@ -399,10 +207,8 @@ export async function run(sc: StewardCtx): Promise<void> {
     const landRef = `${anyOutcome?.branch ?? "(branch not recorded)"}@${anyOutcome?.ts ?? 0}`;
     check("disposition setup: a real outcome row exists to label", !!anyOutcome && typeof anyOutcome.ts === "number", landRef);
 
-    const before = await attestAt();
-    await Bun.sleep(1100); // the write must be strictly later, and Date.now() is ms-granular
     const wr = await post("/api/dispositions", { worker: "land", ref: landRef, disposition: "accepted" });
-    const wrJ = (await wr.json()) as { ok?: boolean; record?: { source?: string; at?: number }; harmAttestAt?: number };
+    const wrJ = (await wr.json()) as { ok?: boolean; record?: { source?: string; at?: number } };
     check("disposition: an owner write is accepted and stamps source \"owner\" (never read from the body)",
       wr.ok && wrJ.ok === true && wrJ.record?.source === "owner", `${wr.status} ${JSON.stringify(wrJ)}`);
     const rt = await readDispos();
@@ -410,18 +216,9 @@ export async function run(sc: StewardCtx): Promise<void> {
     check("disposition: the owner write round-trips through the append-only rail (worker/ref/verdict/source)",
       landRow?.disposition === "accepted" && landRow?.source === "owner" && typeof landRow?.at === "number"
       && rt.total >= 1, JSON.stringify(landRow ?? null));
-    check("disposition: labeling advances harmAttestAt — labeling IS the harm channel operating",
-      (await attestAt()) > before, `${before} -> ${await attestAt()}`);
 
-    // …and that advance is not cosmetic: a rail write RESTORES promotion eligibility on its own,
-    // exactly as an explicit attest does. This is the whole reason the rail is wired to the
-    // harm channel — the machinery was structurally unfeedable before it existed.
-    await Bun.sleep(attestTtlMs + 1500); // age it back out
-    check("disposition: eligibility really did go stale again before the rail write (control)",
-      (await readOutcomes()).eligibility.continue_nudge === false);
+    // a changed mind is a second write to the same ref, not an edit of the first
     await post("/api/dispositions", { worker: "land", ref: landRef, disposition: "wrong" });
-    check("disposition: an owner label alone (no explicit attest) restores promotion eligibility",
-      (await readOutcomes()).eligibility.continue_nudge === true);
     // append-only + newest-wins: the re-label does NOT rewrite the first row, it supersedes it
     const relabeled = (await readDispos()).dispositions.filter((d) => d.worker === "land" && d.ref === landRef);
     check("disposition: a changed mind APPENDS (both rows on the rail, newest first) — nothing is rewritten",
@@ -494,17 +291,19 @@ export async function run(sc: StewardCtx): Promise<void> {
       dispoMode === 0o600, dispoMode.toString(8));
   }
 
+  // owner token is out of scope for the steward outcomes GET (steward-scoped, like the journal)
+  check("owner token on the steward outcomes route is out of scope (404)", (await get("/api/steward/outcomes")).status === 404);
+
   // --- A2 null-calibration: `baselineRate` (F-C). The SAME helped classifier run over ACTIVE,
   // UN-nudged slots gives the background "helped-looking" rate — a working slot commits/emits
-  // anyway — so a nudged-helped count is interpretable. It is ADVISORY: it must NEVER gate
-  // promotion and NEVER write outcomeTally. The server samples the busiest un-nudged slots each
-  // window; the shrunk FLEET_OUTCOME_WINDOW_MS turns control cohorts over in seconds. ---
+  // anyway. It is ADVISORY: it must NEVER gate anything. The server samples the busiest
+  // un-nudged slots each window; the shrunk FLEET_OUTCOME_WINDOW_MS turns control cohorts over
+  // in seconds. ---
   // The ring is CAPPED (server.ts, BASELINE_RING_CAP): once it saturates, `samples` is pinned at
   // the cap and a shift can cancel an incoming helped — so "a sample was recorded" must be read
   // off the lifetime counters `seen`/`seenHelped`, never off the ring's length. The ring is still
   // asserted about, as a ring: its own rate identity, and the cap it must respect.
   interface BaselineOutcomes {
-    tally: Record<string, { helped: number; noEffect: number; harmed: number }>;
     baselineRate: { rate: number | null; samples: number; helped: number; cap: number; seen: number; seenHelped: number };
   }
   const readBaseline = async (): Promise<BaselineOutcomes> =>
@@ -514,7 +313,6 @@ export async function run(sc: StewardCtx): Promise<void> {
   // window close → the control classifier scores it 'helped' via the OUTPUT signal, no nudge.
   const bl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   const blBefore = await readBaseline();
-  const tallyBefore = JSON.stringify(blBefore.tally);
   await tmuxOut("send-keys", "-t", `s${bl.slot}`, "while true; do echo baseline-tick; sleep 0.1; done", "Enter");
   let blBusy = blBefore; // poll ~44s (a control cohort turns over roughly every tickGit≈10s)
   for (let i = 0; i < 220; i++) {
@@ -538,8 +336,6 @@ export async function run(sc: StewardCtx): Promise<void> {
     && blBusy.baselineRate.samples <= blBusy.baselineRate.seen
     && blBusy.baselineRate.helped <= blBusy.baselineRate.seenHelped,
     JSON.stringify(blBusy.baselineRate));
-  check("baselineRate: the control sampler NEVER writes outcomeTally (advisory only — never gates, never tallies)",
-    JSON.stringify(blBusy.tally) === tallyBefore, `${tallyBefore} -> ${JSON.stringify(blBusy.tally)}`);
 
   // no-effect control: after the loop stops, drain any cohort that overlapped it, then a window
   // with NO un-nudged slot committing/emitting must record a NON-helped sample — seen rises,
@@ -663,9 +459,7 @@ export async function run(sc: StewardCtx): Promise<void> {
   check("steward sessions surfaces a wedged merge/rebase (gitOp true)", sigWedged?.gitOp === true, JSON.stringify(sigWedged?.gitOp));
   spawnSync("git", ["-C", oc2.cwd, "rebase", "--abort"]);
 
-  await post(`/api/slots/${oc1.slot}/kill`, {});
   await post(`/api/slots/${oc2.slot}/kill`, {});
-  await post(`/api/slots/${oc3.slot}/kill`, {});
   await post(`/api/slots/${sc.slot}/kill`, {});
   await post(`/api/slots/${bl.slot}/kill`, {}); // A2 control lane — free its lane budget for the dispatch block
 

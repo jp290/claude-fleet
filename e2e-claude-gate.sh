@@ -78,14 +78,11 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # PATH_EXPORT is read ONCE at server.ts startup and baked into every pane command for the
 # server's whole lifetime (server.ts:31) — $FAKEBIN must be prepended here, at server start,
 # not passed to the test script later, or newly-opened panes wouldn't see it
-# FLEET_STEWARD_MIN_IDLE_MS + FLEET_OUTCOME_WINDOW_MS are shrunk for the crash-candidate branch:
-# it must send a steward nudge (idle gate) then let claude die inside the effect window (which the
-# window-close measurement pass reads) within the test's time budget rather than the 60s/10min defaults.
 # FLEET_AUTO_REVIEW_MS=0 turns the auto-③ tick OFF here: this harness configures no
 # FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_OUTCOME_WINDOW_MS=3000 exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).

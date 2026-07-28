@@ -9,6 +9,22 @@ export const IP = process.env.FLEET_E2E_HOST ?? "127.0.0.1";
 // (own port + own tmux socket) instead of the live fleet — see e2e-isolated.sh
 export const PORT = Number(process.env.FLEET_PORT ?? 8790);
 export const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
+// THE LIVE-FLEET REFUSAL. Every e2e entry point — the runner and the four single-file harnesses —
+// opens and kills slots, restarts srv, drives merges and lands. Against the live pair that is the
+// owner's real panes. Each harness used to carry its own hand-copied version of this line, which
+// is one forgotten line away from a fifth harness driving the fleet; it belongs in the module they
+// all import, as the FIRST thing it does, so nothing can act before it.
+// BOTH halves of the live pair are checked, because they are reached by different means and a
+// wrapper can get one right and the other wrong: SOCK is what every tmux command hits, PORT is
+// what every fetch() hits. A run with FLEET_SOCK set but FLEET_PORT forgotten would previously
+// have talked HTTP to the live server on a test socket and looked fine doing it.
+// The escape hatch is the one fleet-e2e.ts already documented (docs/verification.md:39); folding
+// the refusal here extends it to the four harnesses, which had none — a deliberate loosening,
+// and the price of having exactly one copy of the rule.
+const LIVE_SOCK = "claudefleet";
+const LIVE_PORT = 8790;
+if ((SOCK === LIVE_SOCK || PORT === LIVE_PORT) && !process.env.FLEET_E2E_ALLOW_LIVE)
+  throw new Error(`refusing to run against the live fleet (socket=${SOCK} port=${PORT}) — use one of the ./e2e-*.sh wrappers (or set FLEET_E2E_ALLOW_LIVE=1)`);
 export const BASE = `http://${IP}:${PORT}`;
 // the suite copy this runs from: the modules live in e2e/, every state file the server writes
 // (fleet.json, streams/, audit.jsonl, …) sits next to server.ts one level up.

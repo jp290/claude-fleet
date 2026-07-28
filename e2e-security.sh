@@ -20,11 +20,13 @@ PORT=$((21400 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-# src/ comes along for the static client-invariant checks (§7) — they must read the REAL
-# sources, and the harness resolves everything relative to its own directory.
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
-  "$SRC/continuity.ts" "$SRC/fleet-e2e-security.ts" "$SRC/src" "$SRC/public" "$SRC/package.json" "$DIR/"
-ln -s "$SRC/node_modules" "$DIR/node_modules"
+# Instance contents are DERIVED from the entry files' imports — rule in e2e-stage.sh.
+# STAGE_EXTRA=src is the one thing derivation CANNOT see: §7's static client-invariant checks
+# readFileSync `$ROOT/src/client.ts` and `$ROOT/src/md.ts` (fleet-e2e-security.ts:312/329/333).
+# An import scan finds imports; a file read by path is invisible to it, so it is declared.
+. "$SRC/e2e-stage.sh"
+STAGE_EXTRA=src
+stage_instance "$SRC" "$DIR" server.ts fleet-e2e-security.ts || exit 1
 
 # two throwaway repos: one the lane/branch checks fork from, one the dispatcher spawns from
 # (kept separate so a dispatched lane can never collide with a hand-made one)
@@ -76,7 +78,10 @@ done
 sleep 0.5
 
 cd "$DIR" || exit 1
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_TOKEN=$TOKEN FLEET_INTAKE_SECRET=$INTAKE \
+# FLEET_E2E_SUITE labels this run's trail rows (e2e/trail-emit.ts); the emitter's default is
+# "isolated", so without it these rows would claim to be the main suite's.
+FLEET_E2E_SUITE=security \
+  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_TOKEN=$TOKEN FLEET_INTAKE_SECRET=$INTAKE \
   FLEET_SHARE_HOSTS=$SHAREHOST FLEET_E2E_REPO="$DIR/testrepo" FLEET_DISPATCH_REPO="$DIR/dispatchrepo" \
   bun fleet-e2e-security.ts
 code=$?

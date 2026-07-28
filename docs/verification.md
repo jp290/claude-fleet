@@ -35,8 +35,16 @@ bun run build
 
 - **Judge the tail, not a remembered count.** The suite grows; "155 checks" is a
   claim from a handoff, "ALL PASS" at the end of *this* run is a signal.
-- `e2e-isolated.sh` refuses the live socket, so it is safe anywhere — including
-  inside a lane. Raw `bun fleet-e2e.ts` is blocked without `FLEET_E2E_ALLOW_LIVE=1`.
+- Every suite refuses the live fleet, so they are safe anywhere — including inside a lane. The
+  refusal lives in `e2e/harness.ts` and fires on import, so no entry point can act before it, and
+  it covers **both** halves of the live pair: socket `claudefleet` (what tmux commands hit) and
+  port 8790 (what `fetch` hits). Raw `bun fleet-e2e.ts` — or any of the four single-file harnesses
+  — is blocked without `FLEET_E2E_ALLOW_LIVE=1`.
+- **What an instance contains is derived, not listed.** `e2e-stage.sh` copies the entry files plus
+  the transitive closure of their relative imports (subpaths included), `public/`, `package.json`
+  and a `node_modules` symlink; `$STAGE_EXTRA` declares the few assets read by path rather than
+  imported. All seven copy-scripts use it, so a new `server.ts` import needs no wrapper edit — the
+  hand-kept lists it replaced had already killed `e2e-postland-audit.sh` and `steward-arena.sh`.
 - **Where a check goes:** `fleet-e2e.ts` is a runner; the checks live in `e2e/<family>.ts`
   (slots, autos, share, merge, outcomes, steward-…). Shared plumbing is `e2e/harness.ts`;
   cross-section fixtures travel through `e2e/ctx.ts`. Naming `fleet-e2e.ts` on the `tsc` line

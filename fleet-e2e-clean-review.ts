@@ -6,107 +6,31 @@
 // The same file runs a second time under FLEET_CR_PHASE=shadow against a server booted with
 // FLEET_CLEAN_REVIEW=shadow: there the reviewer is POWERLESS — every verdict lands and is only
 // RECORDED on the lane's outcome row (`cleanReviewShadow`).
+// Plumbing — BASE, the owner token read out of the instance's fleet.json, post/get/check, and the
+// live-fleet refusal this file used to carry as its own copied line — is e2e/harness.ts; that
+// refusal now fires on import and covers the live PORT as well as the live socket. The lane spine
+// (seedRepo / openLane / driveMerge, and the two waits underneath them) is e2e/lane-helpers.ts,
+// shared with fleet-e2e-postland-audit.ts, which drove lanes exactly this way from its own copy.
+// waitMerge there settles only on a real verdict for these harnesses — the requireVerdict option,
+// where the reason this suite polls through a null `last` is written down.
+// check() in harness.ts is the per-check trail's single emit site, so BOTH phases of this suite now
+// leave durable rows (docs/e2e-trail.md), stamped FLEET_E2E_SUITE=clean-review by the wrapper.
 import { spawnSync } from "node:child_process";
-const IP = "127.0.0.1";
-const PORT = Number(process.env.FLEET_PORT ?? 8790);
-const SOCK = process.env.FLEET_SOCK ?? "fleetcrtest";
-if (SOCK === "claudefleet") throw new Error("refusing to run against the live socket");
-const BASE = `http://${IP}:${PORT}`;
-const results: string[] = [];
-let failed = 0;
-function check(name: string, ok: boolean, detail = ""): void {
-  results.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
-  if (!ok) failed++;
-}
+import { check, failures, get, post, results } from "./e2e/harness";
+import { driveMerge, openLane, seedRepo, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 
-const stateFile = (await Bun.file(`${import.meta.dir}/fleet.json`).json()) as { token?: string };
-const TOKEN = stateFile.token ?? "";
-const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
-const post = (path: string, body: unknown): Promise<Response> =>
-  fetch(BASE + path, { method: "POST", headers: H, body: JSON.stringify(body) });
-const get = (path: string): Promise<Response> => fetch(BASE + path, { headers: H });
-
-type MergeVerdict = { status: string; detail: string; landed: boolean; cleanReview?: { verdict: string; reason: string } };
-const WAIT_MS = 60_000;
-const STEP = 100;
-const waitMerge = async (slot: number): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
-  for (let i = 0; i < Math.ceil(WAIT_MS / STEP); i++) {
-    const r = await get(`/api/slots/${slot}/merge`);
-    if (r.status === 400) return { gone: true, last: null }; // slot torn down = the lane LANDED
-    const j = (await r.json()) as { running: boolean; last: MergeVerdict | null };
-    // settle ONLY on a real verdict: !running with a null last means the job hasn't produced one yet
-    // (started/recorded lag), not "done" — keep polling rather than returning a spurious null.
-    if (!j.running && j.last !== null) return { gone: false, last: j.last };
-    await Bun.sleep(STEP);
-  }
-  throw new Error(`waitMerge timed out for slot ${slot} — merge job never settled`);
-};
-const settleForMerge = async (slot: number): Promise<void> => {
-  for (let i = 0; i < 80; i++) {
-    const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
-    const sl = sx.slots.find((x) => x.id === slot);
-    if (sl && sx.now - sl.lastOutput >= 3000) return;
-    await Bun.sleep(150);
-  }
-};
 const setReviewMode = (m: string): Promise<number> => Bun.write(`${import.meta.dir}/cleanreviewmode`, m);
 const mainLog = (): string => spawnSync("git", ["-C", REPO, "log", "--oneline", "-6"]).stdout.toString();
 
 // throwaway repo the lanes fork from
 const REPO = `${import.meta.dir}/testrepo`;
-spawnSync("git", ["init", "-q", "-b", "main", REPO]);
-spawnSync("git", ["-C", REPO, "config", "user.email", "t@t"]);
-spawnSync("git", ["-C", REPO, "config", "user.name", "t"]);
-spawnSync("git", ["-C", REPO, "config", "commit.gpgsign", "false"]);
-await Bun.write(`${REPO}/seed.txt`, "seed\n");
-spawnSync("git", ["-C", REPO, "add", "seed.txt"]);
-spawnSync("git", ["-C", REPO, "commit", "-qm", "seed"]);
+await seedRepo(REPO);
 
-// create a lane that rebases CLEANLY (its own file → no conflict, the merge agent is never consulted),
-// commit its work, drive its merge, return the settled verdict. This is exactly the clean+green
-// auto-land path the reviewer guards.
-type Lane = { slot: number; cwd: string; branch: string };
-// open a lane, optionally give it an owner BRIEF (logged to the prompt journal — what ② is told the
-// lane was asked to do), and commit one file so it has real in-flight work.
-const openLane = async (name: string, brief?: string): Promise<Lane> => {
-  const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
-  // the brief is logged as an OWNER prompt regardless of pane readiness (same route e2e/outcomes.ts
-  // uses) — reported as its own check rather than thrown, so a send failure names itself instead of
-  // taking the rest of the suite down with an unhandled rejection
-  if (brief) {
-    const sent = await post("/send", { slot: ln.slot, text: brief });
-    check(`the owner brief for lane ${name} is accepted (and journalled)`, sent.ok, `${sent.status} ${await sent.text()}`);
-  }
-  await Bun.write(`${ln.cwd}/${name}.txt`, `${name} work\n`);
-  spawnSync("git", ["-C", ln.cwd, "add", `${name}.txt`]);
-  // a freshly-created lane worktree can briefly hold a git index lock (fleet's tickGit polls it right
-  // after `git worktree add`), so the FIRST commit can silently fail. Retry until it is actually in the
-  // log — otherwise the lane has no commit and the merge handler treats it as already-at-main.
-  for (let i = 0; i < 12; i++) {
-    spawnSync("git", ["-C", ln.cwd, "commit", "-qm", `${name} lane work`]);
-    if (spawnSync("git", ["-C", ln.cwd, "log", "--oneline", "-1"]).stdout.toString().includes(`${name} lane work`)) break;
-    await Bun.sleep(300);
-  }
-  return ln;
-};
-const driveMerge = async (ln: Lane, name: string): Promise<{ gone: boolean; last: MergeVerdict | null; branch: string }> => {
-  // the idle gate can refuse the FIRST merge attempt on a freshly-spawned pane — retry until the job
-  // actually starts (running) or the slot is gone (landed) or a verdict appears, so waitMerge never
-  // reads a never-started merge as a null verdict.
-  for (let attempt = 0; attempt < 8; attempt++) {
-    await settleForMerge(ln.slot);
-    const m = await post(`/api/slots/${ln.slot}/merge`, {});
-    if (!m.ok) console.error(`[${name}] merge POST attempt ${attempt}: ${m.status} ${(await m.clone().text()).slice(0, 200)}`);
-    const r = await get(`/api/slots/${ln.slot}/merge`);
-    if (r.status === 400) break; // already landed
-    const j = (await r.json()) as { running: boolean; last: MergeVerdict | null };
-    if (j.running || j.last !== null) break; // job started (or already settled)
-    await Bun.sleep(800);
-  }
-  return { ...(await waitMerge(ln.slot)), branch: ln.branch };
-};
+// a lane that rebases CLEANLY (its own file → no conflict, the merge agent is never consulted), its
+// work committed, its merge driven to a settled verdict: exactly the clean+green auto-land path the
+// reviewer guards.
 const cleanLaneMerge = async (name: string): Promise<{ gone: boolean; last: MergeVerdict | null; branch: string }> =>
-  driveMerge(await openLane(name), name);
+  driveMerge(await openLane(REPO, name), name);
 
 // the lane's outcome row (lane-outcomes.jsonl via the owner-only read endpoint), looked up by the
 // lane's branch — the shadow verdict's only home.
@@ -219,8 +143,8 @@ if (PHASE === "shadow") {
     JSON.stringify(kRow?.cleanReviewShadow));
 
   console.log(results.join("\n"));
-  console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
-  process.exit(failed ? 1 : 0);
+  console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+  process.exit(failures() ? 1 : 0);
 }
 
 // ---- GATE PHASE (server booted with FLEET_CLEAN_REVIEW=1) ----
@@ -256,8 +180,8 @@ check("gate: a prose-wrapped ok verdict is rescued and lets the lane auto-land",
 {
   await setReviewMode("ok");
   const BRIEF = "brief for the reviewed lane: keep the change inside sierra.txt";
-  const reviewed = await openLane("sierra", BRIEF);          // forks from main HERE
-  const sibling = await openLane("tango");                   // stays OPEN — the concurrent-lane picture
+  const reviewed = await openLane(REPO, "sierra", BRIEF);          // forks from main HERE
+  const sibling = await openLane(REPO, "tango");                   // stays OPEN — the concurrent-lane picture
   const moved = await cleanLaneMerge("uniform");             // lands → main moves PAST sierra's fork
   check("enrichment setup: a second lane landed, so main really moved since the reviewed lane forked",
     moved.gone && mainLog().includes("uniform lane work"), mainLog());
@@ -309,5 +233,5 @@ check("gate: an extracted object with a junk verdict still FAILS CLOSED (not lan
 check("the junk-verdict lane's commit did NOT reach main", !mainLog().includes("juliett lane work"), mainLog());
 
 console.log(results.join("\n"));
-console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
-process.exit(failed ? 1 : 0);
+console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+process.exit(failures() ? 1 : 0);

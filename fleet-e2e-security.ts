@@ -12,31 +12,19 @@
 // out-of-scope 403s, pending-never-dispatches, and the client's no-HTML-sink invariant.
 // docs/security-model.md carries the threat model these checks are derived from.
 import { readdirSync, readFileSync, statSync } from "node:fs";
+// Plumbing — IP/PORT/BASE/ROOT, the owner token (env first, then the instance's fleet.json, which
+// is what lets ./e2e-security.sh pin FLEET_TOKEN), post/get/check, and the live-fleet refusal this
+// file used to carry as its own line — is e2e/harness.ts. The refusal now fires on import and
+// covers the live PORT as well as the live socket. check() there is the per-check trail's single
+// emit site, so this suite's checks now leave durable rows (docs/e2e-trail.md), stamped
+// FLEET_E2E_SUITE=security by the wrapper.
+import { BASE, check, failures, get, IP, PORT, post, results, ROOT, TOKEN } from "./e2e/harness";
 
-const IP = "127.0.0.1";
-const PORT = Number(process.env.FLEET_PORT ?? 8790);
-const SOCK = process.env.FLEET_SOCK ?? "fleetsectest";
-if (SOCK === "claudefleet") throw new Error("refusing to run against the live socket");
-const BASE = `http://${IP}:${PORT}`;
-const ROOT = import.meta.dir;
 const REPO = process.env.FLEET_E2E_REPO ?? "";
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 const INTAKE = process.env.FLEET_INTAKE_SECRET ?? "";
 const SHARE_HOST = process.env.FLEET_SHARE_HOSTS ?? "";
 
-const results: string[] = [];
-let failed = 0;
-function check(name: string, ok: boolean, detail = ""): void {
-  results.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
-  if (!ok) failed++;
-}
-
-const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as { token?: string };
-const TOKEN = process.env.FLEET_TOKEN ?? state.token ?? "";
-const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
-const post = (path: string, body: unknown): Promise<Response> =>
-  fetch(BASE + path, { method: "POST", headers: H, body: JSON.stringify(body) });
-const get = (path: string): Promise<Response> => fetch(BASE + path, { headers: H });
 const withCookie = (path: string, cookie: string): Promise<Response> =>
   fetch(BASE + path, { headers: { cookie } });
 
@@ -355,5 +343,5 @@ if (INTAKE && DISPATCH_REPO) {
 }
 
 console.log(results.join("\n"));
-console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
-process.exit(failed ? 1 : 0);
+console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+process.exit(failures() ? 1 : 0);

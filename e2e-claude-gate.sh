@@ -23,8 +23,11 @@ fi
 
 rm -rf "$DIR" "$FAKEBIN"
 mkdir -p "$DIR" "$FAKEBIN"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/continuity.ts" "$SRC/fleet-e2e-claude-gate.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
-ln -s "$SRC/node_modules" "$DIR/node_modules"
+# Instance contents are DERIVED from the entry files' imports — the rule (and the two harnesses
+# that died of hand-kept lists) is in e2e-stage.sh. e2e/harness.ts and its own imports ride in
+# because fleet-e2e-claude-gate.ts imports them; nothing here names them.
+. "$SRC/e2e-stage.sh"
+stage_instance "$SRC" "$DIR" server.ts fleet-e2e-claude-gate.ts || exit 1
 
 # a throwaway git repo the dispatcher spawns lanes from — needed to exercise the
 # post-spawn re-check (server.ts tickDispatch): the gate suite's fake `claude` can die
@@ -94,7 +97,9 @@ done
 sleep 0.5
 
 cd "$DIR" || exit 1
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 bun fleet-e2e-claude-gate.ts
+# FLEET_E2E_SUITE names this suite in every trail row the run writes (e2e/trail-emit.ts); without
+# it the rows would claim to come from the isolated suite, which is the emitter's default.
+FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 bun fleet-e2e-claude-gate.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

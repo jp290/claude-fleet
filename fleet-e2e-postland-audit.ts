@@ -8,46 +8,21 @@
 // Run via ./e2e-postland-audit.sh — never against a live fleet.
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-const IP = "127.0.0.1";
-const PORT = Number(process.env.FLEET_PORT ?? 8790);
-const SOCK = process.env.FLEET_SOCK ?? "fleetplatest";
-if (SOCK === "claudefleet") throw new Error("refusing to run against the live socket");
-const BASE = `http://${IP}:${PORT}`;
-const results: string[] = [];
-let failed = 0;
-function check(name: string, ok: boolean, detail = ""): void {
-  results.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
-  if (!ok) failed++;
-}
-
-const stateFile = (await Bun.file(`${import.meta.dir}/fleet.json`).json()) as { token?: string };
-const TOKEN = stateFile.token ?? "";
-const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
-const post = (path: string, body: unknown): Promise<Response> =>
-  fetch(BASE + path, { method: "POST", headers: H, body: JSON.stringify(body) });
-const get = (path: string): Promise<Response> => fetch(BASE + path, { headers: H });
-
-type MergeVerdict = { status: string; detail: string; landed: boolean };
-const WAIT_MS = 60_000;
-const STEP = 100;
-const waitMerge = async (slot: number): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
-  for (let i = 0; i < Math.ceil(WAIT_MS / STEP); i++) {
-    const r = await get(`/api/slots/${slot}/merge`);
-    if (r.status === 400) return { gone: true, last: null }; // slot torn down = the lane LANDED
-    const j = (await r.json()) as { running: boolean; last: MergeVerdict | null };
-    if (!j.running && j.last !== null) return { gone: false, last: j.last };
-    await Bun.sleep(STEP);
-  }
-  throw new Error(`waitMerge timed out for slot ${slot} — merge job never settled`);
-};
-const settleForMerge = async (slot: number): Promise<void> => {
-  for (let i = 0; i < 80; i++) {
-    const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
-    const sl = sx.slots.find((x) => x.id === slot);
-    if (sl && sx.now - sl.lastOutput >= 3000) return;
-    await Bun.sleep(150);
-  }
-};
+// Plumbing — IP/PORT/SOCK/BASE, the owner token read out of the instance's fleet.json, get/check,
+// and the live-fleet refusal this file used to carry as its own copied line — is e2e/harness.ts;
+// the refusal now fires on import and covers the live PORT as well as the live socket. The lane
+// spine (seedRepo / openLane / driveMerge and the waits underneath) is e2e/lane-helpers.ts, shared
+// with fleet-e2e-clean-review.ts, which drove lanes exactly this way from its own copy.
+// check() in harness.ts is the per-check trail's single emit site, so this suite's checks now leave
+// durable rows (docs/e2e-trail.md), stamped FLEET_E2E_SUITE=postland-audit by the wrapper.
+// NOT folded, deliberately: srv restart. harness.ts's restartSrv carries EVERY FLEET_* key of the
+// harness process forward, which is the wrong shape twice here — sections E–G need a boot that
+// DROPS FLEET_POSTLAND_AUDIT_CMD (an unconfigured server, not one pointed at a declining stand-in),
+// and this wrapper does not strip the lane pane's FLEET_SELF_* credentials the way e2e-isolated.sh
+// does, so a whitelist is the safe direction. e2e/restart.ts builds its own line for its own
+// reasons too.
+import { check, failures, get, IP, PORT, results, SOCK } from "./e2e/harness";
+import { driveMerge, openLane, seedRepo, settleForMerge, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 
 // the stand-in suite's control + evidence files (both live next to this script, = the server's dir)
 const setAuditMode = (m: string): Promise<number> => Bun.write(`${import.meta.dir}/auditmode`, m);
@@ -147,44 +122,15 @@ const startSrv = async (opts: { audit: boolean }): Promise<boolean> => {
 
 // throwaway repo the lanes fork from
 const REPO = `${import.meta.dir}/testrepo`;
-spawnSync("git", ["init", "-q", "-b", "main", REPO]);
-spawnSync("git", ["-C", REPO, "config", "user.email", "t@t"]);
-spawnSync("git", ["-C", REPO, "config", "user.name", "t"]);
-spawnSync("git", ["-C", REPO, "config", "commit.gpgsign", "false"]);
-await Bun.write(`${REPO}/seed.txt`, "seed\n");
-spawnSync("git", ["-C", REPO, "add", "seed.txt"]);
-spawnSync("git", ["-C", REPO, "commit", "-qm", "seed"]);
+await seedRepo(REPO);
 const headOf = (ref = "main"): string => spawnSync("git", ["-C", REPO, "rev-parse", ref]).stdout.toString().trim();
 const noteAt = (sha: string): boolean => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]).status === 0;
 
-type Lane = { slot: number; cwd: string; branch: string };
 // a lane whose rebase is CLEAN (its own file → no conflict, the merge agent is never consulted) with
-// its work committed: exactly the clean+green auto-land path tier 2 hangs off.
-const makeLane = async (name: string): Promise<Lane> => {
-  const ln = (await (await post("/api/lanes", { repo: REPO })).json()) as Lane;
-  await Bun.write(`${ln.cwd}/${name}.txt`, `${name} work\n`);
-  spawnSync("git", ["-C", ln.cwd, "add", `${name}.txt`]);
-  // a freshly-created lane worktree can briefly hold a git index lock — retry until the commit is
-  // actually in the log, or the lane has nothing to land
-  for (let i = 0; i < 12; i++) {
-    spawnSync("git", ["-C", ln.cwd, "commit", "-qm", `${name} lane work`]);
-    if (spawnSync("git", ["-C", ln.cwd, "log", "--oneline", "-1"]).stdout.toString().includes(`${name} lane work`)) break;
-    await Bun.sleep(300);
-  }
-  return ln;
-};
-const landLane = async (ln: Lane): Promise<{ gone: boolean; last: MergeVerdict | null }> => {
-  for (let attempt = 0; attempt < 8; attempt++) {
-    await settleForMerge(ln.slot);
-    await post(`/api/slots/${ln.slot}/merge`, {});
-    const r = await get(`/api/slots/${ln.slot}/merge`);
-    if (r.status === 400) break; // already landed
-    const j = (await r.json()) as { running: boolean; last: MergeVerdict | null };
-    if (j.running || j.last !== null) break;
-    await Bun.sleep(800);
-  }
-  return waitMerge(ln.slot);
-};
+// its work committed: exactly the clean+green auto-land path tier 2 hangs off. Both are one-line
+// bindings of the shared spine to this harness's repo and its local vocabulary.
+const makeLane = (name: string): Promise<Lane> => openLane(REPO, name);
+const landLane = (ln: Lane): Promise<{ gone: boolean; last: MergeVerdict | null }> => driveMerge(ln, ln.branch);
 
 // ===== (D) CONCURRENCY + COALESCING, and the "does not block the land" property =================
 // Runs FIRST, while the trail is empty, so the row counts below are unambiguous. The stand-in sleeps
@@ -426,5 +372,5 @@ check("the queue file is gone once that row exists too", (await readQueueFile())
   JSON.stringify(await readQueueFile()));
 
 console.log(results.join("\n"));
-console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
-process.exit(failed ? 1 : 0);
+console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+process.exit(failures() ? 1 : 0);

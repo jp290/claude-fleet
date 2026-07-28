@@ -1,7 +1,9 @@
 // Prompt history per slot, the global append-only prompt log and the /api/prompts directory
 // served from it, plus the transcript and session-brief reads.
-import { statSync } from "node:fs";
-import { check, get, plogPath, plogRead } from "./harness";
+import { statSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { check, get, post, plogPath, plogRead } from "./harness";
+import { WORKER_CONTRACTS } from "../src/protocol";
 
 export async function run(): Promise<void> {
   // --- prompt history: composed sends recorded, raw WS typing deliberately not ---
@@ -54,6 +56,55 @@ export async function run(): Promise<void> {
   const tr2j = (await tr2.json()) as { entries: unknown[]; total: number };
   check("transcript incremental fetch returns nothing new", tr2.ok && tr2j.entries.length === 0 && tr2j.total >= tr1j.total, `total=${tr2j.total}`);
   check("transcript rejects inactive slot", (await get("/api/slots/4/transcript")).status === 400);
+
+  // --- the CLASSIFICATION: a background worker's transcript is never served as a slot's own
+  // conversation. Every throwaway claude this fleet spawns writes its JSONL into the SAME
+  // ~/.claude/projects/<cwd> directory as the slot it ran for, so the mtime fallback above would
+  // hand the board a resolver's or a digest's prompt as "your conversation". The live-sid set that
+  // would otherwise catch it is process memory and is empty after any restart; the mark in the
+  // prompt text is then the only handle left. Six of the eight workers had no mark at all until
+  // WORKER_CONTRACTS existed, so this runs ONCE PER CONTRACT, driven off that table: a worker added
+  // without a mark cannot pass here, and neither can a mark that has fallen out of its prompt.
+  // Deliberately through the ROUTE, on a throwaway cwd of this run's own — asserting on `source`
+  // (the filename the server chose) rather than on content, because that is the classification
+  // itself and not a proxy for it.
+  {
+    const markCwd = `${tmpdir()}/fleet-e2e-marks-${process.pid}`;
+    const markProj = `${process.env.HOME}/.claude/projects/${markCwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    mkdirSync(markCwd, { recursive: true });
+    mkdirSync(markProj, { recursive: true });
+    const free = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.filter((s) => s.cwd === null).map((s) => s.id).pop();
+    const opened = free !== undefined && (await post(`/api/slots/${free}/open`, { cwd: markCwd })).ok;
+    check("background-mark fixture: a free slot opens on a throwaway cwd", opened, `slot=${free}`);
+    if (opened) {
+      const line = (text: string) =>
+        `${JSON.stringify({ type: "assistant", timestamp: new Date(0).toISOString(), message: { content: [{ type: "text", text }] } })}\n`;
+      for (const [name, contract] of Object.entries(WORKER_CONTRACTS)) {
+        for (const f of readdirSync(markProj)) rmSync(`${markProj}/${f}`);
+        // the slot's own conversation first, the worker's strictly newer — so the fallback prefers
+        // the worker's file on mtime and only the sniff can reject it
+        writeFileSync(`${markProj}/own.jsonl`, line("a real conversation this slot had"));
+        await Bun.sleep(15);
+        writeFileSync(`${markProj}/bg-${name}.jsonl`, line(`${contract.mark} — the worker's own prompt`));
+        const tj = (await (await get(`/api/slots/${free}/transcript`)).json()) as { source: string | null };
+        check(`the ${name} worker's transcript is not served as the slot's conversation`,
+          tj.source === "own.jsonl", `source=${tj.source}`);
+      }
+      // and the control: without a mark the same file IS the slot's conversation, so the row above
+      // is measuring the mark and not some blanket refusal to serve anything
+      for (const f of readdirSync(markProj)) rmSync(`${markProj}/${f}`);
+      writeFileSync(`${markProj}/own.jsonl`, line("a real conversation this slot had"));
+      await Bun.sleep(15);
+      writeFileSync(`${markProj}/unmarked.jsonl`, line("an ordinary session with no worker mark"));
+      const ctl = (await (await get(`/api/slots/${free}/transcript`)).json()) as { source: string | null };
+      check("control: an UNMARKED newer transcript is served (the rows above measure the mark)",
+        ctl.source === "unmarked.jsonl", `source=${ctl.source}`);
+      await post(`/api/slots/${free}/kill`, {});
+    }
+    rmSync(markProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it
+    rmSync(markCwd, { recursive: true, force: true });
+  }
 
   // --- session brief (slot 1 cwd is ~/claude-fleet, a real git repo) ---
   const bf1 = await get("/api/slots/1/brief");

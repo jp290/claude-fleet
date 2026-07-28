@@ -58,17 +58,30 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # TS2688 — the types field NAMES a package, it cannot substitute for one). Costs ~30ms from bun's
 # global cache; --frozen-lockfile keeps it read-only w.r.t. bun.lock, and a failure exits non-zero
 # with a named reason instead of masquerading as a type error.
-# tsc covers SEVEN files, not four (verify-tiering.md §4, §8 Step 1): the three single-file
+# `bun e2e/pins.ts` runs FIRST and costs milliseconds: it reads files and compares them, checking
+# the must-agree pairs whose other side is not TypeScript and that therefore no compiler can see —
+# among them THIS line's own consistency (every entry file type-checked, every named suite present
+# and executable, the comment below honest about what runs, the port bands disjoint, the skip
+# contract's exit code equal to server.ts's VERIFY_SKIP_EXIT). It is cheapest-first for the same
+# reason the rest of the chain is, and it is the only step that can fail before anything is spawned.
+# tsc covers every entry file in the tree (verify-tiering.md §4, §8 Step 1): the single-file
 # harnesses were unimported by anything the checker saw, so the type checker had a blind spot
 # exactly where the suites that guard the land path live. Measured 2026-07-26: 1.62 s, no new
-# errors. ./e2e-clean-review.sh is the gate's FIRST land-path coverage ever (§8 Step 2) — it
+# errors. fleet-e2e-postland-audit.ts was still missing from the list on 2026-07-28 — the harness
+# guarding the whole tier-2 path was the one with no type coverage — which is why the pins step
+# above now derives the list's completeness from the files on disk instead of trusting this line.
+# ./e2e-clean-review.sh is the gate's FIRST land-path coverage ever (§8 Step 2) — it
 # drives tryScriptRebase → runVerify → advanceIntegration → recordLand → landLane end to end and
 # is the only suite exercising runCleanReview, which is live in shadow mode on this fleet. It is
-# ordered cheapest-first so the gate fails fast. NOT here: ./e2e-isolated.sh (§5 — measurably
-# non-deterministic under load, which is why it is tier 2 AFTER the land, not a gate), and
-# ./e2e-security.sh (§8 Step 2b — eligible only after a burn-in, and its first burn-in was void
-# because the suite itself was broken; see d146e74/e5e5e80).
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
+# ordered cheapest-first so the gate fails fast.
+# ./e2e-security.sh IS in the chain (§8 Step 2b): it graduated after its burn-in, and this comment
+# claimed the opposite until 2026-07-28, having outlived the change by weeks.
+# The exclusion clause is LAST in this block by convention, because that is how the pins step reads
+# it: everything after "NOT here:" is taken as denied, and a denied suite that the line below runs
+# fails the gate. Keep it last, and keep it to suite names.
+# NOT here: ./e2e-isolated.sh (§5 — measurably non-deterministic under load, which is why it is
+# tier 2 AFTER the land, not a gate).
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 # --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------

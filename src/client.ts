@@ -5,6 +5,12 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import qrcode from "qrcode-generator";
 import { mdInto } from "./md";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
+// everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
+// than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
+import {
+  WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS,
+  type GitInfo, type PostLandAuditInfo, type DispositionWorker, type DispositionVerdict,
+} from "./protocol";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -14,7 +20,7 @@ const slotsEl = $("slots"), dot = $("dot"),
   pkLists = $("pklists"), pkCrumb = $("pkcrumb"), chipsEl = $("chips"), panesEl = $("panes");
 
 const RECENT_MS = 5000;
-const MAX_CHUNK = 1000; // stay under the server's 1024-byte cap per WS message
+const MAX_CHUNK = WS_INPUT_MAX_BYTES; // the server drops a larger frame in silence — one number, both ends
 const LAYOUTS: Record<string, number> = { "1": 1, "2": 2, "4": 4 };
 
 // must match the mobile media query in index.html
@@ -134,7 +140,6 @@ interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
 }
-interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
 interface WorktreeInfo { repo: string; branch: string }
 interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number;
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean }
@@ -1581,7 +1586,7 @@ async function renderBoard() {
           const rlab = el("div", "ocdispo-row");
           rlab.appendChild(el("span", "ocdispo-state" + (rcur ? ` is-${rcur}` : " is-none"),
             rcur ? `dein Urteil: ${DISPO_WORD_UI[rcur]}` : "unbewertet"));
-          for (const [verdict, word] of [["accepted", "nützlich"], ["wrong", "falsch"]] as [DispoVerdict, string][]) {
+          for (const [verdict, word] of [["accepted", "nützlich"], ["wrong", "falsch"]] as [DispositionVerdict, string][]) {
             const b = el("button", `ocdispo-btn${rcur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
             b.title = `label this review — records an owner \`${verdict}\` disposition on the rail`;
             b.onclick = async () => {
@@ -2520,8 +2525,6 @@ function armReload() {
 const PLA_ACK_KEY = "fleet.plaudit.ack";
 // the compact projection postLandAuditSummary() ships. Tolerant on the wire by design: an older
 // server, or a row written before a field existed, must degrade to "not recorded" — never to a claim.
-interface PostLandAuditInfo { at: number; ms?: number; result: string; repo?: string; main?: string;
-  mainSha?: string; covers?: string[]; reason?: string }
 interface PlaAlarm { tone: "red" | "unknown"; headline: string; where: string; note: string }
 function postLandAlarm(a: PostLandAuditInfo | null, ackedAt: number): PlaAlarm | null {
   if (!a || a.result === "green") return null;
@@ -2604,7 +2607,11 @@ async function refresh() {
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
       data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, s.share?.comments, s.mergePending, serverNow - s.lastOutput < RECENT_MS,
-        s.git?.branch, s.git?.dirty, s.git?.ahead, !!s.worktree])]);
+        // every git field renderSlots actually paints, or the skip-the-rebuild shortcut below
+        // silently freezes it: `behind` was missing here while the lane dot's tooltip has shown
+        // it since the dot existed, so a lane falling behind main kept the old count until some
+        // OTHER field moved. Adding a rendered field here is not optional.
+        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind, !!s.worktree])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();
@@ -2974,15 +2981,13 @@ $("auditbtn").onclick = () => void openAudit();
 // APPROVAL — an unlabeled ref renders as unlabeled, never as accepted, so no view may default a
 // missing label into a verdict. The map is a read cache of the append-only rail: newest wins,
 // which is exactly "the owner changed their mind" and needs no server-side mutation.
-type DispoVerdict = "accepted" | "edited" | "ignored" | "wrong";
 interface DispoRow { at?: number; worker?: string; ref?: string; disposition?: string }
-const dispoByRef = new Map<string, DispoVerdict>();
-const DISPO_VERDICTS: DispoVerdict[] = ["accepted", "edited", "ignored", "wrong"];
+const dispoByRef = new Map<string, DispositionVerdict>();
 // the join keys, mirroring the server's documented ref shapes. `land` is branch@ts because ts is
 // the only field EVERY outcome row carries; a row whose branch was never recorded still joins.
 const landRef = (o: { branch?: string | null; ts: number }) => `${o.branch ?? "(branch not recorded)"}@${o.ts}`;
 const dispoKey = (worker: string, ref: string) => `${worker}\u0000${ref}`;
-function dispoOf(worker: string, ref: string | null | undefined): DispoVerdict | null {
+function dispoOf(worker: DispositionWorker, ref: string | null | undefined): DispositionVerdict | null {
   return ref ? dispoByRef.get(dispoKey(worker, ref)) ?? null : null;
 }
 async function loadDispositions(): Promise<void> {
@@ -2994,19 +2999,19 @@ async function loadDispositions(): Promise<void> {
   // (older) rows for the same ref are superseded history and must not overwrite it
   for (const d of data.dispositions ?? []) {
     if (typeof d.worker !== "string" || typeof d.ref !== "string" || !d.ref) continue;
-    if (!DISPO_VERDICTS.includes(d.disposition as DispoVerdict)) continue;
+    if (!DISPOSITION_VERDICTS.includes(d.disposition as DispositionVerdict)) continue;
     const k = dispoKey(d.worker, d.ref);
-    if (!dispoByRef.has(k)) dispoByRef.set(k, d.disposition as DispoVerdict);
+    if (!dispoByRef.has(k)) dispoByRef.set(k, d.disposition as DispositionVerdict);
   }
 }
 // one write. Returns whether it stuck: a failed label must never render as a label.
-async function labelDisposition(worker: string, ref: string, disposition: DispoVerdict): Promise<boolean> {
+async function labelDisposition(worker: DispositionWorker, ref: string, disposition: DispositionVerdict): Promise<boolean> {
   const res = await post("/api/dispositions", { worker, ref, disposition });
   if (!res.ok) { toast(`labeling failed (${res.status}) — nothing recorded`); return false; }
   dispoByRef.set(dispoKey(worker, ref), disposition);
   return true;
 }
-const DISPO_WORD_UI: Record<DispoVerdict, string> = {
+const DISPO_WORD_UI: Record<DispositionVerdict, string> = {
   accepted: "✓ accepted", edited: "✎ edited", ignored: "· ignored", wrong: "✗ wrong",
 };
 
@@ -3357,7 +3362,7 @@ function renderOutcomes() {
     for (const [verdict, glyph, title] of [
       ["accepted", "✓", "this outcome was right — records an owner `accepted` disposition"],
       ["wrong", "✗", "this outcome was wrong — records an owner `wrong` disposition"],
-    ] as [DispoVerdict, string, string][]) {
+    ] as [DispositionVerdict, string, string][]) {
       const b = el("button", `ocdispo-btn${cur === verdict ? " active" : ""}`, glyph) as HTMLButtonElement;
       b.title = title;
       b.onclick = async () => {

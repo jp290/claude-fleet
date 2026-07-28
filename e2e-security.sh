@@ -9,12 +9,14 @@ set -u
 # spawns. Strip them so the server's OWN issuing logic is the only source of a self token.
 unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_STEWARD_TOKEN
 SRC="$(cd "$(dirname "$0")" && pwd)"
-# SOCK/PORT/DIR from $$ so concurrent runs never share a socket/port, and a band of its own
-# so this suite cannot collide with e2e-isolated (8800+), e2e-claude-gate (10800+) or
-# e2e-clean-review (13000+) either.
+# SOCK/PORT/DIR from $$ so concurrent runs never share a socket/port. The port base comes from
+# the PORT BAND TABLE in e2e-isolated.sh — never pick one here. It moved off 15200 because
+# 15200-17199 overlapped e2e-postland-audit's 15000-16999 by 1800 ports: distinct sockets keep
+# tmux apart, but both suites bind 127.0.0.1:PORT, and both run in the same gate. 21400, not the
+# next free 19400, because that one contains cloudflared's metrics pair (20241/20242).
 DIR="${TMPDIR:-/tmp}/fleet-e2e-security-instance-$$"
 SOCK="fleetsectest$$"
-PORT=$((15200 + $$ % 2000))
+PORT=$((21400 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"

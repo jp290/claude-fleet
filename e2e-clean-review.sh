@@ -9,8 +9,8 @@
 #   ./e2e-clean-review.sh
 set -u
 SRC="$(cd "$(dirname "$0")" && pwd)"
-# SOCK/PORT/DIR derived from $$ so concurrent runs never collide (own port band, distinct from the
-# other suites so the three can't hit each other either)
+# SOCK/PORT/DIR derived from $$ so concurrent runs never collide. The port base comes from the
+# PORT BAND TABLE in e2e-isolated.sh — never pick one here.
 DIR="${TMPDIR:-/tmp}/fleet-e2e-cleanreview-instance-$$"
 SOCK="fleetcrtest$$"
 PORT=$((13000 + $$ % 2000))

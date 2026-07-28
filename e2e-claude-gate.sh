@@ -8,8 +8,8 @@
 set -u
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never share a socket/port —
-# one run's kill-server can't hit another's server (same scheme as e2e-isolated.sh,
-# different port band so the two suites can't collide with each other either)
+# one run's kill-server can't hit another's server (same scheme as e2e-isolated.sh).
+# The port base comes from the PORT BAND TABLE in e2e-isolated.sh — never pick one here.
 DIR="${TMPDIR:-/tmp}/fleet-e2e-gate-instance-$$"
 FAKEBIN="${TMPDIR:-/tmp}/fleet-e2e-gate-fakebin-$$"
 SOCK="fleetgatetest$$"

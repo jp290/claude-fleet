@@ -1,143 +1,121 @@
-# HANDOFF — 2026-07-27/28 (session 9: the audit, eight lands, and a deployed fleet)
+# HANDOFF — 2026-07-28 (session 10: the adversarial pass, and a plan whose core is a refusal)
 
-*A thin map, NOT the knowledge. Every line is a claim to verify. **State is given as a COMMAND,
-not a number** — this convention is inherited and it earns its keep: session 8's handoff was wrong
-by six ledger rows within a day, and two of this session's own errors were stale numbers.*
-
-**The single most important thing: the ② reviewer's main-side feed was `main..main` — structurally
-empty for every lane ever reviewed.** All 25 shadow verdicts on record were correct readings of a
-dead sensor, so the K2 series measured availability and never judgment. Fixed and **deployed**. The
-first land after 2026-07-28 08:49 is the first time in this feature's life that ② sees a real main
-side. Treat those verdicts as a NEW series; do not continue the old count.
+*A thin map, NOT the knowledge. Every line is a claim to verify. **State is a COMMAND, not a
+number.** This convention keeps earning its keep: two of this session's own errors were stale
+numbers, and one was reading silence as evidence.*
 
 ## Status
 
-**Recompute before believing anything below — do not read past this line without running it:**
+**Recompute before believing anything below:**
 ```sh
 ./state.sh
 ```
-`state.sh` derives HEAD, what landed since this handoff, lanes on disk, the ledger counts, whether
-the running server is the code on disk, and machine hygiene. It is a script and not a paragraph on
-purpose: this file's job is the RESIDUE git cannot carry (intent, what is in flight, corrections,
-the order of next steps and why) — not state, which rots between writing and reading.
 
-**What happened is in git, not here.** The commit BODIES are this project's finding record — see
-`69e4b8d` for the shape: measurement, what was traced vs executed, mechanism, components. Read
-`git log <last handoff>..HEAD` rather than trusting a summary. `refs/notes/fleet/land` carries
-structured integration provenance per land (`git notes --ref=fleet/land show <sha>`).
+**What happened is in git.** `git log 143da45..HEAD` with bodies. The two analysis documents this
+session produced are `docs/analysis-2026-07-28-findings.md` (measurements) and
+`docs/analysis-2026-07-28-register.md` (86 claims with their evidence class). Read the findings
+doc before proposing any extraction or any deletion — it exists to stop both from being re-derived.
 
-**Accomplished.** Mined the five ledgers; ran a six-agent read-only audit of the data layer;
-root-caused the merge/resolver flake; wrote the structural plan; briefed and landed **eight lanes**;
-deployed. All of it is live as of 2026-07-28 08:49 (`launchctl kickstart` then `kill-session -t srv`,
-in that order — the kickstart is required because `1028` changed the srv **spawn line** itself).
+**Accomplished.** Built a nine-mechanism overview of the program; ran five agents against it —
+three **blind** to it, two attacking named claims and the selection criterion; turned the result
+into a simplification plan; briefed and landed **two lanes**. Both landed clean+green through the
+ordinary gate; the second went through `⏫` merge, i.e. the unattended auto-land path.
 
-**Live now (verify with the commands above, not this list):**
-- ② anchors its main side on the fork **commit**; an unresolvable fork renders UNKNOWN, never a
-  settled zero. It also receives the lane's brief and the concurrent-lane picture.
-- The tier-2 audit queue survives a srv restart (it previously died with it — that is why four
-  lands on 07-26 have no audit rows and never will).
-- The land path writes a durable intent marker before it moves `main`; boot recovers **from git
-  alone** (`land_recovered` / `land_recover_fail`, never a fabricated undo pair).
-- A red run names its failing checks (the cap kept 33 PASS lines and no FAIL names before).
-- **A per-check trail** — `e2e/trail-emit.ts` writes one row per `check()`. Contract:
-  `docs/e2e-trail.md`.
-- Ledger reads span both rotation generations; state file has a unique temp name, mode-at-create,
-  single-instance guard; `umask 077` now actually reaches the server.
-- The board renders post-land audit results; `confirmedByHuman` no longer renders as
-  "auto-landed clean+green".
+## The one decision that shapes everything after it
 
-**Broken / open:**
-- **The merge/resolver flake is root-caused but NOT fixed.** `tryScriptRebase` discards
-  `git rebase --abort`'s exit code (grep it in `server.ts`), so a lost `index.lock` race leaves a
-  lane mid-rebase with conflict markers. The colliding actor is Fleet's own `tickGit`, which runs
-  `git status` in every slot cwd with no merge-inflight guard. `gitRetry` exists and is wired to
-  only two call sites, neither on the rebase path. **This is the autonomy blocker** — see Next Steps.
-- The land path takes ~1 minute, and it is **not** `tsc` (1.7s) or `bun install` (0.03s): the
-  verify gate ends with three suite wrappers chained by `&&`, each booting its own server.
-- Wave 2 of the audit is unstarted (`docs/audit-implementation-plan.md`).
+**Do not extract from `server.ts`.** Measured, not argued: 7109 lines but **4777 of code**; it grew
+**+908 lines in two days**; the only seam with zero shared mutable state is 238 lines (**3.3 %**).
+Eight invariants survive only by co-location — three synchronous reservations before a first
+`await`, `auditDraining`'s same-turn microtask window, 54 `saveState` call sites over 21 persisted
+fields. Every candidate boundary **creates** must-agree pairs and removes none, because the existing
+pairs are not caused by co-location.
 
-## Next Steps
+`docs/structural-plan.md`'s M2 is therefore superseded in its central proposal — not wrong about the
+defect class, wrong about the remedy. Its remaining value is M1/M3/M4 and its sequencing argument.
 
-The owner's stated goal: **streamline these processes and start testing autonomy.** That reorders
-the structural plan — the following order is by *what unblocks the trial*, not by finding severity.
+**The path that does work here, empirically:** six modules were extracted successfully, all with
+zero module state, zero I/O, zero back-import. **Derivations out, never state.**
 
-1. **Fix the git race.** Check `rebase --abort`'s exit code; route the merge path's rebase/abort
-   through `gitRetry`; add `--no-optional-locks` to the read-only pollers; skip `tickGit` for a slot
-   with a merge in flight. *Why first:* an unattended land's only safety net is the post-land audit,
-   and this flake makes its reds ambiguous. A sensor that cries wolf is worse than none.
-2. **Streamline the land path.** Parallelize the three verify suites — they are isolation-safe by
-   construction (distinct socket prefixes, port bands 10800/13000/15200, separate processes).
-   `watchdog.sh`, so it needs a `launchctl kickstart`; batch it with the next deploy.
-3. **Define the trial.** Half-autonomy = drop **one** slice of the human's role under bounds, with a
-   **friction log** as the product, not a pass rate. Recommended first slice: *land-then-show* —
-   keep inspection (post-hoc) and standard-setting, drop presence-at-the-moment. Bounds that cost
-   nothing: one outstanding unattended land at a time; no push until its audit returns.
-   Pre-commit an end date and a review, or the trial silently becomes the default.
-4. **Hygiene — it is degrading the box the trial will run on.** ~664 leaked e2e tmux sockets;
-   ~690 MB of TMPDIR scratch; leaked test *servers* (two killed this session, one had run 23h).
-   Nothing reaps any of it.
-5. Wave 2 of the audit, and knowledge piece (b) — the lane read surface (`GET /api/self/context`).
-   **Both are off the autonomy path**; do not let them displace 1–3.
+## The ranking criterion — the owner sharpened it, and it reorders the plan
 
-**Blockers / open questions:**
-- `would_stop EVER` is still 0 and now finally *measurable*. Nothing yet proves ② can disagree.
-- Reversibility is still one land deep (`undoLast`, one record per repo). A burst of lands is
-  un-rollbackable except for the last — and waiting between lands does **not** change that.
-- Two lanes are open worktrees with no slot: `fleet-260726125942-a0fa`, `fleet-260726165836-6883`.
-  Decide: land, or discard.
+Not "simpler" and separately "more robust". The changes worth doing are the ones where
+**subtraction and hardening are the same move.** Under that lens:
 
-## Key Decisions
+1. **`src/protocol.ts` + `e2e/pins.ts`** — deletes duplicated declarations **and** turns 27 silent
+   must-agree pairs into compile errors or loud check failures. Highest score in the plan; it was
+   *not* where I had started.
+2. **Derive the five `cp` lists → fold the four harnesses onto `e2e/harness.ts`** — −260 lines and
+   the pre-land gate gets a trail for the first time (today only `e2e-isolated` is observed; the
+   158 checks that actually gate leave nothing).
+3. **Delete the intervention-outcome subsystem** (~590 lines) — and a false signal goes with it:
+   `promotionEligible` currently reads a tally whose only producer has never fired.
+4. **`saveState` ↔ boot-restore as one field table** — −100 lines and the largest must-agree surface
+   becomes unbreakable. **Riskiest change in the plan: last, alone, behind a round-trip property.**
 
-- **No new knowledge store / no Python program.** The gap was *currency of delivery*, not lookup.
-  A lane can already read main's newest knowledge (`git show main:docs/x.md`) — verified live, and
-  now a rule in `CLAUDE.md`. Reasoning and the prior two decisions it upholds:
-  `docs/knowledge-currency.md`.
-- **Record observations, not conclusions.** Conclusions rot; observations do not. This produced the
-  per-check trail, which immediately proved the flake nondeterministic from four same-tree runs
-  (7/1/7/1 failures on one tree) — work that previously cost a 7-minute re-run each time.
-- **Extract one seam, not a rewrite.** `server.ts` is ~8× the house line ceiling and that *is* the
-  mechanism failure behind the "two places that must agree, don't" bug class — but only the ledger
-  layer is proposed for extraction (`docs/structural-plan.md`).
-- **Burst-landing beats spacing.** Audits coalesce; waiting buys attribution only, never
-  reversibility.
-- **Lanes report, the owner lands.** Held all session. Every lane was briefed "do NOT land".
+Pure hardening that *costs* lines — the notification path, the reaper, the git-race fix — is still
+needed but is a trade, and should be labelled as one rather than smuggled in as simplification.
 
-## Context to Restore
+## Broken / open
 
-**Written this session** (read in this order for the full arc):
-- `docs/mining-2026-07-26.md` — what the ledgers said; finding 3 carries the ② correction.
-- `docs/data-audit-2026-07-27.md` — the six-agent data audit, ranked, with a cut line.
-- `docs/suite-contention.md` — the flake's mechanism and why serializing is treating a bug as a property.
-- `docs/structural-plan.md` — thirty findings → four mechanisms, with sequencing.
-- `docs/knowledge-currency.md` — the knowledge-layer answer; amends `docs/knowledge-layers.md`.
-- `docs/audit-implementation-plan.md` — the wave plan; wave 2 is the deferred list.
-- `docs/e2e-trail.md` — the trail's contract (written by the lane that built it).
+- **The git race is still the autonomy blocker.** `tryScriptRebase` (grep it) discards
+  `git rebase --abort`'s exit code; the colliding actor is Fleet's own `tickGit`, which runs
+  `git status` in every slot cwd with no merge-inflight guard. `gitRetry` exists and is wired only
+  to the commit route. **Consequence measured this session: nothing can land through it** (`pre.clean`
+  is false, every route is `landed:false`) — it wedges a lane and makes tier-2 reds ambiguous.
+- **② cannot stop anything today.** `FLEET_CLEAN_REVIEW=shadow`. The old 38 shadow verdicts measured
+  a dead feed (`main..main`, fixed 07-28 08:49) — **the series restarts at zero; do not quote 30.**
+- **Two orphan worktrees**, `a0fa` and `6883`, still unlanded. Decide: land or discard.
+- **The queue-deletion register** (`docs/proposals/queue-deletion-2026-07-28.md`) is **parked** by
+  the owner's call and mine. Two carve-outs that should not be parked: `27b97958`
+  (`--strict-mcp-config` missing on `MERGE_TOOLS`/`REVIEW_TOOLS`) and the collision below.
+- **`outcomeTally` has two owners.** The queue register wants its two false `dismissed` rows
+  corrected so `promotionEligible` reads right; the deletion inventory wants the whole subsystem
+  gone because its producer never ran. **Decide once, not twice.** My reading: the deletion evidence
+  is stronger — repairing an instrument nobody reads is not a repair.
 
-**Inherited and still load-bearing:** `CLAUDE.md` (gitignored — read it in the MAIN checkout, a
-lane's copy is a spawn-time snapshot), `docs/verify-tiering.md` §11, `docs/graduation-criteria.md`,
-`BACKLOG.md` item 17 (the knowledge-layer decision record — do not re-propose an index).
+## Must be fixed by hand in the main checkout — `CLAUDE.md` is gitignored
 
-**Non-obvious state:**
+1. **Delete the NUL-byte rule.** `src/client.ts` has no NUL (fixed in `688d22e`, an ancestor of
+   HEAD); plain `grep -c 'MAX_CHUNK' src/client.ts` returns 2, exit 0. This false rule rode into
+   every agent prompt this session.
+2. **"ALLE vier Wrapper prüfen" → six scripts carry `cp` lists** (the five plus `steward-arena.sh`,
+   which has been dead at module resolution since 07-26 for exactly this reason).
+3. **"Der Dispatcher ist verfügbar UND an" → it is `off`** (`fleet.json` `"dispatch": false`).
+4. **The lane Verify line is not the live gate.** `watchdog.sh:71` runs `./e2e-clean-review.sh &&
+   ./e2e-security.sh && ./e2e-claude-gate.sh`; `./e2e-security.sh` is missing from the lane's Verify
+   line, so a lane can fail the land gate on a suite it never ran. Its tsc list also omits three
+   harnesses the gate checks. *(Reported by the lane that fixed the wrappers — it could not fix this
+   itself, and neither can any lane.)*
+
+`docs/lane-brief-template.md:84-85` describes the gate wrongly too — that file **is** landable, and
+it is delivered into every lane's launch prompt.
+
+## Non-obvious state
+
+- **The 8800 band contains live local services** (8815, 8850, 8862, 8899, 8901, 8924 measured). Port
+  bands are now disjoint, but `e2e-isolated.sh`'s band still collides with real listeners — a run
+  whose `$$` lands there fails to bind. Left deliberately un-respaced as out of scope; noted in the
+  band-table comment.
+- **The per-check trail proved itself.** It adjudicated a red post-land audit in one query instead
+  of a seven-minute re-run: tree `c0439f15` (a day older than the change under suspicion) fired the
+  same `FIX1` check on 4 runs as 0/1/0/1. Use it before re-running anything.
+- `FLEET_CMD=claude --dangerously-skip-permissions` is set in **no file you would think to check** —
+  it lives in the tmux server's global environment *and* in `.env`, and `watchdog.sh` sets it zero
+  times. **31 of 42 config values have no sensor at all**; `state.sh` derives none of them.
 - The live server binds **only** the Tailscale IP: `curl http://100.64.0.1:8790/`.
-  `127.0.0.1:8790` never answers and looks like a dead server.
-- Client changes go live on `bun run build` alone (static files); **server** changes need the srv
-  restart. They deploy independently — this session's board rendering was live hours before the
-  server code was.
-- The trail writes to `<main checkout>/e2e-trail/` normally, but to a `$TMPDIR` fallback under the
-  post-land audit (the snapshot is a tree, not a repo, so nothing points home). **Lane history and
-  audit history therefore live in two places** — piece (b) must reconcile them.
-- `src/client.ts` contains a raw NUL byte: plain `grep` reports nothing and exits 1. Use `grep -a`.
 
-## Corrections this session made — including four of its own
+## Corrections this session made — including two of my own
 
-Recorded because calibration is the point, not self-flagellation.
-1. Claimed ledger rotation was already running, from an `audit.jsonl.1` seen inside a TMPDIR **test
-   instance**, not the repo. Rotation has never fired.
-2. Read shadow rows with the key `answer`; the field is `rawAnswer`. Nearly concluded the reviewer
-   never answers — it demonstrably reads code and runs git.
-3. Attributed ②'s identical verdicts to degenerate *traffic*. It was a broken *feed*. A lane found it.
-4. Told a lane that `e2e/harness.ts` and `fleet-e2e.ts` were "touched by nobody" — true when
-   written, false when read, because another lane committed in between. My own currency failure,
-   an hour after documenting the class.
-5. Advised landing one-at-a-time with waits. Wrong: audits coalesce, and `undoLast` is overwritten
-   by every land regardless of timing.
+1. **I reported `.env` as empty. It is not** — it carries `FLEET_CMD`. My check was
+   `cat -A .env 2>/dev/null`; stderr was suppressed and I read the silence as emptiness. An agent
+   had cited it correctly and I "corrected" it wrongly. Same failure class as the session's subject.
+2. **I called the client "a surface, not a mechanism".** Right conclusion, wrong reason: a red,
+   skipped or stale verify badge **never disables land** (`src/client.ts:1007`), so the render *is*
+   the gate at the manual-land boundary. It holds because it was built carefully, not because it is
+   a surface — and calling it a surface removes it from the class of things that get audited.
+3. **Ruling sharing out was wrong.** `view` is genuinely a surface; `interact` is a different object
+   with the same name — an unattended write path into a pane, missing the one guard the codebase
+   itself identified as necessary (`claudeAlive`), with the WS half writing no log line at all.
+4. "The conflict path always stops" holds **within** a run. Across runs there is a fall-through:
+   once `main` moves, the re-run guard lapses and a lane still carrying agent resolutions can take
+   the clean auto-land branch.

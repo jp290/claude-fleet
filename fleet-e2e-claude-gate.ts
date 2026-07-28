@@ -14,6 +14,10 @@
 const IP = "127.0.0.1";
 const PORT = Number(process.env.FLEET_PORT ?? 8792);
 const SOCK = process.env.FLEET_SOCK ?? "fleetgatetest";
+// This harness opens and kills slots, enables the dispatcher and queues a task — against the live
+// socket that would drive the real panes. Same refusal every sibling harness carries, and it must
+// stay the FIRST statement that can act: nothing below it may run on the live fleet.
+if (SOCK === "claudefleet") throw new Error("refusing to run against the live socket");
 const BASE = `http://${IP}:${PORT}`;
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 const results: string[] = [];

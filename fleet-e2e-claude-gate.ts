@@ -41,6 +41,10 @@ check("dead-claude gate: lastResult reports the skip", a1after?.lastResult === "
 
 // --- branch 2: claude IS running (swap the fake binary for a hang variant, open a
 // fresh slot so the new pane resolves the new file) — the auto must fire normally ---
+// rm before write: an in-place overwrite of an executable another pane still maps invalidates
+// its code-signature (AMFI, Apple Silicon) and kills that pane's process on its next exec —
+// rm+write gives every swap a fresh inode instead of mutating the one currently mapped.
+await Bun.$`rm -f ${FAKEBIN}/claude`.quiet();
 await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-hang`).arrayBuffer());
 await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
 const o2 = await post("/api/slots/2/open", { cwd: "~" });
@@ -87,7 +91,13 @@ check("steward sessions: a dead-claude pane reads alive=false from the cache", s
 // early; that only weakens the PROOF (not the gate), so retry the setup up to 3 times.
 let gateRefused = false, freshProven = false, sigDetail = "";
 for (let attempt = 0; attempt < 3 && !freshProven; attempt++) {
-  // (re)establish a LIVE claude in slot 3
+  // (re)establish a LIVE claude in slot 3. rm before write: slot 2's claude-hang (branch 2) is
+  // still running and still mapping this exact inode — an in-place overwrite invalidates its
+  // code-signature (AMFI, Apple Silicon) and kills ITS process on its next exec, which is exactly
+  // the mechanism that made this branch fail 4/4 on a verified-quiet machine and pass 0/2 on
+  // unmodified HEAD (where branch 3 used to run — and itself swap+kill — in between): a fresh
+  // inode per swap, never a mutation of the one branch 2's pane still has mapped.
+  await Bun.$`rm -f ${FAKEBIN}/claude`.quiet();
   await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-hang`).arrayBuffer());
   await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
   if (attempt === 0) {
@@ -104,7 +114,9 @@ for (let attempt = 0; attempt < 3 && !freshProven; attempt++) {
   if (!aliveCached) { sigDetail = `attempt ${attempt}: cache never read alive`; continue; }
   // kill claude NOW: exit-variant binary + pane kill → self-heal respawns straight to a bare
   // shell. No tick has run yet, so the cache still says alive — exactly the stale-cache race
-  // the docs name ("a pane that died 9s ago").
+  // the docs name ("a pane that died 9s ago"). rm before write — same inode-mapping mechanism
+  // as above; slot 2's claude-hang is still running and still mapping this path.
+  await Bun.$`rm -f ${FAKEBIN}/claude`.quiet();
   await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-exit`).arrayBuffer());
   await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
   await tmuxOut("kill-session", "-t", "s3");
@@ -178,6 +190,9 @@ await tmuxOut("kill-session", "-t", "s4");
 // this (FLEET_CMD=true short-circuits claudeAlive to a constant true). Here the fake `claude` is
 // the immediate-exit variant, so every dispatched lane lands on a bare shell → the gate must
 // requeue the task ("dispatch held (…) — requeued") and NOTHING may reach the pane. ---
+// rm before write — same inode-mapping mechanism as above; slot 2's claude-hang (branch 2) is
+// never killed in this suite and is still running, still mapping this path.
+await Bun.$`rm -f ${FAKEBIN}/claude`.quiet();
 await Bun.write(`${FAKEBIN}/claude`, await Bun.file(`${FAKEBIN}/claude-exit`).arrayBuffer());
 await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
 interface DispSlot { id: number; cwd: string | null; worktree: { branch: string } | null }

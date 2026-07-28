@@ -5662,9 +5662,14 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // spans both generations), never an in-memory counter a restart would reset toward zero. Only
     // the last cap-many rundgang records can matter — if every one of them is inside the window,
     // the window is full. A record with a non-numeric ts is not evidence of a recent write and is
-    // dropped here exactly as the anchor readers drop it.
-    const recentJournal = (await readStewardJournal(STEWARD_JOURNAL_PER_HOUR, RUNDGANG_KIND))
-      .filter((r) => typeof r.ts === "number" && Date.now() - r.ts < 3_600_000);
+    // dropped here exactly as the anchor readers drop it. Filter FIRST, then count: a positional
+    // slice(-cap) before the in-hour filter undercounts whenever a stale or bad-ts row sits among
+    // the newest cap rows — each such row granted one extra accept (deterministic 13-over-accept,
+    // post-land audit on 8e0f232), because every new append displaced one older in-hour row from
+    // the window and pinned the count below the cap.
+    const { rows: journalRows } = await readEventLog(STEWARD_JOURNAL_FILE);
+    const recentJournal = journalRows.filter((r) =>
+      r.kind === RUNDGANG_KIND && typeof r.ts === "number" && Date.now() - r.ts < 3_600_000);
     if (recentJournal.length >= STEWARD_JOURNAL_PER_HOUR) {
       audit("steward_journal_capped", stewardSlot()?.id, `hourly:${STEWARD_JOURNAL_PER_HOUR}`);
       return json({ error: `hourly steward journal cap (${STEWARD_JOURNAL_PER_HOUR}) reached` }, 429);

@@ -4,9 +4,71 @@
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "../merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
-import { check } from "./harness";
+import { check, ROOT } from "./harness";
+
+// The three tool profiles every throwaway agent is spawned with, read out of server.ts's SOURCE.
+// Importing server.ts would BOOT it (Bun.serve, tmux adoption, the whole state machine) and this is
+// the no-server family — so the profile is matched as the one-line literal it is declared as. The
+// match is anchored and requires the closing `';`: a profile rewritten as a `+` chain (which would
+// also silently widen ToolProfile back to `string`) resolves to "" here and turns the guard below
+// RED, rather than making the assertions vacuously green.
+const profileOf = (src: string, name: string): string =>
+  new RegExp(`^const ${name} = '([^']*)';$`, "m").exec(src)?.[1] ?? "";
 
 export async function run(): Promise<void> {
+  // --- the agent TOOL PROFILES (server.ts): pure string assertions, no server. These are the
+  // capability floor of every throwaway claude the fleet spawns, and nothing else can check them —
+  // an over-wide profile produces no error, no log line and no failing request, it just silently
+  // hands an agent more machine than it needs. ---
+  {
+    const src = await Bun.file(`${ROOT}/server.ts`).text();
+    const PROFILES = ["TEXT_ONLY_TOOLS", "MERGE_TOOLS", "REVIEW_TOOLS"] as const;
+    const tools = Object.fromEntries(PROFILES.map((n) => [n, profileOf(src, n)])) as Record<typeof PROFILES[number], string>;
+    // guard: every assertion below is an ABSENCE check somewhere, and an absence check on an empty
+    // string passes for the wrong reason. So first prove all three were actually resolved.
+    check("tool profiles: all three resolve out of server.ts as one-line literals",
+      PROFILES.every((n) => tools[n].length > 20 && tools[n].includes("--permission-mode dontAsk")),
+      PROFILES.map((n) => `${n}:${tools[n].length}`).join(" "));
+    // --allowedTools is ADDITIVE to the owner's ~/.claude/settings.json allow list, where a bare
+    // `Read`/`Grep`/`Glob` means EVERY file on the machine. Verified empirically 2026-07-25: with
+    // the owner's settings loaded, `Read(**)` still read a canary outside the worktree. So an
+    // anchored list without --setting-sources "" is not a narrow profile — it is a wide one wearing
+    // anchors, and it looks correct in review. This is the exact regression that check exists for.
+    const anchored = PROFILES.filter((n) => tools[n].includes("--allowedTools"));
+    check("tool profiles: every --allowedTools profile also drops the owner's settings (--setting-sources \"\")",
+      anchored.length >= 2 && anchored.every((n) => tools[n].includes('--setting-sources ""')),
+      `anchored: ${anchored.join(",") || "(none)"}`);
+    // the five text-only agents get a CAPABILITY cut, not a permission rule — the one form
+    // settings.json cannot widen. An --allowedTools list here would be unioned with the owner's.
+    check("tool profiles: TEXT_ONLY_TOOLS cuts tools entirely and never carries an allow list",
+      tools.TEXT_ONLY_TOOLS.includes('--tools ""') && !tools.TEXT_ONLY_TOOLS.includes("--allowedTools"),
+      tools.TEXT_ONLY_TOOLS);
+    // the ② clean reviewer runs on the one path nobody watches, on a tree that is about to land,
+    // reading lane code another agent wrote. It answers a verdict STRING — it never writes. Each
+    // banned entry is a primitive the post-run `git reset --hard` cannot undo: Edit/Write reach
+    // outside the worktree, and `git rebase` is arbitrary command execution via `git rebase -x`.
+    const banned = ["Edit(", "Write(", "git add", "git rm", "git checkout", "git rebase"];
+    check("tool profiles: REVIEW_TOOLS holds no write/exec primitive, only the read-only git + file tools",
+      banned.every((b) => !tools.REVIEW_TOOLS.includes(b))
+      // positive half, so this can never pass by the profile being empty or renamed away
+      && tools.REVIEW_TOOLS.includes('"Bash(git diff:*)"') && tools.REVIEW_TOOLS.includes('"Read(**)"')
+      // and the same primitives ARE in MERGE_TOOLS — proving the list above is spelled the way the
+      // profiles spell it, not a set of strings that happen to match nothing anywhere
+      && banned.every((b) => tools.MERGE_TOOLS.includes(b)),
+      banned.filter((b) => tools.REVIEW_TOOLS.includes(b)).join(",") || "none present");
+    // Model names reach a tmux shell line, and the 1M variants are spelled `claude-opus-5[1m]`.
+    // tmux's default-shell here is zsh, which ABORTS on an unmatched glob ("no matches found"), so
+    // one unquoted interpolation kills every session it spawns — and tsc cannot see it. Comment
+    // lines are dropped first (several discuss `--model` in prose); the argv-array form needs no
+    // quoting because no shell parses it.
+    const modelLines = src.split("\n")
+      .filter((l) => !l.trim().startsWith("//")).map((l) => l.replace(/\s\/\/.*$/, ""))
+      .filter((l) => l.includes("--model") && !l.includes('"--model",'));
+    check("model interpolation: every --model that reaches a shell command string is single-quoted",
+      modelLines.length >= 2 && modelLines.every((l) => /--model '\$\{[^}]+\}'/.test(l)),
+      modelLines.map((l) => l.trim().slice(0, 60)).join(" | "));
+  }
+
   // --- buildMergePrompt: PURE-function unit tests (no server needed) ---
   // The real conflict resolver runs a live agent behind FLEET_MERGE_CMD, which the isolated
   // e2e replaces with a fake command — so NO e2e can exercise the prompt's ACTUAL effect on a

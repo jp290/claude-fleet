@@ -169,6 +169,12 @@ rotting. Two shelves, plus the steward subsystem.
   `git rebase --abort`'s exit code, so a lost `index.lock` race (against Fleet's own `tickGit`)
   leaves a lane wedged mid-rebase. Read before treating suite non-determinism as a property of the
   suite, and before serializing anything else around it.
+- **`lane-driving.md`** — what a brief should and should not carry, why the lane decomposition is
+  forced rather than preferred (same-file collision at land; undo is one land deep, so the split *is*
+  the reversibility), and the fire-and-forget defect: one brief then an hour of silence while the
+  channel that reaches a lane mid-flight went unused. Amends `lane-brief-template.md`. Carries the
+  ideas with no home yet and the two measured shut — read §6 before proposing an extraction or a
+  maintained index again.
 - **`analysis-2026-07-28-findings.md`** — five agents, three of them blind to the prior analysis.
   The measured refusal of the ledger extraction (`server.ts` grew +908 lines in two days; the only
   clean seam is 3.3%; `appendEvent`/`readLedger` already own the discipline and the remainder is

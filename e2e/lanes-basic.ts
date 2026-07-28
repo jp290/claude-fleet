@@ -4,18 +4,23 @@ import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
-import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
+import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
 
 export async function run(lc: LaneCtx): Promise<void> {
   const wtOpen = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
   const wtJson = (await wtOpen.json()) as { ok?: boolean; branch?: string; error?: string };
   check("open-worktree creates a lane", wtOpen.ok && wtJson.branch === "e2e-lane", JSON.stringify(wtJson));
   const wtDir = `${REPO}.worktrees/e2e-lane`;
-  check("worktree dir materialized on disk", statSync(wtDir).isDirectory());
-  check("untracked .env copied into the worktree", statSync(`${wtDir}/.env`).isFile());
+  const wtEnv = `${wtDir}/.env`;
+  // guarded through exists() rather than a bare statSync: if open-worktree failed above, an ENOENT
+  // thrown while evaluating check()'s ARGUMENTS escapes the whole run and takes every later result
+  // with it — one missing lane must cost one FAIL, not the suite's report.
+  check("worktree dir materialized on disk", exists(wtDir) && statSync(wtDir).isDirectory());
+  check("untracked .env copied into the worktree", exists(wtEnv) && statSync(wtEnv).isFile());
   // SEC-12: the copy is the one path that deliberately carries .env into every lane, so it must
   // land 0600 regardless of the source's mode (the live source was 0644 when this was written)
-  check("copied .env is owner-only (0600)", (statSync(`${wtDir}/.env`).mode & 0o777) === 0o600, (statSync(`${wtDir}/.env`).mode & 0o777).toString(8));
+  const wtEnvMode = exists(wtEnv) ? statSync(wtEnv).mode & 0o777 : -1;
+  check("copied .env is owner-only (0600)", wtEnvMode === 0o600, wtEnvMode === -1 ? "missing" : wtEnvMode.toString(8));
   const wtRefused = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
   check("open-worktree on an active slot is refused", wtRefused.status === 400);
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };

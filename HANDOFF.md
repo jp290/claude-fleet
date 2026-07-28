@@ -1,79 +1,84 @@
-# HANDOFF — 2026-07-28 (Session 11 final: drei Lands, das Race ist tot, ab jetzt wird benutzt)
+# HANDOFF — 2026-07-28 (Session 12: First-Principles-Reset — das Projekt ist wieder die Harness)
 
-*Zustand ist ein KOMMANDO: `./state.sh` (mit Config-Sensor). Historie: `git log <dieser Commit>^..HEAD`
-mit Bodies. Owner-Sicht ohne FS-Zugriff: der Atlas, `http://100.64.0.1:8794/`. Diese Datei trägt
-nur das Residuum.*
+*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 41ddc57..HEAD` mit Bodies (das
+Befund-Register). Diese Datei trägt nur das Residuum — Absicht, Entscheide, was git nicht trägt.*
 
-## Was diese Session gelandet hat (Kette, seriell, je durch den Gate)
+## Status
 
-1. **fold** `3d38960` — `e2e-stage.sh`: EINE abgeleitete Kopier-Regel (transitiver Import-Closure,
-   fatal bei unauflösbar) für alle sieben Skripte; der Pre-Land-Gate schreibt erstmals Trail-Rows.
-2. **protocol/pins** `8304cc3` — `src/protocol.ts` (tsc macht Paar-Drift zum Compile-Fehler) +
-   `e2e/pins.ts` (21 Regeln, ~40 ms, ERSTE Stufe im Gate seit dem kickstart dieser Session);
-   BACKGROUND_MARKS-Bug an der Form gefixt (Pflichtfeld, Prompts byte-identisch bewiesen).
-3. **merge-Härtung** `2bca3d2` — **das Race ist ursächlich behoben**: `.git/index.lock` aus Fleets
-   eigenen Status-Polls; `GIT_OPTIONAL_LOCKS=0` an den read-only-Aufrufen. Beweis: 16/60 Abort-Fails
-   ohne, 0/60 mit Flag; FIX1 **10/10** über 5 serielle Läufe (Basisrate 8/16). Der ⏸-Fall-Through
-   war REAL (auf altem Code nachgestellt: ungereviewte Agent-Resolution erreichte main) und ist zu,
-   inkl. Error-Verdicts + Interrupt-Marker; der verworfene Abort-Exit war ZWEIMAL da (auch
-   Confirm-Land-Replay), beide zu. Eine erklärte Coverage-Lücke steht im Code, nicht versteckt.
+- **Der Owner hat die Grundidee neu gezogen** (wörtlich: „einfach nur eine Harness für Claude
+  Code … die Idee war nie viel mehr als das"). Konsequenz umgesetzt, nicht nur beschlossen —
+  7 Commits `41ddc57..ddc5128`, alle deployed:
+  1. Zwei Lands durch den vollen Zyklus (`1b0b99c` steward-truth via **Dispatcher-Arm**,
+     `1cf2bee`+`8e0f232` delete-Lane via **Hand-Arm, Sonnet-Pin**) — Brief → Arbeit → Gate →
+     Land → Audit, beides sauber.
+  2. Der Tier-2-Audit auf dem Merge wurde ROT und fand damit einen **echten Zählfehler** im
+     frisch gelandeten Journal-Cap: `b9bb130` (slice-vor-Filter-Leck + Restart-Whitelist-Lücke,
+     zwei sich gegenseitig kaschierende Bugs — Mechanismus vollständig im Commit-Body). Danach
+     volle Suite **ALL PASS (759) seriell** auf exakt diesem Baum.
+  3. Das Reset-Paket: `8edbbd8` Shadow-② **off** · `7cb9e03` **Attic** (52 Docs eingelagert,
+     12 operative bleiben) · `ddc5128` **Suiten serialisieren sich selbst** (Mutex in
+     e2e-stage.sh, bewiesen: zweite Suite wartet, beide grün).
+- **Deploy verifiziert, kein Gap:** srv-Start 18:45:49 trägt `b9bb130` (18:45:38) und
+  `8edbbd8` (18:45:46); danach nur e2e-/docs-Commits. Health 200, `bundleStale:false`.
+- Kaputt ist nichts. In-Flight ist nichts (Monitore/Poller gestoppt, Lanes gelandet+abgeräumt).
 
-**Deploy-Stand beim Schreiben:** fold+protocol voll deployed (build+kickstart+srv, Tier-2 GRÜN auf
-8304cc3). Für `2bca3d2` lief der Tier-2-Audit noch; srv-Restart folgt direkt danach (nur der —
-kein watchdog-/Client-Diff). Nachprüfen: `./state.sh` (deploy gap) + `GET /api/post-land-audits`.
+## Abgeschlossene Zahlen (final — die Serie ist zu, das rottet nicht mehr)
 
-## Nächste Session: NICHT mit Analyse öffnen
+- **K2/Shadow-②: 46 Rows, 38 valide, ausnahmslos „pass", `would_stop` 0, 8 invalid** (4 leere
+  rawAnswer ≈ Timeout, 4 unparsebar). Der Richter hat in 46 Lands null Information geliefert —
+  das IST die Begründung für off, nicht Sparsamkeit.
+- **Audit-Ledger: newest = ROT auf `8e0f232` — ADJUDIZIERT.** Wer `./state.sh` liest, darf das
+  Rot nicht als offen deuten: Ursache gefunden, gefixt (`b9bb130`), Suite danach grün. 27 Audits
+  gesamt (16 grün / 11 rot); FIX1-Rate seit dem Race-Fix weiter 0.
+- Trial 1 (Protokoll im Attic), Antworten: Q1 select+brief 1/1 · Q2 n=2, beide gelandet
+  (Hand-Arm brauchte 2 Mid-Flight-Korrekturen — Ursache Suite-Kontention, seit `ddc5128`
+  mechanisch gelöst) · Q3 2 Audits, 1 grün + 1 rot mit echtem Fund · Q4 = 3 Interventionen,
+  alle eine Wurzel: Serialisierung war Prosa, jetzt Mechanismus. S1 feuerte und wurde befolgt.
 
-**Benutzen, nicht messen.** Die verbleibenden Unbekannten sind Laufzeit-Unbekannte: widerspricht ②
-je auf echtem Traffic (K2-Serie Richtung N≥25 — jedes Clean-Auto-Land zahlt ein), und hält die
-FIX1-Rate bei ~0 jetzt, wo der Tier-2-Alarm wieder informativ ist. Konkreter Opener: Autonomie-
-Trial — Queue kuratieren, Dispatcher an (`POST /api/dispatch {on:true}`), Steward briefed nach dem
-Ritual unten. Meta:Produktion lag bei ~2:1; noch ein Analyse-Durchgang wäre Selbststudium.
+## Next Steps
 
-## Geschobene Lanes (Briefs = Residuum; Fakten im Faktendokument §3/§7)
+1. **Keine. Benutzen.** Die Harness ist deckungsgleich mit der Idee; nächste Session braucht
+   kein Programm. Bei Bedarf, in dieser Reihenfolge sinnvoll (alles Owner-Entscheid, nichts drängt):
+   (a) L3 aus der Löcher-Analyse: `./state.sh` um einen lane-outcomes-Auswerteblock erweitern
+   (pro Modell Lands/Median-sessionMs/ownerPrompts — die Daten liegen ungelesen im Ledger);
+   (b) L4: `dispositions.jsonl` wire-or-delete (1 Row seit Bestehen, Schreiber `server.ts:3837`);
+   (c) Stash vom 21.07. entscheiden (`git stash list` — klaus-Domain + share.html-Emoji).
+2. Falls dieser Checkout je woanders repliziert wird: **CLAUDE.md ist gitignored** — die heutigen
+   Regel-Updates (unten) müssten von Hand mitreisen.
 
-- **delete-Lane** (Intervention-Outcome, ~645 Zeilen): KORRIGIERTE Lage beachten — outcomeTally hat
-  vier Schreiber, propose lief 11×, promotionEligible wäre TRUE; im propose-Block `audit()` behalten,
-  `bumpTally` kappen; e2e-Kopplungen (Digest-Anker, Tier-1-Fixture oc2, security-Route-Pin) umbauen
-  statt schneiden; Persistenz selbstheilend, KEIN Migrationscode; die zwei falschen dismissed-Rows
-  nicht reparieren (gegenstandslos). Günstigeres Modell pinnen — mechanische Arbeit.
-- **steward-truth-Lane**: `ref:"verify"` muss das `landed`-Feld lesen (heute sagt auch
-  blocked/error „Lane gelandet"); Pulse ohne mtime-Fallback (zitiert sonst fremde Sessions);
-  Journal-POST-Rate-Cap. Token-Rotation als Route = eigener Owner-Entscheid.
+## Key Decisions
 
-Geparkt bis Anlass (unverändert): interact-Guard, Ring 2.3/3.4/3.5-Rest, Ring-4-Rest + Slot.mission,
-Kostüm-Variablen (nur als Vorschlag, drills/ erst prüfen), saveState-Feldtabelle (eigene ruhige
-Session, Round-Trip-Property zuerst).
+- **„Nur eine Harness"** — Autonomie ist KEIN Ziel mehr. Nichts gelöscht, alles eingelagert:
+  Reaktivierung wäre `git mv` aus dem Attic + env-Flip; ② dürfte aber erst nach einer
+  bestandenen **Feuerprobe** (absichtlich schlechter Land, Richter muss ihn stoppen) je gaten.
+- **Suite-Mutex in `e2e-stage.sh`** statt Trap-Chirurgie in 7 Wrappern. Semantik, die man kennen
+  muss: `/tmp/fleet-e2e.lock` **existiert ≠ gehalten** — die `pid`-Datei entscheidet; toter
+  Halter wird vom nächsten Anwärter gereapt; **pid-LOSE Dir = manueller Park-Halt**, wird nie
+  gereapt. Manuelles `until mkdir` um Suite-Läufe ist obsolet.
+- **Dispatcher off** nach Trial-Ende (heute wieder ausgeschaltet, `fleet.json` geprüft). Bleibt
+  als Feature: Queue kuratieren → `POST /api/dispatch {on:true}`.
+- Die geschobenen Session-11-Briefs (interact-Guard, Ring-Reste, Kostüm-Variablen,
+  saveState-Feldtabelle) sind unter dem Reset **größtenteils gegenstandslos** — nicht
+  wiedervorlegen, außer ein konkreter Anlass entsteht.
 
-## Das Lane-Ritual, jetzt n=4 und belastbar
+## Context to Restore
 
-Residuum-Brief per `POST /send {slot,text}` (Fakten committen, Brief zeigt darauf) → Monitor auf
-Pane-Idle-Transition (Busy-Regex `esc to interrupt|· ↓|thinking|ing… \(` — Spinner-Verben rotieren)
-→ Mid-Flight-Korrektur, wenn die Lane etwas nicht wissen KANN (einmal gebraucht: Fork älter als
-neues Wissen) → Land über `POST /api/slots/:id/merge` (NICHT /land) → Verdict-Poll ebendort →
-rote Audits ZUERST per Trail (`$TMPDIR/fleet-e2e-trail` bzw. `e2e-trail/`) adjudizieren →
-**direkt nach dem Land die nächste Lane spawnen** (Audit-Warten war ~7 min Totzeit; nur SUITEN
-brauchen die stille Maschine, nicht die Lese-Phase einer Lane).
+- `./state.sh` — Zustand ableiten (Achtung: newest Audit rot = adjudiziert, s. o.)
+- `git log 41ddc57..HEAD` mit Bodies — jede Mechanik des Tages steht dort, nicht hier
+- `CLAUDE.md` — das Rulebook, enthält alle heutigen Updates
+- `docs/attic/README.md` — was eingelagert wurde und warum; `docs/` (12 Dateien) = Betriebswissen
+- `lane-outcomes.jsonl` — 69 Rows, reichstes Artefakt (model/briefHash/sessionMs/ownerPrompts)
 
 ## Nicht-offensichtlicher Zustand
 
-- **Atlas**: tmux-Session `atlas` (Live-Socket), Port 8794, Regen alle 120 s, `atlas.sh` im Repo.
-- **CLAUDE.md dieser Session geändert** (gitignored, nur hier dokumentiert): Verify-Zeile = echter
-  Gate; NUL-Regel raus; sechs cp-Skripte (jetzt via e2e-stage.sh abgeleitet); Dispatcher-Zeile auf
-  „aus"; FIX1-Zeile ZWEIMAL gedreht — final: Flake BEHOBEN, ein FIX1-Rot nach `2bca3d2` ist echt;
-  fünfte Flake-Familie benannt („41 marks, 1..40", reseed+live-bytes, 2/22 Läufe, Vorfahr-Beweis).
-- **Stash vom 21.07. weiter offen** (klaus.example.com raus + share.html-Emoji) —
-  Owner-Entscheid, nicht anwenden, nicht droppen.
-- Steward-Worktree hat main gemergt (4ee56f6), Tree sauber. Slot-1-Auto „TRIAL WATCH (dispatcher
-  on)" stammt aus einer früheren Nacht-Konfiguration — vor dem nächsten Trial prüfen/erneuern.
-- 81 gemergte Lane-Branches, 693 Sockets, 109 Scratch-Dirs (~800 MB) abgeräumt; der
-  Scratch-Wachstums-Mechanismus (behalten-bei-Fehler, kein Reaper) besteht als benannter Trade.
-- Session-10-Geist: Slot 7 kann noch ein stales 0a5b-Merge-Verdict zeigen — kosmetisch,
-  überschreibt sich beim nächsten Merge dort.
-
-## Faktenlage zum Nachschlagen
-
-`docs/analysis-2026-07-28-verification.md` (§1 Paare, §2 Fold, §3 Outcome-KORREKTUR, §4 Kollisionen,
-§5 Race-Anker, §7 Steward-Tiefenlese, §8 Assertion-Audit, §9 FIX1-Basisrate=Vorgeschichte) ·
-`docs/simplification-plan-2026-07-28.md` (die geborgenen RINGE, Session-10-Scratchpad) ·
-Commit-Bodies von `9d3944f..2bca3d2`.
+- **CLAUDE.md heute geändert** (gitignored, nur hier dokumentiert): Flake-Signatur generisch
+  „N marks, 1..N-1" · Arena-cp-Zeile korrigiert (Stage-Fold heilt alle sieben) · Clean-Review-
+  Absatz auf off umgeschrieben (mit finalen Zahlen) · Dispatcher-Absatz auf Feature gekürzt ·
+  Suite-Mutex-Absatz ersetzt die manuelle Lock-Anleitung.
+- Steward-Worktree liegt auf `4ee56f6` (vor allen heutigen Commits) — langlebige Konvention,
+  driftet per Design; bei nächster Steward-Nutzung dort main mergen.
+- Slot-1-Auto `c01fdd90` („TRIAL WATCH") disabled — kann gelöscht werden, Trial ist vorbei.
+- Task `0b4568f2` steht korrekt auf `done` (auto beim Land). Queue leer.
+- stray pid 51871 (`rag-job-channel/serve-dexter`) ist NICHT Fleet — state.sh zeigt ihn immer.
+- Die fünfte Flake-Familie feuerte heute 1× (Lauf 3 der Cap-Diagnose, „41 marks") — Basisrate
+  besteht, kein Handlungsbedarf.

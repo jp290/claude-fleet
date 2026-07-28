@@ -110,6 +110,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
+    // without this the post-restart server reverts to the prod journal cap (6) and the honest
+    // filter-then-count cap 429s the later anchor fixtures — the leaky slice-window cap used to
+    // let exactly those extra POSTs through, which is how this gap stayed invisible until the fix
+    "FLEET_STEWARD_JOURNAL_PER_HOUR",
     "FLEET_SUMMARY_CMD", "FLEET_ENHANCE_CMD", "FLEET_MERGE_CMD", "FLEET_COMMIT_CMD", "FLEET_DIGEST_CMD",
     "FLEET_REVIEW_CMD"]
     .filter((k) => process.env[k])

@@ -186,3 +186,17 @@ destrukturierte Route entgeht Extraktor UND Stray-Detektor, §2-Matrix nur bei P
 (4) Steward-Brief-Read nie wert-geprüft (`e2e/steward-core.ts:129`); (5) `land-durability.ts:
 194-195` fragt das Undo-Record nicht ab. Strukturnote: „hat main NICHT erreicht"-Negationen
 sind fenster-begrenzt (`git log -3..-6`), nicht ancestry-basiert.
+
+## 9. FIX1-Basisrate: die Tier-2-Röte ist ein vorbestehender ~44%-Flake — und vermutlich das Race
+
+Trail-Historie über 18 Läufe / 6 Bäume (Kommando: FIX1-Rows je `e2e-trail/*.jsonl` +
+Audit-Trail zählen): FIX1 läuft 2× pro Suite-Lauf; **in 8 von 18 Läufen fällt genau eine
+Instanz**, Signatur immer identisch („agent reported rebased, but the lane is not clean — fake
+rebased"). Betroffen u. a. c0439f15 (27.07., 2/2·1/2·2/2·1/2), 4df2898e (vor dem Fold, 2/2·1/2·
+1/2), ecbd2a40 (nach dem Fold, 1/2) — **die Rate ist baumunabhängig und älter als jede Änderung
+dieser Session.** Der rote Post-Land-Audit auf 3d38960 und der rote Same-Tree-Rerun sind damit
+kein Regress, sondern die Basisrate. Konsequenz 1: Tier-2 ist bei dieser Rate ~50 % der Zeit
+alarmierend — der Alarm verliert seinen Informationswert. Konsequenz 2 (Hypothese, prüfbar):
+der Flake-Mechanismus IST das Git-Race (tickGit-`status` gegen `rebase`/`--abort` unter der
+Concurrency des Checks). **Abnahmekriterium der merge-Härtungs-Lane: FIX1-Basisrate im Trail
+fällt von 8/18 auf ~0.** Kept instance des Rerun-Fails inspiziert und entsorgt.

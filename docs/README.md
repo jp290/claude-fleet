@@ -242,7 +242,11 @@ rotting. Two shelves, plus the steward subsystem.
   `learning-engine-next-steps-2026-07.md`), `mechanism-deep-dive-2026-07.md`, and
   `stack-land-program-board-2026-07.md` (propose-only). Check here before proposing; the
   reasoning lives in these, the register only points. Listed here from 2026-07-25 — the shelf
-  above had never pointed at them.
+  above had never pointed at them. Added 2026-07-28: `queue-deletion-2026-07-28.md` — the day
+  the whole task queue was deleted from the board, what made the loss silent, and the register
+  of all 14 open tasks re-checked against HEAD (12 still open), with its verbatim restore
+  payload `queue-deletion-2026-07-28-tasks.md`. Both die once those tasks are re-filed or
+  dropped; that is why they are here and not on the shelf.
 
 *(A "right-tab-agents" design-note entry — "the board's agentic surfaces: inventory and the open
 advisory-vs-acts axis" — stood here until 2026-07-25 and was cited by `steward.md` too. It was

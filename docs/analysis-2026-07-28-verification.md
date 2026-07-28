@@ -145,3 +145,44 @@ verifiziert — als Claim an die Härtungs-Lane.
   (~800 MB) gelöscht. `$TMPDIR/fleet-e2e-trail` bewusst behalten (Audit-Trail-Daten).
   Wachstums-Mechanismus bleibt (Register A5.3: Wrapper behalten Scratch bei Fehler, kein Reaper).
 - Live-Gate-Beschreibung in `docs/lane-brief-template.md:84` gefixt (`9d3944f`).
+
+## 7. Steward-Region tiefgelesen (Agent, Session 11) — Grenze hält, fünf Defekte
+
+Grenzprüfung positiv: default-deny hinter Owner-Gate-Vorrang (`server.ts:5832-5835`), kein
+Land/Merge/Kill/Open/Share/Mission/Harm über Steward-Token (e2e-Belege `e2e/steward-core.ts:
+173-181`), Share-Hosts sehen die Routen gar nicht (404 vor Token, `:5795-5797`), Autos hart
+slot-gebunden, Tasks hart „pending", keine Perpetuals. ABER Sends/Brief/Transcript erreichen
+**jeden aktiven Slot** (kein Lane-Guard, `:5072-5073/:5647/:5655`) — kein Doku-Widerspruch
+gefunden, aber auch keine Guard-Zeile.
+
+Defekte, gerankt:
+1. **`ref:"verify"` sagt einer blockierten Lane „Lane gelandet"**: `:5026-5028` prüft
+   `status !== "interrupted"` statt des vorhandenen `landed`-Felds (`:2893-2894`) — auch
+   `blocked`/`error` rendert die Land-Behauptung. Kosten: Lane verifiziert gegen falsche Prämisse.
+2. **Pulse kann fremde Session zitieren**: `pulseLastOutput` `:4958-4976` nutzt den
+   newest-by-mtime-Fallback `:1797-1815`, den `transcriptFact` `:5198-5201` explizit als
+   „silently swaps subject" verweigert — vierte Datenquelle am Kommentar `:4933-4934` vorbei.
+3. **Quiet-Hours-Lücke**: direkter Send gemutet (`:5083`), ein Steward-One-Shot-Auto feuert in
+   tickAutos trotzdem (`:1552` `quietHours: a.everySec !== null`) — nur eigene Pane, Kill-Switch
+   greift.
+4. **Steward-Token nie rotiert, schwächer gebunden als `:275-278` behauptet**: send/tasks/journal/
+   sessions/brief/transcript brauchen keinen existierenden Steward-Slot; Widerruf = fleet.json
+   von Hand.
+5. **Journal-POST ohne Rate-Cap** (`:5729-5757`): fächert `laneFacts()`-git-Subprozesse pro
+   aktiver Lane auf; Loop rotiert den eigenen Rundgang-Anker aus der `.1`-Generation.
+
+Uncosted: doppeltes ⚙-Label möglich (Token in JEDE matchende Pane, `:1211-1212`); Audit-
+Attribution gemischt (send=Ziel-Slot `:5107`, tasks/journal=Steward-oder-undefined); Hourly-Cap
+global, nirgends so dokumentiert.
+
+## 8. Assertion-Substrat (Agent, Session 11): 488 Checks gelesen — 469 OK / 17 SCHWACH / 2 LEER
+
+Land-Pfad-Familien (merge, land-provenance, land-durability, ref-advance, lanes-*) enthalten
+**null** Quelltext-Regex-Stellvertreter und bauen explizit anti-tautologisch. Konzentrierte
+Schwächen: (1) `e2e/security.ts:71-82` Pre-Auth-Pin matcht nur Literal `url.pathname` — eine
+destrukturierte Route entgeht Extraktor UND Stray-Detektor, §2-Matrix nur bei Pflege der
+`dangerous()`-Liste; (2) `e2e/merge.ts:377` „lands (clean, merged)" beweist nur HTTP-`.ok`;
+(3) `e2e/merge.ts:62-63` „exactly what will land" prüft weder Base noch Exklusivität;
+(4) Steward-Brief-Read nie wert-geprüft (`e2e/steward-core.ts:129`); (5) `land-durability.ts:
+194-195` fragt das Undo-Record nicht ab. Strukturnote: „hat main NICHT erreicht"-Negationen
+sind fenster-begrenzt (`git log -3..-6`), nicht ancestry-basiert.

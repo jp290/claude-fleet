@@ -2064,19 +2064,27 @@ async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, ti
 // instead of a permission prompt that would hang the pane until the timeout.
 const TEXT_ONLY_TOOLS = '--tools "" --strict-mcp-config --permission-mode dontAsk';
 
+// The tool floor is a REQUIRED, TYPED argument of every throwaway spawn — the union is closed over
+// the three profiles this file defines (TEXT_ONLY_TOOLS here, MERGE_TOOLS and REVIEW_TOOLS below).
+// It was optional, which meant a new call site could spawn a claude holding the owner's entire
+// ambient allow list by simply not thinking about it, and nothing anywhere would notice. There is
+// no runtime check that could catch that — but tsc gates every land, so a missing or hand-rolled
+// tool string is now a compile error instead of a silent capability grant.
+type ToolProfile = typeof TEXT_ONLY_TOOLS | typeof MERGE_TOOLS | typeof REVIEW_TOOLS;
+
 // production path: throwaway INTERACTIVE claude in its own tmux session on the
 // server socket — runs on the subscription, not the metered API. Session id is
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
 // read from that JSONL with the transcript view's own parser.
-async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summary"',
-  opts: { extraArgs?: string; timeoutMs?: number } = {}): Promise<string> {
+async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
+  opts: { tools: ToolProfile; timeoutMs?: number }): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? SUMMARY_TIMEOUT_MS;
   const sid = crypto.randomUUID();
   summarizerSids.add(sid);
   const name = `sum-${sid.slice(0, 8)}`;
   const started = Date.now();
   const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
-    `${PATH_EXPORT}claude --session-id ${sid} --model '${SUMMARY_MODEL}'${opts.extraArgs ? ` ${opts.extraArgs}` : ""}`);
+    `${PATH_EXPORT}claude --session-id ${sid} --model '${SUMMARY_MODEL}' ${opts.tools}`);
   if (sp.code !== 0) throw new Error("summarizer session failed to start");
   const file = `${projDir(cwd)}/${sid}.jsonl`;
   try {
@@ -2127,6 +2135,34 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark = '"summa
     await rm(file, { force: true });
     summarizerSids.delete(sid);
   }
+}
+
+// Every throwaway agent in this file is spawned through here. The eight call sites (summary,
+// 🔍 review, commit message, ✨ enhance, ⏫ merge resolver, its repair round, ② clean review,
+// 🧭 steward digest) differ in exactly four things — the FLEET_*_CMD stand-in, the tool profile,
+// the done-mark and the timeout — and shared the same four lines otherwise, which had already
+// drifted apart (one site passed no explicit timeout where its sibling did). Collapsed so a fix
+// here cannot land on seven of eight, and so a NEW site cannot be written without naming a tool
+// profile: `tools` is required, and its type is the closed union.
+// What is NOT collapsed: what each caller does with the answer (strict JSON, prose-tolerant, or
+// fail-closed) stays at the call site — those differences are real contracts, not duplication.
+interface WorkerSpec {
+  cmd: string | null;      // FLEET_*_CMD subprocess stand-in; null in production → the session path
+  tools: ToolProfile;      // capability floor for the session path (see ToolProfile)
+  doneMark: string;        // the substring that marks the JSONL answer as complete
+  timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on BOTH paths, same as before
+}
+async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise<string> {
+  const text = spec.cmd
+    ? await summaryViaSubprocess(spec.cmd, prompt, cwd, spec.timeoutMs)
+    : await summaryViaSession(prompt, cwd, spec.doneMark, { tools: spec.tools, timeoutMs: spec.timeoutMs });
+  // the test stand-in answers in a {"result": "..."} envelope — unwrap it; no contract JSON in
+  // this file has a string `result`, so this is a no-op for real runs
+  try {
+    const env = JSON.parse(text) as { result?: unknown };
+    if (typeof env.result === "string") return env.result.trim();
+  } catch { /* not an envelope — treat as the answer itself */ }
+  return text;
 }
 
 // the summary contract, shared by the owner sideboard and the guest info tab:
@@ -2198,15 +2234,8 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     "- openThreads: things started or mentioned but not finished (empty array if none).",
     '- verification: which checks/tests/builds ran and their results, or "none seen".',
   ].join("\n");
-  let text = SUMMARY_CMD
-    ? await summaryViaSubprocess(SUMMARY_CMD, prompt, cwd)
-    : await summaryViaSession(prompt, cwd, '"summary"', { extraArgs: TEXT_ONLY_TOOLS });
-  // the test stand-in answers in a {"result": "..."} envelope — unwrap it; the
-  // contract JSON itself has no string `result`, so this is a no-op for real runs
-  try {
-    const env = JSON.parse(text) as { result?: unknown };
-    if (typeof env.result === "string") text = env.result.trim();
-  } catch { /* not an envelope — treat as the answer itself */ }
+  const text = await runWorker(
+    { cmd: SUMMARY_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"summary"' }, prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   let summary = body, openThreads: string[] = [], verification = "", raw = true;
   try {
@@ -2226,7 +2255,7 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
 // cite file:line. Click-only (POST), cached on the exact git state, GET never spawns. Strictly
 // advisory and OWNER-ONLY — no land/merge/commit path reads any of this, and unlike the summary
 // it is deliberately NOT on the guest share surface. Read-only by the same contract runSummary
-// uses: no tool args to summaryViaSession plus an explicit no-tools instruction. It NEVER touches
+// uses: the TEXT_ONLY_TOOLS profile plus an explicit no-tools instruction. It NEVER touches
 // the tree — no reset, no checkout (unlike runCleanReview, which runs on a clean about-to-land
 // tree; this one runs on a LIVE lane that may hold hours of uncommitted work).
 // FLEET_REVIEW_CMD (tests only) switches to a plain subprocess stand-in.
@@ -2438,14 +2467,9 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
     '- notes: one line on what you could NOT check (truncated diff, code outside it), or "" if nothing.',
     "- An empty findings array is a valid and good answer. Never invent a finding to fill the list.",
   ].join("\n");
-  let text = REVIEW_CMD
-    ? await summaryViaSubprocess(REVIEW_CMD, prompt, cwd, REVIEW_TIMEOUT_MS)
-    : await summaryViaSession(prompt, cwd, '"findings"',
-      { extraArgs: TEXT_ONLY_TOOLS, timeoutMs: REVIEW_TIMEOUT_MS });
-  try {
-    const env = JSON.parse(text) as { result?: unknown };
-    if (typeof env.result === "string") text = env.result.trim();
-  } catch { /* not an envelope — treat as the answer itself */ }
+  const text = await runWorker(
+    { cmd: REVIEW_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"findings"', timeoutMs: REVIEW_TIMEOUT_MS },
+    prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // fail-soft exactly like runSummary: an off-contract answer degrades to notes, never a 500
   let findings: ReviewFinding[] = [], notes = body.slice(0, 2000), raw = true;
@@ -2548,13 +2572,8 @@ async function agentCommitMessage(cwd: string): Promise<string> {
     "", "## status", st.code === 0 && st.lines.length ? st.lines.join("\n") : "(none)",
     "", "## diff (truncated)", (d.code === 0 ? d.out.slice(0, 30_000) : "") || "(none)",
   ].join("\n");
-  let text = COMMIT_CMD
-    ? await summaryViaSubprocess(COMMIT_CMD, prompt, cwd)
-    : await summaryViaSession(prompt, cwd, '"message"', { extraArgs: TEXT_ONLY_TOOLS });
-  try {
-    const env = JSON.parse(text) as { result?: unknown };
-    if (typeof env.result === "string") text = env.result.trim();
-  } catch { /* not an envelope */ }
+  const text = await runWorker(
+    { cmd: COMMIT_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"message"' }, prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { message?: unknown };
@@ -2641,14 +2660,8 @@ function extractJsonObject(text: string): string | null {
 
 async function runEnhance(text: string, cwd: string, facts: EnhanceFacts | null): Promise<string> {
   const prompt = buildEnhancePrompt(text, facts);
-  let out = ENHANCE_CMD
-    ? await summaryViaSubprocess(ENHANCE_CMD, prompt, cwd)
-    : await summaryViaSession(prompt, cwd, '"prompt"', { extraArgs: TEXT_ONLY_TOOLS });
-  // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
-  try {
-    const env = JSON.parse(out) as { result?: unknown };
-    if (typeof env.result === "string") out = env.result.trim();
-  } catch { /* not an envelope */ }
+  const out = await runWorker(
+    { cmd: ENHANCE_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"prompt"' }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   let j: { prompt?: unknown };
   try {
@@ -2855,9 +2868,11 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
 // the owner's settings loaded, `Read(**)` still read a canary outside the worktree; with the
 // sources dropped the same read comes back "Permission to use Read has been denied". So the
 // anchors below only bind because this process no longer inherits that list.
-const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools '
-  + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" '
-  + '"Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
+// Written as ONE string literal, not a `+` chain, and that is load-bearing twice over: TypeScript
+// infers a literal type for a lone literal but widens a concatenation to `string`, which would
+// quietly turn ToolProfile's closed union back into "any string"; and a capability floor split
+// across chunks can hide a token from the assertions in e2e/prompts.ts at a chunk boundary.
+const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" "Bash(git checkout:*)" "Bash(git rebase:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
 // The ② clean reviewer's whole job is a verdict STRING — it inspects and answers, it never writes.
 // It runs on the one path nobody watches (FLEET_CLEAN_REVIEW on a clean auto-land) and, by design,
 // reads lane code another agent wrote — so it must not hold the resolver's write+exec primitives.
@@ -2867,8 +2882,8 @@ const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedToo
 // three read-only git subcommands its prompt names plus anchored Read/Grep/Glob. `--setting-sources ""`
 // carries the same load as above — without it the anchors are inert and this list only ADDS to the
 // owner's allow list, which would hand the write tools straight back.
-const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools '
-  + '"Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Read(**)" "Grep(**)" "Glob(**)"';
+// one literal, for the two reasons stated above MERGE_TOOLS
+const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Read(**)" "Grep(**)" "Glob(**)"';
 // "resolved" = the agent had to make semantic conflict choices; the rebase is git-verified
 // but deliberately NOT landed — it waits for the owner to review the diff and confirm.
 // A clean (script) rebase involves no judgment and still goes straight to "merged".
@@ -3787,14 +3802,8 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
     laneLog: lg.code === 0 ? lg.out : "",
     mainLog: mlg.code === 0 ? mlg.out : "",
   });
-  let out = MERGE_CMD
-    ? await summaryViaSubprocess(MERGE_CMD, prompt, cwd, MERGE_TIMEOUT_MS)
-    : await summaryViaSession(prompt, cwd, '"status"', { extraArgs: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS });
-  // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
-  try {
-    const env = JSON.parse(out) as { result?: unknown };
-    if (typeof env.result === "string") out = env.result.trim();
-  } catch { /* not an envelope */ }
+  const out = await runWorker(
+    { cmd: MERGE_CMD, tools: MERGE_TOOLS, doneMark: '"status"', timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // the JSON is the agent's NARRATIVE, never the authority — a correct rebase answered in
   // prose must not be thrown away (seen live: agent ignored an injected commit subject,
@@ -3817,13 +3826,8 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
 async function runRepair(cwd: string, branch: string, main: string, conflicted: string[],
   verify: { cmd: string; out: string }): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted });
-  let out = MERGE_CMD
-    ? await summaryViaSubprocess(MERGE_CMD, prompt, cwd, MERGE_TIMEOUT_MS)
-    : await summaryViaSession(prompt, cwd, '"status"', { extraArgs: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS });
-  try {
-    const env = JSON.parse(out) as { result?: unknown };
-    if (typeof env.result === "string") out = env.result.trim();
-  } catch { /* not an envelope */ }
+  const out = await runWorker(
+    { cmd: MERGE_CMD, tools: MERGE_TOOLS, doneMark: '"status"', timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
@@ -3901,20 +3905,18 @@ async function runCleanReview(cwd: string, root: string, branch: string, main: s
     otherLanes: await otherOpenLanes(cwd, root),
   });
   const preHead = await git(cwd, "rev-parse", "HEAD");
+  // the ONE site that wraps its spawn: everywhere else a throw propagates to a caller that reports
+  // the failure, but this one is deciding whether a clean tree auto-lands — so a timeout or a spawn
+  // failure must degrade to "" and be read as fail-closed below, never abort the land path.
   let out = "";
   try {
-    out = CLEAN_REVIEW_CMD
-      ? await summaryViaSubprocess(CLEAN_REVIEW_CMD, prompt, cwd, CLEAN_REVIEW_TIMEOUT_MS)
-      : await summaryViaSession(prompt, cwd, '"verdict"', { extraArgs: REVIEW_TOOLS, timeoutMs: CLEAN_REVIEW_TIMEOUT_MS });
+    out = await runWorker(
+      { cmd: CLEAN_REVIEW_CMD, tools: REVIEW_TOOLS, doneMark: '"verdict"', timeoutMs: CLEAN_REVIEW_TIMEOUT_MS },
+      prompt, cwd);
   } catch { /* timeout / spawn failure → out stays "" → parsed as fail-closed below */ }
   // enforce read-only: restore the tree to exactly what it was before the reviewer ran (it is about to land)
   if (preHead.code === 0 && preHead.out) await git(cwd, "reset", "--hard", preHead.out);
-  let text = out;
-  try {
-    const env = JSON.parse(text) as { result?: unknown };
-    if (typeof env.result === "string") text = env.result.trim();
-  } catch { /* not an envelope */ }
-  const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // the real model routinely wraps a perfectly valid verdict object in a one-sentence preamble
   // (5 of the first 6 production shadow rows) — so on a parse failure, carve the object out the
   // same way runEnhance does before giving up. This RESCUES a well-formed answer; it can never
@@ -5487,14 +5489,8 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
   let digest: StewardDigest | null = null;
   let error: string | undefined;
   try {
-    let out = DIGEST_CMD
-      ? await summaryViaSubprocess(DIGEST_CMD, prompt, home.cwd!)
-      : await summaryViaSession(prompt, home.cwd!, '"digest"', { extraArgs: TEXT_ONLY_TOOLS });
-    // test stand-in answers in a {"result": …} envelope — unwrap; no-op for real runs
-    try {
-      const env = JSON.parse(out) as { result?: unknown };
-      if (typeof env.result === "string") out = env.result.trim();
-    } catch { /* not an envelope */ }
+    const out = await runWorker(
+      { cmd: DIGEST_CMD, tools: TEXT_ONLY_TOOLS, doneMark: '"digest"' }, prompt, home.cwd!);
     const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
     let j: { digest?: unknown };
     try {

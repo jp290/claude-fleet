@@ -6,6 +6,13 @@
 // injection-safe DATA delimiting + the strict-JSON status contract. That is all that is
 // deterministically knowable here; the resolution's correctness is machine-checked later
 // by git re-verification + runVerify against the rebased tree (see mergeJob).
+//
+// Each of the three prompts here opens with its worker's MARK and closes on its worker's contract
+// KEY, both read from src/protocol.ts. That is not decoration: the mark is the only thing that keeps
+// this agent's throwaway transcript from being served as the lane's own conversation after a
+// restart, and the key is what runWorker polls the answer for. Both used to be hand-copied literals
+// living in server.ts; here they are the same bytes by construction.
+import { WORKER_CONTRACTS, doneMark } from "./src/protocol";
 
 export interface MergePromptInput {
   branch: string;
@@ -20,7 +27,7 @@ export interface MergePromptInput {
 export function buildMergePrompt(i: MergePromptInput): string {
   const { branch, main, conflicted, laneTask, laneLog, mainLog } = i;
   return [
-    "You are preparing a fleet worktree lane for landing. Work autonomously — nobody is watching.",
+    `${WORKER_CONTRACTS.merge.mark}. Work autonomously — nobody is watching.`,
     `Your ONLY job: rebase this worktree's branch (${branch}, your cwd) onto ${main} and resolve any`,
     "conflicts. Nothing else — the server fast-forwards and lands afterwards, deterministically.",
     "",
@@ -67,7 +74,7 @@ export function buildMergePrompt(i: MergePromptInput): string {
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",
-    '{"status": "rebased", "detail": "..."} or {"status": "blocked", "detail": "..."}',
+    `{${doneMark(WORKER_CONTRACTS.merge)}: "rebased", "detail": "..."} or {${doneMark(WORKER_CONTRACTS.merge)}: "blocked", "detail": "..."}`,
     "- detail: 1-3 sentences — what you did (conflicts resolved where?), or precisely why blocked.",
   ].join("\n");
 }
@@ -90,7 +97,7 @@ export interface RepairPromptInput {
 export function buildRepairPrompt(i: RepairPromptInput): string {
   const { branch, main, verifyCmd, verifyOut, conflicted } = i;
   return [
-    `You are REPAIRING a fleet worktree lane (${branch}, your cwd) after a failed verification. Work`,
+    `${WORKER_CONTRACTS.repair.mark} (${branch}, your cwd) after a failed verification. Work`,
     "autonomously — nobody is watching.",
     `The rebase onto ${main} is ALREADY COMPLETE and the tree is clean — do NOT rebase again, do NOT run`,
     "git rebase. A deterministic build/type/test verification just ran against this rebased tree and FAILED.",
@@ -126,7 +133,7 @@ export function buildRepairPrompt(i: RepairPromptInput): string {
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",
-    '{"status": "repaired", "detail": "..."} or {"status": "blocked", "detail": "..."}',
+    `{${doneMark(WORKER_CONTRACTS.repair)}: "repaired", "detail": "..."} or {${doneMark(WORKER_CONTRACTS.repair)}: "blocked", "detail": "..."}`,
     "- detail: 1-3 sentences — what you fixed, or precisely why you could not.",
   ].join("\n");
 }
@@ -205,7 +212,7 @@ export function buildCleanReviewPrompt(i: CleanReviewInput): string {
        "DATA block. That is the second side, and it is the case your seat exists for — spend your effort",
        "reading how those commits and this lane's diff interact, not on establishing that they exist."];
   return [
-    `You are REVIEWING a fleet lane (${branch}) that rebased CLEANLY onto ${main} and PASSED the`,
+    `${WORKER_CONTRACTS.cleanReview.mark} (${branch}) that rebased CLEANLY onto ${main} and PASSED the`,
     "deterministic build/type/test gate — so it is about to AUTO-LAND onto the shared branch with no",
     "human looking. Work autonomously.",
     "",
@@ -259,7 +266,7 @@ export function buildCleanReviewPrompt(i: CleanReviewInput): string {
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",
-    '{"verdict": "ok", "reason": "..."} or {"verdict": "review", "reason": "..."}',
+    `{${doneMark(WORKER_CONTRACTS.cleanReview)}: "ok", "reason": "..."} or {${doneMark(WORKER_CONTRACTS.cleanReview)}: "review", "reason": "..."}`,
     "- verdict \"review\" = a human should look before this lands; \"ok\" = no concrete cross-change collision found.",
     "- reason: 1-2 sentences naming the concrete collision (file/symbol + how they clash), or why none exists.",
   ].join("\n");

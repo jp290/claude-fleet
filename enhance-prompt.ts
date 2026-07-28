@@ -14,6 +14,10 @@
 // directive = conformed to. Discipline dosing stays downstream in /sharpen3, which runs INSIDE
 // the target session and picks by expected failure, sighted.
 
+// the enhancer's transcript mark and its JSON contract key, from the one table both this prompt and
+// server.ts's runWorker read (src/protocol.ts) — see merge-prompt.ts for why the mark matters
+import { WORKER_CONTRACTS, doneMark } from "./src/protocol";
+
 export interface EnhanceFacts {
   branch: string | null;
   laneScoped: boolean;
@@ -61,7 +65,7 @@ function factLines(f: EnhanceFacts | null): string[] {
 
 export function buildEnhancePrompt(draft: string, facts: EnhanceFacts | null): string {
   return [
-    "Du bist JPs Prompt-Veredler. Unten steht ein ROHER Entwurf, den JP gleich an eine laufende Coding-Agent-Session schickt.",
+    `${WORKER_CONTRACTS.enhance.mark}. Unten steht ein ROHER Entwurf, den JP gleich an eine laufende Coding-Agent-Session schickt.`,
     // HONEST about both directions: facts yes, session no. This line must never claim more
     // (it would invite interpretation) and never claim less (the DATA block is right there).
     "Du siehst den VERLAUF dieser Session NICHT — keine Nachrichten, keinen Kontext, keine Historie. Was du siehst, ist ausschließlich der DATEN-Block unten: der deterministische git-Stand des Arbeitsverzeichnisses, in dem die Session läuft.",
@@ -97,7 +101,7 @@ export function buildEnhancePrompt(draft: string, facts: EnhanceFacts | null): s
     ...factLines(facts),
     "DATA>>>",
     "",
-    'Benutze keine Tools. Antworte in EINER Nachricht mit STRICT JSON ohne Markdown-Zäune, exakt: {"prompt": "..."}',
+    `Benutze keine Tools. Antworte in EINER Nachricht mit STRICT JSON ohne Markdown-Zäune, exakt: {${doneMark(WORKER_CONTRACTS.enhance)}: "..."}`,
     "",
     "Beispiele:",
     // grounded thickening of a rough short draft — the fact is quoted from the DATA block,

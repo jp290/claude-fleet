@@ -310,6 +310,20 @@ leaves §3's answer (types, plus 25 checks about `claudeAlive`) exactly where it
 
 Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, +892/−21).
 
+> **SUPERSEDED IN ONE RESPECT, 2026-07-28.** This section was written on 2026-07-25 against a lane
+> whose tier was still switched off, and it says so three times below. **Tier 2 has been live since
+> later that same day**: `watchdog.sh`'s srv-spawn line carries `FLEET_POSTLAND_AUDIT_CMD`, so a full
+> `./e2e-isolated.sh` runs against the integration tip after every land that moves main. Read the
+> three passages marked ~~struck~~ as history, not as the current configuration. The claim is now
+> machine-checked rather than re-read: the marker below is compared against the actual srv-spawn line
+> by `bun e2e/pins.ts`, which runs first in the land gate — if the tier is ever switched off, or its
+> flag renamed, this paragraph fails the gate instead of quietly going stale again. That is the only
+> defence prose has, and this section is the case for it: it outlived its own subject by three days
+> in a document whose whole purpose is describing what the gate does.
+>
+> <!-- pin:watchdog-spawn FLEET_POSTLAND_AUDIT_CMD=set FLEET_VERIFY_CMD=set FLEET_CLEAN_REVIEW=shadow -->
+> Pinned: `FLEET_POSTLAND_AUDIT_CMD` set · `FLEET_VERIFY_CMD` set · `FLEET_CLEAN_REVIEW=shadow`.
+
 **What it already solves — do not re-propose:**
 
 - The post-land tier exists: `recordLand` → `schedulePostLandAudit` → `git archive` snapshot of the
@@ -318,8 +332,10 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
   `postLandAudit` on `/api/sessions`, rehydrated at boot, loud server-log line on non-green.
 - The decisions I would otherwise have argued for are already taken and argued at the decision site:
   it gates nothing, it does not auto-undo, `unknown` is never rounded to green or red, the child
-  inherits no `FLEET_*` variable (so no recursion and no live tokens), and it is **default OFF** with
-  the enabling lines pre-written but commented out in `watchdog.sh:60–74`.
+  inherits no `FLEET_*` variable (so no recursion and no live tokens), and it is ~~**default OFF** with
+  the enabling lines pre-written but commented out in `watchdog.sh:60–74`~~ — default off in
+  `server.ts` still, but **switched on in `watchdog.sh` since 2026-07-25**; the lines are live, not
+  commented out.
 - 32 checks in `fleet-e2e-postland-audit.ts` plus 2 default-off non-regression checks in the main
   suite. Coalescing, non-overlap, non-blocking, the joins, the scratch-dir isolation, env scrubbing,
   and all three `unknown` shapes are each pinned.
@@ -332,8 +348,9 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
 
 **What it does not solve** (its own docs say the first two; the rest are mine):
 
-1. It is off. Nothing is audited until `FLEET_POSTLAND_AUDIT_CMD` is in the srv-spawn line and
-   `launchctl kickstart` has run.
+1. ~~It is off. Nothing is audited until `FLEET_POSTLAND_AUDIT_CMD` is in the srv-spawn line and
+   `launchctl kickstart` has run.~~ **Resolved 2026-07-25**: the variable is in the srv-spawn line and
+   the kickstart has run. Everything else in this list still stands.
 2. Nothing reads the trail — no client rendering, no attribution consumer.
 3. **The rollback it names is mostly unavailable in the burst case it optimises for** (§6c). Worth
    saying in the doc it ships with, because "↩ undo-land is the rollback" reads as a general
@@ -356,8 +373,9 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
    "something failed" into "something failed reproducibly" — which is the difference between an
    alarm the owner acts on and one the owner learns to ignore.
 
-**Collision surface with my proposal:** only `watchdog.sh`. They append a commented-out `AUDIT_CMD`
-block *below* the `VERIFY_CMD` line (`watchdog.sh:60–74` in their tree); I propose changing the
+**Collision surface with my proposal:** only `watchdog.sh`. They append an `AUDIT_CMD`
+block *below* the `VERIFY_CMD` line (commented out in their tree when this was written; live since
+2026-07-25 — `watchdog.sh`, grep `AUDIT_CMD`); I propose changing the
 `VERIFY_CMD` string itself (line 57) and adding one env var to the srv-spawn line. Different lines
 of the same file, both owner-applied by hand, both needing `launchctl kickstart`. Neither auto-lands.
 No conflict in intent: their tier is the slow half, mine widens the fast half.

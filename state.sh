@@ -66,5 +66,45 @@ echo "  leaked e2e tmux sockets: $(ls /private/tmp/tmux-501/ 2>/dev/null | grep 
 echo "  TMPDIR e2e scratch:      $(du -shc "${TMPDIR:-/tmp}"/fleet-e2e-instance-* 2>/dev/null | tail -1 | cut -f1)"
 echo "  suites running now:      $(ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh')"
 echo
+echo "=== config sensor (Ring 1.1: Wert+Quelle je FLEET_*; vorher hatten 31/42 Werte keinen Sensor) ==="
+python3 - <<'PY'
+import subprocess, re
+def sh(cmd):
+    try: return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10).stdout
+    except Exception: return ''
+def clip(v): return (v[:44] + '…') if len(v) > 44 else v
+cwd_here = sh('pwd').strip()
+live = {}
+for p in sh("pgrep -f 'bun server.ts'").split():
+    c = [l[1:] for l in sh(f'lsof -a -p {p} -d cwd -Fn').splitlines() if l.startswith('n')]
+    if c and c[0] == cwd_here:
+        # ps eww hängt die Env an die Kommandozeile; mehrteilige Werte (die *_CMD) erscheinen
+        # nur bis zum ersten Leerzeichen — für den Sensor reicht Existenz + Präfix
+        for m in re.finditer(r'(FLEET_[A-Z_]+)=(\S*)', sh(f'ps eww -p {p}')):
+            live[m.group(1)] = m.group(2)
+tmx = dict(re.findall(r'^(FLEET_[A-Z_]+)=(.*)$', sh('tmux -L claudefleet show-environment -g 2>/dev/null'), re.M))
+env = {}
+try: env = dict(re.findall(r'^(FLEET_[A-Z_]+)=(.*)$', open('.env').read(), re.M))
+except FileNotFoundError: pass
+wd = {}
+try:
+    for m in re.finditer(r'(FLEET_[A-Z_]+)=', open('watchdog.sh').read()): wd.setdefault(m.group(1), True)
+except FileNotFoundError: pass
+srcs = [('live', live), ('tmux-global', tmx), ('.env', env)]
+for k in sorted(set(live) | set(tmx) | set(env) | set(wd)):
+    parts = [f"{n}={clip(d[k])}" for n, d in srcs if k in d]
+    if k in wd: parts.append('watchdog.sh')
+    print(f"  {k:32s} {' | '.join(parts)}")
+for k, v in tmx.items():
+    if k in live and live[k] != v and not k.endswith('_CMD'):
+        print(f"  ⚠ {k}: tmux-global={clip(v)} != live={clip(live[k])}")
+for k, v in env.items():
+    if k in tmx and tmx[k] != v:
+        print(f"  ⚠ {k}: .env={clip(v)} liegt UNTER tmux-global={clip(tmx[k])} (echte Env gewinnt)")
+if not live: print('  (kein LIVE-Server in diesem cwd — live-Spalte leer)')
+PY
+echo "  (watchdog.sh-Spalte = kommt in der Spawn-Zeile vor, eingefroren bis launchctl kickstart;"
+echo "   Werte, die NUR in server.ts-Defaults leben, haben weiterhin keinen Sensor — Ring 1.2)"
+echo
 echo "Health check (the server binds ONLY the Tailscale IP; 127.0.0.1 never answers):"
 echo "  curl http://100.64.0.1:8790/"

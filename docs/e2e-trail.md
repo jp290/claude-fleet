@@ -47,7 +47,8 @@ code, and that is exactly the distinction a flake query turns on.
 
 `e2e-isolated.sh` `rm -rf`s its instance dir **on success**. A trail written there would vanish on
 exactly the green runs — the baseline that makes a red one legible. So the trail is resolved
-*outside* the instance dir, and resolved **inside the harness**, so no wrapper changes:
+*outside* the instance dir, and resolved **inside the harness**, so no wrapper has to say where
+(each wrapper names only its own `FLEET_E2E_SUITE`, see §6):
 
 1. `FLEET_E2E_TRAIL_DIR` if set (empty string = trail disabled).
 2. Otherwise `<main checkout>/e2e-trail/`, found by asking git for the source tree's
@@ -94,9 +95,28 @@ instance dir, and that a known check's row carries the full shape. The failure-d
 asserted on the pure row builder, since a deliberately failing check would fail the run measuring
 it.
 
-## 6. Not in this layer
+## 6. Which suites write a trail
+
+All five. Originally only `e2e-isolated.sh`'s — the four single-file harnesses did not import
+`e2e/harness.ts`, so the ~104 runtime checks of the pre-land gate produced no rows at all, and
+`FLEET_E2E_SUITE` had no writer anywhere (every row said `isolated` by default). Folding their
+duplicated plumbing onto `e2e/harness.ts` (2026-07-28) made `check()` their choke point too, and
+each wrapper now names its suite on the line that invokes its harness:
+
+| wrapper | `FLEET_E2E_SUITE` |
+| --- | --- |
+| `e2e-isolated.sh` | `isolated` |
+| `e2e-claude-gate.sh` | `claude-gate` |
+| `e2e-clean-review.sh` | `clean-review` (both phases — they are two processes, so two run ids, and every shadow-phase check name is prefixed `shadow: `) |
+| `e2e-security.sh` | `security` |
+| `e2e-postland-audit.sh` | `postland-audit` |
+
+The label is passed to the harness process only, never into the srv spawn env: the server has no
+use for it, and `restartSrv` filters `FLEET_E2E_*` out of the env it carries forward anyway.
+
+`drills/drill-3.sh` writes no trail — its harness is a drill fixture, not a `check()` suite.
+
+## 7. Not in this layer
 
 No query, no flake ranking, no route. `GET /api/…` over these rows is the next piece, and
-`knowledge-currency.md` §5(b) is where it belongs. Only `e2e-isolated.sh`'s suite writes a trail;
-`fleet-e2e-claude-gate.ts` and `fleet-e2e-clean-review.ts` are separate single-file harnesses that
-do not import `e2e/harness.ts` and are unaffected.
+`knowledge-currency.md` §5(b) is where it belongs.

@@ -14,9 +14,12 @@ PORT=$((15000 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
-  "$SRC/continuity.ts" "$SRC/fleet-e2e-postland-audit.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
-ln -s "$SRC/node_modules" "$DIR/node_modules"
+# Instance contents are DERIVED from the entry files' imports — rule in e2e-stage.sh. THIS is the
+# wrapper the hand-kept list killed: when continuity.ts landed, the other five lists were updated
+# and this one was not, so the suite died at boot on every run for weeks, unnoticed because no
+# gate drives it. There is no longer a list here to forget.
+. "$SRC/e2e-stage.sh"
+stage_instance "$SRC" "$DIR" server.ts fleet-e2e-postland-audit.ts || exit 1
 
 # green verify stand-in (no sabotage marker → clean+green → the lane auto-lands, which is what the
 # audit hangs off)
@@ -124,7 +127,11 @@ cd "$DIR" || exit 1
 # the durability section restarts srv itself (kill mid-audit → boot again), so the same env the
 # srv-spawn line above uses is exported to the harness process, which rebuilds that line from
 # process.env — same pattern as e2e/restart.ts. FLEET_HOST/PORT/SOCK ride along too.
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true \
+# FLEET_E2E_SUITE labels this run's trail rows (e2e/trail-emit.ts), which default to "isolated".
+# It is NOT in the list above: the harness re-exports these to rebuild the srv line, and the
+# server has no use for a suite label.
+FLEET_E2E_SUITE=postland-audit \
+  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true \
   FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_MERGE_CMD="$DIR/fakemerge" \
   FLEET_POSTLAND_AUDIT_CMD="$DIR/fakeaudit" FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 \
   FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD="$DIR/fakecleanreview" \

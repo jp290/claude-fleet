@@ -21,24 +21,17 @@ PORT=$((17400 + $$ % 2000))
 
 [ -f "$SRC/server.ts" ] || { echo "not a fleet checkout: $SRC"; exit 2; }
 rm -rf "$DIR"; mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" \
-      "$SRC/continuity.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
-cp "$HERE/drill-3-clean-review.ts" "$DIR/"
-ln -s "$SRC/node_modules" "$DIR/node_modules"
-
 # A hand-maintained copy list rots the moment server.ts gains a relative import, and the symptom is
-# a boot failure that reads like anything else. It has now happened three times in one evening:
-# e2e-security.sh (d146e74), this harness, and it is why fleet-e2e-security.ts's own §5 broke too.
-# So the list is CHECKED rather than trusted — derived from server.ts itself, every run.
-missing=""
-for m in $(grep -oE 'from "\./[A-Za-z0-9_-]+"' "$SRC/server.ts" | sed 's|from "\./||; s|"||' | sort -u); do
-  [ -f "$DIR/$m.ts" ] || missing="$missing $m.ts"
-done
-if [ -n "$missing" ]; then
-  echo "FATAL: server.ts imports these, and the drill instance does not have them:$missing"
-  echo "Add them to the cp list above. The drill is VOID until then — the server cannot boot."
-  exit 2
-fi
+# a boot failure that reads like anything else — it happened three times in one evening
+# (e2e-security.sh d146e74, this harness, and fleet-e2e-security.ts's own §5). This harness answered
+# with a list PLUS a derived guard that checked it. The guard's regex (`from "\./[A-Za-z0-9_-]+"`)
+# matched bare names only, so a subpath import like `./src/protocol` would have slipped past it and
+# the drill would have gone void anyway. Now there is one rule and no list: e2e-stage.sh derives the
+# instance from the entry's imports, subpaths included, and an unresolvable specifier is fatal here.
+. "$SRC/e2e-stage.sh"
+stage_instance "$SRC" "$DIR" server.ts || exit 2
+# the drill's own fixture builder, which lives in drills/ rather than in the checkout root
+cp "$HERE/drill-3-clean-review.ts" "$DIR/"
 
 cat > "$DIR/fakeverify" <<'EOF'
 #!/bin/sh

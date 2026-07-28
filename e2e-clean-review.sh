@@ -17,8 +17,11 @@ PORT=$((13000 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/continuity.ts" "$SRC/fleet-e2e-clean-review.ts" "$SRC/public" "$SRC/package.json" "$DIR/"
-ln -s "$SRC/node_modules" "$DIR/node_modules"
+# Instance contents are DERIVED from the entry files' imports — rule in e2e-stage.sh. The shared
+# e2e/ plumbing this harness now imports (harness.ts, lane-helpers.ts, trail-emit.ts) rides in as
+# a transitive import; this wrapper names none of it.
+. "$SRC/e2e-stage.sh"
+stage_instance "$SRC" "$DIR" server.ts fleet-e2e-clean-review.ts || exit 1
 
 # green verify stand-in (no sabotage marker → clean+green → the reviewer is what decides the land)
 cat > "$DIR/fakeverify" <<'EOF'
@@ -105,7 +108,11 @@ wait_bound
 
 cd "$DIR" || exit 1
 echo "--- phase: gate (FLEET_CLEAN_REVIEW=1) ---"
-FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun fleet-e2e-clean-review.ts
+# FLEET_E2E_SUITE labels this run's trail rows (e2e/trail-emit.ts), which otherwise default to
+# "isolated". BOTH phases carry the same label on purpose: they are one suite, they run as two
+# processes so they already get two distinct run ids, and every shadow-phase check name is
+# prefixed "shadow: " — so the phase is legible from the rows without a second suite name.
+FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun fleet-e2e-clean-review.ts
 code=$?
 
 # Phase 2: the SAME instance rebooted with FLEET_CLEAN_REVIEW=shadow. A restart (not a second server)
@@ -118,7 +125,7 @@ if [ "$code" = 0 ]; then
     "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
   wait_bound
   echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
-  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
+  FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
   code=$?
 fi
 

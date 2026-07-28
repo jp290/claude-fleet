@@ -4,14 +4,14 @@
 # Handgepflegtes rottet (102/117 tote Refs, gemessen); Abgeleitetes kann nur veralten, nie lügen —
 # der Zeitstempel im Kopf sagt, wie alt es ist.
 #
-# Usage:  ./atlas.sh [outdir]      default outdir: ~/fleet-atlas
+# Usage:  ./atlas.sh [outdir]      default outdir: $HOME/fleet-atlas
 # Serve:  tmux -L claudefleet new-session -d -s atlas \
-#           'cd ~/fleet-atlas && python3 -m http.server 8794 --bind 100.64.0.1'
+#           'cd $HOME/fleet-atlas && python3 -m http.server 8794 --bind 100.64.0.1'
 #         plus Regen-Loop, siehe README-Zeile am Seitenfuß. Port 8794: 2026-07-28 frei gemessen
 #         (8790 fleet, 8795/8815/8850/8862 fremde Dienste, 8796/8899 bun).
 set -u
 cd "$(dirname "$0")" || exit 1
-OUT=${1:-~/fleet-atlas}
+OUT=${1:-$HOME/fleet-atlas}
 mkdir -p "$OUT"
 esc() { python3 -c "import sys,html;sys.stdout.write(html.escape(sys.stdin.read()))"; }
 {

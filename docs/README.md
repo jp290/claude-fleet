@@ -158,6 +158,27 @@ rotting. Two shelves, plus the steward subsystem.
   instead of a query. The row shape, why the trail lives in the main checkout's `e2e-trail/` and
   not in the instance dir the wrapper deletes on green, why one file per run, and why the timing
   field is called `msSincePrev` and not a duration. Read before querying or extending it.
+- **`mining-2026-07-26.md`** — the five ledgers read rather than assumed. Where the tier-2 audit
+  silently lost four lands to a srv restart, why both red audits went unread, and finding 3's
+  correction: ②'s identical verdicts were a **broken feed** (`main..main`), not degenerate traffic.
+- **`data-audit-2026-07-27.md`** — six parallel read-only agents over the data plumbing, ranked with
+  a cut line: the restart windows in the land path, the alarm no client read, the output cap that
+  kept 33 PASS lines and no FAIL names, the rotation cliff, the state-file durability holes. Each
+  finding carries its `file:line` and its cost. The source list for wave 2.
+- **`suite-contention.md`** — the merge/resolver flake root-caused: `tryScriptRebase` discards
+  `git rebase --abort`'s exit code, so a lost `index.lock` race (against Fleet's own `tickGit`)
+  leaves a lane wedged mid-rebase. Read before treating suite non-determinism as a property of the
+  suite, and before serializing anything else around it.
+- **`structural-plan.md`** — thirty findings collapsed into four mechanisms (intent-before-act;
+  one module per ledger with unknown representable; no swallowed failure on a mutating op; a poll
+  path may not do unbounded work), with what each does *not* cover and what stays bespoke.
+- **`knowledge-currency.md`** — the answer to "should lanes have a shared knowledge store": no, for
+  the third time, but naming the gap the prior two missed — the worktree delivers the shelf as of
+  *spawn time*. A lane can read main's newest knowledge with `git show main:docs/x.md`. Amends
+  `knowledge-layers.md`; read both before proposing an index.
+- **`audit-implementation-plan.md`** — how the audit was partitioned into lanes by `server.ts`
+  region (not by finding number), the reproduce-before-fix rule, and the explicit wave-2 deferral
+  list so nothing fell off between waves.
 - **`ungoverned-artifacts.md`** — `CLAUDE.md`/`OWNER.md`/the four `.jsonl` trails are untracked,
   copied per-lane at spawn, and unbacked-up: why a lane cannot fulfil Wissenspflege for the
   rulebook, the measured per-worktree drift, and the fix ladder under a public remote.

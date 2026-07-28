@@ -11,34 +11,14 @@
 //
 // Run via ./e2e-claude-gate.sh (builds the fake binary, starts an isolated instance,
 // invokes this file, tears down). Do not run directly against a live fleet.
-const IP = "127.0.0.1";
-const PORT = Number(process.env.FLEET_PORT ?? 8792);
-const SOCK = process.env.FLEET_SOCK ?? "fleetgatetest";
-// This harness opens and kills slots, enables the dispatcher and queues a task — against the live
-// socket that would drive the real panes. Same refusal every sibling harness carries, and it must
-// stay the FIRST statement that can act: nothing below it may run on the live fleet.
-if (SOCK === "claudefleet") throw new Error("refusing to run against the live socket");
-const BASE = `http://${IP}:${PORT}`;
+// The plumbing below the checks — BASE, the owner token read out of the instance's fleet.json,
+// post/get/check/tmuxOut, and the live-fleet refusal this harness used to carry as its own copied
+// line — is e2e/harness.ts, the module the main suite's check modules already import. It refuses
+// the live socket AND the live port on import, before anything here can act. check() there is also
+// the per-check trail's single emit site, so this suite's checks now leave durable rows
+// (docs/e2e-trail.md); ./e2e-claude-gate.sh stamps them with FLEET_E2E_SUITE=claude-gate.
+import { BASE, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
-const results: string[] = [];
-let failed = 0;
-function check(name: string, ok: boolean, detail = "") {
-  results.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
-  if (!ok) failed++;
-}
-
-async function tmuxOut(...args: string[]) {
-  const p = Bun.spawn(["tmux", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
-  const out = await new Response(p.stdout).text();
-  const code = await p.exited;
-  return { out, code };
-}
-
-const state = (await Bun.file(`${import.meta.dir}/fleet.json`).json()) as { token?: string };
-const TOKEN = state.token ?? "";
-const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
-const post = (path: string, body: unknown) => fetch(BASE + path, { method: "POST", headers: H, body: JSON.stringify(body) });
-const get = (path: string) => fetch(BASE + path, { headers: H });
 
 interface AutoInfo { id: string; slot: number; lastResult: string | null }
 
@@ -270,5 +250,5 @@ check("dispatch post-spawn gate: the task text never reached the bare shell",
 for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.id)) await tmuxOut("kill-session", "-t", `s${s.id}`);
 
 console.log(results.join("\n"));
-console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
-process.exit(failed ? 1 : 0);
+console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+process.exit(failures() ? 1 : 0);

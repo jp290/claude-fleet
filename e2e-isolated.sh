@@ -43,11 +43,17 @@ PORT=$((8800 + $$ % 2000))
 
 rm -rf "$DIR"
 mkdir -p "$DIR"
-# fleet-e2e.ts is the runner; the checks live in e2e/*.ts and are imported relative to it.
-# src/ comes along for the client-side pure modules a check imports directly (src/backoff.ts) —
-# the server never reads src/, only public/*.js, which is already built.
-cp -R "$SRC/server.ts" "$SRC/merge-prompt.ts" "$SRC/enhance-prompt.ts" "$SRC/lane-signals.ts" "$SRC/continuity.ts" "$SRC/fleet-e2e.ts" "$SRC/e2e" "$SRC/src" "$SRC/public" "$SRC/package.json" "$DIR/"
-ln -s "$SRC/node_modules" "$DIR/node_modules"
+# What the instance contains is DERIVED from the entry files' imports, not listed here —
+# e2e-stage.sh carries the rule and the two dead harnesses that motivated it.
+# Entries: server.ts (the app) + fleet-e2e.ts (the runner). All 31 e2e/*.ts ride in as the
+# runner's transitive imports, so a new check module still needs no change to this wrapper —
+# and now neither does a new top-level directory, which used to need one.
+# No STAGE_EXTRA: the one src/ file the suite actually imports (src/backoff.ts, via
+# e2e/slots.ts) comes with the closure, and the only check that reads client SOURCE resolves
+# it through the node_modules symlink on purpose (e2e/outcomes.ts:278-283) — whose comment
+# "carries server.ts + public/ but NOT src/" is true again now that the wholesale copy is gone.
+. "$SRC/e2e-stage.sh"
+stage_instance "$SRC" "$DIR" server.ts fleet-e2e.ts || exit 1
 
 # a throwaway git repo the worktree/dispatch tests spawn lanes from
 REPO="$DIR/testrepo"
@@ -283,8 +289,10 @@ done
 sleep 0.5
 
 cd "$DIR" || exit 1
-# the SAME env the srv spawn got — see the SRV_ENV comment above for why the two must be one string
-eval "$SRV_ENV bun fleet-e2e.ts"
+# the SAME env the srv spawn got — see the SRV_ENV comment above for why the two must be one string.
+# FLEET_E2E_SUITE rides in FRONT of it, not inside it: it is a harness-only label (the name every
+# trail row this run writes is stamped with, e2e/trail-emit.ts) and the server has no use for it.
+eval "FLEET_E2E_SUITE=isolated $SRV_ENV bun fleet-e2e.ts"
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

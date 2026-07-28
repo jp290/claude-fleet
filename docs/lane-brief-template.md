@@ -81,9 +81,10 @@ one-line note of anything you could not resolve. No walkthrough of your reasonin
   `e2e/<family>.ts` and `fleet-e2e.ts` is a runner. The rule is unchanged in substance —
   "insert next to related checks in the right family module" — but the collision surface
   is now per-family, so name the *module*, not the file.)
-- **Gate coverage steers what a lane may own.** The land gate is tsc + e2e-claude-gate:
-  server-side behavior is covered, **client code is asserted only at source-string level
-  (no DOM harness)**. So a lane whose value lives in rendering carries risk the gate
+- **Gate coverage steers what a lane may own.** The land gate is tsc (seven files) +
+  `./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh` (`watchdog.sh`,
+  `VERIFY_CMD` — the file is the source, not this line): server-side behavior is
+  covered, **client code is asserted only at source-string level (no DOM harness)**. So a lane whose value lives in rendering carries risk the gate
   cannot see — say so in the brief, and prefer server-side scope for anything
   autonomy-adjacent until a DOM harness exists.
 - **A calibration lane is told it is one.** Deceive the judge under test, never the

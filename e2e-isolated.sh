@@ -18,6 +18,25 @@ unset FLEET_SELF_TOKEN FLEET_SELF_SLOT FLEET_STEWARD_TOKEN
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR are derived from $$ so concurrent runs (e.g. two worktree lanes)
 # never share a socket/port — one run's kill-server can't hit another's server.
+#
+# PORT BAND TABLE — the ONE place a band is assigned. Every harness computes
+# PORT=$((base + $$ % 2000)), so a band is exactly 2000 wide and two harnesses whose bands
+# overlap WILL collide on the HTTP bind for the same $$ (distinct tmux sockets do not help:
+# the port is the shared resource, and these suites are expressly run side by side).
+# Bands must be pairwise disjoint; they must also never contain the live fleet's 8790.
+#   e2e-isolated.sh         8800 – 10799
+#   e2e-claude-gate.sh     10800 – 12799
+#   e2e-clean-review.sh    13000 – 14999
+#   e2e-postland-audit.sh  15000 – 16999
+#   drills/drill-3.sh      17400 – 19399
+#   e2e-security.sh        21400 – 23399
+# Next free base: 23400. Add a new harness to this table FIRST, then copy the base into it.
+# Disjoint from each other is only half of it — a band also has to be clear of what else listens
+# on this box. Checked with `lsof -nP -iTCP -sTCP:LISTEN` when security was re-spaced: the obvious
+# squatter is cloudflared's metrics pair 20241/20242, which is why security skips 19400 and takes
+# 21400. Pre-existing and NOT fixed here, so the next hand knows: the 8800 band already contains
+# several long-lived local services (8815, 8850, 8862, 8899, 8901, 8924 were up that day) and
+# drill-3's contains 18789/18792 — a run whose $$ lands on one of those fails to bind.
 DIR="${TMPDIR:-/tmp}/fleet-e2e-instance-$$"
 SOCK="fleettest$$"
 PORT=$((8800 + $$ % 2000))

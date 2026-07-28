@@ -55,6 +55,26 @@ Not "simpler" and separately "more robust". The changes worth doing are the ones
 Pure hardening that *costs* lines — the notification path, the reaper, the git-race fix — is still
 needed but is a trade, and should be labelled as one rather than smuggled in as simplification.
 
+## How the next lane should be driven — `docs/lane-driving.md`
+
+Written after this session's two lanes, at the owner's prompting, and it corrects **me**, not the
+structure. The briefs were ~40 lines and enumerated what the lane could have found by reading;
+`lane-brief-template.md`'s own norms already say a brief carries **only the residue** — the decision,
+its reason, the hazard, the territory. Both lanes contributed things no brief contained (a sixth
+port consumer, the 8800-band collision with live services, a refusal to re-assess an open security
+finding), which is the evidence that enumeration was not what made them work.
+
+**The decomposition, by contrast, is not a preference.** Same-file lanes collide at land, and undo is
+one land deep — one lane doing both concerns yields one land over eleven files that cannot be half
+reversed. The split *is* the reversibility. Corollary applied here: **land the lane you are most
+likely to want back last.**
+
+**What actually went wrong was fire-and-forget:** one brief, then an hour of silence, while five
+agent reports sat unused in the main session. `POST /send {slot,text}` reaches any lane at any time
+and the `⚙ steward` convention exists for it; neither was used. The next lane should get a *short*
+brief plus mid-flight correction — stated in `lane-driving.md` §3 with what would refute it, because
+**n = 2** and nothing here is a validated method yet.
+
 ## Broken / open
 
 - **The git race is still the autonomy blocker.** `tryScriptRebase` (grep it) discards

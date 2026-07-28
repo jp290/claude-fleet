@@ -169,6 +169,16 @@ rotting. Two shelves, plus the steward subsystem.
   `git rebase --abort`'s exit code, so a lost `index.lock` race (against Fleet's own `tickGit`)
   leaves a lane wedged mid-rebase. Read before treating suite non-determinism as a property of the
   suite, and before serializing anything else around it.
+- **`analysis-2026-07-28-findings.md`** — five agents, three of them blind to the prior analysis.
+  The measured refusal of the ledger extraction (`server.ts` grew +908 lines in two days; the only
+  clean seam is 3.3%; `appendEvent`/`readLedger` already own the discipline and the remainder is
+  four bypass call sites), ~1,800 deletable lines **with a longer do-NOT-delete list**, the 37
+  must-agree pairs and why they are one mechanism, the six-place config surface, and the substrate's
+  coverage holes. Read before proposing an extraction or a deletion.
+- **`analysis-2026-07-28-register.md`** — its companion: 86 claims from the mechanism overview, each
+  with its **evidence class** (read-code / code-comment / derived / unverified) and its verdict after
+  adversarial checking. The format matters more than the rows: a claim sourced from a comment is
+  marked as such, so partial coverage cannot read as complete.
 - **`structural-plan.md`** — thirty findings collapsed into four mechanisms (intent-before-act;
   one module per ledger with unknown representable; no swallowed failure on a mutating op; a poll
   path may not do unbounded work), with what each does *not* cover and what stays bespoke.

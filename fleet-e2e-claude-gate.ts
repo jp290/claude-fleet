@@ -17,7 +17,8 @@
 // the live socket AND the live port on import, before anything here can act. check() there is also
 // the per-check trail's single emit site, so this suite's checks now leave durable rows
 // (docs/e2e-trail.md); ./e2e-claude-gate.sh stamps them with FLEET_E2E_SUITE=claude-gate.
-import { BASE, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
+import { readFileSync } from "node:fs";
+import { BASE, ROOT, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
 import { FLEET_DEFAULT_MODEL } from "./src/protocol";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
@@ -233,6 +234,51 @@ check("dispatch post-spawn gate: the task text never reached the bare shell",
   laneSlot > 0 && !capDisp.out.includes(dispMarker), capDisp.out.slice(-160));
 // teardown: kill any lane the dispatcher spawned (worktrees stay on disk in $DIR, torn down by the wrapper)
 for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.id)) await tmuxOut("kill-session", "-t", `s${s.id}`);
+
+// --- the heal REASON writer (server.ts ensureSlot → audit self_heal_recreate). Only this harness
+// can tell the two causes apart: under FLEET_CMD=true (the main suite) s.sessionId is never pinned
+// at all, so both branches would answer "no-session" and the check would pass for the wrong reason.
+// Here FLEET_CMD is a real `claude`, so the pin IS written — and the same slot yields
+//   first spawn  → nothing was ever pinned (openSlot sets sessionId=null, then ensureSlot) → no-session
+//   after a kill → a pin exists, its transcript never did (the fake claude writes none) → no-transcript
+// which is exactly the pair the classification collapsed when it read s.sessionId AFTER the spawn
+// block reassigned it (b7d449a0). Regression-shaped on purpose: with that bug the FIRST check goes
+// red, because the always-truthy candidate made no-session unreachable. ---
+{
+  const healDetails = (slot: number): string[] => {
+    try {
+      return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+        .filter((r): r is Record<string, unknown> => !!r && r.event === "self_heal_recreate" && r.slot === slot)
+        .map((r) => String(r.detail ?? ""));
+    } catch { return []; }
+  };
+  // DELTA off a baseline, never an absolute count: the dispatcher branch above spawns lanes into
+  // whatever slot is free and kills them again, so this id may legitimately carry earlier rows.
+  const HEAL_SLOT = 6;
+  const before = healDetails(HEAL_SLOT).length;
+  const hOpen = await post(`/api/slots/${HEAL_SLOT}/open`, { cwd: "~" });
+  check("heal-reason: open a fresh slot under a real claude", hOpen.ok,
+    JSON.stringify(await hOpen.clone().json().catch(() => null)));
+  await Bun.sleep(1500);
+  const afterOpen = healDetails(HEAL_SLOT).slice(before);
+  check("heal-reason: a first spawn was never pinned → created:no-session",
+    afterOpen.length === 1 && afterOpen[0] === "created:no-session", JSON.stringify(afterOpen));
+  // kill the pane: the self-heal loop rebuilds it, and NOW a sessionId is pinned while the fake
+  // claude has written no transcript for it
+  await tmuxOut("kill-session", "-t", `s${HEAL_SLOT}`);
+  let afterHeal: string[] = [];
+  for (let i = 0; i < 40; i++) { // the 2s self-heal tick, polled rather than slept-through
+    afterHeal = healDetails(HEAL_SLOT).slice(before);
+    if (afterHeal.length >= 2) break;
+    await Bun.sleep(250);
+  }
+  check("heal-reason: a heal with a pin but no transcript → created:no-transcript",
+    afterHeal.length === 2 && afterHeal[1] === "created:no-transcript", JSON.stringify(afterHeal));
+  check("heal-reason: the two causes are distinguishable, not one collapsed bucket",
+    new Set(afterHeal).size === 2, JSON.stringify(afterHeal));
+  await tmuxOut("kill-session", "-t", `s${HEAL_SLOT}`);
+}
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

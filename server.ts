@@ -344,6 +344,10 @@ function stewardSlot(): Slot | null {
 // public base URL for share links shown in the owner UI (e.g. https://cowork.example.com);
 // empty = links are rendered relative to wherever the owner opened the dashboard
 const SHARE_URL = process.env.FLEET_SHARE_URL ?? "";
+// The landing page's footer link to the owner's own site. The repo is public, so landing.html
+// ships the placeholder `https://example.com` and the real address is substituted at serve time
+// from the gitignored .env. Unset → the placeholder stays, which is a dead but harmless link.
+const SITE_URL = process.env.FLEET_SITE_URL ?? "";
 // hosts that may ONLY reach share routes — the public tunnel hostname goes here so the
 // internet-facing side can never even load the owner login page
 const SHARE_HOSTS = new Set((process.env.FLEET_SHARE_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean));
@@ -5719,10 +5723,16 @@ Bun.serve<WSData>({
     // the owner login page. (Host was already validated against ALLOWED_HOSTS above.)
     if (SHARE_HOSTS.has(req.headers.get("host") ?? "")) {
       // the bare domain gets a deliberate landing page instead of a 404
-      if (url.pathname === "/" && req.method === "GET")
-        return new Response(Bun.file(`${import.meta.dir}/public/landing.html`), {
+      if (url.pathname === "/" && req.method === "GET") {
+        // read-and-substitute rather than stream the file: the footer link is a placeholder in the
+        // public repo (see SITE_URL). Both the href and the visible label carry it.
+        let html = await Bun.file(`${import.meta.dir}/public/landing.html`).text();
+        if (SITE_URL) html = html.replaceAll("https://example.com", SITE_URL)
+          .replaceAll(">example.com<", `>${SITE_URL.replace(/^https?:\/\//, "")}<`);
+        return new Response(html, {
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
+      }
       const pub = ["/share.js", "/xterm.css", "/icon.svg", "/icon-180.png", "/favicon.ico"].includes(url.pathname)
         || /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/.test(url.pathname);
       if (!pub) return new Response("not found", { status: 404 });

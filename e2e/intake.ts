@@ -8,8 +8,29 @@ export async function run(ctx: Ctx): Promise<void> {
   if (INTAKE) {
     const noSecret = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x" }) });
     check("intake without secret is 401", noSecret.status === 401);
+    // a wrong secret is a password guess, and this endpoint answers on the PUBLIC tunnel (it is
+    // dispatched before the share-host gate). So it owes the same three things every other
+    // credential surface here already does: cost, a trace, and a lockout. It had none — the hourly
+    // cap counted accepted submissions only (d8efc50f).
+    const t0 = Date.now();
     const wrongSecret = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": "nope" }, body: JSON.stringify({ text: "x" }) });
+    const wrongMs = Date.now() - t0;
     check("intake with wrong secret is 401", wrongSecret.status === 401);
+    check("intake: a wrong secret costs wall-clock (throttled like every other credential check)",
+      wrongMs >= 350, `${wrongMs}ms`);
+    // length-mismatch and same-length paths must BOTH be throttled — an early length return would
+    // make the delay itself a length oracle
+    const t1 = Date.now();
+    const wrongSameLen = await fetch(BASE + "/intake", { method: "POST",
+      headers: { "content-type": "application/json", "x-intake-secret": "x".repeat(INTAKE.length) }, body: JSON.stringify({ text: "x" }) });
+    const sameLenMs = Date.now() - t1;
+    check("intake: a same-length wrong secret is throttled too (no length oracle)",
+      wrongSameLen.status === 401 && sameLenMs >= 350, `${sameLenMs}ms status=${wrongSameLen.status}`);
+    const failAudit = (await (await get("/api/audit?limit=50")).json()) as { events: { event: string; detail?: string }[] };
+    check("intake: a failed guess leaves an audit trace, and never the attempted secret",
+      failAudit.events.some((e) => e.event === "intake_auth_fail")
+      && !JSON.stringify(failAudit.events).includes("nope"),
+      JSON.stringify(failAudit.events.filter((e) => e.event.startsWith("intake_")).slice(0, 3)));
     const ok = await fetch(BASE + "/intake", { method: "POST", headers: { "content-type": "application/json", "x-intake-secret": INTAKE }, body: JSON.stringify({ text: "CEO wants dark mode", from: "ceo@acme.co" }) });
     check("intake with secret accepts", ok.ok);
     const sessI = (await (await get("/api/sessions")).json()) as { tasks: { id: string; source: string; from?: string; status: string }[]; intake: boolean };

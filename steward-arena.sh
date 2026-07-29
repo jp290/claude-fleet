@@ -35,6 +35,11 @@
 
 set -euo pipefail
 
+# The deployment address is not in this public repo — it lives in the gitignored .env, the same
+# file watchdog.sh sources for the server. Without this, ARENA_HOST falls back to the placeholder
+# below and the arena binds an address nothing can reach. An already-set env var still wins.
+if [ -f "$(dirname "$0")/.env" ]; then set -a; . "$(dirname "$0")/.env"; set +a; fi
+
 # --- the reliability spine: dedicated, NEVER-the-live values ------------------
 ARENA_HOST="${FLEET_ARENA_HOST:-100.64.0.1}"   # Tailscale IP — watchable from other devices, token-gated
 ARENA_PORT=""                                    # NOT fixed: chosen at launch by pick_port() (probe up from PROBE_START)

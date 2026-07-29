@@ -106,12 +106,20 @@ while true; do
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
     #
+    # The deployment identity (FLEET_HOST, ALLOWED_HOSTS, SHARE_HOSTS, SHARE_URL) is NOT in this
+    # file: the repo is public, so those values live only in the gitignored .env and are sourced
+    # INSIDE this pane command. That placement is load-bearing — the pane's shell is a child of the
+    # tmux SERVER, not of this loop, so a `. .env` in the outer script would never reach it (the same
+    # inheritance gap documented for PATH and umask above). `set -a` exports them for `bun server.ts`;
+    # .env quotes its values because POSIX `.` would otherwise run a spaced value as a command.
+    # A missing .env does NOT hammer the restart loop: it logs and starts on the server's defaults.
+    #
     # FLEET_DISPATCH_REPO makes the dispatcher AVAILABLE, it does not switch it on: `dispatchOn`
     # (server.ts, grep `let dispatchOn`) is a separate persisted runtime flag, default false, and
     # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
     # this is a watched first run (docs/autonomy-trial-1.md), not maximum throughput.
     if tmux -L claudefleet new-session -d -s srv \
-      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && FLEET_HOST=100.64.0.1 FLEET_ALLOWED_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_HOSTS=cowork.example.com,klaus.example.com FLEET_SHARE_URL=https://cowork.example.com FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

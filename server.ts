@@ -1179,6 +1179,15 @@ async function ensureSlot(s: Slot): Promise<void> {
     // Otherwise: fresh claude, fresh pinned uuid — only if WE win the has-session/
     // new-session race below (the 2s self-heal loop and a fresh openSlot() can race)
     const resume = !!s.sessionId && existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`);
+    // WHY a heal could not resume, not just THAT it could not — the two causes are different
+    // bugs: no-session = nothing was ever pinned (a non-claude BASE_CMD, or the openSlot race
+    // this function's spawn-block comment predicts); no-transcript = a pin exists but its .jsonl
+    // is gone, the one that would mean the durability promise is broken (slotstats.ts).
+    // Classified HERE, before the spawn: the spawn block below REASSIGNS s.sessionId to the
+    // always-truthy candidate, and reading it there collapsed the formula to "which BASE_CMD" —
+    // no-session became unreachable and every race heal read as a broken promise (b7d449a0,
+    // found by the inspection pulse on the first day of the measurement it poisoned).
+    const healDetail = resume ? "resumed" : s.sessionId ? "created:no-transcript" : "created:no-session";
     const candidate = resume ? s.sessionId! : crypto.randomUUID();
     // self-scheduling credential: only baked into a LANE's pane (never a plain session) —
     // a session running inside its own worktree can POST /api/self/autos to check in on
@@ -1199,13 +1208,7 @@ async function ensureSlot(s: Slot): Promise<void> {
       s.rows = 50;
       s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
       saveState();
-      // WHY it could not resume, not just THAT it could not: the two causes are different bugs.
-      // no-session = nothing was ever pinned (a non-claude BASE_CMD, or a slot opened before the
-      // pin existed); no-transcript = the id was pinned but its .jsonl is gone, which is the one
-      // that would mean the durability promise is broken. Measured 196:1 created:resumed before
-      // this line could tell them apart (slotstats.ts).
-      audit("self_heal_recreate", s.id,
-        resume ? "resumed" : s.sessionId ? "created:no-transcript" : "created:no-session");
+      audit("self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
       console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }

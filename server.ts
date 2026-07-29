@@ -5582,6 +5582,10 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // whether it HOLDS — identity kept across a crash, how often it falls over, how its sessions
       // end. Route-computed like its neighbours. DISPLAY ONLY: nothing gates on it, and the
       // Inspektion's revier 1 reads it so a pulse need not re-aggregate the trail by hand.
+      // Served WHOLE rather than as a whitelist projection like `ledgers` above, and deliberately:
+      // every field is a counter over slot lifecycle events, and its one non-numeric field (`cwd`)
+      // this principal already reads verbatim in `slots` — so there is nothing here to project away.
+      // Anything later added to slotstats.ts that is NOT a counter breaks that argument.
       slotHealth: await slotStatsView(now),
       // the two ledgers the pulse used to be blind to: post-land audit results and terminal lane
       // outcomes (incl. the powerless ② shadow verdict), delta'd against the SAME prior record.

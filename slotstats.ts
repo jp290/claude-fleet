@@ -22,6 +22,9 @@
 //     busiest.
 //   - audit.jsonl rotates (one generation, oldest overwritten), so a kill whose open fell off the
 //     front has an UNKNOWN start. Not a short life — an unmeasurable one.
+//   - An open arriving while one is already open means the previous session ended without saying
+//     so. Its life is unmeasurable, and — this is the trap — overwriting the start silently would
+//     make it VANISH rather than merely be unknown. Excluded and counted, like everything else.
 //   - `resumeRate` is null when nothing healed. A rate with no denominator is unknown, not 0.
 //   - Rows written before the reasons existed carry no reason. They are `unknown`, never silently
 //     bucketed into whichever category happens to be first.
@@ -53,7 +56,14 @@ export interface SlotHealth {
   resumed: number;
   /** why the other heals could not resume — nonzero entries only */
   healReasons: Record<string, number>;
-  /** completed open→kill spans only; a still-running session is excluded, never counted as short */
+  /**
+   * completed open→kill spans; a still-running one is excluded, never counted as short.
+   *
+   * This is the OCCUPANCY of the slot, not the continuity of the conversation in it — the two
+   * diverge exactly when a heal cannot resume, because ensureSlot then mints a fresh uuid and the
+   * old conversation is gone while the occupancy runs on. `resumed`/`heals` is the continuity
+   * measure; neither number answers the question alone.
+   */
   lifetimes: Span;
   /** how those sessions ended — nonzero entries only */
   endings: Record<string, number>;
@@ -78,7 +88,7 @@ export interface SlotStatsSummary {
   /** slots with events that did not fit the payload cap */
   slotsOmitted: number;
   /** spans that COULD have been measured and deliberately were not */
-  excluded: { openAtEnd: number; killWithoutOpen: number };
+  excluded: { openAtEnd: number; killWithoutOpen: number; openWithoutKill: number };
   /** rows the window never admitted, or could not read — scope and damage, kept apart */
   outOfScope: { beforeWindow: number; otherEvent: number; malformed: number };
 }
@@ -129,7 +139,7 @@ export function slotStats(records: SlotEventRecord[], opts: {
   const maxSlots = opts.maxSlots ?? SLOTSTATS_MAX_SLOTS;
   const from = opts.now - windowMs;
 
-  const excluded = { openAtEnd: 0, killWithoutOpen: 0 };
+  const excluded = { openAtEnd: 0, killWithoutOpen: 0, openWithoutKill: 0 };
   const outOfScope = { beforeWindow: 0, otherEvent: 0, malformed: opts.malformed ?? 0 };
 
   type Row = { ts: number; event: string; detail: unknown };
@@ -176,6 +186,12 @@ export function slotStats(records: SlotEventRecord[], opts: {
       if (e.event === "slot_open") {
         if (typeof e.detail === "string") cwd = e.detail;
         if (inWindow) opens++;
+        // an open while one is already open: the previous session ended and said nothing. openSlot
+        // only kills when TMUX still has the session, so a slot whose pane died out from under it
+        // is re-opened with no slot_kill at all (6 such pairs on the real trail). Overwriting
+        // `start` here would drop that session's whole life SILENTLY — the one thing this file
+        // must never do. It is unmeasurable, so it is excluded and counted, like every other unknown.
+        if (start !== null) excluded.openWithoutKill++;
         start = e.ts;
       } else if (e.event === "self_heal_recreate") {
         // a heal re-spawns the pane; the SESSION's span continues, so `start` is untouched
@@ -186,7 +202,12 @@ export function slotStats(records: SlotEventRecord[], opts: {
       } else { // slot_kill
         if (!inWindow) { start = null; continue; }
         bump(endings, ending(e.detail));
-        if (start === null) excluded.killWithoutOpen++; // rotated-away open: unmeasurable, not short
+        // no open to pair with. Two causes, both unmeasurable: the open rotated off the front of
+        // the trail, or the kill route fired on an already-empty slot — it has no `s.cwd` guard,
+        // unlike the shelve branch beside it (server.ts, the plain-kill fall-through). Never
+        // observed on the real trail, but the ledger permits it, so this counter must not claim
+        // one cause when there are two.
+        if (start === null) excluded.killWithoutOpen++;
         else lifetimes.push(Math.max(0, e.ts - start));
         start = null;
       }

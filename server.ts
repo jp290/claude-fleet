@@ -8,6 +8,7 @@ import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./m
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
+import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -1074,7 +1075,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ er
       t.note = `landed (${branch})`;
     }
   }
-  await killSlot(s);
+  await killSlot(s, "landed");
   void tickGit().catch(() => {});
   return { removed: path, branch };
 }
@@ -1198,7 +1199,13 @@ async function ensureSlot(s: Slot): Promise<void> {
       s.rows = 50;
       s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
       saveState();
-      audit("self_heal_recreate", s.id, resume ? "resumed" : "created");
+      // WHY it could not resume, not just THAT it could not: the two causes are different bugs.
+      // no-session = nothing was ever pinned (a non-claude BASE_CMD, or a slot opened before the
+      // pin existed); no-transcript = the id was pinned but its .jsonl is gone, which is the one
+      // that would mean the durability promise is broken. Measured 196:1 created:resumed before
+      // this line could tell them apart (slotstats.ts).
+      audit("self_heal_recreate", s.id,
+        resume ? "resumed" : s.sessionId ? "created:no-transcript" : "created:no-session");
       console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }
@@ -1261,7 +1268,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // against its stale FLEET_SELF_TOKEN. The pane is the ground truth, so PROBE THE PANE rather
   // than s.cwd — state and tmux can disagree (an adopted pane, a kill that failed). Deliberately
   // placed after the cwd validation: a bad path must never destroy a running session.
-  if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s);
+  if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
   s.cwd = cwd;
   // a fresh session gets a fresh identity — but the caller may name it AT SPAWN, which is the
   // only moment a label-keyed env export (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in;
@@ -1315,8 +1322,11 @@ function detachSlotTasks(slotId: number, note: string): void {
   }
 }
 
-async function killSlot(s: Slot): Promise<void> {
-  audit("slot_kill", s.id);
+// `why` is mandatory: a session's lifetime is uninterpretable without it — a median of minutes
+// means slot recycling if the kills are `reopen`, and abandoned work if they are `owner`. Every
+// call site knows its own reason; none of them may pass it as an afterthought (slotstats.ts).
+async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
+  audit("slot_kill", s.id, why);
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
   s.mission = null; // dies with the session it was written for, same as the label
@@ -5462,6 +5472,14 @@ async function continuityView(now: number): Promise<ContinuitySummary> {
   return continuitySummary(records, { now, malformed, inQuietHours });
 }
 
+// slot health, derived from the audit trail on demand — same stance as continuityView above: a
+// FACT, route-computed, never cached and never shapeable by a model. One pass over the file
+// /api/audit already re-reads per request.
+async function slotStatsView(now: number): Promise<SlotStatsSummary> {
+  const { rows, malformed } = await readLedger<SlotEventRecord>(AUDIT_FILE);
+  return slotStats(rows, { now, malformed });
+}
+
 // --- the two ledgers the Rundgang was structurally blind to (docs/mining-2026-07-26.md finding 5:
 // the only two RED post-land audits ever recorded were seen by nobody, because the pulse's single
 // gathering call carried no audit result, no outcome row and no shadow verdict). Both trails keep
@@ -5560,6 +5578,11 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // resolved each wait. Route-computed for the same reason as its neighbours above. DISPLAY
       // ONLY — nothing reads it, nothing gates on it, there is no threshold.
       continuity: await continuityView(now),
+      // the slot fact, continuity's twin: continuity asks whether a slot gets ATTENDED, this asks
+      // whether it HOLDS — identity kept across a crash, how often it falls over, how its sessions
+      // end. Route-computed like its neighbours. DISPLAY ONLY: nothing gates on it, and the
+      // Inspektion's revier 1 reads it so a pulse need not re-aggregate the trail by hand.
+      slotHealth: await slotStatsView(now),
       // the two ledgers the pulse used to be blind to: post-land audit results and terminal lane
       // outcomes (incl. the powerless ② shadow verdict), delta'd against the SAME prior record.
       // Route-computed for the same reason as its neighbours above — a fact, not a worker's claim.
@@ -6071,6 +6094,13 @@ Bun.serve<WSData>({
         await readLedger<{ ts?: unknown; event?: unknown; slot?: unknown; detail?: unknown }>(AUDIT_FILE);
       events.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ events: events.slice(0, limit), total, malformed });
+    }
+    // the same audit trail as /api/audit, read as slot HEALTH rather than as a list of lines: does
+    // a slot keep its identity across a crash, does one of them keep falling over, how long does a
+    // session live and how does it end (slotstats.ts names the four questions and the exclusions).
+    // Derived, never stored — the events were always there, only nobody aggregated them.
+    if (url.pathname === "/api/slot-stats" && req.method === "GET") {
+      return json(await slotStatsView(Date.now()));
     }
     // owner-only, read-only per-lane outcome trail — EXACT same access model as /api/audit above:
     // token-gated (past the tokenGate at the top of this block) and structurally 404 on SHARE_HOSTS
@@ -6838,13 +6868,13 @@ Bun.serve<WSData>({
         shelved[s.cwd] = { at: Date.now(), note }; // keyed by worktree path; survives the kill below
         audit("slot_shelve", s.id, `note:${note.length}`); // never the note TEXT — same hygiene as prompt logging
         emitLaneOutcome(await buildLaneOutcome(s, "shelved")); // record BEFORE killSlot clears lane state
-        await killSlot(s); // keeps the worktree on disk (as any kill does) — now WITH a note to resume from
+        await killSlot(s, "shelved"); // keeps the worktree on disk (as any kill does) — now WITH a note to resume from
         return json({ ok: true });
       }
       // plain kill (fall-through): record an abandoned lane's outcome before killSlot clears its
       // state. Gated on s.worktree — a plain (non-lane) session kill leaves no lane outcome.
       if (s.cwd && s.worktree) emitLaneOutcome(await buildLaneOutcome(s, "killed"));
-      await killSlot(s);
+      await killSlot(s, "owner");
       return json({ ok: true });
     }
     if (req.method === "POST" && url.pathname === "/send") {

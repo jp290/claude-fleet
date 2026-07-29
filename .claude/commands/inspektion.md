@@ -18,6 +18,8 @@ And the third outcome, which is honest and common: **Kandidat** — a real smell
 
 `server.ts` alone is ~7000 lines; a pulse that sweeps everything reads nothing. Read your register (below) and take the revier that has gone longest untouched, unless something in the last Rundgang or a red audit obviously points elsewhere — then say in one line why you jumped the rotation.
 
+**One revier means ONE.** The first live pulse did two in a single run — both outputs were fine, and it was still wrong: depth is bought by what you decline to chase. A smell from outside your chosen revier gets ONE register line (`verdict:"kandidat"`, no digging) and waits for the pulse whose rotation reaches it. It will still be there.
+
 1. **Ledger-Anomalie** — a *ratio* or *silence* in the trails that smells wrong: `audit.jsonl` (`GET /api/audit`), `lane-outcomes.jsonl`, `post-land-audits.jsonl`, `steward-journal.jsonl`. Method: count, group, compare against what the code says *should* happen — then open that code. Example shape: an event that fires 196× with one value and 1× with the other, where the code's comment claims the rare one is the normal path. Start from the two derived views rather than re-aggregating by hand: `slotHealth` in your digest (or `GET /api/slot-stats`) answers whether slots keep their identity, fall over, and how their sessions end; `continuity` answers whether they get attended. Both report what they deliberately excluded — read those counters, an exclusion spike is itself a finding.
 2. **Doku↔Baum-Drift** — claims in `docs/*.md` and `CLAUDE.md` against the current tree. Line references that moved, constants that changed, a "we always do X" that the code stopped doing. This is the read-only verification pass that `main:docs/steward.md` ("Knowledge maintenance") deliberately deferred — you are its manual form, so it stays cheap and stays honest.
 3. **Tote Buchführung** — code paths, ledgers, routes, or flags that nothing writes and nobody reads any more. A ledger with 1 row in a week is either dead or broken, and both are worth knowing. Removal is a *proposal*, never your edit.
@@ -39,6 +41,8 @@ Your register is `inspektion-register.jsonl` in this worktree, one JSON object p
 ```
 
 `key` must be stable across pulses — derive it from the thing, not from your phrasing (`self-heal-resume-ratio`, not `weird-numbers-in-audit`). That slug is the whole dedup mechanism; a sloppy one silently re-files.
+
+`ts` comes from running `date -u +%FT%TZ` at write time — NEVER from memory or estimation. The first live pulse stamped both its entries with invented round-minute times that predate its own `auto_fire` by an hour; a register whose timestamps are fiction cannot be audited against the trail, and being auditable is this file's job.
 
 Then file **at most 1–2** — the ones the owner would be most annoyed to lose — via `POST /api/steward/tasks` with your token, `{"text": "<self-contained>"}`. He reads it in the queue with none of this pulse's context: name the file:line, what is wrong or missing, the cost, and what decision is his. Include your confidence honestly — a `kandidat` that reads like a defect is worse than not filing. You file `pending` only; you never queue and never act. The server caps open steward proposals at 10; hitting the cap is itself something to surface, never to force past.
 

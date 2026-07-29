@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { BASE, IP, PORT, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
+import { slotStats } from "../slotstats";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -423,4 +424,85 @@ export async function run(): Promise<void> {
   check("export rejects inactive slot", expInactive.status === 400);
 
   for (const t of ["s1", "s2"]) await tmuxOut("send-keys", "-t", t, "C-u");
+
+  // --- slot HEALTH (slotstats.ts): the derived view over the audit trail. Pure-module assertions
+  // first — a synthetic trail yields an exactly predictable summary — then the route that serves
+  // it. Every assertion here is about the DIRECTION DISCIPLINE: what the module refuses to claim
+  // when it does not know. A version that folded unknowns into zero would pass a naive happy-path
+  // test and silently report a fleet that never falls over. ---
+  {
+    const T = 1_700_000_000_000; // fixed clock: nothing in the module may read the wall clock
+    const h = 3_600_000;
+    const ev = (ts: number, event: string, slot: number, detail?: unknown) => ({ ts, event, slot, detail });
+
+    // slot 1: one completed session (2h, owner-killed) that healed twice — once keeping identity,
+    // once losing it. slot 2: opened and still running at the window's end.
+    const trail = [
+      ev(T - 10 * h, "slot_open", 1, "/repo"),
+      ev(T - 9 * h, "self_heal_recreate", 1, "resumed"),
+      ev(T - 8.5 * h, "self_heal_recreate", 1, "created:no-transcript"),
+      ev(T - 8 * h, "slot_kill", 1, "owner"),
+      ev(T - 5 * h, "slot_open", 2, "/other"),
+      ev(T - 4 * h, "owner_auth_fail", 2), // not lifecycle: scope, not damage
+      { ts: T - 3 * h, event: "owner_auth_fail" }, // …and the real shape: no `slot` field AT ALL
+    ];
+    const s = slotStats(trail, { now: T });
+    const s1 = s.slots.find((r) => r.slot === 1)!;
+    check("slotstats: a completed session's lifetime is its open→kill span",
+      s1.lifetimes.n === 1 && s1.lifetimes.medianMs === 2 * h, JSON.stringify(s1.lifetimes));
+    check("slotstats: a heal does NOT end the session it interrupts",
+      s1.opens === 1 && s1.heals === 2, `opens=${s1.opens} heals=${s1.heals}`);
+    check("slotstats: the resume rate is resumed/heals, and it is the promise being measured",
+      s.overall.resumed === 1 && s.overall.heals === 2 && s.overall.resumeRate === 0.5,
+      JSON.stringify(s.overall));
+    check("slotstats: a heal that could not resume names WHY",
+      s1.healReasons["no-transcript"] === 1 && s1.healReasons["resumed"] === undefined,
+      JSON.stringify(s1.healReasons));
+    check("slotstats: a kill carries how the session ended",
+      s1.endings["owner"] === 1, JSON.stringify(s1.endings));
+    check("slotstats: a still-running session is EXCLUDED, never counted as a short life",
+      s.excluded.openAtEnd === 1 && s.overall.lifetimes.n === 1, JSON.stringify(s.excluded));
+    // the ordering bug this catches: validating ts/slot BEFORE checking the event books every
+    // foreign row as damage. owner_auth_fail carries no `slot` at all, and on the real trail that
+    // read as 468 "malformed" rows in a file with zero torn lines. Scope is not damage.
+    check("slotstats: a foreign event is out of scope — with or without a slot field, never malformed",
+      s.outOfScope.otherEvent === 2 && s.outOfScope.malformed === 0, JSON.stringify(s.outOfScope));
+
+    // unknown ≠ zero, the four ways it can go wrong
+    const noHeals = slotStats([ev(T - 2 * h, "slot_open", 1, "/r"), ev(T - h, "slot_kill", 1, "owner")], { now: T });
+    check("slotstats: resumeRate is NULL when nothing healed — a rate with no denominator is unknown",
+      noHeals.overall.resumeRate === null && noHeals.overall.heals === 0,
+      JSON.stringify(noHeals.overall));
+    const orphanKill = slotStats([ev(T - h, "slot_kill", 1, "owner")], { now: T });
+    check("slotstats: a kill whose open rotated away is unmeasurable, NOT a zero-length life",
+      orphanKill.excluded.killWithoutOpen === 1 && orphanKill.overall.lifetimes.n === 0,
+      JSON.stringify(orphanKill));
+    const legacy = slotStats([
+      ev(T - 3 * h, "slot_open", 1, "/r"),
+      ev(T - 2 * h, "self_heal_recreate", 1, "created"), // pre-reason row
+      ev(T - h, "slot_kill", 1),                          // pre-reason row: detail absent
+    ], { now: T });
+    check("slotstats: rows written before the reasons existed read as unknown, not as a category",
+      legacy.slots[0]!.healReasons["unknown"] === 1 && legacy.slots[0]!.endings["unknown"] === 1
+        && legacy.slots[0]!.endings["owner"] === undefined,
+      JSON.stringify(legacy.slots[0]));
+    // one of OURS that is unreadable (lifecycle event, torn ts) vs one that was never ours (no
+    // event field). Both are dropped, but only the first is damage — and the counters must say which.
+    const junk = slotStats([{ ts: "nope", event: "slot_open", slot: 1 }, { ts: T, slot: 1 }], { now: T, malformed: 3 });
+    check("slotstats: an unreadable row of OURS is damage; a row that was never ours is only scope",
+      junk.outOfScope.malformed === 4 && junk.outOfScope.otherEvent === 1 && junk.slots.length === 0,
+      JSON.stringify(junk.outOfScope));
+    const stale = slotStats([ev(T - 40 * 24 * h, "slot_open", 1, "/r"), ev(T - 39 * 24 * h, "slot_kill", 1, "owner")], { now: T });
+    check("slotstats: an event outside the window is out of scope and yields no slot row",
+      stale.slots.length === 0 && stale.outOfScope.beforeWindow === 2, JSON.stringify(stale.outOfScope));
+
+    // and the route that serves it — same access model as /api/audit
+    const sres = await get("/api/slot-stats");
+    const sbody = await sres.json() as { overall?: { heals?: unknown; resumeRate?: unknown }; slots?: unknown[]; excluded?: unknown };
+    check("/api/slot-stats serves the derived summary", sres.ok
+      && typeof sbody.overall?.heals === "number" && Array.isArray(sbody.slots) && !!sbody.excluded,
+      JSON.stringify(sbody).slice(0, 200));
+    const sauth = await fetch(`${BASE}/api/slot-stats`);
+    check("/api/slot-stats rejects an unauthenticated read", sauth.status === 401, String(sauth.status));
+  }
 }

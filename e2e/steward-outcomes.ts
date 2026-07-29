@@ -1,5 +1,5 @@
 // The steward principal, second half: filed proposals, per-slot model, the owner disposition
-// rail, the A2 null-calibration baselineRate, and the Tier-1 signal surface.
+// rail and the Tier-1 signal surface.
 import { spawnSync } from "node:child_process";
 import { readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { BASE, ROOT, REPO, check, get, post, readText, restartSrv, tmuxOut } from "./harness";
@@ -291,73 +291,6 @@ export async function run(sc: StewardCtx): Promise<void> {
       dispoMode === 0o600, dispoMode.toString(8));
   }
 
-  // owner token is out of scope for the steward outcomes GET (steward-scoped, like the journal)
-  check("owner token on the steward outcomes route is out of scope (404)", (await get("/api/steward/outcomes")).status === 404);
-
-  // --- A2 null-calibration: `baselineRate` (F-C). The SAME helped classifier run over ACTIVE,
-  // UN-nudged slots gives the background "helped-looking" rate — a working slot commits/emits
-  // anyway. It is ADVISORY: it must NEVER gate anything. The server samples the busiest
-  // un-nudged slots each window; the shrunk FLEET_OUTCOME_WINDOW_MS turns control cohorts over
-  // in seconds. ---
-  // The ring is CAPPED (server.ts, BASELINE_RING_CAP): once it saturates, `samples` is pinned at
-  // the cap and a shift can cancel an incoming helped — so "a sample was recorded" must be read
-  // off the lifetime counters `seen`/`seenHelped`, never off the ring's length. The ring is still
-  // asserted about, as a ring: its own rate identity, and the cap it must respect.
-  interface BaselineOutcomes {
-    baselineRate: { rate: number | null; samples: number; helped: number; cap: number; seen: number; seenHelped: number };
-  }
-  const readBaseline = async (): Promise<BaselineOutcomes> =>
-    (await (await sc.stewGet("/api/steward/outcomes")).json()) as BaselineOutcomes;
-
-  // a busy, UN-nudged active slot (no steward send): keep it emitting so it is still-emitting at
-  // window close → the control classifier scores it 'helped' via the OUTPUT signal, no nudge.
-  const bl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  const blBefore = await readBaseline();
-  await tmuxOut("send-keys", "-t", `s${bl.slot}`, "while true; do echo baseline-tick; sleep 0.1; done", "Enter");
-  let blBusy = blBefore; // poll ~44s (a control cohort turns over roughly every tickGit≈10s)
-  for (let i = 0; i < 220; i++) {
-    blBusy = await readBaseline();
-    if (blBusy.baselineRate.seenHelped > blBefore.baselineRate.seenHelped) break;
-    await Bun.sleep(200);
-  }
-  await tmuxOut("send-keys", "-t", `s${bl.slot}`, "C-c"); // stop the loop now that it's been sampled
-  check("baselineRate: a busy un-nudged slot raises the control tally (a sample was taken and it scored helped)",
-    blBusy.baselineRate.seen > blBefore.baselineRate.seen
-    && blBusy.baselineRate.seenHelped > blBefore.baselineRate.seenHelped,
-    `${blBefore.baselineRate.seenHelped}/${blBefore.baselineRate.seen} -> ${blBusy.baselineRate.seenHelped}/${blBusy.baselineRate.seen}`);
-  check("baselineRate: rate == helped/samples (advisory ratio, not truthiness)",
-    blBusy.baselineRate.rate !== null && blBusy.baselineRate.samples > 0
-    && Math.abs((blBusy.baselineRate.rate ?? 0) - blBusy.baselineRate.helped / blBusy.baselineRate.samples) < 1e-9,
-    JSON.stringify(blBusy.baselineRate));
-  // the ring stays a RING: bounded by its cap, and never claiming more than the lifetime counters
-  // (which is what makes the length-based reading unusable once saturated — asserted, not assumed).
-  check("baselineRate: the rolling ring stays bounded by its cap and never exceeds the lifetime counts",
-    blBusy.baselineRate.samples <= blBusy.baselineRate.cap && blBusy.baselineRate.cap > 0
-    && blBusy.baselineRate.samples <= blBusy.baselineRate.seen
-    && blBusy.baselineRate.helped <= blBusy.baselineRate.seenHelped,
-    JSON.stringify(blBusy.baselineRate));
-
-  // no-effect control: after the loop stops, drain any cohort that overlapped it, then a window
-  // with NO un-nudged slot committing/emitting must record a NON-helped sample — seen rises,
-  // seenHelped stays flat (an idle un-nudged slot correctly looks un-helped).
-  await Bun.sleep(1500 /* OUTCOME_WINDOW_MS */ + 12_000 /* one tickGit + margin, drains the loop-overlapping cohort */);
-  const blIdleStart = await readBaseline();
-  let blIdle = blIdleStart;
-  for (let i = 0; i < 120; i++) {
-    blIdle = await readBaseline();
-    if (blIdle.baselineRate.seen > blIdleStart.baselineRate.seen) break;
-    await Bun.sleep(200);
-  }
-  check("baselineRate: an idle window (no un-nudged slot committing/emitting) records a no-effect sample (a sample was taken, none scored helped)",
-    blIdle.baselineRate.seen > blIdleStart.baselineRate.seen
-    && blIdle.baselineRate.seenHelped === blIdleStart.baselineRate.seenHelped,
-    `${blIdleStart.baselineRate.seenHelped}/${blIdleStart.baselineRate.seen} -> ${blIdle.baselineRate.seenHelped}/${blIdle.baselineRate.seen}`);
-  // NOTE: the control lane is released further down, with the other lane kills that precede the
-  // dispatch block — it counts against FLEET_DISPATCH_MAX_LANES (default 3) and would otherwise
-  // starve the dispatcher. It must NOT be killed here: the "inactive slot reads null" check below
-  // takes the first cwd-less slot, and a just-killed slot keeps stale git/alive readings until the
-  // next tickGit (≤10s) clears them (server.ts, the `if (!s.cwd)` cache-purge branch in tickGit).
-
   // --- Tier-1 signal surface (synergy-findings.md): the steward's READ routes expose the
   // deterministic facts the server already computes — cached claudeAlive, idleMs, gitOp, the
   // FULL mergeLast verdict, and the lane's founding Task. The FLEET_CMD=true suite can only
@@ -461,7 +394,6 @@ export async function run(sc: StewardCtx): Promise<void> {
 
   await post(`/api/slots/${oc2.slot}/kill`, {});
   await post(`/api/slots/${sc.slot}/kill`, {});
-  await post(`/api/slots/${bl.slot}/kill`, {}); // A2 control lane — free its lane budget for the dispatch block
 
   // --- Task on the signal surface: dispatch a queued task and the holding lane's steward
   // view carries the founding intent (id/status/source/text) it was started for. ---

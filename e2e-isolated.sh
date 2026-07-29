@@ -266,12 +266,6 @@ done
 trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
 
 tmux -L "$SOCK" kill-server 2>/dev/null
-# FLEET_OUTCOME_WINDOW_MS shrinks the 10-min A2 null-calibration control window (the
-# intervention-outcome tally it originally also sized was removed,
-# docs/analysis-2026-07-28-verification.md §3) so the baselineRate tests can turn a control cohort
-# over within seconds; FLEET_OUTCOME_SUSTAIN_MS shrinks the "still emitting at close" bar to 800ms
-# so the positive output-signal path is reachable inside the shrunk window (a still-quiet slot or a
-# lone early blip is stale by close → no-effect).
 # FLEET_STEWARD_JOURNAL_PER_HOUR RAISES the hourly journal cap (prod default 6) above what this
 # suite legitimately writes: the steward sections anchor ~9-11 rundgang records over their run, and
 # the cap is a one-way door inside its hour. Set high enough that only the dedicated cap check at
@@ -290,7 +284,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # a re-parse both recognises them and strips these quotes.
 # FLEET_HOST stays OUT of the list on purpose: it is a server-side bind knob, and the harness
 # hardcodes 127.0.0.1 (e2e/harness.ts's IP) rather than reading it.
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_OUTCOME_WINDOW_MS=1500 FLEET_OUTCOME_SUSTAIN_MS=800 FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

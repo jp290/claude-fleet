@@ -477,6 +477,19 @@ export async function run(): Promise<void> {
     check("slotstats: a kill whose open rotated away is unmeasurable, NOT a zero-length life",
       orphanKill.excluded.killWithoutOpen === 1 && orphanKill.overall.lifetimes.n === 0,
       JSON.stringify(orphanKill));
+    // the trap this file exists to avoid: openSlot only kills when TMUX still has the session, so
+    // a slot whose pane died is re-opened with NO slot_kill (6 such pairs on the real trail). The
+    // naive reading overwrites `start` and the first session vanishes — neither measured nor
+    // excluded, which reads as "it never happened" rather than "we cannot know".
+    const reopened = slotStats([
+      ev(T - 5 * h, "slot_open", 1, "/r"),
+      ev(T - 3 * h, "slot_open", 1, "/r"), // no kill in between: the first session ended in silence
+      ev(T - h, "slot_kill", 1, "owner"),
+    ], { now: T });
+    check("slotstats: a session that ended without a kill is excluded, never silently dropped",
+      reopened.excluded.openWithoutKill === 1 && reopened.overall.lifetimes.n === 1
+        && reopened.overall.lifetimes.medianMs === 2 * h,
+      JSON.stringify({ excluded: reopened.excluded, lifetimes: reopened.overall.lifetimes }));
     const legacy = slotStats([
       ev(T - 3 * h, "slot_open", 1, "/r"),
       ev(T - 2 * h, "self_heal_recreate", 1, "created"), // pre-reason row

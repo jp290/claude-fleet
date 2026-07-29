@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -2272,6 +2272,80 @@ const REVIEW_CMD = process.env.FLEET_REVIEW_CMD ?? null;
 // this without raising idleTimeout first re-breaks that.
 const REVIEW_TIMEOUT_MS = 180_000;
 const REVIEW_DIFF_CAP = 60_000; // per diff section — the prompt carries at most two
+
+// The reviewer's context files — "deliver context, not tools" (owner decision 2026-07-29).
+// Measured need over 66 outcome review rows: 46% of findings carried basis:"inferred" and 32
+// notes were some form of "did not check code outside the diff" — the reviewer was starving for
+// SURROUNDINGS, not for capabilities. So the current full content of the most-changed files rides
+// the same DATA block. The worker stays tool-less and one-shot (TEXT_ONLY_TOOLS), which is the
+// point: the injection surface does not change, and the alternatives measurably would — a
+// tool-bearing reviewer in the LIVE lane tree races the lane and reads its copied-in .env
+// (Read(**) is machine-wide even anchored), and a snapshot worktree buys the same context for a
+// new lifecycle plus the git plumbing the land path was just hardened against.
+const REVIEW_CONTEXT_MAX_FILES = 6;
+// a file larger than this is NAMED, never head-truncated: context from the wrong region of a
+// 7k-line file misleads more than it helps, and the named omission keeps the reviewer's notes honest
+const REVIEW_CONTEXT_FILE_CAP = 30_000;
+const REVIEW_CONTEXT_TOTAL_CAP = 100_000;
+
+// Which files ride: only ones that existed BEFORE this lane touched them — M/T in either scope.
+// A file the lane authored (A in the committed scope) is already in the diff whole; a deleted file
+// has no current content; renames appear as A+D and are excluded with them (no -M on purpose —
+// keeps the parse two-column, and a rename's context value is marginal). Ranked by changed volume
+// so the budget goes where the review is. Every exclusion is NAMED in the emitted blocks, never
+// silent — same stance as continuity/slotstats: an omission the reader cannot see is a lie.
+async function reviewContextBlocks(cwd: string, base: string | null): Promise<string[]> {
+  const excluded = new Set<string>();
+  const candidates = new Set<string>();
+  const volume = new Map<string, number>();
+  const scopes: string[][] = base ? [[`${base}...HEAD`], ["HEAD"]] : [["HEAD"]];
+  for (let i = 0; i < scopes.length; i++) {
+    const range = scopes[i]!;
+    const committedScope = base !== null && i === 0;
+    // context is auxiliary: a failed git read here degrades to "no context", never fails the
+    // review — the SUBJECT diffs have their own fail-loud path (readFailed) in the caller
+    const ns = await gitRead(cwd, "diff", "--name-status", "--no-color", ...range);
+    if (ns.code === 0) for (const line of ns.out.split("\n")) {
+      const m = /^([A-Z])\t(.+)$/.exec(line);
+      if (!m) continue;
+      if (m[1] === "A" && committedScope) excluded.add(m[2]!);
+      else if (m[1] === "D") excluded.add(m[2]!);
+      else if (m[1] === "M" || m[1] === "T") candidates.add(m[2]!);
+    }
+    const num = await gitRead(cwd, "diff", "--numstat", "--no-color", ...range);
+    if (num.code === 0) for (const line of num.out.split("\n")) {
+      const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+      if (m) volume.set(m[3]!, (volume.get(m[3]!) ?? 0)
+        + (m[1] === "-" ? 0 : Number(m[1])) + (m[2] === "-" ? 0 : Number(m[2])));
+    }
+  }
+  const ranked = [...candidates].filter((p) => !excluded.has(p))
+    .sort((a, b) => (volume.get(b) ?? 0) - (volume.get(a) ?? 0) || a.localeCompare(b));
+  const blocks: string[] = [];
+  let included = 0;
+  let budget = REVIEW_CONTEXT_TOTAL_CAP;
+  for (const path of ranked) {
+    if (included >= REVIEW_CONTEXT_MAX_FILES) {
+      blocks.push(`--- ${path} — omitted (beyond the ${REVIEW_CONTEXT_MAX_FILES}-file cap)`);
+      continue;
+    }
+    // lstat, never stat: a tracked symlink must be seen AS a symlink and skipped UNREAD. The lane
+    // worktree carries a copied-in .env, and a symlink pointing at it (or anywhere else) would
+    // otherwise pull that content into a prompt whose findings the board displays.
+    let st: ReturnType<typeof lstatSync>;
+    try { st = lstatSync(`${cwd}/${path}`); } catch { blocks.push(`--- ${path} — omitted (unreadable)`); continue; }
+    if (!st.isFile()) { blocks.push(`--- ${path} — omitted (symlink or non-regular file — never followed)`); continue; }
+    if (st.size > REVIEW_CONTEXT_FILE_CAP) { blocks.push(`--- ${path} — omitted (too large: ${st.size} bytes)`); continue; }
+    if (st.size > budget) { blocks.push(`--- ${path} — omitted (context budget exhausted)`); continue; }
+    let content: string;
+    try { content = await Bun.file(`${cwd}/${path}`).text(); } catch { blocks.push(`--- ${path} — omitted (unreadable)`); continue; }
+    if (content.includes("\0")) { blocks.push(`--- ${path} — omitted (binary)`); continue; }
+    included++;
+    budget -= st.size;
+    blocks.push(`--- ${path} (${st.size} bytes, current working-tree content)\n${content}`);
+  }
+  return blocks;
+}
 const MAX_FINDINGS = 5;
 interface ReviewFinding {
   title: string; file: string; line: number | null; impact: "high" | "medium" | "low";
@@ -2308,9 +2382,9 @@ const reviewAutoTried = new Map<number, string>();
 // the owner's click, the auto path and the outcome row's staleness relation — three readers of
 // "which tree did this describe" that must not each derive it their own way. null = not a repo.
 async function reviewState(cwd: string): Promise<{ key: string; head: string | null; dirty: number } | null> {
-  const st = await git(cwd, "status", "--porcelain");
+  const st = await gitRead(cwd, "status", "--porcelain");
   if (st.code !== 0) return null;
-  const hd = await git(cwd, "rev-parse", "HEAD");
+  const hd = await gitRead(cwd, "rev-parse", "HEAD");
   const head = hd.code === 0 ? hd.out : null;
   return { key: `${head}:${Bun.hash(st.out)}`, head, dirty: st.out.split("\n").filter(Boolean).length };
 }
@@ -2410,14 +2484,14 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   // LandFacts.verified: empty ≠ clean, and unknown ≠ zero (A4).
   let readFailed = "";
   if (base) {
-    const d = await git(cwd, "diff", "--no-color", `${base}...HEAD`);
+    const d = await gitRead(cwd, "diff", "--no-color", `${base}...HEAD`);
     if (d.code === 0) { committed = d.out; scope = `this lane's changes since ${base}, plus its uncommitted work`; }
     // NOT the same as having no base at all: the fallback scope string below would misdescribe this
     // as "(no lane base to diff against)" while a perfectly good base sat in s.worktree.base.
     else readFailed = `git diff ${base}...HEAD exited ${d.code}: ${(d.err || d.out).slice(0, 200)}`;
   }
   if (!scope) scope = "uncommitted changes plus recent commits (no lane base to diff against)";
-  const un = await git(cwd, "diff", "HEAD", "--no-color");
+  const un = await gitRead(cwd, "diff", "HEAD", "--no-color");
   if (un.code !== 0 && !readFailed) readFailed = `git diff HEAD exited ${un.code}: ${(un.err || un.out).slice(0, 200)}`;
   const uncommitted = un.code === 0 ? un.out : "";
   // THROW rather than degrade: a review is advisory, and this project's rule for it is already
@@ -2427,7 +2501,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   // running, so nothing is cached, the outcome row honestly says `none`, and an owner click gets a
   // 500 naming the git failure instead of a silent "nothing to review".
   if (readFailed) throw new Error(`review could not read this tree — ${readFailed}`);
-  const lg = await git(cwd, "log", "--no-color", "--oneline", "-15");
+  const lg = await gitRead(cwd, "log", "--no-color", "--oneline", "-15");
   // the id of the diff text BELOW, taken HERE and stored with the findings: an owner click on a
   // dirty tree reviews uncommitted work that no later read can reconstruct, so the relation the
   // outcome row records is only honest if it is frozen at review time
@@ -2437,6 +2511,12 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
   // only invent findings, and it would be billed for every click on an untouched tree.
   if (!committed.trim() && !uncommitted.trim())
     return { findings: [], scope, notes: "no code changes in scope — nothing to review", raw: false, ...meta };
+  // context AFTER the subject freeze: patchId above is taken of exactly the diff strings, and
+  // these reads happen moments later — on a still-moving tree the context may lag the subject by
+  // that much. Acceptable for auxiliary material; the reviewed CHANGES' identity is unaffected,
+  // which is why context is deliberately NOT part of the patch id (landedPatchId recomputes from
+  // the diffs alone, and folding context in would break that comparison).
+  const context = await reviewContextBlocks(cwd, base);
   const cut = (t: string) => (t.length > REVIEW_DIFF_CAP ? `${t.slice(0, REVIEW_DIFF_CAP)}\n… truncated` : t);
   const truncated = committed.length > REVIEW_DIFF_CAP || uncommitted.length > REVIEW_DIFF_CAP;
   const prompt = [
@@ -2455,6 +2535,10 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
     "## recent commits", lg.code === 0 && lg.out ? lg.out : "(none)",
     "", "## committed changes in scope", cut(committed) || "(none)",
     "", "## uncommitted changes", cut(uncommitted) || "(clean)",
+    ...(context.length ? ["", "## full current files",
+      "the working tree's WHOLE version of the most-changed files — context for judging the",
+      "diffs above (callers, surrounding code, the rest of the file), NOT itself the review",
+      "subject; a line here is only reviewable where a diff above touches it:", ...context] : []),
     "DATA>>>",
     "",
     "FINALLY: respond in ONE message with STRICT JSON, no markdown fences, exactly:",
@@ -2466,11 +2550,13 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
       + " A finding without a cited line is not a finding — drop it rather than guess a line.",
     "- cost: what concretely breaks, degrades, or becomes unmaintainable if this stands."
       + " If you cannot state the cost, drop the finding.",
-    '- basis: "verified" only if the diff itself shows it; "inferred" if it depends on code not shown here.'
-      + " Never let an inference read as verified.",
+    '- basis: "verified" if the diff or a provided full file shows it; "inferred" only if it depends'
+      + " on code not shown here. Check the full files before settling for inferred —"
+      + " never let an inference read as verified.",
     "- What is MISSING matters most: at each boundary the diff touches, ask what input is unvalidated,"
       + " what path is untested, what failure is unhandled.",
-    '- notes: one line on what you could NOT check (truncated diff, code outside it), or "" if nothing.',
+    '- notes: one line on what you could NOT check (truncated diff, an omitted context file, code'
+      + ' outside the provided material), or "" if nothing.',
     "- An empty findings array is a valid and good answer. Never invent a finding to fill the list.",
   ].join("\n");
   const text = await runWorker(

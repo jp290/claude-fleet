@@ -1,7 +1,7 @@
 // The 🔍 review agent (owner click) and auto-③ (the server running it itself on a done-looking
 // lane) — every guard rail asserted as a fact via the stand-in's per-cwd spawn log.
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, check, get, post, reviewRunsFor } from "./harness";
+import { BASE, REPO, check, get, post, reviewRunsFor, lastReviewPromptFor } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -75,6 +75,45 @@ export async function run(ctx: Ctx): Promise<void> {
       rvEmpty.findings.length === 0 && reviewRunsFor(rvNewCwd) === 0,
       `${JSON.stringify(rvEmpty.notes)} runs=${reviewRunsFor(rvNewCwd)}`);
     await post(`/api/slots/${rv.slot}/kill`, {});
+  }
+
+  // --- context delivery ("deliver context, not tools", 2026-07-29): the most-changed files that
+  // existed BEFORE the lane touched them ride the prompt in full; everything the server declines
+  // to include is NAMED. Asserted against the prompt the stand-in actually received — the only
+  // place the built prompt is observable. Four cases, each a distinct guard:
+  //   M ride-along · A excluded · symlink skipped unread (the .env canary) · oversize named. ---
+  {
+    const cx = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    // M: modify the LAST line region of a 24-line seed file — line 1 is outside any diff context
+    // window, so finding it in the prompt proves the FULL file rode, not just the hunks
+    spawnSync("sh", ["-c", `echo ctxmod-appended >> '${cx.cwd}/ctx-mod.txt'`]);
+    // A: lane-authored file — its whole story is already in the diff; must NOT ride as context
+    await Bun.write(`${cx.cwd}/ctx-added.txt`, "brand new lane file\n");
+    // T: replace a tracked file with a symlink at the lane's own copied-in .env — the guard must
+    // see the symlink via lstat and skip it UNREAD, or the canary leaks into a displayable prompt
+    spawnSync("sh", ["-c", `rm '${cx.cwd}/ctx-linked.txt' && ln -s '${cx.cwd}/.env' '${cx.cwd}/ctx-linked.txt'`]);
+    // M but oversized (~36KB seed > REVIEW_CONTEXT_FILE_CAP): named, content absent
+    spawnSync("sh", ["-c", `echo ctxbig-appended >> '${cx.cwd}/ctx-big.txt'`]);
+    spawnSync("git", ["-C", cx.cwd, "add", "-A"]);
+    spawnSync("git", ["-C", cx.cwd, "commit", "-qm", "context-delivery fixtures"]);
+    const cxRes = await post(`/api/slots/${cx.slot}/review`, {});
+    check("context: review runs on the fixture lane", cxRes.ok, String(cxRes.status));
+    const p = lastReviewPromptFor(cx.cwd);
+    check("context: the stand-in captured this lane's prompt", p.length > 0, `len=${p.length}`);
+    check("context: a modified pre-existing file rides IN FULL — a line no diff hunk carries is present",
+      p.includes("## full current files") && p.includes("ctx-mod.txt (") && p.includes("ctxmod-1\nctxmod-2"),
+      p.slice(p.indexOf("## full current files"), p.indexOf("## full current files") + 200));
+    check("context: a lane-authored file is NOT re-delivered as context",
+      !p.includes("--- ctx-added.txt ("), "found a context block for the A-status file");
+    check("context: a symlink is skipped unread — named, and the .env canary is absent",
+      p.includes("ctx-linked.txt — omitted (symlink") && !p.includes("SECRET=1"),
+      p.includes("SECRET=1") ? "CANARY LEAKED" : "no symlink omission marker");
+    check("context: an oversized file is named, its content absent",
+      p.includes("ctx-big.txt — omitted (too large") && !p.includes("ctxbig-2000"),
+      p.slice(0, 0) || "marker or absence failed");
+    check("context: the basis contract admits full-file grounding",
+      p.includes("the diff or a provided full file"), "contract line missing");
+    await post(`/api/slots/${cx.slot}/kill`, {});
   }
 
   // --- auto-③ (docs/perception-layer.md §4): the server runs the reviewer ITSELF on a lane that

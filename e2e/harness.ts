@@ -104,6 +104,17 @@ export const reviewRunsFor = (cwd: string): number => {
   } catch { return 0; }
 };
 
+// the last prompt the review stand-in received for THIS lane — cwd-keyed blocks, so concurrent
+// auto-③ runs on other lanes can never be mistaken for ours. "" when no run was captured.
+export const lastReviewPromptFor = (cwd: string): string => {
+  try {
+    const blocks = readFileSync(`${ROOT}/reviewprompts`, "utf8").split("===REVIEWPROMPT ")
+      .filter((b) => b.startsWith(`${cwd}===\n`));
+    const last = blocks[blocks.length - 1];
+    return last ? (last.slice(cwd.length + 4).split("\n===ENDPROMPT===")[0] ?? "") : "";
+  } catch { return ""; }
+};
+
 export interface PromptLogEntry {
   ts: number; slot: number; cwd: string | null; label: string | null; source: string; text: string;
 }

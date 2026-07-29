@@ -62,7 +62,10 @@ mkdir -p "$REPO"
 # to `git status` and doesn't dirty a fresh lane
 ( cd "$REPO" && git init -q && git config user.email t@t && git config user.name t \
   && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\n' > .gitignore \
-  && git add code.txt .gitignore && git commit -qm init )
+  && awk 'BEGIN{for(i=0;i<24;i++)print "ctxmod-"i}' > ctx-mod.txt \
+  && awk 'BEGIN{for(i=0;i<4000;i++)print "ctxbig-"i}' > ctx-big.txt \
+  && printf 'link target original\n' > ctx-linked.txt \
+  && git add code.txt .gitignore ctx-mod.txt ctx-big.txt ctx-linked.txt && git commit -qm init )
 
 SHAREHOST=sharetest
 INTAKE=e2e-intake-secret
@@ -89,7 +92,11 @@ chmod +x "$DIR/fakesum"
 # review is a non-event — one attempt per git state, no retry storm" is checked.
 cat > "$DIR/fakereview" <<'EOF'
 #!/bin/sh
-cat >/dev/null
+# persist the received prompt, cwd-keyed: the context-delivery checks assert what the server
+# actually BUILT (full files ride, symlink skipped, caps named), which only this capture can prove.
+# ONE printf, not a { ...; } group: two reviews can run at once (AUTO_REVIEW_MAX_CONCURRENT=2),
+# and O_APPEND only keeps whole write()s intact — a three-write group can interleave mid-block
+printf '===REVIEWPROMPT %s===\n%s\n===ENDPROMPT===\n' "$PWD" "$(cat)" >> "$(dirname "$0")/reviewprompts"
 echo "$PWD" >> "$(dirname "$0")/reviewruns"
 delay="$(cat "$(dirname "$0")/reviewdelay" 2>/dev/null || echo 0)"
 [ "$delay" != 0 ] && sleep "$delay"

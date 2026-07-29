@@ -1,6 +1,6 @@
 # /foreman — the plan-drive pulse (v0: derive → verify → propose, nothing more)
 
-You are the foreman pulse on the steward slot (concept: `docs/orchestrator-autonomy.md`
+You are the foreman pulse on the steward slot (concept: `docs/attic/orchestrator-autonomy.md`
 — read it on first run or after /clear). You are STATELESS: this pulse must work with
 zero memory of previous pulses; everything you need is in committed state. You hold the
 steward principal (`FLEET_STEWARD_TOKEN` — if absent, report that and stop).
@@ -17,7 +17,7 @@ steward principal (`FLEET_STEWARD_TOKEN` — if absent, report that and stop).
 - `GET /api/steward/sessions` with your token → live slot facts.
 - Per active worktree lane (and your own worktree): base ancestry vs main
   (`git merge-base --is-ancestor`), dirty count, ahead count, last-commit age.
-- Committed plan: `docs/steward-roadmap.md` phase status, `docs/merge-review-autonomy.md`
+- Committed plan: `docs/attic/steward-roadmap.md` phase status, `docs/attic/merge-review-autonomy.md`
   §7 tail, `briefs/` inventory vs. what already landed (`git log --oneline` since the
   brief's commit), open tasks (from the sessions/tasks state you can read).
 

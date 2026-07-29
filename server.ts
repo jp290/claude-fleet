@@ -273,6 +273,17 @@ let quietHours: { start: number; end: number } | null = null; // owner-set local
 // public intake shares its own secret, NEVER the owner token. Empty = intake disabled.
 const INTAKE_SECRET = process.env.FLEET_INTAKE_SECRET ?? "";
 const intakeStrikes: number[] = []; // timestamps, for a simple hourly rate limit
+// Failed intake auth, counted apart from the accepted-submission rate limit above. A wrong
+// secret is a password guess, and every other credential surface here already treats it as one:
+// tokenGate sleeps 400ms and audits, /s/<id>/auth sleeps, audits and locks after 50. Intake had
+// none of the three — its hourly cap only ever counted ACCEPTED submissions, so a guesser was
+// never slowed, never locked out, and left no trace at all. That matters more than the endpoint's
+// size suggests: /intake is dispatched BEFORE the share-host gate so it answers on the public
+// tunnel too, which makes it the one guessable surface reachable from outside (found by the
+// inspection pulse, d8efc50f — latent only because FLEET_INTAKE_SECRET is unset).
+const intakeFails: number[] = [];
+const INTAKE_FAIL_WINDOW_MS = 3_600_000;
+const INTAKE_FAIL_LOCK = 50; // same bar as a share's failStrike
 const AUTO_MIN_EVERY_SEC = 10;
 const AUTO_MAX_RUNS = 100;
 const AUTO_MAX_PER_SLOT = 5;
@@ -310,16 +321,6 @@ const STEWARD_JOURNAL_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_JO
 // simplification, not the full joint-5 semantics (real outcome-based episode closure
 // needs the journal/effect-sensing this doc's own build order defers).
 const STEWARD_EPISODE_MS = 10 * 60 * 1000;
-// --- A2 null-calibration window (docs/analysis-2026-07-28-verification.md §3 — the
-// intervention-outcome tally these constants originally sized was removed; measureControls is
-// their only remaining reader). A control cohort is parked at window OPEN and classified one
-// window later by the same git-delta/sustained-output signals the deleted tally used. SUSTAIN is
-// the "output began inside the window and is still emitting at window close" bar, measured as
-// recency-at-close on the scalar lastOutput (a lone early blip is stale by close). Both
-// overridable so e2e can shrink them; left at 10min/60s in prod so a real work-pause never reads
-// as a "helped-looking" background sample.
-const OUTCOME_WINDOW_MS = Number(process.env.FLEET_OUTCOME_WINDOW_MS ?? 10 * 60 * 1000) | 0;
-const OUTCOME_SUSTAIN_MS = Number(process.env.FLEET_OUTCOME_SUSTAIN_MS ?? 60_000) | 0;
 // cap counters are NOT kept in memory: they're derived by re-reading audit.jsonl's
 // steward_send events on every send. Audit.jsonl is already the durable, chmod-600,
 // rotated append log (appendEvent above) — a separate in-memory counter would just be a
@@ -408,6 +409,7 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "owner_auth_fail"
+  | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
   | "steward_send" | "steward_send_capped"
   | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
@@ -892,43 +894,11 @@ async function tickGit(): Promise<void> {
       }
       gitInfo.set(s.id, { branch, dirty, ahead, behind });
     }
-    measureControls(Date.now()); // the gitInfo/aliveInfo caches are now fresh for THIS tick — measure against them
   } finally {
     gitTickBusy = false;
   }
 }
 
-// A2 null-calibration: classify matured controls with the same helped-git/helped-output logic
-// the deleted intervention-outcome tally used, record helped/noEffect into the rolling ring, then
-// re-park a fresh cohort of busiest un-nudged active slots. In-memory only — never persisted.
-// `recentNudges` (slot -> last steward_send ts) is this function's own exclusion signal: a slot
-// nudged within the current window is not a clean null. Keyed by slot id, so it never grows
-// unbounded — a new send just overwrites the slot's prior timestamp.
-function measureControls(now: number): void {
-  const nudged = new Set([...recentNudges].filter(([, t]) => now - t < OUTCOME_WINDOW_MS).map(([slot]) => slot));
-  for (let i = controlPending.length - 1; i >= 0; i--) {
-    const c = controlPending[i];
-    if (now - c.openedAt < OUTCOME_WINDOW_MS) continue; // window still open
-    controlPending.splice(i, 1);
-    if (nudged.has(c.slot)) continue; // got nudged mid-window → no longer a clean control, drop it
-    const gi = gitInfo.get(c.slot);
-    const s = slots[c.slot - 1];
-    const helpedGit = !!gi && gi.ahead > c.aheadBaseline;
-    const outStarted = !!s && s.lastOutput > c.outputBaseline;
-    const outSustained = !!s && now - s.lastOutput <= OUTCOME_SUSTAIN_MS;
-    const controlHelped = helpedGit || (outStarted && outSustained);
-    baselineSamples.push(controlHelped);
-    if (baselineSamples.length > BASELINE_RING_CAP) baselineSamples.shift();
-    baselineSeen++;
-    if (controlHelped) baselineSeenHelped++;
-  }
-  if (controlPending.length > 0) return; // a cohort is still maturing — don't stack
-  const candidates = slots.filter((s) => s.cwd && !nudged.has(s.id))
-    .sort((a, b) => b.lastOutput - a.lastOutput) // busiest first — the honest null is a working slot
-    .slice(0, CONTROL_SAMPLE_MAX);
-  for (const s of candidates)
-    controlPending.push({ slot: s.id, openedAt: now, aheadBaseline: gitInfo.get(s.id)?.ahead ?? 0, outputBaseline: s.lastOutput });
-}
 
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
@@ -3730,30 +3700,6 @@ function emitLaneOutcome(o: LaneOutcome | null): void {
   if (o) appendEvent(LANE_OUTCOME_FILE, o as unknown as Record<string, unknown>);
 }
 
-// --- A2 null-calibration (docs/analysis-2026-07-28-verification.md §3 — the intervention-outcome
-// tally this control group used to calibrate against was removed). `baselineRate` runs the helped
-// classifier over ACTIVE slots that got NO steward send, so a nudged-helped count is interpretable
-// against the background "helped-looking" rate. ADVISORY ONLY. A control is parked at window OPEN
-// and classified one window later; the samples are an in-memory rolling ring (advisory number —
-// not worth a persist/restore surface). We sample the BUSIEST un-nudged slots (highest lastOutput,
-// up to CONTROL_SAMPLE_MAX) because the honest null is "a WORKING slot nobody nudged" — an idle
-// slot trivially scores no-effect and only dilutes the denominator.
-interface ControlBaseline { slot: number; openedAt: number; aheadBaseline: number; outputBaseline: number }
-const controlPending: ControlBaseline[] = [];
-const CONTROL_SAMPLE_MAX = 3;
-const BASELINE_RING_CAP = 50; // rolling window of recent control samples
-const baselineSamples: boolean[] = []; // true = the control slot looked "helped" with no nudge
-// …and, beside the ring, the LIFETIME counts of control samples ever classified. The ring answers
-// "what is the recent background rate" (deliberately forgetful); these answer "was a sample taken
-// at all", which the ring stops being able to report once it saturates at BASELINE_RING_CAP — its
-// length is pinned and a shift can even cancel an incoming helped. Same in-memory-only discipline
-// as the ring: advisory, never persisted.
-let baselineSeen = 0;
-let baselineSeenHelped = 0;
-// last steward_send timestamp per slot — measureControls' own "was this slot just nudged"
-// exclusion signal, now that the deleted tally's pending-baseline list (which used to double as
-// one) is gone. In-memory only, keyed by slot: a new send just overwrites the slot's prior entry.
-const recentNudges = new Map<number, number>();
 
 // --- DISPOSITION rail: the owner's label channel for advisory output (docs/graduation-criteria.md
 // needs owner labels as ground truth, and Fleet's throwaway workers had none). One append-only
@@ -4609,10 +4555,24 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 // limit. The result is always a `pending` task the owner must review before anything runs.
 async function handleIntake(req: Request): Promise<Response> {
   if (!INTAKE_SECRET) return json({ error: "intake disabled" }, 404);
+  const now = Date.now();
+  while (intakeFails.length && now - intakeFails[0] > INTAKE_FAIL_WINDOW_MS) intakeFails.shift();
+  // locked out: refuse BEFORE comparing, so a locked guesser cannot use the endpoint as an oracle
+  // even with the right secret — same stance as /s/<id>/auth's pre-check
+  if (intakeFails.length >= INTAKE_FAIL_LOCK) {
+    await Bun.sleep(400);
+    return json({ error: "unauthorized" }, 401);
+  }
   const given = req.headers.get("x-intake-secret") ?? "";
   const a = Buffer.from(given), b = Buffer.from(INTAKE_SECRET);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return json({ error: "unauthorized" }, 401);
-  const now = Date.now();
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    await Bun.sleep(400); // flat delay, as tokenGate — a guess costs wall-clock, not just a strike
+    intakeFails.push(now);
+    // never the attempted secret itself, exactly as owner_auth_fail refuses to log the token
+    audit("intake_auth_fail");
+    if (intakeFails.length === INTAKE_FAIL_LOCK) audit("intake_auth_lock", undefined, `fails:${INTAKE_FAIL_LOCK}`);
+    return json({ error: "unauthorized" }, 401);
+  }
   while (intakeStrikes.length && now - intakeStrikes[0] > 3_600_000) intakeStrikes.shift();
   if (intakeStrikes.length >= 30) return json({ error: "rate limited" }, 429);
   const body = await readJson(req);
@@ -5168,7 +5128,6 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   saveHistory(s);
   logPrompt(s, rendered.text, "steward", ts);
   audit("steward_send", s.id, `${kind}:${ref}`);
-  recentNudges.set(s.id, ts); // measureControls' null-calibration exclusion signal
   return json({ ok: true, text: rendered.text });
 }
 
@@ -5744,18 +5703,6 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   }
   if (url.pathname === "/api/steward/send" && req.method === "POST")
     return handleStewardSend(await readJson(req));
-  // the A2 null-calibration reading (docs/analysis-2026-07-28-verification.md §3 — the
-  // intervention-outcome tally this route used to also serve was removed). `rate`/`samples`/
-  // `helped` describe the rolling ring (capped at BASELINE_RING_CAP); `seen`/`seenHelped` are the
-  // lifetime counters, monotone and cap-free, so "did the sampler record anything" stays
-  // answerable after the ring saturates.
-  if (url.pathname === "/api/steward/outcomes" && req.method === "GET") {
-    return json({
-      baselineRate: { rate: baselineSamples.length ? baselineSamples.filter(Boolean).length / baselineSamples.length : null,
-        samples: baselineSamples.length, helped: baselineSamples.filter(Boolean).length,
-        cap: BASELINE_RING_CAP, seen: baselineSeen, seenHelped: baselineSeenHelped },
-    });
-  }
   if (url.pathname === "/api/steward/journal" && req.method === "GET") {
     const tail = Math.min(50, Math.max(1, Number(url.searchParams.get("tail") ?? 1) | 0));
     return json({ records: await readStewardJournal(tail) });

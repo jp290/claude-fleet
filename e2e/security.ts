@@ -63,7 +63,7 @@ const STATIC_ROUTES = ["/", "/app.js", "/share.js", "/xterm.css", "/manifest.web
 // second pre-auth surface — pinned for the same reason.
 const STEWARD_ROUTES = [
   "= /api/dispositions", "= /api/steward/autos", "= /api/steward/digest", "= /api/steward/journal",
-  "= /api/steward/outcomes", "= /api/steward/send", "= /api/steward/sessions", "= /api/steward/tasks",
+  "= /api/steward/send", "= /api/steward/sessions", "= /api/steward/tasks",
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/brief$/`,
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/transcript$/`,
 ];
@@ -265,7 +265,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   await sweep("steward-readable", [["sessions", sc.stewGet("/api/steward/sessions")],
     ["brief", sc.stewGet(`/api/steward/slots/${ln.slot}/brief`)],
     ["transcript", sc.stewGet(`/api/steward/slots/${ln.slot}/transcript`)],
-    ["outcomes", sc.stewGet("/api/steward/outcomes")], ["journal", sc.stewGet("/api/steward/journal?tail=5")],
+    ["journal", sc.stewGet("/api/steward/journal?tail=5")],
     ["dispositions", sc.stewGet("/api/dispositions?limit=50")]]);
   await post(`/api/slots/${ln.slot}/unshare`, {});
 

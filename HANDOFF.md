@@ -7,8 +7,8 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 ## Was diese Session getan hat
 
 Der Owner wollte zweierlei: den Steward autonom nach Fehlern/Verbesserungen schauen lassen,
-und den Datenlayer über Sessions/Slots/Lanes ausbauen. Beides steht: 10 Commits, `27827a6`
-bis `3921560`, alle deployed und verifiziert. (`fc24499..HEAD` sind 13 — die drei ältesten
+und den Datenlayer über Sessions/Slots/Lanes ausbauen. Beides steht: 10 Commits, `c1f4ad5`
+bis `fd982e9`, alle deployed und verifiziert. (`fc24499..HEAD` sind 13 — die drei ältesten
 darin, Privacy-Scrub und `.env`-Umzug, stammen noch aus der Vor-Session.)
 
 **Der Inspektor (`/inspektion`) ist der zweite Puls.** Der Rundgang schaut auf den *Betrieb*,
@@ -18,7 +18,7 @@ Pulse; Register ist `inspektion-register.jsonl` im Steward-Worktree (untracked, 
 
 **Er hat sich in zwei Läufen bezahlt gemacht.** Puls 1: eine verifizierte latente Auth-Lücke
 und ein verwaistes Mess-Subsystem. Puls 2: **einen echten Bug in Code, der zwei Stunden vorher
-gelandet und auf Owner-Nachfrage kritisch nachgeprüft worden war** (`b7d449a0` → `3afce29`).
+gelandet und auf Owner-Nachfrage kritisch nachgeprüft worden war** (`b7d449a0` → `ba4b24f`).
 Das ist der stärkste Beleg, den es für den Puls gibt.
 
 **Der Slot-Datenlayer** (`slotstats.ts`, `GET /api/slot-stats`, `slotHealth` im Digest) misst,
@@ -26,7 +26,7 @@ was ein Slot verspricht: behält er seine Identität über einen Crash. Reine Ab
 Events, die längst geschrieben wurden — plus zwei Erfassungszeilen dort, wo die Ableitung an
 eine Wand lief (Heal-Grund, Kill-Grund).
 
-**Der ③-Reviewer bekommt Kontext statt Werkzeug** (`a5a5a52`): die vollen Inhalte der
+**Der ③-Reviewer bekommt Kontext statt Werkzeug** (`b50c233`): die vollen Inhalte der
 meistberührten vorbestehenden Dateien reiten im DATA-Block mit. Werkzeuglos und one-shot
 bleibt er — die Ablehnungsgründe für die Alternativen stehen an den Konstanten in `server.ts`
 und sind die Checkliste für die Eskalation, falls die Messreihe sie fordert.
@@ -38,7 +38,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
 1. **Wirkt der ③-Kontext?** Basis vor der Änderung: 46 % der Findings `basis:"inferred"`
    (36/78), und 32 von 66 Notes sagen „did not check code outside the diff". Beides muss
    fallen. Quelle: `review.findings[].basis` und `review.notes` in `lane-outcomes.jsonl`.
-2. **Hält der Slot sein Versprechen?** Die Serie startet bei `3afce29` neu — Rows davor können
+2. **Hält der Slot sein Versprechen?** Die Serie startet bei `ba4b24f` neu — Rows davor können
    die Frage nicht beantworten, weil die Klassifikation kaputt war. Zu lesen an `healReasons`
    in `/api/slot-stats`: `no-session` = die harmlose openSlot-Race, `no-transcript` = die echte
    Verletzung. Vorher war Letzteres unerreichbar.
@@ -53,7 +53,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
    oder ruhen lassen.** Entscheidungsgrundlage: zwei Läufe, zwei verwertbare Befunde, einer
    davon ein echter Bug.
 2. **7 pending Tasks.** Zwei davon sind diese Session verifiziert UND erledigt (`0b21cc94`
-   gelöscht in `6dea981`, `d8efc50f` gehärtet in `b6e915e`) — die Rows stehen aber noch auf
+   gelöscht in `59eccbb`, `d8efc50f` gehärtet in `d495607`) — die Rows stehen aber noch auf
    `pending` und gehören abgeräumt, sonst zählen sie beim nächsten Blick doppelt. Der Rest ist
    ungeprüft. Vor einem Dispatch-Einschalten ohnehin durchzusehen (Steward-Benachrichtigungen
    landen in derselben Queue und würden als Brief gespawnt).
@@ -78,7 +78,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
   „196 Heilungen". Die Trennung leistet jetzt die Reason-Spalte.
 - **Zwei Protokoll-Abweichungen des ersten Pulses** waren im Pane-Output unsichtbar und nur im
   Audit-Trail zu sehen (zwei Reviere in einem Lauf; erfundene Register-Zeitstempel), beide im
-  Command geschlossen (`aed9d8e`). Die Lehre: die Puls-Ausgabe ist kein Compliance-Beleg.
+  Command geschlossen (`41e8313`). Die Lehre: die Puls-Ausgabe ist kein Compliance-Beleg.
 
 ## Key Decisions
 

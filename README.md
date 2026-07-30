@@ -1,5 +1,7 @@
 # Claude Fleet
 
+**Run and steer many Claude Code sessions at once — from your desk or from your phone.**
+
 Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback (WebGL-rendered), direct typing into the focused session, a directory picker with recents for starting sessions per project. Plus: per-slot prompt history (🕘 / ArrowUp recall), print/PDF export (⇩), a conversation view that renders the claude transcript as structured messages (💬), password-gated session sharing for guests ([SHARING.md](SHARING.md)), scheduled prompts (⏱ — one-shot or recurring with idle/claude-alive guard rails), and crash-resilient sessions — a died pane self-heals with `claude --resume`, keeping the conversation. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
 
 ![claude-fleet — four Claude Code sessions in a 2×2 grid](docs/screenshot.png)

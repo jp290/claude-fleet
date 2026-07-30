@@ -1,10 +1,57 @@
-# HANDOFF — 2026-07-29/30 (Session 13: der zweite Puls, und ein Datenlayer für Slots)
+# HANDOFF — 2026-07-29/30 (Session 13: der zweite Puls und ein Datenlayer · Session 14: die Demo-Aufnahme)
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log fc24499..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
 
-## Was diese Session getan hat
+---
+
+## Session 14 (2026-07-30): Teil A der öffentlichen Demo ist aufgenommen
+
+Zwei Commits, `d638c63` + `214f630`, **nicht gepusht**. Vier echte Claude-Code-Sessions auf
+einer Wegwerf-Instanz (Port 8877, eigener Socket, Scratch-Kopie — die Live-Instanz auf 8790
+wurde nicht berührt), ihre Roh-Streams liegen in `demo/fixtures/`. Neues Bild in
+`docs/screenshot.png`, dazu erstmals ein Handy-Bild. **Das operative Wissen dazu steht in
+`docs/demo-fixtures.md`** — vier Fallen, die aus den Bytes nicht ableitbar sind; wer den
+Replay-Player baut (Session B) oder das Bild neu schießt, liest das zuerst.
+
+**Der Owner-Entscheid dieser Session, und er gilt weiter: der Maschinen-Accountname darf
+nirgends sichtbar sein.** Er stand 80× in den Aufnahmen und im Screenshot. Konsequenzen, die
+über diese Session hinausreichen:
+
+1. **Redaktion in einem Terminal-Stream muss längentreu sein** (8 Bytes für 8), sonst
+   verschiebt sich jede Cursor-Adresse danach. Kein Text-Ersetzen ohne diese Eigenschaft.
+2. **Ein Grep über die Bytes reicht nicht.** Ein Vorkommen lag als die ersten sieben Zeichen
+   des Namens + Cursor-Sprung im Stream, das achte hatte ein früherer Redraw gemalt — der Grep
+   war sauber, der *gerenderte Frame* zeigte den Namen. Gefunden über alle Fragmente ≥ 3
+   Zeichen, bewiesen durch Rendern des Frames vor/nach dem Patch. Für Terminal-Aufnahmen gilt:
+   prüfen, was **malt**, nicht was greppt.
+3. **Die Regel gilt auch für die Prosa.** Der erste Anlauf dieser Dokumentation nannte das
+   Fragment wörtlich und hätte sieben Achtel des Namens in ein öffentliches Repo geschrieben —
+   in derselben Datei, die vor genau diesem Fehler warnt. Beschreiben, nicht zitieren.
+4. **Die Commits wurden vor jedem Push umgeschrieben**, damit kein Blob den Namen je trug. Ein
+   Nachbesserungs-Commit hätte ihn dauerhaft in der Historie gelassen — das ist das Leck, nicht
+   der Working Tree. Prüfung: `git log -p 4b8fec4..HEAD` gegen den Namen und gegen jedes seiner
+   Fragmente ≥ 3 Zeichen = 0.
+
+**Was als Nächstes ansteht (Demo-Strang):** Session B baut den Replay-Modus, Session C bettet
+ein. Beide brauchen `docs/demo-fixtures.md`; der Geometrie-Vertrag (76×28) und „vor dem ersten
+Byte den Terminal löschen" sind harte Vorgaben, keine Vorschläge.
+
+**Offen, klein:** Das Board-Bild rendert die Fixtures, nicht eine lebende Flotte (vier fertige
+Live-Sessions sind nachträglich nicht mehr fotografierbar) — steht im Commit-Body und in der
+Doc. Wer es je wieder live schießen will, muss die Aufnahme neu fahren.
+
+**Nicht im Repo, aber erhalten:** die vier echten Diffs der Sessions und die Aufnahme-Skripte
+liegen in `~/claude-fleet-private/demo-2026-07-30/`. Der `claude-deck`-Patch (500 → 400 an der
+Boundary) ist ein echter Fix für dieses öffentliche Repo und wartet dort auf Übernahme; die
+Scratch-Klone sind weg.
+
+---
+
+## Session 13 (2026-07-29/30): der zweite Puls, und ein Datenlayer für Slots
+
+### Was diese Session getan hat
 
 Der Owner wollte zweierlei: den Steward autonom nach Fehlern/Verbesserungen schauen lassen,
 und den Datenlayer über Sessions/Slots/Lanes ausbauen. Beides steht: 10 Commits, `c1f4ad5`
@@ -31,7 +78,7 @@ meistberührten vorbestehenden Dateien reiten im DATA-Block mit. Werkzeuglos und
 bleibt er — die Ablehnungsgründe für die Alternativen stehen an den Konstanten in `server.ts`
 und sind die Checkliste für die Eskalation, falls die Messreihe sie fordert.
 
-## Zwei Messreihen laufen — beide brauchen ~15 Lanes, bevor sie etwas sagen
+### Zwei Messreihen laufen — beide brauchen ~15 Lanes, bevor sie etwas sagen
 
 Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue Erfassung:
 
@@ -43,7 +90,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
    in `/api/slot-stats`: `no-session` = die harmlose openSlot-Race, `no-transcript` = die echte
    Verletzung. Vorher war Letzteres unerreichbar.
 
-## Was als Nächstes ansteht — in dieser Reihenfolge
+### Was als Nächstes ansteht — in dieser Reihenfolge
 
 1. **Die Pulse laufen aus, und das ist Absicht.** `/rundgang` (`ad14fc62`, alle 3 h) hat noch 3
    von 8 Läufen; `/inspektion` (`cf216970`, alle 6 h) hat **runsLeft 0** und ist damit still.
@@ -62,7 +109,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
 4. **Orphan-Worktree `fleet-260728184459-9e73`** (5523d1f) liegt ohne Slot auf Platte — landen
    oder verwerfen.
 
-## Korrekturen an früheren Behauptungen (diese Session gemessen)
+### Korrekturen an früheren Behauptungen (diese Session gemessen)
 
 - **„Der Steward-Ladepfad funktioniert" war falsch.** `/steward` Schritt 0 (`git merge main`)
   hätte **418 fremde Commits** gezogen (History-Rewrite beim Public-Release), und 11 von 13
@@ -80,7 +127,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
   Audit-Trail zu sehen (zwei Reviere in einem Lauf; erfundene Register-Zeitstempel), beide im
   Command geschlossen (`41e8313`). Die Lehre: die Puls-Ausgabe ist kein Compliance-Beleg.
 
-## Key Decisions
+### Key Decisions
 
 - **„Deliver context, not tools" statt Snapshot-Worktree für ③.** Gemessen, nicht geraten: das
   Defizit war Kontext (46 % inferred, 32 „did not check"-Notes), nicht Werkzeug (Truncation nur
@@ -100,7 +147,7 @@ Nicht vorher interpretieren. Beide lesen sich aus vorhandenen Ledgern, ohne neue
   Zeile (Scope-Prüfung stand hinter der Feldvalidierung). Jede Zahl beantwortet eine benannte
   Frage, sonst fliegt sie raus.
 
-## Womit man sofort fortsetzen kann
+### Womit man sofort fortsetzen kann
 
 `./state.sh`, dann `git log fc24499..HEAD` mit Bodies. Die zwei Messreihen brauchen keine
 Erklärung, nur Geduld und einen Ledger-Query; die eine fällige Entscheidung ist Punkt 1.

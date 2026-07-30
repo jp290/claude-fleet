@@ -82,7 +82,14 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`data-saver.md`** — the bandwidth program: `/api/sessions` was the cause, not the
   terminal. Doubles as `scope-inflation.md`'s worked case.
 
-*(`docs/screenshot.png` is the board image the top-level README embeds — not a doc.)*
+**The public demo**
+- **`demo-fixtures.md`** — the four recorded sessions in `demo/fixtures/`: the 76×28 geometry
+  contract, why each stream starts mid-screen and must not be "restored", and what may not be
+  visible in anything published. Read before building the replay player, re-shooting the board
+  image, or re-recording.
+
+*(`docs/screenshot.png` and `docs/screenshot-mobile.png` are the images the top-level README
+embeds — not docs. `demo-fixtures.md` covers how they were made.)*
 
 ## The attic
 

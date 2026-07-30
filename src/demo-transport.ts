@@ -12,7 +12,9 @@
 // The consequence worth stating plainly: client.ts is not modified by one line for this demo,
 // so the demo cannot drift from the real UI, and the real UI cannot break because of the demo.
 //
-// This file MUST NOT be imported by anything but src/demo.ts.
+// This file MUST NOT be imported by anything but src/demo.ts and src/demo-chapters.ts — the
+// chapters are the demo's presentation layer and this is its transport; nothing else may reach
+// either, least of all the real client.
 import { Terminal } from "@xterm/xterm";
 
 // Nothing in this file may reach the network except the fixture loads below. `realFetch` is
@@ -60,6 +62,28 @@ const TARGET_MS = 90_000;
 const MIN_FRAME_MS = 16;
 const MAX_FRAME_MS = 80;
 
+// --- excerpts ----------------------------------------------------------------------------------
+// A chapter may play a FRAME RANGE of a recording instead of the whole file, and pace it itself:
+// the 90 s above is the budget of a whole stream, and a 15 s chapter that inherits it would either
+// crawl or run out of pictures. `secs` is therefore per excerpt, and the same clamp applies, so a
+// short range still cannot become a slideshow.
+//
+// The range is stated in frames, not seconds or bytes, because the frame is the only unit the
+// recordings actually have (see above): a chosen frame boundary is a whole repaint, so an excerpt
+// can start and end on a complete picture instead of mid-redraw.
+export interface DemoCut { from: number; to?: number; secs?: number }
+const cuts = new Map<number, DemoCut>();
+// Set by the chapter layer BEFORE the pane connects (src/demo-chapters.ts runs before the client's
+// boot, and re-arms a pane by clicking its own ↻ when a chapter changes what it should play).
+export function setCuts(next: ReadonlyMap<number, DemoCut>): void {
+  cuts.clear();
+  for (const [slot, cut] of next) cuts.set(slot, cut);
+}
+// One listener, not an event bus: the chapter bar wants to know when the picture stopped moving,
+// so its "Weiter" can ask for attention instead of leaving a passive visitor sitting in chapter 1.
+let streamEnd: ((slot: number) => void) | null = null;
+export function onStreamEnd(fn: (slot: number) => void): void { streamEnd = fn; }
+
 const CURSOR_SHOW = [0x1b, 0x5b, 0x3f, 0x32, 0x35, 0x68]; // ESC [ ? 2 5 h
 
 // Split after every cursor-show. A trailing remainder (the recording ends mid-repaint — 42–120 B
@@ -94,6 +118,13 @@ function loadManifest(): Promise<DemoManifest> {
     if (!r.ok) throw new Error(`demo: fixtures/slots.json → ${r.status}`);
     return r.json() as Promise<DemoManifest>;
   }));
+}
+
+// The prompt a session was really given. The chapter layer puts it in the (disabled) compose bar
+// instead of writing a caption about it — same source as the brief's prompt outline below, so the
+// two can never disagree.
+export async function slotPrompt(id: number): Promise<string> {
+  return (await loadManifest()).slots.find((s) => s.id === id)?.prompt ?? "";
 }
 
 // One parse per stream, shared by every pane that shows it (the 2×2 layout plus a slot the
@@ -142,6 +173,7 @@ class DemoSocket {
   private stopped = false;
   private slot = 0;
   private frameMs = MAX_FRAME_MS;
+  private cut: DemoCut | undefined;
 
   constructor(url: string | URL) {
     this.url = String(url);
@@ -183,15 +215,27 @@ class DemoSocket {
       const m = await loadManifest();
       const s = m.slots.find((x) => x.id === this.slot);
       if (!s) throw new Error(`demo: no fixture for slot ${this.slot}`);
-      const frames = await loadFrames(s.file);
+      const all = await loadFrames(s.file);
+      // The excerpt is cut here rather than in the chapter layer so the WHOLE file is still parsed
+      // once and cached (framesOnce): two chapters showing two ranges of the same recording cost
+      // one download, and switching back and forth costs none.
+      this.cut = cuts.get(this.slot);
+      const from = Math.min(Math.max(0, this.cut?.from ?? 0), all.length);
+      const to = Math.min(Math.max(from, this.cut?.to ?? all.length), all.length);
+      const frames = all.slice(from, to);
       // Both awaits above guarantee at least one microtask, so the client's synchronous
       // `ws.onopen = …` / `onmessage = …` assignments after `new WebSocket(…)` have landed by
       // the time anything is delivered. This ordering is load-bearing, not incidental.
       if (this.stopped) return;
       this.readyState = DemoSocket.OPEN;
       this.onopen?.(new Event("open"));
+      // Clearing first is the same argument as at the start of a stream, and it binds harder for an
+      // excerpt: frame `from` is a repaint that assumes whatever the frames before it drew, so
+      // without a clear the range would start on top of a screen that belongs to another moment.
       this.emit(CLEAR);
-      this.frameMs = Math.min(MAX_FRAME_MS, Math.max(MIN_FRAME_MS, Math.round(TARGET_MS / frames.length)));
+      const target = Math.max(1000, (this.cut?.secs ?? TARGET_MS / 1000) * 1000);
+      this.frameMs = Math.min(MAX_FRAME_MS,
+        Math.max(MIN_FRAME_MS, Math.round(target / Math.max(1, frames.length))));
       this.play(frames, 0);
     } catch (e) {
       // A missing or unreadable fixture must say so in the pane it belongs to instead of
@@ -210,7 +254,11 @@ class DemoSocket {
   private play(frames: ArrayBuffer[], i: number): void {
     if (this.stopped) return;
     if (i >= frames.length) {
-      this.emit(FINISHED);
+      // A whole stream that reached its end says so. An EXCERPT does not: the session did not stop
+      // there, and writing "replay finished" into it would claim something untrue. It holds on its
+      // last picture instead — which is also what makes the last picture the chapter's exhibit.
+      if (!this.cut) this.emit(FINISHED);
+      streamEnd?.(this.slot);
       return;
     }
     this.emit(frames[i]);
@@ -515,12 +563,10 @@ globalThis.fetch = demoFetch as typeof fetch;
 // handlers, send, close) — not the full WebSocket interface, which nothing here calls.
 globalThis.WebSocket = DemoSocket as unknown as typeof WebSocket;
 
-// The visitor arrives once and should see the thing the tool is for: four sessions at work in the
-// 2×2 grid, which is also the geometry the panes were recorded at. Seeded rather than hardcoded so
-// the layout buttons keep working and a returning visitor's own choice survives — this writes the
-// same localStorage key the real client reads at boot and never overwrites an existing one.
-if (!localStorage.getItem("fleet.view"))
-  localStorage.setItem("fleet.view", JSON.stringify({ layout: 4, panes: [1, 2, 3, 4], focused: 0 }));
+// The 2×2 seed that used to sit here is gone: chapters SET their layout rather than seeding it
+// (src/demo-chapters.ts). Seeding wrote fleet.view only when the key was absent, so anyone who had
+// already opened the four-panes-at-once version kept it forever — and would have met the guided
+// tour with the one picture the tour is built to arrive at last.
 
 {
   // Input off, at the surface as well as at the socket. The placeholder is pinned because

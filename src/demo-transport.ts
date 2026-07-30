@@ -34,6 +34,10 @@ interface DemoManifest {
   // ℹ brief. Declared here rather than probed for, so an absent brief costs no request and logs no
   // 404 in a visitor's console.
   briefs?: string;
+  // the same switch for the 💬 conversation view, PER SLOT: the transcript route is per slot, so
+  // the fixtures are too. A visitor who opens one session downloads that session's transcript and
+  // no other — declared, never guessed, for the same reason as `briefs`.
+  transcripts?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -263,18 +267,47 @@ function loadBriefs(): Promise<Record<string, DemoBrief> | null> {
     return ((await r.json()) as { briefs?: Record<string, DemoBrief> }).briefs ?? null;
   }).catch(() => null));
 }
-// Reveal the ℹ control once, if and only if the fixture is there. The demo's stylesheet hides it by
-// default (demo/build.ts), so this override is what turns the feature on.
+// Reveal the ℹ control once, if and only if the fixture is there. The demo's stylesheet hides it
+// through `html:not(.has-briefs)` (demo/build.ts), so this class is what turns the feature on — and
+// hands the control back to the dashboard's own rules, including the mobile one that keeps ℹ off a
+// phone where renderBoard() would not render anything anyway.
 void loadBriefs().then((b) => {
-  if (!b) return;
-  const style = document.createElement("style");
-  style.textContent = ".boardtoggle { display: block !important; }";
-  document.head.appendChild(style);
+  if (b) document.documentElement.classList.add("has-briefs");
 });
+
+// --- the 💬 conversation view ------------------------------------------------------------------
+// The recorded sessions' scratch repositories are gone, but their Claude Code transcripts are not,
+// and they are what this view reads. Each fixture is the payload the real route would return —
+// {entries, total, source}, already through server.ts's viewEntry filters and truncations — so the
+// demo needs no parser and cannot render something the dashboard would render differently.
+//
+// One file PER SLOT, cached per file like framesOnce: the transcripts weigh 17-123 KB apiece, and
+// switching one pane to 💬 must cost that pane's transcript, not all four.
+interface DemoTEntry { n: number; role: string; ts: string | null; blocks: unknown[]; meta?: boolean }
+interface DemoTranscript { entries: DemoTEntry[]; total: number; source: string | null }
+const transcriptOnce = new Map<string, Promise<DemoTranscript | null>>();
+function loadTranscript(file: string): Promise<DemoTranscript | null> {
+  const hit = transcriptOnce.get(file);
+  if (hit) return hit;
+  const p = realFetch(fixture(file))
+    .then(async (r) => (r.ok ? ((await r.json()) as DemoTranscript) : null))
+    .catch(() => null);
+  transcriptOnce.set(file, p);
+  return p;
+}
+// Reveal the 💬 control if and only if the manifest declares transcripts — the mirror of the ℹ
+// reveal below. On the DECLARATION, not on a successful load: fetching all four here to prove they
+// exist would spend the very requests the per-slot split is for. Unlike ℹ, 💬 is deliberately left
+// on for phones: it reflows at any width, which the fixed 76-column stream cannot.
+void loadManifest().then((m) => {
+  if (m.transcripts && Object.keys(m.transcripts).length)
+    document.documentElement.classList.add("has-transcripts");
+}).catch(() => { /* a broken manifest already reports itself in the pane */ });
 
 async function demoFetch(input: RequestInfo | URL, _init?: RequestInit): Promise<Response> {
   const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  const path = new URL(href, location.href).pathname;
+  const url = new URL(href, location.href);
+  const path = url.pathname;
   if (path.endsWith("/api/sessions")) return sessions();
   if (path.endsWith("/api/dispositions")) return json({ dispositions: [] });
   if (path.endsWith("/resize")) return json({ ok: true });
@@ -289,13 +322,26 @@ async function demoFetch(input: RequestInfo | URL, _init?: RequestInit): Promise
       return json({ ...b, worktree: null, laneScoped: false, laneBase: null,
         sessionStart: b.sessionStart ?? null, ahead: b.ahead ?? 0, behind: b.behind ?? 0 });
     }
-    // The brief's prompt outline reads the transcript feed. The one entry the demo can state truly
-    // is the prompt the session was actually given, which slots.json records.
+    // The conversation view and the brief's prompt outline both read this feed. With a transcript
+    // declared it serves the recorded session; without one it falls back to the single entry the
+    // demo can state truly either way — the prompt the session was actually given, from slots.json.
+    //
+    // `after` is honoured on BOTH paths and is not optional: the client polls this route once a
+    // second with after=<the total it last saw> and APPENDS whatever comes back (src/client.ts's
+    // pollChat), so a route that ignores the cursor re-delivers the whole conversation every second.
+    // `n` is an absolute JSONL line number and `total` the raw line count, exactly as server.ts's
+    // transcriptPayload reports them, so the same `n > after` comparison is the correct filter here.
     if (route === "transcript") {
-      const s = (await loadManifest()).slots.find((x) => x.id === Number(id));
+      const m = await loadManifest();
+      const s = m.slots.find((x) => x.id === Number(id));
       if (!s) return json({ entries: [], total: 0, source: null });
+      const after = Math.max(0, Number(url.searchParams.get("after") ?? 0) | 0);
+      const file = m.transcripts?.[id];
+      const t = file ? await loadTranscript(file) : null;
+      if (t) return json({ total: t.total, source: t.source, entries: t.entries.filter((e) => e.n > after) });
       return json({ total: 1, source: "recorded",
-        entries: [{ n: 1, role: "user", ts: null, blocks: [{ t: "text", text: s.prompt }] }] });
+        entries: after >= 1 ? []
+          : [{ n: 1, role: "user", ts: null, blocks: [{ t: "text", text: s.prompt }] }] });
     }
   }
   return json({ error: "not available in the demo" }, 404);

@@ -74,8 +74,12 @@ after a context reset, run `/steward` (project command), which:
    checkout. Ordering is load-bearing: reading precedes nothing; a shelf read
    before the merge is a stale world-model dressed as a fresh one (this is how
    the branch once drifted 22 commits behind).
-2. Reads the shelf in order: `operating-model.md` → `interaction-modes.md` →
-   `tailored-context.md` → `verification.md` → this file.
+2. Reads the shelf in order: `README.md` (what is operative at all) →
+   `tailored-context.md` → `verify-tiering.md` → this file. **Corrected 2026-07-29:**
+   three of the originally named docs (`operating-model.md`, `interaction-modes.md`,
+   `verification.md`) moved to `docs/attic/` in `66d302b`, and the ritual pointed at
+   their old paths for two days — a load step that silently reads nothing is worse than
+   one that fails loudly, which is why the index now carries a pointer check.
 3. Spot-verifies the claims it is about to rely on (a handful of the line
    references against the current tree) — the shelf's claims are treated as
    claims, per CLAUDE.md.
@@ -86,6 +90,46 @@ memory, the shelf its durable knowledge. A long-lived pane accumulating context
 is the failure mode; the cheap rebuild via this ritual is the feature. When
 context has grown long, the steward says so and asks for a `/clear` + reload
 rather than degrading quietly.
+
+## The two pulses (2026-07-29)
+
+Unprompted **attention**, never unprompted action. Both run as owner-created autos on the
+steward slot, both are read-only, and both end in the same place: at most one or two
+`pending` proposals the owner promotes or drops. Neither gates anything.
+
+| | `/rundgang` | `/inspektion` |
+|---|---|---|
+| Watches | the **operation** — which lane needs the owner now | the **substance** — what is broken or avoidably worse |
+| Sensing | one call: `GET /api/steward/digest` (per-slot state, `sinceLastLook`, ledgers) | one revier per run out of five, rotating |
+| Memory | the steward journal (`POST /api/steward/journal`) | `inspektion-register.jsonl`, untracked in the steward worktree |
+| Honest empty result | "all clear", files nothing | "nothing", files nothing |
+
+Three properties earn the Inspektion its keep, each written against a measured failure:
+
+- **A finding you cannot cite is not a finding.** Agents do not inherit CLAUDE.md's
+  analysis discipline, so the burden is written into the command: read the file, carry
+  `file:line`, name the cost. *Fehler* (broken now) and *Verbesserung* (avoidably worse)
+  carry different burdens; an unresolved smell is a *Kandidat*, never dressed as a defect.
+- **One revier means one.** Depth is bought by what you decline to chase. A smell outside
+  the chosen revier gets one register line and waits for its rotation.
+- **The register remembers refutations too.** Code defects, unlike lane states, persist
+  until fixed — without a memory the pulse re-files a dismissed finding every run, and
+  re-derives the same dead ends. `ts` comes from `date -u` at write time; a register whose
+  timestamps are invented cannot be audited against the audit trail, and being auditable
+  is its whole job.
+
+Both pulses send into the steward's own pane, which is where the owner briefs it. The known
+hazard is unchanged: `sendText` is paste-buffer + Enter with no clearing of the input line,
+so text the owner typed but did not submit is prepended to the pulse and both are submitted
+as one prompt. Nothing guards this today.
+
+**Track record so far, so this section stays honest:** two Inspektion pulses have run. The
+first filed a verified latent auth gap and, in the same run, an orphaned measurement
+subsystem — both confirmed independently, both acted on by the owner. The second found a
+real defect in code that had landed two hours earlier and survived a critical re-read
+(`b7d449a0`: a classification reading state the spawn had already overwritten). Whether
+this holds is an open question with a fixed answer date — the autos carry finite run caps
+on purpose, so continuing is a decision rather than a default.
 
 ## Voice
 

@@ -24,7 +24,7 @@ curl -X POST http://<host>:<port>/api/slots/<id>/open -H 'authorization: Bearer 
 ```
 
 That is a single reproducible call, and it is destructive by design: an active slot's pane is torn
-down and respawned (see `state-reality-divergence.md` D2). The **board's** picker still sends only
+down and respawned (see `docs/attic/state-reality-divergence.md` D2). The **board's** picker still sends only
 `{cwd}` and is reachable only for empty slots, so the label path is API-only for now. Renaming a
 live slot to `⚙ steward` still does NOT hand it the token until its pane respawns — that gap (and
 the reverse one, authority outliving the label) is D5, unchanged.
@@ -35,11 +35,13 @@ the reverse one, authority outliving the label) is D5, unchanged.
 
 One designated slot that hosts a **durable conversation about the system** —
 planning, concept work, brief-shaping, automation design. It is the standing home
-of interaction-mode 2 (`interaction-modes.md`, session → session): the steward
+of interaction-mode 2 (`docs/attic/interaction-modes.md`, session → session): the steward
 briefs, lanes execute, the owner reviews at land.
 
 A slot already is "a durable conversation with a place to live" (pinned session id,
-self-heal resumes via `--resume` — `operating-model.md`, Slot). The steward is that
+self-heal resumes via `--resume` — `docs/attic/operating-model.md`, Slot;
+that promise is now measured rather than assumed: `slotstats.ts`, served at
+`GET /api/slot-stats`). The steward is that
 primitive plus three conventions:
 
 ## The three conventions
@@ -76,8 +78,9 @@ after a context reset, run `/steward` (project command), which:
    the branch once drifted 22 commits behind).
 2. Reads the shelf in order: `README.md` (what is operative at all) →
    `tailored-context.md` → `verify-tiering.md` → this file. **Corrected 2026-07-29:**
-   three of the originally named docs (`operating-model.md`, `interaction-modes.md`,
-   `verification.md`) moved to `docs/attic/` in `66d302b`, and the ritual pointed at
+   three of the originally named docs (operating-model, interaction-modes,
+   verification — named without extensions here for the same reason the index does it)
+   moved to `docs/attic/` in `66d302b`, and the ritual pointed at
    their old paths for two days — a load step that silently reads nothing is worse than
    one that fails loudly, which is why the index now carries a pointer check.
 3. Spot-verifies the claims it is about to rely on (a handful of the line
@@ -161,7 +164,7 @@ the judgment").
 
 - Not a server feature, slot type, or UI mode — revisit only if the convention
   proves insufficient in real use.
-- Not a gate: like every advisory agent (`perception-layer.md` §7), its judgment never
+- Not a gate: like every advisory agent (`docs/attic/perception-layer.md` §7), its judgment never
   blocks or triggers anything mechanically.
 - Not cross-project: Fleet-only for now. Generalize the pattern elsewhere only
   after it has proven itself here.

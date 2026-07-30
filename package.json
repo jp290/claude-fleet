@@ -10,6 +10,7 @@
   "private": true,
   "scripts": {
     "start": "bun server.ts",
+    "build:demo": "bun demo/build.ts",
     "build": "bun build src/client.ts --outfile public/app.js --target browser --minify && bun build src/share.ts --outfile public/share.js --target browser --minify"
   },
   "dependencies": {

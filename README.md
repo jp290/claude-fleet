@@ -43,6 +43,9 @@ Same core as claude-deck (see its README for the full rationale), parameterized 
 
 Below 700px viewport width (or a coarse-pointer device in short landscape) the same page switches to a phone layout — one shared codebase, no separate build:
 
+<img src="docs/screenshot-mobile.png" alt="claude-fleet on a phone — app bar, key row, compose bar" width="360">
+
+
 - **App bar + drawer** — ☰ opens the session list (same slots UI as the desktop sidebar); tapping a slot switches and closes it. Title shows the focused session, dot shows WS state. On touch there's no hover, so each row's ✎ rename and ✕ delete icons are pinned visible and finger-sized — you can rename or kill a session straight from the phone (✕ still guards with a confirm).
 - **Key row** — `esc ⇥ ⇧⇥ ↑ ↓ ← → ⏎ ^C` buttons send raw bytes over the WS, covering everything Claude Code's TUI needs (interrupt, mode cycle, menu navigation) that virtual keyboards lack.
 - **Live typing (⌨)** — the toggle left of the compose box opens a dedicated input that relays every keystroke straight to the focused pane's pty — characters plus Enter/Esc/Backspace/Tab/arrows. Uses a real visible field, not xterm's hidden textarea (unreliable on iOS: keyboard often won't open, autocorrect swallows input); a sweeper keeps the field empty and `beforeinput`/`compositionend` handling makes IME and dictation work. Tap ⌨ again to exit; leaving mobile width auto-disables it.

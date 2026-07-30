@@ -468,6 +468,15 @@ function demoHint(text: string): void {
 // first version of this looked wrong in the 2-up layout.
 const REC_COLS = 76;
 const MIN_ROWS = 8;
+// The scale is CAPPED, and only upwards. Scaling DOWN is what keeps 76 columns inside a pane too
+// narrow for them, and that is not negotiable. Scaling UP is a presentation choice, and past a point
+// a bad one: one pane at 1360 px hands the terminal a factor of 2.06, i.e. the dashboard's own 12 px
+// type drawn at 25 px, which is what made a solo chapter read as a zoomed screenshot instead of a
+// terminal. Above the cap the block is centred in what is left rather than stretched into it.
+// Pinning the ROWS to the recorded 28 was tried here and rolled back: at exactly 28 rows the opening
+// prompt has scrolled off the top by frame 151, and the order standing in the terminal is the one
+// thing chapter 1 is about. Rows keep following the pane; only the magnification is capped.
+const MAX_SCALE = 1.5;
 const termOf = new WeakMap<HTMLElement, Terminal>();
 {
   const open = Terminal.prototype.open;
@@ -506,10 +515,10 @@ function fitScale(paneterm: HTMLElement | null, tries = 0): void {
     if (tries < 30) requestAnimationFrame(() => fitScale(paneterm, tries + 1));
     return;
   }
-  // Width alone sets the scale: 76 columns fill the pane exactly, which is the whole point of
-  // pinning them. Height is then absorbed by asking for as many ROWS as fit at that scale, so a
-  // tall pane fills with scrollback rather than with letterbox.
-  const s = box.width / natW;
+  // Width sets the scale — 76 columns fill the pane exactly, which is the whole point of pinning
+  // them — but never past MAX_SCALE. Height is then absorbed by asking for as many ROWS as fit at
+  // that scale, so a tall pane fills with scrollback rather than with letterbox.
+  const s = Math.min(box.width / natW, MAX_SCALE);
   const t = termOf.get(paneterm);
   if (t) {
     const cellH = natH / Math.max(1, t.rows);
@@ -522,7 +531,9 @@ function fitScale(paneterm: HTMLElement | null, tries = 0): void {
   term.style.height = `${natH}px`;
   term.style.transformOrigin = "top left";
   term.style.transform = `scale(${s.toFixed(4)})`;
-  term.style.marginLeft = "0px";
+  // Centred horizontally in whatever the cap left over. transform does not participate in layout, so
+  // the offset has to be a margin on the un-transformed box, computed from the SCALED width.
+  term.style.marginLeft = `${Math.max(0, Math.round((box.width - natW * s) / 2))}px`;
   term.style.marginTop = "0px";
 }
 

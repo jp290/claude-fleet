@@ -43,6 +43,10 @@ export interface ShellOpts {
   // list-column width in px (desktop only — mobile is always full-bleed). Views that show paths
   // or prose rows need more than the 320px default.
   listWidth?: number;
+  // fired when the selection MOVES by keyboard, so a view whose detail pane follows the cursor can
+  // keep up. Not fired when a view restores its own selection after a re-render (that would refetch
+  // what is already on screen), and not fired for clicks — a view already has its own click handler.
+  onSelect?: (row: ShellRow, i: number) => void;
   onClose?: () => void;
 }
 
@@ -57,7 +61,7 @@ export interface Shell {
   // register the rows Enter/↑/↓ walk, in visual order. Views call this after every re-render;
   // the previous registration is dropped, so a row that no longer exists can never be selected.
   setRows(rows: ShellRow[]): void;
-  select(i: number, scroll?: boolean): void;
+  select(i: number, scroll?: boolean, notify?: boolean): void;
   selectedIndex(): number;
   // mobile only: slide the detail pane in over the list. A no-op on desktop, where both are shown.
   showDetail(on: boolean): void;
@@ -101,20 +105,26 @@ export function openShell(o: ShellOpts): Shell {
   let open = true;
 
   const setRows = (next: ShellRow[]) => {
+    // Clear the outgoing rows FIRST. A row that leaves the list (filtered out, or a section the
+    // view stopped rendering) would otherwise keep `.sel` forever: it is no longer registered, so
+    // no later select() can reach it, and it reappears looking selected next to the real selection.
+    const prev = sel >= 0 ? rows[sel]?.el : undefined;
+    for (const r of rows) r.el.classList.remove("sel");
     rows = next;
     // keep the selection only if the SAME element is still registered — an index that happens to
     // survive a re-render would otherwise silently point at a different thing
-    const cur = sel >= 0 ? rows.findIndex((r) => r.el.classList.contains("sel")) : -1;
-    sel = cur;
+    sel = prev ? rows.findIndex((r) => r.el === prev) : -1;
+    if (sel >= 0) rows[sel].el.classList.add("sel");
   };
 
-  const select = (i: number, scroll = true) => {
+  const select = (i: number, scroll = true, notify = true) => {
     sel = Math.max(-1, Math.min(i, rows.length - 1));
     for (const r of rows) r.el.classList.remove("sel");
     const cur = sel >= 0 ? rows[sel] : undefined;
     if (cur) {
       cur.el.classList.add("sel");
       if (scroll) cur.el.scrollIntoView({ block: "nearest" });
+      if (notify) o.onSelect?.(cur, sel);
     }
   };
 
@@ -150,6 +160,9 @@ export function openShell(o: ShellOpts): Shell {
     // Home/End move the caret inside a text field; they only walk the list outside one
     if (!inInput && e.key === "Home") { e.preventDefault(); e.stopPropagation(); select(0); return; }
     if (!inInput && e.key === "End") { e.preventDefault(); e.stopPropagation(); select(rows.length - 1); return; }
+    // a MODIFIED Enter is the view's to define (the picker starts a session with it) — the shell
+    // must not consume it in the capture phase before the view's own listener ever runs
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) return;
     if (e.key === "Enter" && sel >= 0) {
       const r = rows[sel];
       if (r?.open) { e.preventDefault(); e.stopPropagation(); r.open(); }

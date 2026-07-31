@@ -13,14 +13,13 @@ import {
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
-import { openShell, type ShellRow } from "./shell";
+import { openShell, type Shell, type ShellRow } from "./shell";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
   ta = $("input") as HTMLTextAreaElement, send = $("send") as HTMLButtonElement,
   gate = $("gate"), gateIn = $("gatein") as HTMLInputElement,
-  picker = $("picker"), pkTitle = $("pktitle"), pkPath = $("pkpath") as HTMLInputElement,
-  pkLists = $("pklists"), pkCrumb = $("pkcrumb"), chipsEl = $("chips"), panesEl = $("panes");
+  chipsEl = $("chips"), panesEl = $("panes");
 
 const RECENT_MS = 5000;
 const MAX_CHUNK = WS_INPUT_MAX_BYTES; // the server drops a larger frame in silence — one number, both ends
@@ -1845,7 +1844,7 @@ function showSlot(id: number) {
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    if (picker.style.display === "flex") closePicker();
+    // the picker and the review window are src/shell.ts windows — they swallow their own Escape
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
@@ -1952,24 +1951,19 @@ function saveView() {
 }
 
 // --- directory picker ---
+// Re-hosted in the src/shell.ts window; it was a 520px .panel with a list and three buttons. Same
+// rows, same pins, same type-a-few-letters-then-Enter path — plus the detail pane that answers the
+// question the old picker structurally could not: what IS this folder. A RE-HOST rather than a
+// rewrite on purpose. PK_ICONS below is pinned by fleet-e2e-security.ts §7, and the row anatomy
+// (pin star, ⎇ badge, start ▸) was already the part that worked.
+//
+// One interaction DID change, and it is the platform-standard direction: a single click selects
+// (and the detail follows) instead of navigating. Navigating in is now double-click or Enter, as it
+// is in Finder, Explorer and VS Code. Single-click-to-navigate made a detail pane unreachable —
+// you could never rest on a folder long enough to read about it. It also drops a 250ms timer that
+// only existed to tell a first click from a double.
 let pickerSlot = 0;
-function closePicker() {
-  picker.style.display = "none";
-  pickerSlot = 0;
-}
-picker.addEventListener("click", (e) => {
-  if (e.target === picker) closePicker();
-});
-$("pkcancel").onclick = closePicker;
-$("pkstart").onclick = () => void startSession(pkPath.value);
-
-// type-to-filter + arrow-key selection over the row list — the picker opens on every
-// new session, so the common path must be "type a few letters, Enter" with no mouse
-const pkFilter = $("pkfilter") as HTMLInputElement;
-const pkHideWt = $("pkhidewt") as HTMLButtonElement;
-interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null; wt: boolean }
-let pkRows: PkRow[] = [];
-let pkSel = -1;
+let pkShell: Shell | null = null;
 let pkPins = new Set<string>(); // pinned paths, refreshed from /api/dirs on every browse()
 // worktree lanes clutter the picker (recents are mostly `*.worktrees/fleet-*`); hide them by
 // default. View-only pref, per device — kept in localStorage like the board/histall toggles.
@@ -1977,9 +1971,30 @@ let hideWorktrees = localStorage.getItem("fleet.hidewt") !== "0";
 // a path is a lane if it lives under (or is) a `.worktrees` dir — reliable, no false positives
 function isWtPath(p: string): boolean { return /\.worktrees(\/|$)/.test(p); }
 
+interface PkRow { row: HTMLElement; path: string; name: string; head: HTMLElement | null; wt: boolean }
+let pkRows: PkRow[] = [];
+// the window's own controls, rebuilt on every open (the window itself is created per open)
+let pkFilter: HTMLInputElement;
+let pkPathIn: HTMLInputElement;
+let pkCrumb: HTMLElement;
+let pkHideBtn: HTMLButtonElement;
+
+function closePicker() { pkShell?.close(); }
+
 // a row is out when the worktree toggle hides it (pkwt) OR the text filter excludes it (pkhide)
 function pkVisible(): PkRow[] {
   return pkRows.filter((r) => !r.row.classList.contains("pkhide") && !r.row.classList.contains("pkwt"));
+}
+
+// the shell walks the rows it was handed, so it must be handed only the ones actually on screen —
+// otherwise ↑/↓ stops on a row hidden by the filter or the lane toggle
+function pkSyncRows(select: number) {
+  const shell = pkShell;
+  if (!shell) return;
+  const vis = pkVisible();
+  shell.setRows(vis.map((r) => ({ el: r.row, open: () => void browse(r.path) })));
+  if (select >= 0 && vis.length) shell.select(Math.min(select, vis.length - 1));
+  else shell.select(-1, false, false);
 }
 
 // mark/unmark worktree rows, refresh section counts to match, then re-run the text filter
@@ -1992,19 +2007,8 @@ function applyWtHide() {
     if (!r.head || r.row.classList.contains("up")) continue;
     counts.set(r.head, (counts.get(r.head) ?? 0) + (r.row.classList.contains("pkwt") ? 0 : 1));
   }
-  for (const [head, n] of counts) { const b = head.querySelector(".pkheadn"); if (b) b.textContent = String(n); }
+  for (const [head, n] of counts) { const b = head.querySelector(".shellsecn"); if (b) b.textContent = String(n); }
   applyPkFilter();
-}
-
-function setPkSel(i: number) {
-  const vis = pkVisible();
-  pkSel = Math.max(-1, Math.min(i, vis.length - 1));
-  for (const r of pkRows) r.row.classList.remove("sel");
-  const cur = pkSel >= 0 ? vis[pkSel] : undefined;
-  if (cur) {
-    cur.row.classList.add("sel");
-    cur.row.scrollIntoView({ block: "nearest" });
-  }
 }
 
 function applyPkFilter() {
@@ -2018,50 +2022,14 @@ function applyPkFilter() {
     if (r.head) headHits.set(r.head, (headHits.get(r.head) ?? 0) + (shown ? 1 : 0));
   }
   for (const [head, n] of headHits) head.classList.toggle("pkhide", n === 0);
-  setPkSel(q ? 0 : -1); // filtering pre-selects the best match so Enter just works
+  pkSyncRows(q ? 0 : -1); // filtering pre-selects the best match so Enter just works
 }
 
-function pkKeyNav(e: KeyboardEvent): boolean {
-  if (e.key === "ArrowDown") { setPkSel(pkSel + 1); return true; }
-  if (e.key === "ArrowUp") { setPkSel(pkSel - 1); return true; }
-  if (e.key === "Home") { setPkSel(0); return true; }
-  if (e.key === "End") { setPkSel(pkVisible().length - 1); return true; }
-  return false;
-}
-// ⌘/Ctrl+D pins or unpins the selected row — bookmark convention, never pollutes filter text
-function pkPinKey(e: KeyboardEvent): boolean {
-  if (!(e.metaKey || e.ctrlKey) || (e.key !== "d" && e.key !== "D")) return false;
-  const target = pkSel >= 0 ? pkVisible()[pkSel] : undefined;
-  if (target) void togglePin(target.path);
-  return true;
-}
-pkFilter.addEventListener("input", applyPkFilter);
-pkFilter.addEventListener("keydown", (e) => {
-  if (pkPinKey(e)) { e.preventDefault(); return; }
-  if (pkKeyNav(e)) { e.preventDefault(); return; }
-  if (e.key !== "Enter") return;
-  e.preventDefault();
-  const target = pkSel >= 0 ? pkVisible()[pkSel] : undefined;
-  if (e.metaKey || e.ctrlKey) void startSession(target?.path ?? pkPath.value);
-  else if (target) void browse(target.path);
-});
 function renderHideWtBtn() {
-  pkHideWt.textContent = "⎇ hide lanes";
-  pkHideWt.classList.toggle("on", hideWorktrees);
-  pkHideWt.title = hideWorktrees ? "worktree lanes hidden — click to show them" : "click to hide worktree lanes";
+  pkHideBtn.textContent = "⎇ hide lanes";
+  pkHideBtn.classList.toggle("on", hideWorktrees);
+  pkHideBtn.title = hideWorktrees ? "worktree lanes hidden — click to show them" : "click to hide worktree lanes";
 }
-pkHideWt.onclick = () => {
-  hideWorktrees = !hideWorktrees;
-  localStorage.setItem("fleet.hidewt", hideWorktrees ? "1" : "0");
-  renderHideWtBtn();
-  applyWtHide();
-};
-pkPath.addEventListener("keydown", (e) => {
-  if (pkKeyNav(e)) { e.preventDefault(); return; }
-  if (e.key !== "Enter") return;
-  if (e.metaKey || e.ctrlKey) void startSession(pkPath.value);
-  else void browse(pkPath.value);
-});
 
 // crisp monochrome glyphs (stroke = currentColor, tinted per row-kind in CSS). Static markup,
 // no interpolated data — safe to set via innerHTML.
@@ -2104,11 +2072,14 @@ function dirRow(o: DirRowOpts): HTMLElement {
   // browse() replaces this row's DOM once its fetch resolves, and on a local server
   // that's fast enough to beat the second click of a real double-click, which would
   // then land on whatever row ends up in its place instead of this one.
-  let clickTimer: ReturnType<typeof setTimeout> | undefined;
+  // click 1 selects (the detail pane follows), click 2 navigates in. No timer: selecting is
+  // idempotent and replaces no DOM, so the first click of a double-click costs nothing to let
+  // through — which is exactly what forced the old 250ms reconciliation.
   row.onclick = (e) => {
-    clearTimeout(clickTimer);
-    if (e.detail >= 2) { void startSession(o.path); return; }
-    clickTimer = setTimeout(() => void browse(o.path), 250);
+    if (e.detail >= 2) { void browse(o.path); return; }
+    const i = pkVisible().findIndex((r) => r.row === row);
+    if (i >= 0) pkShell?.select(i, false, false);
+    void showDirDetail(o.path);
   };
   const use = el("span", "pkuse", "start ▸");
   use.onclick = (e) => {
@@ -2157,32 +2128,31 @@ async function browse(path: string): Promise<boolean> {
     | { path: string; parent: string | null; dirs: string[]; repos?: string[]; worktrees?: string[];
         recents: string[]; pins?: string[]; common: string[]; git?: boolean }
     | { error: string };
+  const shell = pkShell;
+  if (!shell) return false;
   if ("error" in data) {
-    pkPath.classList.add("bad");
-    setTimeout(() => pkPath.classList.remove("bad"), 1200);
+    pkPathIn.classList.add("bad");
+    setTimeout(() => pkPathIn.classList.remove("bad"), 1200);
     return false;
   }
-  pkPath.value = data.path;
-  pkPath.classList.remove("bad");
+  pkPathIn.value = data.path;
+  pkPathIn.classList.remove("bad");
   renderCrumb(data.path);
   pkPins = new Set(data.pins ?? []);
-  // the worktree action only makes sense inside a git repo
-  pkWorktreeBtn.style.display = data.git ? "" : "none";
   localStorage.setItem("fleet.pkdir", data.path); // next openPicker starts where you left off
-  pkLists.replaceChildren();
+  shell.list.replaceChildren();
   pkRows = [];
-  pkSel = -1;
   pkFilter.value = "";
   let head: HTMLElement | null = null;
   const addHead = (t: string, n?: number) => {
-    head = el("div", "pkhead");
-    head.appendChild(el("span", "pkheadt", t));
-    if (n !== undefined) head.appendChild(el("span", "pkheadn", String(n)));
-    pkLists.appendChild(head);
+    head = el("div", "shellsec");
+    head.appendChild(el("span", "shellsect", t));
+    if (n !== undefined) head.appendChild(el("span", "shellsecn", String(n)));
+    shell.list.appendChild(head);
   };
   const addRow = (o: DirRowOpts) => {
     const row = dirRow(o);
-    pkLists.appendChild(row);
+    shell.list.appendChild(row);
     pkRows.push({ row, path: o.path, name: `${o.label} ${o.sub ?? ""}`.toLowerCase(), head, wt: !!o.wt });
   };
   // full paths render as name-up-front + dimmed parent; a bare top-level dir (/tmp) still splits
@@ -2217,9 +2187,100 @@ async function browse(path: string): Promise<boolean> {
     label: d, path: `${data.path}/${d}`.replace("//", "/"), cls: "dir", icon: "folder",
     repo: repoSet.has(d), wt: wtSet.has(d) || d.endsWith(".worktrees"),
   });
-  if (!data.dirs.length) pkLists.appendChild(el("div", "pknone", "no subfolders here"));
+  if (!data.dirs.length) shell.list.appendChild(el("div", "pknone", "no subfolders here"));
   applyWtHide(); // honor the current "hide lanes" toggle for the freshly built rows
+  // the detail describes the folder you just navigated INTO until the cursor moves, so the pane is
+  // never empty and its actions always have an unambiguous target
+  void showDirDetail(data.path);
   return true;
+}
+
+// --- what the highlighted folder actually is (GET /api/dirinfo) ---
+// The old picker could say "this is a git repo" and nothing more, so telling two similarly-named
+// checkouts apart meant opening a session in one to find out.
+interface DirInfoResp {
+  path: string; exists: boolean; git: boolean; worktree?: boolean; branch?: string | null;
+  dirty?: number; ahead?: number | null; behind?: number | null;
+  last?: { hash: string; ts: number; subject: string } | null; lanes?: number; error?: string;
+}
+let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches it starts
+
+async function showDirDetail(path: string) {
+  const shell = pkShell;
+  if (!shell) return;
+  const seq = ++pkInfoSeq;
+  renderDirDetail(path, null);
+  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
+  if (!res || !shell.isOpen() || seq !== pkInfoSeq) return;
+  const info = (await res.json().catch(() => null)) as DirInfoResp | null;
+  if (!info || seq !== pkInfoSeq) return;
+  renderDirDetail(path, info);
+}
+
+function renderDirDetail(path: string, info: DirInfoResp | null) {
+  const shell = pkShell;
+  if (!shell) return;
+  shell.detail.replaceChildren();
+  shell.detail.appendChild(el("div", "rvhead", baseName(path)));
+  shell.detail.appendChild(el("div", "pkdpath", path.replace(/^\/Users\/[^/]+/, "~")));
+
+  // a slot already sitting in this folder is the single most useful thing to know before starting
+  // another one there — Fleet will happily open two sessions on the same tree
+  const open = fleet.filter((s) => s.cwd === path);
+  if (open.length) {
+    const who = open.map((s) => `slot ${s.id}${s.label ? ` (${s.label})` : ""}`).join(", ");
+    shell.detail.appendChild(el("div", "pkdwarn", `already open in ${who}`));
+  }
+
+  const acts = el("div", "pkdacts");
+  const start = el("button", "shrbtn primary", "Start session here") as HTMLButtonElement;
+  start.onclick = () => void startSession(path);
+  acts.appendChild(start);
+  if (info?.git && !info.worktree) {
+    const lane = el("button", "shrbtn", "⎇ New lane here") as HTMLButtonElement;
+    lane.title = "create a git worktree (lane) in this repo and open a session in it";
+    lane.onclick = () => void startWorktree(path);
+    acts.appendChild(lane);
+  }
+  shell.detail.appendChild(acts);
+
+  if (!info) { shell.detail.appendChild(el("div", "shellhint", "reading…")); return; }
+  if (info.error) { shell.detail.appendChild(el("div", "diffstat err", info.error)); return; }
+  if (!info.exists) {
+    shell.detail.appendChild(el("div", "diffstat err", "this folder no longer exists"));
+    return;
+  }
+  if (!info.git) {
+    shell.detail.appendChild(el("div", "shellhint",
+      "not a git repo — a session here works fine, there is just nothing to branch, diff or land"));
+    return;
+  }
+
+  const facts = el("div", "ocfacts");
+  facts.appendChild(chip(info.branch ?? "detached HEAD", info.branch ? "" : "warn"));
+  if (info.worktree) facts.appendChild(chip("⎇ this is a lane", "",
+    "a git worktree, not the primary checkout — Fleet lanes live in <repo>.worktrees/"));
+  facts.appendChild(info.dirty
+    ? chip(`${info.dirty} uncommitted`, "warn")
+    : chip("clean tree", "ok"));
+  // ABSENT is not zero: a branch with no upstream has nothing to be ahead OF, and rendering 0/0
+  // would state a comparison that was never made
+  if (typeof info.ahead === "number" && typeof info.behind === "number")
+    facts.appendChild(chip(`↑${info.ahead} ↓${info.behind}`, info.ahead ? "warn" : "",
+      "commits ahead of / behind the upstream branch"));
+  else facts.appendChild(chip("no upstream", "dim",
+    "this branch tracks nothing, so there is no ahead/behind to report — not a measured zero"));
+  if (info.lanes) facts.appendChild(chip(`${info.lanes} lane${info.lanes === 1 ? "" : "s"}`, "",
+    "Fleet worktrees forked from this repo, in <repo>.worktrees/"));
+  shell.detail.appendChild(facts);
+
+  if (info.last) {
+    shell.detail.appendChild(el("div", "shellsec")).appendChild(el("span", "shellsect", "Last commit"));
+    shell.detail.appendChild(el("div", "pkdlast", info.last.subject));
+    shell.detail.appendChild(el("div", "diffstat", `${info.last.hash} · ${fmtTs(info.last.ts)}`));
+  } else {
+    shell.detail.appendChild(el("div", "shellhint", "no commits yet in this repo"));
+  }
 }
 
 // pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
@@ -2229,7 +2290,7 @@ async function togglePin(path: string) {
   const data = (await res.json()) as { pins?: string[] };
   pkPins = new Set(data.pins ?? []);
   const keepFilter = pkFilter.value; // browse() clears it — restore so ⌘D-pin keeps your context
-  await browse(pkPath.value); // rebuild the Pinned section + star states from the new set
+  await browse(pkPathIn.value); // rebuild the Pinned section + star states from the new set
   if (keepFilter) { pkFilter.value = keepFilter; applyPkFilter(); }
 }
 
@@ -2238,8 +2299,8 @@ async function startSession(path: string) {
   const slot = pickerSlot;
   const res = await post(`/api/slots/${slot}/open`, { cwd: path });
   if (!res.ok) {
-    pkPath.classList.add("bad");
-    setTimeout(() => pkPath.classList.remove("bad"), 1200);
+    pkPathIn.classList.add("bad");
+    setTimeout(() => pkPathIn.classList.remove("bad"), 1200);
     return;
   }
   closePicker();
@@ -2247,8 +2308,6 @@ async function startSession(path: string) {
   showSlot(slot);
 }
 
-const pkWorktreeBtn = $("pkworktree") as HTMLButtonElement;
-pkWorktreeBtn.onclick = () => void startWorktree(pkPath.value);
 async function startWorktree(repo: string) {
   if (!pickerSlot) return;
   const slot = pickerSlot;
@@ -2257,8 +2316,8 @@ async function startWorktree(repo: string) {
   const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "" });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
-    pkPath.classList.add("bad");
-    setTimeout(() => pkPath.classList.remove("bad"), 1200);
+    pkPathIn.classList.add("bad");
+    setTimeout(() => pkPathIn.classList.remove("bad"), 1200);
     if (err.error) alert(`Lane failed: ${err.error}`);
     return;
   }
@@ -2269,10 +2328,66 @@ async function startWorktree(repo: string) {
 
 function openPicker(slotId: number) {
   setDrawer(false);
+  pkShell?.close();
   pickerSlot = slotId;
-  pkTitle.textContent = `New session — slot ${slotId}`;
+  const shell = openShell({
+    id: "picker",
+    title: `New session — slot ${slotId}`,
+    listWidth: 400,
+    onSelect: (row) => {
+      const hit = pkRows.find((r) => r.row === row.el);
+      if (hit) void showDirDetail(hit.path);
+    },
+    onClose: () => { pickerSlot = 0; pkShell = null; pkRows = []; },
+  });
+  pkShell = shell;
+
+  // --- the window's controls. Line 1 is the fast path (filter + lane toggle); the breadcrumb and
+  // the type-a-path box wrap onto line 2, where they are navigation rather than the common case.
+  pkFilter = el("input", "pkfilterin") as HTMLInputElement;
+  pkFilter.type = "text";
+  pkFilter.spellcheck = false;
+  pkFilter.autocomplete = "off";
+  pkFilter.placeholder = "filter — ↑↓ select · Enter open · ⌘Enter start · ⌘D pin";
+  pkHideBtn = el("button", "pktoggle") as HTMLButtonElement;
+  pkHideBtn.onclick = () => {
+    hideWorktrees = !hideWorktrees;
+    localStorage.setItem("fleet.hidewt", hideWorktrees ? "1" : "0");
+    renderHideWtBtn();
+    applyWtHide();
+  };
   renderHideWtBtn();
-  picker.style.display = "flex";
+  pkCrumb = el("div", "pkcrumb");
+  pkCrumb.setAttribute("aria-label", "current location");
+  pkPathIn = el("input", "pkpathin") as HTMLInputElement;
+  pkPathIn.type = "text";
+  pkPathIn.spellcheck = false;
+  pkPathIn.autocomplete = "off";
+  pkPathIn.placeholder = "or type a path";
+  const line2 = el("div", "pkline2");
+  line2.append(pkCrumb, pkPathIn);
+  shell.tools.append(pkFilter, pkHideBtn, line2);
+
+  pkFilter.addEventListener("input", applyPkFilter);
+  pkPathIn.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.metaKey || e.ctrlKey) return;
+    e.preventDefault();
+    void browse(pkPathIn.value);
+  });
+  // ⌘Enter starts, ⌘D pins. Both ride on the shell root: the shell skips modified Enter precisely
+  // so a view can claim it, and it never binds plain letters at all.
+  shell.root.addEventListener("keydown", (e) => {
+    const target = () => {
+      const i = shell.selectedIndex();
+      const vis = pkVisible();
+      return i >= 0 && vis[i] ? vis[i].path : pkPathIn.value;
+    };
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void startSession(target()); return; }
+    if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) { e.preventDefault(); void togglePin(target()); }
+  });
+
+  shell.foot.textContent = "click selects · double-click or Enter opens · ⌘Enter starts a session · ⌘D pins";
+
   const last = localStorage.getItem("fleet.pkdir") ?? "~";
   void browse(last).then(async (ok) => {
     if (!ok && last !== "~") await browse("~"); // remembered dir may have been deleted
@@ -2978,7 +3093,7 @@ async function openReview(slotId: number, initial: RvSource) {
       if (commits.capped) shell.list.appendChild(el("div", "shellhint", "…older commits not listed"));
     }
     shell.setRows(rows);
-    if (selIdx >= 0) shell.select(selIdx, false);
+    if (selIdx >= 0) shell.select(selIdx, false, false);
   }
 
   const renderTools = () => {

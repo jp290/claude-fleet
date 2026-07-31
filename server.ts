@@ -715,6 +715,63 @@ async function laneBaseRef(s: Slot): Promise<string | null> {
   const sha = await git(s.worktree.repo, "rev-parse", "HEAD");
   return sha.code === 0 && sha.out ? sha.out : null;
 }
+// --- the slot's commits, for the review window's left column ---
+// ONE list, used twice: the client renders it, and the per-commit diff route checks a requested
+// hash against it. That is deliberate — the membership check and the thing the user was offered
+// can never drift apart if they are the same computation.
+const MAX_COMMIT_ROWS = 200;
+interface SlotCommit { hash: string; ts: number; subject: string; stat: string }
+interface SlotCommits {
+  // WHICH commits these are. A lane has an unambiguous answer (its own, since the fork). A plain
+  // repo session has one only if the branch has an upstream. Without either there is no such thing
+  // as "this session's commits", so recent history is offered and LABELLED recent — the client
+  // words it differently, because "the last 30 commits in this repo" is not a statement about work
+  // done here and must never render as one.
+  scope: "lane" | "upstream" | "recent";
+  base: string | null;
+  branch: string | null;
+  commits: SlotCommit[];
+  capped: boolean;
+}
+// one `git log`, not one per commit: --shortstat appends the stat line to each entry, and the NUL
+// prefix in the format gives a record separator that cannot occur inside a subject or a stat line.
+async function commitRows(cwd: string, range: string | null): Promise<SlotCommit[] | null> {
+  const args = ["log", "--no-color", "-n", String(MAX_COMMIT_ROWS),
+    "--format=%x00%h%x09%ct%x09%s", "--shortstat"];
+  if (range) args.push(range);
+  const r = await gitRead(cwd, ...args);
+  if (r.code !== 0) return null; // an unresolvable range (no upstream) — the caller falls back
+  const out: SlotCommit[] = [];
+  for (const chunk of r.out.split("\0")) {
+    const lines = chunk.split("\n");
+    const [hash, ct, ...rest] = (lines[0] ?? "").split("\t");
+    if (!hash) continue;
+    const secs = Number(ct);
+    out.push({
+      hash, ts: Number.isFinite(secs) ? secs * 1000 : 0, subject: rest.join("\t"),
+      stat: lines.slice(1).map((l) => l.trim()).filter(Boolean).join(" "),
+    });
+  }
+  return out;
+}
+async function slotCommits(s: Slot): Promise<SlotCommits> {
+  const cwd = s.cwd!;
+  const capped = (rows: SlotCommit[]) => rows.length >= MAX_COMMIT_ROWS;
+  if (s.worktree) {
+    const base = await laneBaseRef(s);
+    // two-dot on purpose: the lane's OWN commits since the fork. (merge-diff uses three-dot
+    // because for `diff` that is what "since the merge-base" means; for `log` it is not.)
+    const rows = base ? await commitRows(cwd, `${base}..HEAD`) : null;
+    if (rows) return { scope: "lane", base, branch: s.worktree.branch, commits: rows, capped: capped(rows) };
+  }
+  const br = await gitRead(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+  const branch = br.code === 0 && br.out && br.out !== "HEAD" ? br.out : null;
+  const up = await commitRows(cwd, "@{upstream}..HEAD");
+  if (up) return { scope: "upstream", base: "@{upstream}", branch, commits: up, capped: capped(up) };
+  const recent = await commitRows(cwd, null);
+  return { scope: "recent", base: null, branch, commits: recent ?? [], capped: capped(recent ?? []) };
+}
+
 // the lane's fork point as an immutable COMMIT, resolved ONCE at create/attach time while the
 // fork is still the fork. `base` is a branch name by design (it must track the tip), but that
 // makes it useless AFTER a land: the integration branch has been advanced past the lane, so
@@ -6639,6 +6696,38 @@ Bun.serve<WSData>({
       const ns = await git(s.cwd, "diff", `${main}...HEAD`, "--name-only");
       return json({
         main, branch: s.worktree.branch,
+        files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
+        diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
+        truncated: diff.length > DIFF_CAP,
+      });
+    }
+    // the slot's commits, for the review window's left column. Until this existed the UI could
+    // show a lane's commit COUNT (the outcome feed) and its subjects as a destructive-action
+    // warning (worktreeRisk), but never as something to read — there was no route.
+    const clMatch = /^\/api\/slots\/(\d+)\/commits$/.exec(url.pathname);
+    if (req.method === "GET" && clMatch) {
+      const s = slotFrom(clMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      return json(await slotCommits(s));
+    }
+    // one commit's diff. The hash MUST be one this slot's own commit list just offered: the range
+    // is recomputed here and membership checked, so the route can never be steered into showing an
+    // arbitrary object in the repo (or, via a crafted rev, one outside it).
+    const cdMatch = /^\/api\/slots\/(\d+)\/commit-diff$/.exec(url.pathname);
+    if (req.method === "GET" && cdMatch) {
+      const s = slotFrom(cdMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const hash = url.searchParams.get("hash") ?? "";
+      if (!/^[0-9a-f]{4,40}$/.test(hash)) return json({ error: "bad hash" }, 400);
+      const listed = await slotCommits(s);
+      if (!listed.commits.some((c) => c.hash === hash)) return json({ error: "not a commit of this slot" }, 404);
+      // --format= empties the header: the client already has subject/author/date from the list,
+      // and a merge commit legitimately yields no textual diff here (rendered as such, not as empty)
+      const d = await gitRead(s.cwd, "show", "--no-color", "--format=", hash);
+      const diff = d.code === 0 ? d.out : "";
+      const ns = await gitRead(s.cwd, "show", "--no-color", "--format=", "--name-only", hash);
+      return json({
+        hash,
         files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
         diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
         truncated: diff.length > DIFF_CAP,

@@ -215,7 +215,7 @@
   .slot .lanediff:hover { color: #bfe6ff; }
   .slot .diff { flex: none; font-size: 12px; color: #666; cursor: pointer; }
   .slot .diff:hover { color: #7dcfff; }
-  #diffpanel, #queuepanel { max-width: 900px; width: 92vw; }
+  #queuepanel { max-width: 900px; width: 92vw; }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
   .riskpanel { gap: 8px; }
@@ -279,6 +279,84 @@
   .panel { width: 520px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column;
     background: #1d1d1d; border: 1px solid #333; border-radius: 14px; padding: 16px; gap: 10px; }
   .panel h2 { font-size: 13px; color: #e8e8e8; }
+
+  /* --- the browse-and-inspect window (src/shell.ts) ---------------------------------------
+     A list on the left, the selected thing rendered in full on the right. Four surfaces share
+     it — diff/commit review, project picker, task queue, outcome feed — which is why it is a
+     window rather than another .panel: all four were a single scrolling column inside a 520–900px
+     box, and all four had to truncate what they showed to fit it. Row and section classes live
+     here too, because every view builds the same two shapes into .shelllist. */
+  .shellwin { display: flex; flex-direction: column; overflow: hidden;
+    width: min(1400px, 95vw); height: min(880px, 92vh);
+    background: #1d1d1d; border: 1px solid #333; border-radius: 14px; }
+  .shellhead { flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 11px 13px; border-bottom: 1px solid #2a2a2a; }
+  .shellback { display: none; }  /* mobile-only: the detail pane is a pushed screen there */
+  .shelltitles { flex: 1; min-width: 0; }
+  .shelltitles h2 { font-size: 13px; color: #e8e8e8; }
+  .shellsub { font-size: 11.5px; color: #888; margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shellsub:empty { display: none; }
+  .shellclose { flex: none; width: 28px; height: 28px; border-radius: 8px; border: 1px solid #333;
+    background: #262626; color: #888; font-size: 12px; font-family: inherit; cursor: pointer; }
+  .shellclose:hover { color: #ccc; }
+  .shelltools { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 9px 13px; border-bottom: 1px solid #2a2a2a; }
+  .shelltools:empty { display: none; }
+  .shellbody { flex: 1; min-height: 0; display: flex; }
+  .shelllist { flex: none; width: var(--shell-list-w, 320px); overflow-y: auto;
+    border-right: 1px solid #2a2a2a; padding: 7px; display: flex; flex-direction: column; gap: 1px; }
+  .shelldetail { flex: 1; min-width: 0; overflow: auto; padding: 12px 14px; }
+  .shellfoot { flex: none; padding: 8px 13px; border-top: 1px solid #2a2a2a;
+    color: #666; font-size: 11px; line-height: 1.5; }
+  .shellfoot:empty { display: none; }
+  .shellhint { color: #666; font-size: 12px; padding: 10px 2px; line-height: 1.5; }
+
+  /* section header inside the list — same vocabulary as the picker's .pkhead it replaces */
+  .shellsec { display: flex; align-items: center; gap: 7px; padding: 10px 6px 4px; }
+  .shellsec:first-child { padding-top: 2px; }
+  .shellsect { font-size: 10px; color: #6a6a6a; text-transform: uppercase; letter-spacing: 0.07em;
+    font-weight: 600; }
+  .shellsecn { font-size: 10px; color: #666; background: #232323; border-radius: 20px; padding: 1px 7px; }
+  .shellrow { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 7px;
+    cursor: pointer; min-width: 0; }
+  .shellrow:hover { background: #262626; }
+  .shellrow.sel { background: #2c3a5e; }
+  .shellrow .shrmain { flex: 1; min-width: 0; }
+  .shellrow .shrname { font-size: 12.5px; color: #ddd; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .shellrow .shrsub { font-size: 10.5px; color: #6f6f6f; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; margin-top: 1px; }
+  .shellrow.sel .shrsub { color: #9aa7c7; }
+
+  /* review window: per-row +/− counts, and the diff filling the detail pane instead of sitting
+     in its own 60vh scroller (the pane already scrolls — two nested scrollers is the bug that
+     made the old overlay feel like a keyhole) */
+  .shrdelta { flex: none; font: 10.5px ui-monospace, Menlo, Consolas, monospace; }
+  .shrdelta .a { color: #9ece6a; } .shrdelta .d { color: #f7768e; margin-left: 5px; }
+  .rvhead { font-size: 12.5px; color: #e8e8e8; font-weight: 600; margin-bottom: 2px; }
+  /* the file line under a commit heading — which file of that commit you are looking at */
+  .rvsub { color: #9aa7c7; font-size: 11.5px; margin: 4px 0 10px;
+    font-family: ui-monospace, Menlo, Consolas, monospace; }
+  /* the commit a selected file belongs to: context, not selection — dimmer than .sel on purpose */
+  .shellrow.ctx { background: #232a3a; }
+  .shelldetail .difftxt { max-height: none; border: none; background: none; padding: 0; overflow: visible; }
+  .diffstat.err { color: #f7768e; }
+
+  /* condition MUST match MOBILE_MQ in src/client.ts and src/shell.ts */
+  @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+    .shell { align-items: stretch; justify-content: stretch; }
+    .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh);
+      border: none; border-radius: 0; padding-top: env(safe-area-inset-top); }
+    .shelllist { width: 100%; border-right: none; }
+    .shelldetail { display: none; }
+    .shell.detailmode .shelllist { display: none; }
+    .shell.detailmode .shelldetail { display: block; }
+    .shell.detailmode .shellback { display: block; flex: none; width: 34px; height: 30px;
+      border-radius: 8px; border: 1px solid #333; background: #262626; color: #ccc;
+      font-size: 16px; font-family: inherit; cursor: pointer; }
+  }
+
   #pkpathrow { display: flex; gap: 7px; }
   #pkpath { flex: 1; height: 38px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
     background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
@@ -891,10 +969,6 @@
     <h2 id="histtitle">Prompt history</h2>
     <div id="histlist"></div>
   </div>
-</div>
-
-<div id="diffdlg" class="overlay">
-  <div class="panel" id="diffpanel"></div>
 </div>
 
 <div id="queuedlg" class="overlay">

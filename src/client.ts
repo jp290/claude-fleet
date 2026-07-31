@@ -1849,7 +1849,6 @@ window.addEventListener("keydown", (e) => {
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
     if (audit.style.display === "flex") closeAudit();
-    if (outcomes.style.display === "flex") closeOutcomes();
     setDrawer(false);
   }
 });
@@ -3570,7 +3569,9 @@ const DISPO_WORD_UI: Record<DispositionVerdict, string> = {
 //   · `sessionMs` is the lane's LIFETIME, not work time — labelled as such, never as effort.
 //   · `↩ undo` is one-step (only the newest land is undoable), so it is deliberately NOT offered
 //     per row; the board's single undo button stays the only affordance.
-const outcomes = $("outcomes"), outcomepanel = $("outcomepanel");
+let ocShell: Shell | null = null;
+let ocPick: string | null = null;              // landRef() of the selected outcome
+let ocRowOf = new Map<HTMLElement, OutcomeRow>(); // which outcome a list row stands for
 // Every field optional: this parses ROWS ON DISK, written by older server builds. The renderer
 // distinguishes absent from present-and-empty everywhere it matters, so nothing may be defaulted in.
 interface OutcomeReviewRow { state?: string; at?: number; model?: string; head?: string | null;
@@ -3712,7 +3713,9 @@ let outcomeDispo: string | "all" = "all";
 let outcomeUncovered = false; // the gap-3 question: which rows landed without ③ having covered them
 
 function renderOutcomes() {
-  outcomepanel.replaceChildren(el("h2", "", "Outcome feed — what landed, and what review said"));
+  const shell = ocShell;
+  if (!shell) return;
+  shell.tools.replaceChildren();
   const ctl = el("div", "auditctl");
   const dispos = [...new Set(outcomeData.map((o) => o.disposition).filter((d): d is string => !!d))].sort();
   const sel = el("select", "") as HTMLSelectElement;
@@ -3735,7 +3738,7 @@ function renderOutcomes() {
   ctl.appendChild(el("span", "auditcount",
     (capped ? `latest ${outcomeData.length} of ${outcomeTotal} rows` : `${outcomeData.length} rows`)
     + tornNote(outcomeMalformed)));
-  outcomepanel.appendChild(ctl);
+  shell.tools.appendChild(ctl);
 
   // the coverage tally — the whole reason the feed exists. Counted over ALL loaded rows, not the
   // filtered view, so narrowing the list never changes the number the tally reports.
@@ -3745,7 +3748,7 @@ function renderOutcomes() {
   tal.appendChild(el("span", "", "③ coverage:"));
   for (const k of ["covered", "superseded", "inflight", "none", "unmeasured"] as RvRel[])
     tal.appendChild(chip(`${tally[k]} ${k}`, `rel-${k}`, REL_WORD[k]));
-  outcomepanel.appendChild(tal);
+  shell.tools.appendChild(tal);
 
   // criteria progress — counted over ALL loaded rows like the tally above, never the filtered view.
   // No rows at all ⇒ no header: an empty ledger has nothing to say, and "0/20" would state a
@@ -3787,24 +3790,62 @@ function renderOutcomes() {
       "graduation-criteria §2 — recorded ② shadow verdicts, counted across the whole ledger. A row"
       + " whose shadow verdict is null (the reviewer produced no explicit verdict) is a failed"
       + " measurement and does not count."));
-    outcomepanel.appendChild(kel);
+    shell.tools.appendChild(kel);
   }
 
   const rows = outcomeData.filter((o) =>
     (outcomeDispo === "all" || o.disposition === outcomeDispo)
     && (!outcomeUncovered || reviewRel(o) !== "covered"));
-  const list = el("div", "");
-  list.id = "outcomelist";
-  if (!rows.length) list.appendChild(el("div", "histnone", "no outcomes match this filter"));
+  // the LIST is the index: when, what happened, to which branch, and whether ③ described it. Every
+  // fact the row used to carry is still rendered in full — in the detail pane, one outcome at a
+  // time, which is what the density of these rows was always fighting.
+  shell.list.replaceChildren();
+  const shRows: ShellRow[] = [];
+  let selIdx = -1;
+  if (!rows.length) shell.list.appendChild(el("div", "histnone", "no outcomes match this filter"));
   for (const o of rows) {
+    const ref = landRef(o);
+    const dispo = o.disposition ?? "unknown";
+    const r = el("div", `shellrow dis-${dispo}`);
+    const m = el("div", "shrmain");
+    const nm = el("div", "shrname");
+    nm.appendChild(el("span", "ocdispo", DISPO_WORD[dispo] ?? dispo));
+    nm.appendChild(el("span", "ocbranch", (o.branch ?? "(branch not recorded)").replace(/^fleet\//, "")));
+    m.appendChild(nm);
+    m.appendChild(el("div", "shrsub", `${fmtTs(o.ts)}${o.shortstat ? ` · ${o.shortstat}` : ""}`));
+    r.appendChild(m);
+    // the coverage relation is the one fact worth carrying in the index — it is what the feed is for
+    r.appendChild(chip(reviewRel(o) === "covered" ? "③" : "·", `rel-${reviewRel(o)}`, REL_WORD[reviewRel(o)]));
+    const act = () => { ocPick = ref; renderOutcomes(); renderOutcomeDetail(o); shell.showDetail(true); };
+    r.onclick = act;
+    shell.list.appendChild(r);
+    if (ref === ocPick) { r.classList.add("sel"); selIdx = shRows.length; }
+    ocRowOf.set(r, o);
+    shRows.push({ el: r, open: act });
+  }
+  shell.setRows(shRows);
+  if (selIdx >= 0) shell.select(selIdx, false, false);
+}
+
+// Everything the feed knows about ONE outcome. Moved here verbatim from the row renderer: every
+// honesty constraint below is asserted by e2e/outcomes.ts as SOURCE TEXT — absent ≠ false for
+// confirmedByHuman / resolvedConflict / repairRounds, an absent briefHash never rendering as an
+// identity two rows share, an unlabeled row never defaulting to a verdict. Those checks work by
+// slicing this file between two landmark statements in the landed-chips block below, so the WORDING
+// here is a contract, and this comment must not restate those landmarks literally: an earlier draft
+// did, indexOf() matched the comment instead of the code, and four checks silently went vacuous.
+function renderOutcomeDetail(o: OutcomeRow) {
+  const shell = ocShell;
+  if (!shell) return;
+  shell.detail.replaceChildren();
+  {
     const rel = reviewRel(o);
     const dispo = o.disposition ?? "unknown";
-    const row = el("div", `ocrow dis-${dispo}`);
+    const row = shell.detail;
     const hd = el("div", "ochd");
     hd.appendChild(el("span", "aud-ts", fmtTs(o.ts)));
     hd.appendChild(el("span", "ocdispo", DISPO_WORD[dispo] ?? dispo));
     hd.appendChild(el("span", "ocbranch", (o.branch ?? "(branch not recorded)").replace(/^fleet\//, "")));
-    list.appendChild(row);
     row.appendChild(hd);
 
     const facts = el("div", "ocfacts");
@@ -3901,25 +3942,37 @@ function renderOutcomes() {
       b.title = title;
       b.onclick = async () => {
         b.disabled = true;
-        if (await labelDisposition("land", ref, verdict)) renderOutcomes();
+        if (await labelDisposition("land", ref, verdict)) { renderOutcomes(); renderOutcomeDetail(o); }
         else b.disabled = false;
       };
       lab.appendChild(b);
     }
     row.appendChild(lab);
   }
-  outcomepanel.appendChild(list);
-  outcomepanel.appendChild(el("div", "ochint",
-    "↩ undo is one step — only the newest land can be reverted, from the board. It is deliberately"
-    + " not offered per row here: rendering it on every row would imply a capability the land spine"
-    + " does not have."));
 }
 
 async function openOutcomes() {
   setDrawer(false);
+  ocShell?.close();
   outcomeDispo = "all";
   outcomeUncovered = false;
   outcomeData = [];
+  ocPick = null;
+  ocRowOf = new Map();
+  const shell = openShell({
+    id: "outcomes",
+    title: "Outcome feed — what landed, and what review said",
+    listWidth: 340,
+    detailHint: "Pick an outcome to see its footprint, its verify verdict, what ③ said about it,"
+      + " and to label it.",
+    onSelect: (row) => { const o = ocRowOf.get(row.el); if (o) { ocPick = landRef(o); renderOutcomeDetail(o); } },
+    onClose: () => { ocShell = null; ocRowOf = new Map(); },
+  });
+  ocShell = shell;
+  shell.foot.textContent = "↩ undo is one step — only the newest land can be reverted, from the"
+    + " board. It is deliberately not offered per row here: rendering it on every row would imply a"
+    + " capability the land spine does not have.";
+  renderOutcomes(); // empty until the fetch lands, so the window opens instantly
   await loadDispositions(); // labels before rows: a row must never render for an instant as unlabeled when it is not
   const res = await api("/api/lane-outcomes?limit=1000");
   if (res.ok) {
@@ -3928,11 +3981,8 @@ async function openOutcomes() {
     outcomeTotal = typeof data.total === "number" ? data.total : outcomeData.length;
     outcomeMalformed = typeof data.malformed === "number" ? data.malformed : 0;
   }
-  renderOutcomes(); // server already returns newest-first; we preserve that order
-  outcomes.style.display = "flex";
+  if (shell.isOpen()) renderOutcomes(); // server already returns newest-first; we preserve that order
 }
-function closeOutcomes() { outcomes.style.display = "none"; }
-outcomes.addEventListener("click", (e) => { if (e.target === outcomes) closeOutcomes(); });
 $("outcomebtn").onclick = () => void openOutcomes();
 
 function copyLine(label: string, value: string): HTMLElement {

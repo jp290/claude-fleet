@@ -483,7 +483,14 @@
   /* outcome feed — the lane-outcome ledger rendered (docs/perception-layer.md §6).
      Reuses the audit overlay's control row (.auditctl) and the board's finding rows (.bfind*)
      rather than growing a second vocabulary for the same two things. */
-  #outcomepanel { max-width: 820px; width: 94vw; }
+  /* outcome list rows: the disposition word + branch on one line, time + shortstat under it. The
+     left accent is the disposition, so the index scans by outcome kind without reading. */
+  .shellrow .ocdispo { margin-right: 7px; }
+  .shellrow.dis-landed { border-left: 3px solid #9ece6a; }
+  .shellrow.dis-reverted { border-left: 3px solid #f7768e; }
+  .shellrow.dis-shelved { border-left: 3px solid #7aa2f7; }
+  .shellrow.dis-killed-dirty { border-left: 3px solid #e0af68; }
+  .shellrow.dis-killed-empty { border-left: 3px solid #444; }
   #outcomelist { flex: 1; min-height: 90px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   .octally { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 10.5px;
     color: #888; margin-bottom: 6px; }
@@ -966,10 +973,6 @@
 
 <div id="audit" class="overlay">
   <div class="panel" id="auditpanel"></div>
-</div>
-
-<div id="outcomes" class="overlay">
-  <div class="panel" id="outcomepanel"></div>
 </div>
 
 <div id="gate" class="overlay">

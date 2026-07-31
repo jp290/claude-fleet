@@ -41,8 +41,12 @@ type Control = "chat" | "brief";
 export interface Hint {
   /** A CSS selector for a piece of UI CHROME — "#slots", "#board", "#board .bsec:first-child".
    *  Never a terminal row, and never the recording itself: nothing is drawn into the recording,
-   *  so a visitor can always tell what the session did from what we wrote beside it. */
-  anchor: string;
+   *  so a visitor can always tell what the session did from what we wrote beside it.
+   *  A function when the ELEMENT differs by device, for the same reason `text` may be one: the
+   *  sidebar is a column on a desktop and a drawer behind ☰ on a phone, so a label about the list
+   *  of sessions has to point at the list in one case and at the handle in the other. Anchored to
+   *  the column alone it simply vanished on a phone — correct by the rule below, and useless. */
+  anchor: string | (() => string);
   /** Half a sentence, German. It says the POINT or the ACTION; it does not repeat the narration.
    *  A function when the sentence depends on the device — the key that starts the replay is Enter
    *  on a desktop and ➤ on a phone (src/client.ts:3856), so one fixed string would be wrong on one
@@ -237,10 +241,21 @@ const CHAPTERS: Chapter[] = [
       // Beside it, the label sits in the page margin the bounded app leaves free — which is where
       // PLAN §4 wanted our writing in the first place. placeHint() falls back along the recording
       // where no side margin exists, so the phone is not left pointing at nothing.
+      // "die Aufnahme" was the demo's word, not the visitor's, and it did not say WHERE the thing
+      // would happen. Naming the slot ties the key to the session he is looking at — which is also
+      // what makes it true after he has clicked a different row, since every session now waits for
+      // the same press.
       { anchor: "#input", place: "left", at: 0, until: 1, cta: true,
         text: () => (MOBILE.matches
-          ? "Tipp auf ➤ — dann läuft die Aufnahme los."
-          : "Drück Enter — dann läuft die Aufnahme los.") },
+          ? "Tipp auf ➤ — dann startet die Demo-Sitzung in diesem Slot."
+          : "Drück Enter — dann startet die Demo-Sitzung in diesem Slot.") },
+      // The sidebar needs naming before "in diesem Slot" means anything: a visitor who has never
+      // seen this app does not know that the column on the left IS the list of sessions, so the
+      // label above it says so once, while the page is still waiting for him.
+      { anchor: () => (MOBILE.matches ? "#menu" : "#slots"), place: "above", at: 0, until: 1,
+        text: () => (MOBILE.matches
+          ? "Hinter ☰ liegen fünf aufgezeichnete Sitzungen — jede in einem eigenen Projekt."
+          : "Links stehen fünf aufgezeichnete Sitzungen — jede in einem eigenen Projekt.") },
       // 223 is the picture at which frame 2062 lands (151 in the first range, then 72 into the
       // second), i.e. the moment both commits stand in the terminal. The label says the POINT, not
       // where things are: a half-sentence that locates ("die Zahlen dazu stehen hier") only helps
@@ -391,7 +406,7 @@ function exhibits(): DOMRect[] {
 }
 
 function placeHint(el: HTMLElement, h: Hint): void {
-  const a = document.querySelector(h.anchor);
+  const a = document.querySelector(typeof h.anchor === "function" ? h.anchor() : h.anchor);
   const r = a instanceof HTMLElement ? a.getBoundingClientRect() : null;
   if (!r || !onScreen(r)) { el.classList.add("hid"); return; }
   const b = el.getBoundingClientRect();

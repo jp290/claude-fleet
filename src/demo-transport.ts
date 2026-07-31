@@ -214,6 +214,23 @@ const seq = (s: string): ArrayBuffer => enc.encode(s).buffer as ArrayBuffer;
 // that each stream starts mid-screen (the boot banner had already been drawn when recording
 // began), so the terminal is cleared before the first recorded byte lands.
 const CLEAR = seq("\x1b[H\x1b[2J\x1b[3J");
+// SCROLLING BACK USED TO BE IMPOSSIBLE, and it was this file's doing rather than the recording's.
+// The client gives every pane 50 000 lines of scrollback (src/client.ts:235) and the excerpt threw
+// all of it away: CLEAR carries \x1b[3J, which erases the scrollback buffer itself, and it ran
+// before every range — and the card between ranges wiped it a second time. Measured before the fix:
+// the viewport reported scrollHeight 392 against clientHeight 392, i.e. nothing above the fold at
+// all. A visitor who wanted to read back what he had just watched could not.
+// So a range boundary now SCROLLS the old screen away instead of deleting it: park the cursor on
+// the last row, push `rows` newlines (every one of them moves a line into the scrollback), then
+// blank the visible screen. \x1b[3J is gone from everything except the very first clear, where
+// there is genuinely nothing worth keeping — the stream starts mid-screen.
+// The pleasant part is that the cards go into the scrollback too, in their place between the
+// ranges. Scrolled back, the demo reads: first range, "── knapp vier Minuten später ──", second
+// range, "── eine halbe Minute später ──", third range. The cut stays MARKED where it happened
+// instead of being a claim made once and then gone, which is what PLAN §2's "sichtbar markiert,
+// nicht still" was actually asking for.
+const scrollAway = (): ArrayBuffer =>
+  seq(`\x1b[999;1H${"\r\n".repeat(REC.rows)}\x1b[H\x1b[2J`);
 const FINISHED = seq(
   "\r\n\x1b[2m── replay finished — this session's recording ends here. ↻ (top right of the pane) replays it. ──\x1b[0m\r\n",
 );
@@ -238,7 +255,9 @@ const GAP_MS = 1800;
 const gapCard = (text: string): ArrayBuffer => {
   const line = `── ${text} ──`;
   const pad = " ".repeat(Math.max(0, Math.floor((REC.cols - [...line].length) / 2)));
-  return seq(`\x1b[H\x1b[2J\x1b[3J${"\r\n".repeat(Math.max(0, (REC.rows >> 1) - 1))}${pad}\x1b[1m\x1b[38;2;210;153;34m${line}\x1b[0m`);
+  // No clear of its own any more: the caller has just scrolled the previous range away and left a
+  // blank screen, and a \x1b[3J here would delete the very scrollback that scroll just built.
+  return seq(`${"\r\n".repeat(Math.max(0, (REC.rows >> 1) - 1))}${pad}\x1b[1m\x1b[38;2;210;153;34m${line}\x1b[0m`);
 };
 
 let manifestOnce: Promise<DemoManifest> | null = null;
@@ -400,6 +419,7 @@ class DemoSocket {
       // standing for its full frame time instead of being wiped a moment early.
       const gap = s > 0 ? this.cut?.gaps?.[s - 1] : undefined;
       if (gap) {
+        this.emit(scrollAway()); // the range just played moves up into the scrollback, not into nothing
         this.emit(gapCard(gap));
         await this.park(GAP_MS);
         if (this.stopped) return;
@@ -408,10 +428,13 @@ class DemoSocket {
       const from = Math.min(Math.max(0, span.from), all.length);
       const to = Math.min(Math.max(from, span.to ?? all.length), all.length);
       const frames = all.slice(from, to);
-      // Clearing first is the same argument as at the start of a stream, and it binds harder for an
-      // excerpt: frame `from` is a repaint that assumes whatever the frames before it drew, so
-      // without a clear the range would start on top of a screen that belongs to another moment.
-      this.emit(CLEAR);
+      // Starting on a blank screen is the same argument as at the start of a stream, and it binds
+      // harder for an excerpt: frame `from` is a repaint that assumes whatever the frames before it
+      // drew, so beginning on top of a screen that belongs to another moment would render garbage.
+      // BLANK, THOUGH — not erased. Only the first range wipes the scrollback with it; every later
+      // one scrolls what is on screen (the card, or the previous range if a gap was not declared)
+      // up out of the way, so the visitor can still read back everything he was shown.
+      this.emit(s === 0 ? CLEAR : scrollAway());
       const target = Math.max(1000, (span.secs ?? TARGET_MS / 1000) * 1000);
       const frameMs = Math.min(MAX_FRAME_MS,
         Math.max(MIN_FRAME_MS, Math.round(target / Math.max(1, frames.length))));

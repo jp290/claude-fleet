@@ -188,11 +188,35 @@ const CHAPTERS: Chapter[] = [
       // excerpt would have kept running at 12.1 s and 7.2 s while the source claimed otherwise.
       // ~39 s including the card between them, which is also where PLAN §2 put this step before any
       // of it was built ("zusammen etwa 35 s"). The shipped 12.8 s was the accident.
-      spans: [{ from: 0, to: 151, secs: 17 }, { from: 1990, to: 2080, secs: 20 }],
-      // Read off the session's own two timers above — 12s and 4m 44s — and not from the recording's
-      // total. PLAN §2b proposed "gut fünf Minuten" from the `Cogitated for 5m 8s` the session
-      // prints at frame 2119; that is the whole run, while what this card skips is 4m 32s of it.
-      gaps: ["gut viereinhalb Minuten später"],
+      // A THIRD RANGE, FROM THE MIDDLE NOBODY HAD LOOKED AT. Owner, 31.07.: could more text fit in
+      // the terminal? Measured rather than guessed — of the 1839 frames between the two ends, 58 are
+      // larger than 400 B, and they fall into 26 blocks of real output. One of them is the best
+      // material in the recording and was being thrown away whole:
+      //
+      //   1672  bun test v1.3.9 — 16 pass
+      //   1738  "All 16 pass. Verifying they can actually fail — two mutations of src/md.ts:"
+      //   1772  --- mutation 1: no inline pass --- 8 pass 8 fail
+      //
+      // The session writes a test, runs it, and then breaks its own source ON PURPOSE to prove the
+      // test would have caught the bug. That is the difference between work that passes and work
+      // that is checked, it is recorded and true, and no sentence we could write beside the terminal
+      // would carry it half as well as watching it happen. 1795 ends after the mutation result and
+      // before the next block starts at 1802.
+      spans: [
+        { from: 0, to: 151, secs: 12 },
+        { from: 1665, to: 1795, secs: 13 },
+        { from: 1990, to: 2080, secs: 18 },
+      ],
+      // BOTH NUMBERS ARE THE SESSION'S OWN CLOCK, read off the rendered screen at the last picture
+      // before each card and the first one after it — the spinner writes its digits into fixed
+      // columns, so the bytes of a single frame do not carry the number and only the rendered
+      // terminal can be asked. PLAN §2b's "gut fünf Minuten" came from the `Cogitated for 5m 8s` at
+      // frame 2119; that is the whole run, not either of these gaps.
+      // MEASURED ON THE RENDERED SCREEN, and the first drafts of both were wrong — which is the
+      // whole reason they are measured. Card 1: last clock before it 12s, first after it 3m 58s, so
+      // 3:46 — "gut dreieinhalb" undersold it by sixteen seconds. Card 2: 4m 16s to 4m 44s, so 28
+      // seconds — "eine gute Minute" was not a rounding, it was more than double.
+      gaps: ["knapp vier Minuten später", "eine halbe Minute später"],
       hold: true,
     },
     briefAfter: 2062,
@@ -234,7 +258,15 @@ const CHAPTERS: Chapter[] = [
       // present-tense sentence there reads as a promise about something the visitor is still waiting
       // for. "Niemand hat das eingetragen" is deliberately not here — see the note above on the cold
       // reader, who read exactly that shape as the one sentence trying to impress him.
-      { anchor: "#board", place: "right", at: 223,
+      // PICTURE 224, not a frame number: `at` counts pictures shown across the whole excerpt, so the
+      // middle range shifts everything after it. 151 pictures in the first range, then 1738-1665=73
+      // into the second — the moment "Verifying they can actually fail" is on screen — and it holds
+      // to the end of that range (picture 281).
+      { anchor: "#panes", place: "left", at: 224, until: 281,
+        text: "Sie prüft ihren eigenen Test: macht den Code absichtlich kaputt und sieht nach, "
+          + "ob er das merkt." },
+      // 353: 151 + 130 pictures in the two ranges before it, then 2062-1990=72 into the last.
+      { anchor: "#board", place: "right", at: 353,
         text: "Fleet hat mitgeschrieben: beide Arbeitsschritte, jede geänderte Datei." },
       // The third label pointed at "Weiter" and went with step 2. There is nowhere to send the
       // visitor on now, and a sign to a door that is not there is worse than no sign.

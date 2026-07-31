@@ -76,12 +76,18 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # ordered cheapest-first so the gate fails fast.
 # ./e2e-security.sh IS in the chain (§8 Step 2b): it graduated after its burn-in, and this comment
 # claimed the opposite until 2026-07-28, having outlived the change by weeks.
+# demo/src/demo.ts joined the tsc list on 2026-07-31, and it is the ENTRY of the public demo, so
+# typechecking it covers the transport, the chapter and the excerpts behind it. It was outside every
+# gate until then: the demo imports src/client.ts and derives its page from public/index.html, so a
+# change to either can break it — and nothing would have said so until somebody happened to run
+# `bun run build:demo`. No suite stages the demo (e2e-stage.sh copies an import closure and nothing
+# in the app imports it), which is exactly why the type check is the one place it can be caught.
 # The exclusion clause is LAST in this block by convention, because that is how the pins step reads
 # it: everything after "NOT here:" is taken as denied, and a denied suite that the line below runs
 # fails the gate. Keep it last, and keep it to suite names.
 # NOT here: ./e2e-isolated.sh (§5 — measurably non-deterministic under load, which is why it is
 # tier 2 AFTER the land, not a gate).
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts demo/src/demo.ts && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 # --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------

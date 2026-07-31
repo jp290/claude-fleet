@@ -1,10 +1,12 @@
 # demo/fixtures — the recorded sessions, and the four traps in re-using them
 
-`demo/fixtures/` holds four raw `pipe-pane` streams from four real Claude Code sessions
-(`f010709`, 2026-07-30), recorded for the public replay demo. Session B builds the player,
-session C embeds it. This doc exists because four things about those bytes are **not
-derivable from them**, and getting any of the four wrong is either a privacy incident or a
-garbled replay.
+`demo/fixtures/` holds five raw `pipe-pane` streams from real Claude Code sessions, recorded for
+the public replay demo: `s1.raw`, `s3.raw` and `s4.raw` from 2026-07-30 (`bd3256a` — the earlier
+`f010709`/`57c5ce4` were rewritten before anything was pushed and are orphaned, so do not chase
+them), plus `lane.raw` and `project.raw` from a single 2026-07-31 sitting with two panes
+(`cd8ae5b`). A sixth, `s2.raw`, was deleted with the 2×2 grid it existed for (`8426ce5`). This doc
+exists because four things about those bytes are **not derivable from them**, and getting any of
+the four wrong is either a privacy incident or a garbled replay.
 
 Everything else is already written where it belongs: what each session did is in the commit
 body, the per-slot metadata is in `slots.json`.
@@ -29,10 +31,12 @@ pane reproduces the live session's final screen.
 
 Claude Code's boot banner prints the account's org line, which is an **email address**. It
 is redrawn on every start: `/clear` leaves it on screen, and the `--resume` path Fleet's
-self-heal uses prints it again. There is no flag for it. So the recording starts after it,
-and the dropped byte count is recorded per slot in `slots.json.droppedHeadBytes` — a future
-session that finds the streams "truncated" and re-copies them from an instance would put the
-email straight into a public repo.
+self-heal uses prints it again. There is no flag for it. So the recording starts after it, and
+`slots.json.head` says so — a future session that finds the streams "truncated" and re-copies
+them from an instance would put the email straight into a public repo. (That note used to be a
+per-slot `droppedHeadBytes` count and is not one any more: the 2026-07-31 pair needed no head cut
+at all, because both recordings were started AT their prompt by emptying Fleet's own stream file
+immediately before the send, so the banner never entered either file.)
 
 A first recording of slot 4 was discarded whole for the neighbouring reason: that session
 shelled out to `gh` and printed the account handle. The lesson generalizes — **a demo task

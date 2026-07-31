@@ -357,16 +357,22 @@
       font-size: 16px; font-family: inherit; cursor: pointer; }
   }
 
-  #pkpathrow { display: flex; gap: 7px; }
-  #pkpath { flex: 1; height: 38px; padding: 0 12px; border-radius: 9px; border: 1px solid #333;
-    background: #262626; color: #eee; font-size: 13px; font-family: inherit; }
-  #pkpath:focus { outline: none; border-color: #3a4a7a; }
-  #pkpath.bad { border-color: #f85149; }
+  /* picker controls, now built by openPicker into the window's .shelltools (line 1 = the fast
+     path: filter + lane toggle; line 2 wraps and carries navigation) */
+  .pkline2 { flex-basis: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .pkfilterin { flex: 1; min-width: 0; height: 32px; padding: 0 12px; border-radius: 9px;
+    border: 1px solid #333; background: #1a1a1a; color: #ddd; font-size: 13px; font-family: inherit; }
+  .pkfilterin:focus { outline: none; border-color: #3a4a7a; }
+  .pkpathin { flex: none; width: 240px; height: 28px; padding: 0 10px; border-radius: 8px;
+    border: 1px solid #2e2e2e; background: #191919; color: #bbb; font-size: 11.5px;
+    font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .pkpathin:focus { outline: none; border-color: #3a4a7a; }
+  .pkpathin.bad { border-color: #f85149; }
 
   /* breadcrumb: where you are + one-click jump to any ancestor. Scrolls sideways when deep. */
-  #pkcrumb { display: flex; align-items: center; gap: 1px; padding: 1px 2px; min-height: 24px;
-    overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
-  #pkcrumb::-webkit-scrollbar { display: none; }
+  .pkcrumb { flex: 1; min-width: 0; display: flex; align-items: center; gap: 1px; padding: 1px 2px;
+    min-height: 24px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .pkcrumb::-webkit-scrollbar { display: none; }
   .pkseg { flex: none; padding: 3px 7px; border-radius: 6px; font-size: 12px; color: #8b93b0;
     cursor: pointer; }
   .pkseg:hover { background: #262626; color: #cdd6f4; }
@@ -384,14 +390,7 @@
   .pktoggle:hover { color: #ccc; border-color: #444; }
   .pktoggle.on { background: #2a2320; color: #e0af68; border-color: #5a4a2a; }
 
-  .pkrow.pkhide, .pkhead.pkhide, .pknone.pkhide { display: none; }
-  #pklists { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column;
-    gap: 1px; margin-top: 2px; border-top: 1px solid #2a2a2a; padding-top: 4px; }
-  .pkhead { display: flex; align-items: center; gap: 7px; padding: 10px 6px 4px; }
-  .pkhead:first-child { padding-top: 2px; }
-  .pkheadt { font-size: 10px; color: #6a6a6a; text-transform: uppercase; letter-spacing: 0.07em;
-    font-weight: 600; }
-  .pkheadn { font-size: 10px; color: #666; background: #232323; border-radius: 20px; padding: 1px 7px; }
+  .pkrow.pkhide, .shellsec.pkhide, .pknone.pkhide { display: none; }
 
   .pkrow { display: flex; align-items: center; gap: 10px; padding: 6px 9px; border-radius: 7px;
     cursor: pointer; }
@@ -424,8 +423,15 @@
   .pkrow.pin .pkicon { color: #e0af68; }
   .pkrow.pkwt { display: none; } /* hidden by the "hide lanes" toggle — separate from filter's pkhide */
   /* left-fade the breadcrumb when ancestors have scrolled out of view (hint they're reachable) */
-  #pkcrumb.overflow { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+  .pkcrumb.overflow { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
     mask-image: linear-gradient(90deg, transparent 0, #000 26px); }
+  /* the picker's detail pane: what this folder IS */
+  .pkdpath { font: 11.5px ui-monospace, Menlo, Consolas, monospace; color: #777;
+    margin: 2px 0 10px; word-break: break-all; }
+  .pkdwarn { font-size: 12px; color: #e0af68; background: #2a2320; border: 1px solid #5a4a2a;
+    border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }
+  .pkdacts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid #333; background: #262626;
     color: #ccc; font-size: 13px; font-family: inherit; cursor: pointer; }
@@ -932,29 +938,6 @@
   </div>
 </div>
 <div id="shade"></div>
-
-<div id="picker" class="overlay">
-  <div class="panel">
-    <h2 id="pktitle">New session</h2>
-    <div id="pkpathrow">
-      <input id="pkpath" type="text" spellcheck="false" autocomplete="off"
-        placeholder="/path/to/project — Enter to browse">
-    </div>
-    <div id="pkcrumb" aria-label="current location"></div>
-    <div id="pkfilterrow">
-      <input id="pkfilter" type="text" spellcheck="false" autocomplete="off"
-        placeholder="filter — ↑↓ select · Enter open · ⌘Enter start · ⌘D pin">
-      <button id="pkhidewt" class="pktoggle" title="hide worktree lanes">⎇ hide lanes</button>
-    </div>
-
-    <div id="pklists"></div>
-    <div class="pkbtns">
-      <button id="pkcancel">Cancel</button>
-      <button id="pkworktree" title="create a git worktree (lane) here and open a session in it" style="display:none">⎇ new lane</button>
-      <button id="pkstart">Start here</button>
-    </div>
-  </div>
-</div>
 
 <div id="autodlg" class="overlay">
   <div class="panel" id="autopanel"></div>

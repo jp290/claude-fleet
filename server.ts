@@ -1783,6 +1783,54 @@ async function listDirs(raw: string) {
   return { path: dir, parent: parent === dir ? null : parent, dirs, repos, worktrees, recents, pins, common, git: existsSync(`${dir}/.git`) };
 }
 
+// --- what a folder IS, for the picker's detail pane ---
+// The picker could say a folder was a git repo (one statSync for the ⎇ badge) and nothing else, so
+// choosing between two similarly-named directories meant opening a session in one to find out.
+// Every field here is absent rather than guessed when git cannot answer: a branch with no upstream
+// has no ahead/behind, and reporting 0/0 for it would be a measurement nobody made.
+interface DirInfo {
+  path: string;
+  exists: boolean;
+  git: boolean;
+  worktree?: boolean;               // this path is itself a lane (.git is a file)
+  branch?: string | null;
+  dirty?: number;                   // uncommitted entries, `git status --porcelain` lines
+  ahead?: number | null;            // null = no upstream to compare against, NOT zero
+  behind?: number | null;
+  last?: CommitRow | null;
+  lanes?: number;                   // Fleet lanes forked from this repo (<path>.worktrees/*)
+}
+async function dirInfo(raw: string): Promise<DirInfo> {
+  const path = resolve(expandCwd(raw));
+  if (!existsSync(path) || !statSync(path).isDirectory()) return { path, exists: false, git: false };
+  let worktree = false;
+  try {
+    worktree = statSync(`${path}/.git`).isFile();
+  } catch {
+    return { path, exists: true, git: false };
+  }
+  const br = await gitRead(path, "rev-parse", "--abbrev-ref", "HEAD");
+  const st = await statusLines(path);
+  const lg = await gitRead(path, "log", "-1", "--no-color", "--format=%h%x09%ct%x09%s");
+  // "N<TAB>M" = behind, ahead. A non-zero exit means there is no upstream — reported as null.
+  const ab = await gitRead(path, "rev-list", "--left-right", "--count", "@{upstream}...HEAD");
+  const counts = ab.code === 0 ? ab.out.split(/\s+/).map(Number) : [];
+  const ok = counts.length === 2 && counts.every(Number.isFinite);
+  let lanes = 0;
+  try {
+    lanes = (await readdir(`${path}.worktrees`, { withFileTypes: true })).filter((e) => e.isDirectory()).length;
+  } catch { /* no lanes forked from this repo */ }
+  return {
+    path, exists: true, git: true, worktree,
+    branch: br.code === 0 && br.out ? br.out : null,
+    dirty: st.code === 0 ? st.lines.length : 0,
+    behind: ok ? counts[0] : null,
+    ahead: ok ? counts[1] : null,
+    last: lg.code === 0 && lg.out ? parseCommitLog(lg.out)[0] ?? null : null,
+    lanes,
+  };
+}
+
 // --- transcript view: read claude's own JSONL (~/.claude/projects/<cwd-slug>/<uuid>.jsonl)
 // and hand the client structured messages instead of terminal bytes. Renders natively at
 // any width — this is the per-device-formatting answer the pty can never give.
@@ -6772,6 +6820,17 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/dirs") {
       try {
         return json(await listDirs(url.searchParams.get("path") ?? "~"));
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
+      }
+    }
+    // what the folder under the picker's cursor actually IS. Deliberately a SEPARATE route from
+    // /api/dirs rather than fields on every listed row: this costs four git calls, and paying that
+    // per row would make browsing a directory of repos as slow as its slowest repo. One selection,
+    // one call. Owner-only by position — everything below the share-host gate above is.
+    if (url.pathname === "/api/dirinfo") {
+      try {
+        return json(await dirInfo(url.searchParams.get("path") ?? "~"));
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }

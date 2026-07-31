@@ -14,7 +14,7 @@
 // slot in the sidebar, presses 💬. The state it produces is the real UI's own state, and the
 // visitor can take over at any point without anything having to be handed back.
 import {
-  MOBILE, onFrame, onStreamEnd, setBriefSwitch, setCuts, slotPrompt, type DemoCut,
+  MOBILE, onFrame, onStreamEnd, onWait, setBriefSwitch, setCuts, type DemoCut,
 } from "./demo-transport";
 
 // MOBILE is the dashboard's own breakpoint (src/client.ts:27), and it is imported rather than
@@ -52,7 +52,14 @@ export interface Hint {
    *  on a desktop and ➤ on a phone (src/client.ts:3856), so one fixed string would be wrong on one
    *  of them. Re-read on every reposition, so crossing the breakpoint corrects it. */
   text: string | (() => string);
-  /** From which frame OF THIS CHAPTER'S EXCERPT it shows. Default: from the first. */
+  /** Shown while a session is PARKED on its opening picture — whichever session that is. For the
+   *  labels that belong to the page rather than to the story: what the sidebar is, which key
+   *  starts the thing on screen. Mutually exclusive with `at`/`until`, which count pictures. */
+  whileWaiting?: boolean;
+  /** Which slot's excerpt `at`/`until` count, and which slot must be on screen for this label to
+   *  appear. Default: the chapter's own slot. */
+  slot?: number;
+  /** From which frame OF THAT SLOT'S EXCERPT it shows. Default: from the first. */
   at?: number;
   /** Up to which frame. Default: the end of the chapter. */
   until?: number;
@@ -73,8 +80,10 @@ export interface Chapter {
   /** The narration, German, AT MOST TWO SENTENCES: the visitor reads it while the excerpt runs, and
    *  three sentences × five chapters overruns the 60–90 s the whole tour is allowed (PLAN §2). */
   text: string;
-  /** The session this chapter is about — it gets the focused pane. */
+  /** The session this chapter is about: its cut, its briefAfter and its story labels belong to it. */
   slot: number;
+  /** The session the PAGE opens on, when that should not be `slot`. See shapeOf(). */
+  opensOn?: number;
   /** Desktop layout. On a phone every chapter is single-pane, whatever this says. */
   layout: 1 | 2 | 4;
   /** Pane→slot assignment when the layout holds more than one. Defaults to [slot]. */
@@ -83,10 +92,9 @@ export interface Chapter {
   view?: "term" | "chat";
   /** Open the ℹ session brief. Desktop only — renderBoard() bails out on mobile (client.ts:1204). */
   brief?: boolean;
-  /** Stand this session's real prompt in the (disabled) compose bar. Chapter 1's whole exhibit,
-   *  and opt-in rather than automatic: the manifest holds a session's FIRST prompt, and a chapter
-   *  replaying a later question would otherwise put the wrong sentence under it. */
-  prompt?: boolean;
+  // `prompt` used to stand here as a chapter opt-in and is gone: the compose bar is written per
+  // SLOT by the transport, at the moment that slot parks, because the visitor can change which
+  // session is on screen and a chapter cannot know that he did.
   /** Controls to reveal beyond the ones `view`/`brief` already imply. */
   shows?: Control[];
   /** Frame ranges of the recording instead of the whole file. Absent = the whole stream. */
@@ -133,8 +141,8 @@ export interface Chapter {
 // the sentence PLAN §1 wants a visitor to leave with survives in one step: the tool keeps its own
 // record. What does not survive is showing the landing, and nothing in the text now claims it.
 //
-// NOTHING WAS THROWN AWAY. project.raw, transcript-project.json and briefs["5"] all ship; slot 5 is
-// the last row of the sidebar and a visitor who clicks it gets that real recording. Restoring the
+// NOTHING WAS THROWN AWAY. project.raw, transcript-project.json and briefs["2"] all ship; slot 2 is
+// a row of the sidebar and a visitor who clicks it gets that real recording. Restoring the
 // step is one entry in this list, and its measurements are the ones that cost the most to get:
 // frames 153–308 of project.raw, opening on the second question and ending on "Two commits landed
 // on main since this session started" — never past 342, where Claude Code paints its own grey
@@ -153,10 +161,11 @@ const CHAPTERS: Chapter[] = [
     // the narration only has to say what happens: an order goes out, and two commits come back.
     text: "Die Sitzung nimmt den Auftrag an und arbeitet ihn ab. Am Ende stehen die zwei "
       + "Arbeitsschritte da, die verlangt waren — mit Kürzel, Betreff und Zeilenzahl.",
-    slot: 2,
+    slot: 5,
+    // The page opens on the plainest session, not on this one — see shapeOf().
+    opensOn: 1,
     layout: 1,
     brief: true, // open from the first picture: a panel that appears later is a second event
-    prompt: true, // the real order in the real compose bar, which is what the visitor's Enter sends
     // TWO RANGES, BECAUSE THE MIDDLE IS A SPINNER. The recording is 2120 frames and the pacing
     // clamp floors a frame at 16 ms, so playing it whole takes at least 34 s — of which about 30
     // are a spinner turning while the session thinks. What the step needs is its two ends.
@@ -245,14 +254,14 @@ const CHAPTERS: Chapter[] = [
       // would happen. Naming the slot ties the key to the session he is looking at — which is also
       // what makes it true after he has clicked a different row, since every session now waits for
       // the same press.
-      { anchor: "#input", place: "left", at: 0, until: 1, cta: true,
+      { anchor: "#input", place: "left", whileWaiting: true, cta: true,
         text: () => (MOBILE.matches
           ? "Tipp auf ➤ — dann startet die Demo-Sitzung in diesem Slot."
           : "Drück Enter — dann startet die Demo-Sitzung in diesem Slot.") },
       // The sidebar needs naming before "in diesem Slot" means anything: a visitor who has never
       // seen this app does not know that the column on the left IS the list of sessions, so the
       // label above it says so once, while the page is still waiting for him.
-      { anchor: () => (MOBILE.matches ? "#menu" : "#slots"), place: "above", at: 0, until: 1,
+      { anchor: () => (MOBILE.matches ? "#menu" : "#slots"), place: "above", whileWaiting: true,
         text: () => (MOBILE.matches
           ? "Hinter ☰ liegen fünf aufgezeichnete Sitzungen — jede in einem eigenen Projekt."
           : "Links stehen fünf aufgezeichnete Sitzungen — jede in einem eigenen Projekt.") },
@@ -311,10 +320,16 @@ const focusPaneEl = (el: HTMLElement | undefined): void => {
   el?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
 };
 
-/** What this chapter shows on THIS viewport: a phone gets one pane, always. */
+/** What this chapter shows on THIS viewport: a phone gets one pane, always.
+ *  `opensOn` is the slot the PAGE starts on and it is deliberately not `slot`: the session the story
+ *  runs in has by far the most complicated order of the five (owner, 31.07.), and opening on it puts
+ *  430 characters of jargon in front of a visitor before he knows what he is looking at. He arrives
+ *  on a plain one and walks down the list instead — every session waits for the same press now, so
+ *  none of them is a dead end, and the story keeps its own slot for its own labels. */
 function shapeOf(ch: Chapter): { layout: number; slots: number[] } {
-  if (MOBILE.matches) return { layout: 1, slots: [ch.slot] };
-  const slots = (ch.panes ?? [ch.slot]).slice(0, ch.layout);
+  const opens = ch.opensOn ?? ch.slot;
+  if (MOBILE.matches) return { layout: 1, slots: [opens] };
+  const slots = (ch.panes ?? [opens]).slice(0, ch.layout);
   return { layout: ch.layout, slots };
 }
 
@@ -349,7 +364,16 @@ const cutKey = (ch: Chapter): string =>
 const HINT_MAX = 2;
 const HINT_GAP = 10;
 let hintsEl: HTMLElement | null = null;
-let frame = 0; // frames played of the CURRENT chapter's excerpt — the unit a Hint's `at` is in
+// PER SLOT, and that is the fix for "labels only ever appeared on one session". `frame` used to be
+// a single counter fed only by the chapter's own slot (onFrame dropped every other one), so the
+// four sessions in the sidebar had no labels at all — and once the page opens on one of THEM, that
+// means a visitor arrives with no guidance whatsoever. A hint is now either tied to a slot's
+// excerpt (a frame window, and it must be that slot on screen) or to the PAGE (`whileWaiting`),
+// which is true of whichever session is parked.
+const framesOf = new Map<number, number>();
+let shownSlot = 0;   // the slot whose pictures are on screen right now
+let waiting = false; // a session is parked on its opening picture, whichever one it is
+const frameOfShown = (): number => framesOf.get(shownSlot) ?? 0;
 let hintTimer: ReturnType<typeof setInterval> | undefined;
 
 function hintLayer(): HTMLElement {
@@ -459,9 +483,16 @@ function placeHint(el: HTMLElement, h: Hint): void {
 function syncHints(): void {
   const layer = hintLayer();
   const hints = current.hints ?? [];
+  const f = frameOfShown();
   const live = hints
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => frame >= (h.at ?? 0) && frame < (h.until ?? Infinity))
+    .filter(({ h }) => (h.whileWaiting
+      // A page label: true of whichever session is parked, so it does not ask which slot that is.
+      ? waiting
+      // A story label: this slot's excerpt, this slot on screen. The second half is what stops a
+      // label about the lane's commits from appearing over somebody else's session.
+      : shownSlot === (h.slot ?? current.slot)
+        && f >= (h.at ?? 0) && f < (h.until ?? Infinity)))
     .slice(0, HINT_MAX);
   // Keyed by CHAPTER and index, not index alone: two chapters both have a first hint, and a key
   // that ignored the chapter re-used the previous chapter's box — which kept its old text. Measured
@@ -496,14 +527,16 @@ function syncHints(): void {
   }
 }
 
-/** A chapter change resets the frame count — `at` is counted within THIS chapter's excerpt — and
- *  arms the reposition poll, but only for a chapter that has labels at all. A poll rather than
- *  three observers because the boxes move for reasons no single observed element sees: the ℹ panel
- *  opening, the sidebar re-rendering, a pane being rebuilt by a layout switch. Two rect reads every
- *  250 ms is not a cost worth three observers' worth of ways to be subtly wrong. */
+/** A chapter change drops every slot's frame count — `at` is counted within an excerpt, and a new
+ *  chapter is a new excerpt — and arms the reposition poll, but only for a chapter that has labels
+ *  at all. A poll rather than three observers because the boxes move for reasons no single observed
+ *  element sees: the ℹ panel opening, the sidebar re-rendering, a pane being rebuilt by a layout
+ *  switch. Two rect reads every 250 ms is not a cost worth three observers' worth of ways to be
+ *  subtly wrong. */
 function armHints(): void {
   clearInterval(hintTimer);
-  frame = 0;
+  framesOf.clear();
+  shownSlot = current.slot;
   syncHints();
   if (current.hints?.length) hintTimer = setInterval(syncHints, 250);
 }
@@ -582,23 +615,12 @@ function applyUi(ch: Chapter): void {
       click(foc.querySelector(".boardtoggle"));
   }
 
-  // The real prompt in the real (disabled) compose bar, instead of a caption saying what it was.
-  // Opt-in, and step 4 is why: slot 5 was asked twice and that chapter replays the SECOND question,
-  // while the manifest carries a session's first. Left on, the box read "what is this project"
-  // under a terminal answering "what came in" — not false, but the one thing on screen a visitor
-  // could take for the command that produced the picture. Off, the box shows the demo's own
-  // "Input is disabled" placeholder, which is true in every chapter.
-  const ta = $("input") as HTMLTextAreaElement | null;
-  if (!ch.prompt) {
-    if (ta) { ta.value = ""; ta.style.height = ""; }
-  } else void slotPrompt(ch.slot).then((p) => {
-    if (!ta || current.id !== ch.id) return;
-    ta.value = p;
-    // The compose box does not grow by itself (no auto-grow in client.ts); a two-line prompt would
-    // sit half out of sight. CSS max-height still caps it.
-    ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
-  });
+  // THE COMPOSE BAR IS NOT WRITTEN HERE ANY MORE. It used to be a chapter opt-in, which was right
+  // while a chapter was the only thing that could change which session was on screen. It is not:
+  // the visitor changes it by clicking the sidebar, and a box written per chapter then kept the
+  // previous session's order over somebody else's terminal. src/demo-transport.ts writes it for
+  // whichever slot is parking, which is the only moment the answer is knowable and the only place
+  // that cannot disagree with what is playing.
 
   applied = ch;
 }
@@ -784,10 +806,17 @@ whenReady(() => {
   // the only clock a replay has: the recordings carry no timestamps, so seconds would be a number
   // we invented and frames are what the material actually has.
   onFrame((slot, i) => {
-    if (slot !== current.slot || i === frame) return;
-    frame = i;
+    // Every slot is counted now, not just the chapter's — a session the visitor opened is the one
+    // on screen, and its labels have to follow its own pictures.
+    if (framesOf.get(slot) === i && shownSlot === slot) return;
+    framesOf.set(slot, i);
+    shownSlot = slot;
     syncHints();
   });
+
+  // The page labels live on this edge rather than on a frame count: "press Enter" is true while a
+  // session waits and false the moment it does not, on any slot.
+  onWait((w) => { waiting = w; syncHints(); });
 
   // When the picture stops moving, the way on gets a quiet pulse. Autoplay stays rejected (PLAN §1b):
   // this asks, it does not act.

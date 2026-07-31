@@ -179,10 +179,21 @@ async function showPromptFor(slot: number): Promise<void> {
  *  a hint with `until: 1` is on screen exactly while the first frame stands — but the input
  *  handlers below do: an Enter with nothing waiting must not silently look like it worked. */
 export function replayWaiting(): boolean { return openGate !== null; }
+// WAITING IS A STATE THE LABEL LAYER HAS TO SEE, not just something it can ask about. A label that
+// says "press Enter" is true of WHICHEVER session is parked, and the chapter layer's only other
+// clock — the frame counter — advances for one slot alone. So the gate reports its own edges and
+// the labels follow the page rather than the chapter (src/demo-chapters.ts, `whileWaiting`).
+let waitChanged: ((waiting: boolean) => void) | null = null;
+export function onWait(fn: (waiting: boolean) => void): void { waitChanged = fn; }
+function setGate(g: (() => void) | null): void {
+  const was = openGate !== null;
+  openGate = g;
+  if (was !== (g !== null)) waitChanged?.(g !== null);
+}
 /** The visitor acted. False when nothing was waiting, so the caller can say so instead. */
 export function startReplay(): boolean {
   const go = openGate;
-  openGate = null;
+  setGate(null);
   if (!go) return false;
   go();
   return true;
@@ -354,7 +365,7 @@ class DemoSocket {
   close(): void {
     this.stopped = true;
     clearTimeout(this.timer);
-    if (openGate === this.wake) openGate = null; // a pane discarded mid-wait takes its gate with it
+    if (openGate === this.wake) setGate(null); // a pane discarded mid-wait takes its gate with it
     this.wake?.();
     this.readyState = DemoSocket.CLOSED;
   }
@@ -416,7 +427,7 @@ class DemoSocket {
       // moment at which an order belongs in the box — and it is THIS stream's order, which is what
       // makes a visitor's slot switch correct as well as a ↻ that rebuilds the socket without
       // re-running the chapter.
-      if (ms === null) { openGate = this.wake; void showPromptFor(this.slot); }
+      if (ms === null) { setGate(this.wake); void showPromptFor(this.slot); }
       else this.timer = setTimeout(() => this.wake?.(), ms);
     });
   }
@@ -455,6 +466,23 @@ class DemoSocket {
         this.emit(frames[i]!);
         // The hold is the FIRST picture of the FIRST range and nowhere else: it is the moment
         // before the order goes out, and there is only one of those.
+        // THE OPENING PICTURE IS WRITTEN TWICE, and the second time is the one that shows. A pane
+        // built by the client's own slot switch has no measured size in the frame it is inserted in
+        // (the same reason fitScale retries up to 30 times), and a repaint written into a terminal
+        // that is still sizing itself lands nowhere — the buffer takes the bytes and the DOM
+        // renderer paints an empty screen. Measured on a phone at 390x844: after the opening was
+        // dismissed the terminal showed 0 rows for 3.6 s while the compose bar already carried that
+        // slot's order, i.e. the stream had parked and its frame 0 had been emitted. Desktop escaped
+        // it because its pane is measured by the time the stream lands.
+        // So the held picture is re-sent once, two animation frames later, while the gate is still
+        // this stream's. It is the same full-screen repaint after the same clear, so a terminal that
+        // did paint the first one is unchanged by the second.
+        if (s === 0 && i === 0) {
+          const first = frames[i]!;
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (!this.stopped && openGate === this.wake) { this.emit(CLEAR); this.emit(first); }
+          }));
+        }
         // EVERY STREAM HOLDS, not just the one the chapter cut. It used to depend on cut.hold, so
         // the four sidebar sessions had no gate at all and began playing the instant the visitor
         // clicked them — measured: slot 3 grew from 10 rows to 16 within three seconds of the click,
@@ -605,7 +633,7 @@ async function demoFetch(input: RequestInfo | URL, _init?: RequestInit): Promise
       const b = before !== undefined && switchAt !== undefined
         && (frameAt.get(Number(id)) ?? 0) < switchAt ? before : after;
       // The lane fields are PASSED THROUGH, not blanked. They used to be forced to null here
-      // because no recording had ever been a lane; slot 2 is one, and forcing them made the panel
+      // because no recording had ever been a lane; slot 5 is one, and forcing them made the panel
       // call it "· repo session" and head its commits "commits this session" — a false statement
       // about a fetched answer, and the one difference step 4's two states are built on. Every
       // field still has a default, because the plain repo sessions carry none of them.

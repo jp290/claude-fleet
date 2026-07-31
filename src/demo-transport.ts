@@ -461,21 +461,27 @@ function demoHint(text: string): void {
 // large, the 2x2 grid shows four smaller ones, a phone shows the whole 76-column session shrunk to
 // fit. transform does not participate in layout, so .xterm keeps reporting its natural pixel size
 // and the factor stays derivable from it.
-// COLUMNS are pinned; ROWS are not. Only the column count can break the recording: a wrapped line
-// occupies an extra screen row and desynchronises the repaint. The row count is free — the stream
-// simply scrolls inside whatever height it is given — so letting rows follow the pane is what makes
-// a tall pane fill with scrollback instead of showing a letterboxed 28-row block, which is how the
-// first version of this looked wrong in the 2-up layout.
-const REC_COLS = 76;
-const MIN_ROWS = 8;
-// The scale is CAPPED, and only upwards. Scaling DOWN is what keeps 76 columns inside a pane too
-// narrow for them, and that is not negotiable. Scaling UP is a presentation choice, and past a point
-// a bad one: one pane at 1360 px hands the terminal a factor of 2.06, i.e. the dashboard's own 12 px
-// type drawn at 25 px, which is what made a solo chapter read as a zoomed screenshot instead of a
-// terminal. Above the cap the block is centred in what is left rather than stretched into it.
-// Pinning the ROWS to the recorded 28 was tried here and rolled back: at exactly 28 rows the opening
-// prompt has scrolled off the top by frame 151, and the order standing in the terminal is the one
-// thing chapter 1 is about. Rows keep following the pane; only the magnification is capped.
+//
+// BOTH AXES ARE PINNED to the recorded geometry, and that is a correction of the rule that stood
+// here before ("columns are pinned, rows follow the pane"). Letting rows follow the pane assumes a
+// stream that keeps producing output, which is true of a live session and false of a replay: the
+// recording paints a 28-row screen and nothing it can do will fill a 34-row one. Measured on the
+// solo chapter at 1360x860 — the layout that rule never saw — it asked for 34 rows and the recording
+// filled 18, so 47% of the pane was structurally empty, for good, and the picture read as a text
+// block glued to the top of a black box. Pinning rows removes exactly that void; what is left inside
+// the terminal is the recording's own emptiness, which is what the session really looked like.
+//
+// The claim that a 28-row terminal loses chapter 1's opening prompt (the reason rows were left free
+// in d642ae3) does not reproduce: replayed INTO 28 rows, the prompt still stands in row 0, with one
+// status bar and one ctx bar — i.e. no repaint desynchronisation either. 28 is not a guess, it is
+// the geometry the stream was recorded at (slots.json's terminal.rows), so it is the one height at
+// which the TUI's own cursor arithmetic is exactly right.
+const REC = { cols: 76, rows: 28 };
+// The scale is CAPPED, and only upwards. Scaling DOWN is what fits the whole recorded screen into a
+// pane too small for it, and that is not negotiable. Scaling UP is a presentation choice, and past a
+// point a bad one: one pane at 1360 px hands the terminal a factor of 2.06, i.e. the dashboard's own
+// 12 px type drawn at 25 px, which is what made a solo chapter read as a zoomed screenshot instead
+// of a terminal. Beyond the cap the block is centred in what is left rather than stretched into it.
 const MAX_SCALE = 1.5;
 const termOf = new WeakMap<HTMLElement, Terminal>();
 {
@@ -485,10 +491,25 @@ const termOf = new WeakMap<HTMLElement, Terminal>();
     open.call(this, el);
   };
   const resize = Terminal.prototype.resize;
-  Terminal.prototype.resize = function pinnedResize(this: Terminal, _cols: number, rows: number): void {
-    resize.call(this, REC_COLS, Math.max(MIN_ROWS, rows | 0));
+  Terminal.prototype.resize = function pinnedResize(this: Terminal, _cols: number, _rows: number): void {
+    resize.call(this, REC.cols, REC.rows);
   };
 }
+
+// The recorded geometry is DECLARED in slots.json, and the constants above are only what the first
+// terminal is built with — the client constructs one before any fetch resolves. When the manifest
+// lands, it wins: a re-recording at another size would otherwise be rendered at this file's idea of
+// the size, silently and wrongly, which is the failure mode a declared manifest exists to prevent.
+void loadManifest().then((m) => {
+  const cols = (m.terminal?.cols ?? 0) | 0, rows = (m.terminal?.rows ?? 0) | 0;
+  if (!cols || !rows || (cols === REC.cols && rows === REC.rows)) return;
+  REC.cols = cols;
+  REC.rows = rows;
+  for (const pt of document.querySelectorAll<HTMLElement>(".paneterm")) {
+    termOf.get(pt)?.resize(cols, rows); // pinnedResize ignores the arguments; they document intent
+    fitScale(pt);
+  }
+});
 
 // The retry is the part that was broken before: a pane created by setLayout() has no measured size
 // in the frame it is inserted in, so the first attempt reads 0 and must come back rather than give
@@ -515,26 +536,19 @@ function fitScale(paneterm: HTMLElement | null, tries = 0): void {
     if (tries < 30) requestAnimationFrame(() => fitScale(paneterm, tries + 1));
     return;
   }
-  // Width sets the scale — 76 columns fill the pane exactly, which is the whole point of pinning
-  // them — but never past MAX_SCALE. Height is then absorbed by asking for as many ROWS as fit at
-  // that scale, so a tall pane fills with scrollback rather than with letterbox.
-  const s = Math.min(box.width / natW, MAX_SCALE);
-  const t = termOf.get(paneterm);
-  if (t) {
-    const cellH = natH / Math.max(1, t.rows);
-    const want = Math.max(MIN_ROWS, Math.floor(box.height / (cellH * s)));
-    // Only act on a real difference: resize() feeds this observer, and reacting to sub-row noise
-    // would oscillate. The next observer pass re-derives everything from the new content size.
-    if (want !== t.rows) { t.resize(REC_COLS, want); return; }
-  }
+  // One factor, from whichever axis runs out first, never past MAX_SCALE — the whole recorded screen
+  // is always inside the pane. Because both axes are pinned, this is the entire geometry: there is no
+  // row count to negotiate with the pane, so there is also no resize()-feeds-the-observer loop to
+  // damp, which is what the removed oscillation guard was for.
+  const s = Math.min(box.width / natW, box.height / natH, MAX_SCALE);
   term.style.width = `${natW}px`;
   term.style.height = `${natH}px`;
   term.style.transformOrigin = "top left";
   term.style.transform = `scale(${s.toFixed(4)})`;
-  // Centred horizontally in whatever the cap left over. transform does not participate in layout, so
-  // the offset has to be a margin on the un-transformed box, computed from the SCALED width.
+  // Centred on both axes in whatever is left over. transform does not participate in layout, so the
+  // offsets have to be margins on the un-transformed box, computed from the SCALED size.
   term.style.marginLeft = `${Math.max(0, Math.round((box.width - natW * s) / 2))}px`;
-  term.style.marginTop = "0px";
+  term.style.marginTop = `${Math.max(0, Math.round((box.height - natH * s) / 2))}px`;
 }
 
 {

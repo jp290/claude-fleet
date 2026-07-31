@@ -2934,8 +2934,15 @@ const samePick = (a: RvPick, b: RvPick): boolean =>
 // the commit whose content is on screen, whether it was reached directly or through one of its files
 const pickCommit = (p: RvPick): string | undefined => p.k === "commit" ? p.hash : p.k === "file" ? p.hash : undefined;
 
+let rvShell: Shell | null = null;
+
 async function openReview(slotId: number, initial: RvSource) {
   setDrawer(false);
+  // the other three windows already do this. Without it a double-click on ± stacks two review
+  // windows: openShell() runs synchronously before any fetch, so both exist, both fetch, and one
+  // Escape closes both (capture-phase listeners on the same node are not stopped by
+  // stopPropagation). One window per surface, closed by whoever opens the next.
+  rvShell?.close();
   const isLane = !!fleet.find((s) => s.id === slotId)?.worktree;
   let source: RvSource = isLane ? initial : "working";
   let pick: RvPick = { k: "all" };
@@ -2950,7 +2957,9 @@ async function openReview(slotId: number, initial: RvSource) {
     subtitle: "loading…",
     detailHint: "Pick a file or a commit on the left — “All changes” shows the whole diff.",
     listWidth: 370,
+    onClose: () => { rvShell = null; },
   });
+  rvShell = shell;
 
   const showDiffText = (target: HTMLElement, text: string) => {
     const box = el("div", "difftxt");

@@ -137,13 +137,21 @@ const CHAPTERS: Chapter[] = [
     // one covers the exhibit it points at (measured — the first version sat squarely on the two
     // commit subjects). What IS empty is the sidebar below the last session and the panel below
     // its last section, so both labels are anchored to what they name and placed BELOW it.
+    // The labels say the POINT and the ACTION, not where things are. A half-sentence that locates
+    // ("die Zahlen dazu stehen hier") only helps somebody who already knows what he is looking at;
+    // the one thing this whole demo has to land is that the record keeps ITSELF, and if a visitor
+    // takes only one sentence away it has to be that one.
     hints: [
-      // The narration says what the numbers mean; this says where they are — the one thing the
-      // sentence deliberately does not say, because on a phone the panel is not there at all.
-      { anchor: "#board .bsec:last-child", place: "below", text: "die Zahlen dazu stehen hier" },
-      // Shown late, and the tour's only piece of stage-setting: the next thing that happens is a
-      // click on this row, and a visitor who never noticed the row will not read it as an answer.
-      { anchor: '#slots .slot[data-slot="5"]', place: "below", at: 55, text: "das Projekt selbst" },
+      { anchor: "#board .bsec:last-child", place: "below",
+        text: "Das führt Fleet von selbst mit: jeden Schritt, jede geänderte Datei. Niemand notiert hier etwas." },
+      // Under the terminal, not on the "Weiter" button it names: anchored to the button it landed
+      // on the ℹ panel's own heading, and a label that covers the exhibit is worse than one that
+      // sits a few centimetres from its subject. The strip below the pane is empty — but only
+      // since the pane stopped being stretched to the window, which is the same change that let
+      // these labels grow. Shown late: an instruction that arrives before there is anything to
+      // see is an interruption.
+      { anchor: "#panes .pane.focused", place: "below", at: 55,
+        text: "Weiter drücken — dann siehst du, wo diese Arbeit ankommt." },
     ],
   },
   // STEP 4, second picture: the project. THE STATE CHANGE IS THE SLOT CHANGE — no second-state
@@ -180,9 +188,10 @@ const CHAPTERS: Chapter[] = [
     // panel then say the same thing from two directions, which is what this step is for.
     cut: { from: 153, to: 308, secs: 12 },
     hints: [
-      // The identity line is the entire difference between the two pictures — "fleet/… · fleet
-      // lane" became "main · repo session" — and it is the one word the narration never says.
-      { anchor: "#board .bsec:last-child", place: "below", text: "auf main, nicht mehr daneben" },
+      // Closes the loop the first label opened: the same record, now under the project, and still
+      // nobody's typing. This is the sentence the demo exists to leave behind.
+      { anchor: "#board .bsec:last-child", place: "below",
+        text: "Dieselben zwei Einträge — jetzt beim Projekt. Abgeschrieben hat sie niemand." },
     ],
   },
 ];

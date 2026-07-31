@@ -82,14 +82,17 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`data-saver.md`** — the bandwidth program: `/api/sessions` was the cause, not the
   terminal. Doubles as `scope-inflation.md`'s worked case.
 
-**The public demo**
-- **`demo-fixtures.md`** — the four recorded sessions in `demo/fixtures/`: the 76×28 geometry
-  contract, why each stream starts mid-screen and must not be "restored", and what may not be
-  visible in anything published. Read before building the replay player, re-shooting the board
-  image, or re-recording.
+**The recorded demo — not in this repository (2026-07-31)**
+- It lives in `~/claude-fleet-demo`, which has no remote and is not to be published; this
+  repository is public and the showcase is not. `demo-fixtures.md` went with it (now its
+  `docs/fixtures.md`) because it describes those recordings, not this app.
+- What still concerns anyone working HERE: that build derives its page from
+  `public/index.html` and imports `src/client.ts` unmodified, so a change to either can break it
+  — and no gate in this repository will say so. Its own `bun run typecheck` and `bun run build`
+  are the check, seconds each.
 
 *(`docs/screenshot.png` and `docs/screenshot-mobile.png` are the images the top-level README
-embeds — not docs. `demo-fixtures.md` covers how they were made.)*
+embeds — not docs. How they were made is written up in the demo repository's `docs/fixtures.md`.)*
 
 ## The attic
 

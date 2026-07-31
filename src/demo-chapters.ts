@@ -217,7 +217,6 @@ const CHAPTERS: Chapter[] = [
       // 3:46 — "gut dreieinhalb" undersold it by sixteen seconds. Card 2: 4m 16s to 4m 44s, so 28
       // seconds — "eine gute Minute" was not a rounding, it was more than double.
       gaps: ["knapp vier Minuten später", "eine halbe Minute später"],
-      hold: true,
     },
     briefAfter: 2062,
     // BOTH LABELS SIT IN EMPTY SPACE, and that is a measurement rather than an aesthetic. At

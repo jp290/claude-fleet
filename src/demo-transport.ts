@@ -103,8 +103,10 @@ export interface DemoCut {
   /** What stands between span i and span i+1. A silent jump would be the one claim in this demo
    *  nobody could check; a named one is not. */
   gaps?: string[];
-  /** Hold on the first picture until the visitor acts (see the gate below). */
-  hold?: boolean;
+  // `hold` used to live here and is gone: holding the first picture is a property of EVERY stream
+  // now, not an option a cut may switch on, because the streams that had no cut were the ones that
+  // autoplayed. Leaving the field as an accepted-but-ignored option is how a caller ends up setting
+  // it and believing it did something.
 }
 const cuts = new Map<number, DemoCut>();
 // Set by the chapter layer BEFORE the pane connects (src/demo-chapters.ts runs before the client's
@@ -146,22 +148,30 @@ let openGate: (() => void) | null = null;
 // suggest. So the DOM field empties at the same moment the recorded one does, and the demo's own
 // placeholder ("Recorded replay — nothing is sent") takes its place, which is the disclosure
 // arriving exactly when the visitor acts.
-// Kept, not discarded: ↻ replays the excerpt without re-running the chapter, so the order has to be
-// back in the box before the next Enter, or the second run starts on an empty prompt.
-let heldPrompt = "";
+// AND THE BOX BELONGS TO THE SLOT, not to the chapter. Found by the owner, 31.07.: clicking another
+// session in the sidebar left the previous session's order standing in the compose bar, so the page
+// showed `run the full test suite…` in the terminal with `in the 💬 conversation view **bold**…`
+// underneath it as the order that produced it. That is a false statement rather than an untidiness,
+// and it is exactly the failure applyUi's own comment describes for chapter switches — it just had
+// no answer for a switch the VISITOR makes. So the order is now written from the manifest for
+// whichever slot is about to play, at the moment that slot parks and waits.
+// This also replaces the earlier remember-and-restore: there is nothing to remember when the answer
+// can be looked up, and remembering was wrong the moment two slots were involved.
 const composeBar = (): HTMLTextAreaElement | null =>
   document.getElementById("input") as HTMLTextAreaElement | null;
 function clearCompose(): void {
   const ta = composeBar();
-  if (!ta || !ta.value) return;
-  heldPrompt = ta.value;
+  if (!ta) return;
   ta.value = "";
   ta.style.height = ""; // applyUi grew it to fit two lines; let it shrink back
 }
-function restoreCompose(): void {
+async function showPromptFor(slot: number): Promise<void> {
+  const p = await slotPrompt(slot);
   const ta = composeBar();
-  if (!ta || !heldPrompt || ta.value) return;
-  ta.value = heldPrompt;
+  if (!ta) return;
+  ta.value = p;
+  // The compose box does not grow by itself (no auto-grow in client.ts); a two-line order would sit
+  // half out of sight. The CSS max-height still caps it.
   ta.style.height = "auto";
   ta.style.height = `${ta.scrollHeight}px`;
 }
@@ -403,9 +413,10 @@ class DemoSocket {
     return new Promise<void>((resolve) => {
       this.wake = () => { this.wake = null; resolve(); };
       // The hold gate is the only place the page waits for the visitor, so it is also the only
-      // moment at which the order belongs back in the box — including after ↻, which builds a new
-      // socket without re-running the chapter.
-      if (ms === null) { openGate = this.wake; restoreCompose(); }
+      // moment at which an order belongs in the box — and it is THIS stream's order, which is what
+      // makes a visitor's slot switch correct as well as a ↻ that rebuilds the socket without
+      // re-running the chapter.
+      if (ms === null) { openGate = this.wake; void showPromptFor(this.slot); }
       else this.timer = setTimeout(() => this.wake?.(), ms);
     });
   }
@@ -444,7 +455,14 @@ class DemoSocket {
         this.emit(frames[i]!);
         // The hold is the FIRST picture of the FIRST range and nowhere else: it is the moment
         // before the order goes out, and there is only one of those.
-        await this.park(this.cut?.hold && s === 0 && i === 0 ? null : frameMs);
+        // EVERY STREAM HOLDS, not just the one the chapter cut. It used to depend on cut.hold, so
+        // the four sidebar sessions had no gate at all and began playing the instant the visitor
+        // clicked them — measured: slot 3 grew from 10 rows to 16 within three seconds of the click,
+        // with nothing pressed. To a visitor that reads as "clicking a session sent its prompt",
+        // which is the one thing this page must never appear to do, and it broke PLAN §2's "Kein
+        // Autoplay" outright. Now the rule is the same everywhere: a session shows its first
+        // picture, its order stands in the box, and it waits.
+        await this.park(s === 0 && i === 0 ? null : frameMs);
         if (this.stopped) return;
       }
     }

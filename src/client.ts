@@ -11,6 +11,9 @@ import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS,
   type GitInfo, type PostLandAuditInfo, type DispositionWorker, type DispositionVerdict,
 } from "./protocol";
+// the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
+// the outcome feed. Chrome only — every renderer below still owns its own rows and data.
+import { openShell, type ShellRow } from "./shell";
 
 const $ = (id: string) => document.getElementById(id)!;
 const slotsEl = $("slots"), dot = $("dot"),
@@ -1846,7 +1849,7 @@ window.addEventListener("keydown", (e) => {
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
-    if (diffdlg.style.display === "flex") closeDiffDlg();
+    // the review window is a src/shell.ts window: it swallows its own Escape in the capture phase
     if (queuedlg.style.display === "flex") closeQueueDlg();
     if (audit.style.display === "flex") closeAudit();
     if (outcomes.style.display === "flex") closeOutcomes();
@@ -2688,11 +2691,12 @@ sharedlg.addEventListener("click", (e) => {
   if (e.target === sharedlg) closeShareDlg();
 });
 
-// --- diff review overlay: what the agent actually changed in this slot's tree ---
-const diffdlg = $("diffdlg"), diffpanel = $("diffpanel");
-function closeDiffDlg() { diffdlg.style.display = "none"; }
-diffdlg.addEventListener("click", (e) => { if (e.target === diffdlg) closeDiffDlg(); });
-
+// --- the review window: what changed, file by file, and the commits that made it ---
+//
+// Replaces two single-column overlays. Both dumped a whole `git diff` into one 900px box with no
+// way to reach a particular file, and neither could show a commit at all — the commit LIST had no
+// route until this window needed one (server.ts, slotCommits). The two entry points survive as
+// wrappers because six call sites in the board and sidebar use them by name.
 function renderDiffInto(target: HTMLElement, diff: string) {
   // colorize by line prefix — each line is its own textContent node, never innerHTML
   for (const line of diff.split("\n")) {
@@ -2703,57 +2707,330 @@ function renderDiffInto(target: HTMLElement, diff: string) {
   }
 }
 
-async function openDiff(slotId: number) {
-  setDrawer(false);
-  diffpanel.replaceChildren(el("h2", "", "Diff"));
-  diffdlg.style.display = "flex";
-  const res = await api(`/api/slots/${slotId}/diff`);
-  const data = (await res.json().catch(() => ({}))) as
-    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean;
-      sessionScoped?: boolean; error?: string };
-  diffpanel.replaceChildren(el("h2", "", data.sessionScoped
-    ? "Session diff — everything this session changed" : "Working diff (uncommitted)"));
-  if (data.error) { diffpanel.appendChild(el("div", "diffstat", data.error)); return; }
-  const nChanged = data.status?.length ?? 0;
-  diffpanel.appendChild(el("div", "diffstat",
-    `${data.branch ?? "?"} · ${nChanged} file${nChanged === 1 ? "" : "s"} changed${data.truncated ? " · diff truncated" : ""}`));
-  if (!data.diff) {
-    diffpanel.appendChild(el("div", "diffstat", nChanged
-      ? "(changes are untracked — no tracked diff)"
-      : data.sessionScoped
-        ? "this session hasn't changed anything yet"
-        : "clean working tree — everything is committed"));
-    return;
+// A unified diff's content lines always carry a ' ', '+' or '-' prefix, so `diff --git` at column
+// zero is always a file header — the split needs no state machine and file CONTENT cannot spoof it.
+interface DiffFile { path: string; text: string; add: number; del: number }
+function diffPath(header: string): string {
+  // `a/x b/x` for an edit; a rename has two different paths and is shown as such. Matching the
+  // same path on both sides first is what keeps filenames containing spaces intact.
+  const same = /^diff --git a\/(.+) b\/\1$/.exec(header);
+  if (same) return same[1];
+  const two = /^diff --git a\/(.+?) b\/(.+)$/.exec(header);
+  return two ? `${two[1]} → ${two[2]}` : header.slice("diff --git ".length);
+}
+function splitDiff(diff: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let cur: DiffFile | undefined;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      cur = { path: diffPath(line), text: line, add: 0, del: 0 };
+      files.push(cur);
+      continue;
+    }
+    if (!cur) continue; // git emits nothing before the first header; a truncation marker lands here
+    cur.text += `\n${line}`;
+    if (line.startsWith("+") && !line.startsWith("+++")) cur.add++;
+    else if (line.startsWith("-") && !line.startsWith("---")) cur.del++;
   }
-  const box = el("div", "difftxt");
-  renderDiffInto(box, data.diff);
-  diffpanel.appendChild(box);
+  return files;
 }
 
-// the resolved lane's diff (main..HEAD) — exactly what will fast-forward onto main once
-// the owner confirms. Same overlay as openDiff, different source.
-async function openMergeDiff(slotId: number) {
-  setDrawer(false);
-  diffpanel.replaceChildren(el("h2", "", "Resolved diff — what will land on main"));
-  diffdlg.style.display = "flex";
-  const res = await api(`/api/slots/${slotId}/merge-diff`).catch(() => null);
-  const data = (res && res.ok ? await res.json().catch(() => ({ loadFailed: true })) : { loadFailed: true }) as
-    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean; error?: string; loadFailed?: boolean };
-  // fail closed — a dropped fetch must not read as "no changes to land" (no ⏏ button appears either way here, but say so plainly)
-  if (data.loadFailed) { diffpanel.appendChild(el("div", "diffstat err", "couldn't load the diff — retry")); return; }
-  if (data.error) { diffpanel.appendChild(el("div", "diffstat", data.error)); return; }
-  const n = data.files?.length ?? 0;
-  diffpanel.appendChild(el("div", "diffstat",
-    `${data.branch ?? "?"} → ${data.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${data.truncated ? " · diff truncated" : ""}`));
-  if (!data.diff) { diffpanel.appendChild(el("div", "diffstat", "no changes to land")); return; }
-  const box = el("div", "difftxt");
-  renderDiffInto(box, data.diff);
-  diffpanel.appendChild(box);
-  const land = el("button", "bmergeland", "⏏ land") as HTMLButtonElement;
-  land.style.marginTop = "10px";
-  land.onclick = () => { closeDiffDlg(); void doMergeLand(slotId); };
-  diffpanel.appendChild(land);
+type RvSource = "working" | "land";
+interface RvDiff {
+  heading: string;
+  stat: string;
+  files: DiffFile[];
+  diff: string;
+  truncated: boolean;
+  // exactly one of these when there is no diff to show. `error` is a refusal from the server;
+  // `loadFailed` is a dropped fetch and must never be worded as "nothing changed"; `empty` is a
+  // real, measured absence of changes.
+  error?: string;
+  loadFailed?: boolean;
+  empty?: string;
 }
+interface RvCommit { hash: string; ts: number; subject: string; stat: string }
+interface RvCommits { scope: "lane" | "upstream" | "recent"; base: string | null; branch: string | null;
+  commits: RvCommit[]; capped: boolean }
+// what the commit section is a list OF. "recent" is not a claim about this session's work and is
+// worded so — the server can offer no better answer for a branch with no upstream.
+const RV_SCOPE: Record<RvCommits["scope"], { head: string; note: string }> = {
+  lane: { head: "Commits on this lane", note: "this lane's own commits, since it forked" },
+  upstream: { head: "Commits not yet pushed", note: "commits here that the upstream branch does not have" },
+  recent: { head: "Recent commits in this repo", note: "this branch has no upstream, so there is no"
+    + " \"commits made here\" to compute — this is recent history, NOT a statement about this session" },
+};
+
+async function fetchWorkingDiff(slotId: number): Promise<RvDiff> {
+  const res = await api(`/api/slots/${slotId}/diff`).catch(() => null);
+  if (!res || !res.ok) return { heading: "Working diff", stat: "", files: [], diff: "", truncated: false, loadFailed: true };
+  const d = (await res.json().catch(() => ({}))) as
+    { branch?: string | null; status?: string[]; diff?: string; truncated?: boolean;
+      sessionScoped?: boolean; error?: string };
+  const heading = d.sessionScoped
+    ? "Session diff — everything this session changed" : "Working diff (uncommitted)";
+  if (d.error) return { heading, stat: "", files: [], diff: "", truncated: false, error: d.error };
+  const n = d.status?.length ?? 0;
+  const diff = d.diff ?? "";
+  return {
+    heading,
+    stat: `${d.branch ?? "?"} · ${n} file${n === 1 ? "" : "s"} changed${d.truncated ? " · diff truncated" : ""}`,
+    files: splitDiff(diff), diff, truncated: !!d.truncated,
+    empty: diff ? undefined : n
+      ? "(changes are untracked — no tracked diff)"
+      : d.sessionScoped ? "this session hasn't changed anything yet"
+        : "clean working tree — everything is committed",
+  };
+}
+
+async function fetchLandDiff(slotId: number): Promise<RvDiff> {
+  const res = await api(`/api/slots/${slotId}/merge-diff`).catch(() => null);
+  const heading = "What will land on main (main…HEAD)";
+  // fail closed, as the land confirm does: a dropped fetch must not read as "no changes to land"
+  if (!res || !res.ok) return { heading, stat: "", files: [], diff: "", truncated: false, loadFailed: true };
+  const d = (await res.json().catch(() => ({ loadFailed: true }))) as
+    { main?: string; branch?: string; files?: string[]; diff?: string; truncated?: boolean;
+      error?: string; loadFailed?: boolean };
+  if (d.loadFailed) return { heading, stat: "", files: [], diff: "", truncated: false, loadFailed: true };
+  if (d.error) return { heading, stat: "", files: [], diff: "", truncated: false, error: d.error };
+  const n = d.files?.length ?? 0;
+  const diff = d.diff ?? "";
+  return {
+    heading,
+    stat: `${d.branch ?? "?"} → ${d.main ?? "main"} · ${n} file${n === 1 ? "" : "s"}${d.truncated ? " · diff truncated" : ""}`,
+    files: splitDiff(diff), diff, truncated: !!d.truncated,
+    empty: diff ? undefined : "no committed changes to land",
+  };
+}
+
+function rvDelta(add: number, del: number): HTMLElement {
+  const w = el("span", "shrdelta");
+  w.appendChild(el("span", "a", `+${add}`));
+  w.appendChild(el("span", "d", `−${del}`));
+  return w;
+}
+
+// what the detail pane is currently showing. A commit is keyed by hash, not by index, so a
+// re-render that reorders the list can never swap which commit is on screen. A file carries the
+// hash it belongs to (absent = a file of the whole-range diff), because the same path means two
+// different diffs depending on whether you reached it through a commit or through the range.
+type RvPick = { k: "all" } | { k: "file"; path: string; hash?: string } | { k: "commit"; hash: string };
+const samePick = (a: RvPick, b: RvPick): boolean =>
+  a.k === b.k
+  && (a.k !== "file" || (a.path === (b as { path: string }).path && a.hash === (b as { hash?: string }).hash))
+  && (a.k !== "commit" || a.hash === (b as { hash: string }).hash);
+// the commit whose content is on screen, whether it was reached directly or through one of its files
+const pickCommit = (p: RvPick): string | undefined => p.k === "commit" ? p.hash : p.k === "file" ? p.hash : undefined;
+
+async function openReview(slotId: number, initial: RvSource) {
+  setDrawer(false);
+  const isLane = !!fleet.find((s) => s.id === slotId)?.worktree;
+  let source: RvSource = isLane ? initial : "working";
+  let pick: RvPick = { k: "all" };
+  const diffs = new Map<RvSource, RvDiff>();
+  let commits: RvCommits | null = null;
+  // one entry per commit whose diff has been fetched — a commit is immutable, so this never goes stale
+  const commitDiffs = new Map<string, { files: DiffFile[]; diff: string; truncated: boolean; failed?: boolean }>();
+
+  const shell = openShell({
+    id: "review",
+    title: "Review",
+    subtitle: "loading…",
+    detailHint: "Pick a file or a commit on the left — “All changes” shows the whole diff.",
+    listWidth: 370,
+  });
+
+  const showDiffText = (target: HTMLElement, text: string) => {
+    const box = el("div", "difftxt");
+    renderDiffInto(box, text);
+    target.appendChild(box);
+  };
+
+  // The window HEADER carries what the current source is; the detail carries what the current
+  // PICK is. Repeating the heading in both (the first cut did) reads as two different statements
+  // about the same thing, so "all changes" deliberately renders no heading of its own.
+  const renderDetail = () => {
+    shell.detail.replaceChildren();
+    const d = diffs.get(source);
+    if (!d) { shell.detail.appendChild(el("div", "shellhint", "loading…")); return; }
+    const hash = pickCommit(pick);
+    if (hash) {
+      const c = commits?.commits.find((x) => x.hash === hash);
+      const cd = commitDiffs.get(hash);
+      shell.detail.appendChild(el("div", "rvhead", c?.subject ?? "commit"));
+      shell.detail.appendChild(el("div", "diffstat",
+        c ? `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}` : hash));
+      if (!cd) { shell.detail.appendChild(el("div", "shellhint", "loading…")); return; }
+      if (cd.failed) {
+        shell.detail.appendChild(el("div", "diffstat err",
+          "couldn't load this commit's diff — pick it again to retry"));
+        return;
+      }
+      if (pick.k === "file") {
+        // into a const first: `pick` is a mutable binding another closure writes, so TS drops its
+        // narrowing inside the callback below
+        const path = pick.path;
+        const f = cd.files.find((x) => x.path === path);
+        if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is not in this commit")); return; }
+        shell.detail.appendChild(el("div", "rvsub", `${f.path} · +${f.add} −${f.del}`));
+        showDiffText(shell.detail, f.text);
+        return;
+      }
+      if (!cd.diff) {
+        shell.detail.appendChild(el("div", "shellhint",
+          "no textual diff — a merge commit shows none here, and neither does an empty commit"));
+        return;
+      }
+      if (cd.truncated) shell.detail.appendChild(el("div", "diffstat", "diff truncated"));
+      showDiffText(shell.detail, cd.diff);
+      return;
+    }
+    if (d.loadFailed) {
+      shell.detail.appendChild(el("div", "diffstat err",
+        "couldn't load this diff — retry. This is a failed fetch, not an empty diff."));
+      return;
+    }
+    if (d.error) { shell.detail.appendChild(el("div", "diffstat", d.error)); return; }
+    if (pick.k === "file") {
+      const path = pick.path;
+      const f = d.files.find((x) => x.path === path);
+      if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is no longer in this diff")); return; }
+      shell.detail.appendChild(el("div", "rvhead", f.path));
+      shell.detail.appendChild(el("div", "diffstat", `+${f.add} −${f.del}`));
+      showDiffText(shell.detail, f.text);
+      return;
+    }
+    if (d.empty) { shell.detail.appendChild(el("div", "shellhint", d.empty)); return; }
+    showDiffText(shell.detail, d.diff);
+  };
+
+  const open = (p: RvPick) => {
+    pick = p;
+    if (p.k === "commit" && !commitDiffs.has(p.hash)) {
+      const hash = p.hash;
+      void api(`/api/slots/${slotId}/commit-diff?hash=${encodeURIComponent(hash)}`)
+        .then(async (r) => (r.ok
+          ? (await r.json()) as { diff?: string; truncated?: boolean }
+          : { failed: true } as const))
+        .catch(() => ({ failed: true } as const))
+        .then((j) => {
+          const diff = "failed" in j ? "" : j.diff ?? "";
+          commitDiffs.set(hash, {
+            diff, files: splitDiff(diff),
+            truncated: "failed" in j ? false : !!j.truncated,
+            failed: "failed" in j,
+          });
+          if (shell.isOpen() && pick.k === "commit" && pick.hash === hash) renderDetail();
+        });
+    }
+    renderList();
+    renderDetail();
+    shell.showDetail(true);
+  };
+
+  function renderList() {
+    shell.list.replaceChildren();
+    const rows: ShellRow[] = [];
+    let selIdx = -1;
+    const sec = (text: string, n?: number, title?: string) => {
+      const h = el("div", "shellsec");
+      h.appendChild(el("span", "shellsect", text));
+      if (n !== undefined) h.appendChild(el("span", "shellsecn", String(n)));
+      if (title) h.title = title;
+      shell.list.appendChild(h);
+    };
+    const row = (o: { name: string; sub?: string; right?: HTMLElement; on: RvPick; title?: string;
+        ctx?: boolean }) => {
+      const r = el("div", `shellrow${o.ctx ? " ctx" : ""}`);
+      if (o.title) r.title = o.title;
+      const m = el("div", "shrmain");
+      m.appendChild(el("div", "shrname", o.name));
+      if (o.sub) m.appendChild(el("div", "shrsub", o.sub));
+      r.appendChild(m);
+      if (o.right) r.appendChild(o.right);
+      const act = () => open(o.on);
+      r.onclick = act;
+      shell.list.appendChild(r);
+      if (samePick(o.on, pick)) { r.classList.add("sel"); selIdx = rows.length; }
+      rows.push({ el: r, open: act });
+    };
+
+    const d = diffs.get(source);
+    row({ name: "All changes", sub: d?.stat || undefined, on: { k: "all" } });
+    // the file section follows the SELECTION: with a commit open it lists that commit's files, so
+    // the list and the diff on screen are never statements about two different sets of changes
+    const hash = pickCommit(pick);
+    const cd = hash ? commitDiffs.get(hash) : undefined;
+    const files = cd ? cd.files : d?.files ?? [];
+    if (files.length) {
+      sec(cd ? "Files in this commit" : "Changed files", files.length);
+      for (const f of files) row({ name: f.path.split("/").pop() ?? f.path, sub: f.path,
+        right: rvDelta(f.add, f.del), on: { k: "file", path: f.path, hash }, title: f.path });
+    }
+    if (commits?.commits.length) {
+      const sc = RV_SCOPE[commits.scope];
+      sec(sc.head, commits.commits.length, sc.note);
+      for (const c of commits.commits)
+        row({ name: c.subject || "(no subject)", on: { k: "commit", hash: c.hash },
+          // a file of this commit is selected → mark the commit as the context that file sits in
+          ctx: c.hash === hash && pick.k === "file",
+          sub: `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}` });
+      if (commits.capped) shell.list.appendChild(el("div", "shellhint", "…older commits not listed"));
+    }
+    shell.setRows(rows);
+    if (selIdx >= 0) shell.select(selIdx, false);
+  }
+
+  const renderTools = () => {
+    shell.tools.replaceChildren();
+    if (isLane) {
+      for (const [s, label, title] of [
+        ["land", "to land", "the resolved diff against main — exactly what a land would fast-forward"],
+        ["working", "uncommitted", "what is changed in the lane's tree right now, not yet committed"],
+      ] as [RvSource, string, string][]) {
+        const b = el("button", `shrbtn${source === s ? " active" : ""}`, label) as HTMLButtonElement;
+        b.title = title;
+        b.onclick = () => { if (source !== s) { source = s; pick = { k: "all" }; void load(); } };
+        shell.tools.appendChild(b);
+      }
+    }
+    const d = diffs.get(source);
+    // the ⏏ button appears only on a land diff that actually loaded and has content — the same
+    // fail-closed posture as the land confirm, which is where the real gate still lives
+    if (isLane && source === "land" && d && !d.loadFailed && !d.error && !d.empty) {
+      const land = el("button", "shrbtn primary", "⏏ land") as HTMLButtonElement;
+      land.style.marginLeft = "auto";
+      land.onclick = () => { shell.close(); void doMergeLand(slotId); };
+      shell.tools.appendChild(land);
+    }
+  };
+
+  const load = async () => {
+    renderTools();
+    renderList();
+    renderDetail();
+    if (!diffs.has(source)) {
+      diffs.set(source, source === "land" ? await fetchLandDiff(slotId) : await fetchWorkingDiff(slotId));
+      if (!shell.isOpen()) return;
+    }
+    const d = diffs.get(source);
+    shell.setTitle(d?.heading ?? "Review");
+    shell.setSubtitle(d?.stat ?? "");
+    renderTools();
+    renderList();
+    renderDetail();
+  };
+
+  void load();
+  void api(`/api/slots/${slotId}/commits`)
+    .then(async (r) => (r.ok ? (await r.json()) as RvCommits : null))
+    .catch(() => null)
+    .then((c) => { if (!shell.isOpen()) return; commits = c; renderList(); });
+}
+
+// six call sites across the board and the sidebar reach the window through these two names
+async function openDiff(slotId: number) { await openReview(slotId, "working"); }
+async function openMergeDiff(slotId: number) { await openReview(slotId, "land"); }
 
 // --- task queue overlay ---
 const queuedlg = $("queuedlg"), queuepanel = $("queuepanel");

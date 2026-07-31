@@ -138,8 +138,12 @@ const CHAPTERS: Chapter[] = [
     // No copy-versus-project half-sentence any more: it existed to set up step 2, and a promise
     // whose payoff has been cut is worse than no promise. What is left is what this one step really
     // shows — an order in plain language, and a record that writes itself while it is carried out.
-    text: "Der Auftrag steht als normaler Satz im Feld, kein Kommando. Was die Sitzung fertig hat, "
-      + "hält sie in zwei Schritten fest, und Fleet schreibt beide mit.",
+    // Rewritten with the opening in place. The old sentence spent its first half on "kein Kommando",
+    // a distinction only somebody who expected a command line would notice, and its second half said
+    // the same thing twice ("hält fest" / "schreibt mit"). The opening now carries what this is, so
+    // the narration only has to say what happens: an order goes out, and two commits come back.
+    text: "Die Sitzung nimmt den Auftrag an und arbeitet ihn ab. Am Ende stehen die zwei "
+      + "Arbeitsschritte da, die verlangt waren — mit Kürzel, Betreff und Zeilenzahl.",
     slot: 2,
     layout: 1,
     brief: true, // open from the first picture: a panel that appears later is a second event
@@ -191,10 +195,13 @@ const CHAPTERS: Chapter[] = [
       // Exactly while the first picture stands. `until: 1` needs no new machinery for that: the
       // hold parks the replay after frame 0 and the next picture is frame 1, so this label is on
       // screen for precisely as long as the wait lasts.
+      // "Der Auftrag steht im Feld" moved into the opening, which says it with room to spare. What
+      // is left is the one thing this label has to do — name the key — plus what pressing it starts,
+      // so the visitor knows he is beginning a recording and not sending a message.
       { anchor: "#input", place: "below", at: 0, until: 1,
         text: () => (MOBILE.matches
-          ? "Der Auftrag steht im Feld. Tipp auf ➤."
-          : "Der Auftrag steht im Feld. Drück Enter.") },
+          ? "Tipp auf ➤ — dann läuft die Aufnahme los."
+          : "Drück Enter — dann läuft die Aufnahme los.") },
       // 223 is the picture at which frame 2062 lands (151 in the first range, then 72 into the
       // second), i.e. the moment both commits stand in the terminal. The label says the POINT, not
       // where things are: a half-sentence that locates ("die Zahlen dazu stehen hier") only helps
@@ -207,8 +214,12 @@ const CHAPTERS: Chapter[] = [
       // kein Vorteil, den ich einordnen kann, weil ich gar nicht wusste, dass hier jemand etwas
       // notieren oder abschreiben müsste." It is also the shape the owner struck from a letter on
       // 30.07. — work is described by what it does, never against a straw man.
+      // Past tense since the gate: it appears at the moment the panel has ALREADY changed, and a
+      // present-tense sentence there reads as a promise about something the visitor is still waiting
+      // for. "Niemand hat das eingetragen" is deliberately not here — see the note above on the cold
+      // reader, who read exactly that shape as the one sentence trying to impress him.
       { anchor: "#board", place: "below", at: 223,
-        text: "Das schreibt Fleet von selbst mit: jeden Schritt, jede geänderte Datei." },
+        text: "Fleet hat mitgeschrieben: beide Arbeitsschritte, jede geänderte Datei." },
       // The third label pointed at "Weiter" and went with step 2. There is nowhere to send the
       // visitor on now, and a sign to a door that is not there is worse than no sign.
     ],

@@ -775,6 +775,29 @@ globalThis.WebSocket = DemoSocket as unknown as typeof WebSocket;
     });
   }
 
+  // THE OPENING, AND WHY ITS DISMISSAL LIVES HERE. #dbintro (demo/build.ts) covers the page until
+  // the visitor has read what he is about to watch. It answers to the same two controls as the
+  // replay — Enter and a click — so the two behaviours have to be decided in one place, or the
+  // keystroke that closes the opening would fall straight through and start the recording, and the
+  // visitor would never see the first picture he was just told to look at.
+  // The state is a class on <html> rather than a variable so the CSS reads it too, and so the guard
+  // below cannot disagree with what is on screen.
+  const introUp = (): boolean => !document.documentElement.classList.contains("dbintro-done");
+  const closeIntro = (e?: Event): void => {
+    e?.preventDefault();
+    e?.stopImmediatePropagation();
+    document.documentElement.classList.add("dbintro-done");
+    // focus goes to the compose bar, so the next Enter is aimed at the thing the label points at
+    (document.getElementById("input") as HTMLTextAreaElement | null)?.focus();
+  };
+  window.addEventListener("keydown", (e) => {
+    if (!introUp()) return;
+    if (e.key === "Enter" || e.key === " " || e.key === "Escape") closeIntro(e);
+  }, true);
+  window.addEventListener("click", (e) => {
+    if (introUp() && e.target instanceof Element && e.target.closest("#dbintro")) closeIntro(e);
+  }, true);
+
   // WHY THE WINDOW AND WHY CAPTURE. client.ts's own handlers sit ON the two elements —
   // `ta.addEventListener("keydown", …)` (:3855) and `send.onclick = …` (:3854) — and a window
   // capture listener runs before anything at the target, whoever registered first. That is not a
@@ -783,6 +806,11 @@ globalThis.WebSocket = DemoSocket as unknown as typeof WebSocket;
   const trigger = (e: Event): void => {
     e.preventDefault();
     e.stopImmediatePropagation();
+    // Belt and braces: the opening's own listeners are registered above this one and stop the event
+    // before it arrives, and its overlay covers ➤ anyway. Stated here as well because "the recording
+    // cannot start behind the opening" is an invariant of the page, not a side effect of two
+    // listener registration orders.
+    if (introUp()) return;
     if (!startReplay()) demoHint(NOTHING_SENT);
   };
   window.addEventListener("keydown", (e) => {

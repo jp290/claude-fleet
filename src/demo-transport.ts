@@ -477,12 +477,20 @@ function demoHint(text: string): void {
 // the geometry the stream was recorded at (slots.json's terminal.rows), so it is the one height at
 // which the TUI's own cursor arithmetic is exactly right.
 const REC = { cols: 76, rows: 28 };
-// The scale is CAPPED, and only upwards. Scaling DOWN is what fits the whole recorded screen into a
-// pane too small for it, and that is not negotiable. Scaling UP is a presentation choice, and past a
-// point a bad one: one pane at 1360 px hands the terminal a factor of 2.06, i.e. the dashboard's own
-// 12 px type drawn at 25 px, which is what made a solo chapter read as a zoomed screenshot instead
-// of a terminal. Beyond the cap the block is centred in what is left rather than stretched into it.
-const MAX_SCALE = 1.5;
+// There is NO upper cap on the factor, and the 1.5 that used to be here was the actual cause of the
+// solo chapter looking broken. .pane draws a real frame (1px border, 8px radius, its own background;
+// public/index.html's .pane rule). Capped, the block sat 824 px wide inside a 1118 px frame — 147 px
+// of pane background down each side, a border promising a surface its content did not fill. In the
+// 2x2 grid the terminal is exactly as wide as its pane, the frame hugs it, and that is precisely why
+// the grid always looked right and the single pane did not.
+//
+// Filling the pane instead hands the solo chapter a factor of 1.83 (the height binds first), i.e. the
+// dashboard's 12 px type drawn at 22 px with 56 px of slack down each side. For a tutorial read by
+// people without the vocabulary, large and legible is the point, not a defect: the earlier worry
+// that this "reads as a zoomed screenshot" was a judgement about a dashboard, and this page is not
+// one. Sizing the PANE to the terminal instead was tried and reverted: .pane's children are all
+// absolutely positioned, so a pane that stops stretching has no intrinsic height and collapses to
+// nothing — measured, the terminal vanished entirely.
 const termOf = new WeakMap<HTMLElement, Terminal>();
 {
   const open = Terminal.prototype.open;
@@ -536,17 +544,18 @@ function fitScale(paneterm: HTMLElement | null, tries = 0): void {
     if (tries < 30) requestAnimationFrame(() => fitScale(paneterm, tries + 1));
     return;
   }
-  // One factor, from whichever axis runs out first, never past MAX_SCALE — the whole recorded screen
-  // is always inside the pane. Because both axes are pinned, this is the entire geometry: there is no
-  // row count to negotiate with the pane, so there is also no resize()-feeds-the-observer loop to
-  // damp, which is what the removed oscillation guard was for.
-  const s = Math.min(box.width / natW, box.height / natH, MAX_SCALE);
+  // One factor, from whichever axis runs out first: the whole recorded screen is always inside the
+  // pane, and it fills the pane on the axis that bound. Because both axes are pinned, this is the
+  // entire geometry — there is no row count to negotiate with the pane, so there is also no
+  // resize()-feeds-the-observer loop to damp, which is what the removed oscillation guard was for.
+  const s = Math.min(box.width / natW, box.height / natH);
   term.style.width = `${natW}px`;
   term.style.height = `${natH}px`;
   term.style.transformOrigin = "top left";
   term.style.transform = `scale(${s.toFixed(4)})`;
-  // Centred on both axes in whatever is left over. transform does not participate in layout, so the
-  // offsets have to be margins on the un-transformed box, computed from the SCALED size.
+  // Centred on both axes in whatever the other axis left over. transform does not participate in
+  // layout, so the offsets have to be margins on the un-transformed box, computed from the SCALED
+  // size.
   term.style.marginLeft = `${Math.max(0, Math.round((box.width - natW * s) / 2))}px`;
   term.style.marginTop = `${Math.max(0, Math.round((box.height - natH * s) / 2))}px`;
 }

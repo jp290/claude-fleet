@@ -54,6 +54,11 @@ export interface Hint {
   until?: number;
   /** Which side of the anchor it sits on. Default "right". */
   place?: "above" | "below" | "left" | "right";
+  /** This label asks for an action rather than explaining one. It keeps pulsing until the visitor
+   *  acts; every other label pulses a few times and then holds still. The distinction is the whole
+   *  reason the pulse is tolerable: a page that never stops nudging about something already done is
+   *  the thing "not annoying" rules out. */
+  cta?: boolean;
 }
 
 export interface Chapter {
@@ -177,7 +182,13 @@ const CHAPTERS: Chapter[] = [
     // PLAN §2b describes this version as the better reading anyway: the terminal reports "Done",
     // holds, and a moment later the panel catches up — which is what a polling dashboard does.
     cut: {
-      spans: [{ from: 0, to: 151, secs: 5 }, { from: 1990, to: 2080, secs: 6 }],
+      // SLOWED TO ~30% OF THE PACE THAT SHIPPED (owner, 31.07.: "vllt 25-35% vom jetzigen"): 5 s and
+      // 6 s become 17 s and 20 s, i.e. 113 ms and 222 ms per frame. Both needed MAX_FRAME_MS raised
+      // first — at the old 80 ms ceiling these two numbers would have bought nothing at all, and the
+      // excerpt would have kept running at 12.1 s and 7.2 s while the source claimed otherwise.
+      // ~39 s including the card between them, which is also where PLAN §2 put this step before any
+      // of it was built ("zusammen etwa 35 s"). The shipped 12.8 s was the accident.
+      spans: [{ from: 0, to: 151, secs: 17 }, { from: 1990, to: 2080, secs: 20 }],
       // Read off the session's own two timers above — 12s and 4m 44s — and not from the recording's
       // total. PLAN §2b proposed "gut fünf Minuten" from the `Cogitated for 5m 8s` the session
       // prints at frame 2119; that is the whole run, while what this card skips is 4m 32s of it.
@@ -198,7 +209,12 @@ const CHAPTERS: Chapter[] = [
       // "Der Auftrag steht im Feld" moved into the opening, which says it with room to spare. What
       // is left is the one thing this label has to do — name the key — plus what pressing it starts,
       // so the visitor knows he is beginning a recording and not sending a message.
-      { anchor: "#input", place: "below", at: 0, until: 1,
+      // TO THE SIDE, not underneath. Below the compose box is the one strip a label must not occupy
+      // on a phone, where the bar clamps it straight back onto the order it points at (PLAN §8h).
+      // Beside it, the label sits in the page margin the bounded app leaves free — which is where
+      // PLAN §4 wanted our writing in the first place. placeHint() falls back along the recording
+      // where no side margin exists, so the phone is not left pointing at nothing.
+      { anchor: "#input", place: "left", at: 0, until: 1, cta: true,
         text: () => (MOBILE.matches
           ? "Tipp auf ➤ — dann läuft die Aufnahme los."
           : "Drück Enter — dann läuft die Aufnahme los.") },
@@ -218,7 +234,7 @@ const CHAPTERS: Chapter[] = [
       // present-tense sentence there reads as a promise about something the visitor is still waiting
       // for. "Niemand hat das eingetragen" is deliberately not here — see the note above on the cold
       // reader, who read exactly that shape as the one sentence trying to impress him.
-      { anchor: "#board", place: "below", at: 223,
+      { anchor: "#board", place: "right", at: 223,
         text: "Fleet hat mitgeschrieben: beide Arbeitsschritte, jede geänderte Datei." },
       // The third label pointed at "Weiter" and went with step 2. There is nowhere to send the
       // visitor on now, and a sign to a door that is not there is worse than no sign.
@@ -332,6 +348,14 @@ function exhibits(): DOMRect[] {
   if (rec) out.push(rec);
   const box = document.querySelector<HTMLElement>("#input")?.getBoundingClientRect();
   if (box && onScreen(box)) out.push(box);
+  // THE ℹ PANEL IS THE THIRD, and leaving it out was a real defect rather than an omission of
+  // principle: with the labels moved to the sides, the one anchored to #board asked for the right
+  // margin, the margin is 155 px and the label is 280, so it was clamped back INTO the panel and
+  // came to rest on the two commit lines it was describing. Measured at 1360x860 — label at
+  // 1072..1352, panel at 940..1204. A label that covers its own subject is worse than no label, and
+  // this panel is the demo's exhibit as much as the recording is.
+  const brd = document.querySelector<HTMLElement>("#board")?.getBoundingClientRect();
+  if (brd && onScreen(brd)) out.push(brd);
   return out;
 }
 
@@ -411,7 +435,7 @@ function syncHints(): void {
     let el = layer.querySelector<HTMLElement>(`[data-h="${key(i)}"]:not(.going)`);
     if (!el) {
       el = document.createElement("div");
-      el.className = `dbhint p-${h.place ?? "right"}`;
+      el.className = `dbhint p-${h.place ?? "right"}${h.cta ? " cta" : ""}`;
       el.dataset.h = key(i);
       el.textContent = text;
       layer.appendChild(el);

@@ -26,6 +26,15 @@ const realFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 // unchanged at a site root, under a subpath (example.com/demo/), and inside an iframe.
 const fixture = (name: string): string => new URL(`fixtures/${name}`, document.baseURI).href;
 
+// The dashboard's own breakpoint (src/client.ts:27), repeated because client.ts is not modified and
+// its constant is therefore not reachable. It lives here rather than in the chapter layer because
+// both halves of the demo now need it — the chapters for their layout, this file for the key that
+// starts a replay, which is Enter on a desktop and ➤ on a phone.
+export const MOBILE = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
+
+/** What every refused input says. One sentence, because there is one reason. */
+const NOTHING_SENT = "This is a recorded replay — nothing is sent.";
+
 interface DemoSlot {
   id: number; file: string; label: string; cwd: string;
   prompt: string; outcome: string; bytes: number;
@@ -63,15 +72,28 @@ const MIN_FRAME_MS = 16;
 const MAX_FRAME_MS = 80;
 
 // --- excerpts ----------------------------------------------------------------------------------
-// A chapter may play a FRAME RANGE of a recording instead of the whole file, and pace it itself:
+// A chapter may play FRAME RANGES of a recording instead of the whole file, and pace each itself:
 // the 90 s above is the budget of a whole stream, and a 15 s chapter that inherits it would either
-// crawl or run out of pictures. `secs` is therefore per excerpt, and the same clamp applies, so a
+// crawl or run out of pictures. `secs` is therefore per range, and the same clamp applies, so a
 // short range still cannot become a slideshow.
 //
-// The range is stated in frames, not seconds or bytes, because the frame is the only unit the
+// A range is stated in frames, not seconds or bytes, because the frame is the only unit the
 // recordings actually have (see above): a chosen frame boundary is a whole repaint, so an excerpt
 // can start and end on a complete picture instead of mid-redraw.
-export interface DemoCut { from: number; to?: number; secs?: number }
+//
+// WHY MORE THAN ONE RANGE. The pacing clamp bounds a frame at MIN_FRAME_MS, so lane.raw's 2120
+// frames run at least 34 s however short a `secs` asks for — and 1839 of those frames are a spinner
+// turning while the session thinks. Step 1 needs its two ends and not its middle: the order going
+// out, and the commits coming back.
+export interface DemoSpan { from: number; to?: number; secs?: number }
+export interface DemoCut {
+  spans: DemoSpan[];
+  /** What stands between span i and span i+1. A silent jump would be the one claim in this demo
+   *  nobody could check; a named one is not. */
+  gaps?: string[];
+  /** Hold on the first picture until the visitor acts (see the gate below). */
+  hold?: boolean;
+}
 const cuts = new Map<number, DemoCut>();
 // Set by the chapter layer BEFORE the pane connects (src/demo-chapters.ts runs before the client's
 // boot, and re-arms a pane by clicking its own ↻ when a chapter changes what it should play).
@@ -89,6 +111,44 @@ export function onStreamEnd(fn: (slot: number) => void): void { streamEnd = fn; 
 // of this chapter — and does not move when a cut's `from` does.
 let framePlayed: ((slot: number, i: number) => void) | null = null;
 export function onFrame(fn: (slot: number, i: number) => void): void { framePlayed = fn; }
+
+// ---------------------------------------------------------------------------------------------
+// THE GATE — the one thing on this page a visitor does, and the one place a keystroke means what
+// it looks like.
+//
+// A held chapter emits its first picture and then waits. That picture is not a still we made: in
+// lane.raw frame 0 the order stands in the SESSION'S OWN input line, unsubmitted — read out of the
+// stream, where the context bar still says `[----------] --%` and no spinner is running — and
+// frame 1 is that same order echoed with "Transmuting…" under it. So the visitor's Enter lands
+// exactly where the real one did, and nothing between the two is invented.
+//
+// It is a promise rather than a flag because the player awaits it: there is no second code path
+// for "started" and none for "not yet", so a chapter cannot get stuck half-armed.
+let openGate: (() => void) | null = null;
+/** True while a replay is parked on its first picture. The chapter layer needs no such query —
+ *  a hint with `until: 1` is on screen exactly while the first frame stands — but the input
+ *  handlers below do: an Enter with nothing waiting must not silently look like it worked. */
+export function replayWaiting(): boolean { return openGate !== null; }
+/** The visitor acted. False when nothing was waiting, so the caller can say so instead. */
+export function startReplay(): boolean {
+  const go = openGate;
+  openGate = null;
+  if (!go) return false;
+  go();
+  return true;
+}
+
+// How far each slot's replay has got, in ABSOLUTE frames of its recording — the excerpt-relative
+// index the chapter layer counts cannot answer "have the commits been printed yet", because that
+// is a fact about the recording. The ℹ brief route below reads this; nothing else does.
+const frameAt = new Map<number, number>();
+// From which absolute frame a slot's brief answers with its AFTER state. Set by the chapter that
+// owns the excerpt, because that is where the recording's landmarks already live.
+const briefSwitch = new Map<number, number>();
+export function setBriefSwitch(slot: number, frame: number | null): void {
+  if (frame === null) briefSwitch.delete(slot);
+  else briefSwitch.set(slot, frame);
+}
 
 const CURSOR_SHOW = [0x1b, 0x5b, 0x3f, 0x32, 0x35, 0x68]; // ESC [ ? 2 5 h
 
@@ -117,6 +177,19 @@ const CLEAR = seq("\x1b[H\x1b[2J\x1b[3J");
 const FINISHED = seq(
   "\r\n\x1b[2m── replay finished — this session's recording ends here. ↻ (top right of the pane) replays it. ──\x1b[0m\r\n",
 );
+// The card between two ranges. It is drawn on a CLEARED screen rather than appended to the last
+// picture: the cursor sits wherever the TUI left it, and writing there would land the words inside
+// the session's own compose box. Cleared, they are unmistakably ours.
+//
+// It says something true rather than merely owning up to the cut: the recording prints
+// `Cogitated for 5m 8s` at its own frame 2119 (read out of the stream), so the elapsed time in the
+// text is the session's own number and not our rounding of a byte count.
+const GAP_MS = 1800;
+const gapCard = (text: string): ArrayBuffer => {
+  const line = `── ${text} ──`;
+  const pad = " ".repeat(Math.max(0, Math.floor((REC.cols - [...line].length) / 2)));
+  return seq(`\x1b[H\x1b[2J\x1b[3J${"\r\n".repeat(Math.max(0, (REC.rows >> 1) - 1))}${pad}\x1b[2m${line}\x1b[0m`);
+};
 
 let manifestOnce: Promise<DemoManifest> | null = null;
 function loadManifest(): Promise<DemoManifest> {
@@ -178,8 +251,10 @@ class DemoSocket {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   private slot = 0;
-  private frameMs = MAX_FRAME_MS;
   private cut: DemoCut | undefined;
+  // Whatever the player is currently waiting on — a frame's delay or the visitor. close() calls it
+  // so a discarded pane's player returns instead of parking forever on a promise nobody will keep.
+  private wake: (() => void) | null = null;
 
   constructor(url: string | URL) {
     this.url = String(url);
@@ -191,7 +266,7 @@ class DemoSocket {
   // place where the visitor learns why, rather than three disabled controls that each need
   // their own explanation.
   send(_data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-    demoHint("This is a recorded replay — input is disabled.");
+    demoHint(NOTHING_SENT);
   }
 
   // Deliberately never fires onclose, on this path or in close(). The client's onclose handler
@@ -200,6 +275,8 @@ class DemoSocket {
   close(): void {
     this.stopped = true;
     clearTimeout(this.timer);
+    if (openGate === this.wake) openGate = null; // a pane discarded mid-wait takes its gate with it
+    this.wake?.();
     this.readyState = DemoSocket.CLOSED;
   }
 
@@ -217,6 +294,10 @@ class DemoSocket {
     // fixed-geometry recording cannot honour, so only the slot id is read. (Reflow at another
     // width is xterm's job and works; slots.json records the 76×28 the sessions really ran at.)
     this.slot = Number(/\/ws\/(\d+)/.exec(this.url)?.[1] ?? 0);
+    // Where this replay stands, before it has painted anything. Without it a pane rebuilt for a
+    // second look would inherit the last progress of the pane before it, and the ℹ panel would open
+    // on the state the visitor has not reached yet.
+    frameAt.set(this.slot, cuts.get(this.slot)?.spans[0]?.from ?? 0);
     try {
       const m = await loadManifest();
       const s = m.slots.find((x) => x.id === this.slot);
@@ -226,23 +307,13 @@ class DemoSocket {
       // once and cached (framesOnce): two chapters showing two ranges of the same recording cost
       // one download, and switching back and forth costs none.
       this.cut = cuts.get(this.slot);
-      const from = Math.min(Math.max(0, this.cut?.from ?? 0), all.length);
-      const to = Math.min(Math.max(from, this.cut?.to ?? all.length), all.length);
-      const frames = all.slice(from, to);
       // Both awaits above guarantee at least one microtask, so the client's synchronous
       // `ws.onopen = …` / `onmessage = …` assignments after `new WebSocket(…)` have landed by
       // the time anything is delivered. This ordering is load-bearing, not incidental.
       if (this.stopped) return;
       this.readyState = DemoSocket.OPEN;
       this.onopen?.(new Event("open"));
-      // Clearing first is the same argument as at the start of a stream, and it binds harder for an
-      // excerpt: frame `from` is a repaint that assumes whatever the frames before it drew, so
-      // without a clear the range would start on top of a screen that belongs to another moment.
-      this.emit(CLEAR);
-      const target = Math.max(1000, (this.cut?.secs ?? TARGET_MS / 1000) * 1000);
-      this.frameMs = Math.min(MAX_FRAME_MS,
-        Math.max(MIN_FRAME_MS, Math.round(target / Math.max(1, frames.length))));
-      this.play(frames, 0);
+      await this.play(all);
     } catch (e) {
       // A missing or unreadable fixture must say so in the pane it belongs to instead of
       // leaving an empty terminal that looks like a hung connection.
@@ -254,22 +325,58 @@ class DemoSocket {
     }
   }
 
-  // Chained timeouts rather than one interval: the next frame is scheduled only after the
-  // current one has been handed over, so a slow paint delays the replay instead of building an
-  // unbounded write queue inside xterm.
-  private play(frames: ArrayBuffer[], i: number): void {
-    if (this.stopped) return;
-    if (i >= frames.length) {
-      // A whole stream that reached its end says so. An EXCERPT does not: the session did not stop
-      // there, and writing "replay finished" into it would claim something untrue. It holds on its
-      // last picture instead — which is also what makes the last picture the chapter's exhibit.
-      if (!this.cut) this.emit(FINISHED);
-      streamEnd?.(this.slot);
-      return;
+  /** Wait — for a frame's delay, or (`ms === null`) for the visitor. Awaited rather than chained
+   *  through setTimeout for the same reason the chaining existed: the next frame is scheduled only
+   *  after the current one has been handed over, so a slow paint delays the replay instead of
+   *  building an unbounded write queue inside xterm. The gate needs the same shape, and one shape
+   *  is fewer ways to be subtly wrong than two. */
+  private park(ms: number | null): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.wake = () => { this.wake = null; resolve(); };
+      if (ms === null) openGate = this.wake;
+      else this.timer = setTimeout(() => this.wake?.(), ms);
+    });
+  }
+
+  private async play(all: ArrayBuffer[]): Promise<void> {
+    const spans = this.cut?.spans ?? [{ from: 0 }];
+    let shown = 0; // pictures shown in THIS excerpt, across all its spans — a hint's `at` counts these
+    for (let s = 0; s < spans.length; s++) {
+      // The card owning up to the jump, before the range it precedes rather than after the one it
+      // follows: it clears the screen, so putting it first leaves the previous range's last picture
+      // standing for its full frame time instead of being wiped a moment early.
+      const gap = s > 0 ? this.cut?.gaps?.[s - 1] : undefined;
+      if (gap) {
+        this.emit(gapCard(gap));
+        await this.park(GAP_MS);
+        if (this.stopped) return;
+      }
+      const span = spans[s]!;
+      const from = Math.min(Math.max(0, span.from), all.length);
+      const to = Math.min(Math.max(from, span.to ?? all.length), all.length);
+      const frames = all.slice(from, to);
+      // Clearing first is the same argument as at the start of a stream, and it binds harder for an
+      // excerpt: frame `from` is a repaint that assumes whatever the frames before it drew, so
+      // without a clear the range would start on top of a screen that belongs to another moment.
+      this.emit(CLEAR);
+      const target = Math.max(1000, (span.secs ?? TARGET_MS / 1000) * 1000);
+      const frameMs = Math.min(MAX_FRAME_MS,
+        Math.max(MIN_FRAME_MS, Math.round(target / Math.max(1, frames.length))));
+      for (let i = 0; i < frames.length; i++) {
+        frameAt.set(this.slot, from + i);
+        framePlayed?.(this.slot, shown++);
+        this.emit(frames[i]!);
+        // The hold is the FIRST picture of the FIRST range and nowhere else: it is the moment
+        // before the order goes out, and there is only one of those.
+        await this.park(this.cut?.hold && s === 0 && i === 0 ? null : frameMs);
+        if (this.stopped) return;
+      }
     }
-    framePlayed?.(this.slot, i);
-    this.emit(frames[i]);
-    this.timer = setTimeout(() => this.play(frames, i + 1), this.frameMs);
+    // A whole stream that reached its end says so. An EXCERPT does not: the session did not stop
+    // there, and writing "replay finished" into it would claim something untrue. It holds on its
+    // last picture instead — which is also what makes the last picture the chapter's exhibit.
+    if (!this.cut) this.emit(FINISHED);
+    streamEnd?.(this.slot);
   }
 }
 
@@ -309,7 +416,12 @@ async function sessions(): Promise<Response> {
 // captured facts and no further code change. The feature appears exactly when its data does.
 interface DemoBrief {
   branch: string | null; sessionStart?: number | null;
-  uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
+  // `string | null` and not `string` as the live route types it (server.ts:775, which sends "" when
+  // there is nothing): the BEFORE state below is written out in PLAN §6 with an explicit null, and
+  // it is copied rather than adjusted. Nothing reads it there — with `files: []` the section that
+  // would print it does not render (src/client.ts:1375) — and both values are falsy to the one
+  // check that ever looks.
+  uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string | null;
   commits: { hash: string; ts: number; subject: string }[];
   ahead?: number; behind?: number;
   // A recorded LANE carries these three, and they are what makes the panel call itself a lane
@@ -317,22 +429,28 @@ interface DemoBrief {
   // of them has a default below rather than being required here.
   worktree?: { repo: string; branch: string; base: string; baseSha: string } | null;
   laneScoped?: boolean; laneBase?: string | null;
+  // Only the BEFORE state carries this, and it travels with the data on purpose: that state is the
+  // one value in the whole demo that was defined rather than fetched, and the sentence saying so
+  // belongs next to it rather than in a document somebody would have to go and find.
+  why?: string;
 }
-let briefsOnce: Promise<Record<string, DemoBrief> | null> | null = null;
-function loadBriefs(): Promise<Record<string, DemoBrief> | null> {
+interface DemoBriefs { briefs: Record<string, DemoBrief> | null; before: Record<string, DemoBrief> }
+let briefsOnce: Promise<DemoBriefs> | null = null;
+function loadBriefs(): Promise<DemoBriefs> {
   return (briefsOnce ??= loadManifest().then(async (m) => {
-    if (!m.briefs) return null;
+    if (!m.briefs) return { briefs: null, before: {} };
     const r = await realFetch(fixture(m.briefs));
-    if (!r.ok) return null;
-    return ((await r.json()) as { briefs?: Record<string, DemoBrief> }).briefs ?? null;
-  }).catch(() => null));
+    if (!r.ok) return { briefs: null, before: {} };
+    const j = (await r.json()) as { briefs?: Record<string, DemoBrief>; before?: Record<string, DemoBrief> };
+    return { briefs: j.briefs ?? null, before: j.before ?? {} };
+  }).catch(() => ({ briefs: null, before: {} })));
 }
 // Reveal the ℹ control once, if and only if the fixture is there. The demo's stylesheet hides it
 // through `html:not(.has-briefs)` (demo/build.ts), so this class is what turns the feature on — and
 // hands the control back to the dashboard's own rules, including the mobile one that keeps ℹ off a
 // phone where renderBoard() would not render anything anyway.
 void loadBriefs().then((b) => {
-  if (b) document.documentElement.classList.add("has-briefs");
+  if (b.briefs) document.documentElement.classList.add("has-briefs");
 });
 
 // --- the 💬 conversation view ------------------------------------------------------------------
@@ -375,8 +493,23 @@ async function demoFetch(input: RequestInfo | URL, _init?: RequestInit): Promise
   if (slot) {
     const id = slot[1], route = slot[2];
     if (route === "brief") {
-      const b = (await loadBriefs())?.[id];
-      if (!b) return json({ error: "no brief fixture for this slot" }, 404);
+      const all = await loadBriefs();
+      const after = all.briefs?.[id];
+      if (!after) return json({ error: "no brief fixture for this slot" }, 404);
+      // THE PANEL CHANGES BECAUSE THIS ROUTE DOES, and nothing else in the demo switches it. The
+      // dashboard re-fetches its brief every 3 s of its own accord (src/client.ts:2647, boardMs
+      // 3_000 at :36, both client-side and therefore live here), so a route that answers according
+      // to how far the replay has got is the whole mechanism — the panel fills in with the same
+      // poll a real one uses, a beat behind the terminal, exactly as a real one would.
+      //
+      // The threshold is the frame at which the session prints BOTH commits back (2062, read out of
+      // the stream). Earlier would be false: between 1992 and 2061 there was exactly one commit, and
+      // no diffstat for that state was ever fetched. Later is merely out of date, which is what a
+      // polling panel is anyway.
+      const switchAt = briefSwitch.get(Number(id));
+      const before = all.before[id];
+      const b = before !== undefined && switchAt !== undefined
+        && (frameAt.get(Number(id)) ?? 0) < switchAt ? before : after;
       // The lane fields are PASSED THROUGH, not blanked. They used to be forced to null here
       // because no recording had ever been a lane; slot 2 is one, and forcing them made the panel
       // call it "· repo session" and head its commits "commits this session" — a false statement
@@ -621,23 +754,52 @@ globalThis.WebSocket = DemoSocket as unknown as typeof WebSocket;
 // tour with the one picture the tour is built to arrive at last.
 
 {
-  // Input off, at the surface as well as at the socket. The placeholder is pinned because
-  // focusPane() rewrites it on every focus change ("Prompt for slot 1… (Enter sends)") and that
-  // sentence is not true here; shadowing the accessor makes the client's writes no-ops instead of
-  // racing them with an observer.
+  // THE COMPOSE BAR. Nothing typed here can go anywhere — but Enter is the one thing the visitor
+  // does on this page, so the box cannot simply be dead either.
+  //
+  // readOnly, NOT disabled. A `disabled` textarea fires no keyboard events at all, so the demo's
+  // own handler would never see the key that is supposed to start it. readOnly keeps typing just as
+  // impossible (the element rejects every edit) and lets the event through.
+  //
+  // The placeholder is pinned because focusPane() rewrites it on every focus change ("Prompt for
+  // slot 1… (Enter sends)"); shadowing the accessor makes the client's writes no-ops instead of
+  // racing them with an observer. Its wording changed with this: "Input is disabled" stopped being
+  // true the moment Enter did something, and the sentence a visitor reads has to survive that.
   const ta = document.getElementById("input") as HTMLTextAreaElement | null;
-  const send = document.getElementById("send");
-  const PLACEHOLDER = "Input is disabled — recorded replay";
+  const PLACEHOLDER = "Recorded replay — nothing is sent";
   if (ta) {
-    ta.disabled = true;
+    ta.readOnly = true;
     ta.setAttribute("placeholder", PLACEHOLDER); // the attribute is what renders
     Object.defineProperty(ta, "placeholder", {
       configurable: true, get: () => PLACEHOLDER, set: () => {},
     });
   }
-  // addEventListener, not onclick: client.ts assigns send.onclick, and this has to coexist with
-  // it rather than be overwritten when client.ts runs a moment later.
-  send?.addEventListener("click", () => demoHint("This is a recorded replay — input is disabled."));
-  document.getElementById("keys")?.addEventListener("click", () =>
-    demoHint("This is a recorded replay — input is disabled."));
+
+  // WHY THE WINDOW AND WHY CAPTURE. client.ts's own handlers sit ON the two elements —
+  // `ta.addEventListener("keydown", …)` (:3855) and `send.onclick = …` (:3854) — and a window
+  // capture listener runs before anything at the target, whoever registered first. That is not a
+  // nicety: doSend() posts to /send, this demo answers 404, and flashSendError() paints the button
+  // RED (client.ts:3821-3827). An Enter we did not intercept would look like a failure.
+  const trigger = (e: Event): void => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!startReplay()) demoHint(NOTHING_SENT);
+  };
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+    // ON A PHONE ENTER IS NOT SENDING, and it must not be here either. client.ts:3856 guards its
+    // Enter branch with !isMobile(), so there Enter is a newline and ➤ is what sends — a demo that
+    // started on Enter would be teaching the wrong key. Nothing is swallowed: the textarea is
+    // readOnly, so the newline this key would insert is refused by the element itself.
+    if (MOBILE.matches) return;
+    // Not only when the box has focus. The instruction says "press Enter", and a visitor who has
+    // not clicked into a text field first is not wrong.
+    if (replayWaiting() || e.target === ta) trigger(e);
+  }, true);
+  // ➤ IS THE SECOND TRIGGER, and on a phone the only one.
+  window.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#send")) trigger(e);
+  }, true);
+
+  document.getElementById("keys")?.addEventListener("click", () => demoHint(NOTHING_SENT));
 }

@@ -83,6 +83,12 @@ export function setCuts(next: ReadonlyMap<number, DemoCut>): void {
 // so its "Weiter" can ask for attention instead of leaving a passive visitor sitting in chapter 1.
 let streamEnd: ((slot: number) => void) | null = null;
 export function onStreamEnd(fn: (slot: number) => void): void { streamEnd = fn; }
+// The same shape, for the same reason, one step earlier: a chapter's hints may name a frame of the
+// excerpt ("this one once the commits are on screen"), and the frame index exists only here. `i` is
+// counted WITHIN the excerpt, so a hint's `at` means what a chapter author can see — the nth picture
+// of this chapter — and does not move when a cut's `from` does.
+let framePlayed: ((slot: number, i: number) => void) | null = null;
+export function onFrame(fn: (slot: number, i: number) => void): void { framePlayed = fn; }
 
 const CURSOR_SHOW = [0x1b, 0x5b, 0x3f, 0x32, 0x35, 0x68]; // ESC [ ? 2 5 h
 
@@ -261,6 +267,7 @@ class DemoSocket {
       streamEnd?.(this.slot);
       return;
     }
+    framePlayed?.(this.slot, i);
     this.emit(frames[i]);
     this.timer = setTimeout(() => this.play(frames, i + 1), this.frameMs);
   }
@@ -305,6 +312,11 @@ interface DemoBrief {
   uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
   commits: { hash: string; ts: number; subject: string }[];
   ahead?: number; behind?: number;
+  // A recorded LANE carries these three, and they are what makes the panel call itself a lane
+  // (src/client.ts:1233, :1363, :1377). Absent on the plain repo sessions, which is why every one
+  // of them has a default below rather than being required here.
+  worktree?: { repo: string; branch: string; base: string; baseSha: string } | null;
+  laneScoped?: boolean; laneBase?: string | null;
 }
 let briefsOnce: Promise<Record<string, DemoBrief> | null> | null = null;
 function loadBriefs(): Promise<Record<string, DemoBrief> | null> {
@@ -365,9 +377,15 @@ async function demoFetch(input: RequestInfo | URL, _init?: RequestInit): Promise
     if (route === "brief") {
       const b = (await loadBriefs())?.[id];
       if (!b) return json({ error: "no brief fixture for this slot" }, 404);
-      // the fields the brief renderer needs beyond the captured ones: these sessions are plain repo
-      // sessions in the demo, never lanes, so there is no worktree and no lane base to report
-      return json({ ...b, worktree: null, laneScoped: false, laneBase: null,
+      // The lane fields are PASSED THROUGH, not blanked. They used to be forced to null here
+      // because no recording had ever been a lane; slot 2 is one, and forcing them made the panel
+      // call it "· repo session" and head its commits "commits this session" — a false statement
+      // about a fetched answer, and the one difference step 4's two states are built on. Every
+      // field still has a default, because the plain repo sessions carry none of them.
+      return json({ ...b,
+        worktree: b.worktree ?? null,
+        laneScoped: b.laneScoped ?? false,
+        laneBase: b.laneBase ?? null,
         sessionStart: b.sessionStart ?? null, ahead: b.ahead ?? 0, behind: b.behind ?? 0 });
     }
     // The conversation view and the brief's prompt outline both read this feed. With a transcript

@@ -13,7 +13,7 @@
 // untouched. A chapter therefore does what a visitor does: it presses the layout button, clicks the
 // slot in the sidebar, presses 💬. The state it produces is the real UI's own state, and the
 // visitor can take over at any point without anything having to be handed back.
-import { onStreamEnd, setCuts, slotPrompt, type DemoCut } from "./demo-transport";
+import { onFrame, onStreamEnd, setCuts, slotPrompt, type DemoCut } from "./demo-transport";
 
 // The dashboard's own breakpoint (src/client.ts:27), repeated because client.ts is not modified and
 // its constant is therefore not reachable. It matters more here than anywhere else: setLayout() has
@@ -26,9 +26,39 @@ const MOBILE = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-heigh
 /** A control the demo hides by default and a chapter may grant, because that chapter explains it. */
 type Control = "chat" | "brief";
 
+/**
+ * A label the demo writes BESIDE a piece of the app, so the narration's words have a place to
+ * attach to: the bar can say "the projects are on the left" all it likes, and a visitor who does
+ * not know this UI still has to guess which part "left" means.
+ *
+ * IT ANCHORS TO UI CHROME AND NEVER TO A TERMINAL LINE, and that is a repo finding rather than a
+ * preference. Line-anchored markers were built here once and taken out again because they DRIFT
+ * (src/client.ts:299): a recording scrolls, so a box over line 14 points at something else two
+ * frames later. #slots cannot scroll out from under its label.
+ */
+export interface Hint {
+  /** A CSS selector for a piece of UI CHROME — "#slots", "#board", "#board .bsec:first-child".
+   *  Never a terminal row, and never the recording itself: nothing is drawn into the recording,
+   *  so a visitor can always tell what the session did from what we wrote beside it. */
+  anchor: string;
+  /** Half a sentence, German. It LOCATES what the narration talks about; it does not repeat it. */
+  text: string;
+  /** From which frame OF THIS CHAPTER'S EXCERPT it shows. Default: from the first. */
+  at?: number;
+  /** Up to which frame. Default: the end of the chapter. */
+  until?: number;
+  /** Which side of the anchor it sits on. Default "right". */
+  place?: "above" | "below" | "left" | "right";
+}
+
 export interface Chapter {
   /** 1, 2, 3 … — also the URL fragment (#/2). */
   id: number;
+  /** The STEP this chapter belongs to, when that is not its own id. The tour is four steps
+   *  (PLAN §2) and the last of them has two pictures: the lane, then the project it landed in.
+   *  Both are chapters — that is how the visitor gets there, with "Weiter", the URL and the back
+   *  button all working unchanged — and both are step 4, which is what the bar counts. */
+  step?: number;
   /** Chapter title, German. Shown in the bar. */
   title: string;
   /** The narration, German, AT MOST TWO SENTENCES: the visitor reads it while the excerpt runs, and
@@ -44,10 +74,17 @@ export interface Chapter {
   view?: "term" | "chat";
   /** Open the ℹ session brief. Desktop only — renderBoard() bails out on mobile (client.ts:1204). */
   brief?: boolean;
+  /** Stand this session's real prompt in the (disabled) compose bar. Chapter 1's whole exhibit,
+   *  and opt-in rather than automatic: the manifest holds a session's FIRST prompt, and a chapter
+   *  replaying a later question would otherwise put the wrong sentence under it. */
+  prompt?: boolean;
   /** Controls to reveal beyond the ones `view`/`brief` already imply. */
   shows?: Control[];
   /** A frame range of the recording instead of the whole file. Absent = the whole stream. */
   cut?: DemoCut;
+  /** Labels beside the app. At most two are ever shown at once — three signs pointing at three
+   *  places is not guidance, it is a diagram. */
+  hints?: Hint[];
   /** An optional still, shown beside the app (the finale shows the page on a phone). The asset is
    *  loaded only in a chapter that names one, so the chapters before it pay nothing for it. */
   image?: string;
@@ -64,12 +101,89 @@ const CHAPTERS: Chapter[] = [
       + "Was sie tun soll, steht unten im Eingabefeld — ein normaler Satz, kein Kommando.",
     slot: 1,
     layout: 1,
+    prompt: true, // the order in plain language IS this chapter — it stands in the real compose bar
     // The opening of s1. Where it ENDS was chosen by watching the stream, not by counting: frame 151
     // holds on the session having read the files and started thinking, which is the picture this
     // chapter wants — an order arrived in plain language and something is working on it. Twenty-five
     // frames later the session names the bug AND the second one nobody asked for, and that is
     // chapter 2's whole point; an excerpt that ran on would spend it here.
     cut: { from: 0, to: 151, secs: 12 },
+  },
+  // -------------------------------------------------------------------------------------------
+  // STEP 4, first picture: the lane. Two chapters carry this step, because the thing it shows is a
+  // CHANGE, and a change needs a before and an after that the visitor moves between himself.
+  //
+  // Why the ℹ panel and not a caption: everything below is on it already, fetched from a running
+  // Fleet (demo/fixtures/briefs.json, entry "2"). The chapter's whole job is to open the panel and
+  // say in German what its numbers MEAN — the panel shows "4 files changed, 178 insertions(+)",
+  // the sentence says a person can count that rather than take our word for it.
+  {
+    id: 4,
+    step: 4,
+    title: "Was sich im Projekt geändert hat",
+    text: "Die Sitzung hat ihre Arbeit in zwei Schritten festgehalten, jeder mit einer Notiz, "
+      + "was er sollte: vier Dateien, 178 Zeilen dazu, vier weg — nachzählbar, nicht behauptet.",
+    slot: 2,
+    layout: 1,
+    brief: true,
+    // Frames 1990–2119 of the lane: it writes its second commit (2059), prints both of them back
+    // (2062), reports "Done — two commits, working tree clean" (2076) and holds on that report.
+    // The last frame is the recording's own last, and it carries no typed-ahead suggestion — the
+    // trap that governs the SECOND chapter's cut does not exist in this one.
+    cut: { from: 1990, to: 2120, secs: 12 },
+    // BOTH LABELS SIT IN EMPTY SPACE, and that is a measurement rather than an aesthetic. At
+    // 1360x860 with the ℹ panel open there is no free margin anywhere: the panel is 264 px of
+    // packed text and the terminal fills 854 of its pane's 862 px, so a label placed beside either
+    // one covers the exhibit it points at (measured — the first version sat squarely on the two
+    // commit subjects). What IS empty is the sidebar below the last session and the panel below
+    // its last section, so both labels are anchored to what they name and placed BELOW it.
+    hints: [
+      // The narration says what the numbers mean; this says where they are — the one thing the
+      // sentence deliberately does not say, because on a phone the panel is not there at all.
+      { anchor: "#board .bsec:last-child", place: "below", text: "die Zahlen dazu stehen hier" },
+      // Shown late, and the tour's only piece of stage-setting: the next thing that happens is a
+      // click on this row, and a visitor who never noticed the row will not read it as an answer.
+      { anchor: '#slots .slot[data-slot="5"]', place: "below", at: 55, text: "das Projekt selbst" },
+    ],
+  },
+  // STEP 4, second picture: the project. THE STATE CHANGE IS THE SLOT CHANGE — no second-state
+  // machinery anywhere, because in real use the lane is gone after a land and the thing you click
+  // is the project (owner, 31.07.: "slotwechsel auf der seitenleiste. Genauso wie es in echt
+  // wäre."). applyUi already clicks a slot in the sidebar for every chapter, so this entry needs
+  // no new move: it is the same tour, pointed at a different session.
+  //
+  // Measured, and the reason this is not the lane's own panel after the land: `merged + landed`
+  // (src/client.ts:1462) is unreachable from real data — /merge and /brief both need an active slot
+  // with a worktree, and landing removes exactly that (0.9 s later both answer 400,
+  // demo/fixtures/land.json). A chapter showing it would claim a state the dashboard never has.
+  {
+    id: 5,
+    step: 4,
+    title: "Was sich im Projekt geändert hat",
+    text: "Ein Klick weiter, auf das Projekt selbst: dieselben zwei Schritte stehen jetzt dort. "
+      + "Die Sitzung im Projekt hat nachgesehen, was angekommen ist, und zählt es auf.",
+    slot: 5,
+    layout: 1,
+    brief: true,
+    // It opens ON the second question ("something just landed on main. what came in, and what did
+    // it change?") and ends on the sentence that answers it.
+    //
+    // WHERE IT ENDS WAS MEASURED, and the measurement changed the answer. The obvious end is the
+    // recording's own last frame, and it is wrong twice over. Frame 342 paints Claude Code's grey
+    // suggestion text — `run the full e2e suite` — into the empty prompt; nobody typed it, and a
+    // visitor who does not know this TUI reads grey text in an input box as an instruction that
+    // was given. And the answer is ~40 rows long on a 28-row screen, so by its end BOTH commit
+    // lines have scrolled off: sampled through the real replay, the two hashes share the screen
+    // only up to about frame 306, and the recording holds them as a pair nowhere at all.
+    // So the excerpt ends on the sentence that states the pair instead of on the last picture of
+    // the prose: "Two commits landed on main since this session started". The terminal and the ℹ
+    // panel then say the same thing from two directions, which is what this step is for.
+    cut: { from: 153, to: 308, secs: 12 },
+    hints: [
+      // The identity line is the entire difference between the two pictures — "fleet/… · fleet
+      // lane" became "main · repo session" — and it is the one word the narration never says.
+      { anchor: "#board .bsec:last-child", place: "below", text: "auf main, nicht mehr daneben" },
+    ],
   },
 ];
 
@@ -112,6 +226,148 @@ function controlsOf(ch: Chapter): Set<Control> {
 
 const cutKey = (ch: Chapter): string =>
   ch.cut ? `${ch.slot}:${ch.cut.from}-${ch.cut.to ?? ""}@${ch.cut.secs ?? ""}` : "";
+
+const stepOf = (ch: Chapter): number => ch.step ?? ch.id;
+// The HIGHEST step number, not how many entries are in the list. The tour is four steps (PLAN §2)
+// and steps 2 and 3 are still to be written; counting entries would have the bar say "4 / 2" today
+// and quietly start telling the truth later, which is the worse of the two failures — a visitor
+// reading "4 / 2" learns that the numbers mean nothing.
+const STEPS = Math.max(...CHAPTERS.map(stepOf));
+
+// ---------------------------------------------------------------------------------------------
+// THE HINTS. Labels beside the app, positioned from the app's own boxes.
+//
+// Three properties carry the whole thing, and each answers a way this could have been dishonest:
+//
+//   MEASURED, never declared. getBoundingClientRect on every reposition, so a label cannot promise
+//   a place the layout moved out from under it. An anchor that is not on screen — the sidebar is in
+//   a drawer on a phone, the ℹ panel does not render there at all (src/client.ts:1204) — takes its
+//   label with it rather than pointing at nothing.
+//
+//   NEVER OVER THE RECORDING. Not a rule a chapter author has to remember: a computed box that
+//   would land on the terminal is pushed off it, and hidden if it cannot be. It matters because
+//   the app leaves almost no free space — with the ℹ panel open the terminal block is 854 px wide
+//   inside an 862 px pane, so "left of the panel" IS on the recording, and eyeballing placements
+//   per chapter would get this wrong the first time a viewport changed.
+//
+//   NEVER IN THE WAY. pointer-events: none, so a label can never swallow a click meant for the app
+//   underneath it, and at most two at a time.
+const HINT_MAX = 2;
+const HINT_GAP = 10;
+let hintsEl: HTMLElement | null = null;
+let frame = 0; // frames played of the CURRENT chapter's excerpt — the unit a Hint's `at` is in
+let hintTimer: ReturnType<typeof setInterval> | undefined;
+
+function hintLayer(): HTMLElement {
+  if (hintsEl?.isConnected) return hintsEl;
+  hintsEl = document.createElement("div");
+  hintsEl.id = "dbhints";
+  hintsEl.setAttribute("lang", "de");
+  document.body.appendChild(hintsEl);
+  return hintsEl;
+}
+
+/** Visible at all? A collapsed box catches display:none; the viewport test catches the off-canvas
+ *  drawer, which has a perfectly good box that nobody can see. */
+const onScreen = (r: DOMRect): boolean =>
+  r.width >= 2 && r.height >= 2
+  && r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
+
+const overlaps = (a: DOMRect, l: number, t: number, w: number, h: number): boolean =>
+  l < a.right && l + w > a.left && t < a.bottom && t + h > a.top;
+
+/** The recording's own box — .xterm, the element demo-transport scales, not the pane around it. */
+function recordingBox(): DOMRect | null {
+  const t = document.querySelector<HTMLElement>("#panes .pane.focused .xterm")
+    ?? document.querySelector<HTMLElement>("#panes .xterm");
+  const r = t?.getBoundingClientRect();
+  return r && onScreen(r) ? r : null;
+}
+
+function placeHint(el: HTMLElement, h: Hint): void {
+  const a = document.querySelector(h.anchor);
+  const r = a instanceof HTMLElement ? a.getBoundingClientRect() : null;
+  if (!r || !onScreen(r)) { el.classList.add("hid"); return; }
+  const b = el.getBoundingClientRect();
+  const w = b.width || 200, hgt = b.height || 28;
+  const place = h.place ?? "right";
+  let left = place === "left" ? r.left - w - HINT_GAP
+    : place === "right" ? r.right + HINT_GAP
+      : r.left + r.width / 2 - w / 2;
+  let top = place === "above" ? r.top - hgt - HINT_GAP
+    : place === "below" ? r.bottom + HINT_GAP
+      : r.top + r.height / 2 - hgt / 2;
+
+  // Off the recording, whatever the chapter asked for. Pushed towards the side its anchor is on,
+  // so a label for the sidebar ends up over the sidebar and one for the ℹ panel over the panel.
+  const rec = recordingBox();
+  if (rec && overlaps(rec, left, top, w, hgt)) {
+    left = r.left + r.width / 2 < rec.left + rec.width / 2
+      ? rec.left - w - 6
+      : rec.right + 6;
+  }
+
+  // Never over the bar, never off an edge. The bar is at the top on a desktop and at the bottom on
+  // a phone, which is exactly the difference between these two lines.
+  const barH = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--demo-bar-h")) || 0;
+  const lo = MOBILE.matches ? 8 : barH + 8;
+  const hi = (MOBILE.matches ? innerHeight - barH : innerHeight) - 8 - hgt;
+  left = Math.min(Math.max(8, left), innerWidth - w - 8);
+  top = Math.min(Math.max(lo, top), Math.max(lo, hi));
+
+  // It could not be got off the recording — say nothing rather than write on the session's output.
+  if (rec && overlaps(rec, left, top, w, hgt)) { el.classList.add("hid"); return; }
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+  el.classList.remove("hid");
+}
+
+function syncHints(): void {
+  const layer = hintLayer();
+  const hints = current.hints ?? [];
+  const live = hints
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => frame >= (h.at ?? 0) && frame < (h.until ?? Infinity))
+    .slice(0, HINT_MAX);
+  // Keyed by CHAPTER and index, not index alone: two chapters both have a first hint, and a key
+  // that ignored the chapter re-used the previous chapter's box — which kept its old text. Measured
+  // in the browser: chapter 5 wore chapter 4's label.
+  const key = (i: number): string => `${current.id}:${i}`;
+  const want = new Set(live.map(({ i }) => key(i)));
+  // Fading OUT is why a leaving label is marked and swept later instead of being removed here —
+  // an element taken out of the document cannot animate on its way.
+  for (const el of Array.from(layer.children) as HTMLElement[]) {
+    if (el.classList.contains("going") || want.has(el.dataset.h ?? "")) continue;
+    el.classList.add("going");
+    el.classList.remove("on");
+    setTimeout(() => el.remove(), 300);
+  }
+  for (const { h, i } of live) {
+    let el = layer.querySelector<HTMLElement>(`[data-h="${key(i)}"]:not(.going)`);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = `dbhint p-${h.place ?? "right"}`;
+      el.dataset.h = key(i);
+      el.textContent = h.text;
+      layer.appendChild(el);
+      placeHint(el, h); // measure and place BEFORE the fade, so it never fades in mid-flight
+      requestAnimationFrame(() => el?.classList.add("on"));
+    } else placeHint(el, h);
+  }
+}
+
+/** A chapter change resets the frame count — `at` is counted within THIS chapter's excerpt — and
+ *  arms the reposition poll, but only for a chapter that has labels at all. A poll rather than
+ *  three observers because the boxes move for reasons no single observed element sees: the ℹ panel
+ *  opening, the sidebar re-rendering, a pane being rebuilt by a layout switch. Two rect reads every
+ *  250 ms is not a cost worth three observers' worth of ways to be subtly wrong. */
+function armHints(): void {
+  clearInterval(hintTimer);
+  frame = 0;
+  syncHints();
+  if (current.hints?.length) hintTimer = setInterval(syncHints, 250);
+}
 
 // --- the half of a chapter that must be in place BEFORE the client boots ----------------------
 // The client reads fleet.view once, at boot, and connects each pane immediately after. Both the
@@ -187,8 +443,15 @@ function applyUi(ch: Chapter): void {
   }
 
   // The real prompt in the real (disabled) compose bar, instead of a caption saying what it was.
-  void slotPrompt(ch.slot).then((p) => {
-    const ta = $("input") as HTMLTextAreaElement | null;
+  // Opt-in, and step 4 is why: slot 5 was asked twice and that chapter replays the SECOND question,
+  // while the manifest carries a session's first. Left on, the box read "what is this project"
+  // under a terminal answering "what came in" — not false, but the one thing on screen a visitor
+  // could take for the command that produced the picture. Off, the box shows the demo's own
+  // "Input is disabled" placeholder, which is true in every chapter.
+  const ta = $("input") as HTMLTextAreaElement | null;
+  if (!ch.prompt) {
+    if (ta) { ta.value = ""; ta.style.height = ""; }
+  } else void slotPrompt(ch.slot).then((p) => {
     if (!ta || current.id !== ch.id) return;
     ta.value = p;
     // The compose box does not grow by itself (no auto-grow in client.ts); a two-line prompt would
@@ -207,7 +470,9 @@ function applyUi(ch: Chapter): void {
 function renderBar(ch: Chapter): void {
   const i = CHAPTERS.indexOf(ch);
   const num = $("dbnum"), title = $("dbtitle"), cut = $("dbcut"), text = $("dbtext");
-  if (num) num.textContent = `${ch.id} / ${CHAPTERS.length}`;
+  // STEPS, not chapter count: step 4 is carried by two chapters, and a bar that counted entries
+  // would tell the visitor there are five steps in a tour the whole plan describes as four.
+  if (num) num.textContent = `${stepOf(ch)} / ${STEPS}`;
   if (title) title.textContent = ch.title;
   // "Ausschnitt" is stated where the visitor reads, not in a source comment: a cut recording that
   // does not say it is cut is the one claim in this demo nobody could check.
@@ -238,11 +503,59 @@ function step(delta: number): void {
   if (target) location.hash = `#/${target.id}`; // a history entry, so back/forward do what they look like
 }
 
+// ---------------------------------------------------------------------------------------------
+// The three movements, and there are three because PLAN §4 allows three. Everything else on screen
+// moves because the RECORDING moves: nothing is re-animated, sped up or re-staged, and
+// prefers-reduced-motion switches all three off in CSS while the replay keeps running.
+
+/** A chapter change cross-fades instead of cutting — the difference between "a page changed" and
+ *  "somebody is showing me something". The reflow read restarts the animation when a visitor
+ *  presses Weiter twice in a row, which a class that is already there would not do. */
+function turn(): void {
+  for (const el of [$("app"), $("demobar")]) {
+    if (!el) continue;
+    el.classList.remove("dbturn");
+    void el.offsetWidth;
+    el.classList.add("dbturn");
+  }
+}
+
+/** The slot change in step 4 — the one place in the tour where something really CHANGES instead of
+ *  being replayed, so it gets the longest movement. Tied to the moment the ℹ panel repaints rather
+ *  than to the click: renderBoard fetches before it renders, so animating on the click would have
+ *  faded in the panel that is about to be thrown away. */
+function armSwap(): void {
+  const panesEl = $("panes");
+  if (panesEl) {
+    panesEl.classList.remove("dbswap");
+    void panesEl.offsetWidth;
+    panesEl.classList.add("dbswap");
+  }
+  const body = $("boardbody"), board = $("board");
+  if (!body || !board) return;
+  let bail: ReturnType<typeof setTimeout>;
+  const obs = new MutationObserver(() => {
+    obs.disconnect();
+    clearTimeout(bail);
+    board.classList.remove("dbswap");
+    void board.offsetWidth;
+    board.classList.add("dbswap");
+  });
+  obs.observe(body, { childList: true });
+  // The panel may never repaint (a slot with no brief, a closed panel) — an observer left armed
+  // would fire on some later, unrelated render.
+  bail = setTimeout(() => obs.disconnect(), 4000);
+}
+
 function go(ch: Chapter): void {
+  const from = applied;
   current = ch;
   armState(ch);
   renderBar(ch);
+  turn();
+  if (from && from.slot !== ch.slot) armSwap();
   applyUi(ch);
+  armHints();
   canonicalHash();
 }
 
@@ -272,6 +585,9 @@ function whenReady(fn: () => void): void {
 whenReady(() => {
   renderBar(current);
   applyUi(current);
+  armHints();
+  // A label's place is its anchor's place, so anything that moves the anchor has to move the label.
+  addEventListener("resize", syncHints);
 
   const bar = $("demobar");
   if (bar) {
@@ -308,7 +624,18 @@ whenReady(() => {
 
   // Crossing the breakpoint rebuilds every pane (src/client.ts:1865, the client's own handler), so
   // re-apply after it — a chapter's layout and view do not survive somebody else rebuilding the panes.
-  MOBILE.addEventListener("change", () => { setTimeout(() => { applied = null; applyUi(current); }, 0); });
+  MOBILE.addEventListener("change", () => {
+    setTimeout(() => { applied = null; applyUi(current); syncHints(); }, 0);
+  });
+
+  // A hint may name a frame OF THIS CHAPTER'S EXCERPT ("once the commits are on screen"), which is
+  // the only clock a replay has: the recordings carry no timestamps, so seconds would be a number
+  // we invented and frames are what the material actually has.
+  onFrame((slot, i) => {
+    if (slot !== current.slot || i === frame) return;
+    frame = i;
+    syncHints();
+  });
 
   // When the picture stops moving, the way on gets a quiet pulse. Autoplay stays rejected (PLAN §1b):
   // this asks, it does not act.

@@ -69,7 +69,19 @@ interface DemoManifest {
 // ~74 s (s4).
 const TARGET_MS = 90_000;
 const MIN_FRAME_MS = 16;
-const MAX_FRAME_MS = 80;
+// 80 UNTIL 31.07., AND THAT CEILING WAS THE REAL SPEED LIMIT rather than the `secs` a chapter asks
+// for. Owner, after watching it: the excerpt should run at roughly a third of that pace. It could
+// not — step 1's first range is 151 frames, so 80 ms/frame capped it at 12.1 s no matter what `secs`
+// said, and the second range at 7.2 s. Raised to the slowest step that still reads as a session
+// working rather than a slideshow; the floor is what actually protects against a blur, and it is
+// untouched.
+// KNOWN CONSEQUENCE, and it is an improvement rather than a cost: the old ceiling guaranteed that
+// the 18 frames from 2062 to the hold could not outlast the ℹ panel's 3 s poll, so the panel always
+// filled in on a still picture (PLAN §2b). At 240 ms those 18 frames take 4.3 s, so the panel can
+// now catch up WHILE the last lines are still printing. That is what a polling dashboard beside a
+// working session actually looks like, and the panel still cannot change before frame 2062, which
+// is the only bound that carries a truth claim (briefAfter).
+const MAX_FRAME_MS = 240;
 
 // --- excerpts ----------------------------------------------------------------------------------
 // A chapter may play FRAME RANGES of a recording instead of the whole file, and pace each itself:
@@ -125,6 +137,34 @@ export function onFrame(fn: (slot: number, i: number) => void): void { framePlay
 // It is a promise rather than a flag because the player awaits it: there is no second code path
 // for "started" and none for "not yet", so a chapter cannot get stuck half-armed.
 let openGate: (() => void) | null = null;
+
+// WHAT ENTER DOES TO THE COMPOSE BAR, and why it is not cosmetic. The order stands in the box AND
+// in the recording's own prompt line (frame 0 draws both). When the visitor presses Enter, the
+// recording submits: frame 1 echoes the order into the transcript and the session's `❯` line goes
+// empty. A box that keeps the text while the session is already working on it says the opposite of
+// what just happened — it reads as "not sent yet", which is the one thing the gesture must not
+// suggest. So the DOM field empties at the same moment the recorded one does, and the demo's own
+// placeholder ("Recorded replay — nothing is sent") takes its place, which is the disclosure
+// arriving exactly when the visitor acts.
+// Kept, not discarded: ↻ replays the excerpt without re-running the chapter, so the order has to be
+// back in the box before the next Enter, or the second run starts on an empty prompt.
+let heldPrompt = "";
+const composeBar = (): HTMLTextAreaElement | null =>
+  document.getElementById("input") as HTMLTextAreaElement | null;
+function clearCompose(): void {
+  const ta = composeBar();
+  if (!ta || !ta.value) return;
+  heldPrompt = ta.value;
+  ta.value = "";
+  ta.style.height = ""; // applyUi grew it to fit two lines; let it shrink back
+}
+function restoreCompose(): void {
+  const ta = composeBar();
+  if (!ta || !heldPrompt || ta.value) return;
+  ta.value = heldPrompt;
+  ta.style.height = "auto";
+  ta.style.height = `${ta.scrollHeight}px`;
+}
 /** True while a replay is parked on its first picture. The chapter layer needs no such query —
  *  a hint with `until: 1` is on screen exactly while the first frame stands — but the input
  *  handlers below do: an Enter with nothing waiting must not silently look like it worked. */
@@ -181,14 +221,24 @@ const FINISHED = seq(
 // picture: the cursor sits wherever the TUI left it, and writing there would land the words inside
 // the session's own compose box. Cleared, they are unmistakably ours.
 //
-// It says something true rather than merely owning up to the cut: the recording prints
-// `Cogitated for 5m 8s` at its own frame 2119 (read out of the stream), so the elapsed time in the
-// text is the session's own number and not our rounding of a byte count.
+// It says something true rather than merely owning up to the cut, and the number is the SESSION's
+// own clock rather than our arithmetic on a byte count: its spinner reads 12s on the last picture
+// before the cut and 4m 44s on the first one after it, so the jump is 4:32. (An earlier draft took
+// the `Cogitated for 5m 8s` the recording prints at frame 2119; that is the whole run, not this
+// gap.) Both ends re-measured on the rendered screen, not reconstructed from the stream — the
+// spinner writes its digits into fixed columns, so the bytes of one frame do not carry the number.
+//
+// GOLD, and the exact gold of the labels (#d29922, demo/build.ts). The card is OUR sentence sitting
+// inside the app's terminal, and it is the one place where that is unavoidable — so it wears the
+// same colour as everything else we wrote, and no colour the recording itself ever uses. Truecolor
+// rather than a 256-colour approximation, so the two really are the same. It does not blink: ANSI
+// blink is unevenly supported and crude, and a card that stands alone on a cleared screen for 1.8 s
+// is already the most conspicuous thing in the run.
 const GAP_MS = 1800;
 const gapCard = (text: string): ArrayBuffer => {
   const line = `── ${text} ──`;
   const pad = " ".repeat(Math.max(0, Math.floor((REC.cols - [...line].length) / 2)));
-  return seq(`\x1b[H\x1b[2J\x1b[3J${"\r\n".repeat(Math.max(0, (REC.rows >> 1) - 1))}${pad}\x1b[2m${line}\x1b[0m`);
+  return seq(`\x1b[H\x1b[2J\x1b[3J${"\r\n".repeat(Math.max(0, (REC.rows >> 1) - 1))}${pad}\x1b[1m\x1b[38;2;210;153;34m${line}\x1b[0m`);
 };
 
 let manifestOnce: Promise<DemoManifest> | null = null;
@@ -333,7 +383,10 @@ class DemoSocket {
   private park(ms: number | null): Promise<void> {
     return new Promise<void>((resolve) => {
       this.wake = () => { this.wake = null; resolve(); };
-      if (ms === null) openGate = this.wake;
+      // The hold gate is the only place the page waits for the visitor, so it is also the only
+      // moment at which the order belongs back in the box — including after ↻, which builds a new
+      // socket without re-running the chapter.
+      if (ms === null) { openGate = this.wake; restoreCompose(); }
       else this.timer = setTimeout(() => this.wake?.(), ms);
     });
   }
@@ -811,7 +864,10 @@ globalThis.WebSocket = DemoSocket as unknown as typeof WebSocket;
     // cannot start behind the opening" is an invariant of the page, not a side effect of two
     // listener registration orders.
     if (introUp()) return;
-    if (!startReplay()) demoHint(NOTHING_SENT);
+    // Only on a real start. A press that starts nothing (the excerpt is already running) must leave
+    // the box alone — emptying it there would tell the visitor something was sent when nothing was.
+    if (startReplay()) clearCompose();
+    else demoHint(NOTHING_SENT);
   };
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;

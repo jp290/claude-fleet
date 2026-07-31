@@ -13,6 +13,7 @@
 // untouched. A chapter therefore does what a visitor does: it presses the layout button, clicks the
 // slot in the sidebar, presses 💬. The state it produces is the real UI's own state, and the
 // visitor can take over at any point without anything having to be handed back.
+import { SIDE_CUTS } from "./demo-cuts";
 import {
   MOBILE, onFrame, onStreamEnd, onWait, setBriefSwitch, setCuts, type DemoCut,
 } from "./demo-transport";
@@ -547,7 +548,12 @@ function armHints(): void {
 // corrected them afterwards would download a stream it does not show and then throw it away.
 function armState(ch: Chapter): void {
   const { layout, slots } = shapeOf(ch);
-  const cuts = new Map<number, DemoCut>();
+  // EVERY SLOT IS ARMED, not just the chapter's. The four sessions in the sidebar are excerpts too
+  // (src/demo-cuts.ts), and the visitor — not a chapter — decides which of the five plays: he
+  // clicks a row, the client connects that pane, and the transport reads the cut for whatever slot
+  // asked. So the map has to hold all five before the boot, and the chapter's own cut goes in last
+  // because the session it narrates is the one whose ranges are stated beside its briefAfter.
+  const cuts = new Map<number, DemoCut>(SIDE_CUTS);
   if (ch.cut) cuts.set(ch.slot, ch.cut);
   setCuts(cuts);
   setBriefSwitch(ch.slot, ch.briefAfter ?? null);

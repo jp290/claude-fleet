@@ -1848,8 +1848,6 @@ window.addEventListener("keydown", (e) => {
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
-    // the review window is a src/shell.ts window: it swallows its own Escape in the capture phase
-    if (queuedlg.style.display === "flex") closeQueueDlg();
     if (audit.style.display === "flex") closeAudit();
     if (outcomes.style.display === "flex") closeOutcomes();
     setDrawer(false);
@@ -3147,18 +3145,32 @@ async function openReview(slotId: number, initial: RvSource) {
 async function openDiff(slotId: number) { await openReview(slotId, "working"); }
 async function openMergeDiff(slotId: number) { await openReview(slotId, "land"); }
 
-// --- task queue overlay ---
-const queuedlg = $("queuedlg"), queuepanel = $("queuepanel");
-function closeQueueDlg() { queuedlg.style.display = "none"; }
-queuedlg.addEventListener("click", (e) => { if (e.target === queuedlg) closeQueueDlg(); });
-$("queuebtn").onclick = () => openQueue();
-
-// Prompt texts, cached by task id. They are not on the 2 s poll (server.ts TaskDigest) — this
-// pulls them once per id-set, only while the overlay is actually open, and a task's text never
-// changes after creation, so a cached entry stays valid until the id disappears.
+// --- task queue window ---
+//
+// The queue was a flat list in a 900px box: every task rendered its whole text into a cramped row,
+// there was no search, and `created` was fetched on every open and never shown.
+//
+// It also had a defect that only shows up if you type slowly. refresh() calls renderQueue() on
+// every 2s poll to keep the list live, and renderQueue() rebuilt the panel with replaceChildren —
+// including the "new task" textarea. Typing a task for longer than two seconds LOST IT, in a file
+// whose next comment down explains that rebuilds kill hover state and button focus. So the window
+// is poll-safe by construction: the compose box is created once per open and the poll never touches
+// it, the list is rebuilt only when the task data actually changed (key comparison, like
+// renderSlots), and the detail pane is rebuilt only when the SELECTION changes.
 const taskText = new Map<string, string>();
 let taskTextKey = ""; // the id-set the cache was last filled for
 let taskTextBusy = false;
+let qShell: Shell | null = null;
+let qPick: string | null = null;  // selected task id; null = the compose row
+let qQuery = "";
+let qKey = "";                    // the data key the list was last built from
+let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
+// the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
+let qRowId = new Map<HTMLElement, string | null>();
+
+// Prompt texts, cached by task id. They are not on the 2 s poll (server.ts TaskDigest) — this
+// pulls them once per id-set, only while the window is actually open, and a task's text never
+// changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
   const key = tasksList.map((t) => t.id).join(",");
   if (taskTextBusy || key === taskTextKey) return;
@@ -3177,79 +3189,209 @@ async function loadTaskTexts() {
     // server briefly unreachable — rows keep the placeholder, the next poll retries
   }
   taskTextBusy = false;
-  if (filled) renderQueue();
+  if (filled) { qKey = ""; renderQueue(); } // texts arrived: the rows carry them now
+}
+
+const Q_STATUS: { k: TaskInfo["status"]; head: string }[] = [
+  { k: "pending", head: "Pending" }, { k: "queued", head: "Queued" },
+  { k: "sent", head: "Sent" }, { k: "done", head: "Done" },
+];
+const qTaskText = (id: string) => taskText.get(id) ?? "";
+const qFirstLine = (id: string) => (qTaskText(id).split("\n")[0] || "…").slice(0, 120);
+
+async function qAct(id: string, action: string) {
+  const r = await post(`/api/tasks/${id}/${action}`, {});
+  if (!r.ok) { toast(`couldn't ${action} the task`); return; }
+  if (action === "delete" && qPick === id) qPick = null;
+  await refresh();
+  qKey = ""; // this changed the data — force the list to rebuild even inside the poll's guard
+  renderQueue();
+  renderQueueDetail();
+}
+
+function renderQueueDetail() {
+  const shell = qShell;
+  if (!shell) return;
+  shell.detail.replaceChildren();
+  if (qPick === null) {
+    shell.detail.appendChild(el("div", "rvhead", "New task"));
+    shell.detail.appendChild(el("div", "shellhint",
+      "Describe a feature or a fix. It lands as `pending` — only you move it to `queued`, and only"
+      + " then can the dispatcher pick it up."));
+    if (!qCompose) {
+      qCompose = el("textarea", "qaddin") as HTMLTextAreaElement;
+      qCompose.placeholder = "New task — describe a feature or fix…";
+      qCompose.rows = 8;
+    }
+    shell.detail.appendChild(qCompose);
+    const add = el("button", "shrbtn primary", "add task") as HTMLButtonElement;
+    add.onclick = async () => {
+      const box = qCompose;
+      if (!box || !box.value.trim()) return;
+      const r = await post("/api/tasks", { text: box.value, queue: false });
+      if (!r.ok) { toast("couldn't add the task"); return; } // keep the typed text in the box
+      box.value = "";
+      await refresh();
+      qKey = "";
+      renderQueue();
+    };
+    const acts = el("div", "pkdacts");
+    acts.style.marginTop = "10px";
+    acts.appendChild(add);
+    shell.detail.appendChild(acts);
+    return;
+  }
+  const t = tasksList.find((x) => x.id === qPick);
+  if (!t) {
+    shell.detail.appendChild(el("div", "shellhint", "that task is gone — it was completed or deleted"));
+    return;
+  }
+  shell.detail.appendChild(el("div", "rvhead", `${t.status}${t.slot ? ` · slot ${t.slot}` : ""}`));
+  const meta = el("div", "ocfacts");
+  meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
+    : t.source === "steward" ? "⚙ steward" : "owner"));
+  meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
+  if (t.note) meta.appendChild(chip(t.note, "warn"));
+  shell.detail.appendChild(meta);
+  // the full text, wrapped and selectable — the row only ever shows its first line
+  const body = qTaskText(t.id);
+  shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
+    body || "loading the prompt text…"));
+  const acts = el("div", "pkdacts");
+  const mk = (label: string, action: string, cls = "shrbtn") => {
+    const b = el("button", cls, label) as HTMLButtonElement;
+    b.onclick = () => void qAct(t.id, action);
+    return b;
+  };
+  if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", "shrbtn primary"));
+  if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
+  if (t.status !== "done") acts.appendChild(mk("done", "done"));
+  acts.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
+  shell.detail.appendChild(acts);
+}
+
+function qSelect(id: string | null) {
+  qPick = id;
+  qKey = ""; // selection is painted on the rows, so they must be rebuilt
+  renderQueue();
+  renderQueueDetail();
+  qShell?.showDetail(true);
 }
 
 function renderQueue() {
-  if (queuedlg.style.display !== "flex") return;
+  const shell = qShell;
+  if (!shell || !shell.isOpen()) return;
   void loadTaskTexts(); // no-op unless the visible task set changed
-  queuepanel.replaceChildren(el("h2", "", intakeOn ? "Task queue · ✉ intake on" : "Task queue"));
+  const shown = tasksList.filter((t) => !qQuery
+    || qTaskText(t.id).toLowerCase().includes(qQuery)
+    || t.status.includes(qQuery) || (t.note ?? "").toLowerCase().includes(qQuery));
+  // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
+  // reset the selection every two seconds — the same class of defect as the compose box above.
+  const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
+    shown.map((t) => [t.id, t.status, t.slot, t.note, taskText.has(t.id)])]);
+  if (key === qKey) return;
+  qKey = key;
 
-  if (dispatch.available) {
-    const drow = el("div", "diffstat");
-    drow.textContent = `Dispatcher ${dispatch.on ? "ON" : "off"} · repo ${baseName(dispatch.repo)} · max ${dispatch.maxLanes} lanes — `;
-    const toggle = el("button", "qbtn", dispatch.on ? "turn off" : "turn on") as HTMLButtonElement;
-    toggle.onclick = async () => { const r = await post("/api/dispatch", { on: !dispatch.on }); if (!r.ok) toast("couldn't toggle the dispatcher"); await refresh(); renderQueue(); };
-    drow.appendChild(toggle);
-    queuepanel.appendChild(drow);
-  } else {
-    queuepanel.appendChild(el("div", "diffstat", "Dispatcher unavailable (set FLEET_DISPATCH_REPO to auto-run queued tasks). Tasks are still tracked; send them by hand."));
-  }
+  const counts = Q_STATUS.map((s) => `${tasksList.filter((t) => t.status === s.k).length} ${s.k}`).join(" · ");
+  shell.setSubtitle(`${counts}${intakeOn ? " · ✉ intake on" : ""}`);
 
-  const addWrap = el("div", "qadd");
-  const addIn = el("textarea", "qaddin") as HTMLTextAreaElement;
-  addIn.placeholder = "New task — describe a feature or fix…";
-  addIn.rows = 2;
-  const addBtn = el("button", "qbtn primary", "add") as HTMLButtonElement;
-  addBtn.onclick = async () => {
-    if (!addIn.value.trim()) return;
-    const r = await post("/api/tasks", { text: addIn.value, queue: false });
-    if (!r.ok) { toast("couldn't add the task"); return; } // keep the typed text in the box
-    addIn.value = "";
-    await refresh();
-    renderQueue();
+  shell.list.replaceChildren();
+  const rows: ShellRow[] = [];
+  let selIdx = -1;
+  qRowId = new Map();
+  const add = (o: { name: string; sub?: string; cls?: string; id: string | null }) => {
+    const r = el("div", `shellrow${o.cls ? ` ${o.cls}` : ""}`);
+    qRowId.set(r, o.id);
+    const m = el("div", "shrmain");
+    m.appendChild(el("div", "shrname", o.name));
+    if (o.sub) m.appendChild(el("div", "shrsub", o.sub));
+    r.appendChild(m);
+    const act = () => qSelect(o.id);
+    r.onclick = act;
+    shell.list.appendChild(r);
+    if (o.id === qPick) { r.classList.add("sel"); selIdx = rows.length; }
+    rows.push({ el: r, open: act });
   };
-  addWrap.append(addIn, addBtn);
-  queuepanel.appendChild(addWrap);
-  // legend: the sidebar badges + lane lifecycle, explained once where the workflow lives
-  queuepanel.appendChild(el("div", "qlegend",
-    "flow: pending → queue ▸ → (dispatcher spawns a ⎇ lane, or send by hand) → ± review → ⏏ land.  "
-    + "badge: •N uncommitted · ↑N to push · amber = editing · green = ready to land"));
 
-  const order = { pending: 0, queued: 1, sent: 2, done: 3 };
-  const sorted = [...tasksList].sort((a, b) => (order[a.status] - order[b.status]) || (b.created - a.created));
-  if (!sorted.length) { queuepanel.appendChild(el("div", "diffstat", "no tasks yet")); return; }
-  for (const t of sorted) {
-    const row = el("div", `qrow ${t.status}`);
-    const main = el("div", "qtext");
-    const meta = el("div", "qmeta");
-    meta.textContent = `${t.status}${t.slot ? ` · slot ${t.slot}` : ""}${t.note ? ` · ${t.note}` : ""} · `;
-    if (t.source === "intake") {
-      const tag = el("span", "qintake", `✉ ${t.from ?? "intake"}`);
-      meta.appendChild(tag);
-    } else if (t.source === "steward") {
-      meta.appendChild(el("span", "qintake", "⚙ steward"));
-    } else meta.append("owner");
-    main.appendChild(meta);
-    main.appendChild(el("div", "", taskText.get(t.id) ?? "…")); // "…" until loadTaskTexts answers
-    row.appendChild(main);
-    const mkBtn = (label: string, action: string) => {
-      const b = el("button", "qbtn", label) as HTMLButtonElement;
-      b.onclick = async () => { const r = await post(`/api/tasks/${t.id}/${action}`, {}); if (!r.ok) toast(`couldn't ${action} the task`); await refresh(); renderQueue(); };
-      return b;
-    };
-    if (t.status === "pending") row.appendChild(mkBtn("queue ▸", "queue"));
-    if (t.status === "queued") row.appendChild(mkBtn("hold", "unqueue"));
-    if (t.status !== "done") row.appendChild(mkBtn("done", "done"));
-    row.appendChild(mkBtn("✕", "delete"));
-    queuepanel.appendChild(row);
+  add({ name: "＋ New task", cls: "qnew", id: null });
+  for (const s of Q_STATUS) {
+    const group = shown.filter((t) => t.status === s.k);
+    if (!group.length) continue;
+    const head = el("div", "shellsec");
+    head.appendChild(el("span", "shellsect", s.head));
+    head.appendChild(el("span", "shellsecn", String(group.length)));
+    shell.list.appendChild(head);
+    for (const t of [...group].sort((a, b) => b.created - a.created))
+      add({
+        name: qFirstLine(t.id), id: t.id, cls: `q-${t.status}`,
+        sub: [t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
+          `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
+          t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),
+      });
   }
+  if (!shown.length) shell.list.appendChild(el("div", "pknone",
+    tasksList.length ? "no tasks match this search" : "no tasks yet"));
+  shell.setRows(rows);
+  if (selIdx >= 0) shell.select(selIdx, false, false);
 }
+
+$("queuebtn").onclick = () => openQueue();
 
 function openQueue() {
   setDrawer(false);
-  queuedlg.style.display = "flex";
+  qShell?.close();
+  qPick = null;
+  qQuery = "";
+  qKey = "";
+  qCompose = null;
+  const shell = openShell({
+    id: "queue",
+    title: "Task queue",
+    listWidth: 380,
+    onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
+    onClose: () => { qShell = null; qCompose = null; qRowId = new Map(); },
+  });
+  qShell = shell;
+
+  const search = el("input", "pkfilterin") as HTMLInputElement;
+  search.type = "text";
+  search.spellcheck = false;
+  search.placeholder = "search tasks — text, status or note";
+  search.addEventListener("input", () => { qQuery = search.value.trim().toLowerCase(); qKey = ""; renderQueue(); });
+  shell.tools.appendChild(search);
+
+  const drow = el("div", "qdisp");
+  if (dispatch.available) {
+    // the strip lives OUTSIDE the poll-guarded list rebuild, so it repaints itself from `dispatch`
+    // after a toggle rather than waiting for a rebuild that may never come
+    const label = el("span", "");
+    const toggle = el("button", "shrbtn", "") as HTMLButtonElement;
+    const paint = () => {
+      label.textContent = `Dispatcher ${dispatch.on ? "ON" : "off"} · repo ${baseName(dispatch.repo)} · max ${dispatch.maxLanes} lanes `;
+      toggle.textContent = dispatch.on ? "turn off" : "turn on";
+    };
+    toggle.onclick = async () => {
+      const r = await post("/api/dispatch", { on: !dispatch.on });
+      if (!r.ok) toast("couldn't toggle the dispatcher");
+      await refresh();
+      qKey = "";
+      renderQueue();
+      paint();
+    };
+    paint();
+    drow.append(label, toggle);
+  } else {
+    drow.textContent = "Dispatcher unavailable (set FLEET_DISPATCH_REPO to auto-run queued tasks)."
+      + " Tasks are still tracked; send them by hand.";
+  }
+  shell.tools.appendChild(drow);
+
+  shell.foot.textContent = "pending → queue ▸ → (the dispatcher spawns a ⎇ lane, or you send it by"
+    + " hand) → ± review → ⏏ land.  Sidebar badge: •N uncommitted · ↑N to push · amber = editing ·"
+    + " green = ready to land";
+
   renderQueue();
+  renderQueueDetail();
 }
 
 // --- audit trail overlay (Backlog #9): owner-only read-only lens over /api/audit ---

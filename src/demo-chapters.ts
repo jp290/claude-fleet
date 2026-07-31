@@ -142,7 +142,7 @@ const CHAPTERS: Chapter[] = [
     // the one thing this whole demo has to land is that the record keeps ITSELF, and if a visitor
     // takes only one sentence away it has to be that one.
     hints: [
-      { anchor: "#board .bsec:last-child", place: "below",
+      { anchor: "#board", place: "below",
         text: "Das führt Fleet von selbst mit: jeden Schritt, jede geänderte Datei. Niemand notiert hier etwas." },
       // Under the terminal, not on the "Weiter" button it names: anchored to the button it landed
       // on the ℹ panel's own heading, and a label that covers the exhibit is worse than one that
@@ -150,7 +150,7 @@ const CHAPTERS: Chapter[] = [
       // since the pane stopped being stretched to the window, which is the same change that let
       // these labels grow. Shown late: an instruction that arrives before there is anything to
       // see is an interruption.
-      { anchor: "#panes .pane.focused", place: "below", at: 55,
+      { anchor: "#app", place: "below", at: 55,
         text: "Weiter drücken — dann siehst du, wo diese Arbeit ankommt." },
     ],
   },
@@ -190,7 +190,7 @@ const CHAPTERS: Chapter[] = [
     hints: [
       // Closes the loop the first label opened: the same record, now under the project, and still
       // nobody's typing. This is the sentence the demo exists to leave behind.
-      { anchor: "#board .bsec:last-child", place: "below",
+      { anchor: "#board", place: "below",
         text: "Dieselben zwei Einträge — jetzt beim Projekt. Abgeschrieben hat sie niemand." },
     ],
   },

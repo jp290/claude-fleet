@@ -1848,7 +1848,6 @@ window.addEventListener("keydown", (e) => {
     if (hist.style.display === "flex") closeHist();
     if (sharedlg.style.display === "flex") closeShareDlg();
     if (autodlg.style.display === "flex") closeAutoDlg();
-    if (audit.style.display === "flex") closeAudit();
     setDrawer(false);
   }
 });
@@ -3541,7 +3540,6 @@ function openQueue() {
 // A GLOBAL log, not gated behind a live slot, because the headline question is about a slot
 // that has VANISHED — its lifecycle events are unreachable from a per-slot entry point.
 // One fetch, then all narrowing (slot filter, lifecycle-only) happens client-side.
-const audit = $("audit"), auditpanel = $("auditpanel");
 interface AuditEntry { ts: number; event: string; slot?: number; detail?: string }
 // event kind → category, mirroring how the server groups them (server.ts audit() call sites).
 // Category drives the row colour and the lifecycle-only toggle. Unlisted kinds fall to "other".
@@ -3584,8 +3582,13 @@ let auditLife = false;
 const tornNote = (malformed: number): string =>
   malformed > 0 ? ` · ⚠ ${malformed} unreadable row${malformed === 1 ? "" : "s"} on disk` : "";
 
+// The AUDIT lens. Same data and same two filters as the overlay it replaces; what is new is that
+// selecting an event shows the rest of THAT SLOT's story around it. The trail exists to answer
+// "what happened to the session that vanished", and answering it used to mean setting the slot
+// filter, finding your event again in the narrowed list, and reading up and down by eye.
 function renderAudit() {
-  auditpanel.replaceChildren(el("h2", "", "Audit trail — what Fleet did"));
+  const shell = ocShell;
+  if (!shell) return;
   const ctl = el("div", "auditctl");
   // slot filter (the primary axis): "all" + every slot id present in the trail, ascending
   const slots = [...new Set(auditData.map((e) => e.slot).filter((s): s is number => typeof s === "number"))]
@@ -3600,13 +3603,12 @@ function renderAudit() {
     sel.appendChild(o);
   }
   sel.value = auditSlot === "all" ? "all" : String(auditSlot);
-  sel.onchange = () => { auditSlot = sel.value === "all" ? "all" : Number(sel.value); renderAudit(); };
+  sel.onchange = () => { auditSlot = sel.value === "all" ? "all" : Number(sel.value); renderActivity(); };
   ctl.appendChild(sel);
   const lifeBtn = el("button", `shrbtn${auditLife ? " active" : ""}`, "lifecycle only") as HTMLButtonElement;
   lifeBtn.title = "show only slot_open / slot_kill / slot_shelve / self_heal_recreate";
-  lifeBtn.onclick = () => { auditLife = !auditLife; renderAudit(); };
+  lifeBtn.onclick = () => { auditLife = !auditLife; renderActivity(); };
   ctl.appendChild(lifeBtn);
-  auditpanel.appendChild(ctl);
 
   const rows = auditData.filter((e) =>
     (auditSlot === "all" || e.slot === auditSlot) && (!auditLife || LIFECYCLE_KINDS.has(e.event)));
@@ -3616,42 +3618,76 @@ function renderAudit() {
     ? capped ? `latest ${loaded} of ${auditTotal} events` : `${loaded} event${loaded === 1 ? "" : "s"}`
     : `${rows.length} of ${capped ? `${loaded} loaded (${auditTotal} total)` : loaded}`) + tornNote(auditMalformed);
   ctl.appendChild(el("span", "auditcount", count));
+  shell.tools.appendChild(ctl);
+  shell.setSubtitle(count);
 
-  const list = el("div", "");
-  list.id = "auditlist";
-  if (!rows.length) list.appendChild(el("div", "histnone", "no events match this filter"));
+  shell.list.replaceChildren();
+  auditRowOf = new Map();
+  const shRows: ShellRow[] = [];
+  let selIdx = -1;
+  if (!rows.length) shell.list.appendChild(el("div", "histnone", "no events match this filter"));
   for (const e of rows) {
     const cat = AUDIT_CAT[e.event] ?? "other";
-    const row = el("div", `auditrow cat-${cat}`);
-    row.appendChild(el("span", "aud-ts", fmtTs(e.ts)));
-    const slotBadge = el("span", `aud-slot${typeof e.slot === "number" ? "" : " none"}`,
-      typeof e.slot === "number" ? String(e.slot) : "—");
-    row.appendChild(slotBadge);
-    row.appendChild(el("span", "aud-kind", e.event));
-    row.appendChild(el("span", "aud-detail", decodeAudit(e.event, e.detail)));
-    list.appendChild(row);
+    const r = el("div", `shellrow auditrow cat-${cat}`);
+    auditRowOf.set(r, e);
+    r.appendChild(el("span", "aud-slot" + (typeof e.slot === "number" ? "" : " none"),
+      typeof e.slot === "number" ? String(e.slot) : "—"));
+    const m = el("div", "shrmain");
+    m.appendChild(el("div", "shrname", decodeAudit(e.event, e.detail) || e.event));
+    m.appendChild(el("div", "shrsub", `${fmtTs(e.ts)} · ${e.event}`));
+    r.appendChild(m);
+    const key = `${e.ts}|${e.event}`;
+    const act = () => { auditPick = key; renderActivity(); renderAuditDetail(e); shell.showDetail(true); };
+    r.onclick = act;
+    shell.list.appendChild(r);
+    if (key === auditPick) { r.classList.add("sel"); selIdx = shRows.length; }
+    shRows.push({ el: r, open: act });
   }
-  auditpanel.appendChild(list);
+  shell.setRows(shRows);
+  if (selIdx >= 0) shell.select(selIdx, false, false);
 }
 
-async function openAudit() {
-  setDrawer(false);
-  auditSlot = "all";
-  auditLife = false;
-  auditData = [];
-  const res = await api("/api/audit?limit=1000");
-  if (res.ok) {
-    const data = (await res.json()) as { events?: AuditEntry[]; total?: number; malformed?: number };
-    auditData = (data.events ?? []).filter((e): e is AuditEntry => typeof e?.ts === "number" && typeof e?.event === "string");
-    auditTotal = typeof data.total === "number" ? data.total : auditData.length;
-    auditMalformed = typeof data.malformed === "number" ? data.malformed : 0;
+// the selected event, then the same slot's events around it — the timeline the trail is usually
+// consulted for, without re-filtering and re-finding your place.
+function renderAuditDetail(e: AuditEntry) {
+  const shell = ocShell;
+  if (!shell) return;
+  shell.detail.replaceChildren();
+  shell.detail.appendChild(el("div", "rvhead", decodeAudit(e.event, e.detail) || e.event));
+  shell.detail.appendChild(el("div", "diffstat",
+    `${fmtTs(e.ts)} · ${e.event}${typeof e.slot === "number" ? ` · slot ${e.slot}` : ""}`
+    + ` · ${AUDIT_CAT[e.event] ?? "other"}`));
+  if (e.detail) shell.detail.appendChild(el("div", "qdtext", e.detail));
+
+  if (typeof e.slot !== "number") {
+    shell.detail.appendChild(el("div", "shellhint",
+      "this event is not attached to a slot, so there is no per-slot timeline to show"));
+    return;
   }
-  renderAudit(); // server already returns newest-first; we preserve that order
-  audit.style.display = "flex";
+  const sec = el("div", "shellsec");
+  sec.appendChild(el("span", "shellsect", `Slot ${e.slot} around this moment`));
+  shell.detail.appendChild(sec);
+  // ±8 of the slot's own events, in time order (the ledger arrives newest-first). Bounded on
+  // purpose: this is context for one event, not a second copy of the list on the left.
+  const own = auditData.filter((x) => x.slot === e.slot);
+  const at = own.findIndex((x) => x.ts === e.ts && x.event === e.event);
+  const near = at < 0 ? own.slice(0, 17) : own.slice(Math.max(0, at - 8), at + 9);
+  const tl = el("div", "audtl");
+  for (const x of [...near].reverse()) {
+    const line = el("div", `audtlrow${x.ts === e.ts && x.event === e.event ? " here" : ""}`);
+    line.appendChild(el("span", "aud-ts", fmtTs(x.ts)));
+    line.appendChild(el("span", "aud-kind", x.event));
+    line.appendChild(el("span", "aud-detail", decodeAudit(x.event, x.detail)));
+    tl.appendChild(line);
+  }
+  shell.detail.appendChild(tl);
+  if (own.length > near.length)
+    shell.detail.appendChild(el("div", "shellhint",
+      `showing ${near.length} of this slot's ${own.length} loaded events — filter the list to slot`
+      + ` ${e.slot} to read them all`));
 }
-function closeAudit() { audit.style.display = "none"; }
-audit.addEventListener("click", (e) => { if (e.target === audit) closeAudit(); });
-$("auditbtn").onclick = () => void openAudit();
+
+$("auditbtn").onclick = () => void openActivity("audit");
 
 // --- the owner disposition rail: the one label channel for every advisory worker output
 // (server.ts, grep `DISPOSITION rail`). The rule the UI must not break is that ABSENCE IS NOT
@@ -3716,6 +3752,116 @@ const DISPO_WORD_UI: Record<DispositionVerdict, string> = {
 let ocShell: Shell | null = null;
 let ocPick: string | null = null;              // landRef() of the selected outcome
 let ocRowOf = new Map<HTMLElement, OutcomeRow>(); // which outcome a list row stands for
+let auditPick: string | null = null;
+let auditRowOf = new Map<HTMLElement, AuditEntry>();
+let cmPick: string | null = null;
+let cmRowOf = new Map<HTMLElement, RvCommit>();
+
+// --- the COMMITS lens (GET /api/commits) ---
+interface CommitsResp { repos: string[]; repo: string | null; branch?: string | null;
+  commits: RvCommit[]; capped?: boolean; error?: string }
+let cmData: CommitsResp | null = null;
+let cmErr: string | null = null;
+
+async function loadCommitsLens(repo: string | null) {
+  const q = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+  const res = await api(`/api/commits${q}`).catch(() => null);
+  if (!res) { cmErr = "couldn't reach the server"; return; }
+  if (res.status === 404) { cmErr = SKEW_NOTE; return; }
+  if (!res.ok) { cmErr = `the server answered ${res.status}`; return; }
+  const d = (await res.json().catch(() => null)) as CommitsResp | null;
+  if (!d) { cmErr = "the server's answer was not readable JSON"; return; }
+  cmErr = null;
+  cmData = d;
+}
+
+function renderCommits() {
+  const shell = ocShell;
+  if (!shell) return;
+  shell.list.replaceChildren();
+  cmRowOf = new Map();
+  if (cmErr) { shell.list.appendChild(el("div", "diffstat err", cmErr)); shell.setRows([]); return; }
+  if (!cmData) { shell.list.appendChild(el("div", "shellhint", "loading…")); shell.setRows([]); return; }
+  if (cmData.error) { shell.list.appendChild(el("div", "shellhint", cmData.error)); shell.setRows([]); return; }
+
+  // repo chooser — only when Fleet actually has more than one open, so the common case is quiet
+  const ctl = el("div", "auditctl");
+  if (cmData.repos.length > 1) {
+    const sel = el("select", "") as HTMLSelectElement;
+    for (const r of cmData.repos) {
+      const o = el("option", "", baseName(r)) as HTMLOptionElement;
+      o.value = r;
+      o.title = r;
+      sel.appendChild(o);
+    }
+    sel.value = cmData.repo ?? cmData.repos[0];
+    sel.onchange = async () => {
+      cmData = null; cmPick = null;
+      renderActivity();
+      await loadCommitsLens(sel.value);
+      renderActivity();
+    };
+    ctl.appendChild(sel);
+  } else if (cmData.repo) {
+    ctl.appendChild(el("span", "auditcount", baseName(cmData.repo)));
+  }
+  ctl.appendChild(el("span", "auditcount",
+    `${cmData.branch ?? "detached"} · ${cmData.commits.length} commit${cmData.commits.length === 1 ? "" : "s"}`
+    + (cmData.capped ? " (latest only)" : "")));
+  shell.tools.appendChild(ctl);
+  shell.setSubtitle(cmData.repo ? `${baseName(cmData.repo)} · ${cmData.branch ?? "detached HEAD"}` : "");
+
+  const rows: ShellRow[] = [];
+  let selIdx = -1;
+  if (!cmData.commits.length) shell.list.appendChild(el("div", "histnone", "no commits in this repo"));
+  for (const c of cmData.commits) {
+    const r = el("div", "shellrow");
+    cmRowOf.set(r, c);
+    const m = el("div", "shrmain");
+    m.appendChild(el("div", "shrname", c.subject || "(no subject)"));
+    m.appendChild(el("div", "shrsub", `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}`));
+    r.appendChild(m);
+    const act = () => { cmPick = c.hash; renderActivity(); renderCommitDetail(c); shell.showDetail(true); };
+    r.onclick = act;
+    shell.list.appendChild(r);
+    if (c.hash === cmPick) { r.classList.add("sel"); selIdx = rows.length; }
+    rows.push({ el: r, open: act });
+  }
+  shell.setRows(rows);
+  if (selIdx >= 0) shell.select(selIdx, false, false);
+}
+
+function renderCommitDetail(c: RvCommit) {
+  const shell = ocShell;
+  if (!shell) return;
+  shell.detail.replaceChildren();
+  shell.detail.appendChild(el("div", "rvhead", c.subject || "(no subject)"));
+  shell.detail.appendChild(el("div", "diffstat", `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}`));
+  // the JOIN the two lenses exist to make: did this commit arrive through a Fleet land, or not.
+  // An outcome row records the branch and the time, so an exact commit-to-outcome identity is not
+  // available — this reports the candidates and says plainly that it is a time match, not proof.
+  const near = outcomeData.filter((o) => o.disposition === "landed" && Math.abs(o.ts - c.ts) < 3_600_000);
+  const sec = el("div", "shellsec");
+  sec.appendChild(el("span", "shellsect", "Fleet lands near this commit"));
+  shell.detail.appendChild(sec);
+  if (!actLoaded.has("lands")) {
+    shell.detail.appendChild(el("div", "shellhint",
+      "the lands lens has not been loaded in this window yet — open it once and come back"));
+  } else if (!near.length) {
+    shell.detail.appendChild(el("div", "shellhint",
+      "no land recorded within an hour of this commit — it was probably committed by hand"));
+  } else {
+    for (const o of near) {
+      const line = el("div", "shrsub");
+      line.textContent = `${fmtTs(o.ts)} · ${(o.branch ?? "(branch not recorded)").replace(/^fleet\//, "")}`
+        + `${o.shortstat ? ` · ${o.shortstat}` : ""}`;
+      shell.detail.appendChild(line);
+    }
+    shell.detail.appendChild(el("div", "shellhint",
+      "matched by TIME (±1h), not identity — the ledger records a branch and a moment, not the"
+      + " commit that resulted. Treat this as a lead, never as provenance."));
+  }
+}
 // Every field optional: this parses ROWS ON DISK, written by older server builds. The renderer
 // distinguishes absent from present-and-empty everywhere it matters, so nothing may be defaulted in.
 interface OutcomeReviewRow { state?: string; at?: number; model?: string; head?: string | null;
@@ -3856,10 +4002,11 @@ let outcomeMalformed = 0; // rows the server could not parse — a HOLE in the t
 let outcomeDispo: string | "all" = "all";
 let outcomeUncovered = false; // the gap-3 question: which rows landed without ③ having covered them
 
+// The LANDS lens. renderActivity() owns clearing the toolbar and painting the lens switch, so this
+// appends rather than replaces — otherwise each filter change would wipe the switch above it.
 function renderOutcomes() {
   const shell = ocShell;
   if (!shell) return;
-  shell.tools.replaceChildren();
   const ctl = el("div", "auditctl");
   const dispos = [...new Set(outcomeData.map((o) => o.disposition).filter((d): d is string => !!d))].sort();
   const sel = el("select", "") as HTMLSelectElement;
@@ -3872,11 +4019,11 @@ function renderOutcomes() {
     sel.appendChild(o);
   }
   sel.value = outcomeDispo;
-  sel.onchange = () => { outcomeDispo = sel.value; renderOutcomes(); };
+  sel.onchange = () => { outcomeDispo = sel.value; renderActivity(); };
   ctl.appendChild(sel);
   const unc = el("button", `shrbtn${outcomeUncovered ? " active" : ""}`, "not covered by ③") as HTMLButtonElement;
   unc.title = "rows whose review did not describe what ended up here — superseded / inflight / none / not measured";
-  unc.onclick = () => { outcomeUncovered = !outcomeUncovered; renderOutcomes(); };
+  unc.onclick = () => { outcomeUncovered = !outcomeUncovered; renderActivity(); };
   ctl.appendChild(unc);
   const capped = outcomeTotal > outcomeData.length;
   ctl.appendChild(el("span", "auditcount",
@@ -3960,7 +4107,7 @@ function renderOutcomes() {
     r.appendChild(m);
     // the coverage relation is the one fact worth carrying in the index — it is what the feed is for
     r.appendChild(chip(reviewRel(o) === "covered" ? "③" : "·", `rel-${reviewRel(o)}`, REL_WORD[reviewRel(o)]));
-    const act = () => { ocPick = ref; renderOutcomes(); renderOutcomeDetail(o); shell.showDetail(true); };
+    const act = () => { ocPick = ref; renderActivity(); renderOutcomeDetail(o); shell.showDetail(true); };
     r.onclick = act;
     shell.list.appendChild(r);
     if (ref === ocPick) { r.classList.add("sel"); selIdx = shRows.length; }
@@ -4086,7 +4233,7 @@ function renderOutcomeDetail(o: OutcomeRow) {
       b.title = title;
       b.onclick = async () => {
         b.disabled = true;
-        if (await labelDisposition("land", ref, verdict)) { renderOutcomes(); renderOutcomeDetail(o); }
+        if (await labelDisposition("land", ref, verdict)) { renderActivity(); renderOutcomeDetail(o); }
         else b.disabled = false;
       };
       lab.appendChild(b);
@@ -4095,39 +4242,128 @@ function renderOutcomeDetail(o: OutcomeRow) {
   }
 }
 
-async function openOutcomes() {
+// --- the activity window: three lenses on "what has been happening" ---
+//
+// They were three separate overlays answering one question from three angles, and the gaps between
+// them were the problem. The outcome ledger is what FLEET landed — it cannot see a commit made by
+// hand in a terminal session, so a repo can move without the feed showing anything. The audit trail
+// records what Fleet DID to a slot, and its headline question ("what happened to the session that
+// vanished") was two clicks and a different overlay away from the outcome that explains it.
+//
+// One window, one switch. The lands lens is unchanged — its renderer carries contract wording that
+// e2e/outcomes.ts asserts over the source — and the other two are new views on existing data.
+type ActLens = "lands" | "commits" | "audit";
+let actLens: ActLens = "lands";
+const ACT_LENS: { k: ActLens; label: string; title: string }[] = [
+  { k: "lands", label: "Lands", title: "the lane-outcome ledger — what Fleet landed, and what ③ review said" },
+  { k: "commits", label: "Commits", title: "recent commits in a repo Fleet has open — including ones no ledger recorded" },
+  { k: "audit", label: "Audit", title: "what Fleet did to each slot — opened, killed, shelved, self-healed" },
+];
+
+function renderActivity() {
+  const shell = ocShell;
+  if (!shell) return;
+  shell.tools.replaceChildren();
+  const sw = el("div", "actlens");
+  for (const l of ACT_LENS) {
+    const b = el("button", `shrbtn${actLens === l.k ? " active" : ""}`, l.label) as HTMLButtonElement;
+    b.title = l.title;
+    b.onclick = () => { if (actLens !== l.k) void switchLens(l.k); };
+    sw.appendChild(b);
+  }
+  shell.tools.appendChild(sw);
+  if (actLens === "lands") renderOutcomes();
+  else if (actLens === "commits") renderCommits();
+  else renderAudit();
+}
+
+async function switchLens(k: ActLens) {
+  const shell = ocShell;
+  if (!shell) return;
+  actLens = k;
+  shell.detail.replaceChildren();
+  shell.setTitle(k === "lands" ? "Outcome feed — what landed, and what review said"
+    : k === "commits" ? "Commits — what is actually in the repo"
+    : "Audit trail — what Fleet did to each slot");
+  shell.setSubtitle("");
+  shell.foot.textContent = k === "lands"
+    ? "↩ undo is one step — only the newest land can be reverted, from the board. It is deliberately"
+      + " not offered per row here: rendering it on every row would imply a capability the land spine"
+      + " does not have."
+    : k === "commits"
+      ? "The ledger records what FLEET landed. This records what is in the repo — a commit made by"
+        + " hand in a terminal session appears here and in no ledger."
+      : "A GLOBAL log, not gated behind a live slot: the headline question is usually about a slot"
+        + " that has since vanished, whose events no per-slot view can still reach.";
+  renderActivity();
+  await loadLens(k);
+  if (shell.isOpen()) renderActivity();
+}
+
+// each lens loads once per window; switching back is instant and re-fetches nothing
+const actLoaded = new Set<ActLens>();
+async function loadLens(k: ActLens) {
+  if (actLoaded.has(k)) return;
+  if (k === "lands") {
+    await loadDispositions(); // labels before rows: a row must never render for an instant as unlabeled when it is not
+    const res = await api("/api/lane-outcomes?limit=1000");
+    if (res.ok) {
+      const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number; malformed?: number };
+      outcomeData = (data.outcomes ?? []).filter((o): o is OutcomeRow => typeof o?.ts === "number");
+      outcomeTotal = typeof data.total === "number" ? data.total : outcomeData.length;
+      outcomeMalformed = typeof data.malformed === "number" ? data.malformed : 0;
+    }
+  } else if (k === "commits") {
+    await loadCommitsLens(null);
+  } else {
+    const res = await api("/api/audit?limit=1000");
+    if (res.ok) {
+      const data = (await res.json()) as { events?: AuditEntry[]; total?: number; malformed?: number };
+      auditData = (data.events ?? []).filter((e): e is AuditEntry =>
+        typeof e?.ts === "number" && typeof e?.event === "string");
+      auditTotal = typeof data.total === "number" ? data.total : auditData.length;
+      auditMalformed = typeof data.malformed === "number" ? data.malformed : 0;
+    }
+  }
+  actLoaded.add(k);
+}
+
+async function openActivity(lens: ActLens) {
   setDrawer(false);
   ocShell?.close();
   outcomeDispo = "all";
   outcomeUncovered = false;
   outcomeData = [];
+  auditData = [];
+  auditSlot = "all";
+  auditLife = false;
+  cmData = null;
+  cmErr = null;
+  cmPick = null;
   ocPick = null;
+  auditPick = null;
   ocRowOf = new Map();
+  actLens = lens;
+  actLoaded.clear();
   const shell = openShell({
     id: "outcomes",
-    title: "Outcome feed — what landed, and what review said",
+    title: "Activity",
     listWidth: 340,
-    detailHint: "Pick an outcome to see its footprint, its verify verdict, what ③ said about it,"
-      + " and to label it.",
-    onSelect: (row) => { const o = ocRowOf.get(row.el); if (o) { ocPick = landRef(o); renderOutcomeDetail(o); } },
-    onClose: () => { ocShell = null; ocRowOf = new Map(); },
+    detailHint: "Pick a row on the left.",
+    onSelect: (row) => {
+      const o = ocRowOf.get(row.el);
+      if (o) { ocPick = landRef(o); renderOutcomeDetail(o); return; }
+      const e = auditRowOf.get(row.el);
+      if (e) { auditPick = `${e.ts}|${e.event}`; renderAuditDetail(e); return; }
+      const c = cmRowOf.get(row.el);
+      if (c) { cmPick = c.hash; renderCommitDetail(c); }
+    },
+    onClose: () => { ocShell = null; ocRowOf = new Map(); auditRowOf = new Map(); cmRowOf = new Map(); },
   });
   ocShell = shell;
-  shell.foot.textContent = "↩ undo is one step — only the newest land can be reverted, from the"
-    + " board. It is deliberately not offered per row here: rendering it on every row would imply a"
-    + " capability the land spine does not have.";
-  renderOutcomes(); // empty until the fetch lands, so the window opens instantly
-  await loadDispositions(); // labels before rows: a row must never render for an instant as unlabeled when it is not
-  const res = await api("/api/lane-outcomes?limit=1000");
-  if (res.ok) {
-    const data = (await res.json()) as { outcomes?: OutcomeRow[]; total?: number; malformed?: number };
-    outcomeData = (data.outcomes ?? []).filter((o): o is OutcomeRow => typeof o?.ts === "number");
-    outcomeTotal = typeof data.total === "number" ? data.total : outcomeData.length;
-    outcomeMalformed = typeof data.malformed === "number" ? data.malformed : 0;
-  }
-  if (shell.isOpen()) renderOutcomes(); // server already returns newest-first; we preserve that order
+  await switchLens(lens);
 }
-$("outcomebtn").onclick = () => void openOutcomes();
+$("outcomebtn").onclick = () => void openActivity("lands");
 
 function copyLine(label: string, value: string): HTMLElement {
   const row = el("div", "shrline");

@@ -754,6 +754,20 @@ async function commitRows(cwd: string, range: string | null): Promise<SlotCommit
   }
   return out;
 }
+// the repos Fleet is actually working in: the dispatch repo, plus every active slot's repo. A lane
+// contributes the repo it forked FROM, not its own worktree — the interesting history is the one
+// lands arrive on, and sixteen lanes of one repo would otherwise be sixteen entries.
+function knownRepos(): string[] {
+  const out = new Set<string>();
+  if (DISPATCH_REPO) out.add(DISPATCH_REPO);
+  for (const s of slots) {
+    if (!s.cwd) continue;
+    if (s.worktree?.repo) out.add(s.worktree.repo);
+    else if (existsSync(`${s.cwd}/.git`)) out.add(s.cwd);
+  }
+  return [...out];
+}
+
 async function slotCommits(s: Slot): Promise<SlotCommits> {
   const cwd = s.cwd!;
   const capped = (rows: SlotCommit[]) => rows.length >= MAX_COMMIT_ROWS;
@@ -6823,6 +6837,29 @@ Bun.serve<WSData>({
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }
+    }
+    // recent commits in a repo Fleet KNOWS — the activity window's second lens. The outcome ledger
+    // records what Fleet itself landed; this records what is actually in the repo, which is not the
+    // same set: a commit made by hand in a terminal session appears here and in no ledger.
+    //
+    // `repo` is validated against the known set rather than taken as a path. /api/dirinfo does run
+    // git in an owner-chosen directory, so this is not a boundary the app defends everywhere — but
+    // this route has no reason to reach beyond the repos Fleet is already working in, and a route
+    // that needs no generality should not offer any.
+    if (url.pathname === "/api/commits") {
+      const repos = knownRepos();
+      const want = url.searchParams.get("repo");
+      const repo = want ?? repos[0] ?? "";
+      if (!repo) return json({ repos, repo: null, commits: [], error: "Fleet has no git repo open" });
+      if (!repos.includes(repo)) return json({ error: "not a repo Fleet has open" }, 400);
+      const br = await gitRead(repo, "rev-parse", "--abbrev-ref", "HEAD");
+      const rows = await commitRows(repo, null);
+      return json({
+        repos, repo,
+        branch: br.code === 0 && br.out && br.out !== "HEAD" ? br.out : null,
+        commits: rows ?? [],
+        capped: (rows?.length ?? 0) >= MAX_COMMIT_ROWS,
+      });
     }
     // what the folder under the picker's cursor actually IS. Deliberately a SEPARATE route from
     // /api/dirs rather than fields on every listed row: this costs four git calls, and paying that

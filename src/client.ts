@@ -2106,12 +2106,20 @@ function dirRow(o: DirRowOpts): HTMLElement {
   // to work.
   row.onclick = (e) => {
     if (e.detail >= 2) { void (o.cls === "up" ? browse(o.path) : startSession(o.path)); return; }
+    // "Up to …" is pure navigation, and a phone has no comfortable double-click: one tap goes up.
+    // On a pointer device the double-click still does it and a single click inspects, unchanged.
+    if (o.cls === "up" && isMobile()) { void browse(o.path); return; }
     const i = pkVisible().findIndex((r) => r.row === row);
     if (i >= 0) pkShell?.select(i, false, false);
     void showDirDetail(o.path);
     // opening only, never closing: a click that collapsed what it just selected would make the row
     // under the cursor jump away. The ▸ (and ←) still collapse.
     if (o.tree && !pkOpen.has(o.path)) void toggleNode(o.path);
+    // On a phone there is no second column, so the detail has to be PUSHED or it cannot be seen at
+    // all — which is exactly what it was: the picker never called this, so everything the pane
+    // knows (what is in the folder, its commits, "already open in slot N", ⎇ New lane) was
+    // desktop-only. The tree stays reachable: ▸ expands without leaving the list, and ‹ comes back.
+    if (isMobile()) pkShell?.showDetail(true);
   };
   const use = el("span", "pkuse", "start ▸");
   use.onclick = (e) => {
@@ -2551,7 +2559,11 @@ function openPicker(slotId: number) {
   pkFilter.type = "text";
   pkFilter.spellcheck = false;
   pkFilter.autocomplete = "off";
-  pkFilter.placeholder = "filter — ↑↓ select · ⌘Enter or double-click start · Enter re-root · ⌘D pin";
+  // a phone has no ⌘, no double-click idiom and no arrow keys: the desktop legend is not a shorter
+  // version of the truth there, it is the wrong instructions
+  pkFilter.placeholder = isMobile()
+    ? "filter folders"
+    : "filter — ↑↓ select · ⌘Enter or double-click start · Enter re-root · ⌘D pin";
   pkHideBtn = el("button", "pktoggle") as HTMLButtonElement;
   pkHideBtn.onclick = () => {
     hideWorktrees = !hideWorktrees;
@@ -2600,8 +2612,11 @@ function openPicker(slotId: number) {
     else if (pkOpen.has(hit.path)) void toggleNode(hit.path);
   });
 
-  shell.foot.textContent = "click selects · double-click (or ⌘Enter) starts a session here"
-    + " · →/← expand and collapse · Enter re-roots the tree · ⌘D pins";
+  shell.foot.textContent = isMobile()
+    ? "tap ▸ to open a folder in place · tap its name for what is inside it · “start ▸” opens a"
+      + " session there · ‹ goes back"
+    : "click selects and opens · double-click (or ⌘Enter) starts a session here"
+      + " · →/← expand and collapse · Enter re-roots the tree · ⌘D pins";
 
   const last = localStorage.getItem("fleet.pkdir") ?? "~";
   void browse(last).then(async (ok) => {

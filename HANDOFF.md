@@ -1,8 +1,138 @@
-# HANDOFF — 2026-07-29/30 (Session 13: der zweite Puls und ein Datenlayer · Session 14: die Demo-Aufnahme)
+# HANDOFF — Session 15 (2026-07-31/08-01: die vier Fenster) · Session 13/14 darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log fc24499..HEAD` mit Bodies (das
+*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 99a9c0f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 15 (2026-07-31/08-01): vier Overlays wurden Fenster, und das Land-Gate ist wieder grün
+
+8 Commits, `0ea14e8`..`41c1733`, alle deployed (srv läuft seit 08-01 09:57 als pid 39482, alle 19
+tmux-Sessions haben den Restart überlebt) und live nachgeprüft.
+
+### Das Erste, was die nächste Session tun muss
+
+**Der Owner hat gesagt: „but there are still some things left to fix on this work" — und NICHT
+gesagt, was.** Nicht raten. Die Liste unter „Was ich selbst als offen kenne" ist MEINE Liste, nicht
+seine; sie kann sich mit seiner überschneiden oder gar nicht. Erste Handlung: fragen.
+
+### Absicht dieser Session
+
+Zwei Runden, beide „eins nach dem anderen" auf Owner-Vorgabe. Runde 1: die vier Flächen, die er als
+Brain-Dump nannte — Diff/Commit-Review, Projektauswahl, Task-Queue, Outcome-Feed — waren alle
+dieselbe `.overlay > .panel`-Box (520–900 px, eine scrollende Spalte) und mussten deshalb alle
+abschneiden, was sie zeigen. Runde 2: Polish — der Picker lud endlos, ein Ordnerbaum wurde gewünscht,
+der Outcome-Feed sollte auch Commits zeigen, der Audit-Trail „vielleicht als View-Option".
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **`bun run build` IST ein halber Deploy.** Der Server liefert `public/app.js` von Platte — der
+  Client ist also sofort live, neue ROUTEN erst nach srv-Restart. Genau das hat der Owner als
+  „lädt endlos" gesehen: gemessen `/api/dirs` → 200, `/api/dirinfo` → 404 gegen die laufende
+  Instanz. Wer hier Client UND Server anfasst, muss beide Hälften deployen, sonst baut er dem
+  Owner eine kaputte Oberfläche. Der Client sagt das jetzt selbst (`SKEW_NOTE`) statt zu drehen.
+- **Ein Kommentar, der die Landmarken zitiert, an denen `e2e/outcomes.ts` die Datei zerschneidet,
+  macht die Checks LEER.** Passiert in Schritt 4: `indexOf()` traf den Kommentar statt den Code,
+  vier Ehrlichkeits-Checks waren vakuum und meldeten trotzdem grün. Gefunden, weil ich alle 14
+  Source-Assertions lokal nachgebaut habe, BEVOR ich eine Suite dafür bezahlt habe. Diese
+  Nachbau-Prüfung ist billig und gehört vor jede Änderung am Outcome-Renderer.
+- **Das Land-Gate war seit dem 07-28-Flip rot und niemand hat es gefahren.** `bun e2e/pins.ts` ist
+  sein erster Schritt, also war ALLES dahinter (tsc + drei Suiten) vier Tage lang unerreichbar.
+  Kein Land in dem Fenster — nur deshalb ist es nicht als kaputter Auto-Land aufgefallen.
+
+### Was ich selbst als offen kenne (meine Liste, nicht die des Owners)
+
+1. **Die vier Fenster haben NULL e2e-Abdeckung.** `grep` über `e2e/*.ts` + `fleet-e2e*.ts` nach
+   `openShell`/`shell-review`/`shell-picker`/`shell-queue`/`shell-outcomes` ist leer. Die einzigen
+   Client-Checks sind die Source-Text-Assertions über den Outcome-Renderer-WORTLAUT. Jede
+   Regression in Layout, Auswahl, Tastatur oder Datenfluss dieser vier Fenster ist für JEDES Gate
+   unsichtbar. Alles, was ich geprüft habe, war Playwright von Hand gegen eine Wegwerf-Instanz.
+   Das ist die größte Qualitätslücke dieser Arbeit.
+2. **Mobile nur für das Review-Fenster geprüft** (390 px, Liste↔Detail-Push und Zurück-Knopf).
+   Picker-Baum, Queue und Activity-Fenster sind auf dem Handy UNGEPRÜFT — und das Handy ist hier
+   eine echte Fläche (`docs/screenshot-mobile.png`).
+3. **Zwei Overlay-Idiome koexistieren.** Vier Shell-Fenster, und weiter als `.panel`:
+   `#hist` (Prompt-History), `#autodlg` (Zeitpläne), `#sharedlg` (Share), `#gate` (Token). Kein
+   Fehler, aber inkonsistentes Vokabular; wer das angleicht, sollte es bewusst tun.
+4. **`src/client.ts` ist 4938 Zeilen.** Die Renderer wurden bewusst NICHT ausgelagert (Begründung
+   unter Entscheide) — die Spannung bleibt und wächst.
+5. **Der Filter im Picker expandiert nicht.** Ein Treffer in einem eingeklappten Ordner bleibt
+   unsichtbar. Absichtlich (ehrlich: er filtert, was da ist), aber eine echte Grenze.
+6. **Der Kinder-Cache des Baums lebt so lange wie das Fenster.** Ein Ordner, der während des
+   Offenseins angelegt wird, erscheint erst nach Re-Root/Neuöffnen.
+7. **Der Commits↔Lands-Join ist ein ZEIT-Treffer (±1 h), kein Beweis.** Ein echter Join bräuchte,
+   dass `recordLand` den resultierenden Commit-SHA schreibt — das wäre die saubere Server-Änderung.
+8. **`showDirDetail` feuert pro Pfeiltaste** (latest-wins, aber N Requests beim Durchscrollen).
+   Ein Debounce wäre billig.
+9. `/api/commits` liefert max. `MAX_COMMIT_ROWS` (200) ohne Paging; die Audit-Timeline ist auf ±8
+   Ereignisse begrenzt. Beides bewusst gedeckelt, beides sagt es im UI.
+
+### Aus Session 13 unverändert offen — ich habe nichts davon angefasst
+
+- **`/inspektion` hat `runsLeft 0`** und ist still. Die fällige Entscheidung (neu aufsetzen oder
+  ruhen lassen) steht weiter aus.
+- **7 pending Tasks** — live nachgezählt, immer noch exakt 7. Zwei davon waren laut Session 13
+  bereits erledigt und nur nicht abgeräumt.
+- **Orphan-Worktree `fleet-260728184459-9e73`** (5523d1f) liegt weiter ohne Slot auf Platte.
+- **Maschinenhygiene:** 127 geleakte e2e-tmux-Sockets. Meine eigenen sieben habe ich gereapt; die
+  127 sind Altbestand, und nichts reapt sie.
+- Die zwei Messreihen aus Session 13 brauchen weiter ~15 Lanes, bevor sie etwas sagen.
+
+### Key Decisions (mit Grund, weil der Grund das Wiederaufrollen entscheidet)
+
+- **Die Renderer bleiben in `src/client.ts`; nur neue Chrome ging nach `src/shell.ts`.**
+  `e2e/outcomes.ts` und `fleet-e2e-security.ts` lesen diese Datei als SOURCE TEXT, und ein Check
+  schneidet einen Bereich per Index heraus, transpiliert und FÜHRT IHN AUS. Ein Umzug bricht die
+  Test-Maschinerie, nicht den Test — das ist teurer als die Dateigröße.
+- **Ein Klick wählt aus, statt zu navigieren (Picker).** Plattform-Standard (Finder/Explorer/VS
+  Code) und die Vorbedingung dafür, dass ein Detail-Panel überhaupt erreichbar ist. Nebeneffekt:
+  der 250-ms-Timer, der nur Einzel- von Doppelklick trennte, ist weg.
+- **Audit als LENS, nicht als viertes Fenster.** Owner war unsicher („maybe just as a view option");
+  die drei Linsen beantworten eine Frage aus drei Winkeln, und die Lücken dazwischen waren das
+  Problem — der Ledger sieht einen von Hand getippten Commit nicht.
+- **`off` wurde ein benannter Wert, statt den Pin zu lockern.** Ein Pin, der aufhört zu fallen, ist
+  schlechter als ein roter: er schweigt dann für immer über echte Tippfehler. Mutation beweist
+  beide Richtungen (`off` → PASS, `offf` → FAIL exit 1).
+- **Verifikation dieser Session:** tsc + `bun run build` + der Demo-Checkout (`~/claude-fleet-demo`,
+  eigenes `typecheck`/`build`, KEIN Gate hier fängt einen Bruch) + Land-Gate + `./e2e-isolated.sh`
+  für alles, was den Outcome-Renderer berührt. Plus Playwright von Hand — siehe Lücke 1.
+
+### Reihenfolge der nächsten Schritte, und warum diese Reihenfolge
+
+1. **Owner fragen, was noch offen ist.** Blockierend: er weiß es, ich nicht, und jede Minute an
+   meiner Liste kann an seiner vorbeigehen.
+2. **Mobile-Durchgang für Picker/Queue/Activity.** Billig, und das Handy ist eine echte Fläche.
+   Vor jeder weiteren Feature-Arbeit, weil Layout-Fehler dort strukturell sind, nicht kosmetisch.
+3. **Entscheiden, ob die vier Fenster e2e-Abdeckung bekommen** — oder ausdrücklich festhalten, dass
+   sie handgeprüft bleiben. Der Status quo ist die schlechteste Variante: er sieht abgedeckt aus
+   (die Suiten sind grün) und ist es für diese Fenster nicht.
+4. Erst danach die Punkte 5–9 meiner Liste, falls der Owner sie überhaupt will.
+
+### Womit man sofort weiterarbeitet
+
+`./state.sh`, dann `git log 99a9c0f..HEAD` MIT Bodies — die acht Commit-Bodies sind das
+Befund-Register dieser Session (Messungen, Mechanismen, was gemessen vs. nur gelesen wurde).
+Die Dateien, die man dafür kennen muss:
+
+- `src/shell.ts` (190 Z.) — das Fenster, das alle vier Flächen teilen. Nur Chrome: Layout,
+  Auswahl, Tastatur, Mobile-Push, Escape in der CAPTURE-Phase. Generalisiert bewusst keine Rows.
+- `src/client.ts` — alle vier Renderer. Einstiege: `openReview` · `openPicker`/`paintPicker`/
+  `dirRow` · `openQueue`/`renderQueue` · `openActivity`/`renderActivity` (+ `renderOutcomes`,
+  `renderCommits`, `renderAudit`). `SKEW_NOTE` erklärt die Deploy-Falle.
+- `e2e/outcomes.ts` §(9d)–(9i) — die Source-Text-Assertions über den Outcome-Renderer. VOR jeder
+  Änderung dort lokal nachbauen; sie schneiden die Datei zwischen Landmarken-Statements.
+- `e2e/pins.ts` (Block `FLEET_CLEAN_REVIEW`) — leitet die erkannten Werte aus den Regexen in
+  `server.ts` ab, damit die Menge nicht zweimal geschrieben wird.
+- `server.ts` — neu: `slotCommits`/`commitRows`, `dirInfo`, `knownRepos` und die Routen
+  `/api/slots/:id/commits`, `/commit-diff`, `/api/dirinfo`, `/api/commits`.
+
+Nicht-offensichtlicher Zustand: die Wegwerf-Instanz zum Anschauen steht in
+`$SCRATCH/ui-harness.sh` (eigener Socket/Port 23450, `FLEET_CMD=true`, `FLEET_AUTO_REVIEW_MS=0`) —
+sie ist NICHT im Repo und muss ggf. neu geschrieben werden; Muster ist `e2e-isolated.sh`.
+Deploy bleibt `tmux -L claudefleet kill-session -t srv`, danach IMMER `bundleStale` prüfen
+(`/api/steward/sessions`, Bearer = `stewardToken` aus `fleet.json`, nicht der Owner-Token —
+der gibt dort 404).
 
 ---
 

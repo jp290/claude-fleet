@@ -34,6 +34,14 @@
     border-bottom: 2px solid #f85149; background: #3a1416; color: #ffd7d5;
     box-shadow: 0 2px 10px rgba(0,0,0,.5); }
   .plaudit.unknown { border-bottom-color: #e0af68; background: #38290f; color: #ffe6b8; }
+  /* "a newer client is being served than this page is running". Its own affordance, not the alarm
+     bar above it: this is news, not a failure. Bottom-right so it never covers the header or the
+     audit banner, and it only ever appears on a tab that has been in the FOREGROUND across a
+     deploy — the hidden-tab case reloads itself and is never seen. */
+  #newver { position: fixed; right: 14px; bottom: 14px; z-index: 61; padding: 9px 14px;
+    border-radius: 999px; border: 1px solid #3c5488; background: #1b2438; color: #cfe0ff;
+    font-size: 12px; font-family: inherit; cursor: pointer; box-shadow: 0 6px 20px #0009; }
+  #newver:hover { background: #24304a; border-color: #7aa2f7; }
   .plaudit .plabody { flex: 1; min-width: 0; }
   .plaudit .plahd { font-weight: bold; letter-spacing: .3px; }
   .plaudit .plawhere { color: #ffb9b6; word-break: break-word; }
@@ -996,6 +1004,8 @@
        column width is only indentation, and on 390px it is charged to the name — at depth 2 the
        desktop's 30px columns plus the 34px touch target left 115px for a filename. */
     .pkrow.tree, .pknone.tree { --pkcol: 22px; --pktwid: 34px; --pkiconw: 15px; --pkgap: 7px; }
+    /* clear of the prompt bar, which owns the bottom of a phone screen */
+    #newver { right: 10px; bottom: calc(74px + env(safe-area-inset-bottom)); }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }
     .pkbtns button { padding: 11px 18px; }
   }

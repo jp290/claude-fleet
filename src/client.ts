@@ -2987,6 +2987,14 @@ function renderChips(chips: string[]) {
 // poll. A tab left open across a deploy keeps running OLD code (missing buttons read as
 // "regression") — when the version moves, reload as soon as the tab is hidden so we never
 // yank the page out from under active typing.
+//
+// …and SAY SO in the meantime, because "as soon as the tab is hidden" never arrives for the one
+// window the owner keeps in front of them. That is not a hypothetical: a deploy landed, the
+// dashboard was checked, and the new work was simply absent — the page had been in the foreground
+// the whole time, the self-heal was armed and waiting, and nothing on screen said a newer client
+// existed. The comment above already predicted "missing buttons read as regression"; it did not
+// predict that the reader would be the owner. Deliberately NOT the .plaudit bar — that channel is
+// the post-land audit ALARM, and "there is a newer build" is not an alarm.
 let bundleV = 0;
 let reloadArmed = false;
 function armReload() {
@@ -2996,6 +3004,12 @@ function armReload() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) location.reload();
   });
+  if (document.getElementById("newver")) return;
+  const b = el("button", "", "a newer version is ready — reload");
+  b.id = "newver";
+  b.title = "the server is serving a newer client than this page is running";
+  b.onclick = () => location.reload();
+  document.body.appendChild(b);
 }
 
 // --- verification tier 2 on the board: the post-land audit alarm --------------------------------

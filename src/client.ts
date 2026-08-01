@@ -2043,6 +2043,7 @@ function renderHideWtBtn() {
 // no interpolated data — safe to set via innerHTML.
 const PK_ICONS: Record<string, string> = {
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 19V7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v1.5"/><path d="M5.6 19h13a1.6 1.6 0 0 0 1.55-1.2l1.35-5.2A1 1 0 0 0 20.5 11.3H8.4a1.6 1.6 0 0 0-1.55 1.2l-1.35 5.2A1.6 1.6 0 0 1 3.5 19"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
@@ -2059,7 +2060,10 @@ interface DirRowOpts { label: string; sub?: string; path: string; cls: string; i
   // spine at that level must stop rather than run past a branch that has nothing below it
   blanks?: boolean[]; last?: boolean }
 function dirRow(o: DirRowOpts): HTMLElement {
-  const row = el("div", `pkrow ${o.cls}${o.tree ? " tree" : ""}`);
+  const open = !!o.tree && pkOpen.has(o.path);
+  // `open` rides on the ROW, not just the ▸: it is what grows the line the children hang from,
+  // tints the icon, and turns the glyph. One state, one class, three things saying the same.
+  const row = el("div", `pkrow ${o.cls}${o.tree ? " tree" : ""}${open ? " open" : ""}`);
   row.title = o.path;
   if (o.tree) {
     // one guide span per ancestor level, each a vertical rule stretched over the FULL row box — that
@@ -2079,17 +2083,17 @@ function dirRow(o: DirRowOpts): HTMLElement {
       else if (o.blanks?.[i]) g.classList.add("blank");
       lead.appendChild(g);
     }
-    const open = pkOpen.has(o.path);
     const tw = el("span", `pktw${open ? " open" : ""}`, open ? "▾" : "▸");
     tw.title = open ? "collapse (←)" : "expand (→)";
     tw.onclick = (e) => { e.stopPropagation(); void toggleNode(o.path); };
     lead.appendChild(tw);
     row.appendChild(lead);
   }
-  // NO folder icon on a tree row: every row in the tree is a folder, so the glyph distinguished
-  // nothing and took the width the elbow and the name needed. The shortcut sections keep theirs —
-  // there a star, a clock and a folder are three different KINDS of destination.
-  if (!o.tree) row.appendChild(pkIcon(o.icon));
+  // A folder icon on tree rows after all. It was dropped when every tree row was the same closed
+  // folder and the glyph therefore distinguished nothing — but an icon that OPENS is not the same
+  // glyph twice: it carries the one thing the name cannot say, and it says it in the place the eye
+  // already is. The shortcut sections keep their own kinds (star, clock, folder, up-arrow).
+  row.appendChild(pkIcon(o.tree ? (open ? "folderOpen" : "folder") : o.icon));
   const name = el("span", "pkname");
   name.appendChild(el("span", "pkleaf", o.label));
   if (o.sub) name.appendChild(el("span", "pksub", o.sub));
@@ -2124,9 +2128,14 @@ function dirRow(o: DirRowOpts): HTMLElement {
     const i = pkVisible().findIndex((r) => r.row === row);
     if (i >= 0) pkShell?.select(i, false, false);
     void showDirDetail(o.path);
-    // opening only, never closing: a click that collapsed what it just selected would make the row
-    // under the cursor jump away. The ▸ (and ←) still collapse.
-    if (o.tree && !pkOpen.has(o.path)) void toggleNode(o.path);
+    // A click on a folder OPENS AND CLOSES it — the whole gesture, the way an explorer works. It
+    // used to open only, on the theory that collapsing would make the row under the cursor jump
+    // away; that theory was wrong, because collapsing removes the rows BELOW this one and leaves
+    // this one exactly where it is.
+    // Touch is the exception: there the same tap also pushes the detail pane OVER the list, so a
+    // collapse would happen behind it and be discovered on the way back — the folder you just
+    // opened, shut. On touch the tap only opens, and ▸ still closes.
+    if (o.tree && !(isMobile() && pkOpen.has(o.path))) void toggleNode(o.path);
     // On a phone there is no second column, so the detail has to be PUSHED or it cannot be seen at
     // all — which is exactly what it was: the picker never called this, so everything the pane
     // knows (what is in the folder, its commits, "already open in slot N", ⎇ New lane) was

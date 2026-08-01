@@ -177,10 +177,15 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
   // server's OWN parse expressions rather than to a list of words written down twice.
   const val = /FLEET_CLEAN_REVIEW=(\S+)/.exec(spawnLine)?.[1] ?? "";
   const shadowRe = /\/\^shadow\$\/i\.test/.test(server);
-  const gateSrc = /\/\^\((1\|true\|on\|yes)\)\$\/i\.test\(process\.env\.FLEET_CLEAN_REVIEW/.exec(server);
+  const gateSrc = /\/\^\((1\|true\|on\|yes)\)\$\/i\.test\(CLEAN_REVIEW_RAW\)/.exec(server);
+  // the third set. Until server.ts named its OFF spellings this pin had only two, so the owner's
+  // deliberate `off` was indistinguishable from a typo and this pin failed on a correct config —
+  // red from 2026-07-28 until it was noticed, with the whole land gate behind it.
+  const offSrc = /CLEAN_REVIEW_OFF_RE = \/\^\((0\|off\|false\|no)\)\$\/i/.exec(server);
   pin("server.ts's FLEET_CLEAN_REVIEW parse expressions are where this pin expects them",
-    shadowRe && !!gateSrc, `shadow=${shadowRe} gate=${!!gateSrc}`);
-  const recognised = /^shadow$/i.test(val) || (gateSrc ? new RegExp(`^(${gateSrc[1]})$`, "i").test(val) : false);
+    shadowRe && !!gateSrc && !!offSrc, `shadow=${shadowRe} gate=${!!gateSrc} off=${!!offSrc}`);
+  const inSet = (src: RegExpExecArray | null) => (src ? new RegExp(`^(${src[1]})$`, "i").test(val) : false);
+  const recognised = /^shadow$/i.test(val) || inSet(gateSrc) || inSet(offSrc);
   pin("watchdog.sh's FLEET_CLEAN_REVIEW value is one server.ts recognises (a typo means silent off)",
     val === "" || recognised, `value=${val || "(unset)"}`);
 }

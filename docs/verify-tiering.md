@@ -321,8 +321,12 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
 > defence prose has, and this section is the case for it: it outlived its own subject by three days
 > in a document whose whole purpose is describing what the gate does.
 >
-> <!-- pin:watchdog-spawn FLEET_POSTLAND_AUDIT_CMD=set FLEET_VERIFY_CMD=set FLEET_CLEAN_REVIEW=shadow -->
-> Pinned: `FLEET_POSTLAND_AUDIT_CMD` set · `FLEET_VERIFY_CMD` set · `FLEET_CLEAN_REVIEW=shadow`.
+> <!-- pin:watchdog-spawn FLEET_POSTLAND_AUDIT_CMD=set FLEET_VERIFY_CMD=set FLEET_CLEAN_REVIEW=off -->
+> Pinned: `FLEET_POSTLAND_AUDIT_CMD` set · `FLEET_VERIFY_CMD` set · `FLEET_CLEAN_REVIEW=off`
+> (`shadow` until 2026-07-28, when the K2 shadow series ended — 45 rows, 37 valid, all "pass", zero
+> contradiction — and the reviewer was switched off. This marker outlived that decision by four days
+> and failed the gate it is part of, which is the mechanism working as designed: the paragraph above
+> claims prose has no defence but a machine-checked marker, and then this line proved it twice.)
 
 **What it already solves — do not re-propose:**
 

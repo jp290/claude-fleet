@@ -2044,6 +2044,7 @@ function renderHideWtBtn() {
 const PK_ICONS: Record<string, string> = {
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 19V7a2 2 0 0 1 2-2h3.2l1.8 2H19a2 2 0 0 1 2 2v1.5"/><path d="M5.6 19h13a1.6 1.6 0 0 0 1.55-1.2l1.35-5.2A1 1 0 0 0 20.5 11.3H8.4a1.6 1.6 0 0 0-1.55 1.2l-1.35 5.2A1.6 1.6 0 0 1 3.5 19"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.7l3 1.8"/></svg>',
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l2.6 5.8 6.4.6-4.8 4.2 1.4 6.2L12 17l-5.6 2.8 1.4-6.2L3 9.4l6.4-.6z"/></svg>',
@@ -2475,6 +2476,124 @@ function renderDirDetail(path: string, load: DirLoad) {
 
 // the folder's own children. This is the thing the pane was missing: a branch name and a commit
 // subject do not tell two similarly-named checkouts apart, and their contents do at one glance.
+// --- Contents: a tree you open IN PLACE, not a listing that sends you somewhere -----------------
+//
+// This list used to be one flat level, and a folder in it RE-ROOTED the tree on the left — you
+// asked what is in a folder and the whole window moved. Now it opens where it stands, with the
+// same guides, elbows and descender the left tree uses, so nesting is drawn rather than implied.
+// Its expansion state is its OWN: the left tree answers "where do I want to work", this answers
+// "what is in this project", and neither is a view of the other.
+interface DirEntry { name: string; dir: boolean }
+let pkdRoot = "";                                     // the folder this pane is showing
+let pkdBox: HTMLElement | null = null;                // the element to repaint on expand/collapse
+let pkdInfo: DirInfoResp | null = null;
+const pkdOpen = new Set<string>();
+const pkdKids = new Map<string, DirEntry[] | null>(); // null = read, and unreadable
+const pkdBusy = new Set<string>();
+
+// entries (files AND folders) for any path. /api/dirs is folders-only, which is right for the
+// left tree and useless here. No new route: this keeps the whole change client-side, so it goes
+// live on `bun run build` without an srv restart.
+async function fetchEntries(path: string): Promise<DirEntry[] | null> {
+  const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
+  if (!res || !res.ok) return null;
+  const d = (await res.json().catch(() => null)) as DirInfoResp | null;
+  return d?.entries ?? null;
+}
+
+async function toggleContents(path: string) {
+  if (pkdOpen.has(path)) { pkdOpen.delete(path); paintContents(); return; }
+  if (!pkdKids.has(path)) {
+    if (pkdBusy.has(path)) return;
+    pkdBusy.add(path);
+    paintContents();                                  // the row says it is working
+    const kids = await fetchEntries(path);
+    pkdBusy.delete(path);
+    // an unreadable folder caches as null rather than retrying on every click — the row then says
+    // so, which is the same bargain the left tree makes
+    pkdKids.set(path, kids);
+  }
+  pkdOpen.add(path);
+  paintContents();
+}
+
+function contentsRow(e: DirEntry, path: string, depth: number, blanks: boolean[], last: boolean,
+                     rootPath: string): HTMLElement {
+  const open = e.dir && pkdOpen.has(path);
+  const row = el("div", `pkdent${e.dir ? " dir" : ""}${open ? " open" : ""}`);
+  row.title = path;
+  const lead = el("span", "pklead");
+  for (let i = 0; i <= depth; i++) {
+    const g = el("span", "pkguide");
+    if (i === depth) g.classList.add(last ? "end" : "branch");
+    else if (blanks[i]) g.classList.add("blank");
+    lead.appendChild(g);
+  }
+  // a FILE reserves the same column the ▸ occupies. It has nothing to expand, but taking the
+  // column away would step every filename left of its sibling folders and undo the alignment the
+  // guides just established.
+  const tw = el("span", `pktw${open ? " open" : ""}`,
+    e.dir ? (pkdBusy.has(path) ? "·" : open ? "▾" : "▸") : "");
+  if (e.dir) {
+    tw.title = open ? "collapse" : "expand";
+    tw.onclick = (ev) => { ev.stopPropagation(); void toggleContents(path); };
+  }
+  lead.appendChild(tw);
+  row.appendChild(lead);
+  row.appendChild(pkIcon(e.dir ? (open ? "folderOpen" : "folder") : "file"));
+  row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
+  if (e.dir) {
+    // re-rooting the left tree was what a click did here, and it is still worth having — it just
+    // stops being what happens when you only wanted to look inside.
+    const go = el("span", "pkdgo", "↗");
+    go.title = `make ${e.name}/ the top of the tree on the left`;
+    go.onclick = (ev) => { ev.stopPropagation(); void browse(path); };
+    row.appendChild(go);
+    row.onclick = () => void toggleContents(path);
+  } else {
+    row.onclick = () => {
+      const shell = pkShell;
+      if (!shell) return;
+      showFileView(shell, {
+        path, label: e.name,
+        source: "as it is on disk right now",
+        back: { label: baseName(rootPath), go: () => void showDirDetail(rootPath) },
+      });
+    };
+  }
+  return row;
+}
+
+function paintContents() {
+  const box = pkdBox;
+  const info = pkdInfo;
+  if (!box || !info) return;
+  box.replaceChildren();
+  const emit = (path: string, depth: number, blanks: boolean[]) => {
+    const kids = pkdKids.get(path);
+    if (kids === null) {
+      const bad = el("div", "pknone tree", "could not be read — that is a permissions answer");
+      bad.style.setProperty("--pkdepth", String(depth));
+      box.appendChild(bad);
+      return;
+    }
+    if (!kids) return;
+    if (!kids.length) {
+      const none = el("div", "pknone tree", "empty");
+      none.style.setProperty("--pkdepth", String(depth));
+      box.appendChild(none);
+      return;
+    }
+    kids.forEach((e, i) => {
+      const last = i === kids.length - 1;
+      const full = `${path}/${e.name}`;
+      box.appendChild(contentsRow(e, full, depth, blanks, last, info.path));
+      if (e.dir && pkdOpen.has(full)) emit(full, depth + 1, [...blanks, last]);
+    });
+  };
+  emit(info.path, 0, []);
+}
+
 function appendDirContents(target: HTMLElement, info: DirInfoResp) {
   const sec = el("div", "shellsec");
   sec.appendChild(el("span", "shellsect", "Contents"));
@@ -2501,33 +2620,14 @@ function appendDirContents(target: HTMLElement, info: DirInfoResp) {
         : "this folder is empty"));
     return;
   }
-  const box = el("div", "pkdtree");
-  entries.forEach((e, i) => {
-    const row = el("div", `pkdent${e.dir ? " dir" : ""}`);
-    // the same elbow the list on the left draws, so "contents" reads as one level of that tree
-    row.appendChild(el("span", "pkdelbow", i === entries.length - 1 ? "└" : "├"));
-    row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
-    // a listed folder is a place you can go: clicking one makes it the top of the tree on the left.
-    // A listed FILE opens in the viewer — on disk, because that is the only version a folder that
-    // may not even be a git repo has.
-    if (e.dir) {
-      row.title = `open ${e.name}/ in the tree`;
-      row.onclick = () => void browse(`${info.path}/${e.name}`);
-    } else {
-      row.title = `read ${e.name}`;
-      row.onclick = () => {
-        const shell = pkShell;
-        if (!shell) return;
-        showFileView(shell, {
-          path: `${info.path}/${e.name}`, label: e.name,
-          source: "as it is on disk right now",
-          back: { label: baseName(info.path), go: () => void showDirDetail(info.path) },
-        });
-      };
-    }
-    box.appendChild(row);
-  });
-  target.appendChild(box);
+  // switching to a DIFFERENT folder starts a fresh tree; re-rendering the same one (the pane
+  // repaints on every selection) keeps whatever the reader has opened
+  if (info.path !== pkdRoot) { pkdRoot = info.path; pkdOpen.clear(); pkdKids.clear(); pkdBusy.clear(); }
+  pkdKids.set(info.path, entries);
+  pkdInfo = info;
+  pkdBox = el("div", "pkdtree");
+  paintContents();
+  target.appendChild(pkdBox);
 }
 
 // --- the file view: one renderer for every file list in the app ---------------------------------

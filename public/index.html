@@ -426,7 +426,8 @@
      its right edge, and left:100% lands on it whatever the depth or the column width.
      Without it a child's spine started out of nowhere below the parent, and expanding a folder
      read as "some rows appeared" rather than "this folder opened and here is what is inside". */
-  .pkrow.tree.open .pklead::after { content: ""; position: absolute; top: 50%; bottom: 0;
+  .pkrow.tree.open .pklead::after, .pkdent.open .pklead::after {
+    content: ""; position: absolute; top: 50%; bottom: 0;
     left: calc(100% - var(--pktwid));
     border-left: 3px solid var(--pkline); }
   /* Each level is a column carrying a vertical rule (::before) and, at the row's own level, a
@@ -464,6 +465,9 @@
     justify-content: center; color: #9aa0ad; font-size: 13px; cursor: pointer; }
   .pktw.open { color: #7aa2f7; }
   .pktw:hover { color: #fff; }
+  .pkdtree .pknone.tree { --pkline: #5b6a91; --pkcol: 20px; --pktwid: 15px; --pkiconw: 14px;
+    --pkgap: 7px; --pkname0: calc(6px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap));
+    font-size: 11.5px; }
   .pknone.tree { padding: 5px 9px; font-size: 12px; color: #5a5a5a; text-align: left;
     padding-left: calc(var(--pkname0) + (var(--pkdepth, 0) + 1) * var(--pkcol)); }
   .pkrow:hover { background: #262626; }
@@ -514,9 +518,24 @@
   /* the folder's own children — one level, drawn with the same elbows as the tree on the left */
   .pkdtree { margin-top: 8px; max-height: 340px; overflow-y: auto;
     font: 13.5px ui-monospace, Menlo, Consolas, monospace; }
-  .pkdent { display: flex; align-items: center; gap: 10px; padding: 5px 6px; border-radius: 6px;
-    cursor: pointer; }
-  .pkdelbow { flex: none; color: #5b6a91; font-size: 17px; }
+  /* the SAME drawing as the tree on the left — guides, elbows, the descender under an open folder
+     — at this pane's smaller scale. It is one visual language for one idea (this is inside that),
+     and it is the reason these rows carry .pklead/.pkguide/.pktw rather than a ├ character: a
+     character cannot join up with the row above it, which is exactly what a tree has to do. */
+  .pkdent { display: flex; align-items: center; gap: var(--pkgap); padding: 0 6px; border-radius: 6px;
+    cursor: pointer; --pkline: #5b6a91; --pkcol: 20px; --pktwid: 15px; --pkiconw: 14px; --pkgap: 7px;
+    --pkname0: calc(6px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap)); }
+  .pkdent .pkdname { padding: 5px 0; }
+  .pkdent:hover { --pkline: #7aa2f7; }
+  .pkdent .pkicon, .pkdent .pkicon svg { width: var(--pkiconw); height: var(--pkiconw); }
+  .pkdent .pkicon { color: #7f8798; }
+  .pkdent.dir .pkicon { color: #8a93a6; }
+  .pkdent.open .pkicon { color: #7aa2f7; }
+  .pkdent .pktw { font-size: 11px; }
+  .pkdgo { flex: none; margin-left: auto; padding: 0 5px; color: #7aa2f7; font-size: 12px;
+    visibility: hidden; }
+  .pkdent:hover .pkdgo { visibility: visible; }
+  .pkdgo:hover { color: #cfe0ff; }
   .pkdname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9a9a9a; }
   .pkdent.dir .pkdname { color: #7aa2f7; }
   /* EVERY row here acts on a click — a folder re-roots the tree, a file opens in the viewer — so

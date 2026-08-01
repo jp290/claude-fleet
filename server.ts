@@ -6906,6 +6906,27 @@ Bun.serve<WSData>({
         capped: (rows?.length ?? 0) >= MAX_COMMIT_ROWS,
       });
     }
+    // one commit's change, for the Commits lens's detail pane. Same membership rule as the per-slot
+    // route above and for the same reason: the hash must be one the list THIS ROUTE computes just
+    // offered, so no crafted rev can steer it at an object outside the repos Fleet has open.
+    if (url.pathname === "/api/commit-diff") {
+      const repos = knownRepos();
+      const repo = url.searchParams.get("repo") ?? repos[0] ?? "";
+      const hash = url.searchParams.get("hash") ?? "";
+      if (!repos.includes(repo)) return json({ error: "not a repo Fleet has open" }, 400);
+      if (!/^[0-9a-f]{4,40}$/.test(hash)) return json({ error: "bad hash" }, 400);
+      const listed = await commitRows(repo, null);
+      if (!listed?.some((c) => c.hash === hash)) return json({ error: "not a commit this repo listed" }, 404);
+      const d = await gitRead(repo, "show", "--no-color", "--format=", hash);
+      const diff = d.code === 0 ? d.out : "";
+      const ns = await gitRead(repo, "show", "--no-color", "--format=", "--name-status", hash);
+      return json({
+        hash,
+        files: ns.code === 0 ? ns.out.split("\n").filter(Boolean) : [],
+        diff: diff.length > DIFF_CAP ? `${diff.slice(0, DIFF_CAP)}\n… truncated` : diff,
+        truncated: diff.length > DIFF_CAP,
+      });
+    }
     // what the folder under the picker's cursor actually IS. Deliberately a SEPARATE route from
     // /api/dirs rather than fields on every listed row: this costs four git calls, and paying that
     // per row would make browsing a directory of repos as slow as its slowest repo. One selection,

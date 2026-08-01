@@ -579,6 +579,13 @@
   .ocrev.rel-inflight { border-left-color: #7dcfff; }
   .ocrev.rel-unmeasured { border-left-color: #bb9af7; }
   .ocrel { font-size: 11px; color: #ccc; }
+  .ocrelwhy { font-size: 11px; color: #8a8a8a; line-height: 1.45; margin-top: 3px; }
+  /* a commit's / a land's file list, and the diff under it */
+  .cmfiles { margin-top: 4px; font: 11.5px ui-monospace, Menlo, Consolas, monospace;
+    max-height: 200px; overflow-y: auto; }
+  .cmfile { color: #9a9a9a; padding: 1px 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .cmdiff { margin-top: 10px; }
   .ocsub { font-size: 10.5px; color: #888; margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }
   .ocwarn { font-size: 11px; color: #e0af68; line-height: 1.45; margin-top: 4px; }

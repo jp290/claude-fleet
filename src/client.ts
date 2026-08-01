@@ -3633,29 +3633,68 @@ const AUDIT_CAT: Record<string, string> = {
   land_note_fail: "repo", repo_undo_land: "repo",
 };
 const LIFECYCLE_KINDS = new Set(["slot_open", "slot_kill", "slot_shelve", "self_heal_recreate"]);
-// Generic decode = show the raw detail. A per-kind formatter ONLY for the lifecycle kinds whose
-// raw string is cryptic and load-bearing (the ones that answer "what happened to slot N"). No
-// 22-kind framework — every other kind's detail is already legible enough shown plainly.
+// Generic decode = show the raw detail. A per-kind formatter for the kinds whose raw string is
+// cryptic and load-bearing — the ones that answer "what was DONE to slot N". Every kind listed here
+// is one the live trail actually carries; nothing is written for kinds that have never occurred.
 function decodeAudit(event: string, detail?: string): string {
   switch (event) {
     case "slot_open": return detail ? `opened in ${baseName(detail)}` : "opened";
-    case "slot_kill": return "killed";
+    // the kill reason is recorded and was thrown away here: "landed" and "owner" are different
+    // endings, and which one a vanished session had is exactly what this trail is consulted for
+    case "slot_kill":
+      return detail === "landed" ? "closed after landing"
+        : detail === "owner" ? "closed by the owner"
+        : `closed${detail ? ` (${detail})` : ""}`;
     case "slot_shelve": {
       const m = detail?.match(/^note:(\d+)$/);
       return m ? `shelved · ${m[1]}-char note` : "shelved";
     }
-    case "self_heal_recreate":
-      return detail === "resumed" ? "self-healed (resumed)"
-        : detail === "created" ? "self-healed (recreated fresh)"
-        : `self-healed${detail ? ` (${detail})` : ""}`;
-    default: return detail ?? "";
+    // `created:no-session` / `created:no-transcript` — the reason is the whole point of the field:
+    // no-session is the harmless open race, no-transcript is a slot that lost its conversation
+    case "self_heal_recreate": {
+      const [how, why] = (detail ?? "").split(":");
+      const act = how === "resumed" ? "re-attached to its pane" : how === "created" ? "restarted fresh" : "self-healed";
+      return why === "no-session" ? `${act} (its tmux session was gone)`
+        : why === "no-transcript" ? `${act} (its transcript was gone)`
+        : why ? `${act} (${why})` : act;
+    }
+    case "auto_fire": return detail ? `scheduled prompt fired · ${detail}` : "scheduled prompt fired";
+    case "auto_skip": return detail ? `scheduled prompt skipped · ${detail}` : "scheduled prompt skipped";
+    case "postland_audit": return detail ? `post-land audit · ${detail}` : "post-land audit";
+    case "dispatch_switch": return detail === "on" ? "dispatcher switched ON" : "dispatcher switched OFF";
+    case "owner_auth_fail": return "a request arrived without a valid owner token";
+    // an undecoded kind keeps its NAME in front of its raw detail. Returning the bare detail (what
+    // this did before) was survivable while the row carried the kind on its sub-line; now that the
+    // sub-line carries the project instead, a line reading `d:0 c:true` would name nothing at all.
+    default: return detail ? `${event} · ${detail}` : event;
   }
+}
+// WHICH PROJECT an event happened in. Not recorded per event — only `slot_open` carries a cwd — so
+// it is DERIVED: an event belongs to the folder its slot was last opened in before it. Walking the
+// trail is the only way to answer it, and it is the question the lens is usually being asked
+// ("what did slot 7 do, and where"). A slot whose opening scrolled off the loaded window has no
+// answer, and gets none — never the folder from a later open, which would date the event wrongly.
+function auditProjects(rows: AuditEntry[]): Map<AuditEntry, string> {
+  const out = new Map<AuditEntry, string>();
+  const at = new Map<number, string>();
+  // the ledger arrives newest-first; cwd propagates forward in TIME, so walk it oldest-first
+  for (const e of [...rows].sort((a, b) => a.ts - b.ts)) {
+    if (typeof e.slot !== "number") continue;
+    if (e.event === "slot_open" && e.detail) at.set(e.slot, e.detail);
+    const cwd = at.get(e.slot);
+    if (cwd) out.set(e, cwd);
+    // a kill ends the slot's tenancy in that folder: the next event there belongs to no project
+    // until something opens one again
+    if (e.event === "slot_kill") at.delete(e.slot);
+  }
+  return out;
 }
 let auditData: AuditEntry[] = [];
 let auditTotal = 0; // server-reported PARSED rows on disk; > auditData.length means the load was capped
 let auditMalformed = 0;
 let auditSlot: number | "all" = "all";
 let auditLife = false;
+let auditProject = new Map<AuditEntry, string>(); // derived per render — see auditProjects()
 // A ledger route now reports the rows it could not parse SEPARATELY from the total, so a torn
 // mid-append row cannot masquerade as the benign "capped" message (the total used to count lines
 // the response had already dropped). Absent/zero → the count line reads exactly as before.
@@ -3703,18 +3742,23 @@ function renderAudit() {
 
   shell.list.replaceChildren();
   auditRowOf = new Map();
+  auditProject = auditProjects(auditData);
   const shRows: ShellRow[] = [];
   let selIdx = -1;
   if (!rows.length) shell.list.appendChild(el("div", "histnone", "no events match this filter"));
   for (const e of rows) {
     const cat = AUDIT_CAT[e.event] ?? "other";
     const r = el("div", `shellrow auditrow cat-${cat}`);
+    r.title = `${e.event}${e.detail ? ` · ${e.detail}` : ""}`; // the raw record, kept reachable
     auditRowOf.set(r, e);
     r.appendChild(el("span", "aud-slot" + (typeof e.slot === "number" ? "" : " none"),
       typeof e.slot === "number" ? String(e.slot) : "—"));
     const m = el("div", "shrmain");
     m.appendChild(el("div", "shrname", decodeAudit(e.event, e.detail) || e.event));
-    m.appendChild(el("div", "shrsub", `${fmtTs(e.ts)} · ${e.event}`));
+    // the project comes SECOND on the sub-line: an event without one is a real state (Fleet-wide
+    // events have no slot at all), and an em dash there is quieter than an absent column
+    const where = auditProject.get(e);
+    m.appendChild(el("div", "shrsub", `${fmtTs(e.ts)} · ${where ? baseName(where) : "no project"}`));
     r.appendChild(m);
     const key = `${e.ts}|${e.event}`;
     const act = () => { auditPick = key; renderActivity(); renderAuditDetail(e); shell.showDetail(true); };
@@ -3737,6 +3781,14 @@ function renderAuditDetail(e: AuditEntry) {
   shell.detail.appendChild(el("div", "diffstat",
     `${fmtTs(e.ts)} · ${e.event}${typeof e.slot === "number" ? ` · slot ${e.slot}` : ""}`
     + ` · ${AUDIT_CAT[e.event] ?? "other"}`));
+  // where it happened, said in full — the row can only show a folder's basename, and two checkouts
+  // of one repo differ in the part it has to cut
+  const where = auditProject.get(e);
+  if (where) shell.detail.appendChild(el("div", "pkdpath", where.replace(/^\/Users\/[^/]+/, "~")));
+  else if (typeof e.slot === "number") shell.detail.appendChild(el("div", "shellhint",
+    "no project on record for this event — the slot's opening is older than the loaded window,"
+    + " or the slot had been closed. Deliberately not filled in from a LATER opening: that folder"
+    + " is where the slot went next, not where this happened."));
   if (e.detail) shell.detail.appendChild(el("div", "qdtext", e.detail));
 
   if (typeof e.slot !== "number") {
@@ -3755,9 +3807,14 @@ function renderAuditDetail(e: AuditEntry) {
   const tl = el("div", "audtl");
   for (const x of [...near].reverse()) {
     const line = el("div", `audtlrow${x.ts === e.ts && x.event === e.event ? " here" : ""}`);
+    line.title = `${x.event}${x.detail ? ` · ${x.detail}` : ""}`;
     line.appendChild(el("span", "aud-ts", fmtTs(x.ts)));
-    line.appendChild(el("span", "aud-kind", x.event));
-    line.appendChild(el("span", "aud-detail", decodeAudit(x.event, x.detail)));
+    // the timeline reads as prose now: the raw kind was the wide column and said the least. It
+    // stays on the row's tooltip, and the folder is shown where it CHANGES, so a slot that moved
+    // between projects is visible as a move instead of as a uniform column repeated per line.
+    const w = auditProject.get(x);
+    line.appendChild(el("span", "aud-detail", decodeAudit(x.event, x.detail) || x.event));
+    if (x.event === "slot_open" && w) line.appendChild(el("span", "aud-kind", baseName(w)));
     tl.appendChild(line);
   }
   shell.detail.appendChild(tl);
@@ -3911,12 +3968,64 @@ function renderCommits() {
   if (selIdx >= 0) shell.select(selIdx, false, false);
 }
 
+let cmDiffSeq = 0; // latest-wins: arrow-keying down the commit list outruns the fetches it starts
+
 function renderCommitDetail(c: RvCommit) {
   const shell = ocShell;
   if (!shell) return;
   shell.detail.replaceChildren();
   shell.detail.appendChild(el("div", "rvhead", c.subject || "(no subject)"));
   shell.detail.appendChild(el("div", "diffstat", `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}`));
+
+  // THE CHANGE ITSELF, which is what a commit row is asking about. It used to be absent entirely:
+  // the pane showed a provenance note and nothing about the code, so the lens could tell you a
+  // commit existed and never what it did.
+  const body = el("div", "cmdiff");
+  body.appendChild(el("div", "shellhint", "reading the change…"));
+  shell.detail.appendChild(body);
+  const seq = ++cmDiffSeq;
+  void (async () => {
+    const repo = cmData?.repo;
+    const res = repo
+      ? await api(`/api/commit-diff?repo=${encodeURIComponent(repo)}&hash=${encodeURIComponent(c.hash)}`)
+        .catch(() => null)
+      : null;
+    // a superseded fetch must not paint over the commit the cursor has since moved to
+    if (!shell.isOpen() || seq !== cmDiffSeq) return;
+    body.replaceChildren();
+    if (!repo) { body.appendChild(el("div", "shellhint", "no repo selected")); return; }
+    if (!res) { body.appendChild(el("div", "diffstat err", "couldn't reach the server")); return; }
+    if (res.status === 404) { body.appendChild(el("div", "diffstat err", SKEW_NOTE)); return; }
+    const d = (await res.json().catch(() => null)) as
+      { files?: string[]; diff?: string; truncated?: boolean; error?: string } | null;
+    if (!d || d.error) {
+      body.appendChild(el("div", "diffstat err", d?.error ?? "the server's answer was not readable JSON"));
+      return;
+    }
+    const files = d.files ?? [];
+    if (files.length) {
+      const fsec = el("div", "shellsec");
+      fsec.appendChild(el("span", "shellsect", "Files"));
+      fsec.appendChild(el("span", "shellsecn", String(files.length)));
+      body.appendChild(fsec);
+      const list = el("div", "cmfiles");
+      for (const f of files) list.appendChild(el("div", "cmfile", f));
+      body.appendChild(list);
+    }
+    if (!d.diff) {
+      // a merge commit legitimately has no textual diff against its first parent. Saying "no
+      // changes" there would be false; saying nothing at all is what the pane did before.
+      body.appendChild(el("div", "shellhint",
+        "no textual diff — a merge commit shows none against its first parent, and a commit that"
+        + " only moves metadata (a mode or an empty tree) has none either"));
+      return;
+    }
+    const box = el("div", "difftxt");
+    renderDiffInto(box, d.diff);
+    body.appendChild(box);
+    if (d.truncated) body.appendChild(el("div", "shellhint", "diff truncated — open the commit in a terminal for the rest"));
+  })();
+
   // the JOIN the two lenses exist to make: did this commit arrive through a Fleet land, or not.
   // An outcome row records the branch and the time, so an exact commit-to-outcome identity is not
   // available — this reports the candidates and says plainly that it is a time match, not proof.
@@ -3925,8 +4034,13 @@ function renderCommitDetail(c: RvCommit) {
   sec.appendChild(el("span", "shellsect", "Fleet lands near this commit"));
   shell.detail.appendChild(sec);
   if (!actLoaded.has("lands")) {
-    shell.detail.appendChild(el("div", "shellhint",
-      "the lands lens has not been loaded in this window yet — open it once and come back"));
+    // the ledger is not loaded YET — that is this window's bookkeeping, not a fact about the commit,
+    // so it is fetched rather than reported. Re-renders this pane once, if it is still the one shown.
+    const note = el("div", "shellhint", "checking the land ledger…");
+    shell.detail.appendChild(note);
+    void loadLens("lands").then(() => {
+      if (shell.isOpen() && cmPick === c.hash && actLens === "commits") renderCommitDetail(c);
+    });
   } else if (!near.length) {
     shell.detail.appendChild(el("div", "shellhint",
       "no land recorded within an hour of this commit — it was probably committed by hand"));
@@ -3972,6 +4086,7 @@ const REL_WORD: Record<RvRel, string> = {
   none: "no ③ review on record for this lane",
   unmeasured: "review not measured — this row predates the review field",
 };
+const OC_FILE_ROWS = 40; // a land's file list is bounded in the pane, and says so when it is cut
 const DISPO_WORD: Record<string, string> = {
   landed: "landed", reverted: "reverted", shelved: "shelved",
   "killed-dirty": "killed with work", "killed-empty": "killed empty",
@@ -4291,8 +4406,45 @@ function renderOutcomeDetail(o: OutcomeRow) {
           + " never a hash: rows showing this were NOT briefed alike, they are simply uncounted."));
     row.appendChild(facts);
 
+    // WHAT THIS LAND PUT IN THE TREE. The row has carried the file list all along and showed it
+    // only as a chip tooltip, so a land whose review is absent — most of them — rendered as a line
+    // saying nothing was recorded and nothing else. The files are recorded, and they are the answer
+    // to "what was this". Shown before the review block for that reason: the change is the subject,
+    // the review is a comment on it.
+    const touched = o.filesTouched ?? [];
+    if (touched.length) {
+      const fsec = el("div", "shellsec");
+      // "land" only where one happened: this feed also carries shelved and killed lanes, whose
+      // files were touched and never landed. Calling those a land would be the row lying.
+      fsec.appendChild(el("span", "shellsect",
+        dispo === "landed" ? "Files this land touched" : "Files this lane touched"));
+      fsec.appendChild(el("span", "shellsecn", String(touched.length)));
+      row.appendChild(fsec);
+      const list = el("div", "cmfiles");
+      for (const f of touched.slice(0, OC_FILE_ROWS)) list.appendChild(el("div", "cmfile", f));
+      row.appendChild(list);
+      if (touched.length > OC_FILE_ROWS)
+        row.appendChild(el("div", "shellhint", `${OC_FILE_ROWS} of ${touched.length} shown`));
+    }
+
     const rv = el("div", `ocrev rel-${rel}`);
     rv.appendChild(el("div", "ocrel", REL_WORD[rel]));
+    // what that RELATION means for reading this row. The bare phrase is accurate and was the whole
+    // block for every row without a review, which reads as a dead end rather than as a fact about
+    // coverage — and the coverage gap is the thing the feed exists to make visible.
+    const REL_WHY: Record<RvRel, string> = {
+      covered: "the findings below describe the content that actually landed.",
+      superseded: "③ ran, then the lane moved on. Read the findings as being about an EARLIER state"
+        + " of this branch — not about what is now in the tree.",
+      inflight: "the lane ended while ③ was still running, so its answer was never captured."
+        + " Nothing was reviewed away; nothing was reviewed either.",
+      none: "no reviewer output was recorded for it. That is a gap in COVERAGE, not a verdict on the"
+        + " change: a prompt land structurally beats auto-③ (60s idle + a ≤15s tick + the agent's own"
+        + " run), so a fast land routinely lands before any review could exist. The files above and"
+        + " the commit in the repo are what this row can be judged by.",
+      unmeasured: "this row predates the review field, so the ledger cannot say whether one ran.",
+    };
+    rv.appendChild(el("div", "ocrelwhy", REL_WHY[rel]));
     if ((rel === "covered" || rel === "superseded") && o.review)
       for (const n of reviewBody(o.review)) rv.appendChild(n);
     row.appendChild(rv);
@@ -4337,7 +4489,8 @@ let actLens: ActLens = "lands";
 const ACT_LENS: { k: ActLens; label: string; title: string }[] = [
   { k: "lands", label: "Lands", title: "the lane-outcome ledger — what Fleet landed, and what ③ review said" },
   { k: "commits", label: "Commits", title: "recent commits in a repo Fleet has open — including ones no ledger recorded" },
-  { k: "audit", label: "Audit", title: "what Fleet did to each slot — opened, killed, shelved, self-healed" },
+  { k: "audit", label: "Audit", title: "what Fleet did to each slot, and in which project — opened,"
+    + " closed, shelved, self-healed, scheduled prompts fired" },
 ];
 
 function renderActivity() {
@@ -4364,7 +4517,7 @@ async function switchLens(k: ActLens) {
   shell.detail.replaceChildren();
   shell.setTitle(k === "lands" ? "Outcome feed — what landed, and what review said"
     : k === "commits" ? "Commits — what is actually in the repo"
-    : "Audit trail — what Fleet did to each slot");
+    : "Audit trail — what Fleet did to each slot, and where");
   shell.setSubtitle("");
   shell.foot.textContent = k === "lands"
     ? "↩ undo is one step — only the newest land can be reverted, from the board. It is deliberately"
@@ -4372,9 +4525,11 @@ async function switchLens(k: ActLens) {
       + " does not have."
     : k === "commits"
       ? "The ledger records what FLEET landed. This records what is in the repo — a commit made by"
-        + " hand in a terminal session appears here and in no ledger."
-      : "A GLOBAL log, not gated behind a live slot: the headline question is usually about a slot"
-        + " that has since vanished, whose events no per-slot view can still reach.";
+        + " hand in a terminal session appears here and in no ledger. Pick one to read its change."
+      : "Fleet's own actions on its slots — opening, closing, healing, firing a scheduled prompt —"
+        + " each with the project its slot was working in. NOT the agent's tool calls: what a session"
+        + " did inside its pane is in the transcript, not here. A GLOBAL log, not gated behind a live"
+        + " slot, because the headline question is usually about a slot that has since vanished.";
   renderActivity();
   await loadLens(k);
   if (shell.isOpen()) renderActivity();

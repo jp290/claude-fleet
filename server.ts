@@ -1802,6 +1802,7 @@ async function listDirs(raw: string) {
 // choosing between two similarly-named directories meant opening a session in one to find out.
 // Every field here is absent rather than guessed when git cannot answer: a branch with no upstream
 // has no ahead/behind, and reporting 0/0 for it would be a measurement nobody made.
+interface DirEntry { name: string; dir: boolean }
 interface DirInfo {
   path: string;
   exists: boolean;
@@ -1811,21 +1812,52 @@ interface DirInfo {
   dirty?: number;                   // uncommitted entries, `git status --porcelain` lines
   ahead?: number | null;            // null = no upstream to compare against, NOT zero
   behind?: number | null;
-  last?: CommitRow | null;
+  last?: CommitRow | null;          // recent[0], kept so a client older than this server still renders one
+  recent?: CommitRow[];             // newest first, up to DIRINFO_COMMITS
+  entries?: DirEntry[];             // ABSENT = unreadable (permissions). Present-and-empty = measured empty.
+  entryTotal?: number;              // how many visible children there are, so the cap below is visible
+  hidden?: number;                  // dot-entries not listed — a repo whose visible children are none is not "empty"
   lanes?: number;                   // Fleet lanes forked from this repo (<path>.worktrees/*)
+}
+const DIRINFO_ENTRIES = 40;
+const DIRINFO_COMMITS = 5;
+// What the folder CONTAINS — the question "which of these two checkouts is it" is answered by the
+// files, not by the branch name. Returns null rather than an empty list when the directory cannot be
+// read: "nothing is in here" and "I was not allowed to look" are different facts and the pane says so.
+async function dirEntries(path: string): Promise<{ entries: DirEntry[]; entryTotal: number; hidden: number } | null> {
+  let all;
+  try {
+    all = await readdir(path, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const hidden = all.filter((e) => e.name.startsWith(".")).length;
+  const rows: DirEntry[] = all.filter((e) => !e.name.startsWith(".")).map((e) => {
+    // a symlink to a directory is a directory here: the picker's tree treats it as one (listDirs
+    // resolves it the same way), and the two views must not disagree about what a name is
+    let dir = e.isDirectory();
+    if (!dir && e.isSymbolicLink()) {
+      try { dir = statSync(`${path}/${e.name}`).isDirectory(); } catch { dir = false; }
+    }
+    return { name: e.name, dir };
+  }).sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+  return { entries: rows.slice(0, DIRINFO_ENTRIES), entryTotal: rows.length, hidden };
 }
 async function dirInfo(raw: string): Promise<DirInfo> {
   const path = resolve(expandCwd(raw));
   if (!existsSync(path) || !statSync(path).isDirectory()) return { path, exists: false, git: false };
+  // the listing is what the folder IS, git or not — it is computed before the git probe so a plain
+  // directory (the majority of what the picker browses) gets a detail pane with content in it
+  const listing = await dirEntries(path);
   let worktree = false;
   try {
     worktree = statSync(`${path}/.git`).isFile();
   } catch {
-    return { path, exists: true, git: false };
+    return { path, exists: true, git: false, ...(listing ?? {}) };
   }
   const br = await gitRead(path, "rev-parse", "--abbrev-ref", "HEAD");
   const st = await statusLines(path);
-  const lg = await gitRead(path, "log", "-1", "--no-color", "--format=%h%x09%ct%x09%s");
+  const lg = await gitRead(path, "log", "-n", String(DIRINFO_COMMITS), "--no-color", "--format=%h%x09%ct%x09%s");
   // "N<TAB>M" = behind, ahead. A non-zero exit means there is no upstream — reported as null.
   const ab = await gitRead(path, "rev-list", "--left-right", "--count", "@{upstream}...HEAD");
   const counts = ab.code === 0 ? ab.out.split(/\s+/).map(Number) : [];
@@ -1834,13 +1866,16 @@ async function dirInfo(raw: string): Promise<DirInfo> {
   try {
     lanes = (await readdir(`${path}.worktrees`, { withFileTypes: true })).filter((e) => e.isDirectory()).length;
   } catch { /* no lanes forked from this repo */ }
+  const recent = lg.code === 0 && lg.out ? parseCommitLog(lg.out) : [];
   return {
     path, exists: true, git: true, worktree,
     branch: br.code === 0 && br.out ? br.out : null,
     dirty: st.code === 0 ? st.lines.length : 0,
     behind: ok ? counts[0] : null,
     ahead: ok ? counts[1] : null,
-    last: lg.code === 0 && lg.out ? parseCommitLog(lg.out)[0] ?? null : null,
+    recent,
+    last: recent[0] ?? null,
+    ...(listing ?? {}),
     lanes,
   };
 }

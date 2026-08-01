@@ -2042,10 +2042,24 @@ function pkIcon(kind: string): HTMLElement {
   return s;
 }
 
-interface DirRowOpts { label: string; sub?: string; path: string; cls: string; icon: string; repo?: boolean; wt?: boolean }
+interface DirRowOpts { label: string; sub?: string; path: string; cls: string; icon: string;
+  repo?: boolean; wt?: boolean; depth?: number; tree?: boolean }
 function dirRow(o: DirRowOpts): HTMLElement {
-  const row = el("div", `pkrow ${o.cls}`);
+  const row = el("div", `pkrow ${o.cls}${o.tree ? " tree" : ""}`);
   row.title = o.path;
+  if (o.tree) {
+    // one guide span per ancestor level, each a left border stretched over the FULL row box — that
+    // is what makes the lines continuous from row to row instead of a ladder of dashes. They live
+    // in their own container so .pkrow's 10px gap does not space them apart.
+    const lead = el("span", "pklead");
+    for (let i = 0; i < (o.depth ?? 0); i++) lead.appendChild(el("span", "pkguide"));
+    const open = pkOpen.has(o.path);
+    const tw = el("span", `pktw${open ? " open" : ""}`, open ? "▾" : "▸");
+    tw.title = open ? "collapse (←)" : "expand (→)";
+    tw.onclick = (e) => { e.stopPropagation(); void toggleNode(o.path); };
+    lead.appendChild(tw);
+    row.appendChild(lead);
+  }
   row.appendChild(pkIcon(o.icon));
   const name = el("span", "pkname");
   name.appendChild(el("span", "pkleaf", o.label));
@@ -2063,12 +2077,6 @@ function dirRow(o: DirRowOpts): HTMLElement {
   star.title = pinned ? "unpin (⌘D)" : "pin this folder (⌘D)";
   star.onclick = (e) => { e.stopPropagation(); void togglePin(o.path); };
   row.appendChild(star);
-  // single click navigates in (browse); double click starts here directly — same
-  // navigate-vs-activate convention as double-clicking a slot label to rename it.
-  // Reconciled via MouseEvent.detail in one handler, not separate onclick/ondblclick:
-  // browse() replaces this row's DOM once its fetch resolves, and on a local server
-  // that's fast enough to beat the second click of a real double-click, which would
-  // then land on whatever row ends up in its place instead of this one.
   // click 1 selects (the detail pane follows), click 2 navigates in. No timer: selecting is
   // idempotent and replaces no DOM, so the first click of a double-click costs nothing to let
   // through — which is exactly what forced the old 250ms reconciliation.
@@ -2137,9 +2145,76 @@ async function browse(path: string): Promise<boolean> {
   renderCrumb(data.path);
   pkPins = new Set(data.pins ?? []);
   localStorage.setItem("fleet.pkdir", data.path); // next openPicker starts where you left off
+  pkFilter.value = "";
+  // a new root is a new tree: nothing below it is expanded, and the cached children of the old
+  // root's descendants would only be stale weight
+  pkRoot = data.path;
+  pkOpen.clear();
+  pkKids.clear();
+  pkKids.set(data.path, nodesOf(data.path, data.dirs, data.repos, data.worktrees));
+  pkShortcuts = { pins: data.pins ?? [], recents: data.recents, common: data.common, parent: data.parent };
+  paintPicker();
+  // the detail describes the folder you just navigated INTO until the cursor moves, so the pane is
+  // never empty and its actions always have an unambiguous target
+  void showDirDetail(data.path);
+  return true;
+}
+
+// --- the folder tree ---
+// The picker listed ONE directory at a time. Seeing whether a repo held the subfolder you wanted
+// meant navigating in, looking, and navigating back out — and the shortcut sections scrolled away
+// while you did it. Now the folders under the current root are a tree you expand in place, with a
+// guide line down each level so the nesting is readable at a glance rather than counted in spaces.
+interface PkNode { name: string; path: string; repo: boolean; wt: boolean }
+let pkRoot = "";
+const pkKids = new Map<string, PkNode[]>(); // path → its subfolders, fetched once per expansion
+const pkOpen = new Set<string>();           // which paths are expanded
+const pkBusy = new Set<string>();           // expansions in flight, so a double-click fetches once
+let pkShortcuts: { pins: string[]; recents: string[]; common: string[]; parent: string | null } =
+  { pins: [], recents: [], common: [], parent: null };
+
+function nodesOf(base: string, dirs: string[], repos?: string[], worktrees?: string[]): PkNode[] {
+  const repoSet = new Set(repos ?? []);
+  const wtSet = new Set(worktrees ?? []);
+  return dirs.map((d) => ({
+    name: d, path: `${base}/${d}`.replace("//", "/"),
+    repo: repoSet.has(d), wt: wtSet.has(d) || d.endsWith(".worktrees"),
+  }));
+}
+
+async function fetchKids(path: string): Promise<PkNode[] | null> {
+  const res = await api(`/api/dirs?path=${encodeURIComponent(path)}`).catch(() => null);
+  if (!res || !res.ok) return null;
+  const d = (await res.json().catch(() => null)) as
+    { path?: string; dirs?: string[]; repos?: string[]; worktrees?: string[] } | null;
+  if (!d?.path || !d.dirs) return null;
+  return nodesOf(d.path, d.dirs, d.repos, d.worktrees);
+}
+
+async function toggleNode(path: string) {
+  if (pkOpen.has(path)) { pkOpen.delete(path); paintPicker(); return; }
+  if (!pkKids.has(path)) {
+    if (pkBusy.has(path)) return;
+    pkBusy.add(path);
+    const kids = await fetchKids(path);
+    pkBusy.delete(path);
+    if (!pkShell?.isOpen()) return;
+    // an unreadable folder (permissions, or it vanished) caches as EMPTY rather than retrying on
+    // every click — the row then says so instead of silently doing nothing
+    pkKids.set(path, kids ?? []);
+  }
+  pkOpen.add(path);
+  paintPicker();
+}
+
+// rebuild the whole list from cached state. Cheap — the expensive part is the fetch, which happens
+// once per folder — and it keeps one painting path for browse(), expand, collapse and pin changes.
+function paintPicker() {
+  const shell = pkShell;
+  if (!shell) return;
+  const keep = pkFilter.value;
   shell.list.replaceChildren();
   pkRows = [];
-  pkFilter.value = "";
   let head: HTMLElement | null = null;
   const addHead = (t: string, n?: number) => {
     head = el("div", "shellsec");
@@ -2160,36 +2235,49 @@ async function browse(path: string): Promise<boolean> {
     if (i === 0) return { leaf: disp.slice(1) || disp, sub: "/" };
     return { leaf: disp.slice(i + 1), sub: disp.slice(0, i) };
   };
-  if (data.pins?.length) {
-    addHead("Pinned", data.pins.length);
-    for (const p of data.pins) {
+  // the shortcut sections stay FLAT: they are jump targets scattered across the disk, not places in
+  // this tree, and drawing guide lines beside them would claim a nesting that does not exist
+  if (pkShortcuts.pins.length) {
+    addHead("Pinned", pkShortcuts.pins.length);
+    for (const p of pkShortcuts.pins) {
       const { leaf, sub } = split(p);
       addRow({ label: leaf, sub, path: p, cls: "pin", icon: "star", wt: isWtPath(p) });
     }
   }
-  if (data.recents.length) {
-    addHead("Recent", data.recents.length);
-    for (const r of data.recents) {
+  if (pkShortcuts.recents.length) {
+    addHead("Recent", pkShortcuts.recents.length);
+    for (const r of pkShortcuts.recents) {
       const { leaf, sub } = split(r);
       addRow({ label: leaf, sub, path: r, cls: "recent", icon: "clock", wt: isWtPath(r) });
     }
   }
   addHead("Places");
-  for (const c of data.common) addRow({ label: c.replace(/^\/Users\/[^/]+/, "~"), path: c, cls: "place", icon: "folder" });
-  const repoSet = new Set(data.repos ?? []);
-  const wtSet = new Set(data.worktrees ?? []);
-  addHead("Folders", data.dirs.length);
-  if (data.parent) addRow({ label: `Up to ${baseName(data.parent)}`, path: data.parent, cls: "up", icon: "up" });
-  for (const d of data.dirs) addRow({
-    label: d, path: `${data.path}/${d}`.replace("//", "/"), cls: "dir", icon: "folder",
-    repo: repoSet.has(d), wt: wtSet.has(d) || d.endsWith(".worktrees"),
-  });
-  if (!data.dirs.length) shell.list.appendChild(el("div", "pknone", "no subfolders here"));
+  for (const c of pkShortcuts.common)
+    addRow({ label: c.replace(/^\/Users\/[^/]+/, "~"), path: c, cls: "place", icon: "folder" });
+
+  const roots = pkKids.get(pkRoot) ?? [];
+  addHead("Folders", roots.length);
+  if (pkShortcuts.parent)
+    addRow({ label: `Up to ${baseName(pkShortcuts.parent)}`, path: pkShortcuts.parent, cls: "up", icon: "up" });
+  const emit = (parent: string, depth: number) => {
+    const kids = pkKids.get(parent) ?? [];
+    if (!kids.length && depth > 0) {
+      const empty = el("div", "pknone tree");
+      empty.style.paddingLeft = `${18 + depth * 16}px`;
+      empty.textContent = "empty";
+      shell.list.appendChild(empty);
+      return;
+    }
+    for (const n of kids) {
+      addRow({ label: n.name, path: n.path, cls: "dir", icon: "folder", repo: n.repo, wt: n.wt,
+        depth, tree: true });
+      if (pkOpen.has(n.path)) emit(n.path, depth + 1);
+    }
+  };
+  emit(pkRoot, 0);
+  if (!roots.length) shell.list.appendChild(el("div", "pknone", "no subfolders here"));
   applyWtHide(); // honor the current "hide lanes" toggle for the freshly built rows
-  // the detail describes the folder you just navigated INTO until the cursor moves, so the pane is
-  // never empty and its actions always have an unambiguous target
-  void showDirDetail(data.path);
-  return true;
+  if (keep) { pkFilter.value = keep; applyPkFilter(); }
 }
 
 // --- what the highlighted folder actually is (GET /api/dirinfo) ---
@@ -2202,21 +2290,40 @@ interface DirInfoResp {
 }
 let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches it starts
 
+// A 404 on a route this page KNOWS about means one specific thing in Fleet, and it is worth saying
+// out loud rather than spinning: `bun run build` publishes the client instantly (the server serves
+// public/app.js off disk), while new server ROUTES only exist after srv restarts. So a freshly built
+// dashboard talks to a pre-change server until someone kills the srv session — and every call to a
+// route added in the same change 404s. That is exactly what an indefinite "reading…" was.
+const SKEW_NOTE = "this page is newer than the server it is talking to — that route does not exist"
+  + " there yet. Restart Fleet's srv session to pick up the new routes (the sessions survive it).";
+
+// what the detail pane is currently able to say. A pane that can only render "loading" and "loaded"
+// has no way to stop loading, which is the whole defect: showDirDetail returned early on a failed
+// fetch and left the placeholder on screen forever.
+type DirLoad = { st: "loading" } | { st: "ok"; info: DirInfoResp } | { st: "fail"; why: string };
+
 async function showDirDetail(path: string) {
   const shell = pkShell;
   if (!shell) return;
   const seq = ++pkInfoSeq;
-  renderDirDetail(path, null);
+  renderDirDetail(path, { st: "loading" });
+  const done = (load: DirLoad) => {
+    // a superseded fetch must not paint over the row the cursor has since moved to
+    if (shell.isOpen() && seq === pkInfoSeq) renderDirDetail(path, load);
+  };
   const res = await api(`/api/dirinfo?path=${encodeURIComponent(path)}`).catch(() => null);
-  if (!res || !shell.isOpen() || seq !== pkInfoSeq) return;
+  if (!res) { done({ st: "fail", why: "couldn't reach the server — retry, or check the connection" }); return; }
+  if (res.status === 404) { done({ st: "fail", why: SKEW_NOTE }); return; }
+  if (!res.ok) { done({ st: "fail", why: `the server answered ${res.status} for this folder` }); return; }
   const info = (await res.json().catch(() => null)) as DirInfoResp | null;
-  if (!info || seq !== pkInfoSeq) return;
-  renderDirDetail(path, info);
+  done(info ? { st: "ok", info } : { st: "fail", why: "the server's answer was not readable JSON" });
 }
 
-function renderDirDetail(path: string, info: DirInfoResp | null) {
+function renderDirDetail(path: string, load: DirLoad) {
   const shell = pkShell;
   if (!shell) return;
+  const info = load.st === "ok" ? load.info : null;
   shell.detail.replaceChildren();
   shell.detail.appendChild(el("div", "rvhead", baseName(path)));
   shell.detail.appendChild(el("div", "pkdpath", path.replace(/^\/Users\/[^/]+/, "~")));
@@ -2241,7 +2348,9 @@ function renderDirDetail(path: string, info: DirInfoResp | null) {
   }
   shell.detail.appendChild(acts);
 
-  if (!info) { shell.detail.appendChild(el("div", "shellhint", "reading…")); return; }
+  if (load.st === "loading") { shell.detail.appendChild(el("div", "shellhint", "reading…")); return; }
+  if (load.st === "fail") { shell.detail.appendChild(el("div", "diffstat err", load.why)); return; }
+  if (!info) return; // unreachable: st === "ok" carries one
   if (info.error) { shell.detail.appendChild(el("div", "diffstat err", info.error)); return; }
   if (!info.exists) {
     shell.detail.appendChild(el("div", "diffstat err", "this folder no longer exists"));
@@ -2381,9 +2490,20 @@ function openPicker(slotId: number) {
     };
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void startSession(target()); return; }
     if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) { e.preventDefault(); void togglePin(target()); }
+    // →/← walk the tree. Only on tree rows: a shortcut row has no children to open, and swallowing
+    // the arrows inside the filter box would break moving the caret through what you typed.
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const i = shell.selectedIndex();
+    const hit = i >= 0 ? pkVisible()[i] : undefined;
+    if (!hit || !hit.row.classList.contains("tree")) return;
+    if ((e.target as HTMLElement | null)?.tagName === "INPUT" && pkFilter.value) return;
+    e.preventDefault();
+    if (e.key === "ArrowRight") { if (!pkOpen.has(hit.path)) void toggleNode(hit.path); }
+    else if (pkOpen.has(hit.path)) void toggleNode(hit.path);
   });
 
-  shell.foot.textContent = "click selects · double-click or Enter opens · ⌘Enter starts a session · ⌘D pins";
+  shell.foot.textContent = "click selects · →/← expand and collapse · double-click or Enter re-roots"
+    + " the tree here · ⌘Enter starts a session · ⌘D pins";
 
   const last = localStorage.getItem("fleet.pkdir") ?? "~";
   void browse(last).then(async (ok) => {
@@ -2948,6 +3068,7 @@ async function openReview(slotId: number, initial: RvSource) {
   let pick: RvPick = { k: "all" };
   const diffs = new Map<RvSource, RvDiff>();
   let commits: RvCommits | null = null;
+  let commitsErr: string | null = null;
   // one entry per commit whose diff has been fetched — a commit is immutable, so this never goes stale
   const commitDiffs = new Map<string, { files: DiffFile[]; diff: string; truncated: boolean; failed?: boolean }>();
 
@@ -3098,6 +3219,10 @@ async function openReview(slotId: number, initial: RvSource) {
           sub: `${c.hash} · ${fmtTs(c.ts)}${c.stat ? ` · ${c.stat}` : ""}` });
       if (commits.capped) shell.list.appendChild(el("div", "shellhint", "…older commits not listed"));
     }
+    if (commitsErr) {
+      sec("Commits");
+      shell.list.appendChild(el("div", "diffstat err", commitsErr));
+    }
     shell.setRows(rows);
     if (selIdx >= 0) shell.select(selIdx, false, false);
   }
@@ -3143,10 +3268,20 @@ async function openReview(slotId: number, initial: RvSource) {
   };
 
   void load();
+  // same failure class as the picker's detail pane: a commit list that cannot load must SAY so.
+  // Left silent, a 404 from a server older than this page renders as "this lane has no commits" —
+  // a positive claim about the repo, produced from a failed request.
   void api(`/api/slots/${slotId}/commits`)
-    .then(async (r) => (r.ok ? (await r.json()) as RvCommits : null))
-    .catch(() => null)
-    .then((c) => { if (!shell.isOpen()) return; commits = c; renderList(); });
+    .then(async (r) => (r.ok
+      ? { c: (await r.json()) as RvCommits }
+      : { err: r.status === 404 ? SKEW_NOTE : `couldn't load the commits (${r.status})` }))
+    .catch(() => ({ err: "couldn't load the commits — the request failed" }))
+    .then((res) => {
+      if (!shell.isOpen()) return;
+      if ("c" in res && res.c) commits = res.c;
+      else if ("err" in res && res.err) commitsErr = res.err;
+      renderList();
+    });
 }
 
 // six call sites across the board and the sidebar reach the window through these two names

@@ -404,6 +404,20 @@
 
   .pkrow { display: flex; align-items: center; gap: 10px; padding: 6px 9px; border-radius: 7px;
     cursor: pointer; }
+  /* --- tree rows: one guide line per ancestor level ---
+     The vertical padding moves OFF the row and onto its name, so a guide with align-self:stretch
+     covers the full row box. Left on the row, stretch would only span the content box and the
+     lines would break into a ladder of dashes with a gap at every row boundary. */
+  .pkrow.tree { padding-top: 0; padding-bottom: 0; }
+  .pkrow.tree .pkname { padding: 6px 0; }
+  .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; }
+  .pkguide { flex: none; width: 16px; border-left: 1px solid #3d4356; }
+  .pkrow.tree:hover .pkguide, .pkrow.tree.sel .pkguide { border-left-color: #5b6885; }
+  .pktw { flex: none; width: 16px; display: flex; align-items: center; justify-content: center;
+    color: #8b8b8b; font-size: 10px; cursor: pointer; }
+  .pktw.open { color: #7aa2f7; }
+  .pktw:hover { color: #fff; }
+  .pknone.tree { padding: 3px 9px; font-size: 11px; color: #4a4a4a; text-align: left; }
   .pkrow:hover { background: #262626; }
   .pkrow.sel { background: #2c3a5e; }
   .pkrow.sel .pkuse { visibility: visible; }

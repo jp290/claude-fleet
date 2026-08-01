@@ -2057,9 +2057,13 @@ function dirRow(o: DirRowOpts): HTMLElement {
     // (└) — that turn is what makes a column of names read as a branch of a tree.
     const lead = el("span", "pklead");
     const depth = o.depth ?? 0;
-    for (let i = 0; i < depth; i++) {
+    // depth + 1 columns, not depth: the row's OWN level gets an elbow too, so a top-level folder
+    // hangs off the same spine as everything below it and the whole section reads as ONE tree.
+    // Drawing them only for nested rows left the top level flat, and the first expansion then
+    // sprouted a line out of nowhere — the shape `tree(1)` gets right by connecting every entry.
+    for (let i = 0; i <= depth; i++) {
       const g = el("span", "pkguide");
-      if (i === depth - 1) g.classList.add(o.last ? "end" : "branch");
+      if (i === depth) g.classList.add(o.last ? "end" : "branch");
       else if (o.blanks?.[i]) g.classList.add("blank");
       lead.appendChild(g);
     }
@@ -2070,7 +2074,10 @@ function dirRow(o: DirRowOpts): HTMLElement {
     lead.appendChild(tw);
     row.appendChild(lead);
   }
-  row.appendChild(pkIcon(o.icon));
+  // NO folder icon on a tree row: every row in the tree is a folder, so the glyph distinguished
+  // nothing and took the width the elbow and the name needed. The shortcut sections keep theirs —
+  // there a star, a clock and a folder are three different KINDS of destination.
+  if (!o.tree) row.appendChild(pkIcon(o.icon));
   const name = el("span", "pkname");
   name.appendChild(el("span", "pkleaf", o.label));
   if (o.sub) name.appendChild(el("span", "pksub", o.sub));
@@ -2087,18 +2094,24 @@ function dirRow(o: DirRowOpts): HTMLElement {
   star.title = pinned ? "unpin (⌘D)" : "pin this folder (⌘D)";
   star.onclick = (e) => { e.stopPropagation(); void togglePin(o.path); };
   row.appendChild(star);
-  // click 1 selects (the detail pane follows), click 2 STARTS A SESSION here. No timer: selecting is
-  // idempotent and replaces no DOM, so the first click of a double-click costs nothing to let
-  // through — which is exactly what forced the old 250ms reconciliation.
-  // Double-click used to re-root the tree, which is what a file manager does; this window is not a
-  // file manager, it is "new session — pick where". Descending is what the ▸ twisty and → are for,
-  // and re-rooting still has the breadcrumb, the "Up to …" row, the path box and Enter. The one row
-  // kind that keeps navigating is "Up to …": it names a destination, not a place to work.
+  // click 1 selects AND opens the folder (the detail pane follows), click 2 STARTS A SESSION here.
+  // No timer: both are idempotent-or-invisible, so the first click of a double-click costs nothing
+  // to let through — which is exactly what forced the old 250ms reconciliation. (A double-click
+  // that lands on a closed folder expands it on the way past; the window closes on the session it
+  // starts, so that is never seen.)
+  // Clicking the ROW to open it, not just the ▸, is what Finder, Explorer and VS Code all do, and
+  // the ▸ was an 18px target for the most common action in the window. Re-rooting — making a folder
+  // the top of the tree — stays on the breadcrumb, the "Up to …" row, the path box and Enter. The
+  // one row kind that navigates on double-click is "Up to …": it names a destination, not a place
+  // to work.
   row.onclick = (e) => {
     if (e.detail >= 2) { void (o.cls === "up" ? browse(o.path) : startSession(o.path)); return; }
     const i = pkVisible().findIndex((r) => r.row === row);
     if (i >= 0) pkShell?.select(i, false, false);
     void showDirDetail(o.path);
+    // opening only, never closing: a click that collapsed what it just selected would make the row
+    // under the cursor jump away. The ▸ (and ←) still collapse.
+    if (o.tree && !pkOpen.has(o.path)) void toggleNode(o.path);
   };
   const use = el("span", "pkuse", "start ▸");
   use.onclick = (e) => {
@@ -2280,7 +2293,7 @@ function paintPicker() {
     const kids = pkKids.get(parent) ?? [];
     if (!kids.length && depth > 0) {
       const empty = el("div", "pknone tree");
-      empty.style.paddingLeft = `${18 + depth * 16}px`;
+      empty.style.paddingLeft = `${61 + depth * 26}px`;
       empty.textContent = "empty";
       shell.list.appendChild(empty);
       return;
@@ -2462,6 +2475,12 @@ function appendDirContents(target: HTMLElement, info: DirInfoResp) {
     // the same elbow the list on the left draws, so "contents" reads as one level of that tree
     row.appendChild(el("span", "pkdelbow", i === entries.length - 1 ? "└" : "├"));
     row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
+    // a listed folder is a place you can go: clicking one makes it the top of the tree on the left.
+    // Files are not clickable and do not pretend to be — there is nothing to enter.
+    if (e.dir) {
+      row.title = `open ${e.name}/ in the tree`;
+      row.onclick = () => void browse(`${info.path}/${e.name}`);
+    }
     box.appendChild(row);
   });
   target.appendChild(box);
@@ -2517,7 +2536,7 @@ function openPicker(slotId: number) {
   const shell = openShell({
     id: "picker",
     title: `New session — slot ${slotId}`,
-    listWidth: 400,
+    listWidth: 460,
     onSelect: (row) => {
       const hit = pkRows.find((r) => r.row === row.el);
       if (hit) void showDirDetail(hit.path);

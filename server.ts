@@ -1821,6 +1821,17 @@ interface DirInfo {
 }
 const DIRINFO_ENTRIES = 40;
 const DIRINFO_COMMITS = 5;
+// what one file's body is allowed to be. The cap is on the SERVED text, and `truncated` says so —
+// a viewer that silently shows the first half of a file is worse than one that refuses.
+const FILE_CAP = 512 * 1024;
+function fileBody(text: string): { text: string; binary: boolean; truncated: boolean } {
+  // a NUL anywhere in the first 8 KB is the practical binary test (git uses the same idea). Decoding
+  // a PNG as UTF-8 produces replacement characters, not an error, so "did it decode" proves nothing.
+  if (text.slice(0, 8192).includes("\u0000")) return { text: "", binary: true, truncated: false };
+  return text.length > FILE_CAP
+    ? { text: text.slice(0, FILE_CAP), binary: false, truncated: true }
+    : { text, binary: false, truncated: false };
+}
 // What the folder CONTAINS — the question "which of these two checkouts is it" is answered by the
 // files, not by the branch name. Returns null rather than an empty list when the directory cannot be
 // read: "nothing is in here" and "I was not allowed to look" are different facts and the pane says so.
@@ -6905,6 +6916,50 @@ Bun.serve<WSData>({
         commits: rows ?? [],
         capped: (rows?.length ?? 0) >= MAX_COMMIT_ROWS,
       });
+    }
+    // --- ONE file, for every file list in the UI ---
+    // Four surfaces list files (the picker's Contents, a commit's files, a land's footprint, the
+    // board's changed-files card) and none of them could show one. This is the single route they
+    // share, and it answers in exactly two modes, because a file has two meanings here:
+    //   · ?path=<absolute>            — what is on disk NOW (the picker: the file may not be in git at all)
+    //   · ?repo=&rev=&path=<relative> — what a COMMIT left there (a commit's file list is a
+    //                                   statement about that revision, and today's bytes are not it)
+    // Bounded: FILE_CAP of text, and a NUL in the first 8 KB means binary — reported as binary, never
+    // rendered as mojibake. Access model is positional, exactly like /api/dirinfo and /api/commits
+    // above: past the owner tokenGate, structurally 404 on a share host.
+    if (url.pathname === "/api/file") {
+      const raw = url.searchParams.get("path") ?? "";
+      const rev = url.searchParams.get("rev");
+      if (!raw) return json({ error: "no path" }, 400);
+      if (rev) {
+        if (!/^[0-9a-f]{4,40}$/.test(rev)) return json({ error: "bad rev" }, 400);
+        const repo = resolve(expandCwd(url.searchParams.get("repo") ?? ""));
+        if (!existsSync(`${repo}/.git`)) return json({ error: "not a git repo" }, 400);
+        // NOT gitRead: git() trims, and a trim silently eats a file's leading and trailing
+        // whitespace — the same reason statusLines spawns its own. A viewer must show the bytes.
+        const p = Bun.spawn(["git", "-C", repo, "show", `${rev}:${raw.replace(/^\/+/, "")}`],
+          { stdout: "pipe", stderr: "pipe", env: GIT_READ_ENV });
+        const timer = setTimeout(() => { try { p.kill(); } catch { /* already gone */ } }, GIT_TIMEOUT_MS);
+        try {
+          const text = await new Response(p.stdout).text();
+          const code = await p.exited;
+          if (code !== 0) return json({ error: "this path is not in that commit" }, 404);
+          return json({ ...fileBody(text), path: raw, rev });
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      const path = resolve(expandCwd(raw));
+      let st;
+      try {
+        st = statSync(path);
+      } catch {
+        return json({ error: "no such file" }, 404);
+      }
+      if (st.isDirectory()) return json({ error: "that is a directory" }, 400);
+      const text = await Bun.file(path).text().catch(() => null);
+      if (text === null) return json({ error: "this file could not be read" }, 400);
+      return json({ ...fileBody(text), path, rev: null, size: st.size });
     }
     // one commit's change, for the Commits lens's detail pane. Same membership rule as the per-slot
     // route above and for the same reason: the hash must be one the list THIS ROUTE computes just

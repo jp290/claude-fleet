@@ -340,6 +340,29 @@ if (INTAKE && DISPATCH_REPO) {
   if (SHARE_HOST)
     check("§8 the owner bundle is not published on the public share host",
       (await fetch(BASE + "/app.js", { headers: { host: SHARE_HOST } })).status === 404);
+
+  // GET /api/file is the widest READ this server has: it serves the bytes of any path the owner
+  // names, so it is the one route where "owner-only" has to be true and not merely intended. It is
+  // owner-only by POSITION (past the tokenGate, below the share gate), which is the same reason
+  // /api/dirinfo and /api/audit are — and position is exactly the kind of property a later edit
+  // breaks silently by moving a block. Both halves are asserted here, against a file that is
+  // guaranteed to exist and is guaranteed to be sensitive: fleet.json, which holds the owner token.
+  {
+    const noTok = await fetch(`${BASE}/api/file?path=${encodeURIComponent(`${ROOT}/fleet.json`)}`);
+    check("§8 /api/file refuses a request with no owner token",
+      noTok.status === 401 || noTok.status === 403 || noTok.status === 404, String(noTok.status));
+    const body = await noTok.text();
+    check("§8 …and the refusal carries none of the file's bytes",
+      !body.includes(TOKEN), body.slice(0, 80));
+    if (SHARE_HOST) {
+      const onShare = await fetch(`${BASE}/api/file?path=${encodeURIComponent(`${ROOT}/fleet.json`)}`,
+        { headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` } });
+      check("§8 /api/file does not exist on the public share host, even WITH the owner token",
+        onShare.status === 404, String(onShare.status));
+      check("§8 …and that answer carries none of the file's bytes either",
+        !(await onShare.text()).includes(TOKEN));
+    }
+  }
 }
 
 console.log(results.join("\n"));

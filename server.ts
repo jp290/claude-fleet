@@ -2895,9 +2895,19 @@ const MERGE_REPAIR_ROUNDS = Math.min(3, Math.max(0, Number(process.env.FLEET_MER
 // outcome row (`cleanReviewShadow`) as the dataset that would justify graduating to gate mode. The
 // fail direction is deliberately INVERTED here: nothing is gated, so an errored/unparseable run must
 // record "measurement failed" (verdict null, raw true), never a fabricated pass.
+// OFF IS A VALUE, NOT A FALLTHROUGH. Every unrecognised spelling lands on "off", which means a typo
+// silently disables the reviewer — and the pin guarding that (e2e/pins.ts) could not tell the
+// owner's deliberate `off` from `offf`, so setting the flag to its own default name turned the land
+// gate red on 2026-07-28 and it stayed red. Naming the off spellings makes the two distinguishable
+// to the pin, and makes an unrecognised one say so out loud instead of passing for a decision.
+const CLEAN_REVIEW_RAW = (process.env.FLEET_CLEAN_REVIEW ?? "").trim();
+const CLEAN_REVIEW_OFF_RE = /^(0|off|false|no)$/i;
 const CLEAN_REVIEW_MODE: "off" | "gate" | "shadow" =
-  /^shadow$/i.test(process.env.FLEET_CLEAN_REVIEW ?? "") ? "shadow"
-  : /^(1|true|on|yes)$/i.test(process.env.FLEET_CLEAN_REVIEW ?? "") ? "gate" : "off";
+  /^shadow$/i.test(CLEAN_REVIEW_RAW) ? "shadow"
+  : /^(1|true|on|yes)$/i.test(CLEAN_REVIEW_RAW) ? "gate" : "off";
+if (CLEAN_REVIEW_RAW && CLEAN_REVIEW_MODE === "off" && !CLEAN_REVIEW_OFF_RE.test(CLEAN_REVIEW_RAW))
+  console.log(`[fleet] FLEET_CLEAN_REVIEW=${JSON.stringify(CLEAN_REVIEW_RAW)} is not a recognised`
+    + " value — the ② clean-path reviewer is OFF. Recognised: shadow · 1/true/on/yes · 0/off/false/no.");
 const CLEAN_REVIEW_CMD = process.env.FLEET_CLEAN_REVIEW_CMD ?? null; // tests: subprocess stand-in
 const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_REVIEW_TIMEOUT_MS ?? 180_000) | 0);
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.

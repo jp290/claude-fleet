@@ -408,10 +408,19 @@
      The vertical padding moves OFF the row and onto its name, so a guide with align-self:stretch
      covers the full row box. Left on the row, stretch would only span the content box and the
      lines would break into a ladder of dashes with a gap at every row boundary. */
-  .pkrow.tree { padding-top: 0; padding-bottom: 0; gap: 8px; }
+  .pkrow.tree { padding-top: 0; padding-bottom: 0; gap: var(--pkgap); }
   .pkrow.tree .pkname { padding: 10px 0; }
   .pkrow.tree .pkleaf { font-size: 14px; }
-  .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; }
+  .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; position: relative; }
+  /* AN OPEN FOLDER GROWS THE LINE ITS CHILDREN HANG FROM. From the middle of this row — where its
+     own elbow turns into the name — straight down to the row's bottom edge, in exactly the column
+     the children draw their spine in: the lead is (depth+1) columns wide, so that column begins at
+     its right edge, and left:100% lands on it whatever the depth or the column width.
+     Without it a child's spine started out of nowhere below the parent, and expanding a folder
+     read as "some rows appeared" rather than "this folder opened and here is what is inside". */
+  .pkrow.tree.open .pklead::after { content: ""; position: absolute; top: 50%; bottom: 0;
+    left: calc(100% - var(--pktwid));
+    border-left: 3px solid var(--pkline); }
   /* Each level is a column carrying a vertical rule (::before) and, at the row's own level, a
      horizontal one turning into the name (::after). Drawn as pseudo-elements rather than a border
      on the box so the last child can stop its vertical half-way (└) while staying pixel-aligned
@@ -424,27 +433,41 @@
      indent of the "empty" line that stands in where a row would be. That indent used to be a
      magic `61 + depth * 26` in the renderer — a copy of these numbers that went wrong the instant
      either changed, and was already wrong on the phone, where the ▸ is 34px and not 18px. */
-  .pkrow.tree, .pknone.tree { --pkcol: 30px; --pktwid: 18px; }
-  .pkguide { --pkline: #5b6a91; flex: none; width: var(--pkcol); position: relative; }
+  /* --pkline lives on the ROW, not on .pkguide: the descender below is drawn by .pklead, which is
+     not inside a guide, and an out-of-scope var makes the whole `border-left` shorthand invalid —
+     computing to width 0, i.e. a line that silently is not there. */
+  .pkrow.tree, .pknone.tree { --pkline: #5b6a91; --pkcol: 30px; --pktwid: 18px; --pkiconw: 16px;
+    --pkgap: 8px;
+    /* where a row's NAME starts, measured from the row's left edge: padding + ▸ + gap + icon + gap.
+       Derived once so the stand-in line below tracks it — adding the folder icon moved every name
+       24px right and would otherwise have left that line behind, exactly as the old hardcoded
+       `61 + depth * 26` did. */
+    --pkname0: calc(9px + var(--pktwid) + var(--pkgap) + var(--pkiconw) + var(--pkgap)); }
+  .pkguide { flex: none; width: var(--pkcol); position: relative; }
   .pkguide::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
     border-left: 3px solid var(--pkline); }
   .pkguide.blank::before { border-left-color: transparent; }
   .pkguide.end::before { bottom: 50%; }
   .pkguide.branch::after, .pkguide.end::after { content: ""; position: absolute; left: 0; top: 50%;
     width: calc(var(--pkcol) - 4px); border-top: 3px solid var(--pkline); }
-  .pkrow.tree:hover .pkguide, .pkrow.tree.sel .pkguide { --pkline: #7aa2f7; }
+  .pkrow.tree:hover, .pkrow.tree.sel { --pkline: #7aa2f7; }
   /* the branch runs INTO this glyph, so an 11px one reads as a speck at the end of a 3px stroke */
   .pktw { flex: none; width: var(--pktwid, 18px); display: flex; align-items: center;
     justify-content: center; color: #9aa0ad; font-size: 13px; cursor: pointer; }
   .pktw.open { color: #7aa2f7; }
   .pktw:hover { color: #fff; }
   .pknone.tree { padding: 5px 9px; font-size: 12px; color: #5a5a5a; text-align: left;
-    padding-left: calc(9px + var(--pktwid) + 8px + (var(--pkdepth, 0) + 1) * var(--pkcol)); }
+    padding-left: calc(var(--pkname0) + (var(--pkdepth, 0) + 1) * var(--pkcol)); }
   .pkrow:hover { background: #262626; }
   .pkrow.sel { background: #2c3a5e; }
   .pkrow.sel .pkuse { visibility: visible; }
   .pkicon { flex: none; display: flex; width: 16px; height: 16px; color: #7f7f7f; }
   .pkicon svg { width: 16px; height: 16px; display: block; }
+  /* the tree's icon is a STATE, so it is lit like one: grey shut, accent open — the same accent
+     the ▾ and the guides take, so one glance at a row answers "is this open" three ways */
+  .pkrow.tree .pkicon, .pkrow.tree .pkicon svg { width: var(--pkiconw); height: var(--pkiconw); }
+  .pkrow.tree .pkicon { color: #8a93a6; }
+  .pkrow.tree.open .pkicon { color: #7aa2f7; }
   .pkrow.recent .pkicon { color: #a7c080; }
   .pkrow.place .pkicon { color: #7aa2f7; }
   .pkrow.up .pkicon { color: #888; }
@@ -972,7 +995,7 @@
     /* the guides keep their WEIGHT here and give back their WIDTH. Clarity is the 3px stroke; the
        column width is only indentation, and on 390px it is charged to the name — at depth 2 the
        desktop's 30px columns plus the 34px touch target left 115px for a filename. */
-    .pkrow.tree, .pknone.tree { --pkcol: 24px; --pktwid: 34px; }
+    .pkrow.tree, .pknone.tree { --pkcol: 22px; --pktwid: 34px; --pkiconw: 15px; --pkgap: 7px; }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }
     .pkbtns button { padding: 11px 18px; }
   }

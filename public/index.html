@@ -472,15 +472,24 @@
   .histcopy:hover { background: #2c3a5e; }
   .histnone { padding: 8px; color: #555; font-size: 12px; }
 
-  /* audit trail — owner-only read-only lens over /api/audit (Backlog #9) */
-  #auditpanel { max-width: 720px; width: 92vw; }
-  .auditctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  /* audit trail — the third lens of the activity window (owner-only, read-only over /api/audit) */
+  .auditctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex-basis: 100%; }
   .auditctl select { background: #262626; color: #ccc; border: 1px solid #333; border-radius: 7px;
     padding: 6px 8px; font-family: inherit; font-size: 12px; }
   .auditctl .auditcount { margin-left: auto; color: #666; font-size: 11px; }
-  #auditlist { flex: 1; min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+  /* the lens switch sits above whatever controls the current lens brings */
+  .actlens { display: flex; gap: 6px; flex-basis: 100%; }
+  /* the selected event's own slot timeline, in the detail pane */
+  .audtl { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+  .audtlrow { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-radius: 6px;
+    font-size: 11.5px; color: #aaa; }
+  .audtlrow.here { background: #2c3a5e; color: #e8e8e8; }
+  .audtlrow .aud-ts { flex: none; color: #666; font-size: 10px; width: 74px; }
+  .audtlrow .aud-kind { flex: none; font-size: 10px; font-weight: 700; color: #8b93b0; }
+  .audtlrow .aud-detail { flex: 1; min-width: 0; color: #999; }
+  .shellrow.auditrow { border-left: 3px solid #666; }
   .auditrow { display: flex; gap: 8px; align-items: baseline; padding: 6px 9px; border-radius: 7px;
-    font-size: 12px; color: #ccc; background: #1c1c1c; border-left: 3px solid #666; }
+    font-size: 12px; color: #ccc; }
   .auditrow .aud-ts { flex: none; color: #666; font-size: 10px; width: 74px; }
   .auditrow .aud-slot { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
     background: #141414; border: 1px solid #333; color: #aaa; min-width: 34px; text-align: center; }
@@ -983,10 +992,6 @@
     <h2 id="histtitle">Prompt history</h2>
     <div id="histlist"></div>
   </div>
-</div>
-
-<div id="audit" class="overlay">
-  <div class="panel" id="auditpanel"></div>
 </div>
 
 <div id="gate" class="overlay">

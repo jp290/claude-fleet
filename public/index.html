@@ -416,21 +416,30 @@
      horizontal one turning into the name (::after). Drawn as pseudo-elements rather than a border
      on the box so the last child can stop its vertical half-way (└) while staying pixel-aligned
      with the full-height rules (│) of the siblings above it.
-     Sized for READING: 26px columns and a 2px rule. At 16px and 1px the levels sat so close, and
-     the lines so faint, that the tree read as plain indentation — which is what it was replacing. */
-  .pkguide { --pkline: #4c5673; flex: none; width: 26px; position: relative; }
+     Sized for READING: 30px columns, a 3px rule and a 26px branch. At 16px and 1px the levels sat
+     so close, and the lines so faint, that the tree read as plain indentation — which is what it
+     was replacing. 26/2/18 fixed the spacing and still read as thin, so the stroke took weight and
+     the branch grew until it runs the whole column and arrives at the ▸ it points at. */
+  /* ONE definition of the tree's geometry. The guides read it, the ▸ reads it, and so does the
+     indent of the "empty" line that stands in where a row would be. That indent used to be a
+     magic `61 + depth * 26` in the renderer — a copy of these numbers that went wrong the instant
+     either changed, and was already wrong on the phone, where the ▸ is 34px and not 18px. */
+  .pkrow.tree, .pknone.tree { --pkcol: 30px; --pktwid: 18px; }
+  .pkguide { --pkline: #5b6a91; flex: none; width: var(--pkcol); position: relative; }
   .pkguide::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
-    border-left: 2px solid var(--pkline); }
+    border-left: 3px solid var(--pkline); }
   .pkguide.blank::before { border-left-color: transparent; }
   .pkguide.end::before { bottom: 50%; }
   .pkguide.branch::after, .pkguide.end::after { content: ""; position: absolute; left: 0; top: 50%;
-    width: 18px; border-top: 2px solid var(--pkline); }
+    width: calc(var(--pkcol) - 4px); border-top: 3px solid var(--pkline); }
   .pkrow.tree:hover .pkguide, .pkrow.tree.sel .pkguide { --pkline: #7aa2f7; }
-  .pktw { flex: none; width: 18px; display: flex; align-items: center; justify-content: center;
-    color: #8b8b8b; font-size: 11px; cursor: pointer; }
+  /* the branch runs INTO this glyph, so an 11px one reads as a speck at the end of a 3px stroke */
+  .pktw { flex: none; width: var(--pktwid, 18px); display: flex; align-items: center;
+    justify-content: center; color: #9aa0ad; font-size: 13px; cursor: pointer; }
   .pktw.open { color: #7aa2f7; }
   .pktw:hover { color: #fff; }
-  .pknone.tree { padding: 5px 9px; font-size: 12px; color: #5a5a5a; text-align: left; }
+  .pknone.tree { padding: 5px 9px; font-size: 12px; color: #5a5a5a; text-align: left;
+    padding-left: calc(9px + var(--pktwid) + 8px + (var(--pkdepth, 0) + 1) * var(--pkcol)); }
   .pkrow:hover { background: #262626; }
   .pkrow.sel { background: #2c3a5e; }
   .pkrow.sel .pkuse { visibility: visible; }
@@ -474,13 +483,20 @@
   /* the folder's own children — one level, drawn with the same elbows as the tree on the left */
   .pkdtree { margin-top: 8px; max-height: 340px; overflow-y: auto;
     font: 13.5px ui-monospace, Menlo, Consolas, monospace; }
-  .pkdent { display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 6px; }
-  .pkdelbow { flex: none; color: #4c5673; font-size: 15px; }
+  .pkdent { display: flex; align-items: center; gap: 10px; padding: 5px 6px; border-radius: 6px;
+    cursor: pointer; }
+  .pkdelbow { flex: none; color: #5b6a91; font-size: 17px; }
   .pkdname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9a9a9a; }
   .pkdent.dir .pkdname { color: #7aa2f7; }
-  .pkdent.dir { cursor: pointer; }
-  .pkdent.dir:hover { background: #232a3a; }
-  .pkdent.dir:hover .pkdelbow { color: #7aa2f7; }
+  /* EVERY row here acts on a click — a folder re-roots the tree, a file opens in the viewer — so
+     every row says so under the cursor. Only the folders ever did: when the file rows became
+     clickable they kept the text caret and no hover at all, which reads as prose that happens to
+     respond, and a row that acts without looking like it will is a row nobody clicks. */
+  .pkdent:hover { background: #232a3a; }
+  .pkdent:hover .pkdelbow { color: #7aa2f7; }
+  .pkdent:hover .pkdname { color: #dcdcdc; text-decoration: underline;
+    text-decoration-color: #7aa2f7; text-underline-offset: 3px; }
+  .pkdent.dir:hover .pkdname { color: #9ec1ff; }
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid #333; background: #262626;
     color: #ccc; font-size: 13px; font-family: inherit; cursor: pointer; }
@@ -953,7 +969,10 @@
        without leaving the list — so on touch it gets a target worth aiming at. Widening it shifts
        the name column only: the guides sit BEFORE it, so a child's spine still lands on its
        parent's elbow. */
-    .pkrow.tree .pktw { width: 34px; font-size: 13px; }
+    /* the guides keep their WEIGHT here and give back their WIDTH. Clarity is the 3px stroke; the
+       column width is only indentation, and on 390px it is charged to the name — at depth 2 the
+       desktop's 30px columns plus the 34px touch target left 115px for a filename. */
+    .pkrow.tree, .pknone.tree { --pkcol: 24px; --pktwid: 34px; }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }
     .pkbtns button { padding: 11px 18px; }
   }

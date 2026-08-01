@@ -2313,8 +2313,11 @@ function paintPicker() {
     const kids = pkKids.get(parent) ?? [];
     if (!kids.length && depth > 0) {
       const empty = el("div", "pknone tree");
-      empty.style.paddingLeft = `${61 + depth * 26}px`;
-      empty.textContent = "empty";
+      // depth only — the stylesheet owns the geometry and lines this up with the names above it.
+      // This was `61 + depth * 26`, a copy of the guide/▸/gap widths that no longer matched either
+      // the desktop or the phone once those changed.
+      empty.style.setProperty("--pkdepth", String(depth));
+      empty.textContent = "no subfolders";
       shell.list.appendChild(empty);
       return;
     }

@@ -1,8 +1,122 @@
-# HANDOFF — Session 15 (2026-07-31/08-01: die vier Fenster) · Session 13/14 darunter
+# HANDOFF — Session 16 (2026-08-01: die Fenster werden benutzbar) · 15/14/13 darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 99a9c0f..HEAD` mit Bodies (das
+*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 8f4565b..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 16 (2026-08-01): Picker und Activity werden benutzbar, und Dateien lassen sich öffnen
+
+5 Commits, `c85f1a0`..`08bdcfb`, alle deployed und gegen den Live-Server nachgeprüft
+(`08bdcfb` = bootHead = HEAD, `bundleStale:false`, 6 Sessions haben die Restarts überlebt).
+
+### Das Erste, was die nächste Session tun sollte
+
+**Der einzige benannte, noch offene Punkt aus dem Gespräch: `recordLand` schreibt `repo` und
+`mainAfter` NICHT auf die Outcome-Row — und hat beide in der Hand** (`server.ts`, grep
+`async function recordLand(repo, main, branch, mainBefore, mainAfter, prov)`). Zwei Felder mehr
+auf der Row lösen ZWEI Dinge auf einmal:
+
+1. die Dateiliste in der Lands-Linse wird klickbar (heute ist sie als einzige der vier
+   Dateilisten tot, weil eine Row einen PFAD kennt, aber weder Repo noch Revision), und
+2. der Commits↔Lands-Join hört auf, ein ±1-h-Zeittreffer zu sein — das ist wörtlich Punkt 7
+   der Session-15-Liste („Ein echter Join bräuchte, dass recordLand den resultierenden
+   Commit-SHA schreibt").
+
+Gilt nur für NEUE Rows; alte sagen ehrlich „kein Repository auf der Row". Genau dasselbe
+Muster wie `recent`/`last` in `/api/dirinfo`.
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **`mdInto` rendert KEIN Markdown.** Es gibt ``` ```-Fences Struktur und sonst nichts —
+  absichtlich, weil es feindlichen Transcript-Text rendert (`src/md.ts`, Kopfkommentar). Ich
+  hatte schon „`.md` rendert als Markdown" gebaut und den Kommentar dazu geschrieben, BEVOR
+  ich die Datei gelesen habe; der Check hat es gefangen. Wer eine Markdown-Ansicht will,
+  braucht einen echten Renderer und muss die XSS-Entscheidung neu treffen.
+- **`git()` und `gitRead()` TRIMMEN ihre Ausgabe.** Für Hashes egal, für Dateiinhalt falsch:
+  führende/abschließende Leerzeichen verschwinden. `/api/file` spawnt darum sein eigenes git —
+  dieselbe Begründung, die schon über `statusLines` steht.
+- **Die Info-Karte (`#board`) hat ZWEI Dateilisten, nicht eine**: `brief.uncommittedFiles`
+  (dirty, das was man normalerweise sieht) und `brief.files` (committed footprint). Ich hatte
+  zuerst nur die zweite verdrahtet und es im Browser gemerkt — die sichtbare war die andere.
+- **`.shellsect` ist `text-transform: uppercase`.** Playwright `inner_text()` liefert damit
+  „CONTENTS", nicht „Contents". Drei meiner Checks sind daran gescheitert und haben KORREKTEN
+  Code angeklagt. Bei Text-Assertions gegen dieses UI: `.upper()` vergleichen.
+- **Die Suiten-Wrapper und `bun run build` sind cwd-empfindlich.** Ein `cd` in ein
+  Scratch-Verzeichnis früher in derselben Bash-Zeile lässt `bun run build` dort laufen, es
+  meldet Erfolg, und der Test misst danach ALTEN Code. Zweimal passiert. Build und `cp` immer
+  mit absoluten Pfaden aus dem Repo heraus.
+- **`pkill -f "bun server.ts"` killt den LIVEN Server.** Ich habe es getan (10:53). Der
+  Watchdog hat ihn nach ~2 s neu gestartet, der Audit-Trail zeigt danach kein einziges
+  Slot-Event, es ging nichts verloren — aber das war Glück im Sinne von „der Watchdog
+  funktioniert", nicht Vorsicht. Eine Wegwerf-Instanz beendet man über ihren PORT:
+  `kill $(lsof -ti tcp:23462)`.
+- **`./e2e-isolated.sh` fiel einmal mit 2 Checks im Steward-Send-Episoden-Limiter**
+  („a second send of the same kind×slot within the episode window is 429 (409)" +
+  „a capped send is audited"). Derselbe Baum, direkt danach: 993 PASS. Damit ist die
+  Nicht-Determiniertheit nach der Hausregel bewiesen; der Diff fasst diesen Pfad nirgends an.
+  Eine Beobachtung, keine sechste Flake-Familie — dafür braucht es mehr als eine Instanz.
+
+### Was ich als offen kenne (meine Liste, nicht die des Owners)
+
+1. **Die vier Fenster haben WEITER null e2e-Abdeckung — und die Lücke ist jetzt GRÖSSER, nicht
+   kleiner.** Ich habe diese Session vier Playwright-Harnesses geschrieben, zusammen **72
+   Checks** (24 Picker · 17 Activity · 13 Mobile · 18 Datei-Viewer): der Picker-Baum inklusive
+   aller Guide-Arrays gegen ein Fixture bekannter Form, Mobile mit Touch-Emulation, die drei
+   Activity-Linsen gegen die LIVEN Ledger, der Datei-Viewer über alle vier Aufrufstellen. Sie liegen in `$SCRATCH/{pick,act,mob,fileview}.py` und **sterben mit dieser
+   Session** — sie sind bewusst NICHT eingecheckt worden, und der Grund ist wichtig: sie tragen
+   absolute Pfade mit dem Maschinen-Accountnamen (8 Vorkommen über die vier Dateien), und dieses
+   Repo ist öffentlich. Wer sie einchecken will, muss die Pfade vorher parametrisieren (env /
+   argv) und danach den Privacy-Grep aus `CLAUDE.md` (Abschnitt Deploy) leer sehen — der
+   Owner-Entscheid aus Session 14 gilt weiter. Der Entscheid aus Session 15 (Punkt 3) ist damit fällig und schärfer geworden:
+   entweder die Harnesses werden ein echter, opt-in Suite-Ordner im Repo — **Achtung: sie
+   brauchen Playwright, das eine Homebrew-*Python*-Installation ist und KEINE Repo-Abhängigkeit;
+   ein Gate-Eintrag würde jede Lane brechen, die es nicht hat** — oder es wird ausdrücklich
+   festgehalten, dass diese Fenster handgeprüft bleiben. Der Status quo ist weiterhin die
+   schlechteste Variante.
+2. **Mobile: nur der Picker ist geprüft.** Queue- und Activity-Fenster sind auf dem Handy
+   unverändert UNGEPRÜFT (Session 15, Punkt 2 — der Picker-Teil davon ist erledigt).
+3. **Der Datei-Viewer kann keine Datei aus der Lands-Linse öffnen** — siehe „Das Erste" oben.
+4. Unverändert offen aus Session 15: zwei Overlay-Idiome nebeneinander (Punkt 3), `src/client.ts`
+   ist jetzt 5394 Zeilen (Punkt 4), der Picker-Filter expandiert nicht (5), der Kinder-Cache
+   lebt so lange wie das Fenster (6), `showDirDetail` feuert pro Pfeiltaste (8), `/api/commits`
+   deckelt bei 200 ohne Paging (9).
+
+### Aus 15/13 unverändert offen
+
+- **Beide Pulse sind jetzt still**, nicht nur einer: `/inspektion` UND beide `/rundgang`-Autos
+  stehen auf `runsLeft: 0` (live nachgezählt). Die fällige Entscheidung aus Session 13 gilt
+  damit für alle drei.
+- **7 pending Tasks** (live: 8 Rows, 7 pending) — unverändert, zwei davon laut Session 13
+  längst erledigt und nur nicht abgeräumt.
+- **Orphan-Worktree `fleet-260728184459-9e73`** (5523d1f) liegt weiter ohne Slot auf Platte.
+- **Maschinenhygiene steigt weiter: 146 geleakte e2e-tmux-Sockets, 17 MB TMPDIR-Scratch.**
+  Nichts reapt sie. Ein Teil davon ist diese Session (ich habe ~10 Suite-Läufe gefahren).
+- Die zwei Messreihen aus Session 13 brauchen weiter Lanes, bevor sie etwas sagen.
+
+### Key Decisions (mit Grund)
+
+- **Ein Viewer, vier Aufrufstellen, jede benennt ihre Revision.** Der Entwurfsfehler wäre „einen
+  Datei-Viewer bauen": eine Datei hat mehr als eine Version, und jede Liste meint eine andere.
+  Darum liefert jeder Aufrufer WELCHE Revision er meint und wohin `‹ zurück` führt — und die
+  Kopfzeile sagt es immer laut.
+- **Markdown wird NICHT gerendert** (siehe Korrektur oben) — ein Viewer zeigt die Quelle.
+- **Untracked bekam eine eigene Pick-Art** im Review-Fenster. Als `file`-Pick behandelt rendert
+  es „no longer in this diff": wahr und nutzlos. Die Datei selbst IST das Neue an ihr.
+- **`/api/file` ist owner-only durch POSITION** (hinter tokenGate, unter dem Share-Gate) — genau
+  die Eigenschaft, die ein späteres Verschieben eines Blocks lautlos bricht. Deshalb prüft
+  `fleet-e2e-security.ts` §8 jetzt beide Hälften gegen `fleet.json`: ohne Token 401 und keine
+  Bytes im Body, auf dem Share-Host 404 **auch MIT** Owner-Token.
+- **Klick öffnet, Doppelklick startet** (Picker). Und: ein Klick klappt nur AUF, nie zu — sonst
+  springt die Zeile unter dem Cursor weg.
+
+### Womit man sofort weiterarbeitet
+
+`./state.sh`, dann `git log 8f4565b..HEAD` MIT Bodies — die fünf Bodies sind das Befund-Register
+dieser Session. Neue Einstiege: `showFileView`/`loadFile`/`renderFileBody` und `appendDirContents`
+in `src/client.ts`, `dirEntries`/`fileBody` und die Routen `/api/file` + `/api/commit-diff` in
+`server.ts`, `auditProjects` (die abgeleitete Slot→Projekt-Zuordnung) ebenfalls in `client.ts`.
 
 ---
 

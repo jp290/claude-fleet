@@ -2042,16 +2042,27 @@ function pkIcon(kind: string): HTMLElement {
 }
 
 interface DirRowOpts { label: string; sub?: string; path: string; cls: string; icon: string;
-  repo?: boolean; wt?: boolean; depth?: number; tree?: boolean }
+  repo?: boolean; wt?: boolean; depth?: number; tree?: boolean;
+  // one flag per ANCESTOR level: true where that ancestor was the last of its siblings, so the
+  // spine at that level must stop rather than run past a branch that has nothing below it
+  blanks?: boolean[]; last?: boolean }
 function dirRow(o: DirRowOpts): HTMLElement {
   const row = el("div", `pkrow ${o.cls}${o.tree ? " tree" : ""}`);
   row.title = o.path;
   if (o.tree) {
-    // one guide span per ancestor level, each a left border stretched over the FULL row box — that
+    // one guide span per ancestor level, each a vertical rule stretched over the FULL row box — that
     // is what makes the lines continuous from row to row instead of a ladder of dashes. They live
-    // in their own container so .pkrow's 10px gap does not space them apart.
+    // in their own container so .pkrow's 10px gap does not space them apart. The guide at the row's
+    // OWN level turns horizontally into the name (├), or corners into it if this is the last child
+    // (└) — that turn is what makes a column of names read as a branch of a tree.
     const lead = el("span", "pklead");
-    for (let i = 0; i < (o.depth ?? 0); i++) lead.appendChild(el("span", "pkguide"));
+    const depth = o.depth ?? 0;
+    for (let i = 0; i < depth; i++) {
+      const g = el("span", "pkguide");
+      if (i === depth - 1) g.classList.add(o.last ? "end" : "branch");
+      else if (o.blanks?.[i]) g.classList.add("blank");
+      lead.appendChild(g);
+    }
     const open = pkOpen.has(o.path);
     const tw = el("span", `pktw${open ? " open" : ""}`, open ? "▾" : "▸");
     tw.title = open ? "collapse (←)" : "expand (→)";
@@ -2076,11 +2087,15 @@ function dirRow(o: DirRowOpts): HTMLElement {
   star.title = pinned ? "unpin (⌘D)" : "pin this folder (⌘D)";
   star.onclick = (e) => { e.stopPropagation(); void togglePin(o.path); };
   row.appendChild(star);
-  // click 1 selects (the detail pane follows), click 2 navigates in. No timer: selecting is
+  // click 1 selects (the detail pane follows), click 2 STARTS A SESSION here. No timer: selecting is
   // idempotent and replaces no DOM, so the first click of a double-click costs nothing to let
   // through — which is exactly what forced the old 250ms reconciliation.
+  // Double-click used to re-root the tree, which is what a file manager does; this window is not a
+  // file manager, it is "new session — pick where". Descending is what the ▸ twisty and → are for,
+  // and re-rooting still has the breadcrumb, the "Up to …" row, the path box and Enter. The one row
+  // kind that keeps navigating is "Up to …": it names a destination, not a place to work.
   row.onclick = (e) => {
-    if (e.detail >= 2) { void browse(o.path); return; }
+    if (e.detail >= 2) { void (o.cls === "up" ? browse(o.path) : startSession(o.path)); return; }
     const i = pkVisible().findIndex((r) => r.row === row);
     if (i >= 0) pkShell?.select(i, false, false);
     void showDirDetail(o.path);
@@ -2258,7 +2273,10 @@ function paintPicker() {
   addHead("Folders", roots.length);
   if (pkShortcuts.parent)
     addRow({ label: `Up to ${baseName(pkShortcuts.parent)}`, path: pkShortcuts.parent, cls: "up", icon: "up" });
-  const emit = (parent: string, depth: number) => {
+  // `blanks` grows one entry per level as we descend: the flag says whether the ancestor at that
+  // level was its parent's last child, and a spine below such an ancestor would draw a sibling that
+  // does not exist.
+  const emit = (parent: string, depth: number, blanks: boolean[]) => {
     const kids = pkKids.get(parent) ?? [];
     if (!kids.length && depth > 0) {
       const empty = el("div", "pknone tree");
@@ -2267,13 +2285,14 @@ function paintPicker() {
       shell.list.appendChild(empty);
       return;
     }
-    for (const n of kids) {
+    kids.forEach((n, i) => {
+      const last = i === kids.length - 1;
       addRow({ label: n.name, path: n.path, cls: "dir", icon: "folder", repo: n.repo, wt: n.wt,
-        depth, tree: true });
-      if (pkOpen.has(n.path)) emit(n.path, depth + 1);
-    }
+        depth, tree: true, blanks, last });
+      if (pkOpen.has(n.path)) emit(n.path, depth + 1, [...blanks, last]);
+    });
   };
-  emit(pkRoot, 0);
+  emit(pkRoot, 0, []);
   if (!roots.length) shell.list.appendChild(el("div", "pknone", "no subfolders here"));
   applyWtHide(); // honor the current "hide lanes" toggle for the freshly built rows
   if (keep) { pkFilter.value = keep; applyPkFilter(); }
@@ -2282,10 +2301,13 @@ function paintPicker() {
 // --- what the highlighted folder actually is (GET /api/dirinfo) ---
 // The old picker could say "this is a git repo" and nothing more, so telling two similarly-named
 // checkouts apart meant opening a session in one to find out.
+interface DirCommit { hash: string; ts: number; subject: string }
 interface DirInfoResp {
   path: string; exists: boolean; git: boolean; worktree?: boolean; branch?: string | null;
   dirty?: number; ahead?: number | null; behind?: number | null;
-  last?: { hash: string; ts: number; subject: string } | null; lanes?: number; error?: string;
+  last?: DirCommit | null; recent?: DirCommit[];
+  entries?: { name: string; dir: boolean }[]; entryTotal?: number; hidden?: number;
+  lanes?: number; error?: string;
 }
 let pkInfoSeq = 0; // latest-wins: arrow-keying down a list outruns the fetches it starts
 
@@ -2358,6 +2380,7 @@ function renderDirDetail(path: string, load: DirLoad) {
   if (!info.git) {
     shell.detail.appendChild(el("div", "shellhint",
       "not a git repo — a session here works fine, there is just nothing to branch, diff or land"));
+    appendDirContents(shell.detail, info);
     return;
   }
 
@@ -2379,13 +2402,69 @@ function renderDirDetail(path: string, load: DirLoad) {
     "Fleet worktrees forked from this repo, in <repo>.worktrees/"));
   shell.detail.appendChild(facts);
 
-  if (info.last) {
-    shell.detail.appendChild(el("div", "shellsec")).appendChild(el("span", "shellsect", "Last commit"));
-    shell.detail.appendChild(el("div", "pkdlast", info.last.subject));
-    shell.detail.appendChild(el("div", "diffstat", `${info.last.hash} · ${fmtTs(info.last.ts)}`));
-  } else {
+  appendDirContents(shell.detail, info);
+
+  // `recent` is a newer field than this route: a client built ahead of the server it talks to gets
+  // `last` alone, and one commit is what it can honestly show — not a padded list of one.
+  const commits = info.recent ?? (info.last ? [info.last] : []);
+  const sec = el("div", "shellsec");
+  sec.appendChild(el("span", "shellsect", "Recent commits"));
+  if (commits.length) sec.appendChild(el("span", "shellsecn", String(commits.length)));
+  shell.detail.appendChild(sec);
+  if (!commits.length) {
     shell.detail.appendChild(el("div", "shellhint", "no commits yet in this repo"));
+    return;
   }
+  for (const c of commits) {
+    const row = el("div", "pkdcommit");
+    row.appendChild(el("div", "pkdlast", c.subject));
+    row.appendChild(el("div", "diffstat", `${c.hash} · ${fmtTs(c.ts)}`));
+    shell.detail.appendChild(row);
+  }
+  // says what this list is NOT, so nobody reads five subjects as the repo's history: the audit
+  // trail and the activity window's commits lens are where the full record lives.
+  shell.detail.appendChild(el("div", "shellhint",
+    `the newest ${commits.length} — a glance at what this repo has been doing, not its history.`
+    + " The activity window's Commits lens carries the full list."));
+}
+
+// the folder's own children. This is the thing the pane was missing: a branch name and a commit
+// subject do not tell two similarly-named checkouts apart, and their contents do at one glance.
+function appendDirContents(target: HTMLElement, info: DirInfoResp) {
+  const sec = el("div", "shellsec");
+  sec.appendChild(el("span", "shellsect", "Contents"));
+  const entries = info.entries;
+  if (entries === undefined) {
+    target.appendChild(sec);
+    target.appendChild(el("div", "shellhint",
+      "this folder's contents could not be read — that is a permissions answer, not an empty folder"));
+    return;
+  }
+  // counted over what was actually LISTED. A capped listing says so instead of splitting a total it
+  // only partly saw — the entries sort folders first, so the unlisted tail is not a known mix.
+  const dirs = entries.filter((e) => e.dir).length;
+  const files = entries.length - dirs;
+  const total = info.entryTotal ?? entries.length;
+  const parts = [`${dirs} folder${dirs === 1 ? "" : "s"}`, `${files} file${files === 1 ? "" : "s"}`];
+  if (total > entries.length) parts.unshift(`${entries.length} of ${total}`);
+  if (info.hidden) parts.push(`${info.hidden} hidden`);
+  sec.appendChild(el("span", "shellsecn", parts.join(" · ")));
+  target.appendChild(sec);
+  if (!entries.length) {
+    target.appendChild(el("div", "shellhint",
+      info.hidden ? "nothing here but dot-entries — the folder is not empty, its contents are all hidden"
+        : "this folder is empty"));
+    return;
+  }
+  const box = el("div", "pkdtree");
+  entries.forEach((e, i) => {
+    const row = el("div", `pkdent${e.dir ? " dir" : ""}`);
+    // the same elbow the list on the left draws, so "contents" reads as one level of that tree
+    row.appendChild(el("span", "pkdelbow", i === entries.length - 1 ? "└" : "├"));
+    row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
+    box.appendChild(row);
+  });
+  target.appendChild(box);
 }
 
 // pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
@@ -2453,7 +2532,7 @@ function openPicker(slotId: number) {
   pkFilter.type = "text";
   pkFilter.spellcheck = false;
   pkFilter.autocomplete = "off";
-  pkFilter.placeholder = "filter — ↑↓ select · Enter open · ⌘Enter start · ⌘D pin";
+  pkFilter.placeholder = "filter — ↑↓ select · ⌘Enter or double-click start · Enter re-root · ⌘D pin";
   pkHideBtn = el("button", "pktoggle") as HTMLButtonElement;
   pkHideBtn.onclick = () => {
     hideWorktrees = !hideWorktrees;
@@ -2469,6 +2548,7 @@ function openPicker(slotId: number) {
   pkPathIn.spellcheck = false;
   pkPathIn.autocomplete = "off";
   pkPathIn.placeholder = "or type a path";
+  pkPathIn.dataset.ownEnter = "1"; // Enter here goes to what was TYPED, not to the selected row
   const line2 = el("div", "pkline2");
   line2.append(pkCrumb, pkPathIn);
   shell.tools.append(pkFilter, pkHideBtn, line2);
@@ -2501,8 +2581,8 @@ function openPicker(slotId: number) {
     else if (pkOpen.has(hit.path)) void toggleNode(hit.path);
   });
 
-  shell.foot.textContent = "click selects · →/← expand and collapse · double-click or Enter re-roots"
-    + " the tree here · ⌘Enter starts a session · ⌘D pins";
+  shell.foot.textContent = "click selects · double-click (or ⌘Enter) starts a session here"
+    + " · →/← expand and collapse · Enter re-roots the tree · ⌘D pins";
 
   const last = localStorage.getItem("fleet.pkdir") ?? "~";
   void browse(last).then(async (ok) => {

@@ -411,8 +411,18 @@
   .pkrow.tree { padding-top: 0; padding-bottom: 0; }
   .pkrow.tree .pkname { padding: 6px 0; }
   .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; }
-  .pkguide { flex: none; width: 16px; border-left: 1px solid #3d4356; }
-  .pkrow.tree:hover .pkguide, .pkrow.tree.sel .pkguide { border-left-color: #5b6885; }
+  /* Each level is a 16px column carrying a vertical rule (::before) and, at the row's own level,
+     a horizontal one turning into the name (::after). Drawn as pseudo-elements rather than a
+     border on the box so the last child can stop its vertical half-way (└) while staying pixel-
+     aligned with the full-height rules (│) of the siblings above it. */
+  .pkguide { --pkline: #3d4356; flex: none; width: 16px; position: relative; }
+  .pkguide::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+    border-left: 1px solid var(--pkline); }
+  .pkguide.blank::before { border-left-color: transparent; }
+  .pkguide.end::before { bottom: 50%; }
+  .pkguide.branch::after, .pkguide.end::after { content: ""; position: absolute; left: 0; top: 50%;
+    width: 10px; border-top: 1px solid var(--pkline); }
+  .pkrow.tree:hover .pkguide, .pkrow.tree.sel .pkguide { --pkline: #5b6885; }
   .pktw { flex: none; width: 16px; display: flex; align-items: center; justify-content: center;
     color: #8b8b8b; font-size: 10px; cursor: pointer; }
   .pktw.open { color: #7aa2f7; }
@@ -456,6 +466,15 @@
     border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }
   .pkdacts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
   .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
+  .pkdcommit { padding: 5px 0; border-bottom: 1px solid #1e1e1e; }
+  .pkdcommit:last-of-type { border-bottom: 0; }
+  /* the folder's own children — one level, drawn with the same elbows as the tree on the left */
+  .pkdtree { margin-top: 6px; max-height: 260px; overflow-y: auto;
+    font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  .pkdent { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; }
+  .pkdelbow { flex: none; color: #3d4356; }
+  .pkdname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9a9a9a; }
+  .pkdent.dir .pkdname { color: #7aa2f7; }
   .pkbtns { display: flex; justify-content: flex-end; gap: 8px; }
   .pkbtns button { padding: 9px 18px; border-radius: 9px; border: 1px solid #333; background: #262626;
     color: #ccc; font-size: 13px; font-family: inherit; cursor: pointer; }

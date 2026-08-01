@@ -154,6 +154,12 @@ export function openShell(o: ShellOpts): Shell {
     const t = e.target as HTMLElement | null;
     // a textarea owns its own arrows and Enter (the queue's "new task" box is one)
     if (t && t.tagName === "TEXTAREA") return;
+    // …and so does any field that says it does. The shell consumes Enter in the CAPTURE phase, so a
+    // field with its own Enter handler never ran: the picker's "type a path" box was silently
+    // overruled by the selected row, i.e. typing a path and pressing Enter went somewhere else.
+    // It cannot be decided by tag — the picker's OTHER input, the filter, wants exactly the
+    // behaviour this opts out of (type, then Enter on the best match).
+    if (t?.dataset.ownEnter === "1" && e.key === "Enter") return;
     const inInput = !!t && t.tagName === "INPUT";
     if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); select(sel + 1); return; }
     if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); select(sel - 1); return; }

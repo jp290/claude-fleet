@@ -1304,8 +1304,15 @@ async function renderBoard() {
               : x !== " " ? "staged" : f.startsWith("??") ? "untracked" : "unstaged changes";
             row.appendChild(badge);
             row.appendChild(document.createTextNode(f.slice(3)));
-            row.title = `${f} — click to review the diff`;
-            row.onclick = () => void openDiff(slot);
+            // as with the committed list below: every row here opened the WHOLE working diff,
+            // whichever row you clicked. Now it opens the review window on this file — and an
+            // UNTRACKED file has no diff to open on, so it goes straight to the file itself.
+            const upath = f.slice(3);
+            const untracked = f.startsWith("??");
+            row.title = untracked ? `${f} — click to read it (untracked: there is no diff yet)`
+              : `${f} — click to see what changed in this file`;
+            row.onclick = () => void openReview(slot, "working",
+              untracked ? { k: "untracked", path: upath } : { k: "file", path: upath });
             uf.appendChild(row);
           }
           if (brief.uncommittedFiles.length > 40)
@@ -1383,8 +1390,13 @@ async function renderBoard() {
           const row = el("div", "bfile");
           row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
           row.appendChild(document.createTextNode(f.slice(3)));
-          row.title = `${f} — click to review the diff`;
-          row.onclick = () => void openDiff(slot);
+          // every row here used to open the WHOLE working diff, whichever row you clicked — the
+          // card listed thirty files and answered the same way for all of them. It now opens the
+          // review window ON the file you clicked. `f` is porcelain ("M  path"), so the path
+          // starts at column 3.
+          const path = f.slice(3);
+          row.title = `${f} — click to see what changed in this file`;
+          row.onclick = () => void openReview(slot, "working", { k: "file", path });
           work.appendChild(row);
         }
         if (brief.files.length > 30) work.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
@@ -2484,14 +2496,133 @@ function appendDirContents(target: HTMLElement, info: DirInfoResp) {
     row.appendChild(el("span", "pkdelbow", i === entries.length - 1 ? "└" : "├"));
     row.appendChild(el("span", "pkdname", e.name + (e.dir ? "/" : "")));
     // a listed folder is a place you can go: clicking one makes it the top of the tree on the left.
-    // Files are not clickable and do not pretend to be — there is nothing to enter.
+    // A listed FILE opens in the viewer — on disk, because that is the only version a folder that
+    // may not even be a git repo has.
     if (e.dir) {
       row.title = `open ${e.name}/ in the tree`;
       row.onclick = () => void browse(`${info.path}/${e.name}`);
+    } else {
+      row.title = `read ${e.name}`;
+      row.onclick = () => {
+        const shell = pkShell;
+        if (!shell) return;
+        showFileView(shell, {
+          path: `${info.path}/${e.name}`, label: e.name,
+          source: "as it is on disk right now",
+          back: { label: baseName(info.path), go: () => void showDirDetail(info.path) },
+        });
+      };
     }
     box.appendChild(row);
   });
   target.appendChild(box);
+}
+
+// --- the file view: one renderer for every file list in the app ---------------------------------
+//
+// Four surfaces list files and none of them could open one: the picker's Contents, a commit's
+// files, a land's footprint, and the board's changed-files card (whose rows all opened the WHOLE
+// working diff, whichever row you clicked). They are the same gesture — "show me that file" — so
+// they share this one function, and each caller supplies the two things only it knows: WHICH
+// revision of the file it means, and what going back should return to.
+//
+// The honesty rule this window keeps: a file has more than one version, and the pane always says
+// which one it is showing. A commit's file list is a statement about that commit; rendering
+// today's bytes under it would answer a question nobody asked.
+interface FileViewOpts {
+  path: string;              // what to ask the server for (absolute, or repo-relative with rev)
+  label: string;             // what to call it in the header
+  repo?: string;             // required with rev
+  rev?: string;              // absent = the file as it is on disk now
+  source: string;            // one line naming WHICH version this is. Always shown.
+  diff?: string;             // this file's hunk, when the caller already has it — adds the Change tab
+  back: { label: string; go: () => void };
+}
+type FileResp = { path?: string; rev?: string | null; size?: number; text?: string;
+  binary?: boolean; truncated?: boolean; error?: string };
+
+let fileSeq = 0; // latest-wins, like every other pane that follows a moving cursor
+
+function showFileView(shell: Shell, o: FileViewOpts) {
+  const seq = ++fileSeq;
+  shell.detail.replaceChildren();
+  const back = el("button", "fvback", `‹ ${o.back.label}`);
+  back.onclick = () => o.back.go();
+  shell.detail.appendChild(back);
+  shell.detail.appendChild(el("div", "rvhead", o.label));
+  shell.detail.appendChild(el("div", "pkdpath", o.path.replace(/^\/Users\/[^/]+/, "~")));
+  shell.detail.appendChild(el("div", "fvsource", o.source));
+  const body = el("div", "fvbody");
+
+  // the "view option": where a change EXISTS, it is the default — a file in a commit is interesting
+  // for what the commit did to it. The whole file is one click away, never the other way round.
+  let tab: "change" | "file" = o.diff ? "change" : "file";
+  const tabs = el("div", "actlens");
+  const paint = () => {
+    for (const b of Array.from(tabs.children)) b.classList.toggle("active",
+      (b as HTMLElement).dataset.tab === tab);
+    body.replaceChildren();
+    if (tab === "change" && o.diff) {
+      const box = el("div", "difftxt");
+      renderDiffInto(box, o.diff);
+      body.appendChild(box);
+      return;
+    }
+    body.appendChild(el("div", "shellhint", "reading the file…"));
+    void loadFile(o).then((r) => {
+      if (!shell.isOpen() || seq !== fileSeq) return;
+      body.replaceChildren();
+      renderFileBody(body, o, r);
+    });
+  };
+  if (o.diff) {
+    for (const [k, text] of [["change", "What this changed"], ["file", "The whole file"]] as const) {
+      const b = el("button", "shrbtn", text) as HTMLButtonElement;
+      b.dataset.tab = k;
+      b.onclick = () => { if (tab !== k) { tab = k; paint(); } };
+      tabs.appendChild(b);
+    }
+    shell.detail.appendChild(tabs);
+  }
+  shell.detail.appendChild(body);
+  paint();
+  if (isMobile()) shell.showDetail(true);
+}
+
+async function loadFile(o: FileViewOpts): Promise<FileResp | null> {
+  const q = new URLSearchParams({ path: o.path });
+  if (o.rev && o.repo) { q.set("rev", o.rev); q.set("repo", o.repo); }
+  const res = await api(`/api/file?${q.toString()}`).catch(() => null);
+  if (!res) return { error: "couldn't reach the server" };
+  if (res.status === 404 && !res.headers.get("content-type")?.includes("json")) return { error: SKEW_NOTE };
+  return (await res.json().catch(() => null)) as FileResp | null;
+}
+
+function renderFileBody(body: HTMLElement, o: FileViewOpts, r: FileResp | null) {
+  if (!r) { body.appendChild(el("div", "diffstat err", "the server's answer was not readable JSON")); return; }
+  if (r.error) { body.appendChild(el("div", "diffstat err", r.error)); return; }
+  if (r.binary) {
+    body.appendChild(el("div", "shellhint",
+      "this is a binary file — there is nothing to read as text, and showing the decode would be"
+      + " noise, not content"));
+    return;
+  }
+  const text = r.text ?? "";
+  if (!text) { body.appendChild(el("div", "shellhint", "this file is empty")); return; }
+  // EVERY file is shown as its own text, .md included. The tempting move is to run mdInto over
+  // markdown, and it would be a lie dressed as a feature: mdInto gives structure to ``` fences and
+  // nothing else (deliberately — it renders hostile transcript text, so no other markdown may
+  // become markup). A viewer is for reading what the file SAYS; rendering it would hide the source
+  // this one exists to show.
+  const pre = el("div", "fvtext");
+  pre.textContent = text;
+  body.appendChild(pre);
+  const facts: string[] = [];
+  if (typeof r.size === "number") facts.push(`${(r.size / 1024).toFixed(1)} KB`);
+  facts.push(`${text.split("\n").length} lines`);
+  body.appendChild(el("div", "diffstat", facts.join(" · ")));
+  if (r.truncated) body.appendChild(el("div", "ocwarn",
+    "this file is longer than the viewer serves — what is above is the beginning of it, not all of it"));
 }
 
 // pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
@@ -3159,17 +3290,24 @@ function rvDelta(add: number, del: number): HTMLElement {
 // re-render that reorders the list can never swap which commit is on screen. A file carries the
 // hash it belongs to (absent = a file of the whole-range diff), because the same path means two
 // different diffs depending on whether you reached it through a commit or through the range.
-type RvPick = { k: "all" } | { k: "file"; path: string; hash?: string } | { k: "commit"; hash: string };
+// `untracked` is its own kind because an untracked file HAS no diff — it is not in `git diff` at
+// all. Treating it as a file pick would render "that file is no longer in this diff", which is
+// true and useless; the file itself is the whole of what is new about it.
+type RvPick = { k: "all" } | { k: "file"; path: string; hash?: string } | { k: "commit"; hash: string }
+  | { k: "untracked"; path: string };
 const samePick = (a: RvPick, b: RvPick): boolean =>
   a.k === b.k
   && (a.k !== "file" || (a.path === (b as { path: string }).path && a.hash === (b as { hash?: string }).hash))
+  && (a.k !== "untracked" || a.path === (b as { path: string }).path)
   && (a.k !== "commit" || a.hash === (b as { hash: string }).hash);
 // the commit whose content is on screen, whether it was reached directly or through one of its files
 const pickCommit = (p: RvPick): string | undefined => p.k === "commit" ? p.hash : p.k === "file" ? p.hash : undefined;
 
 let rvShell: Shell | null = null;
 
-async function openReview(slotId: number, initial: RvSource) {
+// `startAt` lets a caller open the window ON a file — the board's changed-files card does, because
+// clicking one of its rows used to open the whole working diff whichever row you clicked.
+async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
   setDrawer(false);
   // the other three windows already do this. Without it a double-click on ± stacks two review
   // windows: openShell() runs synchronously before any fetch, so both exist, both fetch, and one
@@ -3178,7 +3316,7 @@ async function openReview(slotId: number, initial: RvSource) {
   rvShell?.close();
   const isLane = !!fleet.find((s) => s.id === slotId)?.worktree;
   let source: RvSource = isLane ? initial : "working";
-  let pick: RvPick = { k: "all" };
+  let pick: RvPick = startAt ?? { k: "all" };
   const diffs = new Map<RvSource, RvDiff>();
   let commits: RvCommits | null = null;
   let commitsErr: string | null = null;
@@ -3204,8 +3342,41 @@ async function openReview(slotId: number, initial: RvSource) {
   // The window HEADER carries what the current source is; the detail carries what the current
   // PICK is. Repeating the heading in both (the first cut did) reads as two different statements
   // about the same thing, so "all changes" deliberately renders no heading of its own.
+  // the diff answers "what changed"; this answers "what does the file SAY". Same viewer as the
+  // picker's Contents and the Commits lens, and it names its revision: on a commit's file that is
+  // the commit, on a working-tree file it is the disk. A diff alone cannot tell you whether the
+  // three lines above the hunk make sense.
+  const rvWholeFile = (path: string, text: string, hash: string | null) => {
+    const cwd = fleet.find((s) => s.id === slotId)?.cwd;
+    if (!cwd) return;
+    const b = el("button", "shrbtn fvopen", "read the whole file") as HTMLButtonElement;
+    b.onclick = () => showFileView(shell, {
+      path: hash ? path : `${cwd}/${path}`, label: path.split("/").pop() ?? path,
+      repo: hash ? cwd : undefined, rev: hash ?? undefined,
+      source: hash ? `as commit ${hash} left it — not the file as it is today`
+        : "as it is on disk right now, which may already be newer than this diff",
+      // deliberately NO diff here, though the caller has one: the pane this button sits on IS the
+      // diff. Opening the viewer on a "what changed" tab would show what the reader just clicked
+      // away from. ‹ back is the way to the diff, and it is one click.
+      back: { label: "the diff", go: renderDetail },
+    });
+    shell.detail.appendChild(b);
+  };
+
   const renderDetail = () => {
     shell.detail.replaceChildren();
+    if (pick.k === "untracked") {
+      const cwd = fleet.find((s) => s.id === slotId)?.cwd;
+      const path = pick.path;
+      if (!cwd) { shell.detail.appendChild(el("div", "shellhint", "this slot has no working directory")); return; }
+      showFileView(shell, {
+        path: `${cwd}/${path}`, label: path.split("/").pop() ?? path,
+        source: "untracked — git has never seen this file, so there is no diff to show. This is all"
+          + " of it, as it is on disk.",
+        back: { label: "all changes", go: () => open({ k: "all" }) },
+      });
+      return;
+    }
     const d = diffs.get(source);
     if (!d) { shell.detail.appendChild(el("div", "shellhint", "loading…")); return; }
     const hash = pickCommit(pick);
@@ -3228,6 +3399,7 @@ async function openReview(slotId: number, initial: RvSource) {
         const f = cd.files.find((x) => x.path === path);
         if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is not in this commit")); return; }
         shell.detail.appendChild(el("div", "rvsub", `${f.path} · +${f.add} −${f.del}`));
+        rvWholeFile(f.path, f.text, hash);
         showDiffText(shell.detail, f.text);
         return;
       }
@@ -3252,6 +3424,7 @@ async function openReview(slotId: number, initial: RvSource) {
       if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is no longer in this diff")); return; }
       shell.detail.appendChild(el("div", "rvhead", f.path));
       shell.detail.appendChild(el("div", "diffstat", `+${f.add} −${f.del}`));
+      rvWholeFile(f.path, f.text, null);
       showDiffText(shell.detail, f.text);
       return;
     }
@@ -4043,7 +4216,21 @@ function renderCommitDetail(c: RvCommit) {
       fsec.appendChild(el("span", "shellsecn", String(files.length)));
       body.appendChild(fsec);
       const list = el("div", "cmfiles");
-      for (const f of files) list.appendChild(el("div", "cmfile", f));
+      // `--name-status` rows are "M\tpath" (and "R100\told\tnew" for a rename) — the path is the
+      // LAST field, which is also the one that exists at this revision
+      const byPath = new Map(splitDiff(d.diff ?? "").map((x) => [x.path, x.text]));
+      for (const f of files) {
+        const path = f.split("\t").pop() ?? f;
+        const rowEl = el("div", "cmfile open", f);
+        rowEl.title = `read ${path} as this commit left it`;
+        rowEl.onclick = () => showFileView(shell, {
+          path, label: path.split("/").pop() ?? path, repo, rev: c.hash,
+          source: `as commit ${c.hash} left it — not the file as it is today`,
+          diff: byPath.get(path),
+          back: { label: "the commit", go: () => renderCommitDetail(c) },
+        });
+        list.appendChild(rowEl);
+      }
       body.appendChild(list);
     }
     if (!d.diff) {

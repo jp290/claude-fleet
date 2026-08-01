@@ -937,6 +937,11 @@
 
     .panel { max-width: 96vw; max-height: 86vh; padding: 13px; }
     .pkrow { padding: 11px 9px; font-size: 13px; }
+    /* the ▸ is the one control that must NOT push the detail pane — it is how you walk the tree
+       without leaving the list — so on touch it gets a target worth aiming at. Widening it shifts
+       the name column only: the guides sit BEFORE it, so a child's spine still lands on its
+       parent's elbow. */
+    .pkrow.tree .pktw { width: 34px; font-size: 13px; }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }
     .pkbtns button { padding: 11px 18px; }
   }

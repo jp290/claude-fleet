@@ -365,6 +365,43 @@ if (INTAKE && DISPATCH_REPO) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// §9 /intake's LOCKOUT. Of the three guards the intake hardening built, this is the one that had
+// no net at all — grep for INTAKE_FAIL_LOCK across every suite came back empty on 2026-08-02.
+// The property is an ORDER, not a value: once the window is full handleIntake refuses BEFORE it
+// compares, so a locked guesser cannot use the endpoint as an oracle even while holding the right
+// secret. An ordering is exactly what a later edit undoes silently and no type checks.
+// LAST in this file on purpose: it leaves /intake locked for the rest of the fail window, and §5
+// above needs the endpoint working.
+// ---------------------------------------------------------------------------
+if (INTAKE) {
+  // read the bar from the server rather than writing 50 twice — the same derivation e2e/pins.ts
+  // uses, so raising the constant cannot leave this section quietly testing nothing
+  const lockN = Number(/INTAKE_FAIL_LOCK = (\d+)/.exec(readFileSync(`${ROOT}/server.ts`, "utf8"))?.[1] ?? 0);
+  check("§9 the lockout bar is readable from the server source", lockN > 0, String(lockN));
+  const post_ = (secret: string, text: string) => fetch(BASE + "/intake", { method: "POST",
+    headers: { "content-type": "application/json", "x-intake-secret": secret },
+    body: JSON.stringify({ text }) });
+  // fired in parallel: a wrong secret costs a deliberate 400ms flat delay, so 50 serially would add
+  // 20s to this suite. The strike is pushed AFTER that sleep, so a parallel burst all clears the
+  // pre-check and lands exactly lockN strikes — which is the state this section wants.
+  const burst = await Promise.all(Array.from({ length: lockN }, () => post_(`${INTAKE}-wrong`, "guess")));
+  check("§9 every wrong secret is refused 401",
+    burst.every((r) => r.status === 401), burst.map((r) => r.status).join(","));
+  const marker = `sec-e2e-locked-${Date.now()}`;
+  const right = await post_(INTAKE, marker);
+  check("§9 once locked, even the RIGHT secret is refused — the refusal runs BEFORE the compare",
+    right.status === 401, String(right.status));
+  const tasksNow = ((await (await get("/api/tasks")).json()) as { tasks: { text: string }[] }).tasks;
+  check("§9 …and the refused submission wrote no task",
+    !tasksNow.some((t) => t.text === marker), marker);
+  const trail = (() => { try { return readFileSync(`${ROOT}/audit.jsonl`, "utf8"); } catch { return ""; } })();
+  check("§9 the lockout announces itself on the audit trail", trail.includes("intake_auth_lock"),
+    trail.split("\n").filter((l) => l.includes("intake_auth")).slice(-2).join(" | ").slice(0, 200));
+  check("§9 the trail never records the secret that was tried",
+    !trail.includes(`${INTAKE}-wrong`));
+}
+
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
 process.exit(failures() ? 1 : 0);

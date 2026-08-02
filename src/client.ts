@@ -4413,6 +4413,9 @@ interface OutcomeRow { ts: number; branch?: string | null; base?: string | null;
   commitCount?: number; filesTouched?: string[]; e2eTouched?: boolean; verified?: boolean | null;
   sessionMs?: number | null; ownerPrompts?: number; resolvedConflict?: boolean; repairRounds?: number;
   confirmedByHuman?: boolean; review?: OutcomeReviewRow;
+  // where the work ended up — the two things that turn `filesTouched` from names into files.
+  // Absent on rows written before the server recorded them, and on lanes that never landed.
+  repo?: string; mainAfter?: string;
   // FLEET_CLEAN_REVIEW=shadow only. `verdict: null` = the reviewer produced no explicit verdict
   // (the measurement failed) — it is NOT a recorded verdict and must not count toward criterion 2.
   cleanReviewShadow?: { verdict?: "pass" | "would_stop" | null; at?: number; model?: string;
@@ -4768,10 +4771,31 @@ function renderOutcomeDetail(o: OutcomeRow) {
       fsec.appendChild(el("span", "shellsecn", String(touched.length)));
       row.appendChild(fsec);
       const list = el("div", "cmfiles");
-      for (const f of touched.slice(0, OC_FILE_ROWS)) list.appendChild(el("div", "cmfile", f));
+      // A PATH IS NOT A FILE YOU CAN OPEN. It needs a repository to read from and a revision to
+      // read AT, and this was the one file list of the four that had neither — so it was the one
+      // that stayed dead while the other three became clickable. A landed row now carries both.
+      // Rows written before the server recorded them, and lanes that never landed, have no
+      // revision to offer and say that instead of dangling a click that cannot work.
+      const at = o.repo && o.mainAfter ? { repo: o.repo, rev: o.mainAfter } : null;
+      for (const f of touched.slice(0, OC_FILE_ROWS)) {
+        const fr = el("div", `cmfile${at ? " open" : ""}`, f);
+        if (at) {
+          fr.title = `read ${f} at ${at.rev.slice(0, 8)}`;
+          fr.onclick = () => showFileView(shell, {
+            path: f, label: f.split("/").pop() ?? f, repo: at.repo, rev: at.rev,
+            source: `as this ${dispo === "reverted" ? "land left it before it was reverted" : "land left it"} — ${at.rev.slice(0, 8)}`,
+            back: { label: "the outcome", go: () => renderOutcomeDetail(o) },
+          });
+        }
+        list.appendChild(fr);
+      }
       row.appendChild(list);
       if (touched.length > OC_FILE_ROWS)
         row.appendChild(el("div", "shellhint", `${OC_FILE_ROWS} of ${touched.length} shown`));
+      if (!at)
+        row.appendChild(el("div", "shellhint", dispo === "landed" || dispo === "reverted"
+          ? "these names cannot be opened — this row was recorded before it carried its repository"
+          : "this lane never landed, so there is no revision to read these files at"));
     }
 
     const rv = el("div", `ocrev rel-${rel}`);

@@ -63,6 +63,17 @@ refused (`gitOpInProgress`) until a human aborts by hand; and the verdict blames
 
 ## 3. The lock is honour-system, and the machine cannot hold it
 
+> **CLOSED 2026-07-28, verified again 2026-08-02.** This section describes a real gap that no
+> longer exists, and it is kept because the rest of the argument rests on it. `e2e-stage.sh` now
+> takes `/tmp/fleet-e2e.lock` at SOURCE time (`ddc5128`), and every one of the seven wrappers
+> sources it — `e2e-isolated.sh:55` included, which is the very script the post-land audit runs.
+> So the automated runner does hold the lock now, and holds it by construction rather than by an
+> agent remembering to. Two details the fix brought with it: the lock dir EXISTING does not mean
+> the lock is held (the `pid` file inside decides, and a dead holder is reaped by the next
+> contender), and a pid-LESS lock dir is a deliberate manual park that is never reaped.
+> What this section got right and is still true: the discipline had to move into the machine.
+> The paragraphs below are the 2026-07-27 state.
+
 `e2e-isolated.sh` does **not** take `/tmp/fleet-e2e.lock` — the lock lives only in `CLAUDE.md`, as
 an instruction to *agents* to wrap their invocations. And the post-land audit runs
 `./e2e-isolated.sh` directly (`watchdog.sh:84`, `AUDIT_CMD`) with **no lock at all**.

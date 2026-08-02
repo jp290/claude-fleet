@@ -20,7 +20,10 @@ export async function run(): Promise<void> {
         patchId?: string | null; landedPatchId?: string | null;
         // optional here on purpose: rows written before discrepancy-audit F5 was fixed carry none
         // of the three, and the feed's "cannot tell whether this parsed" case depends on that
-        scope?: string; notes?: string; raw?: boolean } };
+        scope?: string; notes?: string; raw?: boolean };
+      // optional for the same reason: rows predate them, and mainAfter is absent by design on any
+      // land that did not move the integration branch
+      repo?: string; mainAfter?: string };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
     // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
@@ -62,6 +65,17 @@ export async function run(): Promise<void> {
     check("outcome: direct ⏏ land records confirmedByHuman:true, resolvedConflict:false, repairRounds:0",
       rec1?.confirmedByHuman === true && rec1?.resolvedConflict === false && rec1?.repairRounds === 0,
       JSON.stringify({ c: rec1?.confirmedByHuman, rc: rec1?.resolvedConflict, rr: rec1?.repairRounds }));
+    // WHERE THE WORK ENDED UP. `filesTouched` is a list of names until a row says which repository
+    // and which revision to read them at. The repo is known for every lane; this land integrated
+    // work that was ALREADY on the integration branch, so main never advanced and there is no
+    // mainAfter to state — absent, not invented, exactly as recordLand skips such a land.
+    // realpath, not the literal: the server resolves the path it stores, and on macOS /var is a
+    // symlink to /private/var — comparing the raw fixture path fails on a difference that is not one
+    const oRepoReal = realpathSync(oRepo);
+    check("outcome: a landed record names the repository its files live in",
+      rec1?.repo === oRepoReal, JSON.stringify({ repo: rec1?.repo, want: oRepoReal }));
+    check("outcome: a land that did NOT move main states no mainAfter rather than guessing one",
+      !("mainAfter" in (rec1 ?? {})), JSON.stringify(rec1?.mainAfter ?? null));
 
     // (2) KILLED-DIRTY — a lane with a commit, abandoned via ✕ kill
     const oc2 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
@@ -134,6 +148,15 @@ export async function run(): Promise<void> {
     check("outcome: confirm-land record carries the lane's real footprint + verify verdict",
       (recR?.commitCount ?? 0) >= 1 && (recR?.filesTouched ?? []).includes("seed.txt")
       && recR?.verified === true, JSON.stringify({ cc: recR?.commitCount, f: recR?.filesTouched, v: recR?.verified }));
+    // …and THIS land moved main, so the row can say where its files ended up: repo + the commit the
+    // integration branch landed on. Together they are what turns the row's file list from names into
+    // files a reader can open, and they are also the honest Commits↔Lands join a ±1h timestamp
+    // match was standing in for.
+    const mainNow = spawnSync("git", ["-C", oRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    check("outcome: a land that MOVED main records repo + the commit main ended up at",
+      recR?.repo === realpathSync(oRepo) && recR?.mainAfter === mainNow
+      && /^[0-9a-f]{40}$/.test(recR?.mainAfter ?? ""),
+      JSON.stringify({ repo: recR?.repo, mainAfter: recR?.mainAfter, mainNow }));
     await setMergeMode("blocked"); // restore the suite default
 
     // (7) LANDED via the CLEAN AUTO-LAND path — the only unattended land, and the one the recorder

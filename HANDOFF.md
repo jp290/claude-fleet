@@ -1,8 +1,88 @@
-# HANDOFF — Session 16 (2026-08-01: die Fenster werden benutzbar) · 15/14/13 darunter
+# HANDOFF — Session 17 (2026-08-01/02: der Picker wird benutzbar, dann sechs offene Enden) · 16/15/14/13 darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 8f4565b..HEAD` mit Bodies (das
+*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 17 (2026-08-01/02): der Picker, und danach die Liste abgearbeitet
+
+7 Commits, `ff0c8fb`..`0ac753e`, alle deployed. srv läuft seit 02.08. 17:00 als pid 13497,
+17 tmux-Sessions haben den Neustart überlebt, `bootHead == HEAD`, `bundleStale:false`.
+
+### Das Erste, was die nächste Session tun sollte
+
+**Die Entscheidung über die UI-Checks ist fällig und wurde zum dritten Mal vertagt** (Session 15
+Punkt 3, Session 16 Punkt 1, jetzt hier). Owner-Vorgabe wörtlich, 2026-08-02: *„vertagen, minimale
+Lösung jetzt und in nächster Session angehen."* Die minimale Lösung ist getan: **100 Playwright-Checks
+liegen lauffähig in `~/claude-fleet-private/ui-checks-2026-08-02/`** (41 Picker-Geometrie · 24
+Ordner-Baum · 25 Contents-Baum · 10 Stale-Client), mit README, parametrisierter `ui-harness.sh` und
+leerem Privacy-Grep — ich habe sie von dort gegen eine frische Instanz laufen lassen, 100/0.
+Die Entscheidung selbst steht: **opt-in Suite im Repo** (muss `exit 42` überspringen, wenn Playwright
+fehlt — es ist eine Homebrew-*Python*-Installation und KEIN Repo-Dependency, ein Gate-Eintrag bricht
+jede Lane) **oder ausdrücklich festhalten, dass diese Fenster handgeprüft bleiben.** Der Status quo
+bleibt die schlechteste Variante: die Suiten sind grün und sehen abgedeckt aus.
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **Ich habe zweimal die falsche Fläche gebaut.** Der Owner meinte durchgehend das *rechte
+  Detail-Panel* (Contents), ich habe Icons und Klick-zum-Aufklappen in den *linken Ordner-Baum*
+  gebaut. Der Hinweis stand in seinem ersten Satz — „die dateien sind jetzt zwar anklickbar", und
+  Dateien gibt es nur in Contents. Danach habe ich zwei Runden lang Caches, Tunnel und Bundles
+  verdächtigt, statt seine Worte nochmal zu lesen. Lehre gespeichert.
+- **Die 11 roten Tier-2-Audits sind NICHT offen.** Das Inspektions-Register hat sie am 29.07. alle
+  nachverfolgt, jeder ist erklärt (`journal-cap 07e5969` war ein echter Bug und ist behoben).
+  `state.sh` zeigt nur den Zähler, nicht diesen Kontext — ich hatte sie im Catchup als
+  unadjudiziert bezeichnet, das war falsch.
+- **`codeBehind` hat KEINEN Leser im Client** (grep über `src/*.ts`, `docs/`, `commands/` ist leer).
+  Es ist eine Zahl in der Steward-Fakten-Schicht, kein Abzeichen auf dem Dashboard. Ich hatte beim
+  Vorschlagen das Gegenteil behauptet.
+- **`/api/dirinfo` ist pro Aufklappen NICHT teuer** — `statSync(pfad/.git)` wirft für gewöhnliche
+  Unterordner, die Funktion kehrt nach einem `readdir` zurück. Nur echte Repo-Roots zahlen die
+  fünf git-Aufrufe. Ich hatte das als Kostenproblem vermutet; Lesen hat die Frage erledigt.
+- **`task/delete` schreibt bei steward-Tasks ein `dismissed` ins Steward-Journal**, `done` nicht.
+  Fünf erledigte Tasks gehören also auf `done` abgeräumt, nie auf `delete` — sonst misst der
+  Propose-Outcome-Kanal Ablehnungen, die nie stattfanden.
+
+### Was offen bleibt (meine Liste, nicht die des Owners)
+
+1. **Die UI-Test-Entscheidung** — siehe oben.
+2. **Zwei pending Tasks, beide echte Entscheidungen:** `d76e791e` (der Steward kann „Rotes ohne
+   Nachspiel" strukturell nicht prüfen — sein Ledger-Fenster hängt am letzten rundgang-Record) und
+   `411dd13a` (Entscheidung zum getakteten Rundgang). Von 7 auf 2 runter; die anderen fünf waren
+   im Code erledigt und sind jetzt als `done` markiert.
+3. **Drei ungegrabene Inspektions-Kandidaten** (30.07., alle in der Puls-Fakten-Schicht):
+   `sinceLastLook` klassifiziert inkonsistent und meldete danach drei Pulse in Folge leer, obwohl
+   main drei Commits vorrückte; `self_heal_recreate` 196× created vs 1× resumed; `dispositions.jsonl`
+   eine Zeile seit 25.07. bei weiter existierender Route.
+4. **Contents-Zeilen sind auf dem Handy ~26px hoch** — und seit dieser Session sitzt dort eine
+   Tipp-Geste (Ordner aufklappen). Unter Fingergröße; kein Overflow, aber eng.
+5. **Mobile-Durchgang für Queue- und Activity-Fenster** ist weiter nie gemacht worden
+   (Session 15, Punkt 2).
+6. Unverändert offen aus 15/16: zwei Overlay-Idiome nebeneinander, `src/client.ts` wächst weiter,
+   der Picker-Filter expandiert nicht, der Kinder-Cache lebt so lange wie das Fenster,
+   `showDirDetail` feuert pro Pfeiltaste, `/api/commits` deckelt bei 200 ohne Paging.
+7. **Orphan-Worktree `fleet-260728184459-9e73`** (5523d1f) liegt weiter ohne Slot auf Platte.
+
+### Key Decisions (mit Grund)
+
+- **`codeBehind` bekam eine ALLOWLIST, keine Denylist.** Der Kommentar über der Funktion verlangt
+  „ein unbekannter Pfad muss eine Lücke melden, nicht verstecken" — eine Allowlist erhält genau
+  das: eine neue `src/`-Datei ist Code, bis jemand sie einträgt. `src/protocol.ts` fehlt dort
+  bewusst, weil server.ts es importiert.
+- **`mainAfter` reitet über `LandFacts` vom Land-Site mit, statt in `buildLaneOutcome` gelesen zu
+  werden.** Zur Aufzeichnungszeit ist main schon vorgerückt — aber WELCHER Branch der
+  Integrationsbranch ist, ist die Tatsache des Aufrufers, nicht die der Funktion. Dasselbe Muster,
+  das `baseSha` dort schon nutzt.
+- **`suite-contention.md` §3 wurde als überholt MARKIERT, nicht umgeschrieben.** Es ist eine
+  datierte Analyse vom 27.07.; die Prämisse zu fälschen würde das Argument darüber unlesbar machen.
+- **Der Intake-Lockout-Test feuert seine 50 Fehlversuche PARALLEL.** Der Strike wird nach dem
+  400-ms-Delay gepusht, also passieren alle den Vorabcheck und landen exakt `FAIL_LOCK` Strikes —
+  ein Roundtrip statt 20 Sekunden. Die Schranke wird per Regex aus `server.ts` gelesen, nicht
+  zweimal geschrieben.
+- **Maschinenhygiene: 179 tote e2e-Sockets gereapt**, der lebende `claudefleet` explizit
+  ausgeschlossen und danach nachgeprüft. Von 164+ auf 1.
 
 ---
 

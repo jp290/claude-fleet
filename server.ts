@@ -3681,6 +3681,15 @@ interface LaneOutcome {
   // recorded while gating nothing. Absent = shadow did not run for this row (off/gate mode, or any
   // disposition other than a clean auto-land). Absence is a non-measurement, never a pass.
   cleanReviewShadow?: CleanReviewShadow;
+  // --- where this lane's work ENDED UP. Both are what only the land site knows, and without them a
+  // row names files it cannot open: `filesTouched` is a list of PATHS with no repository to read
+  // them from and no revision to read them AT. `repo` is present on every row (killed and shelved
+  // included — the lane had a repo whatever became of it); `mainAfter` only where main actually
+  // moved, i.e. on a landed row, and is absent rather than guessed everywhere else.
+  // Rows written before this existed carry neither, and a reader must say so instead of inventing
+  // a repository — the same bargain `recent`/`last` make in /api/dirinfo.
+  repo?: string;
+  mainAfter?: string;
 }
 // `verdict: null` + `raw: true` = the reviewer produced no explicit verdict (error/timeout/unparseable
 // /no fork base) — the measurement failed. A "pass" is only ever an explicit {"verdict":"ok"}.
@@ -3709,6 +3718,10 @@ const SHADOW_RAW_ANSWER_MAX = 2000;
 // on, so the creation-time fork would over-count main's own commits into the lane's footprint.
 type LandFacts = { resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
   verified: boolean | null; baseSha?: string;
+  // the commit `main` ended up at, carried for the same reason baseSha is: only the land site knows
+  // it. Reading it here instead would be a guess — by record time main has already advanced, but
+  // WHICH branch is the integration branch is the caller's fact, not this function's.
+  mainAfter?: string;
   // set ONLY by the clean auto-land site under FLEET_CLEAN_REVIEW=shadow — the powerless verdict this
   // land ignored. Optional because every other land path genuinely has no such measurement.
   cleanReviewShadow?: CleanReviewShadow };
@@ -3838,6 +3851,11 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     review,
     // only a land carries a shadow verdict, and only the clean auto-land site states it
     ...(kind === "landed" && facts.cleanReviewShadow ? { cleanReviewShadow: facts.cleanReviewShadow } : {}),
+    // where the work ended up. The repo is known for every disposition; mainAfter only for a land
+    // that moved main, and it is OMITTED rather than nulled when the land site did not state one —
+    // absence reads as "this row cannot say", which is true, where a null would read as an answer.
+    repo: s.worktree.repo,
+    ...(kind === "landed" && facts.mainAfter ? { mainAfter: facts.mainAfter } : {}),
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
@@ -3869,6 +3887,10 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
     // no live slot here (the lane landed and was torn down) → no review cache to read. Recorded as
     // the explicit "nothing covered this", never as a missing field.
     review: { state: "none" },
+    // this row's files are exactly mainBefore...mainAfter in this repo, so it can say both without
+    // anyone handing them over — the undo record IS the land site's statement
+    repo,
+    mainAfter: rec.mainAfter,
   };
 }
 function emitLaneOutcome(o: LaneOutcome | null): void {
@@ -4331,7 +4353,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
                 // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
                 // verdict this job just produced is the local truth the record needs
                 ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
-                    ...(shadow ? { cleanReviewShadow: shadow } : {}) })
+                    mainAfter, ...(shadow ? { cleanReviewShadow: shadow } : {}) })
                 : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
               res = "error" in land
                 ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
@@ -6755,7 +6777,8 @@ Bun.serve<WSData>({
             repairRounds: reviewed?.repairRounds ?? 0,
             confirmedByHuman: true,
             verified: verifyProv ? verifyProv.ok : null,
-            baseSha: mainBefore }); // the lane is rebased onto exactly this commit — its true fork point
+            baseSha: mainBefore, // the lane is rebased onto exactly this commit — its true fork point
+            mainAfter });        // …and this is where it ended up, so the row can open its own files
           if ("error" in land) {
             saveState(); // the undo record must survive the failed teardown
             return json({ status: "merged", landed: false, branch, landError: land.error,

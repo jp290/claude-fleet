@@ -5413,11 +5413,24 @@ function stewardSlotsView(now: number) {
 //      NEVER as "deployed". bootHead is captured once, so it survives the repo being moved away.
 //   2. codeBehind is the NET tree diff bootHead..HEAD, not a per-commit path walk: `git log
 //      --name-only` lists NO paths for a true merge commit, which would hide real code behind a
-//      false `false`. Anything that is not a `*.md` file counts as code — an unrecognized path
-//      must flag a gap, not hide one (docs/*.md, HANDOFF.md, BACKLOG.md are the docs-only set).
+//      false `false`. A path counts as code unless it is KNOWN not to be — an unrecognized path
+//      must flag a gap, not hide one. Two ALLOWLISTS say what is known:
+//        · docs — `*.md` (docs/*.md, HANDOFF.md, BACKLOG.md).
+//        · client — public/** and the bundle sources below. Landing these does not put the
+//          RUNNING SERVER behind: they reach a browser through `bun run build`, which is exactly
+//          what bundleStale (this fact's twin, further down) reports. Counting them here made the
+//          server claim a gap for work that had already shipped — measured on the live instance
+//          2026-08-02: codeBehind:true whose whole diff was src/client.ts + public/index.html,
+//          with bundleStale:false saying the same bytes were serving.
+//      Allowlists, not a denylist, so the fail-safe survives: a NEW src/ file is code until
+//      someone puts it here. src/protocol.ts is deliberately absent — server.ts imports it.
 // FLEET_REPO_DIR exists because the server's own dir is the repo in production but not in a
 // throwaway test copy; unset it and the fact is about the code actually running.
 const REPO_DIR = process.env.FLEET_REPO_DIR || import.meta.dir;
+// the two sources that become public/app.js and public/share.js, and nothing server.ts imports
+const CLIENT_ONLY_FILES = ["src/client.ts", "src/share.ts", "src/shell.ts", "src/md.ts"];
+const isServerCode = (p: string): boolean =>
+  !p.endsWith(".md") && !p.startsWith("public/") && !CLIENT_ONLY_FILES.includes(p);
 let BOOT_HEAD: string | null = null;
 const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
   .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })
@@ -5439,7 +5452,7 @@ async function deployGap(): Promise<DeployGap> {
   if (cnt.code !== 0 || !Number.isInteger(n) || names.code !== 0) return { ...unknown, head };
   return {
     bootHead: BOOT_HEAD, head, behindCount: n,
-    codeBehind: names.out.split("\n").filter(Boolean).some((p) => !p.endsWith(".md")),
+    codeBehind: names.out.split("\n").filter(Boolean).some(isServerCode),
   };
 }
 

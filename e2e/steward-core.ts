@@ -54,13 +54,46 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("deploy-gap: a docs-only commit after boot counts as behind but NOT code-behind",
     gap1?.behindCount === 1 && gap1.codeBehind === false && gap1.head !== gap1.bootHead,
     JSON.stringify(gap1));
+  // CLIENT-only code is not the SERVER being behind: src/client.ts and public/ reach a browser
+  // through `bun run build`, which is what bundleStale below reports. This case has to sit BETWEEN
+  // the docs commit and the server one, because codeBehind is the net diff bootHead..HEAD — once
+  // server.ts is in that diff every later read is true and would pass for the wrong reason.
+  mkdirSync(`${ctx.gapRepo}/src`, { recursive: true });
+  mkdirSync(`${ctx.gapRepo}/public`, { recursive: true });
+  writeFileSync(`${ctx.gapRepo}/src/client.ts`, "// the bundle's source changed\n");
+  writeFileSync(`${ctx.gapRepo}/public/index.html`, "<!-- and the page it is served from -->\n");
+  gapGit("add", "-A");
+  gapGit("commit", "-qm", "feat(client): touch the bundle sources only");
+  const gapC = await readGap("/api/steward/sessions");
+  check("deploy-gap: a CLIENT-only commit counts as behind but NOT code-behind (bundleStale's job)",
+    gapC?.behindCount === 2 && gapC.codeBehind === false && gapC.head !== gapC.bootHead,
+    JSON.stringify(gapC));
+  // …and the allowlist is an allowlist: an unrecognized src/ file is code until someone says so
+  writeFileSync(`${ctx.gapRepo}/src/protocol.ts`, "// shared with the server\n");
+  gapGit("add", "-A");
+  gapGit("commit", "-qm", "feat: a src file the server imports");
+  const gapP = await readGap("/api/steward/sessions");
+  check("deploy-gap: a src/ file that is NOT on the client allowlist still flags code-behind",
+    gapP?.behindCount === 3 && gapP.codeBehind === true, JSON.stringify(gapP));
   writeFileSync(`${ctx.gapRepo}/server.ts`, "// changed after the server booted\n");
   gapGit("add", "-A");
   gapGit("commit", "-qm", "feat: touch server.ts");
   const gap2 = await readGap("/api/steward/sessions");
   check("deploy-gap: a commit touching code flips codeBehind (bootHead stays pinned to boot)",
-    gap2?.behindCount === 2 && gap2.codeBehind === true && gap2.bootHead === gap0?.bootHead,
+    gap2?.behindCount === 4 && gap2.codeBehind === true && gap2.bootHead === gap0?.bootHead,
     JSON.stringify(gap2));
+  // Hand ctx.gapRepo back BARE. The bundle-staleness section below is this fact's twin, owns the
+  // same repo, and its first check asserts the cannot-tell state — "starts with neither a public/
+  // nor a src/". Planting those two directories up here to exercise the client allowlist broke
+  // four of its checks before this cleanup existed.
+  rmSync(`${ctx.gapRepo}/src`, { recursive: true, force: true });
+  rmSync(`${ctx.gapRepo}/public`, { recursive: true, force: true });
+  gapGit("add", "-A");
+  gapGit("commit", "-qm", "chore: hand the gap repo back bare");
+  // this is the last commit this repo takes, so it is the head every later read must agree with
+  const gapBare = await readGap("/api/steward/sessions");
+  check("deploy-gap: removing the planted client files is still not code-behind on its own account",
+    gapBare?.behindCount === 5 && gapBare.codeBehind === true, JSON.stringify(gapBare));
   // --- context-size proxy (docs/steward-pulse-v2.md phase B): how full is a session? The
   //     deterministic stand-in is its transcript JSONL's size. Slot 2 carries the uuid planted
   //     through the state file at the restart above plus a transcript of a known size; the fresh
@@ -420,8 +453,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // must be the same fact the sessions route served, not something the worker could shape.
   const gapDigest = await readGap("/api/steward/digest?wait=0");
   check("steward digest serves the same route-computed deploy-gap as the sessions route",
-    gapDigest?.behindCount === 2 && gapDigest.codeBehind === true
-    && gapDigest.head === gap2?.head && gapDigest.bootHead === gap0?.bootHead,
+    gapDigest?.behindCount === 5 && gapDigest.codeBehind === true
+    && gapDigest.head === gapBare?.head && gapDigest.bootHead === gap0?.bootHead,
     JSON.stringify(gapDigest));
   // same for the bundle-staleness twin: route-computed, so the digest serves the identical fact
   // (the sessions section left ctx.gapRepo's bundles older than its newest source)

@@ -591,6 +591,25 @@ steward send-cap 429/409, and its audit consequence). **Not root-caused** — sa
 `e2e/review.ts:177` in. Recorded so the next person does not re-derive it: nothing in the four
 landed lanes touches the merge path, and the same checks pass on the same tree on a re-run.
 
+### 11.2b A fifth family: the reseed + live-bytes check (2026-07-28, third sighting 2026-08-01)
+
+Signature, generic on purpose because that is all it has: **`N marks, 1..N-1`** in
+
+> `reseed + live bytes are the pane's output exactly once — no duplicated, no missing line`
+
+Seen three times, on unrelated trees and unrelated diffs: `41 marks, 1..40` and `42 marks, 1..41`
+in lane `7234` (2026-07-28, 2 of 22 trail runs), and byte-identically `42 marks, 1..41` again on
+2026-08-01 against a diff that was **entirely picker CSS** — a path that cannot reach the pane
+stream. The 2026-07-28 pair was additionally shown on ancestor tree `4df2898`.
+
+The shape says one mark is missing from the end of the sequence, i.e. the check reads the stream
+one write before it settles. **Not root-caused**, same as the fourth family. Recorded here because
+`CLAUDE.md` carried it alone and its instance count was already stale.
+
+**No free pass.** Three sightings make the family real; they do not make the next red one a flake.
+The proof order in §11.3 applies unchanged, and it is what cleared the 2026-08-01 instance: the
+same tree, re-run serially on an idle machine, came back 993 PASS / 0 FAIL.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

@@ -84,8 +84,10 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 
 **The recorded demo — not in this repository (2026-07-31)**
 - It lives in `~/claude-fleet-demo`, which has no remote and is not to be published; this
-  repository is public and the showcase is not. `demo-fixtures.md` went with it (now its
-  `docs/fixtures.md`) because it describes those recordings, not this app.
+  repository is public and the showcase is not. The old demo-fixtures write-up went with it
+  (it is that repository's `docs/fixtures.md` now) because it describes those recordings, not
+  this app. Named without its extension here for the same reason the security documents below
+  are: it is *supposed* to be absent, and the pointer check must not trip on it.
 - What still concerns anyone working HERE: that build derives its page from
   `public/index.html` and imports `src/client.ts` unmodified, so a change to either can break it
   — and no gate in this repository will say so. Its own `bun run typecheck` and `bun run build`

@@ -2569,6 +2569,11 @@ function paintContents() {
   const info = pkdInfo;
   if (!box || !info) return;
   box.replaceChildren();
+  // Nothing expanded means every row is a sibling of every other, and siblings do not need to be
+  // stacked in one column down the middle of a wide pane — the stylesheet lays them out as a grid.
+  // Expanding anything ends that: nesting reads top-to-bottom, and a grid would break a subtree
+  // across a column boundary, away from the parent whose guide line claims it.
+  box.classList.toggle("flat", pkdOpen.size === 0);
   const emit = (path: string, depth: number, blanks: boolean[]) => {
     const kids = pkdKids.get(path);
     if (kids === null) {

@@ -375,10 +375,15 @@
       font-size: 16px; font-family: inherit; cursor: pointer; }
   }
 
-  /* picker controls, now built by openPicker into the window's .shelltools (line 1 = the fast
-     path: filter + lane toggle; line 2 wraps and carries navigation) */
-  .pkline2 { flex-basis: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .pkfilterin { flex: 1; min-width: 0; height: 32px; padding: 0 12px; border-radius: 9px;
+  /* picker controls, built by openPicker into the window's .shelltools. They sit on ONE line and
+     wrap only when the window is too narrow to hold them. `flex-basis: 100%` on the navigation
+     group used to force the wrap unconditionally, which cost 37px of window height at every width
+     — on a 1400px window the breadcrumb line was "~" at the far left, the path box at the far
+     right and 1100px of nothing between them. */
+  .pkline2 { flex: 1 1 320px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* capped: past ~420px the filter is only eating the breadcrumb's room, and its placeholder (the
+     keyboard legend) is fully readable well before that */
+  .pkfilterin { flex: 1 1 240px; min-width: 0; max-width: 420px; height: 32px; padding: 0 12px; border-radius: 9px;
     border: 1px solid #333; background: #1a1a1a; color: #ddd; font-size: 13px; font-family: inherit; }
   .pkfilterin:focus { outline: none; border-color: #3a4a7a; }
   .pkpathin { flex: none; width: 240px; height: 28px; padding: 0 10px; border-radius: 8px;
@@ -417,7 +422,10 @@
      covers the full row box. Left on the row, stretch would only span the content box and the
      lines would break into a ladder of dashes with a gap at every row boundary. */
   .pkrow.tree { padding-top: 0; padding-bottom: 0; gap: var(--pkgap); }
-  .pkrow.tree .pkname { padding: 10px 0; }
+  /* 7px, not 10: a 37px row put 19 folders on a 707px column while the list scrolled 4539px. At
+     31px it is 22, and the row is still taller than the 26px one in the Contents pane beside it.
+     The phone keeps its 10px below — 31px is a comfortable pointer target and a poor finger one. */
+  .pkrow.tree .pkname { padding: 7px 0; }
   .pkrow.tree .pkleaf { font-size: 14px; }
   .pklead { flex: none; align-self: stretch; display: flex; align-items: stretch; position: relative; }
   /* AN OPEN FOLDER GROWS THE LINE ITS CHILDREN HANG FROM. From the middle of this row — where its
@@ -445,7 +453,10 @@
   /* --pkline lives on the ROW, not on .pkguide: the descender below is drawn by .pklead, which is
      not inside a guide, and an out-of-scope var makes the whole `border-left` shorthand invalid —
      computing to width 0, i.e. a line that silently is not there. */
-  .pkrow.tree, .pknone.tree { --pkline: #5b6a91; --pkcol: 30px; --pktwid: 18px; --pkiconw: 16px;
+  /* 24px columns, down from 30: the column width is only indentation, and at depth 3 the desktop
+     was charging 90px of it to a 460px list — the same trade the phone already makes below, for
+     the same reason. The 3px stroke is what makes a tree legible; the gap between levels is not. */
+  .pkrow.tree, .pknone.tree { --pkline: #5b6a91; --pkcol: 24px; --pktwid: 18px; --pkiconw: 16px;
     --pkgap: 8px;
     /* where a row's NAME starts, measured from the row's left edge: padding + ▸ + gap + icon + gap.
        Derived once so the stand-in line below tracks it — adding the folder icon moved every name
@@ -515,9 +526,25 @@
   .pkdlast { font-size: 12.5px; color: #ddd; margin-top: 4px; }
   .pkdcommit { padding: 5px 0; border-bottom: 1px solid #1e1e1e; }
   .pkdcommit:last-of-type { border-bottom: 0; }
-  /* the folder's own children — one level, drawn with the same elbows as the tree on the left */
-  .pkdtree { margin-top: 8px; max-height: 340px; overflow-y: auto;
-    font: 13.5px ui-monospace, Menlo, Consolas, monospace; }
+  /* the folder's own children — drawn with the same elbows as the tree on the left.
+     NO max-height and NO scroller of its own: it had `max-height: 340px; overflow-y: auto`, which
+     sealed 1020px of listing into a 340px box while 197px of the detail pane below it sat empty.
+     That is the nested-scroller bug this window's own header calls out ("two nested scrollers is
+     the bug that made the old overlay feel like a keyhole") — .shelldetail already scrolls, so the
+     list simply runs to the bottom of the pane and the pane carries it. */
+  .pkdtree { margin-top: 8px; font: 13.5px ui-monospace, Menlo, Consolas, monospace; }
+  /* A FLAT listing is a grid, a NESTED one is a tree. With nothing expanded these rows are one
+     level of siblings in alphabetical order — 40 of them, 345px of ink each, stacked down the
+     middle of a 910px column. As a grid they are three columns and one glance. The moment anything
+     is expanded the class comes off in paintContents(): depth has to be drawn top-to-bottom, and a
+     column break through the middle of a subtree would cut the guide lines that say what contains
+     what. */
+  .pkdtree.flat { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    column-gap: 18px; }
+  /* the guides are the drawing of NESTING, and a flat grid has none — at one level they are an
+     elbow pointing at nothing, 20px per row of pure decoration. The ▸ stays: it is the control
+     that leaves this mode. */
+  .pkdtree.flat .pkguide { display: none; }
   /* the SAME drawing as the tree on the left — guides, elbows, the descender under an open folder
      — at this pane's smaller scale. It is one visual language for one idea (this is inside that),
      and it is the reason these rows carry .pklead/.pkguide/.pktw rather than a ├ character: a
@@ -1023,6 +1050,8 @@
        column width is only indentation, and on 390px it is charged to the name — at depth 2 the
        desktop's 30px columns plus the 34px touch target left 115px for a filename. */
     .pkrow.tree, .pknone.tree { --pkcol: 22px; --pktwid: 34px; --pkiconw: 15px; --pkgap: 7px; }
+    /* the desktop row tightened to 31px; a finger needs the 37px back */
+    .pkrow.tree .pkname { padding: 10px 0; }
     /* clear of the prompt bar, which owns the bottom of a phone screen */
     #newver { right: 10px; bottom: calc(74px + env(safe-area-inset-bottom)); }
     #pkpath, #pkfilter, #gatein { font-size: 16px; }

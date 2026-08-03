@@ -1,0 +1,37 @@
+# What must never reach the image, and why.
+#
+# .env is the deployment IDENTITY (FLEET_HOST/ALLOWED_HOSTS/SHARE_HOSTS/SHARE_URL and the
+# owner's FLEET_CMD) — it is gitignored precisely because this repo is public, and an image
+# is a more copyable artifact than a checkout. Same for the runtime state and ledgers: they
+# carry the owner token, every lane self-token and every share secret (fleet.json), plus the
+# audit trails. A container is supposed to START one of these, never to INHERIT one.
+.env
+fleet.json
+fleet.json.*
+fleet.pid
+audit.jsonl*
+steward-journal.jsonl*
+lane-outcomes.jsonl*
+dispositions.jsonl*
+post-land-audits.jsonl*
+post-land-audit-queue.json*
+*.log
+
+# CLAUDE.md/OWNER.md are gitignored owner documents, not app code.
+CLAUDE.md
+OWNER.md
+
+# streams/ is the recorded pane output of the owner's real sessions — 43 MB of transcript-
+# adjacent bytes with no business in an image.
+streams/
+
+# rebuilt inside the image (bun install / bun run build), so shipping the host's copies would
+# ship darwin-arm64 artifacts into a linux-arm64 container.
+node_modules/
+public/app.js
+public/share.js
+
+# scratch and local tooling
+e2e-trail/
+.playwright-mcp/
+.claude/settings.local.json

@@ -40,7 +40,7 @@ Three places, and only the first is this folder:
 Deliberately **not** a fourth place: a summary doc that restates any of the three. That is
 how the shelf grew to 52 docs whose claims nobody re-derived.
 
-## The ten operative docs
+## The eleven operative docs
 
 One line per doc — its *purpose*, not its contents, so this index points without rotting.
 
@@ -77,6 +77,12 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`steward.md`** — the convention (optional, recognizable as `⚙ steward`, plans but never
   lands) and its **two pulses**: the Rundgang watches the operation, the Inspektion watches
   the substance.
+
+**Running it somewhere else**
+- **`container.md`** — the `Dockerfile` and what `./docker-verify.sh` attests (the harness,
+  not the agent), plus the three traps: publishing needs `FLEET_ALLOWED_HOSTS` as well as a
+  bind, the instance's identity lives in the app directory with no override, and a guest's
+  credentials must never be the owner's. Read before standing an instance up anywhere but here.
 
 **Measured programs**
 - **`data-saver.md`** — the bandwidth program: `/api/sessions` was the cause, not the

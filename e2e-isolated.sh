@@ -60,7 +60,15 @@ REPO="$DIR/testrepo"
 mkdir -p "$REPO"
 # .env is gitignored, as in a real repo — so createWorktree's copy of it stays invisible
 # to `git status` and doesn't dirty a fresh lane
-( cd "$REPO" && git init -q && git config user.email t@t && git config user.name t \
+# -b main is NOT cosmetic and NOT the platform default: it is the branch `fakemerge` rebases
+# onto by name (`git rebase -X theirs -q main`). Debian's git 2.39 initializes `master`, so
+# without this the whole merge/land family fails with "agent reported rebased, but the lane is
+# not clean" — 35 checks, measured 2026-08-02 in a container. It passes on this Mac only because
+# /Library/Developer/CommandLineTools/usr/share/git-core/gitconfig — an Apple file nobody in this
+# repo wrote — sets init.defaultBranch=main. e2e-security.sh:35 already spelled it out; these
+# were the stragglers. On macOS this changes nothing, which is the point: it makes an inherited
+# accident into a stated fact.
+( cd "$REPO" && git init -q -b main && git config user.email t@t && git config user.name t \
   && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\n' > .gitignore \
   && awk 'BEGIN{for(i=0;i<24;i++)print "ctxmod-"i}' > ctx-mod.txt \
   && awk 'BEGIN{for(i=0;i<4000;i++)print "ctxbig-"i}' > ctx-big.txt \

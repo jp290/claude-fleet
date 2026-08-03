@@ -125,7 +125,7 @@ export async function run(lc: LaneCtx): Promise<void> {
 
     // (b) main-session commit stages tracked only (add -u), leaves untracked alone
     const mainRepo = `${REPO}.commit-main`;
-    spawnSync("git", ["init", "-q", mainRepo]);
+    spawnSync("git", ["init", "-q", "-b", "main", mainRepo]); // fakemerge hardcodes `git rebase main`
     spawnSync("git", ["-C", mainRepo, "config", "user.email", "e2e@test"]);
     spawnSync("git", ["-C", mainRepo, "config", "user.name", "e2e"]);
     await Bun.write(`${mainRepo}/f.txt`, "1\n");
@@ -152,7 +152,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     // (d) an interrupted rebase is surfaced (brief.gitOp) and blocks commit — restart-recovery
     // detection. Isolated repo so the induced conflict never touches the shared test repo.
     const gopRepo = `${REPO}.gitop`;
-    spawnSync("git", ["init", "-q", gopRepo]);
+    spawnSync("git", ["init", "-q", "-b", "main", gopRepo]); // fakemerge hardcodes `git rebase main`
     spawnSync("git", ["-C", gopRepo, "config", "user.email", "e2e@test"]);
     spawnSync("git", ["-C", gopRepo, "config", "user.name", "e2e"]);
     await Bun.write(`${gopRepo}/c.txt`, "base\n");

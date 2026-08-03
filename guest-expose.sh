@@ -32,30 +32,63 @@
 #   ./guest-expose.sh down        close and forget: rule, timer and deadline
 #   ./guest-expose.sh status
 #   ./guest-expose.sh state       the same facts as key=value, for guest-ctl.sh to read
-#   ./guest-expose.sh enforce     what the timer runs; down if past expiry, else nothing
+#   ./guest-expose.sh enforce     what the timer ran before there were slots; one slot
+#   ./guest-expose.sh enforce-all what the timer runs now: every configured slot
+#   ./guest-expose.sh slots       the slot ids that are configured, one per line
+#
+# EVERY VERB ACTS ON ONE SLOT, chosen by GUEST_SLOT (default 1):  GUEST_SLOT=2 ./guest-expose.sh up
+# A slot is simply a directory under ~/.claude-fleet-guest — creating 2/ creates a second guest, and
+# nothing here is capped at two. Deliberately an env var rather than a positional: `up [DAYS]` was
+# already positional and a second number there would be a foot-gun aimed at the deadline.
 set -eu
 
-# Deployment identity lives outside this public repository. Create ~/.claude-fleet-guest/expose.env:
+# Deployment identity lives outside this public repository. Create ~/.claude-fleet-guest/<slot>/expose.env:
 #   GUEST_HOSTNAME=guest.example.com
 #   GUEST_SERVICE=http://127.0.0.1:8791
 #   TUNNEL_CONFIG=$HOME/.cloudflared/config-<name>.yml
 CONF_DIR="$HOME/.claude-fleet-guest"
-CONF_ENV="$CONF_DIR/expose.env"
-[ -f "$CONF_ENV" ] || { echo "guest-expose: missing $CONF_ENV (see the header)" >&2; exit 2; }
+SLOT="${GUEST_SLOT:-1}"
+case "$SLOT" in ''|*[!0-9]*) echo "guest-expose: GUEST_SLOT must be a whole number" >&2; exit 2 ;; esac
+SLOT_DIR="$CONF_DIR/$SLOT"
+CONF_ENV="$SLOT_DIR/expose.env"
+
+PLIST="$HOME/Library/LaunchAgents/com.claude-fleet.guest-expose.plist"
+LABEL="com.claude-fleet.guest-expose"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+# `slots` and `enforce-all` must work before any single slot's config is loaded, so they run here
+# and exit rather than falling through the per-slot validation below.
+slot_ids() { for _d in "$CONF_DIR"/[0-9]*; do [ -f "$_d/expose.env" ] && basename "$_d"; done; }
+case "${1:-status}" in
+slots) slot_ids; exit 0 ;;
+enforce-all)
+  # ONE timer for every slot: a per-slot launchd job would mean N labels to install, reap and
+  # reason about, and a window whose enforcer was never installed is the exact failure this
+  # script exists to prevent.
+  for _s in $(slot_ids); do GUEST_SLOT="$_s" "$SELF" enforce || true; done
+  exit 0
+  ;;
+esac
+
+[ -f "$CONF_ENV" ] || { echo "guest-expose: slot $SLOT is not configured (missing $CONF_ENV)" >&2; exit 2; }
 # shellcheck disable=SC1090
 . "$CONF_ENV"
 : "${GUEST_HOSTNAME:?set GUEST_HOSTNAME in $CONF_ENV}"
 : "${GUEST_SERVICE:?set GUEST_SERVICE in $CONF_ENV}"
 : "${TUNNEL_CONFIG:?set TUNNEL_CONFIG in $CONF_ENV}"
 
-EXPIRY_FILE="$CONF_DIR/expose-until"
-BEGIN="  # >>> fleet-guest-expose (managed by claude-fleet/guest-expose.sh — do not edit by hand) >>>"
-END="  # <<< fleet-guest-expose <<<"
-PLIST="$HOME/Library/LaunchAgents/com.claude-fleet.guest-expose.plist"
-LABEL="com.claude-fleet.guest-expose"
-SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+EXPIRY_FILE="$SLOT_DIR/expose-until"
+BEGIN="  # >>> fleet-guest-expose-$SLOT (managed by claude-fleet/guest-expose.sh — do not edit by hand) >>>"
+END="  # <<< fleet-guest-expose-$SLOT <<<"
+# The marker the single-guest version wrote, with no slot in it. Slot 1 must still recognise a
+# block left by that version, or `cut` would report "already cut" while the door stood open — a
+# panic button that lies is worse than no panic button. Rewritten to the new form on the next
+# add_rule; until then both are honoured for detection and removal.
+LEGACY_BEGIN="  # >>> fleet-guest-expose (managed by claude-fleet/guest-expose.sh — do not edit by hand) >>>"
+LEGACY_END="  # <<< fleet-guest-expose <<<"
+legacy() { [ "$SLOT" = 1 ] && grep -qF "$LEGACY_BEGIN" "$TUNNEL_CONFIG"; }
 
-exposed() { grep -qF "$BEGIN" "$TUNNEL_CONFIG"; }
+exposed() { grep -qF "$BEGIN" "$TUNNEL_CONFIG" || legacy; }
 
 # TOGGLING THIS COSTS A BRIEF OUTAGE OF THE WHOLE TUNNEL — measured, and not what the author
 # assumed. SIGHUP does not hot-reload this cloudflared build: it terminates, and launchd's KeepAlive
@@ -93,10 +126,12 @@ add_rule() {
 del_rule() {
   exposed || return 1
   cp -p "$TUNNEL_CONFIG" "$TUNNEL_CONFIG.guest-expose-bak"
-  awk -v b="$BEGIN" -v e="$END" '
-    $0 == b { skip=1; next }
-    $0 == e { skip=0; next }
-    !skip   { print }
+  # removes THIS slot's block in either marker form — a slot-1 block written by the single-guest
+  # version must still be removable, or cut would silently leave the door open (see LEGACY_BEGIN)
+  awk -v b="$BEGIN" -v e="$END" -v lb="$LEGACY_BEGIN" -v le="$LEGACY_END" -v leg="$([ "$SLOT" = 1 ] && echo 1 || echo 0)" '
+    $0 == b || (leg == 1 && $0 == lb) { skip=1; next }
+    $0 == e || (leg == 1 && $0 == le) { skip=0; next }
+    !skip { print }
   ' "$TUNNEL_CONFIG" > "$TUNNEL_CONFIG.tmp" && mv "$TUNNEL_CONFIG.tmp" "$TUNNEL_CONFIG"
   reload
 }
@@ -111,7 +146,7 @@ install_timer() {
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array>
-    <string>/bin/sh</string><string>$SELF</string><string>enforce</string>
+    <string>/bin/sh</string><string>$SELF</string><string>enforce-all</string>
   </array>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
@@ -139,7 +174,7 @@ up)
   [ "$days" -ge 1 ] || { echo "guest-expose: DAYS must be at least 1" >&2; exit 2; }
 
   add_rule
-  mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
+  mkdir -p "$SLOT_DIR"; chmod 700 "$CONF_DIR" "$SLOT_DIR"
   date -v "+${days}d" +%s > "$EXPIRY_FILE"
   install_timer
 
@@ -227,5 +262,5 @@ state)
   echo "hostname=$GUEST_HOSTNAME"
   ;;
 
-*) echo "usage: $0 up [DAYS] | cut | resume | down | status | state | enforce" >&2; exit 2 ;;
+*) echo "usage: [GUEST_SLOT=n] $0 up [DAYS] | cut | resume | down | status | state | enforce | enforce-all | slots" >&2; exit 2 ;;
 esac

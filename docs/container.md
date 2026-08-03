@@ -74,6 +74,23 @@ hostile project from exfiltrating what is inside it. A remote guest also cannot 
 browser OAuth callback; have them run `claude setup-token` on their own machine and pass
 `CLAUDE_CODE_OAUTH_TOKEN` into the container.
 
+## Standing a guest instance up: `./guest-bootstrap.sh`
+
+Copy it to the target box, run it as a normal user, and read the traps above first — the script
+encodes them but not the reasoning. It refuses to start without `BIND=<ip>:<port>` and has no
+default for it on purpose: the obvious default publishes a Fleet to the whole internet, and a
+Fleet a stranger can reach is a shell. Give it a Tailscale address.
+
+**If the box is an Oracle Cloud "Always Free" instance, convert the account to Pay-As-You-Go
+first.** Oracle reclaims idle Always Free compute — 7-day window, CPU 95th percentile under 20%
+*and* network under 20% *and* memory under 20%. A guest Fleet used a few times a week meets all
+three without effort: idling, it is a few hundred MB of the 12 GB and almost no CPU. So the
+instance disappears precisely after the quiet stretch that makes a shared instance worth having.
+Pay-As-You-Go is the documented exemption and keeps the Always Free allotment free while you
+stay inside it; the exposure it adds is that overruns now bill, which Oracle's own docs answer
+with compartment quotas. (Checked 2026-08-03, together with the June 2026 halving of that tier
+from 4 OCPU/24 GB to 2/12 — a vendor policy, so re-check it rather than trusting this line.)
+
 ## The finding that outlived the container work
 
 Eight of the suite's `git init` calls inherited the platform's default branch while

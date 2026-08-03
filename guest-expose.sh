@@ -19,9 +19,19 @@
 # asleep for that minute; an hourly comparison against a stored timestamp catches up the moment
 # the lid opens, and survives a reboot with no state in the scheduler at all.
 #
-#   ./guest-expose.sh up [DAYS]   default 7
-#   ./guest-expose.sh down
+# CUT AND DOWN ARE DIFFERENT VERBS, and the difference is the deadline (owner's decision,
+# 2026-08-03). `cut` is the panic button: it shuts the door and the window keeps running down, so
+# undoing a panic returns you to the ORIGINAL deadline instead of silently granting a fresh week —
+# a panic button that extends the exposure when you undo it is the wrong shape. `down` is "I am
+# done with this": rule, timer and deadline all go. Re-opening on the same deadline is `resume`;
+# deliberately setting a new one is `up` (which is what a renew button calls).
+#
+#   ./guest-expose.sh up [DAYS]   default 7 — open, and set a FRESH deadline
+#   ./guest-expose.sh cut         close the door, KEEP the deadline and the timer
+#   ./guest-expose.sh resume      re-open on the EXISTING deadline; refuses once it has passed
+#   ./guest-expose.sh down        close and forget: rule, timer and deadline
 #   ./guest-expose.sh status
+#   ./guest-expose.sh state       the same facts as key=value, for guest-ctl.sh to read
 #   ./guest-expose.sh enforce     what the timer runs; down if past expiry, else nothing
 set -eu
 
@@ -66,28 +76,34 @@ reload() {
   [ -n "$pid" ] && kill -HUP $pid && echo "guest-expose: cloudflared reloaded (pid $pid)"
 }
 
-case "${1:-status}" in
-up)
-  days="${2:-7}"
-  case "$days" in ''|*[!0-9]*) echo "guest-expose: DAYS must be a whole number" >&2; exit 2 ;; esac
-  [ "$days" -ge 1 ] || { echo "guest-expose: DAYS must be at least 1" >&2; exit 2; }
-
+# Adding and removing the rule are shared by four verbs (up/resume open, cut/down close), so they
+# live here once: the awk was duplicated the moment `cut` needed the same closing move as `down`.
+add_rule() {
+  if exposed; then echo "guest-expose: ingress rule already present"; return 0; fi
   cp -p "$TUNNEL_CONFIG" "$TUNNEL_CONFIG.guest-expose-bak"
-  if ! exposed; then
-    # insert before the catch-all, which must stay last: cloudflared matches rules in order and a
-    # rule after `service: http_status:404` is unreachable.
-    awk -v b="$BEGIN" -v e="$END" -v h="  - hostname: $GUEST_HOSTNAME" -v s="    service: $GUEST_SERVICE" '
-      /^[[:space:]]*- service: http_status:404/ && !done { print b; print h; print s; print e; done=1 }
-      { print }
-    ' "$TUNNEL_CONFIG" > "$TUNNEL_CONFIG.tmp" && mv "$TUNNEL_CONFIG.tmp" "$TUNNEL_CONFIG"
-    reload
-  else
-    echo "guest-expose: ingress rule already present"
-  fi
+  # insert before the catch-all, which must stay last: cloudflared matches rules in order and a
+  # rule after `service: http_status:404` is unreachable.
+  awk -v b="$BEGIN" -v e="$END" -v h="  - hostname: $GUEST_HOSTNAME" -v s="    service: $GUEST_SERVICE" '
+    /^[[:space:]]*- service: http_status:404/ && !done { print b; print h; print s; print e; done=1 }
+    { print }
+  ' "$TUNNEL_CONFIG" > "$TUNNEL_CONFIG.tmp" && mv "$TUNNEL_CONFIG.tmp" "$TUNNEL_CONFIG"
+  reload
+}
 
-  mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
-  date -v "+${days}d" +%s > "$EXPIRY_FILE"
+del_rule() {
+  exposed || return 1
+  cp -p "$TUNNEL_CONFIG" "$TUNNEL_CONFIG.guest-expose-bak"
+  awk -v b="$BEGIN" -v e="$END" '
+    $0 == b { skip=1; next }
+    $0 == e { skip=0; next }
+    !skip   { print }
+  ' "$TUNNEL_CONFIG" > "$TUNNEL_CONFIG.tmp" && mv "$TUNNEL_CONFIG.tmp" "$TUNNEL_CONFIG"
+  reload
+}
 
+# Idempotent: `resume` re-installs it because a window that is open with no enforcer is exactly
+# the failure this script exists to prevent.
+install_timer() {
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -103,27 +119,71 @@ up)
 PLIST_EOF
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load "$PLIST" 2>/dev/null || true
+}
+
+remove_timer() {
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+  rm -f "$PLIST"
+}
+
+timer_loaded() { launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+# `|| true` is load-bearing under `set -e`: a bare failing substitution in an assignment
+# (`u=$(expiry)`) takes the whole script down, so absence must be an empty string, not an error.
+expiry()       { cat "$EXPIRY_FILE" 2>/dev/null || true; }
+expired()      { u=$(expiry); [ -n "$u" ] && [ "$(date +%s)" -ge "$u" ]; }
+
+case "${1:-status}" in
+up)
+  days="${2:-7}"
+  case "$days" in ''|*[!0-9]*) echo "guest-expose: DAYS must be a whole number" >&2; exit 2 ;; esac
+  [ "$days" -ge 1 ] || { echo "guest-expose: DAYS must be at least 1" >&2; exit 2; }
+
+  add_rule
+  mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
+  date -v "+${days}d" +%s > "$EXPIRY_FILE"
+  install_timer
 
   echo "guest-expose: UP  https://$GUEST_HOSTNAME  until $(date -r "$(cat "$EXPIRY_FILE")")"
   echo "guest-expose: the DNS record is separate and is what makes this resolve at all:"
   echo "    cloudflared tunnel route dns <tunnel> $GUEST_HOSTNAME"
   ;;
 
+cut)
+  # the panic button: door shut, clock still running. The timer stays loaded on purpose — `enforce`
+  # is silent while the rule is absent, and it is what still closes the window if the door is
+  # re-opened with `resume` and then forgotten.
+  if del_rule; then
+    echo "guest-expose: CUT — $GUEST_HOSTNAME falls through to the tunnel's 404"
+  else
+    echo "guest-expose: already cut"
+  fi
+  u=$(expiry)
+  if [ -n "$u" ]; then
+    echo "              deadline KEPT: $(date -r "$u") — 'resume' re-opens on it, 'up' sets a new one"
+  else
+    echo "              no deadline recorded — 'up [DAYS]' is the way back"
+  fi
+  ;;
+
+resume)
+  # re-open on the deadline that was already running. Refusing an expired window here is the whole
+  # point: without it, `resume` would be a silent `up` and the bound would be advisory.
+  u=$(expiry)
+  [ -n "$u" ] || { echo "guest-expose: no window recorded — use 'up [DAYS]' to open a new one" >&2; exit 2; }
+  expired && { echo "guest-expose: window expired $(date -r "$u") — use 'up [DAYS]' to open a new one" >&2; exit 1; }
+  add_rule
+  install_timer
+  echo "guest-expose: UP  https://$GUEST_HOSTNAME  until $(date -r "$u")  (unchanged deadline)"
+  ;;
+
 down)
-  if exposed; then
-    cp -p "$TUNNEL_CONFIG" "$TUNNEL_CONFIG.guest-expose-bak"
-    awk -v b="$BEGIN" -v e="$END" '
-      $0 == b { skip=1; next }
-      $0 == e { skip=0; next }
-      !skip   { print }
-    ' "$TUNNEL_CONFIG" > "$TUNNEL_CONFIG.tmp" && mv "$TUNNEL_CONFIG.tmp" "$TUNNEL_CONFIG"
-    reload
+  if del_rule; then
     echo "guest-expose: DOWN — $GUEST_HOSTNAME now falls through to the tunnel's 404"
   else
     echo "guest-expose: already down"
   fi
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
-  rm -f "$PLIST" "$EXPIRY_FILE"
+  remove_timer
+  rm -f "$EXPIRY_FILE"
   ;;
 
 enforce)
@@ -137,21 +197,35 @@ enforce)
   ;;
 
 status)
+  until_ts=$(expiry)
   if exposed; then
-    if [ -f "$EXPIRY_FILE" ]; then
-      until_ts=$(cat "$EXPIRY_FILE"); now=$(date +%s)
-      left=$(( (until_ts - now) / 3600 ))
+    if [ -n "$until_ts" ]; then
+      left=$(( (until_ts - $(date +%s)) / 3600 ))
       echo "guest-expose: UP    https://$GUEST_HOSTNAME"
       echo "              until $(date -r "$until_ts")  (${left}h left)"
     else
       echo "guest-expose: UP    https://$GUEST_HOSTNAME  — NO EXPIRY RECORDED"
     fi
+  elif [ -n "$until_ts" ]; then
+    # cut, not down: the door is shut and the deadline is still the one that was running
+    expired && when="expired $(date -r "$until_ts")" || when="until $(date -r "$until_ts")"
+    echo "guest-expose: CUT   ($GUEST_HOSTNAME falls through to 404)"
+    echo "              deadline kept, $when"
   else
     echo "guest-expose: DOWN  ($GUEST_HOSTNAME falls through to 404)"
   fi
-  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 \
-    && echo "              timer: loaded (hourly)" || echo "              timer: not loaded"
+  timer_loaded && echo "              timer: loaded (hourly)" || echo "              timer: not loaded"
   ;;
 
-*) echo "usage: $0 up [DAYS] | down | status | enforce" >&2; exit 2 ;;
+state)
+  # the same facts as key=value, so guest-ctl.sh never has to parse the prose above. Shell-safe
+  # by construction: every value is a number, 0/1, or the hostname.
+  echo "exposed=$(exposed && echo 1 || echo 0)"
+  echo "until=$(expiry)"
+  echo "expired=$(expired && echo 1 || echo 0)"
+  echo "timer=$(timer_loaded && echo 1 || echo 0)"
+  echo "hostname=$GUEST_HOSTNAME"
+  ;;
+
+*) echo "usage: $0 up [DAYS] | cut | resume | down | status | state | enforce" >&2; exit 2 ;;
 esac

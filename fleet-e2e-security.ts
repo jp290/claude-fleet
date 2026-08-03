@@ -363,6 +363,27 @@ if (INTAKE && DISPATCH_REPO) {
         !(await onShare.text()).includes(TOKEN));
     }
   }
+
+  // The guest ops routes hold the same property for a WRITE: they can start and stop a machine and
+  // close a public door, and they are owner-only by position alone. The pair below is what keeps
+  // the share-host half honest — a 404 there proves nothing unless the same request on the owner
+  // host is proven to answer, which is why this suite configures a FLEET_GUEST_CMD stand-in.
+  {
+    const owner = await fetch(`${BASE}/api/guest`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    check("§8 /api/guest answers on the owner host when a hook is configured", owner.ok, String(owner.status));
+    check("§8 /api/guest refuses a request with no owner token",
+      (await fetch(`${BASE}/api/guest`)).status === 401);
+    check("§8 a guest ACTION refuses a request with no owner token",
+      (await fetch(`${BASE}/api/guest/stop`, { method: "POST", body: "{}" })).status === 401);
+    if (SHARE_HOST) {
+      check("§8 /api/guest does not exist on the public share host, even WITH the owner token",
+        (await fetch(`${BASE}/api/guest`,
+          { headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` } })).status === 404);
+      check("§8 …nor can a guest action be reached there with the owner token",
+        (await fetch(`${BASE}/api/guest/stop`,
+          { method: "POST", headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` }, body: "{}" })).status === 404);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

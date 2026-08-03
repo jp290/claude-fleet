@@ -159,8 +159,8 @@ way leaves a window in which an unprotected owner dashboard is on the internet, 
 indexed by scanners in minutes.
 
 **The owner's standing decision (2026-08-03) is no edge identity check, and a bounded window
-instead** — `guest-expose.sh up [DAYS] | down | status`, default 7 days, enforced by an hourly
-launchd job rather than by anyone's memory. The reasoning, so it can be revisited honestly: the
+instead** — `guest-expose.sh up [DAYS] | cut | resume | down | status`, default 7 days, enforced by
+an hourly launchd job rather than by anyone's memory. The reasoning, so it can be revisited honestly: the
 measured pre-auth surface is small (only `/` and the share password page answer without a
 credential; `/api/*`, `/ws` and `/intake` all 401), and the token is 192 bits, so guessing is not
 the risk. Leaking is — Fleet accepts the token in the query string, which puts it in browser
@@ -180,6 +180,28 @@ Two things learned building it, both the expensive way:
   website and every other hostname answer 502 before recovering unattended. Toggling exposure is
   therefore not free. Validate the config *before* signalling: on a restart-not-reload, a bad
   config does not fail to apply, it keeps everything down.
+
+### Driving it from the dashboard: `FLEET_GUEST_CMD`
+
+Point that variable at `./guest-ctl.sh` and the info card grows a `guest` section: whether the door
+is open, until when, how many wrong tokens the guest instance has logged in the last hour and day,
+and four buttons — `start`, `cut`, `renew 7 days`, `stop`. Unset the variable and none of it
+exists: the routes 404 and the client draws nothing. `server.ts` never learns what a guest is; it
+learns that a command with those verbs exists (the design record is `briefs/guest-ops-panel.md`).
+
+Two properties worth knowing before relying on it:
+
+- **`cut` keeps the deadline, `renew` moves it.** Cutting is the panic button — the door shuts, the
+  container keeps running with the guest's work intact, and the window keeps counting down, so
+  pressing `start` afterwards returns to the *original* deadline. Extending is a separate press by
+  design. Only the script's `down` verb forgets a window; no button does.
+- **`status` is not polled.** It spawns docker/colima/cloudflared probes, so the client reads it
+  when the card opens and after each action, never on the 2 s session poll (`docs/data-saver.md`).
+
+The auth-failure counts come from the guest instance's *own* `audit.jsonl` — the `owner_auth_fail`
+lines `tokenGate` has been writing since the day it started, which nothing has ever read. The line
+this deliberately does not cross: **security events yes, content no.** The owner sees that somebody
+knocked, never what was done inside; that separation is the whole reason the container exists.
 
 Deployment identity — hostnames, tunnel ids, addresses — lives in the gitignored `.env` and never
 in a tracked file; this repository is public.

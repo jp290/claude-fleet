@@ -1165,7 +1165,58 @@ function setBoard(on: boolean) {
   applyBoard();
   // the board's width changed → terminals must refit (same rule as the sidebar collapse)
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
-  if (on) void renderBoard();
+  if (on) { void loadGuest(); void renderBoard(); }
+}
+
+// --- guest ops (briefs/guest-ops-panel.md) ---
+// The guest instance is a whole separate Fleet in a container, exposed on a public hostname for a
+// bounded window. This section is the only place it is visible from here — and what it shows is
+// deliberately narrow: whether the door is open, until when, and how often someone knocked with a
+// wrong token. Never anything about the work inside it.
+interface GuestStatus {
+  vm: string; container: string; exposed: boolean; expired: boolean;
+  until: number | null; timer: boolean; hostname: string;
+  authFails1h: number | null; authFails24h: number | null; lastAuthFail: number | null;
+}
+let guestState: GuestStatus | null = null;
+let guestAbsent = false;   // 404 = FLEET_GUEST_CMD unset: the feature does not exist, stop asking
+let guestErr: string | null = null;
+let guestRunning: string | null = null; // the verb in flight, so the buttons can say so
+// asked at least once. The board can already be OPEN at page load (it is remembered in
+// localStorage), and that path never calls setBoard — without this latch the section would sit at
+// "reading…" forever there. It is a latch and not a retry: a failed read is left visible with a ↻
+// rather than re-fetched on the 3 s render tick, which would be the poll this must not become.
+let guestTried = false;
+// NOT on the 3s board timer and NOT in the 2s session poll: every call here spawns a subprocess
+// on the host (docker/colima/cloudflared), so it runs when the card opens and after each action.
+async function loadGuest(): Promise<void> {
+  if (guestAbsent) return;
+  guestTried = true;
+  try {
+    const r = await api("/api/guest");
+    if (r.status === 404) { guestAbsent = true; return; }
+    const j = (await r.json()) as GuestStatus & { error?: string };
+    if (!r.ok) { guestErr = j.error ?? `status ${r.status}`; guestState = null; }
+    else { guestState = j; guestErr = null; }
+  } catch {
+    guestErr = "unreachable";
+  }
+  void renderBoard();
+}
+async function guestDo(verb: string, body: unknown = {}): Promise<void> {
+  guestRunning = verb;
+  guestErr = null;
+  void renderBoard();
+  try {
+    const r = await post(`/api/guest/${verb}`, body);
+    const j = (await r.json()) as { ok?: boolean; out?: string; error?: string };
+    if (!r.ok || !j.ok) guestErr = (j.error ?? j.out ?? `${verb} failed`).split("\n").slice(-3).join(" · ");
+  } catch {
+    guestErr = `${verb}: unreachable`;
+  } finally {
+    guestRunning = null;
+  }
+  await loadGuest(); // the action's own claim is not the state — re-read it
 }
 
 async function pollOutline(slot: number): Promise<string[]> {
@@ -1198,18 +1249,110 @@ async function pollOutline(slot: number): Promise<string[]> {
   return c.prompts;
 }
 
+let guestStopArm = 0; // stop is destructive to the guest's sessions — one click arms, the next acts
+function guestSection(): HTMLElement | null {
+  if (guestAbsent) return null;
+  const sec = el("div", "bsec");
+  sec.appendChild(el("h3", "", "guest"));
+  const g = guestState;
+  if (!g) {
+    sec.appendChild(el("div", guestErr ? "bgitop" : "bempty",
+      guestErr ? `guest status unavailable — ${guestErr}` : "reading guest status…"));
+    if (guestErr) {
+      // the read is not retried on a timer, so a failed one needs a way back by hand
+      const again = el("button", "bbtn subtle", "↻ retry") as HTMLButtonElement;
+      again.onclick = () => void loadGuest();
+      sec.appendChild(again);
+    }
+    return sec;
+  }
+  // 1 — is the door open, and to what
+  const state = el("div", "bstate");
+  const open = g.exposed;
+  state.appendChild(el("span", "bwork" + (open ? " on" : ""), open ? "● public" : "○ closed"));
+  state.appendChild(document.createTextNode(` · ${g.hostname || "no hostname configured"}`));
+  sec.appendChild(state);
+
+  // 2 — the deadline. The window is the whole security model here (no edge identity check), so it
+  // is stated in full even when the door is shut: a cut KEEPS it running, by design.
+  if (g.until) {
+    const until = new Date(g.until * 1000);
+    const hoursLeft = Math.round((g.until * 1000 - Date.now()) / 3_600_000);
+    const when = until.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    sec.appendChild(el("div", g.expired ? "bgitop" : "bidmeta", g.expired
+      ? `window expired ${when} — renew to open a new one`
+      : `until ${when} · ${hoursLeft < 48 ? `${hoursLeft}h` : `${Math.round(hoursLeft / 24)}d`} left${open ? "" : " (kept — cut does not extend it)"}`));
+  } else {
+    sec.appendChild(el("div", "bidmeta", "no window recorded — renew opens one"));
+  }
+  if (g.until && !g.expired && open && !g.timer)
+    sec.appendChild(el("div", "bgitop", "⚠ the window is open but its hourly enforcer is NOT loaded — it will not close itself"));
+
+  // 3 — who knocked. These lines have been written to the guest's own audit trail since the day
+  // it started and nobody has ever read them; that is the entire reason this panel exists.
+  if (g.authFails24h == null) {
+    sec.appendChild(el("div", "bidmeta", "auth failures: unreadable while the guest is not running"));
+  } else {
+    const last = g.lastAuthFail
+      ? new Date(g.lastAuthFail).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : null;
+    const line = `${g.authFails24h} wrong token${g.authFails24h === 1 ? "" : "s"} in 24 h`
+      + ` · ${g.authFails1h ?? 0} in the last hour${last ? ` · last ${last}` : ""}`;
+    sec.appendChild(el("div", (g.authFails1h ?? 0) > 0 ? "bgitop" : "bidmeta", line));
+  }
+
+  // 4 — what is actually running underneath
+  sec.appendChild(el("div", "bidmeta", `vm ${g.vm} · container ${g.container}`));
+  if (guestErr) sec.appendChild(el("div", "bgitop", guestErr));
+
+  const row = el("div", "bbtnrow");
+  const mk = (label: string, cls: string, title: string, run: () => void) => {
+    const b = el("button", cls, label) as HTMLButtonElement;
+    b.title = title;
+    b.disabled = guestRunning !== null;
+    b.onclick = run;
+    return b;
+  };
+  const busy = (verb: string, label: string) => (guestRunning === verb ? `… ${verb}ing` : label);
+  row.appendChild(mk(busy("start", "▸ start"), "bbtn",
+    "bring the VM and container up, and re-open on the existing deadline — safe to press any time",
+    () => void guestDo("start")));
+  if (open) row.appendChild(mk(busy("cut", "✂ cut"), "bbtn",
+    "close the public door now; the guest keeps running and the deadline keeps its time",
+    () => void guestDo("cut")));
+  row.appendChild(mk(busy("renew", "↻ renew 7 days"), "bbtn",
+    "deliberately set a fresh 7-day window (re-opens the door if it was cut)",
+    () => void guestDo("renew", { days: 7 })));
+  const armed = Date.now() - guestStopArm < 8_000;
+  row.appendChild(mk(armed ? "⏻ confirm stop" : busy("stop", "⏻ stop"), "bbtn" + (armed ? " accent" : ""),
+    "stop the container and the VM — the guest's running sessions are lost, the volume and the deadline survive",
+    () => {
+      if (!armed) { guestStopArm = Date.now(); void renderBoard(); return; }
+      guestStopArm = 0;
+      void guestDo("stop");
+    }));
+  row.appendChild(mk("↻", "bbtn subtle", "re-read the guest's status (it is never polled)",
+    () => void loadGuest()));
+  sec.appendChild(row);
+  return sec;
+}
+
 let boardAgain = false;
 async function renderBoard() {
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
   // dropped — remember it and re-run once the current pass finishes
   if (boardBusy) { boardAgain = true; return; }
   if (!boardOpen || isMobile()) return;
+  if (!guestTried) void loadGuest(); // once, not per render — see the latch
   boardBusy = true;
   try {
     const slot = panes[focused]?.slot;
     const s = slot ? fleet[slot - 1] : undefined;
     if (!slot || !s?.cwd) {
-      boardBody.replaceChildren(el("div", "bempty", "no session in the focused pane"));
+      // the guest panel is about the MACHINE, not the focused lane — it must not disappear just
+      // because the pane under the cursor is empty (that is a plausible moment to need `cut`)
+      const gs = guestSection();
+      boardBody.replaceChildren(el("div", "bempty", "no session in the focused pane"), ...(gs ? [gs] : []));
       return;
     }
     const [briefRes, prompts, wtRes, mgRes] = await Promise.all([
@@ -1224,6 +1367,9 @@ async function renderBoard() {
     const nodes: HTMLElement[] = [];
     // the right board tells ONE story — the lane lifecycle: IDENTITY → WORK → LAND →
     // AGENTS → LANES → OUTLINE. Every function of the old flat list is kept, only regrouped.
+    // GUEST sits between LANES and OUTLINE and is the one section that is NOT about this lane:
+    // it is machine-level, it only exists when FLEET_GUEST_CMD is configured, and it is placed
+    // there so an emergency control never ends up below a long prompt list.
 
     // 1 — IDENTITY: which lane this is, how to reach it, session-level actions
     const idsec = el("div", "bsec");
@@ -1766,7 +1912,13 @@ async function renderBoard() {
         nodes.push(sec);
       }
     }
-    // 6 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
+    // 6 — GUEST: machine-level, so it sits after the lane story and ABOVE the outline — the
+    // prompt list runs to dozens of rows, and a panic button below it is a panic button you scroll
+    // for. Rendered from the cache filled by loadGuest(); this render never fetches it.
+    const gsec = guestSection();
+    if (gsec) nodes.push(gsec);
+
+    // 7 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
     const psec = el("div", "bsec");
     psec.appendChild(el("h3", "", `your prompts (${prompts.length})`));
     if (!prompts.length) psec.appendChild(el("div", "bempty", "no prompts in the transcript yet"));

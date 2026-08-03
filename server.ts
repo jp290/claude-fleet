@@ -6430,6 +6430,20 @@ Bun.serve<WSData>({
         return json({ error: "guest status: output was not JSON", out: r.out }, 502);
       }
     }
+    // the invite: address + the guest instance's own owner token, to hand to the person being
+    // invited. A SEPARATE route from the status above, and that separation is the point — status
+    // is read on every card open and after every action, so a credential riding along on it would
+    // be a credential in every log that captures one. This is fetched only when the owner asks.
+    if (url.pathname === "/api/guest/link" && req.method === "GET") {
+      if (!GUEST_CMD) return new Response("not found", { status: 404 });
+      const r = await runGuest(["link"]);
+      if (r.timedOut || r.exit !== 0) return json({ error: "guest link failed", out: r.out }, 502);
+      try {
+        return json(JSON.parse(r.out) as Record<string, unknown>);
+      } catch {
+        return json({ error: "guest link: output was not JSON" }, 502);
+      }
+    }
     const guestAct = /^\/api\/guest\/([a-z]+)$/.exec(url.pathname);
     if (guestAct && req.method === "POST") {
       if (!GUEST_CMD) return new Response("not found", { status: 404 });

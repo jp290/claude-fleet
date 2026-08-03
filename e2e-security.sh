@@ -63,6 +63,7 @@ SHAREHOST=sharetest
 cat > "$DIR/fakeguest" <<'EOF'
 #!/bin/sh
 [ "$1" = status ] && printf '{"vm":"running","container":"running","exposed":true,"expired":false,"until":123,"timer":true,"hostname":"guest.example.com","authFails1h":0,"authFails24h":0,"lastAuthFail":null}'
+[ "$1" = link ] && printf '{"url":"https://guest.example.com","token":"e2e-guest-invite-secret"}'
 exit 0
 EOF
 chmod +x "$DIR/fakeguest"

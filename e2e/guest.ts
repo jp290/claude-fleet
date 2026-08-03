@@ -27,6 +27,7 @@ const GOOD_HOOK = `#!/bin/sh
 printf '%s\\n' "$*" >> ${ARGV}
 case "$1" in
 status) printf '{"vm":"running","container":"running","exposed":true,"expired":false,"until":123,"timer":true,"hostname":"guest.example.com","authFails1h":0,"authFails24h":2,"lastAuthFail":99}' ;;
+link)   printf '{"url":"https://guest.example.com","token":"the-guest-credential"}' ;;
 fail)   echo "deliberate failure" >&2; exit 1 ;;
 *)      echo "ok $1" ;;
 esac
@@ -51,6 +52,23 @@ export async function run(): Promise<void> {
       r.ok && j.exposed === true && j.authFails24h === 2 && j.hostname === "guest.example.com");
     check("guest status marks itself configured", j.configured === true);
     check("guest status ran the hook with exactly 'status'", argvLines().includes("status"));
+  }
+
+  // --- (2b) the invite: a route of its own, and the credential is NOT on the status payload.
+  // That separation is the property worth a check — status is read on every card open and after
+  // every action, so a token leaking into it would be a token in every log that captures one. ---
+  {
+    const st = await (await get("/api/guest")).text();
+    check("the guest status payload carries NO credential", !st.includes("the-guest-credential"), st.slice(0, 120));
+    const r = await get("/api/guest/link");
+    const j = (await r.json()) as { url?: string; token?: string };
+    check("the invite route returns the address and the token",
+      r.ok && j.url === "https://guest.example.com" && j.token === "the-guest-credential");
+    check("the invite ran the hook's own 'link' verb", argvLines().includes("link"));
+    check("the invite is not reachable without the owner token",
+      (await fetch(`${BASE}/api/guest/link`)).status === 401);
+    // `link` is a READ, so it must not be reachable as an action either
+    check("link is not a POST verb", (await post("/api/guest/link", {})).status === 400);
   }
 
   // --- (3) the verb is a CLOSED SET. The failure guarded against is an unknown verb reaching the

@@ -1181,6 +1181,7 @@ interface GuestStatus {
 let guestState: GuestStatus | null = null;
 let guestAbsent = false;   // 404 = FLEET_GUEST_CMD unset: the feature does not exist, stop asking
 let guestErr: string | null = null;
+let guestNote: string | null = null;    // the last action's own words — see guestDo
 let guestRunning: string | null = null; // the verb in flight, so the buttons can say so
 // asked at least once. The board can already be OPEN at page load (it is remembered in
 // localStorage), and that path never calls setBoard — without this latch the section would sit at
@@ -1206,17 +1207,34 @@ async function loadGuest(): Promise<void> {
 async function guestDo(verb: string, body: unknown = {}): Promise<void> {
   guestRunning = verb;
   guestErr = null;
+  guestNote = null;
   void renderBoard();
   try {
     const r = await post(`/api/guest/${verb}`, body);
     const j = (await r.json()) as { ok?: boolean; out?: string; error?: string };
     if (!r.ok || !j.ok) guestErr = (j.error ?? j.out ?? `${verb} failed`).split("\n").slice(-3).join(" · ");
+    // Every verb here is idempotent, so the most common successful outcome is that NOTHING in the
+    // status changes — press start while it is already up and the panel would otherwise sit there
+    // looking like the click was lost (it did, 2026-08-03). The hook's own words are the receipt.
+    else guestNote = `${verb}: ${(j.out ?? "ok").split("\n").filter(Boolean).slice(-2).join(" · ") || "ok"}`;
   } catch {
     guestErr = `${verb}: unreachable`;
   } finally {
     guestRunning = null;
   }
   await loadGuest(); // the action's own claim is not the state — re-read it
+}
+// The invite is fetched on demand and never held in a variable longer than this call: it goes
+// straight to the clipboard. `?token=` is what makes the link one-click for the person being
+// invited, and it is also why it belongs in a message to them and not in a browser history that
+// outlives the window (docs/container.md names the query-string leak as the accepted trade).
+async function guestCopyInvite(btn: HTMLButtonElement): Promise<void> {
+  const r = await api("/api/guest/link");
+  const j = (await r.json()) as { url?: string; token?: string; error?: string };
+  if (!r.ok || !j.url || !j.token) { guestErr = j.error ?? "could not read the invite"; void renderBoard(); return; }
+  copyText(`${j.url}/?token=${encodeURIComponent(j.token)}`);
+  btn.textContent = "✓ invite copied";
+  setTimeout(() => { btn.textContent = "⧉ copy invite link"; }, 1600);
 }
 
 async function pollOutline(slot: number): Promise<string[]> {
@@ -1304,6 +1322,7 @@ function guestSection(): HTMLElement | null {
   // 4 — what is actually running underneath
   sec.appendChild(el("div", "bidmeta", `vm ${g.vm} · container ${g.container}`));
   if (guestErr) sec.appendChild(el("div", "bgitop", guestErr));
+  else if (guestNote) sec.appendChild(el("div", "bidmeta", guestNote));
 
   const row = el("div", "bbtnrow");
   const mk = (label: string, cls: string, title: string, run: () => void) => {
@@ -1334,6 +1353,20 @@ function guestSection(): HTMLElement | null {
   row.appendChild(mk("↻", "bbtn subtle", "re-read the guest's status (it is never polled)",
     () => void loadGuest()));
   sec.appendChild(row);
+
+  // what you actually send the person you are inviting. Its own row because it is the one control
+  // here that is not an operation on the machine — and it is fetched only on this click, so the
+  // credential never rides along on a status read.
+  {
+    const inv = el("button", "bbtn subtle", "⧉ copy invite link") as HTMLButtonElement;
+    inv.title = "copy the guest's address with its access token — paste it to the person you are inviting";
+    inv.onclick = () => void guestCopyInvite(inv);
+    const irow = el("div", "bbtnrow");
+    irow.appendChild(inv);
+    sec.appendChild(irow);
+    if (!open)
+      sec.appendChild(el("div", "bidmeta", "the door is closed — the link will not resolve until start or renew"));
+  }
   return sec;
 }
 

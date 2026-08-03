@@ -30,7 +30,7 @@ export async function run(): Promise<void> {
     const forBranch = (os: Outcome[], branch: string): Outcome | undefined => os.find((o) => o.branch === branch);
 
     const oRepo = `${REPO}.outcomes`;
-    spawnSync("git", ["init", "-q", oRepo]);
+    spawnSync("git", ["init", "-q", "-b", "main", oRepo]); // fakemerge hardcodes `git rebase main`
     spawnSync("git", ["-C", oRepo, "config", "user.email", "e2e@test"]);
     spawnSync("git", ["-C", oRepo, "config", "user.name", "e2e"]);
     await Bun.write(`${oRepo}/seed.txt`, "seed\n");

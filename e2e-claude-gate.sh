@@ -36,7 +36,9 @@ stage_instance "$SRC" "$DIR" server.ts fleet-e2e-claude-gate.ts || exit 1
 # this (FLEET_CMD=true short-circuits claudeAlive to a constant true).
 DISPATCH_REPO="$DIR/dispatchrepo"
 mkdir -p "$DISPATCH_REPO"
-( cd "$DISPATCH_REPO" && git init -q && git config user.email t@t && git config user.name t \
+# -b main, same reason as e2e-isolated.sh: the default branch is a platform accident on macOS
+# (Apple's CommandLineTools gitconfig), not something this repo establishes.
+( cd "$DISPATCH_REPO" && git init -q -b main && git config user.email t@t && git config user.name t \
   && printf 'root\n' > code.txt && git add code.txt && git commit -qm init )
 
 # two variants of a binary literally named `claude` (comm= must resolve to a path ending

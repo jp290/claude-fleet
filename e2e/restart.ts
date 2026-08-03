@@ -55,7 +55,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const gapGit = (...a: string[]) => Bun.spawnSync(["git", "-C", GAP_REPO, ...a]);
   rmSync(GAP_REPO, { recursive: true, force: true });
   Bun.spawnSync(["mkdir", "-p", GAP_REPO]);
-  gapGit("init", "-q");
+  gapGit("init", "-q", "-b", "main"); // the default branch is a platform accident, not ours
   gapGit("config", "user.email", "t@t");
   gapGit("config", "user.name", "t");
   writeFileSync(`${GAP_REPO}/server.ts`, "// the build the server boots from\n");

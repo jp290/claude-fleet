@@ -12,7 +12,7 @@ export async function run(): Promise<void> {
   // point of the split: it makes the historic "primary-checkout land collision" impossible. ---
   {
     const raRepo = `${REPO}.refadvance`;
-    spawnSync("git", ["init", "-q", raRepo]);
+    spawnSync("git", ["init", "-q", "-b", "main", raRepo]); // fakemerge hardcodes `git rebase main`
     spawnSync("git", ["-C", raRepo, "config", "user.email", "e2e@test"]);
     spawnSync("git", ["-C", raRepo, "config", "user.name", "e2e"]);
     await Bun.write(`${raRepo}/deck.html`, "base\n");
@@ -55,7 +55,7 @@ export async function run(): Promise<void> {
   // and don't inherit desk-only commits. ---
   {
     const fpRepo = `${REPO}.forkpoint`;
-    spawnSync("git", ["init", "-q", fpRepo]);
+    spawnSync("git", ["init", "-q", "-b", "main", fpRepo]); // fakemerge hardcodes `git rebase main`
     spawnSync("git", ["-C", fpRepo, "config", "user.email", "e2e@test"]);
     spawnSync("git", ["-C", fpRepo, "config", "user.name", "e2e"]);
     await Bun.write(`${fpRepo}/f.txt`, "base\n");

@@ -1183,6 +1183,15 @@ let guestAbsent = false;   // 404 = FLEET_GUEST_CMD unset: the feature does not 
 let guestErr: string | null = null;
 let guestNote: string | null = null;    // the last action's own words — see guestDo
 let guestRunning: string | null = null; // the verb in flight, so the buttons can say so
+// The receipt has to land ON the button, not only in a line under it. Every verb here is
+// idempotent, so the usual successful outcome changes NOTHING in the status — and a button that
+// returns to its resting label after ~2s of work is indistinguishable from a button that ignored
+// you (reported twice by the owner, 2026-08-03). Same idiom as "✓ copied" on the copy buttons.
+let guestDone: { verb: string; at: number } | null = null;
+const GUEST_DONE_MS = 4000;
+const GUEST_PAST: Record<string, string> = {
+  start: "✓ started", cut: "✓ cut", stop: "✓ stopped", renew: "✓ renewed",
+};
 // asked at least once. The board can already be OPEN at page load (it is remembered in
 // localStorage), and that path never calls setBoard — without this latch the section would sit at
 // "reading…" forever there. It is a latch and not a retry: a failed read is left visible with a ↻
@@ -1213,10 +1222,17 @@ async function guestDo(verb: string, body: unknown = {}): Promise<void> {
     const r = await post(`/api/guest/${verb}`, body);
     const j = (await r.json()) as { ok?: boolean; out?: string; error?: string };
     if (!r.ok || !j.ok) guestErr = (j.error ?? j.out ?? `${verb} failed`).split("\n").slice(-3).join(" · ");
-    // Every verb here is idempotent, so the most common successful outcome is that NOTHING in the
-    // status changes — press start while it is already up and the panel would otherwise sit there
-    // looking like the click was lost (it did, 2026-08-03). The hook's own words are the receipt.
-    else guestNote = `${verb}: ${(j.out ?? "ok").split("\n").filter(Boolean).slice(-2).join(" · ") || "ok"}`;
+    else {
+      guestDone = { verb, at: Date.now() };
+      // the hook's OWN lines, not its tools': colima and docker write timestamped warnings on
+      // stderr ("already running, ignoring") that are noise next to "VM and container are up"
+      const own = (j.out ?? "").split("\n").map((l) => l.trim())
+        .filter((l) => l.startsWith("guest-ctl:") || l.startsWith("guest-expose:"));
+      guestNote = `${verb}: ${(own.length ? own : ["done"]).join(" · ")}`;
+      // restore the resting label once the receipt window closes (the 3s board tick would
+      // usually do it, but only while the board is being re-rendered at all)
+      setTimeout(() => { if (guestDone && Date.now() - guestDone.at >= GUEST_DONE_MS) void renderBoard(); }, GUEST_DONE_MS + 100);
+    }
   } catch {
     guestErr = `${verb}: unreachable`;
   } finally {
@@ -1322,7 +1338,9 @@ function guestSection(): HTMLElement | null {
   // 4 — what is actually running underneath
   sec.appendChild(el("div", "bidmeta", `vm ${g.vm} · container ${g.container}`));
   if (guestErr) sec.appendChild(el("div", "bgitop", guestErr));
-  else if (guestNote) sec.appendChild(el("div", "bidmeta", guestNote));
+  // green and 12.5px, not the 10.5px grey of .bidmeta: this is the receipt for an action whose
+  // success is otherwise invisible, so it has to be readable at a glance
+  else if (guestNote) sec.appendChild(el("div", "riskempty", guestNote));
 
   const row = el("div", "bbtnrow");
   const mk = (label: string, cls: string, title: string, run: () => void) => {
@@ -1332,7 +1350,12 @@ function guestSection(): HTMLElement | null {
     b.onclick = run;
     return b;
   };
-  const busy = (verb: string, label: string) => (guestRunning === verb ? `… ${verb}ing` : label);
+  // three states on one button: working → just-succeeded (for GUEST_DONE_MS) → resting
+  const busy = (verb: string, label: string): string => {
+    if (guestRunning === verb) return `… ${verb}ing`;
+    if (guestDone?.verb === verb && Date.now() - guestDone.at < GUEST_DONE_MS) return GUEST_PAST[verb] ?? "✓ done";
+    return label;
+  };
   row.appendChild(mk(busy("start", "▸ start"), "bbtn",
     "bring the VM and container up, and re-open on the existing deadline — safe to press any time",
     () => void guestDo("start")));

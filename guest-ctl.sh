@@ -8,7 +8,8 @@
 # a verb in argv and returns operator facts. It is an operator hook, not a worker. Unset the env
 # var and the feature does not exist: no route, no buttons, no trace.
 #
-#   ./guest-ctl.sh status         JSON on stdout — the only read
+#   ./guest-ctl.sh status         JSON on stdout — the routine read, carries no credential
+#   ./guest-ctl.sh link           JSON {url, token} — the invite, fetched only on demand
 #   ./guest-ctl.sh start          VM + container up, and back on the EXISTING deadline
 #   ./guest-ctl.sh cut            close the public door, keep the deadline (panic button)
 #   ./guest-ctl.sh stop           cut, then stop container and VM (destructive to sessions)
@@ -103,6 +104,18 @@ status_json() {
 case "${1:-status}" in
 status) status_json ;;
 
+link)
+  # What you actually hand to the person you are inviting: the address plus the guest instance's
+  # own owner token. Its OWN verb, never a field on `status` — status is read on every card open
+  # and after every action, and a credential that rides along on a routine read is a credential in
+  # every log that ever captures one. This one is fetched only when the owner asks to copy it.
+  [ -f "$CONF_DIR/token" ] || { echo "guest-ctl: no token at $CONF_DIR/token" >&2; exit 2; }
+  _h=$(try sh "$EXPOSE" state | sed -n 's/^hostname=//p' | head -1)
+  [ -n "$_h" ] || { echo "guest-ctl: no hostname configured (see $CONF_DIR/expose.env)" >&2; exit 2; }
+  printf '{"url":"https://%s","token":"%s"}\n' \
+    "$(jstr "$_h")" "$(jstr "$(tr -d '\n' < "$CONF_DIR/token")")"
+  ;;
+
 start)
   # Idempotent all the way down, which is what makes this a button you may press when your friend
   # says it is not working: colima answers "already running, ignoring" in ~4s, docker start on a
@@ -137,5 +150,5 @@ renew)
     echo "guest-ctl: note — the container is NOT running, so the hostname answers 502 until 'start'"
   ;;
 
-*) echo "usage: $0 status | start | cut | stop | renew [DAYS]" >&2; exit 2 ;;
+*) echo "usage: $0 status | link | start | cut | stop | renew [DAYS]" >&2; exit 2 ;;
 esac

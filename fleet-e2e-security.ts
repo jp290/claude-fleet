@@ -375,6 +375,14 @@ if (INTAKE && DISPATCH_REPO) {
       (await fetch(`${BASE}/api/guest`)).status === 401);
     check("§8 a guest ACTION refuses a request with no owner token",
       (await fetch(`${BASE}/api/guest/stop`, { method: "POST", body: "{}" })).status === 401);
+    // the invite route hands out the guest instance's own owner credential, so it is the guest
+    // surface with the highest cost of being reachable from the wrong place
+    const invite = await fetch(`${BASE}/api/guest/link`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    check("§8 /api/guest/link answers on the owner host", invite.ok, String(invite.status));
+    const noTokInvite = await fetch(`${BASE}/api/guest/link`);
+    check("§8 /api/guest/link refuses a request with no owner token", noTokInvite.status === 401);
+    check("§8 …and that refusal carries none of the guest's credential",
+      !(await noTokInvite.text()).includes("e2e-guest-invite-secret"));
     if (SHARE_HOST) {
       check("§8 /api/guest does not exist on the public share host, even WITH the owner token",
         (await fetch(`${BASE}/api/guest`,
@@ -382,6 +390,12 @@ if (INTAKE && DISPATCH_REPO) {
       check("§8 …nor can a guest action be reached there with the owner token",
         (await fetch(`${BASE}/api/guest/stop`,
           { method: "POST", headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` }, body: "{}" })).status === 404);
+      const shareInvite = await fetch(`${BASE}/api/guest/link`,
+        { headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` } });
+      check("§8 the guest INVITE is not reachable on the public share host either",
+        shareInvite.status === 404, String(shareInvite.status));
+      check("§8 …and that answer leaks no part of the guest's credential",
+        !(await shareInvite.text()).includes("e2e-guest-invite-secret"));
     }
   }
 }

@@ -1,8 +1,91 @@
-# HANDOFF — Session 18 (2026-08-03: Fleet läuft im Container, und ein Gast kann es benutzen) · 17/16/15/14/13 darunter
+# HANDOFF — Session 19 (2026-08-03: die Gast-Konsole) · 18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 19 (2026-08-03): der Gast bekommt eine Konsole
+
+4 Commits, `b6639c2`..`d67c819`, **alle deployed und live nachgeprüft** (`bootHead == HEAD`,
+`bundleStale:false`, Site 200, 8 Sessions haben die Restarts überlebt). Die Mechanismen stehen
+in den Bodies — hier nur, was git nicht trägt.
+
+### Das Erste, was die nächste Session tun sollte
+
+**Der Owner hat den nächsten Auftrag schon benannt: die Kontroll-Fläche rechts in der Info-Karte
+ordnen.** Der Brief liegt fertig unter `briefs/info-card-controls.md` — er ist gemessen, nicht
+geraten (84 Buttons, 7 Sektionen, 5886 Zeilen `src/client.ts`), und er nennt die drei Fallen, an
+denen ein Umbau dort sonst stirbt. **Nicht neu entwerfen — lesen.** Die eine offene Owner-Frage
+steht am Ende des Briefs und ist blockierend, weil sie die Form entscheidet.
+
+### Was live ist und wovon die nächste Session wissen muss
+
+- **`FLEET_GUEST_CMD` ist seit dieser Session in `watchdog.sh`** und zeigt auf `guest-ctl.sh`.
+  Damit existiert die Gast-Sektion in der Info-Karte. Variable weg = Feature weg (Routen 404,
+  keine Knöpfe). Aktiv wurde sie durch `launchctl kickstart` **vor** dem srv-Restart — die
+  umgekehrte Reihenfolge respawnt srv mit der alten Zeile, und dann fehlt die Variable.
+- **Gäste sind SLOTS**, ein Verzeichnis je Gast unter `~/.claude-fleet-guest/<n>/`. Der bestehende
+  Gast wurde nach `1/` migriert (gleiche Deadline, gleicher Token, Container unberührt). Slot 2
+  und 3 existieren NICHT: sie brauchen je einen Hostnamen mit DNS-Record. **Der DNS-Record ist
+  bewusst kein Knopf** — er reicht nach außen, also Owner-Entscheid.
+- **Der Live-Gast hat weiterhin KEINE Claude-Credential** (`claudeAuth:false`, live geprüft). Sein
+  Dashboard öffnet, Sessions starten, `claude` stirbt in jeder Pane. Der Knopf dafür existiert
+  jetzt (`▸ give claude token`), benutzt wurde er nie.
+- **Ein Ingress-Marker in zwei Formen.** Die Ein-Gast-Version schrieb einen Marker ohne Slot;
+  `del_rule` erkennt beide. Wer das je vereinfacht, baut einen Panikknopf, der „already cut"
+  meldet, während die Tür offen steht.
+
+### Was NICHT verifiziert ist — und niemand sollte es behaupten
+
+1. **Ob eine echte Claude-Session in einer echten Pane im Container läuft.** Unverändert die
+   größte Lücke des Strangs (steht seit Session 18 hier). Alles, was grün ist, fährt Shell-Stubs.
+   Der Token-Knopf ist genau der Weg, das endlich zu testen.
+2. **Der Recreate-Pfad gegen einen ECHTEN Container.** `claude-token` ist nur gegen den
+   Stand-in-Hook gelaufen. Was er tut, ist `docker rm -f` + `run` aus der eigenen Inspect-Config —
+   die Volumes überleben, aber bewiesen ist das hier nicht.
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **Der Steward-Send-Zweier ist KEIN Regress und keine offene Adjudikation mehr.** Vier Läufe
+  entscheiden es: derselbe Baum einmal grün, zweimal rot, und **clean HEAD `9d7b2cb` ohne eine
+  Zeile dieser Session fällt identisch**. Ein Check, der auf einem Baum passt UND fällt, und ohne
+  unseren Code fällt, ist ein Rennen. Mechanismus auf Zeilen festgenagelt: `server.ts:5300`
+  (Idle-Gate, 409) läuft VOR dem Episoden-Cap `:5314` (429), und `e2e/steward-core.ts:243` sendet
+  direkt nach dem Paste — der Check muss das pipe-pane-Echo schlagen. Der Geschwister-Check
+  `:261` settelt deshalb neu und sagt es im Kommentar. Test-seitige Fragilität, Fix kostet ~60 s
+  pro Lauf, **Owner-Entscheid, nicht genommen.** Damit ist auch Session 18s roter Tier-2-Audit auf
+  `6081449` erklärt: dieselbe Signatur.
+- **Eine Falle im Harness, die 12 fremde Checks rot machte und meine war:** `restart.ts` pflanzte
+  `FLEET_REPO_DIR` nur in die SERVER-Spawn-Zeile, `harness.restartSrv()` baut diese Zeile aber aus
+  `process.env` neu. Jedes Modul, das danach srv neu startet, verlor die Variable — und
+  deploy-gap/bundle-staleness lasen `null`, was wie echte Fehler aussieht. Behoben an der Quelle
+  (`restart.ts` pflanzt jetzt zusätzlich in `process.env`), Falle bei `restartSrv` dokumentiert.
+- **Zweimal habe ich „der Knopf ist gefixt" behauptet, ohne ihn zu drücken.** Beim dritten Mal
+  habe ich ihn in einem echten Browser gegen eine Wegwerf-Instanz geklickt und die Label-Folge
+  abgetastet: `… starting → ✓ started → ▸ start`. **Und die Harness hat zuerst selbst gelogen** —
+  2,5 s Wartezeit gegen ein Panel, das auf dem 3-s-Board-Tick malt. Sie pollt jetzt.
+- **`no-store` rettet keinen offenen Tab.** `/` und `/app.js` liefern `Cache-Control: no-store`,
+  ein Reload holt also immer frischen Code — ein Tab, der nie neu geladen wurde, fährt den alten
+  Bundle ewig weiter. Genau das war der erste „der Knopf tut nichts"-Report.
+
+### Key Decisions (mit Grund)
+
+- **`cut` behält die Deadline, `renew` verschiebt sie** (Owner, wörtlich: *„I think it should keep
+  the deadline, but some button to reset the deadline would also be very good"*). Ein Panikknopf,
+  der die Exposition still verlängert, wenn man ihn zurücknimmt, ist die falsche Form. `resume`
+  verweigert ein abgelaufenes Fenster — sonst wäre es ein stilles `up` und die Schranke Beiwerk.
+- **Die Credential geht auf STDIN, nie in argv.** argv ist für die Laufzeit des Aufrufs in `ps`
+  weltlesbar. Als Messung geprüft, nicht als Behauptung: der Stub schreibt argv UND stdin mit.
+- **Der Invite ist eine eigene Route mit eigenem Verb.** `status` wird bei jedem Kartenöffnen und
+  nach jeder Aktion gelesen; ein Token, das dort mitreist, ist ein Token in jedem Log.
+- **`claudeAuth` ist ein BOOLEAN in `status`, nie der Wert** — die Frage „hat der Gast überhaupt
+  eine Credential" ist Betriebszustand, der Wert ist es nicht.
+- **Ein Timer für alle Slots** (`enforce-all`) statt N launchd-Labels: ein Fenster, dessen
+  Enforcer nie installiert wurde, ist genau der Fehler, gegen den das Skript existiert.
+- **Status bleibt aus dem 2-s-Poll draußen** (jeder Aufruf spawnt Subprozesse), und das Panel sagt
+  deshalb `checked HH:MM:SS — not polled`, statt Aktualität zu suggerieren.
 
 ---
 

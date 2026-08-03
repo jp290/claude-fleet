@@ -158,6 +158,29 @@ Order matters: put the edge policy in place *before* the DNS record resolves. Do
 way leaves a window in which an unprotected owner dashboard is on the internet, and that window is
 indexed by scanners in minutes.
 
+**The owner's standing decision (2026-08-03) is no edge identity check, and a bounded window
+instead** — `guest-expose.sh up [DAYS] | down | status`, default 7 days, enforced by an hourly
+launchd job rather than by anyone's memory. The reasoning, so it can be revisited honestly: the
+measured pre-auth surface is small (only `/` and the share password page answer without a
+credential; `/api/*`, `/ws` and `/intake` all 401), and the token is 192 bits, so guessing is not
+the risk. Leaking is — Fleet accepts the token in the query string, which puts it in browser
+history and proxy logs. With the egress firewall in place a leak costs the guest their container
+and their own subscription, not the owner's machine; what it still costs the owner is that abuse
+traffic would leave from their address. A window measured in days, that closes itself, is what
+that trade bought.
+
+Two things learned building it, both the expensive way:
+
+- **The ingress rule is the switch, not DNS.** `cloudflared tunnel route dns` creates a record and
+  cannot delete one; removing a hostname through DNS needs an API token this machine has no reason
+  to hold. Delete the ingress rule instead and the hostname falls through to the tunnel's
+  `http_status:404`, so the DNS record can stay forever pointing at nothing.
+- **Changing that config costs a brief outage of every hostname on the tunnel.** SIGHUP does not
+  hot-reload this cloudflared build — it terminates, launchd restarts it, and for ~30 s the owner's
+  website and every other hostname answer 502 before recovering unattended. Toggling exposure is
+  therefore not free. Validate the config *before* signalling: on a restart-not-reload, a bad
+  config does not fail to apply, it keeps everything down.
+
 Deployment identity — hostnames, tunnel ids, addresses — lives in the gitignored `.env` and never
 in a tracked file; this repository is public.
 

@@ -422,6 +422,7 @@ type AuditEvent =
   | "postland_audit"
   | "autos_switch"
   | "dispatch_switch"
+  | "guest_action"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
@@ -5967,6 +5968,42 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   return null;
 }
 
+// ── guest ops ────────────────────────────────────────────────────────────────────────────────
+// One configured command with verbs, and this file learns nothing about colima, Docker, tunnels
+// or audit files (briefs/guest-ops-panel.md). Unset → the feature does not exist: the routes 404
+// and the client draws no buttons, which is the same available-but-off shape as DISPATCH_REPO.
+const GUEST_CMD = process.env.FLEET_GUEST_CMD ?? "";
+// The verb reaches an argv, so it is a CLOSED SET validated at the boundary — the same treatment
+// as MODEL_RE, and never a passthrough. It is also spawned as argv, not through `sh -c`: even a
+// verb that got past this set could not become a second command. `status` is the GET; these are
+// the writes. `stop` is here rather than being the panic button on purpose — `cut` is the one you
+// reach for under attack, because it severs the attacker without destroying the guest's work.
+const GUEST_ACTIONS = new Set(["start", "cut", "stop", "renew"]);
+const GUEST_RENEW_MAX_DAYS = 30; // a renew button, not a lease negotiation
+// One at a time. `start` takes tens of seconds (a VM boots), and a double-tap must not race two
+// of them — the second press is told no rather than queued.
+let guestBusy = false;
+async function runGuest(args: string[]): Promise<{ exit: number; out: string; timedOut: boolean }> {
+  let p: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  try {
+    p = Bun.spawn([GUEST_CMD, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  } catch (e) {
+    // a mistyped or non-executable FLEET_GUEST_CMD is an operator error, and it must read as one
+    // rather than as a 500 — this is the most likely way the feature is ever misconfigured
+    return { exit: -1, out: `guest hook could not be started: ${e instanceof Error ? e.message : String(e)}`, timedOut: false };
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; try { p.kill(); } catch {} }, VERIFY_TIMEOUT_MS);
+  try {
+    const out = await new Response(p.stdout).text();
+    const err = await new Response(p.stderr).text();
+    const exit = await p.exited;
+    return { exit, out: `${out}${err}`.trim().slice(0, 4_000), timedOut };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 Bun.serve<WSData>({
   hostname: HOST,
   port: PORT,
@@ -6371,6 +6408,53 @@ Bun.serve<WSData>({
       const { rows: audits, total, malformed } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
       audits.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
       return json({ audits: audits.slice(0, limit), total, malformed, configured: !!POSTLAND_AUDIT_CMD });
+    }
+    // ── guest ops (briefs/guest-ops-panel.md) ──────────────────────────────────────────────
+    // Owner-only by POSITION, the same property /api/file has and the same one a later block move
+    // would silently break: this sits past tokenGate, BELOW the SHARE_HOSTS gate (so the public
+    // tunnel 404s it even with a valid owner token) and BELOW the steward gate (a steward token
+    // is answered there and never arrives here; a lane's self token is not the owner token, so it
+    // dies at tokenGate with a 401). Nothing below is reachable without FLEET_GUEST_CMD.
+    //
+    // NOT in the 2s poll on purpose: /api/sessions is the endpoint data-saver.md shrank, and a
+    // subprocess per poll would put back exactly what was removed. The client calls this when the
+    // info card opens and after each action — nothing else ever calls it.
+    if (url.pathname === "/api/guest" && req.method === "GET") {
+      if (!GUEST_CMD) return new Response("not found", { status: 404 });
+      const r = await runGuest(["status"]);
+      if (r.timedOut || r.exit !== 0) return json({ error: "guest status failed", out: r.out }, 502);
+      try {
+        return json({ configured: true, ...(JSON.parse(r.out) as Record<string, unknown>) });
+      } catch {
+        // the hook is the operator's own script: say the output was unreadable, never guess a state
+        return json({ error: "guest status: output was not JSON", out: r.out }, 502);
+      }
+    }
+    const guestAct = /^\/api\/guest\/([a-z]+)$/.exec(url.pathname);
+    if (guestAct && req.method === "POST") {
+      if (!GUEST_CMD) return new Response("not found", { status: 404 });
+      const verb = guestAct[1] ?? "";
+      if (!GUEST_ACTIONS.has(verb)) return json({ error: `unknown guest verb: ${verb}` }, 400);
+      const body = await readJson(req);
+      const args = [verb];
+      if (verb === "renew") {
+        // the only operand any verb takes, and it is a number or it is refused — a renew that
+        // accepted a string would hand the script's argv to whoever can reach this route
+        const days = body?.days ?? 7;
+        if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > GUEST_RENEW_MAX_DAYS)
+          return json({ error: `days must be a whole number from 1 to ${GUEST_RENEW_MAX_DAYS}` }, 400);
+        args.push(String(days));
+      }
+      if (guestBusy) return json({ error: "a guest action is already running" }, 409);
+      guestBusy = true;
+      try {
+        const r = await runGuest(args);
+        const ok = !r.timedOut && r.exit === 0;
+        audit("guest_action", undefined, `${verb}:${ok ? "ok" : r.timedOut ? "timeout" : `exit ${r.exit}`}`);
+        return json({ ok, verb, exit: r.exit, timedOut: r.timedOut, out: r.out }, ok ? 200 : 502);
+      } finally {
+        guestBusy = false;
+      }
     }
     // the transport ledger (see the TRANSPORT region): bytes actually sent since boot, per peer
     // and per path. Its OWN route on purpose — /api/sessions is the endpoint being shrunk and is

@@ -35,6 +35,7 @@ import * as restart from "./e2e/restart";
 import * as stewardCore from "./e2e/steward-core";
 import * as stewardOutcomes from "./e2e/steward-outcomes";
 import * as security from "./e2e/security";
+import * as guest from "./e2e/guest";
 import * as trail from "./e2e/trail";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
@@ -93,6 +94,11 @@ await intake.run(ctx);
 
 // --- file permissions, kill semantics, restart persistence, the audit log ---
 await restart.run(ctx);
+
+// --- the guest ops hook: the closed verb set and its owner-only position. Sits next to restart.run
+// because it too restarts srv several times (to turn FLEET_GUEST_CMD on and off again), and it
+// leaves the server unconfigured, exactly as it found it.
+await guest.run();
 
 // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---
 {

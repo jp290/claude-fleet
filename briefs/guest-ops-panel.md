@@ -105,9 +105,32 @@ mode. Record this reasoning at the constant if the lockout is ever built.
 The verb whitelist is the one place this can go wrong in a way that matters — it reaches a command
 line. Treat it like `MODEL_RE`: a closed set validated at the boundary, never a passthrough.
 
-## Open decision, owner's to make
+## The decision that was open, and how it was answered
 
 **Does `cut` also clear the expiry window** (so re-opening starts a fresh N days), or does it only
-close the door and keep the original deadline? Asked, not yet answered. Suggested default: keep the
-deadline — `cut` is a panic button, and a panic button that silently extends the exposure when you
-undo it is the wrong shape.
+close the door and keep the original deadline?
+
+**Answered by the owner, 2026-08-03: keep the deadline — and add a button that resets it on
+purpose.** So the panel has a fifth verb the four above do not: `renew`.
+
+That answer is what separates three verbs that all "close the door":
+
+| | ingress rule | deadline | timer | the verb it is |
+|---|---|---|---|---|
+| `cut` | removed | **kept, still running** | kept | the panic button; `start` returns you to the same deadline |
+| `stop` | removed | kept | kept | cut, plus the container and VM go down |
+| `down` (script only) | removed | deleted | removed | "I am done with this guest" |
+
+`renew` is the only way to move a deadline, and it says so by being a separate press: an extension
+is now a decision with a button, not a side effect of undoing a panic. `guest-expose.sh` grew
+`cut` and `resume` for exactly this — `resume` re-opens on the stored deadline and **refuses once
+it has passed**, which is what stops it from being a silent `up`.
+
+Implemented 2026-08-03. Two deviations from the scope above, both deliberate:
+
+- **"whether anyone is connected right now" is not in `status`.** The only honest sources were the
+  guest instance's own API — which carries labels, cwds and git state, i.e. exactly the content
+  side of the line this brief draws — or a connection count that would say nothing about who. The
+  auth-failure counts, which were the point, are there.
+- **The panel sits between LANES and OUTLINE in the info card**, not at the bottom: the outline is
+  a list of dozens of prompts, and an emergency control below it is one you scroll for.

@@ -56,6 +56,16 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 TOKEN=e2e-security-token
 INTAKE=e2e-security-intake
 SHAREHOST=sharetest
+
+# Stand-in for FLEET_GUEST_CMD. It exists so §8's guest checks are not VACUOUS: without a hook
+# configured, /api/guest 404s everywhere, and "it 404s on the share host" would pass while proving
+# nothing. With it, the owner host answers and only the share host refuses — which is the property.
+cat > "$DIR/fakeguest" <<'EOF'
+#!/bin/sh
+[ "$1" = status ] && printf '{"vm":"running","container":"running","exposed":true,"expired":false,"until":123,"timer":true,"hostname":"guest.example.com","authFails1h":0,"authFails24h":0,"lastAuthFail":null}'
+exit 0
+EOF
+chmod +x "$DIR/fakeguest"
 # FLEET_CMD=true → panes are a bare login shell (claudeAlive short-circuits true, so the
 # dispatcher's delivery gate opens without a real agent). FLEET_AUTO_REVIEW_MS=0 → no
 # FLEET_REVIEW_CMD stand-in is configured here, and auto-③ would otherwise spawn a REAL
@@ -66,6 +76,7 @@ tmux -L "$SOCK" new-session -d -s srv \
    FLEET_CMD=true FLEET_AUTO_REVIEW_MS=0 FLEET_INTAKE_SECRET=$INTAKE \
    FLEET_ALLOWED_HOSTS=$SHAREHOST FLEET_SHARE_HOSTS=$SHAREHOST \
    FLEET_DISPATCH_REPO='$DIR/dispatchrepo' FLEET_DISPATCH_MAX_LANES=8 \
+   FLEET_GUEST_CMD='$DIR/fakeguest' \
    exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.

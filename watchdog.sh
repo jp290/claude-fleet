@@ -125,8 +125,14 @@ while true; do
     # (server.ts, grep `let dispatchOn`) is a separate persisted runtime flag, default false, and
     # the owner flips it with one API call. MAX_LANES=2 instead of the default 3 is deliberate —
     # this is a watched first run (docs/autonomy-trial-1.md), not maximum throughput.
+    #
+    # FLEET_GUEST_CMD is the guest ops hook (briefs/guest-ops-panel.md). Pointing it at the script
+    # is the whole configuration: the server gains GET /api/guest and four verbs, the info card
+    # gains its buttons, and neither knows what a guest IS. Remove the variable and the feature
+    # disappears — routes 404, no buttons. The script needs ~/.claude-fleet-guest/expose.env to do
+    # anything; without it `status` still answers honestly (vm absent, nothing exposed).
     if tmux -L claudefleet new-session -d -s srv \
-      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 FLEET_GUEST_CMD='$FLEET_DIR/guest-ctl.sh' exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

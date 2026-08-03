@@ -71,6 +71,11 @@ export const get = (path: string): Promise<Response> => fetch(BASE + path, { hea
 // appended last), which is how a check turns a server-side fault-injection knob on for exactly one
 // restart and off again for the next. Not used by restart.ts, which builds its own env line for
 // reasons of its own (it deliberately DROPS FLEET_VERIFY_CMD) — see that file.
+//
+// THE TRAP THIS IMPLIES: a variable that was only ever put on the SERVER's spawn line, and never
+// into this process's env, is dropped by every call here. restart.ts's FLEET_REPO_DIR was such a
+// variable and cost 12 red checks in a later module (2026-08-03); it now plants itself in
+// process.env for exactly this reason. Anything server-only added later must do the same.
 export async function restartSrv(extra: Record<string, string> = {}): Promise<void> {
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);

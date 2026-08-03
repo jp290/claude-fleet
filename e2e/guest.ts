@@ -7,12 +7,13 @@
 // argv to a file, so "the verb was never interpolated into a shell" and "an unknown verb never
 // reached the script" are measurements rather than readings of the code.
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { BASE, H, ROOT, TOKEN, check, get, post, restartSrv } from "./harness";
+import { BASE, H, ROOT, TOKEN, check, get, post, readText, restartSrv } from "./harness";
 
 const TMP = process.env.TMPDIR ?? "/tmp";
 const HOOK = `${TMP}/fleet-e2e-guesthook-${process.pid}.sh`;
 const ARGV = `${TMP}/fleet-e2e-guestargv-${process.pid}`;
 const PWNED = `${TMP}/fleet-e2e-guest-pwned-${process.pid}`;
+const STDIN = `${TMP}/fleet-e2e-gueststdin-${process.pid}`;
 
 const argvLines = (): string[] => {
   try { return readFileSync(ARGV, "utf8").split("\n").filter(Boolean); } catch { return []; }
@@ -26,8 +27,9 @@ const writeHook = (body: string): void => {
 const GOOD_HOOK = `#!/bin/sh
 printf '%s\\n' "$*" >> ${ARGV}
 case "$1" in
-status) printf '{"vm":"running","container":"running","exposed":true,"expired":false,"until":123,"timer":true,"hostname":"guest.example.com","authFails1h":0,"authFails24h":2,"lastAuthFail":99}' ;;
+status) printf '{"guests":[{"slot":1,"vm":"running","container":"running","exposed":true,"expired":false,"until":123,"timer":true,"hostname":"guest.example.com","authFails1h":0,"authFails24h":2,"lastAuthFail":99},{"slot":2,"vm":"running","container":"absent","exposed":false,"expired":false,"until":null,"timer":false,"hostname":"guest2.example.com","authFails1h":null,"authFails24h":null,"lastAuthFail":null}]}' ;;
 link)   printf '{"url":"https://guest.example.com","token":"the-guest-credential"}' ;;
+claude-token) cat > ${STDIN}; echo "guest-ctl: recreated" ;;
 fail)   echo "deliberate failure" >&2; exit 1 ;;
 *)      echo "ok $1" ;;
 esac
@@ -47,9 +49,15 @@ export async function run(): Promise<void> {
   // --- (2) configured: the hook's JSON is passed through, plus the `configured` marker ---
   {
     const r = await get("/api/guest");
-    const j = (await r.json()) as { configured?: boolean; exposed?: boolean; hostname?: string; authFails24h?: number };
-    check("guest status returns the hook's JSON",
-      r.ok && j.exposed === true && j.authFails24h === 2 && j.hostname === "guest.example.com");
+    const j = (await r.json()) as { configured?: boolean; guests?: { slot: number; exposed: boolean; hostname: string; authFails24h: number | null; container: string }[] };
+    const g1 = j.guests?.find((g) => g.slot === 1);
+    const g2 = j.guests?.find((g) => g.slot === 2);
+    check("guest status returns every configured slot", r.ok && j.guests?.length === 2);
+    check("slot 1 carries its own facts", g1?.exposed === true && g1.authFails24h === 2 && g1.hostname === "guest.example.com");
+    check("slot 2 carries its own, different facts",
+      g2?.exposed === false && g2.hostname === "guest2.example.com" && g2.container === "absent");
+    check("a guest that is not running reports null knocks, never zero",
+      g2?.authFails24h === null, JSON.stringify(g2));
     check("guest status marks itself configured", j.configured === true);
     check("guest status ran the hook with exactly 'status'", argvLines().includes("status"));
   }
@@ -60,11 +68,11 @@ export async function run(): Promise<void> {
   {
     const st = await (await get("/api/guest")).text();
     check("the guest status payload carries NO credential", !st.includes("the-guest-credential"), st.slice(0, 120));
-    const r = await get("/api/guest/link");
+    const r = await get("/api/guest/link?slot=1");
     const j = (await r.json()) as { url?: string; token?: string };
     check("the invite route returns the address and the token",
       r.ok && j.url === "https://guest.example.com" && j.token === "the-guest-credential");
-    check("the invite ran the hook's own 'link' verb", argvLines().includes("link"));
+    check("the invite ran the hook's own 'link' verb for that slot", argvLines().includes("link 1"));
     check("the invite is not reachable without the owner token",
       (await fetch(`${BASE}/api/guest/link`)).status === 401);
     // `link` is a READ, so it must not be reachable as an action either
@@ -95,16 +103,53 @@ export async function run(): Promise<void> {
     const j = (await r.json()) as { ok?: boolean; verb?: string; out?: string };
     check("cut runs and reports the hook's own output",
       r.ok && j.ok === true && j.verb === "cut" && (j.out ?? "").includes("ok cut"));
-    check("cut reached the hook as a bare verb", argvLines().includes("cut"));
+    check("cut reached the hook with its slot", argvLines().includes("cut 1"));
+    check("an action names the slot it was asked for",
+      (await post("/api/guest/cut", { slot: 2 })).ok && argvLines().includes("cut 2"));
+    for (const [name, slot] of [["a string", "1; rm -rf /"], ["zero", 0], ["a fraction", 1.5], ["out of range", 99]] as const)
+      check(`an action refuses ${name} for slot`, (await post("/api/guest/cut", { slot })).status === 400);
+    check("no refused slot reached the hook",
+      argvLines().filter((l) => l.startsWith("cut")).every((l) => l === "cut 1" || l === "cut 2"));
     check("start and stop are accepted verbs",
       (await post("/api/guest/start", {})).ok && (await post("/api/guest/stop", {})).ok);
+    check("the invite refuses an out-of-range slot",
+      (await get("/api/guest/link?slot=99")).status === 400);
 
-    check("renew defaults to 7 days", (await post("/api/guest/renew", {})).ok && argvLines().includes("renew 7"));
-    check("renew accepts a whole number of days", (await post("/api/guest/renew", { days: 3 })).ok && argvLines().includes("renew 3"));
+    check("renew defaults to slot 1 and 7 days", (await post("/api/guest/renew", {})).ok && argvLines().includes("renew 1 7"));
+    check("renew accepts a whole number of days", (await post("/api/guest/renew", { slot: 2, days: 3 })).ok && argvLines().includes("renew 2 3"));
     for (const [name, days] of [["a string", "3; rm -rf /"], ["a fraction", 1.5], ["zero", 0], ["over the cap", 31]] as const)
       check(`renew refuses ${name} for days`, (await post("/api/guest/renew", { days })).status === 400);
     check("no refused renew reached the hook",
-      argvLines().filter((l) => l.startsWith("renew")).every((l) => l === "renew 7" || l === "renew 3"));
+      argvLines().filter((l) => l.startsWith("renew")).every((l) => l === "renew 1 7" || l === "renew 2 3"));
+  }
+
+  // --- (4b) GIVING a guest its Claude credential. This is the only route that carries a secret
+  // INWARDS, so the checks are about where that secret goes: onto the hook's stdin, and nowhere
+  // near an argv (world-readable in `ps` for the life of the call). ---
+  {
+    const TOK = "sk-ant-oat-e2e-not-a-real-credential-000111222333";
+    rmSync(STDIN, { force: true });
+    const r = await post("/api/guest/claude-token", { slot: 1, token: TOK });
+    const j = (await r.json()) as { ok?: boolean; out?: string };
+    check("a Claude token can be given to a guest", r.ok && j.ok === true);
+    check("the credential arrived on the hook's STDIN",
+      (await readText(STDIN)).trim() === TOK);
+    check("the credential NEVER appeared in an argv",
+      !argvLines().some((l) => l.includes("sk-ant-oat")), argvLines().slice(-3).join(" | "));
+    check("the hook was called with the verb and the slot", argvLines().includes("claude-token 1"));
+    check("the response does not echo the credential back", !JSON.stringify(j).includes(TOK));
+    // shape-checked at the boundary: a typo must not recreate a container around a garbage value
+    for (const [name, tok] of [["empty", ""], ["not a setup-token", "hunter2"],
+                               ["an owner token by mistake", "sk-ant-api03-aaaaaaaaaaaaaaaaaaaa"],
+                               ["a non-string", 42]] as const)
+      check(`giving ${name} as a Claude token is refused`,
+        (await post("/api/guest/claude-token", { slot: 1, token: tok })).status === 400);
+    check("no refused token reached the hook",
+      (await readText(STDIN)).trim() === TOK);
+    check("the token route is owner-only",
+      (await fetch(`${BASE}/api/guest/claude-token`, { method: "POST", body: "{}" })).status === 401);
+    check("the token route refuses an out-of-range slot",
+      (await post("/api/guest/claude-token", { slot: 99, token: TOK })).status === 400);
   }
 
   // --- (5) a failing hook is reported as a failure, never as a state ---
@@ -160,6 +205,7 @@ export async function run(): Promise<void> {
   rmSync(HOOK, { force: true });
   rmSync(ARGV, { force: true });
   rmSync(PWNED, { force: true });
+  rmSync(STDIN, { force: true });
   await restartSrv({ FLEET_GUEST_CMD: "" });
   check("the guest feature is gone again once the hook is unset", (await get("/api/guest")).status === 404);
 }

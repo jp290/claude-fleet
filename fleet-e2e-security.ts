@@ -383,7 +383,13 @@ if (INTAKE && DISPATCH_REPO) {
     check("§8 /api/guest/link refuses a request with no owner token", noTokInvite.status === 401);
     check("§8 …and that refusal carries none of the guest's credential",
       !(await noTokInvite.text()).includes("e2e-guest-invite-secret"));
+    // the route that takes a credential IN is owner-only by the same position rule
+    check("§8 the guest claude-token route refuses a request with no owner token",
+      (await fetch(`${BASE}/api/guest/claude-token`, { method: "POST", body: "{}" })).status === 401);
     if (SHARE_HOST) {
+      check("§8 the guest claude-token route does not exist on the public share host",
+        (await fetch(`${BASE}/api/guest/claude-token`,
+          { method: "POST", headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` }, body: "{}" })).status === 404);
       check("§8 /api/guest does not exist on the public share host, even WITH the owner token",
         (await fetch(`${BASE}/api/guest`,
           { headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` } })).status === 404);

@@ -5980,13 +5980,28 @@ const GUEST_CMD = process.env.FLEET_GUEST_CMD ?? "";
 // reach for under attack, because it severs the attacker without destroying the guest's work.
 const GUEST_ACTIONS = new Set(["start", "cut", "stop", "renew"]);
 const GUEST_RENEW_MAX_DAYS = 30; // a renew button, not a lease negotiation
+// Guests are slots on the operator's disk (one directory each). The id reaches an argv, so it gets
+// the same treatment as the verb: a closed range validated here, never a passthrough.
+const GUEST_MAX_SLOT = 9;
+function guestSlot(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : v;
+  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= GUEST_MAX_SLOT ? n : null;
+}
 // One at a time. `start` takes tens of seconds (a VM boots), and a double-tap must not race two
 // of them — the second press is told no rather than queued.
 let guestBusy = false;
-async function runGuest(args: string[]): Promise<{ exit: number; out: string; timedOut: boolean }> {
-  let p: Bun.Subprocess<"ignore", "pipe", "pipe">;
+async function runGuest(args: string[], stdin?: string): Promise<{ exit: number; out: string; timedOut: boolean }> {
+  let p: Bun.Subprocess<"ignore" | "pipe", "pipe", "pipe">;
   try {
-    p = Bun.spawn([GUEST_CMD, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    // a credential goes in on STDIN and never in argv — argv is world-readable in `ps` for the
+    // lifetime of the call, and the only thing this hook is ever handed is somebody's subscription
+    p = stdin === undefined
+      ? Bun.spawn([GUEST_CMD, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+      : Bun.spawn([GUEST_CMD, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    if (stdin !== undefined && typeof p.stdin === "object" && p.stdin !== null) {
+      p.stdin.write(stdin);
+      await p.stdin.end();
+    }
   } catch (e) {
     // a mistyped or non-executable FLEET_GUEST_CMD is an operator error, and it must read as one
     // rather than as a 500 — this is the most likely way the feature is ever misconfigured
@@ -6436,12 +6451,42 @@ Bun.serve<WSData>({
     // be a credential in every log that captures one. This is fetched only when the owner asks.
     if (url.pathname === "/api/guest/link" && req.method === "GET") {
       if (!GUEST_CMD) return new Response("not found", { status: 404 });
-      const r = await runGuest(["link"]);
+      // absent means slot 1, the same default the actions take — a caller that names no guest
+      // means the original one, and only a slot that is PRESENT and wrong is an error
+      const slot = guestSlot(url.searchParams.get("slot") ?? 1);
+      if (slot === null) return json({ error: `slot must be a whole number from 1 to ${GUEST_MAX_SLOT}` }, 400);
+      const r = await runGuest(["link", String(slot)]);
       if (r.timedOut || r.exit !== 0) return json({ error: "guest link failed", out: r.out }, 502);
       try {
         return json(JSON.parse(r.out) as Record<string, unknown>);
       } catch {
         return json({ error: "guest link: output was not JSON" }, 502);
+      }
+    }
+    // GIVE a guest the Claude credential its panes need — the other half of the invite. Its own
+    // route, not a member of GUEST_ACTIONS, because it is the only one that carries a secret IN:
+    // it never appears in argv (see runGuest), it is never echoed back, and it is never audited
+    // beyond the fact that it happened. Shape-checked before it is passed on, so a typo cannot
+    // silently recreate a container around a garbage credential.
+    if (url.pathname === "/api/guest/claude-token" && req.method === "POST") {
+      if (!GUEST_CMD) return new Response("not found", { status: 404 });
+      const body = await readJson(req);
+      const slot = guestSlot(body?.slot ?? 1);
+      if (slot === null) return json({ error: `slot must be a whole number from 1 to ${GUEST_MAX_SLOT}` }, 400);
+      const tok = typeof body?.token === "string" ? body.token.trim() : "";
+      if (!/^sk-ant-oat[A-Za-z0-9._-]{16,400}$/.test(tok))
+        return json({ error: "expected a `claude setup-token` value (sk-ant-oat…)" }, 400);
+      if (guestBusy) return json({ error: "a guest action is already running" }, 409);
+      guestBusy = true;
+      try {
+        const r = await runGuest(["claude-token", String(slot)], tok);
+        const ok = !r.timedOut && r.exit === 0;
+        audit("guest_action", undefined, `claude-token:${ok ? "ok" : r.timedOut ? "timeout" : `exit ${r.exit}`}`);
+        // the hook prints a confirmation, never the value — but strip defensively anyway
+        const out = r.out.replaceAll(tok, "«token»");
+        return json({ ok, verb: "claude-token", exit: r.exit, timedOut: r.timedOut, out }, ok ? 200 : 502);
+      } finally {
+        guestBusy = false;
       }
     }
     const guestAct = /^\/api\/guest\/([a-z]+)$/.exec(url.pathname);
@@ -6450,7 +6495,11 @@ Bun.serve<WSData>({
       const verb = guestAct[1] ?? "";
       if (!GUEST_ACTIONS.has(verb)) return json({ error: `unknown guest verb: ${verb}` }, 400);
       const body = await readJson(req);
-      const args = [verb];
+      // which guest. Same treatment as the verb: a closed numeric range checked here, passed as
+      // its own argv element, never interpolated — it names a directory on the operator's disk.
+      const slot = guestSlot(body?.slot ?? 1);
+      if (slot === null) return json({ error: `slot must be a whole number from 1 to ${GUEST_MAX_SLOT}` }, 400);
+      const args = [verb, String(slot)];
       if (verb === "renew") {
         // the only operand any verb takes, and it is a number or it is refused — a renew that
         // accepted a string would hand the script's argv to whoever can reach this route

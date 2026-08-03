@@ -1,8 +1,118 @@
-# HANDOFF — Session 17 (2026-08-01/02: der Picker wird benutzbar, dann sechs offene Enden) · 16/15/14/13 darunter
+# HANDOFF — Session 18 (2026-08-03: Fleet läuft im Container, und ein Gast kann es benutzen) · 17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 18 (2026-08-03): der Container-Strang
+
+4 Commits, `1bbc9ee`..`d2d4910`. **Alle Mechanismen stehen in den Bodies** — hier nur, was
+git nicht trägt.
+
+### Das Erste, was die nächste Session tun sollte
+
+**Zwei Dinge, die live offen sind, in dieser Reihenfolge:**
+
+1. **`bundleStale: true`, srv ist 3 Commits zurück** (gemessen 14:15). Der Picker-Land
+   `6081449` fasst `src/client.ts` + `public/index.html` an — der Client-Teil davon ist
+   **unsichtbar**, bis jemand `bun run build` im Haupt-Checkout fährt. Der Server-Restart
+   (`tmux -L claudefleet kill-session -t srv`) ist die zweite Hälfte und Owner-Entscheid.
+2. **Der Tier-2-Audit auf `6081449` ist ROT** — Signatur aus Session 16, siehe unten.
+   Adjudikation steht aus.
+
+### Die zweite Instanz einer benannten Nicht-Determiniertheit
+
+Session 16 notierte einen Zweier-Fail im Steward-Send-Episoden-Limiter und schrieb dazu
+ausdrücklich: *„Eine Beobachtung, keine sechste Flake-Familie — dafür braucht es mehr als
+eine Instanz."* **Die zweite Instanz ist da**, byte-identisch:
+
+    FAIL  a second send of the same kind×slot within the episode window is 429  (409)
+    FAIL  a capped send is audited (steward_send_capped)
+
+Was sie belastet: der auslösende Diff ist **43 Zeilen Picker/Client** (`public/index.html`,
+`src/client.ts`) und kann den Steward-Send-Pfad nicht erreichen — dieselbe Konstellation wie bei
+der fünften Familie am 2026-08-01. Der Land-Gate war grün (`verified: true`), nur Tier 2 ist rot.
+
+**Die Hausregel gilt trotzdem: erst denselben Baum seriell wiederholen**
+(`docs/verify-tiering.md` §11.7), Maschine ruhig. Grün → bewiesen, und es gehört als **sechste
+Familie** nach §11, nicht in CLAUDE.md, damit die Zahl nicht an zwei Stellen altert. Identisch
+rot → echter Regress im Limiter, keine Flake.
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **„Die Lane ist beim Landen gescheitert" — nein.** `fleet/260803082354-3ec9` ist sauber
+  gelandet (`disposition: landed`, `verified: true`, `mainAfter: 6081449`). Rot ist der
+  Tier-2-Audit **danach**. Zwei verschiedene Dinge; die Outcome-Row sagt es eindeutig.
+- **Mein „≥ 4 GB RAM für eine Gast-Flotte" war deutlich zu hoch.** Es kam aus „25 Prozesse,
+  1,2 GB" — davon ~20 winzige Hilfsprozesse. Echte Sessions kosten im Schnitt **110 MB**;
+  Fleet-Boden im Container **23,6 MB**, pro Slot **~8 MB**, vier Slots 55 MB.
+- **Eine colima-VM reserviert ihre Zuteilung NICHT.** Die 2-GiB-VM, die die volle Suite fuhr,
+  kostet den Host im Leerlauf **~213 MB**, nicht 2 GB. Darauf stand mein „diese Maschine ist zu
+  knapp" — es war falsch, und deshalb läuft der Gast jetzt hier statt auf einem VPS.
+- **SIGHUP lädt cloudflared NICHT neu, es beendet es.** launchd startet neu; ~30 s lang
+  antworten **alle** Hostnames des Tunnels 502, die Website eingeschlossen. Erkennbar an der
+  wechselnden PID. Mein Skript-Kommentar behauptete das Gegenteil, korrigiert in `d2d4910`.
+- **`--memory 1g` war nicht die Ursache eines gestorbenen Containers.** Ein Testlauf starb mit
+  `ExitCode=137`, `OOMKilled=false`, bei 55 MB Verbrauch, ohne OOM-Zeile im VM-Kernel. In vier
+  Folgeversuchen mit identischen Flags nicht reproduziert. **Unerklärt**, praktisch aufgefangen
+  durch `--restart unless-stopped`.
+- **Der Crash um 12:08 war nicht Hitze.** Panic-Log: `userspace watchdog timeout … WindowServer
+  … in 120 seconds`. Begleitend 18 Swapfiles und `kernel_task` als CPU-stärkster Thread
+  (= Drosselung lief). Ein echter Hitze-Abschalter hinterlässt **gar keinen** Panic-Log. Nichts
+  ging verloren: Ledger 0 kaputte Zeilen, 7 von 8 Slots per `--resume` zurück.
+- **Der Session-Scratchpad in `/private/tmp` überlebt keinen Reboot.** Der Gast-Token lag dort
+  und war weg. Liegt jetzt in `~/.claude-fleet-guest/token` (0600).
+
+### Was live ist und wovon die nächste Session wissen muss
+
+- **Gast-Flotte öffentlich** unter dem `container.*`-Hostnamen, **befristet bis 10.08. 13:51**,
+  erzwungen durch einen stündlichen launchd-Job (`guest-expose.sh`; mit zurückdatiertem Ablauf
+  getestet). Owner-Entscheid: **kein Cloudflare Access**, Fenster statt Identität.
+- **VM `fleetguest` läuft**, Container `fleet-guest` mit Egress-Firewall (`--user root
+  --cap-add NET_ADMIN --cap-add NET_RAW -e FLEET_FIREWALL=1`), 1 GB Limit, 24–31 MB Verbrauch.
+- **Zweite VM `fleetbuild`** (gestoppt) ist die Bau-/Prüf-VM. Nicht löschen, sonst dauert der
+  nächste `./docker-verify.sh` wieder eine Viertelstunde.
+- **`~/.cloudflared/config-logic-extraction.yml` wurde bearbeitet** (Markerblock, verwaltet von
+  `guest-expose.sh`) — außerhalb des Repos, Sicherung als `.bak-container-*` daneben.
+- **`~/.claude-fleet-guest/`** trägt `token`, `expose.env`, `expose-until`. Alles 0600 und
+  außerhalb des Repos, weil dieses öffentlich ist.
+- **Nach einem Mac-Neustart ist die Gast-Flotte weg**, bis `colima start -p fleetguest` läuft.
+  Die Live-Flotte kommt über launchd zurück, die Gast-VM hat kein Äquivalent — bewusst, siehe
+  den Brief unten (auto-start kostet RAM an jedem Tag, an dem niemand arbeitet).
+
+### Was der Owner selbst tun muss
+
+Node-Sharing/URL-Weitergabe und das `claude setup-token` seines Freundes in den Container —
+**bis dahin ist ungetestet, ob eine echte Claude-Session in einer echten Pane im Container läuft.**
+Der gesamte Suite-Beweis fährt Shell-Stubs; das ist die größte offene Lücke dieses Strangs.
+
+### Der nächste Bauauftrag liegt fertig da
+
+`briefs/guest-ops-panel.md` — Knöpfe in der Info-Karte (`start` · `cut` · `stop`) plus die
+Auth-Fehler-Zahlen aus dem Audit-Log des Gastes. Der Entwurf ist entschieden, inklusive der
+abgelehnten Alternativen (kein automatischer Lockout: Selbst-DoS) und **einer offenen Owner-Frage**
+am Ende. Nicht neu entwerfen — lesen.
+
+### Key Decisions (mit Grund)
+
+- **Ganze App im Container, niemals einzelne Slots.** Der Transkriptpfad wird aus dem `$HOME` des
+  Servers und dem cwd-String gebildet (`projDir`, server.ts:361) — eine Grenze quer durchs Bündel
+  blendet Konversationsansicht, `laneDoneLooking`, Digest und auto-③ gleichzeitig aus und lässt
+  Fleets eigene Worker trotzdem draußen.
+- **Denylist statt Allowlist in der Firewall.** Eine Allowlist ist stärker gegen Exfiltration und
+  bricht den Zweck („er nimmt sein git-Projekt mit" heißt Push auf ein Remote, das niemand vorher
+  gelistet hat). Gemessen war das Risiko *Erreichbarkeit ins Tailnet*; RFC1918 + CGNAT +
+  link-local entfernt genau das, wartungsfrei.
+- **Die Ingress-Regel ist der Schalter, nicht DNS.** `cloudflared` legt Records an und löscht
+  keine; ohne Regel fällt der Hostname auf den 404-Catch-All.
+- **Der Zustand liegt im Named Volume über dem App-Verzeichnis.** Alle 25 Zustands-Pfade hängen
+  an `import.meta.dir`, ohne Env-Override. Preis: ein neu gebautes Image erreicht die Instanz
+  nicht mehr. Für einen Versuch richtig, dauerhaft falsch — `FLEET_STATE_DIR` wäre die Lösung.
+- **Der Transkript-Check bleibt im Container rot** (`e2e/history.ts:52` braucht echte
+  `.jsonl`-Historie). Bewusst nicht angefasst: ihn hermetisch zu machen ändert, was eine
+  Gate-Suite behauptet, und das ist ein Owner-Entscheid, kein Nebeneffekt.
 
 ---
 

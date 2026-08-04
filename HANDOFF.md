@@ -8,8 +8,34 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 
 ## Session 21 (2026-08-04): die Queue wird ein Werkzeug, und graphify zieht ein
 
-2 Commits `f172053` + `27a9576`, beide deployed und live nachgeprüft (bootHead == HEAD ==
-`27a9576`, behind 0, bundleStale false). Mechanismen in den Bodies — hier nur das Residuum.
+4 Feature-Commits `f172053` + `27a9576` + `91c22ec` + `ec66a96`, alle deployed und live
+nachgeprüft (bootHead == HEAD == `ec66a96`, behind 0, bundleStale false). Mechanismen in
+den Bodies — hier nur das Residuum.
+
+### Nachtrag (zweite Runde derselben Session, auf Owner-Zuruf)
+
+- **`91c22ec` — Hand-Knöpfe**: „▸ start lane" (POST /api/tasks/:id/dispatch — sofort, ohne
+  Tick, am Deckel vorbei, ohne Master-Stop; claude-alive-Gate gilt IMMER) und status
+  „archived" (Regal; restore → pending; archive-on-pending-steward schreibt „dismissed").
+  Tick und Knopf teilen den Kern (dispatchTask/briefAndSend) — claude-gate beweist die
+  tote-claude-Eigenschaft für beide Wege (branch 6 + 6b).
+- **`ec66a96` — Per-Task-Repo**: `Task.repo` (owner-only; Intake/Steward hart null), Tick
+  und Knopf spawnen aus `task.repo ?? DISPATCH_REPO`, Deckel zählt pro Ziel-Repo, Composer
+  hat das Repo-Feld (Pins/Recents-Datalist). Der Ein-Repo-Dispatcher war der vom Owner
+  benannte Fehler („das wäre genau der fehler den ich meine").
+- **Im Browser GEDRÜCKT** (Wegwerf-Instanz, Playwright, Session-19-Lektion): start lane →
+  sent + Lane im Task-Repo + kompilierter Brief in der Pane; archive → Archiv-Gruppe →
+  restore → pending; Bad-Repo → abgelehnt, Text bleibt im Composer.
+- **graphify global** (`~/.claude/skills/`, settings.json nachweislich unangetastet) +
+  **post-commit-Hook im Fleet-Repo** (`.git/hooks/post-commit`, baut den Graph pro Commit
+  neu; die vom Installer erzeugte `.gitattributes` liegt jetzt in `.git/info/attributes`).
+  Der lokale PreToolUse-Guard (`.claude/settings.json`, gitignored) nagt advisory in jeder
+  Fleet-Session — wen es stört: Datei löschen, der Skill funktioniert ohne.
+- **Wegwerf-Instanz-Falle, neu gelernt: `. ./e2e-stage.sh` NIMMT DEN SUITE-LOCK** („Sourcing
+  this file IS starting a suite") — für UI-Instanzen schlicht Top-Level-`*.ts` + `src/` +
+  `public/` + `package.json` kopieren und `node_modules` symlinken, kein stage_instance.
+- Beobachtet, nicht angefasst: die Slot-4-Lane fuhr währenddessen ihre eigene
+  `e2e-isolated`-Verifikation (hielt den Lock korrekt).
 
 ### Was in FLUG ist (das Erste, was die nächste Session wissen muss)
 

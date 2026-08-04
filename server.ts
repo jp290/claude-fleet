@@ -1857,32 +1857,165 @@ async function poll(): Promise<void> {
   );
 }
 
-async function listDirs(raw: string) {
-  const dir = resolve(expandCwd(raw));
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`not a directory: ${dir}`);
+// How many folder names one listing serves. The number is unchanged; what is new is that the
+// payload SAYS when it bit — `total` and `capped` are what let the tree draw "200 of 1284 — refine"
+// instead of quietly presenting a truncated directory as the whole directory.
+const DIRS_CAP = 200;
+// what a search from a root is allowed to cost. Every one of these is reported through `truncated`
+// rather than silently applied, for the same reason.
+const FIND_MAX_DEPTH = 6;    // levels below the root
+const FIND_MAX_VISIT = 4000; // directories read
+const FIND_MAX_HITS = 200;   // matches returned
+// A COUNT OF DIRECTORIES IS NOT A BOUND ON TIME, and this is not theoretical: measured on this
+// machine, 119 of the 120 folders in the home directory answer readdir in under 10ms and ~/Desktop
+// — an iCloud-synced folder — does not answer within 8 SECONDS, reproducibly. A visit cap cannot
+// bound that, because the cost is not in the number of reads. So one read races a short timeout and
+// the walk as a whole races a deadline; a search is a keystroke away from the next one and has to
+// come back on a human scale or not at all.
+const FIND_MAX_MS = 2500;    // wall clock for the whole walk
+const FIND_DIR_MS = 400;     // one directory's readdir
+const FIND_FANOUT = 32;      // directories read at once — the deadline buys far more ground in parallel
+// A read that times out is not cancelled, only abandoned: it goes on occupying the filesystem thread
+// pool, and the next search queues behind it. Measured: a full walk of this home directory abandons
+// 4 reads, and back-to-back walks that abandon many more make the FOLLOWING search time out on its
+// own root — 0 hits, one directory visited. So the tail a search may leave behind is bounded too,
+// well above what a healthy walk needs.
+const FIND_MAX_SLOW = 8;
+
+// Folders that did not answer in time, and when. A timed-out read is not CANCELLED, only abandoned:
+// it goes on occupying libuv's filesystem thread pool — four threads, shared with everything else
+// this server does — so abandoning reads is the expensive part, not waiting for them. Measured: five
+// home searches in a row abandoned 100+ reads and every search after them timed out on its own root
+// (0 hits, one directory visited), and the picker stayed that way. Remembering the offenders means
+// the SECOND search does not pay for them at all. The entry expires, because "slow" can also mean
+// "the machine was busy for a moment", and a permanent verdict on that would quietly blind the
+// search to a real folder forever.
+const findSlow = new Map<string, number>();
+const FIND_SLOW_TTL_MS = 5 * 60_000;
+function knownSlow(dir: string): boolean {
+  const at = findSlow.get(dir);
+  if (at === undefined) return false;
+  if (Date.now() - at < FIND_SLOW_TTL_MS) return true;
+  findSlow.delete(dir);
+  return false;
+}
+
+// null = unreadable (permissions, or it vanished). "slow" = it did not answer in time, which is a
+// different fact and one the caller must report rather than treat as an empty folder.
+async function readdirSoon(dir: string) {
+  return await Promise.race([
+    readdir(dir, { withFileTypes: true }).catch(() => null),
+    new Promise<"slow">((r) => setTimeout(() => r("slow"), FIND_DIR_MS)),
+  ]);
+}
+
+// one statSync probe classifies a folder: .git-as-dir = a real repo (badge it, you can start a lane
+// here); .git-as-file = a git worktree (a lane already — the picker's "hide worktrees" toggle
+// filters these). Same syscall budget as a plain existsSync.
+function gitKind(path: string): { repo: boolean; wt: boolean } {
+  try { return { repo: true, wt: statSync(`${path}/.git`).isFile() }; }
+  catch { return { repo: false, wt: false }; }
+}
+
+// the subfolders of one directory, sorted. `hidden` is the picker's dotfolder toggle: .claude and
+// .github are real places to open a session in, and the filter that hid them was unconditional.
+async function subdirNames(dir: string, hidden: boolean): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
-  const dirs = entries
-    .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && !e.name.startsWith("."))
+  return entries
+    .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && (hidden || !e.name.startsWith(".")))
     .filter((e) => { try { return statSync(`${dir}/${e.name}`).isDirectory(); } catch { return false; } })
     .map((e) => e.name)
-    .sort((a, b) => a.localeCompare(b))
-    .slice(0, 200);
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function listDirs(raw: string, hidden: boolean) {
+  const dir = resolve(expandCwd(raw));
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`not a directory: ${dir}`);
+  const all = await subdirNames(dir, hidden);
+  const dirs = all.slice(0, DIRS_CAP);
   const common = [HOME, `${HOME}/Desktop`, `${HOME}/Documents`, `${HOME}/Downloads`]
     .filter((p) => existsSync(p));
   const parent = dirname(dir);
-  // one statSync probe per listed folder classifies it: .git-as-dir = a real repo (badge it,
-  // you can start a lane here); .git-as-file = a git worktree (a lane already — the picker's
-  // "hide worktrees" toggle filters these). Same syscall budget as a plain existsSync loop.
   const repos: string[] = [];
   const worktrees: string[] = [];
   for (const name of dirs) {
-    try {
-      const st = statSync(`${dir}/${name}/.git`);
-      repos.push(name);
-      if (st.isFile()) worktrees.push(name);
-    } catch { /* no .git here — not a repo */ }
+    const k = gitKind(`${dir}/${name}`);
+    if (!k.repo) continue;
+    repos.push(name);
+    if (k.wt) worktrees.push(name);
   }
-  return { path: dir, parent: parent === dir ? null : parent, dirs, repos, worktrees, recents, pins, common, git: existsSync(`${dir}/.git`) };
+  return { path: dir, parent: parent === dir ? null : parent, dirs, total: all.length,
+    capped: all.length > dirs.length, repos, worktrees, recents, pins, common,
+    git: existsSync(`${dir}/.git`) };
+}
+
+// --- searching BELOW the current level ---
+// The picker's filter matched the rows it had rendered, so a folder inside a collapsed one could not
+// be found by typing its name — the one thing a filter is for. Done here rather than as a client-side
+// fetchKids cascade: a client cannot know which collapsed subtree holds a match without fetching all
+// of them, so the cascade is one round trip per folder on the disk and its cap can only bound the
+// FETCHES, leaving no way to say which part of the tree went unsearched. One walk, one budget, and
+// `truncated` names the incompleteness.
+//
+// Breadth-first on purpose: the shallow matches — the ones a person typing three letters means — are
+// complete before the budget can be sunk into one deep subtree.
+async function findDirs(raw: string, q: string, hidden: boolean) {
+  const root = resolve(expandCwd(raw));
+  if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`not a directory: ${root}`);
+  const needle = q.toLowerCase();
+  const hits: { path: string; name: string; repo: boolean; wt: boolean }[] = [];
+  const deadline = Date.now() + FIND_MAX_MS;
+  let frontier = [root];
+  let visited = 0;
+  let depth = 0;
+  // two different facts, and conflating them cost the whole search: `incomplete` = somewhere a
+  // folder that could have held a match was not looked in, `stop` = walking further is pointless or
+  // out of budget. One stalled folder is the first and NOT the second — ending the walk over
+  // ~/Desktop would leave every search from the home directory one level deep on this machine.
+  let incomplete = false;
+  let stop = false;
+  let slow = 0; // directories that did not answer in time and were skipped
+  while (frontier.length && depth < FIND_MAX_DEPTH && !stop) {
+    const next: string[] = [];
+    // a folder already known not to answer is skipped without a read — it still makes the result
+    // incomplete, it just no longer costs a timeout and an abandoned read to say so
+    const todo = frontier.filter((d) => { if (!knownSlow(d)) return true; incomplete = true; return false; });
+    for (let i = 0; i < todo.length && !stop; i += FIND_FANOUT) {
+      if (visited >= FIND_MAX_VISIT || Date.now() >= deadline) { incomplete = stop = true; break; }
+      const batch = todo.slice(i, i + FIND_FANOUT);
+      visited += batch.length;
+      const reads = await Promise.all(batch.map(async (dir) => ({ dir, entries: await readdirSoon(dir) })));
+      for (const { dir, entries } of reads) {
+        if (entries === "slow") {
+          findSlow.set(dir, Date.now());
+          incomplete = true;
+          if (++slow >= FIND_MAX_SLOW) stop = true;
+          continue;
+        }
+        if (!entries) continue; // unreadable — permissions, or it vanished between the two calls
+        for (const e of entries) {
+          if (!hidden && e.name.startsWith(".")) continue;
+          const path = `${dir}/${e.name}`;
+          // a symlink to a directory is a folder for MATCHING and never a place to descend: a link
+          // back up the tree is a cycle, and no budget makes walking one worth it
+          const link = !e.isDirectory() && e.isSymbolicLink();
+          if (link) { try { if (!statSync(path).isDirectory()) continue; } catch { continue; } }
+          else if (!e.isDirectory()) continue;
+          if (e.name.toLowerCase().includes(needle)) {
+            if (hits.length < FIND_MAX_HITS) hits.push({ path, name: e.name, ...gitKind(path) });
+            else incomplete = stop = true; // more matches exist and none of them can be returned
+          }
+          // .git holds hundreds of directories nobody is looking for a session in; it is still
+          // listed above if its own name matches, it is just never walked INTO
+          if (!link && e.name !== ".git") next.push(path);
+        }
+      }
+    }
+    frontier = next;
+    depth++;
+  }
+  // folders left unopened when the walk stopped = there may be matches nobody looked for
+  return { path: root, find: q, hits, visited, slow, truncated: incomplete || frontier.length > 0 };
 }
 
 // --- what a folder IS, for the picker's detail pane ---
@@ -7399,7 +7532,10 @@ Bun.serve<WSData>({
     }
     if (url.pathname === "/api/dirs") {
       try {
-        return json(await listDirs(url.searchParams.get("path") ?? "~"));
+        const path = url.searchParams.get("path") ?? "~";
+        const hidden = url.searchParams.get("hidden") === "1";
+        const find = (url.searchParams.get("find") ?? "").trim();
+        return json(find ? await findDirs(path, find, hidden) : await listDirs(path, hidden));
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "bad path" }, 400);
       }

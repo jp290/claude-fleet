@@ -1,5 +1,6 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { check, get, post, REPO, ROOT } from "./harness";
 import type { Ctx } from "./ctx";
@@ -202,5 +203,30 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await fSess()).tasks.find((t) => t.id === aT.task.id)?.status === "pending",
       JSON.stringify((await fSess()).tasks.find((t) => t.id === aT.task.id)));
     await post(`/api/tasks/${aT.task.id}/delete`, {});
+  }
+
+  // --- (g) per-task repo binding: the TASK decides where its lane spawns (owner-only) ---
+  {
+    const gSess = async (): Promise<{ slots: { id: number; worktree: { repo: string } | null }[] }> =>
+      (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { repo: string } | null }[] };
+    // a second scratch repo next to the harness repo — the whole point is repo ≠ dispatcher default
+    const REPO2 = `${ROOT}/repo2`;
+    spawnSync("git", ["init", "-q", REPO2]);
+    await Bun.write(`${REPO2}/readme.md`, "repo2\n");
+    spawnSync("git", ["-C", REPO2, "add", "-A"]);
+    spawnSync("git", ["-C", REPO2, "commit", "-qm", "init"]);
+    const rT = (await (await post("/api/tasks", { text: "repo2-probe", queue: false, repo: REPO2 })).json()) as { task: { id: string; repo?: string } };
+    check("an owner task can carry a target repo (stored resolved)",
+      typeof rT.task.repo === "string" && rT.task.repo.endsWith("/repo2"), JSON.stringify(rT.task));
+    const rd = await post(`/api/tasks/${rT.task.id}/dispatch`, {});
+    const rdJ = (await rd.json()) as { ok?: boolean; slot?: number };
+    const rLane = typeof rdJ.slot === "number" ? (await gSess()).slots.find((s) => s.id === rdJ.slot) : undefined;
+    check("manual start spawns the lane from the TASK's repo, not the dispatcher default",
+      rd.ok && rdJ.ok === true && (rLane?.worktree?.repo ?? "").endsWith("/repo2"),
+      `${rd.status} ${JSON.stringify({ rdJ, wt: rLane?.worktree ?? null })}`);
+    check("a non-directory repo is refused at task create (400)",
+      (await post("/api/tasks", { text: "x", repo: `${ROOT}/does-not-exist-xyz` })).status === 400);
+    if (typeof rdJ.slot === "number") await post(`/api/slots/${rdJ.slot}/kill`, {});
+    await post(`/api/tasks/${rT.task.id}/delete`, {});
   }
 }

@@ -164,6 +164,9 @@ interface Task {
   // observation addressed to the OWNER (the steward's default). Promote stays allowed for a
   // note — it is the propose-outcome signal — but the dispatcher skips it: an observation
   // ("lane X looks done") must never be injected into a fresh lane as its founding brief.
+  repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
+  // steward can never choose where external text materializes as a working session. null =
+  // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
   status: "pending" | "queued" | "sent" | "done" | "archived";
   created: number;
   slot: number | null; // set once dispatched
@@ -260,13 +263,14 @@ const MAX_TASK_TEXT = 20_000;
 // on the poll path reads the text (the queue button reads status+source); the queue overlay
 // fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
 // null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
-type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note">>;
+type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note" | "repo">>;
 function taskDigest(t: Task): TaskDigest {
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
     ...(t.from ? { from: t.from } : {}),
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
+    ...(t.repo ? { repo: t.repo } : {}),
   };
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
@@ -274,14 +278,20 @@ function taskDigest(t: Task): TaskDigest {
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
 // createWorktree stores the git TOPLEVEL (symlink-resolved: /tmp → /private/tmp) as a lane's
-// repo, so comparing lanes against the raw env string would silently match nothing — and a cap
-// that matches nothing is no cap. Canonicalize once; compare against both forms.
-const DISPATCH_REPO_CANON = (() => {
-  if (!DISPATCH_REPO) return "";
-  try { return realpathSync(resolve(expandCwd(DISPATCH_REPO))); } catch { return DISPATCH_REPO; }
-})();
-const inDispatchRepo = (s: Slot): boolean =>
-  s.worktree != null && (s.worktree.repo === DISPATCH_REPO_CANON || s.worktree.repo === DISPATCH_REPO);
+// repo, so comparing lanes against a raw configured path would silently match nothing — and a
+// cap that matches nothing is no cap. Canonicalize once per repo (cached — realpaths of repo
+// roots don't move underfoot); compare against both forms.
+const repoCanonCache = new Map<string, string>();
+function repoCanon(repo: string): string {
+  const hit = repoCanonCache.get(repo);
+  if (hit !== undefined) return hit;
+  let c: string;
+  try { c = realpathSync(resolve(expandCwd(repo))); } catch { c = repo; }
+  repoCanonCache.set(repo, c);
+  return c;
+}
+const inRepo = (s: Slot, repo: string): boolean =>
+  s.worktree != null && (s.worktree.repo === repoCanon(repo) || s.worktree.repo === repo);
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
 let autosOn = true; // global kill-switch for scheduled autos (the heartbeat surface); owner-toggled, default on
 let quietHours: { start: number; end: number } | null = null; // owner-set local-hour window muting the recurring/heartbeat surface (no 3am nudges)
@@ -1670,7 +1680,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean):
   dispatchingTasks.add(next.id);
   laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
   try {
-    const wt = await createWorktree(DISPATCH_REPO, "");
+    // the task's own target repo wins; the env default covers every unbound row
+    const wt = await createWorktree(next.repo ?? DISPATCH_REPO, "");
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
     await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
@@ -1765,11 +1776,12 @@ async function tickDispatch(): Promise<void> {
     const waiting = (note: string): void => {
       if (next.note !== note) { next.note = note; saveState(); }
     };
-    // count lanes in the dispatcher's OWN repo: the cap bounds unattended fan-out, and this
-    // dispatcher only ever fans out into DISPATCH_REPO — a hand-driven lane in another repo
-    // used to eat the budget and stall the queue with no signal
-    const lanes = slots.filter(inDispatchRepo).length;
-    if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy — land or close one`); return; }
+    // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
+    // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
+    // with no signal
+    const repo = next.repo ?? DISPATCH_REPO;
+    const lanes = slots.filter((s) => inRepo(s, repo)).length;
+    if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); return; }
     const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
     if (!free) { waiting("waiting: no free slot"); return; }
     // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned or the task is
@@ -4857,7 +4869,7 @@ async function handleIntake(req: Request): Promise<Response> {
   const from = typeof body.from === "string" ? body.from.slice(0, 120) : null;
   const t: Task = {
     id: randomBytes(4).toString("hex"), text, source: "intake", from,
-    kind: "lane", status: "pending", created: now, slot: null, note: null,
+    kind: "lane", repo: null, status: "pending", created: now, slot: null, note: null,
   };
   tasks = capTasks([...tasks, t]);
   saveState();
@@ -4973,10 +4985,12 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
         && ["owner", "intake", "steward"].includes((x as Task).source)
         && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
-        // rows persisted before `kind` existed (2026-08-04): steward rows were observations,
-        // everything else was work — normalize here so every row downstream carries the field
-        .map((t) => t.kind === "lane" || t.kind === "note" ? t
-          : { ...t, kind: t.source === "steward" ? "note" as const : "lane" as const });
+        // rows persisted before `kind`/`repo` existed (2026-08-04): steward rows were
+        // observations, everything else was work, and every lane targeted the dispatcher
+        // default — normalize here so every row downstream carries both fields
+        .map((t) => ({ ...t,
+          kind: t.kind === "lane" || t.kind === "note" ? t.kind : (t.source === "steward" ? "note" as const : "lane" as const),
+          repo: typeof t.repo === "string" ? t.repo : null }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -5991,6 +6005,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const t: Task = {
       id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
       source: "steward", from: null, kind: body.kind === "lane" ? "lane" : "note",
+      repo: null, // never body.repo — a steward text must not choose where a lane spawns
       status: "pending", created: Date.now(), slot: null, note: null,
     };
     tasks = capTasks([...tasks, t]);
@@ -7277,9 +7292,19 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/tasks" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
+      // per-task target repo (owner-only — the intake and steward routes hard-set null).
+      // Validated as an existing directory HERE, at the boundary; git-ness is proven at spawn
+      // time by createWorktree, which fails loudly onto the task's note.
+      let taskRepo: string | null = null;
+      if (body.repo !== undefined && body.repo !== null) {
+        if (typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "bad repo" }, 400);
+        const dir = resolve(expandCwd(body.repo.trim()));
+        if (!existsSync(dir) || !statSync(dir).isDirectory()) return json({ error: `repo is not a directory: ${dir}` }, 400);
+        taskRepo = dir;
+      }
       const t: Task = {
         id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-        source: "owner", from: null, kind: "lane",
+        source: "owner", from: null, kind: "lane", repo: taskRepo,
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null, note: null,
       };
       tasks = capTasks([...tasks, t]);
@@ -7296,9 +7321,10 @@ Bun.serve<WSData>({
     // same carve-out canDeliver documents); the post-spawn claude-alive gate holds as always.
     const taskDispatch = /^\/api\/tasks\/([a-z0-9]+)\/dispatch$/.exec(url.pathname);
     if (req.method === "POST" && taskDispatch) {
-      if (!DISPATCH_REPO) return json({ error: "dispatcher unavailable — set FLEET_DISPATCH_REPO" }, 400);
       const t = tasks.find((x) => x.id === taskDispatch[1]);
       if (!t) return json({ error: "unknown task" }, 404);
+      // a task with its own target repo starts fine without the env default
+      if (!DISPATCH_REPO && !t.repo) return json({ error: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" }, 400);
       if (t.kind === "note") return json({ error: "a note is not dispatchable — it is an observation, not a brief" }, 409);
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task can be started` }, 409);

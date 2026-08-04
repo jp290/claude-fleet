@@ -23,6 +23,11 @@ export async function run(sc: StewardCtx): Promise<void> {
     stLane.task?.kind === "lane", JSON.stringify(stLane.task));
   check("an unknown kind is rejected (400), never coerced",
     (await sc.stewPost("/api/steward/tasks", { text: "x", kind: "evil" })).status === 400);
+  // the repo field is owner-only: a steward text must never choose where a lane spawns
+  const stRepo = (await (await sc.stewPost("/api/steward/tasks", { text: "repo grab probe", repo: "/tmp" })).json()) as { task?: { id?: string; repo?: unknown } };
+  check("a steward task can never choose a target repo (field ignored, stays null)",
+    stRepo.task?.repo == null, JSON.stringify(stRepo.task));
+  await post(`/api/tasks/${stRepo.task?.id}/delete`, {});
   await post(`/api/tasks/${stLane.task?.id}/delete`, {});
   const sessSt = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; source: string }[] };
   check("steward-filed task lands in the owner's queue as pending/steward",

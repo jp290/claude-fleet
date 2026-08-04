@@ -1,8 +1,71 @@
-# HANDOFF — Session 22 (2026-08-04: das Merge/Land-Programm, Scheibe ① Drift) · 21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 23 (2026-08-04 abends: ⑦ gelandet und im Gebrauch korrigiert) · 22/21/20/19/18/17/16/15/14/13 darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
+*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 23 (2026-08-04 abends): ⑦ landen, benutzen, und im Gebrauch reparieren
+
+Diese Session hat die vier Handgriffe aus Session 22 abgearbeitet, dann ⑦ gelandet — und dann
+etwas gefunden, das nur durch **Benutzen** sichtbar wurde. Mechanismen stehen in den Commit-Bodies
+(`git log 75b2ca1..HEAD`); hier nur, was git nicht trägt.
+
+### Die Lehre, falls du nur eine Zeile liest
+
+⑦ war eine Stunde alt, als der erste echte Gebrauch einen Fehler zeigte, den kein Check hatte:
+die Gate-Zeile stand **18 Minuten am Stück auf ⚠** auf einer ruhigen Maschine (533 von 567 Zeilen
+eines Beobachter-Logs). Ursache: `e2e-stage.sh:38` gibt den Lock absichtlich nicht frei, also
+hinterlässt JEDE fertige Suite eine Leiche — der Ruhezustand war der Alarmzustand, und die eine
+echte Anomalie (lebender Halter, der zu lange hält) trug denselben Ton wie ein gesunder Lauf.
+Bauen → landen → **benutzen** → korrigieren, innerhalb einer Stunde. Genau dafür sind ① und ⑦ da.
+
+### Buchhaltungs-Lücke, die beim Ledger-Lesen auffallen wird
+
+**Die fünf Commits ab `14dafdc` sind DIREKT auf main entstanden, im Haupt-Checkout, ohne Lane.**
+Konsequenz, die man kennen muss, bevor man den Zahlen glaubt:
+- `git notes --ref=fleet/land` ist für alle fünf **leer** — die Integrations-Provenienz kennt sie nicht.
+- `lane-outcomes.jsonl` hat für sie **keine Rows** (der Ledger endet bei `fleet/260804154311-a0c8`).
+- `post-land-audits.jsonl` ebenso — der Tier-2-Audit feuert nur nach einem Land.
+- `undo-land` greift für sie nicht; der Rückweg ist `git revert`.
+
+Ersatzweise lief vor JEDEM dieser Commits die volle Kette von Hand (`pins` + tsc + build +
+clean-review + security + claude-gate) **plus** `./e2e-isolated.sh` als Stufe 2 auf demselben Baum,
+und für Client-only-Teile ein gerenderter Frame im Browser — keine Suite sieht eine CSS-Farbe.
+Ob das der richtige Weg ist, ist eine **offene Owner-Entscheidung**: die CLAUDE.md beschreibt nur
+den Lane-Weg und sagt nichts über Direkt-Commits aus dem Haupt-Checkout.
+
+### Operativ gelernt (kostet sonst wieder eine Stunde)
+
+- **Suiten-Reihenfolge ist eine Fehlerquelle.** `./e2e-isolated.sh` als FÜNFTE Suite direkt hinter
+  vier anderen fiel mit dem dokumentierten steward-send-cap-Paar (429 erwartet, 409 bekommen,
+  `docs/verify-tiering.md:233-238`, lastabhängig). Derselbe Baum seriell wiederholt: ALL PASS.
+  Danach isolated ZUERST gefahren → kein Rot mehr. Wer die Kette am Stück fährt, provoziert das.
+- **`bun run build` ist ein Deploy.** Es schreibt `public/app.js`, und der Live-Server serviert das
+  sofort — auch aus einem uncommitteten Baum. Genau so ging heute unbeabsichtigt Client-Code live.
+  `bundleStale` merkt das NICHT: es vergleicht mtimes, nicht Commits.
+- **`.playwright-mcp/` habe ich versehentlich gelöscht** (308 Artefakte seit 18.07., gitignored, von
+  nichts referenziert). Rückholbar aus dem TM-Snapshot `2026-08-04-220316` mit sudo; Owner hat noch
+  nicht entschieden, ob es die Mühe wert ist.
+
+### Owner-Entscheide dieser Session
+
+- **Dispatcher bleibt AUS** (`fleet.json` trägt `"dispatch": false`). Die CLAUDE.md behauptete zwei
+  Sessions lang „AN" — korrigiert. Der Hand-Knopf läuft unabhängig weiter.
+- **Picker-Filter: „sagen, was fehlt"** — gewählt aus vier Optionen; nicht „nur den Baum filtern",
+  nicht „Default aus", nicht „so lassen".
+- **Zwei Picker-Beobachtungen am Live-Board**, beide bestätigt und behoben: das rechte Pane
+  widersprach dem Baum (40 vs. 200 Deckel auf denselben Ordner), und der Pfad stand in #777.
+
+### Was als Nächstes ansteht
+
+1. **② Server-first Sync** — der nächste Schritt des Merge/Land-Programms, unverändert.
+2. Zwei kleine ⑦-Lücken: der `exitCode`-Guard hat keinen Check, und `verify_intent` schreibt pro
+   Phasenwechsel eine Audit-Zeile ohne Stundendeckel (das Steward-Journal hat einen).
+3. **Maschinenhygiene**: 104 verwaiste tmux-Sockets, 55 MB TMPDIR-Scratch. Nichts räumt das ab,
+   und die Zahl wächst mit jeder Session (85 heute früh).
+4. Queue: `2e9ed996` (Terminal — Farbe, Robustheit, Scrollback) ist die einzige offene Task.
 
 ---
 
@@ -47,7 +110,12 @@ re-verifiziert absichtlich nicht — markiert stale; Rest-Nutzen reist als Minia
 merge-tree als Review-Flag-Quelle (Vorhersage ≠ Wahrheit — der Server-Rebase-Versuch ist die
 Wahrheit). rerere und Hard-Block bleiben verworfen wie dokumentiert.
 
-### Was der Owner von Hand tun muss (Reihenfolge)
+### Was der Owner von Hand tun muss (Reihenfolge) — ✅ ALLE VIER ERLEDIGT in Session 23
+
+*Historie, nicht offene Arbeit. Punkt 3 wurde beim Ausführen korrigiert: die vorgeschlagene Zeile
+benutzte `$FLEET_HOST`, das es in einer Lane-Pane nicht gibt (gemessen: nur `FLEET_SELF_TOKEN` +
+`FLEET_SELF_SLOT`), sie wäre zu `http://:8790/` expandiert. Steht jetzt mit literalem Host in der
+CLAUDE.md, samt `wouldConflict: null` = UNKNOWN.*
 
 1. Diese Lane landen (⏫) — Code + dieses Handoff + der ⑦-Brief landen zusammen.
 2. Deploy: `tmux -L claudefleet kill-session -t srv`, dann Health-Check. Erst danach

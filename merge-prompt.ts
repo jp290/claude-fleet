@@ -22,10 +22,42 @@ export interface MergePromptInput {
   laneTask: string | null;
   laneLog: string; // `git log main..HEAD --oneline` — this lane's commits (OURS)
   mainLog: string; // `git log mergeBase..main --oneline` — main's commits since the fork (THEIRS)
+  // absolute path to a graphify graph.json built for this run, or null if none was (server.ts,
+  // buildLaneGraph). Required, not optional, and never assumed: a prompt that advertises a tool
+  // that is not there spends the agent's rounds on a command answering "no graph found".
+  // A PATH, not a flag, because the map deliberately lives OUTSIDE the worktree — a graphify-out/
+  // inside a lane is an untracked file, and untracked files are what the land path refuses.
+  graph: string | null;
+}
+
+// The code-map section, shared by both resolver prompts because both agents face the same
+// question — who else uses the symbol I am about to change. Empty when no graph was built, so
+// the capability is advertised only where it exists (fail-closed).
+// The verbs listed here are exactly the ones MERGE_TOOLS allows: read-only. The BUILD verb is
+// deliberately absent from both — its argument is a path, so allowing it would hand the agent an
+// unanchored read of the whole machine. The server builds the graph; the agent only reads it.
+function mapSection(graph: string | null): string[] {
+  if (!graph) return [];
+  return [
+    "MAP: a code graph of this branch was built for you (graphify, AST-only, no network). It answers the",
+    "one question a conflict resolution gets wrong most often — who ELSE uses the thing you are about to",
+    "change. Read-only. The --graph flag is REQUIRED on every call, exactly as written: the graph lives",
+    "outside your worktree on purpose, so a bare `graphify query` would find nothing.",
+    `  graphify affected "<symbol>" --graph ${graph}`,
+    "      → every call site and dependant. Run this BEFORE you drop, rename or merge any symbol that",
+    "        appears in a conflict region.",
+    `  graphify explain "<symbol>" --graph ${graph}`,
+    "      → that one symbol with its connections and source line.",
+    `  graphify query "<question>" --graph ${graph}`,
+    "      → a scoped subgraph for an orientation question.",
+    "The graph is a MAP, never an authority: it was built from this branch's committed code and cannot",
+    "see your resolution. git and the files remain the truth — if they disagree with the graph, they win.",
+    "",
+  ];
 }
 
 export function buildMergePrompt(i: MergePromptInput): string {
-  const { branch, main, conflicted, laneTask, laneLog, mainLog } = i;
+  const { branch, main, conflicted, laneTask, laneLog, mainLog, graph } = i;
   return [
     `${WORKER_CONTRACTS.merge.mark}. Work autonomously — nobody is watching.`,
     `Your ONLY job: rebase this worktree's branch (${branch}, your cwd) onto ${main} and resolve any`,
@@ -37,10 +69,11 @@ export function buildMergePrompt(i: MergePromptInput): string {
     "   preserve the INTENT of both sides — never blanket-pick ours/theirs, never delete code you don't",
     "   understand. Then git add the files and git rebase --continue. Repeat until the rebase completes.",
     "RULES: stay inside this worktree; use only plain `git <subcommand>` invocations (no -c, no aliases,",
-    "no --exec) — anything else is auto-denied. Never run build/test commands. If a conflict is beyond",
+    `no --exec)${graph ? ", plus the read-only graphify verbs listed under MAP below" : ""} — anything else is auto-denied. Never run build/test commands. If a conflict is beyond`,
     "safe resolution or the rebase goes wrong, run git rebase --abort so the lane is exactly as you",
     "found it, and report blocked.",
     "",
+    ...mapSection(graph),
     // THREE-WAY ORIENTATION: name which side is which so the agent reconstructs BOTH intents
     // from the two commit logs in the DATA block, instead of reverse-engineering main's side.
     `ORIENTATION: in each conflict the lines between <<<<<<< and ======= are OURS (this lane, ${branch}); the`,
@@ -85,6 +118,7 @@ export interface RepairPromptInput {
   verifyCmd: string;
   verifyOut: string; // the failing verification's output tail — untrusted DATA
   conflicted: string[]; // the files the resolution touched, for orientation
+  graph: string | null; // same contract as MergePromptInput.graph — a path, or not advertised
 }
 
 // The REPAIR prompt: after a conflict resolution rebases cleanly but the deterministic verify
@@ -95,7 +129,7 @@ export interface RepairPromptInput {
 // git re-verification + a re-run of runVerify against the resulting tree (see mergeJob's loop).
 // The word REPAIRING leads the prompt so the e2e stand-in can distinguish a repair call.
 export function buildRepairPrompt(i: RepairPromptInput): string {
-  const { branch, main, verifyCmd, verifyOut, conflicted } = i;
+  const { branch, main, verifyCmd, verifyOut, conflicted, graph } = i;
   return [
     `${WORKER_CONTRACTS.repair.mark} (${branch}, your cwd) after a failed verification. Work`,
     "autonomously — nobody is watching.",
@@ -110,9 +144,11 @@ export function buildRepairPrompt(i: RepairPromptInput): string {
     "   build needs, restore it. Do NOT reformat or touch anything the verification did not flag.",
     "3. Stage and commit: git add -A && git commit -m 'repair: fix verification failure'. Do NOT rebase.",
     "RULES: stay inside this worktree; use only plain `git <subcommand>` invocations (no -c, no aliases,",
-    "no --exec) — anything else is auto-denied. Never run build/test commands yourself; the server re-verifies.",
+    `no --exec)${graph ? ", plus the read-only graphify verbs listed under MAP below" : ""} — anything else is auto-denied. Never run build/test commands yourself; the server re-verifies.`,
     "If you cannot fix it safely, leave the tree EXACTLY as you found it (no partial edits) and report blocked.",
     "",
+    // the repair's most common cause IS a dropped symbol, which is exactly what `affected` answers
+    ...mapSection(graph),
     // HARD SCOPE RULE: the resolution that produced this tree is otherwise correct — a repair that
     // wanders beyond the reported failure is itself a regression.
     "SCOPE — HARD RULE: change ONLY what the verification failure requires. Preserve every other symbol and",

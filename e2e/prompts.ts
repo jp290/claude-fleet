@@ -56,6 +56,22 @@ export async function run(): Promise<void> {
       // profiles spell it, not a set of strings that happen to match nothing anywhere
       && banned.every((b) => tools.MERGE_TOOLS.includes(b)),
       banned.filter((b) => tools.REVIEW_TOOLS.includes(b)).join(",") || "none present");
+    // The resolver may READ the code graph and must never BUILD one. The build verb takes a PATH,
+    // so a bare "Bash(graphify:*)" would let the agent index any directory on the machine and then
+    // query it — an unanchored read that this profile's Read(**) anchor can never see, and the same
+    // escape the Read(**) canary demonstrated on 2026-07-25 in a different hat. The server builds
+    // the graph (buildLaneGraph) into TMPDIR and hands the agent its path; the agent only queries.
+    const gVerbs = ["Bash(graphify query:", "Bash(graphify explain:", "Bash(graphify affected:"];
+    check("tool profiles: MERGE_TOOLS carries the read-only graphify verbs, one by one",
+      gVerbs.every((v) => tools.MERGE_TOOLS.includes(v)),
+      gVerbs.filter((v) => !tools.MERGE_TOOLS.includes(v)).join(",") || "all present");
+    check("tool profiles: no profile grants a bare graphify (the build verb takes a path = unanchored read)",
+      PROFILES.every((n) => !/"Bash\(graphify:/.test(tools[n]) && !/"Bash\(graphify update/.test(tools[n])),
+      PROFILES.filter((n) => /"Bash\(graphify:/.test(tools[n])).join(",") || "none");
+    // the read-only reviewer gets no map either — it answers a verdict string and reads nothing else
+    check("tool profiles: REVIEW_TOOLS grants no graphify at all (it only ever answers a verdict)",
+      !tools.REVIEW_TOOLS.includes("graphify"), tools.REVIEW_TOOLS);
+
     // Model names reach a tmux shell line, and the 1M variants are spelled `claude-opus-5[1m]`.
     // tmux's default-shell here is zsh, which ABORTS on an unmatched glob ("no matches found"), so
     // one unquoted interpolation kills every session it spawns — and tsc cannot see it. Comment
@@ -84,6 +100,7 @@ export async function run(): Promise<void> {
       laneTask: "add the widget",
       laneLog: "aaa1111 feat: add the widget",
       mainLog: "bbb2222 refactor: rename the gadget",
+      graph: "/tmp/fleet-lane-graph-probe/graphify-out/graph.json",
     });
     // 1. main's intent is present (the gap this change closes) and labelled as THEIRS
     check("buildMergePrompt carries main's commit log (THEIRS side)",
@@ -127,11 +144,38 @@ export async function run(): Promise<void> {
     // 9. an empty main log (main up to date) degrades gracefully, DATA block still closed
     const pEmpty = buildMergePrompt({
       branch: "b", main: "main", mergeBase: "main",
-      conflicted: [], laneTask: null, laneLog: "", mainLog: "",
+      conflicted: [], laneTask: null, laneLog: "", mainLog: "", graph: null,
     });
     check("buildMergePrompt handles an empty main/lane log + null task",
       pEmpty.includes("main commits (THEIRS") && pEmpty.includes("(none)")
       && pEmpty.includes("lane task: (unknown)") && pEmpty.includes("DATA>>>"));
+    // 10. the code map: advertised when a graph was built, and SILENT when none was — a prompt
+    //     that names a tool that is not there spends the agent's rounds on "no graph found".
+    //     `pEmpty` above is the graph:null witness, `p` the built one.
+    check("buildMergePrompt names the code map + the affected verb when a graph was built",
+      p.includes("MAP:") && p.includes('graphify affected "<symbol>"')
+      && p.includes("BEFORE you drop,"), p.includes("MAP:") ? "MAP present" : "MAP missing");
+    // the map lives OUTSIDE the worktree, so every advertised call must carry --graph with the
+    // real path. A verb printed without it sends the agent at a graph that is not there — which is
+    // how this looked before the 54-red run that moved the graph out of the tree.
+    // the ADVERTISED command lines only — a line must START with the verb to be one. Filtering on
+    // "contains graphify" instead swept up the RULES sentence and the "a bare `graphify query`
+    // would find nothing" warning, and turned this check red against a correct prompt.
+    const mapLines = p.split("\n").filter((l) => l.trim().startsWith("graphify "));
+    check("buildMergePrompt spells --graph with the actual path on EVERY advertised verb",
+      mapLines.length >= 3
+      && mapLines.every((l) => l.includes("--graph /tmp/fleet-lane-graph-probe/graphify-out/graph.json")),
+      mapLines.filter((l) => !l.includes("--graph")).join(" | ") || "all carry --graph");
+    check("buildMergePrompt says the map is not an authority (git and the files win)",
+      p.includes("git and the files remain the truth"));
+    check("buildMergePrompt mentions graphify NOWHERE when no graph was built (fail-closed)",
+      !pEmpty.includes("graphify") && !pEmpty.includes("MAP:"),
+      pEmpty.includes("graphify") ? "leaked" : "clean");
+    // and the map must never loosen the sandbox line that check 8 pins
+    check("buildMergePrompt keeps the plain-git rule intact in BOTH map states",
+      p.includes("use only plain `git <subcommand>` invocations")
+      && pEmpty.includes("use only plain `git <subcommand>` invocations")
+      && p.includes("Never run build/test commands") && pEmpty.includes("Never run build/test commands"));
   }
 
   // --- buildRepairPrompt: PURE-function unit tests (no server needed) ---
@@ -144,6 +188,7 @@ export async function run(): Promise<void> {
       verifyCmd: "bunx tsc --noEmit && ./e2e-claude-gate.sh",
       verifyOut: "server.ts(42,7): error TS2304: Cannot find name 'droppedConst'.",
       conflicted: ["server.ts"],
+      graph: "/tmp/fleet-lane-graph-probe/graphify-out/graph.json",
     });
     // 1. leads with REPAIRING (the token the stand-in detects) and forbids re-rebasing
     check("buildRepairPrompt is a repair brief, not a rebase brief",
@@ -172,9 +217,15 @@ export async function run(): Promise<void> {
       && rp.includes("use only plain `git <subcommand>` invocations")
       && rp.includes("Never run build/test commands yourself"));
     // 7. empty verify output degrades gracefully, DATA block still closed
-    const rpEmpty = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "", conflicted: [] });
+    const rpEmpty = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "", conflicted: [], graph: null });
     check("buildRepairPrompt handles empty verify output + no files",
       rpEmpty.includes("(no output captured)") && rpEmpty.includes("(unknown)") && rpEmpty.includes("DATA>>>"));
+    // 8. the map, same fail-closed contract as the merge prompt. A repair's most common cause IS a
+    //    dropped symbol, which is exactly what `affected` answers — so this is where it earns most.
+    check("buildRepairPrompt carries the code map when a graph was built, and nothing when not",
+      rp.includes('graphify affected "<symbol>"') && rp.includes("--graph /tmp/fleet-lane-graph-probe")
+      && !rpEmpty.includes("graphify"),
+      `built=${rp.includes("MAP:")} empty=${rpEmpty.includes("graphify")}`);
   }
 
   // --- buildCleanReviewPrompt: PURE-function unit tests (the OPT-IN clean-path advisory reviewer) ---

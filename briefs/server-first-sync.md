@@ -103,7 +103,70 @@ auf, welche dieser Zusagen bewusst fallen — und lässt den Owner das gegenzeic
   ②": es bewegt den Boden unter einem arbeitenden Agenten. ① (Drift-Surface) ist bewusst die
   advisory Variante davon, und `/api/self/drift` existiert genau dafür.
 
-## Die blockierende Owner-Frage
+## ENTSCHIEDEN (Owner, 2026-08-05) — und die Zahl, die dahinter steht
+
+Die Frage unten ist beantwortet: **Form 1 — Autor zuerst, Wegwerf-Agent als Fallback.** Dazu
+zwei Auflagen, die aus der Messung folgen, nicht aus Geschmack.
+
+**Wie oft der Fallback überhaupt gebraucht wird (gemessen 2026-08-05):**
+
+| Faktor | Messung |
+|---|---|
+| Lane trifft einen Konflikt | 4 / 83 ≈ **4,8 %** |
+| Autor-Pane stirbt | 484 Heals auf 279 Slot-Öffnungen — häufig |
+| …davon MIT Kontext zurückgeholt (`resumed`) | **184** — die Selbstheilung trägt |
+| …davon OHNE Kontext (`created:no-transcript`) | 32, an **2 von 15 Tagen**, 26 am Crash-Tag |
+| **Konflikt UND kontextloser Autor** | **0 mal in 83 Lanes**; gerechnet ≈ 0,3 % ≈ 1 von 300 |
+
+Zwei Einschränkungen, sonst ist die Zahl gelogen: n=4 Konflikte, daraus ist nichts Bedingtes
+messbar (zwei Randverteilungen multipliziert); und sie sind vermutlich **positiv korreliert** —
+die vier Konflikte saßen auf Lanes mit 3,2 h / 10,5 h / 12,2 h gegen 1,1 h Median. 0,3 % ist
+eine Untergrenze. „Busy statt tot" ist gar nicht gemessen.
+
+**Warum der Fallback trotzdem billig ist:** „ein Zweig, der nie feuert, verrottet" gilt hier
+NICHT automatisch — der Repair-Loop hat in 83 Rows nie gefeuert und ist trotzdem von sechs
+Checks abgedeckt (`e2e/land-provenance.ts:342-350`, `e2e/outcomes.ts:137-143`,
+`e2e/prompts.ts:149-160`). Die Suite hält ihn ehrlich. Dasselbe gilt für den Agent-Fallback.
+
+**Auflage 1 — Provenienz, sonst wird der Fallback still zum Normalfall.** Verdict und
+Outcome-Row bekommen `resolvedBy: "agent" | "author"`. Ohne dieses Feld ist in drei Monaten
+nicht feststellbar, welcher Pfad die Auflösungen produziert hat — und genau diese Zahl
+entscheidet, ob Form 2 („nur Autor") je sicher wird.
+
+**Auflage 2 — der Resolver bekommt graphify.** Owner-Vorgabe: *„der agent sollte sich dann
+einfach das projekt angucken + git & graphify"*. Korrektur an meiner eigenen Wortwahl weiter
+oben: „kontextlos" war zu grob. `MERGE_TOOLS` (`server.ts:3345`) gibt dem Resolver Projekt UND
+git längst — `Read/Grep/Glob(**)`, `Edit/Write(**)`, sieben git-Subkommandos. Was fehlt, ist
+graphify. Vier Messungen dazu (2026-08-05), jede eine Falle, die den naiven Weg gekillt hätte:
+
+1. **`graphify-out/` ist gitignored** → ein frischer Lane-Worktree hat KEINEN Graphen.
+2. **Ein nacktes `graphify .` scheitert** in einer Lane: 108 Doc-Dateien verlangen einen
+   LLM-Key (exit 1). Der lokale Pfad ist `graphify . --code-only`.
+3. **`graphify . --code-only` kostet 5,69 s** auf dem getrackten Baum (1158 Knoten /
+   2938 Kanten, kein Key, kein Netz).
+4. **Die Abfrage-Verben laufen auf diesem Graphen ohne Cluster-Schritt** — `explain`,
+   `affected`, `query` alle geprüft; Communities sind nur unbenannt (kosmetisch).
+
+Daraus die Bauform: **den Graphen baut der SERVER**, nicht der Agent — und nur auf dem
+Konfliktpfad, direkt vor dem Spawn, damit der Normalfall (79/83 Lanes, clean) nichts zahlt.
+Der Agent bekommt **nur die Lese-Verben** (`query`/`explain`/`affected`/`path`), nie das
+Bau-Verb: dessen Argument ist ein PFAD, ein blankes `Bash(graphify:*)` wäre also eine
+unverankerte Leseberechtigung auf die ganze Maschine — exakt die Klasse, die der
+`Read(**)`-Canary 2026-07-25 nachgewiesen hat. Fail-closed: schlägt der Bau fehl, nennt der
+Prompt graphify gar nicht erst, statt dem Agenten ein Werkzeug zu versprechen, das fehlt.
+
+## Reihenfolge (klein zuerst, jede Scheibe einzeln landbar)
+
+- **A — Resolver bekommt graphify.** Kein Kontrollfluss-Wechsel, nützt SOFORT dem heutigen
+  Wegwerf-Resolver und später dem Fallback. Risiko niedrig.
+- **B — `resolvedBy` (Auflage 1).** Additives Feld, eigene Checks. Muss VOR C stehen, sonst
+  ist C vom ersten Tag an nicht auswertbar.
+- **C — ② selbst:** Autor wecken (Alive- + Idle-Gate, Selbstheilung mit `--resume`), Verdict
+  `awaiting-author`, Agent als Fallback. Der zweite ⏫-Lauf trifft den bestehenden
+  `carried`-Pfad und stoppt fürs Review — die Zusage „Konfliktpfad landet nie unbeaufsichtigt"
+  bleibt damit unverändert.
+
+## Die (beantwortete) Owner-Frage
 
 **Was soll ⏫ zurückgeben, wenn die Lane-Session tot oder beschäftigt ist?**
 

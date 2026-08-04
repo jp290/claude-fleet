@@ -1178,6 +1178,9 @@ interface GuestStatus {
   until: number | null; timer: boolean; hostname: string;
   authFails1h: number | null; authFails24h: number | null; lastAuthFail: number | null;
   claudeAuth: boolean | null; // does this guest hold a Claude credential — the value never travels
+  // is that credential (and every transcript) on a named volume, or on the container's writable
+  // layer where recreating it destroys them? null when there is no container to ask
+  claudeVolume?: boolean | null;
 }
 let guests: GuestStatus[] = [];
 let guestAbsent = false;   // 404 = FLEET_GUEST_CMD unset: the feature does not exist, stop asking
@@ -1517,6 +1520,14 @@ function guestBlock(slot: number, g: GuestStatus | undefined): HTMLElement {
       "Paste the value from `claude setup-token`, run on the machine of whoever this guest is for. "
       + "It bills to THEIR subscription and rate limit. The container is recreated in place — its "
       + "sessions restart, its volumes, token and deadline do not change."));
+    // That sentence is true and was still misleading: what it does NOT say is that anything outside
+    // a volume dies with the recreate, and this guest's transcripts live there by default. Said
+    // here rather than in a doc because this is the button that does it.
+    if (g?.claudeVolume === false)
+      wrap.appendChild(el("div", "bdline",
+        "⚠ This guest keeps its Claude state on the container's writable layer, not on a volume — "
+        + "so recreating it ALSO DELETES its conversation history. guest-claude-volume.sh moves that "
+        + "path onto a named volume; once it has, this warning disappears."));
     const inp = el("input", "") as HTMLInputElement;
     inp.type = "password";
     inp.placeholder = "sk-ant-oat…";

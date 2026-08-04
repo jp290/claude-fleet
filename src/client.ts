@@ -149,7 +149,7 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
-  status: "pending" | "queued" | "sent" | "done"; created: number; slot?: number; note?: string }
+  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done"; created: number; slot?: number; note?: string }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -4250,6 +4250,8 @@ function renderQueueDetail() {
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
     : t.source === "steward" ? "⚙ steward" : "owner"));
+  if (t.kind === "note") meta.appendChild(chip("note — never dispatched", "dim",
+    "an observation for you; promoting it records your verdict, the dispatcher skips it"));
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   shell.detail.appendChild(meta);
@@ -4325,6 +4327,7 @@ function renderQueue() {
       add({
         name: qFirstLine(t.id), id: t.id, cls: `q-${t.status}`,
         sub: [t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
+          t.kind === "note" ? "note" : "",
           `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
           t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),
       });

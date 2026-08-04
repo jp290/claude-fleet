@@ -58,6 +58,17 @@ EOF
 cp "$FAKEBIN/claude-exit" "$FAKEBIN/claude"
 chmod +x "$FAKEBIN/claude" "$FAKEBIN/claude-hang"
 
+# stand-in ✨ enhancer: tickDispatch compiles a queued task's text into the lane brief before
+# sending (2026-08-04). Without this stand-in every dispatched lane would spawn a real enhance
+# worker — same reasoning as FLEET_AUTO_REVIEW_MS=0 on the spawn line below. Byte-identical to
+# the e2e-isolated.sh stand-in, so both suites assert the same compiled-brief marker.
+cat > "$DIR/fakeenh" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"prompt\\": \\"enhanced prompt. own your work! /sharpen3\\"}"}'
+EOF
+chmod +x "$DIR/fakeenh"
+
 # Reap servers a SIGKILLed earlier run left behind — the one abort path the EXIT trap cannot
 # cover, keyed on owner-PID liveness so a concurrent run is never touched. Full rationale (and
 # the measurements for the signals the trap DOES handle) at the same block in e2e-isolated.sh.
@@ -84,7 +95,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).

@@ -37,7 +37,10 @@ steward principal (`FLEET_STEWARD_TOKEN` — if absent, report that and stop).
 
 - File missing next-step tasks via `POST /api/steward/tasks` (auto-pending, capped) —
   text MUST embed the brief filename as its key, e.g.
-  `foreman: briefs/lane-V3-….md — <one-line why now>`. Skip if an open task already
+  `foreman: briefs/lane-V3-….md — <one-line why now>`, and SHOULD claim
+  `{"kind":"lane"}`: your filing points at a tracked brief file (briefs/ rides into
+  every worktree), so it IS a runnable work pointer — without the claim it defaults
+  to `kind:"note"` and the dispatcher will never run it, even promoted. Skip if an open task already
   carries that key. At most 3 filings per pulse.
 - If the committed plan does not determine the next action: **escalate the question,
   never guess.** That escalation is a valid, good pulse result.

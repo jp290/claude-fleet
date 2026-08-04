@@ -16,7 +16,7 @@
 //    audit.jsonl while an identical re-post does not, and that a report dies with its lane.
 //
 // Nothing here asserts that a suite ran. Nothing in the feature runs one.
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, readText, restartSrv } from "./harness";
 
@@ -24,7 +24,7 @@ const TMP = process.env.TMPDIR ?? "/tmp";
 const REAL_LOCK = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock"; // what e2e-stage.sh took
 const OWN_LOCK = `${TMP}/fleet-e2e-gatelock-${process.pid}`; // never the real one — see the header
 
-interface GateLock { pid: number | null; alive: boolean | null; heldMs: number }
+interface GateLock { pid: number | null; alive: boolean | null; heldMs: number; state: string }
 interface GateReport { slot: number; label: string | null; phase: string; suite: string; exitCode: number | null; at: number }
 interface Gate { lock: GateLock | null; reports: GateReport[] }
 
@@ -114,6 +114,22 @@ export async function run(): Promise<void> {
       live?.pid === process.pid && live.alive === true, JSON.stringify(live));
     check("§2 the hold duration is measured from the claim, not from the request",
       (live?.heldMs ?? 0) >= 1000, String(live?.heldMs));
+    check("§2 a live holder inside the normal window is `held` — a suite is running",
+      live?.state === "held", JSON.stringify(live));
+
+    // OVERDUE: the same live holder, backdated past SUITE_HOLD_OVERDUE_MS. The server reads the
+    // claim time off the pid file's mtime, so moving that mtime IS the passage of time here — no
+    // sleep, and no threshold constant duplicated into the test. 25 min is past the 20 min cap.
+    const backdated = new Date(Date.now() - 25 * 60_000);
+    utimesSync(`${OWN_LOCK}/pid`, backdated, backdated);
+    const over = (await gateOf())?.lock;
+    check("§2 a live holder past the overdue cap is `overdue` — still alive, no longer normal",
+      over?.state === "overdue" && over.alive === true && over.pid === process.pid, JSON.stringify(over));
+    check("§2 overdue is the ONLY warning state: it is reached by TIME, on a holder that is alive",
+      over?.heldMs !== undefined && over.heldMs > 20 * 60_000, String(over?.heldMs));
+    // and back, so the checks below start from an unaged claim
+    const nowStamp = new Date();
+    utimesSync(`${OWN_LOCK}/pid`, nowStamp, nowStamp);
 
     // a holder that is gone. spawnSync has already reaped this child, so the pid is dead by the
     // time it is written — asserted here rather than assumed, because a recycled pid would turn
@@ -126,6 +142,11 @@ export async function run(): Promise<void> {
     const dead = (await gateOf())?.lock;
     check("§2 a dead holder is named AND flagged dead — the next suite reaps this dir",
       dead?.pid === gone && dead.alive === false, JSON.stringify(dead));
+    // THE RESTING STATE OF AN IDLE MACHINE, and the reason this state exists: release is implicit
+    // (e2e-stage.sh:38), so every finished suite leaves this behind. Measured 2026-08-04: 18 min
+    // of it on a quiet machine. It must never be the same class as `overdue`, which is a fault.
+    check("§2 a dead holder is `stale`, NOT a warning — nothing is running and nothing is wrong",
+      dead?.state === "stale", JSON.stringify(dead));
 
     // pid 0 addresses the caller's own process group, so a naive liveness probe answers "alive"
     // about the server itself and reports a lock nobody holds as held
@@ -137,6 +158,9 @@ export async function run(): Promise<void> {
     const junk = (await gateOf())?.lock;
     check("§2 a garbage pid file reads as a lost holder, not as a hand-parked lock",
       junk?.pid === null && junk.alive === false, JSON.stringify(junk));
+    check("§2 an unreadable pid file is `stale` too — same meaning, and never a park",
+      zero?.state === "stale" && junk?.state === "stale",
+      `zero=${JSON.stringify(zero)} junk=${JSON.stringify(junk)}`);
 
     // a pid-LESS dir is a human parking the machine, and e2e-stage.sh never reaps one — it must
     // therefore never be reported with the same `alive: false` that means "reapable"
@@ -144,6 +168,8 @@ export async function run(): Promise<void> {
     const parked = (await gateOf())?.lock;
     check("§2 a pid-less lock dir is a manual park: no pid, and liveness is UNKNOWN, not false",
       parked?.pid === null && parked.alive === null, JSON.stringify(parked));
+    check("§2 a hand-parked lock is `parked`, told apart from `stale` — nothing ever reaps it",
+      parked?.state === "parked", JSON.stringify(parked));
 
     // the server only ever READS the lock — the reaping contract lives in the wrappers, and a
     // second reaper would race the one place that re-checks the pid value before removing it

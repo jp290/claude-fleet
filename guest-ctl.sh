@@ -17,6 +17,9 @@
 #   ./guest-ctl.sh renew  <slot> [DAYS]   deliberately set a FRESH deadline (default 7)
 #   ./guest-ctl.sh claude-token <slot>    give this guest the Claude credential its panes need,
 #                                         read from STDIN; recreates the container in place
+#   ./guest-ctl.sh provision <slot> [hostname]   make an empty place into a real guest: directory,
+#                                         token, volumes, container on its own port, expose.env.
+#                                         Stops at the DNS record, which is yours to run
 #   ./guest-ctl.sh export <slot> [work|all]   tar a guest's volumes out to a 0600 file. `work` is
 #                                         their project volume and is safe to hand back to them;
 #                                         `all` also carries credential and transcripts — a backup,
@@ -249,6 +252,90 @@ renew)
     echo "guest-ctl: note — slot $SLOT's container is NOT running, so the hostname answers 502 until 'start'"
   ;;
 
+provision)
+  # Make an empty place into a real guest, up to — and stopping at — the one step that reaches the
+  # outside world. Everything local is done here: directory, token, volumes, container on its own
+  # port, expose.env. The DNS record is NOT done here and never will be; it is printed for you to
+  # run, because a script that creates public names is a script that can create them by accident.
+  #
+  # The recipe is DERIVED from an existing slot rather than written down: image, tunnel config,
+  # caps, memory and restart policy are this deployment's facts, and this file is public. With no
+  # slot to copy from, it says so instead of guessing.
+  #
+  #   ./guest-ctl.sh provision 2                 local only — no hostname, not public
+  #   ./guest-ctl.sh provision 2 guest2.example.com
+  slot_conf "$SLOT"
+  NEWHOST="${3:-}"
+  [ -f "$CONF_DIR/$SLOT/expose.env" ] && { echo "guest-ctl: slot $SLOT already exists ($CONF_DIR/$SLOT/expose.env)" >&2; exit 2; }
+  d inspect "$CTR" >/dev/null 2>&1 && { echo "guest-ctl: container $CTR already exists" >&2; exit 2; }
+
+  REF=$(for _d in "$CONF_DIR"/[0-9]*; do [ -f "$_d/expose.env" ] && basename "$_d"; done | head -1)
+  [ -n "$REF" ] || { echo "guest-ctl: no existing slot to copy this deployment's shape from — provision the first guest by hand" >&2; exit 2; }
+  # shellcheck disable=SC1090
+  ( : ) ; REF_TUNNEL=$(sed -n 's/^TUNNEL_CONFIG=//p' "$CONF_DIR/$REF/expose.env" | tr -d '"'"'"'"')
+  REF_CTR=$(sed -n 's/^GUEST_CONTAINER=//p' "$CONF_DIR/$REF/expose.env" | tr -d '"'"'"'"')
+  [ -n "$REF_CTR" ] || REF_CTR="fleet-guest-$REF"
+  d inspect "$REF_CTR" >/dev/null 2>&1 || { echo "guest-ctl: reference container $REF_CTR is gone; cannot derive the shape" >&2; exit 2; }
+
+  IMAGE=$(d inspect "$REF_CTR" --format '{{.Config.Image}}')
+  CAPS=$(d inspect "$REF_CTR" --format '{{range .HostConfig.CapAdd}}--cap-add {{.}} {{end}}')
+  MEM=$(d inspect "$REF_CTR" --format '{{.HostConfig.Memory}}')
+  RESTART=$(d inspect "$REF_CTR" --format '{{.HostConfig.RestartPolicy.Name}}')
+  RUNUSER=$(d inspect "$REF_CTR" --format '{{.Config.User}}')
+  INNER=$(d inspect "$REF_CTR" --format '{{range $p, $b := .HostConfig.PortBindings}}{{$p}}{{end}}' | sed 's|/tcp||')
+  BINDIP=$(d inspect "$REF_CTR" --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostIp}}{{end}}{{end}}')
+  # the next free host port above every guest that already has one — never a fixed offset, because
+  # a slot that was provisioned and removed must not hand its port to the next one by arithmetic
+  PORT=$(d ps -a --format '{{.Names}}' | while read -r _c; do
+      d inspect "$_c" --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}}{{println}}{{end}}{{end}}'
+    done | sort -n | tail -1)
+  PORT=$((${PORT:-8790} + 1))
+
+  echo "guest-ctl: provisioning slot $SLOT — container $CTR on $BINDIP:$PORT, image $IMAGE"
+  mkdir -p "$CONF_DIR/$SLOT"; chmod 700 "$CONF_DIR" "$CONF_DIR/$SLOT"
+  TOKEN=$(openssl rand -hex 32)
+  printf '%s' "$TOKEN" > "$CONF_DIR/$SLOT/token"; chmod 600 "$CONF_DIR/$SLOT/token"
+
+  for _v in state work claude; do d volume create "$CTR-$_v" >/dev/null; done
+  ALLOWED="127.0.0.1:$PORT,localhost:$PORT"
+  [ -n "$NEWHOST" ] && ALLOWED="$NEWHOST,$ALLOWED"
+  ENVFILE=$(mktemp); chmod 600 "$ENVFILE"
+  trap 'rm -f "$ENVFILE"' EXIT INT TERM
+  {
+    printf 'FLEET_FIREWALL=1\nFLEET_HOST=0.0.0.0\nFLEET_PORT=%s\nFLEET_CMD=claude\n' "$INNER"
+    printf 'FLEET_ALLOWED_HOSTS=%s\nFLEET_TOKEN=%s\n' "$ALLOWED" "$TOKEN"
+  } > "$ENVFILE"
+  # .claude gets a volume from the START. Slot 1 had to be migrated (guest-claude-volume.sh) because
+  # it did not, and a recreate there silently took the credential and every transcript with it.
+  CFG=$(d inspect "$REF_CTR" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -1)
+  [ -n "$CFG" ] || CFG=/home/fleet/.claude
+  # shellcheck disable=SC2086
+  d run -d --name "$CTR" --restart "$RESTART" --memory "$MEM" --user "$RUNUSER" \
+    $CAPS -p "$BINDIP:$PORT:$INNER" \
+    -v "$CTR-state:/home/fleet/claude-fleet" -v "$CTR-work:/home/fleet/work" -v "$CTR-claude:$CFG" \
+    --env-file "$ENVFILE" "$IMAGE" >/dev/null
+  rm -f "$ENVFILE"
+
+  {
+    [ -n "$NEWHOST" ] && printf 'GUEST_HOSTNAME=%s\n' "$NEWHOST"
+    printf 'GUEST_SERVICE=http://127.0.0.1:%s\n' "$PORT"
+    printf 'TUNNEL_CONFIG=%s\n' "$REF_TUNNEL"
+    printf 'GUEST_CONTAINER=%s\n' "$CTR"
+  } > "$CONF_DIR/$SLOT/expose.env"
+  chmod 600 "$CONF_DIR/$SLOT/expose.env"
+
+  echo "guest-ctl: slot $SLOT is up locally on http://127.0.0.1:$PORT and now appears in status"
+  if [ -n "$NEWHOST" ]; then
+    echo "guest-ctl: TWO steps are left and BOTH are yours, because they reach outside this machine:"
+    echo "    1. cloudflared tunnel route dns <tunnel> $NEWHOST"
+    echo "    2. ./guest-ctl.sh renew $SLOT   (opens its window and the door)"
+  else
+    echo "guest-ctl: NO hostname configured — it is reachable locally and cannot be exposed."
+    echo "    add GUEST_HOSTNAME to $CONF_DIR/$SLOT/expose.env, add its DNS record, then 'renew $SLOT'"
+  fi
+  echo "guest-ctl: it has NO Claude credential yet — log into it, or use 'claude-token $SLOT'"
+  ;;
+
 export)
   # Get a guest's work OFF the box. TWO SCOPES on purpose, and the difference is exactly "can I
   # forward this file to the person it belongs to": `work` is their project volume and nothing
@@ -280,10 +367,12 @@ export)
   [ -n "$ARGS" ] || { echo "guest-ctl: slot $SLOT has no volume matching scope '$scope'" >&2; exit 2; }
   OUT="${GUEST_EXPORT_DIR:-$CONF_DIR/$SLOT}/export-$scope-$(date +%Y%m%d-%H%M%S).tar"
   mkdir -p "$(dirname "$OUT")"
-  # stdout carries the tar and nothing else — the image's entrypoint banner goes to stderr
-  # (verified), which is the difference between an archive and a corrupt one
+  # --entrypoint sh for the same reason import needs it: this image's entrypoint drops to uid 1000
+  # even under --user root, so a volume it cannot read would export as an empty archive. It also
+  # keeps the entrypoint's banner off the pipe entirely, and stdout must carry the tar and nothing
+  # else or the archive is corrupt.
   # shellcheck disable=SC2086
-  d run --rm $ARGS --user root "$IMAGE" tar -cpf - -C /x $PATHS > "$OUT"
+  d run --rm $ARGS --user root --entrypoint sh "$IMAGE" -c "tar -cpf - -C /x $PATHS" > "$OUT"
   chmod 600 "$OUT"
   printf '{"path":"%s","scope":"%s","bytes":%s}\n' "$(jstr "$OUT")" "$scope" "$(wc -c < "$OUT" | tr -d ' ')"
   ;;
@@ -310,10 +399,13 @@ import)
     ARGS="$ARGS -v $_n:/x$_dst"
   done < "$LIST"
   [ -n "$ARGS" ] || { echo "guest-ctl: slot $SLOT has no named volumes to restore into" >&2; exit 2; }
-  # -p keeps the uid/gid the guest's own user needs; paths outside the mounted volumes simply land
-  # in the throwaway container's layer and disappear with it
+  # -p keeps the uid/gid the guest's own user needs, and that needs root to honour — which this
+  # image's entrypoint takes away even under --user root, so it is bypassed. Restoring into a fresh
+  # (root-owned) volume fails outright without this; restoring into an existing one silently
+  # succeeds for the wrong reason, which is how it passed its first test. Paths outside the mounted
+  # volumes land in the throwaway container's layer and disappear with it.
   # shellcheck disable=SC2086
-  d run --rm -i $ARGS --user root "$IMAGE" tar -xpf - -C /x < "$TARFILE"
+  d run --rm -i $ARGS --user root --entrypoint sh "$IMAGE" -c "tar -xpf - -C /x" < "$TARFILE"
   echo "guest-ctl: slot $SLOT — restored $(wc -c < "$TARFILE" | tr -d ' ') bytes into its volumes; 'start' brings it back"
   ;;
 

@@ -113,9 +113,14 @@ d inspect "$CTR" --format '{{range .Config.Env}}{{println .}}{{end}}' \
 # 3 — seed the volume BEFORE removing the container, so a failure here costs nothing
 echo "==> creating and seeding volume $VOL"
 d volume create "$VOL" >/dev/null
-d run --rm -i -v "$VOL:/seed" --user root "$IMAGE" \
-  sh -c "tar -xf - -C /seed && chown -R $OWNER /seed" < "$BACKUP"
-SEEDED=$(d run --rm -v "$VOL:/seed" --user root "$IMAGE" sh -c "find /seed/projects -name '*.jsonl' 2>/dev/null | wc -l" | tr -d ' \r')
+# --entrypoint sh is NOT decoration: this image's entrypoint drops to uid 1000 even when the run
+# asks for --user root, and a fresh named volume belongs to root — so without the bypass every
+# extract fails with "Permission denied" and the chown below could not run either. Measured, after
+# it happened: `docker run --user root … id` reports uid=1000(fleet), `--entrypoint sh` reports 0.
+d run --rm -i -v "$VOL:/seed" --user root --entrypoint sh "$IMAGE" \
+  -c "tar -xpf - -C /seed && chown -R $OWNER /seed" < "$BACKUP"
+SEEDED=$(d run --rm -v "$VOL:/seed" --user root --entrypoint sh "$IMAGE" \
+  -c "find /seed/projects -name '*.jsonl' 2>/dev/null | wc -l" | tr -d ' \r')
 echo "    transcripts in the volume: $SEEDED (was $JSONL)"
 [ "$SEEDED" = "$JSONL" ] || { echo "seed mismatch — NOT touching the container; volume $VOL left for inspection, '$CTR' is stopped and 'start' brings it back" >&2; exit 1; }
 

@@ -1,8 +1,74 @@
-# HANDOFF — Session 21 (2026-08-04: die Queue wird ein Werkzeug, und graphify zieht ein) · 20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 22 (2026-08-04: das Merge/Land-Programm, Scheibe ① Drift) · 21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 22 (2026-08-04, Lane `fleet/260804150902-7c66`, parallel zu 21): das Merge/Land-Programm
+
+Owner-Auftrag wörtlich: das Worktree/Land-System „wirkt eher instabil … nur einen land
+rückgängig … nicht so als könnte man einfach worktree's aufsetzen und die später clean
+resolven — denk gut nach wie und ob man das ganze besser aufsetzen könnte". Diese Session
+hat das Programm hergeleitet, adversarial geprüft (zwei eigene Begründungen dabei widerlegt)
+und Scheibe ① gebaut. Mechanik im Commit-Body (`feat(drift): eine Lane sieht, …`).
+
+### Die Diagnose, in drei Zahlen (lane-outcomes.jsonl, 80 Rows, selbst tabuliert)
+
+- 41/63 Lands sahen ≥1 anderes Land innerhalb ihrer Lebenszeit → **Staleness ist häufig**.
+- Nur 4/64 Lands hatten je einen Konflikt; `repairRounds` war in ALLEN 80 Rows 0 → die
+  Kosten der Staleness sind **Drift, nicht Konflikt**; der Repair-Loop hat nie gefeuert.
+- These, die alles ordnet: **Integration ist heute ein Ereignis (zur Land-Zeit) statt ein
+  Prozess.** Konflikte löst dann ein kontextloser Wegwerf-Resolver; sichtbar ist vorher nichts.
+
+### Das Programm (Reihenfolge beschlossen, Owner-bestätigt)
+
+1. **① Drift-Surface — GEBAUT, diese Lane.** `laneDrift()` + `GET /api/self/drift`
+   (self-token, slot-gebunden): behind / wouldConflict (merge-tree-Probe, advisory — Merge
+   simuliert, Land rebased, Mengen können abweichen) / conflictFiles / overlap / otherLanes
+   / dirty. Board-Projektion = eigene Folge-Scheibe, Platzierung mit Owner festnageln.
+2. **⑦ Verify-Queue, v1 = NUR Sichtbarkeit** — Brief liegt fertig in
+   `briefs/verify-queue-2026-08-04.md`. Motivation: heute starb ein isolated-Lauf dieser
+   Lane mit exit 144 (Killer unbekannt, Log leer), während Session 21 zeitgleich ihr Gate
+   fuhr; Wrapper koordinieren blind über den mkdir-Mutex. Erst sehen, dann besitzen.
+3. **② Server-first Sync**: der Server fährt den Script-Rebase in der Lane (tryScriptRebase-
+   Muster), nur bei Konflikt wird die Lane-Session geweckt — Autor löst mit Kontext.
+   Konflikt-Fall setzt deterministisch ein Review-Flag (Server traf die Konflikte selbst).
+4. **③ oxlint error-level** ins Gate (geprüft: 1.77.0 läuft, 27 Warnings / 0 Errors auf
+   server.ts+src/+e2e/ — sofort grün) und **④ Revert-Undo** für JEDES Land aus den
+   Provenienz-Notes (`mainBefore..mainAfter` linear, revertierbar; Fallback Outcome-Row).
+5. **Graphify-Stecker**: `FLEET_OVERLAP_CMD` als Provider-Kommando (Default = interner
+   git-Datei-Overlap), sobald ⑦/② stehen — Symbol-Ebene statt Dateinamen.
+
+Adversarial geprüft und GEKIPPT (nicht wieder vorschlagen): Lint als Gate-*Beschleuniger*
+(tsc ist mit 1,5 s längst die Fail-Fast-Stufe); Verify-Memo als eigene Säule (confirm-land
+re-verifiziert absichtlich nicht — markiert stale; Rest-Nutzen reist als Miniatur mit ②);
+merge-tree als Review-Flag-Quelle (Vorhersage ≠ Wahrheit — der Server-Rebase-Versuch ist die
+Wahrheit). rerere und Hard-Block bleiben verworfen wie dokumentiert.
+
+### Was der Owner von Hand tun muss (Reihenfolge)
+
+1. Diese Lane landen (⏫) — Code + dieses Handoff + der ⑦-Brief landen zusammen.
+2. Deploy: `tmux -L claudefleet kill-session -t srv`, dann Health-Check. Erst danach
+   existiert `/api/self/drift` live. (Kein Client-Build nötig — src/ unberührt.)
+3. **Eine Zeile in die CLAUDE.md des Haupt-Checkouts** (gitignored, landet nie aus einer
+   Lane), Abschnitt Lane-Disziplin: *„Vor dem Done-Report Drift prüfen:
+   `curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" http://$FLEET_HOST:8790/api/self/drift`
+   — bei `wouldConflict:true` erst selbst auf main rebasen, verifizieren, dann fertigmelden."*
+   Ohne diese Zeile benutzt keine Session den Endpoint — er wurde gebaut, damit die Session
+   es selbst sieht (Owner-Vorgabe wörtlich: „am ende sollte es die session selbst sehen").
+4. ⑦-Lane spawnen mit `briefs/verify-queue-2026-08-04.md` als Brief.
+
+### Beobachtungen, die git nicht trägt
+
+- Der §1-Pre-Auth-Pin (e2e/security.ts) fing die neue Route wie designed — einziger Rot im
+  ersten Durchlauf, Allowlist-Zeile ist die bewusste Antwort. Der Pin funktioniert.
+- Der verworfene erste Suitenlauf: exit 144 unter Doppel-Session-Kontention, nach
+  §11.7 seriell wiederholt → finaler Baum 1068 PASS / 0 FAIL. Kein neuer Flake-Eintrag.
+- Diese Lane hat ihr eigenes Rezept angewandt: vor dem Handoff-Edit selbst auf main
+  rebased (6 Commits, Session 21 war gelandet), merge-tree-Probe vorher exit 0, Rebase
+  konfliktfrei, tsc+build auf dem kombinierten Baum grün.
 
 ---
 

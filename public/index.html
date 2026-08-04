@@ -528,7 +528,11 @@
   .pkcrumb.overflow { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
     mask-image: linear-gradient(90deg, transparent 0, #000 26px); }
   /* the picker's detail pane: what this folder IS */
-  .pkdpath { font: 11.5px ui-monospace, Menlo, Consolas, monospace; color: #777;
+  /* WHERE AM I is the one question this pane must answer at a glance. The path was here all along
+     but painted #777 — the same grey as secondary metadata — so it read as a caption rather than
+     as the answer. Owner, 2026-08-04: "es ist nicht ersichtlich in welchem directory man sich
+     befindet, das sollte irgendwo strahlend weiss stehen". */
+  .pkdpath { font: 12.5px ui-monospace, Menlo, Consolas, monospace; color: #fff; font-weight: 600;
     margin: 2px 0 10px; word-break: break-all; }
   .pkdwarn { font-size: 12px; color: #e0af68; background: #2a2320; border: 1px solid #5a4a2a;
     border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }

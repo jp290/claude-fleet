@@ -2042,7 +2042,14 @@ interface DirInfo {
   hidden?: number;                  // dot-entries not listed — a repo whose visible children are none is not "empty"
   lanes?: number;                   // Fleet lanes forked from this repo (<path>.worktrees/*)
 }
-const DIRINFO_ENTRIES = 40;
+// The detail pane and the folder tree describe the SAME directory, side by side, and stopped at
+// different places: the tree listed up to DIRS_CAP (200) while this pane stopped at 40, so the
+// right-hand surface contradicted its own neighbour about what is in there. Owner-observed
+// 2026-08-04, on a home directory of 153 folders: "auf der grossen Fläche rechts werden nicht alle
+// Ordner angezeigt". Tied to DIRS_CAP rather than re-typed, so the two cannot drift apart again.
+// The cap itself stays — with entryTotal it is a stated one — and folders sort before files, so
+// what a cap removes is always files first.
+const DIRINFO_ENTRIES = DIRS_CAP;
 const DIRINFO_COMMITS = 5;
 // what one file's body is allowed to be. The cap is on the SERVED text, and `truncated` says so —
 // a viewer that silently shows the first half of a file is worse than one that refuses.

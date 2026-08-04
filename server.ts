@@ -6870,10 +6870,12 @@ Bun.serve<WSData>({
         }),
       });
     }
-    // print/PDF export: full scrollback as a self-contained light-theme page — plain
-    // capture (no -e) because tmux's escape-preserving output encodes styling as
-    // absolute-column cursor jumps that any SGR→HTML converter would misplace, and
-    // a white page prints better than terminal colors anyway. ?format=txt downloads raw.
+    // print/PDF export: full scrollback as a self-contained light-theme page — plain capture
+    // (no -e) because a white page prints better than terminal colors. That is the WHOLE reason
+    // now: this comment also claimed -e bakes in absolute-column cursor jumps, and that premise
+    // was measured false on tmux 3.6a (see the WS reseed path — `-e` minus SGR is byte-identical
+    // to plain). Leaving the export plain is a design choice, not a workaround.
+    // ?format=txt downloads raw.
     const exportMatch = /^\/api\/slots\/(\d+)\/export$/.exec(url.pathname);
     if (req.method === "GET" && exportMatch) {
       const s = slotFrom(exportMatch[1]);
@@ -8075,13 +8077,18 @@ Bun.serve<WSData>({
           await tmux("resize-window", "-t", name, "-x", String(cols), "-y", String(rows));
           s.cols = cols;
           s.rows = rows;
-          // no -e here: tmux's escape-preserving capture encodes styled-vs-default runs
-          // as absolute-column cursor jumps (e.g. "\x1b[200G") baked in at the ORIGINAL
-          // width — replaying those into a narrower terminal reproduces the exact
-          // garbling this reseed exists to fix. Plain text reflows correctly; the
-          // trade-off is old scrollback loses color after a width change, which is
-          // preferable to it being unreadable. Live output stays fully colored.
-          const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${seedLines}`);
+          // -e (color) is safe here, and the reason it was left off is not reproducible on this
+          // tmux. The old comment said an escape-preserving capture bakes styled-vs-default runs
+          // in as absolute-column cursor jumps ("\x1b[200G") at the ORIGINAL width, which would
+          // re-garble a narrower client. MEASURED instead, tmux 3.6a, 2026-08-05: wide colored
+          // TUI content in a 200-col pane, resized to 55 exactly as this path does, captured both
+          // ways — `-e` output with only SGR (\x1b[…m) removed is BYTE-IDENTICAL to the plain
+          // capture (1004 = 1004 B, empty diff), and contains ZERO cursor-motion escapes. So `-e`
+          // is plain-plus-color on this tmux, and history keeping its color costs nothing.
+          // The fear was legitimate and is now a CHECK rather than a sacrificed capability:
+          // e2e/slots.ts pins that the seed carries SGR and carries no cursor-motion escape, so
+          // a tmux that ever starts emitting one goes red here instead of silently garbling.
+          const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", `-${seedLines}`);
           ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
           try {
             s.offset = (await stat(streamPath(s.id))).size;
@@ -8102,10 +8109,11 @@ Bun.serve<WSData>({
         // onto un-reset scrollback) after the frequent WS drops mobile connections see.
         // (The owner path below now takes the same seed, for the same two reasons.)
         // Live bytes after this keep flowing from the shared offset via poll()/broadcast,
-        // same as the owner reseed path. No -e (see that path): the styled-run cursor
-        // jumps it bakes in would re-garble a narrower guest; history goes monochrome,
-        // live output stays fully colored.
-        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${seedLines}`);
+        // same as the owner reseed path. -e (color) for the reason measured at the resize path
+        // above: it adds SGR and nothing else, so it cannot change how a guest's terminal wraps
+        // the seed — the guest's unknown width was only ever a risk via cursor-motion escapes,
+        // which this tmux does not emit.
+        const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", `-${seedLines}`);
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       } else {
         // Owner reconnect at a width that already matches the pane — the common case, since a
@@ -8115,7 +8123,7 @@ Bun.serve<WSData>({
         // Measured on the 12 live panes (2026-07-26): 5 634–173 282 B instead of
         // 149 822–2 000 000 B, 15.2× less in aggregate — and the 2 MB cap was not a rare
         // worst case, it bound at its full value on every pane whose stream had outgrown it
-        // (3 of 12, streams run 2.3–4.9 MB). No -e, for the reason the resize path gives.
+        // (3 of 12, streams run 2.3–4.9 MB). -e, for the measurement the resize path gives.
         //
         // Continuity is the delicate part. The raw slice ended exactly at s.offset, so the next
         // broadcast continued seamlessly. A capture instead reflects the pane as of whatever the
@@ -8137,7 +8145,7 @@ Bun.serve<WSData>({
         } catch {
           // stream file briefly missing during recreate — skip nothing, replay what arrives
         }
-        const cap = await tmux("capture-pane", "-t", name, "-p", "-S", `-${seedLines}`);
+        const cap = await tmux("capture-pane", "-t", name, "-e", "-p", "-S", `-${seedLines}`);
         ws.send(new TextEncoder().encode(crlf(cap.out) + "\r\n"));
       }
       ws.data.ready = true;

@@ -51,6 +51,7 @@ const PRE_AUTH_ROUTES = [
   '= /',                  // login (?token=, tokenGate'd) AND the share-host landing page
   '= /api/dispositions',  // pre-check only: 403s a self token, then falls through to the owner gate
   '= /api/self/autos',    // the scoped per-lane credential
+  '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,

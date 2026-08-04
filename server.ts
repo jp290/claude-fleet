@@ -4155,6 +4155,76 @@ async function otherOpenLanes(cwd: string, repo: string): Promise<{ branch: stri
   }
   return out;
 }
+// --- lane drift: how far the integration branch has moved past a lane's COMMITTED work, and
+// whether bringing the lane up to date would conflict. Computed server-side so the lane's own
+// session (GET /api/self/drift), the board and a future sync path all read ONE answer instead of
+// three hand-rolled ones. Root-side ref reads only — a worktree shares refs/objects with its repo,
+// so nothing here touches the lane's working tree or index and it can never collide with a live
+// rebase. The probe is `git merge-tree --write-tree`, a MERGE simulation: the land path REBASES
+// (replays commits one by one), so the real thing can conflict where this predicted clean and —
+// rarer — the reverse. Advisory orientation, never a gate input.
+interface DriftInfo {
+  branch: string; main: string; mainSha: string;
+  behind: number;                // commits main has that this lane's branch lacks
+  dirty: boolean;                // uncommitted work in the lane — NOT assessed by the probe below
+  wouldConflict: boolean | null; // null = the probe could not run (UNKNOWN — never read as "no")
+  conflictFiles: string[];
+  overlap: string[];             // files BOTH sides touched since the merge-base
+  otherLanes: { branch: string; files: string[] }[];
+}
+const DRIFT_FILES_MAX = 50; // same flood cap stance as OTHER_LANE_FILES_MAX
+// keyed per slot on (branch tip, main tip): the probes rerun only when a ref actually moved.
+// Bounded by MAX_SLOTS; a recycled slot's next lane has a different key, so no eviction needed.
+type DriftCore = Pick<DriftInfo, "mainSha" | "behind" | "wouldConflict" | "conflictFiles" | "overlap">;
+const driftCache = new Map<number, { key: string; core: DriftCore }>();
+async function laneDrift(s: Slot, main: string): Promise<DriftInfo | null> {
+  const w = s.worktree;
+  if (!w || !s.cwd) return null;
+  const bTip = await gitRead(w.repo, "rev-parse", w.branch);
+  const mTip = await gitRead(w.repo, "rev-parse", main);
+  if (bTip.code !== 0 || !bTip.out || mTip.code !== 0 || !mTip.out) return null;
+  const key = `${bTip.out}:${mTip.out}:${main}`;
+  const hit = driftCache.get(s.id);
+  let core = hit && hit.key === key ? hit.core : null;
+  if (!core) {
+    const behindR = await gitRead(w.repo, "rev-list", "--count", `${w.branch}..${main}`);
+    if (behindR.code !== 0) return null; // an unreadable count must not read as "current"
+    const behind = Number(behindR.out) || 0;
+    let wouldConflict: DriftInfo["wouldConflict"] = false;
+    let conflictFiles: string[] = [];
+    let overlap: string[] = [];
+    if (behind > 0) {
+      // exit 0 = merges clean; exit 1 = conflicts, and with --name-only the conflicted paths sit
+      // between the written tree's OID (line 1) and the first blank line; anything else = the
+      // probe itself failed (e.g. no merge base) and the honest answer is UNKNOWN, never "no".
+      // Writes only loose tree objects into the shared object DB — no ref, no index, gc-able.
+      const mt = await git(w.repo, "merge-tree", "--write-tree", "--name-only", w.branch, main);
+      if (mt.code === 1) {
+        wouldConflict = true;
+        const lines = mt.out.split("\n").slice(1);
+        const blank = lines.indexOf("");
+        conflictFiles = (blank === -1 ? lines : lines.slice(0, blank)).filter(Boolean).slice(0, DRIFT_FILES_MAX);
+      } else if (mt.code !== 0) wouldConflict = null;
+      const mb = await gitRead(w.repo, "merge-base", w.branch, main);
+      if (mb.code === 0 && mb.out) {
+        const lf = await gitRead(w.repo, "diff", "--name-only", "--no-color", `${mb.out}..${w.branch}`);
+        const mf = await gitRead(w.repo, "diff", "--name-only", "--no-color", `${mb.out}..${main}`);
+        if (lf.code === 0 && mf.code === 0) {
+          const mainTouched = new Set(mf.out.split("\n").filter(Boolean));
+          overlap = lf.out.split("\n").filter((f) => f && mainTouched.has(f)).slice(0, DRIFT_FILES_MAX);
+        }
+      }
+    }
+    core = { mainSha: mTip.out, behind, wouldConflict, conflictFiles, overlap };
+    driftCache.set(s.id, { key, core });
+  }
+  // fresh per request, outside the cache: the tree's dirtiness and the other lanes' in-flight
+  // files move independently of the two refs the key watches. An unreadable tree reports dirty —
+  // the safe direction, since `dirty` exists to say "the probe did not assess everything here".
+  const st = await gitRead(s.cwd, "status", "--porcelain");
+  return { branch: w.branch, main, ...core, dirty: st.code !== 0 || st.out !== "",
+    otherLanes: await otherOpenLanes(s.cwd, w.repo) };
+}
 // OPT-IN clean-path advisory reviewer. Runs only when FLEET_CLEAN_REVIEW is on, only on the clean+green
 // auto-land path, and can ONLY downgrade that auto-land to a stop-and-review — it never lands anything.
 // FAIL-CLOSED: only an explicit {"verdict":"ok"} returns "ok"; every other outcome (a "review" verdict,
@@ -6176,6 +6246,25 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
+    }
+
+    // the lane's own drift view — same principal, same flat-cost auth as /api/self/autos above.
+    // Read-only by construction (laneDrift never touches a working tree), and it grants no new
+    // capability: everything in the payload is committed state a lane could derive itself through
+    // the shared refs (`git diff base...otherBranch`) — the route exists so the session, the board
+    // and the sync path read ONE server-computed answer, not so a lane learns something new.
+    if (url.pathname === "/api/self/drift" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      // a plain session's credential is valid but the question is not askable: drift measures a
+      // LANE against its integration branch. 409 with the why, not a generic 401 (same distinction
+      // the disposition rail draws below: recognized credential, wrong scope, said plainly).
+      if (!s.worktree) return json({ error: "not a lane — drift measures a lane against its integration branch" }, 409);
+      const main = await laneBaseRef(s);
+      if (!main) return json({ error: "no integration branch resolvable for this lane's repo" }, 409);
+      const d = await laneDrift(s, main);
+      return d ? json(d) : json({ error: "drift could not be computed — a git read failed" }, 500);
     }
 
     // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a

@@ -17,6 +17,11 @@
 #   ./guest-ctl.sh renew  <slot> [DAYS]   deliberately set a FRESH deadline (default 7)
 #   ./guest-ctl.sh claude-token <slot>    give this guest the Claude credential its panes need,
 #                                         read from STDIN; recreates the container in place
+#   ./guest-ctl.sh export <slot> [work|all]   tar a guest's volumes out to a 0600 file. `work` is
+#                                         their project volume and is safe to hand back to them;
+#                                         `all` also carries credential and transcripts — a backup,
+#                                         not an attachment
+#   ./guest-ctl.sh import <slot> <file.tar>   put one back; refuses while the guest is running
 #
 # SLOTS. A guest slot is a directory under ~/.claude-fleet-guest holding that guest's expose.env
 # and token; slot 1 is the original. They share one colima VM (a second VM costs ~200 MB of host
@@ -112,14 +117,30 @@ slot_json() {
   [ "$cs" = absent ] || claude=$(try d inspect "$CTR" --format '{{range .Config.Env}}{{println .}}{{end}}' \
     | grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' && echo true || echo false)
 
+  # Is this guest's Claude state — the credential once somebody logs in, and every transcript under
+  # projects/ — on a named volume, or on the container's writable layer? A BOOLEAN, never a path:
+  # the panel's only job with it is to warn before `claude-token` recreates the container and throws
+  # a conversation history away. false is the un-migrated default (guest-claude-volume.sh fixes it).
+  claudevol=null
+  if [ "$cs" != absent ]; then
+    _cfg=$(try d inspect "$CTR" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+      | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -1)
+    [ -n "$_cfg" ] || _cfg="/home/fleet/.claude"
+    if try d inspect "$CTR" --format '{{range .Mounts}}{{println .Destination}}{{end}}' | grep -qx "$_cfg"; then
+      claudevol=true
+    else
+      claudevol=false
+    fi
+  fi
+
   printf '{"slot":%s,"vm":"%s","container":"%s","exposed":%s,"expired":%s,"until":%s,"timer":%s,' \
     "$_s" "$(jstr "$(vm_state)")" "$(jstr "$cs")" \
     "$([ "$exposed" = 1 ] && echo true || echo false)" \
     "$([ "$expired" = 1 ] && echo true || echo false)" \
     "${until_ts:-null}" \
     "$([ "$timer" = 1 ] && echo true || echo false)"
-  printf '"hostname":"%s","authFails1h":%s,"authFails24h":%s,"lastAuthFail":%s,"claudeAuth":%s}' \
-    "$(jstr "$hostname")" "$fails1h" "$fails24h" "$lastfail" "$claude"
+  printf '"hostname":"%s","authFails1h":%s,"authFails24h":%s,"lastAuthFail":%s,"claudeAuth":%s,"claudeVolume":%s}' \
+    "$(jstr "$hostname")" "$fails1h" "$fails24h" "$lastfail" "$claude" "$claudevol"
 }
 
 case "$VERB" in
@@ -228,5 +249,73 @@ renew)
     echo "guest-ctl: note — slot $SLOT's container is NOT running, so the hostname answers 502 until 'start'"
   ;;
 
-*) echo "usage: $0 status | link <slot> | start <slot> | cut <slot> | stop <slot> | renew <slot> [DAYS] | claude-token <slot> (token on stdin)" >&2; exit 2 ;;
+export)
+  # Get a guest's work OFF the box. TWO SCOPES on purpose, and the difference is exactly "can I
+  # forward this file to the person it belongs to": `work` is their project volume and nothing
+  # else; `all` is every named volume this container has, which includes the Claude state — their
+  # credential and every transcript — and is therefore a backup, never an attachment.
+  #
+  # The volumes are read from the container's OWN mounts rather than named here, so a guest whose
+  # layout differs exports what it actually has instead of what this script assumed. The container
+  # is NOT stopped: this is a snapshot of a live filesystem, which is fine for handing someone their
+  # repo and wrong for anything that must be byte-consistent — stop the guest first if you need that.
+  slot_conf "$SLOT"
+  scope="${3:-work}"
+  case "$scope" in work|all) : ;; *) echo "guest-ctl: export scope must be 'work' or 'all'" >&2; exit 2 ;; esac
+  d inspect "$CTR" >/dev/null 2>&1 || { echo "guest-ctl: slot $SLOT has no container ($CTR)" >&2; exit 2; }
+  IMAGE=$(d inspect "$CTR" --format '{{.Config.Image}}')
+  LIST=$(mktemp); trap 'rm -f "$LIST"' EXIT INT TERM
+  d inspect "$CTR" --format '{{range .Mounts}}{{if .Name}}{{.Name}}|{{.Destination}}{{println}}{{end}}{{end}}' > "$LIST"
+  ARGS=''; PATHS=''
+  while IFS='|' read -r _n _dst; do
+    [ -n "$_n" ] || continue
+    if [ "$scope" = work ]; then
+      case "$_dst" in */work) : ;; *) continue ;; esac
+    fi
+    # mounted under /x so the tar keeps each volume's real destination path, which is what lets
+    # import put it back without being told where anything belongs
+    ARGS="$ARGS -v $_n:/x$_dst"
+    PATHS="$PATHS .$_dst"
+  done < "$LIST"
+  [ -n "$ARGS" ] || { echo "guest-ctl: slot $SLOT has no volume matching scope '$scope'" >&2; exit 2; }
+  OUT="${GUEST_EXPORT_DIR:-$CONF_DIR/$SLOT}/export-$scope-$(date +%Y%m%d-%H%M%S).tar"
+  mkdir -p "$(dirname "$OUT")"
+  # stdout carries the tar and nothing else — the image's entrypoint banner goes to stderr
+  # (verified), which is the difference between an archive and a corrupt one
+  # shellcheck disable=SC2086
+  d run --rm $ARGS --user root "$IMAGE" tar -cpf - -C /x $PATHS > "$OUT"
+  chmod 600 "$OUT"
+  printf '{"path":"%s","scope":"%s","bytes":%s}\n' "$(jstr "$OUT")" "$scope" "$(wc -c < "$OUT" | tr -d ' ')"
+  ;;
+
+import)
+  # Put an exported tar back. Restoring a volume under a LIVE Fleet hands it a filesystem that
+  # changed beneath it, and that failure surfaces later as corruption rather than as an error here,
+  # so a running guest is refused rather than raced.
+  slot_conf "$SLOT"
+  TARFILE="${3:-}"
+  [ -n "$TARFILE" ] || { echo "guest-ctl: import needs a tar path: $0 import <slot> <file.tar>" >&2; exit 2; }
+  [ -f "$TARFILE" ] || { echo "guest-ctl: no such file: $TARFILE" >&2; exit 2; }
+  d inspect "$CTR" >/dev/null 2>&1 || { echo "guest-ctl: slot $SLOT has no container ($CTR)" >&2; exit 2; }
+  if [ "$(ctr_state)" = running ]; then
+    echo "guest-ctl: slot $SLOT is running — stop it first; import must not run under a live guest" >&2
+    exit 2
+  fi
+  IMAGE=$(d inspect "$CTR" --format '{{.Config.Image}}')
+  LIST=$(mktemp); trap 'rm -f "$LIST"' EXIT INT TERM
+  d inspect "$CTR" --format '{{range .Mounts}}{{if .Name}}{{.Name}}|{{.Destination}}{{println}}{{end}}{{end}}' > "$LIST"
+  ARGS=''
+  while IFS='|' read -r _n _dst; do
+    [ -n "$_n" ] || continue
+    ARGS="$ARGS -v $_n:/x$_dst"
+  done < "$LIST"
+  [ -n "$ARGS" ] || { echo "guest-ctl: slot $SLOT has no named volumes to restore into" >&2; exit 2; }
+  # -p keeps the uid/gid the guest's own user needs; paths outside the mounted volumes simply land
+  # in the throwaway container's layer and disappear with it
+  # shellcheck disable=SC2086
+  d run --rm -i $ARGS --user root "$IMAGE" tar -xpf - -C /x < "$TARFILE"
+  echo "guest-ctl: slot $SLOT — restored $(wc -c < "$TARFILE" | tr -d ' ') bytes into its volumes; 'start' brings it back"
+  ;;
+
+*) echo "usage: $0 status | link <slot> | start <slot> | cut <slot> | stop <slot> | renew <slot> [DAYS] | claude-token <slot> (token on stdin) | export <slot> [work|all] | import <slot> <file.tar>" >&2; exit 2 ;;
 esac

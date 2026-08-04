@@ -164,7 +164,7 @@ interface Task {
   // observation addressed to the OWNER (the steward's default). Promote stays allowed for a
   // note — it is the propose-outcome signal — but the dispatcher skips it: an observation
   // ("lane X looks done") must never be injected into a fresh lane as its founding brief.
-  status: "pending" | "queued" | "sent" | "done";
+  status: "pending" | "queued" | "sent" | "done" | "archived";
   created: number;
   slot: number | null; // set once dispatched
   note: string | null;
@@ -242,12 +242,14 @@ let tasks: Task[] = [];
 let shelved: Record<string, { at: number; note: string }> = {};
 const MAX_TASKS = 200;
 // cap the task list WITHOUT dropping non-terminal tasks: a still-pending/queued/sent task
-// must never be evicted just because 200 done tasks piled up — only `done` is prunable
+// must never be evicted just because 200 terminal tasks piled up — only the terminal
+// statuses (done, archived) are prunable
+const taskTerminal = (t: Task): boolean => t.status === "done" || t.status === "archived";
 function capTasks(list: Task[]): Task[] {
   if (list.length <= MAX_TASKS) return list;
-  const live = new Set(list.filter((t) => t.status !== "done"));
+  const live = new Set(list.filter((t) => !taskTerminal(t)));
   const keepDone = Math.max(0, MAX_TASKS - live.size);
-  const keptDone = new Set(list.filter((t) => t.status === "done").slice(-keepDone));
+  const keptDone = new Set(list.filter(taskTerminal).slice(-keepDone));
   return list.filter((t) => live.has(t) || keptDone.has(t));
 }
 const MAX_TASK_TEXT = 20_000;
@@ -421,6 +423,7 @@ type AuditEvent =
   | "share_auth_ok" | "share_auth_fail" | "share_auth_lock"
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
+  | "task_dispatch" // the manual start button — an owner act, distinct from the tick's spawns
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
@@ -1651,6 +1654,98 @@ async function tickAutos(): Promise<void> {
   }
 }
 
+// tasks currently mid-spawn (tick or the manual start route): a task must never be dispatched
+// twice. Check-and-add happens synchronously before the first await, so two callers cannot both
+// win; the entry is removed once the row is `sent` (or the spawn failed) — from then on the
+// status itself carries the state.
+const dispatchingTasks = new Set<string>();
+
+// the shared dispatch core: spawn a fresh DISPATCH_REPO lane for `next` in `free`, flip the row
+// to `sent`, and hand back the async `tail` that compiles + gates + injects the brief. The tick
+// awaits the tail (serial by design, exactly as before); the manual route fires it and answers
+// the button in seconds — the row's status/note tracks the rest.
+async function dispatchTask(next: Task, free: Slot, ownerAct: boolean):
+  Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
+  if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
+  dispatchingTasks.add(next.id);
+  laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
+  try {
+    const wt = await createWorktree(DISPATCH_REPO, "");
+    // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
+    // commit is still captured — the outcome record needs it after the land moves main
+    await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
+      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) });
+    free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
+    next.status = "sent";
+    next.slot = free.id;
+    next.note = `lane ${wt.branch}`;
+    saveState();
+    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct) };
+  } catch (e) {
+    // spawning failed — mark the task so the owner sees why instead of it silently vanishing
+    next.status = "queued";
+    next.note = `dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
+    saveState();
+    return { ok: false, error: next.note };
+  } finally {
+    // release the spawn reservation ALWAYS — without this every dispatched slot stayed
+    // in laneSpawn forever, unusable by the dispatcher, attach and manual open alike
+    // until a restart (the sibling routes release in finally; this path didn't).
+    // Safe to release here: openSlot has set free.cwd, so the slot is no longer "free" to
+    // any picker, and the task's own state is carried by its status from this point on.
+    laneSpawn.delete(free.id);
+    dispatchingTasks.delete(next.id);
+  }
+}
+
+// the dispatch tail: compile the raw task text into a grounded brief WHILE claude boots
+// (BACKLOG P-9: the lane used to get the owner's rough text verbatim — no done-criterion, no
+// repo facts). The enhancer is additive-only by contract (enhance-prompt.ts): the owner-reviewed
+// intent survives verbatim, it gains the fresh lane's git facts + /sharpen3. Fallback is the
+// raw text — a lane with an unpolished brief beats a task that never runs.
+// `ownerAct` relaxes the AUTOMATION stops (master stop, quiet hours) on the delivery gates: an
+// explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
+// documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
+// shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
+async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string }, ownerAct: boolean): Promise<void> {
+  const briefP = (async () => runEnhance(next.text, wt.path, await briefPayload(free)))()
+    .catch((e: unknown) => { console.log(`dispatch: brief compile failed, sending raw text: ${e instanceof Error ? e.message : e}`); return null; });
+  // let claude finish booting in the fresh pane before the first prompt lands; a brand-new
+  // lane is idle by definition, but claude's own startup needs a moment
+  await Bun.sleep(4000);
+  const requeue = (note: string): void => {
+    next.status = "queued";
+    next.note = note;
+    saveState();
+  };
+  // the owner may have killed/re-opened this slot during the sleep/compile — re-verify it
+  // is still OUR lane before injecting external text, or we'd prompt an unrelated session
+  const identityLost = (): boolean =>
+    free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
+  const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false } : { idleMs: 0 };
+  // fresh claude-alive gate (was synergy-findings.md Tier-0 #2). Requeue on any failure — the
+  // lane exists, the prompt waits. This gate runs BEFORE the compile is awaited: the requeue
+  // decision must never sit behind a model call — a dead claude used to make the task wait out
+  // the whole worker timeout (caught by the claude-gate suite, 2026-08-04). The floating
+  // briefP resolves later and is discarded by its own catch.
+  if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
+  const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
+  if (!boot.ok) { requeue(`dispatch held (${boot.gate}) — requeued`); return; }
+  const brief = (await briefP) ?? next.text;
+  // the compile may have taken a while — re-verify identity and delivery RIGHT before the
+  // injection, so the gate→send window stays as tight as it was before the compile existed
+  if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
+  const post = await canDeliver(free, { now: Date.now(), ...gateOpts });
+  if (!post.ok) { requeue(`dispatch held (${post.gate}) — requeued`); return; }
+  try {
+    await sendText(free, brief, true);
+    logPrompt(free, brief, "auto", Date.now());
+    console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
+  } catch (e) {
+    requeue(`dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200));
+  }
+}
+
 // idle-lane dispatcher: when ON and a lane budget is free, pull the oldest queued task,
 // spawn a fresh worktree lane from DISPATCH_REPO, and send the task text into it once
 // claude is actually up. Serial by design — one lane per tick — so a burst of intake email
@@ -1662,7 +1757,7 @@ async function tickDispatch(): Promise<void> {
   try {
     // notes are never dispatchable (Task.kind) — skipping them here also shields legacy
     // fleet.json rows queued before the field existed
-    const next = tasks.find((t) => t.status === "queued" && t.kind === "lane");
+    const next = tasks.find((t) => t.status === "queued" && t.kind === "lane" && !dispatchingTasks.has(t.id));
     if (!next) return;
     // a queued task that cannot run RIGHT NOW says why on its own row instead of sitting
     // silent until the owner digs (the stalled-queue finding, 2026-08-04). Written only on
@@ -1683,69 +1778,8 @@ async function tickDispatch(): Promise<void> {
     // does not exist yet.
     const pre = await canDeliver(free, { now: Date.now(), alive: false });
     if (!pre.ok) return; // task stays queued
-    laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
-    try {
-      const wt = await createWorktree(DISPATCH_REPO, "");
-      // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
-      // commit is still captured — the outcome record needs it after the land moves main
-      await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
-        baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) });
-      free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
-      next.status = "sent";
-      next.slot = free.id;
-      next.note = `lane ${wt.branch}`;
-      saveState();
-      // compile the raw task text into a grounded brief WHILE claude boots (BACKLOG P-9: the
-      // lane used to get the owner's rough text verbatim — no done-criterion, no repo facts).
-      // The enhancer is additive-only by contract (enhance-prompt.ts): the owner-reviewed
-      // intent survives verbatim, it gains the fresh lane's git facts + /sharpen3. Fallback is
-      // the raw text — a lane with an unpolished brief beats a task that never runs.
-      const briefP = (async () => runEnhance(next.text, wt.path, await briefPayload(free)))()
-        .catch((e: unknown) => { console.log(`dispatch: brief compile failed, sending raw text: ${e instanceof Error ? e.message : e}`); return null; });
-      // let claude finish booting in the fresh pane before the first prompt lands; the
-      // next tickAutos-style gate isn't reused here because a brand-new lane is idle by
-      // definition, but claude's own startup needs a moment
-      await Bun.sleep(4000);
-      const requeue = (note: string): void => {
-        next.status = "queued";
-        next.note = note;
-        saveState();
-      };
-      // the owner may have killed/re-opened this slot during the sleep/compile — re-verify it
-      // is still OUR lane before injecting external text, or we'd prompt an unrelated session
-      const identityLost = (): boolean =>
-        free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
-      // fresh claude-alive gate (was synergy-findings.md Tier-0 #2): slotCmd is `claude; exec
-      // $SHELL`, so a claude that failed to boot leaves a bare shell that would EXECUTE this
-      // externally-fed task text as commands. Re-check the master stop + quiet hours too (the
-      // owner may have paused during the 4s boot). Requeue on any failure — the lane exists,
-      // the prompt waits. This gate runs BEFORE the compile is awaited: the requeue decision
-      // must never sit behind a model call — a dead claude used to make the task wait out the
-      // whole worker timeout (caught by the claude-gate suite, 2026-08-04). The floating
-      // briefP resolves later and is discarded by its own catch.
-      if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
-      const boot = await canDeliver(free, { now: Date.now(), idleMs: 0 });
-      if (!boot.ok) { requeue(`dispatch held (${boot.gate}) — requeued`); return; }
-      const brief = (await briefP) ?? next.text;
-      // the compile may have taken a while — re-verify identity and delivery RIGHT before the
-      // injection, so the gate→send window stays as tight as it was before the compile existed
-      if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
-      const post = await canDeliver(free, { now: Date.now(), idleMs: 0 });
-      if (!post.ok) { requeue(`dispatch held (${post.gate}) — requeued`); return; }
-      await sendText(free, brief, true);
-      logPrompt(free, brief, "auto", Date.now());
-      console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
-    } catch (e) {
-      // spawning failed — mark the task so the owner sees why instead of it silently vanishing
-      next.status = "queued";
-      next.note = `dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
-      saveState();
-    } finally {
-      // release the spawn reservation ALWAYS — without this every dispatched slot stayed
-      // in laneSpawn forever, unusable by the dispatcher, attach and manual open alike
-      // until a restart (the sibling routes release in finally; this path didn't)
-      laneSpawn.delete(free.id);
-    }
+    const r = await dispatchTask(next, free, false);
+    if (r.ok) await r.tail;
   } finally {
     dispatchBusy = false;
   }
@@ -4938,7 +4972,7 @@ if (existsSync(STATE_FILE)) {
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
         && ["owner", "intake", "steward"].includes((x as Task).source)
-        && ["pending", "queued", "sent", "done"].includes((x as Task).status))
+        && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
         // rows persisted before `kind` existed (2026-08-04): steward rows were observations,
         // everything else was work — normalize here so every row downstream carries the field
         .map((t) => t.kind === "lane" || t.kind === "note" ? t
@@ -7255,19 +7289,47 @@ Bun.serve<WSData>({
     // the full prompt texts, kept off the 2 s poll (see TaskDigest). The queue overlay fetches
     // this when it opens; a task's text never changes after creation, so the client caches by id.
     if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks });
-    const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete)$/.exec(url.pathname);
+    // the manual "start now" button: dispatch THIS task into a fresh lane immediately.
+    // Independent of `dispatchOn` (the owner may run the queue entirely by hand with the auto
+    // tick off) and NOT bound by DISPATCH_MAX_LANES — the cap bounds UNATTENDED fan-out, and
+    // this is an attended click. Master stop / quiet hours don't bind either (owner act, the
+    // same carve-out canDeliver documents); the post-spawn claude-alive gate holds as always.
+    const taskDispatch = /^\/api\/tasks\/([a-z0-9]+)\/dispatch$/.exec(url.pathname);
+    if (req.method === "POST" && taskDispatch) {
+      if (!DISPATCH_REPO) return json({ error: "dispatcher unavailable — set FLEET_DISPATCH_REPO" }, 400);
+      const t = tasks.find((x) => x.id === taskDispatch[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (t.kind === "note") return json({ error: "a note is not dispatchable — it is an observation, not a brief" }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — only a pending or queued task can be started` }, 409);
+      if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
+      const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
+      if (!free) return json({ error: "no free slot" }, 409);
+      const r = await dispatchTask(t, free, true);
+      if (!r.ok) return json({ error: r.error }, 500);
+      r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
+      audit("task_dispatch", r.slot, t.id);
+      return json({ ok: true, slot: r.slot, branch: r.branch });
+    }
+    const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
       if (!t) return json({ error: "unknown task" }, 404);
+      // a running lane's founding task must stay tracked — the shelf is not a place to hide live work
+      if (taskAct[2] === "archive" && t.status === "sent")
+        return json({ error: "task is running in a lane — land or kill the lane first" }, 409);
       // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a causally-clean,
       // deterministic `propose`-class outcome (unlike git deltas, accept/reject is directly
       // attributable). Fire ONCE per task, gated on the pending→ transition ONLY: promote counts
       // helped, dismiss counts the distinct `dismissed` signal. Deleting an already-promoted
       // (queued) proposal is cleanup, not a dismissal — the pending guard makes that a no-op, so a
       // promoted-then-deleted task can never double-count. Read the class BEFORE mutating status.
+      // archive mirrors delete for the measurement channel: shelving a PENDING proposal IS a
+      // dismissal — without this, archive would be a silent second path around the channel
       const proposeOutcome: "helped" | "dismissed" | null =
         t.source === "steward" && t.status === "pending"
-          ? (taskAct[2] === "queue" ? "helped" : taskAct[2] === "delete" ? "dismissed" : null)
+          ? (taskAct[2] === "queue" ? "helped"
+            : taskAct[2] === "delete" || taskAct[2] === "archive" ? "dismissed" : null)
           : null;
       if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       // promoting a NOTE stays legal (it is the propose-outcome "helped" signal) but the
@@ -7275,6 +7337,8 @@ Bun.serve<WSData>({
       // instead of letting it sit "queued" with no visible reason it never runs
       else if (taskAct[2] === "queue") { t.status = "queued"; t.note = t.kind === "note" ? "note — the dispatcher never runs this" : null; }
       else if (taskAct[2] === "unqueue") t.status = "pending";
+      else if (taskAct[2] === "archive") t.status = "archived";
+      else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
       else t.status = "done";
       if (proposeOutcome) {
         writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome });

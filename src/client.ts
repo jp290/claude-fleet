@@ -149,7 +149,7 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
-  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done"; created: number; slot?: number; note?: string }
+  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -4195,13 +4195,20 @@ async function loadTaskTexts() {
 const Q_STATUS: { k: TaskInfo["status"]; head: string }[] = [
   { k: "pending", head: "Pending" }, { k: "queued", head: "Queued" },
   { k: "sent", head: "Sent" }, { k: "done", head: "Done" },
+  { k: "archived", head: "Archive" },
 ];
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 const qFirstLine = (id: string) => (qTaskText(id).split("\n")[0] || "…").slice(0, 120);
 
 async function qAct(id: string, action: string) {
   const r = await post(`/api/tasks/${id}/${action}`, {});
-  if (!r.ok) { toast(`couldn't ${action} the task`); return; }
+  if (!r.ok) {
+    // surface the server's reason — "no free slot" and "task is running in a lane" are
+    // actionable, a generic failure line is not
+    const j = (await r.json().catch(() => null)) as { error?: string } | null;
+    toast(j?.error ?? `couldn't ${action} the task`);
+    return;
+  }
   if (action === "delete" && qPick === id) qPick = null;
   await refresh();
   qKey = ""; // this changed the data — force the list to rebuild even inside the poll's guard
@@ -4265,9 +4272,15 @@ function renderQueueDetail() {
     b.onclick = () => void qAct(t.id, action);
     return b;
   };
-  if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", "shrbtn primary"));
+  // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher (which may be
+  // off), never for notes (the server refuses them anyway)
+  const startable = (t.status === "pending" || t.status === "queued") && t.kind !== "note";
+  if (startable) acts.appendChild(mk("▸ start lane", "dispatch", "shrbtn primary"));
+  if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", startable ? "shrbtn" : "shrbtn primary"));
   if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
-  if (t.status !== "done") acts.appendChild(mk("done", "done"));
+  if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
+  if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));
+  if (t.status !== "sent" && t.status !== "archived") acts.appendChild(mk("🗄 archive", "archive"));
   acts.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
   shell.detail.appendChild(acts);
 }

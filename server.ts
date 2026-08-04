@@ -5902,7 +5902,7 @@ function stewardSlotsView(now: number) {
 //   2. codeBehind is the NET tree diff bootHead..HEAD, not a per-commit path walk: `git log
 //      --name-only` lists NO paths for a true merge commit, which would hide real code behind a
 //      false `false`. A path counts as code unless it is KNOWN not to be — an unrecognized path
-//      must flag a gap, not hide one. Two ALLOWLISTS say what is known:
+//      must flag a gap, not hide one. Three ALLOWLISTS say what is known:
 //        · docs — `*.md` (docs/*.md, HANDOFF.md, BACKLOG.md).
 //        · client — public/** and the bundle sources below. Landing these does not put the
 //          RUNNING SERVER behind: they reach a browser through `bun run build`, which is exactly
@@ -5910,15 +5910,27 @@ function stewardSlotsView(now: number) {
 //          server claim a gap for work that had already shipped — measured on the live instance
 //          2026-08-02: codeBehind:true whose whole diff was src/client.ts + public/index.html,
 //          with bundleStale:false saying the same bytes were serving.
+//        · harness — e2e/** and the runners below. The suites load them, this process never does,
+//          so restarting srv would change nothing. Same measurement, one day later: 2026-08-04 the
+//          line read codeBehind:true over a range of HANDOFF.md + e2e/verify-queue.ts — a warning
+//          surface that cries wolf on its own routine traffic gets learned as noise, which is the
+//          disease 163839b treated one layer down (a lock whose resting state was the alarm).
 //      Allowlists, not a denylist, so the fail-safe survives: a NEW src/ file is code until
-//      someone puts it here. src/protocol.ts is deliberately absent — server.ts imports it.
+//      someone puts it here, and so is a SIXTH top-level runner. src/protocol.ts is deliberately
+//      absent — server.ts imports it. A false warning costs one restart; a hidden gap cost a day.
+//      Deliberately still code: `e2e-*.sh` and every other shell script. `watchdog.sh` is not
+//      redeployed by an srv restart at all, so no shell file has one honest answer here.
 // FLEET_REPO_DIR exists because the server's own dir is the repo in production but not in a
 // throwaway test copy; unset it and the fact is about the code actually running.
 const REPO_DIR = process.env.FLEET_REPO_DIR || import.meta.dir;
 // the two sources that become public/app.js and public/share.js, and nothing server.ts imports
 const CLIENT_ONLY_FILES = ["src/client.ts", "src/share.ts", "src/shell.ts", "src/md.ts"];
+// the five single-file harnesses the e2e-*.sh wrappers boot; e2e/** below is the runner's modules
+const HARNESS_ONLY_FILES = ["fleet-e2e.ts", "fleet-e2e-claude-gate.ts", "fleet-e2e-clean-review.ts",
+  "fleet-e2e-security.ts", "fleet-e2e-postland-audit.ts"];
 const isServerCode = (p: string): boolean =>
-  !p.endsWith(".md") && !p.startsWith("public/") && !CLIENT_ONLY_FILES.includes(p);
+  !p.endsWith(".md") && !p.startsWith("public/") && !p.startsWith("e2e/") &&
+  !CLIENT_ONLY_FILES.includes(p) && !HARNESS_ONLY_FILES.includes(p);
 let BOOT_HEAD: string | null = null;
 const bootHeadReady = git(REPO_DIR, "rev-parse", "HEAD")
   .then((r) => { BOOT_HEAD = r.code === 0 && /^[0-9a-f]{40}$/.test(r.out) ? r.out : null; })

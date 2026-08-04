@@ -47,6 +47,7 @@ export async function run(): Promise<void> {
   rmSync(FIX, { recursive: true, force: true });
   mkdirSync(`${FIX}/public`, { recursive: true });
   mkdirSync(`${FIX}/src`, { recursive: true });
+  mkdirSync(`${FIX}/e2e`, { recursive: true });
   writeFileSync(`${FIX}/public/app.js`, "// bundle");
   writeFileSync(`${FIX}/public/share.js`, "// bundle");
   writeFileSync(`${FIX}/src/client.ts`, "// source");
@@ -83,6 +84,27 @@ export async function run(): Promise<void> {
       f.deployGap?.codeBehind === true && f.deployGap.behindCount === 2, JSON.stringify(f.deployGap));
     check("§2 the boot commit is still named, so the gap is attributable and not just a count",
       /^[0-9a-f]{40}$/.test(f.deployGap?.bootHead ?? ""), JSON.stringify(f.deployGap?.bootHead));
+  }
+
+  // ===== §2b the suites' own code is not the server's =====
+  // On a FRESH boot, because the §2 range now holds server.ts and can never read false again — a
+  // claim about what does NOT count can only be made in a range that holds nothing else. What this
+  // pins was measured live 2026-08-04: codeBehind:true over a range of HANDOFF.md +
+  // e2e/verify-queue.ts, i.e. the deploy line warning about the suite files edited to check it.
+  await restartSrv({ FLEET_REPO_DIR: FIX });
+  {
+    writeFileSync(`${FIX}/e2e/harness.ts`, "// checks");
+    commit("fleet-e2e.ts", "// runner");
+    const f = await settle((x) => x.deployGap?.behindCount === 1);
+    check("§2b an e2e-only commit is NOT a deploy — the wrappers load the harness, srv never does",
+      f.deployGap?.behindCount === 1 && f.deployGap.codeBehind === false, JSON.stringify(f.deployGap));
+    // The near miss, and the reason the runners are allowlisted BY NAME: merge-prompt.ts is a
+    // top-level module sitting right next to them, and server.ts imports it. Any rule of the shape
+    // "a top-level .ts is harness" would pass the check above and silence a real gap here.
+    commit("merge-prompt.ts", "// v2");
+    const g = await settle((x) => x.deployGap?.codeBehind === true);
+    check("§2b a top-level module the server imports is still a deploy, harness neighbours or not",
+      g.deployGap?.codeBehind === true && g.deployGap.behindCount === 2, JSON.stringify(g.deployGap));
   }
 
   // ===== §3 the bundle half: mtimes, not commits =====

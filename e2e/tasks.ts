@@ -1,14 +1,16 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { readFileSync } from "node:fs";
-import { check, get, post, ROOT } from "./harness";
+import { check, get, post, REPO, ROOT } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---
   const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
-  const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; status: string; source: string } };
+  const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; status: string; source: string; kind: string } };
   check("create owner task as pending", tCreate.ok && tJson.task.status === "pending" && tJson.task.source === "owner");
+  check("an owner task is kind \"lane\" — a runnable brief, dispatchable once queued",
+    tJson.task.kind === "lane", JSON.stringify(tJson.task));
   check("queue a task", (await post(`/api/tasks/${tJson.task.id}/queue`, {})).ok);
   const sessT = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[]; dispatch: { available: boolean; on: boolean } };
   check("queued task reflected in sessions", sessT.tasks.some((t) => t.id === tJson.task.id && t.status === "queued"));
@@ -114,7 +116,40 @@ export async function run(ctx: Ctx): Promise<void> {
     check("with both gates open the dispatcher DOES consume the same task (proves the gate, not a dead queue)",
       consumed, `task=${JSON.stringify(tEnd)} dispatchOn=${sessEnd.dispatch.on} autosOn=${sessEnd.autosOn} quiet=${JSON.stringify(sessEnd.quietHours)}`);
 
-    // cleanup: kill only the lane the positive control spawned (a worktree slot new since setup, never
+    // (d) the lane's founding prompt is the COMPILED brief (the fakeenh stand-in's fixed
+    // output), never the raw task text (BACKLOG P-9). Proven off the prompt ledger: the
+    // dispatcher's logPrompt records source:"auto" with exactly what sendText injected.
+    let autoRows: { source?: string; text?: string }[] = [];
+    for (let i = 0; i < 24; i++) { // sendText lands ~4-5s after consumption (boot sleep + compile)
+      autoRows = (((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts)
+        .filter((p) => p.source === "auto");
+      if (autoRows.some((p) => p.text === "enhanced prompt. own your work! /sharpen3")) break;
+      await Bun.sleep(500);
+    }
+    check("the dispatched lane's founding prompt is the COMPILED brief, never the raw task text",
+      autoRows.some((p) => p.text === "enhanced prompt. own your work! /sharpen3")
+      && !autoRows.some((p) => (p.text ?? "").includes("dispatch-gate-probe")),
+      JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
+
+    // (e) capacity honesty: saturate the dispatch repo to the cap with a hand-opened lane, queue
+    // one more task — the tick must write WHY on the row instead of leaving it silent.
+    const capLane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number };
+    const sessCap = await sessJson();
+    check("capacity setup: lanes in the dispatch repo reach maxLanes (so the wait-note check below can fail)",
+      typeof capLane.slot === "number" && sessCap.slots.filter((s) => s.worktree).length >= sessCap.dispatch.maxLanes,
+      `lanes=${sessCap.slots.filter((s) => s.worktree).length}/${sessCap.dispatch.maxLanes}`);
+    const cTask = (await (await post("/api/tasks", { text: "capacity-wait-probe", queue: true })).json()) as { task: { id: string } };
+    let cNote = "";
+    for (let i = 0; i < 24; i++) { // a full 8s tick fires within this wait
+      cNote = (await sessJson()).tasks.find((t) => t.id === cTask.task.id)?.note ?? "";
+      if (cNote) break;
+      await Bun.sleep(500);
+    }
+    check("a queued task blocked by the lane cap says WHY on its own row (waiting note, not silence)",
+      /^waiting: \d+\/\d+ lanes busy/.test(cNote), JSON.stringify(cNote));
+    await post(`/api/tasks/${cTask.task.id}/delete`, {}); // BEFORE freeing lanes — or the next tick grabs it
+
+    // cleanup: kill only the lanes this section spawned (worktree slots new since setup, never
     // the persistence lane), delete the probe task, restore the dispatcher off (persisted off).
     for (const id of await laneIds()) if (!lanes0.has(id) && id !== ctx.restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
     await post(`/api/tasks/${tid}/delete`, {});

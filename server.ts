@@ -1,5 +1,5 @@
 import { stat, rm, readdir, appendFile } from "node:fs/promises";
-import { existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
@@ -160,6 +160,10 @@ interface Task {
   text: string;
   source: "owner" | "intake" | "steward";
   from: string | null; // intake sender label (freeform, for display only — never trusted)
+  kind: "lane" | "note"; // lane = a work brief the dispatcher may run once queued; note = an
+  // observation addressed to the OWNER (the steward's default). Promote stays allowed for a
+  // note — it is the propose-outcome signal — but the dispatcher skips it: an observation
+  // ("lane X looks done") must never be injected into a fresh lane as its founding brief.
   status: "pending" | "queued" | "sent" | "done";
   created: number;
   slot: number | null; // set once dispatched
@@ -254,10 +258,10 @@ const MAX_TASK_TEXT = 20_000;
 // on the poll path reads the text (the queue button reads status+source); the queue overlay
 // fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
 // null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
-type TaskDigest = Pick<Task, "id" | "source" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note">>;
+type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note">>;
 function taskDigest(t: Task): TaskDigest {
   return {
-    id: t.id, source: t.source, status: t.status, created: t.created,
+    id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
     ...(t.from ? { from: t.from } : {}),
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
@@ -267,6 +271,15 @@ function taskDigest(t: Task): TaskDigest {
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
 const DISPATCH_MAX_LANES = Math.max(1, Number(process.env.FLEET_DISPATCH_MAX_LANES ?? 3) | 0);
+// createWorktree stores the git TOPLEVEL (symlink-resolved: /tmp → /private/tmp) as a lane's
+// repo, so comparing lanes against the raw env string would silently match nothing — and a cap
+// that matches nothing is no cap. Canonicalize once; compare against both forms.
+const DISPATCH_REPO_CANON = (() => {
+  if (!DISPATCH_REPO) return "";
+  try { return realpathSync(resolve(expandCwd(DISPATCH_REPO))); } catch { return DISPATCH_REPO; }
+})();
+const inDispatchRepo = (s: Slot): boolean =>
+  s.worktree != null && (s.worktree.repo === DISPATCH_REPO_CANON || s.worktree.repo === DISPATCH_REPO);
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
 let autosOn = true; // global kill-switch for scheduled autos (the heartbeat surface); owner-toggled, default on
 let quietHours: { start: number; end: number } | null = null; // owner-set local-hour window muting the recurring/heartbeat surface (no 3am nudges)
@@ -1647,12 +1660,23 @@ async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !dispatchOn || !DISPATCH_REPO) return;
   dispatchBusy = true;
   try {
-    const lanes = slots.filter((s) => s.worktree).length;
-    if (lanes >= DISPATCH_MAX_LANES) return;
-    const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
-    if (!free) return;
-    const next = tasks.find((t) => t.status === "queued");
+    // notes are never dispatchable (Task.kind) — skipping them here also shields legacy
+    // fleet.json rows queued before the field existed
+    const next = tasks.find((t) => t.status === "queued" && t.kind === "lane");
     if (!next) return;
+    // a queued task that cannot run RIGHT NOW says why on its own row instead of sitting
+    // silent until the owner digs (the stalled-queue finding, 2026-08-04). Written only on
+    // change, so the 8 s tick doesn't churn saveState.
+    const waiting = (note: string): void => {
+      if (next.note !== note) { next.note = note; saveState(); }
+    };
+    // count lanes in the dispatcher's OWN repo: the cap bounds unattended fan-out, and this
+    // dispatcher only ever fans out into DISPATCH_REPO — a hand-driven lane in another repo
+    // used to eat the budget and stall the queue with no signal
+    const lanes = slots.filter(inDispatchRepo).length;
+    if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy — land or close one`); return; }
+    const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
+    if (!free) { waiting("waiting: no free slot"); return; }
     // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned or the task is
     // consumed (was synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet
     // fleet leaves the task queued for the next eligible tick. No idle/alive gate: the target lane
@@ -1671,31 +1695,45 @@ async function tickDispatch(): Promise<void> {
       next.slot = free.id;
       next.note = `lane ${wt.branch}`;
       saveState();
+      // compile the raw task text into a grounded brief WHILE claude boots (BACKLOG P-9: the
+      // lane used to get the owner's rough text verbatim — no done-criterion, no repo facts).
+      // The enhancer is additive-only by contract (enhance-prompt.ts): the owner-reviewed
+      // intent survives verbatim, it gains the fresh lane's git facts + /sharpen3. Fallback is
+      // the raw text — a lane with an unpolished brief beats a task that never runs.
+      const briefP = (async () => runEnhance(next.text, wt.path, await briefPayload(free)))()
+        .catch((e: unknown) => { console.log(`dispatch: brief compile failed, sending raw text: ${e instanceof Error ? e.message : e}`); return null; });
       // let claude finish booting in the fresh pane before the first prompt lands; the
       // next tickAutos-style gate isn't reused here because a brand-new lane is idle by
       // definition, but claude's own startup needs a moment
       await Bun.sleep(4000);
-      // the owner may have killed/re-opened this slot during the sleep — re-verify it is
-      // still OUR lane before injecting external text, or we'd prompt an unrelated session
-      if (free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id) {
+      const requeue = (note: string): void => {
         next.status = "queued";
-        next.note = "slot changed during spawn — requeued";
+        next.note = note;
         saveState();
-        return;
-      }
+      };
+      // the owner may have killed/re-opened this slot during the sleep/compile — re-verify it
+      // is still OUR lane before injecting external text, or we'd prompt an unrelated session
+      const identityLost = (): boolean =>
+        free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
       // fresh claude-alive gate (was synergy-findings.md Tier-0 #2): slotCmd is `claude; exec
       // $SHELL`, so a claude that failed to boot leaves a bare shell that would EXECUTE this
-      // externally-fed task text as commands. Re-check the master stop + quiet hours too (the owner
-      // may have paused during the 4s boot). Requeue on any failure — the lane exists, the prompt waits.
+      // externally-fed task text as commands. Re-check the master stop + quiet hours too (the
+      // owner may have paused during the 4s boot). Requeue on any failure — the lane exists,
+      // the prompt waits. This gate runs BEFORE the compile is awaited: the requeue decision
+      // must never sit behind a model call — a dead claude used to make the task wait out the
+      // whole worker timeout (caught by the claude-gate suite, 2026-08-04). The floating
+      // briefP resolves later and is discarded by its own catch.
+      if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
+      const boot = await canDeliver(free, { now: Date.now(), idleMs: 0 });
+      if (!boot.ok) { requeue(`dispatch held (${boot.gate}) — requeued`); return; }
+      const brief = (await briefP) ?? next.text;
+      // the compile may have taken a while — re-verify identity and delivery RIGHT before the
+      // injection, so the gate→send window stays as tight as it was before the compile existed
+      if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
       const post = await canDeliver(free, { now: Date.now(), idleMs: 0 });
-      if (!post.ok) {
-        next.status = "queued";
-        next.note = `dispatch held (${post.gate}) — requeued`;
-        saveState();
-        return;
-      }
-      await sendText(free, next.text, true);
-      logPrompt(free, next.text, "auto", Date.now());
+      if (!post.ok) { requeue(`dispatch held (${post.gate}) — requeued`); return; }
+      await sendText(free, brief, true);
+      logPrompt(free, brief, "auto", Date.now());
       console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
     } catch (e) {
       // spawning failed — mark the task so the owner sees why instead of it silently vanishing
@@ -3662,7 +3700,8 @@ interface LaneOutcome {
   headSha: string | null;
   disposition: LaneDisposition;
   model: string | null;  // s.model, or null when unpinned — recorded honestly, NEVER guessed
-  briefHash: string | null; // stable short hash of the lane's FIRST owner prompt (the brief)
+  briefHash: string | null; // stable short hash of the lane's FIRST owner/auto prompt (the
+  // founding brief — dispatched lanes are briefed with source "auto", see laneOwnerPrompts)
   shortstat: string;
   commitCount: number;
   filesTouched: string[];
@@ -3749,9 +3788,12 @@ async function laneOwnerPrompts(cwd: string): Promise<{ count: number; firstText
       if (!line) continue;
       try {
         const p = JSON.parse(line) as { cwd?: unknown; source?: unknown; text?: unknown };
-        if (p.source === "owner" && p.cwd === cwd) {
-          count++;
+        // the founding brief is the first owner OR auto prompt — a dispatched lane is briefed
+        // with source "auto" (tickDispatch), and its briefHash used to round to null (P-9).
+        // The count stays owner-only: it is an owner-ATTENTION proxy, and auto costs none.
+        if ((p.source === "owner" || p.source === "auto") && p.cwd === cwd) {
           if (firstText === null && typeof p.text === "string") firstText = p.text;
+          if (p.source === "owner") count++;
         }
       } catch { /* torn mid-append line — skip */ }
     }
@@ -4781,7 +4823,7 @@ async function handleIntake(req: Request): Promise<Response> {
   const from = typeof body.from === "string" ? body.from.slice(0, 120) : null;
   const t: Task = {
     id: randomBytes(4).toString("hex"), text, source: "intake", from,
-    status: "pending", created: now, slot: null, note: null,
+    kind: "lane", status: "pending", created: now, slot: null, note: null,
   };
   tasks = capTasks([...tasks, t]);
   saveState();
@@ -4896,7 +4938,11 @@ if (existsSync(STATE_FILE)) {
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
         && ["owner", "intake", "steward"].includes((x as Task).source)
-        && ["pending", "queued", "sent", "done"].includes((x as Task).status));
+        && ["pending", "queued", "sent", "done"].includes((x as Task).status))
+        // rows persisted before `kind` existed (2026-08-04): steward rows were observations,
+        // everything else was work — normalize here so every row downstream carries the field
+        .map((t) => t.kind === "lane" || t.kind === "note" ? t
+          : { ...t, kind: t.source === "steward" ? "note" as const : "lane" as const });
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -5903,9 +5949,15 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // mandatory — same stance as sends/autos). Review capacity is the binding constraint.
     const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
     if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
+    // kind defaults to "note": a steward text is an observation unless the steward explicitly
+    // claims it is a runnable work brief. The claim is cheap to make and auditable — the unsafe
+    // direction (an observation dispatched into a lane) needs a deliberate opt-in, not a typo.
+    if (body.kind !== undefined && body.kind !== "lane" && body.kind !== "note")
+      return json({ error: "kind must be \"lane\" or \"note\"" }, 400);
     const t: Task = {
       id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-      source: "steward", from: null, status: "pending", created: Date.now(), slot: null, note: null,
+      source: "steward", from: null, kind: body.kind === "lane" ? "lane" : "note",
+      status: "pending", created: Date.now(), slot: null, note: null,
     };
     tasks = capTasks([...tasks, t]);
     saveState();
@@ -7193,7 +7245,7 @@ Bun.serve<WSData>({
       if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
       const t: Task = {
         id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-        source: "owner", from: null,
+        source: "owner", from: null, kind: "lane",
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null, note: null,
       };
       tasks = capTasks([...tasks, t]);
@@ -7218,7 +7270,10 @@ Bun.serve<WSData>({
           ? (taskAct[2] === "queue" ? "helped" : taskAct[2] === "delete" ? "dismissed" : null)
           : null;
       if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
-      else if (taskAct[2] === "queue") { t.status = "queued"; t.note = null; }
+      // promoting a NOTE stays legal (it is the propose-outcome "helped" signal) but the
+      // dispatcher will skip it — say so on the row at promote time, loudly and permanently,
+      // instead of letting it sit "queued" with no visible reason it never runs
+      else if (taskAct[2] === "queue") { t.status = "queued"; t.note = t.kind === "note" ? "note — the dispatcher never runs this" : null; }
       else if (taskAct[2] === "unqueue") t.status = "pending";
       else t.status = "done";
       if (proposeOutcome) {

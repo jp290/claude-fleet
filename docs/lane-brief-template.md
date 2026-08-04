@@ -3,9 +3,12 @@
 *The Phase-2 artifact. A brief is delivered in the lane's initial prompt /
 `--append-system-prompt` — **never** as a file written into the worktree: an
 untracked file makes the lane permanently dirty and blocks `land`
-(`tailored-context.md` §6). This template is the source the launcher — human or
-dispatcher — fills in per task. Keep every filled brief under ~40 lines; curation is
-the point (`tailored-context.md` §5).*
+(`tailored-context.md` §6). This template is the source a HUMAN launcher fills in
+per task. The dispatcher briefs differently since 2026-08-04: it compiles the queued
+task text through the enhancer (`runEnhance` + the fresh lane's `briefPayload`,
+additive-only contract, raw-text fallback — server.ts `tickDispatch`), not through
+this template. Keep every filled brief under ~40 lines; curation is the point
+(`tailored-context.md` §5).*
 
 Placeholders in `{braces}`. Drop any section that is genuinely empty rather than
 padding it.

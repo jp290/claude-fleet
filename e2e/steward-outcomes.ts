@@ -11,15 +11,31 @@ export async function run(sc: StewardCtx): Promise<void> {
   // --- steward files PENDING tasks (queue-automation.md item 1): observations become
   // reviewable proposals; the pending→queued gate stays with the owner. ---
   const stTask = await sc.stewPost("/api/steward/tasks", { text: "steward proposal: rebase lane 3", queue: true });
-  const stTaskJ = (await stTask.json()) as { ok?: boolean; task?: { id: string; status: string; source: string } };
+  const stTaskJ = (await stTask.json()) as { ok?: boolean; task?: { id: string; status: string; source: string; kind?: string } };
   check("steward files a task and queue:true is DISCARDED — status hard-forced to pending",
     stTask.ok && stTaskJ.task?.status === "pending" && stTaskJ.task?.source === "steward",
     JSON.stringify(stTaskJ));
+  check("a steward task defaults to kind \"note\" — an observation, never a runnable brief",
+    stTaskJ.task?.kind === "note", JSON.stringify(stTaskJ.task));
+  // the unsafe direction is a deliberate, auditable opt-in — and junk is refused, never coerced
+  const stLane = (await (await sc.stewPost("/api/steward/tasks", { text: "steward brief: run the drill", kind: "lane" })).json()) as { task?: { id: string; kind?: string } };
+  check("the steward may explicitly claim kind \"lane\" (opt-in for a real work brief)",
+    stLane.task?.kind === "lane", JSON.stringify(stLane.task));
+  check("an unknown kind is rejected (400), never coerced",
+    (await sc.stewPost("/api/steward/tasks", { text: "x", kind: "evil" })).status === 400);
+  await post(`/api/tasks/${stLane.task?.id}/delete`, {});
   const sessSt = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; source: string }[] };
   check("steward-filed task lands in the owner's queue as pending/steward",
     sessSt.tasks.some((t) => t.id === stTaskJ.task?.id && t.status === "pending" && t.source === "steward"));
   check("owner promotes the steward-filed task (pending → queued, the meta-gate)",
     (await post(`/api/tasks/${stTaskJ.task?.id}/queue`, {})).ok);
+  // promote on a note is the propose-outcome signal, not a dispatch order — the row must say
+  // out loud that the dispatcher will never run it, instead of sitting "queued" in silence
+  const promRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; kind?: string; note?: string }[] })
+    .tasks.find((t) => t.id === stTaskJ.task?.id);
+  check("a promoted note carries the standing explanation (dispatcher never runs it) on its row",
+    promRow?.kind === "note" && (promRow?.note ?? "").includes("dispatcher never runs"),
+    JSON.stringify(promRow));
   check("steward task rejects empty text (400)", (await sc.stewPost("/api/steward/tasks", { text: "  " })).status === 400);
   // cap: open steward-pending tasks are bounded — fill to the cap, expect 409, then clean up
   const capIds: string[] = [];
@@ -399,6 +415,10 @@ export async function run(sc: StewardCtx): Promise<void> {
   // view carries the founding intent (id/status/source/text) it was started for. ---
   {
     await post("/api/dispatch", { on: true });
+    // an older queued steward NOTE sits FIRST in FIFO order — the dispatcher must skip it and
+    // take the owner lane-task behind it; the note stays queued (the kind gate, 2026-08-04)
+    const skipNote = (await (await sc.stewPost("/api/steward/tasks", { text: "note: lane 3 looks done — go look" })).json()) as { task: { id: string } };
+    await post(`/api/tasks/${skipNote.task.id}/queue`, {});
     const sigTask = (await (await post("/api/tasks", { text: "steward-signal task probe", queue: false })).json()) as { task: { id: string } };
     const sigTid = sigTask.task.id;
     await post(`/api/tasks/${sigTid}/queue`, {});
@@ -413,6 +433,12 @@ export async function run(sc: StewardCtx): Promise<void> {
       !!sigLane?.task && sigLane.task.id === sigTid && sigLane.task.status === "sent"
       && sigLane.task.source === "owner" && sigLane.task.text.startsWith("steward-signal task probe"),
       JSON.stringify(sigLane?.task ?? null));
+    const skipRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; kind?: string }[] })
+      .tasks.find((t) => t.id === skipNote.task.id);
+    check("the dispatcher SKIPS a queued note even when it is first in line — the lane task behind it was taken instead",
+      sigLaneSlot > 0 && skipRow?.kind === "note" && skipRow?.status === "queued",
+      JSON.stringify(skipRow));
+    await post(`/api/tasks/${skipNote.task.id}/delete`, {});
     await post("/api/dispatch", { on: false });
     if (sigLaneSlot) await post(`/api/slots/${sigLaneSlot}/kill`, {});
     await post(`/api/tasks/${sigTid}/delete`, {});

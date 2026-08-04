@@ -1183,13 +1183,20 @@ let guests: GuestStatus[] = [];
 let guestAbsent = false;   // 404 = FLEET_GUEST_CMD unset: the feature does not exist, stop asking
 let guestAt = 0;           // when the facts below were read — they are NOT polled, so say so
 let guestErr: { slot: number; text: string } | null = null;
-let guestNote: { slot: number; text: string } | null = null;
-let guestRunning: { slot: number; verb: string } | null = null;
+// the note carries its own clock: without one you cannot tell this press's outcome from the one
+// you triggered ten minutes ago, which is the same "did anything happen?" doubt the receipt exists
+// to answer
+let guestNote: { slot: number; text: string; at: number } | null = null;
+// `ing`/`past` are captured at PRESS time, because the label that describes what was done cannot
+// be derived at render time — by then the action has changed the state it would be derived from
+// (press start on a stopped guest and it is running when the receipt paints, which would make it
+// say "repaired")
+let guestRunning: { slot: number; verb: string; ing?: string } | null = null;
 // The receipt has to land ON the button, not only in a line under it. Every verb here is
 // idempotent, so the usual successful outcome changes NOTHING in the status — and a button that
 // returns to its resting label after ~2s of work is indistinguishable from a button that ignored
 // you (reported twice by the owner, 2026-08-03). Same idiom as "✓ copied" on the copy buttons.
-let guestDone: { slot: number; verb: string; at: number } | null = null;
+let guestDone: { slot: number; verb: string; at: number; past?: string } | null = null;
 const GUEST_DONE_MS = 4000;
 const GUEST_PAST: Record<string, string> = {
   start: "✓ started", cut: "✓ cut", stop: "✓ stopped", renew: "✓ renewed",
@@ -1221,8 +1228,11 @@ async function loadGuest(): Promise<void> {
   }
   void renderBoard();
 }
-async function guestDo(slot: number, verb: string, extra: Record<string, unknown> = {}): Promise<void> {
-  guestRunning = { slot, verb };
+async function guestDo(
+  slot: number, verb: string, extra: Record<string, unknown> = {},
+  labels?: { ing: string; past: string },
+): Promise<void> {
+  guestRunning = { slot, verb, ing: labels?.ing };
   guestErr = null;
   guestNote = null;
   void renderBoard();
@@ -1231,12 +1241,12 @@ async function guestDo(slot: number, verb: string, extra: Record<string, unknown
     const j = (await r.json()) as { ok?: boolean; out?: string; error?: string };
     if (!r.ok || !j.ok) guestErr = { slot, text: (j.error ?? j.out ?? `${verb} failed`).split("\n").slice(-3).join(" · ") };
     else {
-      guestDone = { slot, verb, at: Date.now() };
+      guestDone = { slot, verb, at: Date.now(), past: labels?.past };
       // the hook's OWN lines, not its tools': colima and docker write timestamped warnings on
       // stderr ("already running, ignoring") that are noise next to "VM and container are up"
       const own = (j.out ?? "").split("\n").map((l) => l.trim())
         .filter((l) => l.startsWith("guest-ctl:") || l.startsWith("guest-expose:"));
-      guestNote = { slot, text: `${verb}: ${(own.length ? own : ["done"]).join(" · ")}` };
+      guestNote = { slot, at: Date.now(), text: `${verb}: ${(own.length ? own : ["done"]).join(" · ")}` };
       setTimeout(() => { if (guestDone && Date.now() - guestDone.at >= GUEST_DONE_MS) void renderBoard(); }, GUEST_DONE_MS + 100);
     }
   } catch {
@@ -1260,7 +1270,7 @@ async function guestSetClaudeToken(slot: number, value: string): Promise<void> {
     if (!r.ok || !j.ok) guestErr = { slot, text: j.error ?? j.out ?? "could not set the token" };
     else {
       guestTokenOpen = 0;
-      guestNote = { slot, text: `claude token: ${(j.out ?? "set").split("\n").filter(Boolean).slice(-1)[0] ?? "set"}` };
+      guestNote = { slot, at: Date.now(), text: `claude token: ${(j.out ?? "set").split("\n").filter(Boolean).slice(-1)[0] ?? "set"}` };
     }
   } catch {
     guestErr = { slot, text: "setting the token failed" };
@@ -1332,120 +1342,176 @@ async function pollOutline(slot: number): Promise<string[]> {
 }
 
 let guestStopArm: { slot: number; at: number } | null = null; // stop is destructive — one click arms, the next acts
-function guestBlock(g: GuestStatus): HTMLElement {
+// The panel keeps ONE SHAPE for every place, and what the selection changes is what the controls
+// can do: which verb is the deciding press right now, which are merely available, and which are
+// dead and say what would make them live. A place that is not set up yet is not a different screen
+// — it is this screen with nothing enabled, which is also the honest answer to "what can I do
+// about guest 3". Every enabled/disabled rule below is guest-ctl.sh's own precondition, not a
+// guess about it.
+function guestBlock(slot: number, g: GuestStatus | undefined): HTMLElement {
   const box = el("div", "bsec");
-  const open = g.exposed;
+  const open = g?.exposed === true;
+  const ctrRunning = g?.container === "running";
+  const ctrExists = !!g && g.container !== "absent";
+  const windowOk = !!g && g.until != null && !g.expired;
 
-  // 1 — is this guest's door open, and to what
+  // 1 — WHERE this guest is. The row above it is selected and already says which guest and whether
+  // its door is open, so repeating that here would cost a line to say nothing; the address is the
+  // thing a row cannot carry (it is long, and there are three rows).
   const state = el("div", "bstate");
-  state.appendChild(el("span", "bidhead", `guest ${g.slot}`));
-  state.appendChild(document.createTextNode(" · "));
-  state.appendChild(el("span", "bwork" + (open ? " on" : ""), open ? "● public" : "○ closed"));
-  state.appendChild(document.createTextNode(` · ${g.hostname || "no hostname configured"}`));
+  state.appendChild(el("span", "bidhead", `guest ${slot}`));
+  state.appendChild(document.createTextNode(g ? ` · ${g.hostname || "no hostname configured"}` : " · not set up"));
   box.appendChild(state);
 
-  // 2 — IS IT ACTUALLY RUNNING. This was a 10.5px grey afterthought and the owner asked for a
-  // proper way to see it (2026-08-03): it is the first question you have when someone says the
-  // guest is not working, so it gets the same green/amber treatment as the door above.
-  const run = el("div", "bstate");
-  const vmOk = g.vm === "running";
-  const ctrOk = g.container === "running";
-  run.appendChild(el("span", vmOk ? "ready" : "editing", `${vmOk ? "●" : "○"} vm ${g.vm}`));
-  run.appendChild(document.createTextNode(" · "));
-  run.appendChild(el("span", ctrOk ? "ready" : "editing", `${ctrOk ? "●" : "○"} container ${g.container}`));
-  box.appendChild(run);
-  if (vmOk && !ctrOk)
-    box.appendChild(el("div", "bidmeta", "the VM is up but this guest's container is not — start brings it back"));
-
-  // 3 — the deadline. The window is the whole security model here (no edge identity check), so it
-  // is stated in full even when the door is shut: a cut KEEPS it running, by design.
-  if (g.until) {
-    const until = new Date(g.until * 1000);
-    const hoursLeft = Math.round((g.until * 1000 - Date.now()) / 3_600_000);
-    const when = until.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    box.appendChild(el("div", g.expired ? "bgitop" : "bidmeta", g.expired
-      ? `window expired ${when} — renew to open a new one`
-      : `until ${when} · ${hoursLeft < 48 ? `${hoursLeft}h` : `${Math.round(hoursLeft / 24)}d`} left${open ? "" : " (kept — cut does not extend it)"}`));
+  if (!g) {
+    box.appendChild(el("div", "bidmeta",
+      `it needs a directory ~/.claude-fleet-guest/${slot}/ with its own expose.env and token, a container `
+      + "on its own port, and a hostname with a DNS record pointing at the tunnel. The DNS record is the one "
+      + "step that reaches the outside world, so it is deliberately not a button."));
   } else {
-    box.appendChild(el("div", "bidmeta", "no window recorded — renew opens one"));
-  }
-  if (g.until && !g.expired && open && !g.timer)
-    box.appendChild(el("div", "bgitop", "⚠ the window is open but its hourly enforcer is NOT loaded — it will not close itself"));
+    // 2 — IS IT ACTUALLY RUNNING. This was a 10.5px grey afterthought and the owner asked for a
+    // proper way to see it (2026-08-03): it is the first question you have when someone says the
+    // guest is not working, so it gets the same green/amber treatment as the door above.
+    const run = el("div", "bstate");
+    const vmOk = g.vm === "running";
+    run.appendChild(el("span", vmOk ? "ready" : "editing", `${vmOk ? "●" : "○"} vm ${g.vm}`));
+    run.appendChild(document.createTextNode(" · "));
+    run.appendChild(el("span", ctrRunning ? "ready" : "editing", `${ctrRunning ? "●" : "○"} container ${g.container}`));
+    box.appendChild(run);
+    if (vmOk && !ctrRunning)
+      box.appendChild(el("div", "bidmeta", "the VM is up but this guest's container is not — start brings it back"));
 
-  // 4 — who knocked. These lines have been written to this guest's own audit trail since the day
-  // it started and nobody has ever read them; that is the entire reason this panel exists.
-  if (g.authFails24h == null) {
-    box.appendChild(el("div", "bidmeta", "auth failures: unreadable while this guest is not running"));
-  } else {
-    const last = g.lastAuthFail
-      ? new Date(g.lastAuthFail).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : null;
-    const line = `${g.authFails24h} wrong token${g.authFails24h === 1 ? "" : "s"} in 24 h`
-      + ` · ${g.authFails1h ?? 0} in the last hour${last ? ` · last ${last}` : ""}`;
-    box.appendChild(el("div", (g.authFails1h ?? 0) > 0 ? "bgitop" : "bidmeta", line));
+    // 3 — the deadline. The window is the whole security model here (no edge identity check), so it
+    // is stated in full even when the door is shut: a cut KEEPS it running, by design.
+    if (g.until) {
+      const until = new Date(g.until * 1000);
+      const hoursLeft = Math.round((g.until * 1000 - Date.now()) / 3_600_000);
+      const when = until.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      box.appendChild(el("div", g.expired ? "bgitop" : "bidmeta", g.expired
+        ? `window expired ${when} — renew to open a new one`
+        : `until ${when} · ${hoursLeft < 48 ? `${hoursLeft}h` : `${Math.round(hoursLeft / 24)}d`} left${open ? "" : " (kept — cut does not extend it)"}`));
+    } else {
+      box.appendChild(el("div", "bidmeta", "no window recorded — renew opens one"));
+    }
+    if (windowOk && open && !g.timer)
+      box.appendChild(el("div", "bgitop", "⚠ the window is open but its hourly enforcer is NOT loaded — it will not close itself"));
+
+    // 4 — who knocked. These lines have been written to this guest's own audit trail since the day
+    // it started and nobody has ever read them; that is the entire reason this panel exists.
+    if (g.authFails24h == null) {
+      box.appendChild(el("div", "bidmeta", "auth failures: unreadable while this guest is not running"));
+    } else {
+      const last = g.lastAuthFail
+        ? new Date(g.lastAuthFail).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : null;
+      const line = `${g.authFails24h} wrong token${g.authFails24h === 1 ? "" : "s"} in 24 h`
+        + ` · ${g.authFails1h ?? 0} in the last hour${last ? ` · last ${last}` : ""}`;
+      box.appendChild(el("div", (g.authFails1h ?? 0) > 0 ? "bgitop" : "bidmeta", line));
+    }
   }
-  if (guestErr?.slot === g.slot) box.appendChild(el("div", "bgitop", guestErr.text));
-  else if (guestNote?.slot === g.slot) box.appendChild(el("div", "riskempty", guestNote.text));
+  if (guestErr?.slot === slot) box.appendChild(el("div", "bgitop", guestErr.text));
+  else if (guestNote?.slot === slot)
+    box.appendChild(el("div", "riskempty",
+      `${new Date(guestNote.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })} · ${guestNote.text}`));
 
   const row = el("div", "bbtnrow");
-  const mk = (label: string, cls: string, title: string, run2: () => void) => {
+  const mk = (label: string, cls: string, title: string, can: boolean, run2: () => void) => {
     const b = el("button", cls, label) as HTMLButtonElement;
     b.title = title;
-    b.disabled = guestRunning !== null; // one guest action at a time, server-side too
-    b.onclick = run2;
+    // one guest action at a time (the server enforces that too) — and beyond it, a control that
+    // cannot act on THIS guest right now is dead, with a title that says what would revive it
+    b.disabled = guestRunning !== null || !can;
+    if (can) b.onclick = run2;
     return b;
   };
   // three states on one button: working → just-succeeded (for GUEST_DONE_MS) → resting
   const busy = (verb: string, label: string): string => {
-    if (guestRunning?.slot === g.slot && guestRunning.verb === verb) return `… ${verb}ing`;
-    if (guestDone?.slot === g.slot && guestDone.verb === verb && Date.now() - guestDone.at < GUEST_DONE_MS)
-      return GUEST_PAST[verb] ?? "✓ done";
+    if (guestRunning?.slot === slot && guestRunning.verb === verb) return guestRunning.ing ?? `… ${verb}ing`;
+    if (guestDone?.slot === slot && guestDone.verb === verb && Date.now() - guestDone.at < GUEST_DONE_MS)
+      return guestDone.past ?? GUEST_PAST[verb] ?? "✓ done";
     return label;
   };
-  row.appendChild(mk(busy("start", "▸ start"), "bbtn",
-    "bring this guest's container up, and re-open on the existing deadline — safe to press any time",
-    () => void guestDo(g.slot, "start")));
-  if (open) row.appendChild(mk(busy("cut", "✂ cut"), "bbtn",
-    "close this guest's public door now; it keeps running and the deadline keeps its time",
-    () => void guestDo(g.slot, "cut")));
-  row.appendChild(mk(busy("renew", "↻ renew 7 days"), "bbtn",
-    "deliberately set a fresh 7-day window for this guest (re-opens the door if it was cut)",
-    () => void guestDo(g.slot, "renew", { days: 7 })));
-  const armed = guestStopArm?.slot === g.slot && Date.now() - guestStopArm.at < 8_000;
+  // ONE verb, three jobs — and the resting label has to say which one it is doing here. Left as a
+  // permanent "▸ start" it lies on a guest that is demonstrably running: the press appears to have
+  // been undone the moment the receipt fades, which is what confused the owner about this button
+  // three times (2026-08-03 ×2, 2026-08-04). What the hook does in each state is unchanged; only
+  // the promise on the button is now the one it can keep.
+  // On a guest that is already up the hook mends nothing — colima and docker both no-op, and what
+  // actually happens is `resume`: the ingress rule is rewritten and the hourly expiry timer is
+  // reinstalled. So the third face is "re-apply", not "repair"; the one state where it is more than
+  // cosmetic is a missing enforcer (`timer` false), which the panel warns about right above.
+  const startJob = !g || !ctrRunning
+    ? { label: "▸ start", ing: "… starting", past: "✓ started" }
+    : !open && windowOk
+      ? { label: "▸ re-open", ing: "… re-opening", past: "✓ re-opened" }
+      : { label: "↻ re-apply", ing: "… re-applying", past: "✓ re-applied" };
+  // start leads when it is the way back from a down state; as `repair` it is a standing offer, not
+  // the next press, so it does not take the accent
+  const startLeads = !!g && (!ctrRunning || (!open && windowOk));
+  row.appendChild(mk(busy("start", startJob.label), "bbtn" + (startLeads ? " accent" : ""),
+    !g ? "there is no guest in this place yet"
+      : !ctrRunning ? "bring this guest's container up, and re-open it if its window is still valid"
+        : !open && windowOk ? "re-open this guest's door on the window it already has"
+          : "re-assert this guest: rewrite its ingress rule and reinstall the hourly expiry timer "
+            + "(the container is left alone). Safe any time — this is the one to press when your friend says it is not working",
+    !!g, () => void guestDo(slot, "start", {}, { ing: startJob.ing, past: startJob.past })));
+  // cut stays in the row when the door is already shut rather than disappearing: it is the control
+  // you reach for in a hurry, and one that moves position is one you have to hunt for.
+  row.appendChild(mk(busy("cut", "✂ cut"), "bbtn",
+    open ? "close this guest's public door now; it keeps running and the deadline keeps its time"
+      : "the door is already closed — there is nothing to cut",
+    open, () => void guestDo(slot, "cut")));
+  // renew leads when there is no valid window, because it is the ONLY verb that opens one
+  row.appendChild(mk(busy("renew", "↻ renew 7 days"), "bbtn" + (!!g && !windowOk ? " accent" : ""),
+    g ? "deliberately set a fresh 7-day window for this guest (re-opens the door if it was cut)"
+      : "there is no guest in this place yet",
+    !!g, () => void guestDo(slot, "renew", { days: 7 })));
+  const armed = guestStopArm?.slot === slot && Date.now() - guestStopArm.at < 8_000;
   row.appendChild(mk(armed ? "⏻ confirm stop" : busy("stop", "⏻ stop"), "bbtn" + (armed ? " accent" : ""),
-    "stop this guest's container — its running sessions are lost, its volume and deadline survive",
-    () => {
-      if (!armed) { guestStopArm = { slot: g.slot, at: Date.now() }; void renderBoard(); return; }
+    ctrRunning ? "stop this guest's container — its running sessions are lost, its volume and deadline survive"
+      : "this guest's container is not running — there is nothing to stop",
+    ctrRunning, () => {
+      if (!armed) { guestStopArm = { slot, at: Date.now() }; void renderBoard(); return; }
       guestStopArm = null;
-      void guestDo(g.slot, "stop");
+      void guestDo(slot, "stop");
     }));
   box.appendChild(row);
 
   // The single most confusing way for a guest to be broken: dashboard opens, sessions start,
   // `claude` dies in every pane. Say it here rather than letting them discover it.
-  if (g.claudeAuth === false)
+  if (g?.claudeAuth === false)
     box.appendChild(el("div", "bgitop",
       "no Claude credential — the dashboard will open and `claude` will fail in every pane. Give it one below."));
 
-  const inv = el("button", "bbtn subtle", "⧉ copy invite link") as HTMLButtonElement;
-  inv.title = "copy this guest's address with its access token — paste it to the person you are inviting";
-  inv.onclick = () => void guestCopyInvite(g.slot, inv);
   const irow = el("div", "bbtnrow");
+  const inv = el("button", "bbtn subtle", "⧉ copy invite link") as HTMLButtonElement;
+  inv.title = g ? "copy this guest's address with its access token — paste it to the person you are inviting"
+    : "there is no guest in this place yet, so there is no link to copy";
+  inv.disabled = !g;
+  if (g) inv.onclick = () => void guestCopyInvite(slot, inv);
   irow.appendChild(inv);
   const shown = el("div", "");
   const show = el("button", "bbtn subtle", "⚿ show token") as HTMLButtonElement;
-  show.title = "reveal this guest's access token, for when a link is the wrong thing to send";
-  show.onclick = () => void guestShowToken(g.slot, shown);
+  show.title = g ? "reveal this guest's access token, for when a link is the wrong thing to send"
+    : "there is no guest in this place yet, so there is no token to show";
+  show.disabled = !g;
+  if (g) show.onclick = () => void guestShowToken(slot, shown);
   irow.appendChild(show);
-  const give = el("button", "bbtn subtle" + (g.claudeAuth === false ? " accent" : ""),
-    guestTokenOpen === g.slot ? "▾ claude token" : "▸ give claude token") as HTMLButtonElement;
-  give.title = "paste the `claude setup-token` value this guest should run as — its own subscription, not yours";
-  give.onclick = () => { guestTokenOpen = guestTokenOpen === g.slot ? 0 : g.slot; void renderBoard(); };
+  // the credential is delivered by recreating the container from its own inspect config, so there
+  // has to BE a container: guest-ctl.sh exits 2 without one, and a button that can only fail is
+  // worse than a button that says what it needs
+  const give = el("button", "bbtn subtle" + (g?.claudeAuth === false ? " accent" : ""),
+    guestTokenOpen === slot ? "▾ claude token" : "▸ give claude token") as HTMLButtonElement;
+  give.title = ctrExists
+    ? "paste the `claude setup-token` value this guest should run as — its own subscription, not yours"
+    : "there is no container to update — start this guest first";
+  give.disabled = !ctrExists;
+  if (ctrExists) give.onclick = () => { guestTokenOpen = guestTokenOpen === slot ? 0 : slot; void renderBoard(); };
   irow.appendChild(give);
   box.appendChild(irow);
   box.appendChild(shown);
 
-  if (guestTokenOpen === g.slot) {
+  if (guestTokenOpen === slot && ctrExists) {
     const wrap = el("div", "bdiscard");
     wrap.appendChild(el("div", "bdline",
       "Paste the value from `claude setup-token`, run on the machine of whoever this guest is for. "
@@ -1458,7 +1524,7 @@ function guestBlock(g: GuestStatus): HTMLElement {
     (inp.style as CSSStyleDeclaration).width = "100%";
     const save = el("button", "bwtact", guestTokenBusy ? "… saving" : "save & recreate") as HTMLButtonElement;
     save.disabled = guestTokenBusy;
-    save.onclick = () => { if (inp.value.trim()) void guestSetClaudeToken(g.slot, inp.value.trim()); };
+    save.onclick = () => { if (inp.value.trim()) void guestSetClaudeToken(slot, inp.value.trim()); };
     const cancel = el("button", "bwtact", "cancel") as HTMLButtonElement;
     cancel.onclick = () => { guestTokenOpen = 0; void renderBoard(); };
     const btns = el("div", "bdbtns");
@@ -1466,8 +1532,48 @@ function guestBlock(g: GuestStatus): HTMLElement {
     wrap.append(inp, btns);
     box.appendChild(wrap);
   }
-  if (!open) box.appendChild(el("div", "bidmeta", "the door is closed — this link will not resolve until start or renew"));
+  if (g && !open) box.appendChild(el("div", "bidmeta", "the door is closed — this link will not resolve until start or renew"));
   return box;
+}
+
+// How much of this guest's window is left. Only ever the deciding number — the exact date lives
+// in the detail block, because a row that carries a timestamp stops being scannable.
+function guestLeft(g: GuestStatus): string | null {
+  if (!g.until) return null;
+  const h = Math.round((g.until * 1000 - Date.now()) / 3_600_000);
+  if (h <= 0) return null;
+  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
+}
+
+// One place, one row — and the row has to answer "is this one up?" on its own, because that is the
+// question the panel exists for and the previous shape (a strip of chips whose whole content was a
+// dot) could only answer it for whichever guest happened to be selected. Two states earn amber
+// rather than green or grey, and both are the same kind of wrong: a door that is open onto nothing.
+function guestRow(n: number, g: GuestStatus | undefined, on: boolean): HTMLButtonElement {
+  const row = el("button", "bgrow" + (on ? " on" : "") + (g ? "" : " absent")) as HTMLButtonElement;
+  let dot = "○";
+  let tone = "";
+  let text: string;
+  if (!g) {
+    text = "not set up";
+    row.title = `guest ${n} has no directory yet — click for what it needs`;
+  } else {
+    const ctr = g.container === "running";
+    const left = guestLeft(g);
+    if (g.exposed && g.expired) { dot = "◐"; tone = "editing"; text = "expired · still public"; }
+    else if (g.exposed && !ctr) { dot = "◐"; tone = "editing"; text = "public · no container"; }
+    else if (g.exposed) { dot = "●"; tone = "ready"; text = left ? `public · ${left}` : "public"; }
+    else if (g.expired) { text = "expired"; }
+    else if (ctr) { text = left ? `closed · ${left}` : "closed"; }
+    else { text = "stopped"; }
+    row.title = `guest ${n}: door ${g.exposed ? "open" : "closed"} · container ${g.container} · vm ${g.vm}`
+      + (g.hostname ? ` · ${g.hostname}` : "");
+  }
+  row.appendChild(el("span", tone ? `bgdot ${tone}` : "bgdot", dot));
+  row.appendChild(el("span", "bgname", `guest ${n}`));
+  row.appendChild(el("span", tone ? `bgstate ${tone}` : "bgstate", text));
+  row.onclick = () => { guestSel = n; localStorage.setItem("fleet.guest.slot", String(n)); void renderBoard(); };
+  return row;
 }
 
 function guestSection(): HTMLElement | null {
@@ -1480,35 +1586,21 @@ function guestSection(): HTMLElement | null {
     sec.appendChild(el("div", guestErr ? "bgitop" : "bempty",
       guestErr ? `guest status unavailable — ${guestErr.text}` : "reading guest status…"));
   } else {
-    // one row of places, one detail block — the same shape as the picker, and the reason is the
-    // same: stacking N full blocks turns a narrow side panel into a scroll hunt, and the question
-    // "is guest 2 up?" should be answerable without reading guest 1.
-    const tabs = el("div", "bbtnrow");
-    const known = new Set(guests.map((g) => g.slot));
-    if (!known.has(guestSel)) guestSel = guests[0]?.slot ?? 1;
-    for (let n = 1; n <= Math.max(GUEST_UI_SLOTS, ...guests.map((g) => g.slot)); n++) {
-      const g = guests.find((x) => x.slot === n);
-      const on = guestSel === n;
-      const dot = !g ? "" : g.exposed ? "● " : g.container === "running" ? "◐ " : "○ ";
-      const t = el("button", "bbtn" + (on ? " accent" : "") + (g ? "" : " subtle"), `${dot}${n}`) as HTMLButtonElement;
-      t.title = g
-        ? `guest ${n}: ${g.exposed ? "public" : "closed"}, container ${g.container}`
-        : `guest ${n} is not set up yet`;
-      t.onclick = () => { guestSel = n; localStorage.setItem("fleet.guest.slot", String(n)); void renderBoard(); };
-      tabs.appendChild(t);
-    }
-    sec.appendChild(tabs);
-    const cur = guests.find((g) => g.slot === guestSel);
-    if (cur) sec.appendChild(guestBlock(cur));
-    else {
-      const box = el("div", "bsec");
-      box.appendChild(el("div", "bstate", `guest ${guestSel} · not set up`));
-      box.appendChild(el("div", "bidmeta",
-        `it needs a directory ~/.claude-fleet-guest/${guestSel}/ with its own expose.env and token, a container `
-        + "on its own port, and a hostname with a DNS record pointing at the tunnel. The DNS record is the one "
-        + "step that reaches the outside world, so it is deliberately not a button."));
-      sec.appendChild(box);
-    }
+    // The places are the STRUCTURE of this section, not a view over the data: every one of them
+    // gets a row whether or not it exists, because "how many guests could there be" is a property
+    // of this panel and "how many are there" is the answer it gives. One detail block below, for
+    // the selected row only — stacking N full blocks turns a narrow side panel into a scroll hunt.
+    const last = Math.max(GUEST_UI_SLOTS, ...guests.map((g) => g.slot));
+    // Only an out-of-RANGE selection is corrected. Clamping to a slot that exists (what this did
+    // while the places were chips) silently bounced every click on an empty place back to guest 1
+    // and made the explainer below unreachable — an empty place is a place, and picking it is how
+    // you find out what it still needs.
+    if (guestSel < 1 || guestSel > last) guestSel = guests[0]?.slot ?? 1;
+    for (let n = 1; n <= last; n++)
+      sec.appendChild(guestRow(n, guests.find((x) => x.slot === n), guestSel === n));
+    // one block, always — an empty place gets the same panel with dead controls rather than a
+    // second kind of screen, which is what makes this read as one control panel across all three
+    sec.appendChild(guestBlock(guestSel, guests.find((g) => g.slot === guestSel)));
   }
   // these facts are NOT polled (a subprocess per read), so the panel says how old they are
   // instead of implying they are live

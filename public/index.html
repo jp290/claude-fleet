@@ -911,6 +911,23 @@
   .bwtact:hover:not(:disabled) { color: #ddd; border-color: #3a4a7a; }
   .bwtact:disabled { color: #667; cursor: default; }
   .bwtact.del:hover { color: #f7768e; border-color: #5e2c3a; }
+  /* guest places — one row per possible guest, always all of them (src/client.ts guestRow). Same
+     row geometry and the same ready/editing palette as .bwt above; it needs its own rules only
+     because a .bwt is not selectable and these are the section's selector. */
+  .bgrow { display: flex; gap: 7px; align-items: center; width: 100%; margin-top: 3px; padding: 4px 6px;
+    border: 1px solid transparent; border-radius: 7px; background: transparent; color: #aaa;
+    font-family: inherit; font-size: 12px; line-height: 1.5; text-align: left; cursor: pointer; }
+  .bgrow:hover { background: #1b1b1b; border-color: #2a2a2a; }
+  .bgrow.on { background: #1c2437; border-color: #2c3a5e; color: #cfd8ee; }
+  .bgrow.absent { color: #5a5a5a; }
+  /* selected AND empty is a real combination — it is how you read what a place still needs, so it
+     must not stay at the dim weight that says "nothing here" against the selected background */
+  .bgrow.on.absent { color: #8a8fa0; }
+  .bgrow .bgdot { flex: none; font-size: 11px; color: #666; }
+  .bgrow .bgname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bgrow .bgstate { flex: none; font-size: 10px; color: #666; }
+  .bgrow .bgdot.editing, .bgrow .bgstate.editing { color: #e0af68; }
+  .bgrow .bgdot.ready, .bgrow .bgstate.ready { color: #9ece6a; }
   .bdiscard { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid #5e2c3a; border-radius: 8px;
     background: #1c1416; font-size: 11px; line-height: 1.5; }
   .bdiscard .bdtitle { color: #f7768e; font-weight: 700; margin-bottom: 3px; }

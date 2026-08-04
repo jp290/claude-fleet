@@ -336,6 +336,9 @@
   .shellsect { font-size: 10px; color: #6a6a6a; text-transform: uppercase; letter-spacing: 0.07em;
     font-weight: 600; }
   .shellsecn { font-size: 10px; color: #666; background: #232323; border-radius: 20px; padding: 1px 7px; }
+  /* the badge only becomes a control when it has something to confess ("3 · 5 hidden") */
+  .shellsecn.reveal { color: #9aa0a6; cursor: pointer; }
+  .shellsecn.reveal:hover { color: #ddd; background: #2d2d2d; }
   .shellrow { display: flex; align-items: center; gap: 9px; padding: 6px 9px; border-radius: 7px;
     cursor: pointer; min-width: 0; }
   .shellrow:hover { background: #262626; }

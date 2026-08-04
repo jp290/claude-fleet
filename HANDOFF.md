@@ -23,7 +23,7 @@ Bauen → landen → **benutzen** → korrigieren, innerhalb einer Stunde. Genau
 
 ### Buchhaltungs-Lücke, die beim Ledger-Lesen auffallen wird
 
-**Die fünf Commits ab `14dafdc` sind DIREKT auf main entstanden, im Haupt-Checkout, ohne Lane.**
+**Die sieben Commits ab `14dafdc` sind DIREKT auf main entstanden, im Haupt-Checkout, ohne Lane.**
 Konsequenz, die man kennen muss, bevor man den Zahlen glaubt:
 - `git notes --ref=fleet/land` ist für alle fünf **leer** — die Integrations-Provenienz kennt sie nicht.
 - `lane-outcomes.jsonl` hat für sie **keine Rows** (der Ledger endet bei `fleet/260804154311-a0c8`).
@@ -61,11 +61,25 @@ den Lane-Weg und sagt nichts über Direkt-Commits aus dem Haupt-Checkout.
 ### Was als Nächstes ansteht
 
 1. **② Server-first Sync** — der nächste Schritt des Merge/Land-Programms, unverändert.
-2. Zwei kleine ⑦-Lücken: der `exitCode`-Guard hat keinen Check, und `verify_intent` schreibt pro
-   Phasenwechsel eine Audit-Zeile ohne Stundendeckel (das Steward-Journal hat einen).
-3. **Maschinenhygiene**: 104 verwaiste tmux-Sockets, 55 MB TMPDIR-Scratch. Nichts räumt das ab,
-   und die Zahl wächst mit jeder Session (85 heute früh).
+2. **`isServerCode` ist zu grob — Fehlalarm auf der frisch gebauten Deploy-Zeile.** Beim
+   Abschluss-Check dieser Session meldete sie `codeBehind: true`, obwohl die zwei Commits seit dem
+   Serverstart nur `HANDOFF.md` und `e2e/verify-queue.ts` waren — Dateien, die der Server nie lädt.
+   Ursache: `server.ts`, grep `isServerCode` — alles ausser `.md`, `public/` und CLIENT_ONLY_FILES
+   zählt als Server-Code, also auch `e2e/*` und `fleet-e2e*.ts`. Ein `!p.startsWith("e2e/")` plus
+   die Harness-Dateien schliesst es; **volle Kette nötig, weil es server.ts anfasst**. Ironie fürs
+   Register: das ist dieselbe Krankheit, die `163839b` eine Ebene tiefer behoben hat — eine
+   Warnfläche, die im Normalfall warnt, wird als Rauschen gelernt.
+3. **Maschinenhygiene — OFFENE OWNER-ENTSCHEIDUNG, nichts wurde gelöscht.** Gemessen am Ende
+   dieser Session: **124 verwaiste tmux-Sockets, davon 119 nachweislich tot** (kein Server dahinter;
+   der eine lebende ist `claudefleet`), und **6 Instanzverzeichnisse mit 70 MB**, die rote Läufe
+   "kept for inspection" stehen liessen — eines davon aus dieser Session. Wächst mit jeder Session
+   (85 heute früh → 124 abends). Zwei Wege: einmal aufräumen (sicher, tote Sockets sind
+   Dateileichen) ODER `e2e-stage.sh` reapt tote `fleettest*`-Sockets beim Start mit, wie es den
+   Lock schon reapt — stoppt das Wachstum, fasst aber Suiten-Klempnerei an.
 4. Queue: `2e9ed996` (Terminal — Farbe, Robustheit, Scrollback) ist die einzige offene Task.
+5. **Nicht bauen, bewusst zurückgezogen:** der Stundendeckel auf `verify_intent`-Audit-Zeilen. Er
+   würde ausgerechnet dann Zeilen wegwerfen, wenn eine Lane zwischen Phasen springt — im
+   interessantesten Fall, und die Fläche existiert genau dafür. Begründung im Body von `aef612e`.
 
 ---
 

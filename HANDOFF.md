@@ -9,7 +9,8 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 ## Session 24 (2026-08-05 nachts): Punkt 2 der Liste erledigt, Punkt 1 als Brief zurückgegeben
 
 Autonome Session auf Zuruf („mach autonom weiter, denk gut nach was du tust"), abgearbeitet
-in der Reihenfolge der Session-23-Liste. **Ein Commit: `9d3fba8`**, gelandet und deployed.
+in der Reihenfolge der Session-23-Liste. **Drei Commits: `9d3fba8`, `f3ab318`, `d0e2260`**,
+alle gelandet; die zwei Code-Commits deployed und live nachgeprüft.
 
 ### Was erledigt ist
 
@@ -49,12 +50,51 @@ notiert hat: **nur 8 von 67 Lands hat je ein Mensch bestätigt.** Konsequenz, di
 steht und die man vor dem Bauen von ② kennen muss: **② wirkt auf 4 Ereignisse in 83 Lanes.
 Es ist eine Qualitäts-, keine Durchsatzscheibe.**
 
+### Terminal-Task `2e9ed996`: ein Drittel gebaut, zwei Drittel gemessen und benannt
+
+Owner-Wortlaut: *„improving the terminal formatting, making it more robust and giving it
+colour back - also to make it fully scrollback-able"* — drei Dinge, und sie sind verschieden
+weit.
+
+**Farbe: gebaut (`d0e2260`), deployed.** Die drei WS-Seed-Captures nahmen bewusst kein `-e`.
+Der Kommentar im Code begründete das mit absoluten Spaltensprüngen (`\x1b[200G`), die eine
+schmalere Client-Breite garblen würden — Preis ausdrücklich „old scrollback loses color".
+**Diese Prämisse ist auf tmux 3.6a widerlegt, in drei Experimenten:** breite gefärbte
+TUI-Zeilen in einer 200-Spalten-Pane, auf 55 resized wie der Pfad es tut → 0 Cursor-Escapes;
+und entscheidend: **`-e`-Ausgabe minus SGR ist byte-identisch zur plain-Ausgabe** (1004 = 1004
+B, leerer diff), der einzige CSI-Finalbyte ist `m`. Der Trade-off war leer.
+
+**Die Angst war trotzdem berechtigt und ist jetzt ein Check, kein Verzicht** (`e2e/slots.ts`):
+der Seed trägt SGR **und** trägt keine Cursor-Bewegungs-Escape. Ein tmux, das je eine
+emittiert, wird laut rot statt still zu verschieben. Ohne diesen zweiten Check wäre die
+Änderung ein Downgrade von „sicher" auf „heute zufällig sicher".
+
+**Auf der Fläche geprüft, nicht nur auf der Leitung:** Wegwerf-Instanz (eigener Socket/Port,
+danach restlos entfernt), gefärbte Ausgabe in die Pane, dann ein *frischer Seitenaufruf* —
+reiner Reseed ohne eine Zeile Live-Ausgabe — malt den vollen gefärbten Scrollback, sauber auf
+Spalte 0.
+
+**„fully scrollback-able": NICHT gebaut, aber die Ursache steht fest.** `SEED_LINES = 3000`
+(`server.ts:35`) deckelt jeden Connect, während tmux `history-limit 50000` hält (`:1248`) und
+xterm `scrollback: 50000` fasst (`src/client.ts:237`). Der `seed`-Parameter ist bei
+`server.ts` mit `Math.min(SEED_LINES, …)` geklammert — **ein Client kann nur WENIGER
+anfordern, nie mehr.** Der Browser kann also 50 000 Zeilen halten und bekommt nie mehr als
+3000. Eigene Scheibe, und die schwierige Stelle ist nicht der Server: **xterm kann nicht in
+den Scrollback prependen**, „ältere laden" heisst also Puffer neu schreiben. Naheliegende
+Form: ein ausdrückliches „volle Historie laden" (Reseed mit hohem `seed`), nicht ein grösserer
+Default — sonst zahlt jeder Connect den Transfer, und genau davon kam das Data-Saver-Programm.
+
+**„more robust": nicht angefasst, bewusst.** Es ist der einzige der drei Punkte ohne benanntes
+Symptom. Ein Beispiel vom Owner (welche Ausgabe bricht wie) ist billiger als jede Vermutung.
+
 ### Unverändert offen (nichts davon angefasst)
 
 - **Maschinenhygiene bleibt OFFENE OWNER-ENTSCHEIDUNG.** Nichts gelöscht. Gemessen zu
   Sessionbeginn: 124 verwaiste Sockets, 70 MB Instanz-Scratch — die Suitenläufe dieser
   Session kommen obendrauf. Zwei Wege stehen unten in der Session-23-Liste.
-- Queue-Task `2e9ed996` (Terminal) — nicht angefasst.
+- Queue-Task `2e9ed996` (Terminal) — **noch offen, ein Drittel erledigt** (Farbe gebaut;
+  Scrollback-Tiefe und „robust" siehe oben). Die Task bleibt `pending`; der Status im Board
+  wurde nicht angefasst, weil zwei der drei Punkte offen sind.
 - **Buchhaltungslücke setzt sich fort:** `9d3fba8` ist wieder direkt auf main im
   Haupt-Checkout entstanden, ohne Lane → kein `fleet/land`-Note, keine Outcome-Row, kein
   Tier-2-Audit, kein `undo-land`. Rückweg ist `git revert`. Ob das der richtige Weg ist,

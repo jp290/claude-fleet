@@ -4394,12 +4394,34 @@ interface VerifyIntent { phase: VerifyPhase; suite: string; exitCode: number | n
 const verifyIntents = new Map<number, VerifyIntent>(); // slot id → its LAST report. In memory only:
 // a restart is a fact about the server, and reviving one side of a phase pair across it would be
 // the one thing this region must never do — invent state. The audit log keeps the history.
+// How long a LIVE holder may hold before the surface calls it out. Measured on this machine: a
+// full isolated run takes 5.8–9.8 min (six runs, post-land-audits.jsonl) and the gate chain's
+// individual wrappers 21–38 s. 20 minutes is therefore "no suite here takes this long", with 2x
+// headroom on the longest run ever recorded, and it is the ONLY state on this surface that
+// deserves a warning: a suite that should have finished and has not.
+// Overridable because the number is a claim about THIS machine: a slower box, or a suite that
+// grows, would otherwise turn this warning into the same constant false alarm it replaces.
+const SUITE_HOLD_OVERDUE_MS = Math.max(60_000, Number(process.env.FLEET_SUITE_OVERDUE_MS) || 20 * 60_000);
+// What the lock MEANS, decided here rather than in the renderer — the threshold above is a claim
+// about this machine and belongs where a check can reach it (e2e/verify-queue.ts §2).
+//   held    — a live holder inside the normal window: a suite is running.
+//   overdue — a live holder past it: the one genuine anomaly this surface can see.
+//   stale   — the holder is gone, or the pid file is unreadable. NOTHING IS RUNNING. This is the
+//             resting state of an idle machine, not a fault: release is implicit by design
+//             (e2e-stage.sh:38 — no EXIT trap), so EVERY finished suite leaves its dir behind
+//             until the next contender reaps it. Measured 2026-08-04: after one audit ended, this
+//             state held for 18 minutes on a quiet machine with nothing wrong. It was rendered as
+//             a warning, which made the common harmless case shout and left `overdue` — the case
+//             worth shouting about — wearing the same tone as a healthy 30-second hold.
+//   parked  — a pid-LESS dir: a human parked the machine on purpose, and nothing ever reaps it.
+type GateLockState = "held" | "overdue" | "stale" | "parked";
 interface GateLock {
   pid: number | null;     // the recorded holder, or null when the dir carries no readable pid
   alive: boolean | null;  // null = a pid-LESS dir: a MANUAL park (a human parked the machine), and
                           // e2e-stage.sh never reaps one. false = the holder is gone; the next
                           // contender reaps this dir.
   heldMs: number;
+  state: GateLockState;   // the four facts above, named — see SUITE_HOLD_OVERDUE_MS
 }
 interface GateReport { slot: number; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number }
 interface GateView { lock: GateLock | null; reports: GateReport[] }
@@ -4418,7 +4440,7 @@ function suiteLockView(): GateLock | null {
   // "we could not time it" must never come out as "nobody recorded a pid", which means manual park
   try { at = statSync(`${SUITE_LOCK}/pid`).mtimeMs; } catch { /* fall back to the dir's own mtime */ }
   const heldMs = Math.max(0, Date.now() - at);
-  if (raw === null || raw === "") return { pid: null, alive: null, heldMs };
+  if (raw === null || raw === "") return { pid: null, alive: null, heldMs, state: "parked" };
   // `> 0` is not defensive noise: process.kill(0, sig) addresses the CALLER'S OWN process group,
   // so a lock file containing "0" would answer "alive" about this very server and report a lock
   // nobody holds as held. Zero is not a pid here, it is unreadable content.
@@ -4431,7 +4453,9 @@ function suiteLockView(): GateLock | null {
     try { process.kill(pid, 0); alive = true; }
     catch (e: unknown) { alive = (e as { code?: string }).code === "EPERM"; }
   }
-  return { pid, alive, heldMs };
+  // an unparseable pid is `alive:false` above and lands in `stale` with a dead holder — same
+  // meaning to a reader (nothing is running, the next suite clears it), different words in the UI
+  return { pid, alive, heldMs, state: !alive ? "stale" : heldMs > SUITE_HOLD_OVERDUE_MS ? "overdue" : "held" };
 }
 // One projection for /api/sessions. Returns null when there is nothing to say, so the 2s poll
 // carries four bytes rather than an empty shape (the payload is already the fleet's biggest, see

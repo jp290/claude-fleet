@@ -1636,7 +1636,7 @@ function guestSection(): HTMLElement | null {
 // Tolerant on the wire on purpose: an older server sends no `gate` at all and this must then be
 // absent, never "no suite is running" — which is a claim, and one nothing here has measured.
 interface GateInfo {
-  lock: { pid: number | null; alive: boolean | null; heldMs: number } | null;
+  lock: { pid: number | null; alive: boolean | null; heldMs: number; state?: string } | null;
   reports: { slot: number; label: string | null; phase: string; suite: string; exitCode: number | null; at: number }[];
 }
 let gateInfo: GateInfo | null = null;
@@ -1650,16 +1650,27 @@ function gateSection(): HTMLElement | null {
   if (!g) return null;
   const sec = el("div", "bsec");
   const lk = g.lock;
+  // the server names the state (it owns the overdue threshold — see SUITE_HOLD_OVERDUE_MS). The
+  // fallback is for the deploy window where a newer bundle is served by an older server: it can
+  // reproduce every state but `overdue`, so it under-warns rather than inventing one.
+  const state = lk ? lk.state ?? (lk.alive === null ? "parked" : lk.alive ? "held" : "stale") : "free";
+  // `pid null` is a lock file whose contents are not a pid — a lost holder either way, but
+  // printing "pid null" would read as a bug in this line rather than as one on disk.
+  const who = lk?.pid === null ? "unreadable pid file" : `pid ${lk?.pid}`;
+  // gateAge measures from the CLAIM (the pid file's mtime), not from the holder's death — which
+  // nothing here knows. So a dead holder is "claimed 18m ago", never "ended 18m ago".
   const head = el("div", "bstate",
     !lk ? "· suite gate · lock free"
-      : lk.alive === null ? `⏸ suite gate · parked by hand (no pid) · ${gateAge(lk.heldMs)}`
-      : lk.alive ? `⏳ suite gate · held by pid ${lk.pid} · ${gateAge(lk.heldMs)}`
-      // `pid null` here is a lock file whose contents are not a pid — a lost holder either way,
-      // but printing "pid null is gone" would read as a bug in this line rather than on disk
-      : `⚠ suite gate · ${lk.pid === null ? "unreadable pid file" : `pid ${lk.pid} is gone`} — the next suite reaps the lock · ${gateAge(lk.heldMs)}`);
-  head.title = lk
-    ? "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers."
-    : "No suite is holding the machine-wide mutex right now.";
+      : state === "parked" ? `⏸ suite gate · parked by hand (no pid) · ${gateAge(lk.heldMs)}`
+      : state === "held" ? `⏳ suite gate · held by ${who} · ${gateAge(lk.heldMs)}`
+      : state === "overdue" ? `⚠ suite gate · ${who} has held for ${gateAge(lk.heldMs)} — longer than any suite here takes`
+      // NEUTRAL on purpose: every finished suite leaves its dir behind (release is implicit), so
+      // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
+      : `· suite gate · no suite running · stale lock (${who}, claimed ${gateAge(lk.heldMs)} ago)`);
+  head.title = state === "free" ? "No suite is holding the machine-wide mutex right now."
+    : state === "stale" ? "Nothing is running. A finished suite leaves its lock dir behind by design; the next suite clears it."
+    : state === "overdue" ? "This holder is still alive but has held far longer than any suite on this machine takes — check whether it is wedged."
+    : "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers.";
   sec.appendChild(head);
   for (const r of g.reports) {
     const who = `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;

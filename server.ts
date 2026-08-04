@@ -5806,10 +5806,24 @@ function stewardMergeView(slotId: number): { status: string; detail: string; con
   const m = mergeLast.get(slotId);
   return m ? { status: m.status, detail: m.detail, conflicted: m.conflicted ?? [], at: m.at } : null;
 }
-// the lane's founding intent (the Task it was dispatched for) — the baseline "done-looking"
-// is judged against. detachSlotTasks/land keep slot-attribution honest, so find-by-slot is safe.
+// The lane's founding intent: the Task that is RUNNING in this slot right now.
+//
+// The comment that stood here claimed "detachSlotTasks/land keep slot-attribution honest, so
+// find-by-slot is safe", and it was wrong about the land half. detachSlotTasks nulls `slot` on an
+// abort, but landLane deliberately does not: the field is the row's record of WHICH SLOT ran it,
+// and that history is worth keeping. So after one slot recycling, several rows legitimately name
+// the same slot, `find` returned whichever came first — the OLDEST — and the view attributed the
+// new lane to a task that had finished days earlier. Live on 2026-08-04: slot 2 was claimed by
+// 0b4568f2 (done, landed 07-28) and by 9fc24684 (sent, that day), and the older one won.
+//
+// So the two sides mean different things and the read must say which it wants: `Task.slot` is
+// "the slot this task ran in", while THIS function asks "the task this slot is running". Only
+// `sent` is that — dispatchTask is the sole writer of the pair, landLane moves the row to `done`,
+// and every other exit (abort, boot recovery) nulls the slot. Requiring it rather than merely
+// preferring it is the point: if some future path ever attaches a slot to a non-sent row, this
+// answers null — "no founding task recorded" — instead of confidently naming the wrong one.
 function stewardTaskView(slotId: number): { id: string; status: Task["status"]; source: Task["source"]; text: string } | null {
-  const t = tasks.find((x) => x.slot === slotId);
+  const t = tasks.find((x) => x.slot === slotId && x.status === "sent");
   return t ? { id: t.id, status: t.status, source: t.source, text: trim(t.text, 300) } : null;
 }
 

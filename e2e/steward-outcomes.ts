@@ -462,6 +462,24 @@ export async function run(sc: StewardCtx): Promise<void> {
       JSON.stringify(skipRow));
     check("the manual start button refuses a note too (409) — NO path dispatches an observation",
       (await post(`/api/tasks/${skipNote.task.id}/dispatch`, {})).status === 409);
+
+    // --- a FINISHED task must let go of its slot's identity (live misattribution, 2026-08-04).
+    // `Task.slot` deliberately survives completion: it is the row's record of which slot ran it,
+    // and landLane keeps it on purpose. What must NOT survive is the slot's answer to "what is
+    // running here" — after one recycling, several rows name the same slot and a plain find-by-slot
+    // returned the OLDEST. `done` + a still-set slot is exactly the state landLane leaves behind,
+    // reached here through the done route so the check does not need a real merge to exist.
+    {
+      await post(`/api/tasks/${sigTid}/done`, {});
+      await post(`/api/slots/${sigLaneSlot}/kill`, {});
+      const recycled = await sigFor(sigLaneSlot);
+      check("a recycled slot reports NO founding task — a finished one must not answer for it",
+        recycled?.task === null, JSON.stringify(recycled?.task ?? null));
+      const row = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; slot: number | null }[] })
+        .tasks.find((t) => t.id === sigTid);
+      check("...while the finished row still records WHICH slot ran it — the history is not the bug",
+        row?.status === "done" && row.slot === sigLaneSlot, JSON.stringify(row));
+    }
     await post(`/api/tasks/${skipNote.task.id}/delete`, {});
     await post("/api/dispatch", { on: false });
     if (sigLaneSlot) await post(`/api/slots/${sigLaneSlot}/kill`, {});

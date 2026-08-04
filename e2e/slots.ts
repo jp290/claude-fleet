@@ -185,6 +185,14 @@ export async function run(): Promise<void> {
 
   // --- width-aware reseed: a client's cols/rows on connect should resize the tmux window
   // (tmux reflows history on resize, which is what fixes cross-width scrollback wrapping) ---
+  // Colored fixture, planted BEFORE the reseed connect: the seed is a capture of the pane, so
+  // the pane has to hold color for the seed to be able to carry any. Red is written as an
+  // explicit SGR pair so the assertion below is about tmux's re-encoding, not about our printf.
+  await tmuxOut("send-keys", "-t", "s2", "printf '\\033[31mCOLORMARK-RED\\033[0m\\n'", "Enter");
+  for (let i = 0; i < 60; i++) {
+    if ((await tmuxOut("capture-pane", "-t", "s2", "-p")).out.includes("COLORMARK-RED")) break;
+    await Bun.sleep(100);
+  }
   const reseedCols = 55, reseedRows = 38;
   const seedText = await new Promise<string>((resolve) => {
     let first = "";
@@ -200,6 +208,21 @@ export async function run(): Promise<void> {
   const lfCount = (seedText.match(/\n/g) ?? []).length;
   const crlfCount = (seedText.match(/\r\n/g) ?? []).length;
   check("reseed content has no bare LF (every line CRLF-terminated)", lfCount > 0 && lfCount === crlfCount, `${crlfCount}/${lfCount}`);
+  // Color survives the reseed. This was deliberately given up once: the seed took a plain capture
+  // because an escape-preserving one was believed to bake styled runs in as absolute-column cursor
+  // jumps at the ORIGINAL width, which would garble a narrower client. Measured false on tmux 3.6a
+  // (2026-08-05): `-e` output with SGR removed is byte-identical to the plain capture. These two
+  // checks are the trade that replaces the sacrifice — the FIRST says history is colored, the
+  // SECOND says the feared escape class is absent. A tmux that ever emits one goes red HERE,
+  // loudly, instead of silently staggering every line of somebody's scrollback.
+  const sgr = /\x1b\[[0-9;]*m/.test(seedText);
+  // every CSI final byte that MOVES the cursor: @ABCDEFGHST, `abde, plus H/f absolute positioning.
+  // SGR ('m') is excluded by construction — that is the one we want.
+  const motion = seedText.match(/\x1b\[[0-9;]*[@A-HJKLMPSTXZ`abde]/g) ?? [];
+  check("reseed keeps the pane's color (the seed is an escape-preserving capture)",
+    sgr && seedText.includes("COLORMARK-RED"), `sgr=${sgr} mark=${seedText.includes("COLORMARK-RED")}`);
+  check("reseed carries NO cursor-motion escape — the class that would garble a narrower client",
+    motion.length === 0, JSON.stringify(motion.slice(0, 5)));
   await Bun.sleep(300);
   const winSize = await tmuxOut("display-message", "-p", "-t", "s2", "#{window_width} #{window_height}");
   check("WS connect with cols/rows reseeds tmux window", winSize.out.trim() === `${reseedCols} ${reseedRows}`, winSize.out.trim());

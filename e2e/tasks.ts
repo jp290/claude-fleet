@@ -147,12 +147,60 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     check("a queued task blocked by the lane cap says WHY on its own row (waiting note, not silence)",
       /^waiting: \d+\/\d+ lanes busy/.test(cNote), JSON.stringify(cNote));
-    await post(`/api/tasks/${cTask.task.id}/delete`, {}); // BEFORE freeing lanes — or the next tick grabs it
+    // manual start ("▸ start lane") bypasses the cap: the cap bounds UNATTENDED fan-out, and
+    // this is an attended owner click — the very task that just waited spawns immediately.
+    // The status flips to `sent` synchronously inside the route, so no poll is needed.
+    const byp = await post(`/api/tasks/${cTask.task.id}/dispatch`, {});
+    const bypJ = (await byp.json()) as { ok?: boolean; slot?: number };
+    const bypRow = (await sessJson()).tasks.find((t) => t.id === cTask.task.id);
+    check("manual start bypasses the lane cap (attended click beats the unattended-fan-out bound)",
+      byp.ok && bypJ.ok === true && bypRow?.status === "sent", `${byp.status} ${JSON.stringify({ bypJ, bypRow })}`);
 
-    // cleanup: kill only the lanes this section spawned (worktree slots new since setup, never
-    // the persistence lane), delete the probe task, restore the dispatcher off (persisted off).
-    for (const id of await laneIds()) if (!lanes0.has(id) && id !== ctx.restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
-    await post(`/api/tasks/${tid}/delete`, {});
+    // cleanup — dispatcher OFF FIRST: killing the bypass lane below can land inside its own
+    // brief tail, whose identity re-check then REQUEUES the task; with the tick still on, that
+    // requeued probe could be re-dispatched into a freshly freed slot and leak a lane. Then
+    // kill every lane this section spawned (never the persistence lane) and delete the probes.
     await post("/api/dispatch", { on: false });
+    for (const id of await laneIds()) if (!lanes0.has(id) && id !== ctx.restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
+    await post(`/api/tasks/${cTask.task.id}/delete`, {});
+    await post(`/api/tasks/${tid}/delete`, {});
+  }
+
+  // --- (f) the manual start button with the auto dispatcher OFF, and the archive shelf ---
+  {
+    const fSess = async (): Promise<{ tasks: { id: string; status: string; slot?: number }[] }> =>
+      (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; slot?: number }[] };
+    const mT = (await (await post("/api/tasks", { text: "manual-start-probe", queue: false })).json()) as { task: { id: string } };
+    const md = await post(`/api/tasks/${mT.task.id}/dispatch`, {});
+    const mdJ = (await md.json()) as { ok?: boolean; slot?: number; branch?: string };
+    check("manual start dispatches a PENDING task with the auto dispatcher OFF (the button is tick-independent)",
+      md.ok && mdJ.ok === true && typeof mdJ.slot === "number" && (mdJ.branch ?? "").startsWith("fleet/"),
+      `${md.status} ${JSON.stringify(mdJ)}`);
+    const mdRow = (await fSess()).tasks.find((t) => t.id === mT.task.id);
+    check("the manually started task is sent and bound to the spawned lane before the route answers",
+      mdRow?.status === "sent" && mdRow.slot === mdJ.slot, JSON.stringify(mdRow));
+    check("manual start refuses a sent task (409 — it is already running)",
+      (await post(`/api/tasks/${mT.task.id}/dispatch`, {})).status === 409);
+    const mdAudit = ((await (await get("/api/audit?limit=50")).json()) as { events: { event?: string; detail?: string }[] })
+      .events.find((e) => e.event === "task_dispatch" && e.detail === mT.task.id);
+    check("manual start is audited (task_dispatch — an owner act, distinct from the tick)",
+      !!mdAudit, JSON.stringify(mdAudit ?? null));
+    if (typeof mdJ.slot === "number") await post(`/api/slots/${mdJ.slot}/kill`, {});
+    await post(`/api/tasks/${mT.task.id}/delete`, {});
+
+    // archive: a shelf, not a delete — the row survives with its history, is terminal for the
+    // dispatcher and the start button alike, and restore goes back to owner review
+    const aT = (await (await post("/api/tasks", { text: "archive-probe", queue: false })).json()) as { task: { id: string } };
+    check("archive a pending task", (await post(`/api/tasks/${aT.task.id}/archive`, {})).ok);
+    check("the archived row survives with status archived (history kept, list uncluttered)",
+      (await fSess()).tasks.find((t) => t.id === aT.task.id)?.status === "archived",
+      JSON.stringify((await fSess()).tasks.find((t) => t.id === aT.task.id)));
+    check("manual start refuses an archived task (409 — terminal until restored)",
+      (await post(`/api/tasks/${aT.task.id}/dispatch`, {})).status === 409);
+    check("restore returns an archived task to pending (owner review, never straight to queued)",
+      (await post(`/api/tasks/${aT.task.id}/unarchive`, {})).ok
+      && (await fSess()).tasks.find((t) => t.id === aT.task.id)?.status === "pending",
+      JSON.stringify((await fSess()).tasks.find((t) => t.id === aT.task.id)));
+    await post(`/api/tasks/${aT.task.id}/delete`, {});
   }
 }

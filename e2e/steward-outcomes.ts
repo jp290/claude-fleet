@@ -115,6 +115,23 @@ export async function run(sc: StewardCtx): Promise<void> {
     JSON.stringify({ lastRecord: anchorRecs[anchorRecs.length - 1]?.kind, prior: anchorJ.prior }).slice(0, 240));
   await post(`/api/tasks/${anchorProp.task.id}/delete`, {});
 
+  // archive mirrors delete for the propose-outcome channel: shelving a PENDING proposal IS a
+  // dismissal — without this, archive would be a silent second path around the measurement.
+  // The later delete of the (now archived) row writes NOTHING: the pending-only guard holds.
+  const archProp = (await (await sc.stewPost("/api/steward/tasks", { text: "propose: archive probe" })).json()) as { task: { id: string } };
+  check("owner archives a pending steward proposal", (await post(`/api/tasks/${archProp.task.id}/archive`, {})).ok);
+  await Bun.sleep(200); // writeStewardJournal's append is fire-and-forget — settle before reading
+  const archRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as
+    { records: { kind?: string; ref?: string; outcome?: string }[] }).records;
+  check("archiving a pending proposal records propose_outcome dismissed (no silent path around the channel)",
+    archRecs.some((r) => r.kind === "propose_outcome" && r.ref === archProp.task.id && r.outcome === "dismissed"),
+    JSON.stringify(archRecs.slice(-3)));
+  const archRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[] })
+    .tasks.find((t) => t.id === archProp.task.id);
+  check("the archived proposal keeps its row (status archived, not deleted)",
+    archRow?.status === "archived", JSON.stringify(archRow));
+  await post(`/api/tasks/${archProp.task.id}/delete`, {});
+
   // oc2/oc4: fixtures reused below — oc2 by the Tier-1 signal surface checks, oc4 by the
   // pulse-scaffold checks. The intervention-outcome measurement these lanes used to also
   // exercise was removed with the outcome subsystem (docs/analysis-2026-07-28-verification.md §3).
@@ -438,6 +455,8 @@ export async function run(sc: StewardCtx): Promise<void> {
     check("the dispatcher SKIPS a queued note even when it is first in line — the lane task behind it was taken instead",
       sigLaneSlot > 0 && skipRow?.kind === "note" && skipRow?.status === "queued",
       JSON.stringify(skipRow));
+    check("the manual start button refuses a note too (409) — NO path dispatches an observation",
+      (await post(`/api/tasks/${skipNote.task.id}/dispatch`, {})).status === 409);
     await post(`/api/tasks/${skipNote.task.id}/delete`, {});
     await post("/api/dispatch", { on: false });
     if (sigLaneSlot) await post(`/api/slots/${sigLaneSlot}/kill`, {});

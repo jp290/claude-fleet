@@ -235,6 +235,36 @@ check("dispatch post-spawn gate: the task text never reached the bare shell",
 // teardown: kill any lane the dispatcher spawned (worktrees stay on disk in $DIR, torn down by the wrapper)
 for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.id)) await tmuxOut("kill-session", "-t", `s${s.id}`);
 
+// --- branch 6b: the MANUAL start route (POST /api/tasks/:id/dispatch) shares the same
+// post-spawn gate. An attended owner click relaxes the AUTOMATION stops (master stop, quiet
+// hours) — but NEVER the alive gate: the dead-claude lane must requeue the task and the text
+// must never reach the bare shell, exactly like the tick's branch 6 above. The dispatcher is
+// OFF here (posted off above), which is itself half the contract: the button is tick-independent. ---
+{
+  const mdMarker = `${dispMarker}-manual`;
+  const mdT = (await (await post("/api/tasks", { text: mdMarker, queue: false })).json()) as { task?: { id: string } };
+  const mdId = mdT.task?.id ?? "";
+  const mdRes = await post(`/api/tasks/${mdId}/dispatch`, {});
+  const mdJ = (await mdRes.json()) as { ok?: boolean; slot?: number };
+  check("manual dispatch spawns a lane with the auto dispatcher OFF (the button is tick-independent)",
+    mdRes.ok && mdJ.ok === true && typeof mdJ.slot === "number", `${mdRes.status} ${JSON.stringify(mdJ)}`);
+  let mdHeld = false;
+  let mdNote = "";
+  for (let i = 0; i < 100; i++) { // 4s boot + gate + margin (~30s ceiling)
+    const t = (await dispSess()).tasks.find((x) => x.id === mdId);
+    mdNote = t?.note ?? "";
+    if (t?.status === "queued" && mdNote.includes("dispatch held") && mdNote.includes("requeued")) { mdHeld = true; break; }
+    await Bun.sleep(300);
+  }
+  check("manual dispatch post-spawn gate requeues when the fresh claude died — owner act relaxes automation stops, never aliveness",
+    mdHeld, `note=${JSON.stringify(mdNote)}`);
+  const mdCap = typeof mdJ.slot === "number" ? await tmuxOut("capture-pane", "-t", `s${mdJ.slot}`, "-p") : { out: "", code: 1 };
+  check("manual dispatch: the task text never reached the bare shell",
+    typeof mdJ.slot === "number" && !mdCap.out.includes(dispMarker), mdCap.out.slice(-160));
+  if (typeof mdJ.slot === "number") await tmuxOut("kill-session", "-t", `s${mdJ.slot}`);
+  await post(`/api/tasks/${mdId}/delete`, {});
+}
+
 // --- the heal REASON writer (server.ts ensureSlot → audit self_heal_recreate). Only this harness
 // can tell the two causes apart: under FLEET_CMD=true (the main suite) s.sessionId is never pinned
 // at all, so both branches would answer "no-session" and the check would pass for the wrong reason.

@@ -1,8 +1,76 @@
-# HANDOFF — Session 20 (2026-08-04: die Gast-Karte wird eine Kontroll-Fläche) · 19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 21 (2026-08-04: die Queue wird ein Werkzeug, und graphify zieht ein) · 20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 21 (2026-08-04): die Queue wird ein Werkzeug, und graphify zieht ein
+
+2 Commits `f172053` + `27a9576`, beide deployed und live nachgeprüft (bootHead == HEAD ==
+`27a9576`, behind 0, bundleStale false). Mechanismen in den Bodies — hier nur das Residuum.
+
+### Was in FLUG ist (das Erste, was die nächste Session wissen muss)
+
+1. **Slot 2 fährt die Picker-Lane** (`fleet/260804154311-a0c8`, Task `9fc24684`) — vom
+   NEUEN Dispatcher gespawnt und mit kompiliertem Brief gestartet (der injizierte Prompt
+   endet mit `/sharpen3`; Rohtext-Fallback wäre ohne). Scope ist Owner-Entscheid, wörtlich:
+   **„Nur linker Baum"** — Suche, die eingeklappte Ordner findet; versteckte Ordner;
+   ehrlicher 200er-Deckel. Das rechte Contents-Panel ist AUSDRÜCKLICH nicht im Scope.
+   Beim Fertig-Werden: Review + Land bleibt Owner-Hand (Auto-Land-Entscheid: „noch nicht,
+   erst echte Läufe ansehen"). Nach dem Land läuft der Tier-2-Audit → Maschine ruhig halten.
+2. **Task `3389865a` (pending)**: stewardTaskView zeigt nach Slot-Recycling die falsche
+   Gründungs-Task (live doppelt belegt auf Slot 2 beobachtet; der Code-Kommentar
+   „find-by-slot is safe" ist falsch, weil landLane `t.slot` nie abräumt). Befund,
+   Blast-Prüfauftrag (laneSignalView/auto-③!), Fix-Skizze und Verify stehen IM Task-Text.
+3. Slot 4 (`imprv worktree/landing`, fleet-Lane von 15:09) war vor der Session da — fremde
+   Arbeit, nicht angefasst.
+
+### Owner-Entscheide dieser Session
+
+- **Picker**: nur linker Ordnerbaum. **graphify**: Code-Graph jetzt; der Erfahrungs-Korpus
+  (Transkripte/Outcomes, BACKLOG 17) bleibt ausdrücklich separates Folgethema.
+  **Auto-Land**: noch nicht — erst echte Dispatcher-Läufe ansehen.
+
+### Was live ist
+
+- **Queue-Umbau (`f172053`)**: `kind: lane|note` (Steward default note, nie dispatcht,
+  Opt-in-Claim), Kapazität zählt nur DISPATCH_REPO-Lanes (realpath-kanonisiert),
+  Warte-Notes auf blockierten Rows, Compile-at-dispatch via Enhancer. **Live bewiesen**:
+  der Dispatcher nahm `9fc24684` beim ersten Tick, obwohl eine Fremd-Repo-Lane (Slot 8)
+  mit dem alten repo-übergreifenden Zähler 2/2 blockiert hätte — der Stau, den Fix 1
+  behebt, bestand real auf der Live-Flotte.
+- **graphify (`27a9576`)**: 2073 Knoten/3666 Kanten in Sekunden, LLM-frei. Skill getrackt
+  (reist in Lanes), `graphify-out/` + `.claude/settings.json` gitignored (der PreToolUse-
+  Guard ist advisory, ~50 ms, und trägt den Accountnamen im Pfad — darum lokal-only).
+  Nach Code-Änderungen: `graphify update .` (Sekunden). Nagelprobe: `explain tickDispatch`
+  kannte runEnhance/inDispatchRepo sofort; `affected canDeliver` = exakt die drei Sites.
+- **CLAUDE.md-Dispatcher-Absatz neu geschrieben** (Dispatcher ist AN; live gilt die
+  Watchdog-Zeile `FLEET_DISPATCH_MAX_LANES=2`, nicht der server-Default 3).
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **„Steward-Notes bei Promote mit 409 abweisen" war mein erster Entwurf und ist FALSCH** —
+  `e2e/steward-outcomes.ts` pinnt Owner-Promote als ok + propose-outcome („the meta-gate",
+  P-1a-Anker). Die Suite ist die Spec; gebaut ist Dispatcher-Skip + laute Standing-Note.
+- **Gate-Kette 2 fing einen ECHTEN Regress von mir** (claude-gate branch 6): das
+  Compile-Await saß vor dem Post-Spawn-Gate — ein toter claude hätte den Requeue um den
+  Worker-Timeout verzögert. Antwort: Gate vor Await, zweites Gate direkt vor Send, und der
+  fakeenh-Stand-in auch im Gate-Harness. Wer die Gate-Ordnung in tickDispatch anfasst,
+  liest zuerst den Kommentar dort.
+- **createWorktree speichert das Symlink-aufgelöste git-Toplevel** (`/tmp`→`/private/tmp`)
+  — ein naiver String-Vergleich mit `FLEET_DISPATCH_REPO` zählt NULL Lanes und schafft den
+  Deckel lautlos ab (`inDispatchRepo`, canon+raw).
+
+### Nicht verifiziert — und niemand sollte es behaupten
+
+1. Die Live-Latenz des echten Enhance-Workers pro Dispatch (der kompilierte Prompt kam
+   heute innerhalb von ~40 s; nicht gemessen, nicht gepinnt).
+2. Der Output der Picker-Lane (läuft noch — nichts davon ist reviewt oder gelandet).
+3. graphify: Community-Labeling (LLM), Doc-/Semantik-Pass, MCP-Server — bewusst NICHT
+   gebaut; der Graph altert mit Code-Änderungen, bis jemand `graphify update .` läuft
+   (die CLAUDE.md-Regel sagt es jeder Session, erzwungen ist es nicht).
 
 ---
 

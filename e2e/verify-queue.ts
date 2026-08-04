@@ -220,6 +220,11 @@ export async function run(): Promise<void> {
     ["an empty suite label", { phase: "running", suite: "   " }],
     ["a suite label with a newline in it", { phase: "running", suite: "isolated\nrm -rf" }],
     ["a suite label past the length cap", { phase: "running", suite: "s".repeat(61) }],
+    // the exitCode guard had no check: `Number("abc") | 0` is 0, so a coerced answer would report
+    // "exit 0" — SUCCESS — for a code it could not read. Refusing is the only safe direction on a
+    // surface whose whole job is to say what a dead run was doing.
+    ["a non-numeric exitCode", { phase: "failed", suite: "isolated", exitCode: "abc" }],
+    ["a fractional exitCode", { phase: "failed", suite: "isolated", exitCode: 1.5 }],
   ] as [string, unknown][])
     check(`§4 ${why} is rejected at the boundary (400)`, (await selfPost(laneTok, body)).status === 400, why);
 

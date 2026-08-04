@@ -644,7 +644,10 @@ briefed without it silently breaks everyone else's serial proof.
 
 Of the four steps this triage took, three are mechanical and one is not: taking the mutex, deciding
 the machine is quiet, and re-running the same tree are scripts with no judgment in them — and two of
-the three were done wrong on the first attempt, by two different sessions. Reading nine failures and
+the three were done wrong on the first attempt, by two different sessions. (Two of those three have
+since moved into the machine: `e2e-stage.sh` takes the mutex on its own, and "is the machine quiet"
+is now a reading rather than a `ps` incantation — `gate` on `GET /api/sessions`, painted at the top
+of the info card, `suite-contention.md` §7.) Reading nine failures and
 asking whether they share a root is the only step that needed a person.
 
 That ratio is the whole finding: **the expensive part of this session was not the thinking, it was

@@ -449,6 +449,9 @@ type AuditEvent =
   | "autos_switch"
   | "dispatch_switch"
   | "guest_action"
+  // a lane's own account of a verify-suite run: one line per phase change, so a run that dies
+  // without a verdict leaves a timeline behind instead of nothing (see the verify GATE region)
+  | "verify_intent"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
@@ -4225,6 +4228,124 @@ async function laneDrift(s: Slot, main: string): Promise<DriftInfo | null> {
   return { branch: w.branch, main, ...core, dirty: st.code !== 0 || st.out !== "",
     otherLanes: await otherOpenLanes(s.cwd, w.repo) };
 }
+// --- the verify GATE, made VISIBLE (briefs/verify-queue-2026-08-04.md) -------------------------
+// Suites on this box are serial. Every e2e wrapper takes a machine-wide mkdir mutex before it
+// stages an instance (`/tmp/fleet-e2e.lock`, e2e-stage.sh:44-54) and a second wrapper polls at 15s
+// until the holder is gone. That works — and it is completely unobservable. On 2026-08-04 an
+// isolated run died mid-flight with exit 144 while another session's gate chain was starting, and
+// nothing anywhere could say who held the lock, who was waiting, or how long either had been true.
+//
+// So this region adds SIGHT, never control. It starts and stops nothing, and it is not a queue:
+// the mkdir mutex remains the whole truth of serialization. Two INDEPENDENT sources, deliberately
+// kept apart on the wire so a reader can tell measurement from hearsay:
+//   · the LOCK, read straight off the filesystem — ground truth, and read-ONLY. Reaping a dead
+//     holder belongs to the wrappers, which re-check the pid VALUE before removing it; a second
+//     reaper here would be a new collider on exactly the race that design closed.
+//   · the REPORTS, which lanes volunteer through POST /api/self/verify-intent. Advisory by
+//     construction — a lane can lie, forget, or die mid-suite, and none of that touches the mutex.
+//     Their durable half is audit.jsonl: every phase CHANGE is one line, so the next exit-144 has
+//     a timeline to be read against instead of an instance directory and a guess.
+const SUITE_LOCK = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock";
+type VerifyPhase = "waiting" | "running" | "done" | "failed";
+const VERIFY_PHASES: VerifyPhase[] = ["waiting", "running", "done", "failed"];
+// a suite LABEL, not a payload: `isolated`, `e2e-security.sh`, `clean-review`. Constrained at the
+// boundary rather than escaped at every sink — it lands in an audit line and in the board's text.
+const VERIFY_SUITE_RE = /^[\w./ -]{1,60}$/;
+// A report is the lane's word, and a lane can die between `running` and `done`. Both ends age out,
+// for opposite reasons: a finished run stops being news, and an unclosed one must not still read
+// as "in flight" tomorrow. The window is generous — the full isolated suite runs for minutes and
+// the whole gate chain longer — because a report dropped early is worse than one held late.
+const VERIFY_TERMINAL_MS = 5 * 60_000;
+const VERIFY_STALE_MS = 2 * 60 * 60_000;
+interface VerifyIntent { phase: VerifyPhase; suite: string; exitCode: number | null; at: number; cwd: string }
+const verifyIntents = new Map<number, VerifyIntent>(); // slot id → its LAST report. In memory only:
+// a restart is a fact about the server, and reviving one side of a phase pair across it would be
+// the one thing this region must never do — invent state. The audit log keeps the history.
+interface GateLock {
+  pid: number | null;     // the recorded holder, or null when the dir carries no readable pid
+  alive: boolean | null;  // null = a pid-LESS dir: a MANUAL park (a human parked the machine), and
+                          // e2e-stage.sh never reaps one. false = the holder is gone; the next
+                          // contender reaps this dir.
+  heldMs: number;
+}
+interface GateReport { slot: number; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number }
+interface GateView { lock: GateLock | null; reports: GateReport[] }
+// The lock as it is on disk right now. `null` = the dir does not exist, i.e. nothing holds the
+// mutex. Costs two stats, a small read and one signal-0 per call, which is why it is computed per
+// request rather than cached: a cached answer to "is a suite running right now" would be the one
+// kind of wrong this whole region exists to prevent.
+function suiteLockView(): GateLock | null {
+  let dir;
+  try { dir = statSync(SUITE_LOCK); } catch { return null; }
+  if (!dir.isDirectory()) return null;
+  let raw: string | null = null;
+  let at = dir.mtimeMs;
+  try { raw = readFileSync(`${SUITE_LOCK}/pid`, "utf8").trim(); } catch { raw = null; }
+  // separately, so a stat that fails after the read succeeded costs the age and not the identity:
+  // "we could not time it" must never come out as "nobody recorded a pid", which means manual park
+  try { at = statSync(`${SUITE_LOCK}/pid`).mtimeMs; } catch { /* fall back to the dir's own mtime */ }
+  const heldMs = Math.max(0, Date.now() - at);
+  if (raw === null || raw === "") return { pid: null, alive: null, heldMs };
+  // `> 0` is not defensive noise: process.kill(0, sig) addresses the CALLER'S OWN process group,
+  // so a lock file containing "0" would answer "alive" about this very server and report a lock
+  // nobody holds as held. Zero is not a pid here, it is unreadable content.
+  const pid = /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null;
+  // EPERM means the process EXISTS and is someone else's — alive, not absent. Unparseable content
+  // cannot be asked about at all, and the wrappers treat exactly that case as reapable, so it is
+  // reported dead rather than manual: a garbage pid file is a lost holder, not a deliberate park.
+  let alive = false;
+  if (pid !== null) {
+    try { process.kill(pid, 0); alive = true; }
+    catch (e: unknown) { alive = (e as { code?: string }).code === "EPERM"; }
+  }
+  return { pid, alive, heldMs };
+}
+// One projection for /api/sessions. Returns null when there is nothing to say, so the 2s poll
+// carries four bytes rather than an empty shape (the payload is already the fleet's biggest, see
+// docs/data-saver.md). Prunes as it reads: this is the only reader, so a timer would be a second
+// thing to keep alive for no gain.
+function gateView(): GateView | null {
+  const now = Date.now();
+  const reports: GateReport[] = [];
+  for (const [id, v] of [...verifyIntents]) {
+    const s = slots.find((x) => x.id === id);
+    const terminal = v.phase === "done" || v.phase === "failed";
+    // s.cwd !== v.cwd catches the recycled slot: a new session in the same slot is a different
+    // reporter, and its predecessor's "running" must not be attributed to it.
+    if (!s?.cwd || s.cwd !== v.cwd || now - v.at > (terminal ? VERIFY_TERMINAL_MS : VERIFY_STALE_MS)) {
+      verifyIntents.delete(id);
+      continue;
+    }
+    reports.push({ slot: id, label: s.label, phase: v.phase, suite: v.suite, exitCode: v.exitCode, at: v.at });
+  }
+  const lock = suiteLockView();
+  if (!lock && reports.length === 0) return null;
+  return { lock, reports: reports.sort((a, b) => a.slot - b.slot) };
+}
+function recordVerifyIntent(s: Slot, body: Record<string, unknown> | null): Response {
+  const phase = body?.phase;
+  if (typeof phase !== "string" || !VERIFY_PHASES.includes(phase as VerifyPhase))
+    return json({ error: `phase must be one of: ${VERIFY_PHASES.join(", ")}` }, 400);
+  const suite = typeof body?.suite === "string" ? body.suite.trim() : "";
+  if (!VERIFY_SUITE_RE.test(suite))
+    return json({ error: "suite must be a short label matching /^[\\w./ -]{1,60}$/" }, 400);
+  // rejected rather than coerced: `Number("abc") | 0` is 0, and a report that says "exit 0"
+  // because its exit code was unreadable is the one failure mode a sight-only surface cannot have
+  const rawExit = body?.exitCode;
+  if (rawExit != null && !(typeof rawExit === "number" && Number.isInteger(rawExit)))
+    return json({ error: "exitCode must be an integer" }, 400);
+  const exitCode = rawExit == null ? null : (rawExit as number);
+  const prev = verifyIntents.get(s.id);
+  // "every phase CHANGE is one line": an identical re-post (a heartbeat, a retried curl) refreshes
+  // the in-memory age and writes nothing, so a chatty lane cannot push the real events out of the
+  // log's rotation window. cwd is part of the identity — see the recycle note in gateView.
+  const changed = !prev || prev.phase !== phase || prev.suite !== suite
+    || prev.exitCode !== exitCode || prev.cwd !== s.cwd;
+  const rec: VerifyIntent = { phase: phase as VerifyPhase, suite, exitCode, at: Date.now(), cwd: s.cwd ?? "" };
+  verifyIntents.set(s.id, rec);
+  if (changed) audit("verify_intent", s.id, `${suite}:${phase}${exitCode === null ? "" : ` exit ${exitCode}`}`);
+  return json({ ok: true, recorded: rec.at, logged: changed });
+}
 // OPT-IN clean-path advisory reviewer. Runs only when FLEET_CLEAN_REVIEW is on, only on the clean+green
 // auto-land path, and can ONLY downgrade that auto-land to a stop-and-review — it never lands anything.
 // FAIL-CLOSED: only an explicit {"verdict":"ok"} returns "ok"; every other outcome (a "review" verdict,
@@ -6267,6 +6388,19 @@ Bun.serve<WSData>({
       return d ? json(d) : json({ error: "drift could not be computed — a git read failed" }, 500);
     }
 
+    // the lane's own account of a verify-suite run — same principal and same flat-cost auth as the
+    // two routes above. It grants no capability at all: nothing is started, stopped or queued, and
+    // the report only ever reaches the board and the audit log. The 409 for a non-lane keeps this
+    // family's one scope rule (these three routes answer FOR A LANE), not because a plain session's
+    // report would be dangerous — no plain session is ever handed a self token to send one with.
+    if (url.pathname === "/api/self/verify-intent" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — verify-intent reports a lane's own gate run" }, 409);
+      return recordVerifyIntent(s, await readJson(req));
+    }
+
     // the disposition rail's hard rule, enforced HERE because the owner gate below would answer a
     // lane's credential with a generic 401 and hide WHY. A lane must never label its own work: a
     // recognized per-slot FLEET_SELF_TOKEN on this path — sent either as its own header or offered
@@ -6495,6 +6629,9 @@ Bun.serve<WSData>({
         // or no land since boot). Advisory FACT for the owner — it gates nothing; the client's job
         // is to make a `red`/`unknown` result impossible to miss and to name the land it followed.
         postLandAudit: postLandAuditSummary(),
+        // the suite mutex and the lanes' own verify reports — null when neither has anything to
+        // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
+        gate: gateView(),
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {

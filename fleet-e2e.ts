@@ -36,6 +36,7 @@ import * as stewardCore from "./e2e/steward-core";
 import * as stewardOutcomes from "./e2e/steward-outcomes";
 import * as security from "./e2e/security";
 import * as guest from "./e2e/guest";
+import * as verifyQueue from "./e2e/verify-queue";
 import * as trail from "./e2e/trail";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
@@ -99,6 +100,12 @@ await restart.run(ctx);
 // because it too restarts srv several times (to turn FLEET_GUEST_CMD on and off again), and it
 // leaves the server unconfigured, exactly as it found it.
 await guest.run();
+
+// --- the verify gate made visible: the suite mutex projected on /api/sessions, and the phases
+// lanes report about their own gate runs. Next to guest.run() for the same reason — it too points
+// the server at a knob for a few checks (its own private lock dir) and restarts srv back to the
+// wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
+await verifyQueue.run();
 
 // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---
 {

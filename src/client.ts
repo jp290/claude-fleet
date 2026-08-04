@@ -2527,11 +2527,30 @@ function applyWtHide() {
   // So is a `way` row: counting the folders a search walked THROUGH as matches would inflate the
   // one number on screen that says how much the query found.
   const counts = new Map<HTMLElement, number>();
+  const dropped = new Map<HTMLElement, number>();
   for (const r of pkRows) {
     if (!r.head || r.row.classList.contains("up") || r.way) continue;
-    counts.set(r.head, (counts.get(r.head) ?? 0) + (r.row.classList.contains("pkwt") ? 0 : 1));
+    const off = r.row.classList.contains("pkwt");
+    counts.set(r.head, (counts.get(r.head) ?? 0) + (off ? 0 : 1));
+    if (off) dropped.set(r.head, (dropped.get(r.head) ?? 0) + 1);
   }
-  for (const [head, n] of counts) { const b = head.querySelector(".shellsecn"); if (b) b.textContent = String(n); }
+  // A COUNT THAT SHRANK IS NOT A COUNT THAT EXPLAINS ITSELF. The badge was never wrong — it always
+  // showed the surviving rows — but it did not say that any were left out. Measured 2026-08-04 on
+  // the live board: Recent held 8 entries and read "3", the five missing ones being every lane the
+  // owner had worked in that day, hidden by a toggle localStorage had never been asked about
+  // (`fleet.hidewt` unset reads as ON). The folder detail pane already says "… · 2 hidden" for its
+  // dot-entries, so this is the app's own vocabulary, not a new one.
+  for (const [head, n] of counts) {
+    const b = head.querySelector<HTMLElement>(".shellsecn");
+    if (!b) continue;
+    const h = dropped.get(head) ?? 0;
+    b.textContent = h ? `${n} · ${h} hidden` : String(n);
+    b.classList.toggle("reveal", h > 0);
+    b.title = h ? `${h} worktree lane${h === 1 ? "" : "s"} hidden by the ⎇ toggle — click to show them` : "";
+    // routed through the toggle's own button rather than re-implementing it: one place decides what
+    // hiding means, persists it, and repaints, so this can never drift from the ⎇ control
+    b.onclick = h ? (ev: MouseEvent): void => { ev.stopPropagation(); pkHideBtn.click(); } : null;
+  }
   applyPkFilter();
 }
 

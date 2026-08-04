@@ -1,8 +1,129 @@
-# HANDOFF — Session 19 (2026-08-03: die Gast-Konsole) · 18/17/16/15/14/13 darunter
+# HANDOFF — Session 20 (2026-08-04: die Gast-Karte wird eine Kontroll-Fläche) · 19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 01ba51f..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 20 (2026-08-04): die drei Plätze, und was daran hing
+
+3 Commits, `647f4a7`..`a4be955`, alle deployed und live nachgeprüft. Die Mechanismen stehen in
+den Bodies — hier nur, was git nicht trägt.
+
+### Das Erste, was die nächste Session tun sollte
+
+**Slot 2 ist eingerichtet und läuft, aber NICHT öffentlich — und die zwei fehlenden Schritte sind
+beide Owner-Sache, weil sie nach draußen reichen:**
+
+1. `cloudflared tunnel route dns <tunnel> containerTwo.<domain>` — der DNS-Record.
+2. `./guest-ctl.sh renew 2` — öffnet Fenster und Tür.
+
+Vorher: lokal erreichbar auf `127.0.0.1:8792` (antwortet 200), im Panel als `no hostname
+configured`/`closed`. **Die Namensfrage des Owners ist NUR halb umgesetzt:** Slot 2 heißt
+`containerTwo.<domain>`, Slot 1 heißt weiterhin `container.<domain>`. Ihn auf `containerOne.`
+umzubenennen **bricht den bereits verteilten Invite-Link** (Hostname steckt in DNS, in
+`FLEET_ALLOWED_HOSTS` des Containers und in dem, was jemand schon bekommen hat) — deshalb nicht
+getan. Owner-Entscheid, nicht Versehen.
+
+### Was live ist und wovon die nächste Session wissen muss
+
+- **Die Gast-Sektion ist eine Kontroll-Fläche**: drei Zeilen (ein Platz je Zeile, ob er existiert
+  oder nicht), darunter EIN Detailblock für den gewählten. Die Knöpfe folgen dem gewählten Slot,
+  und jede Aktivierung ist die Vorbedingung von `guest-ctl.sh` selbst.
+- **`start` hat drei Gesichter**: `▸ start` · `▸ re-open` · `↻ re-apply`. Wer daran etwas ändert,
+  liest zuerst die Korrektur unten — die Ruhe-Beschriftung war das Problem, nicht die Quittung.
+- **Slot 1 ist migriert**: `/home/fleet/.claude` liegt auf `fleet-guest-claude`. Damit überleben
+  Credential und Transkripte einen `docker rm`. Backups der Migration liegen als
+  `~/.claude-fleet-guest/1/claude-backup-*.tar` (zwei Stück, 0600) — sie können weg, wenn der Gast
+  eine Weile gut läuft.
+- **`guest-ctl.sh` hat drei neue Verben**: `provision <slot> [hostname]`, `export <slot>
+  [work|all]`, `import <slot> <tar>`. `status` trägt zusätzlich `claudeVolume` (Boolean).
+- **`guest-claude-volume.sh` ist für NEUE Slots unnötig** — `provision` legt `.claude` von Anfang
+  an auf ein Volume. Das Skript bleibt für Altbestand und dokumentiert den Mechanismus.
+- **Beide Gäste haben `claudeAuth: false`.** Owner-Entscheid dieser Session: sich selbst einloggen
+  statt einen Token zu injizieren (Begründung unten).
+
+### Was NICHT verifiziert ist — und niemand sollte es behaupten
+
+1. **Ob eine echte Claude-Session in einer echten Pane im Container läuft.** Unverändert die größte
+   Lücke des Strangs, steht seit Session 18 hier. Alles Grüne fährt Shell-Stubs.
+2. **`export`/`import` gegen einen ECHTEN Gast.** Bewiesen ist ein Round-Trip gegen einen
+   Wegwerf-Gast (Slot 99, eigene Volumes, danach restlos entfernt), 17/17.
+3. **Der exponierte Pfad von `provision`.** Mit Hostname geschrieben und geprüft, aber DNS + `renew`
+   sind nie durchlaufen — d. h. „Slot 2 ist wirklich öffentlich erreichbar" ist unbewiesen.
+4. **Das Board ist weiterhin desktop-only** (`renderBoard` kehrt bei `isMobile()` sofort zurück).
+   JEDE Kontrolle dieser Session ist auf dem Handy unsichtbar. Bewusst nicht angefasst.
+
+### Korrekturen an Behauptungen, die sonst in die Irre führen
+
+- **`--user root` ist im Gast-Image WIRKUNGSLOS.** Der Entrypoint fällt auf uid 1000 zurück, auch
+  wenn der Run root verlangt. Gemessen: `docker run --user root … id` → `uid=1000(fleet)`, mit
+  `--entrypoint sh` → `0`. Wer dort einen Wegwerf-Container braucht, der schreiben oder chownen
+  muss, MUSS den Entrypoint umgehen. Das hat die Migration beim ersten echten Lauf gekillt.
+- **Ein grüner Round-Trip-Test kann aus dem falschen Grund grün sein.** Der erste bewies nichts,
+  weil er nur in Volumes zurückspielte, die es schon gab und die `1000:1000` gehörten. Der Fall,
+  der zählt, ist ein FRISCHES, root-eigenes Volume.
+- **Die Quittung am Start-Knopf war NICHT das Problem.** Zwei mechanische Erklärungen geprüft und
+  beide falsch: sie malt zuverlässig, auch in data-saver mit 10-s-Board-Tick, und eine persistente
+  Notiz überlebt sie. Der Defekt war die Ruhe-Beschriftung, die auf einem laufenden Gast weiter
+  „start" versprach.
+- **Der alte Chip-Picker war kaputt, nicht nur eng.** `guestSel` wurde bei JEDEM Render auf einen
+  existierenden Slot geklammert, also war ein Klick auf Platz 2/3 rückgängig, bevor er malte, und
+  der Erklärtext war unerreichbarer toter Code. Bewiesen durch Bau des Vor-Änderungs-Bundles.
+- **`.claude` lag NICHT auf einem Volume**, also warf `▸ give claude token` die Konversations-
+  historie des Gastes weg. Der Text im Kasten sagte „its volumes … do not change" — wahr und
+  irreführend. Für Slot 1 behoben, für neue Slots strukturell zu.
+- **Das Image hat GNU tar 1.34, und sein Entrypoint-Banner geht auf STDERR.** Auf stdout hätte er
+  jedes exportierte Archiv beschädigt. Beides gemessen, bevor darauf gebaut wurde.
+- **`~/.claude/.credentials.json` ist NICHT die Credential, die man einem Container gibt.**
+  `claudeAiOauth.accessToken` ist kurzlebig (der auf Platte war beim Messen bereits abgelaufen) und
+  wird von Claude Code still erneuert; ein Container tut das nicht. Injiziert ergäbe das einen
+  Gast, der nach Stunden in jeder Pane stirbt.
+- **Prüfstand-Falle:** `labels.py` braucht einen Stub, der beim `start` die Welt WIRKLICH verändert
+  (`AFTER=`), sonst bleibt die Beschriftung korrekt auf „start" und der Fehlschlag liest sich wie
+  ein Regress. Einmal passiert; die Vorbedingung wird jetzt geprüft und als SKIP gemeldet.
+
+### Key Decisions (mit Grund)
+
+- **Ein leerer Platz bekommt dieselbe Karte mit toten Kontrollen, keinen anderen Bildschirm** — das
+  ist, was die drei Plätze als EINE Fläche lesbar macht. Preis, den der Owner sofort gefunden hat:
+  tote Knöpfe laden zum Drücken ein. Deshalb `provision`.
+- **`✂ cut` bleibt sichtbar, wenn die Tür schon zu ist** (deaktiviert statt weg): ein Knopf, den man
+  in Eile sucht, darf nicht wandern.
+- **`re-apply` statt `repair`**, weil der Hook nichts repariert — colima und docker sind no-ops, und
+  was wirklich passiert ist `resume`: Ingress-Regel neu schreiben, Ablauf-Timer neu installieren.
+- **Verlaufs-/Quittungswörter werden beim PRESS festgehalten**, nicht beim Render: bis die Quittung
+  malt, hat die Aktion den Zustand verändert, aus dem sie sonst abgeleitet würde.
+- **`export` hat zwei Scopes**, und der Unterschied ist genau „darf ich diese Datei weitergeben":
+  `work` ist das Projekt-Volume, `all` trägt Credential und Transkripte und ist ein Backup.
+- **`provision` hört beim DNS-Record auf.** Ein Skript, das öffentliche Namen erzeugen kann, erzeugt
+  sie irgendwann versehentlich.
+- **Die Rezeptur wird aus einem bestehenden Slot ABGELEITET**, nicht aufgeschrieben — Image, Caps,
+  Memory, Tunnel-Config sind Deployment-Tatsachen und diese Datei ist öffentlich.
+- **„Use my own token" wurde VERWORFEN** (Begründung oben). Stattdessen: selbst einloggen — das
+  erneuert sich selbst und überlebt seit der Migration einen Recreate.
+- **opencode als Gast-Option: vertagt, nicht verworfen.** `FLEET_CMD` ist bereits eine Variable, ein
+  Gast mit `FLEET_CMD=opencode` liefe heute. Aber alles Transkript-Abgeleitete hängt an
+  `~/.claude/projects` (`server.ts`, grep `projDir`) und würde STILL degradieren — leere Outline,
+  „no transcript" — was wie kaputt aussieht statt wie „nicht zutreffend". Fehlt: ein Begriff „welcher
+  Agent läuft hier" in der Status-Schicht.
+
+### RAM, weil die Frage kam und die Antwort nicht offensichtlich ist
+
+**Nichts ist reserviert.** `--memory 1g` ist eine Decke, `MemoryReservation=0`, und die VM-RAM wird
+demand-paged. Die bindende Grenze ist NICHT der Container, sondern die VM: **1,91 GiB**, davon
+gemessen 526 MB benutzt. Drei Gäste à 1 GiB Limit sind darin **1,6× überbucht** — sie können ihre
+Limits nicht alle einlösen. Wer Slot 3 wirklich will, dreht zuerst an der VM-Größe, nicht am
+Container-Limit.
+
+### Offene Owner-Entscheide
+
+1. DNS-Record + `renew 2` für Slot 2 (siehe oben).
+2. Slot 1 auf `containerOne.` umbenennen? Bricht den verteilten Invite-Link.
+3. Slot 3 — braucht erst die VM-Größe.
+4. opencode.
+5. `export`/`import` einmal gegen einen echten Gast fahren, bevor sich jemand darauf verlässt.
 
 ---
 

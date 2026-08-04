@@ -1,8 +1,76 @@
-# HANDOFF — Session 23 (2026-08-04 abends: ⑦ gelandet und im Gebrauch korrigiert) · 22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 24 (2026-08-05 nachts: eine Warnfläche entschärft, ② als Brief statt als Commit) · 23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 24 (2026-08-05 nachts): Punkt 2 der Liste erledigt, Punkt 1 als Brief zurückgegeben
+
+Autonome Session auf Zuruf („mach autonom weiter, denk gut nach was du tust"), abgearbeitet
+in der Reihenfolge der Session-23-Liste. **Ein Commit: `9d3fba8`**, gelandet und deployed.
+
+### Was erledigt ist
+
+- **`isServerCode` (Listenpunkt 2) — behoben, verifiziert, deployed.** Dritte Allowlist
+  (`e2e/**` + fünf `fleet-e2e*.ts`-Runner), Check in `e2e/deploy-facts.ts` §2b auf frischem
+  Boot. Mechanismus + die bewusst offen gelassene Rest-Klasse stehen im Commit-Body.
+  Kette seriell auf demselben Baum: tsc + build, `./e2e-isolated.sh` ALL PASS,
+  clean-review + security + claude-gate je ALL PASS.
+- **Deploy nachgeprüft ohne Owner-Credential**: Commit 23:57:49, srv-Boot 23:58:05 →
+  `bootHead == HEAD`; Bundle-mtimes (1785880090) neuer als die neueste `src/`-Datei
+  (1785875802) → nicht stale. Beides ist dieselbe Rechnung, die die Route macht.
+  **Nebenbefund: `.env` trägt KEIN `FLEET_TOKEN`** — die Zeile „Health-Check per
+  `/api/steward/sessions`" in der CLAUDE.md setzt eine Credential voraus, die eine Session
+  nicht ohne Weiteres hat. Lokal nachrechnen geht und ist billiger.
+
+### Warum ② (Listenpunkt 1) NICHT gebaut wurde
+
+`briefs/server-first-sync.md` liegt fertig da — abgeleitet aus dem Code, nicht aus dem
+Handoff. Zwei Gründe, beide beim Lesen entstanden und beide gegen das Bauen:
+
+1. **② ist enger als sein Name.** „Der Server fährt den Rebase" ist `tryScriptRebase`
+   (`server.ts:4203`) und existiert längst. Offen ist nur, **wer den Konflikt löst** —
+   heute ein kontextloser Wegwerf-Agent (`runMerge`, `:4227`), nach ② der Autor.
+2. **② schreibt `e2e/merge.ts` um, statt sie zu erweitern** (≈7 Check-Familien, namentlich
+   im Brief). Eine Suite, die die heutige Zusage beweist, kann nicht nebenbei umgeschrieben
+   werden — welche Zusagen fallen, ist Owner-Sache.
+
+**Die blockierende Frage steht am Ende des Briefs**: was ⏫ tun soll, wenn die Lane-Session
+tot oder beschäftigt ist (Autor-mit-Fallback / nur Autor / Timeout). Sie entscheidet, ob
+`runMerge` bleibt oder geht. Drei Formen, ausformuliert, mit Kosten.
+
+### Zahlen, neu gerechnet statt zitiert (2026-08-05, `lane-outcomes.jsonl`)
+
+83 Rows · 67 Lands · **42/67 sahen ein fremdes Land in ihrer Lebenszeit** · `resolvedConflict`
+jemals true: **4/83** · `repairRounds` **0 in allen 83** · und der Fakt, den bisher niemand
+notiert hat: **nur 8 von 67 Lands hat je ein Mensch bestätigt.** Konsequenz, die im Brief
+steht und die man vor dem Bauen von ② kennen muss: **② wirkt auf 4 Ereignisse in 83 Lanes.
+Es ist eine Qualitäts-, keine Durchsatzscheibe.**
+
+### Unverändert offen (nichts davon angefasst)
+
+- **Maschinenhygiene bleibt OFFENE OWNER-ENTSCHEIDUNG.** Nichts gelöscht. Gemessen zu
+  Sessionbeginn: 124 verwaiste Sockets, 70 MB Instanz-Scratch — die Suitenläufe dieser
+  Session kommen obendrauf. Zwei Wege stehen unten in der Session-23-Liste.
+- Queue-Task `2e9ed996` (Terminal) — nicht angefasst.
+- **Buchhaltungslücke setzt sich fort:** `9d3fba8` ist wieder direkt auf main im
+  Haupt-Checkout entstanden, ohne Lane → kein `fleet/land`-Note, keine Outcome-Row, kein
+  Tier-2-Audit, kein `undo-land`. Rückweg ist `git revert`. Ob das der richtige Weg ist,
+  ist weiterhin unbeantwortet (Session 23 hat die Frage gestellt, niemand hat sie
+  beschieden). **Gemessen statt gezählt** (`git notes --ref=fleet/land show` über
+  `14dafdc^..HEAD`): **9 Commits ohne Provenienz-Note** — 8 aus Session 23, 1 aus dieser.
+  Der letzte Commit MIT Note ist `14dafdc`, das letzte echte Lane-Land. Session 23s
+  Handoff nennt „sieben" und an anderer Stelle „fünf"; beide Zahlen stimmen nicht, die
+  Messung ist die Zahl.
+- **Latenter Privacy-Fund, heute ungefährlich, beim Antippen scharf:** die
+  `refs/notes/fleet/land`-Notes tragen die volle Verify-Ausgabe und darin Accountname und
+  Rechnername (`14dafdc`s Note enthält beides mehrfach). In einem öffentlichen Repo wäre das
+  ein Leck — **ist es heute nicht**: `remote.origin.push` ist ungesetzt, und der
+  Default-Push fasst `refs/notes/*` nie an (beides gerade nachgesehen). Gefährlich wird
+  ausschliesslich ein ausdrückliches `git push origin refs/notes/*`. Wer die Notes je
+  veröffentlichen will, redigiert vorher die `verify.out`-Felder.
 
 ---
 
@@ -61,14 +129,13 @@ den Lane-Weg und sagt nichts über Direkt-Commits aus dem Haupt-Checkout.
 ### Was als Nächstes ansteht
 
 1. **② Server-first Sync** — der nächste Schritt des Merge/Land-Programms, unverändert.
-2. **`isServerCode` ist zu grob — Fehlalarm auf der frisch gebauten Deploy-Zeile.** Beim
-   Abschluss-Check dieser Session meldete sie `codeBehind: true`, obwohl die zwei Commits seit dem
-   Serverstart nur `HANDOFF.md` und `e2e/verify-queue.ts` waren — Dateien, die der Server nie lädt.
-   Ursache: `server.ts`, grep `isServerCode` — alles ausser `.md`, `public/` und CLIENT_ONLY_FILES
-   zählt als Server-Code, also auch `e2e/*` und `fleet-e2e*.ts`. Ein `!p.startsWith("e2e/")` plus
-   die Harness-Dateien schliesst es; **volle Kette nötig, weil es server.ts anfasst**. Ironie fürs
-   Register: das ist dieselbe Krankheit, die `163839b` eine Ebene tiefer behoben hat — eine
-   Warnfläche, die im Normalfall warnt, wird als Rauschen gelernt.
+2. ~~**`isServerCode` ist zu grob**~~ — **ERLEDIGT in Session 24, `9d3fba8`**, gelandet und
+   deployed (bootHead == HEAD, bundleStale false). Dritte Allowlist: `e2e/**` + fünf
+   `fleet-e2e*.ts`-Runner, namentlich statt per Präfix, und der Check in `e2e/deploy-facts.ts` §2b
+   fährt auf frischem Boot, weil eine „zählt-nicht"-Aussage nur in einer sonst leeren Range
+   beweisbar ist. Rest-Fehlalarm-Klasse, bewusst offen gelassen und im Body benannt:
+   **Shell-Skripte zählen weiter als Server-Code** — `watchdog.sh` wird von einem srv-Restart gar
+   nicht eingesammelt, also hat kein `.sh` hier eine einzige ehrliche Antwort.
 3. **Maschinenhygiene — OFFENE OWNER-ENTSCHEIDUNG, nichts wurde gelöscht.** Gemessen am Ende
    dieser Session: **124 verwaiste tmux-Sockets, davon 119 nachweislich tot** (kein Server dahinter;
    der eine lebende ist `claudefleet`), und **6 Instanzverzeichnisse mit 70 MB**, die rote Läufe

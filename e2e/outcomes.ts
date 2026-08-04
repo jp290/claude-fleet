@@ -65,6 +65,11 @@ export async function run(): Promise<void> {
     check("outcome: direct ⏏ land records confirmedByHuman:true, resolvedConflict:false, repairRounds:0",
       rec1?.confirmedByHuman === true && rec1?.resolvedConflict === false && rec1?.repairRounds === 0,
       JSON.stringify({ c: rec1?.confirmedByHuman, rc: rec1?.resolvedConflict, rr: rec1?.repairRounds }));
+    // …and NO resolvedBy key on it. The attribution answers "which resolver chose these lines"; on a
+    // land with no conflict that question has no subject, and a key present everywhere would make
+    // "there was nothing to resolve" indistinguishable from "we did not record who resolved it".
+    check("outcome: a land with no conflict carries no resolvedBy key at all (absence ≠ unknown)",
+      !("resolvedBy" in (rec1 ?? {})), JSON.stringify({ resolvedBy: (rec1 as { resolvedBy?: string } | undefined)?.resolvedBy }));
     // WHERE THE WORK ENDED UP. `filesTouched` is a list of names until a row says which repository
     // and which revision to read them at. The repo is known for every lane; this land integrated
     // work that was ALREADY on the integration branch, so main never advanced and there is no
@@ -143,6 +148,13 @@ export async function run(): Promise<void> {
     check("outcome: confirm-land of a repaired conflict → resolvedConflict:true, repairRounds>=1, confirmedByHuman:true",
       recR?.disposition === "landed" && recR?.resolvedConflict === true
       && (recR?.repairRounds ?? 0) >= 1 && recR?.confirmedByHuman === true, JSON.stringify(recR));
+    // …and it names WHICH resolver chose those lines. Today only the throwaway agent can have, so
+    // "agent" is the whole truth — the point of writing it now is that the day a second resolver
+    // exists (② hands the conflict to the lane's own session), the two are separable from the first
+    // row instead of being retrofitted onto history that never recorded the difference.
+    check("outcome: a resolved conflict names its resolver — resolvedBy:'agent' today",
+      (recR as { resolvedBy?: string } | undefined)?.resolvedBy === "agent",
+      JSON.stringify({ resolvedBy: (recR as { resolvedBy?: string } | undefined)?.resolvedBy }));
     // the confirm-land moved main onto this lane too — its footprint must be the lane's OWN work
     // (measured from the commit it was rebased onto), never the empty shape a re-resolved name gives
     check("outcome: confirm-land record carries the lane's real footprint + verify verdict",

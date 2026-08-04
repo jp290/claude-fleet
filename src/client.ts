@@ -149,7 +149,7 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
-  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string }
+  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -4165,6 +4165,7 @@ let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
 let qKey = "";                    // the data key the list was last built from
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
+let qRepoIn: HTMLInputElement | null = null; // target-repo input, same once-per-open lifecycle
 // the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
 let qRowId = new Map<HTMLElement, string | null>();
 
@@ -4231,13 +4232,43 @@ function renderQueueDetail() {
       qCompose.rows = 8;
     }
     shell.detail.appendChild(qCompose);
+    if (!qRepoIn) {
+      qRepoIn = el("input", "qaddin") as HTMLInputElement;
+      qRepoIn.placeholder = dispatch.repo
+        ? `target repo — empty = ${dispatch.repo.split("/").pop()}` : "target repo (path)";
+      qRepoIn.title = "where this task's lane spawns; suggestions come from your pinned/recent projects";
+      qRepoIn.setAttribute("list", "qrepodl");
+      // suggestions: the picker's pinned + recent roots. Fetched once per composer create;
+      // the input works without them, so a failed fetch costs only the dropdown.
+      void (async () => {
+        try {
+          const d = (await (await api(`/api/dirs?path=${encodeURIComponent("~")}`)).json()) as { pins?: string[]; recents?: string[] };
+          document.getElementById("qrepodl")?.remove();
+          const dl = document.createElement("datalist");
+          dl.id = "qrepodl";
+          for (const p of [...new Set([...(d.pins ?? []), ...(d.recents ?? [])])]) {
+            const o = document.createElement("option");
+            o.value = p;
+            dl.appendChild(o);
+          }
+          document.body.appendChild(dl);
+        } catch { /* suggestions only */ }
+      })();
+    }
+    shell.detail.appendChild(qRepoIn);
     const add = el("button", "shrbtn primary", "add task") as HTMLButtonElement;
     add.onclick = async () => {
       const box = qCompose;
       if (!box || !box.value.trim()) return;
-      const r = await post("/api/tasks", { text: box.value, queue: false });
-      if (!r.ok) { toast("couldn't add the task"); return; } // keep the typed text in the box
-      box.value = "";
+      const repo = qRepoIn?.value.trim();
+      const r = await post("/api/tasks", { text: box.value, queue: false, ...(repo ? { repo } : {}) });
+      if (!r.ok) {
+        // a bad repo path comes back with the exact reason — show it, keep the typed text
+        const j = (await r.json().catch(() => null)) as { error?: string } | null;
+        toast(j?.error ?? "couldn't add the task");
+        return;
+      }
+      box.value = ""; // the repo input stays — several tasks for one project is the common flow
       await refresh();
       qKey = "";
       renderQueue();
@@ -4259,6 +4290,8 @@ function renderQueueDetail() {
     : t.source === "steward" ? "⚙ steward" : "owner"));
   if (t.kind === "note") meta.appendChild(chip("note — never dispatched", "dim",
     "an observation for you; promoting it records your verdict, the dispatcher skips it"));
+  if (t.repo) meta.appendChild(chip(`⌂ ${t.repo.split("/").pop() || t.repo}`, "dim",
+    `target repo: ${t.repo} — this task's lane spawns there`));
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   shell.detail.appendChild(meta);
@@ -4341,6 +4374,7 @@ function renderQueue() {
         name: qFirstLine(t.id), id: t.id, cls: `q-${t.status}`,
         sub: [t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
           t.kind === "note" ? "note" : "",
+          t.repo ? `⌂ ${t.repo.split("/").pop()}` : "",
           `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
           t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),
       });
@@ -4360,12 +4394,13 @@ function openQueue() {
   qQuery = "";
   qKey = "";
   qCompose = null;
+  qRepoIn = null;
   const shell = openShell({
     id: "queue",
     title: "Task queue",
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
-    onClose: () => { qShell = null; qCompose = null; qRowId = new Map(); },
+    onClose: () => { qShell = null; qCompose = null; qRepoIn = null; qRowId = new Map(); },
   });
   qShell = shell;
 

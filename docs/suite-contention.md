@@ -127,3 +127,59 @@ under load is not evidence that a tree is clean either.
 Wave 1 is mid-flight at 15-19% context. Renegotiating four lanes' done-criteria now costs more than
 it saves, and some may already be inside a suite run. Let them finish as briefed; apply (c) to wave
 2, and file (a) as its own lane behind `a341`.
+
+## 7. The mutex is now VISIBLE — and that is all it is (2026-08-04)
+
+§3 closed the gap where the discipline lived only in prose. What it did not close: nobody can *see*
+the mutex. On 2026-08-04 two sessions ran suites at once and an isolated run died mid-flight with
+`exit 144` — no log, no nameable killer, the kept instance directory the only trace. Neither session
+could answer who held the lock, who was waiting, or for how long either had been true.
+
+So the lock and the lanes' own accounts of their gate runs are projected on `GET /api/sessions`
+under `gate` (`server.ts`, grep *the verify GATE*), and painted at the top of the info card
+(`gateSection()` in `src/client.ts` — machine-level, above the lane story, on the owner's placement
+call). Checks: `e2e/verify-queue.ts`.
+
+**Two sources, deliberately never blended on the wire**, because they are different kinds of claim:
+
+| | `gate.lock` | `gate.reports` |
+|---|---|---|
+| where it comes from | `statSync`/`readFileSync` on the lock dir | `POST /api/self/verify-intent`, a lane's self token |
+| what it is | a measurement | hearsay, and labelled as such in the UI |
+| if it is wrong | the filesystem lied | a lane lied, forgot, or died mid-suite |
+
+The lock projection reproduces `e2e-stage.sh`'s own semantics rather than a simplification of them,
+because every one of those distinctions is load-bearing: **no dir** = nothing held · **pid alive** =
+a real holder · **pid dead** = reapable by the next contender · **no pid file** = a manual park that
+is never reaped. A pid file containing `0` reads as unreadable content, not as a holder — `kill(0,
+sig)` addresses the caller's own process group, so the naive probe would report the *server* as the
+holder of a lock nobody holds.
+
+**What this is NOT, each rejected on purpose:**
+
+- **The server never reaps.** Reaping belongs to the wrappers, which re-check the pid VALUE before
+  removing the dir; a second reaper would race exactly the window that design shrank to microseconds.
+- **The server starts and stops nothing.** Queue *ownership* is a different feature and needs the
+  data this one produces before it can be argued for at all.
+- **No scheduling, priorities, or merge train.** ~6 lands/day does not pay for it (`lane-outcomes`).
+- **The mkdir mutex is untouched.** It remains the whole truth of serialization; a report is advisory
+  and a lane that never sends one is not treated differently by anything.
+
+Reports are in memory and die with a restart — reviving one half of a phase pair across a restart
+would be inventing state. Their durable half is `audit.jsonl`: one `verify_intent` line per phase
+CHANGE (an identical re-post writes nothing, so a chatty lane cannot push real events out of the
+rotation window). That is the timeline the next `exit 144` gets to be read against.
+
+**How a lane actually reports, and the one phase it cannot send.** A lane invokes a wrapper and
+then blocks inside it, so it can post `waiting` before the call and `done`/`failed` after it
+returns — but it never learns the moment the mutex was granted, so `running` is not a phase a lane
+can honestly claim about itself. That phase is in the contract for a reporter that *can* tell (the
+wrapper, if v1.5 ever happens); until then the lock line is what says who is actually running, and
+it is a measurement rather than a claim. The reporting snippet belongs in `CLAUDE.md`'s
+self-scheduling section, next to `/api/self/autos`.
+
+**Still open after v1:** the wrappers themselves do not report, so a suite run by a plain shell shows
+up only as the lock. Doing it from `e2e-stage.sh` needs the live server's host, port and a
+credential the wrapper has no business knowing — a real coupling, and the lock line already answers
+"something is running" for that case. Also, the info card is desktop-only (`renderBoard` returns
+early on mobile), so the phone sees none of this.

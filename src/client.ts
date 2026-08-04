@@ -1625,6 +1625,52 @@ function guestSection(): HTMLElement | null {
   return sec;
 }
 
+// --- the verify gate, at the top of the board ---------------------------------------------
+// Suites are serial on this machine (a machine-wide mkdir mutex, e2e-stage.sh) and until now that
+// serialization was invisible: a run could sit in a 15s poll loop, or die under a neighbour, with
+// nothing on any surface saying so. This is the reading half. It shows two DIFFERENT things and
+// never blends them — the lock is measured off the filesystem, the phase rows are what lanes said
+// about themselves. It is machine-level, like `guests`, which is why it sits above `identity` and
+// survives the empty-pane branch: it is not about the session under the cursor.
+//
+// Tolerant on the wire on purpose: an older server sends no `gate` at all and this must then be
+// absent, never "no suite is running" — which is a claim, and one nothing here has measured.
+interface GateInfo {
+  lock: { pid: number | null; alive: boolean | null; heldMs: number } | null;
+  reports: { slot: number; label: string | null; phase: string; suite: string; exitCode: number | null; at: number }[];
+}
+let gateInfo: GateInfo | null = null;
+// fmtDur rounds to whole minutes, which reads as "0m" for the first half-minute of a hold — the
+// exact window in which someone is watching to see whether a suite actually started.
+// Clamped because a report's age is a SERVER timestamp against this device's clock, and a phone
+// running a few seconds ahead must read "0s", never a negative age.
+const gateAge = (ms: number): string => (ms < 90_000 ? `${Math.max(0, Math.round(ms / 1000))}s` : fmtDur(Math.max(0, ms)));
+function gateSection(): HTMLElement | null {
+  const g = gateInfo;
+  if (!g) return null;
+  const sec = el("div", "bsec");
+  const lk = g.lock;
+  const head = el("div", "bstate",
+    !lk ? "· suite gate · lock free"
+      : lk.alive === null ? `⏸ suite gate · parked by hand (no pid) · ${gateAge(lk.heldMs)}`
+      : lk.alive ? `⏳ suite gate · held by pid ${lk.pid} · ${gateAge(lk.heldMs)}`
+      // `pid null` here is a lock file whose contents are not a pid — a lost holder either way,
+      // but printing "pid null is gone" would read as a bug in this line rather than on disk
+      : `⚠ suite gate · ${lk.pid === null ? "unreadable pid file" : `pid ${lk.pid} is gone`} — the next suite reaps the lock · ${gateAge(lk.heldMs)}`);
+  head.title = lk
+    ? "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers."
+    : "No suite is holding the machine-wide mutex right now.";
+  sec.appendChild(head);
+  for (const r of g.reports) {
+    const who = `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
+    const what = r.phase === "failed" && r.exitCode !== null ? `failed exit ${r.exitCode}` : r.phase;
+    const row = el("div", "bidmeta", `${who} · ${what} ${r.suite} · ${gateAge(Date.now() - r.at)}`);
+    row.title = "Self-reported by that lane. Advisory — the mutex, not this, decides what runs.";
+    sec.appendChild(row);
+  }
+  return sec;
+}
+
 let boardAgain = false;
 async function renderBoard() {
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
@@ -1638,9 +1684,12 @@ async function renderBoard() {
     const s = slot ? fleet[slot - 1] : undefined;
     if (!slot || !s?.cwd) {
       // the guest panel is about the MACHINE, not the focused lane — it must not disappear just
-      // because the pane under the cursor is empty (that is a plausible moment to need `cut`)
+      // because the pane under the cursor is empty (that is a plausible moment to need `cut`).
+      // The gate line is machine-level for the same reason, and stays for the same reason.
       const gs = guestSection();
-      boardBody.replaceChildren(el("div", "bempty", "no session in the focused pane"), ...(gs ? [gs] : []));
+      const gt = gateSection();
+      boardBody.replaceChildren(...(gt ? [gt] : []),
+        el("div", "bempty", "no session in the focused pane"), ...(gs ? [gs] : []));
       return;
     }
     const [briefRes, prompts, wtRes, mgRes] = await Promise.all([
@@ -1658,6 +1707,13 @@ async function renderBoard() {
     // GUEST sits between LANES and OUTLINE and is the one section that is NOT about this lane:
     // it is machine-level, it only exists when FLEET_GUEST_CMD is configured, and it is placed
     // there so an emergency control never ends up below a long prompt list.
+
+    // 0 — GATE: machine-level, above the lane story on the owner's call (2026-08-04) because it
+    // answers "can anything verify right now" before any question about THIS lane is worth asking.
+    // Absent entirely when no suite holds the mutex and no lane has reported — no chrome for the
+    // quiet case, same rule the post-land alarm follows.
+    const gsec0 = gateSection();
+    if (gsec0) nodes.push(gsec0);
 
     // 1 — IDENTITY: which lane this is, how to reach it, session-level actions
     const idsec = el("div", "bsec");
@@ -3626,7 +3682,7 @@ async function refresh() {
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
-      postLandAudit?: PostLandAuditInfo | null };
+      postLandAudit?: PostLandAuditInfo | null; gate?: GateInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
       else if (data.v !== bundleV) armReload();
@@ -3647,6 +3703,9 @@ async function refresh() {
     // that key is about the slot tiles, and an alarm must not wait on an unrelated change to appear.
     postLandAudit = data.postLandAudit ?? null;
     renderPostLandAudit();
+    // read here, painted by the board's own timer — the gate line lives inside a panel that is
+    // closed most of the time, so there is nothing to repaint from this hot path
+    gateInfo = data.gate ?? null;
     serverNow = data.now;
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;

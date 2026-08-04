@@ -995,6 +995,8 @@ async function tickGit(): Promise<void> {
       }
       gitInfo.set(s.id, { branch, dirty, ahead, behind });
     }
+    // the two deploy facts ride this tick rather than the 2 s poll — see refreshDeployFacts
+    await refreshDeployFacts();
   } finally {
     gitTickBusy = false;
   }
@@ -5961,6 +5963,31 @@ function newestMtime(dir: string): number | null {
   }
   return newest;
 }
+// --- the two deploy facts, cached on the slow tick --------------------------------------------
+// Both were served ONLY to the steward (/api/steward/sessions, /api/steward/digest). The owner is
+// the only principal who can act on either — restarting srv and running the build are their hands —
+// so the one person who needs them could not see them. Measured 2026-08-04: srv ran 23 minutes on
+// code older than main with nothing on any owner-facing surface saying so, and a landed client
+// change would have stayed invisible in the browser had the rebuild not been remembered by hand.
+//
+// Cached rather than computed per request: /api/sessions is the 2 s poll and already the fleet's
+// largest payload (docs/data-saver.md), while deployGap costs a git subprocess and bundleStale a
+// walk of src/. Both facts move only when a human commits or builds, so the existing 10 s git tick
+// is already far finer than either needs. `null` until that tick first runs — an honest "not
+// measured yet", which the client draws as nothing rather than as an all-clear.
+//
+// What they do NOT see, stated because the wording on screen depends on it: both measure the
+// COMMITTED tree. A bundle built from uncommitted src reads `stale: false` while serving code that
+// is in no commit, and deployGap compares the boot commit to HEAD, not to the working tree.
+let deployFacts: { gap: DeployGap; bundle: BundleStale } | null = null;
+async function refreshDeployFacts(): Promise<void> {
+  try {
+    deployFacts = { gap: await deployGap(), bundle: bundleStale() };
+  } catch {
+    // keep the previous reading: a refresh that failed is not a new fact, and replacing a good
+    // answer with a blank one would make the surface flicker between "due" and "nothing to say"
+  }
+}
 function bundleMtime(file: string): number | null {
   try {
     return Math.round(statSync(`${REPO_DIR}/public/${file}`).mtimeMs);
@@ -6789,6 +6816,10 @@ Bun.serve<WSData>({
         // the suite mutex and the lanes' own verify reports — null when neither has anything to
         // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
         gate: gateView(),
+        // the deploy facts, same names as on the steward routes so there is ONE vocabulary for
+        // them across the fleet. Cached on the git tick; null until it has run once.
+        deployGap: deployFacts?.gap ?? null,
+        bundleStale: deployFacts?.bundle ?? null,
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {

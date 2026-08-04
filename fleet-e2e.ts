@@ -37,6 +37,7 @@ import * as stewardOutcomes from "./e2e/steward-outcomes";
 import * as security from "./e2e/security";
 import * as guest from "./e2e/guest";
 import * as verifyQueue from "./e2e/verify-queue";
+import * as deployFacts from "./e2e/deploy-facts";
 import * as trail from "./e2e/trail";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
@@ -106,6 +107,11 @@ await guest.run();
 // the server at a knob for a few checks (its own private lock dir) and restarts srv back to the
 // wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
 await verifyQueue.run();
+
+// --- the deploy facts on the owner's poll. Next to verifyQueue for the same reason: it points the
+// server at a fixture repo (FLEET_REPO_DIR) for a few checks and restarts srv back to the
+// wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
+await deployFacts.run();
 
 // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---
 {

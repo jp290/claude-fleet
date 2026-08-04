@@ -1682,6 +1682,36 @@ function gateSection(): HTMLElement | null {
   return sec;
 }
 
+// --- is a deploy due? ------------------------------------------------------------------------
+// Landing is not deploying, and building is not landing. Both facts existed already but were
+// served only to the steward, so the owner — the only principal who restarts srv or runs the
+// build — could not see either. Drawn ONLY when something is actually due: an idle fleet gets no
+// row at all, and an UNKNOWN (null) draws nothing either, because a permanent "can't tell" line
+// is the same noise the suite-gate line just had removed.
+interface DeployGapInfo { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
+interface BundleStaleInfo { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null }
+let deployGapInfo: DeployGapInfo | null = null;
+let bundleStaleInfo: BundleStaleInfo | null = null;
+function deploySection(): HTMLElement | null {
+  const codeDue = deployGapInfo?.codeBehind === true;
+  const bundleDue = bundleStaleInfo?.stale === true;
+  if (!codeDue && !bundleDue) return null;
+  const sec = el("div", "bsec");
+  if (codeDue) {
+    const n = deployGapInfo?.behindCount ?? null;
+    const row = el("div", "bstate",
+      `⚠ deploy due · srv is running server code from ${n === null ? "an earlier commit" : `${n} commit${n === 1 ? "" : "s"} ago`} — restart srv`);
+    row.title = "The running server booted from an older commit than HEAD, and the difference touches server code. Measured against the COMMITTED tree, not the working copy.";
+    sec.appendChild(row);
+  }
+  if (bundleDue) {
+    const row = el("div", "bstate", "⚠ deploy due · the client bundle is older than src/ — run bun run build");
+    row.title = "public/*.js are gitignored build artifacts: landed client code stays invisible in the browser until someone rebuilds them.";
+    sec.appendChild(row);
+  }
+  return sec;
+}
+
 let boardAgain = false;
 async function renderBoard() {
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
@@ -1699,7 +1729,8 @@ async function renderBoard() {
       // The gate line is machine-level for the same reason, and stays for the same reason.
       const gs = guestSection();
       const gt = gateSection();
-      boardBody.replaceChildren(...(gt ? [gt] : []),
+      const dp = deploySection();
+      boardBody.replaceChildren(...(dp ? [dp] : []), ...(gt ? [gt] : []),
         el("div", "bempty", "no session in the focused pane"), ...(gs ? [gs] : []));
       return;
     }
@@ -1723,6 +1754,10 @@ async function renderBoard() {
     // answers "can anything verify right now" before any question about THIS lane is worth asking.
     // Absent entirely when no suite holds the mutex and no lane has reported — no chrome for the
     // quiet case, same rule the post-land alarm follows.
+    // above even the gate line: "can anything verify right now" matters less than "is what you are
+    // looking at even the code that is running". Absent entirely unless something is due.
+    const dsec0 = deploySection();
+    if (dsec0) nodes.push(dsec0);
     const gsec0 = gateSection();
     if (gsec0) nodes.push(gsec0);
 
@@ -3885,7 +3920,8 @@ async function refresh() {
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
-      postLandAudit?: PostLandAuditInfo | null; gate?: GateInfo | null };
+      postLandAudit?: PostLandAuditInfo | null; gate?: GateInfo | null;
+      deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
       else if (data.v !== bundleV) armReload();
@@ -3909,6 +3945,8 @@ async function refresh() {
     // read here, painted by the board's own timer — the gate line lives inside a panel that is
     // closed most of the time, so there is nothing to repaint from this hot path
     gateInfo = data.gate ?? null;
+    deployGapInfo = data.deployGap ?? null;
+    bundleStaleInfo = data.bundleStale ?? null;
     serverNow = data.now;
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;

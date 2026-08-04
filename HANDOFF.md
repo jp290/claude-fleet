@@ -9,8 +9,8 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 ## Session 24 (2026-08-05 nachts): Punkt 2 der Liste erledigt, Punkt 1 als Brief zurückgegeben
 
 Autonome Session auf Zuruf („mach autonom weiter, denk gut nach was du tust"), abgearbeitet
-in der Reihenfolge der Session-23-Liste. **Drei Commits: `9d3fba8`, `f3ab318`, `d0e2260`**,
-alle gelandet; die zwei Code-Commits deployed und live nachgeprüft.
+in der Reihenfolge der Session-23-Liste. **Sechs Commits**, `9d3fba8` · `f3ab318` · `d0e2260` · `9fa6311` · `200f959` · `bbbe4ad`,
+alle gelandet; jeder Code-Commit deployed und live nachgeprüft (bootHead == HEAD).
 
 ### Was erledigt ist
 
@@ -86,6 +86,41 @@ Default — sonst zahlt jeder Connect den Transfer, und genau davon kam das Data
 
 **„more robust": nicht angefasst, bewusst.** Es ist der einzige der drei Punkte ohne benanntes
 Symptom. Ein Beispiel vom Owner (welche Ausgabe bricht wie) ist billiger als jede Vermutung.
+
+### ② ist entschieden und angefangen — A und B stehen, C ist eine Lane
+
+Owner-Entscheid: **Form 1 — Autor zuerst, Wegwerf-Agent als Fallback**, mit zwei Auflagen.
+Messung, Begründung und Reihenfolge stehen in `briefs/server-first-sync.md` (`bbbe4ad`);
+hier nur, was git nicht trägt.
+
+**Warum überhaupt ein Fallback, und wie oft er greift:** Konflikt 4/83 Lanes · Autor-Pane
+stirbt oft (484 Heals / 279 Öffnungen), wird aber **184-mal mit Kontext** zurückgeholt ·
+kontextlos nur 32-mal, an 2 von 15 Tagen · **Konflikt UND kontextloser Autor: 0-mal in 83
+Lanes**, gerechnet ~1 von 300. **Die Zahl ist eine Untergrenze, keine Schätzung** — n=4, also
+zwei multiplizierte Randverteilungen, und die Faktoren sind vermutlich positiv korreliert.
+
+**Ein Argument von mir wurde widerlegt und steht als Widerlegung im Brief:** „ein Zweig, der
+nie feuert, verrottet" gilt hier nicht — der Repair-Loop hat in 83 Rows nie gefeuert und ist
+von sechs Checks abgedeckt. Die Suite hält solche Zweige ehrlich.
+
+**A + B gelandet (`200f959`), deployed** (bootHead == HEAD, 10 Sessions überlebten):
+- **A — graphify für den Resolver.** Korrektur, die man kennen muss: „kontextlos" war meine
+  zu grobe Wortwahl — `MERGE_TOOLS` gab dem Resolver Projekt und git längst; es fehlte nur
+  graphify. **Der Graph liegt bewusst AUSSERHALB des Worktrees** (`git archive` → TMPDIR,
+  Agent bekommt `--graph <abs>`), gebaut nur auf dem Konfliktpfad, aufgeräumt im `finally`.
+- **B — `resolvedBy: "agent" | "author"`**, geschrieben nur wo `resolvedConflict` wahr ist.
+
+**Der Fehler, der dabei am meisten wert war** (54 rote Checks): die erste Fassung baute den
+Graphen IM Worktree. `git status --porcelain` ist auf dem Merge-Pfad die Autorität, also
+wurde aus `?? graphify-out/` ein „agent reported rebased, but the lane is not clean" — **der
+Server lastet dem Agenten einen Zustand an, den der Server selbst erzeugt hat.** Exakt die
+FIX1-Pathologie. In diesem Repo unsichtbar (gitignored), aufgeschlagen wäre sie beim ersten
+Dispatch in ein fremdes Repo über `task.repo`. Wer dort etwas ändert: der Graph darf nie in
+den Baum zurück.
+
+**C ist die nächste Scheibe und läuft als Lane** (Brief: `briefs/server-first-sync.md`).
+Bewusst **eine** Lane, nicht zwei: B und C hätten beide `mergeJob` und dieselben
+Test-Familien angefasst — die Kollision, gegen die ② gebaut wird.
 
 ### Unverändert offen (nichts davon angefasst)
 

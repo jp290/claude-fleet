@@ -4468,7 +4468,12 @@ async function openMergeDiff(slotId: number) { await openReview(slotId, "land");
 // it, the list is rebuilt only when the task data actually changed (key comparison, like
 // renderSlots), and the detail pane is rebuilt only when the SELECTION changes.
 const taskText = new Map<string, string>();
-let taskTextKey = ""; // the id-set the cache was last filled for
+// full eval per task id, from the same /api/tasks fetch: the 2 s poll's digest carries only a
+// bounded reason slice, and the truncated-reason defect (a review verdict whose visible reason
+// argued for auto) is exactly what this cache exists to prevent in the detail panel
+const taskEvalFull = new Map<string, NonNullable<TaskInfo["eval"]>>();
+let taskTextKey = ""; // the id+verdict-set the cache was last filled for — a task's TEXT never
+// changes, but its eval arrives later (and changes on ↻ re-eval), so eval.at is part of the key
 let taskTextBusy = false;
 let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
@@ -4483,16 +4488,20 @@ let qRowId = new Map<HTMLElement, string | null>();
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  const key = tasksList.map((t) => t.id).join(",");
+  const key = tasksList.map((t) => `${t.id}:${t.eval?.at ?? 0}`).join(",");
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
   let filled = false;
   try {
     const res = await api("/api/tasks");
     if (res.ok) {
-      const data = (await res.json()) as { tasks: { id: string; text: string }[] };
+      const data = (await res.json()) as { tasks: { id: string; text: string; eval?: NonNullable<TaskInfo["eval"]> }[] };
       taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
-      for (const t of data.tasks) taskText.set(t.id, t.text);
+      taskEvalFull.clear();
+      for (const t of data.tasks) {
+        taskText.set(t.id, t.text);
+        if (t.eval) taskEvalFull.set(t.id, t.eval);
+      }
       taskTextKey = key;
       filled = true;
     }
@@ -4611,10 +4620,12 @@ function renderQueueDetail() {
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   shell.detail.appendChild(meta);
-  // the eval verdict spelled out in full where it can be READ — the chip above carries the
-  // reason only as a hover title, and the owner asked to see the review without hunting for it
-  if (t.eval) shell.detail.appendChild(el("div", "qdtext",
-    `${t.eval.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review"} — ${t.eval.reason} (${t.eval.model}, ${fmtTs(t.eval.at)})`));
+  // the eval verdict spelled out in full where it can be READ — the FULL reason from the
+  // /api/tasks fetch, never the digest's bounded slice (the truncated slice once made a
+  // review verdict read as its own opposite); the digest is only the fallback while loading
+  const evFull = taskEvalFull.get(t.id) ?? t.eval;
+  if (evFull) shell.detail.appendChild(el("div", "qdtext",
+    `${evFull.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review"} — ${evFull.reason} (${evFull.model}, ${fmtTs(evFull.at)})`));
   // the full text, wrapped and selectable — the row only ever shows its first line
   const body = qTaskText(t.id);
   shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
@@ -4630,6 +4641,8 @@ function renderQueueDetail() {
   const startable = (t.status === "pending" || t.status === "queued") && t.kind !== "note";
   if (startable) acts.appendChild(mk("▸ start lane", "dispatch", "shrbtn primary"));
   if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", startable ? "shrbtn" : "shrbtn primary"));
+  // clear the verdict so the sweep judges afresh — only while pending (the verdict only gates there)
+  if (t.status === "pending" && t.eval) acts.appendChild(mk("↻ re-eval", "eval-reset"));
   if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
   if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
   if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));

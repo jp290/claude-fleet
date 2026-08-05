@@ -4,10 +4,12 @@
 `--append-system-prompt` — **never** as a file written into the worktree: an
 untracked file makes the lane permanently dirty and blocks `land`
 (`tailored-context.md` §6). This template is the source a HUMAN launcher fills in
-per task. The dispatcher briefs differently since 2026-08-04: it compiles the queued
-task text through the enhancer (`runEnhance` + the fresh lane's `briefPayload`,
-additive-only contract, raw-text fallback — server.ts `tickDispatch`), not through
-this template. Keep every filled brief under ~40 lines; curation is the point
+per task. The dispatcher briefs differently since 2026-08-04, and since 2026-08-05 it
+does so EARLIER: the enhancer now runs in the analysis sweep (`tickAnalysisSweep`), the
+compiled brief is stored on the task (`Task.brief`), and `briefAndSend` sends exactly
+those bytes with no model call of its own. Two consequences worth knowing: the brief is
+readable and editable in the queue before the lane starts, and an owner edit pins it
+(`edited`) so nothing recompiles over it. Keep every filled brief under ~40 lines; curation is the point
 (`tailored-context.md` §5).*
 
 Placeholders in `{braces}`. Drop any section that is genuinely empty rather than

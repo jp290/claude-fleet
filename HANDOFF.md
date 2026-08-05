@@ -243,10 +243,16 @@ Check hätte das gefangen, der Owner-Blick auf die Fläche hat es gefangen.
 
 ### Weitere Stufen (Reihenfolge im Chat begründet, nichts davon begonnen)
 
-1. **Auto-Land für eval-auto-Lanes** (Entscheid #6) — Bedingung „erst echte Läufe" ist erfüllt.
+1. ~~**Auto-Land für eval-auto-Lanes** (Entscheid #6)~~ — **hinfällig seit Session 28**: es gibt
+   keine eval-auto-Lanes mehr. Das Gate ist zur beratenden Analyse geworden, unbeaufsichtigt
+   läuft nur noch, was der Owner freigegeben hat (`docs/queue-analyst.md`). Die Frage „Auto-Land"
+   ist damit eine eigene, unbeantwortete Frage über *freigegebene* Lanes, nicht die Fortsetzung
+   dieser hier.
 2. **⑦ v2: die Verify-Queue besitzt die Läufe** — erst danach `DISPATCH_MAX_LANES` > 2.
-3. **Overlap-bewusstes Zurückhalten im Dispatcher** (Eval flaggt Kollisionen schon; `laneDrift`
-   liefert die Daten). Cross-Repo-Parallelität ist schon heute echt (Deckel zählt pro Repo).
+3. **Overlap-bewusstes Zurückhalten im Dispatcher** — die Analyse liefert `collides` jetzt
+   inklusive der laufenden Lanes (nicht mehr nur Batch-Geschwister), `laneDrift` liefert den Rest.
+   Der Dispatcher LIEST beides noch nicht. Cross-Repo-Parallelität ist schon heute echt
+   (Deckel zählt pro Repo).
 
 ---
 

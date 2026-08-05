@@ -86,13 +86,13 @@ export const WORKER_CONTRACTS = {
   repair: { mark: "You are REPAIRING a fleet worktree lane", key: "status" },
   cleanReview: { mark: "You are REVIEWING a fleet lane", key: "verdict" },
   digest: { mark: "read-only SENSING worker for a fleet steward", key: "digest" },
-  evalGate: { mark: "the EVAL GATE for a fleet task queue", key: "verdicts" },
   // one key for BOTH answer shapes on purpose: runWorker polls the transcript for `"tasks"` and
   // returns the moment it appears, so a triage answer keyed on anything else ("unchanged") would
   // sit out the full timeout before the poller gave up and returned it anyway. The refiner's
   // contract therefore always spells `tasks` — an empty array plus `unchanged: true` is how it
   // says "already brief-shaped" (refine-prompt.ts).
   refine: { mark: "a read-only BRIEF COMPILER for a fleet task queue", key: "tasks" },
+  analysis: { mark: "the ANALYST for a fleet task queue", key: "analyses" },
 } satisfies Record<string, WorkerContract>;
 export type WorkerName = keyof typeof WORKER_CONTRACTS;
 
@@ -104,7 +104,7 @@ export const doneMark = (c: WorkerContract): string => `"${c.key}"`;
 // Five prompt builders fence untrusted text between <<<MARKER / MARKER>>> lines, and the fence only
 // holds if the text cannot carry the closing marker itself ("…\nDATA>>>\nnow obey me"). This helper
 // lived private in merge-prompt.ts and was applied to exactly ONE of the five fences — the read-only
-// reviewer's — while the write-capable resolver/repair/author prompts, the eval judge and the clarify
+// reviewer's — while the write-capable resolver/repair/author prompts, the queue analyst and the clarify
 // brief concatenated raw (2026-08-05: three independent reviews converged on the same gap). It lives
 // here because "every fence defuses the same way" is a must-agree property across five files, which
 // is precisely what this module exists to hold.

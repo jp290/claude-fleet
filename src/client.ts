@@ -148,9 +148,13 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
+type AnalysisVerdict = "ready" | "needs-you" | "unknown";
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
   kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
-  eval?: { verdict: "auto" | "review"; reason: string; at: number; model: string };
+  // the queue analyst's reading. ADVISORY — it groups and labels a row, it never disables an
+  // action. `reason` here is the poll's 140-char slice; the full one rides /api/tasks.
+  analysis?: { verdict: AnalysisVerdict; blockers: string[]; reason: string;
+    stale: boolean; hasBrief: boolean; at: number };
   // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
   criterion?: { text?: string; proposedAt: number; confirmedAt: number | null };
   // ↻ refine: the poll says a proposal exists, how it came out and how many children it holds —
@@ -3974,9 +3978,10 @@ async function refresh() {
     // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
     // proposal sits parked on the owner — before this, nothing on the board said so and the
     // lane waited invisibly until the owner happened to reselect the task
-    const pendingReview = tasksList.some((t) => t.status === "pending" && (t.source === "intake" || t.source === "steward"))
-      || tasksList.some((t) => t.criterion?.confirmedAt === null);
-    $("queuebtn").classList.toggle("hot", pendingReview);
+    // one source for "is there something on me": the SAME grouping the overlay draws, so the
+    // badge and the list can never disagree about what needs the owner. (It used to be its own
+    // hand-rolled predicate over source+criterion, which is how the two drifted.)
+    $("queuebtn").classList.toggle("hot", tasksList.some((t) => qGroupOf(t) === "needs"));
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
@@ -3997,8 +4002,8 @@ async function refresh() {
     // the detail actually paints, so hover and an in-progress criterion edit survive quiet polls.
     if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
-      const dk = t ? JSON.stringify([t.id, t.status, t.note, t.eval?.at,
-        t.criterion?.proposedAt, t.criterion?.confirmedAt,
+      const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.analysis?.at,
+        t.analysis?.stale, t.criterion?.proposedAt, t.criterion?.confirmedAt,
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies
         t.refine?.at, t.refining]) : "gone";
@@ -4495,16 +4500,22 @@ async function openMergeDiff(slotId: number) { await openReview(slotId, "land");
 // it, the list is rebuilt only when the task data actually changed (key comparison, like
 // renderSlots), and the detail pane is rebuilt only when the SELECTION changes.
 const taskText = new Map<string, string>();
-// full eval per task id, from the same /api/tasks fetch: the 2 s poll's digest carries only a
+// full analysis per task id, from the same /api/tasks fetch: the 2 s poll's digest carries only a
 // bounded reason slice, and the truncated-reason defect (a review verdict whose visible reason
-// argued for auto) is exactly what this cache exists to prevent in the detail panel
-const taskEvalFull = new Map<string, NonNullable<TaskInfo["eval"]>>();
+// argued for its own opposite) is exactly what this cache exists to prevent in the detail panel
+interface FullAnalysis { verdict: AnalysisVerdict; blockers: string[]; reason: string;
+  collides: string[]; at: number; model: string; attempts: number }
+const taskAnalysisFull = new Map<string, FullAnalysis>();
+// the compiled brief — the exact bytes a lane will receive. Never on the poll (it is a whole
+// prompt); the detail pane shows and edits it from here.
+interface FullBrief { text: string; at: number; model: string; edited: boolean }
+const taskBriefFull = new Map<string, FullBrief>();
 // same reason for the criterion: the poll knows THAT one exists, this knows what it says
 const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
 // …and for the refine proposal: the poll knows a proposal landed, this knows what it proposes
 const taskRefineFull = new Map<string, TaskRefineFull>();
 let taskTextKey = ""; // the id+verdict-set the cache was last filled for — a task's TEXT never
-// changes, but its eval arrives later (and changes on ↻ re-eval), so eval.at is part of the key
+// changes, but its analysis arrives later (and changes on ↻ re-analyse), so analysis.at is in the key
 let taskTextBusy = false;
 let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
@@ -4520,23 +4531,25 @@ let qRowId = new Map<HTMLElement, string | null>();
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  const key = tasksList.map((t) => `${t.id}:${t.eval?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}`).join(",");
+  const key = tasksList.map((t) => `${t.id}:${t.analysis?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}`).join(",");
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
   let filled = false;
   try {
     const res = await api("/api/tasks");
     if (res.ok) {
-      const data = (await res.json()) as { tasks: { id: string; text: string;
-        eval?: NonNullable<TaskInfo["eval"]>; criterion?: NonNullable<TaskInfo["criterion"]>;
+      const data = (await res.json()) as { tasks: { id: string; text: string; analysis?: FullAnalysis;
+        brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
         refine?: TaskRefineFull }[] };
       taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
-      taskEvalFull.clear();
+      taskAnalysisFull.clear();
+      taskBriefFull.clear();
       taskCriterionFull.clear();
       taskRefineFull.clear();
       for (const t of data.tasks) {
         taskText.set(t.id, t.text);
-        if (t.eval) taskEvalFull.set(t.id, t.eval);
+        if (t.analysis) taskAnalysisFull.set(t.id, t.analysis);
+        if (t.brief) taskBriefFull.set(t.id, t.brief);
         if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
         if (t.refine) taskRefineFull.set(t.id, t.refine);
       }
@@ -4552,11 +4565,48 @@ async function loadTaskTexts() {
   if (filled) { qKey = ""; qDetailKey = ""; renderQueue(); renderQueueDetail(); }
 }
 
-const Q_STATUS: { k: TaskInfo["status"]; head: string }[] = [
-  { k: "pending", head: "Pending" }, { k: "queued", head: "Queued" },
-  { k: "sent", head: "Sent" }, { k: "done", head: "Done" },
-  { k: "archived", head: "Archive" },
+// --- WHAT THE LIST IS ORDERED BY, and why it is no longer `status`.
+//
+// `pending` vs `queued` is a mechanism detail — it records whether the owner has clicked promote.
+// Grouping by it made the queue answer a question nobody asks. The owner's real questions are
+// "what needs me", "what did I release", "what is running", and everything else is backlog. So the
+// group is DERIVED from status + analysis + kind, in that priority order, and each group is a
+// standing answer. Nothing here is persisted: change the rule and every row re-sorts itself.
+type QGroup = "needs" | "released" | "running" | "backlog" | "notes" | "closed";
+const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
+  { k: "needs", head: "Needs you", hint: "flagged by the analyst, or waiting on a decision only you can make" },
+  { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order" },
+  { k: "running", head: "Running", hint: "live in a lane" },
+  { k: "backlog", head: "Backlog", hint: "read and unobjected, or not yet read — yours to release" },
+  { k: "notes", head: "Observations", hint: "the steward's findings. Not work: adopt one to turn it into a brief" },
+  { k: "closed", head: "Closed", hint: "done and archived" },
 ];
+function qGroupOf(t: TaskInfo): QGroup {
+  if (t.status === "sent") return "running";
+  if (t.status === "done" || t.status === "archived") return "closed";
+  // an observation is an observation whatever its status says. The check sits ABOVE `queued` on
+  // purpose: releasing a note is refused today, but rows promoted before that refusal existed are
+  // still in the state file, and showing one under "runs next" would be a promise nothing keeps.
+  if (t.kind === "note") return "notes";
+  if (t.status === "queued") return "released";
+  // an unconfirmed criterion is a lane parked on YOUR answer, which outranks any verdict
+  if (t.criterion && t.criterion.confirmedAt === null) return "needs";
+  if (t.analysis && t.analysis.verdict !== "ready") return "needs";
+  return "backlog";
+}
+// the one-line verdict as it appears UNDER a row's title — the thing the old UI hid in a hover.
+// Blockers first because they are the scannable part; the sentence follows for whoever reads on.
+const Q_BLOCKER_LABEL: Record<string, string> = {
+  attribution: "premise doesn't hold", reach: "reaches outside the worktree",
+  criterion: "no done-criterion", "brief-drift": "brief drifted from your draft",
+};
+function qVerdictLine(t: TaskInfo): string {
+  const a = t.analysis;
+  if (!a) return t.kind === "note" ? "" : "not analysed yet";
+  const mark = a.verdict === "ready" ? "✓" : a.verdict === "unknown" ? "?" : "⚠";
+  const tags = a.blockers.map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
+  return [`${mark} ${tags || a.reason}`, a.stale ? "· stale, re-reading" : ""].filter(Boolean).join(" ");
+}
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 const qFirstLine = (id: string) => (qTaskText(id).split("\n")[0] || "…").slice(0, 120);
 
@@ -4651,14 +4701,13 @@ function renderQueueDetail() {
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
     : t.source === "steward" ? "⚙ steward" : "owner"));
-  if (t.kind === "note") meta.appendChild(chip("note — never dispatched", "dim",
-    "an observation for you; promoting it records your verdict, the dispatcher skips it"));
-  // the eval gate's verdict, with its reason on hover — "auto" means the dispatcher may run
-  // this pending task unattended; "review" means it waits for you, and the reason says why
-  if (t.eval) meta.appendChild(chip(
-    t.eval.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review",
-    t.eval.verdict === "auto" ? "ok" : "warn",
-    `${t.eval.reason} (${t.eval.model})`));
+  if (t.kind === "note") meta.appendChild(chip("observation — not work", "dim",
+    "the steward reports, it does not assign. Adopt it to turn it into a brief you own"));
+  // the analyst's reading as a one-word chip; the sentence behind it is spelled out below
+  if (t.analysis) meta.appendChild(chip(
+    t.analysis.verdict === "ready" ? "✓ analysed" : t.analysis.verdict === "unknown" ? "? unread" : "⚠ flagged",
+    t.analysis.verdict === "ready" ? "ok" : "warn",
+    "the queue analyst's reading — advisory, it blocks nothing"));
   if (t.refining) meta.appendChild(chip("↻ refining…", "dim",
     "the brief compiler is reading the repo — this can take a few minutes; the proposal appears here when it lands"));
   if (t.repo) meta.appendChild(chip(`⌂ ${t.repo.split("/").pop() || t.repo}`, "dim",
@@ -4666,12 +4715,50 @@ function renderQueueDetail() {
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   shell.detail.appendChild(meta);
-  // the eval verdict spelled out in full where it can be READ — the FULL reason from the
-  // /api/tasks fetch, never the digest's bounded slice (the truncated slice once made a
-  // review verdict read as its own opposite); the digest is only the fallback while loading
-  const evFull = taskEvalFull.get(t.id) ?? t.eval;
-  if (evFull) shell.detail.appendChild(el("div", "qdtext",
-    `${evFull.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review"} — ${evFull.reason} (${evFull.model}, ${fmtTs(evFull.at)})`));
+  // the verdict spelled out in full where it can be READ — the FULL reason from the /api/tasks
+  // fetch, never the digest's bounded slice (the truncated slice once made a verdict read as its
+  // own opposite). The digest is the fallback while that fetch is still in flight.
+  const anFull = taskAnalysisFull.get(t.id);
+  const an = anFull ?? t.analysis;
+  if (an) {
+    const head = an.verdict === "ready" ? "the analyst found nothing to stop you"
+      : an.verdict === "unknown" ? "the analyst could not read this" : "the analyst wants you to look";
+    shell.detail.appendChild(el("div", "rvhead",
+      `${head}${t.analysis?.stale ? " · stale — the tree moved, it is being re-read" : ""}`));
+    if (an.blockers.length) {
+      const tags = el("div", "ocfacts");
+      for (const b of an.blockers) tags.appendChild(chip(Q_BLOCKER_LABEL[b] ?? b, "warn"));
+      shell.detail.appendChild(tags);
+    }
+    shell.detail.appendChild(el("div", "qdtext", an.reason));
+    if (anFull?.collides.length) shell.detail.appendChild(el("div", "shellhint",
+      `touches the same files as: ${anFull.collides.join(", ")}`));
+    shell.detail.appendChild(el("div", "shellhint",
+      `${anFull ? `${anFull.model}, ` : ""}${fmtTs(an.at)} — advisory: it never blocks an action here`));
+  }
+  // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
+  // It exists in the UI at all because it used to be compiled at spawn time and fired straight
+  // into the pane: unreadable before the fact, and a different string from the one that had been
+  // approved. Editing pins it (the sweep never recompiles over an edit) and re-opens the analysis.
+  const brief = taskBriefFull.get(t.id);
+  if (t.kind !== "note" && (t.status === "pending" || t.status === "queued")) {
+    shell.detail.appendChild(el("div", "rvhead",
+      brief ? `the brief this lane will receive${brief.edited ? " · yours" : ` · compiled ${fmtTs(brief.at)}`}`
+        : "no compiled brief yet — the lane would receive your raw text"));
+    const bbox = el("textarea", "qdcrit") as HTMLTextAreaElement;
+    bbox.value = brief?.text ?? qTaskText(t.id);
+    bbox.rows = 10;
+    shell.detail.appendChild(bbox);
+    const bacts = el("div", "pkdacts");
+    const bb = el("button", "shrbtn", "save brief") as HTMLButtonElement;
+    bb.title = "pins this text as the brief — the analyst re-reads it, and nothing recompiles over it";
+    bb.onclick = () => void qAct(t.id, "brief", { text: bbox.value });
+    bacts.appendChild(bb);
+    shell.detail.appendChild(bacts);
+  } else if (brief) {
+    shell.detail.appendChild(el("div", "rvhead", "the brief this lane received"));
+    shell.detail.appendChild(el("div", "qdtext", brief.text));
+  }
   // the done-criterion: a clarify lane's proposal until you confirm it. Editable in place —
   // confirming stores what YOU agreed to, which is what makes it your anchor and not its own
   const crit = taskCriterionFull.get(t.id) ?? t.criterion;
@@ -4697,8 +4784,11 @@ function renderQueueDetail() {
       shell.detail.appendChild(cacts);
     }
   }
-  // the full text, wrapped and selectable — the row only ever shows its first line
+  // the draft, wrapped and selectable — the row only ever shows its first line. Labelled once a
+  // brief exists, because then these are two different texts and confusing them is the whole
+  // defect this panel was built to end.
   const body = qTaskText(t.id);
+  if (brief) shell.detail.appendChild(el("div", "rvhead", "your draft, as filed"));
   shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
     body || "loading the prompt text…"));
   // ↻ the refine proposal. Rendered BELOW the original text on purpose: the two are meant to be
@@ -4746,28 +4836,53 @@ function renderQueueDetail() {
     b.onclick = () => void qAct(t.id, action, body ?? {});
     return b;
   };
-  // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher (which may be
-  // off), never for notes (the server refuses them anyway)
-  const startable = (t.status === "pending" || t.status === "queued") && t.kind !== "note";
-  if (startable) acts.appendChild(mk("▸ start lane", "dispatch", "shrbtn primary"));
-  // the same spawn with a different founding prompt: settle the done-criterion with the owner
-  // before writing code. The standing answer to an eval:review "no derivable done-criterion".
-  if (startable) acts.appendChild(mk("▸ clarify first", "dispatch", "shrbtn", { clarify: true },
-    "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm"));
-  // ↻ refine: compile this raw request into a work brief (or into the tasks it really is) before
-  // any lane sees it. Attended only — nothing on the server calls this on its own.
-  if (startable) {
-    const rb = el("button", "shrbtn", t.refining ? "↻ refining…" : "↻ refine") as HTMLButtonElement;
-    rb.disabled = t.refining === true;
-    rb.title = "a read-only agent reads the repo and proposes a compiled brief — or a split."
-      + " Nothing changes until you apply it";
-    rb.onclick = () => void qAct(t.id, "refine", {});
-    acts.appendChild(rb);
+  // A NOTE gets its own, short set: it is an observation, and the only two honest things to do
+  // with one are agree (adopt it into a brief, where it becomes normal work) or close it. It has
+  // no lane, no brief, no refine and no release — the server refuses all four.
+  if (t.kind === "note") {
+    if (t.status === "pending") acts.appendChild(mk("→ adopt as a task", "adopt", "shrbtn primary",
+      {}, "turns this observation into a work brief — it gets analysed, and you still release it"));
+  } else {
+    // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher, which may be off
+    const startable = t.status === "pending" || t.status === "queued";
+    if (startable) acts.appendChild(mk("▸ start lane", "dispatch", "shrbtn primary"));
+    // the same spawn with a different founding prompt: settle the done-criterion with the owner
+    // before writing code. The standing answer to a "no done-criterion" blocker.
+    if (startable) acts.appendChild(mk("▸ clarify first", "dispatch", "shrbtn", { clarify: true },
+      "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm"));
+    // ↻ refine: rewrite the REQUEST itself — compile it into a work brief, or into the several
+    // tasks it really is — before any lane sees it. Attended only; nothing on the server calls it.
+    // Distinct from the brief editor above, and the difference is worth holding on to: refine
+    // changes what you are asking for, the brief changes how it is said to the session.
+    if (startable) {
+      const rb = el("button", "shrbtn", t.refining ? "↻ refining…" : "↻ refine") as HTMLButtonElement;
+      rb.disabled = t.refining === true;
+      rb.title = "a read-only agent reads the repo and proposes a compiled brief — or a split."
+        + " Nothing changes until you apply it";
+      rb.onclick = () => void qAct(t.id, "refine", {});
+      acts.appendChild(rb);
+    }
+    // RELEASING is the decision the whole analysis exists to inform, so it says what it does. When
+    // it contradicts the analyst it renames itself and asks once — no dialog for the clean case,
+    // and no silent override for the flagged one.
+    if (t.status === "pending") {
+      const over = !!t.analysis && t.analysis.verdict !== "ready";
+      const b = el("button", startable ? "shrbtn" : "shrbtn primary",
+        over ? "release anyway ▸" : "release ▸") as HTMLButtonElement;
+      b.title = over
+        ? "the analyst flagged this — releasing it is recorded as your override"
+        : "hands it to the dispatcher, which runs released tasks in order";
+      b.onclick = () => {
+        if (over && !confirm(`The analyst flagged this:\n\n${an?.reason ?? ""}\n\nRelease it anyway?`)) return;
+        void qAct(t.id, "queue");
+      };
+      acts.appendChild(b);
+    }
+    if ((t.status === "pending" || t.status === "queued") && t.analysis)
+      acts.appendChild(mk("↻ re-analyse", "reanalyse", "shrbtn", {},
+        "drops the verdict and the un-edited brief so the analyst reads it from scratch"));
+    if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
   }
-  if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", startable ? "shrbtn" : "shrbtn primary"));
-  // clear the verdict so the sweep judges afresh — only while pending (the verdict only gates there)
-  if (t.status === "pending" && t.eval) acts.appendChild(mk("↻ re-eval", "eval-reset"));
-  if (t.status === "queued") acts.appendChild(mk("hold", "unqueue"));
   if (t.status === "archived") acts.appendChild(mk("restore", "unarchive"));
   if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));
   if (t.status !== "sent" && t.status !== "archived") acts.appendChild(mk("🗄 archive", "archive"));
@@ -4793,14 +4908,18 @@ function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
-    shown.map((t) => [t.id, t.status, t.slot, t.note, t.eval?.verdict,
+    shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.analysis?.verdict,
+      t.analysis?.blockers.join(","), t.analysis?.stale,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining])]);
   if (key === qKey) return;
   qKey = key;
 
-  const counts = Q_STATUS.map((s) => `${tasksList.filter((t) => t.status === s.k).length} ${s.k}`).join(" · ");
-  shell.setSubtitle(`${counts}${intakeOn ? " · ✉ intake on" : ""}`);
+  // the subtitle answers the same question the groups do, in one line: what is on YOU, and what is
+  // moving without you. The old one recited five internal statuses.
+  const n = (g: QGroup) => tasksList.filter((t) => qGroupOf(t) === g).length;
+  shell.setSubtitle([`${n("needs")} need you`, `${n("released")} released`, `${n("running")} running`,
+    `${n("backlog")} backlog`, intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
 
   shell.list.replaceChildren();
   const rows: ShellRow[] = [];
@@ -4821,19 +4940,29 @@ function renderQueue() {
   };
 
   add({ name: "＋ New task", cls: "qnew", id: null });
-  for (const s of Q_STATUS) {
-    const group = shown.filter((t) => t.status === s.k);
+  for (const g of Q_GROUPS) {
+    const group = shown.filter((t) => qGroupOf(t) === g.k);
     if (!group.length) continue;
     const head = el("div", "shellsec");
-    head.appendChild(el("span", "shellsect", s.head));
+    head.appendChild(el("span", "shellsect", g.head));
     head.appendChild(el("span", "shellsecn", String(group.length)));
+    head.title = g.hint;
     shell.list.appendChild(head);
-    for (const t of [...group].sort((a, b) => b.created - a.created))
+    // "Released" is the ONE group with a real order — it is the dispatcher's own pick order
+    // (tasks.find over creation order), so showing it newest-first would be a lie about what runs
+    // next. Everywhere else newest-first is what you want.
+    const sorted = g.k === "released"
+      ? [...group].sort((a, b) => a.created - b.created)
+      : [...group].sort((a, b) => b.created - a.created);
+    for (const t of sorted)
       add({
-        name: qFirstLine(t.id), id: t.id, cls: `q-${t.status}`,
-        sub: [t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
-          t.kind === "note" ? "note" : "",
-          t.eval ? (t.eval.verdict === "auto" ? "✓ eval" : "⚠ eval") : "",
+        name: qFirstLine(t.id), id: t.id,
+        cls: [`q-${t.status}`, t.kind === "note" ? "q-obs" : "",
+          t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
+        // the verdict is the SECOND line now, not a hover: it is the reason the row is in this
+        // group, and hiding the reason behind a mouse made the group unexplainable
+        sub: [qVerdictLine(t),
+          t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
           // a criterion awaiting the owner's confirm is the row-level half of the queuebtn's
           // hot flag — the lane behind it is parked until this is acted on
           t.criterion ? (t.criterion.confirmedAt === null ? "⏳ criterion" : "✓ criterion") : "",
@@ -4880,8 +5009,13 @@ function openQueue() {
     // after a toggle rather than waiting for a rebuild that may never come
     const label = el("span", "");
     const toggle = el("button", "shrbtn", "") as HTMLButtonElement;
+    // it says what it RUNS, not merely that it is on. The single most important fact about this
+    // switch is the one it never used to state: it takes released tasks and nothing else — it
+    // does not pick work out of the backlog, which is exactly what its predecessor did.
     const paint = () => {
-      label.textContent = `Dispatcher ${dispatch.on ? "ON" : "off"} · repo ${baseName(dispatch.repo)} · max ${dispatch.maxLanes} lanes `;
+      label.textContent = dispatch.on
+        ? `Dispatcher ON — runs released tasks unattended, up to ${dispatch.maxLanes} lanes in ${baseName(dispatch.repo)}. It never picks its own. `
+        : `Dispatcher off — released tasks wait for you to start them by hand (${baseName(dispatch.repo)}). `;
       toggle.textContent = dispatch.on ? "turn off" : "turn on";
     };
     toggle.onclick = async () => {
@@ -4900,9 +5034,9 @@ function openQueue() {
   }
   shell.tools.appendChild(drow);
 
-  shell.foot.textContent = "pending → queue ▸ → (the dispatcher spawns a ⎇ lane, or you send it by"
-    + " hand) → ± review → ⏏ land.  Sidebar badge: •N uncommitted · ↑N to push · amber = editing ·"
-    + " green = ready to land";
+  shell.foot.textContent = "backlog → the analyst reads it and compiles its brief → you release ▸"
+    + " → a ⎇ lane runs it → ± review → ⏏ land.  The analyst advises; releasing is yours."
+    + "  Sidebar badge: •N uncommitted · ↑N to push · amber = editing · green = ready to land";
 
   renderQueue();
   renderQueueDetail();

@@ -140,19 +140,23 @@ const dangerous = (slot: number): Probe[] => [
 // protected only by §1's structural pin (tokenGate last in the chain). §2 is the mechanism that
 // catches a handler regressing to its own weaker inline check — the way /api/dispositions already
 // special-cases one principal inline — and it was silent on exactly the newest clarify-adjacent
-// surface. `fix` is a DONE fixture task: criterion-confirm / eval-reset / dispatch answer a
+// surface. `fix` is a DONE fixture task: criterion-confirm / reanalyse / brief / dispatch answer a
 // side-effect-free 409 to the owner (proving the route exists) and must answer 401/403 to every
 // other principal. The mutating task actions and the guest routes ride matrix-only (no ownerSafe
 // control), same stance as /api/dispatch.
 const taskSurface = (fix: string): Probe[] => [
   { path: `/api/tasks/${fix}/criterion-confirm`, method: "POST", body: {}, ownerSafe: true },
-  { path: `/api/tasks/${fix}/eval-reset`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/reanalyse`, method: "POST", body: {}, ownerSafe: true },
+  // the brief is a PROMPT a lane will execute — an unauthenticated write here would be arbitrary
+  // remote code execution through the back door, so it belongs on this matrix more than most
+  { path: `/api/tasks/${fix}/brief`, method: "POST", body: { text: "probe" }, ownerSafe: true },
   { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, ownerSafe: true },
   // ↻ refine spawns a repo-reading agent and refine-confirm mints task rows — both answer the
   // owner a side-effect-free 409 on this DONE fixture (wrong status / no proposal), so both can
   // carry the positive control while every other principal must be denied outright
   { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/adopt`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/queue`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/archive`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/delete`, method: "POST", body: {} },

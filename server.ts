@@ -7,7 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
-import { buildEvalPrompt } from "./eval-prompt";
+import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
@@ -184,16 +184,43 @@ interface Task {
   // the Inspektion's register `key`). One live proposal per ref — the server answers a repeat
   // filing with the existing row instead of a duplicate, so a persisting condition survives
   // as ONE queue item across an hourly pulse. Absent on ad-hoc filings and non-steward rows.
-  eval?: TaskEval; // the eval gate's verdict (owner decision 2026-08-05): "auto" lets the
-  // dispatcher consume a PENDING lane task without an owner promote; "review" routes it to the
-  // owner's pile and the dispatcher never touches it. Absent = not yet evaluated. Written only
-  // by tickEvalSweep; the ② contract transplanted to the queue — downgrade-only, fail-closed.
   refine?: TaskRefine; // the brief compiler's PROPOSAL (briefs/task-refine.md). A refine run never
   // touches this row's text — it only parks what it would become here, and the owner's confirm is
   // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
   // must not be the one who rewrites the work order it was measured against.
+  brief?: TaskBrief;       // the compiled work brief — the EXACT bytes a lane will receive. It used
+  // to be compiled at spawn time and thrown straight at the pane, which made it unreadable before
+  // the fact and, worse, meant the eval gate had approved a different string than the one that ran.
+  // Compiled once per draft in the analysis sweep, from then on stored, shown and editable.
+  // NOT the same object as `refine`, and the difference is the point: ↻ refine proposes a new
+  // REQUEST (attended, all-or-nothing, may split one row into several), while this is the prompt
+  // the request compiles down to. Refine rewrites what you asked for; the brief is how it is said.
+  analysis?: TaskAnalysis; // what the queue analyst found ABOUT that brief (owner decision
+  // 2026-08-05, round 2). ADVISORY: it gates nothing. Its predecessor, the eval gate, let a positive
+  // verdict start a PENDING task with no owner promote — which meant the machine picked work out of
+  // the owner's own un-promoted drafts. Now the owner's promote is the decision and this is the
+  // evidence he decides on. Written only by tickAnalysisSweep.
 }
-interface TaskEval { verdict: "auto" | "review"; reason: string; at: number; model: string }
+// The brief and the verdict are deliberately SEPARATE records with separate lifetimes: a brief is
+// compiled once per draft (a fresh lane's git-fact block is empty by construction, so nothing about
+// it improves by recompiling), while its analysis is re-run whenever the tree moves under it.
+interface TaskBrief { text: string; at: number; model: string; edited: boolean }
+// Three-valued on purpose: "unknown" is the analyst failing to ANSWER, which is an absence and must
+// never be able to read as either judgement. The old gate collapsed a timed-out worker into a
+// permanent "review" verdict for its whole batch — fail-closed in direction, but indistinguishable
+// from a real finding and unrecoverable without a per-task reset.
+interface TaskAnalysis {
+  verdict: "ready" | "needs-you" | "unknown";
+  reason: string;                  // decisive factor first; for "unknown" it is the failure
+  blockers: AnalysisBlocker[];     // which criterion failed — the row tags; empty when ready
+  collides: string[];              // other task ids / open lane branches touching the same files
+  at: number;
+  model: string;
+  head: string | null;             // integration tip this was judged against; a moved tip = stale
+  briefAt: number | null;          // the brief revision this judged; the owner editing it = stale
+  attempts: number;                // consecutive analyst failures, for the backoff (0 once answered)
+}
+type AnalysisBlocker = (typeof ANALYSIS_BLOCKERS)[number];
 interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
 const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
 // One compiled child. `text` is the request in its own words; the other three are what a hand-
@@ -307,10 +334,17 @@ const MAX_TASK_TEXT = 20_000;
 // on the poll path reads the text (the queue button reads status+source); the queue overlay
 // fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
 // null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
+// the analysis as the 2 s poll carries it: enough to GROUP and label a row, never the brief and
+// never the full reason. Both of those ride GET /api/tasks, which the queue overlay fetches when
+// it opens — the same two-tier rule the task texts themselves follow.
+interface AnalysisDigest {
+  verdict: TaskAnalysis["verdict"]; blockers: AnalysisBlocker[]; reason: string;
+  stale: boolean; hasBrief: boolean; at: number;
+}
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
-  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "eval">>
+  & Partial<Pick<Task, "from" | "slot" | "note" | "repo">>
   // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
-  & { criterion?: { proposedAt: number; confirmedAt: number | null } }
+  & { criterion?: { proposedAt: number; confirmedAt: number | null }; analysis?: AnalysisDigest }
   // same two-tier rule for the refine proposal: the poll says THAT one exists, how it turned out
   // and how many children it holds — the texts ride GET /api/tasks with everything else.
   // `refining` is derived from the in-flight map, never persisted: it is a fact about this
@@ -323,17 +357,42 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
-    // the digest's reason is a bounded SLICE for the 2 s poll (same size discipline that took
-    // task texts off this endpoint); the full stored reason travels on GET /api/tasks, which
-    // the queue overlay fetches anyway — the detail panel reads it from there
-    ...(t.eval ? { eval: { ...t.eval, reason: t.eval.reason.slice(0, 140) } } : {}),
-    // same two-tier rule as `eval`: the poll carries only whether a criterion exists and whether
-    // it is confirmed — the text itself rides GET /api/tasks, which the queue overlay fetches
+    ...(t.analysis ? {
+      analysis: {
+        verdict: t.analysis.verdict, blockers: t.analysis.blockers,
+        // a bounded SLICE for the poll (same size discipline that took task texts off this
+        // endpoint). The 140-char cap is display-only and must never be the STORED reason: a
+        // 200-char store once beheaded a verdict's decisive "— but …" clause and left a review
+        // reading as its own opposite.
+        reason: t.analysis.reason.slice(0, 140),
+        stale: analysisStale(t), hasBrief: !!t.brief, at: t.analysis.at,
+      },
+    } : {}),
+    // same two-tier rule as `analysis`: the poll carries only whether a criterion exists and
+    // whether it is confirmed — the text itself rides GET /api/tasks, which the overlay fetches
     ...(t.criterion ? { criterion: { proposedAt: t.criterion.proposedAt, confirmedAt: t.criterion.confirmedAt } } : {}),
     ...(t.refine ? { refine: { at: t.refine.at, unchanged: t.refine.proposal.unchanged,
       count: t.refine.proposal.unchanged ? 0 : t.refine.proposal.tasks.length } } : {}),
     ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
   };
+}
+// Last known integration tip per repo, refreshed by the analysis sweep. DISPLAY ONLY: it answers
+// "is this verdict still about today's tree" for a row badge and for the sweep's re-analysis rule.
+// The DISPATCH path must never read it — it takes a fresh integrationHead() before starting a lane,
+// because a cache that lags by one land is exactly a cache that green-lights the stale case.
+const integrationTips = new Map<string, string>();
+// An analysis is STALE, not wrong, when the ground it stood on has moved. Two ways that happens:
+// the integration tip advanced (criterion 1 — "what it claims about the current state is true
+// there" — was checked against a tree that no longer exists), or the owner edited the brief after
+// the verdict, which makes the verdict about a string nobody will send. Unknown tip → NOT stale:
+// the absence of a measurement must never paint every row.
+function analysisStale(t: Task): boolean {
+  const a = t.analysis;
+  if (!a) return false;
+  if (a.briefAt !== (t.brief?.at ?? null)) return true;
+  if (!a.head) return false;
+  const tip = integrationTips.get(repoCanon(t.repo ?? DISPATCH_REPO));
+  return tip !== undefined && tip !== a.head;
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
@@ -521,6 +580,10 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "task_dispatch" // the manual start button — an owner act, distinct from the tick's spawns
+  // the owner released a task the queue analyst had flagged. Recorded because the analyst is
+  // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
+  // nothing could ever be calibrated against how often its objections were right
+  | "task_override"
   // the clarify lane's propose/promote pair, both sides recorded: who drafted the anchor and
   // when the owner made it theirs (the boundary this whole path is built around)
   | "criterion_proposed" | "criterion_confirmed"
@@ -639,7 +702,7 @@ function saveState(): void {
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
-    evalAuto: evalAutoDay }, null, 2);
+  }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once).
@@ -1824,7 +1887,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // gate refuses this slot, so nothing automated can nudge the lane past the owner's decision
     free.awaiting = clarify ? "owner" : null;
     saveState();
-    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct, wasStatus, clarify) };
+    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct, clarify) };
   } catch (e) {
     // spawning failed — mark the task so the owner sees why instead of it silently vanishing
     next.status = wasStatus;
@@ -1842,58 +1905,51 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   }
 }
 
-// the dispatch tail: compile the raw task text into a grounded brief WHILE claude boots
-// (BACKLOG P-9: the lane used to get the owner's rough text verbatim — no done-criterion, no
-// repo facts). The enhancer is additive-only by contract (enhance-prompt.ts): the owner-reviewed
-// intent survives verbatim, it gains the fresh lane's git facts + /sharpen3. Fallback is the
-// raw text — a lane with an unpolished brief beats a task that never runs.
+// the dispatch tail: deliver the brief once claude is up.
+//
+// NO MODEL CALL LIVES HERE ANY MORE, and that is the point. This function used to compile the
+// brief itself — runEnhance on the raw text, in parallel with claude's boot — while the eval gate
+// had already approved the RAW TEXT. So the string that was judged and the string that ran were
+// different, produced by a cheaper model, and nothing compared them. The brief is now compiled and
+// judged together in the analysis sweep and stored on the task; here it is simply sent. What the
+// owner released is byte-for-byte what the lane receives.
+// Fallback stays the raw text: a lane with an unpolished brief beats a task that never runs.
 // `ownerAct` relaxes the AUTOMATION stops (master stop, quiet hours) on the delivery gates: an
 // explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
 // documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
 // shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
-async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string }, ownerAct: boolean,
-  wasStatus: Task["status"], clarify = false): Promise<void> {
-  // clarify mode does NOT compile: the enhancer turns a draft into a work brief with a
-  // done-criterion, and a task that reached this button is precisely one where that cannot be
-  // done yet. Deterministic frame + the raw request, no model call, no failure mode.
-  const briefP = clarify
-    ? Promise.resolve(buildClarifyBrief(next.text, next.eval?.reason ?? null, `http://${HOST}:${PORT}`))
-    : (async () => runEnhance(next.text, wt.path, await briefPayload(free)))()
-      .catch((e: unknown) => { console.log(`dispatch: brief compile failed, sending raw text: ${e instanceof Error ? e.message : e}`); return null; });
+async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string },
+  ownerAct: boolean, clarify = false): Promise<void> {
+  // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
+  // WITH a done-criterion, and a task that reached this button is precisely one where that cannot
+  // be done yet. Deterministic frame + the raw request, no model call, no failure mode.
+  const brief = clarify
+    ? buildClarifyBrief(next.text, next.analysis?.reason ?? null, `http://${HOST}:${PORT}`)
+    : next.brief?.text ?? next.text;
   // let claude finish booting in the fresh pane before the first prompt lands; a brand-new
   // lane is idle by definition, but claude's own startup needs a moment
   await Bun.sleep(4000);
+  // A post-spawn hold is TRANSIENT (dead claude, slot changed mid-boot) — retry-shaped, so the row
+  // goes back to `queued` and the dispatcher picks it up again. Under the advisory-gate design that
+  // is the same destination for both paths: the tick only ever runs tasks the owner released, and
+  // an attended start IS a release. (Deliberately unlike dispatchTask's catch, where the failure is
+  // persistent — a bad repo — and the row goes back to the status it came from instead of looping.)
   const requeue = (note: string): void => {
-    // A post-spawn hold is TRANSIENT (dead claude, slot changed mid-boot) — retry-shaped. An
-    // ATTENDED start therefore requeues to "queued" as it always has (the dispatcher retries;
-    // pinned by claude-gate branch 6b). Only the UNATTENDED path restores the entry status:
-    // a "pending" eval-auto row must retry through the eval disjunct (cap-checked,
-    // attempt-counted), never surface as an owner promote. Deliberately asymmetric with
-    // dispatchTask's catch, where the failure is persistent (bad repo) and even an attended
-    // row goes back where it came from instead of looping through the tick.
-    next.status = ownerAct ? "queued" : wasStatus;
+    next.status = "queued";
     next.note = note;
     saveState();
   };
-  // the owner may have killed/re-opened this slot during the sleep/compile — re-verify it
+  // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
   const identityLost = (): boolean =>
     free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
   const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false } : { idleMs: 0 };
   // fresh claude-alive gate (was synergy-findings.md Tier-0 #2). Requeue on any failure — the
-  // lane exists, the prompt waits. This gate runs BEFORE the compile is awaited: the requeue
-  // decision must never sit behind a model call — a dead claude used to make the task wait out
-  // the whole worker timeout (caught by the claude-gate suite, 2026-08-04). The floating
-  // briefP resolves later and is discarded by its own catch.
+  // lane exists, the prompt waits. With the compile gone there is only ONE gate/send window left
+  // to keep tight; the second round-trip the compile used to need went with it.
   if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
   const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
   if (!boot.ok) { requeue(`dispatch held (${boot.gate}) — requeued`); return; }
-  const brief = (await briefP) ?? next.text;
-  // the compile may have taken a while — re-verify identity and delivery RIGHT before the
-  // injection, so the gate→send window stays as tight as it was before the compile existed
-  if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
-  const post = await canDeliver(free, { now: Date.now(), ...gateOpts });
-  if (!post.ok) { requeue(`dispatch held (${post.gate}) — requeued`); return; }
   try {
     await sendText(free, brief, true);
     logPrompt(free, brief, "auto", Date.now());
@@ -1903,86 +1959,188 @@ async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: 
   }
 }
 
-// --- the eval gate (owner decision 2026-08-05): tasks the machine queues for itself get a
-// critical look BEFORE a lane spawns unattended. One throwaway read-only agent per repo batch
-// judges every un-evaluated pending lane task against the three criteria in eval-prompt.ts.
-// The contract is ② clean-review transplanted to the queue: "auto" is the ONLY positive verdict,
-// everything unclear — including every failure of the worker itself — fails CLOSED to "review",
-// which parks the task on the owner's pile with the why on its row. The sweep only runs while
-// the dispatcher is on: a verdict without a consumer is spend without a purpose.
-const EVAL_CMD = process.env.FLEET_EVAL_CMD ?? null; // tests: subprocess stand-in
-// the judge runs on the interactive tier, not the summary tier (owner decision: "opus5") —
-// this is the one worker whose misjudgment spawns unattended sessions
-const EVAL_MODEL = process.env.FLEET_EVAL_MODEL && MODEL_RE.test(process.env.FLEET_EVAL_MODEL)
-  ? process.env.FLEET_EVAL_MODEL : "claude-opus-5";
-const EVAL_TICK_MS = Math.max(1_000, Number(process.env.FLEET_EVAL_MS ?? 60_000) | 0);
-const EVAL_MAX_AUTO_PER_DAY = Math.max(0, Number(process.env.FLEET_EVAL_MAX_AUTO_PER_DAY ?? 10) | 0);
-const EVAL_BATCH_CAP = 10; // one worker call judges at most this many tasks — a bounded prompt
-let evalAutoDay = { day: "", count: 0 }; // persisted (saveState) — the cap is a per-day valve
-// the owner's LOCAL calendar day, not UTC: "per day" in a per-day valve means what the owner
-// calls a day. With toISOString() the reset fell mid-afternoon west of UTC, so an evening
-// intake burst could span two windows and run up to twice the cap "overnight" (found 2026-08-05).
-const evalDayKey = (): string => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-function evalAutoUnderCap(): boolean {
-  if (evalAutoDay.day !== evalDayKey()) evalAutoDay = { day: evalDayKey(), count: 0 };
-  return evalAutoDay.count < EVAL_MAX_AUTO_PER_DAY;
+// --- the queue analyst (owner decision 2026-08-05, round 2 — it REPLACES the eval gate).
+//
+// What changed and why. The gate ran on `pending` lane tasks and its positive verdict let the
+// dispatcher start one with no owner promote. Measured before this rewrite: it had produced exactly
+// ONE verdict ever, and never a positive one — because its population was empty by construction.
+// Lane tasks have two producers, the owner and /intake; intake is off on the live deployment, the
+// steward files `note`, and a task the owner wants run gets promoted, which bypassed the gate
+// entirely. Its only real subject was the owner's own un-promoted drafts and its only power was
+// starting them behind his back.
+//
+// So the two jobs that had been fused are now separate. The ANALYSIS runs on every dispatchable
+// task in `pending` AND `queued`, and decides nothing. The DECISION is the owner's promote. The
+// consequences, each closing a finding from the audit that prompted this:
+//   · no per-day auto valve, because there is no unattended selection left to meter
+//   · no priority inversion between pending and queued, because they no longer compete for a tick
+//   · what is judged IS what runs: the brief is compiled here, stored, and sent verbatim later
+//   · a worker failure is a TRANSIENT "unknown" with backoff, never a permanent verdict
+//   · the analyst sees the open lanes, so "collides" can mean the running fleet
+const ANALYSIS_CMD = process.env.FLEET_ANALYSIS_CMD ?? null; // tests: subprocess stand-in
+// the analyst runs on the interactive tier, not the summary tier (owner decision: "opus5") — it is
+// the one worker whose reading the owner delegates his own critical look to
+const ANALYSIS_MODEL = process.env.FLEET_ANALYSIS_MODEL && MODEL_RE.test(process.env.FLEET_ANALYSIS_MODEL)
+  ? process.env.FLEET_ANALYSIS_MODEL : "claude-opus-5";
+const ANALYSIS_TICK_MS = Math.max(0, Number(process.env.FLEET_ANALYSIS_MS ?? 60_000) | 0); // 0 = off
+// its OWN timeout, not the summarizer's 180 s. This worker reads files to verify attribution for a
+// whole batch, and under that borrowed cap the honest outcome was a timeout — which the gate then
+// recorded as a permanent verdict for every task in it.
+const ANALYSIS_TIMEOUT_MS = Math.max(60_000, Number(process.env.FLEET_ANALYSIS_TIMEOUT_MS ?? 420_000) | 0);
+const ANALYSIS_BATCH_CAP = 6;   // one call judges at most this many — each carries draft AND brief
+const ANALYSIS_MAX_ATTEMPTS = 3; // consecutive failures before the batch stops retrying itself
+const ANALYSIS_BACKOFF_MS = 60_000; // × 2^attempts — a broken worker must not hammer the machine
+const ANALYSIS_ENHANCE_LIMIT = 3;   // concurrent brief compiles; each is a throwaway claude session
+
+// the fact block for a lane that does not exist yet. Verified, not assumed: createWorktree forks
+// with `worktree add -b <branch> <path> <integration-tip>`, so the lane starts clean AT the tip —
+// 0 ahead, 0 behind, nothing uncommitted, no commits of its own. Which is to say the enhancer's
+// DATA block on the dispatch path was already empty when it ran post-spawn; compiling here costs
+// only the not-yet-existing branch name, and the "concretize from the DATA block" rule could never
+// have used that anyway.
+const freshLaneFacts = (laneBase: string | null): EnhanceFacts => ({
+  branch: null, laneScoped: true, laneBase, ahead: 0, behind: 0,
+  uncommitted: 0, uncommittedFiles: [], files: [], shortstat: "", commits: [], gitOp: false,
+});
+
+async function integrationHead(repo: string): Promise<string | null> {
+  const br = await integrationBranch(repo);
+  if (!br) return null;
+  const r = await git(repo, "rev-parse", br);
+  return r.code === 0 && r.out ? r.out : null;
 }
-let evalBusy = false;
-async function tickEvalSweep(): Promise<void> {
-  if (evalBusy || !dispatchOn || !DISPATCH_REPO) return;
-  evalBusy = true;
+// a task's target repo, canonical, or null when there is none to ground an analysis in
+const taskRepoOf = (t: Task): string | null => {
+  const raw = t.repo ?? (DISPATCH_REPO || null);
+  return raw === null ? null : repoCanon(raw);
+};
+// ONE rule for "this row needs the analyst", so there is one place to read and one place to test:
+// never analysed · answered but the ground moved · or an "unknown" whose backoff has elapsed.
+function analysisDue(t: Task, now: number): boolean {
+  if (t.kind !== "lane" || dispatchingTasks.has(t.id)) return false;
+  if (t.status !== "pending" && t.status !== "queued") return false;
+  const a = t.analysis;
+  if (!a) return true;
+  if (a.verdict === "unknown")
+    return a.attempts < ANALYSIS_MAX_ATTEMPTS && now - a.at >= ANALYSIS_BACKOFF_MS * 2 ** a.attempts;
+  return analysisStale(t);
+}
+let analysisBusy = false;
+async function tickAnalysisSweep(): Promise<void> {
+  if (analysisBusy || !ANALYSIS_TICK_MS) return;
+  analysisBusy = true;
   try {
-    const pool = tasks.filter((t) => t.status === "pending" && t.kind === "lane" && !t.eval && !dispatchingTasks.has(t.id));
-    if (!pool.length) return;
+    const live = tasks.filter((t) => t.kind === "lane" && (t.status === "pending" || t.status === "queued"));
+    if (!live.length) return;
+    // refresh the tips FIRST, before anything asks what is stale. Staleness that only a sweep can
+    // notice, computed from a cache only that same sweep updates, is staleness nobody ever notices.
+    for (const repo of new Set(live.map(taskRepoOf).filter((r): r is string => r !== null))) {
+      const head = await integrationHead(repo);
+      if (head) integrationTips.set(repo, head);
+    }
+    const now = Date.now();
+    // RELEASED ROWS FIRST. Every land moves the tip and makes every verdict stale at once, so a
+    // busy afternoon can hand this sweep more work than one batch holds. What actually needs to be
+    // fresh is what is about to RUN — a backlog row's verdict only has to be fresh by the time the
+    // owner looks at it. Without this the queue could sit behind a re-read of rows nobody released.
+    const due = live.filter((t) => analysisDue(t, now) && taskRepoOf(t) !== null)
+      .sort((a, b) => (a.status === "queued" ? 0 : 1) - (b.status === "queued" ? 0 : 1));
+    if (!due.length) return;
     // one repo batch per tick, serial like the dispatcher — bounded fan-out, bounded prompt
-    const repo = resolve(expandCwd(pool[0].repo ?? DISPATCH_REPO));
-    const batch = pool.filter((t) => resolve(expandCwd(t.repo ?? DISPATCH_REPO)) === repo).slice(0, EVAL_BATCH_CAP);
-    // reason cap 2000, NOT 200: the first live verdict opened with its supporting findings and
-    // the 200-char cap beheaded the decisive "— but …" clause, leaving a review verdict whose
-    // visible reason argued for auto (owner caught it within the hour). The 2 s poll stays
-    // bounded because taskDigest slices its own copy; THIS is the stored truth.
-    const stamp = (verdict: "auto" | "review", reason: string): void => {
-      for (const t of batch) if (!t.eval) t.eval = { verdict, reason: reason.slice(0, 2000), at: Date.now(), model: EVAL_MODEL };
+    const repo = taskRepoOf(due[0])!;
+    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, ANALYSIS_BATCH_CAP);
+    // an "unknown" verdict, NOT a judgement: the batch could not be read, and that must never be
+    // storable as a finding about the work. reason cap 2000, not 200 — a 200-char cap once beheaded
+    // a verdict's decisive "— but …" clause and left it arguing for its own opposite.
+    const unknown = (reason: string): void => {
+      for (const t of batch)
+        t.analysis = {
+          verdict: "unknown", reason: reason.slice(0, 2000), blockers: [], collides: [],
+          at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
+          briefAt: t.brief?.at ?? null, attempts: (t.analysis?.attempts ?? 0) + 1,
+        };
+      saveState();
     };
-    if (!existsSync(repo) || !statSync(repo).isDirectory()) { stamp("review", `eval: repo not found: ${repo}`); saveState(); return; }
-    let verdicts: Map<string, { verdict: "auto" | "review"; reason: string }>;
+    if (!existsSync(repo) || !statSync(repo).isDirectory()) { unknown(`repo not found: ${repo}`); return; }
+
+    // --- compile the missing briefs. Once per draft, never again: the brief depends on the draft,
+    // not on the tree, so a re-analysis after a land must not re-spend a worker per task. An
+    // owner-edited brief is pinned forever (`edited`), which is what makes editing it meaningful.
+    const laneBase = await integrationBranch(repo);
+    const toCompile = batch.filter((t) => !t.brief);
+    for (let i = 0; i < toCompile.length; i += ANALYSIS_ENHANCE_LIMIT) {
+      await Promise.all(toCompile.slice(i, i + ANALYSIS_ENHANCE_LIMIT).map(async (t) => {
+        try {
+          const text = await runEnhance(t.text, repo, freshLaneFacts(laneBase));
+          t.brief = { text, at: Date.now(), model: SUMMARY_MODEL, edited: false };
+        } catch (e) {
+          // no brief is a legitimate state — the lane gets the raw draft, and the analyst is told
+          // to judge THAT as the brief. A failed compile must not stall the analysis behind it.
+          console.log(`analysis: brief compile failed for ${t.id}, judging the draft: ${e instanceof Error ? e.message : e}`);
+        }
+      }));
+    }
+    saveState(); // briefs survive even if the analyst below then fails — they cost a worker each
+
+    // --- the open lanes in this repo, so a collision can mean the running fleet and not merely
+    // the other rows of this batch
+    const lanes = slots.filter((s) => s.cwd && s.worktree && inRepo(s, repo)).map((s) => ({
+      branch: s.worktree!.branch,
+      task: tasks.find((x) => x.slot === s.id && x.status === "sent")?.text ?? null,
+    }));
+
+    let found: Map<string, { verdict: "ready" | "needs-you"; reason: string; blockers: AnalysisBlocker[]; collides: string[] }>;
     try {
-      const out = await runWorker({ worker: "evalGate", cmd: EVAL_CMD, tools: REVIEW_TOOLS, model: EVAL_MODEL },
-        buildEvalPrompt(repo, batch.map((t) => ({ id: t.id, source: t.source, text: t.text }))), repo);
+      const out = await runWorker(
+        { worker: "analysis", cmd: ANALYSIS_CMD, tools: REVIEW_TOOLS, model: ANALYSIS_MODEL, timeoutMs: ANALYSIS_TIMEOUT_MS },
+        buildAnalysisPrompt(repo, batch.map((t) => ({
+          id: t.id, source: t.source, text: t.text, brief: t.brief?.text ?? null,
+        })), lanes), repo);
       const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-      let j: { verdicts?: unknown };
-      try { j = JSON.parse(body) as { verdicts?: unknown }; }
+      let j: { analyses?: unknown };
+      try { j = JSON.parse(body) as { analyses?: unknown }; }
       catch {
         const obj = extractJsonObject(out); // same rescue as runEnhance: a wrapped answer is not a failed one
-        if (!obj) throw new Error("evaluator returned no JSON");
-        j = JSON.parse(obj) as { verdicts?: unknown };
+        if (!obj) throw new Error("analyst returned no JSON");
+        j = JSON.parse(obj) as { analyses?: unknown };
       }
-      if (!Array.isArray(j.verdicts)) throw new Error("evaluator returned no verdicts array");
-      verdicts = new Map();
-      for (const v of j.verdicts as { id?: unknown; verdict?: unknown; reason?: unknown }[]) {
-        if (typeof v?.id === "string" && (v.verdict === "auto" || v.verdict === "review"))
-          verdicts.set(v.id, { verdict: v.verdict, reason: typeof v.reason === "string" ? v.reason : "" });
+      if (!Array.isArray(j.analyses)) throw new Error("analyst returned no analyses array");
+      found = new Map();
+      const strList = (x: unknown, cap: number): string[] => Array.isArray(x)
+        ? x.filter((e): e is string => typeof e === "string").slice(0, cap).map((e) => e.slice(0, 200)) : [];
+      for (const v of j.analyses as { id?: unknown; verdict?: unknown; reason?: unknown; blockers?: unknown; collides?: unknown }[]) {
+        if (typeof v?.id !== "string" || (v.verdict !== "ready" && v.verdict !== "needs-you")) continue;
+        found.set(v.id, {
+          verdict: v.verdict,
+          reason: typeof v.reason === "string" ? v.reason : "",
+          // clamp to the closed set — a blocker is a row tag, and an invented one paints nothing
+          blockers: strList(v.blockers, 8).filter((b): b is AnalysisBlocker => (ANALYSIS_BLOCKERS as readonly string[]).includes(b)),
+          collides: strList(v.collides, 8),
+        });
       }
     } catch (e) {
-      // the ② fail direction: an errored/timed-out/off-contract worker parks the WHOLE batch for
-      // the owner — visibly, with the why — never leaves it retryable into an unattended spend
-      // loop, and never lets absence read as a pass.
-      stamp("review", `eval worker failed: ${e instanceof Error ? e.message : e}`);
-      saveState();
+      // TRANSIENT, and that is the whole difference to the gate this replaces: the batch is marked
+      // unreadable, the attempt counter ticks, and the backoff lets it try again. Only after
+      // ANALYSIS_MAX_ATTEMPTS does it stop — still visibly "unknown", never a verdict about work
+      // nobody managed to read.
+      unknown(`analyst failed: ${e instanceof Error ? e.message : e}`);
       return;
     }
     for (const t of batch) {
-      const v = verdicts.get(t.id);
-      t.eval = v?.verdict === "auto"
-        ? { verdict: "auto", reason: (v.reason || "passed").slice(0, 2000), at: Date.now(), model: EVAL_MODEL }
-        : { verdict: "review", reason: (v ? v.reason || "flagged for review" : "eval returned no verdict for this task").slice(0, 2000), at: Date.now(), model: EVAL_MODEL };
+      const v = found.get(t.id);
+      t.analysis = v
+        ? { ...v, reason: (v.reason || (v.verdict === "ready" ? "no blockers found" : "flagged")).slice(0, 2000),
+          at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
+          briefAt: t.brief?.at ?? null, attempts: 0 }
+        // answered, but not about this row: an absent entry is an absent reading, so it takes the
+        // same "unknown" shape as a dead worker rather than quietly reading as either verdict
+        : { verdict: "unknown", reason: "the analyst returned no entry for this task", blockers: [], collides: [],
+          at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
+          briefAt: t.brief?.at ?? null, attempts: (t.analysis?.attempts ?? 0) + 1 };
     }
     saveState();
   } finally {
-    evalBusy = false;
+    analysisBusy = false;
   }
 }
 
@@ -1992,8 +2150,8 @@ async function tickEvalSweep(): Promise<void> {
 // in v1: no tick calls this, the owner's button does, and the result is a PROPOSAL on the row.
 // The task itself is never rewritten by the worker; only the owner's confirm mints anything.
 const REFINE_CMD = process.env.FLEET_REFINE_CMD ?? null; // tests: subprocess stand-in
-// the compiler runs on the interactive tier like the eval gate, and for the same reason: it reads
-// a repository and writes the text a fresh session will be founded on
+// the compiler runs on the interactive tier like the queue analyst, and for the same reason: it
+// reads a repository and writes the text a fresh session will be founded on
 const REFINE_MODEL = process.env.FLEET_REFINE_MODEL && MODEL_RE.test(process.env.FLEET_REFINE_MODEL)
   ? process.env.FLEET_REFINE_MODEL : "claude-opus-5";
 // refines currently running, by task id. Keyed on the task rather than a slot (there is no slot —
@@ -2003,9 +2161,11 @@ const refineInflight = new Map<string, Promise<void>>();
 
 const clampStr = (v: unknown, max: number): string => (typeof v === "string" ? v : "").slice(0, max).trim();
 // The row text the owner actually promotes, composed from the child's fields in a fixed order.
-// Deterministic on purpose: the dispatcher's own enhancer runs over this text later (additive-only
-// by contract), the eval gate reads it, and a person reads it in the queue — all three benefit more
-// from one predictable shape than from whatever layout the model felt like emitting.
+// Deterministic on purpose: it becomes the DRAFT of a fresh row, so the analysis sweep compiles a
+// brief from it and the analyst then judges both against the repo — and a person reads it in the
+// queue. All of them benefit more from one predictable shape than from whatever layout the model
+// felt like emitting. (A refined child arrives with no brief and no verdict, which is exactly
+// right: the sweep's uniform rule is "never analysed → analyse", and it applies here unchanged.)
 function refineChildText(c: RefineChild): string {
   return [
     c.text,
@@ -2090,27 +2250,26 @@ async function runRefineJob(t: Task, repo: string): Promise<void> {
   saveState();
 }
 
-// idle-lane dispatcher: when ON and a lane budget is free, pull the oldest queued task,
-// spawn a fresh worktree lane from DISPATCH_REPO, and send the task text into it once
-// claude is actually up. Serial by design — one lane per tick — so a burst of intake email
-// can never fan out into a machine full of unattended sessions.
+// idle-lane dispatcher: when ON and a lane budget is free, pull the oldest task the OWNER released,
+// spawn a fresh worktree lane from DISPATCH_REPO, and send its brief once claude is actually up.
+// Serial by design — one lane per tick — so a burst of releases can never fan out into a machine
+// full of unattended sessions.
+//
+// It runs `queued` and nothing else. That is the answer to "may the machine choose its own work":
+// no. It may work unattended, on what you released, which is a different question and the one the
+// owner actually wanted answered yes.
 let dispatchBusy = false;
 async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !dispatchOn || !DISPATCH_REPO) return;
   dispatchBusy = true;
   try {
     // notes are never dispatchable (Task.kind) — skipping them here also shields legacy
-    // fleet.json rows queued before the field existed. Two ways in: the owner's promote
-    // (queued), or the eval gate's positive verdict on a PENDING task (owner decision
-    // 2026-08-05) — bounded by the per-day cap; "review" and un-evaluated rows are never touched.
-    const next = tasks.find((t) => t.kind === "lane" && !dispatchingTasks.has(t.id)
-      && (t.status === "queued"
-        || (t.status === "pending" && t.eval?.verdict === "auto" && evalAutoUnderCap())));
+    // fleet.json rows queued before the field existed.
+    const next = tasks.find((t) => t.kind === "lane" && t.status === "queued" && !dispatchingTasks.has(t.id));
     if (!next) return;
-    const viaEval = next.status === "pending";
-    // a queued task that cannot run RIGHT NOW says why on its own row instead of sitting
-    // silent until the owner digs (the stalled-queue finding, 2026-08-04). Written only on
-    // change, so the 8 s tick doesn't churn saveState.
+    // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
+    // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
+    // 8 s tick doesn't churn saveState.
     const waiting = (note: string): void => {
       if (next.note !== note) { next.note = note; saveState(); }
     };
@@ -2122,22 +2281,29 @@ async function tickDispatch(): Promise<void> {
     if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); return; }
     const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
     if (!free) { waiting("waiting: no free slot"); return; }
-    // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned or the task is
-    // consumed (was synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet
-    // fleet leaves the task queued for the next eligible tick. No idle/alive gate: the target lane
-    // does not exist yet.
+    // THE UNATTENDED INVARIANT: nothing starts on its own that has not been read against the tree
+    // it will actually run on, with the exact brief it will receive. `analysisStale` covers both —
+    // a moved integration tip and a brief the owner edited after the verdict. Fresh here means
+    // fresh NOW: the tip is re-read rather than taken from integrationTips, because a cache that
+    // lags by one land is exactly the cache that would green-light the case this guards.
+    // ...but only while there IS an analyst. With FLEET_ANALYSIS_MS=0 nobody would ever clear this
+    // gate, and a released queue that silently never drains is worse than an unread one: the guard
+    // would have become a deadlock dressed as a safety property. No reader configured, no read
+    // required — the same stance as an absent FLEET_VERIFY_CMD, which does not gate either.
+    if (ANALYSIS_TICK_MS) {
+      const a = next.analysis;
+      if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
+      const tip = await integrationHead(repoCanon(repo));
+      if (tip) integrationTips.set(repoCanon(repo), tip);
+      if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
+    }
+    // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned (was
+    // synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet fleet leaves
+    // the task queued for the next eligible tick. No idle/alive gate: the target lane does not
+    // exist yet.
     const pre = await canDeliver(free, { now: Date.now(), alive: false });
     if (!pre.ok) return; // task stays queued
-    // count the ATTEMPT before the spawn, not the success after it: the old placement skipped
-    // the counter exactly when the spawn failed — and the failed row then retried unmetered.
-    // A flaky spawn now spends the day valve visibly instead of looping for free; the cap is
-    // a valve, and this valve errs closed.
-    if (viaEval) { evalAutoDay.count++; saveState(); }
     const r = await dispatchTask(next, free, false);
-    if (r.ok && viaEval) {
-      next.note = `auto-dispatched: eval gate passed — ${next.eval?.reason ?? ""}`.slice(0, 200);
-      saveState();
-    }
     if (r.ok) await r.tail;
   } finally {
     dispatchBusy = false;
@@ -5972,10 +6138,25 @@ if (existsSync(STATE_FILE)) {
         .map((t) => ({ ...t,
           kind: t.kind === "lane" || t.kind === "note" ? t.kind : (t.source === "steward" ? "note" as const : "lane" as const),
           repo: typeof t.repo === "string" ? t.repo : null,
-          // a hand-edited state file must not smuggle an "auto" verdict shape the sweep never
-          // wrote — anything malformed degrades to "not yet evaluated", never to a pass
-          eval: t.eval && (t.eval.verdict === "auto" || t.eval.verdict === "review") && typeof t.eval.reason === "string"
-            ? { verdict: t.eval.verdict, reason: t.eval.reason.slice(0, 2000), at: Number(t.eval.at) || 0, model: typeof t.eval.model === "string" ? t.eval.model : "" }
+          // a hand-edited state file must not smuggle a "ready" verdict the sweep never wrote —
+          // anything malformed degrades to "not yet analysed", never to a pass. The predecessor
+          // field (`eval`, verdicts "auto"/"review") is deliberately NOT migrated: its criteria
+          // were judged against the raw draft under a different contract, and re-deriving costs
+          // one sweep. Dropping it is how the rewrite avoids inheriting a claim it cannot honour.
+          brief: t.brief && typeof t.brief.text === "string" && t.brief.text
+            ? { text: t.brief.text.slice(0, MAX_TASK_TEXT), at: Number(t.brief.at) || 0,
+              model: typeof t.brief.model === "string" ? t.brief.model : "", edited: t.brief.edited === true }
+            : undefined,
+          analysis: t.analysis && ["ready", "needs-you", "unknown"].includes(t.analysis.verdict)
+            && typeof t.analysis.reason === "string"
+            ? { verdict: t.analysis.verdict, reason: t.analysis.reason.slice(0, 2000),
+              blockers: Array.isArray(t.analysis.blockers)
+                ? t.analysis.blockers.filter((b): b is AnalysisBlocker => (ANALYSIS_BLOCKERS as readonly string[]).includes(b)) : [],
+              collides: Array.isArray(t.analysis.collides)
+                ? t.analysis.collides.filter((c): c is string => typeof c === "string").slice(0, 8) : [],
+              at: Number(t.analysis.at) || 0, model: typeof t.analysis.model === "string" ? t.analysis.model : "",
+              head: typeof t.analysis.head === "string" ? t.analysis.head : null,
+              briefAt: Number(t.analysis.briefAt) || null, attempts: Number(t.analysis.attempts) || 0 }
             : undefined,
           // a malformed criterion degrades to "none proposed", never to a confirmed one — the
           // confirmation is an owner act and must not be forgeable by editing the state file
@@ -6023,8 +6204,6 @@ if (existsSync(STATE_FILE)) {
         if (typeof k === "string" && typeof v === "string" && v) repoBases[k] = v;
     if (typeof (persisted as { dispatch?: unknown }).dispatch === "boolean")
       dispatchOn = (persisted as { dispatch: boolean }).dispatch;
-    const pea = (persisted as { evalAuto?: { day?: unknown; count?: unknown } }).evalAuto;
-    if (pea && typeof pea.day === "string") evalAutoDay = { day: pea.day, count: Number(pea.count) || 0 };
     if (typeof (persisted as { autosOn?: unknown }).autosOn === "boolean")
       autosOn = (persisted as { autosOn: boolean }).autosOn;
     const qh = (persisted as { quietHours?: unknown }).quietHours;
@@ -6231,7 +6410,9 @@ setInterval(() => void tickAutos().catch(() => {}), 5000);
 setInterval(() => void tickGit().catch(() => {}), 10_000);
 void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch(() => {}), 8000);
-setInterval(() => void tickEvalSweep().catch(() => {}), EVAL_TICK_MS);
+// FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
+// harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
+if (ANALYSIS_TICK_MS) setInterval(() => void tickAnalysisSweep().catch(() => {}), ANALYSIS_TICK_MS);
 setInterval(() => void tickHarvest().catch(() => {}), 5000);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch(() => {}), AUTO_REVIEW_MS);
@@ -8671,16 +8852,21 @@ Bun.serve<WSData>({
       audit("task_dispatch", r.slot, clarify ? `${t.id} clarify` : t.id);
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify });
     }
-    // clear a verdict so the sweep judges the task afresh — the one exception to "a verdict is
-    // final", and it is an explicit owner act. Only meaningful while the task is still pending:
-    // everywhere else the verdict is history, not a gate input.
-    const taskEvalReset = /^\/api\/tasks\/([a-z0-9]+)\/eval-reset$/.exec(url.pathname);
-    if (req.method === "POST" && taskEvalReset) {
-      const t = tasks.find((x) => x.id === taskEvalReset[1]);
+    // re-read this task from scratch: drop the verdict so the next sweep judges it again. An
+    // explicit owner act, and the only way to force one — the sweep's own rule (never analysed,
+    // ground moved, or an unknown whose backoff elapsed) deliberately does not re-run a verdict
+    // just because someone is unhappy with it.
+    const taskReanalyse = /^\/api\/tasks\/([a-z0-9]+)\/reanalyse$/.exec(url.pathname);
+    if (req.method === "POST" && taskReanalyse) {
+      const t = tasks.find((x) => x.id === taskReanalyse[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      if (!t.eval) return json({ error: "no verdict to reset" }, 409);
-      if (t.status !== "pending") return json({ error: `task is ${t.status} — a verdict only gates a pending task` }, 409);
-      t.eval = undefined;
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
+      if (t.kind === "note") return json({ error: "a note is an observation, not a work brief — nothing to analyse" }, 409);
+      t.analysis = undefined;
+      // an un-edited brief goes too: "analyse this again" means the whole reading, and a brief the
+      // owner never touched is the analyst's own output, not an input worth preserving.
+      if (t.brief && !t.brief.edited) t.brief = undefined;
       saveState();
       return json({ ok: true });
     }
@@ -8735,9 +8921,11 @@ Bun.serve<WSData>({
       const kids: Task[] = proposal.tasks.map((c) => ({
         id: randomBytes(4).toString("hex"), text: refineChildText(c),
         // source "owner": the owner is confirming this text, whatever the original row came in as.
-        // NO `eval` — the children go through the sweep fresh, which is what keeps "a verdict is
-        // final" true: inheriting the parent's would carry a judgment about a text that no longer
-        // exists. `repo` rides along, or the split would silently retarget the dispatcher default.
+        // NO `brief` and NO `analysis` — a child is a NEW draft, so it must reach the sweep as one:
+        // inheriting either would carry a compile and a judgment about a text that no longer exists.
+        // `repo` rides along, or the split would silently retarget the dispatcher default. Note the
+        // children land as `pending`, never `queued`: refining proposes work, releasing it stays a
+        // separate owner act, and confirming a split must not smuggle four rows past that boundary.
         source: "owner", from: null, kind: "lane", repo: t.repo,
         status: "pending", created: now, slot: null, note: null,
       }));
@@ -8750,6 +8938,25 @@ Bun.serve<WSData>({
       saveState();
       audit("task_refine_confirm", undefined, `${t.id} → ${kids.map((k) => k.id).join(",")}`);
       return json({ ok: true, tasks: kids.map(taskDigest) });
+    }
+    // the brief is the one model output the owner may overwrite, and that is the point of storing
+    // it: it is the exact text a lane will receive, so being able to read it before the fact is
+    // worth little unless you can also fix it. An edited brief is PINNED (`edited`) — the sweep
+    // never recompiles over it — and it invalidates the analysis, because the verdict was about
+    // the other string.
+    const taskBrief = /^\/api\/tasks\/([a-z0-9]+)\/brief$/.exec(url.pathname);
+    if (req.method === "POST" && taskBrief) {
+      const t = tasks.find((x) => x.id === taskBrief[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (t.kind === "note") return json({ error: "a note is never sent to a lane — it has no brief" }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — its brief has already been sent` }, 409);
+      const body = await readJson(req);
+      const text = typeof body?.text === "string" ? body.text.slice(0, MAX_TASK_TEXT).trim() : "";
+      if (!text) return json({ error: "bad text" }, 400);
+      t.brief = { text, at: Date.now(), model: "owner", edited: true };
+      saveState();
+      return json({ ok: true, brief: t.brief });
     }
     // the owner's half of the propose/promote pair: confirming makes the criterion THEIRS, which
     // is the whole reason a lane may draft one. Releases the lane's wait in the same act — the
@@ -8772,7 +8979,7 @@ Bun.serve<WSData>({
       audit("criterion_confirmed", t.slot ?? undefined, t.id);
       return json({ ok: true, criterion: t.criterion });
     }
-    const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive)$/.exec(url.pathname);
+    const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive|adopt)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
       if (!t) return json({ error: "unknown task" }, 404);
@@ -8790,16 +8997,46 @@ Bun.serve<WSData>({
       // promoted-then-deleted task can never double-count. Read the class BEFORE mutating status.
       // archive mirrors delete for the measurement channel: shelving a PENDING proposal IS a
       // dismissal — without this, archive would be a silent second path around the channel
+      // `adopt` joins the channel on the "helped" side: it is now the act a steward NOTE receives
+      // when the owner agrees with it, exactly where `queue` used to sit for notes.
       const proposeOutcome: "helped" | "dismissed" | null =
         t.source === "steward" && t.status === "pending"
-          ? (taskAct[2] === "queue" ? "helped"
+          ? (taskAct[2] === "queue" || taskAct[2] === "adopt" ? "helped"
             : taskAct[2] === "delete" || taskAct[2] === "archive" ? "dismissed" : null)
           : null;
-      if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
-      // promoting a NOTE stays legal (it is the propose-outcome "helped" signal) but the
-      // dispatcher will skip it — say so on the row at promote time, loudly and permanently,
-      // instead of letting it sit "queued" with no visible reason it never runs
-      else if (taskAct[2] === "queue") { t.status = "queued"; t.note = t.kind === "note" ? "note — the dispatcher never runs this" : null; }
+      // ...and the KIND with it, for the same reason the comment above gives for the class:
+      // `adopt` rewrites note→lane, so reading it at journal-write time would record every adopted
+      // observation as having been a brief all along — erasing exactly the distinction the channel
+      // exists to measure.
+      const outcomeKind = t.kind;
+      // A NOTE IS NOT WORK (owner ask 2026-08-05): an observation must not be releasable as if it
+      // were a brief. Promoting one used to be legal and produced a `queued` row that no tick would
+      // ever run, carrying a note explaining its own inertness — a contradiction sitting in the
+      // release lane. Adopting is the honest move: it converts the observation into a work brief,
+      // back at `pending`, where the analyst reads it and the owner still has to release it. The
+      // conversion is the owner's, which keeps the steward from ever authoring runnable work.
+      if (taskAct[2] === "adopt") {
+        if (t.kind !== "note") return json({ error: "already a work brief — nothing to adopt" }, 409);
+        if (t.status !== "pending") return json({ error: `task is ${t.status} — only a pending note can be adopted` }, 409);
+        t.kind = "lane";
+        t.note = "adopted from an observation — analysed like any brief, still yours to release";
+      } else if (taskAct[2] === "queue" && t.kind === "note") {
+        return json({ error: "a note is an observation, not a work brief — adopt it first" }, 409);
+      } else if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
+      else if (taskAct[2] === "queue") {
+        // RELEASING IS THE DECISION, and when it contradicts the analyst it is an override that
+        // must leave a trace. Before this, promoting a flagged task was indistinguishable from
+        // promoting a clean one — so the analyst could never be calibrated against what the owner
+        // actually did with it. The note is not a warning, it is a record.
+        // "needs-you" ONLY, never "unknown": an unread task carries no objection to overrule, and
+        // booking one as an override would both mis-record the owner's act and — because the note
+        // is written here — overwrite the dispatcher's "waiting: not analysed yet" with a sentence
+        // claiming a verdict that was never reached. (Caught by e2e (h6), which asserted the wait.)
+        const over = t.analysis?.verdict === "needs-you";
+        t.status = "queued";
+        t.note = over ? `released over the analyst's "${t.analysis!.verdict}" — ${t.analysis!.reason}`.slice(0, 200) : null;
+        if (over) audit("task_override", undefined, `${t.id}:${t.analysis!.verdict}`);
+      }
       else if (taskAct[2] === "unqueue") t.status = "pending";
       else if (taskAct[2] === "archive") t.status = "archived";
       else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
@@ -8813,7 +9050,7 @@ Bun.serve<WSData>({
         // trade-off: enough to calibrate the filing threshold against, not an archive of texts
         // the owner chose to discard.
         writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome,
-          taskKind: t.kind, ...(t.ref ? { slug: t.ref } : {}), text: t.text.slice(0, 200) });
+          taskKind: outcomeKind, ...(t.ref ? { slug: t.ref } : {}), text: t.text.slice(0, 200) });
         audit("steward_propose_outcome", stewardSlot()?.id, `${t.id}:${proposeOutcome}`);
       }
       saveState();

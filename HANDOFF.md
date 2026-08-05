@@ -1,10 +1,72 @@
-# HANDOFF — Session 26 (2026-08-05: der Resolver sieht beide Seiten) · 25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 27 (2026-08-05: der Sweep und seine Schnittlinie) · 26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
 
 ---
+
+## Session 27 (2026-08-05): der Issue-/Lücken-Sweep, und was oberhalb der Schnittlinie gebaut wurde
+
+Owner-Auftrag wörtlich: *„wir haben jetzt echt viel Arbeit geleistet in den letzten Sessions,
+und deswegen sollten wir das ganze jetzt nochmal analysieren, nach issues und lücken suchen
+und dann verbessern."* Methode: sechs parallele Read-only-Reviews (Merge/Resolver, Eval/
+Dispatcher, Self-Routen/Clarify, Steward, Docs-Währung, Client/Terminal), jeden tragenden
+Befund selbst am Code nachvollzogen, Rangliste mit Schnittlinie, dann acht Commits
+(`3a02e8d`..`964b5c2` + Nachfix). Mechanismen in den Bodies; hier nur das Residuum.
+
+### Der eine systemische Befund, falls du nur eine Zeile liest
+
+**`defuseDelimiters` existierte und wurde in genau einem von ~sechs Fence-Buildern angewandt.**
+Drei unabhängige Reviews konvergierten am selben Tag darauf — am schärfsten beim Eval-Richter
+(der einzige Riegel zwischen Intake-Text und unbeaufsichtigtem Spawn; ein Fence-Break sprach
+für den ganzen Batch). Jetzt geteilt in `src/protocol.ts`, überall angewandt, adversarial
+gepinnt. Der alte Eval-Check fütterte nur harmlosen Text und **pinnte die verwundbare Form
+als korrekt** — ein Check, der seine Klasse nie fangen musste, dokumentiert nur Hoffnung
+(dasselbe galt für den Motion-Regex: Kommentar versprach `H/f`, Klasse hatte kein `f`).
+
+### Ein Regress von mir, vom Gate gefangen — und die Semantik dahinter
+
+Der Entry-Status-Restore (Eval-Cap-Fix, `88a7da7`) war zu breit: claude-gate 6b fiel, weil ein
+**attended** Start nach totem claude jetzt zu `pending` statt `queued` requeued hätte.
+Korrigiert auf die präzise Regel: **transienter Post-Spawn-Fail = Retry-förmig** (`queued` bei
+Owner-Akt, Entry-Status nur unattended — schützt die Eval-Identität), **persistenter
+Spawn-Fehler = zurück an den Ursprung** (auch attended; sonst loopt eine kaputte Repo-Task
+durch den Tick). Die Asymmetrie ist Absicht und im Code begründet.
+
+### Unterhalb der Schnittlinie — geflaggt, NICHT gebaut (Owner-Entscheid oder eigene Scheibe)
+
+1. **Land-Serialisierung pro Repo** (zwei zeitgleiche ⏫: Crash-Fenster kann Provenienz/Undo
+   des Verlierers verlieren; Normalfall nur roher ff-Fehler). Eingriff in den Land-Kern.
+2. **`awaiting-author` ohne Versuchszähler/erzwingbaren Fallback** — kann still zur Gummiwand
+   werden; die Form (Owner-Knopf „diesmal der Worker"?) ist Owner-Sache.
+3. `resolvedBy:"author"`-Fehlattribution im Randfall (Konflikt verschwindet, weil main
+   zurücknimmt) · Self-Routen drift/gate/criterion ohne Rate-Limit (capRecent existiert) ·
+   `verify.cmd` wird Lanes wörtlich serviert (nie ein Secret hineinschreiben!) · Send-Belt
+   accept/release und propose-outcome-Anreicherung ungepinnt · Steward-Dedup verwirft frischen
+   Text ohne lastSeen · Journal-Ack vor Durability (dokumentierter Kontrakt).
+
+### Governance-Lücken (die größten „Lücken" im Wortsinn, beide unentschieden)
+
+- **2 von ~30 Commits seit `14dafdc` tragen eine Provenienz-Note** — Direkt-auf-main ist der
+  Normalfall geworden, die ganze Land-Buchhaltung (Notes, Outcome-Rows, Tier-2, undo) greift
+  nur für Lane-Lands. Blessen (Minimal-Buchhaltung für Direkt-Commits) oder Lanes erzwingen?
+- **12 von 33 Tier-2-Audits sind rot, keiner trägt eine Adjudikation** — Alarm+Ack existieren,
+  aber ob ein Rot als Flake bewiesen oder nie angesehen wurde, steht nirgends maschinenlesbar.
+
+### Stehende offene Fäden (unverändert, nur gesammelt)
+
+Terminal-Task `2e9ed996` zu ⅔ offen · **Enhance-Job = vom Owner benannter Erstauftrag** (Session
+25, unangetastet) · Auto-Land-Entscheid (Bedingung „echte Läufe ansehen" ist erfüllt) ·
+Gast-Container nie mit echter Claude-Session bewiesen · `recordLand` ohne `repo`/`mainAfter`
+auf der Row (Session 16).
+
+### Verifikation dieser Session
+
+Volle Kette seriell auf dem finalen Baum: pins + tsc + build grün, clean-review / security /
+claude-gate / isolated je ALL PASS (claude-gate nach dem Nachfix erneut, die anderen drei
+danach seriell erneut — 0 FAIL). `e2e-postland-audit.sh` bewusst nicht gefahren (kein
+Tier-2-Pfad angefasst). Deploy + Health-Check am Sessionende, siehe state.sh.
 
 ## Session 26 (2026-08-05, parallel zum Steward-/Eval-Strang): der Resolver sieht beide Seiten
 

@@ -9,6 +9,7 @@ import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-sign
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildEvalPrompt } from "./eval-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
+import { buildRefinePrompt } from "./refine-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
@@ -187,10 +188,27 @@ interface Task {
   // dispatcher consume a PENDING lane task without an owner promote; "review" routes it to the
   // owner's pile and the dispatcher never touches it. Absent = not yet evaluated. Written only
   // by tickEvalSweep; the ② contract transplanted to the queue — downgrade-only, fail-closed.
+  refine?: TaskRefine; // the brief compiler's PROPOSAL (briefs/task-refine.md). A refine run never
+  // touches this row's text — it only parks what it would become here, and the owner's confirm is
+  // what mints the children. Propose/promote like `criterion`, for the same reason: the producer
+  // must not be the one who rewrites the work order it was measured against.
 }
 interface TaskEval { verdict: "auto" | "review"; reason: string; at: number; model: string }
 interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
 const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
+// One compiled child. `text` is the request in its own words; the other three are what a hand-
+// written brief carries and a raw task usually does not. They are stored SEPARATELY rather than
+// pre-joined so the proposal stays reviewable field by field in the queue detail — the row text
+// the owner promotes is composed from them deterministically (refineChildText).
+interface RefineChild { text: string; doneCriterion: string; verify: string; files: string[] }
+// The two answer shapes, as a discriminated union: either the task was already brief-shaped
+// (triage — the anti-overthink clause) or it compiles into 1..MAX_REFINE_CHILDREN children.
+type RefineProposal = { unchanged: true; reason: string } | { unchanged: false; tasks: RefineChild[] };
+interface TaskRefine { at: number; model: string; proposal: RefineProposal }
+const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's judgment: an answer
+// over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
+const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
+const MAX_REFINE_FILES = 20;
 
 interface Slot {
   id: number;
@@ -292,7 +310,12 @@ const MAX_TASK_TEXT = 20_000;
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "eval">>
   // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
-  & { criterion?: { proposedAt: number; confirmedAt: number | null } };
+  & { criterion?: { proposedAt: number; confirmedAt: number | null } }
+  // same two-tier rule for the refine proposal: the poll says THAT one exists, how it turned out
+  // and how many children it holds — the texts ride GET /api/tasks with everything else.
+  // `refining` is derived from the in-flight map, never persisted: it is a fact about this
+  // process, and a restart mid-run must not leave a row claiming a worker that no longer exists.
+  & { refine?: { at: number; unchanged: boolean; count: number }; refining?: true };
 function taskDigest(t: Task): TaskDigest {
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
@@ -307,6 +330,9 @@ function taskDigest(t: Task): TaskDigest {
     // same two-tier rule as `eval`: the poll carries only whether a criterion exists and whether
     // it is confirmed — the text itself rides GET /api/tasks, which the queue overlay fetches
     ...(t.criterion ? { criterion: { proposedAt: t.criterion.proposedAt, confirmedAt: t.criterion.confirmedAt } } : {}),
+    ...(t.refine ? { refine: { at: t.refine.at, unchanged: t.refine.proposal.unchanged,
+      count: t.refine.proposal.unchanged ? 0 : t.refine.proposal.tasks.length } } : {}),
+    ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
   };
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
@@ -498,6 +524,10 @@ type AuditEvent =
   // the clarify lane's propose/promote pair, both sides recorded: who drafted the anchor and
   // when the owner made it theirs (the boundary this whole path is built around)
   | "criterion_proposed" | "criterion_confirmed"
+  // ↻ refine, the same propose/promote pair one level up: the compiler was asked (task_refine),
+  // and the owner either promoted the proposal into new rows or discarded it. The confirm's detail
+  // carries the children's ids — the archived original is otherwise the only place they are named
+  | "task_refine" | "task_refine_confirm" | "task_refine_dismiss"
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
@@ -1956,6 +1986,110 @@ async function tickEvalSweep(): Promise<void> {
   }
 }
 
+// --- ↻ refine (briefs/task-refine.md): the brief compiler on the queue. One read-only worker
+// turns a raw request into what a person would have written as a work brief — files, done-
+// criterion, verification — or into the two or three separate tasks it really was. ATTENDED ONLY
+// in v1: no tick calls this, the owner's button does, and the result is a PROPOSAL on the row.
+// The task itself is never rewritten by the worker; only the owner's confirm mints anything.
+const REFINE_CMD = process.env.FLEET_REFINE_CMD ?? null; // tests: subprocess stand-in
+// the compiler runs on the interactive tier like the eval gate, and for the same reason: it reads
+// a repository and writes the text a fresh session will be founded on
+const REFINE_MODEL = process.env.FLEET_REFINE_MODEL && MODEL_RE.test(process.env.FLEET_REFINE_MODEL)
+  ? process.env.FLEET_REFINE_MODEL : "claude-opus-5";
+// refines currently running, by task id. Keyed on the task rather than a slot (there is no slot —
+// nothing is spawned): the route refuses a second run for the same row, and taskDigest reads it so
+// the owner sees "refining…" instead of a button that appears to do nothing for three minutes.
+const refineInflight = new Map<string, Promise<void>>();
+
+const clampStr = (v: unknown, max: number): string => (typeof v === "string" ? v : "").slice(0, max).trim();
+// The row text the owner actually promotes, composed from the child's fields in a fixed order.
+// Deterministic on purpose: the dispatcher's own enhancer runs over this text later (additive-only
+// by contract), the eval gate reads it, and a person reads it in the queue — all three benefit more
+// from one predictable shape than from whatever layout the model felt like emitting.
+function refineChildText(c: RefineChild): string {
+  return [
+    c.text,
+    ...(c.files.length ? ["", `Files: ${c.files.join(", ")}`] : []),
+    ...(c.doneCriterion ? ["", `Done: ${c.doneCriterion}`] : []),
+    ...(c.verify ? [`Verify: ${c.verify}`] : []),
+  ].join("\n").slice(0, MAX_TASK_TEXT).trim();
+}
+
+// Parse + validate the worker's answer. Every off-contract shape THROWS, because the caller's
+// only fail direction is closed: a half-understood proposal must never reach the owner looking
+// like a compiled brief. The cap is enforced here rather than truncated — an answer with six
+// children is a worker that ignored its contract, not five good children plus one.
+function parseRefineAnswer(out: string): RefineProposal {
+  const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+  let j: { unchanged?: unknown; reason?: unknown; tasks?: unknown };
+  try {
+    j = JSON.parse(body) as typeof j;
+  } catch {
+    const obj = extractJsonObject(out); // same rescue as runEnhance: a wrapped answer is not a failed one
+    if (!obj) throw new Error("refiner returned no JSON");
+    j = JSON.parse(obj) as typeof j;
+  }
+  if (j.unchanged === true)
+    return { unchanged: true, reason: clampStr(j.reason, MAX_REFINE_FIELD) || "already brief-shaped" };
+  if (!Array.isArray(j.tasks)) throw new Error("refiner returned no tasks array");
+  if (j.tasks.length > MAX_REFINE_CHILDREN)
+    throw new Error(`refiner returned ${j.tasks.length} tasks — the cap is ${MAX_REFINE_CHILDREN}`);
+  const kids: RefineChild[] = [];
+  for (const raw of j.tasks as { text?: unknown; doneCriterion?: unknown; verify?: unknown; files?: unknown }[]) {
+    const text = clampStr(raw?.text, MAX_TASK_TEXT);
+    if (!text) continue; // an entry with no request in it is not a task
+    kids.push({
+      text,
+      doneCriterion: clampStr(raw?.doneCriterion, MAX_REFINE_FIELD),
+      verify: clampStr(raw?.verify, MAX_REFINE_FIELD),
+      files: Array.isArray(raw?.files)
+        ? (raw.files as unknown[]).filter((f): f is string => typeof f === "string" && !!f.trim())
+          .map((f) => f.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES)
+        : [],
+    });
+  }
+  if (!kids.length) throw new Error("refiner returned no usable task");
+  return { unchanged: false, tasks: kids };
+}
+
+// the same shape read back off disk, where anything may have been hand-edited (loadState)
+function normRefine(r: TaskRefine | undefined): TaskRefine | undefined {
+  const p = r?.proposal as Partial<RefineProposal> | undefined;
+  if (!r || !p) return undefined;
+  const at = Number(r.at) || 0;
+  const model = typeof r.model === "string" ? r.model : "";
+  if (p.unchanged === true) return { at, model, proposal: { unchanged: true, reason: clampStr((p as { reason?: unknown }).reason, MAX_REFINE_FIELD) } };
+  const kids = Array.isArray((p as { tasks?: unknown }).tasks) ? (p as { tasks: unknown[] }).tasks : [];
+  const out: RefineChild[] = [];
+  for (const k of kids as RefineChild[]) {
+    const text = clampStr(k?.text, MAX_TASK_TEXT);
+    if (text) out.push({ text, doneCriterion: clampStr(k?.doneCriterion, MAX_REFINE_FIELD),
+      verify: clampStr(k?.verify, MAX_REFINE_FIELD),
+      files: Array.isArray(k?.files) ? k.files.filter((f): f is string => typeof f === "string").slice(0, MAX_REFINE_FILES) : [] });
+  }
+  return out.length ? { at, model, proposal: { unchanged: false, tasks: out.slice(0, MAX_REFINE_CHILDREN) } } : undefined;
+}
+
+// FAIL-CLOSED, in the ② direction: a worker that times out, answers off-contract or blows the cap
+// leaves the row exactly as it was and says why in its note. There is no partial proposal and no
+// retry loop — the owner clicks again if they want another try.
+async function runRefineJob(t: Task, repo: string): Promise<void> {
+  try {
+    const out = await runWorker({ worker: "refine", cmd: REFINE_CMD, tools: REVIEW_TOOLS, model: REFINE_MODEL },
+      buildRefinePrompt(repo, t.text, MAX_REFINE_CHILDREN), repo);
+    t.refine = { at: Date.now(), model: REFINE_MODEL, proposal: parseRefineAnswer(out) };
+    // clear ONLY a previous refine failure — the note is a shared display line (the dispatcher
+    // writes "lane fleet/…" and its waiting reasons there), and a compile that succeeded while
+    // the row was being started elsewhere must not wipe what that other path put on it
+    if (t.note?.startsWith("refine failed")) t.note = null;
+  } catch (e) {
+    // note only — never t.refine, and never the text: an errored compiler has said nothing about
+    // this task, and absence must not read as "nothing to improve"
+    t.note = `refine failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
+  }
+  saveState();
+}
+
 // idle-lane dispatcher: when ON and a lane budget is free, pull the oldest queued task,
 // spawn a fresh worktree lane from DISPATCH_REPO, and send the task text into it once
 // claude is actually up. Serial by design — one lane per tick — so a burst of intake email
@@ -2712,9 +2846,10 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
   }
 }
 
-// Every throwaway agent in this file is spawned through here. The eight call sites (summary,
-// 🔍 review, commit message, ✨ enhance, ⏫ merge resolver, its repair round, ② clean review,
-// 🧭 steward digest) differ in exactly four things — the FLEET_*_CMD stand-in, the tool profile,
+// Every throwaway agent in this file is spawned through here. The call sites (summary, 🔍 review,
+// commit message, ✨ enhance, ⏫ merge resolver, its repair round, ② clean review, 🧭 steward
+// digest, the eval gate, ↻ refine — deliberately unnumbered here, the count decayed twice)
+// differ in exactly four things — the FLEET_*_CMD stand-in, the tool profile,
 // the done-mark and the timeout — and shared the same four lines otherwise, which had already
 // drifted apart (one site passed no explicit timeout where its sibling did). Collapsed so a fix
 // here cannot land on seven of eight, and so a NEW site cannot be written without naming a tool
@@ -5850,7 +5985,11 @@ if (existsSync(STATE_FILE)) {
             : undefined,
           // a hand-edited ref that no longer parses as a slug is dropped, not repaired — dedup
           // against a mangled key would silently stop matching the pulse's next filing anyway
-          ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined }));
+          ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined,
+          // a malformed proposal degrades to "none proposed": confirming one mints new task rows,
+          // so the same rule as the criterion applies — the state file must not be able to smuggle
+          // in a shape the worker never produced
+          refine: normRefine(t.refine) }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -8544,6 +8683,73 @@ Bun.serve<WSData>({
       t.eval = undefined;
       saveState();
       return json({ ok: true });
+    }
+    // ↻ refine: hand this task to the brief compiler (briefs/task-refine.md). Async like ⏫ — the
+    // worker reads the repository and can take minutes — so the route answers immediately and the
+    // proposal appears on the row when it lands. The task itself is never touched by the worker.
+    const taskRefine = /^\/api\/tasks\/([a-z0-9]+)\/refine$/.exec(url.pathname);
+    if (req.method === "POST" && taskRefine) {
+      const t = tasks.find((x) => x.id === taskRefine[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      // a note is an observation addressed to the owner (Task.kind); confirming a refinement mints
+      // `kind:"lane"` rows, so refining one would be a kind change wearing a rewrite — the same
+      // reason the dispatch button refuses notes
+      if (t.kind === "note") return json({ error: "a note is not a brief — refining it would mint lane rows out of an observation" }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — only a pending or queued task can be refined` }, 409);
+      if (refineInflight.has(t.id)) return json({ error: "a refine is already running for this task" }, 409);
+      if (!DISPATCH_REPO && !t.repo) return json({ error: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" }, 400);
+      // the compiler's whole value is that it READS this repository — a missing one is a 400 here,
+      // not a worker failure three minutes later
+      const rRepo = resolve(expandCwd(t.repo ?? DISPATCH_REPO));
+      if (!existsSync(rRepo) || !statSync(rRepo).isDirectory()) return json({ error: `repo is not a directory: ${rRepo}` }, 400);
+      const job: Promise<void> = runRefineJob(t, rRepo)
+        .finally(() => { if (refineInflight.get(t.id) === job) refineInflight.delete(t.id); });
+      refineInflight.set(t.id, job);
+      audit("task_refine", undefined, t.id);
+      return json({ ok: true, running: true });
+    }
+    // the owner's half of the refine pair. `{accept:false}` discards the proposal and does nothing
+    // else. Accepting is ALL-OR-NOTHING by design (briefs/task-refine.md): a child that turns out
+    // useless is thrown away afterwards with the archive button that already exists — a per-child
+    // confirm would be a second UI for that same operation.
+    const taskRefineConfirm = /^\/api\/tasks\/([a-z0-9]+)\/refine-confirm$/.exec(url.pathname);
+    if (req.method === "POST" && taskRefineConfirm) {
+      const t = tasks.find((x) => x.id === taskRefineConfirm[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const proposal = t.refine?.proposal;
+      if (!proposal) return json({ error: "no refine proposal for this task" }, 409);
+      if ((await readJson(req))?.accept === false) {
+        t.refine = undefined;
+        saveState();
+        audit("task_refine_dismiss", undefined, t.id);
+        return json({ ok: true, dismissed: true });
+      }
+      if (proposal.unchanged) return json({ error: "the proposal says this task is already brief-shaped — there is nothing to promote" }, 409);
+      if (t.status !== "pending" && t.status !== "queued")
+        return json({ error: `task is ${t.status} — only a pending or queued task can be replaced by its refinement` }, 409);
+      // a run still in flight holds a reference to this row and would write its proposal onto the
+      // archived original afterwards
+      if (refineInflight.has(t.id)) return json({ error: "a refine is still running for this task" }, 409);
+      const now = Date.now();
+      const kids: Task[] = proposal.tasks.map((c) => ({
+        id: randomBytes(4).toString("hex"), text: refineChildText(c),
+        // source "owner": the owner is confirming this text, whatever the original row came in as.
+        // NO `eval` — the children go through the sweep fresh, which is what keeps "a verdict is
+        // final" true: inheriting the parent's would carry a judgment about a text that no longer
+        // exists. `repo` rides along, or the split would silently retarget the dispatcher default.
+        source: "owner", from: null, kind: "lane", repo: t.repo,
+        status: "pending", created: now, slot: null, note: null,
+      }));
+      // append BEFORE archiving the original: capTasks may only evict TERMINAL rows, and the
+      // original is still live at this point — archiving first could make the very row we are
+      // about to annotate the one the cap drops
+      tasks = capTasks([...tasks, ...kids]);
+      t.status = "archived";
+      t.note = `refined → ${kids.map((k) => k.id).join(", ")}`;
+      saveState();
+      audit("task_refine_confirm", undefined, `${t.id} → ${kids.map((k) => k.id).join(",")}`);
+      return json({ ok: true, tasks: kids.map(taskDigest) });
     }
     // the owner's half of the propose/promote pair: confirming makes the criterion THEIRS, which
     // is the whole reason a lane may draft one. Releases the lane's wait in the same act — the

@@ -152,7 +152,15 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
   eval?: { verdict: "auto" | "review"; reason: string; at: number; model: string };
   // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
-  criterion?: { text?: string; proposedAt: number; confirmedAt: number | null } }
+  criterion?: { text?: string; proposedAt: number; confirmedAt: number | null };
+  // ↻ refine: the poll says a proposal exists, how it came out and how many children it holds —
+  // the texts ride /api/tasks like everything else. `refining` is live server state (a worker is
+  // running right now), which is why it is a fact about the moment and never persisted.
+  refine?: { at: number; unchanged: boolean; count: number }; refining?: boolean }
+// the proposal itself, as GET /api/tasks serves it (server.ts TaskRefine)
+interface RefineChildView { text: string; doneCriterion?: string; verify?: string; files?: string[] }
+interface TaskRefineFull { at: number; model: string;
+  proposal: { unchanged: boolean; reason?: string; tasks?: RefineChildView[] } }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -3990,7 +3998,10 @@ async function refresh() {
     if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
       const dk = t ? JSON.stringify([t.id, t.status, t.note, t.eval?.at,
-        t.criterion?.proposedAt, t.criterion?.confirmedAt]) : "gone";
+        t.criterion?.proposedAt, t.criterion?.confirmedAt,
+        // the refine proposal arrives on a poll exactly like the criterion does, and the button
+        // spends minutes in `refining` before it — both have to move the key or the pane lies
+        t.refine?.at, t.refining]) : "gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     }
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
@@ -4490,6 +4501,8 @@ const taskText = new Map<string, string>();
 const taskEvalFull = new Map<string, NonNullable<TaskInfo["eval"]>>();
 // same reason for the criterion: the poll knows THAT one exists, this knows what it says
 const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
+// …and for the refine proposal: the poll knows a proposal landed, this knows what it proposes
+const taskRefineFull = new Map<string, TaskRefineFull>();
 let taskTextKey = ""; // the id+verdict-set the cache was last filled for — a task's TEXT never
 // changes, but its eval arrives later (and changes on ↻ re-eval), so eval.at is part of the key
 let taskTextBusy = false;
@@ -4507,7 +4520,7 @@ let qRowId = new Map<HTMLElement, string | null>();
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  const key = tasksList.map((t) => `${t.id}:${t.eval?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}`).join(",");
+  const key = tasksList.map((t) => `${t.id}:${t.eval?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}`).join(",");
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
   let filled = false;
@@ -4515,14 +4528,17 @@ async function loadTaskTexts() {
     const res = await api("/api/tasks");
     if (res.ok) {
       const data = (await res.json()) as { tasks: { id: string; text: string;
-        eval?: NonNullable<TaskInfo["eval"]>; criterion?: NonNullable<TaskInfo["criterion"]> }[] };
+        eval?: NonNullable<TaskInfo["eval"]>; criterion?: NonNullable<TaskInfo["criterion"]>;
+        refine?: TaskRefineFull }[] };
       taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
       taskEvalFull.clear();
       taskCriterionFull.clear();
+      taskRefineFull.clear();
       for (const t of data.tasks) {
         taskText.set(t.id, t.text);
         if (t.eval) taskEvalFull.set(t.id, t.eval);
         if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
+        if (t.refine) taskRefineFull.set(t.id, t.refine);
       }
       taskTextKey = key;
       filled = true;
@@ -4554,6 +4570,10 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
     return;
   }
   if (action === "delete" && qPick === id) qPick = null;
+  // applying or discarding consumes the proposal server-side; drop the local copy in the same
+  // beat, or the detail paints one stale frame of a proposal that no longer exists (the /api/tasks
+  // refetch that would correct it is a poll behind)
+  if (action === "refine-confirm") taskRefineFull.delete(id);
   await refresh();
   qKey = ""; // this changed the data — force the list to rebuild even inside the poll's guard
   renderQueue();
@@ -4639,6 +4659,8 @@ function renderQueueDetail() {
     t.eval.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review",
     t.eval.verdict === "auto" ? "ok" : "warn",
     `${t.eval.reason} (${t.eval.model})`));
+  if (t.refining) meta.appendChild(chip("↻ refining…", "dim",
+    "the brief compiler is reading the repo — this can take a few minutes; the proposal appears here when it lands"));
   if (t.repo) meta.appendChild(chip(`⌂ ${t.repo.split("/").pop() || t.repo}`, "dim",
     `target repo: ${t.repo} — this task's lane spawns there`));
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
@@ -4679,6 +4701,44 @@ function renderQueueDetail() {
   const body = qTaskText(t.id);
   shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
     body || "loading the prompt text…"));
+  // ↻ the refine proposal. Rendered BELOW the original text on purpose: the two are meant to be
+  // read against each other, and what the owner promotes is the compiled version — so the thing
+  // being replaced stays visible right above it until they decide.
+  const ref = taskRefineFull.get(t.id);
+  if (ref) {
+    const kids = ref.proposal.tasks ?? [];
+    shell.detail.appendChild(el("div", "rvhead",
+      ref.proposal.unchanged ? `refine · already brief-shaped (${fmtTs(ref.at)})`
+        : `refine · PROPOSED ${kids.length === 1 ? "rewrite" : `split into ${kids.length}`} — yours to apply (${fmtTs(ref.at)})`));
+    if (ref.proposal.unchanged) {
+      shell.detail.appendChild(el("div", "qdtext",
+        `${ref.proposal.reason || "already brief-shaped"} (${ref.model})`));
+    } else {
+      kids.forEach((c, i) => {
+        shell.detail.appendChild(el("div", "qdtext", [
+          `${kids.length > 1 ? `${i + 1}. ` : ""}${c.text}`,
+          ...(c.files?.length ? [`Files: ${c.files.join(", ")}`] : []),
+          ...(c.doneCriterion ? [`Done: ${c.doneCriterion}`] : []),
+          ...(c.verify ? [`Verify: ${c.verify}`] : []),
+        ].join("\n")));
+      });
+    }
+    const racts = el("div", "pkdacts");
+    // applying is all-or-nothing and archives this row — say so on the button, because the
+    // alternative reading ("adds the children alongside") is the one that would surprise
+    if (!ref.proposal.unchanged && (t.status === "pending" || t.status === "queued")) {
+      const ab = el("button", "shrbtn primary",
+        `✓ apply — replace this task with ${kids.length === 1 ? "it" : `these ${kids.length}`}`) as HTMLButtonElement;
+      ab.title = "creates the compiled task(s) as new pending rows and archives this one";
+      ab.onclick = () => void qAct(t.id, "refine-confirm", {});
+      racts.appendChild(ab);
+    }
+    const db = el("button", "shrbtn", "✕ discard proposal") as HTMLButtonElement;
+    db.title = "drops the proposal — the task itself is untouched either way";
+    db.onclick = () => void qAct(t.id, "refine-confirm", { accept: false });
+    racts.appendChild(db);
+    shell.detail.appendChild(racts);
+  }
   const acts = el("div", "pkdacts");
   const mk = (label: string, action: string, cls = "shrbtn", body?: Record<string, unknown>, title?: string) => {
     const b = el("button", cls, label) as HTMLButtonElement;
@@ -4694,6 +4754,16 @@ function renderQueueDetail() {
   // before writing code. The standing answer to an eval:review "no derivable done-criterion".
   if (startable) acts.appendChild(mk("▸ clarify first", "dispatch", "shrbtn", { clarify: true },
     "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm"));
+  // ↻ refine: compile this raw request into a work brief (or into the tasks it really is) before
+  // any lane sees it. Attended only — nothing on the server calls this on its own.
+  if (startable) {
+    const rb = el("button", "shrbtn", t.refining ? "↻ refining…" : "↻ refine") as HTMLButtonElement;
+    rb.disabled = t.refining === true;
+    rb.title = "a read-only agent reads the repo and proposes a compiled brief — or a split."
+      + " Nothing changes until you apply it";
+    rb.onclick = () => void qAct(t.id, "refine", {});
+    acts.appendChild(rb);
+  }
   if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", startable ? "shrbtn" : "shrbtn primary"));
   // clear the verdict so the sweep judges afresh — only while pending (the verdict only gates there)
   if (t.status === "pending" && t.eval) acts.appendChild(mk("↻ re-eval", "eval-reset"));
@@ -4724,7 +4794,8 @@ function renderQueue() {
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
     shown.map((t) => [t.id, t.status, t.slot, t.note, t.eval?.verdict,
-      t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id)])]);
+      t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
+      t.refine?.at, t.refining])]);
   if (key === qKey) return;
   qKey = key;
 

@@ -6344,9 +6344,16 @@ function writeStewardJournal(rec: Record<string, unknown>): void {
   // override the "server-stamped" time silently — the spread order IS the guarantee
   appendEvent(STEWARD_JOURNAL_FILE, { ...rec, ts: Date.now() });
 }
-async function readStewardJournal(tail: number, kind?: string): Promise<Record<string, unknown>[]> {
+async function readStewardJournal(tail: number, kind?: string, ref?: string): Promise<Record<string, unknown>[]> {
   const { rows } = await readEventLog(STEWARD_JOURNAL_FILE); // both generations, chronological
-  return (kind === undefined ? rows : rows.filter((r) => r.kind === kind)).slice(-tail);
+  // both filters run BEFORE the tail. `ref` is what makes the journal's dedup memory
+  // key-addressed instead of a 50-row recency window: without it, a dismissed finding older
+  // than 50 register rows silently fell out of the read-first step and returned to the owner —
+  // the exact failure mode the register exists to prevent (2026-08-05). It matches BOTH slug
+  // fields, because the two channels named theirs differently before this existed: register
+  // rows carry `key`, propose_outcome/task rows carry `ref`.
+  return rows.filter((r) => (kind === undefined || r.kind === kind)
+    && (ref === undefined || r.ref === ref || r.key === ref)).slice(-tail);
 }
 
 // Tier-1 signal-sharing (synergy-findings.md): the facts the server already computes, handed
@@ -6424,6 +6431,12 @@ function stewardSlotsView(now: number) {
       // against the git/idle facts next to it; null means the owner never wrote one, which is
       // "unknown intent", not "no intent".
       mission: s.mission,
+      // a clarify lane parked on the owner (Slot.awaiting) — served at SENSE time so the pulse
+      // never reads a deliberately-waiting lane as idle/stalled. The send gate already 409s such
+      // a slot (mechanics), but the steward used to learn that only by bouncing off the gate at
+      // send time and could file "lane looks stalled" notes about a lane that is parked by
+      // design (2026-08-05). Escalate-to-owner is the playbook for this state, never a nudge.
+      awaiting: s.awaiting,
       mergePending: needsMergeReview(s.id),
       // the deterministic label, served as a FACT next to the facts it is computed from — the
       // digest worker gets the same rule in prose and may still disagree; this one is the
@@ -7013,7 +7026,11 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // read-your-register-first step depends on that
     const kind = url.searchParams.get("kind");
     if (kind !== null && !/^[a-z_]{1,32}$/.test(kind)) return json({ error: "bad kind" }, 400);
-    return json({ records: await readStewardJournal(tail, kind ?? undefined) });
+    // ?ref= answers "have I ruled on THIS condition before" across the WHOLE log — the tail
+    // alone is a recency window, not a memory (see readStewardJournal)
+    const jref = url.searchParams.get("ref");
+    if (jref !== null && !/^[a-zA-Z0-9._-]{1,64}$/.test(jref)) return json({ error: "bad ref" }, 400);
+    return json({ records: await readStewardJournal(tail, kind ?? undefined, jref ?? undefined) });
   }
   if (url.pathname === "/api/steward/journal" && req.method === "POST") {
     const body = await readJson(req);

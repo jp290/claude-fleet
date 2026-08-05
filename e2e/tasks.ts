@@ -440,6 +440,15 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(i) a waiting clarify lane refuses every steward send (409 — escalate, never nudge past the owner)",
       nudge.status === 409 && (nudgeJ.error ?? "").includes("waiting on the owner"),
       `${nudge.status} ${JSON.stringify(nudgeJ)}`);
+    // the wait is also VISIBLE at sense time (2026-08-05): the steward slots view carries
+    // `awaiting`, so the pulse never reads a deliberately parked lane as idle/stalled. Before
+    // this field the steward learned the state only by bouncing off the send gate above — and
+    // could file "lane looks stalled" notes about a lane parked by design.
+    const senseSlots = ((await (await fetch(`${BASE}/api/steward/sessions`, { headers: stewardHdr })).json()) as
+      { slots: { id: number; awaiting?: "owner" | null }[] }).slots;
+    check("(i) the steward's sense surface says the lane is awaiting the owner (not merely idle)",
+      senseSlots.find((s) => s.id === iSlot)?.awaiting === "owner",
+      JSON.stringify(senseSlots.find((s) => s.id === iSlot) ?? null));
 
     // --- the criterion: the lane PROPOSES through its own scoped token, the owner CONFIRMS ---
     const laneSelfTok = persisted.slots?.[String(iSlot)]?.selfToken ?? "";

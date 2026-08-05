@@ -26,6 +26,12 @@ explicitly relative to it. This doc deliberately does not touch `gate-coverage.m
    `ok:null` "nothing was measured" state one line away. *Cost:* the same number-poisoning
    `gate-coverage.md` §4 documents for `verified:true`, in the opposite direction, and it gets
    worse with every second added to the gate.
+> **Items 3 and 5 below are FIXED as of the 2026-07-28 gate** (§7/§8 carry the detail; this
+> ranking predates them): the gate now runs `e2e-clean-review` + `e2e-security` +
+> `e2e-claude-gate` — live land-path coverage — and its `tsc` list typechecks every standalone
+> harness (`watchdog.sh`, grep `FLEET_VERIFY_CMD`). The live timeout is 300 000 ms set in
+> `watchdog.sh`, not an unchosen 120 s default. Read §0 as the 2026-07-26 snapshot it is.
+
 3. **The gate has zero coverage of the land path — and tier 2's trigger lives there (§3, §6d).**
    `grep` for `landLane|advanceIntegration|recordLand|emitLaneOutcome|runCleanReview|undoLast` in
    the gate harness = 0. `schedulePostLandAudit` is called from `recordLand`. *Cost:* one
@@ -587,7 +593,18 @@ the lane tree is still unmerged:
   `outcome: repaired conflict resolution … / confirm-land …` (3).
 
 This is the merge/resolver family and it is distinct from §5b's three (`e2e/review.ts:177`, the
-steward send-cap 429/409, and its audit consequence). **Not root-caused** — same state §5b left
+steward send-cap 429/409, and its audit consequence).
+
+> **ROOT-CAUSED AND FIXED 2026-07-28** (`fix(merge): the land path survives its own git
+> plumbing`): `.git/index.lock` from Fleet's own status polls authored FIX1 — read-only git now
+> runs `GIT_OPTIONAL_LOCKS=0` (`server.ts`, grep `GIT_READ_ENV`); proof was 10/10 FIX1 instances
+> over 5 serial runs against a base rate of 8/16. **A FIX1-shaped red AFTER that commit is real
+> and yours** — CLAUDE.md has said so since the fix, while this section still said "not
+> root-caused" until 2026-08-05: a lane adjudicating a red through THIS paragraph read the exact
+> opposite of the rulebook and could wave a real regression through as a known flake. The
+> paragraph below is the pre-fix state, kept as history.
+
+**Not root-caused** *(historical, superseded above)* — same state §5b left
 `e2e/review.ts:177` in. Recorded so the next person does not re-derive it: nothing in the four
 landed lanes touches the merge path, and the same checks pass on the same tree on a re-run.
 

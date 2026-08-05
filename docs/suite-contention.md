@@ -17,6 +17,14 @@ unhandled error path**, and it is a product bug, not a test bug.
 
 ## 2. The mechanism (verified by reading, plus 12 on-disk failure artifacts)
 
+> **ALLE VIER §4(a)-FIXES SIND GEBAUT** (2026-07-28; Banner nachgetragen 2026-08-05 — dieses
+> Kapitel beschrieb den Vor-Fix-Zustand im Präsens und ohne Marker). Heute: Rebase UND Abort
+> laufen durch `gitRetry` und der Abort-Ausgang wird ausgewertet samt Wedge-Erkennung
+> (`server.ts`, grep `tryScriptRebase`); `tickGit` überspringt Slots mit laufendem Merge (grep
+> `mergeInflight.has` dort); die Read-Pfade fahren `GIT_OPTIONAL_LOCKS=0` (grep `GIT_READ_ENV`);
+> `gitRetry` hat inzwischen elf Call-Sites. Die Zeilennummern unten stammen vom damaligen Baum.
+> Der Text bleibt als Diagnose-Historie — nichts hieraus erneut vorschlagen.
+
 `tryScriptRebase` (`server.ts:3486-3495`) runs `git rebase main` as a pre-pass to decide whether a
 lane conflicts. On failure it cleans up with:
 

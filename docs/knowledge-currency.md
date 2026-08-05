@@ -123,7 +123,7 @@ rulebook revision. Reuses the existing token, channel and state; no new process.
 
 > **Built, in pieces, and NOT under the name proposed here** — the paragraph above is history from
 > 2026-07-27 and its "exactly one route / cannot ask a single question" is false as of 2026-08-05.
-> The self principal now has four routes, and no `GET /api/self/context` was ever built: the payload
+> The self principal now has five routes (autos · drift · gate · criterion · verify-intent), and no `GET /api/self/context` was ever built: the payload
 > was cut along its natural seams instead, each shipped when its own defect justified it.
 > · `GET /api/self/drift` (2026-08-04) — fork point versus main now, `wouldConflict`, the sibling
 >   lanes' in-flight files. That is this item's first and third clause.

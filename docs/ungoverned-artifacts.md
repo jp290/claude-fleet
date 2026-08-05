@@ -63,7 +63,13 @@ that lacks the `fails-identically-at-HEAD` proof duty, and whose Verify line is 
 your CLAUDE.md" points it at the *wrong command*, silently. The norm was written to prevent
 exactly this drift and, because of the copy mechanism, guarantees it instead.
 
-## 4. Nothing is backed up (VERIFIED)
+## 4. Nothing is backed up (VERIFIED 2026-07-25 — half-closed since)
+
+> The repo is PUBLIC and pushed since 2026-07-28 (`github.com/jp290/claude-fleet`) — fix 4
+> below happened. The untracked layer (rulebook, owner model, `fleet.json`, the `.jsonl`
+> trails) is still exactly as unbacked as described. And fix 3 is BUILT: `rulebookDrifted`
+> rides on `GET /api/self/gate` (`server.ts`, grep `rulebookDrifted`) since `184fc72` —
+> do not re-propose either.
 
 - `git remote -v` → `github.com/jp290/claude-fleet`, and `gh repo view` reports
   **`pushedAt: 2026-07-13`**. Twelve days of commits — including every land of the calibration

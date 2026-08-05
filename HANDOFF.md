@@ -12,21 +12,35 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 `8194aea`, `669d2c9`, `33b3105` gehören NICHT zu diesem Strang — sie sind der parallel
 laufende Steward-/clarify-Strang.*
 
-### Was IN FLUG ist (das Erste, was die nächste Session wissen muss)
+### GELANDET (`b297aad`) und deployed
 
-**Lane `fleet/260805124635-95a7` auf Slot 1**, Basis `33b3105`, gebrieft aus
-`briefs/resolver-both-sides.md` (Task `10bc0b91`, per Hand-Knopf dispatcht — der umgeht das
-Eval-Gate bewusst, attended schlägt Automatik). Sie baut drei Dinge: einen ZWEITEN
-graphify-Graphen für die Seite, in die hineingemerged wird; beide Graphen unverwechselbar
-beschriftet im Prompt (fail-closed **pro Graph**); und das fertige
-`git diff <mergeBase>..<main> -- <datei>`-Kommando in der DO-Liste von `buildMergePrompt`
-UND `buildAuthorPrompt`.
+Lane `fleet/260805124635-95a7` (Slot 1, Basis `33b3105`, Task `10bc0b91` per Hand-Knopf —
+der umgeht das Eval-Gate bewusst, attended schlägt Automatik), gebrieft aus
+`briefs/resolver-both-sides.md`. Ein Commit, drei Dateien (`e2e/prompts.ts`,
+`merge-prompt.ts`, `server.ts`), kein `src/` → **kein Bundle-Bau nötig.**
 
-**Beim Fertigwerden:** Baum unabhängig verifizieren (der Report einer Lane ist eine
-Behauptung), dann landen — **aber erst, wenn der Haupt-Checkout sauber ist.** Grund: das Land
-fährt `git merge --ff-only` im Haupt-Checkout, und git verweigert, sobald es lokale Änderungen
-an einer Datei überschreiben müsste, die es anfasst. Eine *unbeteiligte* schmutzige Datei ist
-kein Problem (dafür gibt es einen e2e-Check), `server.ts` schon.
+Vollständig protokolliert: `verified:true`, Provenienz-Note `ab2319e → b297aad`,
+Tier-2-Audit **grün** (exit 0, 460 s, `covers` nennt die Lane), `bootHead == HEAD`.
+**Vor** dem Land unabhängig verifiziert (der Report einer Lane ist eine Behauptung):
+tsc 0 + alle vier Suiten ALL PASS auf ihrem Baum — und der Diff zwischen dem so geprüften
+Commit und dem gelandeten ist über die drei Dateien **0 Zeilen**, es ist also exakt der
+geprüfte Stand.
+
+**Was die Lane über den Brief hinaus gefunden hat** (beides gehört ins Register):
+- **`git rev-parse <unbekanntes-ref>` echot den REF SELBST auf stdout und exitet 128.** Ein
+  Truthiness-Test hätte den String `"main"` als sha durchgereicht. Der Exit-Code entscheidet.
+- **`core.hooksPath` ist unset** — die Ergänzung, die meinen Hook-Befund unten erst
+  vollständig macht. Ohne sie wäre „`.git/hooks` trägt kein `post-merge`" nicht ausreichend
+  gewesen, weil die Hooks umgeleitet sein könnten.
+- Beide Archive kommen aus dem LANE-Worktree: Worktrees teilen eine Objektdatenbank, mains
+  Commit ist dort lesbar, **ohne den Haupt-Checkout anzufassen**. Parallel gebaut, 4,75 s für
+  beide gegen ~5,7 s für einen seriell.
+
+**Offene Design-Frage, jetzt als Kontrakt festgenagelt:** der **Autor-Prompt bekommt keine
+Karte**. Begründbar (der Autor ist eine echte Session mit eigenen Werkzeugen), aber die
+Graphen liegen in TMPDIR und **die Pfade kennt nur der Server** — der Autor könnte sie also
+nicht benutzen, selbst wenn er wollte. Er bekommt das Diff-Kommando, nicht die Karte. Ein
+neuer Check pinnt das; wer es ändern will, ändert bewusst einen Kontrakt.
 
 ### Der Befund, der die Scheibe ausgelöst hat
 
@@ -66,6 +80,13 @@ der richtige Commit, damit entsteht die Frische-Frage gar nicht erst.
   nicht an. Die Unterscheidung kostet sonst grundlos Wartezeit.
 - **`built_at_commit == HEAD` ist kein Frische-Beweis für den Merge-Zeitpunkt**, sondern nur
   für den Augenblick des Nachsehens. Siehe oben.
+- **Ein Warte-Loop auf `merges[slot].running` direkt nach dem ⏫-POST bricht sofort ab** — die
+  Flagge ist da noch nicht gesetzt. Ich habe daraus eine Fehldiagnose gebaut („der Server ist
+  mitten im Job gestorben", weil main unbewegt war und kein Verdict dastand) und sie fast als
+  Störfall gemeldet. Der Job lief die ganze Zeit normal. **Auf `main`-Bewegung bzw. das
+  Verschwinden des Worktrees warten, nicht auf die Running-Flagge** — und ein fehlender
+  Beweis ist kein Beweis des Fehlens. Was es aufgeklärt hat: Outcome-Row und Provenienz-Note
+  nachschlagen statt der ersten Beobachtung glauben.
 
 ---
 

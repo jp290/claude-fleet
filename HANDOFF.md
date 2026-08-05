@@ -118,9 +118,31 @@ FIX1-Pathologie. In diesem Repo unsichtbar (gitignored), aufgeschlagen wäre sie
 Dispatch in ein fremdes Repo über `task.repo`. Wer dort etwas ändert: der Graph darf nie in
 den Baum zurück.
 
-**C ist die nächste Scheibe und läuft als Lane** (Brief: `briefs/server-first-sync.md`).
-Bewusst **eine** Lane, nicht zwei: B und C hätten beide `mergeJob` und dieselben
-Test-Familien angefasst — die Kollision, gegen die ② gebaut wird.
+**C ist GELANDET (`a9b5a13`) und deployed.** Lane `fleet/260804233117-3ab1`, vom Dispatcher
+gespawnt, ein Commit, +551/-34 über 8 Dateien. Bewusst **eine** Lane, nicht zwei: B und C
+hätten beide `mergeJob` und dieselben Test-Familien angefasst — die Kollision, gegen die ②
+gebaut wird.
+
+Zum Land, weil es das erste vollständig protokollierte seit Langem ist: Verify-Gate grün,
+Auto-Land auf dem clean-Pfad (`resolvedConflict:false`, also korrekt **kein** `resolvedBy`),
+**Provenienz-Note + Outcome-Row + Tier-2-Audit vorhanden** — genau das, was den neun
+Direkt-auf-main-Commits dieser Session fehlt. Der Tier-2-Audit ist **grün** auf `a9b5a13`
+(419 s, `covers` nennt die Lane). Unabhängig vorher nachgeprüft: ich habe die volle Kette
+selbst auf dem Lane-Baum gefahren, statt dem Report zu glauben — tsc + vier Suiten ALL PASS,
+**20 ②-Checks gelaufen und grün, kein Check übersprungen**.
+
+**Was C geändert hat, und was daran unbeweisbar bleibt:** bei Konflikt weckt der Server die
+Lane-Session (Verdict `awaiting-author`, im Board als Warten gemalt, nicht als Fehler); der
+Wegwerf-Resolver ist Fallback. Die Suite fährt dafür ein `claude`, das ein **Symlink auf
+/bin/cat** ist (auf macOS zwingend Symlink — eine Kopie einer Plattform-Binary wird mit
+SIGKILL erschlagen, gemessen). Dass ein ECHTES claude den Brief liest und gut auflöst, ist
+in keiner Harness prüfbar. **Gefallen ist:** die sieben alten Check-Familien beschreiben ab
+jetzt den Fallback, nicht den Hauptweg — die Lane hat das korrekt als Owner-Entscheid
+gemeldet, statt die Suite passend zu machen.
+
+**Der erwartete Preis war kleiner als im Brief geschätzt:** weil `e2e-isolated.sh` mit
+`FLEET_CMD=true` fährt, antwortet die strenge Alive-Sonde dort „no-claude" — es musste
+**keine** der sieben Familien umgeschrieben werden.
 
 ### Unverändert offen (nichts davon angefasst)
 

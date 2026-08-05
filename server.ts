@@ -607,6 +607,7 @@ function saveState(): void {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
+    mergeParked: Object.fromEntries(mergeParked),
     repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
     evalAuto: evalAutoDay }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
@@ -1211,6 +1212,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ er
   const landed = await buildLaneOutcome(s, "landed", facts);
   const fail = await removeWorktreeSafe(repo, path, branch);
   if (fail) return fail;
+  mergeParked.delete(branch); // the branch is landed and gone — a parked ⏸ must not outlive it
   emitLaneOutcome(landed);
   // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
   // (which handles aborts) sees nothing left to detach
@@ -1439,7 +1441,13 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
-  mergeLast.delete(s.id); // a recycled slot must never show a previous lane's merge verdict
+  // a recycled slot must never show a previous lane's merge verdict — but a reviewable verdict
+  // follows its BRANCH into the park (see parkMergeVerdict), and comes back the moment this
+  // open IS that branch's reattach. Park before restore, so reattaching the same lane into the
+  // same slot round-trips instead of deleting.
+  parkMergeVerdict(s.id, true);
+  const parkedVerdict = worktree ? mergeParked.get(worktree.branch) : undefined;
+  if (parkedVerdict) { mergeLast.set(s.id, parkedVerdict); mergeParked.delete(parkedVerdict.branch); }
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // ...nor report the prior lane's merge JOB as running:true and 409 the new lane (the old job's finally self-checks identity, so dropping the entry here is safe)
   aliveInfo.delete(s.id); // ...nor its liveness/wedge readings until the next tick recomputes
   gitOpInfo.delete(s.id);
@@ -1490,6 +1498,7 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   harvest.delete(s.id); // no cursor on a dead slot — a later open re-seeds it
   startCache.delete(s.id);
   mergeInflight.delete(s.id); mergeStart.delete(s.id); // F5: a recycled slot must not inherit the prior lane's in-flight merge job as running:true (the old job's finally self-checks identity via mergeInflight.get === job, so this drop is safe)
+  parkMergeVerdict(s.id, false); // a reviewable ⏸ follows the branch into the park (reattach restores it); merged/blocked stay visible as before
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   s.model = null; // the per-slot model dies with the session it was chosen for
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
@@ -3602,6 +3611,27 @@ const mergeInflight = new Map<number, Promise<void>>();
 // quick POSTs would both start a job — two concurrent `git rebase`s on one worktree
 const mergeStart = new Set<number>();
 const mergeLast = new Map<number, MergeLast>();
+// ⏸ has LANE lifetime, not slot lifetime (2026-08-05). The record "this branch carries
+// agent-chosen conflict resolutions no human reviewed" describes COMMITS on the branch, and the
+// branch survives a kill and a reattach — but the record was keyed by slot and died with it:
+// openSlot cleared it on every recycle (including reattaching the SAME lane), and the boot
+// restore below drops entries whose slot lost its worktree. Kill → reattach → ⏫ then found no
+// verdict, `carried` was empty, and the clean auto-land path landed exactly the resolutions the
+// pause exists for — the same hole the boot-restore closed for deploys, on the kill path.
+// So a reviewable verdict is PARKED by branch when its slot lets go, restored when any slot
+// picks that branch up again, and dies only with the branch (land / remove / discard).
+const mergeParked = new Map<string, MergeLast>();
+// `clearAll` distinguishes the two callers: a RECYCLE (openSlot) drops every prior verdict —
+// the slot is about to be someone else; a KILL only lifts the reviewable shapes into the park
+// and leaves merged/blocked/error in place, exactly as killSlot always has (the board may still
+// be telling the owner how the lane ended).
+function parkMergeVerdict(slotId: number, clearAll: boolean): void {
+  const m = mergeLast.get(slotId);
+  const reviewable = !!m && (m.status === "resolved" || m.status === "awaiting-author"
+    || (m.status === "interrupted" && (m.conflicted?.length ?? 0) > 0));
+  if (m && reviewable) mergeParked.set(m.branch, m);
+  if (reviewable || clearAll) mergeLast.delete(slotId);
+}
 // the ⏸ board signal: this lane holds agent-chosen conflict resolutions that no human has seen.
 // Two shapes qualify — a settled "resolved" verdict, and an INTERRUPTED run that had already
 // handed the conflicts to the agent (same discriminator the ⏫ re-run guard uses, kept in one
@@ -5870,6 +5900,16 @@ if (existsSync(STATE_FILE)) {
           && (v as MergeLast).branch === s.worktree.branch)
           mergeLast.set(s.id, v as MergeLast);
       }
+    // ...and the branch-keyed park (see parkMergeVerdict): verdicts whose slot let go before a
+    // reattach. Only the reviewable shapes are ever parked, and the key must equal the row's own
+    // branch — anything else is a torn write and is dropped.
+    const pp = (persisted as { mergeParked?: unknown }).mergeParked;
+    if (typeof pp === "object" && pp !== null && !Array.isArray(pp))
+      for (const [b, v] of Object.entries(pp as Record<string, unknown>))
+        if (typeof v === "object" && v !== null
+          && ["resolved", "interrupted", "awaiting-author"].includes((v as MergeLast).status)
+          && typeof (v as MergeLast).detail === "string" && (v as MergeLast).branch === b)
+          mergeParked.set(b, v as MergeLast);
     const psh = (persisted as { shelved?: unknown }).shelved;
     if (typeof psh === "object" && psh !== null && !Array.isArray(psh))
       for (const [k, v] of Object.entries(psh as Record<string, unknown>))
@@ -7931,6 +7971,7 @@ Bun.serve<WSData>({
       if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree is open in a slot — land it there" }, 409);
       const fail = await removeWorktreeSafe(top.out, wt.path, wt.branch);
       if (fail) return json({ error: fail.error }, fail.code);
+      mergeParked.delete(wt.branch); // the lane is gone — its parked ⏸ dies with it
       void tickGit().catch(() => {});
       return json({ ok: true, removed: wt.path });
     }
@@ -7955,6 +7996,7 @@ Bun.serve<WSData>({
       const rmv = await git(top.out, "worktree", "remove", "--force", wt.path);
       if (rmv.code !== 0) return json({ error: `worktree remove failed: ${(rmv.err || rmv.out).slice(0, 300)}` }, 409);
       delete shelved[wt.path]; // worktree destroyed — drop any shelve note
+      mergeParked.delete(wt.branch); // deliberate destruction takes the parked ⏸ with it
       const branchDeleted = wt.branch !== "(detached)"
         && (await git(top.out, "branch", "-D", wt.branch)).code === 0;
       void tickGit().catch(() => {});

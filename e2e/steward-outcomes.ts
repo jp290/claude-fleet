@@ -32,14 +32,20 @@ export async function run(sc: StewardCtx): Promise<void> {
   const sessSt = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; source: string }[] };
   check("steward-filed task lands in the owner's queue as pending/steward",
     sessSt.tasks.some((t) => t.id === stTaskJ.task?.id && t.status === "pending" && t.source === "steward"));
-  check("owner promotes the steward-filed task (pending → queued, the meta-gate)",
-    (await post(`/api/tasks/${stTaskJ.task?.id}/queue`, {})).ok);
-  // promote on a note is the propose-outcome signal, not a dispatch order — the row must say
-  // out loud that the dispatcher will never run it, instead of sitting "queued" in silence
-  const promRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; kind?: string; note?: string }[] })
+  // AN OBSERVATION IS NOT WORK (owner ask 2026-08-05). Releasing one used to be legal and produced
+  // a `queued` row that no tick would ever run, carrying a note explaining its own inertness — a
+  // contradiction parked in the release lane. The honest move is a CONVERSION the owner performs:
+  // adopt turns the observation into a brief, back at pending, where it gets analysed and still
+  // has to be released. Which keeps the steward from ever authoring runnable work.
+  const stQ = await post(`/api/tasks/${stTaskJ.task?.id}/queue`, {});
+  check("an observation cannot be released — it is not a brief (409)",
+    stQ.status === 409, `${stQ.status} ${await stQ.text()}`);
+  check("owner adopts the steward-filed observation (note → lane, still pending)",
+    (await post(`/api/tasks/${stTaskJ.task?.id}/adopt`, {})).ok);
+  const promRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; kind?: string; status: string; note?: string }[] })
     .tasks.find((t) => t.id === stTaskJ.task?.id);
-  check("a promoted note carries the standing explanation (dispatcher never runs it) on its row",
-    promRow?.kind === "note" && (promRow?.note ?? "").includes("dispatcher never runs"),
+  check("the adopted row is a pending BRIEF that says where it came from",
+    promRow?.kind === "lane" && promRow.status === "pending" && (promRow.note ?? "").includes("adopted from an observation"),
     JSON.stringify(promRow));
   check("steward task rejects empty text (400)", (await sc.stewPost("/api/steward/tasks", { text: "  " })).status === 400);
 
@@ -62,10 +68,17 @@ export async function run(sc: StewardCtx): Promise<void> {
     .filter((t) => t.ref === "lane3-awaiting-human");
   check("the queue holds exactly one row for the ref after the repeat sighting",
     refRows.length === 1, `rows=${refRows.length}`);
-  check("owner promotes the ref'd note — a QUEUED row still dedups (live is pending|queued|sent)",
-    (await post(`/api/tasks/${refA.task?.id}/queue`, {})).ok
+  // dedup must survive the owner ACTING on the row, not just the row existing. Since 2026-08-05 an
+  // observation is adopted rather than released (a note has nothing to release), so the reachable
+  // post-action state is adopt → queue, and the ref must still answer through both.
+  check("owner adopts and releases the ref'd row — a QUEUED row still dedups (live is pending|queued|sent)",
+    (await post(`/api/tasks/${refA.task?.id}/adopt`, {})).ok
+    && (await post(`/api/tasks/${refA.task?.id}/queue`, {})).ok
     && (((await (await sc.stewPost("/api/steward/tasks",
       { text: "resight while queued", ref: "lane3-awaiting-human" })).json()) as { dedup?: boolean }).dedup === true));
+  // ...and park it again: a released row here would race the dispatcher for a slot the sections
+  // below expect to be free
+  await post(`/api/tasks/${refA.task?.id}/unqueue`, {});
   // a RULED-ON row frees its ref: archive-from-pending is a dismissal, and a condition that
   // returns after a ruling is new information, not pulse noise
   const refC = (await (await sc.stewPost("/api/steward/tasks",
@@ -153,12 +166,13 @@ export async function run(sc: StewardCtx): Promise<void> {
     JSON.stringify(jGet2J).slice(0, 200));
 
   // digest's delta anchor must be the last RUNDGANG record, not the last record of ANY kind
-  // (P-1a) — proved using a still-live non-rundgang journal writer: promoting/dismissing a
-  // steward proposal appends kind:"propose_outcome" (server.ts, the /api/tasks/:id/queue|delete
+  // (P-1a) — proved using a still-live non-rundgang journal writer: adopting/dismissing a
+  // steward proposal appends kind:"propose_outcome" (server.ts, the /api/tasks/:id/adopt|delete
   // route) independently of the deleted intervention-outcome tally
-  // (docs/analysis-2026-07-28-verification.md §3).
+  // (docs/analysis-2026-07-28-verification.md §3). `adopt` carries the "helped" side of that
+  // channel since 2026-08-05, where `queue` used to — an observation is no longer releasable.
   const anchorProp = (await (await sc.stewPost("/api/steward/tasks", { text: "propose: digest anchor probe" })).json()) as { task: { id: string } };
-  await post(`/api/tasks/${anchorProp.task.id}/queue`, {});
+  await post(`/api/tasks/${anchorProp.task.id}/adopt`, {});
   await Bun.sleep(200); // writeStewardJournal's appendEvent write is fire-and-forget — settle before reading
   const anchorRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50")).json()) as { records: { kind?: string }[] }).records;
   const anchorJ = (await (await sc.stewGet("/api/steward/digest?wait=0")).json()) as DigJ & { prior?: { counts?: Record<string, number> } | null };
@@ -535,10 +549,14 @@ export async function run(sc: StewardCtx): Promise<void> {
   // view carries the founding intent (id/status/source/text) it was started for. ---
   {
     await post("/api/dispatch", { on: true });
-    // an older queued steward NOTE sits FIRST in FIFO order — the dispatcher must skip it and
-    // take the owner lane-task behind it; the note stays queued (the kind gate, 2026-08-04)
+    // an older steward NOTE sits FIRST in FIFO order. Since 2026-08-05 it cannot even be released
+    // (the release route refuses an observation), so the defence is now TWO-LAYERED: the route
+    // says no, and the dispatcher's `kind === "lane"` filter still shields rows that reached
+    // `queued` before that refusal existed — a state only an old fleet.json can hold. Both are
+    // asserted below; the second one has to be, because no API call can construct it any more.
     const skipNote = (await (await sc.stewPost("/api/steward/tasks", { text: "note: lane 3 looks done — go look" })).json()) as { task: { id: string } };
-    await post(`/api/tasks/${skipNote.task.id}/queue`, {});
+    const skipQ = await post(`/api/tasks/${skipNote.task.id}/queue`, {});
+    check("an observation cannot enter the release lane at all (409 at the route)", skipQ.status === 409);
     const sigTask = (await (await post("/api/tasks", { text: "steward-signal task probe", queue: false })).json()) as { task: { id: string } };
     const sigTid = sigTask.task.id;
     await post(`/api/tasks/${sigTid}/queue`, {});
@@ -555,8 +573,8 @@ export async function run(sc: StewardCtx): Promise<void> {
       JSON.stringify(sigLane?.task ?? null));
     const skipRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; kind?: string }[] })
       .tasks.find((t) => t.id === skipNote.task.id);
-    check("the dispatcher SKIPS a queued note even when it is first in line — the lane task behind it was taken instead",
-      sigLaneSlot > 0 && skipRow?.kind === "note" && skipRow?.status === "queued",
+    check("the dispatcher takes the lane task and leaves the older observation exactly where it was",
+      sigLaneSlot > 0 && skipRow?.kind === "note" && skipRow?.status === "pending",
       JSON.stringify(skipRow));
     check("the manual start button refuses a note too (409) — NO path dispatches an observation",
       (await post(`/api/tasks/${skipNote.task.id}/dispatch`, {})).status === 409);

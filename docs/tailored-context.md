@@ -103,10 +103,17 @@ world the change lives in** and asks the agent to hold that world in mind silent
 ## 6. Application to Fleet: the lane brief
 
 > **Built since (2026-08-04, `f172053`):** the dispatcher compiles exactly this brief —
-> `runEnhance` over the task text plus the fresh lane's git facts (`briefPayload`),
-> additive-only by contract, `briefHash` on the outcome row. The paragraphs below are the
-> design rationale that led there; "inherits generic context" still describes a HAND-opened
-> lane, no longer the dispatch path.
+> `runEnhance` over the task text, additive-only by contract, `briefHash` on the outcome row.
+> The paragraphs below are the design rationale that led there; "inherits generic context"
+> still describes a HAND-opened lane, no longer the dispatch path.
+>
+> **Amended 2026-08-05:** the compile moved OFF the spawn path into the analysis sweep, and the
+> git-fact half of it was retired as an illusion. A dispatched lane is a fresh `worktree add`
+> off the integration tip, so its `briefPayload` was 0 ahead, 0 behind, nothing uncommitted, no
+> commits — an empty DATA block dressed as grounding. The enhancer's real product on this path
+> was form plus the `/sharpen3` suffix, and it says so now (`freshLaneFacts`). The grounding the
+> section below actually asks for arrives instead from the analyst, which reads the repo and
+> names what the brief does not hold up against.
 
 Today a lane (a `git worktree` + a Claude session) inherits whatever generic context
 the repo carries. That is the thin case: the agent gets the repo but not the *task's

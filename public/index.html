@@ -238,6 +238,14 @@
   .shellrow.q-queued { border-left: 3px solid #7aa2f7; }
   .shellrow.q-sent { border-left: 3px solid #9ece6a; }
   .shellrow.q-done { border-left: 3px solid #333; opacity: 0.55; }
+  /* ...and, overriding it, what the analyst made of the row. Status is a mechanism; these two are
+     the reasons a row is where it is, so they win the accent. `q-flag` = it wants your eyes,
+     `q-obs` = an observation, which is not work at all and should not read like a queued task. */
+  .shellrow.q-flag { border-left: 3px solid #e0af68; }
+  .shellrow.q-obs { border-left: 3px dotted #9d7cd8; }
+  .shellrow.q-obs .shrname { color: #c0caf5; }
+  /* the verdict line under a row title: present on nearly every row, so it must stay quiet */
+  .shellrow .shrsub .qv { color: #e0af68; }
   .shrbtn.danger { border-color: #5e2c3a; color: #f7768e; }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */

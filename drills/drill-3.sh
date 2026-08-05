@@ -71,7 +71,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 
 echo "drill instance: $DIR  (socket $SOCK, port $PORT)"
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow $REVIEW_ENV exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow $REVIEW_ENV exec bun server.ts >> server.log 2>&1"
 sleep 3
 
 cd "$DIR" || exit 1

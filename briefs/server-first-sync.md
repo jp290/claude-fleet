@@ -92,6 +92,57 @@ ihre Bedeutung oder verschwinden — sie sind der eigentliche Preis der Scheibe:
 heutige Zusage beweist, kann nicht nebenbei umgeschrieben werden. Wer ② baut, schreibt zuerst
 auf, welche dieser Zusagen bewusst fallen — und lässt den Owner das gegenzeichnen.
 
+## C ist gebaut — was dabei bewusst gefallen ist (2026-08-05, gegenzuzeichnen)
+
+Der Abschnitt oben verlangt, dass wer ② baut ZUERST aufschreibt, welche Zusagen fallen. Hier
+ist die Liste, und zuerst die Messung, die sie kleiner macht als der Brief erwartet hat.
+
+**Die Messung, die alles verschiebt:** `e2e-isolated.sh` startet den Server mit `FLEET_CMD=true`
+(`e2e-isolated.sh:295`). Die Lane-Panes der Suite laufen also *kein* claude. Der Autor-Pfad fragt
+`claudeAliveAt(sess(id))` — die UN-gewaiverte Sonde — und die antwortet dort `false`. Ergebnis:
+in der Suite feuert weiterhin der Fallback, und **keine einzige der sieben genannten
+Check-Familien musste umgeschrieben werden**. Sie sind nicht angefasst worden.
+
+Warum die strenge Sonde und nicht `claudeAlive`: `claudeAlive` gibt für ein fremdes `FLEET_CMD`
+bedingungslos `true` zurück (`server.ts:1469`, „custom commands are intentionally whatever the
+operator chose"). Dieser Waiver ist richtig für einen vom Owner geschriebenen Auto-Prompt und
+falsch hier: der Autor-Pfad pastet einen vom SERVER verfassten Prosa-Brief in die Pane, und eine
+Pane ohne claude führt Prosa als Shell-Kommandos aus — exakt die Gefahr, die der Kommentar über
+`claudeAlive` selbst beschreibt (`server.ts:1463-1467`).
+
+**Was trotzdem fällt — als Zusage, nicht als Check:**
+
+1. **„Ein Konflikt geht an den Wegwerf-Resolver."** Fällt. Neu: Autor zuerst, Agent als Fallback.
+   Die Checks `e2e/merge.ts:29/41/48/54/140` bestehen unverändert weiter, aber ihr Text („agent
+   …") beschreibt ab jetzt den FALLBACK, nicht mehr den einzigen Weg. Der Preis ist keine rote
+   Suite, sondern eine Suite, deren Wortlaut ohne diesen Absatz mehr verspricht als der Code hält.
+2. **Der Repair-Loop deckt nur noch den Agenten-Pfad.** `MERGE_REPAIR_ROUNDS` hängt an
+   `!pre.clean`; die vom Autor gelöste Auflösung kommt im ZWEITEN ⏫-Lauf als `carried` an, und
+   der ist per Definition `pre.clean`. Ein rotes Verify sieht der Owner dort trotzdem —
+   `runVerify` läuft auf beiden Pfaden (`server.ts:4774`) —, es wird nur nicht automatisch
+   repariert. Das ist die im Brief vorhergesagte strukturelle Ersetzung („der Autor, der löst,
+   verifiziert selbst"), hier als Konsequenz benannt statt als Nebeneffekt.
+3. **`carried` heißt nicht mehr „agent-gewählt".** Die Fall-Through-Familie (`:220-251`) prüft
+   mechanisch dasselbe, trägt aber jetzt beide Urheber; deshalb reist `resolvedBy` mit dem
+   `carried`-Satz mit, sonst wäre die Herkunft nach dem zweiten Lauf verloren.
+4. **Ein neuer Verdict-Status `awaiting-author`.** Jede Stelle, die MergeLast-Status aufzählt,
+   muss ihn führen (Boot-Restore `server.ts`, `src/client.ts`). Er ist bewusst KEIN
+   `needsMergeReview`: es liegt noch nichts zum Ansehen im Baum.
+
+**Was ausdrücklich NICHT fällt** (die drei Unverhandelbaren, je an ihrer Zeile geprüft):
+
+- git bleibt die Autorität: der zweite Lauf geht durch exakt dieselbe Prüfung „Tree sauber UND
+  main ist Vorfahr" (`server.ts:4761-4766`). Der Autor bekommt keinen Vertrauensvorschuss.
+- Der Konfliktpfad landet nie unbeaufsichtigt: im zweiten Lauf ist `unreviewed = carried`
+  nicht-leer, also endet er zwingend im `resolved`-Stopp — der Auto-Land-Zweig ist unerreichbar.
+- `tryScriptRebase` bleibt Schritt eins samt `rerere.enabled=false` und der `halted`-
+  Unterscheidung; der Autor-Zweig sitzt strikt dahinter.
+
+**Was keine Suite beweisen kann und offen bleibt:** dass ein ECHTES claude den Brief liest und
+eine gute Auflösung produziert. Das ist dieselbe Grenze, die `buildMergePrompt` seit jeher hat.
+Beweisbar gemacht ist alles davor und danach — die Zustellung, das Verdict, die Kette
+`awaiting-author` → `carried` → `resolvedBy:"author"` auf der Outcome-Row.
+
 ## Verworfen, mit Grund (nicht neu vorschlagen)
 
 - **Den Autor OHNE git-Verifikation glauben.** Die Prüfung bei `:4672` ist gegen einen lügenden

@@ -4,7 +4,7 @@ import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
-import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt } from "./merge-prompt";
+import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "./merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
@@ -437,6 +437,9 @@ type AuditEvent =
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
+  // ② the conflict went to the lane's OWN session instead of the throwaway resolver — the durable
+  // half of `resolvedBy`, recorded at the moment of the decision rather than reconstructed at land
+  | "merge_wake_author"
   | "steward_send" | "steward_send_capped"
   | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
   | "slot_shelve"
@@ -3366,8 +3369,16 @@ const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTo
 // "interrupted" is not a verdict a merge run PRODUCES — it is the durable INTENT marker a run
 // writes about itself before it starts, and the only status that can still be on record after the
 // process that owed a verdict died. Everything else here is a settled outcome.
-interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "interrupted";
+interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "interrupted" | "awaiting-author";
   detail: string; landed: boolean; branch: string; at: number; conflicted?: string[];
+  // WHO is resolving (or resolved) the files in `conflicted`. Present only where that question has a
+  // subject — i.e. alongside `conflicted`, never on a clean verdict. On "awaiting-author" it is a
+  // record of who was HANDED the conflict; on "resolved" it is who chose the lines now in the tree.
+  // It has to live on the verdict, not just on the land, because the ⏫ re-run carries the previous
+  // verdict's conflicts forward (`carried` in mergeJob) and the land site is the FIRST place that
+  // could no longer tell an author's resolution from a worker's — which is the one number that
+  // decides whether the fallback may ever be dropped (briefs/server-first-sync.md, Auflage 1).
+  resolvedBy?: "agent" | "author";
   // deterministic verify result against the rebased tree (design note §3). FOUR states, and the
   // owner-facing surfaces name all four:
   //   field absent      — no FLEET_VERIFY_CMD configured ("unverified", never silently green)
@@ -4335,6 +4346,77 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
   }
 }
 
+// ② THE OTHER RESOLVER — the lane's own session, the one that wrote the conflicting lines.
+// Owner decision 2026-08-05 (briefs/server-first-sync.md), Form 1: the author gets first refusal
+// on its own conflict, runMerge above stays as the fallback for when it cannot take it. What the
+// author has and the worker cannot be given is WHY those lines are the way they are.
+//
+// Nothing here is new gate machinery — all three safeguards already existed and are reused as they
+// stand: ensureSlot's `--resume` self-heal, the alive probe, and canDeliver's idle gate.
+//
+// Returns null when the author took it (the brief is in the pane), otherwise the gate that refused,
+// so the fallback's verdict can SAY why it fell back. That string is not decoration: the standing
+// risk the owner named is that the fallback quietly becomes the normal case, and "it fell back 40
+// times" is only actionable next to "because the pane was busy".
+type AuthorGate = DeliveryGate | "no-claude" | "send-failed";
+async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
+  conflicted: string[], laneTask: string | null): Promise<AuthorGate | null> {
+  // SELF-HEAL FIRST, and this is what makes "the author" mean something: a lane whose claude exited
+  // is recreated by ensureSlot with `--resume`, i.e. the SAME transcript and the same context that
+  // wrote the conflicting lines. 484 heals over 279 slot openings, 184 of them resumed with their
+  // context intact (measured 2026-08-05) — without this step the author path would silently degrade
+  // into "whatever session happens to still be running in that slot".
+  await ensureSlot(s);
+  // The UN-waived alive probe, deliberately not canDeliver's. `claudeAlive` returns true
+  // unconditionally when FLEET_CMD is not claude (:1469, "custom commands are intentionally
+  // whatever the operator chose") — a waiver that is correct for an owner-written scheduled prompt
+  // and WRONG here: this path pastes a prose brief the SERVER composed, and a pane not running
+  // claude would execute prose as shell commands. That is verbatim the hazard claudeAlive's own
+  // comment describes; the author path therefore asks the strict question and falls back when the
+  // answer is no. (It is also why a fleet with a custom FLEET_CMD keeps today's behaviour exactly.)
+  if (!(await claudeAliveAt(sess(s.id)))) return "no-claude";
+  // ⏫ is an owner act, so the master stop and quiet hours are waived exactly as the land gate in
+  // the merge route waives them — and the agent fallback honours neither either, so gating the
+  // author on them would only push work to the LESS informed resolver. `alive: false` because the
+  // strict probe above already answered that. The IDLE gate is the one that carries weight here:
+  // it is the "or busy" half of the owner's decision, and pasting a conflict brief over an author
+  // mid-task is precisely what it prevents.
+  const gate = await canDeliver(s, { now: Date.now(), killSwitch: false, alive: false,
+    quietHours: false, idleMs: MERGE_IDLE_MS });
+  if (!gate.ok) return gate.gate;
+  // Both logs are computed the same way runMerge computes them, for the same reason: the author
+  // knows its own side but has NOT seen what main did since the fork. Best-effort — an unreadable
+  // log becomes "(none)" in the brief rather than blocking the wake.
+  const lg = await git(cwd, "log", "--no-color", "--oneline", `${main}..HEAD`);
+  const mb = await git(cwd, "merge-base", main, "HEAD");
+  const mergeBase = mb.code === 0 && mb.out.trim() ? mb.out.trim() : main;
+  const mlg = await git(cwd, "log", "--no-color", "--oneline", `${mergeBase}..${main}`);
+  const prompt = buildAuthorPrompt({ branch, main, conflicted, laneTask,
+    laneLog: lg.code === 0 ? lg.out : "", mainLog: mlg.code === 0 ? mlg.out : "" });
+  try {
+    await sendText(s, prompt, true);
+  } catch {
+    // sendText throws when the pane died between the probe above and the paste. Recording "sent"
+    // for a brief that never arrived would leave a lane waiting on an author that never heard —
+    // report it as a gate so the fallback runs instead.
+    return "send-failed";
+  }
+  // the brief is server-injected text in the owner's own pane: it belongs in the same two records
+  // every other injected prompt lands in. Source "auto" (not "owner") on purpose — ownerPrompts is
+  // an owner-ATTENTION proxy and Fleet's own brief costs the owner none.
+  // Known coupling, left as it is: laneOwnerPrompts reads the FIRST owner-or-auto prompt as a
+  // lane's founding brief, so on a lane that never received one this brief would become it. That
+  // lane cannot occur in practice — a lane with no prompt at all wrote no conflicting code — and
+  // the alternative (omitting the brief) would leave a prompt the SERVER typed into a pane off the
+  // one journal that records such things, which is the worse trade.
+  const now = Date.now();
+  s.history = [...s.history, { text: prompt, ts: now }].slice(-MAX_HISTORY);
+  saveHistory(s);
+  logPrompt(s, prompt, "auto", now);
+  audit("merge_wake_author", s.id, `${branch}: ${conflicted.length} conflict${conflicted.length === 1 ? "" : "s"}`);
+  return null;
+}
+
 // One repair round: hand the resolver the exact verify failure and let it fix the rebased tree.
 // Invoked exactly like runMerge (same MERGE_CMD/session, timeout, tools). The returned status is
 // the agent's NARRATIVE only — mergeJob's loop re-establishes the git-verified state and re-runs
@@ -4685,12 +4767,23 @@ function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; a
   };
 }
 
-// `carried` = conflict files whose agent-chosen resolution is ALREADY committed in this lane and
-// has never been reviewed, taken from the verdict this re-run supersedes (see the ⏸ guard in the
-// merge route). Empty for a first run.
+// `carried` = conflict files whose resolution is ALREADY committed in this lane and has never been
+// reviewed, taken from the verdict this re-run supersedes (see the ⏸ guard in the merge route).
+// Empty for a first run. `carriedBy` is WHO chose those resolutions — it rides along because this
+// re-run is the only place the attribution can be lost: the lane looks identical whether an author
+// or a worker produced it, and the land site reads it off the verdict this run is about to write.
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
-  carried: string[] = []): Promise<void> {
+  carried: string[] = [], carriedBy: "agent" | "author" = "agent"): Promise<void> {
   let res: MergeLast;
+  // the verdict write, extracted so the ② author path can leave early without duplicating it: a
+  // slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared by openSlot,
+  // and this lane's verdict must not be written over whatever lives there now.
+  const record = (r: MergeLast): void => {
+    if (!s.cwd || s.cwd === cwd) {
+      mergeLast.set(s.id, r);
+      saveState(); // verdicts are part of persisted state now — the ⏸ gate must survive deploys
+    }
+  };
   // the code map's scratch, outside the tree by design (buildLaneGraph). Declared out here so the
   // cleanup below runs on EVERY exit — a thrown worker, a wedged pre-pass, a timeout.
   let graphDir: string | null = null;
@@ -4740,10 +4833,40 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       await saveStateNow();
     }
     const laneTask = tasks.find((t) => t.slot === s.id)?.text ?? null;
+    // ② FORK IN THE ROAD, and the only one this job has: who resolves. The author gets first
+    // refusal (wakeAuthor); the throwaway resolver below is the fallback. Strictly AFTER the script
+    // pre-pass, which is unchanged and still the first step — the author is asked only about a
+    // conflict git could not replay by itself.
+    const authorGate = pre.clean ? "clean" : await wakeAuthor(s, cwd, branch, main, pre.conflicted, laneTask);
+    if (authorGate === null) {
+      // The brief is in the author's pane. This job is DONE — deliberately: waiting for a human-
+      // paced session inside a request-shaped job is what the async verdict exists to avoid, and
+      // the second ⏫ is where the work comes back.
+      // `conflicted` is what makes the return trip safe. The route carries it (and `resolvedBy`)
+      // into the next run as `carried`, so when the author's rebase replays clean, `unreviewed` is
+      // non-empty and the run lands in the STOP-for-review branch instead of the clean auto-land.
+      // That is M3 ("the conflict path never lands unattended") holding for the author exactly as
+      // it holds for the worker — the invariant is about unseen semantic choices, not about who
+      // made them. Note this is NOT needsMergeReview: nothing is in the tree yet to review.
+      record({ status: "awaiting-author", landed: false, branch, at: Date.now(),
+        conflicted: pre.conflicted, resolvedBy: "author",
+        // the cap wraps the WHOLE string, not just its last piece — the file list is unbounded input
+        detail: (`${main} moved and the rebase conflicts in ${pre.conflicted.length} file${pre.conflicted.length === 1 ? "" : "s"} `
+          + `(${pre.conflicted.slice(0, 6).join(", ")}) — handed to this lane's own session, which wrote the code. `
+          + "It resolves and commits; then re-run ⏫ and the server re-verifies with git and stops here for your review.").slice(0, 600) });
+      return;
+    }
+    // The author could not take it — `authorGate` now names why, and it is carried into the verdict
+    // below rather than only logged. A fallback nobody can count silently becomes the normal case,
+    // and "it fell back" without "because the pane was busy" is not a number anyone can act on.
+    const fellBack = authorGate === "clean" ? "" : `(author unavailable: ${authorGate}) `;
+    if (fellBack) console.log(`slot ${s.id}: conflict resolution fell back to the throwaway resolver — ${authorGate}`);
     // The code map is built ONLY where an agent is actually about to read it. 79 of the 83
     // recorded lanes rebased clean and spawned nothing at all (lane-outcomes.jsonl, 2026-08-05);
     // charging every one of them 5.7 s for a graph nobody opens would be a cost on the common
     // path to serve the rare one. Reused by the repair rounds below — same tree, same agent.
+    // The AUTHOR path never gets here and never pays it either: a session in its own worktree
+    // already has the project, and CLAUDE.md already tells it about graphify.
     if (!pre.clean) {
       graphDir = `${tmpdir()}/fleet-lane-graph-${randomBytes(6).toString("hex")}`;
       graph = await buildLaneGraph(cwd, graphDir);
@@ -4820,11 +4943,16 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           const repairNote = repairRounds > 0
             ? ` verify ${repairVerdict} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
             : "";
+          // WHO chose the lines now in this tree. On the carried path that is whoever the superseded
+          // verdict named (`carriedBy` — the author path's whole return trip runs through here); on
+          // this run's own conflict path it is the worker that just ran, because the author path
+          // returned above and never reaches this branch.
+          const resolvedBy = pre.clean ? carriedBy : "agent";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
-            conflicted: unreviewed, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
+            conflicted: unreviewed, resolvedBy, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
             detail: (pre.clean
-              ? `${main} moved on, so this lane re-rebased with no conflicts — but it still carries an agent's unreviewed resolution of ${unreviewed.length} conflict${unreviewed.length === 1 ? "" : "s"} from an earlier run. Review the diff, then land.`
-              : `${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`).slice(0, 600) };
+              ? `${main} moved on, so this lane re-rebased with no conflicts — but it still carries an ${resolvedBy}'s unreviewed resolution of ${unreviewed.length} conflict${unreviewed.length === 1 ? "" : "s"} from an earlier run. Review the diff, then land.`
+              : `${fellBack}${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`).slice(0, 600) };
         } else if (verify && verify.ok === null) {
           // CLEAN path but verify SKIPPED — the decision site (see VERIFY_SKIP_EXIT above). A
           // configured gate declined to run on this tree, so this land would be as unverified as a
@@ -4905,22 +5033,20 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     }
   } catch (e) {
     // `conflicted` rides along on the failure too. It is not decoration: it is the ONLY record
-    // that this lane holds agent-chosen resolutions nobody reviewed, and the next run reads it
-    // straight off this verdict (`carried`). Dropping it on an error — a wedged pre-pass, a
-    // thrown worker — would let the run after that one auto-land them.
+    // that this lane holds resolutions nobody reviewed, and the next run reads it straight off
+    // this verdict (`carried`). Dropping it on an error — a wedged pre-pass, a thrown worker —
+    // would let the run after that one auto-land them. `resolvedBy` travels with it for the same
+    // reason and only where it does: it describes those carried files, so it is meaningless (and
+    // absent) when there are none.
     res = { status: "error", detail: (e instanceof Error ? e.message : "merge agent failed").slice(0, 600),
-      landed: false, branch, at: Date.now(), ...(carried.length ? { conflicted: carried } : {}) };
+      landed: false, branch, at: Date.now(),
+      ...(carried.length ? { conflicted: carried, resolvedBy: carriedBy } : {}) };
   } finally {
     // the map is a scratch artifact of ONE run, never state: a second ⏫ rebuilds it against
     // whatever the tree looks like then, and a stale map is worse than no map for a conflict.
     if (graphDir) try { rmSync(graphDir, { recursive: true, force: true }); } catch { /* inert in TMPDIR */ }
   }
-  // a slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared
-  // by openSlot — don't write this lane's verdict onto whatever lives there now
-  if (!s.cwd || s.cwd === cwd) {
-    mergeLast.set(s.id, res);
-    saveState(); // verdicts are part of persisted state now — the ⏸ gate must survive deploys
-  }
+  record(res);
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -5484,7 +5610,7 @@ if (existsSync(STATE_FILE)) {
       for (const [k, v] of Object.entries(pm as Record<string, unknown>)) {
         const s = slotFrom(k);
         if (s?.worktree && typeof v === "object" && v !== null
-          && ["merged", "blocked", "error", "resolved", "interrupted"].includes((v as MergeLast).status)
+          && ["merged", "blocked", "error", "resolved", "interrupted", "awaiting-author"].includes((v as MergeLast).status)
           && typeof (v as MergeLast).detail === "string" && typeof (v as MergeLast).branch === "string"
           && (v as MergeLast).branch === s.worktree.branch)
           mergeLast.set(s.id, v as MergeLast);
@@ -7564,10 +7690,11 @@ Bun.serve<WSData>({
           // resolvedConflict from the verdict's conflicted files, repairRounds it carried, human-confirmed.
           const land = await landLane(s, {
             resolvedConflict: (reviewed?.conflicted?.length ?? 0) > 0,
-            // the throwaway resolver is the only path that can have produced this tree today. When
-            // ② lets the lane's own session resolve instead, that path states "author" HERE, and
-            // the ledger separates them from its first row rather than in hindsight.
-            resolvedBy: "agent",
+            // ② is live, so this is no longer always the throwaway resolver: the verdict the owner
+            // is confirming names its own resolver, and that is the only thing here that knows.
+            // The `?? "agent"` covers verdicts written before the field existed — those predate the
+            // author path entirely, so the default is a fact about them, not a guess.
+            resolvedBy: reviewed?.resolvedBy ?? "agent",
             repairRounds: reviewed?.repairRounds ?? 0,
             confirmedByHuman: true,
             verified: verifyProv ? verifyProv.ok : null,
@@ -7619,9 +7746,14 @@ Bun.serve<WSData>({
         // on, which is precisely when the fresh run's pre-pass rebases them cleanly. Carry them, or
         // the clean auto-land branch lands work no human has seen (`unreviewed` in mergeJob).
         const carried = (pend?.conflicted ?? []).slice(0, 50);
+        // …and WHO chose them. This is the one hop where the attribution can be lost: the verdict
+        // is about to be deleted, and the tree it describes looks the same whichever resolver made
+        // it. Default "agent" matches every verdict written before resolvedBy existed — those were
+        // all worker resolutions, so the default is a fact about the old rows, not a guess.
+        const carriedBy = pend?.resolvedBy ?? "agent";
         mergeLast.delete(s.id); // a new run supersedes the previous verdict
         saveState();
-        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carried)
+        const job: Promise<void> = mergeJob(s, cwd, repo, branch, main, carried, carriedBy)
           .finally(() => { if (mergeInflight.get(s.id) === job) mergeInflight.delete(s.id); });
         mergeInflight.set(s.id, job);
         return json({ running: true });

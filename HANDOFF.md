@@ -1,8 +1,53 @@
-# HANDOFF — Session 24 (2026-08-05 nachts: eine Warnfläche entschärft, ② als Brief statt als Commit) · 23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 25 (2026-08-05: die Ventile — Eval-Gate, Steward-Puls, Dispatcher an) · 24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 25 (2026-08-05): der Autonomie-Kreislauf ist geschlossen — hinter Ventilen
+
+Drei Commits (`db02562` Reaper · `184fc72` `/api/self/gate` · `ca55b52` Eval-Gate), alle
+deployed und live nachgeprüft; Mechanismen in den Bodies. Hier nur das Residuum.
+
+### Owner-Entscheide dieser Session
+
+- **Eval-Gate gebaut und AN**: maschinell eingereihte Tasks bekommen VOR dem unbeaufsichtigten
+  Spawn eine kritische Sicht (Opus 5, read-only, `eval-prompt.ts`; ②-Kontrakt: downgrade-only,
+  fail-closed). **Dispatcher wieder AN** — der Flip kam NACH dem Gate, das war die Bedingung.
+  Owner-Promote und Hand-Knopf umgehen das Gate bewusst (attended schlägt Automatik).
+- **Eval-Modell = `claude-opus-5`** (Owner wörtlich: „Beim eval-Model … einfach opus5 nehmen").
+- **Steward-Dauerpuls**: perpetual-Auto `69b31603` auf Slot 2 (`⚙ steward`), stündlich,
+  idleSec 600. perpetual ist owner-only per Design (`server.ts`, grep `allowPerpetual`).
+
+### Live bewiesen, erste Minuten
+
+Der erste echte Sweep fing eine **Queue-Dublette mit Zeilenzitat** („slice C is already
+implemented and landed. wakeAuthor exists at server.ts:4457") — und der erste Rundgang-Puls
+des Stewards fand **dieselbe Dublette unabhängig**. Die Terminal-Task `2e9ed996` wurde
+korrekt als `review` geparkt (mehrteilig, teilerledigt) und wartet auf Owner-Split.
+
+### Korrekturen, die man kennen muss
+
+- **Der Steward-Worktree ist NEU**: der alte hing auf der Vor-Publish-Historie (`b5a140b`)
+  und wurde ersetzt — Branch `steward-live` auf aktuellem main, Scaffolding von Hand kopiert
+  (0600). Der alte Branch `steward` liegt als Altlast. `inspektion-register.jsonl` (26 Zeilen
+  Puls-Register) wurde in den Haupt-Checkout gerettet, jetzt gitignored.
+- Das ⚙-Zahnrad fehlte, weil KEIN Slot auf den Steward-Worktree zeigte — Label exakt
+  `⚙ steward` ist token-tragend (`server.ts`, grep `STEWARD_LABEL`); die Open-Route nimmt
+  `label` direkt mit, dann bakes der Erst-Spawn den Token (verifiziert per `ps eww`, nur Key).
+- Bewusste v1-Lücke: eine am Tages-Cap (`FLEET_EVAL_MAX_AUTO_PER_DAY`, 10) wartende
+  auto-Task trägt keine waiting-Note — nur den eval-Chip.
+
+### Nächste Stufen (Reihenfolge im Chat begründet, nichts davon begonnen)
+
+1. **Auto-Land für eval-auto-Lanes** (Entscheid #6) — Bedingung „erst echte Läufe" ist erfüllt.
+2. **⑦ v2: die Verify-Queue besitzt die Läufe** — erst danach `DISPATCH_MAX_LANES` > 2.
+3. **Overlap-bewusstes Zurückhalten im Dispatcher** (Eval flaggt Kollisionen schon; `laneDrift`
+   liefert die Daten). Cross-Repo-Parallelität ist schon heute echt (Deckel zählt pro Repo).
+4. Ideen-Pool: existiert als `kind:note`; „↻ refine"-Knopf (Note → Enhancer → lane-Task) als
+   kleiner Folge-Baustein, erst nach ein paar Tagen Betrieb.
 
 ---
 

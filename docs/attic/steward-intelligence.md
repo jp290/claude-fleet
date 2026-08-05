@@ -141,6 +141,14 @@ worktree churn would wipe it). It lives server-side, beside `fleet.json`, on the
   (`POST /api/steward/outcomes/harm`); a `claudeAlive` true→false-in-window is an escalated
   crash CANDIDATE, never auto-harm (§6). Reply-referencing deferred (under-counts `helped`,
   conservative). The ladder wiring that consumes the tally is still future.
+  **Corrected 2026-08-05: the outcome half above was REMOVED again** (`bef43f6`, per
+  analysis-2026-07-28 §3 — a writer with two readers and no consumer;
+  `measureOutcomes`/`promotionEligible`/`GET /api/steward/outcomes` no longer exist).
+  The outcome signal that survived is the propose-class record: owner promote/dismiss of
+  a steward filing writes `kind:"propose_outcome"` to this journal, since 2026-08-05
+  enriched with the filing's `slug`, `taskKind` and a 200-char text excerpt so the
+  helped/dismissed ratio is calibratable against WHAT was filed. The reading half of §4's
+  ladder — anything that consumes this record — remains unbuilt.
 - **Owner-model** — a curated document the steward *proposes* edits to and the
   owner promotes (like the shelf, but about JP). *Resolved 2026-07-22:* a gitignored
   **`OWNER.md`** at repo root, mirroring CLAUDE.md (hand-copied into the steward

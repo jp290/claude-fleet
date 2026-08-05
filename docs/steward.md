@@ -103,9 +103,14 @@ steward slot, both are read-only, and both end in the same place: at most one or
 | | `/rundgang` | `/inspektion` |
 |---|---|---|
 | Watches | the **operation** — which lane needs the owner now | the **substance** — what is broken or avoidably worse |
-| Sensing | one call: `GET /api/steward/digest` (per-slot state, `sinceLastLook`, ledgers) | one revier per run out of five, rotating |
-| Memory | the steward journal (`POST /api/steward/journal`) | `inspektion-register.jsonl`, untracked in the steward worktree |
+| Sensing | one call: `GET /api/steward/digest` (per-slot state, `sinceLastLook`, ledgers, deploy facts) | one revier per run out of five, rotating |
+| Memory | the steward journal (`POST /api/steward/journal`) | the same journal, `kind:"inspektion"` register rows (`?kind=` filter on the GET) |
 | Honest empty result | "all clear", files nothing | "nothing", files nothing |
+
+Filings from both pulses carry a stable `ref` slug; the server keeps **one live proposal per
+ref** and answers a repeat filing with the existing row (`dedup:true`) — a persisting condition
+survives an hourly pulse as one queue item, not a pile. A done/archived ref may re-file: the
+owner ruled, and a condition that returns after a ruling is new information.
 
 Three properties earn the Inspektion its keep, each written against a measured failure:
 
@@ -117,9 +122,12 @@ Three properties earn the Inspektion its keep, each written against a measured f
   the chosen revier gets one register line and waits for its rotation.
 - **The register remembers refutations too.** Code defects, unlike lane states, persist
   until fixed — without a memory the pulse re-files a dismissed finding every run, and
-  re-derives the same dead ends. `ts` comes from `date -u` at write time; a register whose
-  timestamps are invented cannot be audited against the audit trail, and being auditable
-  is its whole job.
+  re-derives the same dead ends. Since 2026-08-05 the register lives in the steward journal
+  (`kind:"inspektion"`), not as a file in the steward worktree: the worktree is disposable,
+  and when it was replaced the file-register silently stayed behind in the dead tree —
+  exactly the memory loss this bullet exists against. The server stamps `ts` itself now;
+  the first live pulse had invented round-minute times, and a register whose timestamps
+  are fiction cannot be audited against the audit trail, which is its whole job.
 
 Both pulses send into the steward's own pane, which is where the owner briefs it. The known
 hazard is unchanged: `sendText` is paste-buffer + Enter with no clearing of the input line,
@@ -130,9 +138,11 @@ as one prompt. Nothing guards this today.
 first filed a verified latent auth gap and, in the same run, an orphaned measurement
 subsystem — both confirmed independently, both acted on by the owner. The second found a
 real defect in code that had landed two hours earlier and survived a critical re-read
-(`b7d449a0`: a classification reading state the spawn had already overwritten). Whether
-this holds is an open question with a fixed answer date — the autos carry finite run caps
-on purpose, so continuing is a decision rather than a default.
+(`b7d449a0`: a classification reading state the spawn had already overwritten). The
+finite-run-cap stance ("continuing is a decision rather than a default") was decided for
+the Rundgang on 2026-08-05: the owner made it a **perpetual hourly auto** (perpetual is
+owner-only by design), backed by server-side ref-dedup; the Inspektion stays manually
+fired or finite-capped.
 
 ## Voice
 

@@ -4611,6 +4611,10 @@ function renderQueueDetail() {
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   shell.detail.appendChild(meta);
+  // the eval verdict spelled out in full where it can be READ — the chip above carries the
+  // reason only as a hover title, and the owner asked to see the review without hunting for it
+  if (t.eval) shell.detail.appendChild(el("div", "qdtext",
+    `${t.eval.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review"} — ${t.eval.reason} (${t.eval.model}, ${fmtTs(t.eval.at)})`));
   // the full text, wrapped and selectable — the row only ever shows its first line
   const body = qTaskText(t.id);
   shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
@@ -4652,7 +4656,7 @@ function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
-    shown.map((t) => [t.id, t.status, t.slot, t.note, taskText.has(t.id)])]);
+    shown.map((t) => [t.id, t.status, t.slot, t.note, t.eval?.verdict, taskText.has(t.id)])]);
   if (key === qKey) return;
   qKey = key;
 
@@ -4690,6 +4694,7 @@ function renderQueue() {
         name: qFirstLine(t.id), id: t.id, cls: `q-${t.status}`,
         sub: [t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
           t.kind === "note" ? "note" : "",
+          t.eval ? (t.eval.verdict === "auto" ? "✓ eval" : "⚠ eval") : "",
           t.repo ? `⌂ ${t.repo.split("/").pop()}` : "",
           `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
           t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),

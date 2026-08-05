@@ -53,6 +53,17 @@ while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
 done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
 
+# --- dead-socket reap (owner decision 2026-08-05, hygiene before continuous operation). tmux
+# never unlinks a -L socket file when its server exits, so every instance leaves one behind —
+# the machine had accumulated 171 dead sockets in days. Reap here, holding the suite lock, the
+# same way the lock itself is reaped: `fleet*` can never match the live `claudefleet` (different
+# prefix), and a socket whose server still answers is KEPT — a UI throwaway instance runs
+# WITHOUT this lock, so liveness is probed per socket, never assumed from the name.
+for _st_sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/fleet*; do
+  [ -S "$_st_sock" ] || continue
+  tmux -S "$_st_sock" list-sessions >/dev/null 2>&1 || rm -f "$_st_sock"
+done
+
 # normalize a relative path in place: `e2e/../src/backoff` → `src/backoff`
 _stage_norm() {
   printf '%s' "$1" | awk -F/ '{

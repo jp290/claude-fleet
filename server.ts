@@ -54,6 +54,11 @@ const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
 // the post-land audit trail (verification tier 2) — one row per full-suite run against the
 // integration branch after a land. Same appendEvent discipline/rotation as the trails above.
 const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
+// the ADJUDICATION rail for that trail — one append-only judgement per audit row somebody ruled on
+// (see the ADJUDICATION region below). A SIDE rail, exactly like DISPOSITION_FILE, and for the same
+// reason plus one: it makes "a judgement can never rewrite `result`" structural rather than a rule
+// the route has to keep. Same appendEvent discipline/rotation as the trails above.
+const AUDIT_ADJUDICATION_FILE = `${import.meta.dir}/audit-adjudications.jsonl`;
 // the PENDING side of that trail: lands whose audit has not produced a row yet. Not an event log
 // (no rotation, no history) — a small mutable mirror of the in-memory queue, rewritten whole on
 // every mutation. Absent file = nothing pending. See savePostLandAuditQueue for why it exists.
@@ -4390,6 +4395,125 @@ function postLandAuditSummary(): PostLandAuditInfo | null {
     mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}) } : null;
 }
 
+// --- ADJUDICATION: a red audit must be able to say that somebody LOOKED AT IT --------------------
+// Measured 2026-08-05 on the live trail: 36 runs, 23 green / 13 red, and a row carries
+// `at/startedAt/ms/repo/main/mainSha/result/cmd/exitCode/out/covers` — no field a judgement fits in.
+// So every red is permanently ambiguous between "nobody looked" and "looked, it was noise", and the
+// pulse learned the only response that ambiguity allows: scroll past. This rail is the missing half
+// — not a better red, a red that can be CLOSED.
+//
+// It is a SIDE rail (its own append-only file, joined by key), not a field rewritten into the audit
+// row, and the choice is load-bearing three times over:
+//   · `result` can never change, because this writer has no reach into POSTLAND_AUDIT_FILE at all.
+//     An adjudicated red stays red BY CONSTRUCTION rather than by a rule the route must remember.
+//   · POSTLAND_AUDIT_FILE is append-only through appendEvent's serialized chain and rotates into a
+//     `.1` generation. In-place editing would have to read both generations, rewrite whole files,
+//     and race an audit that finishes mid-rewrite (runs take minutes and land whenever they land) —
+//     a lost row, or a torn write that costs the entire history instead of one line.
+//   · it is this repo's existing answer to the identical problem: DISPOSITION_FILE, "one
+//     append-only label per advisory output the owner ruled on". Copied, not re-invented.
+// What the owner asked for is preserved where it is observable: every read surface JOINS the rail in
+// and serves `adjudication` ON the row (the API trail and the steward's ledger projection below), so
+// a consumer sees the field the brief specified and never the plumbing.
+//
+// KEY = the row's `at`. Not `mainSha`: coalescing plus the drain's stated at-least-once residual
+// ("a death inside it re-audits the same tip once more after boot") means two rows can name one
+// tip, and a row that never resolved a tip carries `mainSha: ""` — while `at` is stamped once per
+// row by a globally serialized drain loop, is present on every row including the unmeasurable ones,
+// and is already the sort key of every reader.
+const ADJUDICATION_VERDICTS = ["real", "flake", "stale-test", "unknowable"] as const;
+type AdjudicationVerdict = typeof ADJUDICATION_VERDICTS[number];
+// one sentence of why, the same shape and cap as Slot.mission — a note, never a report
+const MAX_ADJUDICATION_NOTE = 300;
+// `by` is stamped server-side, never read from the body: "owner" is a human decision, "backfill" is
+// the one-shot migration below. A reader must be able to tell them apart — a judgement nobody typed
+// is weaker evidence than one somebody did, and hiding that would be the whole point, inverted.
+interface AuditAdjudication {
+  at: number;                  // when the judgement was made
+  auditAt: number;             // the audit row it judges (that row's `at`)
+  verdict: AdjudicationVerdict;
+  by: "owner" | "backfill";
+  note?: string;
+}
+// newest-wins per audit row, so a mis-judgement is corrected by adjudicating again and the rail
+// keeps the whole history — the same append-only-with-latest-reading shape as every trail here.
+async function adjudicationsByAudit(): Promise<Map<number, AuditAdjudication>> {
+  const { rows } = await readLedger<Record<string, unknown>>(AUDIT_ADJUDICATION_FILE);
+  const byAudit = new Map<number, AuditAdjudication>();
+  for (const r of rows) {
+    const auditAt = typeof r.auditAt === "number" ? r.auditAt : NaN;
+    const verdict = typeof r.verdict === "string" ? r.verdict : "";
+    if (!Number.isFinite(auditAt) || !ADJUDICATION_VERDICTS.includes(verdict as AdjudicationVerdict)) continue;
+    const rec: AuditAdjudication = {
+      at: typeof r.at === "number" ? r.at : 0, auditAt, verdict: verdict as AdjudicationVerdict,
+      by: r.by === "backfill" ? "backfill" : "owner",
+      ...(typeof r.note === "string" && r.note ? { note: r.note } : {}),
+    };
+    const prev = byAudit.get(auditAt);
+    if (!prev || rec.at >= prev.at) byAudit.set(auditAt, rec);
+  }
+  return byAudit;
+}
+// the owner write. Mirrors writeDisposition: validate and append in one place, return the Response.
+async function writeAuditAdjudication(body: Record<string, unknown> | null): Promise<Response> {
+  if (!body) return json({ error: "invalid json" }, 400);
+  const auditAt = typeof body.at === "number" ? body.at : NaN;
+  const verdict = body.verdict;
+  const note = typeof body.note === "string" ? body.note.trim() : "";
+  if (!Number.isFinite(auditAt))
+    return json({ error: "at must be the `at` of the audit row being judged" }, 400);
+  if (typeof verdict !== "string" || !ADJUDICATION_VERDICTS.includes(verdict as AdjudicationVerdict))
+    return json({ error: `verdict must be one of ${ADJUDICATION_VERDICTS.join(", ")}` }, 400);
+  if (note.length > MAX_ADJUDICATION_NOTE)
+    return json({ error: `note must be ≤${MAX_ADJUDICATION_NOTE} chars` }, 400);
+  // the row must EXIST. A judgement on a key that names nothing is a typo, and accepting it would
+  // put a verdict on the rail that no reader can ever join back to anything.
+  const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+  const target = rows.find((r) => r.at === auditAt);
+  if (!target) return json({ error: `no post-land audit row with at=${auditAt}` }, 404);
+  const rec: AuditAdjudication = {
+    at: Date.now(), auditAt, verdict: verdict as AdjudicationVerdict,
+    by: "owner", // stamped, never read from the body — this route has exactly one principal
+    ...(note ? { note } : {}),
+  };
+  appendEvent(AUDIT_ADJUDICATION_FILE, rec as unknown as Record<string, unknown>);
+  audit("postland_audit", undefined,
+    `adjudicated ${verdict} — ${String(target.result)} audit at ${auditAt}${note ? `: ${note}` : ""}`.slice(0, 240));
+  // `result` is echoed back UNCHANGED and on purpose: the caller's own confirmation that judging a
+  // red did not launder it into a pass.
+  return json({ ok: true, adjudication: rec, result: target.result });
+}
+// The one-shot BACKFILL, run at boot. Eight of the thirteen reds on the live trail were produced
+// before the signal-first retention landed (70cd443, in effect on the live srv from the restart
+// between rows 1785181565699 and 1785231715695): their `out` is a blind 4095-char tail that keeps
+// the 4% of a suite log which says nothing, so WHICH checks failed is unrecoverable from any
+// artifact that still exists. Those reds are not open questions — they are unanswerable ones, and a
+// ledger that shows thirteen open questions where five are open is itself a false reading.
+// Idempotent (it writes only where the join is empty) and inert anywhere else: every row a harness
+// or another deployment produces is stamped `Date.now()`, i.e. far past this bound.
+const SIGNAL_FIRST_RETENTION_AT = 1785231715695; // the oldest row on record carrying the new retention
+const BACKFILL_NOTE = "record predates signal-first retention — the retained output is a blind"
+  + " char-tail and cannot name what failed";
+async function backfillUnknowableAudits(): Promise<void> {
+  try {
+    const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+    const judged = await adjudicationsByAudit();
+    const stale = rows.filter((r) => r.result === "red" && typeof r.at === "number"
+      && r.at < SIGNAL_FIRST_RETENTION_AT && !judged.has(r.at));
+    if (!stale.length) return;
+    for (const r of stale)
+      appendEvent(AUDIT_ADJUDICATION_FILE, {
+        at: Date.now(), auditAt: r.at as number, verdict: "unknowable", by: "backfill", note: BACKFILL_NOTE,
+      });
+    console.log(`post-land audit adjudication: ${stale.length} red row(s) predating signal-first`
+      + " retention marked unknowable — unanswerable, not open.");
+  } catch (e) {
+    // never fatal at boot: without the backfill those reds simply stay un-adjudicated, which is
+    // today's behaviour and no worse
+    console.log(`post-land audit backfill failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 // --- per-lane attributed-outcome RECORDER. Appends ONE server-stamped fact at each of a lane's
 // terminal events (land / kill / shelve / revert), so the fleet can eventually learn which
 // model + brief + task-class produces landable work — from REAL lanes, not a synthetic eval set.
@@ -6365,6 +6489,10 @@ if (existsSync(POSTLAND_AUDIT_FILE)) {
     console.log("post-land audit trail: last row unreadable — the board starts without it");
   }
 }
+// the one-shot migration that retires the reds nobody can ever answer (see backfillUnknowableAudits).
+// Fire-and-forget: it reads two ledgers and appends at most a handful of rows, and nothing at boot
+// waits on the result — an un-backfilled red is simply an un-adjudicated one.
+void backfillUnknowableAudits();
 // ...and resume the PENDING side of it. Everything still on the queue file is a land whose audit
 // never produced a row: queued behind a running suite, or in flight when the process died. Both
 // re-enter the drain here, against the CURRENT integration tip — which is not a compromise but the
@@ -7183,7 +7311,12 @@ async function slotStatsView(now: number): Promise<SlotStatsSummary> {
 // narrative, and it survives a dead digest worker.
 const LEDGER_ROW_CAP = 20;   // hard per-trail cap: a burst of lands cannot inflate the pulse payload
 const LEDGER_COLD_ROWS = 5;  // no usable anchor (first pulse, or a rotated-away prior): last few rows, not a fake delta
-interface LedgerAudit { at: number; result: string; main: string; mainSha: string; covers: string[]; reason?: string }
+// `adjudication` rides the projection because it is what makes the pulse's audit rule decidable:
+// an un-adjudicated red is a section-1 candidate, an adjudicated one is closed and stays quiet. The
+// note comes along, capped exactly like `reason` beside it — the steward's job here is to NOT
+// re-raise a settled red, and one line of why is the difference between that and re-deriving it.
+interface LedgerAudit { at: number; result: string; main: string; mainSha: string; covers: string[]; reason?: string;
+  adjudication?: { verdict: string; at: number; by: string; note?: string } }
 interface LedgerOutcome { ts: number; branch: string; disposition: string; verified: boolean | null;
   confirmedByHuman: boolean; shadow: { verdict: string | null; at: number; raw: boolean } | null }
 interface LedgersView { since: number | null; auditConfigured: boolean; audits: LedgerAudit[]; outcomes: LedgerOutcome[] }
@@ -7203,14 +7336,20 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
     // it is durable and boot-resumed since the POSTLAND_AUDIT_QUEUE_FILE land — so a lingering
     // gap now means the run is still going, repeatedly dying, or unconfigured; not restart loss.)
     auditConfigured: !!POSTLAND_AUDIT_CMD,
-    audits: sinceWindow((await readEventLog(POSTLAND_AUDIT_FILE)).rows, "at").map((r) => {
-      const covers = Array.isArray(r.covers) ? (r.covers as unknown[]) : [];
-      return {
-        at: num(r.at), result: str(r.result) || "unknown", main: str(r.main), mainSha: str(r.mainSha),
-        covers: covers.map((c) => str((c as { branch?: unknown } | null)?.branch)).filter(Boolean).slice(0, 12),
-        ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
-      };
-    }),
+    audits: await (async () => {
+      const judged = await adjudicationsByAudit();
+      return sinceWindow((await readEventLog(POSTLAND_AUDIT_FILE)).rows, "at").map((r) => {
+        const covers = Array.isArray(r.covers) ? (r.covers as unknown[]) : [];
+        const adj = judged.get(num(r.at));
+        return {
+          at: num(r.at), result: str(r.result) || "unknown", main: str(r.main), mainSha: str(r.mainSha),
+          covers: covers.map((c) => str((c as { branch?: unknown } | null)?.branch)).filter(Boolean).slice(0, 12),
+          ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
+          ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at, by: adj.by,
+            ...(adj.note ? { note: adj.note.slice(0, 200) } : {}) } } : {}),
+        };
+      });
+    })(),
     outcomes: sinceWindow((await readEventLog(LANE_OUTCOME_FILE)).rows, "ts").map((r) => {
       const sh = r.cleanReviewShadow;
       const shadow = typeof sh === "object" && sh !== null ? sh as { verdict?: unknown; at?: unknown; raw?: unknown } : null;
@@ -8008,8 +8147,22 @@ Bun.serve<WSData>({
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 100) | 0));
       const { rows: audits, total, malformed } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
       audits.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
-      return json({ audits: audits.slice(0, limit), total, malformed, configured: !!POSTLAND_AUDIT_CMD });
+      // the adjudication rail JOINED onto the row it judges (see the ADJUDICATION region): the
+      // consumer reads one row carrying its own verdict, while `result` comes straight off the audit
+      // trail and no writer on the rail can reach it.
+      const judged = await adjudicationsByAudit();
+      const withAdj = audits.slice(0, limit).map((r) => {
+        const adj = typeof r.at === "number" ? judged.get(r.at) : undefined;
+        return adj ? { ...r, adjudication: adj } : r;
+      });
+      return json({ audits: withAdj, total, malformed, configured: !!POSTLAND_AUDIT_CMD });
     }
+    // ...and the write that puts a judgement there. Owner-only by POSITION (below tokenGate), the
+    // same access model as the trail above. It appends to a SEPARATE file and never opens
+    // POSTLAND_AUDIT_FILE for writing, so "an adjudicated red stays red" is not a rule this handler
+    // keeps — it is a thing it cannot do.
+    if (url.pathname === "/api/post-land-audits/adjudicate" && req.method === "POST")
+      return await writeAuditAdjudication(await readJson(req));
     // ── guest ops (briefs/guest-ops-panel.md) ──────────────────────────────────────────────
     // Owner-only by POSITION, the same property /api/file has and the same one a later block move
     // would silently break: this sits past tokenGate, BELOW the SHARE_HOSTS gate (so the public

@@ -15,6 +15,8 @@ dispositions.jsonl
 dispositions.jsonl.1
 post-land-audits.jsonl
 post-land-audits.jsonl.1
+audit-adjudications.jsonl
+audit-adjudications.jsonl.1
 post-land-audit-queue.json
 post-land-audit-queue.json.tmp
 e2e-trail/

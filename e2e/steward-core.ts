@@ -581,7 +581,8 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // anchor as sinceLastLook — the prior rundgang record — and a WHITELIST projection: the owner-only
   // trails keep their own routes, the steward sees result/timing/branch facts and nothing else. ---
   type LedgersJ = { since: number | null; auditConfigured: boolean;
-    audits: { at: number; result: string; mainSha: string; covers: string[]; reason?: string }[];
+    audits: { at: number; result: string; mainSha: string; covers: string[]; reason?: string;
+      adjudication?: { verdict: string; at: number; by: string; note?: string } }[];
     outcomes: { ts: number; branch: string; disposition: string; verified: boolean | null;
       shadow: { verdict: string | null; raw: boolean } | null }[] } | undefined;
   const getLedgers = async (): Promise<LedgersJ> =>
@@ -624,6 +625,26 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   // rule stays honestly disarmed instead of firing on an unarmed sensor
   check("the ledger delta states whether the post-land audit is configured at all",
     led?.auditConfigured === false, JSON.stringify({ auditConfigured: led?.auditConfigured }));
+  // --- ADJUDICATION on the projection. This is what makes the pulse's audit rule decidable at all:
+  // "a red audit whose land has not since been resolved" cannot be evaluated from a row that has no
+  // field for a judgement, so an un-adjudicated red is the section-1 candidate and an adjudicated
+  // one is closed and stays quiet. Both halves are asserted — a projection that always carried the
+  // field, or never did, would leave the rule exactly as undecidable as before.
+  check("an UNADJUDICATED red reaches the steward as such — nothing to say it was ruled on",
+    led?.audits[0]?.result === "red" && led.audits[0].adjudication === undefined,
+    JSON.stringify(led?.audits[0]));
+  const adjRes = await post("/api/post-land-audits/adjudicate",
+    { at: freshAt, verdict: "stale-test", note: "fixture went stale, not a regression" });
+  check("the owner can adjudicate that red row (owner-token route, keyed on the row's `at`)",
+    adjRes.ok, `${adjRes.status} ${(await adjRes.text()).slice(0, 160)}`);
+  const adjLed = await getLedgers();
+  const adjRow = adjLed?.audits.find((a) => a.at === freshAt);
+  check("...and the judgement rides ON the digest row — verdict, by whom, and one line of why",
+    adjRow?.adjudication?.verdict === "stale-test" && adjRow.adjudication.by === "owner"
+    && (adjRow.adjudication.note ?? "").includes("fixture went stale"),
+    JSON.stringify(adjRow));
+  check("adjudicating did NOT launder the red into a pass — the projection still reads `red`",
+    adjRow?.result === "red" && adjRow.mainSha === "freshshaaaa", JSON.stringify(adjRow));
   // an unusable anchor (a prior whose ts is not a number) → since:null + the last few rows, never a
   // fake-empty delta. Same honesty stance as sinceLastLook's null.
   writeFileSync("steward-journal.jsonl",

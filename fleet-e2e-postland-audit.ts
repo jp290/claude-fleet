@@ -6,7 +6,7 @@
 // green), a burst of lands never spawns two concurrent suites, and — sections E–G, which restart the
 // server and therefore run last — a pending audit survives the death of the process that owed it.
 // Run via ./e2e-postland-audit.sh — never against a live fleet.
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 // Plumbing — IP/PORT/SOCK/BASE, the owner token read out of the instance's fleet.json, get/check,
 // and the live-fleet refusal this file used to carry as its own copied line — is e2e/harness.ts;
@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 // and this wrapper does not strip the lane pane's FLEET_SELF_* credentials the way e2e-isolated.sh
 // does, so a whitelist is the safe direction. e2e/restart.ts builds its own line for its own
 // reasons too.
-import { check, failures, get, IP, PORT, results, SOCK } from "./e2e/harness";
+import { BASE, check, failures, get, IP, PORT, post, results, SOCK } from "./e2e/harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 
 // the stand-in suite's control + evidence files (both live next to this script, = the server's dir)
@@ -370,6 +370,124 @@ check("configuring the command and restarting DRAINS what the unconfigured boot 
   j.result === "green" && j.covers.some((c) => c.branch === juliett.branch), JSON.stringify(j).slice(0, 300));
 check("the queue file is gone once that row exists too", (await readQueueFile()) === null,
   JSON.stringify(await readQueueFile()));
+
+// ===== (H) A RED CAN BE ADJUDICATED — and adjudicating it never launders it into a pass =========
+// The gap this closes (measured 2026-08-05 on the live trail: 36 runs, 13 red, 0 judgements): a row
+// had no field a verdict fits in, so every red stayed permanently ambiguous between "nobody looked"
+// and "looked, it was noise" — and that ambiguity is what trains the reflex of scrolling past red.
+// Everything here runs LAST, after the restart sections, for the same reason they do: it appends to
+// the trail and would otherwise disturb the exact row counts asserted above.
+type Adj = { verdict: string; at: number; by: string; note?: string };
+type AdjRow = AuditRow & { adjudication?: Adj };
+const adjRows = async (): Promise<AdjRow[]> => (await auditRows()) as AdjRow[];
+const rowAt = async (at: number): Promise<AdjRow | undefined> => (await adjRows()).find((r) => r.at === at);
+const RAIL_FILE = `${import.meta.dir}/audit-adjudications.jsonl`;
+const railRows = (): { auditAt?: number; verdict?: string; by?: string }[] => {
+  try {
+    return readFileSync(RAIL_FILE, "utf8").split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l) as { auditAt?: number; verdict?: string; by?: string });
+  } catch { return []; }
+};
+
+const allH = await adjRows();
+const theRed = allH.find((r) => r.result === "red") ?? NO_ROW as AdjRow;
+const aGreen = allH.find((r) => r.result === "green") ?? NO_ROW as AdjRow;
+check("(H) fixture: the run's real red row and a green neighbour are both on the trail, both unjudged",
+  theRed.result === "red" && aGreen.result === "green"
+    && theRed.adjudication === undefined && aGreen.adjudication === undefined,
+  `red@${theRed.at} green@${aGreen.at} adj=${JSON.stringify(theRed.adjudication)}`);
+
+// the credential. The full six-principal matrix lives in e2e/security.ts; what belongs HERE is that
+// the route is not open at all — a judgement is evidence, and evidence anyone can write is not.
+const anon = await fetch(`${BASE}/api/post-land-audits/adjudicate`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ at: theRed.at, verdict: "flake" }),
+});
+check("(H) adjudicating requires the owner token — an unauthenticated write is refused",
+  anon.status === 401 || anon.status === 403, String(anon.status));
+check("(H) ...and it wrote nothing: the row is still unjudged",
+  (await rowAt(theRed.at))?.adjudication === undefined,
+  JSON.stringify((await rowAt(theRed.at))?.adjudication));
+
+// a key that names nothing is a typo, not a judgement — accepting it would put a verdict on the
+// rail that no reader could ever join back to anything
+const ghost = await post("/api/post-land-audits/adjudicate", { at: 1, verdict: "real" });
+check("(H) an unknown audit key is 404, never a dangling judgement", ghost.status === 404, String(ghost.status));
+const badVerdict = await post("/api/post-land-audits/adjudicate", { at: theRed.at, verdict: "probably-fine" });
+check("(H) the verdict vocabulary is a CLOSED set — a free-text verdict is refused",
+  badVerdict.status === 400, String(badVerdict.status));
+const longNote = "x".repeat(301);
+const capped = await post("/api/post-land-audits/adjudicate", { at: theRed.at, verdict: "flake", note: longNote });
+check("(H) the note cap is enforced SERVER-SIDE (301 chars → 400), not trusted to the client",
+  capped.status === 400, `${capped.status} ${(await capped.text()).slice(0, 120)}`);
+check("(H) ...and none of the three rejected calls left a judgement behind",
+  (await rowAt(theRed.at))?.adjudication === undefined && railRows().length === 0,
+  `adj=${JSON.stringify((await rowAt(theRed.at))?.adjudication)} rail=${railRows().length}`);
+
+// the write itself, and THE property: `result` survives it untouched.
+const before = await rowAt(theRed.at);
+const okRes = await post("/api/post-land-audits/adjudicate",
+  { at: theRed.at, verdict: "flake", note: "known reseed race, reran the same tree green" });
+const okJ = (await okRes.json()) as { ok?: boolean; adjudication?: Adj; result?: string };
+check("(H) the owner's judgement is accepted and echoes the row's result back UNCHANGED",
+  okRes.ok && okJ.ok === true && okJ.result === "red" && okJ.adjudication?.verdict === "flake",
+  JSON.stringify(okJ).slice(0, 240));
+const after = await rowAt(theRed.at);
+check("(H) an adjudicated red IS STILL RED — every field of the audit row is byte-identical",
+  !!after && after.result === "red"
+    && JSON.stringify({ ...after, adjudication: undefined }) === JSON.stringify({ ...before, adjudication: undefined }),
+  `${JSON.stringify(before).slice(0, 160)} → ${JSON.stringify(after).slice(0, 160)}`);
+check("(H) the judgement rides ON the row: verdict, when, by whom, and one line of why",
+  after?.adjudication?.verdict === "flake" && after.adjudication.by === "owner"
+    && typeof after.adjudication.at === "number" && after.adjudication.at > 0
+    && (after.adjudication.note ?? "").includes("reseed race"),
+  JSON.stringify(after?.adjudication));
+check("(H) `by` is stamped server-side — a body cannot claim someone else made the call",
+  (await (await post("/api/post-land-audits/adjudicate",
+    { at: theRed.at, verdict: "flake", by: "the-machine", note: "spoof attempt" })).json() as { adjudication?: Adj })
+    .adjudication?.by === "owner");
+// the join is KEYED, not blanket — judging one row must not quiet its neighbours
+check("(H) a red WITHOUT a judgement is distinguishable from one WITH: the green neighbour stays unjudged",
+  (await rowAt(aGreen.at))?.adjudication === undefined && (await rowAt(theRed.at))?.adjudication !== undefined,
+  `green=${JSON.stringify((await rowAt(aGreen.at))?.adjudication)}`);
+
+// a mis-judgement is corrected by judging again: newest wins, and the rail keeps the whole history
+await post("/api/post-land-audits/adjudicate", { at: theRed.at, verdict: "real", note: "reran it — it reproduces" });
+const revised = await rowAt(theRed.at);
+check("(H) re-adjudicating supersedes: the row reads the newest verdict, the rail keeps every one",
+  revised?.adjudication?.verdict === "real" && (revised.adjudication.note ?? "").includes("reproduces")
+    && railRows().filter((r) => r.auditAt === theRed.at).length === 3,
+  `${JSON.stringify(revised?.adjudication)} rail=${JSON.stringify(railRows())}`);
+
+// ===== (H2) THE BACKFILL — reds that PREDATE signal-first retention are unanswerable, not open ===
+// Eight of the live trail's thirteen reds were produced before the retention fix (70cd443): their
+// retained output is a blind char-tail that cannot name what failed, so they are not open questions.
+// Two synthetic rows bracket the cutoff — the modern one is the control that keeps this from passing
+// against a backfill that simply judges every red it can find.
+const OLD_AT = 1_700_000_000_000; // comfortably before SIGNAL_FIRST_RETENTION_AT
+const NEW_AT = Date.now();
+const synth = (at: number, sha: string): string => `${JSON.stringify({ at, startedAt: at, ms: 1, repo: REPO,
+  main: "main", mainSha: sha, result: "red", cmd: "x", exitCode: 1, out: "6 FAILURES", covers: [] })}\n`;
+appendFileSync(`${import.meta.dir}/post-land-audits.jsonl`, synth(OLD_AT, "oldredsha") + synth(NEW_AT, "newredsha"));
+await killSrv();
+check("(H2) the server came back up over a trail carrying a pre-retention red", await startSrv({ audit: true }));
+const oldRow = await rowAt(OLD_AT);
+const newRow = await rowAt(NEW_AT);
+check("(H2) a red predating signal-first retention is backfilled `unknowable`, stamped as a backfill",
+  oldRow?.result === "red" && oldRow.adjudication?.verdict === "unknowable"
+    && oldRow.adjudication.by === "backfill" && (oldRow.adjudication.note ?? "").includes("predates"),
+  JSON.stringify(oldRow?.adjudication));
+check("(H2) control: a red from AFTER the cutoff is left alone — the backfill judges no live question",
+  newRow?.result === "red" && newRow.adjudication === undefined, JSON.stringify(newRow?.adjudication));
+check("(H2) the owner's own judgements survived the restart (the rail is durable, like every trail)",
+  (await rowAt(theRed.at))?.adjudication?.verdict === "real", JSON.stringify((await rowAt(theRed.at))?.adjudication));
+const railAfter = railRows().length;
+await killSrv();
+check("(H2) the server came back up a second time", await startSrv({ audit: true }));
+await Bun.sleep(500);
+check("(H2) the backfill is IDEMPOTENT — a second boot adds no second judgement",
+  railRows().length === railAfter && (await rowAt(OLD_AT))?.adjudication?.by === "backfill",
+  `rail=${railRows().length} was=${railAfter}`);
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

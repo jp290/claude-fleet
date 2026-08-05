@@ -6824,6 +6824,38 @@ Bun.serve<WSData>({
       return d ? json(d) : json({ error: "drift could not be computed — a git read failed" }, 500);
     }
 
+    // the lane's own view of THE GATE — the one fact family no file in its worktree can carry:
+    // the live land gate is this process's env (VERIFY_CMD…), a lane's CLAUDE.md is a spawn-time
+    // COPY, and watchdog.sh on disk can differ from the running watchdog until kickstart
+    // (docs/attic/lane-context.md §2, the verified defect this route closes). Same principal,
+    // same flat-cost auth, same one-scope-rule 409 as its siblings. Read-only, and it grants no
+    // capability: knowing the judge changes which suites a lane runs, never the verdict.
+    if (url.pathname === "/api/self/gate" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — the gate judges a lane's land" }, 409);
+      // rulebook: does the lane's copied CLAUDE.md still match the source repo's current one?
+      // null = not comparable (either side missing) — served as absent, never as "no drift"
+      // (a lane of a foreign task.repo may legitimately have no rulebook on either side).
+      let rulebookDrifted: boolean | null = null;
+      try {
+        const [src, copy] = await Promise.all([
+          Bun.file(`${s.worktree.repo}/CLAUDE.md`).text(),
+          Bun.file(`${s.cwd!}/CLAUDE.md`).text(),
+        ]);
+        rulebookDrifted = src !== copy;
+      } catch { /* either side unreadable → stays null */ }
+      return json({
+        verify: VERIFY_CMD ? { cmd: VERIFY_CMD, timeoutMs: VERIFY_TIMEOUT_MS, skipExit: VERIFY_SKIP_EXIT } : null,
+        cleanReview: CLEAN_REVIEW_MODE,
+        autoReview: AUTO_REVIEW_MS > 0 ? { tickMs: AUTO_REVIEW_MS, idleMs: AUTO_REVIEW_IDLE_MS } : null,
+        postlandAudit: POSTLAND_AUDIT_CMD !== null,
+        mergeRepairRounds: MERGE_REPAIR_ROUNDS,
+        rulebookDrifted,
+      });
+    }
+
     // the lane's own account of a verify-suite run — same principal and same flat-cost auth as the
     // two routes above. It grants no capability at all: nothing is started, stopped or queued, and
     // the report only ever reaches the board and the audit log. The 409 for a non-lane keeps this

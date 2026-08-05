@@ -112,6 +112,44 @@ export async function run(ctx: Ctx): Promise<void> {
     !!otherEntry && otherEntry.files.includes("drift-other.txt"), JSON.stringify(d4.otherLanes));
   check("drift cleanup: the second lane is torn down", (await post(`/api/slots/${lnOther.slot}/kill`, {})).ok);
 
+  // --- GET /api/self/gate: the live land-gate facts, served from the server's own process env.
+  // The env pass-throughs (verify/cleanReview/…) are pinned by their own suites; what is tested
+  // HARD here is this route's own logic — auth, the one-scope rule, and the rulebook compare. ---
+  const selfGate = (token?: string) => fetch(BASE + "/api/self/gate", {
+    headers: token !== undefined ? { "x-fleet-self-token": token } : {},
+  });
+  type Gate = { verify: { cmd: string; timeoutMs: number; skipExit: number } | null; cleanReview: string;
+    autoReview: { tickMs: number; idleMs: number } | null; postlandAudit: boolean;
+    mergeRepairRounds: number; rulebookDrifted: boolean | null };
+  const g0Res = await selfGate(selfTok);
+  const g0 = (await g0Res.json()) as Gate;
+  check("GET /api/self/gate: full shape, skipExit pinned to 42, no rulebook on either side reads null",
+    g0Res.ok && (g0.verify === null || (typeof g0.verify.cmd === "string" && g0.verify.skipExit === 42))
+      && ["off", "gate", "shadow"].includes(g0.cleanReview)
+      && (g0.autoReview === null || g0.autoReview.tickMs > 0)
+      && typeof g0.postlandAudit === "boolean"
+      && g0.mergeRepairRounds >= 0 && g0.mergeRepairRounds <= 3
+      && g0.rulebookDrifted === null,
+    JSON.stringify(g0));
+  check("gate: the owner token does not substitute for a selfToken", (await selfGate(TOKEN)).status === 401);
+  check("gate: a missing selfToken header is rejected", (await selfGate(undefined)).status === 401);
+  check("gate: a plain (non-lane) slot's selfToken answers 409 not-a-lane, never a generic 401",
+    (await selfGate(plainSelf)).status === 409, "reuses the drift fixture's plain-slot token");
+  // rulebook compare: identical copy reads false, a moved source reads true. Fixtures are
+  // UNTRACKED files in REPO and the lane — removed right after, an untracked file in either
+  // tree would poison later modules' clean-tree assumptions (and a lane's landability).
+  writeFileSync(`${REPO}/CLAUDE.md`, "rules v1\n");
+  writeFileSync(`${lnTok.cwd}/CLAUDE.md`, "rules v1\n");
+  const g1 = (await (await selfGate(selfTok)).json()) as Gate;
+  check("gate: an identical rulebook copy reads rulebookDrifted:false", g1.rulebookDrifted === false,
+    JSON.stringify({ rb: g1.rulebookDrifted }));
+  writeFileSync(`${REPO}/CLAUDE.md`, "rules v1\nrules v2\n");
+  const g2 = (await (await selfGate(selfTok)).json()) as Gate;
+  check("gate: a source rulebook that moved past the copy reads rulebookDrifted:true", g2.rulebookDrifted === true,
+    JSON.stringify({ rb: g2.rulebookDrifted }));
+  rmSync(`${REPO}/CLAUDE.md`);
+  rmSync(`${lnTok.cwd}/CLAUDE.md`);
+
   // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
   // the restart section (guards fix A) uses this token, then tears the lane down.
   ctx.restartSelfTok = selfTok;

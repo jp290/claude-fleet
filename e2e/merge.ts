@@ -288,6 +288,45 @@ export async function run(lc: LaneCtx): Promise<void> {
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("fallthrough lane work"),
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
 
+  // ⏸ has to survive a KILL + REATTACH too (2026-08-05). The record describes commits on the
+  // BRANCH, and the branch outlives the slot — but the verdict was slot-keyed: openSlot dropped
+  // it on every open (reattach included) and the boot restore drops it for slots without a
+  // worktree. Kill → reattach → ⏫ then found no pending verdict, carried nothing, and the clean
+  // auto-land path landed the agent's resolutions unreviewed — the deploy hole's kill-shaped
+  // twin (that one is named in the boot-restore comment; this one had no check until now).
+  const lnKr = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnKr.cwd}/code.txt`, "root\nkr-lane\n");
+  spawnSync("git", ["-C", lnKr.cwd, "commit", "-aqm", "killreattach lane work"]);
+  await Bun.write(`${REPO}/code.txt`, "root\nkr-main\n"); // same line → conflict → agent resolves
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "killreattach main work"]);
+  await setMergeMode("do");
+  await settleForMerge(lnKr.slot);
+  await post(`/api/slots/${lnKr.slot}/merge`, {});
+  const vKr = await waitMerge(lnKr.slot);
+  check("(setup) kill/reattach lane is agent-resolved and paused", vKr.last?.status === "resolved", JSON.stringify(vKr.last));
+  const krPath = lnKr.cwd;
+  await post(`/api/slots/${lnKr.slot}/kill`, {});
+  const krAtt = (await (await post("/api/lanes", { repo: REPO, attach: krPath })).json()) as { slot?: number };
+  check("(setup) the killed lane reattaches into a slot", typeof krAtt.slot === "number", JSON.stringify(krAtt));
+  const krSlot = krAtt.slot as number;
+  const krPend = ((await (await get("/api/sessions")).json()) as { slots: { id: number; mergePending?: boolean }[] })
+    .slots.find((s) => s.id === krSlot);
+  check("⏸ survives kill + reattach — the reattached lane still wears the pause",
+    krPend?.mergePending === true, JSON.stringify(krPend ?? null));
+  await setMergeMode("blocked"); // if the re-run consulted the agent, the verdict would be blocked
+  await settleForMerge(krSlot);
+  const krRe = (await (await post(`/api/slots/${krSlot}/merge`, {})).json()) as { status?: string; detail?: string };
+  check("⏸ a re-run after reattach refuses instead of auto-landing the unreviewed resolution",
+    krRe.status === "resolved" && (krRe.detail ?? "").includes("review"), JSON.stringify(krRe));
+  check("the unreviewed resolution has NOT reached main through the reattach hole",
+    !spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("killreattach lane work"),
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
+  await settleForMerge(krSlot);
+  const krConf = (await (await post(`/api/slots/${krSlot}/merge`, { confirm: true })).json()) as
+    { status?: string; landed?: boolean };
+  check("the reattached lane confirm-lands after review (the park never wedges the land)",
+    krConf.status === "merged" && krConf.landed === true, JSON.stringify(krConf));
+
   // --- V1: deterministic verify in the merge verdict (design note §3). The server runs
   // FLEET_VERIFY_CMD (here $DIR/fakeverify — a git-grep for a VERIFYBAD sabotage marker)
   // against the REBASED tree, before any land, and records verify:{cmd,ok,out,at,mainSha}.

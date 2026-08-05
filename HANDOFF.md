@@ -1,8 +1,71 @@
-# HANDOFF — Session 25 (2026-08-05: die Ventile — Eval-Gate, Steward-Puls, Dispatcher an) · 24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 26 (2026-08-05: der Resolver sieht beide Seiten) · 25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 26 (2026-08-05, parallel zum Steward-/Eval-Strang): der Resolver sieht beide Seiten
+
+*Fortsetzung des ②-Programms aus Session 24. Die Commits `38ec2bd`, `bb9e067`, `0e4d65c`,
+`8194aea`, `669d2c9`, `33b3105` gehören NICHT zu diesem Strang — sie sind der parallel
+laufende Steward-/clarify-Strang.*
+
+### Was IN FLUG ist (das Erste, was die nächste Session wissen muss)
+
+**Lane `fleet/260805124635-95a7` auf Slot 1**, Basis `33b3105`, gebrieft aus
+`briefs/resolver-both-sides.md` (Task `10bc0b91`, per Hand-Knopf dispatcht — der umgeht das
+Eval-Gate bewusst, attended schlägt Automatik). Sie baut drei Dinge: einen ZWEITEN
+graphify-Graphen für die Seite, in die hineingemerged wird; beide Graphen unverwechselbar
+beschriftet im Prompt (fail-closed **pro Graph**); und das fertige
+`git diff <mergeBase>..<main> -- <datei>`-Kommando in der DO-Liste von `buildMergePrompt`
+UND `buildAuthorPrompt`.
+
+**Beim Fertigwerden:** Baum unabhängig verifizieren (der Report einer Lane ist eine
+Behauptung), dann landen — **aber erst, wenn der Haupt-Checkout sauber ist.** Grund: das Land
+fährt `git merge --ff-only` im Haupt-Checkout, und git verweigert, sobald es lokale Änderungen
+an einer Datei überschreiben müsste, die es anfasst. Eine *unbeteiligte* schmutzige Datei ist
+kein Problem (dafür gibt es einen e2e-Check), `server.ts` schon.
+
+### Der Befund, der die Scheibe ausgelöst hat
+
+Owner-Frage war, womit der Merge-Agent eigentlich arbeitet. Gemessen am Prompt-Bauer:
+
+- **Er bekommt Betreffs, nicht Inhalt.** `buildMergePrompt` und `buildAuthorPrompt` reichen
+  `git log --oneline` BEIDER Seiten hin — Einzeiler. Den echten Diff kann er sich holen
+  (`git diff` ist im Profil), aber **nichts sagt ihm, dass er soll**. Die einzige Stelle mit
+  hingereichter Maschinenausgabe ist der Repair-Prompt; das Muster existiert, es ist nur nicht
+  auf den Merge angewandt.
+- **Der Lane-Graph ist aus dem Lane-HEAD gebaut** und enthält main nur bis zum Fork — einen
+  Aufrufer, den main SEIT dem Fork hinzugefügt hat, kann er prinzipiell nicht sehen. Genau der
+  Konfliktfall, der schiefgeht.
+
+### Die Messung, die einen fertigen Entwurf gekippt hat — nicht wieder aufmachen
+
+Der naheliegende Fix war, den graphify-Graphen des Haupt-Checkouts mitzureichen: ein
+`post-commit`-Hook pflegt ihn ja. **Falsch, gemessen 2026-08-05:**
+
+- Der Server bewegt main mit `git merge --ff-only` (`server.ts:1183`) bzw. `git branch -f`
+  (`:1188`) — **keins von beidem feuert `post-commit`**.
+- Installiert sind nur `post-commit` und `post-checkout`, **kein `post-merge`**.
+- **`.git/hooks/` ist nicht getrackt** (`git ls-files` zählt dort 0) — der Hook reist mit
+  keinem Klon und in keinen Worktree mit.
+
+Also ist der Graph des Haupt-Checkouts **genau nach einem Land veraltet** — dem Moment, in dem
+die nächste Lane merged. Beim Nachsehen sah er aktuell aus (`built_at_commit == HEAD`), aber
+nur weil der letzte Schritt zufällig ein Hand-Commit war. **Nicht wieder vorschlagen:**
+Hook-Pflege, `graphify watch`, Cron, oder irgendein Produktfeature auf `.git/hooks`. Der
+Server baut main's Graphen stattdessen selbst aus `git archive <main-sha>` — per Konstruktion
+der richtige Commit, damit entsteht die Frische-Frage gar nicht erst.
+
+### Korrekturen an eigenen Aussagen dieser Session
+
+- **„Fremde uncommittete Arbeit blockiert die Lane" war zu breit.** Sie blockiert das **Land**,
+  nie den **Spawn** — ein Worktree entsteht aus committed HEAD und rührt den Haupt-Checkout
+  nicht an. Die Unterscheidung kostet sonst grundlos Wartezeit.
+- **`built_at_commit == HEAD` ist kein Frische-Beweis für den Merge-Zeitpunkt**, sondern nur
+  für den Augenblick des Nachsehens. Siehe oben.
 
 ---
 

@@ -1764,6 +1764,11 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
   dispatchingTasks.add(next.id);
+  // captured BEFORE any mutation, restored on every failure path: an eval-auto row enters as
+  // "pending", and flipping it to "queued" on a failed spawn used to promote its RETRY to the
+  // owner path — uncounted by the day valve, ungated by the eval disjunct (found 2026-08-05).
+  // Restoring the entry status keeps a task on exactly the path that admitted it.
+  const wasStatus = next.status;
   laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
   try {
     // the task's own target repo wins; the env default covers every unbound row
@@ -1780,10 +1785,10 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // gate refuses this slot, so nothing automated can nudge the lane past the owner's decision
     free.awaiting = clarify ? "owner" : null;
     saveState();
-    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct, clarify) };
+    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct, wasStatus, clarify) };
   } catch (e) {
     // spawning failed — mark the task so the owner sees why instead of it silently vanishing
-    next.status = "queued";
+    next.status = wasStatus;
     next.note = `dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200);
     saveState();
     return { ok: false, error: next.note };
@@ -1808,7 +1813,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 // documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
 // shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
 async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string }, ownerAct: boolean,
-  clarify = false): Promise<void> {
+  wasStatus: Task["status"], clarify = false): Promise<void> {
   // clarify mode does NOT compile: the enhancer turns a draft into a work brief with a
   // done-criterion, and a task that reached this button is precisely one where that cannot be
   // done yet. Deterministic frame + the raw request, no model call, no failure mode.
@@ -1820,7 +1825,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: 
   // lane is idle by definition, but claude's own startup needs a moment
   await Bun.sleep(4000);
   const requeue = (note: string): void => {
-    next.status = "queued";
+    // back to the ENTRY status, not blanket "queued" — same reasoning as dispatchTask's catch:
+    // a "queued" row retries on the owner disjunct, a "pending" eval-auto row must retry
+    // through the eval disjunct (cap-checked, attempt-counted) or not at all
+    next.status = wasStatus;
     next.note = note;
     saveState();
   };
@@ -1868,7 +1876,13 @@ const EVAL_TICK_MS = Math.max(1_000, Number(process.env.FLEET_EVAL_MS ?? 60_000)
 const EVAL_MAX_AUTO_PER_DAY = Math.max(0, Number(process.env.FLEET_EVAL_MAX_AUTO_PER_DAY ?? 10) | 0);
 const EVAL_BATCH_CAP = 10; // one worker call judges at most this many tasks — a bounded prompt
 let evalAutoDay = { day: "", count: 0 }; // persisted (saveState) — the cap is a per-day valve
-const evalDayKey = (): string => new Date().toISOString().slice(0, 10);
+// the owner's LOCAL calendar day, not UTC: "per day" in a per-day valve means what the owner
+// calls a day. With toISOString() the reset fell mid-afternoon west of UTC, so an evening
+// intake burst could span two windows and run up to twice the cap "overnight" (found 2026-08-05).
+const evalDayKey = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 function evalAutoUnderCap(): boolean {
   if (evalAutoDay.day !== evalDayKey()) evalAutoDay = { day: evalDayKey(), count: 0 };
   return evalAutoDay.count < EVAL_MAX_AUTO_PER_DAY;
@@ -1967,9 +1981,13 @@ async function tickDispatch(): Promise<void> {
     // does not exist yet.
     const pre = await canDeliver(free, { now: Date.now(), alive: false });
     if (!pre.ok) return; // task stays queued
+    // count the ATTEMPT before the spawn, not the success after it: the old placement skipped
+    // the counter exactly when the spawn failed — and the failed row then retried unmetered.
+    // A flaky spawn now spends the day valve visibly instead of looping for free; the cap is
+    // a valve, and this valve errs closed.
+    if (viaEval) { evalAutoDay.count++; saveState(); }
     const r = await dispatchTask(next, free, false);
     if (r.ok && viaEval) {
-      evalAutoDay.count++; // counts ATTEMPTS through the gate, so a requeue can't re-spend the cap
       next.note = `auto-dispatched: eval gate passed — ${next.eval?.reason ?? ""}`.slice(0, 200);
       saveState();
     }

@@ -1,7 +1,7 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { check, get, post, restartSrv, BASE, REPO, ROOT } from "./harness";
 import { buildEvalPrompt } from "../eval-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
@@ -228,6 +228,22 @@ export async function run(ctx: Ctx): Promise<void> {
       `${rd.status} ${JSON.stringify({ rdJ, wt: rLane?.worktree ?? null })}`);
     check("a non-directory repo is refused at task create (400)",
       (await post("/api/tasks", { text: "x", repo: `${ROOT}/does-not-exist-xyz` })).status === 400);
+    // a FAILED spawn restores the row's ENTRY status (2026-08-05): a plain directory passes the
+    // create boundary (directory-ness only; the comment there promises git-ness fails loudly at
+    // spawn) and createWorktree then throws. The row must come back as PENDING — the old blanket
+    // `status = "queued"` promoted a failed eval-auto row's RETRY onto the owner disjunct,
+    // uncounted by the day valve and ungated. The button probe pins the shared mechanism
+    // (dispatchTask's wasStatus); the eval disjunct reads the same field.
+    const PLAIN = `${ROOT}/plain-dir-probe`;
+    mkdirSync(PLAIN, { recursive: true });
+    const pT = (await (await post("/api/tasks", { text: "plain-dir-spawnfail-probe", queue: false, repo: PLAIN })).json()) as { task: { id: string } };
+    const pd = await post(`/api/tasks/${pT.task.id}/dispatch`, {});
+    const pRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; note?: string }[] })
+      .tasks.find((t) => t.id === pT.task.id);
+    check("a failed spawn puts the row back where it WAS (pending) with the why — never blanket-queued",
+      pd.status === 500 && pRow?.status === "pending" && (pRow?.note ?? "").startsWith("dispatch failed"),
+      `${pd.status} ${JSON.stringify(pRow ?? null)}`);
+    await post(`/api/tasks/${pT.task.id}/delete`, {});
     if (typeof rdJ.slot === "number") await post(`/api/slots/${rdJ.slot}/kill`, {});
     await post(`/api/tasks/${rT.task.id}/delete`, {});
   }

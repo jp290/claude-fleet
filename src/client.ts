@@ -149,7 +149,8 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
-  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string }
+  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
+  eval?: { verdict: "auto" | "review"; reason: string; at: number; model: string } }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -4599,6 +4600,12 @@ function renderQueueDetail() {
     : t.source === "steward" ? "⚙ steward" : "owner"));
   if (t.kind === "note") meta.appendChild(chip("note — never dispatched", "dim",
     "an observation for you; promoting it records your verdict, the dispatcher skips it"));
+  // the eval gate's verdict, with its reason on hover — "auto" means the dispatcher may run
+  // this pending task unattended; "review" means it waits for you, and the reason says why
+  if (t.eval) meta.appendChild(chip(
+    t.eval.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review",
+    t.eval.verdict === "auto" ? "ok" : "warn",
+    `${t.eval.reason} (${t.eval.model})`));
   if (t.repo) meta.appendChild(chip(`⌂ ${t.repo.split("/").pop() || t.repo}`, "dim",
     `target repo: ${t.repo} — this task's lane spawns there`));
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));

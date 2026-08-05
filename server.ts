@@ -7,6 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "./merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
+import { buildEvalPrompt } from "./eval-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
@@ -171,7 +172,12 @@ interface Task {
   created: number;
   slot: number | null; // set once dispatched
   note: string | null;
+  eval?: TaskEval; // the eval gate's verdict (owner decision 2026-08-05): "auto" lets the
+  // dispatcher consume a PENDING lane task without an owner promote; "review" routes it to the
+  // owner's pile and the dispatcher never touches it. Absent = not yet evaluated. Written only
+  // by tickEvalSweep; the ② contract transplanted to the queue — downgrade-only, fail-closed.
 }
+interface TaskEval { verdict: "auto" | "review"; reason: string; at: number; model: string }
 
 interface Slot {
   id: number;
@@ -263,7 +269,7 @@ const MAX_TASK_TEXT = 20_000;
 // on the poll path reads the text (the queue button reads status+source); the queue overlay
 // fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
 // null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
-type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note" | "repo">>;
+type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "eval">>;
 function taskDigest(t: Task): TaskDigest {
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
@@ -271,6 +277,7 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
+    ...(t.eval ? { eval: t.eval } : {}), // reason is capped at write time (tickEvalSweep)
   };
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
@@ -539,7 +546,8 @@ function saveState(): void {
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
-    repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending) }, null, 2);
+    repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
+    evalAuto: evalAutoDay }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
   // new truth (which would eat every share, task, lane tag and session pin at once).
@@ -1765,6 +1773,79 @@ async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: 
   }
 }
 
+// --- the eval gate (owner decision 2026-08-05): tasks the machine queues for itself get a
+// critical look BEFORE a lane spawns unattended. One throwaway read-only agent per repo batch
+// judges every un-evaluated pending lane task against the three criteria in eval-prompt.ts.
+// The contract is ② clean-review transplanted to the queue: "auto" is the ONLY positive verdict,
+// everything unclear — including every failure of the worker itself — fails CLOSED to "review",
+// which parks the task on the owner's pile with the why on its row. The sweep only runs while
+// the dispatcher is on: a verdict without a consumer is spend without a purpose.
+const EVAL_CMD = process.env.FLEET_EVAL_CMD ?? null; // tests: subprocess stand-in
+// the judge runs on the interactive tier, not the summary tier (owner decision: "opus5") —
+// this is the one worker whose misjudgment spawns unattended sessions
+const EVAL_MODEL = process.env.FLEET_EVAL_MODEL && MODEL_RE.test(process.env.FLEET_EVAL_MODEL)
+  ? process.env.FLEET_EVAL_MODEL : "claude-opus-5";
+const EVAL_TICK_MS = Math.max(1_000, Number(process.env.FLEET_EVAL_MS ?? 60_000) | 0);
+const EVAL_MAX_AUTO_PER_DAY = Math.max(0, Number(process.env.FLEET_EVAL_MAX_AUTO_PER_DAY ?? 10) | 0);
+const EVAL_BATCH_CAP = 10; // one worker call judges at most this many tasks — a bounded prompt
+let evalAutoDay = { day: "", count: 0 }; // persisted (saveState) — the cap is a per-day valve
+const evalDayKey = (): string => new Date().toISOString().slice(0, 10);
+function evalAutoUnderCap(): boolean {
+  if (evalAutoDay.day !== evalDayKey()) evalAutoDay = { day: evalDayKey(), count: 0 };
+  return evalAutoDay.count < EVAL_MAX_AUTO_PER_DAY;
+}
+let evalBusy = false;
+async function tickEvalSweep(): Promise<void> {
+  if (evalBusy || !dispatchOn || !DISPATCH_REPO) return;
+  evalBusy = true;
+  try {
+    const pool = tasks.filter((t) => t.status === "pending" && t.kind === "lane" && !t.eval && !dispatchingTasks.has(t.id));
+    if (!pool.length) return;
+    // one repo batch per tick, serial like the dispatcher — bounded fan-out, bounded prompt
+    const repo = resolve(expandCwd(pool[0].repo ?? DISPATCH_REPO));
+    const batch = pool.filter((t) => resolve(expandCwd(t.repo ?? DISPATCH_REPO)) === repo).slice(0, EVAL_BATCH_CAP);
+    const stamp = (verdict: "auto" | "review", reason: string): void => {
+      for (const t of batch) if (!t.eval) t.eval = { verdict, reason: reason.slice(0, 200), at: Date.now(), model: EVAL_MODEL };
+    };
+    if (!existsSync(repo) || !statSync(repo).isDirectory()) { stamp("review", `eval: repo not found: ${repo}`); saveState(); return; }
+    let verdicts: Map<string, { verdict: "auto" | "review"; reason: string }>;
+    try {
+      const out = await runWorker({ worker: "evalGate", cmd: EVAL_CMD, tools: REVIEW_TOOLS, model: EVAL_MODEL },
+        buildEvalPrompt(repo, batch.map((t) => ({ id: t.id, source: t.source, text: t.text }))), repo);
+      const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+      let j: { verdicts?: unknown };
+      try { j = JSON.parse(body) as { verdicts?: unknown }; }
+      catch {
+        const obj = extractJsonObject(out); // same rescue as runEnhance: a wrapped answer is not a failed one
+        if (!obj) throw new Error("evaluator returned no JSON");
+        j = JSON.parse(obj) as { verdicts?: unknown };
+      }
+      if (!Array.isArray(j.verdicts)) throw new Error("evaluator returned no verdicts array");
+      verdicts = new Map();
+      for (const v of j.verdicts as { id?: unknown; verdict?: unknown; reason?: unknown }[]) {
+        if (typeof v?.id === "string" && (v.verdict === "auto" || v.verdict === "review"))
+          verdicts.set(v.id, { verdict: v.verdict, reason: typeof v.reason === "string" ? v.reason : "" });
+      }
+    } catch (e) {
+      // the ② fail direction: an errored/timed-out/off-contract worker parks the WHOLE batch for
+      // the owner — visibly, with the why — never leaves it retryable into an unattended spend
+      // loop, and never lets absence read as a pass.
+      stamp("review", `eval worker failed: ${e instanceof Error ? e.message : e}`);
+      saveState();
+      return;
+    }
+    for (const t of batch) {
+      const v = verdicts.get(t.id);
+      t.eval = v?.verdict === "auto"
+        ? { verdict: "auto", reason: (v.reason || "passed").slice(0, 200), at: Date.now(), model: EVAL_MODEL }
+        : { verdict: "review", reason: (v ? v.reason || "flagged for review" : "eval returned no verdict for this task").slice(0, 200), at: Date.now(), model: EVAL_MODEL };
+    }
+    saveState();
+  } finally {
+    evalBusy = false;
+  }
+}
+
 // idle-lane dispatcher: when ON and a lane budget is free, pull the oldest queued task,
 // spawn a fresh worktree lane from DISPATCH_REPO, and send the task text into it once
 // claude is actually up. Serial by design — one lane per tick — so a burst of intake email
@@ -1775,9 +1856,14 @@ async function tickDispatch(): Promise<void> {
   dispatchBusy = true;
   try {
     // notes are never dispatchable (Task.kind) — skipping them here also shields legacy
-    // fleet.json rows queued before the field existed
-    const next = tasks.find((t) => t.status === "queued" && t.kind === "lane" && !dispatchingTasks.has(t.id));
+    // fleet.json rows queued before the field existed. Two ways in: the owner's promote
+    // (queued), or the eval gate's positive verdict on a PENDING task (owner decision
+    // 2026-08-05) — bounded by the per-day cap; "review" and un-evaluated rows are never touched.
+    const next = tasks.find((t) => t.kind === "lane" && !dispatchingTasks.has(t.id)
+      && (t.status === "queued"
+        || (t.status === "pending" && t.eval?.verdict === "auto" && evalAutoUnderCap())));
     if (!next) return;
+    const viaEval = next.status === "pending";
     // a queued task that cannot run RIGHT NOW says why on its own row instead of sitting
     // silent until the owner digs (the stalled-queue finding, 2026-08-04). Written only on
     // change, so the 8 s tick doesn't churn saveState.
@@ -1799,6 +1885,11 @@ async function tickDispatch(): Promise<void> {
     const pre = await canDeliver(free, { now: Date.now(), alive: false });
     if (!pre.ok) return; // task stays queued
     const r = await dispatchTask(next, free, false);
+    if (r.ok && viaEval) {
+      evalAutoDay.count++; // counts ATTEMPTS through the gate, so a requeue can't re-spend the cap
+      next.note = `auto-dispatched: eval gate passed — ${next.eval?.reason ?? ""}`.slice(0, 200);
+      saveState();
+    }
     if (r.ok) await r.tail;
   } finally {
     dispatchBusy = false;
@@ -2444,14 +2535,17 @@ type ToolProfile = typeof TEXT_ONLY_TOOLS | typeof MERGE_TOOLS | typeof REVIEW_T
 // pinned (same trick as slotCmd) so the transcript path is known; the answer is
 // read from that JSONL with the transcript view's own parser.
 async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
-  opts: { tools: ToolProfile; timeoutMs?: number }): Promise<string> {
+  opts: { tools: ToolProfile; timeoutMs?: number; model?: string }): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? SUMMARY_TIMEOUT_MS;
   const sid = crypto.randomUUID();
   summarizerSids.add(sid);
   const name = `sum-${sid.slice(0, 8)}`;
   const started = Date.now();
+  // opts.model: a MODEL_RE-validated override for the one worker whose judgment the owner priced
+  // above the summary tier (eval gate → EVAL_MODEL). Single-quoted like every model interpolation
+  // (the [1m] variants glob under zsh) — MODEL_RE forbids `'`, so the quote wrap stays closed.
   const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
-    `${PATH_EXPORT}claude --session-id ${sid} --model '${SUMMARY_MODEL}' ${opts.tools}`);
+    `${PATH_EXPORT}claude --session-id ${sid} --model '${opts.model ?? SUMMARY_MODEL}' ${opts.tools}`);
   if (sp.code !== 0) throw new Error("summarizer session failed to start");
   const file = `${projDir(cwd)}/${sid}.jsonl`;
   try {
@@ -2521,6 +2615,7 @@ interface WorkerSpec {
   cmd: string | null;      // FLEET_*_CMD subprocess stand-in; null in production → the session path
   tools: ToolProfile;      // capability floor for the session path (see ToolProfile)
   timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on BOTH paths, same as before
+  model?: string;          // omitted → SUMMARY_MODEL; MODEL_RE-validated at the const it comes from
 }
 async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise<string> {
   const contract = WORKER_CONTRACTS[spec.worker];
@@ -2532,7 +2627,7 @@ async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise
     throw new Error(`worker "${spec.worker}": prompt does not carry its background mark`);
   const text = spec.cmd
     ? await summaryViaSubprocess(spec.cmd, prompt, cwd, spec.timeoutMs)
-    : await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs });
+    : await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: spec.model });
   // the test stand-in answers in a {"result": "..."} envelope — unwrap it; no contract JSON in
   // this file has a string `result`, so this is a no-op for real runs
   try {
@@ -5566,7 +5661,12 @@ if (existsSync(STATE_FILE)) {
         // default — normalize here so every row downstream carries both fields
         .map((t) => ({ ...t,
           kind: t.kind === "lane" || t.kind === "note" ? t.kind : (t.source === "steward" ? "note" as const : "lane" as const),
-          repo: typeof t.repo === "string" ? t.repo : null }));
+          repo: typeof t.repo === "string" ? t.repo : null,
+          // a hand-edited state file must not smuggle an "auto" verdict shape the sweep never
+          // wrote — anything malformed degrades to "not yet evaluated", never to a pass
+          eval: t.eval && (t.eval.verdict === "auto" || t.eval.verdict === "review") && typeof t.eval.reason === "string"
+            ? { verdict: t.eval.verdict, reason: t.eval.reason.slice(0, 200), at: Number(t.eval.at) || 0, model: typeof t.eval.model === "string" ? t.eval.model : "" }
+            : undefined }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -5597,6 +5697,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof k === "string" && typeof v === "string" && v) repoBases[k] = v;
     if (typeof (persisted as { dispatch?: unknown }).dispatch === "boolean")
       dispatchOn = (persisted as { dispatch: boolean }).dispatch;
+    const pea = (persisted as { evalAuto?: { day?: unknown; count?: unknown } }).evalAuto;
+    if (pea && typeof pea.day === "string") evalAutoDay = { day: pea.day, count: Number(pea.count) || 0 };
     if (typeof (persisted as { autosOn?: unknown }).autosOn === "boolean")
       autosOn = (persisted as { autosOn: boolean }).autosOn;
     const qh = (persisted as { quietHours?: unknown }).quietHours;
@@ -5793,6 +5895,7 @@ setInterval(() => void tickAutos().catch(() => {}), 5000);
 setInterval(() => void tickGit().catch(() => {}), 10_000);
 void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch(() => {}), 8000);
+setInterval(() => void tickEvalSweep().catch(() => {}), EVAL_TICK_MS);
 setInterval(() => void tickHarvest().catch(() => {}), 5000);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch(() => {}), AUTO_REVIEW_MS);

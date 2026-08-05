@@ -86,6 +86,7 @@ export const WORKER_CONTRACTS = {
   repair: { mark: "You are REPAIRING a fleet worktree lane", key: "status" },
   cleanReview: { mark: "You are REVIEWING a fleet lane", key: "verdict" },
   digest: { mark: "read-only SENSING worker for a fleet steward", key: "digest" },
+  evalGate: { mark: "the EVAL GATE for a fleet task queue", key: "verdicts" },
 } satisfies Record<string, WorkerContract>;
 export type WorkerName = keyof typeof WORKER_CONTRACTS;
 

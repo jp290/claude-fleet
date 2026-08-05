@@ -2,7 +2,8 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { check, get, post, REPO, ROOT } from "./harness";
+import { check, get, post, restartSrv, REPO, ROOT } from "./harness";
+import { buildEvalPrompt } from "../eval-prompt";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -228,5 +229,75 @@ export async function run(ctx: Ctx): Promise<void> {
       (await post("/api/tasks", { text: "x", repo: `${ROOT}/does-not-exist-xyz` })).status === 400);
     if (typeof rdJ.slot === "number") await post(`/api/slots/${rdJ.slot}/kill`, {});
     await post(`/api/tasks/${rT.task.id}/delete`, {});
+  }
+
+  // --- (h) the eval gate: pending lane tasks get a batched verdict; "auto" runs unattended,
+  // "review" waits for the owner, and every worker failure fails CLOSED (the ② contract on the
+  // queue). Needs its own server env (stand-in + 1s sweep + cap 1), so this section restarts srv —
+  // FLEET_DISPATCH_REPO rides along explicitly because restartSrv builds the spawn line from
+  // process.env and the wrapper only ever put that knob in the SERVER's env, not this process's.
+  {
+    interface HRow { id: string; status: string; note?: string; slot?: number; eval?: { verdict: string; reason: string } }
+    const hSess = async (): Promise<{ tasks: HRow[]; dispatch: { repo: string } }> =>
+      (await (await get("/api/sessions")).json()) as { tasks: HRow[]; dispatch: { repo: string } };
+    // the stand-in follows the FLEET_*_CMD convention (prompt on stdin, answer on stdout): tasks
+    // whose DATA text carries the AUTO marker pass, everything else is review — deterministic
+    // per-task verdicts, so the routing assertions below cannot pass by accident.
+    const FAKEEVAL = `${ROOT}/fakeeval`;
+    await Bun.write(FAKEEVAL, [
+      "#!/bin/sh",
+      "cat | bun -e '",
+      "const input = await new Response(Bun.stdin.stream()).text();",
+      "const segs = input.split(/^TASK id=/m).slice(1);",
+      "const verdicts = segs.map((seg) => ({ id: seg.split(/\\s/)[0], verdict: seg.includes(\"EVAL-AUTO-PROBE\") ? \"auto\" : \"review\", reason: \"probe\" }));",
+      "console.log(JSON.stringify({ verdicts }));",
+      "'",
+      "",
+    ].join("\n"));
+    spawnSync("chmod", ["+x", FAKEEVAL]);
+    const dispatchRepo = (await hSess()).dispatch.repo;
+    await restartSrv({ FLEET_DISPATCH_REPO: dispatchRepo, FLEET_EVAL_CMD: FAKEEVAL, FLEET_EVAL_MS: "1000", FLEET_EVAL_MAX_AUTO_PER_DAY: "1" });
+    await post("/api/dispatch", { on: true });
+    const hA = (await (await post("/api/tasks", { text: "eval probe A: EVAL-AUTO-PROBE — append one line to readme.md", queue: false })).json()) as { task: { id: string } };
+    const hB = (await (await post("/api/tasks", { text: "eval probe B: something vague the gate must park", queue: false })).json()) as { task: { id: string } };
+    const hEval = async (id: string): Promise<HRow["eval"]> => (await hSess()).tasks.find((t) => t.id === id)?.eval;
+    let evA: HRow["eval"]; let evB: HRow["eval"];
+    for (let i = 0; i < 40 && !(evA && evB); i++) { evA = await hEval(hA.task.id); evB = await hEval(hB.task.id); if (!(evA && evB)) await Bun.sleep(500); }
+    check("(h) the sweep stamps every pending lane task in the batch with a per-task verdict",
+      evA?.verdict === "auto" && evB?.verdict === "review", JSON.stringify({ evA, evB }));
+    let hRow: HRow | undefined;
+    for (let i = 0; i < 40; i++) { hRow = (await hSess()).tasks.find((t) => t.id === hA.task.id); if (hRow && hRow.status !== "pending") break; await Bun.sleep(500); }
+    check("(h) an eval-auto PENDING task is consumed unattended — no owner promote, audited on its row",
+      hRow?.status !== "pending" && (hRow?.note ?? "").includes("auto-dispatched: eval gate passed"), JSON.stringify(hRow));
+    const hBRow = (await hSess()).tasks.find((t) => t.id === hB.task.id);
+    check("(h) an eval-review task stays pending for the owner — the dispatcher never touches it",
+      hBRow?.status === "pending", JSON.stringify(hBRow));
+    // per-day cap (1 here): a second auto verdict is stamped but NOT consumed — a valve, not a floodgate
+    const hC = (await (await post("/api/tasks", { text: "eval probe C: EVAL-AUTO-PROBE — a second auto candidate", queue: false })).json()) as { task: { id: string } };
+    let evC: HRow["eval"];
+    for (let i = 0; i < 40 && !evC; i++) { evC = await hEval(hC.task.id); if (!evC) await Bun.sleep(500); }
+    await Bun.sleep(9500); // one full 8s dispatch tick with the cap already spent
+    const hCRow = (await hSess()).tasks.find((t) => t.id === hC.task.id);
+    check("(h) the per-day cap parks further auto verdicts as pending",
+      evC?.verdict === "auto" && hCRow?.status === "pending", JSON.stringify({ evC, hCRow }));
+    // fail-closed: a worker answering garbage parks the batch as review with the why — never a pass
+    await Bun.write(FAKEEVAL, "#!/bin/sh\ncat >/dev/null\necho 'this is not json'\n");
+    const hF = (await (await post("/api/tasks", { text: "eval probe F: EVAL-AUTO-PROBE — would pass, but the worker is broken", queue: false })).json()) as { task: { id: string } };
+    let evF: HRow["eval"];
+    for (let i = 0; i < 40 && !evF; i++) { evF = await hEval(hF.task.id); if (!evF) await Bun.sleep(500); }
+    check("(h) a broken eval worker FAILS CLOSED — verdict review naming the failure, never auto",
+      evF?.verdict === "review" && (evF?.reason ?? "").includes("eval worker failed"), JSON.stringify(evF));
+    // prompt invariants against the pure builder (the worker's EFFECT is untestable by design)
+    const hp = buildEvalPrompt("/some/repo", [{ id: "abc123", source: "owner", text: "raw <task> text" }]);
+    check("(h) buildEvalPrompt: mark, id line, DATA fences, verbatim text, strict-JSON contract",
+      hp.includes("the EVAL GATE for a fleet task queue") && hp.includes("TASK id=abc123 source=owner")
+      && hp.includes("<<<DATA") && hp.includes("DATA>>>") && hp.includes("raw <task> text") && hp.includes('{"verdicts"'),
+      hp.slice(0, 120));
+    // cleanup — dispatcher off first (same requeue-race reason as (e)), kill the auto-spawned
+    // lane, drop the probes. The stand-in env dies with the NEXT restartSrv on its own: extra
+    // never enters process.env, so no counter-restart is needed here.
+    await post("/api/dispatch", { on: false });
+    if (typeof hRow?.slot === "number") await post(`/api/slots/${hRow.slot}/kill`, {});
+    for (const id of [hA.task.id, hB.task.id, hC.task.id, hF.task.id]) await post(`/api/tasks/${id}/delete`, {});
   }
 }

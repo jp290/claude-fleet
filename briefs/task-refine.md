@@ -72,9 +72,10 @@ Drei Kontrakt-Klauseln, alle deterministisch pinnbar:
 - **Kein Auto-Tick.** Kandidat für v2: Auto-Refine auf `eval:review`-Tasks (review = „zu vage
   für unbeaufsichtigten Spawn" — exakt die Bedingung, die dieser Job behebt). Erst attended
   Erfahrung sammeln — dieselbe Reihenfolge wie beim Eval-Gate.
-- **Dispatch-Pfad unangetastet.** `runEnhance` am Dispatch bleibt wie er ist; ob ein
-  refined-Kind den Dispatch-Compile überspringt (Doppel-Kompilierung), ist eine offene Frage
-  unten.
+- **Dispatch-Pfad unangetastet — auch für refined-Kinder.** `runEnhance` läuft während des
+  claude-Boots (null Wall-Clock-Kosten), ist additiv-only und suffix-idempotent (hängt
+  `/sharpen3` nur an, wenn keiner da ist) — auf einem kompilierten Kind kann er per Kontrakt
+  nichts verwässern. Ein Skip-Marker wäre mehr Maschinerie als das, was er spart.
 - **✨-Knopf unangetastet** (mechanisch intakt, Kontrakt bewusst klein — Live-Probe 2026-08-05:
   HTTP 200 in 7 s). **`sharpen3.md` unangetastet** (Skill-Änderung = eigener Owner-Entscheid;
   der Ein-Zeilen-Fix „Steuerungssignal ≠ Arbeitsauftrag" liegt als Vorschlag im Chat).
@@ -89,10 +90,17 @@ Kinder ohne Eval-Verdict + archiviert das Original mit Verweis-Note; refine auf 
 `archived` → 409; Worker-Fehler → Row unverändert + Note; Kinder-Cap greift serverseitig;
 Pre-Auth-Pin für beide neuen Routen (`e2e/security.ts` §1 fängt sie ohnehin).
 
-## Offene Fragen an den Owner (vor dem Bau entscheiden)
+## Die drei Formfragen — aufgelöst, keine Owner-Entscheide nötig (2026-08-05)
 
-1. Confirm **all-or-nothing** oder pro Kind einzeln? (Vorschlag: all-or-nothing, v1 simpel.)
-2. Überspringt ein refined-Kind den Dispatch-`runEnhance`? (Vorschlag: ja — Marker auf der
-   Row; Doppel-Compile kostet und kann nur verwässern. Der ` /sharpen3`-Suffix bleibt.)
-3. Zählt ein Refine-Lauf gegen ein Tagesbudget wie `FLEET_EVAL_MAX_AUTO_PER_DAY`? (v1: nein —
-   attended-only, der Knopf IST das Budget.)
+*Erste Fassung dieses Briefs stellte sie als offene Fragen; Owner-Rückfrage („denk gut nach ob
+sich die Antworten nicht erübrigen") hat sie zu Recht gekippt — alle drei lösen sich aus
+existierender Maschinerie bzw. aus der v1-Form selbst auf:*
+
+1. **Confirm ist all-or-nothing.** Kein Entscheid, sondern Redundanzvermeidung: ein
+   unbrauchbares Kind wird nach dem Promote mit dem VORHANDENEN Archiv-Knopf entsorgt —
+   ein Pro-Kind-Confirm wäre eine zweite UI für dieselbe Operation.
+2. **Refined-Kinder nehmen den normalen Dispatch-Pfad** (Begründung oben bei „bewusst NICHT
+   in v1": kostenlos, kontrakt-harmlos, suffix-idempotent — uniform schlägt Sonderfall).
+3. **Kein Budget in v1.** Attended-only heißt: der Knopf ist das Budget. Ein Deckel gehört
+   zum Auto-Pfad, und der existiert in v1 nicht; ein v2-Auto-Refine bringt seinen eigenen
+   mit (Muster `evalAuto`).

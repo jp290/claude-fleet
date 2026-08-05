@@ -3963,7 +3963,11 @@ async function refresh() {
     shareBase = data.shareBase ?? "";
     chipCmds = data.chips;
     renderChips(data.chips);
-    const pendingReview = tasksList.some((t) => t.status === "pending" && (t.source === "intake" || t.source === "steward"));
+    // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
+    // proposal sits parked on the owner — before this, nothing on the board said so and the
+    // lane waited invisibly until the owner happened to reselect the task
+    const pendingReview = tasksList.some((t) => t.status === "pending" && (t.source === "intake" || t.source === "steward"))
+      || tasksList.some((t) => t.criterion?.confirmedAt === null);
     $("queuebtn").classList.toggle("hot", pendingReview);
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
@@ -3979,6 +3983,16 @@ async function refresh() {
       renderSlots();
     }
     renderQueue(); // no-op unless the queue overlay is open; keeps it live
+    // keep an open task DETAIL honest the same way (2026-08-05): a clarify lane's criterion
+    // proposal arrived on this poll, but the detail only ever repainted on reselect — the
+    // owner sat in front of a stale pane while the lane waited on them. Keyed on the fields
+    // the detail actually paints, so hover and an in-progress criterion edit survive quiet polls.
+    if (qShell?.isOpen() && qPick !== null) {
+      const t = tasksList.find((x) => x.id === qPick);
+      const dk = t ? JSON.stringify([t.id, t.status, t.note, t.eval?.at,
+        t.criterion?.proposedAt, t.criterion?.confirmedAt]) : "gone";
+      if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
+    }
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
     // rebuilding it on every poll — rebuilds kill hover state and button focus
     if (dlgSlot && sharedlg.style.display === "flex") {
@@ -4483,6 +4497,7 @@ let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
 let qKey = "";                    // the data key the list was last built from
+let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
 let qRepoIn: HTMLInputElement | null = null; // target-repo input, same once-per-open lifecycle
 // the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
@@ -4516,7 +4531,9 @@ async function loadTaskTexts() {
     // server briefly unreachable — rows keep the placeholder, the next poll retries
   }
   taskTextBusy = false;
-  if (filled) { qKey = ""; renderQueue(); } // texts arrived: the rows carry them now
+  // texts arrived: rows AND the open detail carry them now — the detail's criterion textarea
+  // renders from taskCriterionFull, which was empty until this very fetch
+  if (filled) { qKey = ""; qDetailKey = ""; renderQueue(); renderQueueDetail(); }
 }
 
 const Q_STATUS: { k: TaskInfo["status"]; head: string }[] = [
@@ -4637,9 +4654,12 @@ function renderQueueDetail() {
   // confirming stores what YOU agreed to, which is what makes it your anchor and not its own
   const crit = taskCriterionFull.get(t.id) ?? t.criterion;
   if (crit) {
-    const confirmed = crit.confirmedAt !== null;
+    // narrowed through a local, not a boolean-plus-`!`: the assertion form would hand fmtTs a
+    // null as "Jan 1 1970" the day a third criterion state decouples the two lines
+    const confirmedAt = crit.confirmedAt;
+    const confirmed = confirmedAt !== null;
     shell.detail.appendChild(el("div", "rvhead",
-      confirmed ? `done-criterion · confirmed ${fmtTs(crit.confirmedAt!)}` : "done-criterion · PROPOSED — yours to confirm"));
+      confirmedAt !== null ? `done-criterion · confirmed ${fmtTs(confirmedAt)}` : "done-criterion · PROPOSED — yours to confirm"));
     if (confirmed) {
       shell.detail.appendChild(el("div", "qdtext", crit.text ?? ""));
     } else {
@@ -4703,7 +4723,8 @@ function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
-    shown.map((t) => [t.id, t.status, t.slot, t.note, t.eval?.verdict, taskText.has(t.id)])]);
+    shown.map((t) => [t.id, t.status, t.slot, t.note, t.eval?.verdict,
+      t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id)])]);
   if (key === qKey) return;
   qKey = key;
 
@@ -4742,6 +4763,9 @@ function renderQueue() {
         sub: [t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
           t.kind === "note" ? "note" : "",
           t.eval ? (t.eval.verdict === "auto" ? "✓ eval" : "⚠ eval") : "",
+          // a criterion awaiting the owner's confirm is the row-level half of the queuebtn's
+          // hot flag — the lane behind it is parked until this is acted on
+          t.criterion ? (t.criterion.confirmedAt === null ? "⏳ criterion" : "✓ criterion") : "",
           t.repo ? `⌂ ${t.repo.split("/").pop()}` : "",
           `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
           t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),

@@ -217,8 +217,18 @@ export async function run(): Promise<void> {
   // loudly, instead of silently staggering every line of somebody's scrollback.
   const sgr = /\x1b\[[0-9;]*m/.test(seedText);
   // every CSI final byte that MOVES the cursor: @ABCDEFGHST, `abde, plus H/f absolute positioning.
-  // SGR ('m') is excluded by construction — that is the one we want.
-  const motion = seedText.match(/\x1b\[[0-9;]*[@A-HJKLMPSTXZ`abde]/g) ?? [];
+  // SGR ('m') is excluded by construction — that is the one we want. ONE regex for the live
+  // probe and the synthetic fixtures below, so the class can never drift from what was proven.
+  const MOTION_RE = /\x1b\[[0-9;]*[@A-HJKLMPSTXZ`abdef]/g;
+  // the detector itself is proven against synthetic escapes it has never seen from tmux: CSI f
+  // (HVP) is CUP's exact twin and was MISSING from the class while the comment claimed it
+  // (2026-08-05) — a detector never shown to catch its class only documents hope. The SGR
+  // fixture is the negative control (the one final byte the class must NOT match).
+  check("motion detector: catches CUP (H) and its twin HVP (f), ignores SGR (m)",
+    ("x\x1b[5;10Hy".match(MOTION_RE) ?? []).length === 1
+    && ("x\x1b[5;10fy".match(MOTION_RE) ?? []).length === 1
+    && ("x\x1b[31my".match(MOTION_RE) ?? []).length === 0, "");
+  const motion = seedText.match(MOTION_RE) ?? [];
   check("reseed keeps the pane's color (the seed is an escape-preserving capture)",
     sgr && seedText.includes("COLORMARK-RED"), `sgr=${sgr} mark=${seedText.includes("COLORMARK-RED")}`);
   check("reseed carries NO cursor-motion escape — the class that would garble a narrower client",

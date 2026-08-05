@@ -6164,17 +6164,29 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   const ref = kind === "pulse" ? "pulse" : typeof body.ref === "string" ? body.ref : "";
   const s = slotFrom(body.slot);
   if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+  // Guard order is a pinned CONTRACT (e2e steward-core/-outcomes/tasks), most-meaningful answer
+  // first: an INVALID request answers 400 even when the slot is waiting, automation is stopped
+  // or a cap is exhausted (a blocked lane must never be told "Lane gelandet" just because a
+  // policy gate answered first), a valid one hits the FREE policy gates (awaiting-owner, master
+  // stop, quiet hours — plain field checks) before the caps, and only a valid, deliverable one
+  // can be told 429. The expensive fresh gates (claudeAlive subprocess, idle) come last,
+  // directly before the paste. Deliberately NOT cost-first: a throttled caller still pays the
+  // render fan-out, because refusal-priority is the contract — reordering that is an owner
+  // decision, not an optimization.
+  const rendered = await renderStewardMessage(kind, ref, s, question);
+  if ("error" in rendered) return json({ error: rendered.error }, 400);
   // a lane told to stop and wait for the owner IS the playbook's `awaiting-human`: escalate,
-  // never answer in the owner's stead. Checked before the render so no send of any kind — not
-  // even a state relay — can arrive as the nudge that resumes work the owner has not approved.
+  // never answer in the owner's stead. A free policy gate BEHIND the render (rendering is not
+  // sending — sendText sits below, behind canDeliver), so no send of any kind can arrive as
+  // the nudge that resumes work the owner has not approved, while an invalid request to a
+  // waiting slot is still answered as invalid (400), not as the wait (409).
   if (s.awaiting === "owner")
     return json({ error: "slot is waiting on the owner (clarify lane) — escalate, never nudge past it" }, 409);
-  // caps FIRST — they are the cheap refusal. The old order ran renderStewardMessage (for
-  // kind:"pulse" a briefPayload git fan-out plus a transcript tail read) and canDeliver's fresh
-  // claudeAlive subprocess before ever consulting a cap, so a fully-throttled caller still cost
-  // the box the full per-request work on every 429. The in-memory belt (capAccept) makes
-  // check+consume atomic; every non-delivery exit below releases what it took — a refused or
-  // failed send must not eat the episode.
+  const policy = await canDeliver(s, { now: Date.now(), alive: false });
+  if (!policy.ok) {
+    if (policy.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
+    return json({ error: "quiet hours — steward sends are muted" }, 409);
+  }
   const recent = await stewardRecentSends();
   const now = Date.now();
   const withinHour = recent.filter((r) => now - r.ts < 3_600_000).length;
@@ -6189,14 +6201,14 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
     audit("steward_send_capped", s.id, `${kind}:${ref}:episode`);
     return json({ error: "cap: 1 per kind×slot per episode" }, 429);
   }
+  // the in-memory belt: check+consume atomic (no await between the cap reads above and these
+  // stamps), and every non-delivery exit below releases what it took — a refused or failed
+  // send must not eat the episode
   const hourlyStamp = capAccept("send:hourly");
   const episodeStamp = capAccept(episodeKey);
   const release = (): void => { capRelease("send:hourly", hourlyStamp); capRelease(episodeKey, episodeStamp); };
-  const rendered = await renderStewardMessage(kind, ref, s, question);
-  if ("error" in rendered) { release(); return json({ error: rendered.error }, 400); }
-  // the shared delivery choke-point: the master stop (autosOn) and quiet hours now reach the
-  // steward's own send, not just scheduled autos (was synergy-findings.md Tier-0 #1) — plus the
-  // fresh claude-alive + idle gates it already had.
+  // the shared delivery choke-point, fresh directly before the paste: claude-alive + idle, plus
+  // the policy gates once more against a mid-request toggle (was synergy-findings.md Tier-0 #1)
   const verdict = await canDeliver(s, { now: Date.now(), idleMs: STEWARD_MIN_IDLE_MS });
   if (!verdict.ok) {
     release();

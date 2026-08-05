@@ -389,8 +389,11 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(i) fixture: the clarify lane's own scoped token and the steward token are readable",
       !!persisted.stewardToken && !!persisted.slots?.[String(iSlot)]?.selfToken, "");
     const stewardHdr = { "content-type": "application/json", authorization: `Bearer ${persisted.stewardToken ?? ""}` };
+    // the probe must be a VALID send (continue_nudge takes ref "continue" only) — under the
+    // refusal-priority contract an invalid one answers 400 at the renderer, which would test
+    // the renderer, not the waiting gate
     const nudge = await fetch(`${BASE}/api/steward/send`, { method: "POST", headers: stewardHdr,
-      body: JSON.stringify({ slot: iSlot, kind: "continue_nudge", ref: "probe" }) });
+      body: JSON.stringify({ slot: iSlot, kind: "continue_nudge", ref: "continue" }) });
     const nudgeJ = (await nudge.json()) as { error?: string };
     check("(i) a waiting clarify lane refuses every steward send (409 — escalate, never nudge past the owner)",
       nudge.status === 409 && (nudgeJ.error ?? "").includes("waiting on the owner"),
@@ -428,9 +431,10 @@ export async function run(ctx: Ctx): Promise<void> {
       (await propose("sneaking a wider criterion in")).status === 409);
     check("(i) confirming twice is refused (409)",
       (await post(`/api/tasks/${iT.task.id}/criterion-confirm`, {})).status === 409);
-    // and the confirmation released the wait, so the steward may talk to the lane again
+    // and the confirmation released the wait, so the steward may talk to the lane again —
+    // same VALID probe as above, so a 409 here could only mean the wait (or a later gate)
     const nudge2 = await fetch(`${BASE}/api/steward/send`, { method: "POST", headers: stewardHdr,
-      body: JSON.stringify({ slot: iSlot, kind: "continue_nudge", ref: "probe" }) });
+      body: JSON.stringify({ slot: iSlot, kind: "continue_nudge", ref: "continue" }) });
     check("(i) confirming releases the wait — the slot is a normal lane again (no longer 409-waiting)",
       nudge2.status !== 409 || !((await nudge2.json()) as { error?: string }).error?.includes("waiting on the owner"),
       String(nudge2.status));

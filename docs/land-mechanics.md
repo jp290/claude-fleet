@@ -141,7 +141,10 @@ Ranked by what actually blocked a human today:
    The verify gate has a 5-minute cap (`FLEET_VERIFY_TIMEOUT_MS`) and the suite mutex is
    blocking, so a land started next to a running suite can fail on *queueing* rather than
    on its own tree.
-2. **`baseSha` re-anchoring** after any rebase (§5), or the outcome ledger lies.
+2. **`baseSha` re-anchoring** after any rebase (§5), or the outcome ledger lies — *narrowed
+   2026-08-05: both SERVER land paths already re-anchor (`buildLaneOutcome` takes
+   `facts.baseSha`; the clean auto-land and the reviewed confirm-land both pass `mainBefore`).
+   Open only on the `OWNER_LAND_FACTS` paths (grep it), which is what §5 measured.*
 3. **A rule for semantic conflicts** (§4): "both sides additive → keep both" is
    automatable; "two comments legislating opposite orderings" is an owner decision and
    must escalate, not resolve.

@@ -102,6 +102,12 @@ world the change lives in** and asks the agent to hold that world in mind silent
 
 ## 6. Application to Fleet: the lane brief
 
+> **Built since (2026-08-04, `f172053`):** the dispatcher compiles exactly this brief —
+> `runEnhance` over the task text plus the fresh lane's git facts (`briefPayload`),
+> additive-only by contract, `briefHash` on the outcome row. The paragraphs below are the
+> design rationale that led there; "inherits generic context" still describes a HAND-opened
+> lane, no longer the dispatch path.
+
 Today a lane (a `git worktree` + a Claude session) inherits whatever generic context
 the repo carries. That is the thin case: the agent gets the repo but not the *task's
 world*.

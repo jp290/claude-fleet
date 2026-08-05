@@ -146,7 +146,7 @@ Was das für die These dieses Dokuments heißt, in beide Richtungen ehrlich:
 Was das Landen zusätzlich gekostet hat, steht nicht hier, sondern in `verify-tiering.md` §11: vier
 Suite-Läufe für eine Attribution, wo einer gereicht hätte.
 
-## 7 — Vorschlag für `CLAUDE.md` (nicht eingetragen)
+## 7 — Vorschlag für `CLAUDE.md` (INZWISCHEN EINGETRAGEN — der Satz steht wörtlich in der Lane-Disziplin; dieser Abschnitt ist Historie)
 
 `CLAUDE.md` ist gitignored und wird beim Lane-Spawn nur kopiert — Änderungen daran
 gehören als Text gemeldet, nicht aus einer Lane eingetragen (`ungoverned-artifacts.md`).

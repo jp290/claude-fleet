@@ -21,6 +21,29 @@ A lane's entire information environment is therefore: the brief (prose, static, 
 **copy** of `CLAUDE.md` (snapshot, drifts, uncommittable — `ungoverned-artifacts.md`), its own
 worktree, its own transcript, and two env vars.
 
+> **SUPERSEDED 2026-08-05 — the three paragraphs above are the 2026-07-25 measurement and are now
+> false in their central claim.** They are kept because the *argument* they carry is what got the
+> routes built, and because this note is cited elsewhere as the justification; but a reader must
+> not take the table as today's state. What is true now: the lane principal has **five** routes,
+> two of them reads —
+> · `GET /api/self/drift` (2026-08-04) — behind, `wouldConflict`, conflict files, and the sibling
+>   lanes' in-flight files. So "cannot query one fact about itself **or its siblings**" is gone.
+> · `GET /api/self/gate` (2026-08-05) — the LIVE `FLEET_VERIFY_CMD` and timeout, the judges' modes,
+>   and a rulebook-drift flag. So "**or the gate that will judge it**" is gone too, which was §2.2's
+>   verified defect and the reason this note recommended building `gate` and `rulebook` first.
+> · writes: `POST /api/self/autos`, `POST /api/self/verify-intent` (advisory gate-phase report),
+>   `POST /api/self/criterion` (a clarify lane's PROPOSED done-criterion, owner-confirmed).
+>
+> Two things this note got right and one it got wrong, worth carrying forward:
+> · **Right:** the seam. §4.1's payload was built in slices, each when its own defect justified it,
+>   never as the one `GET /api/self/context` proposed here — a name that was never used.
+> · **Right:** the build order. `gate` + `rulebook` first on correctness grounds, exactly as §6
+>   argued against its own broader case.
+> · **Wrong, or at least unresolved:** §6 made the cost instrument (lane wall-clock and token spend
+>   per landed change) a precondition for `siblings`/`main`, and `drift` shipped those without it.
+>   The instrument still does not exist, so the efficiency claim behind them remains **unmeasured**.
+>   `behind`-at-land is still not a field on the outcome row (re-checked 2026-08-05).
+
 ## 2. Why "it can just look" is not the answer
 
 Much is *technically* reachable from disk — sibling worktrees, `git log HEAD..main`, the ledger

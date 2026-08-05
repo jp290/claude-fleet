@@ -125,6 +125,10 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/autos/switch", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/autos/quiet", method: "POST", body: { start: 99, end: 99 }, ownerSafe: true },
   { path: "/api/dispositions", method: "POST", body: {}, ownerSafe: true },
+  // the tier-2 adjudication rail's only writer. A judgement on a red audit is EVIDENCE that someone
+  // looked, and evidence any principal can forge is worse than none — an empty body answers the
+  // owner a side-effect-free 400 (no verdict), so it carries the positive control too.
+  { path: "/api/post-land-audits/adjudicate", method: "POST", body: {}, ownerSafe: true },
   { path: "/api/tasks", method: "POST", body: {}, ownerSafe: true },
   // GET /api/tasks serves the full prompt texts (intake mail included) that the 2 s poll no
   // longer carries — a read route, but the most content-bearing one the queue has

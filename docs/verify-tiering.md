@@ -355,13 +355,35 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
   the gap measured in `mining-2026-07-26.md` finding 1 — the deploy ritual (`land → kill-session -t
   srv`) had raced and erased every audit it triggered. 17 further checks, sections E–G of the same
   file; the count above is now 49.
+- **Since 2026-08-05 a red can be ADJUDICATED** — the missing half of "surface a red", and the one
+  that decides whether anyone acts on it. Measured that day: 36 runs, 23 green / 13 red, **0 rows
+  carrying a judgement, because no field existed to carry one**. A red was therefore permanently
+  ambiguous between *nobody looked* and *looked, it was noise*, and that ambiguity is what trained
+  the reflex of scrolling past red. Now: `POST /api/post-land-audits/adjudicate` (owner-only, keyed
+  on the row's `at`) appends `{verdict: real|flake|stale-test|unknowable, at, by, note≤300}` to a
+  SEPARATE append-only rail, `audit-adjudications.jsonl`, which every reader JOINS onto the row it
+  judges — `GET /api/post-land-audits` and the steward's `ledgers.audits` projection both serve
+  `adjudication` on the row. A side rail rather than a field rewritten in place, for three reasons:
+  it makes *an adjudicated red stays red* structural (the writer cannot open the audit trail at
+  all), it avoids rewriting an append-only two-generation ledger under a concurrent `appendEvent`,
+  and it is the shape `dispositions.jsonl` already uses for the identical problem. Newest judgement
+  wins; the rail keeps every one. A one-shot boot backfill stamps the 8 reds predating the
+  signal-first retention fix (`70cd443`) `unknowable`/`by:"backfill"` — those rows' retained output
+  is a blind char-tail that physically cannot name what failed, so they are unanswerable, not open.
+  Deliberately NOT built (owner's instruction, 2026-08-05): any automatic flake classification. A
+  regex that closes a red is a guard that never fires, and it would silently dismiss the next real
+  failure with a similar signature. 19 further checks, sections H/H2; the count above is now 68.
 
 **What it does not solve** (its own docs say the first two; the rest are mine):
 
 1. ~~It is off. Nothing is audited until `FLEET_POSTLAND_AUDIT_CMD` is in the srv-spawn line and
    `launchctl kickstart` has run.~~ **Resolved 2026-07-25**: the variable is in the srv-spawn line and
    the kickstart has run. Everything else in this list still stands.
-2. Nothing reads the trail — no client rendering, no attribution consumer.
+2. ~~Nothing reads the trail — no client rendering, no attribution consumer.~~ **Partly resolved**:
+   the steward's `ledgers.audits` projection reads it each pulse, and since the adjudication rail a
+   red can be closed there. Still open: **no client rendering at all** — the board shows only the
+   newest row's summary, and the only way to WRITE a judgement is a curl to the route. The owner
+   cannot adjudicate from the UI.
 3. **The rollback it names is mostly unavailable in the burst case it optimises for** (§6c). Worth
    saying in the doc it ships with, because "↩ undo-land is the rollback" reads as a general
    guarantee and is a one-land, until-the-next-land guarantee.

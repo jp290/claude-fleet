@@ -42,6 +42,45 @@ export async function run(sc: StewardCtx): Promise<void> {
     promRow?.kind === "note" && (promRow?.note ?? "").includes("dispatcher never runs"),
     JSON.stringify(promRow));
   check("steward task rejects empty text (400)", (await sc.stewPost("/api/steward/tasks", { text: "  " })).status === 400);
+
+  // --- ref-dedup: one LIVE proposal per condition slug (the piece rundgang.md's scheduling
+  // amendment left open — the pulse is hourly now, so display-discipline alone no longer
+  // bounds duplicates). Filed BEFORE the cap fill below so the at-cap re-file can prove the
+  // dedup answer outranks the 409. ---
+  const refA = (await (await sc.stewPost("/api/steward/tasks",
+    { text: "ref probe: lane 3 awaiting a human", ref: "lane3-awaiting-human" })).json()) as
+    { ok?: boolean; dedup?: boolean; task?: { id: string; ref?: string } };
+  check("a steward filing may carry a stable ref (stored on the row)",
+    refA.ok === true && refA.dedup === undefined && refA.task?.ref === "lane3-awaiting-human",
+    JSON.stringify(refA));
+  const refB = (await (await sc.stewPost("/api/steward/tasks",
+    { text: "ref probe RE-SIGHTED, different phrasing", ref: "lane3-awaiting-human" })).json()) as
+    { ok?: boolean; dedup?: boolean; task?: { id: string } };
+  check("re-filing a live ref answers the EXISTING row (dedup:true, same id), never a duplicate",
+    refB.ok === true && refB.dedup === true && refB.task?.id === refA.task?.id, JSON.stringify(refB));
+  const refRows = ((await (await get("/api/tasks")).json()) as { tasks: { ref?: string }[] }).tasks
+    .filter((t) => t.ref === "lane3-awaiting-human");
+  check("the queue holds exactly one row for the ref after the repeat sighting",
+    refRows.length === 1, `rows=${refRows.length}`);
+  check("owner promotes the ref'd note — a QUEUED row still dedups (live is pending|queued|sent)",
+    (await post(`/api/tasks/${refA.task?.id}/queue`, {})).ok
+    && (((await (await sc.stewPost("/api/steward/tasks",
+      { text: "resight while queued", ref: "lane3-awaiting-human" })).json()) as { dedup?: boolean }).dedup === true));
+  // a RULED-ON row frees its ref: archive-from-pending is a dismissal, and a condition that
+  // returns after a ruling is new information, not pulse noise
+  const refC = (await (await sc.stewPost("/api/steward/tasks",
+    { text: "ruled-on probe", ref: "ruled-on-cond" })).json()) as { task?: { id: string } };
+  await post(`/api/tasks/${refC.task?.id}/archive`, {});
+  const refC2 = (await (await sc.stewPost("/api/steward/tasks",
+    { text: "the condition RETURNED after the ruling", ref: "ruled-on-cond" })).json()) as
+    { dedup?: boolean; task?: { id: string } };
+  check("an archived (ruled-on) ref may be re-filed as a NEW row — dedup scopes to live rows only",
+    refC2.dedup === undefined && !!refC2.task?.id && refC2.task?.id !== refC.task?.id,
+    JSON.stringify({ old: refC.task?.id, new: refC2.task?.id }));
+  check("a malformed ref is refused (400), never silently dropped",
+    (await sc.stewPost("/api/steward/tasks", { text: "x", ref: "Bad Ref!" })).status === 400
+    && (await sc.stewPost("/api/steward/tasks", { text: "x", ref: `a${"b".repeat(64)}` })).status === 400);
+
   // cap: open steward-pending tasks are bounded — fill to the cap, expect 409, then clean up
   const capIds: string[] = [];
   let capHit = false;
@@ -51,7 +90,16 @@ export async function run(sc: StewardCtx): Promise<void> {
     capIds.push(((await r.json()) as { task: { id: string } }).task.id);
   }
   check("steward pending cap refuses the overflow proposal (409)", capHit, `filed=${capIds.length}`);
-  for (const id of [...capIds, stTaskJ.task?.id]) await post(`/api/tasks/${id}/delete`, {});
+  // at the cap, the two answers stay distinct: a repeat sighting is a truthful dedup (200,
+  // checked before the cap), a genuinely new condition is still refused (409, no cap bypass)
+  const atCapDedup = await sc.stewPost("/api/steward/tasks",
+    { text: "resight at the cap", ref: "lane3-awaiting-human" });
+  check("at the cap a repeat sighting still answers dedup (200), not a spurious 409",
+    atCapDedup.ok && (((await atCapDedup.json()) as { dedup?: boolean }).dedup === true),
+    String(atCapDedup.status));
+  check("at the cap a NEW ref is still refused (409) — dedup is not a cap bypass",
+    (await sc.stewPost("/api/steward/tasks", { text: "new condition", ref: "brand-new-cond" })).status === 409);
+  for (const id of [...capIds, stTaskJ.task?.id, refA.task?.id, refC2.task?.id]) await post(`/api/tasks/${id}/delete`, {});
   check("owner token on the steward tasks route is out of scope (404)",
     (await post("/api/steward/tasks", { text: "x" })).status === 404);
 
@@ -136,6 +184,45 @@ export async function run(sc: StewardCtx): Promise<void> {
   check("the archived proposal keeps its row (status archived, not deleted)",
     archRow?.status === "archived", JSON.stringify(archRow));
   await post(`/api/tasks/${archProp.task.id}/delete`, {});
+
+  // --- the Inspektion's register as a journal kind: typed write, server-stamped ts, read back
+  // through the same rotation-aware reader as the pulse anchor. It replaces the loose jsonl in
+  // the steward worktree, which died with the worktree on 2026-08-05. ---
+  const regW = await sc.stewPost("/api/steward/journal", { kind: "inspektion", revier: 2,
+    key: "docs-drift-probe", titel: "doc claims a cap the code lost", cite: "server.ts:123", verdict: "kandidat", task: null });
+  const regWJ = (await regW.json()) as { ok?: boolean; ts?: number };
+  check("register line accepted: typed write answers ok with a SERVER timestamp",
+    regW.ok && regWJ.ok === true && typeof regWJ.ts === "number", JSON.stringify(regWJ));
+  await Bun.sleep(200); // appendEvent is fire-and-forget — settle before reading
+  const regRecs = ((await (await sc.stewGet("/api/steward/journal?tail=50&kind=inspektion")).json()) as
+    { records: { kind?: string; key?: string; verdict?: string; revier?: number; ts?: number }[] }).records;
+  check("?kind=inspektion serves ONLY register rows — the new line among them, ts stamped by the server",
+    regRecs.length > 0 && regRecs.every((r) => r.kind === "inspektion")
+    && regRecs.some((r) => r.key === "docs-drift-probe" && r.verdict === "kandidat" && r.revier === 2
+      && typeof r.ts === "number" && Math.abs(Date.now() - (r.ts ?? 0)) < 60_000),
+    JSON.stringify(regRecs.slice(-2)));
+  check("a register write never becomes the pulse's delta anchor (kind-filtered prior stays rundgang)",
+    (((await (await sc.stewGet("/api/steward/digest?wait=0")).json()) as { prior?: { kind?: string } }).prior?.kind) === "rundgang");
+  check("register write rejects an unknown verdict (400)",
+    (await sc.stewPost("/api/steward/journal", { kind: "inspektion", revier: 2, key: "k", titel: "t", cite: "c", verdict: "guilty" })).status === 400);
+  check("register write rejects a sloppy key (400) — the slug IS the dedup mechanism",
+    (await sc.stewPost("/api/steward/journal", { kind: "inspektion", revier: 2, key: "Weird Numbers!", titel: "t", cite: "c", verdict: "filed" })).status === 400);
+  check("register write rejects an out-of-range revier (400)",
+    (await sc.stewPost("/api/steward/journal", { kind: "inspektion", revier: 7, key: "k2", titel: "t", cite: "c", verdict: "filed" })).status === 400);
+  check("an unknown journal kind is refused (400) — propose_outcome stays server-written only",
+    (await sc.stewPost("/api/steward/journal", { kind: "propose_outcome", ref: "x", outcome: "accepted" })).status === 400);
+  // the cap's check-then-act window is closed by the in-memory belt: fill serially to one below
+  // the hourly register cap (12), then fire three writes IN PARALLEL into the last free slot —
+  // exactly one may land, deterministically, even though appendEvent's disk write is async and
+  // none of the fills may have reached the ledger yet when the burst reads it
+  for (let i = regRecs.length; i < 11; i++)
+    await sc.stewPost("/api/steward/journal",
+      { kind: "inspektion", revier: 1, key: `fill-${i}`, titel: "fill", cite: "e2e", verdict: "observation" });
+  const burst = await Promise.all([0, 1, 2].map((i) => sc.stewPost("/api/steward/journal",
+    { kind: "inspektion", revier: 1, key: `burst-${i}`, titel: "burst", cite: "e2e", verdict: "observation" })));
+  check("parallel burst into the last register slot: exactly ONE lands (belt closes the async-write race)",
+    burst.filter((r) => r.ok).length === 1 && burst.filter((r) => r.status === 429).length === 2,
+    JSON.stringify(burst.map((r) => r.status)));
 
   // oc2/oc4: fixtures reused below — oc2 by the Tier-1 signal surface checks, oc4 by the
   // pulse-scaffold checks. The intervention-outcome measurement these lanes used to also

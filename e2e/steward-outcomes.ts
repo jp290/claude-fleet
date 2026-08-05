@@ -223,6 +223,17 @@ export async function run(sc: StewardCtx): Promise<void> {
   check("parallel burst into the last register slot: exactly ONE lands (belt closes the async-write race)",
     burst.filter((r) => r.ok).length === 1 && burst.filter((r) => r.status === 429).length === 2,
     JSON.stringify(burst.map((r) => r.status)));
+  // ?ref= is key-addressed MEMORY (2026-08-05): the tail alone is a recency window, and a
+  // dismissed finding older than 50 register rows silently returned to the owner — the exact
+  // failure mode the register names as its worst. The fills/burst above wrote NEWER rows, so a
+  // tail=1 lookup answering the OLD slug proves the filter runs before the tail.
+  const refHit = ((await (await sc.stewGet("/api/steward/journal?kind=inspektion&ref=docs-drift-probe&tail=1")).json()) as
+    { records: { key?: string; verdict?: string }[] }).records;
+  check("?ref= answers an old slug past newer rows — key-addressed memory, not a recency window",
+    refHit.length === 1 && refHit[0].key === "docs-drift-probe" && refHit[0].verdict === "kandidat",
+    JSON.stringify(refHit));
+  check("a malformed journal ref is refused (400)",
+    (await sc.stewGet("/api/steward/journal?ref=bad!ref")).status === 400);
 
   // oc2/oc4: fixtures reused below — oc2 by the Tier-1 signal surface checks, oc4 by the
   // pulse-scaffold checks. The intervention-outcome measurement these lanes used to also

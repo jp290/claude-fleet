@@ -2,6 +2,7 @@
 // own conflict-free script pre-pass, confirm-land and its stale-main replay, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { REPO, check, get, plogRead, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
@@ -133,6 +134,31 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("conflict-free lane merges + lands via the script, agent never consulted", vC.gone, JSON.stringify(vC));
   check("script-path lane commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("clean lane work"));
+
+  // the UNTRACKED twin of the dirty-holder refusal (2026-08-05): a file the lane ADDS that lies
+  // untracked in the primary used to pass this guard (it filtered ?? out) and die at the very end
+  // — ff-only's raw stderr, after the full verify spend. Now it is the same curated refusal, up
+  // front. The unrelated untracked file proves the doctrine survives: only a NAME COLLISION
+  // blocks, plain dirt in the holder never does.
+  const lnU = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  await Bun.write(`${lnU.cwd}/untracked-collide.txt`, "lane adds this\n");
+  spawnSync("git", ["-C", lnU.cwd, "add", "untracked-collide.txt"]);
+  spawnSync("git", ["-C", lnU.cwd, "commit", "-qm", "untracked collide work"]);
+  await Bun.write(`${REPO}/untracked-collide.txt`, "the holder's uncommitted twin\n"); // untracked there
+  await Bun.write(`${REPO}/unrelated-untracked.txt`, "must not block\n");
+  await setMergeMode("blocked"); // agent, if wrongly consulted, would block — it must not be
+  await settleForMerge(lnU.slot);
+  const uRes = (await (await post(`/api/slots/${lnU.slot}/merge`, {})).json()) as { status?: string; detail?: string };
+  check("a holder-untracked file the lane ADDS blocks the land up front, curated (not raw ff stderr)",
+    uRes.status === "blocked" && (uRes.detail ?? "").includes("UNTRACKED files this lane also adds")
+    && (uRes.detail ?? "").includes("untracked-collide.txt"), JSON.stringify(uRes));
+  rmSync(`${REPO}/untracked-collide.txt`, { force: true });
+  await settleForMerge(lnU.slot);
+  await post(`/api/slots/${lnU.slot}/merge`, {});
+  const vU = await waitMerge(lnU.slot);
+  check("with the twin gone the same lane lands — the unrelated untracked file never blocked",
+    vU.gone && exists(`${REPO}/unrelated-untracked.txt`), JSON.stringify(vU));
+  rmSync(`${REPO}/unrelated-untracked.txt`, { force: true });
 
   // a correct rebase answered in PROSE must not be thrown away: git verification is the
   // authority, the agent's JSON is only narrative (seen live — injection-distracted agent

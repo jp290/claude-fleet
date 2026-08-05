@@ -702,8 +702,11 @@ interface MergeState { running: boolean;
   // "interrupted" is the durable marker a merge run leaves about itself before it starts: a run
   // that never came back (the server was killed mid-job) is reported as such instead of as no
   // verdict at all. Rendered by the plain verdict note below, like every other non-resolved state.
-  last: { status: "merged" | "blocked" | "error" | "resolved" | "interrupted"; detail: string; landed: boolean;
-    branch: string; at: number; conflicted?: string[]; verify?: VerifyVerdict } | null;
+  // "awaiting-author" (②) means the conflict was handed to the lane's OWN session rather than to a
+  // throwaway resolver. Deliberately NOT part of `awaitingReview` below: nothing is in the tree to
+  // review yet — the author is still working, and the next ⏫ is what brings the resolution back.
+  last: { status: "merged" | "blocked" | "error" | "resolved" | "interrupted" | "awaiting-author"; detail: string; landed: boolean;
+    branch: string; at: number; conflicted?: string[]; verify?: VerifyVerdict; resolvedBy?: "agent" | "author" } | null;
   // the repo's most recent still-undoable land (null if none) — drives the ↩ undo button
   undoable?: { branch: string; at: number } | null }
 // slots with a merge job the client kicked off or observed — when such a slot goes
@@ -2007,9 +2010,15 @@ async function renderBoard() {
           note.appendChild(acts);
           land.appendChild(note);
         } else if (l) {
-          const cls = l.status === "merged" && l.landed ? "ok" : l.status === "blocked" ? "warn" : "err";
+          // "awaiting-author" is a WAIT, not a failure: the lane's own session is resolving its own
+          // conflict right now. Rendering it in the error style (the fall-through default for every
+          // non-merged/non-blocked status) would read as "the merge broke" on the one path that is
+          // working exactly as designed.
+          const cls = (l.status === "merged" && l.landed) || l.status === "awaiting-author" ? "ok"
+            : l.status === "blocked" ? "warn" : "err";
           const vn = el("div", `bmergenote ${cls}`,
-            `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed") : l.status}: ${l.detail} `);
+            `${l.status === "merged" ? (l.landed ? "merged + landed" : "merged, NOT landed")
+              : l.status === "awaiting-author" ? "the lane's own session is resolving this conflict" : l.status}: ${l.detail} `);
           vn.appendChild(verifyBadge(l.verify));
           land.appendChild(vn);
         }

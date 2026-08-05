@@ -1,9 +1,10 @@
 // Helpers shared by every worktree-lane check module: the fake merge agent's mode file, the
 // two deterministic waits (async merge job settled / pane idle past the land gate), and the
 // verdict shape they return.
-import { statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync, symlinkSync } from "node:fs";
+import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { check, get, post, REPO } from "./harness";
+import { check, get, post, tmuxOut, REPO, ROOT } from "./harness";
 
 export const exists = (p: string): boolean => { try { statSync(p); return true; } catch { return false; } };
 export const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/, "")}/mergemode`, m);
@@ -65,6 +66,65 @@ export const settleForMerge = async (slot: number): Promise<void> => {
     if (sl && sx.now - sl.lastOutput >= MERGE_IDLE_MS) return;
     await Bun.sleep(150);
   }
+};
+
+// --- ② the AUTHOR-path fixture: make ONE lane pane look like a live claude ---------------------
+// The author path asks the STRICT alive question (server.ts, claudeAliveAt) rather than the waived
+// one, precisely because it pastes a prose brief and a non-claude pane would run prose as shell
+// commands. This whole suite boots the server with FLEET_CMD=true (e2e-isolated.sh), so every lane
+// pane runs a bare shell and that question answers "no" — which is why every OTHER merge check in
+// this suite still exercises the throwaway-resolver FALLBACK, unchanged.
+//
+// To cover the author path itself, satisfy the server's predicate for exactly one pane instead of
+// changing FLEET_CMD for the whole run (which would re-point every alive gate, self-heal and
+// dispatch check in the suite at a different code path). claudeAliveAt reads `ps -o comm=` of the
+// pane pid and matches the BASENAME against /^claude/ — so a `claude` that is really /bin/cat,
+// exec'd in the pane, is a live "claude" by the server's own definition, and one that also behaves
+// usefully: it keeps the pane alive and echoes whatever is pasted into it, so the brief's arrival
+// is observable in the pane's own output.
+//
+// HOW the `claude` is made is platform-dependent, and both halves are load-bearing — this suite
+// also runs on Debian inside ./docker-verify.sh (docs/container.md), so a macOS-only trick here
+// would break that run silently:
+//   · macOS → SYMLINK. A copied platform binary is SIGKILLed (its signature does not survive a
+//     plain cp — measured here: exit 137 and a pane dead on the spot), and `ps -o comm=` on a
+//     symlinked exec reports the LINK's own path, which is exactly the name this needs.
+//   · Linux → COPY. Nothing rejects the copy there, and /proc/<pid>/comm (what `ps -o comm=`
+//     prints) is the basename of the executed FILE — so the copy must carry the name, a symlink
+//     would report its target instead.
+// chmod is deliberately absent from the symlink branch: it would follow the link onto /bin/cat.
+//
+// Deterministic, not timed: send-keys is RETRIED until the server's predicate actually answers yes
+// (the shell can drop a keystroke sent before it is ready), and the predicate itself is polled —
+// never a sleep-then-look, which is the shape of the pane flake this suite removed.
+const paneRunsClaude = async (target: string): Promise<boolean> => {
+  const p = await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}");
+  const pid = Number(p.out.trim());
+  if (!pid) return false;
+  const ps = Bun.spawn(["ps", "-o", "comm=", "-p", String(pid)], { stdout: "pipe", stderr: "pipe" });
+  const comm = (await new Response(ps.stdout).text()).trim();
+  await ps.exited;
+  return (comm.split("/").pop() ?? "").startsWith("claude");
+};
+export const fakeClaudeInPane = async (slot: number, timeoutMs = 20_000): Promise<boolean> => {
+  const bin = `${ROOT}/fakeclaude/claude`;
+  if (!existsSync(bin)) {
+    mkdirSync(dirname(bin), { recursive: true });
+    if (process.platform === "darwin") symlinkSync("/bin/cat", bin);
+    else { copyFileSync("/bin/cat", bin); chmodSync(bin, 0o755); }
+  }
+  const target = `s${slot}`;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // `exec` replaces the shell, so the PANE PID itself becomes the fake claude — that is the first
+    // branch of claudeAliveAt and needs no child walk to be found.
+    await tmuxOut("send-keys", "-t", target, `exec '${bin}'`, "Enter");
+    for (let i = 0; i < 30 && Date.now() < deadline; i++) {
+      if (await paneRunsClaude(target)) return true;
+      await Bun.sleep(100);
+    }
+  }
+  return false;
 };
 
 // --- seeding and driving a lane, for the harnesses that bring their OWN repo -------------------

@@ -2,9 +2,9 @@
 // own conflict-free script pre-pass, confirm-land and its stale-main replay, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
-import { REPO, check, get, post } from "./harness";
+import { REPO, check, get, plogRead, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
-import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(lc: LaneCtx): Promise<void> {
   // ⏫ merge: dirty lane → deterministic block, no agent run
@@ -47,6 +47,16 @@ export async function run(lc: LaneCtx): Promise<void> {
   const vD = await waitMerge(lc.lnSlot);
   check("agent resolves the conflict → PAUSES for review (verified, NOT landed, lane kept)",
     !vD.gone && vD.last?.status === "resolved" && exists(lc.lnPath), JSON.stringify(vD.last));
+  // ② changed what this check MEANS, so the fallback contract is stated rather than implied. Since
+  // the author path exists, "the throwaway resolver ran" is a claim about a FALLBACK, and every
+  // agent-verdict check in this file holds only because these panes run FLEET_CMD=true and the
+  // server's strict alive probe therefore finds no claude to wake. Assert that reason out loud:
+  // the verdict names the resolver as the agent AND says why the author was passed over. Without
+  // this, a regression that broke the author gate would leave the suite green and silent.
+  check("fallback: with no claude in the lane pane the throwaway resolver runs, and the verdict says so",
+    (vD.last as { resolvedBy?: string } | null)?.resolvedBy === "agent"
+    && (vD.last?.detail ?? "").includes("author unavailable: no-claude"),
+    JSON.stringify({ resolvedBy: (vD.last as { resolvedBy?: string } | null)?.resolvedBy, detail: vD.last?.detail }));
   // V1: verify runs on the RESOLVED (conflict) path too — server-side, against the rebased
   // tree, its result recorded as a fact (design note §3, §6 rule 4). This -X theirs resolution
   // leaves no VERIFYBAD marker → green. Proves the call fires on the resolved path (a kept
@@ -407,6 +417,114 @@ export async function run(lc: LaneCtx): Promise<void> {
   // discard: the VERIFYNOISY marker must never reach main, or every later clean lane inherits it
   await post(`/api/slots/${lnVn.slot}/kill`, {});
   await post("/api/worktrees/discard", { repo: REPO, path: lnVn.cwd, branch: lnVn.branch });
+
+  // --- ② SERVER-FIRST SYNC: the AUTHOR resolves its own conflict; the worker is the FALLBACK ---
+  // Owner decision 2026-08-05, Form 1 (briefs/server-first-sync.md). Every other merge check in
+  // this file exercises the fallback — this suite's panes run FLEET_CMD=true, so the server's
+  // strict alive probe finds no claude to wake. Here one lane is given a pane that DOES satisfy
+  // that probe (fakeClaudeInPane), which is the only difference, and the whole round trip is
+  // asserted: hand-off → the author's own resolution → the stop for review → the confirm-land →
+  // the attribution surviving all the way onto the outcome row.
+  {
+    const lnA = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnA.cwd}/code.txt`, "root\nauthor-lane\n");
+    spawnSync("git", ["-C", lnA.cwd, "commit", "-aqm", "author lane work"]);
+    await Bun.write(`${REPO}/code.txt`, "root\nauthor-main\n"); // same line → a real rebase conflict
+    spawnSync("git", ["-C", REPO, "commit", "-aqm", "author main work"]);
+    // "blocked" throughout: if the throwaway resolver were consulted at any point below, the
+    // verdict would be "blocked" and every author assertion here would fail loudly.
+    await setMergeMode("blocked");
+    const ready = await fakeClaudeInPane(lnA.slot);
+    check("② setup: the author lane's pane satisfies the server's STRICT claude-alive probe",
+      ready, `slot ${lnA.slot}`);
+    await settleForMerge(lnA.slot);
+    await post(`/api/slots/${lnA.slot}/merge`, {});
+    const vA1 = await waitMerge(lnA.slot);
+    check("② a conflict is handed to the lane's OWN session, not to the throwaway resolver",
+      !vA1.gone && vA1.last?.status === "awaiting-author", JSON.stringify(vA1.last));
+    check("② the hand-off records WHO was asked (resolvedBy:'author') and WHICH files",
+      (vA1.last as { resolvedBy?: string } | null)?.resolvedBy === "author"
+      && (vA1.last?.conflicted ?? []).includes("code.txt"), JSON.stringify(vA1.last));
+    // the fallback did not silently also run: mergemode is "blocked", so ANY consultation of the
+    // fake resolver puts its verdict ("blocked") and its answer text ("fake conflict") on the
+    // record — neither appears, so the worker never ran.
+    check("② the throwaway resolver was never consulted (mergemode 'blocked' would have said so)",
+      vA1.last?.status !== "blocked" && !(vA1.last?.detail ?? "").includes("fake conflict"),
+      JSON.stringify(vA1.last?.detail));
+    // the pre-pass ABORTED, so the promise the brief makes to the author must actually hold
+    check("② nothing landed, and the lane is left pristine at its own commits (pre-pass aborted)",
+      vA1.last?.landed === false && exists(lnA.cwd)
+      && spawnSync("git", ["-C", lnA.cwd, "status", "--porcelain"]).stdout.toString().trim() === "",
+      spawnSync("git", ["-C", lnA.cwd, "status", "--porcelain"]).stdout.toString());
+    const aPreLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+    check("② the unresolved conflict has NOT reached main", !aPreLand.includes("author lane work"), aPreLand.trim());
+    // the brief REALLY arrived: the fake claude echoes what is pasted into it, so the pane's own
+    // output is the witness — not the server's claim that it sent something.
+    check("② the brief was actually delivered into the author's pane",
+      (await tmuxOut("capture-pane", "-t", `s${lnA.slot}`, "-p", "-S", "-")).out
+        .includes("MERGE CONFLICT IN YOUR OWN LANE"), `slot ${lnA.slot}`);
+    // …and it is on the durable prompt journal, like every other server-injected prompt
+    check("② the brief is journalled as an injected prompt for this lane (source 'auto')",
+      (await plogRead()).some((e) => e.cwd === lnA.cwd && e.source === "auto"
+        && e.text.includes("MERGE CONFLICT IN YOUR OWN LANE")), lnA.cwd);
+    check("② the hand-off is audited (merge_wake_author names the lane)",
+      ((await (await get("/api/audit?limit=100")).json()) as { events: { event?: string; slot?: number }[] })
+        .events.some((e) => e.event === "merge_wake_author" && e.slot === lnA.slot), `slot ${lnA.slot}`);
+
+    // THE AUTHOR NOW DOES ITS JOB — the test plays it, exactly as the brief instructs: rebase,
+    // resolve, continue, leave the tree clean and committed. (What a real claude would make of the
+    // brief is not fakeable here, same limit buildMergePrompt has always had; the mechanism around
+    // it is what this covers.)
+    const rbA = spawnSync("git", ["-C", lnA.cwd, "rebase", "main"]);
+    check("② setup: the author's own rebase hits the conflict the server told it about",
+      rbA.status !== 0 && spawnSync("git", ["-C", lnA.cwd, "diff", "--name-only", "--diff-filter=U"])
+        .stdout.toString().includes("code.txt"), rbA.stderr.toString().slice(0, 200));
+    await Bun.write(`${lnA.cwd}/code.txt`, "root\nauthor-main\nauthor-lane\n"); // both intents kept
+    spawnSync("git", ["-C", lnA.cwd, "add", "code.txt"]);
+    const contA = spawnSync("git", ["-C", lnA.cwd, "rebase", "--continue"], { env: { ...process.env, GIT_EDITOR: "true" } });
+    check("② setup: the author completes the rebase and leaves a clean, committed tree",
+      contA.status === 0 && spawnSync("git", ["-C", lnA.cwd, "status", "--porcelain"]).stdout.toString().trim() === "",
+      contA.stderr.toString().slice(0, 200));
+
+    // The return trip. THIS is the invariant the whole design turns on: the second ⏫ takes the
+    // CLEAN path (the author already rebased), and it must still STOP — because `carried` says
+    // semantic choices nobody reviewed are sitting in this lane. An author's unreviewed resolution
+    // is exactly as unreviewed as a worker's.
+    await settleForMerge(lnA.slot);
+    await post(`/api/slots/${lnA.slot}/merge`, {});
+    const vA2 = await waitMerge(lnA.slot);
+    check("② the re-run STOPS for review instead of auto-landing the author's resolution",
+      !vA2.gone && vA2.last?.status === "resolved" && vA2.last?.landed === false && exists(lnA.cwd),
+      JSON.stringify(vA2.last));
+    check("② the attribution survives the re-run that supersedes the verdict (still 'author')",
+      (vA2.last as { resolvedBy?: string } | null)?.resolvedBy === "author"
+      && (vA2.last?.conflicted ?? []).includes("code.txt"), JSON.stringify(vA2.last));
+    // git verified the author's claim with the SAME check a worker's claim gets — a resolution that
+    // left the tree dirty or unrebased would have come back "error", not "resolved"
+    check("② the author's resolution was git-verified, and verify ran against the rebased tree",
+      vA2.last?.verify?.ok === true && (vA2.last?.verify?.cmd ?? "").endsWith("fakeverify"),
+      JSON.stringify(vA2.last?.verify));
+    const a2Log = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+    check("② the author's resolution has NOT reached main before the owner confirms",
+      !a2Log.includes("author lane work"), a2Log.trim());
+    // the stop is a pause, never a block — the owner reviews and lands deliberately
+    await settleForMerge(lnA.slot);
+    const aConf = (await (await post(`/api/slots/${lnA.slot}/merge`, { confirm: true })).json()) as
+      { status?: string; landed?: boolean };
+    check("② the owner can confirm-land the author's reviewed resolution",
+      aConf.status === "merged" && aConf.landed === true, JSON.stringify(aConf));
+    check("② after the confirm the author's resolution IS on main, with both intents kept",
+      spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString() === "root\nauthor-main\nauthor-lane\n",
+      JSON.stringify(spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString()));
+    // Auflage 1, end to end: the ledger separates the two resolvers. Without this the fallback
+    // could become the normal case and no row would ever say so.
+    const aOut = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string | null; disposition: string; resolvedConflict?: boolean; resolvedBy?: string }[] })
+      .outcomes.find((o) => o.branch === lnA.branch);
+    check("② the outcome row attributes the land to the AUTHOR (resolvedBy:'author')",
+      aOut?.disposition === "landed" && aOut?.resolvedConflict === true && aOut?.resolvedBy === "author",
+      JSON.stringify(aOut));
+  }
 
   // orphan flow: a killed lane's worktree survives on disk, shows slot:null in the map,
   // can be reattached into a fresh slot (landable again) or safely removed

@@ -2,8 +2,9 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { check, get, post, restartSrv, REPO, ROOT } from "./harness";
+import { check, get, post, restartSrv, BASE, REPO, ROOT } from "./harness";
 import { buildEvalPrompt } from "../eval-prompt";
+import { buildClarifyBrief } from "../clarify-prompt";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -321,5 +322,119 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: false });
     if (typeof hRow?.slot === "number") await post(`/api/slots/${hRow.slot}/kill`, {});
     for (const id of [hA.task.id, hB.task.id, hC.task.id, hF.task.id]) await post(`/api/tasks/${id}/delete`, {});
+  }
+
+  // --- (i) "▸ clarify first": the same spawn with a founding prompt that settles the
+  // done-criterion WITH the owner instead of executing. The load-bearing property is that this
+  // path does NOT run the enhancer — the compiled brief is what a task in this state cannot
+  // have — so the assertions below pin the frame's presence AND the compiled brief's absence. ---
+  {
+    const MARK = "clarify-probe-verbatim-marker";
+    const iT = (await (await post("/api/tasks", { text: `${MARK} — three bundled parts, no done-criterion`, queue: false })).json()) as { task: { id: string } };
+    const iRes = await post(`/api/tasks/${iT.task.id}/dispatch`, { clarify: true });
+    const iJ = (await iRes.json()) as { ok?: boolean; slot?: number; clarify?: boolean };
+    check("(i) clarify start spawns a lane and reports the mode back",
+      iRes.ok && iJ.ok === true && iJ.clarify === true && typeof iJ.slot === "number", `${iRes.status} ${JSON.stringify(iJ)}`);
+    let iAuto: { source?: string; text?: string }[] = [];
+    for (let i = 0; i < 24; i++) { // the send lands after the 4s boot sleep; no compile on this path
+      iAuto = (((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts)
+        .filter((p) => p.source === "auto");
+      if (iAuto.some((p) => (p.text ?? "").includes("<<<REQUEST"))) break;
+      await Bun.sleep(500);
+    }
+    const iSent = iAuto.find((p) => (p.text ?? "").includes("<<<REQUEST"));
+    check("(i) the founding prompt is the clarify frame with the request verbatim, and NOT the compiled brief",
+      !!iSent && (iSent.text ?? "").includes(MARK) && (iSent.text ?? "").includes("not to implement it yet")
+      && !(iSent.text ?? "").includes("enhanced prompt. own your work!"),
+      JSON.stringify(iSent?.text ?? null).slice(0, 300));
+    const iRow = (await (await get("/api/sessions")).json() as { tasks: { id: string; status: string; note?: string }[] })
+      .tasks.find((t) => t.id === iT.task.id);
+    check("(i) the row says a clarify lane is running, not a plain dispatch",
+      iRow?.status === "sent" && (iRow?.note ?? "").startsWith("clarify lane"), JSON.stringify(iRow));
+    const iAudit = ((await (await get("/api/audit?limit=50")).json()) as { events: { event?: string; detail?: string }[] })
+      .events.find((e) => e.event === "task_dispatch" && e.detail === `${iT.task.id} clarify`);
+    check("(i) the mode rides in the audit detail (same event name as a plain start)",
+      !!iAudit, JSON.stringify(iAudit ?? null));
+    // pure builder: the request rides verbatim, the frame forbids code before confirmation, no
+    // /sharpen3 (that skill compiles a work order — the missing thing), and the eval verdict is
+    // carried only when there is one
+    const cb = buildClarifyBrief("raw <request> text", "the judge said this", "http://fixture.invalid:1");
+    check("(i) buildClarifyBrief: verbatim request, stop-before-code, verdict block, no /sharpen3",
+      cb.includes("raw <request> text") && cb.includes("<<<REQUEST") && cb.includes("REQUEST>>>")
+      && cb.includes("Do not write code") && cb.includes("<<<VERDICT") && cb.includes("the judge said this")
+      && !cb.includes("/sharpen3"), cb.slice(0, 100));
+    check("(i) buildClarifyBrief omits the verdict block entirely when there is no verdict",
+      !buildClarifyBrief("x", null, "http://fixture.invalid:1").includes("VERDICT"), "");
+    // the deploy host must reach the prompt at RUNTIME and never live in this tracked file —
+    // the repo is public, and `git grep` cannot catch it while a new file is still untracked
+    check("(i) buildClarifyBrief takes its base URL as a parameter, hardcoding no deployment host",
+      cb.includes("http://fixture.invalid:1/api/self/criterion")
+      && !/\d+\.\d+\.\d+\.\d+/.test(readFileSync(`${ROOT}/clarify-prompt.ts`, "utf8")), "");
+    check("(i) the frame tells the lane to structure the report and to record the criterion durably",
+      cb.includes("/api/self/criterion") && cb.includes("Structure it")
+      && cb.includes("VERIFIED") && cb.includes("INFERRED"), "");
+
+    // --- the wait is a STATE: while a clarify lane waits, no steward send may reach it ---
+    const iSlot = iJ.slot as number;
+    // the steward principal travels as a Bearer token (server.ts, tokenFrom → the steward
+    // intercept above the owner gate), same as e2e/guest.ts reads it
+    // retried: saveState writes tmp+rename, and a read that lands mid-write throws — the same
+    // guard e2e/self-token.ts uses for this file
+    let persisted: { stewardToken?: string; slots?: Record<string, { selfToken?: string }> } = {};
+    for (let i = 0; i < 40; i++) {
+      try { persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof persisted; } catch { /* mid-write */ }
+      if (persisted.stewardToken && persisted.slots?.[String(iSlot)]?.selfToken) break;
+      await Bun.sleep(100);
+    }
+    check("(i) fixture: the clarify lane's own scoped token and the steward token are readable",
+      !!persisted.stewardToken && !!persisted.slots?.[String(iSlot)]?.selfToken, "");
+    const stewardHdr = { "content-type": "application/json", authorization: `Bearer ${persisted.stewardToken ?? ""}` };
+    const nudge = await fetch(`${BASE}/api/steward/send`, { method: "POST", headers: stewardHdr,
+      body: JSON.stringify({ slot: iSlot, kind: "continue_nudge", ref: "probe" }) });
+    const nudgeJ = (await nudge.json()) as { error?: string };
+    check("(i) a waiting clarify lane refuses every steward send (409 — escalate, never nudge past the owner)",
+      nudge.status === 409 && (nudgeJ.error ?? "").includes("waiting on the owner"),
+      `${nudge.status} ${JSON.stringify(nudgeJ)}`);
+
+    // --- the criterion: the lane PROPOSES through its own scoped token, the owner CONFIRMS ---
+    const laneSelfTok = persisted.slots?.[String(iSlot)]?.selfToken ?? "";
+    const propose = (text: string, token = laneSelfTok) => fetch(`${BASE}/api/self/criterion`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify({ text }),
+    });
+    const p1 = await propose("done = the scrollback slice, verified by ./e2e-isolated.sh");
+    check("(i) the lane can propose a criterion onto its own founding task",
+      p1.ok, `${p1.status} ${JSON.stringify(await p1.json())}`);
+    const critOf = async (id: string) => ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; criterion?: { text: string; proposedAt: number; confirmedAt: number | null } }[] })
+      .tasks.find((t) => t.id === id)?.criterion;
+    const c1 = await critOf(iT.task.id);
+    check("(i) a proposed criterion is stored UNCONFIRMED — a producer never confirms its own anchor",
+      c1?.text.includes("scrollback slice") === true && c1?.confirmedAt === null, JSON.stringify(c1));
+    const digestRow = ((await (await get("/api/sessions")).json()) as
+      { tasks: { id: string; criterion?: { text?: string; confirmedAt: number | null } }[] })
+      .tasks.find((t) => t.id === iT.task.id);
+    check("(i) the sessions digest carries the criterion's state but not its text",
+      !!digestRow?.criterion && digestRow.criterion.text === undefined
+      && digestRow.criterion.confirmedAt === null, JSON.stringify(digestRow?.criterion));
+    check("(i) an unknown self token cannot propose a criterion", (await propose("x", "0".repeat(32))).status === 401);
+    // the owner confirms, editing as they go — what is stored is what THEY agreed to
+    const conf = await post(`/api/tasks/${iT.task.id}/criterion-confirm`, { text: "done = scrollback only, owner-edited" });
+    const c2 = await critOf(iT.task.id);
+    check("(i) the owner's confirmation stores THEIR text and stamps confirmedAt",
+      conf.ok && c2?.text === "done = scrollback only, owner-edited" && typeof c2?.confirmedAt === "number",
+      `${conf.status} ${JSON.stringify(c2)}`);
+    check("(i) a confirmed criterion is no longer the lane's to rewrite (409)",
+      (await propose("sneaking a wider criterion in")).status === 409);
+    check("(i) confirming twice is refused (409)",
+      (await post(`/api/tasks/${iT.task.id}/criterion-confirm`, {})).status === 409);
+    // and the confirmation released the wait, so the steward may talk to the lane again
+    const nudge2 = await fetch(`${BASE}/api/steward/send`, { method: "POST", headers: stewardHdr,
+      body: JSON.stringify({ slot: iSlot, kind: "continue_nudge", ref: "probe" }) });
+    check("(i) confirming releases the wait — the slot is a normal lane again (no longer 409-waiting)",
+      nudge2.status !== 409 || !((await nudge2.json()) as { error?: string }).error?.includes("waiting on the owner"),
+      String(nudge2.status));
+    await post(`/api/slots/${iSlot}/kill`, {});
+    await post(`/api/tasks/${iT.task.id}/delete`, {});
   }
 }

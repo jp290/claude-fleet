@@ -53,6 +53,7 @@ const PRE_AUTH_ROUTES = [
   '= /api/self/autos',    // the scoped per-lane credential
   '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)
+  '= /api/self/criterion', // same credential: the lane's PROPOSED done-criterion (slot-bound, owner confirms)
   '= /api/self/verify-intent', // same credential: the lane's advisory gate-phase report (slot-bound)
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token

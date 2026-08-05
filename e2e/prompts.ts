@@ -60,7 +60,7 @@ export async function run(): Promise<void> {
     // so a bare "Bash(graphify:*)" would let the agent index any directory on the machine and then
     // query it — an unanchored read that this profile's Read(**) anchor can never see, and the same
     // escape the Read(**) canary demonstrated on 2026-07-25 in a different hat. The server builds
-    // the graph (buildLaneGraph) into TMPDIR and hands the agent its path; the agent only queries.
+    // both graphs (buildCodeGraph) into TMPDIR and hands the agent their paths; the agent only queries.
     const gVerbs = ["Bash(graphify query:", "Bash(graphify explain:", "Bash(graphify affected:"];
     check("tool profiles: MERGE_TOOLS carries the read-only graphify verbs, one by one",
       gVerbs.every((v) => tools.MERGE_TOOLS.includes(v)),
@@ -92,6 +92,10 @@ export async function run(): Promise<void> {
   // knowable is that the prompt CARRIES the right information and STILL upholds its safety
   // invariants; assert exactly that against the built string.
   {
+    // the two probe paths are deliberately distinguishable strings: every "both graphs" assertion
+    // below is only meaningful if the same path cannot satisfy it twice
+    const LANE_GRAPH = "/tmp/fleet-lane-graph-probe/graphify-out/graph.json";
+    const MAIN_GRAPH = "/tmp/fleet-main-graph-probe/graphify-out/graph.json";
     const p = buildMergePrompt({
       branch: "fleet/probe-lane",
       main: "main",
@@ -100,7 +104,7 @@ export async function run(): Promise<void> {
       laneTask: "add the widget",
       laneLog: "aaa1111 feat: add the widget",
       mainLog: "bbb2222 refactor: rename the gadget",
-      graph: "/tmp/fleet-lane-graph-probe/graphify-out/graph.json",
+      graphs: { lane: LANE_GRAPH, main: MAIN_GRAPH },
     });
     // 1. main's intent is present (the gap this change closes) and labelled as THEIRS
     check("buildMergePrompt carries main's commit log (THEIRS side)",
@@ -144,14 +148,14 @@ export async function run(): Promise<void> {
     // 9. an empty main log (main up to date) degrades gracefully, DATA block still closed
     const pEmpty = buildMergePrompt({
       branch: "b", main: "main", mergeBase: "main",
-      conflicted: [], laneTask: null, laneLog: "", mainLog: "", graph: null,
+      conflicted: [], laneTask: null, laneLog: "", mainLog: "", graphs: { lane: null, main: null },
     });
     check("buildMergePrompt handles an empty main/lane log + null task",
       pEmpty.includes("main commits (THEIRS") && pEmpty.includes("(none)")
       && pEmpty.includes("lane task: (unknown)") && pEmpty.includes("DATA>>>"));
     // 10. the code map: advertised when a graph was built, and SILENT when none was — a prompt
     //     that names a tool that is not there spends the agent's rounds on "no graph found".
-    //     `pEmpty` above is the graph:null witness, `p` the built one.
+    //     `pEmpty` above is the both-null witness, `p` the both-built one.
     check("buildMergePrompt names the code map + the affected verb when a graph was built",
       p.includes("MAP:") && p.includes('graphify affected "<symbol>"')
       && p.includes("BEFORE you drop,"), p.includes("MAP:") ? "MAP present" : "MAP missing");
@@ -162,9 +166,9 @@ export async function run(): Promise<void> {
     // "contains graphify" instead swept up the RULES sentence and the "a bare `graphify query`
     // would find nothing" warning, and turned this check red against a correct prompt.
     const mapLines = p.split("\n").filter((l) => l.trim().startsWith("graphify "));
-    check("buildMergePrompt spells --graph with the actual path on EVERY advertised verb",
-      mapLines.length >= 3
-      && mapLines.every((l) => l.includes("--graph /tmp/fleet-lane-graph-probe/graphify-out/graph.json")),
+    check("buildMergePrompt spells --graph with an actual path on EVERY advertised verb",
+      mapLines.length >= 6
+      && mapLines.every((l) => l.includes(`--graph ${LANE_GRAPH}`) || l.includes(`--graph ${MAIN_GRAPH}`)),
       mapLines.filter((l) => !l.includes("--graph")).join(" | ") || "all carry --graph");
     check("buildMergePrompt says the map is not an authority (git and the files win)",
       p.includes("git and the files remain the truth"));
@@ -176,19 +180,76 @@ export async function run(): Promise<void> {
       p.includes("use only plain `git <subcommand>` invocations")
       && pEmpty.includes("use only plain `git <subcommand>` invocations")
       && p.includes("Never run build/test commands") && pEmpty.includes("Never run build/test commands"));
+
+    // --- 2026-08-05: BOTH SIDES. Two gaps, one root cause — the resolver was handed its own side in
+    // depth and the other side as a list of commit subjects. The lane graph is built from the lane's
+    // HEAD, so a caller main added AFTER the fork is not merely missing from it, it is structurally
+    // unreachable; and nothing in the prompt told the agent to look at what THEIRS actually changed.
+    // Each assertion below is by its NEGATION somewhere: a label that does not distinguish the two
+    // sides, a path that satisfies a "both" check twice, or a half-built pair that leaks the side
+    // that was not built would all pass a naive "contains graphify" test. ---
+    // 11. the two maps are named, distinguishable, and each carries ITS OWN path
+    check("buildMergePrompt names BOTH graphs and tells them apart (yours vs. the side you merge into)",
+      p.includes(`GRAPH — YOUR BRANCH (fleet/probe-lane)`)
+      && p.includes(`GRAPH — THE SIDE YOU ARE MERGING INTO (main)`)
+      && p.includes(`graphify affected "<symbol>" --graph ${LANE_GRAPH}`)
+      && p.includes(`graphify affected "<symbol>" --graph ${MAIN_GRAPH}`),
+      p.split("\n").filter((l) => l.startsWith("GRAPH — ")).join(" | ") || "no GRAPH headings");
+    // 12. and it says WHY there are two — without this the agent reads them as duplicates and picks
+    //     one, which is exactly the blind spot the second graph exists to close
+    check("buildMergePrompt states why both graphs must be checked (the fork-point blind spot)",
+      p.includes("CHECK BOTH") && p.includes("cannot see a caller main added after you forked")
+      && p.includes("may have a live caller on the side you are merging into"));
+    // 13. FAIL-CLOSED PER GRAPH — the half-built cases. A failed graphify on one side must leave the
+    //     other fully advertised and the missing one unmentioned: no path, no heading, and no
+    //     "check both" instruction pointing at a map that does not exist.
+    const base = { branch: "fleet/probe-lane", main: "main", mergeBase: "abc123",
+      conflicted: ["server.ts"], laneTask: null, laneLog: "", mainLog: "" };
+    const pLaneOnly = buildMergePrompt({ ...base, graphs: { lane: LANE_GRAPH, main: null } });
+    const pMainOnly = buildMergePrompt({ ...base, graphs: { lane: null, main: MAIN_GRAPH } });
+    check("buildMergePrompt: only the LANE graph built → the other side is never mentioned, not even half",
+      pLaneOnly.includes(`--graph ${LANE_GRAPH}`) && !pLaneOnly.includes(MAIN_GRAPH)
+      && !pLaneOnly.includes("THE SIDE YOU ARE MERGING INTO") && !pLaneOnly.includes("CHECK BOTH")
+      && pLaneOnly.includes("YOUR BRANCH (fleet/probe-lane)"),
+      pLaneOnly.includes(MAIN_GRAPH) ? "main path leaked" : "clean");
+    check("buildMergePrompt: only the MAIN graph built → the lane side is never mentioned, not even half",
+      pMainOnly.includes(`--graph ${MAIN_GRAPH}`) && !pMainOnly.includes(LANE_GRAPH)
+      && !pMainOnly.includes("YOUR BRANCH") && !pMainOnly.includes("CHECK BOTH")
+      && pMainOnly.includes("THE SIDE YOU ARE MERGING INTO (main)"),
+      pMainOnly.includes(LANE_GRAPH) ? "lane path leaked" : "clean");
+    // 14. the READY diff command for the other side — the gap that has nothing to do with graphify.
+    //     Spelled with the real merge-base and main refs, because a placeholder the agent has to
+    //     fill in is a command it will not run. NOT the diff itself: unbounded, untrusted text does
+    //     not belong in the prompt (it would have to go inside the DATA block and would blow it up).
+    check("buildMergePrompt hands over a ready `git diff mergeBase..main -- <file>` for the other side",
+      p.includes("git diff abc123..main -- <file>")
+      && p.includes("commit subjects") && p.includes("titles, not content")
+      && p.includes("what THEIRS changed since this branch forked"),
+      p.split("\n").find((l) => l.includes("git diff abc123")) ?? "no diff command");
+    // and it is there whether or not any graph was built — the two are independent gaps
+    check("buildMergePrompt carries the other-side diff command even with NO graph at all",
+      pEmpty.includes("git diff main..main -- <file>"),
+      pEmpty.split("\n").find((l) => l.includes("git diff")) ?? "absent");
+    // the diff command must stay INSIDE the sandbox `git diff` already allows (MERGE_TOOLS) —
+    // asserted as a plain-git invocation, no -c / alias / --exec smuggled in
+    check("buildMergePrompt's diff command is a plain git subcommand (within the merge sandbox)",
+      /^ *git diff [^|;&]*$/m.test(p.split("\n").find((l) => l.includes("git diff abc123")) ?? ""),
+      p.split("\n").find((l) => l.includes("git diff abc123")) ?? "missing");
   }
 
   // --- buildRepairPrompt: PURE-function unit tests (no server needed) ---
   // Same rationale as buildMergePrompt: the real repair runs a live agent, so no e2e exercises its
   // EFFECT here; assert the built string carries the verify failure and upholds the safety invariants.
   {
+    const LANE_GRAPH = "/tmp/fleet-lane-graph-probe/graphify-out/graph.json";
+    const MAIN_GRAPH = "/tmp/fleet-main-graph-probe/graphify-out/graph.json";
     const rp = buildRepairPrompt({
       branch: "fleet/probe-lane",
       main: "main",
       verifyCmd: "bunx tsc --noEmit && ./e2e-claude-gate.sh",
       verifyOut: "server.ts(42,7): error TS2304: Cannot find name 'droppedConst'.",
       conflicted: ["server.ts"],
-      graph: "/tmp/fleet-lane-graph-probe/graphify-out/graph.json",
+      graphs: { lane: LANE_GRAPH, main: MAIN_GRAPH },
     });
     // 1. leads with REPAIRING (the token the stand-in detects) and forbids re-rebasing
     check("buildRepairPrompt is a repair brief, not a rebase brief",
@@ -217,7 +278,7 @@ export async function run(): Promise<void> {
       && rp.includes("use only plain `git <subcommand>` invocations")
       && rp.includes("Never run build/test commands yourself"));
     // 7. empty verify output degrades gracefully, DATA block still closed
-    const rpEmpty = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "", conflicted: [], graph: null });
+    const rpEmpty = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "", conflicted: [], graphs: { lane: null, main: null } });
     check("buildRepairPrompt handles empty verify output + no files",
       rpEmpty.includes("(no output captured)") && rpEmpty.includes("(unknown)") && rpEmpty.includes("DATA>>>"));
     // 8. the map, same fail-closed contract as the merge prompt. A repair's most common cause IS a
@@ -226,6 +287,20 @@ export async function run(): Promise<void> {
       rp.includes('graphify affected "<symbol>"') && rp.includes("--graph /tmp/fleet-lane-graph-probe")
       && !rpEmpty.includes("graphify"),
       `built=${rp.includes("MAP:")} empty=${rpEmpty.includes("graphify")}`);
+    // 9. BOTH sides here too, and this is where the second graph earns most of all: the symbol a
+    //    resolution dropped may be one only main's NEW code calls, so the lane graph alone reports
+    //    it as unused. Same per-graph fail-closed contract (the half-built case asserted by negation).
+    check("buildRepairPrompt carries BOTH graphs, each with its own path",
+      rp.includes(`GRAPH — YOUR BRANCH (fleet/probe-lane)`) && rp.includes(`--graph ${LANE_GRAPH}`)
+      && rp.includes(`GRAPH — THE SIDE YOU ARE MERGING INTO (main)`) && rp.includes(`--graph ${MAIN_GRAPH}`)
+      && rp.includes("CHECK BOTH"),
+      rp.split("\n").filter((l) => l.startsWith("GRAPH — ")).join(" | ") || "no GRAPH headings");
+    const rpHalf = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "",
+      conflicted: [], graphs: { lane: null, main: MAIN_GRAPH } });
+    check("buildRepairPrompt: one graph missing → the missing side is unmentioned, the built one intact",
+      rpHalf.includes(`--graph ${MAIN_GRAPH}`) && !rpHalf.includes(LANE_GRAPH)
+      && !rpHalf.includes("YOUR BRANCH") && !rpHalf.includes("CHECK BOTH"),
+      rpHalf.includes(LANE_GRAPH) ? "lane path leaked" : "clean");
   }
 
   // --- buildAuthorPrompt: PURE-function unit tests (② — the brief the AUTHOR gets) ---
@@ -238,6 +313,7 @@ export async function run(): Promise<void> {
     const a = buildAuthorPrompt({
       branch: "fleet/probe-lane",
       main: "main",
+      mergeBase: "abc123",
       conflicted: ["server.ts", "src/client.ts"],
       laneTask: "add the widget",
       laneLog: "aaa1111 feat: add the widget",
@@ -285,10 +361,29 @@ export async function run(): Promise<void> {
       && !a.includes("Work autonomously — nobody is watching"),
       a.includes("STRICT JSON") ? "JSON contract leaked" : "clean");
     // 8. degrades without a task or logs, DATA block still closed
-    const aEmpty = buildAuthorPrompt({ branch: "b", main: "main", conflicted: [], laneTask: null, laneLog: "", mainLog: "" });
+    const aEmpty = buildAuthorPrompt({ branch: "b", main: "main", mergeBase: "main", conflicted: [], laneTask: null, laneLog: "", mainLog: "" });
     check("buildAuthorPrompt handles an empty log + null task and still closes its DATA block",
       aEmpty.includes("lane task: (unknown)") && aEmpty.includes("(none)")
       && aEmpty.includes("conflicted files: (unknown)") && aEmpty.includes("DATA>>>"));
+    // 9. 2026-08-05: the author has the SAME blind spot as the worker, and the worse half of it —
+    //    being the author means knowing OURS by heart, which is the side that needs no looking up.
+    //    So it gets the same ready command. Asserted with the real merge-base, because a placeholder
+    //    the reader must fill in is a command it will not run.
+    check("buildAuthorPrompt hands the author a ready `git diff mergeBase..main -- <file>` for the other side",
+      a.includes("git diff abc123..main -- <file>")
+      && a.includes("titles, not content") && a.includes("what THEIRS changed since you forked"),
+      a.split("\n").find((l) => l.includes("git diff abc123")) ?? "no diff command");
+    // it must NOT have acquired a map along the way: the author path builds no graph (server.ts,
+    // mergeJob — only the worker path pays for one), so naming one would advertise a missing tool
+    check("buildAuthorPrompt still carries no code map (the author path builds none)",
+      !a.includes("graphify") && !a.includes("MAP:") && !aEmpty.includes("graphify"),
+      a.includes("graphify") ? "map leaked into the author brief" : "clean");
+    // and the renumbered DO list still ends where it did — the author stops at a clean tree
+    check("buildAuthorPrompt keeps its DO list ordered and still ends at STOP",
+      a.includes("1. git rebase main") && a.indexOf("2. Before resolving a file") > a.indexOf("1. git rebase main")
+      && a.indexOf("3. Resolve each conflict") > a.indexOf("2. Before resolving a file")
+      && a.includes("4. Leave the worktree CLEAN and COMMITTED")
+      && a.includes("5. Say in one line") && a.includes("Then STOP."));
   }
 
   // --- buildCleanReviewPrompt: PURE-function unit tests (the OPT-IN clean-path advisory reviewer) ---

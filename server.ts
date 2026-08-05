@@ -4,7 +4,7 @@ import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
-import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "./merge-prompt";
+import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildEvalPrompt } from "./eval-prompt";
@@ -3527,8 +3527,8 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
 // deliberately absent. A bare "Bash(graphify:*)" would be an UNANCHORED read of the machine: the
 // build verb's argument is a path, so `graphify ~/.ssh --code-only && graphify query …` reads a
 // tree this profile's anchored Read(**) could never reach. That is the same escape the Read(**)
-// canary demonstrated on 2026-07-25, wearing a different hat. The server builds the graph in the
-// lane (buildLaneGraph) and the agent only ever queries it.
+// canary demonstrated on 2026-07-25, wearing a different hat. The server builds BOTH graphs — the
+// lane's and the side it merges into (buildCodeGraph) — and the agent only ever queries them.
 const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" "Bash(git checkout:*)" "Bash(git rebase:*)" "Bash(graphify query:*)" "Bash(graphify explain:*)" "Bash(graphify affected:*)" "Bash(graphify path:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
 // The ② clean reviewer's whole job is a verdict STRING — it inspects and answers, it never writes.
 // It runs on the one path nobody watches (FLEET_CLEAN_REVIEW on a clean auto-land) and, by design,
@@ -4433,7 +4433,10 @@ async function tryScriptRebase(cwd: string, main: string): Promise<{ clean: bool
 }
 
 // The resolver's map of the codebase, built server-side because the agent must not hold the verb
-// that builds it (see MERGE_TOOLS). Four things were measured before this existed (2026-08-05):
+// that builds it (see MERGE_TOOLS). Called TWICE per conflict — once for the lane's HEAD, once for
+// the commit being rebased onto — hence the explicit `ref`: the two sides are different trees and
+// the whole point of the second one is that the first cannot see it. Four things were measured
+// before this existed (2026-08-05):
 //   · a bare `graphify .` FAILS in this repo (exit 1): 108 doc files ask for an LLM key. The
 //     local, keyless, networkless path is `--code-only`, which skips them.
 //   · `graphify . --code-only` costs 5.7 s here (1158 nodes / 2938 edges).
@@ -4470,15 +4473,17 @@ async function runGraphStep(cmd: string[], cwd: string): Promise<number> {
     clearTimeout(timer);
   }
 }
-async function buildLaneGraph(cwd: string, dir: string): Promise<string | null> {
+async function buildCodeGraph(repo: string, dir: string, ref: string): Promise<string | null> {
   try {
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     const tar = `${dir}/snapshot.tar`;
-    // HEAD, not the working tree: the pre-pass aborted its rebase, so the lane is pristine at its
-    // own commits — which is precisely the code the resolver has to reason about. `git archive`
-    // is also the one snapshot that cannot dirty the worktree it reads.
-    if (await runGraphStep(["git", "-C", cwd, "archive", "--format=tar", "-o", tar, "HEAD"], dir) !== 0) return null;
+    // A COMMIT, never the working tree: for the lane that is HEAD (the pre-pass aborted its rebase,
+    // so the lane is pristine at its own commits — precisely the code the resolver reasons about),
+    // for the other side the sha the rebase targets. `git archive` is also the one snapshot that
+    // cannot dirty the worktree it reads. Both refs resolve from the LANE worktree: worktrees share
+    // one object database, so main's commit is readable there without touching the main checkout.
+    if (await runGraphStep(["git", "-C", repo, "archive", "--format=tar", "-o", tar, ref], dir) !== 0) return null;
     if (await runGraphStep(["tar", "-x", "-f", tar, "-C", dir], dir) !== 0) return null;
     unlinkSync(tar);
     if (await runGraphStep(["graphify", ".", "--code-only"], dir) !== 0) return null;
@@ -4489,7 +4494,7 @@ async function buildLaneGraph(cwd: string, dir: string): Promise<string | null> 
   }
 }
 
-async function runMerge(cwd: string, branch: string, main: string, conflicted: string[], laneTask: string | null, graph: string | null): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
+async function runMerge(cwd: string, branch: string, main: string, conflicted: string[], laneTask: string | null, graphs: MergeGraphs): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
   const lg = await git(cwd, "log", "--no-color", "--oneline", `${main}..HEAD`);
   // main's intent, deterministically: commits main gained since the fork. Compute the merge-base
   // here (fall back to `main` if it can't be resolved — then mergeBase..main is empty, matching
@@ -4505,7 +4510,7 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
     laneTask,
     laneLog: lg.code === 0 ? lg.out : "",
     mainLog: mlg.code === 0 ? mlg.out : "",
-    graph,
+    graphs,
   });
   const out = await runWorker(
     { worker: "merge", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
@@ -4569,7 +4574,7 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
   const mb = await git(cwd, "merge-base", main, "HEAD");
   const mergeBase = mb.code === 0 && mb.out.trim() ? mb.out.trim() : main;
   const mlg = await git(cwd, "log", "--no-color", "--oneline", `${mergeBase}..${main}`);
-  const prompt = buildAuthorPrompt({ branch, main, conflicted, laneTask,
+  const prompt = buildAuthorPrompt({ branch, main, mergeBase, conflicted, laneTask,
     laneLog: lg.code === 0 ? lg.out : "", mainLog: mlg.code === 0 ? mlg.out : "" });
   try {
     await sendText(s, prompt, true);
@@ -4600,8 +4605,8 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
 // the agent's NARRATIVE only — mergeJob's loop re-establishes the git-verified state and re-runs
 // runVerify to decide, never trusting this word (believe git, not the agent).
 async function runRepair(cwd: string, branch: string, main: string, conflicted: string[],
-  verify: { cmd: string; out: string }, graph: string | null): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
-  const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graph });
+  verify: { cmd: string; out: string }, graphs: MergeGraphs): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
+  const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graphs });
   const out = await runWorker(
     { worker: "repair", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
@@ -4962,10 +4967,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       saveState(); // verdicts are part of persisted state now — the ⏸ gate must survive deploys
     }
   };
-  // the code map's scratch, outside the tree by design (buildLaneGraph). Declared out here so the
-  // cleanup below runs on EVERY exit — a thrown worker, a wedged pre-pass, a timeout.
-  let graphDir: string | null = null;
-  let graph: string | null = null;
+  // the code maps' scratch, outside the tree by design (buildCodeGraph). Declared out here so the
+  // cleanup below runs on EVERY exit — a thrown worker, a wedged pre-pass, a timeout. A LIST because
+  // the conflict path builds two (both sides), and a second directory that outlives its run is the
+  // same leak as the first one.
+  const graphDirs: string[] = [];
+  const graphs: MergeGraphs = { lane: null, main: null };
   // DURABLE INTENT, written before the first await and before anything touches the lane. The
   // route just deleted this slot's previous verdict and persisted the deletion; without this the
   // window from here to the verdict write at the tail is a hole in the record, and a restart
@@ -5039,19 +5046,44 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     // and "it fell back" without "because the pane was busy" is not a number anyone can act on.
     const fellBack = authorGate === "clean" ? "" : `(author unavailable: ${authorGate}) `;
     if (fellBack) console.log(`slot ${s.id}: conflict resolution fell back to the throwaway resolver — ${authorGate}`);
-    // The code map is built ONLY where an agent is actually about to read it. 79 of the 83
+    // The code maps are built ONLY where an agent is actually about to read them. 79 of the 83
     // recorded lanes rebased clean and spawned nothing at all (lane-outcomes.jsonl, 2026-08-05);
-    // charging every one of them 5.7 s for a graph nobody opens would be a cost on the common
-    // path to serve the rare one. Reused by the repair rounds below — same tree, same agent.
+    // charging every one of them for a graph nobody opens would be a cost on the common path to
+    // serve the rare one. Reused by the repair rounds below — same tree, same agent.
     // The AUTHOR path never gets here and never pays it either: a session in its own worktree
     // already has the project, and CLAUDE.md already tells it about graphify.
+    //
+    // TWO graphs, because one of them structurally cannot answer the question. The lane graph is
+    // built from the lane's HEAD, so it holds main only up to the FORK — a caller main added
+    // afterwards is invisible in it, and that is exactly the conflict that goes wrong. The second is
+    // built from the commit this rebase targets, resolved HERE rather than carried over from the
+    // pre-pass: the resolver about to spawn runs its own `git rebase ${main}`, so the side it will
+    // actually merge into is whatever main is at THIS moment. The main CHECKOUT's own graphify-out/ is
+    // deliberately NOT used: the server moves main with `merge --ff-only` / `branch -f`, neither of
+    // which fires post-commit, no post-merge hook is installed, and .git/hooks is untracked — so
+    // that graph is stale exactly after a land, i.e. exactly when the next lane merges (measured
+    // 2026-08-05, briefs/resolver-both-sides.md). Built in parallel: they are independent trees, and
+    // a conflict is already the slow path.
     if (!pre.clean) {
-      graphDir = `${tmpdir()}/fleet-lane-graph-${randomBytes(6).toString("hex")}`;
-      graph = await buildLaneGraph(cwd, graphDir);
+      const laneDir = `${tmpdir()}/fleet-lane-graph-${randomBytes(6).toString("hex")}`;
+      const mainDir = `${tmpdir()}/fleet-main-graph-${randomBytes(6).toString("hex")}`;
+      graphDirs.push(laneDir, mainDir);
+      // an unresolvable target is no graph, never a guess: fail-closed is per graph, and the prompt
+      // then simply never names that side's map. The exit code is what decides — `git rev-parse` on
+      // an unknown ref echoes the REF ITSELF on stdout and exits 128, so a truthiness test alone
+      // would hand `git archive` the string "main" and call it a sha.
+      const rp = await git(root, "rev-parse", main);
+      const target = rp.code === 0 && rp.out ? rp.out : null;
+      const [laneGraph, mainGraph] = await Promise.all([
+        buildCodeGraph(cwd, laneDir, "HEAD"),
+        target ? buildCodeGraph(cwd, mainDir, target) : Promise.resolve(null),
+      ]);
+      graphs.lane = laneGraph;
+      graphs.main = mainGraph;
     }
     const r = pre.clean
       ? { status: "rebased" as const, detail: "clean rebase — no conflicts, agent not needed" }
-      : await runMerge(cwd, branch, main, pre.conflicted, laneTask, graph);
+      : await runMerge(cwd, branch, main, pre.conflicted, laneTask, graphs);
     if (r.status === "blocked") {
       res = { status: "blocked", detail: r.detail, landed: false, branch, at: Date.now() };
     } else {
@@ -5086,7 +5118,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         let repairRounds = 0;
         if (!pre.clean && verify && verify.ok === false && MERGE_REPAIR_ROUNDS > 0) {
           for (let round = 1; round <= MERGE_REPAIR_ROUNDS; round++) {
-            const rep = await runRepair(cwd, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out }, graph);
+            const rep = await runRepair(cwd, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out }, graphs);
             if (rep.status === "blocked") break; // agent aborted, tree left pristine — nothing to re-verify
             const rst = await git(cwd, "status", "--porcelain");
             if (rst.code !== 0 || rst.out) {
@@ -5220,9 +5252,9 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       landed: false, branch, at: Date.now(),
       ...(carried.length ? { conflicted: carried, resolvedBy: carriedBy } : {}) };
   } finally {
-    // the map is a scratch artifact of ONE run, never state: a second ⏫ rebuilds it against
-    // whatever the tree looks like then, and a stale map is worse than no map for a conflict.
-    if (graphDir) try { rmSync(graphDir, { recursive: true, force: true }); } catch { /* inert in TMPDIR */ }
+    // the maps are scratch artifacts of ONE run, never state: a second ⏫ rebuilds them against
+    // whatever the two sides look like then, and a stale map is worse than no map for a conflict.
+    for (const d of graphDirs) try { rmSync(d, { recursive: true, force: true }); } catch { /* inert in TMPDIR */ }
   }
   record(res);
 }

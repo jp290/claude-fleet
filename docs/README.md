@@ -26,7 +26,7 @@ Every feature that survives is a principle wearing a UI:
 
 Three places, and only the first is this folder:
 
-- **`docs/*.md`** — the ten operative docs below. Everything that earns ongoing
+- **`docs/*.md`** — the twelve operative docs below. Everything that earns ongoing
   maintenance.
 - **Commit bodies** — *this repo's finding register.* A defect, its mechanism, its
   measurement and its rejected alternatives are written where the change is:
@@ -40,7 +40,7 @@ Three places, and only the first is this folder:
 Deliberately **not** a fourth place: a summary doc that restates any of the three. That is
 how the shelf grew to 52 docs whose claims nobody re-derived.
 
-## The eleven operative docs
+## The twelve operative docs
 
 One line per doc — its *purpose*, not its contents, so this index points without rotting.
 
@@ -56,6 +56,14 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`e2e-trail.md`** — the per-check trail: the row shape, why it lives in the main
   checkout, and why the timing field is `msSincePrev` and not a duration. Read before
   querying or extending it.
+
+**The land path**
+- **`land-mechanics.md`** — what a land actually moves: the target is the lane repo's
+  *integration branch*, not `main`, and the ref advance runs inside whichever worktree
+  holds that branch. Carries the read-only conflict probe (`merge-tree` + `merge-file`,
+  and the trap that makes a marker count read as clean), why the author resolves rather
+  than the port, and the two facts a rebase silently invalidates. Read before porting a
+  lane by hand, before automating a land, and before calling a quiet lane done.
 
 **Briefing and scope**
 - **`tailored-context.md`** — the brief principle: shape the environment, induce silent

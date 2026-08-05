@@ -1834,10 +1834,14 @@ async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: 
   // lane is idle by definition, but claude's own startup needs a moment
   await Bun.sleep(4000);
   const requeue = (note: string): void => {
-    // back to the ENTRY status, not blanket "queued" — same reasoning as dispatchTask's catch:
-    // a "queued" row retries on the owner disjunct, a "pending" eval-auto row must retry
-    // through the eval disjunct (cap-checked, attempt-counted) or not at all
-    next.status = wasStatus;
+    // A post-spawn hold is TRANSIENT (dead claude, slot changed mid-boot) — retry-shaped. An
+    // ATTENDED start therefore requeues to "queued" as it always has (the dispatcher retries;
+    // pinned by claude-gate branch 6b). Only the UNATTENDED path restores the entry status:
+    // a "pending" eval-auto row must retry through the eval disjunct (cap-checked,
+    // attempt-counted), never surface as an owner promote. Deliberately asymmetric with
+    // dispatchTask's catch, where the failure is persistent (bad repo) and even an attended
+    // row goes back where it came from instead of looping through the tick.
+    next.status = ownerAct ? "queued" : wasStatus;
     next.note = note;
     saveState();
   };

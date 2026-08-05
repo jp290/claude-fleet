@@ -277,7 +277,10 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
-    ...(t.eval ? { eval: t.eval } : {}), // reason is capped at write time (tickEvalSweep)
+    // the digest's reason is a bounded SLICE for the 2 s poll (same size discipline that took
+    // task texts off this endpoint); the full stored reason travels on GET /api/tasks, which
+    // the queue overlay fetches anyway — the detail panel reads it from there
+    ...(t.eval ? { eval: { ...t.eval, reason: t.eval.reason.slice(0, 140) } } : {}),
   };
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
@@ -1804,8 +1807,12 @@ async function tickEvalSweep(): Promise<void> {
     // one repo batch per tick, serial like the dispatcher — bounded fan-out, bounded prompt
     const repo = resolve(expandCwd(pool[0].repo ?? DISPATCH_REPO));
     const batch = pool.filter((t) => resolve(expandCwd(t.repo ?? DISPATCH_REPO)) === repo).slice(0, EVAL_BATCH_CAP);
+    // reason cap 2000, NOT 200: the first live verdict opened with its supporting findings and
+    // the 200-char cap beheaded the decisive "— but …" clause, leaving a review verdict whose
+    // visible reason argued for auto (owner caught it within the hour). The 2 s poll stays
+    // bounded because taskDigest slices its own copy; THIS is the stored truth.
     const stamp = (verdict: "auto" | "review", reason: string): void => {
-      for (const t of batch) if (!t.eval) t.eval = { verdict, reason: reason.slice(0, 200), at: Date.now(), model: EVAL_MODEL };
+      for (const t of batch) if (!t.eval) t.eval = { verdict, reason: reason.slice(0, 2000), at: Date.now(), model: EVAL_MODEL };
     };
     if (!existsSync(repo) || !statSync(repo).isDirectory()) { stamp("review", `eval: repo not found: ${repo}`); saveState(); return; }
     let verdicts: Map<string, { verdict: "auto" | "review"; reason: string }>;
@@ -1837,8 +1844,8 @@ async function tickEvalSweep(): Promise<void> {
     for (const t of batch) {
       const v = verdicts.get(t.id);
       t.eval = v?.verdict === "auto"
-        ? { verdict: "auto", reason: (v.reason || "passed").slice(0, 200), at: Date.now(), model: EVAL_MODEL }
-        : { verdict: "review", reason: (v ? v.reason || "flagged for review" : "eval returned no verdict for this task").slice(0, 200), at: Date.now(), model: EVAL_MODEL };
+        ? { verdict: "auto", reason: (v.reason || "passed").slice(0, 2000), at: Date.now(), model: EVAL_MODEL }
+        : { verdict: "review", reason: (v ? v.reason || "flagged for review" : "eval returned no verdict for this task").slice(0, 2000), at: Date.now(), model: EVAL_MODEL };
     }
     saveState();
   } finally {
@@ -5665,7 +5672,7 @@ if (existsSync(STATE_FILE)) {
           // a hand-edited state file must not smuggle an "auto" verdict shape the sweep never
           // wrote — anything malformed degrades to "not yet evaluated", never to a pass
           eval: t.eval && (t.eval.verdict === "auto" || t.eval.verdict === "review") && typeof t.eval.reason === "string"
-            ? { verdict: t.eval.verdict, reason: t.eval.reason.slice(0, 200), at: Number(t.eval.at) || 0, model: typeof t.eval.model === "string" ? t.eval.model : "" }
+            ? { verdict: t.eval.verdict, reason: t.eval.reason.slice(0, 2000), at: Number(t.eval.at) || 0, model: typeof t.eval.model === "string" ? t.eval.model : "" }
             : undefined }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
@@ -8152,6 +8159,19 @@ Bun.serve<WSData>({
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       audit("task_dispatch", r.slot, t.id);
       return json({ ok: true, slot: r.slot, branch: r.branch });
+    }
+    // clear a verdict so the sweep judges the task afresh — the one exception to "a verdict is
+    // final", and it is an explicit owner act. Only meaningful while the task is still pending:
+    // everywhere else the verdict is history, not a gate input.
+    const taskEvalReset = /^\/api\/tasks\/([a-z0-9]+)\/eval-reset$/.exec(url.pathname);
+    if (req.method === "POST" && taskEvalReset) {
+      const t = tasks.find((x) => x.id === taskEvalReset[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (!t.eval) return json({ error: "no verdict to reset" }, 409);
+      if (t.status !== "pending") return json({ error: `task is ${t.status} — a verdict only gates a pending task` }, 409);
+      t.eval = undefined;
+      saveState();
+      return json({ ok: true });
     }
     const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {

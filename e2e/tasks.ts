@@ -237,7 +237,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // FLEET_DISPATCH_REPO rides along explicitly because restartSrv builds the spawn line from
   // process.env and the wrapper only ever put that knob in the SERVER's env, not this process's.
   {
-    interface HRow { id: string; status: string; note?: string; slot?: number; eval?: { verdict: string; reason: string } }
+    interface HRow { id: string; status: string; note?: string; slot?: number; eval?: { verdict: string; reason: string; at?: number } }
     const hSess = async (): Promise<{ tasks: HRow[]; dispatch: { repo: string } }> =>
       (await (await get("/api/sessions")).json()) as { tasks: HRow[]; dispatch: { repo: string } };
     // the stand-in follows the FLEET_*_CMD convention (prompt on stdin, answer on stdout): tasks
@@ -249,7 +249,7 @@ export async function run(ctx: Ctx): Promise<void> {
       "cat | bun -e '",
       "const input = await new Response(Bun.stdin.stream()).text();",
       "const segs = input.split(/^TASK id=/m).slice(1);",
-      "const verdicts = segs.map((seg) => ({ id: seg.split(/\\s/)[0], verdict: seg.includes(\"EVAL-AUTO-PROBE\") ? \"auto\" : \"review\", reason: \"probe\" }));",
+      "const verdicts = segs.map((seg) => ({ id: seg.split(/\\s/)[0], verdict: seg.includes(\"EVAL-AUTO-PROBE\") ? \"auto\" : \"review\", reason: \"probe \" + \"x\".repeat(300) }));",
       "console.log(JSON.stringify({ verdicts }));",
       "'",
       "",
@@ -272,6 +272,27 @@ export async function run(ctx: Ctx): Promise<void> {
     const hBRow = (await hSess()).tasks.find((t) => t.id === hB.task.id);
     check("(h) an eval-review task stays pending for the owner — the dispatcher never touches it",
       hBRow?.status === "pending", JSON.stringify(hBRow));
+    // reason size contract, both directions: the 2 s poll carries a bounded slice, the queue
+    // overlay's own /api/tasks fetch carries the full text. This pins the truncation defect
+    // that once made a review verdict read as its own opposite (the stored reason lost its
+    // decisive "— but …" clause to a 200-char cap).
+    const hFull = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; eval?: { reason: string } }[] })
+      .tasks.find((t) => t.id === hB.task.id)?.eval;
+    check("(h) digest reason is a bounded slice (≤140) while /api/tasks carries the full reason",
+      (hBRow?.eval?.reason.length ?? 999) <= 140 && (hFull?.reason.length ?? 0) > 140,
+      JSON.stringify({ digest: hBRow?.eval?.reason.length, full: hFull?.reason.length }));
+    // ↻ re-eval: an explicit owner reset clears the verdict and the sweep judges afresh
+    const hRst = await post(`/api/tasks/${hB.task.id}/eval-reset`, {});
+    let evB2: HRow["eval"];
+    for (let i = 0; i < 40; i++) {
+      evB2 = await hEval(hB.task.id);
+      if (evB2 && (evB2.at ?? 0) > (evB?.at ?? 0)) break;
+      evB2 = undefined;
+      await Bun.sleep(500);
+    }
+    check("(h) eval-reset clears a pending verdict and the sweep re-judges it (fresh timestamp)",
+      hRst.ok && evB2?.verdict === "review" && (evB2?.at ?? 0) > (evB?.at ?? 0),
+      JSON.stringify({ reset: hRst.status, evB2 }));
     // per-day cap (1 here): a second auto verdict is stamped but NOT consumed — a valve, not a floodgate
     const hC = (await (await post("/api/tasks", { text: "eval probe C: EVAL-AUTO-PROBE — a second auto candidate", queue: false })).json()) as { task: { id: string } };
     let evC: HRow["eval"];
@@ -291,7 +312,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const hp = buildEvalPrompt("/some/repo", [{ id: "abc123", source: "owner", text: "raw <task> text" }]);
     check("(h) buildEvalPrompt: mark, id line, DATA fences, verbatim text, strict-JSON contract",
       hp.includes("the EVAL GATE for a fleet task queue") && hp.includes("TASK id=abc123 source=owner")
-      && hp.includes("<<<DATA") && hp.includes("DATA>>>") && hp.includes("raw <task> text") && hp.includes('{"verdicts"'),
+      && hp.includes("<<<DATA") && hp.includes("DATA>>>") && hp.includes("raw <task> text") && hp.includes('{"verdicts"')
+      && hp.includes("DECISIVE factor comes FIRST"),
       hp.slice(0, 120));
     // cleanup — dispatcher off first (same requeue-race reason as (e)), kill the auto-spawned
     // lane, drop the probes. The stand-in env dies with the NEXT restartSrv on its own: extra

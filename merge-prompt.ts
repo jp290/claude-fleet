@@ -14,6 +14,64 @@
 // living in server.ts; here they are the same bytes by construction.
 import { WORKER_CONTRACTS, doneMark } from "./src/protocol";
 
+// BOTH sides' maps. Each is an absolute path to a graphify graph.json built for this run by the
+// server (server.ts, buildCodeGraph), or null if that one was not built. Required, not optional, and
+// never assumed: a prompt that advertises a map that is not there spends the agent's rounds on a
+// command answering "no graph found". PATHS, not flags, because the maps deliberately live OUTSIDE
+// the worktree — a graphify-out/ inside a lane is an untracked file, and untracked files are what
+// the land path refuses.
+//
+// They are NOT redundant, and that is the whole reason `main` exists. The lane graph is built from
+// the lane's own HEAD, so it contains main only up to the FORK — a caller main added AFTERWARDS is
+// structurally invisible in it, and that is exactly the conflict that goes wrong. Fail-closed applies
+// PER GRAPH: whichever one was not built is never named, not even half.
+export interface MergeGraphs {
+  lane: string | null; // this branch's committed code (the lane's HEAD)
+  main: string | null; // the commit being rebased ONTO — the side the resolution merges into
+}
+
+// The code-map section, shared by both resolver prompts because both agents face the same
+// question — who else uses the symbol I am about to change. Empty when NEITHER graph was built, so
+// the capability is advertised only where it exists (fail-closed, per graph).
+// The verbs listed here are exactly the ones MERGE_TOOLS allows: read-only. The BUILD verb is
+// deliberately absent from both — its argument is a path, so allowing it would hand the agent an
+// unanchored read of the whole machine. The server builds the graphs; the agent only reads them.
+function mapSection(g: MergeGraphs, branch: string, main: string): string[] {
+  const sides: { head: string; path: string }[] = [];
+  if (g.lane) sides.push({ head: `YOUR BRANCH (${branch}) — built from your own committed code:`, path: g.lane });
+  if (g.main) sides.push({ head: `THE SIDE YOU ARE MERGING INTO (${main}) — built from the exact commit you rebase onto:`, path: g.main });
+  if (!sides.length) return [];
+  const many = sides.length > 1;
+  return [
+    `MAP: ${many ? "two code graphs were" : "a code graph was"} built for you (graphify, AST-only, no network).`,
+    `${many ? "They answer" : "It answers"} the one question a conflict resolution gets wrong most often — who ELSE uses`,
+    "the thing you are about to change. Read-only. The --graph flag is REQUIRED on every call, exactly",
+    `as written: the ${many ? "graphs live" : "graph lives"} outside your worktree on purpose, so a bare \`graphify query\` would`,
+    "find nothing.",
+    ...sides.flatMap((s) => [
+      `GRAPH — ${s.head}`,
+      `  graphify affected "<symbol>" --graph ${s.path}`,
+      "      → every call site and dependant. Run this BEFORE you drop, rename or merge any symbol that",
+      "        appears in a conflict region.",
+      `  graphify explain "<symbol>" --graph ${s.path}`,
+      "      → that one symbol with its connections and source line.",
+      `  graphify query "<question>" --graph ${s.path}`,
+      "      → a scoped subgraph for an orientation question.",
+    ]),
+    // WHY TWO. Without this the agent reads them as duplicates and queries whichever it sees first —
+    // which defeats the point, because the blind spot is one-directional and always the same one.
+    ...(many
+      ? [`CHECK BOTH — they are not interchangeable. Your branch's graph was built from YOUR head, so it`,
+         `cannot see a caller ${main} added after you forked; the other graph can. A symbol that looks`,
+         "unused on your side may have a live caller on the side you are merging into.",
+         ""]
+      : []),
+    `${many ? "Both are MAPS" : "The graph is a MAP"}, never an authority: ${many ? "each was" : "it was"} built from committed code and cannot`,
+    "see your resolution. git and the files remain the truth — if they disagree with the graph, they win.",
+    "",
+  ];
+}
+
 export interface MergePromptInput {
   branch: string;
   main: string;
@@ -22,42 +80,12 @@ export interface MergePromptInput {
   laneTask: string | null;
   laneLog: string; // `git log main..HEAD --oneline` — this lane's commits (OURS)
   mainLog: string; // `git log mergeBase..main --oneline` — main's commits since the fork (THEIRS)
-  // absolute path to a graphify graph.json built for this run, or null if none was (server.ts,
-  // buildLaneGraph). Required, not optional, and never assumed: a prompt that advertises a tool
-  // that is not there spends the agent's rounds on a command answering "no graph found".
-  // A PATH, not a flag, because the map deliberately lives OUTSIDE the worktree — a graphify-out/
-  // inside a lane is an untracked file, and untracked files are what the land path refuses.
-  graph: string | null;
-}
-
-// The code-map section, shared by both resolver prompts because both agents face the same
-// question — who else uses the symbol I am about to change. Empty when no graph was built, so
-// the capability is advertised only where it exists (fail-closed).
-// The verbs listed here are exactly the ones MERGE_TOOLS allows: read-only. The BUILD verb is
-// deliberately absent from both — its argument is a path, so allowing it would hand the agent an
-// unanchored read of the whole machine. The server builds the graph; the agent only reads it.
-function mapSection(graph: string | null): string[] {
-  if (!graph) return [];
-  return [
-    "MAP: a code graph of this branch was built for you (graphify, AST-only, no network). It answers the",
-    "one question a conflict resolution gets wrong most often — who ELSE uses the thing you are about to",
-    "change. Read-only. The --graph flag is REQUIRED on every call, exactly as written: the graph lives",
-    "outside your worktree on purpose, so a bare `graphify query` would find nothing.",
-    `  graphify affected "<symbol>" --graph ${graph}`,
-    "      → every call site and dependant. Run this BEFORE you drop, rename or merge any symbol that",
-    "        appears in a conflict region.",
-    `  graphify explain "<symbol>" --graph ${graph}`,
-    "      → that one symbol with its connections and source line.",
-    `  graphify query "<question>" --graph ${graph}`,
-    "      → a scoped subgraph for an orientation question.",
-    "The graph is a MAP, never an authority: it was built from this branch's committed code and cannot",
-    "see your resolution. git and the files remain the truth — if they disagree with the graph, they win.",
-    "",
-  ];
+  graphs: MergeGraphs;
 }
 
 export function buildMergePrompt(i: MergePromptInput): string {
-  const { branch, main, conflicted, laneTask, laneLog, mainLog, graph } = i;
+  const { branch, main, mergeBase, conflicted, laneTask, laneLog, mainLog, graphs } = i;
+  const hasMap = !!graphs.lane || !!graphs.main;
   return [
     `${WORKER_CONTRACTS.merge.mark}. Work autonomously — nobody is watching.`,
     `Your ONLY job: rebase this worktree's branch (${branch}, your cwd) onto ${main} and resolve any`,
@@ -65,15 +93,25 @@ export function buildMergePrompt(i: MergePromptInput): string {
     "",
     "DO, in order:",
     `1. Run: git rebase ${main}`,
-    "2. If conflicts arise, resolve them by editing the conflicted files: read enough surrounding code to",
-    "   preserve the INTENT of both sides — never blanket-pick ours/theirs, never delete code you don't",
+    // THE OTHER SIDE'S CONTENT. The DATA block hands over main's commit SUBJECTS, which are titles,
+    // not changes — and the agent's own worktree only ever shows it its own side plus the markers.
+    // The command is given ready to run rather than the diff pasted in: a diff is unbounded and
+    // untrusted, so embedding it would blow up the DATA block and widen the injection surface for
+    // information the agent can fetch itself in one call.
+    "2. Before resolving a file, LOOK at what the other side actually did to it — the commit subjects",
+    "   in the DATA block are titles, not content. For each conflicted file:",
+    `     git diff ${mergeBase}..${main} -- <file>`,
+    `   That is exactly what THEIRS changed since this branch forked. Read it before you resolve that`,
+    "   file; your own side is the code you already have.",
+    "3. Resolve the conflicts by editing the conflicted files: read enough surrounding code to preserve",
+    "   the INTENT of both sides — never blanket-pick ours/theirs, never delete code you don't",
     "   understand. Then git add the files and git rebase --continue. Repeat until the rebase completes.",
     "RULES: stay inside this worktree; use only plain `git <subcommand>` invocations (no -c, no aliases,",
-    `no --exec)${graph ? ", plus the read-only graphify verbs listed under MAP below" : ""} — anything else is auto-denied. Never run build/test commands. If a conflict is beyond`,
+    `no --exec)${hasMap ? ", plus the read-only graphify verbs listed under MAP below" : ""} — anything else is auto-denied. Never run build/test commands. If a conflict is beyond`,
     "safe resolution or the rebase goes wrong, run git rebase --abort so the lane is exactly as you",
     "found it, and report blocked.",
     "",
-    ...mapSection(graph),
+    ...mapSection(graphs, branch, main),
     // THREE-WAY ORIENTATION: name which side is which so the agent reconstructs BOTH intents
     // from the two commit logs in the DATA block, instead of reverse-engineering main's side.
     `ORIENTATION: in each conflict the lines between <<<<<<< and ======= are OURS (this lane, ${branch}); the`,
@@ -118,7 +156,7 @@ export interface RepairPromptInput {
   verifyCmd: string;
   verifyOut: string; // the failing verification's output tail — untrusted DATA
   conflicted: string[]; // the files the resolution touched, for orientation
-  graph: string | null; // same contract as MergePromptInput.graph — a path, or not advertised
+  graphs: MergeGraphs; // same contract as MergePromptInput.graphs — paths, or not advertised
 }
 
 // The REPAIR prompt: after a conflict resolution rebases cleanly but the deterministic verify
@@ -129,7 +167,8 @@ export interface RepairPromptInput {
 // git re-verification + a re-run of runVerify against the resulting tree (see mergeJob's loop).
 // The word REPAIRING leads the prompt so the e2e stand-in can distinguish a repair call.
 export function buildRepairPrompt(i: RepairPromptInput): string {
-  const { branch, main, verifyCmd, verifyOut, conflicted, graph } = i;
+  const { branch, main, verifyCmd, verifyOut, conflicted, graphs } = i;
+  const hasMap = !!graphs.lane || !!graphs.main;
   return [
     `${WORKER_CONTRACTS.repair.mark} (${branch}, your cwd) after a failed verification. Work`,
     "autonomously — nobody is watching.",
@@ -144,11 +183,12 @@ export function buildRepairPrompt(i: RepairPromptInput): string {
     "   build needs, restore it. Do NOT reformat or touch anything the verification did not flag.",
     "3. Stage and commit: git add -A && git commit -m 'repair: fix verification failure'. Do NOT rebase.",
     "RULES: stay inside this worktree; use only plain `git <subcommand>` invocations (no -c, no aliases,",
-    `no --exec)${graph ? ", plus the read-only graphify verbs listed under MAP below" : ""} — anything else is auto-denied. Never run build/test commands yourself; the server re-verifies.`,
+    `no --exec)${hasMap ? ", plus the read-only graphify verbs listed under MAP below" : ""} — anything else is auto-denied. Never run build/test commands yourself; the server re-verifies.`,
     "If you cannot fix it safely, leave the tree EXACTLY as you found it (no partial edits) and report blocked.",
     "",
-    // the repair's most common cause IS a dropped symbol, which is exactly what `affected` answers
-    ...mapSection(graph),
+    // the repair's most common cause IS a dropped symbol, which is exactly what `affected` answers —
+    // and on BOTH sides: the symbol the resolution dropped may be one only main's new code calls.
+    ...mapSection(graphs, branch, main),
     // HARD SCOPE RULE: the resolution that produced this tree is otherwise correct — a repair that
     // wanders beyond the reported failure is itself a regression.
     "SCOPE — HARD RULE: change ONLY what the verification failure requires. Preserve every other symbol and",
@@ -177,6 +217,11 @@ export function buildRepairPrompt(i: RepairPromptInput): string {
 export interface AuthorPromptInput {
   branch: string;
   main: string;
+  // merge-base(main, HEAD) — the fork point, so the brief can hand over a ready `git diff
+  // <mergeBase>..<main> -- <file>`. The author's blind spot is the SAME one the worker has, and it
+  // is the worse half of the two: being the author means knowing your own side well, which is
+  // exactly the side that needs no looking up.
+  mergeBase: string;
   conflicted: string[];
   laneTask: string | null;
   laneLog: string; // `git log main..HEAD --oneline` — this lane's own commits
@@ -200,7 +245,7 @@ export interface AuthorPromptInput {
 // the three-way orientation, the hard scope rule, and the injection-safe DATA block — main's commit
 // log is external data to this lane whoever reads it.
 export function buildAuthorPrompt(i: AuthorPromptInput): string {
-  const { branch, main, conflicted, laneTask, laneLog, mainLog } = i;
+  const { branch, main, mergeBase, conflicted, laneTask, laneLog, mainLog } = i;
   const n = conflicted.length;
   return [
     `⏫ MERGE CONFLICT IN YOUR OWN LANE (${branch}, your cwd) — this is Fleet asking you, the session that`,
@@ -212,11 +257,18 @@ export function buildAuthorPrompt(i: AuthorPromptInput): string {
     "",
     "DO, in order:",
     `1. git rebase ${main}`,
-    "2. Resolve each conflict by editing the file: read enough surrounding code to preserve the INTENT of",
+    // The author knows OURS by heart and THEIRS not at all — the one side it cannot reconstruct from
+    // memory is the one the DATA block only names in subject lines. Same command as the worker gets.
+    "2. Before resolving a file, LOOK at what the other side actually did to it — the commit subjects",
+    "   in the DATA block are titles, not content. For each conflicted file:",
+    `     git diff ${mergeBase}..${main} -- <file>`,
+    `   That is exactly what THEIRS changed since you forked. You know your own side; this is the half`,
+    "   you do not.",
+    "3. Resolve each conflict by editing the file: read enough surrounding code to preserve the INTENT of",
     "   both sides — never blanket-pick ours/theirs, never delete code you don't understand. Then git add",
     "   the file and git rebase --continue. Repeat until the rebase completes.",
-    "3. Leave the worktree CLEAN and COMMITTED. Nothing uncommitted, no rebase in progress.",
-    "4. Say in one line that the conflict is resolved and what you chose. Then STOP.",
+    "4. Leave the worktree CLEAN and COMMITTED. Nothing uncommitted, no rebase in progress.",
+    "5. Say in one line that the conflict is resolved and what you chose. Then STOP.",
     "",
     // The author must not try to finish the job — the land is the server's, and ⏫ is the owner's
     // button. Saying so here is what keeps invariant M3 ("the conflict path never lands unattended")

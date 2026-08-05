@@ -179,6 +179,10 @@ interface Task {
   // later judged against (see Slot.mission). Durable on purpose: before this field the settled
   // criterion lived only in pane scrollback and died at /clear, so nothing could later say what
   // the work was measured against.
+  ref?: string; // steward filings only: the pulse's stable condition slug (rundgang bound 1 /
+  // the Inspektion's register `key`). One live proposal per ref — the server answers a repeat
+  // filing with the existing row instead of a duplicate, so a persisting condition survives
+  // as ONE queue item across an hourly pulse. Absent on ad-hoc filings and non-steward rows.
   eval?: TaskEval; // the eval gate's verdict (owner decision 2026-08-05): "auto" lets the
   // dispatcher consume a PENDING lane task without an owner promote; "review" routes it to the
   // owner's pile and the dispatcher never touches it. Absent = not yet evaluated. Written only
@@ -361,6 +365,31 @@ let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
 // max OPEN steward-filed pending tasks — a looping pulse must not flood the review buffer
 const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
+// the shape a steward `ref` / register `key` must have: derived from the THING, not the phrasing
+// (inspektion.md — the slug IS the dedup mechanism, a sloppy one silently re-files)
+const STEWARD_REF_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+// register lines per hour (the Inspektion writes one per seriously-considered finding, refuted
+// ones included, so its honest per-pulse volume is higher than the Rundgang's single record)
+const STEWARD_REGISTER_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_REGISTER_PER_HOUR ?? 12) | 0);
+// belt over the ledger-counted caps: appendEvent is fire-and-forget on a shared chain, so a
+// tight burst can pass the durable count before the first accepted write reaches disk —
+// check-then-act over an async write (found in review 2026-08-05; the journal write even runs
+// a laneFacts git fan-out between check and append). The ledger stays the restart-proof count
+// of record; this in-memory trail covers only the in-flight window, which a restart cannot
+// race because a restart also drops the requests in flight. Consumers take the MAX of both.
+const capAccepts = new Map<string, number[]>();
+function capAccept(key: string): number {
+  const now = Date.now();
+  capAccepts.set(key, [...(capAccepts.get(key) ?? []).filter((t) => now - t < 3_600_000), now]);
+  return now;
+}
+function capRelease(key: string, stamp: number): void {
+  capAccepts.set(key, (capAccepts.get(key) ?? []).filter((t) => t !== stamp));
+}
+function capRecent(key: string, windowMs: number): number {
+  const now = Date.now();
+  return (capAccepts.get(key) ?? []).filter((t) => now - t < windowMs).length;
+}
 // max rundgang records the journal POST accepts per hour. Unlike the read routes this one is
 // neither cheap nor idempotent: each accepted record fans out laneFacts() — several git
 // subprocesses per ACTIVE lane — and appends to the very file the pulse reads its own delta
@@ -477,6 +506,9 @@ type AuditEvent =
   | "merge_wake_author"
   | "steward_send" | "steward_send_capped"
   | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
+  // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
+  // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
+  | "steward_task_dedup"
   | "slot_shelve"
   | "repo_undo_land"
   | "land_note_fail"
@@ -5723,7 +5755,10 @@ if (existsSync(STATE_FILE)) {
           criterion: t.criterion && typeof t.criterion.text === "string" && t.criterion.text
             ? { text: t.criterion.text.slice(0, MAX_CRITERION), proposedAt: Number(t.criterion.proposedAt) || 0,
               confirmedAt: Number(t.criterion.confirmedAt) || null }
-            : undefined }));
+            : undefined,
+          // a hand-edited ref that no longer parses as a slug is dropped, not repaired — dedup
+          // against a mangled key would silently stop matching the pulse's next filing anyway
+          ref: typeof t.ref === "string" && STEWARD_REF_RE.test(t.ref) ? t.ref : undefined }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -6044,7 +6079,11 @@ async function renderStewardMessage(kind: StewardKind, ref: string, s: Slot, que
     const p = await briefPayload(s);
     if (!p) return { error: "no deterministic git facts for this slot — a pulse never ships an unfactual DATA block" };
     const tf = transcriptFact(s);
-    const subjects = p.commits.slice(0, 2).map((c) => c.subject).join(" · ") || "keine";
+    // commit subjects are session-authored text echoed back into the session's own prompt —
+    // the same forgery surface as the quoted last output (pulseLastOutput above), so the
+    // [pulse-reply] marker is defused the same way before it can fake a reply line
+    const subjects = (p.commits.slice(0, 2).map((c) => c.subject).join(" · ") || "keine")
+      .replaceAll("[pulse-reply]", "(pulse-reply)");
     return { text: [
       "[steward-pulse] DATA:",
       `- branch/commits: ${p.branch ?? "unbekannt"} · +${p.ahead}/-${p.behind} · ${subjects}`,
@@ -6130,33 +6169,46 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   // even a state relay — can arrive as the nudge that resumes work the owner has not approved.
   if (s.awaiting === "owner")
     return json({ error: "slot is waiting on the owner (clarify lane) — escalate, never nudge past it" }, 409);
+  // caps FIRST — they are the cheap refusal. The old order ran renderStewardMessage (for
+  // kind:"pulse" a briefPayload git fan-out plus a transcript tail read) and canDeliver's fresh
+  // claudeAlive subprocess before ever consulting a cap, so a fully-throttled caller still cost
+  // the box the full per-request work on every 429. The in-memory belt (capAccept) makes
+  // check+consume atomic; every non-delivery exit below releases what it took — a refused or
+  // failed send must not eat the episode.
+  const recent = await stewardRecentSends();
+  const now = Date.now();
+  const withinHour = recent.filter((r) => now - r.ts < 3_600_000).length;
+  if (Math.max(withinHour, capRecent("send:hourly", 3_600_000)) >= STEWARD_SENDS_PER_HOUR) {
+    audit("steward_send_capped", s.id, `${kind}:${ref}:hourly`);
+    return json({ error: `hourly steward send cap (${STEWARD_SENDS_PER_HOUR}) reached` }, 429);
+  }
+  const episodeKey = `send:episode:${kind}:${s.id}`;
+  const sameEpisode = recent.some((r) => r.kind === kind && r.slot === s.id && now - r.ts < STEWARD_EPISODE_MS)
+    || capRecent(episodeKey, STEWARD_EPISODE_MS) > 0;
+  if (sameEpisode) {
+    audit("steward_send_capped", s.id, `${kind}:${ref}:episode`);
+    return json({ error: "cap: 1 per kind×slot per episode" }, 429);
+  }
+  const hourlyStamp = capAccept("send:hourly");
+  const episodeStamp = capAccept(episodeKey);
+  const release = (): void => { capRelease("send:hourly", hourlyStamp); capRelease(episodeKey, episodeStamp); };
   const rendered = await renderStewardMessage(kind, ref, s, question);
-  if ("error" in rendered) return json({ error: rendered.error }, 400);
+  if ("error" in rendered) { release(); return json({ error: rendered.error }, 400); }
   // the shared delivery choke-point: the master stop (autosOn) and quiet hours now reach the
   // steward's own send, not just scheduled autos (was synergy-findings.md Tier-0 #1) — plus the
   // fresh claude-alive + idle gates it already had.
   const verdict = await canDeliver(s, { now: Date.now(), idleMs: STEWARD_MIN_IDLE_MS });
   if (!verdict.ok) {
+    release();
     if (verdict.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
     if (verdict.gate === "not-alive") return json({ error: "claude not running in target pane" }, 409);
     if (verdict.gate === "quiet-hours") return json({ error: "quiet hours — steward sends are muted" }, 409);
     return json({ error: "target slot not idle" }, 409);
   }
-  const recent = await stewardRecentSends();
-  const now = Date.now();
-  const withinHour = recent.filter((r) => now - r.ts < 3_600_000).length;
-  if (withinHour >= STEWARD_SENDS_PER_HOUR) {
-    audit("steward_send_capped", s.id, `${kind}:${ref}:hourly`);
-    return json({ error: `hourly steward send cap (${STEWARD_SENDS_PER_HOUR}) reached` }, 429);
-  }
-  const sameEpisode = recent.some((r) => r.kind === kind && r.slot === s.id && now - r.ts < STEWARD_EPISODE_MS);
-  if (sameEpisode) {
-    audit("steward_send_capped", s.id, `${kind}:${ref}:episode`);
-    return json({ error: "cap: 1 per kind×slot per episode" }, 429);
-  }
   try {
     await sendText(s, rendered.text, true);
   } catch (e) {
+    release();
     return json({ error: e instanceof Error ? e.message : "send failed" }, 502);
   }
   const ts = Date.now();
@@ -6177,8 +6229,50 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
 // delta anchor must be read with `kind` FILTERED. Reading "the last record" would anchor the
 // pulse on a foreign record written between two pulses, silently destroying its baseline.
 const RUNDGANG_KIND = "rundgang";
+// the Inspektion's register (inspektion.md §3) as a journal kind. It lived as a loose jsonl in
+// the steward WORKTREE — which is disposable by design, and when the worktree was replaced on
+// 2026-08-05 the register silently stayed behind in the dead tree, zeroing the channel's dedup
+// memory (its own doc calls a returning dismissed finding "this channel's worst failure mode").
+// Here it survives worktree churn, rides readStewardJournal's rotation awareness (5 MB × 2
+// generations ≫ a year of pulses), and gets SERVER timestamps — the first live pulse invented
+// round-minute times, and a register whose timestamps are fiction cannot be audited.
+const INSPEKTION_KIND = "inspektion";
+const INSPEKTION_VERDICTS = ["filed", "refuted", "observation", "kandidat"];
+async function stewardInspektionWrite(body: Record<string, unknown>): Promise<Response> {
+  if (typeof body.revier !== "number" || !Number.isInteger(body.revier) || body.revier < 1 || body.revier > 5)
+    return json({ error: "revier must be an integer 1..5" }, 400);
+  if (typeof body.key !== "string" || !STEWARD_REF_RE.test(body.key))
+    return json({ error: "key must match [a-z0-9][a-z0-9._-]{0,63}" }, 400);
+  if (typeof body.titel !== "string" || !body.titel.trim() || body.titel.length > 200)
+    return json({ error: "titel must be a non-empty string of at most 200 chars" }, 400);
+  if (typeof body.cite !== "string" || !body.cite.trim() || body.cite.length > 160)
+    return json({ error: "cite must be file:line you actually read, at most 160 chars" }, 400);
+  if (typeof body.verdict !== "string" || !INSPEKTION_VERDICTS.includes(body.verdict))
+    return json({ error: `verdict must be one of ${INSPEKTION_VERDICTS.join(" | ")}` }, 400);
+  if (body.task !== undefined && body.task !== null && typeof body.task !== "string")
+    return json({ error: "task must be a task id string or null" }, 400);
+  // same durable-ledger cap stance as the rundgang write below, counted per kind; own constant
+  // because one honest inspection writes several lines (refuted findings included)
+  const { rows } = await readEventLog(STEWARD_JOURNAL_FILE);
+  const recent = rows.filter((r) =>
+    r.kind === INSPEKTION_KIND && typeof r.ts === "number" && Date.now() - r.ts < 3_600_000);
+  if (Math.max(recent.length, capRecent("journal:inspektion", 3_600_000)) >= STEWARD_REGISTER_PER_HOUR) {
+    audit("steward_journal_capped", stewardSlot()?.id, `inspektion-hourly:${STEWARD_REGISTER_PER_HOUR}`);
+    return json({ error: `hourly inspektion register cap (${STEWARD_REGISTER_PER_HOUR}) reached` }, 429);
+  }
+  capAccept("journal:inspektion"); // no await between the check above and this line — atomic
+  writeStewardJournal({
+    kind: INSPEKTION_KIND, revier: body.revier, key: body.key,
+    titel: body.titel.trim(), cite: body.cite.trim(), verdict: body.verdict,
+    task: typeof body.task === "string" ? body.task.slice(0, 16) : null,
+  });
+  audit("steward_journal", stewardSlot()?.id, `inspektion:${body.key}:${body.verdict}`);
+  return json({ ok: true, ts: Date.now() });
+}
 function writeStewardJournal(rec: Record<string, unknown>): void {
-  appendEvent(STEWARD_JOURNAL_FILE, { ts: Date.now(), ...rec });
+  // ts last so it always wins: spreading rec after the stamp would let a future caller
+  // override the "server-stamped" time silently — the spread order IS the guarantee
+  appendEvent(STEWARD_JOURNAL_FILE, { ...rec, ts: Date.now() });
 }
 async function readStewardJournal(tail: number, kind?: string): Promise<Record<string, unknown>[]> {
   const { rows } = await readEventLog(STEWARD_JOURNAL_FILE); // both generations, chronological
@@ -6597,7 +6691,11 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
 }
 // concurrent pulses share one worker run (the beat is hours apart; a double-fire must not
 // spawn two agents). On completion the run WRITES the cache, then nulls inflight.
+// inflightCwd binds the RUN to the steward home it started for, the way slotCwd binds the
+// cache: without it, a GET after a steward move would join the old home's run and serve (and
+// cache) a verdict computed in the wrong cwd — the cache-drop below only refuses snapshots.
 let digestInflight: Promise<DigestResult> | null = null;
+let digestInflightCwd: string | null = null;
 let digestCache: DigestResult | null = null;
 
 // The continuity fact, read straight off the append-only prompt journal (continuity.ts holds the
@@ -6654,7 +6752,9 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
   return {
     since,
     // whether tier 2 is armed at all: without it, "no audit row" means nothing — with it, a land
-    // that never grew a row is the silent-gap signature (finding 1: the queue dies with srv).
+    // that never grew a row is the silent-gap signature. (The queue no longer dies with srv —
+    // it is durable and boot-resumed since the POSTLAND_AUDIT_QUEUE_FILE land — so a lingering
+    // gap now means the run is still going, repeatedly dying, or unconfigured; not restart loss.)
     auditConfigured: !!POSTLAND_AUDIT_CMD,
     audits: sinceWindow((await readEventLog(POSTLAND_AUDIT_FILE)).rows, "at").map((r) => {
       const covers = Array.isArray(r.covers) ? (r.covers as unknown[]) : [];
@@ -6699,16 +6799,21 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     let snapshot: DigestResult | null = fresh;
     if (!fresh) {
       if (!digestInflight) {
+        digestInflightCwd = home.cwd;
         digestInflight = runStewardDigest(home)
           .then((r) => { digestCache = r; return r; })
-          .finally(() => { digestInflight = null; });
+          .finally(() => { digestInflight = null; digestInflightCwd = null; });
       }
-      const inflight = digestInflight;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<null>((res) => { timer = setTimeout(() => res(null), waitMs); });
-      const raced = await Promise.race([inflight, timeout]);
-      if (timer) clearTimeout(timer);
-      snapshot = raced ?? digestCache; // timeout won → serve the last snapshot (or null on cold cache)
+      if (digestInflightCwd === home.cwd) {
+        const inflight = digestInflight;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<null>((res) => { timer = setTimeout(() => res(null), waitMs); });
+        const raced = await Promise.race([inflight, timeout]);
+        if (timer) clearTimeout(timer);
+        snapshot = raced ?? digestCache; // timeout won → serve the last snapshot (or null on cold cache)
+      }
+      // else: a run for a PREVIOUS steward home is still in flight — let it finish (never two
+      // workers), answer cold, and the next GET starts fresh once it drains
     }
     const digestAt = snapshot ? snapshot.computedAt : null;
     return json({
@@ -6788,6 +6893,26 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   if (url.pathname === "/api/steward/tasks" && req.method === "POST") {
     const body = await readJson(req);
     if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
+    // optional `ref`: the pulse's stable condition slug. Refused when malformed rather than
+    // silently dropped — a filing that THINKS it is dedup-protected but isn't would re-file
+    // every pulse, which is exactly the failure the field exists against.
+    if (body.ref !== undefined && (typeof body.ref !== "string" || !STEWARD_REF_RE.test(body.ref)))
+      return json({ error: "ref must match [a-z0-9][a-z0-9._-]{0,63}" }, 400);
+    const ref = typeof body.ref === "string" ? body.ref : undefined;
+    // server-side ref-dedup (the mechanism rundgang.md's scheduling amendment left open — the
+    // pulse is hourly now, so display-discipline alone no longer bounds duplicates): one LIVE
+    // proposal per ref. Scoped to live rows (pending/queued/sent) on purpose — a done/archived
+    // ref may be re-filed: the owner ruled on that row, and a condition that RETURNS after a
+    // ruling is new information, not pulse noise. Checked before the cap so a full queue answers
+    // a repeat sighting truthfully (dedup) instead of with a spurious 409.
+    if (ref) {
+      const live = tasks.find((t) => t.source === "steward" && t.ref === ref
+        && (t.status === "pending" || t.status === "queued" || t.status === "sent"));
+      if (live) {
+        audit("steward_task_dedup", stewardSlot()?.id, `${ref}:${live.id}`);
+        return json({ ok: true, dedup: true, task: live });
+      }
+    }
     // cap open steward proposals so a looping pulse can't flood the review buffer (caps are
     // mandatory — same stance as sends/autos). Review capacity is the binding constraint.
     const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
@@ -6802,6 +6927,7 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       source: "steward", from: null, kind: body.kind === "lane" ? "lane" : "note",
       repo: null, // never body.repo — a steward text must not choose where a lane spawns
       status: "pending", created: Date.now(), slot: null, note: null,
+      ...(ref ? { ref } : {}),
     };
     tasks = capTasks([...tasks, t]);
     saveState();
@@ -6812,11 +6938,22 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     return handleStewardSend(await readJson(req));
   if (url.pathname === "/api/steward/journal" && req.method === "GET") {
     const tail = Math.min(50, Math.max(1, Number(url.searchParams.get("tail") ?? 1) | 0));
-    return json({ records: await readStewardJournal(tail) });
+    // ?kind= filters BEFORE tailing (readStewardJournal), so tail=50 of the register is 50
+    // register rows, not 50 mixed rows that happen to contain some — the Inspektion's
+    // read-your-register-first step depends on that
+    const kind = url.searchParams.get("kind");
+    if (kind !== null && !/^[a-z_]{1,32}$/.test(kind)) return json({ error: "bad kind" }, 400);
+    return json({ records: await readStewardJournal(tail, kind ?? undefined) });
   }
   if (url.pathname === "/api/steward/journal" && req.method === "POST") {
     const body = await readJson(req);
     if (!body) return json({ error: "invalid json" }, 400);
+    // two POSTable kinds share the route: absent/explicit "rundgang" falls through to the pulse
+    // record below; "inspektion" appends a register line; anything else is refused rather than
+    // written as a mislabeled pulse record (propose_outcome stays server-written only)
+    if (body.kind === INSPEKTION_KIND) return stewardInspektionWrite(body);
+    if (body.kind !== undefined && body.kind !== RUNDGANG_KIND)
+      return json({ error: `kind must be ${RUNDGANG_KIND} | ${INSPEKTION_KIND}` }, 400);
     // typed choke-point (same stance as typed sends): build the stored record ONLY from validated
     // fields, never spread the body, so no free-text/injected key can enter the ledger. The pulse
     // supplies its own judged counts; trust-sensitive outcome fields are back-filled server-side
@@ -6844,10 +6981,12 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     const { rows: journalRows } = await readEventLog(STEWARD_JOURNAL_FILE);
     const recentJournal = journalRows.filter((r) =>
       r.kind === RUNDGANG_KIND && typeof r.ts === "number" && Date.now() - r.ts < 3_600_000);
-    if (recentJournal.length >= STEWARD_JOURNAL_PER_HOUR) {
+    if (Math.max(recentJournal.length, capRecent("journal:rundgang", 3_600_000)) >= STEWARD_JOURNAL_PER_HOUR) {
       audit("steward_journal_capped", stewardSlot()?.id, `hourly:${STEWARD_JOURNAL_PER_HOUR}`);
       return json({ error: `hourly steward journal cap (${STEWARD_JOURNAL_PER_HOUR}) reached` }, 429);
     }
+    capAccept("journal:rundgang"); // atomic with the check: the laneFacts fan-out below must not
+    // reopen the window the durable-ledger read just closed
     // the per-lane commit-cursor map is SERVER-computed and SERVER-stamped — a body-supplied
     // `lanes` key is ignored like every other unvalidated field (never-spread): fact, not claim.
     writeStewardJournal({
@@ -8314,7 +8453,15 @@ Bun.serve<WSData>({
       else if (taskAct[2] === "unarchive") t.status = "pending"; // back to owner review, never straight to queued
       else t.status = "done";
       if (proposeOutcome) {
-        writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome });
+        // the row itself is deleted or mutated right above, so the record must carry what the
+        // ruling was ABOUT or the trail is unreadable — live-measured 2026-08-05: 14 rows,
+        // 7 helped / 7 dismissed, and nobody could say what the dismissed half had proposed.
+        // `ref` stays the task id (historic rows read that way); `slug` is the steward's stable
+        // condition ref when it filed one. The 200-char excerpt is a deliberate retention
+        // trade-off: enough to calibrate the filing threshold against, not an archive of texts
+        // the owner chose to discard.
+        writeStewardJournal({ kind: "propose_outcome", ref: t.id, outcome: proposeOutcome,
+          taskKind: t.kind, ...(t.ref ? { slug: t.ref } : {}), text: t.text.slice(0, 200) });
         audit("steward_propose_outcome", stewardSlot()?.id, `${t.id}:${proposeOutcome}`);
       }
       saveState();

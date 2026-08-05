@@ -150,7 +150,9 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // The optional fields are absent, not null, when unset.
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
   kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
-  eval?: { verdict: "auto" | "review"; reason: string; at: number; model: string } }
+  eval?: { verdict: "auto" | "review"; reason: string; at: number; model: string };
+  // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
+  criterion?: { text?: string; proposedAt: number; confirmedAt: number | null } }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 let autosList: AutoInfo[] = [];
@@ -4472,6 +4474,8 @@ const taskText = new Map<string, string>();
 // bounded reason slice, and the truncated-reason defect (a review verdict whose visible reason
 // argued for auto) is exactly what this cache exists to prevent in the detail panel
 const taskEvalFull = new Map<string, NonNullable<TaskInfo["eval"]>>();
+// same reason for the criterion: the poll knows THAT one exists, this knows what it says
+const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
 let taskTextKey = ""; // the id+verdict-set the cache was last filled for — a task's TEXT never
 // changes, but its eval arrives later (and changes on ↻ re-eval), so eval.at is part of the key
 let taskTextBusy = false;
@@ -4488,19 +4492,22 @@ let qRowId = new Map<HTMLElement, string | null>();
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  const key = tasksList.map((t) => `${t.id}:${t.eval?.at ?? 0}`).join(",");
+  const key = tasksList.map((t) => `${t.id}:${t.eval?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}`).join(",");
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
   let filled = false;
   try {
     const res = await api("/api/tasks");
     if (res.ok) {
-      const data = (await res.json()) as { tasks: { id: string; text: string; eval?: NonNullable<TaskInfo["eval"]> }[] };
+      const data = (await res.json()) as { tasks: { id: string; text: string;
+        eval?: NonNullable<TaskInfo["eval"]>; criterion?: NonNullable<TaskInfo["criterion"]> }[] };
       taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
       taskEvalFull.clear();
+      taskCriterionFull.clear();
       for (const t of data.tasks) {
         taskText.set(t.id, t.text);
         if (t.eval) taskEvalFull.set(t.id, t.eval);
+        if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
       }
       taskTextKey = key;
       filled = true;
@@ -4520,8 +4527,8 @@ const Q_STATUS: { k: TaskInfo["status"]; head: string }[] = [
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 const qFirstLine = (id: string) => (qTaskText(id).split("\n")[0] || "…").slice(0, 120);
 
-async function qAct(id: string, action: string) {
-  const r = await post(`/api/tasks/${id}/${action}`, {});
+async function qAct(id: string, action: string, body: Record<string, unknown> = {}) {
+  const r = await post(`/api/tasks/${id}/${action}`, body);
   if (!r.ok) {
     // surface the server's reason — "no free slot" and "task is running in a lane" are
     // actionable, a generic failure line is not
@@ -4626,20 +4633,47 @@ function renderQueueDetail() {
   const evFull = taskEvalFull.get(t.id) ?? t.eval;
   if (evFull) shell.detail.appendChild(el("div", "qdtext",
     `${evFull.verdict === "auto" ? "✓ eval: auto" : "⚠ eval: review"} — ${evFull.reason} (${evFull.model}, ${fmtTs(evFull.at)})`));
+  // the done-criterion: a clarify lane's proposal until you confirm it. Editable in place —
+  // confirming stores what YOU agreed to, which is what makes it your anchor and not its own
+  const crit = taskCriterionFull.get(t.id) ?? t.criterion;
+  if (crit) {
+    const confirmed = crit.confirmedAt !== null;
+    shell.detail.appendChild(el("div", "rvhead",
+      confirmed ? `done-criterion · confirmed ${fmtTs(crit.confirmedAt!)}` : "done-criterion · PROPOSED — yours to confirm"));
+    if (confirmed) {
+      shell.detail.appendChild(el("div", "qdtext", crit.text ?? ""));
+    } else {
+      const box = el("textarea", "qdcrit") as HTMLTextAreaElement;
+      box.value = crit.text ?? "";
+      box.rows = 6;
+      shell.detail.appendChild(box);
+      const cacts = el("div", "pkdacts");
+      const cb = el("button", "shrbtn primary", "✓ confirm criterion") as HTMLButtonElement;
+      cb.title = "makes this criterion yours and releases the lane to build against it";
+      cb.onclick = () => void qAct(t.id, "criterion-confirm", { text: box.value });
+      cacts.appendChild(cb);
+      shell.detail.appendChild(cacts);
+    }
+  }
   // the full text, wrapped and selectable — the row only ever shows its first line
   const body = qTaskText(t.id);
   shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
     body || "loading the prompt text…"));
   const acts = el("div", "pkdacts");
-  const mk = (label: string, action: string, cls = "shrbtn") => {
+  const mk = (label: string, action: string, cls = "shrbtn", body?: Record<string, unknown>, title?: string) => {
     const b = el("button", cls, label) as HTMLButtonElement;
-    b.onclick = () => void qAct(t.id, action);
+    if (title) b.title = title;
+    b.onclick = () => void qAct(t.id, action, body ?? {});
     return b;
   };
   // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher (which may be
   // off), never for notes (the server refuses them anyway)
   const startable = (t.status === "pending" || t.status === "queued") && t.kind !== "note";
   if (startable) acts.appendChild(mk("▸ start lane", "dispatch", "shrbtn primary"));
+  // the same spawn with a different founding prompt: settle the done-criterion with the owner
+  // before writing code. The standing answer to an eval:review "no derivable done-criterion".
+  if (startable) acts.appendChild(mk("▸ clarify first", "dispatch", "shrbtn", { clarify: true },
+    "opens a lane that works out the done-criterion WITH you and waits — no code until you confirm"));
   if (t.status === "pending") acts.appendChild(mk("queue ▸", "queue", startable ? "shrbtn" : "shrbtn primary"));
   // clear the verdict so the sweep judges afresh — only while pending (the verdict only gates there)
   if (t.status === "pending" && t.eval) acts.appendChild(mk("↻ re-eval", "eval-reset"));

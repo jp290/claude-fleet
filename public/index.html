@@ -227,6 +227,11 @@
   .qdisp { flex-basis: 100%; font-size: 11.5px; color: #888; display: flex; align-items: center; gap: 8px; }
   .qdtext { font-size: 13px; color: #ddd; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
     background: #161616; border: 1px solid #262626; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  /* the proposed done-criterion, editable before you confirm it — same box as .qdtext so a
+     proposal and a settled criterion read as the same object in two states */
+  .qdcrit { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: #ddd;
+    line-height: 1.55; background: #161616; border: 1px solid #3a3a3a; border-radius: 8px;
+    padding: 10px 12px; margin: 10px 0; resize: vertical; }
   .shellrow.qnew .shrname { color: #7aa2f7; font-weight: 600; }
   /* the status a row is in, as a left accent — same vocabulary the old .qrow strip used */
   .shellrow.q-pending { border-left: 3px solid #666; }

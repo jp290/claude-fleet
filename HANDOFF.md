@@ -40,6 +40,36 @@ korrekt als `review` geparkt (mehrteilig, teilerledigt) und wartet auf Owner-Spl
 - Bewusste v1-Lücke: eine am Tages-Cap (`FLEET_EVAL_MAX_AUTO_PER_DAY`, 10) wartende
   auto-Task trägt keine waiting-Note — nur den eval-Chip.
 
+### „▸ clarify first" — die dritte Antwort auf ein eval:review
+
+Owner-Ask: ein Knopf, der die Lane spawnt, dem Agenten aber sagt, er soll das Done-Kriterium
+ZUERST mit dem Owner ermitteln. Gebaut; Mechanik im Commit-Body. Das Residuum:
+
+- **Der Enhancer läuft auf diesem Pfad bewusst NICHT.** Er kompiliert einen Arbeitsauftrag mit
+  Done-Kriterium — und eine Task, die diesen Knopf erreicht, ist genau die, wo diese Prämisse
+  nicht gilt. Deterministischer Rahmen + Rohtext in einer Fence, kein Modellaufruf. Kein
+  `/sharpen3` aus demselben Grund.
+- **Das Kriterium ist dauerhaft und gehört am Ende dem Owner**: Lane schlägt vor
+  (`POST /api/self/criterion`, `confirmedAt:null`), Owner bestätigt mit EIGENEM Text. Danach
+  kann die Lane es nicht mehr überschreiben (409). Das ist die propose/promote-Grenze — ein
+  Produzent schreibt nie den Anker, an dem er gemessen wird (`server.ts`, `Slot.mission`).
+- **Das Warten ist ein ZUSTAND, nicht nur ein Satz im Prompt.** `Slot.awaiting="owner"`
+  (persistiert) lässt `handleStewardSend` den Slot mit 409 abweisen. Ohne das wäre eine
+  wartende Clarify-Lane schlicht eine idle Lane, also ein `continue_nudge`-Ziel — der Steward
+  hätte sie am Owner vorbei weitergeschoben. auto-③ war nie ein Risiko: `git.ahead>0` ist
+  Pflicht (`lane-signals.ts:44`), eine Lane ohne Code hat null Commits.
+
+**Zwei Dinge, die beim Selbst-Audit auffielen und die man kennen muss:**
+
+1. **Der Public-Repo-Guard hat eine Lücke.** `git grep -inE '…|100\.68…'` (CLAUDE.md, Deploy)
+   sieht **nur getrackte Dateien** — eine noch untracked NEUE Datei mit der Deploy-IP läuft
+   glatt durch. Genau das wäre hier fast passiert (`clarify-prompt.ts` hatte den Host
+   hardcodiert). Die Base-URL wird jetzt zur Laufzeit übergeben, ein Check pinnt es. **Wer den
+   Guard fährt, muss ihn bei neuen Dateien gegen den ARBEITSBAUM fahren, nicht gegen den Index.**
+2. **`bun run build` deployt den Client sofort** — auch aus einem uncommitteten Baum. Dadurch
+   stand der „▸ clarify first"-Knopf im Live-Board, während der Live-Server die Routen noch
+   nicht hatte (404). Steht so schon in der CLAUDE.md; hier als gelebter Fall.
+
 ### Das Erste für die nächste frische Session (Owner-Auftrag, wörtlich)
 
 **Der automatische Prompt-Enhance-Job für Tasks.** Owner: *„für genau diesen Task wäre ein

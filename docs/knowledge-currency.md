@@ -121,6 +121,20 @@ versus main *now*, which other open lanes touch which paths (computed from workt
 pasted by hand into four briefs tonight), the recent flake ranking from (a), and the current
 rulebook revision. Reuses the existing token, channel and state; no new process.
 
+> **Built, in pieces, and NOT under the name proposed here** — the paragraph above is history from
+> 2026-07-27 and its "exactly one route / cannot ask a single question" is false as of 2026-08-05.
+> The self principal now has four routes, and no `GET /api/self/context` was ever built: the payload
+> was cut along its natural seams instead, each shipped when its own defect justified it.
+> · `GET /api/self/drift` (2026-08-04) — fork point versus main now, `wouldConflict`, the sibling
+>   lanes' in-flight files. That is this item's first and third clause.
+> · `GET /api/self/gate` (2026-08-05) — the LIVE gate command, the judges' modes, and a rulebook
+>   drift flag. That is the fourth clause, and the reason it went first: it closes a verified
+>   defect (`docs/attic/lane-context.md` §2 — no file a lane can read tells it what will gate it).
+> · `POST /api/self/criterion` (2026-08-05) — not from this list at all: a clarify lane writes its
+>   PROPOSED done-criterion onto its founding task, which the owner then confirms.
+> Still unbuilt from the clause list: **the flake ranking from (a)**. The trail has the data; nothing
+> reads it. That is the honest remainder of this item.
+
 **(c) The `main:` rule.** One line in the rulebook: knowledge is read from `main:`, not the working
 tree. Free, and it closes §3's new gap for everything tracked.
 

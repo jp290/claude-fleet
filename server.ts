@@ -8,6 +8,7 @@ import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAutho
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildEvalPrompt } from "./eval-prompt";
+import { buildClarifyBrief } from "./clarify-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
@@ -172,12 +173,20 @@ interface Task {
   created: number;
   slot: number | null; // set once dispatched
   note: string | null;
+  criterion?: TaskCriterion; // what "done" means for this task, settled in a clarify lane. The
+  // lane PROPOSES it (POST /api/self/criterion, confirmedAt null); only the owner confirms —
+  // the same propose/promote boundary that keeps a producer from authoring the anchor it is
+  // later judged against (see Slot.mission). Durable on purpose: before this field the settled
+  // criterion lived only in pane scrollback and died at /clear, so nothing could later say what
+  // the work was measured against.
   eval?: TaskEval; // the eval gate's verdict (owner decision 2026-08-05): "auto" lets the
   // dispatcher consume a PENDING lane task without an owner promote; "review" routes it to the
   // owner's pile and the dispatcher never touches it. Absent = not yet evaluated. Written only
   // by tickEvalSweep; the ② contract transplanted to the queue — downgrade-only, fail-closed.
 }
 interface TaskEval { verdict: "auto" | "review"; reason: string; at: number; model: string }
+interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
+const MAX_CRITERION = 4000; // a done-criterion is a short contract, not a design document
 
 interface Slot {
   id: number;
@@ -189,6 +198,12 @@ interface Slot {
   // scrollback and dies at /clear. Owner-written only (the steward gate never reaches the route:
   // a producer must not author the anchor it is later judged against), and per SESSION, not per
   // slot — openSlot/killSlot clear it with the label.
+  awaiting: "owner" | null; // a clarify lane that was told to report and WAIT for the owner's
+  // confirmation. Automation must not push past that wait — the steward's send gate refuses
+  // while this is set, which is its own playbook's `awaiting-human` rule (escalate, never answer
+  // in the owner's stead). Without it a waiting lane is simply an idle lane, i.e. a nudge target.
+  // Cleared by the owner's own send, by the criterion confirmation, and with the label on
+  // open/kill. Persisted: a restart must not re-open the hole.
   worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
@@ -219,6 +234,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   cwd: null,
   label: null,
   mission: null,
+  awaiting: null,
   worktree: null,
   model: null,
   selfToken: randomBytes(16).toString("hex"),
@@ -269,7 +285,10 @@ const MAX_TASK_TEXT = 20_000;
 // on the poll path reads the text (the queue button reads status+source); the queue overlay
 // fetches GET /api/tasks once when it opens. Null-valued fields are omitted rather than sent as
 // null — with 200 tasks (MAX_TASKS) even the digest is the payload's biggest term.
-type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created"> & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "eval">>;
+type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
+  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "eval">>
+  // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
+  & { criterion?: { proposedAt: number; confirmedAt: number | null } };
 function taskDigest(t: Task): TaskDigest {
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
@@ -281,6 +300,9 @@ function taskDigest(t: Task): TaskDigest {
     // task texts off this endpoint); the full stored reason travels on GET /api/tasks, which
     // the queue overlay fetches anyway — the detail panel reads it from there
     ...(t.eval ? { eval: { ...t.eval, reason: t.eval.reason.slice(0, 140) } } : {}),
+    // same two-tier rule as `eval`: the poll carries only whether a criterion exists and whether
+    // it is confirmed — the text itself rides GET /api/tasks, which the queue overlay fetches
+    ...(t.criterion ? { criterion: { proposedAt: t.criterion.proposedAt, confirmedAt: t.criterion.confirmedAt } } : {}),
   };
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
@@ -444,6 +466,9 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "task_dispatch" // the manual start button — an owner act, distinct from the tick's spawns
+  // the clarify lane's propose/promote pair, both sides recorded: who drafted the anchor and
+  // when the owner made it theirs (the boundary this whole path is built around)
+  | "criterion_proposed" | "criterion_confirmed"
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
@@ -542,9 +567,10 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
 let saveChain: Promise<unknown> = Promise.resolve();
 let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the pid makes it unique across
 function saveState(): void {
-  const active: Record<string, { cwd: string; label: string | null; mission: string | null; sessionId: string | null;
+  const active: Record<string, { cwd: string; label: string | null; mission: string | null; awaiting: "owner" | null;
+    sessionId: string | null;
     worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null; selfToken: string }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
@@ -1360,6 +1386,11 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // placed after the cwd validation: a bad path must never destroy a running session.
   if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
   s.cwd = cwd;
+  // a stale wait must not outlive the session it was about. killSlot clears it, but the branch
+  // above only runs when a pane still EXISTS — a slot whose pane already died would otherwise
+  // hand its "waiting on the owner" to the next occupant, silently muting the steward there.
+  // Same lifetime and same reason as the mission below.
+  s.awaiting = null;
   // a fresh session gets a fresh identity — but the caller may name it AT SPAWN, which is the
   // only moment a label-keyed env export (FLEET_STEWARD_TOKEN, see ensureSlot) can be baked in;
   // open-then-rename always arrives after the pane's env is fixed
@@ -1420,6 +1451,7 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.cwd = null; // clear first so the self-heal loop can't resurrect it mid-kill
   s.label = null;
   s.mission = null; // dies with the session it was written for, same as the label
+  s.awaiting = null; // no session left to wait for anything — same lifetime as the label
   summaryCache.delete(s.id); // a recycled slot must never show the previous session's summary
   reviewCache.delete(s.id); // …nor the previous session's 🔍 review
   reviewAutoTried.delete(s.id); // …and the next lane in this slot gets its own auto-③ budget
@@ -1693,7 +1725,10 @@ const dispatchingTasks = new Set<string>();
 // to `sent`, and hand back the async `tail` that compiles + gates + injects the brief. The tick
 // awaits the tail (serial by design, exactly as before); the manual route fires it and answers
 // the button in seconds — the row's status/note tracks the rest.
-async function dispatchTask(next: Task, free: Slot, ownerAct: boolean):
+// `clarify` opens the lane to SETTLE the done-criterion with the owner instead of executing
+// (owner ask 2026-08-05, the third answer to an eval:review verdict — see clarify-prompt.ts).
+// Owner-only by construction: no tick passes it, only the attended button does.
+async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
   dispatchingTasks.add(next.id);
@@ -1708,9 +1743,12 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean):
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     next.status = "sent";
     next.slot = free.id;
-    next.note = `lane ${wt.branch}`;
+    next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you` : `lane ${wt.branch}`;
+    // the wait is a STATE, not just a sentence in the prompt: while it holds, the steward's send
+    // gate refuses this slot, so nothing automated can nudge the lane past the owner's decision
+    free.awaiting = clarify ? "owner" : null;
     saveState();
-    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct) };
+    return { ok: true, slot: free.id, branch: wt.branch, tail: briefAndSend(next, free, wt, ownerAct, clarify) };
   } catch (e) {
     // spawning failed — mark the task so the owner sees why instead of it silently vanishing
     next.status = "queued";
@@ -1737,9 +1775,15 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean):
 // explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
 // documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
 // shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
-async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string }, ownerAct: boolean): Promise<void> {
-  const briefP = (async () => runEnhance(next.text, wt.path, await briefPayload(free)))()
-    .catch((e: unknown) => { console.log(`dispatch: brief compile failed, sending raw text: ${e instanceof Error ? e.message : e}`); return null; });
+async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string }, ownerAct: boolean,
+  clarify = false): Promise<void> {
+  // clarify mode does NOT compile: the enhancer turns a draft into a work brief with a
+  // done-criterion, and a task that reached this button is precisely one where that cannot be
+  // done yet. Deterministic frame + the raw request, no model call, no failure mode.
+  const briefP = clarify
+    ? Promise.resolve(buildClarifyBrief(next.text, next.eval?.reason ?? null, `http://${HOST}:${PORT}`))
+    : (async () => runEnhance(next.text, wt.path, await briefPayload(free)))()
+      .catch((e: unknown) => { console.log(`dispatch: brief compile failed, sending raw text: ${e instanceof Error ? e.message : e}`); return null; });
   // let claude finish booting in the fresh pane before the first prompt lands; a brand-new
   // lane is idle by definition, but claude's own startup needs a moment
   await Bun.sleep(4000);
@@ -5673,6 +5717,12 @@ if (existsSync(STATE_FILE)) {
           // wrote — anything malformed degrades to "not yet evaluated", never to a pass
           eval: t.eval && (t.eval.verdict === "auto" || t.eval.verdict === "review") && typeof t.eval.reason === "string"
             ? { verdict: t.eval.verdict, reason: t.eval.reason.slice(0, 2000), at: Number(t.eval.at) || 0, model: typeof t.eval.model === "string" ? t.eval.model : "" }
+            : undefined,
+          // a malformed criterion degrades to "none proposed", never to a confirmed one — the
+          // confirmation is an owner act and must not be forgeable by editing the state file
+          criterion: t.criterion && typeof t.criterion.text === "string" && t.criterion.text
+            ? { text: t.criterion.text.slice(0, MAX_CRITERION), proposedAt: Number(t.criterion.proposedAt) || 0,
+              confirmedAt: Number(t.criterion.confirmedAt) || null }
             : undefined }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
@@ -5684,6 +5734,9 @@ if (existsSync(STATE_FILE)) {
         // back IN as well: the state file is on disk and a hand-edit must not widen the field.
         const pmi = (v as { mission?: unknown }).mission;
         if (typeof pmi === "string") s.mission = pmi.slice(0, MAX_MISSION) || null;
+        // only the one recognised value survives a reload — a hand-edited state file must not
+        // be able to invent a wait the code never set
+        if ((v as { awaiting?: unknown }).awaiting === "owner") s.awaiting = "owner";
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const pm = (v as { model?: unknown }).model;
@@ -6072,6 +6125,11 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   const ref = kind === "pulse" ? "pulse" : typeof body.ref === "string" ? body.ref : "";
   const s = slotFrom(body.slot);
   if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+  // a lane told to stop and wait for the owner IS the playbook's `awaiting-human`: escalate,
+  // never answer in the owner's stead. Checked before the render so no send of any kind — not
+  // even a state relay — can arrive as the nudge that resumes work the owner has not approved.
+  if (s.awaiting === "owner")
+    return json({ error: "slot is waiting on the owner (clarify lane) — escalate, never nudge past it" }, 409);
   const rendered = await renderStewardMessage(kind, ref, s, question);
   if ("error" in rendered) return json({ error: rendered.error }, 400);
   // the shared delivery choke-point: the master stop (autosOn) and quiet hours now reach the
@@ -6964,6 +7022,33 @@ Bun.serve<WSData>({
         mergeRepairRounds: MERGE_REPAIR_ROUNDS,
         rulebookDrifted,
       });
+    }
+
+    // the clarify lane's PROPOSED done-criterion, written back onto its own founding task so it
+    // outlives the pane (before this it lived in scrollback and died at /clear). Same principal
+    // and flat-cost auth as its siblings, and the same authority: none. It lands as a proposal —
+    // `confirmedAt` stays null until the OWNER confirms, so a producer can still not author the
+    // anchor it is judged against; it can only write down what it is asking for.
+    if (url.pathname === "/api/self/criterion" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!s.worktree) return json({ error: "not a lane — a criterion belongs to a lane's founding task" }, 409);
+      const body = await readJson(req);
+      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      if (!text) return json({ error: "bad text" }, 400);
+      if (text.length > MAX_CRITERION) return json({ error: `text must be at most ${MAX_CRITERION} chars` }, 400);
+      // slot + status "sent" is the ONE sound way to name a slot's live founding task — the bare
+      // find-by-slot used elsewhere can hit a landed row, because landLane leaves `t.slot` set
+      const t = tasks.find((x) => x.slot === s.id && x.status === "sent");
+      if (!t) return json({ error: "no founding task on this slot to attach a criterion to" }, 409);
+      // re-proposing REPLACES an unconfirmed draft (the lane may refine it mid-conversation) but
+      // never a confirmed one: that would let the producer edit the anchor after the promotion
+      if (t.criterion?.confirmedAt) return json({ error: "criterion already confirmed by the owner — it is theirs now" }, 409);
+      t.criterion = { text, proposedAt: Date.now(), confirmedAt: null };
+      saveState();
+      audit("criterion_proposed", s.id, t.id);
+      return json({ ok: true, proposedAt: t.criterion.proposedAt });
     }
 
     // the lane's own account of a verify-suite run — same principal and same flat-cost auth as the
@@ -8154,11 +8239,16 @@ Bun.serve<WSData>({
       if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
-      const r = await dispatchTask(t, free, true);
+      // `clarify`: same spawn, different founding prompt — settle the done-criterion with the
+      // owner first (clarify-prompt.ts). Only reachable from this attended route.
+      const clarify = (await readJson(req))?.clarify === true;
+      const r = await dispatchTask(t, free, true, clarify);
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
-      audit("task_dispatch", r.slot, t.id);
-      return json({ ok: true, slot: r.slot, branch: r.branch });
+      // the mode rides in the audit detail, never a second event name: one "an owner started a
+      // task" line stays greppable, and the bare id remains the normal path's exact detail
+      audit("task_dispatch", r.slot, clarify ? `${t.id} clarify` : t.id);
+      return json({ ok: true, slot: r.slot, branch: r.branch, clarify });
     }
     // clear a verdict so the sweep judges the task afresh — the one exception to "a verdict is
     // final", and it is an explicit owner act. Only meaningful while the task is still pending:
@@ -8172,6 +8262,27 @@ Bun.serve<WSData>({
       t.eval = undefined;
       saveState();
       return json({ ok: true });
+    }
+    // the owner's half of the propose/promote pair: confirming makes the criterion THEIRS, which
+    // is the whole reason a lane may draft one. Releases the lane's wait in the same act — the
+    // session is free to build the moment its anchor has an owner.
+    const taskCriterion = /^\/api\/tasks\/([a-z0-9]+)\/criterion-confirm$/.exec(url.pathname);
+    if (req.method === "POST" && taskCriterion) {
+      const t = tasks.find((x) => x.id === taskCriterion[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      if (!t.criterion) return json({ error: "no criterion proposed for this task yet" }, 409);
+      if (t.criterion.confirmedAt) return json({ error: "criterion already confirmed" }, 409);
+      // an owner edit at confirm time is the normal case, not an exception: the draft is a
+      // starting point, and what gets stored is whatever the owner actually agreed to
+      const body = await readJson(req);
+      const edited = typeof body?.text === "string" ? body.text.trim() : "";
+      if (edited.length > MAX_CRITERION) return json({ error: `text must be at most ${MAX_CRITERION} chars` }, 400);
+      t.criterion = { text: edited || t.criterion.text, proposedAt: t.criterion.proposedAt, confirmedAt: Date.now() };
+      const bound = t.slot === null ? null : slotFrom(t.slot);
+      if (bound?.awaiting === "owner") bound.awaiting = null;
+      saveState();
+      audit("criterion_confirmed", t.slot ?? undefined, t.id);
+      return json({ ok: true, criterion: t.criterion });
     }
     const taskAct = /^\/api\/tasks\/([a-z0-9]+)\/(queue|unqueue|done|delete|archive|unarchive)$/.exec(url.pathname);
     if (req.method === "POST" && taskAct) {
@@ -8393,6 +8504,9 @@ Bun.serve<WSData>({
       const s = slotFrom(body.slot);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
+      // the owner has spoken to this pane, so whatever it was waiting for has arrived — the
+      // wait exists to hold AUTOMATION back, never the person it is waiting for
+      s.awaiting = null;
       await sendText(s, body.text, body.submit !== false);
       const ts = Date.now();
       s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);

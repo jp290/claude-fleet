@@ -51,7 +51,19 @@ Ideen-Pool ist `kind:note`. Offene Formfragen für den Entwurf: Wo hängt der Jo
 Task („↻ refine"), automatisch auf eval:review-Tasks, oder beides? Darf er EINE Task in
 MEHRERE saubere lane-Tasks zerlegen (der Erstfall braucht genau das)? Was passiert mit dem
 Original (archive mit Verweis?) — und das Verdict-ist-final-Prinzip beachten: neue Tasks
-bekommen frisches Urteil, das Original wird nie re-evaluiert.
+bekommen frisches Urteil. **Ausnahme seit `37510f5`: `↻ re-eval`** (`POST
+/api/tasks/:id/eval-reset`, nur auf pending) räumt ein Verdict ab und lässt den Sweep neu
+urteilen — ein ausdrücklicher Owner-Akt, kein Automatismus. Wer den Enhance-Job entwirft,
+entscheidet, ob eine veredelte Task diesen Weg nimmt oder eine neue Row wird.
+
+**Der Eval-Kontrakt hat am ersten Tag eine Korrektur gebraucht** (Owner: „the eval doesn't
+make sense to me at all", und er hatte recht): `reason` war bei 200 Zeichen gekappt, das
+erste Live-Verdict öffnete mit seinen stützenden Befunden und verlor das Urteil im
+abgeschnittenen Nachsatz — sichtbar blieb ein review, das für auto argumentierte. Behoben in
+drei Schichten (Cap 2000, Digest-Anriss vs. voller Text auf `/api/tasks`, Prompt-Regel
+„entscheidender Faktor zuerst"); Mechanismus im Commit-Body. **Die Lehre für den Enhance-Job:
+was ein Urteilstext SAGT, ist erst dann geprüft, wenn ihn jemand ganz gelesen hat** — kein
+Check hätte das gefangen, der Owner-Blick auf die Fläche hat es gefangen.
 
 ### Weitere Stufen (Reihenfolge im Chat begründet, nichts davon begonnen)
 

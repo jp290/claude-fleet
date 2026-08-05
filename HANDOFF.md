@@ -40,14 +40,25 @@ korrekt als `review` geparkt (mehrteilig, teilerledigt) und wartet auf Owner-Spl
 - Bewusste v1-Lücke: eine am Tages-Cap (`FLEET_EVAL_MAX_AUTO_PER_DAY`, 10) wartende
   auto-Task trägt keine waiting-Note — nur den eval-Chip.
 
-### Nächste Stufen (Reihenfolge im Chat begründet, nichts davon begonnen)
+### Das Erste für die nächste frische Session (Owner-Auftrag, wörtlich)
+
+**Der automatische Prompt-Enhance-Job für Tasks.** Owner: *„für genau diesen Task wäre ein
+funktionierender und automatischer prompt-enhance job genau das richtige! Das sollten wir aber
+am besten in einer neuen frischen Session angehen."* Erstfall ist `2e9ed996` (Terminal-Task,
+parkt mit eval:review — bewusst NICHT von Hand gesplittet). Die Form ist zu entwerfen, die
+Maschinerie existiert: `runEnhance` (additiv-only-Kontrakt) + danach das Eval-Gate; der
+Ideen-Pool ist `kind:note`. Offene Formfragen für den Entwurf: Wo hängt der Job — Knopf pro
+Task („↻ refine"), automatisch auf eval:review-Tasks, oder beides? Darf er EINE Task in
+MEHRERE saubere lane-Tasks zerlegen (der Erstfall braucht genau das)? Was passiert mit dem
+Original (archive mit Verweis?) — und das Verdict-ist-final-Prinzip beachten: neue Tasks
+bekommen frisches Urteil, das Original wird nie re-evaluiert.
+
+### Weitere Stufen (Reihenfolge im Chat begründet, nichts davon begonnen)
 
 1. **Auto-Land für eval-auto-Lanes** (Entscheid #6) — Bedingung „erst echte Läufe" ist erfüllt.
 2. **⑦ v2: die Verify-Queue besitzt die Läufe** — erst danach `DISPATCH_MAX_LANES` > 2.
 3. **Overlap-bewusstes Zurückhalten im Dispatcher** (Eval flaggt Kollisionen schon; `laneDrift`
    liefert die Daten). Cross-Repo-Parallelität ist schon heute echt (Deckel zählt pro Repo).
-4. Ideen-Pool: existiert als `kind:note`; „↻ refine"-Knopf (Note → Enhancer → lane-Task) als
-   kleiner Folge-Baustein, erst nach ein paar Tagen Betrieb.
 
 ---
 

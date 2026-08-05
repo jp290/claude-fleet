@@ -148,6 +148,11 @@ const taskSurface = (fix: string): Probe[] => [
   { path: `/api/tasks/${fix}/criterion-confirm`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/tasks/${fix}/eval-reset`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, ownerSafe: true },
+  // ↻ refine spawns a repo-reading agent and refine-confirm mints task rows — both answer the
+  // owner a side-effect-free 409 on this DONE fixture (wrong status / no proposal), so both can
+  // carry the positive control while every other principal must be denied outright
+  { path: `/api/tasks/${fix}/refine`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/refine-confirm`, method: "POST", body: {}, ownerSafe: true },
   { path: `/api/tasks/${fix}/queue`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/archive`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/delete`, method: "POST", body: {} },

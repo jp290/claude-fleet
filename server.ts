@@ -5176,11 +5176,19 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // this run's own conflict path it is the worker that just ran, because the author path
           // returned above and never reaches this branch.
           const resolvedBy = pre.clean ? carriedBy : "agent";
+          // A red/skipped verify on THIS tree must be readable in the sentence itself, not only
+          // in the verify field (2026-08-05): the steward relay quotes `detail` verbatim and a
+          // confirm-land never re-verifies — a carried resolution whose gate was red read as a
+          // plain "review the diff, then land" invitation. The repairNote branch already names
+          // its own verify outcome, so this only speaks when no repair round did.
+          const gateNote = repairRounds > 0 ? ""
+            : verify?.ok === false ? " Verify FAILED on this tree — read its output before landing."
+            : verify?.ok === null ? " Verify SKIPPED itself on this tree — nothing was verified." : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
             conflicted: unreviewed, resolvedBy, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
-            detail: (pre.clean
+            detail: ((pre.clean
               ? `${main} moved on, so this lane re-rebased with no conflicts — but it still carries an ${resolvedBy}'s unreviewed resolution of ${unreviewed.length} conflict${unreviewed.length === 1 ? "" : "s"} from an earlier run. Review the diff, then land.`
-              : `${fellBack}${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`).slice(0, 600) };
+              : `${fellBack}${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`) + gateNote).slice(0, 600) };
         } else if (verify && verify.ok === null) {
           // CLEAN path but verify SKIPPED — the decision site (see VERIFY_SKIP_EXIT above). A
           // configured gate declined to run on this tree, so this land would be as unverified as a
@@ -8039,20 +8047,30 @@ Bun.serve<WSData>({
           // land behind an irrelevant edit. git's own --ff-only stays the final arbiter below.
           const pst = await git(landHolder.path, "status", "--porcelain");
           if (pst.code === 0 && pst.out) {
-            const dirty = new Set(pst.out.split("\n")
-              .filter((l) => l && !l.startsWith("??") && !l.startsWith("!!"))
-              .map((l) => (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim()));
-            if (dirty.size) {
+            const rows = pst.out.split("\n").filter((l) => l && !l.startsWith("!!"));
+            const pathOf = (l: string): string =>
+              (l.includes(" -> ") ? l.slice(l.indexOf(" -> ") + 4) : l.slice(3)).trim();
+            const dirty = new Set(rows.filter((l) => !l.startsWith("??")).map(pathOf));
+            // UNTRACKED twin of the same refusal (2026-08-05): git's ff-only refuses to overwrite
+            // an untracked holder file just as hard as a modified one — but that used to surface
+            // only AFTER the full verify chain, as raw stderr in the verdict. Same refusal, before
+            // the spend, curated. Unrelated untracked files stay ignored (the "unbeteiligte
+            // schmutzige Datei" doctrine) — only a name the lane itself adds collides.
+            const untracked = new Set(rows.filter((l) => l.startsWith("??")).map(pathOf));
+            if (dirty.size || untracked.size) {
               const mb = await git(repo, "merge-base", main, branch);
               const changed = mb.code === 0 && mb.out
                 ? await git(repo, "diff", "--name-only", `${mb.out}..${branch}`)
                 : { code: 1, out: "", err: "" };
+              const laneFiles = changed.code === 0
+                ? changed.out.split("\n").map((f) => f.trim()).filter(Boolean) : null;
               // couldn't compute the lane's file set → fall back to the safe (broad) refusal
-              const collide = changed.code === 0
-                ? changed.out.split("\n").map((f) => f.trim()).filter((f) => f && dirty.has(f))
-                : [...dirty];
+              const collide = laneFiles ? laneFiles.filter((f) => dirty.has(f)) : [...dirty];
               if (collide.length) return json({ status: "blocked",
                 detail: `${main} is checked out at ${landHolder.path} with uncommitted changes to ${collide.join(", ")} — the land would overwrite them; commit or stash there first` });
+              const collideU = laneFiles ? laneFiles.filter((f) => untracked.has(f)) : [];
+              if (collideU.length) return json({ status: "blocked",
+                detail: `${main} is checked out at ${landHolder.path} with UNTRACKED files this lane also adds (${collideU.join(", ")}) — the land would overwrite them; move or commit them there first` });
             }
           }
         }
@@ -8489,8 +8507,11 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskAct) {
       const t = tasks.find((x) => x.id === taskAct[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      // a running lane's founding task must stay tracked — the shelf is not a place to hide live work
-      if (taskAct[2] === "archive" && t.status === "sent")
+      // a running lane's founding task must stay tracked — the shelf is not a place to hide live
+      // work. `delete` shares the guard (2026-08-05): deleting a sent row didn't just hide it, it
+      // orphaned the lane — /api/self/criterion resolves the founding task by slot+status "sent",
+      // so a running clarify lane lost its one way to record a criterion, permanently (409).
+      if ((taskAct[2] === "archive" || taskAct[2] === "delete") && t.status === "sent")
         return json({ error: "task is running in a lane — land or kill the lane first" }, 409);
       // B1 (F-C): the owner's promote/dismiss of a STEWARD-origin proposal is a causally-clean,
       // deterministic `propose`-class outcome (unlike git deltas, accept/reject is directly

@@ -480,6 +480,11 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(i) confirming releases the wait — the slot is a normal lane again (no longer 409-waiting)",
       nudge2.status !== 409 || !((await nudge2.json()) as { error?: string }).error?.includes("waiting on the owner"),
       String(nudge2.status));
+    // delete shares archive's sent-guard (2026-08-05): deleting the founding task of a RUNNING
+    // lane orphaned it — /api/self/criterion resolves the task by slot+status "sent", so the
+    // lane permanently 409'd on its one way to record a criterion. kill first, then delete.
+    check("(i) deleting a running lane's founding task is refused like archive (409)",
+      (await post(`/api/tasks/${iT.task.id}/delete`, {})).status === 409, "");
     await post(`/api/slots/${iSlot}/kill`, {});
     await post(`/api/tasks/${iT.task.id}/delete`, {});
   }

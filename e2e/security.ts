@@ -136,6 +136,25 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/steward/token", method: "GET", ownerSafe: true },
   { path: "/api/lanes", method: "POST", body: {}, ownerSafe: true },
 ];
+// The task-scoped + guest surface (2026-08-05): these routes sat outside the matrix and were
+// protected only by §1's structural pin (tokenGate last in the chain). §2 is the mechanism that
+// catches a handler regressing to its own weaker inline check — the way /api/dispositions already
+// special-cases one principal inline — and it was silent on exactly the newest clarify-adjacent
+// surface. `fix` is a DONE fixture task: criterion-confirm / eval-reset / dispatch answer a
+// side-effect-free 409 to the owner (proving the route exists) and must answer 401/403 to every
+// other principal. The mutating task actions and the guest routes ride matrix-only (no ownerSafe
+// control), same stance as /api/dispatch.
+const taskSurface = (fix: string): Probe[] => [
+  { path: `/api/tasks/${fix}/criterion-confirm`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/eval-reset`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/dispatch`, method: "POST", body: {}, ownerSafe: true },
+  { path: `/api/tasks/${fix}/queue`, method: "POST", body: {} },
+  { path: `/api/tasks/${fix}/archive`, method: "POST", body: {} },
+  { path: `/api/tasks/${fix}/delete`, method: "POST", body: {} },
+  { path: "/api/guest", method: "GET" },
+  { path: "/api/guest/link", method: "GET" },
+  { path: "/api/guest/claude-token", method: "POST", body: {} },
+];
 
 const fire = (p: Probe, headers: Record<string, string>): Promise<Response> =>
   fetch(BASE + p.path, {
@@ -188,7 +207,12 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const sess = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] };
   const idle = sess.slots.find((s) => !s.cwd);
   check("§2 an idle slot is available as the matrix's blast-radius-free target", !!idle, JSON.stringify(sess.slots.map((s) => s.id + (s.cwd ? "*" : ""))));
-  const probes = dangerous(idle?.id ?? 16);
+  // a DONE task as the matrix's task-scoped fixture — every ownerSafe probe on it answers 409
+  // before any mutation (no criterion, no verdict, not pending/queued), so the owner control
+  // proves existence without touching state
+  const fixT = (await (await post("/api/tasks", { text: "sec-matrix-fixture", queue: false })).json()) as { task: { id: string } };
+  await post(`/api/tasks/${fixT.task.id}/done`, {});
+  const probes = [...dangerous(idle?.id ?? 16), ...taskSurface(fixT.task.id)];
   // a lane's scoped credential, taken from state rather than a pane probe (deterministic, and it
   // is the same string the pane exports — server.ts ~1084 reads it from exactly here)
   const st0 = readState();
@@ -217,6 +241,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const denied = ownerRes.filter((r) => r.status === 401 || r.status === 403 || r.status === 404);
   check(`§2 control: the owner is admitted on all ${ownerProbes.length} of them (so the denials above are about auth, not missing routes)`,
     denied.length === 0, denied.map((r) => `${r.probe.path}:${r.status}`).join(" "));
+  await post(`/api/tasks/${fixT.task.id}/delete`, {}); // the task-surface fixture, retired
 
   if (!REPO) return; // §3–§5 need a lane; the lane sections of the suite are repo-gated too
 

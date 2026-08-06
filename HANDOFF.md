@@ -1,8 +1,116 @@
-# HANDOFF — Session 27 (2026-08-05: der Sweep und seine Schnittlinie) · 26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 28 (2026-08-06: der Fakt, der Gate und die Stille) · 27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 28 (2026-08-06): `stalled` wird ein Fakt — und der Land-Gate lernt, dass Stille kein Urteil ist
+
+**Der Auftrag für die NÄCHSTE frische Session steht ganz unten unter „Das Erste".** Zwei Sessions
+laufen bzw. sind gebrieft; ihre Berichte sind das Material, das du verarbeiten sollst.
+
+### Gelandet (5 Commits, `d7142d8..26acdbd`) — Mechanismen in den Bodies, hier nur die Namen
+
+| | |
+|---|---|
+| `523f5dc` | Perception-Fix: `lastOutput` wurde nach JEDEM Neustart als ~1.79e12 ms gelesen; zwei Verbraucher handelten darauf (`canDeliver`s busy-Gate, die auto-③-Idle-Klausel) |
+| `29c6799` | der Brief zum `stalled`-Fakt |
+| `28014d4` | der `stalled`-Fakt selbst — zweite Klausel-Liste in `lane-signals.ts`, Feld auf `stewardSlotsView`, Digest-Prompt aus derselben Quelle |
+| `2758e0a` | der Fakt trägt seine Neustart-Verzerrung im Kommentar + `briefs/lane-stalled-ledger.md` |
+| `79f0111` | `briefs/autonomy-findings-2026-08-06.md` — vier Befunde, die in keinem Ledger stehen |
+| `26acdbd` | Pane zurückholen, ohne den Slot wegzuwerfen |
+
+Alle vier Tier-2-Audits danach **grün**. Server läuft auf `2758e0a`; **`26acdbd` und `79f0111` sind
+gelandet, aber NICHT live** — ein srv-Restart steht aus (`codeBehind: true`).
+
+### Owner-Entscheide dieser Session
+
+- **`stalled` bleibt ein Fakt ohne Aktion.** Kein Auto-Kill, kein Nudge, kein Tick liest ihn.
+- **Instanz-Ledger: unentschieden.** Erst vertagt („schauen, ob überhaupt etwas zu zählen ist"),
+  dann feuerte der Fakt binnen Stunden — siehe die Korrektur unten, die das wieder aufmacht.
+- **Owner-Token-Rotation: ausdrücklich nicht jetzt** („erstmal egal"). Der Token steht durch einen
+  Shell-Fehler von mir im Transcript dieser Session.
+- **Zwei rote Tier-2-Audits adjudiziert** (`flake`, Beleg: sie liefen 4½ h bzw. 3 h VOR `2bca3d2`,
+  dem Commit, der die FIX1-Flake behob). Offene Rote: 4 → 2.
+- **Reihenfolge:** der Land-Gate zuerst, die Landkarte parallel — beides gebrieft, siehe unten.
+
+### Korrekturen an eigenen Aussagen (alle in dieser Session entstanden und belegt)
+
+1. **`GET /api/post-land-audits` liefert NEUESTE ZUERST.** Ich habe zweimal `rows[rows.length-1]`
+   gelesen und die ÄLTESTE Zeile als „letzter Audit" zitiert. Entscheidungen hingen nicht daran
+   (die stützten sich auf den Zeilen-Zähler), die zitierten Zeilen waren trotzdem falsch.
+2. **Meine Timeout-Hypothese war falsch.** Ich hielt die +97 Zeilen einer Lane in
+   `fleet-e2e-claude-gate.ts` für die Ursache — plausibel, gut begründet, **widerlegt**: 37,9 s vs
+   37,4 s, also +0,5 s. Eine automatische Diagnose hätte dasselbe Muster erkannt und dieselbe
+   falsche Schuld zugewiesen. Konsequenz, die im Gate-Brief steht: automatische Diagnose darf nur
+   Fakten benutzen, die der Server hält — nie kausale Zuschreibung nach Plausibilität.
+3. **Mein eigener `stalled`-Entwurf hatte einen echten Defekt.** Ich hatte ihn im Haupt-Checkout
+   gebaut (falscher Ort, verworfen); ihm fehlte die `observed`-Klausel. `idleMs` leitet sich von
+   `lastOutput` ab, und das ist `0`, bis der Poll ein erstes Byte sieht — `0` liefert eine ZAHL
+   (~1.79e12), kein `null`. Meine Null-Disziplin prüfte nur auf `null` und hätte damit jede frisch
+   geöffnete Pane sofort angeklagt. Die Lane fand es durch MESSUNG, nicht durch Nachdenken.
+4. **`stalled: true` auf Lane 8 ist ein FEHLALARM gegenüber der Absicht.** Ich meldete es als
+   „erster echter Fang". Der Owner: Slot 6 und Lane 8 sind **Notiz-Worktrees**, absichtlich
+   geparkt. Das Prädikat erfüllte jede Klausel korrekt — trotzdem falsch. `awaiting: "owner"` deckt
+   nur Clarify-Lanes; für „absichtlich geparkt" gibt es **kein Feld**. Das bedroht die Feuerprobe
+   des Fakts direkt (sein Brief verlangt 10 Instanzen bei höchstens 2 Fehlalarmen) und ist damit
+   die erste offene Frage am Instanz-Ledger, nicht eine Randnotiz.
+
+### Der Vorfall, aus dem der Gate-Brief entstand
+
+Ein Land wurde gestoppt: `verify.ok: false`, `detail: "clean rebase, but verify failed"` — die
+Ausgabe enthielt aber **null FAIL-Zeilen**, endete mit `ALL PASS` und dann
+`[verify timed out after 300000ms]`. Die Lane maß die Ursache selbst: ihre Änderung kostete 0,5 s,
+die ganze Kette auf leerer Maschine 106,8 s von 300 s. Die fehlenden ~255 s waren **Warten auf den
+maschinenweiten Suite-Mutex** — `e2e-stage.sh` blockiert in einer `sleep 15`-Schleife und schreibt
+dabei kein Byte. `FLEET_VERIFY_TIMEOUT_MS` ist ein Wanduhr-Budget und enthält damit still eine
+unbegrenzte Wartezeit (ein gequeuetes `isolated` = ~8 min). Auslöser war der Tier-2-Vorschaulauf
+der Lane selbst; CLAUDE.md verbietet Parallelläufe nur neben dem **Post**-Land-Audit, nicht neben
+dem Pre-Land-Gate.
+
+**Zweiter Anlauf auf leerer Maschine: 100 s, `verify.ok: true`, gelandet.** Die Diagnose ist damit
+empirisch bestätigt, nicht nur plausibel.
+
+### Das Ordnungsprinzip, auf das sich diese Session festgelegt hat
+
+> **Erst reden lassen, dann unterscheiden, dann handeln.** Nichts automatisieren, dessen Ursache
+> das System heute nicht selbst benennen kann.
+
+Belegt durch Korrektur 2: der Grund, warum hier ein Mensch nötig war, ist nicht Komplexität — es
+ist **Stille**. Der blockierende Prozess kannte die Zahl und schrieb sie nicht hin.
+
+### In Flug / gebrieft — beide Briefe liegen im Repo, nicht in einem Scratchpad
+
+- **`briefs/land-gate-speaks.md`** — Lock-Wartezeit sichtbar machen, Timeout als vierter
+  Gate-Zustand, `verifyMs` im Record. Trägt die Sicherheits-Invariante: `unconfigured` ist der
+  EINZIGE Zustand, der unbeaufsichtigt auto-landet; der neue Zustand muss in die Nie-Gruppe.
+  Ausdrücklich NICHT gebaut: Auto-Retry, Budget-Erhöhung, Mutex-Vorrang.
+- **`briefs/autonomy-gap-addendum-2026-08-06.md`** — der Nachtrag zu `briefs/autonomy-gap.md`
+  (die nie gelaufene Landkarte). Read-only, **aber mit ausdrücklicher Commit-Pflicht für den
+  Bericht** — Abweichung vom Hauptbrief, weil an einem Tag zweimal Analyse in einem sterbenden
+  Worktree bzw. einem Transcript fast verloren ging.
+- **`briefs/…`-Prompt für die zwei restlichen roten Audits** liegt formuliert vor (Familie B:
+  Send-Cap / Episoden-Fenster, `409 statt 429` ist auffällig, 409 ist die awaiting-owner-Abweisung)
+  — noch nicht ins Repo geschrieben, noch nicht gespawnt.
+
+### Das Erste für die nächste frische Session
+
+**Die Berichte der zwei gebrieften Sessions verarbeiten** — dafür existiert dieser Handoff. Der
+Landkarten-Bericht ist der wichtigere: er ist die Reihenfolgen-Entscheidung für Auto-Deploy,
+Auto-Land, Kollisionsvermeidung und die Entscheidungs-Inbox, und **genau die wurde bisher Scheibe
+für Scheibe geraten**. Er wird als Datei committet vorliegen (`docs/` oder `briefs/`).
+
+Was NICHT vorentschieden ist und auch nicht vorentschieden werden soll: alles unterhalb der
+Schnittlinie in `briefs/autonomy-findings-2026-08-06.md` §5.
+
+Stehend offen, unabhängig davon:
+- srv-Restart, damit `26acdbd`/`79f0111` live sind (Reihenfolge: nie während ein Tier-2-Audit läuft
+  — der Audit ist ein Kind des Serverprozesses)
+- 2 un-adjudizierte rote Audits (Brief formuliert, Lane nicht gespawnt)
+- 7 ungelesene Rundgang-Notizen in der Queue
+- das Feld für „absichtlich geparkt" (Korrektur 4) — Vorbedingung für die Feuerprobe von `stalled`
 
 ---
 

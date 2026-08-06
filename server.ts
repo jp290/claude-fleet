@@ -201,6 +201,12 @@ interface Task {
   // NOT the same object as `refine`, and the difference is the point: ↻ refine proposes a new
   // REQUEST (attended, all-or-nothing, may split one row into several), while this is the prompt
   // the request compiles down to. Refine rewrites what you asked for; the brief is how it is said.
+  comments?: TaskComment[]; // the owner's own words ON this row, addressed to whoever picks it up.
+  // The queue had five texts written BY machines about a task (brief, verdict, refine, criterion,
+  // note) and no way for the owner to write one back — every remark had to be typed into a pane,
+  // where it died at the next /clear. Deliberately NOT folded into the brief: the brief is the
+  // exact bytes a lane receives and is approved as such, so appending to it behind the owner's
+  // back would break the one contract that makes it reviewable. A comment is read, not executed.
   analysis?: TaskAnalysis; // what the queue analyst found ABOUT that brief (owner decision
   // 2026-08-05, round 2). ADVISORY: it gates nothing. Its predecessor, the eval gate, let a positive
   // verdict start a PENDING task with no owner promote — which meant the machine picked work out of
@@ -211,6 +217,10 @@ interface Task {
 // compiled once per draft (a fresh lane's git-fact block is empty by construction, so nothing about
 // it improves by recompiling), while its analysis is re-run whenever the tree moves under it.
 interface TaskBrief { text: string; at: number; model: string; edited: boolean }
+// One remark, timestamped and individually deletable. `id` exists for the delete: an index would
+// name a different comment the moment an earlier one goes.
+interface TaskComment { id: string; ts: number; text: string }
+const MAX_COMMENTS_PER_TASK = 50;
 // Three-valued on purpose: "unknown" is the analyst failing to ANSWER, which is an absence and must
 // never be able to read as either judgement. The old gate collapsed a timed-out worker into a
 // permanent "review" verdict for its whole batch — fail-closed in direction, but indistinguishable
@@ -355,7 +365,10 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // and how many children it holds — the texts ride GET /api/tasks with everything else.
   // `refining` is derived from the in-flight map, never persisted: it is a fact about this
   // process, and a restart mid-run must not leave a row claiming a worker that no longer exists.
-  & { refine?: { at: number; unchanged: boolean; count: number }; refining?: true };
+  & { refine?: { at: number; unchanged: boolean; count: number }; refining?: true }
+  // …and for comments: how many and how recent. That is everything the row chip needs and
+  // everything the overlay needs to notice a new one; the texts ride GET /api/tasks.
+  & { comments?: { n: number; at: number } };
 function taskDigest(t: Task): TaskDigest {
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
@@ -380,6 +393,8 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.refine ? { refine: { at: t.refine.at, unchanged: t.refine.proposal.unchanged,
       count: t.refine.proposal.unchanged ? 0 : t.refine.proposal.tasks.length } } : {}),
     ...(refineInflight.has(t.id) ? { refining: true as const } : {}),
+    ...(t.comments?.length
+      ? { comments: { n: t.comments.length, at: t.comments[t.comments.length - 1].ts } } : {}),
   };
 }
 // Last known integration tip per repo, refreshed by the analysis sweep. DISPLAY ONLY: it answers
@@ -6434,7 +6449,17 @@ if (existsSync(STATE_FILE)) {
           // a malformed proposal degrades to "none proposed": confirming one mints new task rows,
           // so the same rule as the criterion applies — the state file must not be able to smuggle
           // in a shape the worker never produced
-          refine: normRefine(t.refine) }));
+          refine: normRefine(t.refine),
+          // comments carry no authority — they are read by people, never executed — so a malformed
+          // entry is simply dropped rather than degraded to something. Capped on the way back IN
+          // for the same reason `mission` is: the state file is on disk and a hand-edit must not
+          // widen a field past what the route would have accepted.
+          comments: Array.isArray(t.comments)
+            ? t.comments.filter((c): c is TaskComment => typeof c === "object" && c !== null
+              && typeof c.id === "string" && typeof c.text === "string" && !!c.text)
+              .map((c) => ({ id: c.id, ts: Number(c.ts) || 0, text: c.text.slice(0, MAX_COMMENT_TEXT) }))
+              .slice(-MAX_COMMENTS_PER_TASK)
+            : undefined }));
       tasks = capTasks(tasks);
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -9312,6 +9337,38 @@ Bun.serve<WSData>({
       t.brief = { text, at: Date.now(), model: "owner", edited: true };
       saveState();
       return json({ ok: true, brief: t.brief });
+    }
+    // A COMMENT — the one text on this row the OWNER writes. Every other text here is machine
+    // output (brief, verdict, refine proposal) or the original request, and until now a remark
+    // about a task had to be typed into a pane, where it died at the next /clear.
+    // Allowed in EVERY status on purpose: the most useful remark is often about a row that has
+    // already run ("this is why it was reverted"), and a queue whose memory stops at `sent` is
+    // exactly the queue that was here before.
+    const taskComment = /^\/api\/tasks\/([a-z0-9]+)\/comment$/.exec(url.pathname);
+    if (req.method === "POST" && taskComment) {
+      const t = tasks.find((x) => x.id === taskComment[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      const text = typeof body?.text === "string" ? body.text.slice(0, MAX_COMMENT_TEXT).trim() : "";
+      if (!text) return json({ error: "bad text" }, 400);
+      const c: TaskComment = { id: randomBytes(4).toString("hex"), ts: Date.now(), text };
+      t.comments = [...(t.comments ?? []), c].slice(-MAX_COMMENTS_PER_TASK);
+      saveState();
+      return json({ ok: true, comment: c });
+    }
+    // deleting one is by id, never by index — an index names a different comment the moment an
+    // earlier one is gone, which is precisely the shape of a delete that removes the wrong row
+    const taskCommentDel = /^\/api\/tasks\/([a-z0-9]+)\/comment-delete$/.exec(url.pathname);
+    if (req.method === "POST" && taskCommentDel) {
+      const t = tasks.find((x) => x.id === taskCommentDel[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const cid = (await readJson(req))?.comment;
+      if (typeof cid !== "string" || !cid) return json({ error: "bad comment id" }, 400);
+      const before = t.comments?.length ?? 0;
+      t.comments = (t.comments ?? []).filter((x) => x.id !== cid);
+      if (t.comments.length === before) return json({ error: "unknown comment" }, 404);
+      saveState();
+      return json({ ok: true });
     }
     // the owner's half of the propose/promote pair: confirming makes the criterion THEIRS, which
     // is the whole reason a lane may draft one. Releases the lane's wait in the same act — the

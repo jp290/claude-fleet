@@ -45,6 +45,54 @@ export async function run(ctx: Ctx): Promise<void> {
       fullT?.text === big, `${fullT?.text.length ?? -1} of ${big.length} chars`);
     await post(`/api/tasks/${bigT.task.id}/delete`, {});
   }
+  // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
+  // carries a count, the text rides GET /api/tasks), plus the contract that makes a comment safe
+  // to write at all: it is NEVER folded into the brief a lane receives. If it were, a remark typed
+  // after the brief was approved would change the bytes that run without anyone re-reading them.
+  {
+    const CM = "comment-probe — read me, do not run me";
+    const ct = (await (await post("/api/tasks", { text: "commented task", queue: false })).json()) as { task: { id: string } };
+    const cid = ct.task.id;
+    check("a comment with no text is refused", (await post(`/api/tasks/${cid}/comment`, { text: "  " })).status === 400);
+    const c1 = await post(`/api/tasks/${cid}/comment`, { text: CM });
+    const c1j = (await c1.json()) as { ok?: boolean; comment?: { id: string; ts: number; text: string } };
+    check("an owner comment lands on the task, with an id and a timestamp of its own",
+      c1.ok && c1j.comment?.text === CM && !!c1j.comment.id && (c1j.comment.ts ?? 0) > 0,
+      JSON.stringify(c1j.comment));
+    const rawS = await (await get("/api/sessions")).text();
+    const digC = (JSON.parse(rawS) as { tasks: { id: string; comments?: { n: number; at: number } }[] })
+      .tasks.find((t) => t.id === cid);
+    check("the poll carries the comment COUNT, never the comment text",
+      digC?.comments?.n === 1 && (digC.comments.at ?? 0) > 0 && !rawS.includes(CM),
+      JSON.stringify(digC?.comments));
+    type TWithC = { id: string; comments?: { id: string; text: string }[]; brief?: { text: string } };
+    const full = async (): Promise<TWithC | undefined> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: TWithC[] }).tasks.find((t) => t.id === cid);
+    check("the comment text is reachable behind GET /api/tasks (what the detail pane renders)",
+      (await full())?.comments?.[0]?.text === CM);
+    // the contract, stated as a check because it is the one an implementation would quietly break:
+    // an owner-set brief is the exact bytes a lane receives, and commenting must not touch them
+    await post(`/api/tasks/${cid}/brief`, { text: "the brief, mine" });
+    await post(`/api/tasks/${cid}/comment`, { text: "a second remark, after the brief was set" });
+    const afterC = await full();
+    check("a comment is never folded into the brief — the bytes a lane would receive are untouched",
+      afterC?.brief?.text === "the brief, mine" && afterC.comments?.length === 2,
+      JSON.stringify({ brief: afterC?.brief?.text, comments: afterC?.comments?.length }));
+    // deleting is BY ID: with two comments on the row, an index-based delete would take the wrong one
+    const first = afterC?.comments?.[0];
+    check("deleting an unknown comment id is a 404, not a silent no-op",
+      (await post(`/api/tasks/${cid}/comment-delete`, { comment: "nosuchid" })).status === 404);
+    await post(`/api/tasks/${cid}/comment-delete`, { comment: first?.id });
+    const left = (await full())?.comments;
+    check("deleting a comment by id removes THAT one and leaves the rest",
+      left?.length === 1 && left[0].text === "a second remark, after the brief was set",
+      JSON.stringify(left));
+    // survives a restart: a remark that dies with the process is the pane scrollback this replaces
+    await restartSrv();
+    check("a comment survives a server restart (it is state, not a live-process fact)",
+      (await full())?.comments?.[0]?.text === "a second remark, after the brief was set");
+    await post(`/api/tasks/${cid}/delete`, {});
+  }
   // the dispatch switch carries the same contract as /api/autos/switch: the dangerous direction is
   // OFF, because a stop that lives only in memory is silently re-armed by the next srv respawn
   // (boot reloads `dispatch` from fleet.json and the dispatcher spawns lanes again).

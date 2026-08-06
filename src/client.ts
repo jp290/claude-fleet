@@ -160,7 +160,10 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   // ↻ refine: the poll says a proposal exists, how it came out and how many children it holds —
   // the texts ride /api/tasks like everything else. `refining` is live server state (a worker is
   // running right now), which is why it is a fact about the moment and never persisted.
-  refine?: { at: number; unchanged: boolean; count: number }; refining?: boolean }
+  refine?: { at: number; unchanged: boolean; count: number }; refining?: boolean;
+  // comments: the poll carries only how many and how recent — enough for the row chip and to
+  // notice a new one; the texts ride /api/tasks like every other body on this row
+  comments?: { n: number; at: number } }
 // the proposal itself, as GET /api/tasks serves it (server.ts TaskRefine)
 interface RefineChildView { text: string; doneCriterion?: string; verify?: string; files?: string[] }
 interface TaskRefineFull { at: number; model: string;
@@ -4054,7 +4057,7 @@ async function refresh() {
         t.analysis?.stale, t.criterion?.proposedAt, t.criterion?.confirmedAt,
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies
-        t.refine?.at, t.refining]) : "gone";
+        t.refine?.at, t.refining, t.comments?.n, t.comments?.at]) : "gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     }
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
@@ -4562,6 +4565,10 @@ const taskBriefFull = new Map<string, FullBrief>();
 const taskCriterionFull = new Map<string, NonNullable<TaskInfo["criterion"]>>();
 // …and for the refine proposal: the poll knows a proposal landed, this knows what it proposes
 const taskRefineFull = new Map<string, TaskRefineFull>();
+// …and the comment thread. Same split for the same reason: a comment is free text of unbounded
+// length, and the 2 s poll is the one place in this client where bytes are a standing cost.
+interface TaskCommentView { id: string; ts: number; text: string }
+const taskCommentsFull = new Map<string, TaskCommentView[]>();
 let taskTextKey = ""; // the id+verdict-set the cache was last filled for — a task's TEXT never
 // changes, but its analysis arrives later (and changes on ↻ re-analyse), so analysis.at is in the key
 let taskTextBusy = false;
@@ -4572,6 +4579,11 @@ let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
 let qRepoIn: HTMLInputElement | null = null; // target-repo input, same once-per-open lifecycle
+// the comment box, kept across rebuilds for the SELECTED task — same lifecycle trick as qCompose
+// and for the same reason: a poll that repaints the detail must never eat half a typed sentence.
+// Keyed by task id, because carrying one task's draft over to another row would be worse.
+let qCmBox: HTMLTextAreaElement | null = null;
+let qCmFor: string | null = null;
 // the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
 let qRowId = new Map<HTMLElement, string | null>();
 
@@ -4579,7 +4591,7 @@ let qRowId = new Map<HTMLElement, string | null>();
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  const key = tasksList.map((t) => `${t.id}:${t.analysis?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}`).join(",");
+  const key = tasksList.map((t) => `${t.id}:${t.analysis?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}`).join(",");
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
   let filled = false;
@@ -4588,18 +4600,20 @@ async function loadTaskTexts() {
     if (res.ok) {
       const data = (await res.json()) as { tasks: { id: string; text: string; analysis?: FullAnalysis;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
-        refine?: TaskRefineFull }[] };
+        refine?: TaskRefineFull; comments?: TaskCommentView[] }[] };
       taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
       taskAnalysisFull.clear();
       taskBriefFull.clear();
       taskCriterionFull.clear();
       taskRefineFull.clear();
+      taskCommentsFull.clear();
       for (const t of data.tasks) {
         taskText.set(t.id, t.text);
         if (t.analysis) taskAnalysisFull.set(t.id, t.analysis);
         if (t.brief) taskBriefFull.set(t.id, t.brief);
         if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
         if (t.refine) taskRefineFull.set(t.id, t.refine);
+        if (t.comments?.length) taskCommentsFull.set(t.id, t.comments);
       }
       taskTextKey = key;
       filled = true;
@@ -4625,7 +4639,7 @@ const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
   { k: "needs", head: "Needs you", hint: "flagged by the analyst, or waiting on a decision only you can make" },
   { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order" },
   { k: "running", head: "Running", hint: "live in a lane" },
-  { k: "backlog", head: "Backlog", hint: "read and unobjected, or not yet read — yours to release" },
+  { k: "backlog", head: "Backlog — about to start", hint: "read and unobjected, or not yet read — yours to release" },
   { k: "notes", head: "Observations", hint: "the steward's findings. Not work: adopt one to turn it into a brief" },
   { k: "closed", head: "Closed", hint: "done and archived" },
 ];
@@ -4658,14 +4672,16 @@ function qVerdictLine(t: TaskInfo): string {
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 const qFirstLine = (id: string) => (qTaskText(id).split("\n")[0] || "…").slice(0, 120);
 
-async function qAct(id: string, action: string, body: Record<string, unknown> = {}) {
+// returns whether the action actually took: the comment box clears its draft on the strength of
+// this, and clearing on a failed post is how a typed remark gets lost with nothing to show for it
+async function qAct(id: string, action: string, body: Record<string, unknown> = {}): Promise<boolean> {
   const r = await post(`/api/tasks/${id}/${action}`, body);
   if (!r.ok) {
     // surface the server's reason — "no free slot" and "task is running in a lane" are
     // actionable, a generic failure line is not
     const j = (await r.json().catch(() => null)) as { error?: string } | null;
     toast(j?.error ?? `couldn't ${action} the task`);
-    return;
+    return false;
   }
   if (action === "delete" && qPick === id) qPick = null;
   // applying or discarding consumes the proposal server-side; drop the local copy in the same
@@ -4676,6 +4692,7 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
   qKey = ""; // this changed the data — force the list to rebuild even inside the poll's guard
   renderQueue();
   renderQueueDetail();
+  return true;
 }
 
 function renderQueueDetail() {
@@ -4763,6 +4780,43 @@ function renderQueueDetail() {
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   shell.detail.appendChild(meta);
+  // COMMENTS — sits directly under the chips, above the analyst, because it is the only text on
+  // this row a HUMAN wrote and the one most likely to overrule everything below it. Always
+  // present, even empty: "there was nowhere to leave a remark" is the defect this closes, and a
+  // box that appears only once a thread exists has the same problem one click deeper.
+  const cms = taskCommentsFull.get(t.id) ?? [];
+  shell.detail.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
+  for (const c of cms) {
+    shell.detail.appendChild(el("div", "qdtext", c.text));
+    const cline = el("div", "pkdacts");
+    cline.appendChild(el("div", "shellhint", fmtTs(c.ts)));
+    const cx = el("button", "shrbtn", "✕") as HTMLButtonElement;
+    cx.title = "delete this comment";
+    cx.onclick = () => void qAct(t.id, "comment-delete", { comment: c.id });
+    cline.appendChild(cx);
+    shell.detail.appendChild(cline);
+  }
+  // the box itself is kept across rebuilds (see qCmBox): the 2 s poll repaints this pane whenever
+  // a verdict or a comment lands, and a locally-created textarea would lose a half-typed remark
+  if (!qCmBox || qCmFor !== t.id) {
+    qCmBox = el("textarea", "qdcrit") as HTMLTextAreaElement;
+    qCmBox.rows = 3;
+    qCmBox.placeholder = "leave a comment on this task…";
+    qCmFor = t.id;
+  }
+  const cbox = qCmBox;
+  shell.detail.appendChild(cbox);
+  const cmacts = el("div", "pkdacts");
+  const cmb = el("button", "shrbtn", "💬 comment") as HTMLButtonElement;
+  cmb.title = "a remark for whoever picks this up — read, never executed:"
+    + " it is not appended to the brief the lane receives";
+  cmb.onclick = () => {
+    if (!cbox.value.trim()) return;
+    // cleared only once the server has it — a draft dropped on a failed post is gone for good
+    void qAct(t.id, "comment", { text: cbox.value }).then((ok) => { if (ok) cbox.value = ""; });
+  };
+  cmacts.appendChild(cmb);
+  shell.detail.appendChild(cmacts);
   // the verdict spelled out in full where it can be READ — the FULL reason from the /api/tasks
   // fetch, never the digest's bounded slice (the truncated slice once made a verdict read as its
   // own opposite). The digest is the fallback while that fetch is still in flight.
@@ -4959,7 +5013,7 @@ function renderQueue() {
     shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.analysis?.verdict,
       t.analysis?.blockers.join(","), t.analysis?.stale,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
-      t.refine?.at, t.refining])]);
+      t.refine?.at, t.refining, t.comments?.n])]);
   if (key === qKey) return;
   qKey = key;
 
@@ -5014,6 +5068,7 @@ function renderQueue() {
           // a criterion awaiting the owner's confirm is the row-level half of the queuebtn's
           // hot flag — the lane behind it is parked until this is acted on
           t.criterion ? (t.criterion.confirmedAt === null ? "⏳ criterion" : "✓ criterion") : "",
+          t.comments ? `💬 ${t.comments.n}` : "",
           t.repo ? `⌂ ${t.repo.split("/").pop()}` : "",
           `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
           t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),
@@ -5035,12 +5090,14 @@ function openQueue() {
   qKey = "";
   qCompose = null;
   qRepoIn = null;
+  qCmBox = null;
+  qCmFor = null;
   const shell = openShell({
     id: "queue",
     title: "Task queue",
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
-    onClose: () => { qShell = null; qCompose = null; qRepoIn = null; qRowId = new Map(); },
+    onClose: () => { qShell = null; qCompose = null; qRepoIn = null; qCmBox = null; qCmFor = null; qRowId = new Map(); },
   });
   qShell = shell;
 

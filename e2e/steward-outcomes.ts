@@ -458,6 +458,28 @@ export async function run(sc: StewardCtx): Promise<void> {
   const sigFor = async (slot: number): Promise<SigSlot | undefined> =>
     (await sigSessions()).slots.find((x) => x.id === slot);
 
+  // --- gate: the machine-busy fact reaches the steward (autonomy verbs, Verb 1). The pulse's
+  // note 05320523 named this blindness — it could not tell a finished pane from one waiting on
+  // a suite. Pinned like the lane-side twin in self-token.ts: agreement with the lock dir on
+  // disk, so the check is deterministic under a wrapper (we hold the mutex) AND standalone.
+  const gLockDir = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock";
+  let gDirExists = false; let gDiskPid: number | null = null;
+  try { gDirExists = statSync(gLockDir).isDirectory(); } catch { gDirExists = false; }
+  if (gDirExists) {
+    try {
+      const raw = readFileSync(`${gLockDir}/pid`, "utf8").trim();
+      gDiskPid = /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null;
+    } catch { gDiskPid = null; }
+  }
+  const gateJ = (await (await sc.stewGet("/api/steward/sessions")).json()) as
+    { gate: { lock: { pid: number | null; alive: boolean | null; state: string } | null } | null };
+  check("steward sessions carries the gate fact, agreeing with the lock dir on disk",
+    !gDirExists ? (gateJ.gate === null || gateJ.gate.lock === null)
+      : gDiskPid === null ? gateJ.gate?.lock?.state === "parked"
+      : gateJ.gate?.lock?.pid === gDiskPid && gateJ.gate.lock.alive === true
+        && (gateJ.gate.lock.state === "held" || gateJ.gate.lock.state === "overdue"),
+    JSON.stringify({ disk: { exists: gDirExists, pid: gDiskPid }, gate: gateJ.gate }));
+
   // cached alive: tickGit (≤10s) must deliver a reading for a live pane
   let sigOc2: SigSlot | undefined;
   for (let i = 0; i < 80; i++) {

@@ -609,6 +609,12 @@ type AuditEvent =
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"
   | "slot_shelve"
+  // the owner restarted a pane on purpose (↻ bring session back). Deliberately NOT
+  // self_heal_recreate: slotstats reads that event as "the pane died and the loop rebuilt it"
+  // and divides resumed/heals to measure the durability promise. An owner-triggered rebuild
+  // resumes by construction whenever a transcript exists, so booking it as a heal would inflate
+  // exactly the rate it is not evidence for. Same detail vocabulary, different question.
+  | "slot_restart"
   | "repo_undo_land"
   | "land_note_fail"
   // a land that was interrupted between "main moved" and "the land is recorded", settled at boot:
@@ -1413,7 +1419,16 @@ async function repaint(name: string): Promise<void> {
 // hits this on nearly every line — normalize before anything captured reaches a terminal.
 const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
 
-async function ensureSlot(s: Slot): Promise<void> {
+// Slots whose pane the owner is deliberately restarting. The 2s self-heal loop skips them for
+// the duration, so the route's own kill→ensureSlot pair cannot lose the new-session race to the
+// loop — whoever wins writes the audit row, and the two rows answer different questions
+// (slot_restart vs self_heal_recreate). Also the double-click guard: a second ↻ while one is in
+// flight is refused rather than queued behind a pane that is already coming back.
+const restarting = new Set<number>();
+
+// `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
+// identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
+async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<void> {
   if (!s.cwd) return;
   const name = sess(s.id);
   const has = await tmux("has-session", "-t", name);
@@ -1454,7 +1469,7 @@ async function ensureSlot(s: Slot): Promise<void> {
       s.rows = 50;
       s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
       saveState();
-      audit("self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
+      audit(cause === "restart" ? "slot_restart" : "self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
       console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }
@@ -6579,7 +6594,10 @@ if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch(() => {}),
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
-  for (const s of slots) void ensureSlot(s).catch(() => {});
+  for (const s of slots) {
+    if (restarting.has(s.id)) continue; // the ↻ route owns this pane's rebuild — see `restarting`
+    void ensureSlot(s).catch(() => {});
+  }
 }, 2000);
 
 type StewardKind = "state_relay" | "lifecycle_op" | "continue_nudge" | "pulse";
@@ -9311,7 +9329,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|share|unshare|share-mode|land|shelve)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|share|unshare|share-mode|land|shelve|restart)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -9417,6 +9435,36 @@ Bun.serve<WSData>({
         } finally {
           laneSpawn.delete(s.id);
         }
+      }
+      // ↻ bring the session back. The pane is restarted, the SLOT is not touched — which is the
+      // whole verb, and the reason it must never route through closeSlot/killSlot: those clear
+      // sessionId, worktree, label, model and mission, drop the slot's shares and autos, detach its
+      // tasks and emit a lane outcome. That is a session ENDING. This is the opposite: the pane dies
+      // and ensureSlot, seeing the untouched s.sessionId and its transcript, respawns with
+      // `--resume <id>` (slotCmd) — the conversation continues in the same transcript.
+      // The occasion: claude can switch conversations IN-PROCESS. The pane's argv still named the
+      // pinned session while a different transcript was being written, and Escape did not undo it
+      // (measured 2026-08-06). Nothing outside the pane can put it back; only a respawn can.
+      if (slotMatch[2] === "restart") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        if (restarting.has(s.id)) return json({ error: "a restart is already in flight" }, 409);
+        const pinned = s.sessionId;
+        restarting.add(s.id);
+        try {
+          await tmux("kill-session", "-t", sess(s.id));
+          // rebuilt INLINE rather than left to the 2s self-heal loop: the button promises a session
+          // that is back, and a route that only kills cannot say whether it is. Those two seconds
+          // are also exactly when the owner is watching the board, and a slot that reads dead there
+          // invites a second click on something else.
+          await ensureSlot(s, "restart");
+        } finally {
+          restarting.delete(s.id);
+        }
+        // read off what ensureSlot DID, rather than re-deriving its resume formula here (two copies
+        // of that predicate is how they drift). The pin survives the rebuild only when it was
+        // resumable; a fresh uuid (pin but no transcript) and no pin at all (a non-claude FLEET_CMD)
+        // both answer false, which is the truth in both cases.
+        return json({ ok: true, resumed: pinned !== null && s.sessionId === pinned });
       }
       if (slotMatch[2] === "land") {
         const land = await landLane(s, OWNER_LAND_FACTS);

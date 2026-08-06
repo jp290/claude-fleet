@@ -1,7 +1,8 @@
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, and the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase).
 import { spawnSync } from "node:child_process";
-import { REPO, check, get, post } from "./harness";
+import { readFileSync } from "node:fs";
+import { REPO, ROOT, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists } from "./lane-helpers";
 
@@ -56,6 +57,100 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify(wmap2.worktrees.find((w) => w.path === sh.cwd)));
     check("shelve rejects a non-worktree slot", (await post("/api/slots/2/shelve", { note: "x" })).status === 400);
     await post(`/api/slots/${reopen.slot ?? 0}/kill`, {}); // free the slot for later tests
+  }
+
+  // --- ↻ restart: the one slot verb that is NOT a teardown. Every other exit (kill, shelve, the
+  // recycle inside openSlot) funnels through killSlot, which clears sessionId/worktree/label/model/
+  // mission, drops the slot's shares and autos, detaches its tasks and — for a lane — emits a lane
+  // outcome. Restart must do NONE of that: it kills the pane so ensureSlot can respawn it against
+  // the still-pinned conversation. Measured as a before/after on the persisted slot record plus the
+  // two ledgers, because that boundary is the whole verb and a future edit that routes it through
+  // killSlot "to reuse the teardown" would look perfectly reasonable in a diff.
+  //
+  // WHAT THIS SUITE CANNOT PROVE: the `--resume <id>` string itself. e2e-isolated.sh runs
+  // FLEET_CMD=true, and slotCmd only pins/resumes a session when BASE_CMD starts with `claude` —
+  // so sessionId is null on both sides here and asserting the resume string would assert something
+  // this harness never produces. That half lives in fleet-e2e-claude-gate.ts, which runs a real
+  // `claude` stand-in and therefore has a pin to preserve. ---
+  {
+    const rs = (await (await post("/api/lanes", { repo: REPO, model: "restart-probe-model-5" })).json()) as
+      { slot: number; cwd: string; branch: string };
+    await post(`/api/slots/${rs.slot}/mission`, { mission: "the restart must not eat this" });
+    const shJ = (await (await post(`/api/slots/${rs.slot}/share`, { mode: "view" })).json()) as { id?: string };
+    const auJ = (await (await post(`/api/slots/${rs.slot}/autos`, { text: "survive the restart", inSec: 3600 })).json()) as
+      { auto?: { id: string } };
+    await Bun.write(`${rs.cwd}/restart-uncommitted.txt`, "half done\n"); // the worktree must be untouched too
+
+    // fleet.json's per-slot record IS the state under test — cwd, label, mission, awaiting,
+    // sessionId, worktree, model and selfToken in one object (server.ts saveState). Comparing the
+    // WHOLE record rather than a hand-picked field list means a field added to a slot later is
+    // covered by this check without anyone remembering to extend it.
+    const slotRecord = async (): Promise<string> => JSON.stringify(
+      ((await Bun.file(`${ROOT}/fleet.json`).json()) as { slots: Record<string, unknown> }).slots[String(rs.slot)] ?? null);
+    const liveState = async () => {
+      const j = (await (await get("/api/sessions")).json()) as
+        { slots: { id: number; cwd: string | null; share?: { id: string } | null }[]; autos: { id: string; slot: number }[] };
+      return { slot: j.slots.find((x) => x.id === rs.slot), autos: j.autos };
+    };
+    const outcomes = async (): Promise<{ branch?: string }[]> =>
+      ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: { branch?: string }[] }).outcomes;
+    // DELTA off a baseline, never an absolute count: opening this lane already wrote a
+    // self_heal_recreate row of its own (ensureSlot audits its FIRST spawn too), and slot ids are
+    // recycled across the suite, so this id legitimately carries older rows.
+    const slotAudit = (): string[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number }; } catch { return null; } })
+      .filter((r): r is { event?: string; slot?: number } => !!r && r.slot === rs.slot)
+      .map((r) => String(r.event ?? ""));
+
+    await Bun.sleep(300); // saveState/audit writes are chained and fire-and-forget — let the setup land before baselining
+    const recBefore = await slotRecord();
+    const outBefore = (await outcomes()).length;
+    const auditBefore = slotAudit().length;
+    const paneBefore = (await tmuxOut("display-message", "-p", "-t", `s${rs.slot}`, "#{pane_pid}")).out.trim();
+
+    const rsRes = await post(`/api/slots/${rs.slot}/restart`, {});
+    const rsJ = (await rsRes.json()) as { ok?: boolean; resumed?: boolean; error?: string };
+    check("↻ restart answers ok, and says whether the pinned conversation came back",
+      rsRes.ok && rsJ.ok === true && typeof rsJ.resumed === "boolean", `${rsRes.status} ${JSON.stringify(rsJ)}`);
+    // FLEET_CMD=true pins nothing, so `false` is the TRUTH here, not a defect — the route must
+    // report it rather than claim a resume it did not perform (the claude-gate suite owns the
+    // other branch of this same field).
+    check("↻ restart under an unpinned FLEET_CMD reports resumed:false, never a claimed resume",
+      rsJ.resumed === false, JSON.stringify(rsJ));
+
+    const paneAfter = (await tmuxOut("display-message", "-p", "-t", `s${rs.slot}`, "#{pane_pid}")).out.trim();
+    check("↻ restart leaves a LIVE pane behind — rebuilt inline, not left to the 2s self-heal tick",
+      paneAfter !== "" && paneAfter !== paneBefore, `before=${paneBefore} after=${paneAfter}`);
+
+    check("↻ restart changes NOTHING in the slot's persisted record (sessionId, worktree, label, model, mission, selfToken)",
+      (await slotRecord()) === recBefore, `before=${recBefore} after=${await slotRecord()}`);
+
+    const live = await liveState();
+    check("↻ restart keeps the slot's share — a restart is not a session ending",
+      !!shJ.id && live.slot?.share?.id === shJ.id, `${shJ.id} → ${live.slot?.share?.id}`); // id only — the detail must not echo the share secret
+    check("↻ restart keeps the slot's scheduled prompts",
+      !!auJ.auto?.id && live.autos.some((a) => a.id === auJ.auto?.id && a.slot === rs.slot),
+      `${auJ.auto?.id} → ${JSON.stringify(live.autos.filter((a) => a.slot === rs.slot))}`);
+    const outAfter = await outcomes();
+    check("↻ restart writes NO lane outcome — the lane did not end, so the ledger must stay silent",
+      outAfter.length === outBefore && !outAfter.some((o) => o.branch === rs.branch),
+      `before=${outBefore} after=${outAfter.length} thisBranch=${outAfter.filter((o) => o.branch === rs.branch).length}`);
+    check("↻ restart leaves the worktree and its uncommitted work alone", exists(`${rs.cwd}/restart-uncommitted.txt`));
+
+    // the trail must say WHO rebuilt the pane. Booking an owner-triggered restart as
+    // self_heal_recreate would feed slotstats' resumed/heals a rebuild that resumes by
+    // construction — inflating the exact durability rate it is no evidence for.
+    let auditNew: string[] = [];
+    for (let i = 0; i < 50; i++) { // the audit write is chained and fire-and-forget — poll, never sleep-and-hope
+      auditNew = slotAudit().slice(auditBefore);
+      if (auditNew.length > 0) break;
+      await Bun.sleep(100);
+    }
+    check("↻ restart is trailed as slot_restart, never as a self-heal (slotstats must not read it as a heal)",
+      auditNew.length === 1 && auditNew[0] === "slot_restart", JSON.stringify(auditNew));
+
+    await post(`/api/slots/${rs.slot}/kill`, {});
+    check("↻ restart refuses an inactive slot", (await post(`/api/slots/${rs.slot}/restart`, {})).status === 400);
   }
 
   // --- lane brief must be LANE-SCOPED and match git exactly (regression: it used to show

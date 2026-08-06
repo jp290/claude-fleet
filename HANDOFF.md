@@ -8,10 +8,30 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 
 ## Session 29 (2026-08-06 nachmittags): Schritt A + Verb 1 gelandet, das Verb-Programm steht, die Adjudikations-Schuld ist null
 
-**Das Erste für die NÄCHSTE frische Session: Verb 2, das Deploy-Verb** —
-`docs/autonomy-verbs-2026-08-06.md` ist der Arbeitsplan (Owner-Richtung wörtlich im Kopf),
-Verb 2 trägt Bauform, Rückweg-Antwort und Schwelle. Davor `./state.sh` und prüfen, ob die
-Phantom-Park-Lane (Slot 1, Task `f93deff8`) inzwischen gemeldet hat — ihr Land geht vor.
+**Das Erste für die NÄCHSTE frische Session — zwei Aufträge, beide vom Owner:**
+
+**1. Der Startdienst (Owner wörtlich: „kann die nächste session das auch alles sauber für
+mich starten?" — JA, das hier ist die Autorisierung).** Das UI-Programm
+(`briefs/ui-next-level-2026-08-06.md`) als sein Operator fahren, mit Owner-Token, attended:
+
+- `./state.sh`; falls die Phantom-Park-Lane (Slot 1, `f93deff8`) gemeldet hat: unabhängig
+  verifizieren (Report = Behauptung), landen. Ihr Land geht allem voran.
+- **F4 (`3322990f`) releasen** (`POST /api/tasks/:id/queue`) — `ready`, Doc-Reihenfolge Platz 1.
+- **Zweites Release erst, wenn Phantom-Park gelandet ist** (Lane-Deckel 2/Repo): dann
+  F2+F3 (`cb607025`) oder F6 (`2784427e`) oder Mini (`547c7c36`), alle `ready`.
+- **F1 (`0bfd3d7e`): Release ÜBER den reach-Einspruch ist vom Owner autorisiert** (Sanktion
+  steht im Task-Text UND hier; der `task_override`-Audit-Event ist gewollt — er macht die
+  gesprochene Erlaubnis aktenkundig). Zeitpunkt frei, keine Abhängigkeiten.
+- **F5 (`9534b49a`) NIE vor F4s Land** — danach `↻ re-analyse`, auf `ready` warten, releasen.
+- Vor jedem Spawn die Maschine fragen — dafür ist Verb 1 da: `gate` auf
+  `/api/steward/sessions` bzw. das Owner-Board; bei gehaltenem Lock warten, nicht stapeln.
+  Max. zwei UI-Lanes zugleich (Doc-Warnung: alle schneiden `src/client.ts`).
+- Gelandete UI-Lanes brauchen `bun run build` (Client!) + srv-Restart — `bundleStale` prüfen.
+
+**2. Verb 2, das Deploy-Verb**, als eigene Bauarbeit zwischen den Releases —
+`docs/autonomy-verbs-2026-08-06.md` trägt Bauform, Rückweg-Antwort und Schwelle. (Verb 2
+macht übrigens genau den `bun run build`+Restart-Handgriff aus Punkt 1 überflüssig — wer es
+früh baut, erntet es noch im selben UI-Programm.)
 
 ### Gelandet und LIVE (deployed, bootHead == HEAD, je verifiziert)
 

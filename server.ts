@@ -3856,16 +3856,60 @@ const VERIFY_SKIP_MARK = /^verify skipped:/m;
 // by timing from the outside — and an unproven fix for it would be worth nothing, so the hole
 // gets a handle. Nothing but the sleep changes; the land path is byte-identical when unset.
 const LAND_PAUSE_MS = Math.max(0, Number(process.env.FLEET_TEST_LAND_PAUSE_MS ?? 0) | 0);
+// --- how much of a verify run was not verifying ------------------------------------------------
+// The gate chain's steps each take the machine-wide suite mutex before they can start, and its
+// holder may be any suite on the box. So VERIFY_TIMEOUT_MS — a wall-clock budget — silently
+// contains an unbounded wait, and a run that spends most of it queueing is indistinguishable from
+// one that spent it working. e2e-stage.sh prints one `acquired after Ns` line per staged step
+// (see the block above its lock loop), so the split is MEASURED by the thing that actually waited
+// rather than estimated here. A command that prints no such line yields null — "this command does
+// not report its waits" is a different answer from "it waited 0s", and guessing between them is
+// how an invented number gets into a record that is supposed to be evidence.
+// A step that ACQUIRED reports its total wait once, and that number supersedes its own heartbeats.
+// A step that was still QUEUED when the run was killed never gets to report — and that is the
+// likeliest shape of a timeout, not a rare one: a land that starts while an 8-minute suite is at
+// minute one is killed long before it ever reaches the front. Its last heartbeat is therefore
+// counted too, which makes waitMs a LOWER BOUND (the heartbeat is a minute coarse) and sets
+// `waitPartial`. Zero would have been the alternative, and "it did not wait" is precisely the
+// false sentence this whole change exists to stop the record from telling.
+// ONE expression for both line kinds, and every suite-lock line the shell prints must match it —
+// a format the parser cannot see is a wait that silently reads as zero. e2e/pins.ts renders each
+// printf in e2e-stage.sh against this and requires exactly one of them to classify as an acquire.
+const SUITE_LOCK_RE = /^\[suite-lock\][^\n]* (waiting|acquired after) (\d+)s\b/gm;
+function suiteWait(text: string): { waitMs: number; stages: number; blocked: number; partialMs: number } | null {
+  let waitMs = 0, stages = 0, blocked = 0, cur = 0;
+  // `.exec` in a loop (not matchAll) purely to keep lastIndex handling local to this function
+  const re = new RegExp(SUITE_LOCK_RE.source, "gm");
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const s = Number(m[2]);
+    if (!Number.isFinite(s)) continue;
+    if (m[1] === "acquired after") { stages++; if (s > 0) blocked++; waitMs += s * 1000; cur = 0; }
+    else cur = Math.max(cur, s * 1000); // heartbeats of a step that has not acquired yet
+  }
+  if (stages === 0 && cur === 0) return null;
+  return { waitMs: waitMs + cur, stages, blocked, partialMs: cur };
+}
 // Layer 1 of the three-layer model (§2): the authority is a SERVER-run fact, never an agent's
 // self-assessment. Runs in the lane worktree (cwd), against the rebased tree, after the rebase
 // is git-verified and before any land. No command → undefined (field absent, verdict unverified,
-// never silently green). Non-zero exit OR timeout → ok:false; a self-declared skip (VERIFY_SKIP_EXIT,
-// or the legacy marker at exit 0) → ok:null, which is neither a pass nor a failure but "no
-// measurement happened" — same vocabulary as LandFacts.verified and CleanReviewShadow.verdict.
+// never silently green). Non-zero exit → ok:false; a self-declared skip (VERIFY_SKIP_EXIT, or the
+// legacy marker at exit 0) → ok:null, which is neither a pass nor a failure but "no measurement
+// happened" — same vocabulary as LandFacts.verified and CleanReviewShadow.verdict.
+//
+// A TIMEOUT is that same non-answer, and since 2026-08-06 it says so: `ok:null` plus `timedOut`.
+// It used to land in `ok:false`, where it read as a reasoned no — the gate ran and rejected the
+// tree — when in fact the gate was killed mid-sentence and measured nothing. The distinction is
+// not cosmetic: `ok:false` is the input the resolver↔verify repair loop feeds an agent as a defect
+// to fix, and a killed clock is not a defect. Carried as a FLAG inside ok:null rather than as a
+// fourth value of `ok` on purpose: every never-auto-land branch keys on `ok === null` / `ok ===
+// false`, so a new enum value would have to be REMEMBERED at each of them to stay safe, whereas a
+// flag inside ok:null is inside the never-land group by construction — the worst a forgotten
+// branch can do is word the stop badly, never open a land.
 // `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
 // moves past it (§6 rule 3).
 async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verify"]> {
   if (!VERIFY_CMD) return undefined;
+  const startedAt = Date.now();
   const p = Bun.spawn(["sh", "-c", VERIFY_CMD], { cwd, stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; try { p.kill(); } catch {} }, VERIFY_TIMEOUT_MS);
@@ -3873,15 +3917,28 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
     const out = await new Response(p.stdout).text();
     const err = await new Response(p.stderr).text();
     const code = await p.exited;
-    // a fact about the RUN, not a line of its log — reserved out of the budget so it can never
-    // itself be the thing retention drops
-    const note = timedOut ? `\n[verify timed out after ${VERIFY_TIMEOUT_MS}ms]` : "";
+    const ms = Date.now() - startedAt;
+    // parsed over the FULL output for the same reason the skip test is: the lock lines are printed
+    // FIRST, so on any run long enough to matter they are the first thing retention drops
+    const wait = suiteWait(`${out}${err}`);
+    // facts about the RUN, not lines of its log — reserved out of the byte budget so they can
+    // never themselves be the thing retention drops. This is what makes an expired verify.out
+    // name its own cause instead of ending in silence after somebody else's ALL PASS.
+    const notes: string[] = [];
+    if (timedOut) notes.push(`[verify TIMED OUT after ${VERIFY_TIMEOUT_MS}ms — killed mid-run, so this is not a verdict: nothing was measured]`);
+    if (wait) notes.push(`[suite mutex: ${wait.partialMs ? "at least " : ""}${Math.round(wait.waitMs / 1000)}s of this ${Math.round(ms / 1000)}s run was spent waiting for ${SUITE_LOCK}, not verifying (${wait.blocked} of ${wait.stages} staged step${wait.stages === 1 ? "" : "s"} blocked${wait.partialMs ? `, and one more was still queued after ${Math.round(wait.partialMs / 1000)}s when the run ended` : ""})]`);
+    const note = notes.length ? `\n${notes.join("\n")}` : "";
     // the skip test runs over the FULL output, not the retained window: a command that declines
     // early and then prints past the cap would otherwise have its own declaration truncated away
     const skipped = !timedOut && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(`${out}${err}`)));
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
-    return { cmd: VERIFY_CMD, ok: skipped ? null : !timedOut && code === 0,
-      out: `${kept}${note}`.trim(), at: Date.now(), mainSha };
+    return { cmd: VERIFY_CMD, ok: timedOut || skipped ? null : code === 0,
+      ...(timedOut ? { timedOut: true as const } : {}),
+      // p.exitCode, not the awaited status: Bun reports null for a signal death, which is the
+      // honest answer for a process this server killed — a number there would read as a verdict
+      // the command never reached.
+      out: `${kept}${note}`.trim(), at: Date.now(), startedAt, ms, exitCode: p.exitCode,
+      ...(wait ? { waitMs: wait.waitMs, ...(wait.partialMs ? { waitPartial: true as const } : {}) } : {}), mainSha };
   } finally {
     clearTimeout(timer);
   }
@@ -3930,16 +3987,29 @@ interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "int
   // could no longer tell an author's resolution from a worker's — which is the one number that
   // decides whether the fallback may ever be dropped (briefs/server-first-sync.md, Auflage 1).
   resolvedBy?: "agent" | "author";
-  // deterministic verify result against the rebased tree (design note §3). FOUR states, and the
-  // owner-facing surfaces name all four:
-  //   field absent      — no FLEET_VERIFY_CMD configured ("unverified", never silently green)
-  //   ok: true          — the gate ran and passed
-  //   ok: false         — the gate ran and failed (or timed out)
-  //   ok: null          — the command declined to verify (VERIFY_SKIP_EXIT / marker): SKIPPED.
-  //                       Not a pass, not a failure — nothing was measured. Never auto-lands.
+  // deterministic verify result against the rebased tree (design note §3). FIVE states, and the
+  // owner-facing surfaces name all five:
+  //   field absent            — no FLEET_VERIFY_CMD configured ("unverified", never silently green)
+  //   ok: true                — the gate ran and passed
+  //   ok: false               — the gate ran and failed
+  //   ok: null                — the command declined to verify (VERIFY_SKIP_EXIT / marker): SKIPPED.
+  //                             Not a pass, not a failure — nothing was measured.
+  //   ok: null + timedOut     — the gate was KILLED at VERIFY_TIMEOUT_MS. Also not a measurement,
+  //                             and not the same non-measurement: a skip is the command's own
+  //                             decision about the tree, a timeout is our clock running out on it.
+  // THE INVARIANT: `field absent` is the ONLY state that auto-lands. ok:false, SKIPPED and TIMED
+  // OUT all stop for the owner — the timeout rides inside ok:null so it belongs to that group
+  // structurally rather than by a branch someone has to remember (see runVerify).
   // `stale` is stamped at confirm-land when main moved past `mainSha` after the verify ran
   // (the verdict is void once main moves past it — marked, not re-run).
-  verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean };
+  // TIMING, all optional because a record deserialized from fleet.json or a git note written by an
+  // older server genuinely has none of it — `ms` is what the run cost end to end, `waitMs` how much
+  // of that was queueing behind the suite mutex rather than verifying (absent = the command does
+  // not report its waits, which is not the same as zero), `exitCode` null on a signal death.
+  // `waitPartial` marks `waitMs` as a LOWER BOUND: a step was still queued when the run ended, so
+  // its wait is known only to the last heartbeat (see suiteWait).
+  verify?: { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
+    timedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true; exitCode?: number | null };
   // set when main WAS advanced (the land is recorded — note + undo) but the lane teardown
   // failed afterwards; distinct from `detail` so "landed but not torn down" is machine-readable
   landError?: string;
@@ -4793,7 +4863,10 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // on the value: an explicit null from a land is an ANSWER ("no verify ran"), not a missing fact.
     // A SKIPPED verify (verify.ok === null) collapses into the same null here, and correctly so:
     // the ledger's question is "was this verified", and a skip's answer is no. Which flavour of
-    // "no" it was — no command configured, or a command that declined — stays on the merge verdict.
+    // "no" it was — no command configured, a command that declined, or one our clock killed —
+    // stays on the merge verdict. A TIMEOUT reaches this line as null too, which is the point of
+    // that state: it used to arrive as `verified:false`, i.e. a claim about the lane's WORK, when
+    // the only thing measured was the machine's load (verify-tiering.md §0 item 2).
     verified: kind === "landed" ? facts.verified : mergeLast.get(s.id)?.verify?.ok ?? null,
     sessionMs: start !== null ? ts - start : null,
     ownerPrompts,
@@ -5627,7 +5700,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // human review below — it only improves the verify state that review sees.
         // `ok === false` explicitly, not `!ok`: a SKIPPED verify (ok:null) reports no failure to
         // repair, and feeding the resolver "verify skipped: not the fleet repo" as if it were a
-        // build error would spend agent rounds editing a tree against a phantom defect.
+        // build error would spend agent rounds editing a tree against a phantom defect. A TIMEOUT
+        // is ok:null for exactly this reason too (2026-08-06): as ok:false it used to enter this
+        // loop and hand an agent a killed clock to fix — up to MERGE_REPAIR_ROUNDS rounds of edits
+        // against a defect that was never in the tree, each round re-running the gate that was
+        // timing out because the machine was busy.
         let repairRounds = 0;
         if (!pre.clean && verify && verify.ok === false && MERGE_REPAIR_ROUNDS > 0) {
           for (let round = 1; round <= MERGE_REPAIR_ROUNDS; round++) {
@@ -5662,7 +5739,8 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // three-way, because a repair CAN produce a skip: a resolution that moves or deletes the
           // file the verify command guards on makes the very next run decline. "still failed"
           // would hide that the gate stopped running at all.
-          const repairVerdict = verify?.ok === true ? "passed" : verify?.ok === null ? "skipped itself" : "still failed";
+          const repairVerdict = verify?.ok === true ? "passed"
+            : verify?.timedOut ? "timed out" : verify?.ok === null ? "skipped itself" : "still failed";
           const repairNote = repairRounds > 0
             ? ` verify ${repairVerdict} after ${repairRounds} repair round${repairRounds === 1 ? "" : "s"}.`
             : "";
@@ -5678,6 +5756,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
           // its own verify outcome, so this only speaks when no repair round did.
           const gateNote = repairRounds > 0 ? ""
             : verify?.ok === false ? " Verify FAILED on this tree — read its output before landing."
+            : verify?.timedOut ? ` Verify TIMED OUT on this tree (${VERIFY_TIMEOUT_MS}ms) — nothing was verified; that is not a failure of this tree.`
             : verify?.ok === null ? " Verify SKIPPED itself on this tree — nothing was verified." : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(),
             conflicted: unreviewed, resolvedBy, verify, ...(repairRounds > 0 ? { repairRounds } : {}),
@@ -5685,15 +5764,27 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               ? `${main} moved on, so this lane re-rebased with no conflicts — but it still carries an ${resolvedBy}'s unreviewed resolution of ${unreviewed.length} conflict${unreviewed.length === 1 ? "" : "s"} from an earlier run. Review the diff, then land.`
               : `${fellBack}${r.detail}${r.detail ? " " : ""}— resolved ${pre.conflicted.length || "the"} conflict${pre.conflicted.length === 1 ? "" : "s"};${repairNote} review the diff, then land.`) + gateNote).slice(0, 600) };
         } else if (verify && verify.ok === null) {
-          // CLEAN path but verify SKIPPED — the decision site (see VERIFY_SKIP_EXIT above). A
-          // configured gate declined to run on this tree, so this land would be as unverified as a
-          // red one, while LOOKING greener than an unconfigured fleet. The auto-land is downgraded
-          // to the same stop-and-review a red verify gets: the owner keeps full latitude (confirm-
-          // land never hard-blocks), but no tree reaches main unattended behind a gate that ran
-          // nothing. A fleet with NO verify command at all is untouched — `verify === undefined`
-          // never reaches here, and that deployment's auto-land is the owner's standing decision.
+          // CLEAN path but NO MEASUREMENT — the decision site (see VERIFY_SKIP_EXIT above). Two
+          // ways to get here and they must not be worded alike, but they get the identical stop:
+          //   SKIPPED   — a configured gate declined to run on this tree.
+          //   TIMED OUT — the gate was killed at VERIFY_TIMEOUT_MS, mid-run.
+          // Either way this land would be as unverified as a red one while LOOKING greener than an
+          // unconfigured fleet, so the auto-land is downgraded to the same stop-and-review a red
+          // verify gets: the owner keeps full latitude (confirm-land never hard-blocks), but no
+          // tree reaches main unattended behind a gate that measured nothing. A fleet with NO
+          // verify command at all is untouched — `verify === undefined` never reaches here, and
+          // that deployment's auto-land is the owner's standing decision.
+          // The timeout wording deliberately refuses to blame the tree: on 2026-08-06 a lane spent
+          // an afternoon looking for a defect of its own behind a `verify failed` that was really
+          // ~255s of queueing behind somebody else's suite. `waitMs` on the record, and the
+          // reserved note in `out`, now say where the budget went.
+          const spent = verify.ms !== undefined
+            ? ` It ran ${Math.round(verify.ms / 1000)}s${verify.waitMs !== undefined ? `, ${verify.waitPartial ? "at least " : ""}${Math.round(verify.waitMs / 1000)}s of it queued behind the suite mutex rather than verifying` : ""}.`
+            : "";
           res = { status: "resolved", landed: false, branch, at: Date.now(), verify,
-            detail: `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`.slice(0, 600) };
+            detail: (verify.timedOut
+              ? `clean rebase, but verify TIMED OUT after ${VERIFY_TIMEOUT_MS}ms (${verify.cmd}) — killed mid-run, so nothing was verified and this is NOT a verdict about the tree; it did not auto-land.${spent} Read the output, re-run the gate, or land if intended.`
+              : `clean rebase, but verify SKIPPED itself (${verify.cmd}) — nothing was verified, so this did not auto-land; review the output, then land if intended.`).slice(0, 600) };
         } else if (verify && verify.ok === false) {
           // CLEAN path but verify RED: today this would auto-land, but the rebased tree does
           // NOT pass verify — landing it lands broken code. Consciously downgrade the auto-land

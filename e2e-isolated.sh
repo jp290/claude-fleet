@@ -201,6 +201,31 @@ if git grep -qI VERIFYBAD -- . 2>/dev/null; then
   echo "verify FAIL: VERIFYBAD marker present in the rebased tree"
   exit 1
 fi
+# A gate that never answers, so FLEET_VERIFY_TIMEOUT_MS has to kill it. Shaped like the incident of
+# 2026-08-06: one chain step finishes and prints its ALL PASS, the next one blocks, and the clock
+# runs out with the log ending mid-sentence — which used to be recorded as `ok:false`, a reasoned
+# "no" over an output containing zero failures. The sleep's fds are redirected AWAY from the
+# inherited pipe on purpose: otherwise the grandchild keeps stdout open after the server SIGTERMs
+# its parent and the collecting read blocks for the sleep's full duration instead of returning what
+# was already printed (measured — with the redirect the read returns at the kill, output intact).
+# The suite-lock lines are part of the fixture, not decoration: they are what e2e-stage.sh prints
+# in a real chain, and the server sums them into verify.waitMs. Three staged steps, two of which
+# blocked, so the arithmetic under test (total, stages, blocked) has a distinguishable answer.
+if git grep -qI VERIFYHANG -- . 2>/dev/null; then
+  echo "[suite-lock] e2e-clean-review.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 04:11): /bin/sh ./e2e-isolated.sh"
+  echo "[suite-lock] e2e-clean-review.sh acquired after 3s (pid 4243)"
+  echo "PASS  the chain step that finished before the machine got busy"
+  echo "ALL PASS"
+  echo "[suite-lock] e2e-security.sh acquired after 0s (pid 4244)"
+  echo "[suite-lock] e2e-claude-gate.sh acquired after 1s (pid 4245)"
+  # and a fourth step that never gets in — the shape of a land killed WHILE queueing, which is the
+  # likelier timeout: it has heartbeats and no acquire line, so its wait exists only as a bound
+  echo "[suite-lock] e2e-postland-audit.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 09:00): /bin/sh ./e2e-isolated.sh"
+  echo "[suite-lock] e2e-postland-audit.sh waiting 12s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 09:12): /bin/sh ./e2e-isolated.sh"
+  sleep 30 </dev/null >/dev/null 2>&1
+  echo "verify OK: the hang stand-in was never meant to reach this line"
+  exit 0
+fi
 # The shape a REAL suite has, and the one the old tail-slice could not survive: hundreds of
 # result lines, the failing one buried among them, only the COUNT at the end — plus a noisy
 # stderr big enough that concatenate-then-tail-slice kept nothing but stderr. A red run that
@@ -292,7 +317,12 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # a re-parse both recognises them and strips these quotes.
 # FLEET_HOST stays OUT of the list on purpose: it is a server-side bind knob, and the harness
 # hardcodes 127.0.0.1 (e2e/harness.ts's IP) rather than reading it.
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+# FLEET_VERIFY_TIMEOUT_MS=8000 exists so the gate's TIMEOUT state is reachable in a suite (the
+# 120 s production default is not). It is the smallest value with real headroom: every other
+# fakeverify path in this run is a git-grep and a few echoes, tens of milliseconds, so the margin
+# to a false timeout is ~100x — while 5000, the server's own floor, would buy 8 s of suite time
+# for a thinner one. e2e/merge.ts reads it back off process.env rather than restating the number.
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

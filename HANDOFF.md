@@ -8,10 +8,11 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 
 ## Session 28 (2026-08-06): `stalled` wird ein Fakt — und der Land-Gate lernt, dass Stille kein Urteil ist
 
-**Der Auftrag für die NÄCHSTE frische Session steht ganz unten unter „Das Erste".** Zwei Sessions
-laufen bzw. sind gebrieft; ihre Berichte sind das Material, das du verarbeiten sollst.
+**Der Auftrag für die NÄCHSTE frische Session steht ganz unten unter „Das Erste".** Beide
+gebrieften Sessions sind gelaufen UND gelandet — du musst nichts mehr einsammeln. Ihr Ergebnis ist
+`docs/autonomy-map-2026-08-06.md`, und dessen §11.3 ist die Reihenfolge, nach der du arbeitest.
 
-### Gelandet (5 Commits, `d7142d8..26acdbd`) — Mechanismen in den Bodies, hier nur die Namen
+### Gelandet (11 Commits, `d7142d8..a67a96f`) — Mechanismen in den Bodies, hier nur die Namen
 
 | | |
 |---|---|
@@ -34,13 +35,17 @@ laufen bzw. sind gebrieft; ihre Berichte sind das Material, das du verarbeiten s
 ### Owner-Entscheide dieser Session
 
 - **`stalled` bleibt ein Fakt ohne Aktion.** Kein Auto-Kill, kein Nudge, kein Tick liest ihn.
-- **Instanz-Ledger: unentschieden.** Erst vertagt („schauen, ob überhaupt etwas zu zählen ist"),
-  dann feuerte der Fakt binnen Stunden — siehe die Korrektur unten, die das wieder aufmacht.
+- **Instanz-Ledger: BEAUFTRAGT, nicht mehr offen.** Erst vertagt („schauen, ob überhaupt etwas zu
+  zählen ist"), dann feuerte der Fakt binnen Stunden, dann Owner-Auftrag wörtlich: *„leg ein Log an,
+  damit `stalledSince`-Daten einen Neustart überleben."* → `briefs/stalled-parked-and-ledger.md`
+  (`909ace3`), Markierung als Teil 1 VOR dem Ledger als Teil 2. **Offen ist nur noch das WANN**: die
+  Landkarte stellt es hinter die Instrumentierung (§11.3, Schritt F).
 - **Owner-Token-Rotation: ausdrücklich nicht jetzt** („erstmal egal"). Der Token steht durch einen
   Shell-Fehler von mir im Transcript dieser Session.
 - **Zwei rote Tier-2-Audits adjudiziert** (`flake`, Beleg: sie liefen 4½ h bzw. 3 h VOR `2bca3d2`,
   dem Commit, der die FIX1-Flake behob). Offene Rote: 4 → 2.
-- **Reihenfolge:** der Land-Gate zuerst, die Landkarte parallel — beides gebrieft, siehe unten.
+- **Reihenfolge dieser Session:** Land-Gate und Landkarte parallel — beides ausgeführt und
+  gelandet. Die Reihenfolge für ALLES WEITERE gehört ab jetzt der Landkarte, nicht mir.
 
 ### Korrekturen an eigenen Aussagen (alle in dieser Session entstanden und belegt)
 

@@ -1,8 +1,9 @@
 // PURE-function unit tests — no server needed: the merge/repair/clean-review prompt builders,
-// the `done-looking` predicate (lane-signals.ts) and the continuity derivation (continuity.ts),
-// each clause asserted by its negation.
+// the `done-looking` and `stalled` predicates (lane-signals.ts) and the continuity derivation
+// (continuity.ts), each clause asserted by its negation.
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "../merge-prompt";
-import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE, type LaneSignalView } from "../lane-signals";
+import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE,
+  laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
 import { check, ROOT } from "./harness";
 
@@ -541,7 +542,8 @@ export async function run(): Promise<void> {
   // NEGATION separately — a predicate that is only tested on its happy path would fire on a dead
   // pane, a wedged rebase or a dirty tree and nobody would notice until an agent spawned there. ---
   {
-    const OK: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 0, ahead: 2 }, gitOp: false, merge: null };
+    const OK: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 0, ahead: 2 }, gitOp: false, merge: null,
+      observed: true, awaiting: null };
     const T = 1000; // idle threshold
     check("done-looking: true on idle + clean + git.ahead>0", laneDoneLooking(OK, T) === true);
     check("done-looking: false on a DIRTY tree",
@@ -591,6 +593,110 @@ export async function run(): Promise<void> {
     check("done-looking: the digest's prose rule is composed from every clause of the predicate",
       DONE_LOOKING_RULES.every((r) => DONE_LOOKING_PROSE.includes(r.prose))
       && DONE_LOOKING_PROSE.endsWith("→ done-looking"), DONE_LOOKING_PROSE);
+  }
+
+  // --- `stalled` as a DETERMINISTIC predicate (briefs/lane-stalled-fact.md): the same pure-function
+  // treatment, and it needs it MORE than its neighbour. done-looking is a positive claim, so an
+  // unknown fact makes it false — silence. `stalled` is an accusation, so a missing fact must not be
+  // allowed to become one. Every clause is therefore asserted by its NEGATION separately, and the
+  // two shapes that actually occur in production (a just-recycled slot, a non-repo cwd) get their
+  // own named pins below. ---
+  {
+    // a lane that is alive, has been observed, has committed NOTHING, and has gone quiet
+    const ST: LaneSignalView = { alive: true, idleMs: 120_000, git: { dirty: 0, ahead: 0 }, gitOp: false,
+      merge: null, observed: true, awaiting: null };
+    const T = 60_000; // stalled threshold
+    check("stalled: true on alive + observed + idle + git.ahead=0 (the state that freezes the fleet)",
+      laneStalled(ST, T) === true);
+    check("stalled: false when NOT idle (below the threshold)",
+      laneStalled({ ...ST, idleMs: 59_999 }, T) === false);
+    check("stalled: false on a DEAD pane (a dead pane is not a working one either — but it is not this fact)",
+      laneStalled({ ...ST, alive: false }, T) === false);
+    check("stalled: false at git.ahead>0 — that lane has something to show, and is done-looking's business",
+      laneStalled({ ...ST, git: { dirty: 0, ahead: 1 } }, T) === false);
+    check("stalled: false while a git merge/rebase is in progress",
+      laneStalled({ ...ST, gitOp: true }, T) === false);
+    check("stalled: false while a merge is blocked or errored (that is awaiting-human, not stalled)",
+      laneStalled({ ...ST, merge: { status: "blocked" } }, T) === false
+      && laneStalled({ ...ST, merge: { status: "error" } }, T) === false);
+    // the 2026-08-05 miss, now mechanical: a clarify lane parked on the owner is waiting BY DESIGN
+    check("stalled: false on a lane awaiting the owner — parked by design is not stuck",
+      laneStalled({ ...ST, awaiting: "owner" }, T) === false);
+    // an UNKNOWN fact is never an accusation — the polarity trap `!laneDoneLooking` would fall into
+    check("stalled: false on unknown facts (null alive / null git / null idleMs / null gitOp+null git)",
+      laneStalled({ ...ST, alive: null }, T) === false
+      && laneStalled({ ...ST, git: null }, T) === false
+      && laneStalled({ ...ST, idleMs: null }, T) === false
+      && laneStalled({ ...ST, gitOp: null, git: null }, T) === false);
+    // THE SHAPE THAT MADE `observed` A CLAUSE: killSlot/openSlot reset lastOutput to 0 and drop
+    // gitInfo, and 523f5dc deliberately fixed only the BOOT path. So a slot recycled seconds ago
+    // reports idleMs ~1.79e12 — past every threshold — while its git facts are still unknown. Read
+    // through `!doneLooking` it is "stalled" two seconds after the owner opened it.
+    const RECYCLED: LaneSignalView = { alive: true, idleMs: 1.79e12, git: null, gitOp: null,
+      merge: null, observed: false, awaiting: null };
+    check("stalled: false for a JUST-RECYCLED slot (lastOutput 0 reads as ~1.79e12ms idle, git unknown)",
+      laneStalled(RECYCLED, T) === false && laneDoneLooking(RECYCLED, T) === false,
+      `idleMs=${RECYCLED.idleMs} observed=${RECYCLED.observed}`);
+    // and once the git tick has caught up but the pane still has not printed its first byte
+    check("stalled: false while the pane's output was never observed, even with every git fact in",
+      laneStalled({ ...ST, idleMs: 1.79e12, observed: false }, T) === false);
+    // a non-repo cwd: tickGit writes git=null outright and alive stays true, forever
+    check("stalled: false for an alive slot whose cwd is not a repo (git null is not git.ahead=0)",
+      laneStalled({ ...ST, git: null }, T) === false);
+    // dirty is NOT disqualifying: `stalled-dirty` is a subset of this fact, which is exactly how the
+    // composed prose hands it to the digest worker
+    check("stalled: true on a DIRTY tree too — stalled-dirty is a rider on this fact, not a rival",
+      laneStalled({ ...ST, git: { dirty: 3, ahead: 0 } }, T) === true);
+    // --- the two predicates can never both hold: done-looking needs ahead>0, stalled needs ahead=0.
+    // Proved over the product of every value each field takes, not on a happy path.
+    {
+      const alives: (boolean | null)[] = [true, false, null];
+      const idles: (number | null)[] = [null, 0, 5000, 120_000];
+      const gits: ({ dirty: number; ahead: number } | null)[] =
+        [null, { dirty: 0, ahead: 0 }, { dirty: 0, ahead: 2 }, { dirty: 1, ahead: 0 }, { dirty: 1, ahead: 2 }];
+      const ops: (boolean | null)[] = [null, false, true];
+      const merges: ({ status: string } | null)[] = [null, { status: "blocked" }, { status: "merged" }];
+      let both = 0, cases = 0, everStalled = 0;
+      for (const alive of alives) for (const idleMs of idles) for (const git of gits)
+        for (const gitOp of ops) for (const merge of merges)
+          for (const observed of [true, false]) for (const awaiting of [null, "owner"] as const) {
+            const v: LaneSignalView = { alive, idleMs, git, gitOp, merge, observed, awaiting };
+            cases++;
+            if (laneStalled(v, T)) everStalled++;
+            if (laneStalled(v, T) && laneDoneLooking(v, T)) both++;
+          }
+      check("stalled and done-looking are mutually exclusive across every combination of facts",
+        both === 0 && everStalled > 0, `cases=${cases} both=${both} stalled=${everStalled}`);
+    }
+    // --- tier 2 (laneStalledSince), same contract as laneQuietSince next door
+    const NOW = 1_000_000;
+    check("stalled-since: reports when the pane went quiet, well before the threshold is reached",
+      laneStalledSince({ ...ST, idleMs: 5000 }, NOW) === NOW - 5000
+      && laneStalled({ ...ST, idleMs: 5000 }, T) === false,
+      String(laneStalledSince({ ...ST, idleMs: 5000 }, NOW)));
+    check("stalled-since: still reported once the predicate itself has flipped (same instant, one source)",
+      laneStalledSince({ ...ST, idleMs: 120_000 }, NOW) === NOW - 120_000
+      && laneStalled({ ...ST, idleMs: 120_000 }, T) === true);
+    check("stalled-since: null on every NON-clock clause the predicate rejects",
+      laneStalledSince({ ...ST, alive: false }, NOW) === null
+      && laneStalledSince({ ...ST, git: { dirty: 0, ahead: 1 } }, NOW) === null
+      && laneStalledSince({ ...ST, gitOp: true }, NOW) === null
+      && laneStalledSince({ ...ST, merge: { status: "blocked" } }, NOW) === null
+      && laneStalledSince({ ...ST, awaiting: "owner" }, NOW) === null
+      && laneStalledSince({ ...ST, observed: false }, NOW) === null);
+    check("stalled-since: null on unknown facts — an unknown is never a timestamp either",
+      laneStalledSince({ ...ST, alive: null }, NOW) === null
+      && laneStalledSince({ ...ST, git: null }, NOW) === null
+      && laneStalledSince({ ...ST, idleMs: null }, NOW) === null);
+    check("stalled-since: the clock is exactly one clause of the list, and it is the idle one",
+      STALLED_RULES.filter((r) => r.clock).length === 1
+      && STALLED_RULES.find((r) => r.clock)?.prose === "idle");
+    // the worker's prose rule is GENERATED from the same clause list — and it now carries
+    // stalled-dirty as a rider, which was the last hand-written condition rule in that prompt
+    check("stalled: the digest's prose rule is composed from every clause, and carries stalled-dirty",
+      STALLED_RULES.every((r) => STALLED_PROSE.includes(r.prose))
+      && STALLED_PROSE.includes("→ stalled ")
+      && STALLED_PROSE.endsWith("(+ git.dirty>0 → stalled-dirty)"), STALLED_PROSE);
   }
 
   // --- the CONTINUITY fact (continuity.ts): per-slot time-to-next-action, bucketed by the surface

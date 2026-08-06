@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
-import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE } from "./lane-signals";
+import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE,
+  laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
@@ -3478,6 +3479,12 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
 // `sum-` background agent), which is what makes firing it unprompted acceptable.
 const AUTO_REVIEW_MS = Number(process.env.FLEET_AUTO_REVIEW_MS ?? 15_000) | 0; // 0 disables the tick
 const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_000) | 0;
+// `stalled`'s own threshold, deliberately NOT the one above (lane-signals.ts, STALLED_RULES).
+// AUTO_REVIEW_IDLE_MS is the threshold for "finished", where being early costs an advisory review
+// nobody had to wait for. This is the threshold for "stopped working", where being early is a false
+// accusation about a lane that is simply busy — and a lane running an e2e suite routinely prints
+// nothing for ten minutes at a stretch. 30 min (owner's call, 2026-08-06).
+const STALLED_IDLE_MS = Number(process.env.FLEET_STALLED_IDLE_MS ?? 30 * 60_000) | 0;
 // the predicate is LEVEL-triggered — a finished lane stays idle+clean+ahead forever — so the
 // trigger needs a ceiling in both directions: one attempt per git state (reviewAutoTried, written
 // BEFORE the spawn so a failure is remembered too) and this cap on how many throwaway sessions
@@ -6898,6 +6905,11 @@ function laneSignalView(s: Slot, now: number) {
     gitOp: gitOpInfo.get(s.id) ?? null,
     idleMs: s.cwd ? Math.max(0, now - s.lastOutput) : null,
     merge: stewardMergeView(s.id),
+    // lastOutput 0 = this pane's output was never observed. It is NOT idleMs:null — the line above
+    // happily turns it into ~1.79e12 ms — so the `stalled` clause list tests this fact separately
+    // (lane-signals.ts). done-looking ignores it and is unaffected.
+    observed: s.lastOutput > 0,
+    awaiting: s.awaiting,
   };
 }
 
@@ -6952,6 +6964,17 @@ function stewardSlotsView(now: number) {
       // poller can tell "just went quiet" from "quiet for minutes" without lowering the trigger.
       doneLookingSince: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
         ? laneQuietSince(sig, now) : null,
+      // the fleet's word for "this lane stopped working" (lane-signals.ts, STALLED_RULES). Same
+      // shape and the same lanes-only scope as the two above, and like them it is a FACT served
+      // next to the facts it is computed from. NOTHING acts on it: no tick reads it, there is no
+      // auto-kill and no nudge — it exists so a stopped lane can be SEEN, and counted, at all.
+      // `awaiting` is subtracted inside the predicate, not here, so no future caller can forget it.
+      stalled: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
+        && laneStalled(sig, STALLED_IDLE_MS),
+      // its timestamp tier, exactly as doneLookingSince is for done-looking: when the pane went
+      // quiet with every non-clock clause holding — non-null well before `stalled` flips.
+      stalledSince: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
+        ? laneStalledSince(sig, now) : null,
       // context-size proxy — {bytes, mtime} of this session's transcript, null when unknowable
       transcriptFact: transcriptFact(s),
     };
@@ -7201,7 +7224,9 @@ async function sinceLastLookView(prior: Record<string, unknown> | null): Promise
 // digest:null, so the pulse degrades to manual sensing instead of failing.
 const DIGEST_CMD = process.env.FLEET_DIGEST_CMD ?? null; // tests: subprocess stand-in
 interface StewardDigest { conditions: Record<string, string>; changed: string[]; attention: string[] }
-const DIGEST_CONDITIONS = ["healthy-running", "done-looking", "stalled-dirty", "stuck-looping", "awaiting-human", "unknown"];
+// `stalled` joined the list on 2026-08-06: the lane that is alive, has committed nothing and has
+// stopped had no word here at all, so the worker had to file it as healthy-running or unknown.
+const DIGEST_CONDITIONS = ["healthy-running", "done-looking", "stalled", "stalled-dirty", "stuck-looping", "awaiting-human", "unknown"];
 function clampDigest(v: unknown): StewardDigest | null {
   if (typeof v !== "object" || v === null) return null;
   const j = v as { conditions?: unknown; changed?: unknown; attention?: unknown };
@@ -7241,9 +7266,11 @@ async function runStewardDigest(home: Slot): Promise<DigestResult> {
     "For each ACTIVE slot (cwd set) EXCEPT the steward's own (label \"⚙ steward\"), assign one",
     `condition from exactly: ${DIGEST_CONDITIONS.join(" / ")}.`,
     "Deterministic rules, facts only: alive=false → unknown (a dead pane proves nothing else);",
-    "gitOp=true or merge.status error/blocked → awaiting-human; idle + git.dirty>0 → stalled-dirty;",
-    // generated from DONE_LOOKING_RULES — the worker's prose rule and the deterministic predicate
-    // auto-③ fires on are the SAME source, so they cannot drift apart silently (§3)
+    "gitOp=true or merge.status error/blocked → awaiting-human;",
+    // both lines are generated from the clause lists themselves — the worker's prose rules and the
+    // deterministic predicates are the SAME source, so they cannot drift apart silently. The second
+    // one also retired the last hand-written condition rule in this prompt (stalled-dirty).
+    `${STALLED_PROSE};`,
     `${DONE_LOOKING_PROSE}; recent output → healthy-running; anything`,
     "ambiguous → unknown, never a guess. You cannot see transcripts, so never claim stuck-looping",
     "unless the prior record already flagged it.",

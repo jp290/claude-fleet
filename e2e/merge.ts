@@ -3,7 +3,7 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { REPO, check, get, plogRead, post, tmuxOut } from "./harness";
+import { REPO, ROOT, check, get, plogRead, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -244,7 +244,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   // fresh run's pre-pass replays them onto the new main with NO conflict. That put them on the
   // clean auto-land path, which landed conflict resolutions no human had ever seen. M3's "the
   // conflict path always stops" must hold across the re-run, not just within one run.
-  const lnFt = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const lnFt = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   await Bun.write(`${lnFt.cwd}/code.txt`, "root\nft-lane\n");
   spawnSync("git", ["-C", lnFt.cwd, "commit", "-aqm", "fallthrough lane work"]);
   await Bun.write(`${REPO}/code.txt`, "root\nft-main\n"); // same line → conflict → the agent resolves
@@ -294,7 +294,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   // worktree. Kill → reattach → ⏫ then found no pending verdict, carried nothing, and the clean
   // auto-land path landed the agent's resolutions unreviewed — the deploy hole's kill-shaped
   // twin (that one is named in the boot-restore comment; this one had no check until now).
-  const lnKr = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+  const lnKr = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
   await Bun.write(`${lnKr.cwd}/code.txt`, "root\nkr-lane\n");
   spawnSync("git", ["-C", lnKr.cwd, "commit", "-aqm", "killreattach lane work"]);
   await Bun.write(`${REPO}/code.txt`, "root\nkr-main\n"); // same line → conflict → agent resolves
@@ -326,6 +326,23 @@ export async function run(lc: LaneCtx): Promise<void> {
     { status?: string; landed?: boolean };
   check("the reattached lane confirm-lands after review (the park never wedges the land)",
     krConf.status === "merged" && krConf.landed === true, JSON.stringify(krConf));
+
+  // …and the other direction: a ⏸ must not outlive the branch it describes. landLane deletes the
+  // branch-keyed park, but killSlot runs milliseconds later and parkMergeVerdict lifts whatever
+  // slot-keyed verdict is still in mergeLast straight back INTO that park — and a confirm-land is
+  // exactly the shape that still holds one. Both lands just above are that shape (ft never let go
+  // of its verdict; kr's came back out of the park at reattach), and both left a phantom entry
+  // behind: a review posten pointing at a branch whose worktree is gone. Asserting the STATE FILE
+  // rather than an endpoint is deliberate — mergeParked has no route, and the file is the only
+  // thing the boot restore reads, so an absence here is also the "not after a restart" half.
+  // The complement of the kill+reattach checks above: those two go red if the park is dropped,
+  // this one goes red if it is kept too long.
+  await Bun.sleep(600); // saveState writes through a promise chain — let it settle before reading
+  const parkedAfterLand = Object.keys(((await Bun.file(`${ROOT}/fleet.json`).json()) as
+    { mergeParked?: Record<string, unknown> }).mergeParked ?? {});
+  check("a LANDED branch leaves no parked ⏸ behind — not in memory, and not in the file a restart reads",
+    !parkedAfterLand.includes(lnKr.branch) && !parkedAfterLand.includes(lnFt.branch),
+    JSON.stringify({ parked: parkedAfterLand, kr: lnKr.branch, ft: lnFt.branch }));
 
   // --- V1: deterministic verify in the merge verdict (design note §3). The server runs
   // FLEET_VERIFY_CMD (here $DIR/fakeverify — a git-grep for a VERIFYBAD sabotage marker)

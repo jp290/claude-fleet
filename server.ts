@@ -1321,7 +1321,16 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ er
   const landed = await buildLaneOutcome(s, "landed", facts);
   const fail = await removeWorktreeSafe(repo, path, branch);
   if (fail) return fail;
-  mergeParked.delete(branch); // the branch is landed and gone — a parked ⏸ must not outlive it
+  // the branch is landed and gone — a parked ⏸ must not outlive it. BOTH keyed views have to go,
+  // because the park is RE-CREATED from the slot-keyed one: killSlot below calls parkMergeVerdict,
+  // which lifts whatever mergeLast still holds back into mergeParked milliseconds later — and a
+  // confirm-land is precisely the shape that still holds a reviewable verdict at this point. So
+  // the line above only sticks if its source goes with it; otherwise the entry re-appears, gets
+  // persisted, and the boot restore reads it back forever as a review posten for a branch and a
+  // worktree that no longer exist. killSlot's park is untouched: it exists for a slot letting go
+  // of a branch that STILL EXISTS and can be reattached — the one thing a land rules out.
+  mergeParked.delete(branch);
+  mergeLast.delete(s.id);
   emitLaneOutcome(landed);
   // landing completes the lane's task — mark it BEFORE killSlot so detachSlotTasks
   // (which handles aborts) sees nothing left to detach

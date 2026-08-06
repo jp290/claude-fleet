@@ -395,6 +395,22 @@ not outlive it"*) und ruft **danach** `killSlot` (`server.ts:1330`). `killSlot` 
 (Findings-Doc §4) — diese Inbox würde am ersten Tag ein Item zeigen, das seit 16 Stunden erledigt
 ist, mit einer Handlungsaufforderung, die nicht mehr ausführbar ist.
 
+**Status 2026-08-06 — der Pfad ist zu, der Alt-Eintrag lebt noch.** `landLane` räumt jetzt BEIDE
+Sichten, bevor `killSlot` läuft: `mergeParked.delete(branch)` **und** `mergeLast.delete(s.id)`.
+Die Quelle, aus der `parkMergeVerdict` die Park-Map Millisekunden später wieder befüllte, ist
+damit leer — und der Aufruf in `killSlot` bleibt unangetastet, denn er ist kein Bug: er trägt
+einen reviewable Verdict über einen Kill hinweg, solange der Branch WEITERLEBT und reattacht
+werden kann. Genau das schließt ein Land aus, und genau das ist der Unterschied, an dem der Fix
+ansetzt. Gepinnt durch zwei Checks in `e2e/merge.ts`: *„a LANDED branch leaves no parked ⏸
+behind — not in memory, and not in the file a restart reads"* (rot ohne den Fix) und, für die
+Gegenrichtung, das bestehende *„⏸ survives kill + reattach — the reattached lane still wears the
+pause"* (rot, sobald jemand den Park stattdessen streicht). **Nicht erledigt: der Alt-Eintrag**
+`fleet/260805151236-096a` selbst — er liegt bereits in `fleet.json` und verschwindet durch einen
+Fix am Land-Pfad nicht. Ob per Einmal-Räumung beim Boot (räumt auch künftige Altlasten, fasst
+aber ungeprüften Zustand an) oder von Hand, ist eine Owner-Frage. Solange er steht, gilt die
+Einschränkung weiter unten (`mergeLast.status` als noch nicht vertrauenswürdiger Inbox-Item-Typ)
+unverändert.
+
 ### 9.2 Ein requeueter Dispatch lässt seine Lane stehen
 
 Siehe §5.4. Eigener Punkt, weil er nicht Kollision ist, sondern Ressourcenleck.

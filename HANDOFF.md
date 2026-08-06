@@ -1,8 +1,137 @@
-# HANDOFF — Session 30 (2026-08-06 abends: der Rückkanal, und die Suite wird vermessen) · 29/28/27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 31 (2026-08-06 nachts: sechs Lands, und die Fäden sortiert) · 30/29/28/27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 31: Runde 2+3 gelandet — und der Versuch, ALLE Fäden einmal sauber zu sortieren
+
+**Für die nächste Session steht die Gruppierung unten unter „Die sieben Gruppen".** Sie ist
+nach einer Achse gebaut, nicht nach Themen: siehe „Wie sortiert wurde".
+
+### Gelandet und deployed (6 Commits, alle Audits grün außer einem fremdgetöteten)
+
+| | |
+|---|---|
+| `72da914` | T3-Doc: `Stop`-Hooks als Nullpunkt der idle-Uhr — **gerechnet und verworfen** (die Lane hat ihren eigenen Vorschlag adversarial gekippt; 92/104 Lanes ≤1 Owner-Prompt, Median-Session 67,8 min → die Klausel hätte die gesunde Median-Lane als `stalled` markiert) |
+| `46e0bc3` | Mini-Fixes: Branch-Truncation suffix-erhaltend, Untracked-Tooltip-Ternary |
+| `04646d3` | `docs/agent-visibility-2026-08-06.md` (455 Z.) — was jede Rolle sieht, gemessen |
+| `d49c6e8` | **Der Dispatcher liest `collides`** — der Deckel spielt nicht mehr Kollisionsvermeidung |
+| `1074b86` | F2+F3: Pastellfarbe pro Projekt, Lanes falten sich unter die Main-Session |
+| `ed5c352` | F5: Dateibaum im Board + Editor mit realpath-Containment, Hash-Konflikt, Deny-Liste |
+
+Vier davon `verified:true, confirmedByHuman:false` (vollmaschinell). `72da914` trägt
+`verify:null` + Hand-Kette (5× ALL PASS) + Confirm — die Verify lief in den Timeout, **469 s
+davon Warten auf den Suite-Mutex, 31 s echte Arbeit.**
+
+### Wie sortiert wurde — die Achse, nicht das Thema
+
+Wer parallelisieren will, gruppiert nach **Kollisionsfläche** (welche Datei schneidet ein
+Strang) und quer dazu nach **Entscheidungs-Eigentum** (mechanisch vs. Owner). Ein
+Themen-Cluster, dessen zwei Stränge dieselbe Funktion anfassen, ist keine Gruppe, sondern eine
+Warteschlange — heute live vorgeführt: `05ba5609` und `db02104d` sind zwei Befunde in
+**derselben Funktion** (`otherOpenLanes`), in entgegengesetzte Richtungen.
+
+### Die Decke, heute gemessen — jeder Orchestrierungsplan muss sie tragen
+
+- **Ein Suite-Mutex für die ganze Maschine.** Ein Land = ~110 s Gate + ~600 s Post-Land-Audit,
+  beide auf demselben Lock. **Lands sind zwangsläufig seriell**, Takt ~12 min. Parallelität
+  gilt fürs Produzieren, nie fürs Landen.
+- **Drei Suiten sind heute fremdgetötet worden**, alle durch Muster-Kills: Slot 1s
+  `-f "bun server.ts"` traf Live-Server + die Sandbox von Slot 7; sein späterer
+  `pkill -f 'e2e-isolated.sh'` traf den Post-Land-Audit (exit 143, 15,6 s, **null Checks** —
+  stand als ROT im Register, adjudiziert `unknowable`). Regel steht jetzt in CLAUDE.md:
+  eigenen Lauf nur über die notierte PID beenden.
+- **Tier-2-Vorschau in der Lane ist verzichtbar** (Vorschau, kein Gate) — der Post-Land-Audit
+  fährt dieselbe Suite ohnehin. Das halbiert die Mutex-Last pro Lane.
+
+### Die sieben Gruppen
+
+**G1 — Land-/Merge-Maschinerie.** `25b79c23` (Repair-Worker darf nicht committen: `git commit`
+kommt in `MERGE_TOOLS` 0× vor, `merge-prompt.ts:187` verlangt es wörtlich; **latent**, nie
+ausgelöst — `repairRounds` = 0 in allen 104 Ledger-Zeilen). Fläche: `server.ts` Tool-Profile +
+`merge-prompt.ts` + `e2e/prompts.ts`. Blocker: keiner. `ready`.
+
+**G2 — Die Queue-Wahrheit.** `05ba5609` (rebaste Lane meldet 37 Dateien statt 1) +
+`db02104d` (leere Lane hält eine Zeile: Fehlalarm der neuen Kollisionsprüfung, live gemessen).
+**EINE Lane, nicht zwei** — beide Fehlerrichtungen sitzen in `otherOpenLanes`. Dazu passend:
+`cabf3c88` (eine startende Zeile sieht man ihr nicht an) und Map-**5.3** (`files` als Feld am
+Refine-Kind). Fläche: `server.ts` (`otherOpenLanes`/`tickDispatch`/Analyse), `e2e/tasks.ts`,
+`src/client.ts` (Row-Note). Blocker: keiner. **Höchste Hebelwirkung**, weil der Deckel gerade
+durch diese Prüfung ERSETZT wurde.
+
+**G3 — Sensoren + die fünf ungelesenen Notizen.** Map-**6.2** (`sinceLastLook` nach Repo
+schlüsseln), **6.3** (`transcriptFact.mtime` warnt nicht vor sich selbst), **9.2** (requeueter
+Dispatch lässt seine Lane stehen — ein Leck), **E** (Digest-TTL; `DIGEST_TTL` existiert im
+Code, ob es der Map-Punkt ist: **ungeprüft**). Notizen `05320523`, `94565a55`, `b759e8d9`,
+`9821035e` füttern genau das. Plus der ungespawnte Brief `briefs/stalled-parked-and-ledger.md`
+(Parkungs-Markierung, dann Instanz-Ledger). Fläche: `server.ts` Steward-Views + `lane-signals.ts`.
+
+**G4 — Board-Rest.** `2784427e` (F6 Uploads, Owner-Entscheid „lane-lokal" steht wörtlich im
+Brief, Analyst hält nur wegen brief-drift), F7 (Drag&Drop im Explorer, im UI-Brief §F7, **keine
+Queue-Zeile**), `356333db` (Zeit der letzten Ausgabe sichtbar). Fläche: `src/client.ts` +
+`public/index.html` (+ eine Upload-Route für F6). **Diese Gruppe kollidiert mit sich selbst** —
+immer nur EIN Board-Strang gleichzeitig.
+
+**G5 — Harness-Öffnung + Pi.** `0d39cc94` (drei harness-blinde Stellen: `claudeAlive`,
+`MODEL_RE`, unauflösbares Modell → tote Pane) und `944281c5` (Pi anschließen, **braucht deinen
+Login**). Fläche: `server.ts` Spawn-Pfad. `0d39cc94` ist `ready` und ohne dich baubar.
+
+**G6 — Autonomie: Verben 2–5 + der Rückkanal.** Verb 2 Deploy (`api/deploy` kommt in
+`server.ts` **0×** vor — ungebaut, verifiziert), Verb 3 Auto-Promote, Verb 4 Steward auf neuen
+Schienen (Steward ist unbesetzt), Verb 5 Auto-Land; Map-**G** (Inbox) steht bewusst zuletzt.
+Dazu `1981be9a` — **in Flug in Slot 5**, Commit `0de526c` (doc-only) **unlandet**. Und
+`0be58694` (Entscheidungsnotiz, kein Auftrag).
+
+**G7 — Plan-Hygiene, und sie ist überfällig.** `BACKLOG.md` (1269 Z., zuletzt 2026-08-05)
+beschreibt Arbeit unter anderen Namen als der UI-Brief und die Landkarte: **Item 13
+(„Right sideboard: project file tree") ist F5 und heute gelandet**, **Item 12 („File /
+screenshot drop") ist F6 ist `2784427e`** — drei Namen für eine Sache. P-4 sagt „Client
+rendering still open", `deployGap` steht 5× in `src/client.ts`. Zwei Zeilen tragen noch
+„SHIPPED, NOT yet deployed". Wer die nächste Runde aus dem BACKLOG plant, plant gegen einen
+veralteten Baum.
+
+### Was NICHT nebeneinander laufen darf
+
+1. Zwei Stränge aus **G4** (alle schneiden `src/client.ts` an derselben Stelle).
+2. **G2 in sich** — die beiden Befunde sind dieselbe Funktion; getrennt gebaut heben sie sich auf.
+3. Mehr als **zwei** `server.ts`-Lanes gleichzeitig (G1, G2, G3, G5, G6 fassen alle `server.ts` an).
+4. Zwei Lands. Nie. Und keine Lane-Tier-2-Vorschau neben einem Land.
+
+### Drei Owner-Entscheidungen, die den Rest freischalten
+
+1. **Verb 2 (Deploy) bauen — ja/nein?** Ohne ihn bleibt jede gelandete Arbeit dunkel, bis ein
+   Mensch `bun run build` + srv-Neustart fährt. Heute waren das drei Handgriffe von mir.
+2. **Lane-Deckel anheben — jetzt oder erst nach G2?** Der Deckel wurde durch eine Prüfung
+   ersetzt, die am selben Abend einen Fehlalarm produziert hat. Erst G2, dann anheben, ist die
+   sichere Reihenfolge; „jetzt" geht, kostet aber Hand-Knopf-Betrieb.
+3. **Pi (`944281c5`) — wann machst du den Login?** Ohne dich bewegt sich dort nichts;
+   `0d39cc94` (die harness-blinden Stellen) läuft davon unabhängig.
+
+### Vorschlag für die erste Welle der nächsten Session
+
+Zwei produzierende Lanes, ein serieller Land-Takt:
+
+- **Lane A = G2** (die eine `otherOpenLanes`-Lane, beide Richtungen + Check). Höchster Hebel,
+  weil sie die Instanz repariert, die jetzt allein Kollisionen zurückhält.
+- **Lane B = G1** (Repair-Worker-Profil + der Check, der Prompt und Profil verkoppelt).
+  Andere Region in `server.ts`, kleiner Diff.
+- **Slot 5** (`1981be9a`, Autonomie-Bausteine) landet der Owner selbst — nicht anfassen; sein
+  Ergebnis gehört gelesen, BEVOR G6 geplant wird, denn genau dort liegen die Prämissen.
+- **Welle 2:** G6/Verb 2 (Deploy) gegen G4/F6 — verschiedene Flächen, sauber parallel.
+- **Welle 3:** G3 als **ein** Bündel (die vier Sensor-Punkte + die vier Notizen gehören
+  zusammen, einzeln erzeugen sie vier Rebase-Runden auf denselben Views).
+
+### Was ich NICHT geprüft habe
+
+Ob Map-**E** wirklich offen ist (`DIGEST_TTL` existiert, den Punkt selbst habe ich nicht
+gelesen) · den Inhalt der fünf Rundgang-Notizen (nur ihre Titel) · ob F7 heute noch gewollt ist
+(steht nur im Brief, keine Queue-Zeile) · den vollen `BACKLOG.md`-Text (1269 Zeilen; ich habe
+die Registerzeilen und drei Stichproben geprüft, die Drift ist damit belegt, ihr Umfang nicht) ·
+und die Frage, ob der Fehlalarm aus `db02104d` wirklich in `otherOpenLanes` entsteht — die
+Eingrenzung steht, der Mechanismus ist Teil der Arbeit.
 
 ---
 

@@ -1,7 +1,7 @@
 // The 🔍 review agent (owner click) and auto-③ (the server running it itself on a done-looking
 // lane) — every guard rail asserted as a fact via the stand-in's per-cwd spawn log.
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, check, get, post, reviewRunsFor, lastReviewPromptFor } from "./harness";
+import { BASE, REPO, check, get, post, paneEnv, reviewRunsFor, lastReviewPromptFor } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -291,6 +291,105 @@ export async function run(ctx: Ctx): Promise<void> {
     check("auto-③ never reviews a freshly recycled, still-empty lane (no phantom 'no code changes' review)",
       reviewRunsFor(rcCwd) === 0 && rcRev.cached === false, `runs=${reviewRunsFor(rcCwd)} ${JSON.stringify(rcRev)}`);
     await post(`/api/slots/${donor.slot}/kill`, {});
+  }
+
+  // --- (G2) `stalled` SERVED AS A FACT (briefs/lane-stalled-fact.md) — section G's polarity twin.
+  // G proves an unknown fact never becomes permission to ACT; this proves the same discipline for a
+  // fact that is an ACCUSATION. The state has no other word in the fleet: a lane that is alive, has
+  // committed nothing and has stopped cannot be done-looking by construction (that needs ahead>0),
+  // so before this it read as healthy-running while it held a dispatcher slot shut.
+  // Nothing acts on this — there is no tick, no kill, no nudge behind it. What is asserted here is
+  // exactly that it is COMPUTED and SERVED, on the right slots and on no others. The harness shrinks
+  // FLEET_STALLED_IDLE_MS (30 min in production) so the clock is observable inside the budget. ---
+  {
+    const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+    type SvSlot = { id: number; stalled: boolean; stalledSince: number | null; doneLooking: boolean;
+      observed: boolean; lastOutput: number };
+    const svSlot = async (slot: number): Promise<SvSlot | undefined> =>
+      ((await (await fetch(BASE + "/api/steward/sessions",
+        { headers: { authorization: `Bearer ${svTok}` } })).json()) as { slots: SvSlot[] })
+        .slots.find((x) => x.id === slot);
+
+    // (a) the subject: a lane that never commits anything and simply goes quiet
+    const sl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    // (b) the same state wearing the ⚙ steward label — a planning pane is not a stalled lane
+    const ss = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    await post(`/api/slots/${ss.slot}/rename`, { label: "⚙ steward" });
+    // (c) a NON-lane slot in the same shape: a plain clone, clean, nothing ahead, no worktree
+    const stalledPlain = `${REPO}.stalledplain`;
+    spawnSync("git", ["clone", "-q", REPO, stalledPlain]);
+    const freeStalled = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((x) => x.cwd === null);
+    const openStalled = freeStalled ? await post(`/api/slots/${freeStalled.id}/open`, { cwd: stalledPlain }) : null;
+    check("stalled setup: a non-lane slot sits on a clean clone with nothing ahead", !!openStalled?.ok,
+      `${freeStalled?.id} ${openStalled?.status}`);
+
+    // EVERY pane here must SPEAK before it falls silent, or the fixture tests nothing: this harness
+    // runs FLEET_CMD=true, so a freshly opened pane emits no bytes at all and `lastOutput` stays 0 —
+    // which is exactly the "never observed" state the predicate refuses to accuse (measured: the
+    // first version of this block failed here, with observed:false and idleMs 1.79e12). A real lane
+    // paints within a second of spawning; the probe reproduces that, and only then does going quiet
+    // mean what the fact says it means. paneEnv is the sanctioned way to make a pane render (it
+    // retries send-keys until the marked line appears), so it doubles as proof the pane responded.
+    // The wait is load-bearing, not politeness: ensureSlot sets `quietUntil = now + 1500` when it
+    // starts piping, and poll() streams output inside that window WITHOUT stamping lastOutput — the
+    // repaint tmux just caused is not the session doing work (server.ts, both lines). A probe fired
+    // inside the window therefore renders on the pane, satisfies paneEnv, and still leaves
+    // lastOutput at 0. Measured exactly that way: the probes all reported success and the lane was
+    // still observed:false. Every window started at its own slot's open, all of which are above.
+    await Bun.sleep(2000);
+    const panes = [sl.slot, ss.slot, ...(freeStalled ? [freeStalled.id] : [])];
+    const spoke: number[] = [];
+    for (const target of panes) if ((await paneEnv(`s${target}`, "HOME")) !== null) spoke.push(target);
+    check("stalled setup: every pane in this block produced output before going quiet",
+      spoke.length === panes.length, `spoke=[${spoke}] of [${panes}]`);
+
+    // the git facts ride the 10s tickGit, and the idle clock is the shrunk threshold on top
+    let slView: SvSlot | undefined;
+    for (let i = 0; i < 40 && !slView?.stalled; i++) {
+      await Bun.sleep(1000);
+      slView = await svSlot(sl.slot);
+    }
+    // non-tautology guard first: name the precondition, so a silent pane fails as a SETUP problem
+    // rather than looking like the predicate is broken
+    check("stalled setup: the lane's output was observed, so idle means idle and not 'never spoke'",
+      slView?.observed === true && (slView?.lastOutput ?? 0) > 0,
+      JSON.stringify({ observed: slView?.observed, lastOutput: slView?.lastOutput }));
+    check("stalled is served as a fact for a lane that is alive, has committed nothing, and went quiet",
+      slView?.stalled === true, JSON.stringify(slView));
+    // the mutual exclusion the clause lists guarantee, observed on the live server rather than in a
+    // fixture: this lane has nothing to review, so the other predicate must be silent about it
+    check("a stalled lane is NOT done-looking — the two predicates never both hold",
+      slView?.stalled === true && slView?.doneLooking === false, JSON.stringify(slView));
+    check("stalled-since is served next to it as a past timestamp, not a boolean's shadow",
+      typeof slView?.stalledSince === "number" && (slView.stalledSince as number) <= Date.now(),
+      JSON.stringify(slView?.stalledSince));
+    // the two exclusions, read at the same instant as the positive case above
+    const ssView = await svSlot(ss.slot);
+    const plainView = freeStalled ? await svSlot(freeStalled.id) : undefined;
+    check("stalled is never claimed about ⚙ steward or a non-lane slot, and neither is stalled-since",
+      ssView?.stalled === false && ssView?.stalledSince === null
+      && plainView?.stalled === false && plainView?.stalledSince === null,
+      JSON.stringify({ steward: ssView, plain: plainView }));
+
+    // (d) THE FACT IS LEVEL-TRIGGERED, NOT LATCHED: the moment the lane has something to show, it is
+    // done-looking's business again and this fact must go quiet by itself. A `stalled` that stuck
+    // once set would accuse a lane that had gone back to work.
+    await Bun.write(`${sl.cwd}/unstalled.txt`, "the lane commits, so it is no longer empty\n");
+    spawnSync("git", ["-C", sl.cwd, "add", "unstalled.txt"]);
+    spawnSync("git", ["-C", sl.cwd, "commit", "-qm", "the stalled lane produces work"]);
+    let after: SvSlot | undefined;
+    for (let i = 0; i < 40 && after?.stalled !== false; i++) {
+      await Bun.sleep(1000);
+      after = await svSlot(sl.slot);
+    }
+    check("stalled clears itself once the lane has committed something (level-triggered, never latched)",
+      after?.stalled === false && after?.stalledSince === null, JSON.stringify(after));
+
+    await post(`/api/slots/${sl.slot}/kill`, {});
+    await post(`/api/slots/${ss.slot}/kill`, {});
+    if (freeStalled) await post(`/api/slots/${freeStalled.id}/kill`, {});
+    spawnSync("rm", ["-rf", stalledPlain]);
   }
 
   // --- (H) A FAILED GIT READ IS NOT "NOTHING TO REVIEW". runReview reads the lane's diff with two

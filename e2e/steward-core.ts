@@ -1,7 +1,7 @@
 // The steward principal, first half: its scoped token, the reduced fleet-wide reads, the
 // deploy-gap / transcript-size / bundle-staleness facts, transcript redaction, the owner-only
 // 403s, typed+capped sends across an audit rotation, the journal and the P3 digest.
-import { DONE_LOOKING_PROSE } from "../lane-signals";
+import { DONE_LOOKING_PROSE, STALLED_PROSE } from "../lane-signals";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type ContinuitySummary } from "../continuity";
@@ -513,6 +513,26 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("the digest worker's done-looking rule is the predicate's own clause list, verbatim",
     digestPrompt.includes(DONE_LOOKING_PROSE),
     JSON.stringify(digestPrompt.split("\n").find((l) => l.includes("done-looking")) ?? ""));
+  // the same assurance for `stalled`, which arrived with a rider: `stalled-dirty` was the LAST
+  // hand-written condition rule in this prompt, and it is now composed from the clause list too.
+  // So the check is two-sided — the composed line is present, and no hand-written second version of
+  // the rule survives anywhere in the prompt to quietly contradict it.
+  check("the digest worker's stalled rule is the predicate's own clause list, verbatim",
+    digestPrompt.includes(STALLED_PROSE),
+    JSON.stringify(digestPrompt.split("\n").find((l) => l.includes("→ stalled")) ?? ""));
+  // Matched on the RULE ARROW rather than on a count of the word: this prompt also embeds the prior
+  // journal record and the slots JSON, either of which may legitimately carry "stalled-dirty" as a
+  // recorded condition VALUE. Counting occurrences would make this fail on the suite's own history.
+  const dirtyRules = digestPrompt.split("\n").filter((l) => l.includes("→ stalled-dirty"));
+  check("no hand-written stalled-dirty rule survives beside the composed one",
+    dirtyRules.length === 1 && dirtyRules[0].includes(STALLED_PROSE), JSON.stringify(dirtyRules));
+  // the worker cannot report a condition it was never given a word for — `stalled` must be in the
+  // enumerated list it picks from, or clampDigest silently rewrites every use of it to "unknown"
+  // "stalled" is a prefix of "stalled-dirty", so the vocabulary line is matched on the separators
+  // the list is joined with — otherwise this passes on stalled-dirty alone and asserts nothing
+  const vocab = digestPrompt.split("\n").find((l) => l.includes("from exactly:")) ?? "";
+  check("the digest's condition vocabulary offers stalled as its own condition, beside stalled-dirty",
+    vocab.includes("/ stalled /") && vocab.includes("/ stalled-dirty /"), JSON.stringify(vocab));
 
   // (d) ?wait is clamped to [0, 60s] — observable via the echoed waitMs (cache is fresh, so these
   //     return instantly): an over-max value is capped to 60s, a non-numeric falls back to ~30s.

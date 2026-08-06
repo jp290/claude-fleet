@@ -543,10 +543,36 @@ export async function run(ctx: Ctx): Promise<void> {
     // this field the steward learned the state only by bouncing off the send gate above — and
     // could file "lane looks stalled" notes about a lane parked by design.
     const senseSlots = ((await (await fetch(`${BASE}/api/steward/sessions`, { headers: stewardHdr })).json()) as
-      { slots: { id: number; awaiting?: "owner" | null }[] }).slots;
+      { slots: { id: number; awaiting?: "owner" | null; stalled?: boolean; stalledSince?: number | null }[] }).slots;
     check("(i) the steward's sense surface says the lane is awaiting the owner (not merely idle)",
       senseSlots.find((s) => s.id === iSlot)?.awaiting === "owner",
       JSON.stringify(senseSlots.find((s) => s.id === iSlot) ?? null));
+    // …and since 2026-08-06 that is mechanical rather than a matter of reading carefully: `stalled`
+    // is a deterministic predicate now (lane-signals.ts), and `awaiting` is one of its CLAUSES. This
+    // lane is alive, has committed nothing and is silent — the exact shape the fact would otherwise
+    // accuse. Parked by design is not stuck.
+    // Asserted on `stalledSince`, which is the CLOCK-INDEPENDENT half: it is null if and only if a
+    // NON-clock clause fails, so it cannot pass merely because the idle threshold has not elapsed
+    // yet. The git fact is polled first for the same reason — an unknown git would make it null for
+    // the wrong reason, and the assertion would prove nothing about `awaiting` at all.
+    type SenseSlot = { id: number; stalled?: boolean; stalledSince?: number | null;
+      alive?: boolean | null; git?: { ahead: number } | null; observed?: boolean };
+    const senseOf = async (): Promise<SenseSlot | undefined> =>
+      ((await (await fetch(`${BASE}/api/steward/sessions`, { headers: stewardHdr })).json()) as
+        { slots: SenseSlot[] }).slots.find((s) => s.id === iSlot);
+    let iSense: SenseSlot | undefined;
+    for (let i = 0; i < 40; i++) {
+      iSense = await senseOf();
+      if (iSense?.git && iSense.alive === true && iSense.observed === true) break;
+      await Bun.sleep(500);
+    }
+    // `observed` belongs in the guard as much as the git fact does: a pane that never printed a byte
+    // is not stalled either, and without this the assertion below could pass for that reason instead
+    check("(i) non-tautology guard: every other stalled clause holds for the parked lane (alive, observed, ahead=0)",
+      iSense?.alive === true && iSense?.observed === true && iSense?.git?.ahead === 0,
+      JSON.stringify({ alive: iSense?.alive, observed: iSense?.observed, git: iSense?.git ?? null }));
+    check("(i) a lane parked on the owner is never `stalled`, however long it waits",
+      iSense?.stalled === false && iSense?.stalledSince === null, JSON.stringify(iSense));
 
     // --- the criterion: the lane PROPOSES through its own scoped token, the owner CONFIRMS ---
     const laneSelfTok = persisted.slots?.[String(iSlot)]?.selfToken ?? "";

@@ -16,6 +16,11 @@ markiert, nicht als Lane.
 (`#board`, gerendert von `renderBoard`, src/client.ts:1756). Der Filemanager
 (Picker, `openPicker` src/client.ts:3584) bleibt laut Owner **unangetastet**.
 
+**Lesart von „beide Tabs neu bauen":** als Umbau, nicht als Rewrite — der Owner
+sagt selbst „weiterhin die gleichen hilfreichen Informationen" (rechts) und „der
+Filemanager ist gut soweit" (links). Jede Lane behält funktionierende Teile und
+ordnet um, statt neu zu schreiben.
+
 ---
 
 ## Ist-Stand-Anker (verifiziert, nicht erinnert)
@@ -71,9 +76,16 @@ interface Harness {
 - Jedes Feature, das claude annimmt, fragt künftig `supports.*` und **degradiert
   sichtbar** (kein Transcript-Toggle, kein ✨/🔍, kein „bring session back" für
   einen Harness ohne resume) statt still zu brechen.
-- UI: im Picker-Dir-Detail (wo heute das Modell gewählt wird) ein Harness-Select +
-  harness-spezifische Optionen darunter — das ist die „unten fest"-Variante, die
-  der Owner bevorzugt.
+- UI: im Picker-Dir-Detail eine Options-Zeile (Harness-Select + harness-
+  spezifische Optionen wie Modell/Effort) neben „Start session here"/„⎇ New lane
+  here" — die „unten fest"-Variante, die der Owner bevorzugt. **Befund der
+  Nachprüfung (2. Runde):** es gibt heute NIRGENDS im Client eine Spawn-Option —
+  die Server-Routen akzeptieren `model` längst (`modelOf`, server.ts:8561, 9498,
+  9518), aber kein Client-Aufruf sendet es (`newLane` client.ts:1177 postet nur
+  `{repo, branch}`). Die Options-Zeile ist also die ERSTE Spawn-Options-UI
+  überhaupt und schließt nebenbei eine bestehende Lücke: Modell-pro-Slot ist
+  bisher nur per API erreichbar, nie per Klick. Die Schnellpfade (⎇+ quicklane,
+  ⌘Enter) bleiben Ein-Klick und nehmen Defaults (claude + DEFAULT_MODEL).
 - **Mit ZWEI Harnesses anfangen** (claude + der eine, der wirklich installiert
   ist), nicht mit vieren. Zwei erzwingen die Abstraktion; vier multiplizieren nur
   die Testfläche.
@@ -122,7 +134,19 @@ erhöhen.
   Anker = der non-lane-Slot mit der niedrigsten ID in diesem Repo.
 - Zugeklappt: Anker-Row + Chip „⎇ N" in der Projektfarbe (F2 zuerst — die Farbe
   IST die Stapel-Identität). Aufgeklappt: Lane-Rows leicht eingerückt darunter;
-  Zustand in localStorage, bleibt auf.
+  Zustand in localStorage, bleibt auf (per Gerät — Handy und Desktop dürfen
+  verschieden aufgeklappt sein, das ist gewollt).
+- **Klick-Semantik, wörtlich vom Owner** („erst aufklappt und klickbar wenn man
+  auf ihn drückt, bleibt dann auf"): Klick auf den ZUGEKLAPPTEN Stapel klappt nur
+  auf — er wechselt NICHT die Pane. Erst danach sind die Rows normal klickbar;
+  ein weiterer Klick auf die Anker-Row fokussiert die Main-Session. Zuklappen
+  über ein kleines ▾/▸ am Anker, nie über den Row-Klick (sonst kann man die
+  Main-Session nicht mehr fokussieren, ohne den Stapel zu schließen).
+- **Zweite Main-Session im selben Repo** (Owner-Lean: ein Stapel = EIN Anker):
+  Anker ist der non-lane-Slot mit der niedrigsten ID; jede weitere Main-Session
+  des Repos bleibt eine normale flache Row — mit derselben Projektfarbe, damit
+  die Zugehörigkeit sichtbar bleibt, aber ohne zweiten Stapel. (Default, im
+  Clarify-Block unten bestätigen lassen.)
 - **Drei Kanten, die über Gelingen entscheiden:**
   1. Lanes ohne Main-Session im selben Repo (kommt real vor — Dispatcher-Lanes):
      eigener schmaler Repo-Header als Anker, nie unsichtbar.
@@ -190,6 +214,11 @@ offen halten, nicht bauen.)
   in einer working Lane).
 - Warnhinweis im Editor, wenn die Session gerade ● working ist (Signal existiert:
   `sessionActive`, client.ts:958).
+- **Reichweiten-Grenze benennen:** das Board rendert auf Mobile gar nicht
+  (`renderBoard` returned bei `isMobile()`, client.ts:1760, plus CSS-Breakpoints)
+  — Explorer + Editor sind damit im ersten Schnitt Desktop-only. Bewusst so
+  lassen (ein Editor auf dem Handy ist ein eigenes Projekt); im Clarify-Block
+  unten steht die Frage, ob dem Owner das reicht.
 
 **Done:** File im Board-Explorer anklicken → Inhalt lesbar; Edit-Klick → ändern →
 Save → `git diff` im Worktree zeigt exakt die Änderung; Pfad-Escape (`../`,
@@ -212,15 +241,26 @@ geben und direkt in der Nachricht zu erwähnen.
   <ts>-<name>` — außerhalb jedes Repos (gleiche Logik wie die Guest-Verzeichnisse
   außerhalb des public Repos). Claude liest absolute Pfade problemlos, Bilder
   eingeschlossen.
-- Nach Upload fügt der Client `@/abs/pfad` in den Composer ein — „direkt in der
-  Nachricht erwähnt", der Owner tippt den Rest.
+- Nach Upload fügt der Client die Erwähnung in den Composer ein — „direkt in der
+  Nachricht erwähnt", der Owner tippt den Rest. **Format in der Lane VERIFIZIEREN,
+  nicht annehmen:** ob ein per tmux paste-buffer eingefügtes `@/abs/pfad` die
+  @-Mention der claude-CLI wirklich auslöst, ist ungeprüft — der robuste Fallback
+  ist schlichter Text (`attached: /abs/pfad — read it`), das Modell liest den Pfad
+  per Read ohnehin. Erst testen, dann das schönere Format wählen.
+- **Handy-Parität von Anfang an:** Drag&Drop existiert auf dem Phone schlicht
+  nicht — dieselbe Upload-Route braucht dort einen 📎-Knopf neben dem Composer
+  (`<input type=file>`, öffnet Kamera/Fotos/Dateien). Der Owner bedient Fleet
+  real vom Handy (die rowacts-Leiste existiert genau dafür, client.ts:3860);
+  ein Desktop-only-Upload wäre das halbe Feature. Paste im Composer deckt
+  Desktop-Screenshots, 📎 deckt Mobile — beides über dieselbe Route.
 - Retention von Anfang an mitliefern (Löschen beim Slot-Kill + Alters-Sweep),
   sonst wächst ein unsichtbares Verzeichnis für immer.
 
 **Done:** PNG auf die Pane droppen → Pfad steht im Composer → senden → Session
-liest das Bild nachweislich (beschreibt den Inhalt); dito Textdatei; 25-MB-Datei
-wird mit klarer Meldung abgelehnt; Kill räumt `drops/<slot>/` weg. e2e-Check für
-die Route (Auth + Cap + Pfad).
+liest das Bild nachweislich (beschreibt den Inhalt); dito Textdatei; dito einmal
+über den 📎-Knopf (der Handy-Pfad, am Desktop testbar); 25-MB-Datei wird mit
+klarer Meldung abgelehnt; Kill räumt `drops/<slot>/` weg. e2e-Check für die
+Route (Auth + Cap + Pfad).
 
 ## F7 — Drag&Drop im File-Explorer (Phase 2)
 
@@ -254,15 +294,39 @@ Server-Checks in `e2e/` neben die passende Familie, nie ans Runner-EOF.
 
 ---
 
+## Offene Fragen an den Owner (eine Antwort-Runde reicht)
+
+Gesammelt, damit sie in EINER Nachricht beantwortbar sind — alles andere im
+Dossier ist entschieden oder als Default markiert:
+
+1. **F1:** Welche Agenten-CLIs sind auf der Maschine real installiert (und
+   welche willst du zuerst)? Pi/opencode/Codex sind bisher nur Namen aus deinem
+   Prompt — der Adapter-Brief braucht die zwei konkreten Ziele. (Flags/Effort
+   klärt dann die Clarify-Lane per `--help`, nicht du.)
+2. **F1:** Reicht dir Interactive-TUI-in-der-Pane pro Harness (wie claude heute),
+   oder erwartest du für einzelne davon print-/API-Modus mit eigener Anzeige?
+3. **Mobile-Ambition:** F5 (Explorer/Editor) ist im ersten Schnitt Desktop-only,
+   F6 bekommt dafür den 📎-Knopf fürs Handy. Einverstanden — oder ist
+   Editor-vom-Handy für dich Kernfall statt Kür?
+4. **F4:** Summary/Review ans Ende ist gesetzt. Sollen sie zusätzlich hinter
+   einen Aufklapper („more ▸") — oder sichtbar bleiben? Du nanntest sie
+   „wahrscheinlich ziemlich überholt"; gelöscht wird nichts (③ schreibt das
+   Outcome-Ledger weiter).
+5. **F3-Defaults abnicken:** Anker = niedrigste non-lane-Slot-ID; zweite
+   Main-Session im selben Repo bleibt flache Row in Projektfarbe; Zuklappen nur
+   über ▾/▸, nie über Row-Klick. Passt das so?
+
 ## Queue — fertige Task-Texte
 
 Owner-Weg A: 🗒-Overlay → Task anlegen (Texte unten einfügen), dann promote.
 Owner-Weg B: Main-Session im Haupt-Checkout:
 
 ```sh
-# TOKEN + FLEET_HOST aus der .env des Haupt-Checkouts; queue:true = direkt queued
+# TOKEN + FLEET_HOST aus der .env des Haupt-Checkouts; queue:true = direkt queued.
+# Auth ist Bearer/Cookie/?token= (tokenFrom, server.ts:5878) — einen x-fleet-token-
+# Header gibt es NICHT (die 2. Prüfrunde hat genau den hier gefunden und ersetzt).
 curl -s -X POST "http://$FLEET_HOST:8790/api/tasks" \
-  -H "x-fleet-token: $TOKEN" -H "content-type: application/json" \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"text":"<Task-Text>","queue":true}'
 ```
 
@@ -271,7 +335,7 @@ nicht eine Nacherzählung):
 
 1. `F4 Board-Neuordnung + git-HEAD — briefs/ui-next-level-2026-08-06.md §F4 lesen und exakt diesen Schnitt bauen. Reihenfolge deploy/gate→identity(+HEAD)→land-pending→commits→files→lanes→guest→agents→outline; head-Feld in Brief-Route+BriefInfo. Volle Gate-Verify.`
 2. `F2+F3 Projekt-Pastellfarben + Slot-Stapel — briefs/ui-next-level-2026-08-06.md §F2+§F3. Erst Farben (deterministisch aus Repo-Pfad, beide Themes), dann Gruppierung unter Ein-Anker-Main-Session mit den drei benannten Kanten (verwaiste Lanes, Fokus-schlägt-Collapse, Badge-Aggregation). Client-only.`
-3. `F6 Drag&Drop/Paste-Uploads — briefs/ui-next-level-2026-08-06.md §F6. Upload-Route (multipart, Cap, Owner-Auth), Ablage AUSSERHALB des Worktrees (~/.claude-fleet/drops/<slot>/), Composer-Mention, Retention, e2e-Check für Auth+Cap.`
+3. `F6 Drag&Drop/Paste/📎-Uploads — briefs/ui-next-level-2026-08-06.md §F6. Upload-Route (multipart, Cap, Owner-Auth), Ablage AUSSERHALB des Worktrees (~/.claude-fleet/drops/<slot>/), Composer-Mention (Format erst verifizieren: triggert tmux-Paste die @-Mention?), 📎-Knopf für Mobile, Retention, e2e-Check für Auth+Cap.`
 4. `F5 Board-File-Explorer + Editor — briefs/ui-next-level-2026-08-06.md §F5. NACH F4 starten. git-ls-files-Tree, Read-Route mit realpath-Prefix-Guard + .env/fleet.json-Ausschluss, Edit erst nach extra Klick, Content-Hash-Konfliktschutz, security-e2e für Pfad-Escape.`
 5. (kein Task) `F1 Harness-Auswahl` → erst Clarify-Gespräch, Fragen in §F1.
 

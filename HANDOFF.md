@@ -16,9 +16,15 @@ Die Queue ist DAS Register: ~80 offene Zeilen, alle `pending`, nichts startet vo
 `e6203a1` register.sh + L1-Rot-Detektor (e2e/pins.ts §5, rot-ok-Fluchttür) ·
 `c366c66` BACKLOG.md → docs/attic/backlog-2026-07.md (39 Posten: 26 gelandet / 11 offen /
 2 überholt; 14 neue Zeilen) · `d139698` 0/12→1/15-Korrektur (4 Doc-Stellen) ·
-`f378d4c` e2e/pins.ts in die Gate-tsc-Liste — **aktiv erst nach `launchctl kickstart
-gui/$(id -u)/com.claude-fleet.watchdog` + srv-Respawn**; Session 32 macht das im
-Deploy-Fenster nach dem letzten Audit, sonst ist es DER erste Schritt der nächsten Session.
+`f378d4c` e2e/pins.ts in die Gate-tsc-Liste — **ERLEDIGT 00:52**: kickstart + srv-Respawn
+gefahren, neue VERIFY_CMD am laufenden Prozess verifiziert, Sessions überlebt, beide
+Post-Land-Audits grün (e6203a1 in 564 s, c366c66 in 699 s).
+
+**In Flug bei Übergabe:** Slot 2 (`task-review`, Haupt-Checkout) fährt den Wert-Review
+aller ~80 offenen Zeilen („tatsächlich hilfreich?" je Zeile: BEHALTEN+Welle / ARCHIV-KANDIDAT /
+BRAUCHT-OWNER / MERGEN; Quellen-übergreifender Dedupe; sequenzierte Drück-Liste als Output)
+plus als Zusatzauftrag die Frage, wie ein besetzter Steward bei der Registerpflege mitwirken
+könnte (Vorschlag, kein Bau). Der Owner drückt danach; nichts startet von selbst.
 
 **Woher die neuen Zeilen kommen (Provenienz steht in jedem Zeilentext):**
 - 21 aus der Doc-Aggregation (`891dfc49`, Lane `…4956-3b38`): alle offenen Punkte aus

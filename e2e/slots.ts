@@ -397,6 +397,26 @@ export async function run(): Promise<void> {
     /localStorage\.setItem\("fleet\.datasaver"/.test(cliSrc)
     && /localStorage\.getItem\("fleet\.datasaver"\) === "1"/.test(cliSrc), "setSaver / dataSaver in src/client.ts");
 
+  // --- the board's SECTION ORDER (§F4, briefs/ui-next-level-2026-08-06.md). The owner named
+  // this order explicitly; nothing else in the suite would notice a re-sort undoing it. Asserted
+  // as a RELATIVE order over renderBoard's own pushes, so a later section inserted between two
+  // of them (F5's file explorer) does not trip it — only a reordering does. This suite has no
+  // DOM, so the source is the evidence; the rendered result was checked by hand (see the commit).
+  const boardSrc = cliSrc.slice(cliSrc.indexOf("async function renderBoard()"), cliSrc.indexOf("$(\"boardclose\")"));
+  const pushOrder = [...boardSrc.matchAll(/nodes\.push\((\w+)\)/g)].map((m) => m[1]);
+  const at = (name: string) => pushOrder.indexOf(name);
+  check("client: the board renders in the owner's order — identity → to-land → commits → files → lanes → guest → agents → outline",
+    at("idsec") >= 0 && at("idsec") < at("work") && at("work") < at("csec") && at("csec") < at("fsec")
+    && at("fsec") < at("sec") && at("sec") < at("gsec") && at("gsec") < at("asec") && at("asec") < at("psec"),
+    JSON.stringify(pushOrder));
+  check("client: the advisory agents group is folded on every load, and the fold is not persisted",
+    /^let agentsOpen = false;$/m.test(cliSrc) && /agentsOpen = !agentsOpen/.test(cliSrc)
+    && !/fleet\.agents/.test(cliSrc), "agentsOpen in src/client.ts");
+  // folding must not silently retire the ③ reviewer — the button and its POST stay reachable
+  check("client: folding agents away keeps both agent actions — nothing was deleted",
+    /"🔍 review"/.test(boardSrc) && /"📋 summarize"/.test(boardSrc)
+    && /post\(`\/api\/slots\/\$\{slot\}\/review`/.test(boardSrc), "the agents group in renderBoard");
+
   const wsNoTok = await new Promise<boolean>((resolve) => {
     let opened = false;
     const ws = new WebSocket(`ws://${IP}:${PORT}/ws/1`);

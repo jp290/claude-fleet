@@ -175,8 +175,9 @@ export async function run(lc: LaneCtx): Promise<void> {
     await Bun.write(`${bl.cwd}/lane-untracked.txt`, "u\n");
 
     const blb = (await (await get(`/api/slots/${bl.slot}/brief`)).json()) as
-      { laneScoped: boolean; laneBase: string; ahead: number; behind: number;
-        commits: { subject: string }[]; files: string[]; uncommittedFiles: string[] };
+      { laneScoped: boolean; laneBase: string; ahead: number; behind: number; head: string | null;
+        commits: { subject: string }[]; repoCommits: { subject: string }[];
+        files: string[]; uncommittedFiles: string[] };
     // git truth for comparison
     const gitCommits = spawnSync("git", ["-C", bl.cwd, "log", "--format=%s", `${blb.laneBase}..HEAD`]).stdout.toString().split("\n").filter(Boolean);
     const gitStatus = spawnSync("git", ["-C", bl.cwd, "status", "--porcelain"]).stdout.toString().split("\n").filter(Boolean);
@@ -198,6 +199,27 @@ export async function run(lc: LaneCtx): Promise<void> {
       `brief=${JSON.stringify(blb.uncommittedFiles)} git=${JSON.stringify(gitStatus)}`);
     check("first uncommitted entry keeps its leading status column (not truncated)",
       blb.uncommittedFiles.some((f) => f === " M lane-a.txt"), JSON.stringify(blb.uncommittedFiles));
+    // --- the board's identity line (§F4): the commit the tree actually sits on. A branch name
+    // says WHICH lane, never WHERE it is — two lanes off the same base read identically until
+    // one of them commits, and this is the field that tells them apart.
+    const gitHead = spawnSync("git", ["-C", bl.cwd, "rev-parse", "--short", "HEAD"]).stdout.toString().trim();
+    check("lane brief carries the short HEAD sha, and it is git's", blb.head === gitHead && /^[0-9a-f]{7,}$/.test(blb.head ?? ""),
+      `brief=${blb.head} git=${gitHead}`);
+    // --- repoCommits is the COMPLEMENT of `commits`, not a second copy of it: for a lane that is
+    // the base branch's own recent history ("what the project got while I was working"). The lane's
+    // commits appearing here would make the board's two subheads say the same thing twice.
+    const repoSubjects = (blb.repoCommits ?? []).map((c) => c.subject);
+    check("lane repoCommits = the BASE branch's history (has main's divergence, not the lane's own commits)",
+      repoSubjects.includes("main divergence") && !repoSubjects.some((s) => s.startsWith("lane commit")),
+      JSON.stringify(repoSubjects));
+    // HEAD is a fact about the tree, not a cached label — one more commit must move it
+    await Bun.write(`${bl.cwd}/lane-c.txt`, "c\n");
+    spawnSync("git", ["-C", bl.cwd, "add", "lane-c.txt"]);
+    spawnSync("git", ["-C", bl.cwd, "commit", "-qm", "lane commit three"]);
+    const blb2 = (await (await get(`/api/slots/${bl.slot}/brief`)).json()) as { head: string | null };
+    check("lane brief HEAD follows a new commit", blb2.head !== null && blb2.head !== blb.head
+      && blb2.head === spawnSync("git", ["-C", bl.cwd, "rev-parse", "--short", "HEAD"]).stdout.toString().trim(),
+      `before=${blb.head} after=${blb2.head}`);
     await post(`/api/slots/${bl.slot}/kill`, {}); // free the slot; worktree orphaned in the throwaway repo
   }
 

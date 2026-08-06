@@ -3484,6 +3484,20 @@ const AUTO_REVIEW_IDLE_MS = Number(process.env.FLEET_AUTO_REVIEW_IDLE_MS ?? 60_0
 // nobody had to wait for. This is the threshold for "stopped working", where being early is a false
 // accusation about a lane that is simply busy — and a lane running an e2e suite routinely prints
 // nothing for ten minutes at a stretch. 30 min (owner's call, 2026-08-06).
+//
+// WHAT THIS THRESHOLD COSTS, and it is not symmetric: 523f5dc stamps `lastOutput` to the BOOT time
+// for every restored pane — the honest reading, since a fresh process has observed nothing yet. The
+// consequence for this fact is that EVERY RESTART RESETS EVERY LANE'S IDLE CLOCK. The deploy ritual
+// is `tmux kill-session -t srv`, ~10×/day (see the comment above saveState), so a lane only ever
+// reaches this threshold if it survives a restart-free 30-minute window, and no stalled stretch can
+// outlive the interval between two deploys.
+// The bias therefore runs one way only — DOWNWARD, never up. A restart can hide a lane that really
+// has stopped; it can never invent one, because the clock only ever restarts at zero. That keeps the
+// fact honest in the direction that matters (no false accusations) at the price of missed ones, which
+// is the right trade for an accusation-shaped fact. But it must be read alongside any attempt to
+// COUNT instances: the count is a floor, not a measurement, and it is furthest below the truth
+// exactly on the busiest deploy days. Anyone raising the threshold makes this strictly worse;
+// anyone counting on it should record the threshold next to the count (briefs/lane-stalled-ledger.md).
 const STALLED_IDLE_MS = Number(process.env.FLEET_STALLED_IDLE_MS ?? 30 * 60_000) | 0;
 // the predicate is LEVEL-triggered — a finished lane stays idle+clean+ahead forever — so the
 // trigger needs a ceiling in both directions: one attempt per git state (reviewAutoTried, written

@@ -310,7 +310,9 @@ Auftrag verlangt Urteil + Beleg pro Zeile, adjudiziert wird owner-seitig.
 Regressionen** produziert. Das ist kein Argument, ihn abzuschalten — es ist die Basisrate, gegen
 die jedes zukünftige Rot gelesen werden muss, und sie sagt: *ein rotes Tier-2 ist a priori
 wahrscheinlich kein Produktdefekt.* Wer daraus einen Auto-Rollback baut, baut einen Auslöser mit
-einer historischen Trefferquote von 0/12.
+einer historischen Trefferquote von 0/12 *(Korrektur 2026-08-06: inzwischen **1/15** — ein echtes
+`real` darunter, Server-Defekt behoben in `07e5969`; `docs/autonomy-bausteine-2026-08-06.md` §1.1.
+Der Entscheid steht: 14 von 15 wären grundlos gewesen.)*.
 
 ### 7.2 Der Rundgang: 72 aufgedeckte Entscheidungen, 9 offene Zeilen, und heute keine einzige neue
 
@@ -482,8 +484,9 @@ Analyse kommen:
 1. **Kein Auto-Land, in keiner Form, solange `repairRounds` bei 0 und `resolvedBy` bei n=1
    steht.** Beide Pfade, die einen misslungenen Auto-Land auffangen sollen, sind im Feld
    ungetestet. Ein Sicherheitsnetz mit null Belastungsproben ist Dekoration.
-2. **Kein Auto-Rollback auf ein rotes Tier-2.** Historische Trefferquote: 0 von 12 adjudizierten
-   Roten waren `real` (§7.1). Ein Auslöser, der bisher ausschließlich falsch ausgelöst hätte, macht
+2. **Kein Auto-Rollback auf ein rotes Tier-2.** Historische Trefferquote: 1 von 15 adjudizierten
+   Roten war `real` (§7.1; Korrektur 2026-08-06, vorher 0/12 — `docs/autonomy-bausteine-2026-08-06.md`
+   §1.1). Ein Auslöser, der in 14 von 15 Fällen grundlos ausgelöst hätte, macht
    `main` instabiler, nicht stabiler. Dazu kommt: `undoableFor` hält einen Eintrag pro Repo (§8),
    im Schub ist der Rückweg ohnehin weg.
 3. **Kein serverseitiger Sender an Lanes**, solange `/api/self/drift` kein Audit-Event schreibt
@@ -535,7 +538,7 @@ das im laufenden Betrieb Ressourcen frisst.
 **Zuletzt — der Rückkanal:** **G**, die Inbox, deterministisch abgeleitet wie das Findings-Doc
 vorschlägt. Sie steht am Ende und nicht am Anfang, aus einem Grund, den §7.1 und §9.1 zusammen
 liefern: zwei ihrer acht Item-Typen sind heute noch nicht vertrauenswürdig (rotes Tier-2 mit
-Basisrate 0/12, `mergeLast.status` mit Phantom-Einträgen). Eine Inbox, die am ersten Tag zwei
+Basisrate 1/15 — Korrektur 2026-08-06, vorher 0/12 —, `mergeLast.status` mit Phantom-Einträgen). Eine Inbox, die am ersten Tag zwei
 falsche Items zeigt, wird als Rauschen gelernt — und das ist genau die Krankheit, die sie heilen
 soll.
 

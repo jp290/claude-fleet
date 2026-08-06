@@ -166,7 +166,7 @@ aufmacht, muss zuerst den Beleg widerlegen — nicht das Gegenteil behaupten.
 
 | Idee | Warum sie beerdigt ist | Beleg |
 |---|---|---|
-| **Auto-Rollback auf ein rotes Tier-2-Audit** | **0 von 12** adjudizierten roten Audits waren `real` — ein Auto-Rollback hätte in 100 % der Fälle falsch ausgelöst | `docs/autonomy-map-2026-08-06.md`; die Basisrate ist im Register nachrechenbar |
+| **Auto-Rollback auf ein rotes Tier-2-Audit** | **1 von 15** adjudizierten roten Audits war `real` (Korrektur 2026-08-06, vorher 0/12) — ein Auto-Rollback hätte in 14 von 15 Fällen grundlos ausgelöst | `docs/autonomy-bausteine-2026-08-06.md` §1.1; die Basisrate ist im Register nachrechenbar |
 | **`rerere` + ein hartes Pre-Land-Gate** | im Härtungs-Programm geprüft und verworfen; die volle Suite ist nicht-deterministisch genug, um zu gaten — deshalb Stufe 2 NACH dem Land | `docs/verify-tiering.md`, Memory `project-fleet-land-hardening` |
 | **Hook-Pflege / `graphify watch` / Cron auf `.git/hooks`** | gemessen: der Server bewegt main mit `--ff-only`/`branch -f`, **kein** `post-commit`/`post-merge` feuert, und `.git/hooks` ist nicht getrackt. Der Server baut den Graphen stattdessen aus `git archive <sha>` | Session 26, Body von `b297aad` |
 | **`Stop`-Hooks als Nullpunkt der idle-Uhr** | `Stop` markiert das **Ende eines Turns**, nicht Aktivität: 92/104 Lanes haben ≤1 Owner-Prompt, Median-Session 67,8 min → die Klausel hätte die *gesunde* Median-Lane als `stalled` markiert | `briefs/stalled-clock-hooks-refuted.md` (`72da914`), Zahlen unabhängig reproduziert |

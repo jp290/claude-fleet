@@ -8,7 +8,8 @@ lanes automatically or pot. by another more conservative, separate agent, becaus
 build it so that it's kinda idiot proof."*
 
 *Die Rangliste endet, wo diese Vorgabe erfüllt ist. NICHT im Programm: die Entscheidungs-Inbox,
-der clarify-Umbau, Auto-Rollback auf rotes Tier-2 (0/12 adjudizierte Rote waren `real`),
+der clarify-Umbau, Auto-Rollback auf rotes Tier-2 (Korrektur 2026-08-06: 1/15 adjudizierte Rote
+waren `real`, nicht mehr 0/12 — `docs/autonomy-bausteine-2026-08-06.md` §1.1; der Entscheid steht),
 Handeln auf `stalled`. Alles Stehende dazu: `docs/autonomy-map-2026-08-06.md` §11.*
 
 ## Der Befund, der dieses Dokument klein macht

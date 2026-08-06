@@ -1,4 +1,4 @@
-# HANDOFF — Session 28 (2026-08-06: der Fakt, der Gate und die Stille) · 27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 28 (2026-08-06: der Fakt, der Gate und die Landkarte) · 27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
@@ -21,9 +21,15 @@ laufen bzw. sind gebrieft; ihre Berichte sind das Material, das du verarbeiten s
 | `2758e0a` | der Fakt trägt seine Neustart-Verzerrung im Kommentar + `briefs/lane-stalled-ledger.md` |
 | `79f0111` | `briefs/autonomy-findings-2026-08-06.md` — vier Befunde, die in keinem Ledger stehen |
 | `26acdbd` | Pane zurückholen, ohne den Slot wegzuwerfen |
+| `b169785` | dieser Handoff + `land-gate-speaks` + `autonomy-gap-addendum` |
+| `909ace3` | `briefs/stalled-parked-and-ledger.md` — Markierung VOR Ledger |
+| `6e96eaf` | `briefs/audit-reds-familie-b.md` |
+| `5d707bc` | `docs/autonomy-map-2026-08-06.md` — die Landkarte, 593 Zeilen |
+| `9c1b73c` | Timeout ist kein Nein mehr, das Warten schreibt sich auf |
 
-Alle vier Tier-2-Audits danach **grün**. Server läuft auf `2758e0a`; **`26acdbd` und `79f0111` sind
-gelandet, aber NICHT live** — ein srv-Restart steht aus (`codeBehind: true`).
+**Alle sechs Tier-2-Audits danach grün.** Server läuft auf `9c1b73c`, `codeBehind: false`,
+`bundleStale: false` — der Stand ist vollständig deployt (Bundle neu gebaut, weil `9c1b73c`
+`src/client.ts` anfasst).
 
 ### Owner-Entscheide dieser Session
 
@@ -81,36 +87,84 @@ empirisch bestätigt, nicht nur plausibel.
 Belegt durch Korrektur 2: der Grund, warum hier ein Mensch nötig war, ist nicht Komplexität — es
 ist **Stille**. Der blockierende Prozess kannte die Zahl und schrieb sie nicht hin.
 
-### In Flug / gebrieft — beide Briefe liegen im Repo, nicht in einem Scratchpad
+### Beide gebrieften Sessions sind gelaufen und GELANDET — das ist nicht mehr „in Flug"
 
-- **`briefs/land-gate-speaks.md`** — Lock-Wartezeit sichtbar machen, Timeout als vierter
-  Gate-Zustand, `verifyMs` im Record. Trägt die Sicherheits-Invariante: `unconfigured` ist der
-  EINZIGE Zustand, der unbeaufsichtigt auto-landet; der neue Zustand muss in die Nie-Gruppe.
-  Ausdrücklich NICHT gebaut: Auto-Retry, Budget-Erhöhung, Mutex-Vorrang.
-- **`briefs/autonomy-gap-addendum-2026-08-06.md`** — der Nachtrag zu `briefs/autonomy-gap.md`
-  (die nie gelaufene Landkarte). Read-only, **aber mit ausdrücklicher Commit-Pflicht für den
-  Bericht** — Abweichung vom Hauptbrief, weil an einem Tag zweimal Analyse in einem sterbenden
-  Worktree bzw. einem Transcript fast verloren ging.
-- **`briefs/…`-Prompt für die zwei restlichen roten Audits** liegt formuliert vor (Familie B:
-  Send-Cap / Episoden-Fenster, `409 statt 429` ist auffällig, 409 ist die awaiting-owner-Abweisung)
-  — noch nicht ins Repo geschrieben, noch nicht gespawnt.
+- **`briefs/land-gate-speaks.md` → `9c1b73c`.** Timeout als eigener Gate-Zustand, Lock-Wartezeit
+  schreibt sich auf, `verifyMs` im Record. Sie hat `docs/suite-contention.md` neu angelegt und
+  `docs/verify-tiering.md` nachgezogen, und den Zustand testbar gemacht, indem
+  `e2e-isolated.sh` `FLEET_VERIFY_TIMEOUT_MS=8000` setzt (~100× Kopf gegen die realen ~50 ms der
+  Stand-ins). Verifikation im Body, inkl. `e2e-postland-audit` — die Suite, die sonst unbemerkt
+  verrottet.
+- **`briefs/autonomy-gap-addendum-2026-08-06.md` → `docs/autonomy-map-2026-08-06.md` (`5d707bc`).**
+  Die Landkarte, 593 Zeilen, aus den Ledgern gerechnet. **Sie ist ab jetzt die Reihenfolge**, siehe
+  unten.
+- **`briefs/audit-reds-familie-b.md` (`6e96eaf`)** — der Auftrag für die zwei letzten
+  un-adjudizierten Roten. Im Repo, **noch nicht gespawnt**.
+- **`briefs/stalled-parked-and-ledger.md` (`909ace3`)** — Parkungs-Markierung (Teil 1) vor
+  Instanz-Ledger (Teil 2). Im Repo, **noch nicht gespawnt**. Die Landkarte hat den Brief gelesen und
+  schlägt ausdrücklich nichts vor, was dort schon steht — sie ergänzt ihn nur um die
+  Neustart-Zählung (siehe unten).
+- **Queue-Task `81514506`** (`pending`, `kind: lane`) — Drift-Blindheit, mit dem Vermerk, dass die
+  Landkarte ihn einordnen soll, bevor er promotet wird. Sie hat es getan: Schritt **A**.
+
+### Die Landkarte korrigiert diesen Handoff und das Findings-Doc an fünf Stellen
+
+Nachlesen in `docs/autonomy-map-2026-08-06.md` §2 — hier nur die, die man kennen muss:
+
+1. **Zeilennummern verrotten binnen Stunden.** `laneDrift` steht bei `5180` (nicht 5144), sein
+   Abnehmer bei `7780` (nicht 7721), `/send` bei `9503` (nicht 9414). Die *Aussagen* wurden alle
+   bestätigt — die Referenzen wanderten, weil drei Commits in `server.ts` landeten.
+2. **„`/send` schreibt jede Nachricht dem Owner zu" war zu weit.** Die Quell-Union hat fünf Werte
+   (`owner|share|auto|terminal|steward`), und der Steward-Sender schreibt bereits `"steward"`.
+   `/send` IST die Owner-Route. Was fehlt, ist enger: **ein Label für „Maschine, die mit dem
+   Owner-Credential spricht"** — bis es existiert, muss jeder maschinelle Sender über eine eigene
+   Route laufen, nie über `/send`.
+3. **Mein `briefPayload`-Beleg war wertlos** (das ist ein UI-Payload, kein Prompt). Der Befund hält
+   trotzdem: in `enhance-prompt.ts`/`refine-prompt.ts`/`clarify-prompt.ts` kommt Drift nicht vor.
+4. **„Die Analyse gated nichts" (CLAUDE.md) ist unpräzise**: das *Verdict* gated nichts, die
+   *Existenz* einer frischen Analyse gated den unbeaufsichtigten Tick sehr wohl.
+5. **`RefineChild.files` existiert nur im Vorschlag** — der Confirm faltet es in den Fließtext.
+   Damit ist die Zutat für Kollisionsvermeidung *nicht* da, wo der Hauptbrief sie vermutet.
+
+### Der härteste Einzelbefund der Landkarte
+
+**0 von 12 adjudizierten roten Tier-2-Audits waren `real`.** Ein Auto-Rollback auf ein rotes Audit
+hätte bisher in 100 % der Fälle falsch ausgelöst. Das beerdigt die Idee ohne Diskussion — und es ist
+der Grund, warum die Inbox in ihrer Reihenfolge ganz hinten steht: zwei ihrer acht Item-Typen sind
+heute nicht vertrauenswürdig, und eine Inbox, die am ersten Tag falsche Items zeigt, wird als
+Rauschen gelernt.
 
 ### Das Erste für die nächste frische Session
 
-**Die Berichte der zwei gebrieften Sessions verarbeiten** — dafür existiert dieser Handoff. Der
-Landkarten-Bericht ist der wichtigere: er ist die Reihenfolgen-Entscheidung für Auto-Deploy,
-Auto-Land, Kollisionsvermeidung und die Entscheidungs-Inbox, und **genau die wurde bisher Scheibe
-für Scheibe geraten**. Er wird als Datei committet vorliegen (`docs/` oder `briefs/`).
+**Die Reihenfolge steht jetzt, und sie ist nicht mehr meine.** `docs/autonomy-map-2026-08-06.md`
+§11.3, begründet statt nach Aufwand sortiert:
 
-Was NICHT vorentschieden ist und auch nicht vorentschieden werden soll: alles unterhalb der
-Schnittlinie in `briefs/autonomy-findings-2026-08-06.md` §5.
+1. **Instrumentierung zuerst**, sonst wird jede folgende Entscheidung gegen eine Vermutung gebaut:
+   **A** Audit-Event auf `/api/self/drift` (eine Zeile — Task `81514506`), dann **9.1** der
+   Phantom-`mergeParked`-Eintrag (ein Bug mit Live-Beleg, verfälscht ausgerechnet den Item-Typ, den
+   die Inbox zuerst zeigen würde), dann **E** `DIGEST_TTL_MS` über das Puls-Intervall.
+2. **Sensoren:** `sinceLastLook` nach Repo schlüsseln, `mtime`-Caveat, Timeout-Zustand *(letzterer
+   ist mit `9c1b73c` erledigt)*.
+3. **Prävention:** 9.2 (requeueter Dispatch lässt seine Lane stehen — ein Leck, kein Feature),
+   dann `otherLanes.files` auf uncommittete Dateien, dann `files` als Feld am Refine-Kind.
+4. **Zuletzt der Rückkanal:** die Entscheidungs-Inbox.
 
-Stehend offen, unabhängig davon:
-- srv-Restart, damit `26acdbd`/`79f0111` live sind (Reihenfolge: nie während ein Tier-2-Audit läuft
-  — der Audit ist ein Kind des Serverprozesses)
-- 2 un-adjudizierte rote Audits (Brief formuliert, Lane nicht gespawnt)
+**§11.2 trägt für jeden Schritt eine Schwelle** — welche Zahl, über wie viele Läufe, wann man
+abbricht. Ohne die ist ein Vorschlag eine Meinung; mit ihr ist er prüfbar. Nicht in der Liste,
+bewusst: Auto-Deploy — der Neustart ist harmloser als gedacht (die Audit-Queue überlebt ihn), aber
+„was ist der Rückweg, wenn ein Auto-Deploy etwas Kaputtes live stellt" ist unbeantwortet.
+
+Ergänzung der Landkarte zum Instanz-Ledger, die in `909ace3` fehlt: **jede Zeile muss die Zahl der
+srv-Neustarts in ihrem Fenster tragen.** Gemessen 5 / 11 / 12 / **38** Neustarts an den letzten vier
+Tagen — ohne diese Zahl ist die Stichprobe nicht „zehn Instanzen", sondern „zehn Instanzen aus den
+ruhigen Tagen".
+
+Stehend offen:
+- **2 un-adjudizierte rote Audits** — Brief `6e96eaf` liegt, Lane nicht gespawnt
+- **Parkungs-Markierung + Instanz-Ledger** — Brief `909ace3` liegt, Lane nicht gespawnt
 - 7 ungelesene Rundgang-Notizen in der Queue
-- das Feld für „absichtlich geparkt" (Korrektur 4) — Vorbedingung für die Feuerprobe von `stalled`
+- `Slot.mission` existiert und ist leer — bevor ein neues Feld für „geparkt" entsteht, gehört
+  begründet, warum das vorhandene nicht der Träger ist (Landkarte §9.4/§10)
 
 ---
 

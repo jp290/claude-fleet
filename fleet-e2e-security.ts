@@ -11,7 +11,9 @@
 // brute force, the injection charsets that reach a pane command line, the self-token's
 // out-of-scope 403s, pending-never-dispatches, and the client's no-HTML-sink invariant.
 // docs/security-model.md carries the threat model these checks are derived from.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 // Plumbing — IP/PORT/BASE/ROOT, the owner token (env first, then the instance's fleet.json, which
 // is what lets ./e2e-security.sh pin FLEET_TOKEN), post/get/check, and the live-fleet refusal this
 // file used to carry as its own line — is e2e/harness.ts. The refusal now fires on import and
@@ -404,6 +406,145 @@ if (INTAKE && DISPATCH_REPO) {
         !(await shareInvite.text()).includes("e2e-guest-invite-secret"));
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// §10 The board editor's WRITE route is contained by the working directory it names.
+//
+// Numbered 10 but placed HERE, above §9: §9 leaves /intake locked for an hour and says so, and
+// nothing may run after it. The number is the section's identity, the position is §9's constraint.
+//
+// This is the one route on this server that writes bytes to a path a request named, so the
+// perimeter it keeps is not "validate the input" — it is a containment, and a containment is only
+// worth what its escapes prove. Four ways out are tried against a REAL repo (slot 2's cwd): a
+// relative climb, an absolute path elsewhere, a symlink inside the tree pointing out of it, and
+// the two files whose contents would hand over the machine (.env, fleet.json). Each must be
+// refused with a 4xx AND leave the target byte-identical — a route that answers 400 after writing
+// would pass a status-only check, so every negative here reads the file back.
+//
+// The positive control at the top is what keeps the rest non-vacuous: an ordinary edit in the
+// same repo, through the same route, must succeed and land on disk.
+// ---------------------------------------------------------------------------
+if (REPO) {
+  const readBytes = (p: string): string => { try { return readFileSync(p, "utf8"); } catch { return "\0unreadable"; } };
+  const sha = (s: string) => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
+  const write = (body: unknown) => post("/api/file/write", body);
+  // slot 2 sits in REPO (opened at the top of this file). code.txt is the repo's committed file.
+  const target = `${REPO}/code.txt`;
+  const before = readBytes(target);
+
+  const readRes = await get(`/api/file?path=${encodeURIComponent(target)}`);
+  const read = (await readRes.json()) as { text?: string; hash?: string; noEdit?: string };
+  check("§10 the read route hands the editor a content hash for an ordinary text file",
+    /^[0-9a-f]{64}$/.test(read.hash ?? ""), `${read.hash ?? "(none)"} ${read.noEdit ?? ""}`);
+  check("§10 …and that hash is over the bytes on disk, not over something the server made up",
+    read.hash === sha(before), `${read.hash?.slice(0, 12)} vs ${sha(before).slice(0, 12)}`);
+
+  const okRes = await write({ slot: 2, path: "code.txt", text: "root\nedited by the board editor\n", baseHash: read.hash });
+  check("§10 CONTROL: an ordinary edit inside the session's own directory is written",
+    okRes.status === 200, String(okRes.status));
+  check("§10 …and the bytes on disk are exactly what was sent (the negatives below are not vacuous)",
+    readBytes(target) === "root\nedited by the board editor\n", JSON.stringify(readBytes(target)).slice(0, 60));
+  const now = readBytes(target);
+  const nowHash = sha(now);
+
+  // --- the escapes. Each is a path the guard must resolve BEFORE it compares. -----------------
+  // The witness is a canary the suite plants OUTSIDE slot 2's repo, deliberately not the
+  // instance's own fleet.json: the server rewrites that file on its own schedule (saveState), so
+  // "did the bytes change" would be measuring the server's bookkeeping, not this route. The canary
+  // sits in the same directory fleet.json does, i.e. exactly one `../` above the repo.
+  const outside = `${ROOT}/escape-canary.txt`;
+  const CANARY = "if this line ever changes, the write route escaped its working directory\n";
+  writeFileSync(outside, CANARY);
+  const outsideBefore = readBytes(outside);
+  const escapes: { name: string; path: string; witness: string }[] = [
+    { name: "a relative climb out of the tree (../)", path: "../escape-canary.txt", witness: outside },
+    { name: "an absolute path to another directory entirely", path: outside, witness: outside },
+    { name: "a climb dressed up with a legitimate prefix", path: "code.txt/../../escape-canary.txt", witness: outside },
+  ];
+  // a symlink INSIDE the repo pointing out of it — the escape a string-prefix test cannot see,
+  // and the reason both sides of the comparison go through realpath
+  const linkName = "escape-link";
+  try { unlinkSync(`${REPO}/${linkName}`); } catch { /* first run */ }
+  symlinkSync(outside, `${REPO}/${linkName}`);
+  escapes.push({ name: "a symlink inside the tree that resolves outside it", path: linkName, witness: outside });
+
+  for (const e of escapes) {
+    const res = await write({ slot: 2, path: e.path, text: "owned", baseHash: sha(outsideBefore) });
+    check(`§10 refused: ${e.name}`, res.status >= 400 && res.status < 500,
+      `${res.status} ${(await res.text()).slice(0, 80)}`);
+    check(`§10 …and nothing was written through it`, readBytes(e.witness) === outsideBefore, e.witness);
+  }
+
+  // --- the two files that are never editable, wherever they sit ------------------------------
+  for (const name of [".env", "fleet.json", ".env.local", "sub/.env", "sub/fleet.json"]) {
+    const p = `${REPO}/${name}`;
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, "SECRET=1\n");
+    const res = await write({ slot: 2, path: name, text: "SECRET=owned\n", baseHash: sha("SECRET=1\n") });
+    check(`§10 refused: ${name} is not editable through the board, wherever it sits`,
+      res.status >= 400 && res.status < 500, `${res.status} ${(await res.text()).slice(0, 80)}`);
+    check(`§10 …and ${name} still holds its own bytes`, readBytes(p) === "SECRET=1\n");
+  }
+  // .git is the repository itself — a textarea must not be able to rewrite a ref
+  {
+    const res = await write({ slot: 2, path: ".git/HEAD", text: "ref: refs/heads/owned\n", baseHash: sha(readBytes(`${REPO}/.git/HEAD`)) });
+    check("§10 refused: a path inside .git", res.status >= 400 && res.status < 500,
+      `${res.status} ${(await res.text()).slice(0, 80)}`);
+    check("§10 …and HEAD still points where it did", readBytes(`${REPO}/.git/HEAD`).includes("refs/heads/main"));
+  }
+
+  // --- the conflict guard: an agent wrote the file while the editor held it open ---------------
+  {
+    const stale = await write({ slot: 2, path: "code.txt", text: "clobbered\n", baseHash: read.hash });
+    check("§10 a save against a hash the file no longer has is refused 409",
+      stale.status === 409, `${stale.status} ${(await stale.text()).slice(0, 90)}`);
+    check("§10 …and the refusal wrote nothing — the other writer's bytes survive",
+      readBytes(target) === now, JSON.stringify(readBytes(target)).slice(0, 60));
+    const fresh = await write({ slot: 2, path: "code.txt", text: "agreed\n", baseHash: nowHash });
+    check("§10 …while the SAME save with the current hash goes through (the guard is about drift, not about refusing)",
+      fresh.status === 200 && readBytes(target) === "agreed\n", String(fresh.status));
+  }
+
+  // --- creation is not this route's gesture, and a directory is not a file --------------------
+  {
+    const made = await write({ slot: 2, path: "brand-new.txt", text: "hello\n", baseHash: sha("") });
+    check("§10 a file that does not exist is not created by the editor",
+      made.status === 404, `${made.status} ${(await made.text()).slice(0, 80)}`);
+    check("§10 …and no such file appeared", !existsSync(`${REPO}/brand-new.txt`));
+  }
+
+  // --- a slot that owns no directory owns no write ---------------------------------------------
+  {
+    const noSlot = await write({ slot: 11, path: "code.txt", text: "x", baseHash: nowHash });
+    check("§10 an inactive slot cannot be used as the anchor for a write",
+      noSlot.status === 400, `${noSlot.status} ${(await noSlot.text()).slice(0, 80)}`);
+  }
+
+  // --- and a slot that is not in a git tree owns no write either -------------------------------
+  // Slot 1 sits on ~ (opened at the top of this file). Were the containment merely "the slot's
+  // cwd", that session would make this route's reach the whole home directory — ~/.claude and the
+  // shell's own dotfiles included — with nothing in `git status` to show for it afterwards.
+  {
+    const home = await write({ slot: 1, path: ".zshrc", text: "# owned\n", baseHash: sha("") });
+    check("§10 a session on a plain directory (~) cannot write through the editor at all",
+      home.status === 400, `${home.status} ${(await home.text()).slice(0, 90)}`);
+  }
+
+  // --- the tree route answers only for a slot, and only about that slot's own repo -------------
+  {
+    const t = await get("/api/tree?slot=2");
+    const tj = (await t.json()) as { root?: string; files?: string[]; total?: number };
+    check("§10 the tree route lists the session's own repo", t.status === 200
+      && tj.root === realpathSync(REPO) && (tj.files ?? []).includes("code.txt"),
+      `${t.status} ${tj.root ?? ""} ${(tj.files ?? []).slice(0, 4).join(",")}`);
+    check("§10 …and it is git's list, so the untracked .env this section wrote is not in it",
+      !(tj.files ?? []).some((f) => f === ".env" || f.endsWith("/.env")), (tj.files ?? []).join(","));
+    const noArg = await get("/api/tree");
+    check("§10 …and it refuses to answer without a slot to be anchored on",
+      noArg.status === 400, String(noArg.status));
+  }
+  try { unlinkSync(`${REPO}/${linkName}`); } catch { /* already gone */ }
 }
 
 // ---------------------------------------------------------------------------

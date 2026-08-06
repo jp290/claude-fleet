@@ -134,6 +134,13 @@ const dangerous = (slot: number): Probe[] => [
   // longer carries — a read route, but the most content-bearing one the queue has
   { path: "/api/tasks", method: "GET", ownerSafe: true },
   { path: "/api/dispatch", method: "POST", body: {} },
+  // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
+  // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code
+  // reaching disk. Both answer the owner a side-effect-free 400 on an empty body (no slot), which
+  // is what lets them carry the positive control; the containment guards themselves (realpath
+  // prefix, the .env/fleet.json refusal, the hash conflict) are proved in fleet-e2e-security.ts §10.
+  { path: "/api/file/write", method: "POST", body: {}, ownerSafe: true },
+  { path: "/api/tree", method: "GET", ownerSafe: true },
   { path: "/api/sessions", method: "GET", ownerSafe: true },
   { path: "/api/audit", method: "GET", ownerSafe: true },
   { path: "/api/prompts", method: "GET", ownerSafe: true },

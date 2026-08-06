@@ -157,3 +157,23 @@ nicht das Entscheiden, sondern das Wieder-Ableiten von Zustand, den kein Artefak
 - **Die fünf Rundgang-Notizen sind nach Titel eingeordnet, nicht nach Inhalt.**
 - **grep-Treffer sind Anwesenheit, nicht Funktion** — gilt für jede „vorhanden"-Aussage in §3.
 - Ob **Map E** wirklich offen ist, und ob **F7** noch gewollt ist (steht nur im Brief).
+
+## 7. Was beerdigt ist — nicht wieder aufmachen
+
+Eine frische Session hat den Reiz, Naheliegendes neu vorzuschlagen. Diese sechs sind
+**entschieden**, jeweils mit dem Beleg, der sie entschieden hat. Wer eines davon wieder
+aufmacht, muss zuerst den Beleg widerlegen — nicht das Gegenteil behaupten.
+
+| Idee | Warum sie beerdigt ist | Beleg |
+|---|---|---|
+| **Auto-Rollback auf ein rotes Tier-2-Audit** | **0 von 12** adjudizierten roten Audits waren `real` — ein Auto-Rollback hätte in 100 % der Fälle falsch ausgelöst | `docs/autonomy-map-2026-08-06.md`; die Basisrate ist im Register nachrechenbar |
+| **`rerere` + ein hartes Pre-Land-Gate** | im Härtungs-Programm geprüft und verworfen; die volle Suite ist nicht-deterministisch genug, um zu gaten — deshalb Stufe 2 NACH dem Land | `docs/verify-tiering.md`, Memory `project-fleet-land-hardening` |
+| **Hook-Pflege / `graphify watch` / Cron auf `.git/hooks`** | gemessen: der Server bewegt main mit `--ff-only`/`branch -f`, **kein** `post-commit`/`post-merge` feuert, und `.git/hooks` ist nicht getrackt. Der Server baut den Graphen stattdessen aus `git archive <sha>` | Session 26, Body von `b297aad` |
+| **`Stop`-Hooks als Nullpunkt der idle-Uhr** | `Stop` markiert das **Ende eines Turns**, nicht Aktivität: 92/104 Lanes haben ≤1 Owner-Prompt, Median-Session 67,8 min → die Klausel hätte die *gesunde* Median-Lane als `stalled` markiert | `briefs/stalled-clock-hooks-refuted.md` (`72da914`), Zahlen unabhängig reproduziert |
+| **Der K2-Shadow-Richter (`FLEET_CLEAN_REVIEW`)** | 45 Zeilen, 37 valide, **alle** „pass", 0 Widerspruch — der Richter hat nie Information geliefert. Code bleibt, Wiedereinschalten braucht erst eine bestandene Feuerprobe | `CLAUDE.md` Deploy-Abschnitt, `docs/attic/judge-calibration.md` |
+| **Das Eval-Gate** | in seiner Lebenszeit **genau ein** Verdict erzeugt; seine einzige Macht war, Owner-Entwürfe hinter dessen Rücken zu starten. Ersetzt durch die *advisory* Analyse | Body von `500ff63` |
+
+**Nicht auf dieser Liste, obwohl es so aussieht:** echte Parallelität zwischen Suiten. Die
+Messung, die sie verbietet, stammt von **vor** den Race-Fixes vom 28.07. — sie ist damit nicht
+widerlegt, sondern **ungeprüft**. Der ehrliche Weg ist eine Messung nach den beiden
+Suite-Hebeln, nicht eine Meinung (`HANDOFF.md` Session 30).

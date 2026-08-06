@@ -17,7 +17,7 @@
 // the live socket AND the live port on import, before anything here can act. check() there is also
 // the per-check trail's single emit site, so this suite's checks now leave durable rows
 // (docs/e2e-trail.md); ./e2e-claude-gate.sh stamps them with FLEET_E2E_SUITE=claude-gate.
-import { readFileSync } from "node:fs";
+import { readFileSync, rmdirSync, rmSync } from "node:fs";
 import { BASE, ROOT, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
 import { FLEET_DEFAULT_MODEL } from "./src/protocol";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
@@ -308,6 +308,101 @@ for (const s of (await dispSess()).slots) if (s.worktree && !lanesBefore.has(s.i
   check("heal-reason: the two causes are distinguishable, not one collapsed bucket",
     new Set(afterHeal).size === 2, JSON.stringify(afterHeal));
   await tmuxOut("kill-session", "-t", `s${HEAL_SLOT}`);
+}
+
+// --- ↻ the owner-triggered pane restart (POST /api/slots/:id/restart). Only this harness can
+// prove the half that carries the whole point: slotCmd pins a session id — and resumes one — ONLY
+// when BASE_CMD starts with `claude`, so under the main suite's FLEET_CMD=true there is no pin to
+// preserve and no `--resume` to look for (the main suite owns the other half, the boundary against
+// killSlot's teardown, in e2e/lanes-lifecycle.ts). BOTH branches of the route's `resumed` field are
+// checked here, because the negative one is the one that must never be dressed up as success: the
+// owner reaches for this button exactly when the conversation already looks wrong. ---
+{
+  const RS_SLOT = 7;
+  const pinOf = (): string | null => {
+    try {
+      const st = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { sessionId?: string | null }> };
+      return st.slots?.[String(RS_SLOT)]?.sessionId ?? null;
+    } catch { return null; }
+  };
+  // the pane's OWN command line, not our reconstruction of it — same source as the model-pin
+  // checks above. Retried, because tmux can answer before the new session is fully mapped.
+  const startCmdOf = async (): Promise<string> => {
+    let cmd = "";
+    for (let i = 0; i < 40; i++) {
+      cmd = (await tmuxOut("display-message", "-p", "-t", `s${RS_SLOT}`, "#{pane_start_command}")).out;
+      if (cmd.includes("claude")) break;
+      await Bun.sleep(250);
+    }
+    return cmd;
+  };
+
+  // no pre-kill: openSlot recycles an occupied slot itself, so this is deterministic whichever
+  // slot the dispatcher branch above happened to roam into.
+  const rsOpen = await post(`/api/slots/${RS_SLOT}/open`, { cwd: process.cwd() });
+  check("↻ restart: open a slot under a real claude", rsOpen.ok, String(rsOpen.status));
+  let pin0: string | null = null;
+  for (let i = 0; i < 40; i++) { pin0 = pinOf(); if (pin0) break; await Bun.sleep(250); }
+  const cmd0 = await startCmdOf();
+  check("↻ restart: a fresh slot is pinned with --session-id, not resumed",
+    !!pin0 && cmd0.includes(`--session-id ${pin0}`), `pin=${pin0} cmd=${cmd0.slice(-160)}`);
+
+  // (a) a pin whose transcript never existed — the fake claude writes none. The conversation is
+  // genuinely gone, so the route must SAY so and the pane must start fresh.
+  const rA = await post(`/api/slots/${RS_SLOT}/restart`, {});
+  const rAJ = (await rA.json()) as { ok?: boolean; resumed?: boolean };
+  const cmdA = await startCmdOf();
+  check("↻ restart with no transcript reports resumed:false and respawns fresh — never a claimed resume",
+    rA.ok && rAJ.resumed === false && !cmdA.includes("--resume") && cmdA.includes("--session-id"),
+    `${JSON.stringify(rAJ)} ${cmdA.slice(-160)}`);
+  const pinA = pinOf();
+  check("↻ restart with no transcript mints a NEW pin — the old id names a conversation that is not there",
+    !!pinA && pinA !== pin0, `${pin0} → ${pinA}`);
+
+  // (b) the case the verb exists for. Claude Code can switch conversation IN-PROCESS: the pane's
+  // argv goes on naming the pinned session while a different transcript is written, and Escape does
+  // not undo it (measured 2026-08-06). Nothing outside the pane can put it back — only a respawn
+  // against the pinned id. A transcript beside the pin is the one condition ensureSlot needs.
+  // Same throwaway-project-dir pattern the main suite already uses (e2e/restart.ts): the slug is
+  // derived from this instance's own temp cwd, and the file is removed below.
+  const trDir = `${process.env.HOME}/.claude/projects/${process.cwd().replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const trFile = `${trDir}/${pinA}.jsonl`;
+  await Bun.write(trFile, `${JSON.stringify({ type: "user", timestamp: "2026-08-06T09:00:00Z" })}\n`);
+  const rB = await post(`/api/slots/${RS_SLOT}/restart`, {});
+  const rBJ = (await rB.json()) as { ok?: boolean; resumed?: boolean };
+  const cmdB = await startCmdOf();
+  check("↻ restart resumes the pinned conversation — `--resume <id>` in the pane's own command line",
+    rB.ok && rBJ.resumed === true && cmdB.includes(`--resume ${pinA}`) && !cmdB.includes("--session-id"),
+    `${JSON.stringify(rBJ)} ${cmdB.slice(-160)}`);
+  check("↻ restart keeps the pin it resumed — same conversation, same transcript",
+    pinOf() === pinA, `${pinA} → ${pinOf()}`);
+  // the model rides the respawn too, still shell-quoted: a resumed pane must be the same session
+  // AND the same model, or the conversation comes back somewhere it was never held
+  check("↻ restart respawns with the slot's model, still shell-quoted",
+    cmdB.includes(`--model '${FLEET_DEFAULT_MODEL}'`), cmdB.slice(-160));
+
+  // the restart is trailed under its own event, never as a self-heal — slotstats divides
+  // resumed/heals to measure the durability promise, and an owner-triggered rebuild that resumes
+  // by construction is no evidence for it (server.ts, the slot_restart comment on AuditEvent).
+  let rsRows: string[] = [];
+  for (let i = 0; i < 40; i++) {
+    rsRows = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+      .filter((r): r is Record<string, unknown> => !!r && r.event === "slot_restart" && r.slot === RS_SLOT)
+      .map((r) => String(r.detail ?? ""));
+    if (rsRows.length >= 2) break;
+    await Bun.sleep(250);
+  }
+  check("↻ restart trails BOTH outcomes under slot_restart, with the reason the heal path uses",
+    rsRows.length === 2 && rsRows[0] === "created:no-transcript" && rsRows[1] === "resumed", JSON.stringify(rsRows));
+
+  await post(`/api/slots/${RS_SLOT}/kill`, {});
+  // clean up after ourselves in the one place this suite writes OUTSIDE its instance dir. rmdir,
+  // never a recursive rm: it refuses a non-empty directory, so this can only ever remove the
+  // throwaway project folder we caused and never anything that was already there.
+  rmSync(trFile, { force: true });
+  try { rmdirSync(trDir); } catch { /* not ours to empty — leave it */ }
 }
 
 console.log(results.join("\n"));

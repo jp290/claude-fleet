@@ -1817,7 +1817,33 @@ async function renderBoard() {
         const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
         if (row instanceof HTMLElement) startRename(row, s);
       };
-      arow.append(shrb, expb, renb);
+      // ↻ bring session back — the repair for a pane that switched conversations on you.
+      // Claude Code can change session IN-PROCESS: the pane keeps the argv it was spawned with,
+      // so nothing on the outside can tell, and Escape does not undo it. A respawn does, because
+      // the slot still holds the pinned sessionId and the server restarts the pane with --resume.
+      // Always shown on an active slot: there is no deterministic signal for "this pane wandered
+      // off" (the one candidate, "the pinned transcript is not growing", fires on any long tool
+      // call), so the owner decides, not a detector.
+      const rsb = el("button", "bbtn", "↻ bring session back") as HTMLButtonElement;
+      rsb.title = "restart this pane and resume the pinned conversation — the slot keeps its lane, "
+        + "label, model, shares and scheduled prompts. Whatever the session is doing RIGHT NOW is lost.";
+      rsb.onclick = async () => {
+        if (!confirm(`Restart slot ${slot}'s pane and resume the pinned conversation?\n\n`
+          + "Nothing about the slot is thrown away. But claude is killed, so anything it is doing "
+          + "right now — a running tool call, unsent output — is lost.")) return;
+        rsb.disabled = true;
+        rsb.textContent = "… restarting";
+        const r = await post(`/api/slots/${slot}/restart`, {});
+        const j = await r.json().catch(() => null) as { resumed?: boolean; error?: string } | null;
+        if (!r.ok) { alert(j?.error ?? "restart failed"); rsb.disabled = false; rsb.textContent = "↻ bring session back"; return; }
+        // say which of the two happened rather than a uniform tick: "restarted fresh" means the
+        // pinned conversation could NOT be resumed (no pin, or its transcript is gone), and that
+        // is the one outcome the owner must not mistake for success
+        rsb.textContent = j?.resumed ? "✓ session back" : "⚠ restarted fresh";
+        setTimeout(() => { rsb.disabled = false; rsb.textContent = "↻ bring session back"; }, 2500);
+        await refresh();
+      };
+      arow.append(shrb, expb, renb, rsb);
       idsec.appendChild(arow);
     }
     nodes.push(idsec);
@@ -5051,6 +5077,7 @@ interface AuditEntry { ts: number; event: string; slot?: number; detail?: string
 // Category drives the row colour and the lifecycle-only toggle. Unlisted kinds fall to "other".
 const AUDIT_CAT: Record<string, string> = {
   slot_open: "lifecycle", slot_kill: "lifecycle", slot_shelve: "lifecycle", self_heal_recreate: "lifecycle",
+  slot_restart: "lifecycle",
   auto_fire: "automation", auto_skip: "automation", autos_quiet: "automation", autos_switch: "automation",
   steward_send: "steward", steward_task: "steward", steward_journal: "steward",
   steward_propose_outcome: "steward", steward_send_capped: "steward", steward_journal_capped: "steward",
@@ -5058,7 +5085,7 @@ const AUDIT_CAT: Record<string, string> = {
   share_mode_change: "security", guest_ws_connect: "security", guest_ws_disconnect: "security",
   land_note_fail: "repo", repo_undo_land: "repo",
 };
-const LIFECYCLE_KINDS = new Set(["slot_open", "slot_kill", "slot_shelve", "self_heal_recreate"]);
+const LIFECYCLE_KINDS = new Set(["slot_open", "slot_kill", "slot_shelve", "self_heal_recreate", "slot_restart"]);
 // Generic decode = show the raw detail. A per-kind formatter for the kinds whose raw string is
 // cryptic and load-bearing — the ones that answer "what was DONE to slot N". Every kind listed here
 // is one the live trail actually carries; nothing is written for kinds that have never occurred.
@@ -5083,6 +5110,16 @@ function decodeAudit(event: string, detail?: string): string {
       return why === "no-session" ? `${act} (its tmux session was gone)`
         : why === "no-transcript" ? `${act} (its transcript was gone)`
         : why ? `${act} (${why})` : act;
+    }
+    // the owner's ↻ — same detail vocabulary as a heal, deliberately a different event: a rebuild
+    // nobody asked for and one the owner asked for answer different questions (server.ts, the
+    // slot_restart comment on the AuditEvent union)
+    case "slot_restart": {
+      const [how, why] = (detail ?? "").split(":");
+      if (how === "resumed") return "restarted by the owner — its conversation came back";
+      return why === "no-transcript" ? "restarted by the owner — fresh session (its transcript was gone)"
+        : why === "no-session" ? "restarted by the owner — fresh session (nothing was pinned)"
+        : "restarted by the owner — fresh session";
     }
     case "auto_fire": return detail ? `scheduled prompt fired · ${detail}` : "scheduled prompt fired";
     case "auto_skip": return detail ? `scheduled prompt skipped · ${detail}` : "scheduled prompt skipped";
@@ -5151,7 +5188,7 @@ function renderAudit() {
   sel.onchange = () => { auditSlot = sel.value === "all" ? "all" : Number(sel.value); renderActivity(); };
   ctl.appendChild(sel);
   const lifeBtn = el("button", `shrbtn${auditLife ? " active" : ""}`, "lifecycle only") as HTMLButtonElement;
-  lifeBtn.title = "show only slot_open / slot_kill / slot_shelve / self_heal_recreate";
+  lifeBtn.title = "show only slot_open / slot_kill / slot_shelve / self_heal_recreate / slot_restart";
   lifeBtn.onclick = () => { auditLife = !auditLife; renderActivity(); };
   ctl.appendChild(lifeBtn);
 

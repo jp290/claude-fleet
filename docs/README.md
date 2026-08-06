@@ -119,6 +119,13 @@ nothing there demands maintenance, generates rules, or binds attention. A pointe
 attic is a pointer into history, and the commands that still cite one write
 `docs/attic/…` so the path itself tells you which shelf you are on.
 
+**The old `BACKLOG.md` went there on 2026-08-07** (`docs/attic/backlog-2026-07.md`) — it
+was this repository's *second* register, and having two was the defect: the same work stood
+under three names and no process noticed (`work-register-2026-08-06.md` §4). There is one
+register now, the **queue**, and you read it derived rather than written: `./register.sh`.
+The move is what makes that rule true rather than stated — a document that lists open work
+is a register no matter what its header claims.
+
 Not published at all: the four internal security working documents (trust-perimeter,
 security-model, the 2026-07-25 review, security-findings) — their status markers track a
 live deployment and read as false statements out of context. Named without file extensions

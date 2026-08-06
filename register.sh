@@ -308,9 +308,10 @@ for p in sorted(Path("docs").glob("*.md")):
             hits += 1
             print(f"  {p}:{n}  {clip(line, 96)}")
 print(f"  {hits} line(s). A marker is a CLAIM; e2e/pins.ts checks the checkable subset of them.")
-print("  NOT scanned, and said out loud rather than left silent: BACKLOG.md. It is a July register")
-print("  (work-register §4 measures the drift) whose reconciliation is its own queue row — scanning")
-print("  1200 lines of it here would bury this section in items the queue already disowns.")
+print("  Scanned: docs/*.md only. docs/attic/ is history and is deliberately left out — a marker")
+print("  there is a record of what somebody thought in July, not a claim on today's tree. That is")
+print("  where BACKLOG.md went on 2026-08-07 (docs/attic/backlog-2026-07.md), reconciled line by")
+print("  line first, so this section no longer has a 1200-line July register standing beside it.")
 
 # ── 5. index drift ──────────────────────────────────────────────────────────────────────────────
 print()

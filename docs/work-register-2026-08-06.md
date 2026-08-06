@@ -20,7 +20,7 @@ Sie sind nicht gleichartig, und sie gleich zu behandeln ist der Fehler, der zu h
 |---|---|---|
 | **A · Lebendes Register** | Live-Queue · `docs/autonomy-map-2026-08-06.md` §11.3 · `docs/autonomy-verbs-2026-08-06.md` · `briefs/ui-next-level-2026-08-06.md` | Trägt offene Arbeit. Vor dem Planen lesen. |
 | **B · Historischer Beleg** | die meisten `briefs/*` (ausgeführt, Ergebnis gelandet) · `docs/agent-visibility` · `briefs/stalled-clock-hooks-refuted.md` | Nicht Arbeit, sondern **Beweis**. Verhindert Wiederholung. Nie als offene Liste lesen. |
-| **C · Überholt, aber nicht markiert** | `BACKLOG.md` Track A + Teile von Track B | Der gefährliche Fall: liest sich wie A, ist aber Juli-Stand. Siehe §4. |
+| **C · Überholt, aber nicht markiert** | `BACKLOG.md` Track A + Teile von Track B | Der gefährliche Fall: liest sich wie A, ist aber Juli-Stand. Siehe §4. **Seit 2026-08-07 leer** — der einzige Bewohner ist abgeglichen und nach D verschoben (§4 Nachtrag). Die Klasse bleibt stehen, weil sie wieder zulaufen wird. |
 | **D · Attic** | `docs/attic/*` (55) | Ausdrücklich stillgelegt. Nur als Quelle für „warum haben wir das verworfen". |
 
 **Der Kern-Befund:** wir haben **zwei Register** — die Queue (live, maschinenlesbar) und die
@@ -93,7 +93,8 @@ zuletzt) · Queue `1981be9a` (Autonomie-Bausteine, in Flug beim Owner) · `0be58
 (Entscheidungsnotiz, kein Auftrag).
 
 ### G7 · Plan-Hygiene — neu, und Voraussetzung für alles Weitere
-BACKLOG-Reconciliation (§4) · ~~**P-10 L1-Rot-Detektor**~~ und ~~`register.sh`~~ **beide gebaut am
+~~BACKLOG-Reconciliation (§4)~~ **erledigt 2026-08-07** (§4 Nachtrag; die Datei liegt im Attic) ·
+~~**P-10 L1-Rot-Detektor**~~ und ~~`register.sh`~~ **beide gebaut am
 2026-08-06** (§5 trägt die Fassung, die daraus wurde) · BACKLOG P-6 Program-Board (`0` Treffer,
 ungebaut, Owner-Entscheid „bauen oder nicht" steht seit Juli offen).
 
@@ -115,6 +116,36 @@ Nicht als Vorwurf, sondern als Beleg für §5 — jede Zeile ist eine Messung:
    Steward-Outcomes). Das Programm ist seither zweimal umgebaut worden (Analyse statt
    Eval-Gate, `500ff63`; die fünf Verben; die Landkarte). Track A beschreibt eine Welt, die es
    nicht mehr gibt.
+
+**Nachtrag 2026-08-07 — der Abgleich ist gelaufen, und §6 kann seinen ersten Punkt streichen.**
+`BACKLOG.md` liegt seit heute als `docs/attic/backlog-2026-07.md` im Attic, Zeile für Zeile
+abgeglichen. **39 Posten** (18 Items · 11 Hardening · 10 Track-A-Zeilen), und ein Posten ist eine
+Registerzeile, nicht ein Satz: **26 gelandet** (mit SHA oder Belegzeile im Code), **11 offen**
+(mit Belegzeile), **2 überholt** (mit dem Commit, der die Prämisse kippte). Dazu **3 Prämissen**,
+die keine Posten sind, aber ganz Track A tragen — und alle drei sind gefallen.
+Punkt 5 oben wird dabei **schärfer, nicht schwächer**: Track A ist
+nicht veraltet, sondern **gegenstandslos** — `promotionEligible`, `outcomeTally` und
+`measureOutcomes` sind mit `bef43f6` aus `server.ts` gelöscht, `baselineRate` mit `6dea981`.
+Und der Abgleich hat **drei Zeilen dieses Dokuments selbst widerlegt**, alle in §3; sie stehen
+oben unkorrigiert, weil dies ein Schnappschuss ist, und hier richtiggestellt, weil eine falsche
+Zeile in einem gelesenen Dokument teurer ist als ein Schnappschuss, der altert:
+
+- §3 G4 „BACKLOG **B-4/B-5/B-6** — alle unverändert offen" ist bei allen dreien falsch:
+  B-4 (UI-Verdichtung) landete als `0be9e1e`, B-5 (Print/PDF) als `3a38f8f`, B-6
+  (Per-Device-Streams) als `aa7be82` — und zwar in der Form, die das Item selbst als „the actual
+  structural answer" benennt, der Conversation-View, nicht als Per-Device-pty.
+- §3 „**B-15** Lane-Vokabular" als erledigt gezählt: nur zur Hälfte. Das Badge-Halb ist gelandet
+  (`src/client.ts:4308` streift `fleet/`, das Detail sitzt im Tooltip `:4369`). Das Dialog-Halb
+  („work is saved — retire the lane?") ist NICHT gebaut und auch nicht mehr gewollt: `38709ea`
+  hat es durch `showRiskPreview` ersetzt, das die git-Fakten zeigt statt sie zu übersetzen.
+- §3 „**P-7a/P-7b** (Digest-Cache, SIGKILL) sind vorhanden": P-7b ist offen. `runVerify`
+  (`server.ts:4025`) kennt genau ein `p.kill()` ohne Eskalation; die SIGTERM→SIGKILL-Staffel
+  existiert nur im Post-Land-Audit (`server.ts:4552`) — also in dem Pfad, der sie NICHT braucht,
+  während der mit dem 120-s-Timeout sie nicht hat.
+
+Das ist die Fehlerform, vor der §2 warnt, an diesem Dokument selbst vorgeführt: **ein grep-Treffer
+ist Anwesenheit, nicht Funktion** — bei P-7b traf das Wort `SIGKILL` im selben File, nur im
+falschen Pfad.
 
 ## 5. Der Mechanismus — warum ein besserer Handoff das falsche Ziel wäre
 
@@ -170,9 +201,11 @@ nicht das Entscheiden, sondern das Wieder-Ableiten von Zustand, den kein Artefak
 
 ## 6. Was NICHT geprüft wurde
 
-- **`BACKLOG.md` ist nicht Zeile für Zeile abgeglichen** — gelesen wurden das Register (Track A/B)
-  und die Abschnittsköpfe, gegengeprüft sechs P-Items und fünf B-Items. Die Drift ist damit
-  **belegt**, ihr **Umfang nicht vermessen**. Das ist die Arbeit, die G7 beauftragt.
+- ~~**`BACKLOG.md` ist nicht Zeile für Zeile abgeglichen**~~ — **erledigt 2026-08-07**, siehe den
+  Nachtrag in §4. Der Umfang der Drift ist damit vermessen (39 Posten, davon 11 offen), und die
+  Datei liegt als `docs/attic/backlog-2026-07.md` im Attic, ihre offenen Posten als 14
+  `pending`-Zeilen in der Queue (7 Lane-Zeilen, 7 Notizen). Nicht aus der Lane heraus: die hat
+  dafür keine Credential (`/api/tasks` → 401), gefilet wurde auf ausdrückliche Owner-Freigabe.
 - **Die 55 Attic-Docs wurden nicht gelesen** — die Klassifikation stützt sich auf ihre Ablage.
 - **Die 27 Juli-Briefs wurden nicht einzeln entschieden**, nur die August-Briefs.
 - **Die fünf Rundgang-Notizen sind nach Titel eingeordnet, nicht nach Inhalt.**

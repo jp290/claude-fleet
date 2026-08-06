@@ -1,3 +1,48 @@
+# Stillgelegt 2026-08-07 — dies war `BACKLOG.md` (Klasse D, Attic)
+
+*Vom 2026-07-17 bis 2026-08-06 das **zweite** Register dieses Repos. Die Queue führte
+dieselbe Arbeit unter anderen Namen, und kein Prozess merkte es — der Beleg dafür ist
+`docs/work-register-2026-08-06.md` §4, der Abgleich Zeile für Zeile steht im Body des
+Commits, der diese Datei hierher verschoben hat: 39 Posten, 26 gelandet, 11 offen,
+2 überholt. Alles unterhalb dieses Kopfes ist unverändert der Stand vom Stilllegen:
+gelesen als **Beleg**, nie als Arbeitsliste.*
+
+**Wohin die lebenden Posten gegangen sind.** In die Queue, und nur dorthin — sie ist das
+eine Register (`docs/work-register-2026-08-06.md` §5, „Ein-Register-Regel"). Abzulesen ist
+sie nicht hier, sondern abgeleitet: **`./register.sh`** druckt die offenen Zeilen aus
+`fleet.json`, ihre Kollisionsflächen, die Doc-Marker und die Index-Drift. Von den beim
+Stilllegen noch offenen Posten trug genau einer schon eine Zeile — Item 12 („File /
+screenshot drop") ist `2784427e`; **die übrigen sind am 2026-08-07 als 14 Zeilen gefilet
+worden**, alle `pending`, keine `queued`: sieben Lane-Zeilen mit Done-Kriterium und
+Verifikationsweg (`4544f602` `04607d0b` `5388c07d` `8bdf0e81` `8830dddc` `9bf62ae6`
+`df5b74ba`), fünf Notizen über die Steward-Route mit `ref`-Dedup (`56be77a3` `09572f62`
+`cd85c924` `97f529b1` `7366e599`) und zwei über die Owner-Route (`10ac2528` `63626cdb`).
+Welche Zeile welchem Posten entspricht, steht im Body des Verschiebe-Commits.
+**Dieses Dokument ist ausdrücklich keine zweite Liste mehr.**
+
+**Fünf Aussagen hier drin waren beim Stilllegen nachweislich falsch** — sie stehen bewusst
+unkorrigiert da, weil ein Attic-Dokument Geschichte ist und nicht nachgeführt wird:
+
+- **Track A steht auf 2026-07-23/24, und seine zwei „facts that constrain everything"
+  sind gegenstandslos, nicht bloß veraltet.** `promotionEligible`, `outcomeTally` und
+  `measureOutcomes` wurden mit `bef43f6` gelöscht, `baselineRate` mit `6dea981`. Die
+  gemessene „un-nudged slot looks helped ~25 %"-Zahl ist damit ohne Subjekt (und war schon
+  vorher als Pro-Boot-Artefakt widerlegt, `docs/attic/discrepancy-audit.md` D3).
+- **Drei Zeilen tragen „not yet deployed"** für Arbeit vom 24. Juli (die Zeilen zum
+  Repair-Loop, zu P-1a und zu P-4). Alles davon ist längst deployt.
+- **P-4 sagt „Client rendering still open"** — `deployGap` steht 5× in `src/client.ts`.
+- **Item 13 („Right sideboard") IST F5** und ist als `ed5c352` gelandet; **Item 12 IST F6
+  IST `2784427e`.** Drei Namen, zwei Sachen.
+- **Hardening #9 beschreibt „112 checks in one linear script"** — diese Harness gibt es
+  seit `0cad14f` nicht mehr; `fleet-e2e.ts` ist ein Runner über `e2e/*.ts`.
+
+**Was hier weiterhin trägt, und deshalb nicht mitverrottet:** die drei Listen am Ende von
+Track A — „Parked with a trigger", „Dead ends — never retry", „Measured as working". Das
+sind Entscheide mit Beleg, keine Statusmeldungen; wer einen davon wieder aufmacht,
+widerlegt zuerst den Beleg (dieselbe Regel wie `docs/work-register-2026-08-06.md` §7).
+
+---
+
 # Claude Fleet — Feature Backlog
 
 Collected 2026-07-17 from a few days of real usage. Each item analyzed against the

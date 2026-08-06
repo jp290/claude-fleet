@@ -8,8 +8,25 @@ Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächste
 
 ## Session 31: Runde 2+3 gelandet — und der Versuch, ALLE Fäden einmal sauber zu sortieren
 
-**Für die nächste Session steht die Gruppierung unten unter „Die sieben Gruppen".** Sie ist
-nach einer Achse gebaut, nicht nach Themen: siehe „Wie sortiert wurde".
+**Das Erste für die nächste Session — drei Dateien, in dieser Reihenfolge:**
+
+1. `./state.sh` (Zustand ist ein Kommando, keine Erinnerung).
+2. **`docs/work-register-2026-08-06.md`** — alle Dokumente einmal durchgesehen: vier Klassen
+   statt einer, das offene Register in sieben Gruppen (§3), der Beleg, dass `BACKLOG.md` ein
+   Juli-Register ist (§4), und in §6 ausdrücklich, was NICHT geprüft wurde.
+3. **`briefs/work-register.md`** — die FORM des Registers, das das ersetzen soll: keine dritte
+   Liste, drei Wahrheitswerte, `Task.files` als fehlender Join, Fluchttür für den Rot-Detektor.
+
+**Zwei neue Queue-Zeilen tragen genau das:** `1a08e5db` (`register.sh` + L1-Rot-Detektor,
+Stufen 1–3 ohne `server.ts`-Eingriff) und `8997bff1` (BACKLOG abgleichen → Queue-Zeilen →
+Attic; **nach** `1a08e5db`, dessen Ausgabe ist der Abgleichspartner).
+
+Die Gruppierung unten ist nach einer Achse gebaut, nicht nach Themen: siehe „Wie sortiert wurde".
+
+**Deploy-Stand bei Übergabe:** `bootHead` = `ed5c352`, HEAD = `5fd1018` — die drei Commits
+darüber sind **doc-only** (`codeBehind:false`, `bundleStale:false`), also ist **nichts zu
+deployen**. Slot 5 landet seine eigene Zeile (`1981be9a`) selbst; sein Ergebnis gehört gelesen,
+bevor G6 geplant wird.
 
 ### Gelandet und deployed (6 Commits, alle Audits grün außer einem fremdgetöteten)
 
@@ -118,6 +135,10 @@ Zwei produzierende Lanes, ein serieller Land-Takt:
   weil sie die Instanz repariert, die jetzt allein Kollisionen zurückhält.
 - **Lane B = G1** (Repair-Worker-Profil + der Check, der Prompt und Profil verkoppelt).
   Andere Region in `server.ts`, kleiner Diff.
+- **Lane C = `1a08e5db`** (`register.sh` Stufen 1–3 + Rot-Detektor Prüfung 1) — sie fasst
+  `server.ts` NICHT an und kollidiert deshalb mit A und B nicht. Wenn nur zwei Lanes laufen
+  sollen: diese hier vor B, denn sie ist die Voraussetzung dafür, dass die übernächste Session
+  nicht wieder von Hand sortiert.
 - **Slot 5** (`1981be9a`, Autonomie-Bausteine) landet der Owner selbst — nicht anfassen; sein
   Ergebnis gehört gelesen, BEVOR G6 geplant wird, denn genau dort liegen die Prämissen.
 - **Welle 2:** G6/Verb 2 (Deploy) gegen G4/F6 — verschiedene Flächen, sauber parallel.

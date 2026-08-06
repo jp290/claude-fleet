@@ -624,6 +624,11 @@ type AuditEvent =
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"
   | "slot_shelve"
+  // the board editor wrote a file into a session's working directory. This server's only
+  // owner-driven write to a path outside its own state files, so it is on the trail by the same
+  // rule as slot_open: what changed the machine is recorded, and the detail names the FILE, never
+  // its contents (the trail is read by people who are not entitled to the file's text).
+  | "file_write"
   // the owner restarted a pane on purpose (↻ bring session back). Deliberately NOT
   // self_heal_recreate: slotstats reads that event as "the pane died and the loop rebuilt it"
   // and divides resumed/heals to measure the durability promise. An owner-triggered rebuild
@@ -2668,6 +2673,34 @@ function fileBody(text: string): { text: string; binary: boolean; truncated: boo
     ? { text: text.slice(0, FILE_CAP), binary: false, truncated: true }
     : { text, binary: false, truncated: false };
 }
+// Whether this file may be EDITED, decided where the bytes are rather than in the client. Three
+// files must never reach a textarea, and each for a reason only the reader of the bytes knows:
+//   · binary — there is no text to edit, and the viewer already says so
+//   · truncated — the client holds the first FILE_CAP of it, and saving that back would delete the
+//     tail. This is the one failure mode an editor bolted onto a capped viewer creates for free.
+//   · not byte-identical when re-encoded — a latin-1 line inside an otherwise clean source file
+//     decodes to replacement characters, and saving would rewrite bytes the viewer had to guess at
+// `hash` is the whole conflict story and is ABSENT in exactly those three cases: the client offers
+// ✎ if and only if the server sent one, so "is this editable" is never a client-side opinion. It
+// is over the bytes ON DISK, so an agent writing the same file in the same lane invalidates it.
+function editability(bytes: Uint8Array, text: string, body: { binary: boolean; truncated: boolean }):
+  { hash?: string; noEdit?: string } {
+  if (body.binary) return {};
+  if (body.truncated) return { noEdit: "longer than the viewer serves — editing here would save only the part you can see" };
+  if (Buffer.compare(Buffer.from(text, "utf8"), Buffer.from(bytes)) !== 0)
+    return { noEdit: "not valid UTF-8 — saving it back would rewrite bytes this viewer had to guess at" };
+  return { hash: createHash("sha256").update(bytes).digest("hex") };
+}
+// How many tracked paths the explorer tree serves. `git ls-files` on this repo returns ~130; the
+// cap is for the checkout that is two orders larger, and `capped` says so rather than pretending
+// the tree is the repo.
+const TREE_CAP = 4000;
+// Never editable through the board, wherever in the tree they sit. The first two hold this
+// server's own secrets — .env is where the deploy identity lives and fleet.json holds the owner
+// token, every share secret and every lane's scoped credential — and .git is the repository's
+// integrity, which is not text a textarea should be able to touch. Matched against the path
+// RELATIVE to the working directory, so it cannot be sidestepped by depth.
+const FILE_WRITE_DENY = /(^|\/)(\.env(\.[^/]*)?|fleet\.json|\.git)(\/|$)/;
 // What the folder CONTAINS — the question "which of these two checkouts is it" is answered by the
 // files, not by the branch name. Returns null rather than an empty list when the directory cannot be
 // read: "nothing is in here" and "I was not allowed to look" are different facts and the pane says so.
@@ -9185,9 +9218,95 @@ Bun.serve<WSData>({
         return json({ error: "no such file" }, 404);
       }
       if (st.isDirectory()) return json({ error: "that is a directory" }, 400);
-      const text = await Bun.file(path).text().catch(() => null);
-      if (text === null) return json({ error: "this file could not be read" }, 400);
-      return json({ ...fileBody(text), path, rev: null, size: st.size });
+      // BYTES, not .text(): the editor's conflict hash has to be over what is on disk, and the
+      // round-trip test in editability() needs the original to compare against. The decode is the
+      // same one .text() did.
+      const buf = await Bun.file(path).arrayBuffer().catch(() => null);
+      if (buf === null) return json({ error: "this file could not be read" }, 400);
+      const bytes = new Uint8Array(buf);
+      const text = new TextDecoder().decode(bytes);
+      const body = fileBody(text);
+      return json({ ...body, path, rev: null, size: st.size, ...editability(bytes, text, body) });
+    }
+    // --- the file EXPLORER's tree -----------------------------------------------------------
+    // `git ls-files` and nothing else. It is one cheap call, it is the repo's OWN answer to
+    // "which files are mine", and it excludes node_modules and build output for free — a readdir
+    // walk would have to re-derive .gitignore badly and would then be the slowest thing on the
+    // board. The consequence is stated rather than hidden: an UNTRACKED file does not appear here.
+    // The board's changed-files card is where a new file shows up, and it opens the same viewer.
+    // Anchored on a SLOT, not a free path: the tree is "this session's repo", which is also the
+    // only directory the write route below will accept.
+    if (url.pathname === "/api/tree") {
+      const s = slotFrom(url.searchParams.get("slot"));
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      let root: string;
+      try { root = realpathSync(s.cwd); } catch { return json({ error: "this session's directory is gone" }, 400); }
+      if (!existsSync(`${root}/.git`)) return json({ error: "not a git repo" }, 400);
+      const r = await gitRead(root, "ls-files", "-z");
+      if (r.code !== 0) return json({ error: "git could not list this directory" }, 502);
+      const all = r.out.split("\0").filter(Boolean).sort();
+      return json({ root, files: all.slice(0, TREE_CAP), total: all.length, capped: all.length > TREE_CAP });
+    }
+    // --- the ONE route on this server that writes a file the owner named ---------------------
+    //
+    // /api/file above reads any absolute path on purpose — the picker browses the whole home
+    // directory, and that is existing, deliberate design. This route is deliberately NOT its
+    // mirror image: a read is recoverable, a write is not, and a write-anywhere endpoint would be
+    // a remote-code-execution gadget wearing an editor's face (~/.claude/settings.json,
+    // watchdog.sh, a launchd plist are each one path away from a textarea).
+    //
+    // So containment is not a validation step here, it is the route's shape:
+    //   · the target is resolved inside a SLOT's own working directory, and BOTH sides go through
+    //     realpath first. A string prefix test over unresolved paths is passed by any symlink
+    //     pointing out of the tree; the dispatcher's lane cap canonicalises for the same reason.
+    //     Resolved fresh, deliberately not through repoCanon() — that cache answers from a
+    //     previous resolution, and a guard must not.
+    //   · the file must already EXIST. An editor edits; creating one is a different gesture and
+    //     would need its own thinking about parent directories that do not exist yet.
+    //   · FILE_WRITE_DENY, above, wherever in the tree the file sits.
+    //   · the write is CONDITIONAL on the hash the reader was shown. A lane's agent writes the
+    //     same files this editor opens, so "last save wins" would mean silently deleting an
+    //     agent's work — the one new failure this feature would otherwise introduce.
+    if (url.pathname === "/api/file/write" && req.method === "POST") {
+      const b = await readJson(req);
+      const s = slotFrom(b?.slot);
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      if (typeof b?.path !== "string" || !b.path.trim()) return json({ error: "no path" }, 400);
+      if (typeof b.text !== "string") return json({ error: "no text" }, 400);
+      if (typeof b.baseHash !== "string" || !/^[0-9a-f]{64}$/.test(b.baseHash))
+        return json({ error: "no base hash — reopen the file and try the edit again" }, 400);
+      if (b.text.length > FILE_CAP) return json({ error: "larger than this editor writes" }, 400);
+      if (b.text.includes("\0")) return json({ error: "refusing to write a NUL byte through a text editor" }, 400);
+      let root: string;
+      try { root = realpathSync(s.cwd); } catch { return json({ error: "this session's directory is gone" }, 400); }
+      // Only inside a git working tree, which is tighter than it looks and deliberate on two
+      // counts. It keeps the route's reach equal to the surface that offers it (the explorer is
+      // `git ls-files`, so it never appears for a plain directory) — a route that can write more
+      // than any UI can ask for is a gadget waiting to be found. And it means every edit made here
+      // is visible in `git status` and revertible with `git checkout --`: the owner's own undo,
+      // which a write into a bare directory would not have. Without it, a session opened on ~
+      // would make this editor's containment "the home directory", ~/.claude/settings.json included.
+      if (!existsSync(`${root}/.git`)) return json({ error: "this session is not in a git working tree" }, 400);
+      let target: string;
+      // resolve() lets an ABSOLUTE path through unchanged, which is what the viewer sends — the
+      // containment below is what makes that safe, and it is the only thing that does.
+      try { target = realpathSync(resolve(root, b.path)); } catch {
+        return json({ error: "no such file — this editor changes files that exist, it does not create them" }, 404);
+      }
+      if (!target.startsWith(`${root}/`)) return json({ error: "outside this session's directory" }, 400);
+      const rel = target.slice(root.length + 1);
+      if (FILE_WRITE_DENY.test(rel)) return json({ error: "this file is not editable here" }, 400);
+      let st;
+      try { st = statSync(target); } catch { return json({ error: "no such file" }, 404); }
+      if (!st.isFile()) return json({ error: "that is not a regular file" }, 400);
+      if (st.size > FILE_CAP) return json({ error: "longer than the viewer serves — this editor would truncate it" }, 400);
+      const now = new Uint8Array(await Bun.file(target).arrayBuffer());
+      if (createHash("sha256").update(now).digest("hex") !== b.baseHash)
+        return json({ error: "this file changed on disk since you opened it — nothing was written. Reopen it." }, 409);
+      const next = Buffer.from(b.text, "utf8");
+      writeFileSync(target, next);
+      audit("file_write", s.id, `${rel} · ${next.length}b`);
+      return json({ ok: true, path: target, hash: createHash("sha256").update(next).digest("hex"), size: next.length });
     }
     // one commit's change, for the Commits lens's detail pane. Same membership rule as the per-slot
     // route above and for the same reason: the hash must be one the list THIS ROUTE computes just

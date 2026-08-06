@@ -1761,6 +1761,153 @@ function deploySection(): HTMLElement | null {
   return sec;
 }
 
+// --- the file explorer (§F5) --------------------------------------------------------------
+//
+// The tree is `git ls-files` and nothing else — see the /api/tree comment in server.ts for why,
+// and for the one thing it therefore cannot show (untracked files; the card above shows those).
+//
+// Two rules this cache exists to keep, both of them about the 3s board repaint:
+//   · it is fetched ONCE per working directory, never from the repaint loop. /api/sessions at 2s
+//     is what data-saver.md had to shrink; a subprocess per board render would put it back.
+//   · what the reader has OPENED is module state, not DOM state, so a repaint cannot fold the
+//     tree shut under their hands. Same reason `agentsOpen` and the picker's `pkdOpen` are.
+interface TreeInfo { root: string; files: string[]; total: number; capped: boolean }
+const fxTree = new Map<string, TreeInfo | { error: string }>(); // keyed by the slot's cwd
+const fxAsked = new Set<string>();  // the latch: one fetch per cwd, retried only by ⟳
+const fxOpen = new Set<string>();   // directories the reader has expanded, as "a/b" prefixes
+let fxShell: Shell | null = null;
+
+// the tree as a nested map, derived from the flat path list on every paint. Cheap (a few thousand
+// strings at most, capped server-side) and it keeps ONE source of truth — the flat list the server
+// sent — instead of a parallel structure that could disagree with it.
+interface TreeNode { dirs: Map<string, TreeNode>; files: string[] }
+function treeOf(paths: string[]): TreeNode {
+  const root: TreeNode = { dirs: new Map(), files: [] };
+  for (const p of paths) {
+    const parts = p.split("/");
+    let node = root;
+    for (const seg of parts.slice(0, -1)) {
+      let next = node.dirs.get(seg);
+      if (!next) { next = { dirs: new Map(), files: [] }; node.dirs.set(seg, next); }
+      node = next;
+    }
+    node.files.push(parts[parts.length - 1]);
+  }
+  return root;
+}
+
+// One renderer, two homes: the board card and the explorer window's list pane. `onPick` is what a
+// FILE row does — the only thing the two callers disagree about. Folding a directory repaints
+// THIS container from the root and nothing else: re-rendering the board would re-run its fetches,
+// and a fold is not new information.
+function paintTree(into: HTMLElement, root: TreeNode, onPick: (rel: string) => void,
+  picked: () => string | null): void {
+  const redraw = () => { into.replaceChildren(); walk(root, "", 0); };
+  const walk = (node: TreeNode, prefix: string, depth: number): void => {
+    for (const [name, kid] of Array.from(node.dirs.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const rel = prefix ? `${prefix}/${name}` : name;
+      const open = fxOpen.has(rel);
+      const row = el("div", "fxrow fxdir");
+      row.style.paddingLeft = `${depth * 12}px`;
+      row.appendChild(el("span", "fxtwist", open ? "▾" : "▸"));
+      row.appendChild(el("span", "fxname", name));
+      row.onclick = () => { if (open) fxOpen.delete(rel); else fxOpen.add(rel); redraw(); };
+      into.appendChild(row);
+      if (open) walk(kid, rel, depth + 1);
+    }
+    for (const name of node.files.slice().sort((a, b) => a.localeCompare(b))) {
+      const rel = prefix ? `${prefix}/${name}` : name;
+      const row = el("div", `fxrow fxfile${picked() === rel ? " sel" : ""}`);
+      row.style.paddingLeft = `${depth * 12 + 12}px`;
+      row.appendChild(el("span", "fxname", name));
+      row.title = rel;
+      row.onclick = () => { onPick(rel); redraw(); };
+      into.appendChild(row);
+    }
+  };
+  redraw();
+}
+async function loadTree(slot: number, cwd: string): Promise<void> {
+  const res = await api(`/api/tree?slot=${slot}`).catch(() => null);
+  if (res?.ok) {
+    const d = (await res.json().catch(() => null)) as TreeInfo | null;
+    fxTree.set(cwd, d ?? { error: "the server's answer was not readable JSON" });
+  } else {
+    const e = res ? ((await res.json().catch(() => null)) as { error?: string } | null) : null;
+    fxTree.set(cwd, { error: e?.error ?? "the file tree could not be read" });
+  }
+  void renderBoard();
+}
+
+// The card. Compact by design — it lists the repo root and lets the reader walk down; the WINDOW
+// (⤢) is where a file is actually read, because a 6-line-wide sideboard is not a place to read code.
+function fileTreeSection(slot: number, cwd: string): HTMLElement {
+  const sec = el("div", "bsec");
+  const hd = el("div", "bwthead");
+  hd.appendChild(el("h3", "", "files in this repo"));
+  const t = fxTree.get(cwd);
+  if (t && !("error" in t)) {
+    const big = el("button", "bwtact", "⤢");
+    big.title = "open the file explorer in a window — the place to actually read one";
+    big.onclick = () => openExplorer(slot, cwd);
+    hd.appendChild(big);
+    const again = el("button", "bwtact", "⟳");
+    again.title = "re-read the tree (a new file only appears after this)";
+    again.onclick = () => { fxTree.delete(cwd); void loadTree(slot, cwd); };
+    hd.appendChild(again);
+  }
+  sec.appendChild(hd);
+  if (!t) {
+    // the latch: one fetch per working directory, so the 3s repaint that draws this card cannot
+    // turn a `git ls-files` into a poll
+    if (!fxAsked.has(cwd)) { fxAsked.add(cwd); void loadTree(slot, cwd); }
+    sec.appendChild(el("div", "bempty", "reading the file tree…"));
+    return sec;
+  }
+  if ("error" in t) { sec.appendChild(el("div", "bempty", t.error)); return sec; }
+  sec.appendChild(el("div", "bstate", `${t.total} tracked file${t.total === 1 ? "" : "s"}`
+    + (t.capped ? ` · showing the first ${t.files.length}` : "")));
+  const box = el("div", "fxtree");
+  paintTree(box, treeOf(t.files), (rel) => openExplorer(slot, cwd, rel), () => null);
+  sec.appendChild(box);
+  return sec;
+}
+
+// The explorer window. It is the same shell every other browse-and-inspect surface uses, and the
+// detail pane is showFileView — the viewer the diff window, the picker and the commit lens already
+// share. F5 adds an ENTRY POINT to that stair, not a second file view.
+function openExplorer(slot: number, cwd: string, startAt?: string) {
+  const t = fxTree.get(cwd);
+  if (!t || "error" in t) return;
+  fxShell?.close();
+  let picked: string | null = null;
+  const shell = openShell({
+    id: "files",
+    title: "Files",
+    subtitle: `${baseName(cwd)} · ${t.total} tracked`,
+    detailHint: "Pick a file on the left. Reading is all it does until you press ✎.",
+    listWidth: 340,
+    onClose: () => { fxShell = null; },
+  });
+  fxShell = shell;
+  const open = (rel: string) => {
+    picked = rel;
+    showFileView(shell, {
+      path: `${cwd}/${rel}`,
+      label: rel.split("/").pop() ?? rel,
+      source: "as it is on disk right now",
+      edit: { slot },
+      back: { label: "the tree", go: () => {
+        picked = null;
+        shell.setCloseGuard(null);
+        shell.detail.replaceChildren(el("div", "shellhint", "Pick a file on the left."));
+      } },
+    });
+  };
+  paintTree(shell.list, treeOf(t.files), open, () => picked);
+  if (startAt) open(startAt);
+}
+
 let boardAgain = false;
 async function renderBoard() {
   // a render requested while one is in flight (e.g. focus moved mid-fetch) must not be
@@ -1794,7 +1941,7 @@ async function renderBoard() {
     if (mg?.running) mergeWatch.add(slot);
     const nodes: HTMLElement[] = [];
     // the right board tells ONE story, in the owner's order (§F4, 2026-08-06): IDENTITY →
-    // TO LAND → COMMITS → FILES → LANES → GUEST → AGENTS → OUTLINE. It runs from "what is
+    // TO LAND → COMMITS → FILES → EXPLORER → LANES → GUEST → AGENTS → OUTLINE. It runs from "what is
     // pending" through "what is already done" to "what else exists" — so the freshest thing
     // is always at the top and the advisory agents, folded, are at the bottom. Every function
     // of the old flat list is kept, only regrouped. GUEST is the one section NOT about this
@@ -2127,7 +2274,17 @@ async function renderBoard() {
         nodes.push(fsec);
       }
 
-      // 5 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
+      // 5 — EXPLORER: the repo's whole file tree, not just what changed. The card above answers
+      // "what did this session touch"; this one answers "what is in here", which is the question
+      // you have when you are reading rather than reviewing. Same destination either way — one
+      // click opens the file view both cards already use.
+      // Drawn only where there is a branch: the tree is `git ls-files`, so a session opened on a
+      // plain directory would get a card whose only content is "not a git repo" on every repaint.
+      // A detached HEAD loses the card too — the honest cost of reading git-ness off the one field
+      // the brief already carries, rather than adding a probe to the 3s render for an edge case.
+      if (brief.branch) nodes.push(fileTreeSection(slot, s.cwd));
+
+      // 6 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
       // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
       // ＋ new lane.
       if (wts) {
@@ -2285,14 +2442,14 @@ async function renderBoard() {
         nodes.push(sec);
       }
     }
-    // 6 — GUEST: machine-level, so it sits after the lane story and ABOVE the outline — the
+    // 7 — GUEST: machine-level, so it sits after the lane story and ABOVE the outline — the
     // prompt list runs to dozens of rows, and a panic button below it is a panic button you scroll
     // for. Rendered from the cache filled by loadGuest(); this render never fetches it.
     const gsec = guestSection();
     if (gsec) nodes.push(gsec);
 
     if (brief) {
-      // 7 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review. Last of the lane story and
+      // 8 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review. Last of the lane story and
       // folded behind "more ▸", closed on every load (owner call §F4): the git story above is
       // what the board is for, and these two were sitting in the middle of it. NOTHING is
       // removed — the ③ auto-review keeps writing the outcome ledger either way; this decides
@@ -2441,7 +2598,7 @@ async function renderBoard() {
       nodes.push(asec);
     }
 
-    // 8 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
+    // 9 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
     const psec = el("div", "bsec");
     psec.appendChild(el("h3", "", `your prompts (${prompts.length})`));
     if (!prompts.length) psec.appendChild(el("div", "bempty", "no prompts in the transcript yet"));
@@ -3514,15 +3671,26 @@ interface FileViewOpts {
   rev?: string;              // absent = the file as it is on disk now
   source: string;            // one line naming WHICH version this is. Always shown.
   diff?: string;             // this file's hunk, when the caller already has it — adds the Change tab
+  // WHICH session's working directory this file lives in. Opt-in, and absent means read-only:
+  // the ✎ button exists only where a caller can name the slot whose cwd contains the file, which
+  // is exactly the containment the write route enforces on its side. A commit's file view never
+  // passes it — there is no editing a revision — so the gesture cannot appear where it is a lie.
+  edit?: { slot: number };
   back: { label: string; go: () => void };
 }
 type FileResp = { path?: string; rev?: string | null; size?: number; text?: string;
-  binary?: boolean; truncated?: boolean; error?: string };
+  binary?: boolean; truncated?: boolean; error?: string;
+  // present iff the server is willing to be written back to (see editability(), server.ts) —
+  // `hash` doubles as the conflict token, `noEdit` as the reason there is none
+  hash?: string; noEdit?: string };
 
 let fileSeq = 0; // latest-wins, like every other pane that follows a moving cursor
 
 function showFileView(shell: Shell, o: FileViewOpts) {
   const seq = ++fileSeq;
+  // whatever the previous file left armed goes with it — a guard belongs to a textarea that is
+  // about to be replaced, and an orphaned one would make the window refuse to close for nothing
+  shell.setCloseGuard(null);
   shell.detail.replaceChildren();
   const back = el("button", "fvback", `‹ ${o.back.label}`);
   back.onclick = () => o.back.go();
@@ -3550,7 +3718,7 @@ function showFileView(shell: Shell, o: FileViewOpts) {
     void loadFile(o).then((r) => {
       if (!shell.isOpen() || seq !== fileSeq) return;
       body.replaceChildren();
-      renderFileBody(body, o, r);
+      renderFileBody(shell, body, o, r, paint);
     });
   };
   if (o.diff) {
@@ -3576,7 +3744,8 @@ async function loadFile(o: FileViewOpts): Promise<FileResp | null> {
   return (await res.json().catch(() => null)) as FileResp | null;
 }
 
-function renderFileBody(body: HTMLElement, o: FileViewOpts, r: FileResp | null) {
+function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: FileResp | null, repaint: () => void) {
+  shell.setCloseGuard(null); // the read view holds nothing unsaved; only the editor below arms it
   if (!r) { body.appendChild(el("div", "diffstat err", "the server's answer was not readable JSON")); return; }
   if (r.error) { body.appendChild(el("div", "diffstat err", r.error)); return; }
   if (r.binary) {
@@ -3586,14 +3755,14 @@ function renderFileBody(body: HTMLElement, o: FileViewOpts, r: FileResp | null) 
     return;
   }
   const text = r.text ?? "";
-  if (!text) { body.appendChild(el("div", "shellhint", "this file is empty")); return; }
+  if (!text && !r.hash) { body.appendChild(el("div", "shellhint", "this file is empty")); return; }
   // EVERY file is shown as its own text, .md included. The tempting move is to run mdInto over
   // markdown, and it would be a lie dressed as a feature: mdInto gives structure to ``` fences and
   // nothing else (deliberately — it renders hostile transcript text, so no other markdown may
   // become markup). A viewer is for reading what the file SAYS; rendering it would hide the source
   // this one exists to show.
   const pre = el("div", "fvtext");
-  pre.textContent = text;
+  pre.textContent = text || "(this file is empty)";
   body.appendChild(pre);
   const facts: string[] = [];
   if (typeof r.size === "number") facts.push(`${(r.size / 1024).toFixed(1)} KB`);
@@ -3601,6 +3770,86 @@ function renderFileBody(body: HTMLElement, o: FileViewOpts, r: FileResp | null) 
   body.appendChild(el("div", "diffstat", facts.join(" · ")));
   if (r.truncated) body.appendChild(el("div", "ocwarn",
     "this file is longer than the viewer serves — what is above is the beginning of it, not all of it"));
+  // ── the third step of the stair: read → understand → change ────────────────────────────────
+  // Editing is a SEPARATE click and always was the requirement ("Bearbeiten erst nach extra
+  // Klick"). Nothing above changes when this button is absent, which is the normal case: a commit's
+  // revision, a file the server declined to hand an editable hash for, a caller that named no slot.
+  if (!o.edit) return;
+  if (!r.hash) {
+    if (r.noEdit) body.appendChild(el("div", "shellhint", `not editable here — ${r.noEdit}`));
+    return;
+  }
+  const slot = o.edit.slot;
+  const hash = r.hash;
+  const editBtn = el("button", "shrbtn fvedit", "✎ edit this file") as HTMLButtonElement;
+  editBtn.onclick = () => openFileEditor(shell, body, { slot, path: o.path, text, hash }, repaint);
+  body.appendChild(editBtn);
+}
+
+// The editor. A textarea, a save, and a cancel — deliberately not a code editor: "simpel aber
+// robust" was the brief, and 6,700 lines of client.ts do not need a CodeMirror to change one line
+// of a config file. What it DOES take seriously is the two ways an edit here can destroy work:
+//   · the window closing on top of it (setCloseGuard, armed while there is anything unsaved)
+//   · an agent in the same lane having written the file since it was read — the server refuses on
+//     the hash, and this pane keeps your text so the refusal costs a re-read, not the edit
+function openFileEditor(shell: Shell, body: HTMLElement,
+  f: { slot: number; path: string; text: string; hash: string }, repaint: () => void) {
+  body.replaceChildren();
+  // an edit lands in a directory an agent may be building in RIGHT NOW. The board knows whether
+  // that session is working, so it says so instead of letting the reader find out from a conflict.
+  if (sessionActive(f.slot)) body.appendChild(el("div", "ocwarn",
+    "this session is working right now — it may write this same file while you type, and the save"
+    + " will then be refused rather than overwrite it"));
+  const ta = el("textarea", "fvedit-ta") as HTMLTextAreaElement;
+  ta.value = f.text;
+  ta.spellcheck = false;
+  const foot = el("div", "fveditfoot");
+  const state = el("span", "diffstat", "");
+  const save = el("button", "shrbtn primary", "Save") as HTMLButtonElement;
+  const cancel = el("button", "shrbtn", "Cancel") as HTMLButtonElement;
+  const err = el("div", "diffstat err", "");
+  err.style.display = "none";
+  const dirty = () => ta.value !== f.text;
+  const paintState = () => {
+    state.textContent = `${ta.value.split("\n").length} lines${dirty() ? " · unsaved changes" : ""}`;
+    save.disabled = !dirty();
+  };
+  const leave = () => { shell.setCloseGuard(null); repaint(); };
+  const tryLeave = () => {
+    if (dirty() && !confirm("Discard your changes to this file?")) return;
+    leave();
+  };
+  // Armed for as long as the editor is open. It always CONSUMES the gesture — Escape/✕/backdrop
+  // step out of the EDITOR, back to reading the same file, which is one step back rather than
+  // two; a second Escape then closes the window for real. This is also the ONLY Escape handling
+  // the editor has: the shell listens in the capture phase on `document`, so it runs before the
+  // textarea either way, and a second handler down there would ask "discard?" twice.
+  shell.setCloseGuard(() => { tryLeave(); return true; });
+  const doSave = async () => {
+    save.disabled = true;
+    err.style.display = "none";
+    const res = await post("/api/file/write", { slot: f.slot, path: f.path, text: ta.value, baseHash: f.hash });
+    const d = (await res.json().catch(() => null)) as { error?: string } | null;
+    if (!res.ok) {
+      err.textContent = d?.error ?? `the server refused this save (${res.status})`;
+      err.style.display = "";
+      paintState(); // your text stays in the box — a refused save must never also lose the edit
+      return;
+    }
+    // re-read rather than trust the echo: the file view's whole contract is that it shows what is
+    // on disk, and after a write the freshest statement about that is a fresh read
+    leave();
+  };
+  ta.oninput = paintState;
+  ta.onkeydown = (e) => {
+    if (e.key === "s" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); if (dirty()) void doSave(); }
+  };
+  save.onclick = () => void doSave();
+  cancel.onclick = () => { tryLeave(); };
+  foot.append(state, save, cancel);
+  body.append(ta, foot, err);
+  paintState();
+  ta.focus();
 }
 
 // pin/unpin round-trips to the server (pins follow the owner across devices), then re-renders
@@ -4654,6 +4903,9 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
       repo: hash ? cwd : undefined, rev: hash ?? undefined,
       source: hash ? `as commit ${hash} left it — not the file as it is today`
         : "as it is on disk right now, which may already be newer than this diff",
+      // the stair's third step is reachable from here too, but only for the file ON DISK: a
+      // commit's revision has no editable present, and the server declines to hash one anyway
+      edit: hash ? undefined : { slot: slotId },
       // deliberately NO diff here, though the caller has one: the pane this button sits on IS the
       // diff. Opening the viewer on a "what changed" tab would show what the reader just clicked
       // away from. ‹ back is the way to the diff, and it is one click.
@@ -4672,6 +4924,7 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
         path: `${cwd}/${path}`, label: path.split("/").pop() ?? path,
         source: "untracked — git has never seen this file, so there is no diff to show. This is all"
           + " of it, as it is on disk.",
+        edit: { slot: slotId },
         back: { label: "all changes", go: () => open({ k: "all" }) },
       });
       return;

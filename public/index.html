@@ -758,6 +758,27 @@
     color: #c8c8c8; line-height: 1.5; }
   .fvmd { font-size: 13px; color: #ddd; line-height: 1.6; }
   .fvopen { margin: 2px 0 10px; }
+  /* the editor (§F5). A textarea, on purpose — see openFileEditor in src/client.ts. */
+  .fvedit { margin-top: 12px; }
+  .fvedit-ta { width: 100%; min-height: 46vh; resize: vertical; box-sizing: border-box;
+    background: #101010; color: #c8c8c8; border: 1px solid #2c3a5e; border-radius: 7px;
+    padding: 10px 12px; font: 12px ui-monospace, Menlo, Consolas, monospace; line-height: 1.5;
+    white-space: pre; overflow-wrap: normal; tab-size: 2; }
+  .fvedit-ta:focus { outline: none; border-color: #7aa2f7; }
+  .fveditfoot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .fveditfoot .diffstat { flex: 1; margin: 0; }
+  /* the explorer tree — one renderer, in the board card and in the window's list pane */
+  .fxtree { margin-top: 4px; max-height: 320px; overflow-y: auto; }
+  .shelllist .fxtree, .shelllist > .fxrow { max-height: none; }
+  .fxrow { display: flex; align-items: center; gap: 4px; padding: 2px 4px; cursor: pointer;
+    border-radius: 4px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
+  .fxrow:hover { background: #242424; }
+  .fxrow.sel { background: #1c2437; }
+  .fxtwist { color: #667; width: 9px; flex: none; font-size: 9px; }
+  .fxdir .fxname { color: #b8b8b8; }
+  .fxfile .fxname { color: #8a8a8a; }
+  .fxfile:hover .fxname, .fxrow.sel .fxname { color: #cfe0ff; }
+  .fxname { overflow: hidden; text-overflow: ellipsis; }
   .ocsub { font-size: 10.5px; color: #888; margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }
   .ocwarn { font-size: 11px; color: #e0af68; line-height: 1.45; margin-top: 4px; }

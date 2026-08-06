@@ -67,6 +67,14 @@ export interface Shell {
   showDetail(on: boolean): void;
   close(): void;
   isOpen(): boolean;
+  // A view that holds UNSAVED state can intercept the three ways this window closes (Escape, ✕,
+  // backdrop). Return true to mean "I consumed that — stay open"; false or no guard closes as
+  // before. It exists because the file editor put a textarea in the detail pane, and this shell's
+  // Escape runs in the CAPTURE phase on `document`: nothing the textarea does can stop it, so
+  // without this hook one stray Escape would take the window and the unsaved edit with it. The
+  // guard must always offer a way out (the editor's Cancel clears it) — a window that cannot be
+  // closed is a worse bug than the one this prevents.
+  setCloseGuard(fn: (() => boolean) | null): void;
 }
 
 const MOBILE_MQ = matchMedia("(max-width: 700px), ((pointer: coarse) and (max-height: 500px))");
@@ -130,6 +138,13 @@ export function openShell(o: ShellOpts): Shell {
 
   const showDetail = (on: boolean) => { root.classList.toggle("detailmode", on); };
 
+  let closeGuard: (() => boolean) | null = null;
+  // The guard sits on the three USER close gestures only, never on finish() itself: `close()` is
+  // how one view tears down the previous window before opening the next (openReview does exactly
+  // that), and a refusable teardown would leave two stacked windows — the bug that comment warns
+  // about. "Ask the user" and "tear this down" are different requests.
+  const userClose = () => { if (!closeGuard?.()) finish(); };
+
   const finish = () => {
     if (!open) return;
     open = false;
@@ -147,7 +162,7 @@ export function openShell(o: ShellOpts): Shell {
       e.stopPropagation();
       // on mobile the detail pane is a pushed screen, so Escape backs out of it first
       if (MOBILE_MQ.matches && root.classList.contains("detailmode")) { showDetail(false); return; }
-      finish();
+      userClose();
       return;
     }
     if (!rows.length) return;
@@ -176,9 +191,9 @@ export function openShell(o: ShellOpts): Shell {
   }
   document.addEventListener("keydown", onKey, true);
 
-  close.onclick = finish;
+  close.onclick = userClose;
   back.onclick = () => showDetail(false);
-  root.onclick = (e) => { if (e.target === root) finish(); };
+  root.onclick = (e) => { if (e.target === root) userClose(); };
 
   document.body.appendChild(root);
 
@@ -192,5 +207,6 @@ export function openShell(o: ShellOpts): Shell {
     showDetail,
     close: finish,
     isOpen: () => open,
+    setCloseGuard: (fn) => { closeGuard = fn; },
   };
 }

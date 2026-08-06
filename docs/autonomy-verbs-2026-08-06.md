@@ -118,12 +118,24 @@ sollen, sind im Feld ungetestet. Ein Sicherheitsnetz mit null Belastungsproben i
 Dekoration."* Das „solange" ist temporal, kein Nie — die Bedingung ist erfüllbar, und dieses
 Programm erfüllt sie, statt sie zu umgehen.
 
-**Nicht die Agenten-Form.** Ein „konservativer separater Agent" als Lander ist die eine Form,
-die empirisch schon durchgefallen ist: die ②-Shadow-Serie (45 Rows, 37 valide, alle „pass",
-**0 Widerspruch**) hat gemessen, dass ein Richter auf dem clean path null Information liefert
-— deshalb steht `FLEET_CLEAN_REVIEW` seit 2026-07-28 auf `off`. Die Doktrin dazu steht seit
-Juli: **Autonomie ist ein maschinell geprüfter Gate, nicht ein Agent, der den Token hält.**
-Konservativ heißt hier deterministisch, nicht meinungsstark.
+**Die Agenten-Form, korrigiert nach Owner-Einwand (2026-08-06):** Der erste Entwurf dieses
+Abschnitts lehnte einen Reviewer-Agenten mit Verweis auf die ②-Shadow-Serie ab (45 Rows, 0
+Widerspruch → `FLEET_CLEAN_REVIEW` off). Der Owner hielt dagegen — „an opus5 session with
+context of the project would understand this" — und er hat recht, denn die Serie beweist
+weniger als behauptet: ihr Richter war ein Wegwerf-Worker (`SUMMARY_MODEL`) mit einer Frage
+ohne Varianz („ist dieses clean-path-Land formal ok?" — immer ja). Null Information, weil die
+FRAGE null Information trug. Der (j)-Fall zeigt zugleich die Frage, die Varianz HAT und die
+der deterministische Gate strukturell nicht sehen kann: **„was hat main seit dem Fork dieser
+Lane gewonnen, und kollidiert es semantisch mit diesem Diff?"**
+
+Also: Verb 5 bekommt einen kontextbeladenen Kollisions-Reviewer — Opus 5, gefüttert mit
+Lane-Diff + main-seit-Fork + graphify-Karte, genau diese eine Frage. Die Maschinerie dafür
+EXISTIERT schlafend (`CLEAN_REVIEW_MODE off|shadow|1`, Kontrakt downgrade-only + fail-closed);
+CLAUDE.md verlangt fürs Wieder-Einschalten „erst eine bestandene Feuerprobe" — die Shadow-Phase
+unten IST sie. Eine Zeile bleibt stehen, nicht als Doktrin, sondern weil sie schlicht besser
+ist: **der Agent urteilt, die Maschine landet** — downgrade-only, fail-closed. Ein Reviewer,
+der stirbt oder hängt, heißt damit „geparkt für den Owner", nie „trotzdem gelandet" und nie
+„für immer blockiert".
 
 **Die Form:**
 

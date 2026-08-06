@@ -130,10 +130,21 @@ export async function run(ctx: Ctx): Promise<void> {
     `cd '${ROOT}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${cmdEnv}${gapEnv}exec bun server.ts >> server.log 2>&1`]);
   await srvStart.exited;
   await Bun.sleep(3000);
-  const api = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null }[] };
+  const api = (await (await get("/api/sessions")).json()) as
+    { now: number; slots: { id: number; cwd: string | null; label: string | null; lastOutput: number }[] };
   check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
   check("after restart: slot 1 still empty", api.slots[0].cwd === null);
   check("after restart: label persisted", api.slots[1].label === "research-agent");
+  // A restored pane must not read as idle since the epoch. `offset` is seeded so pre-restart bytes
+  // are not replayed, which means nothing sets `lastOutput` until the pane's NEXT byte — and a pane
+  // blocked on a long tool call may emit none for minutes. Two consumers act on that number
+  // (canDeliver's busy gate; the idle clause of done-looking), so leaving it 0 disarms both on
+  // every deploy. Asserting the gap is SMALL is what fails if the boot stamp is ever removed: the
+  // unfixed reading is ~1.79e12 ms, not a near-miss.
+  const idleAfterBoot = api.now - api.slots[1].lastOutput;
+  check("after restart: a restored pane is idle-since-boot, never idle-since-the-epoch",
+    api.slots[1].lastOutput > 0 && idleAfterBoot >= 0 && idleAfterBoot < 60_000,
+    `now-lastOutput=${idleAfterBoot}ms lastOutput=${api.slots[1].lastOutput}`);
   // the planted uuid rode the restore, so slot 2 is now a PINNED slot: give it a transcript of a
   // KNOWN byte size, which the context-size-proxy checks in the steward section read back.
   const PLANTED_TR_BYTES = 4097;

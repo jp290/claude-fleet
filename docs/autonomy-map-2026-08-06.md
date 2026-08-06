@@ -505,7 +505,7 @@ abbricht.**
 
 | Schritt | Zahl | über | Stop-Kriterium |
 |---|---|---|---|
-| **A. Audit-Event auf `/api/self/drift`** (eine Zeile) | Anteil der Lanes, die ihren Drift *vor* dem letzten Drittel ihrer Lebenszeit prüfen | 20 gelandete Lanes | keins nötig — reine Messung, kein Verhalten ändert sich. Wenn nach 20 Lanes der Anteil <20 % ist, ist die CLAUDE.md-Anweisung als Mechanismus widerlegt und B wird Pflicht statt Option. |
+| **A. Audit-Event auf `/api/self/drift`** — **gebaut `2ada187`, 2026-08-06; die Messung läuft** (§11.3) | Anteil der Lanes, die ihren Drift *vor* dem letzten Drittel ihrer Lebenszeit prüfen | 20 gelandete Lanes | keins nötig — reine Messung, kein Verhalten ändert sich. Wenn nach 20 Lanes der Anteil <20 % ist, ist die CLAUDE.md-Anweisung als Mechanismus widerlegt und B wird Pflicht statt Option. |
 | **B. Drift-Hinweis in den Gründungsbrief** | dieselbe Quote wie A, nach der Einführung | 20 gelandete Lanes | steigt die Quote nicht um ≥30 Prozentpunkte, ist der Brief nicht der Träger — dann aufhören, nicht nachschärfen. |
 | **C. `otherLanes.files` auf uncommittete Dateien erweitern** (§5.2) | Anzahl der Lane-Paare, für die der Wert vor dem Spawn nichtleer gewesen wäre | 15 Spawns | liefert es in <3 von 15 Fällen etwas, ist Kollisionsvermeidung vor dem Spawn kein reales Problem dieser Flotte und der ganze Bereich 3 wird zurückgestellt. |
 | **D. Timeout als vierter Verify-Zustand** (§4/§9.3) | Anzahl der `verify.ok:false` mit `[verify timed out after …]` im Output | 30 Merge-Läufe | 0 Vorkommen in 30 → der Live-Fall vom 06.08. war ein Einzelfall, der Zustand bleibt ungetrennt (billiger als eine Unterscheidung, die nie greift). |
@@ -520,8 +520,16 @@ Begründet, nicht sortiert nach Aufwand.
 **Zuerst — Instrumentierung, weil sonst jede folgende Entscheidung gegen eine Vermutung gebaut
 wird.** In dieser Reihenfolge:
 
-1. **A** (Audit-Event auf Drift). Eine Zeile, und sie beantwortet zum ersten Mal eine Frage, die
-   in zwei Dokumenten als „niemand kann es sagen" steht.
+1. ~~**A** (Audit-Event auf Drift). Eine Zeile, und sie beantwortet zum ersten Mal eine Frage, die
+   in zwei Dokumenten als „niemand kann es sagen" steht.~~
+   **ERLEDIGT — `2ada187` (2026-08-06), nachgetragen 2026-08-07.** `GET /api/self/drift` schreibt
+   seither ein `self_drift`-Audit-Event; Join-Key ist der Branch, nicht die Slot-id, und gebucht
+   wird nur eine frische Antwort (ein Cache-Hit schreibt nichts, damit der Aufrufer nicht die
+   Historie aus dem Log rotiert, das er füllt). Der Basiswert steht im §12-Block —
+   *landed 78, checked 0*, über 78 gelandete Lanes kein einziger messbarer Check —, und das ist
+   der Nullpunkt, gegen den die Schwelle oben läuft, nicht ihr Ergebnis:
+   `docs/autonomy-bausteine-2026-08-06.md` §1.3 zählte am 2026-08-06 ~20:15 bereits 20 Events.
+   **Die Instrumentierungs-Gruppe beginnt damit bei 9.1.**
 2. **9.1** (der Phantom-`mergeParked`-Eintrag). Kein Messproblem, ein Bug mit Live-Beleg, und er
    verfälscht ausgerechnet den Item-Typ, den die Inbox als erstes zeigen würde. Billig.
 3. **E** (Digest-TTL). Eine Zahl. Ohne sie ist Bereich 4 nicht bewertbar, weil sein

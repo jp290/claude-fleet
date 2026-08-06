@@ -21,8 +21,21 @@ Die Kette „Steward-Befund → analysierte, gebriefte, dispatchbare Task" exist
 - Der Analyse-Sweep liest ausschließlich `kind:"lane"` (grep `t.kind === "lane"` in
   `tickAnalysisSweep`) — Notes sind für JEDES Gate strukturell unsichtbar, per 409 erzwungen
   (dispatch/reanalyse/refine/send).
-- Der Dispatcher startet ausschließlich `status:"queued"` — und dorthin führt heute nur der
-  Owner-Promote.
+- Der Dispatcher startet ausschließlich `status:"queued"`. **Präzisiert 2026-08-07** — hier stand
+  *„und dorthin führt heute nur der Owner-Promote"*, und diese Ausschließlichkeit ist falsch
+  (`docs/autonomy-bausteine-2026-08-06.md` §1.2). Drei Stellen schreiben `status = "queued"`, zwei
+  davon maschinell: `requeue()` in `briefAndSend` (`server.ts:2009`, feuert bei jedem Fehlschlag
+  des Alive-Gates nach dem Spawn) und der Boot-Abgleich einer als `sent` persistierten Zeile,
+  deren Slot nicht als lebende Lane zurückkam (`server.ts:6699`). Die Owner-Promote-Route ist die
+  dritte (`server.ts:9621`).
+  **Was stattdessen gilt — und was Verb 3 wirklich trägt:** *hinter jedem heutigen Weg nach
+  `queued` steht ein Owner-Akt.* Beide Maschinen-Pfade sind Rückläufer, keine Beförderer: sie
+  fassen ausschließlich Zeilen an, die bereits `sent` waren, und `sent` entsteht nur aus einem
+  Tick auf einer freigegebenen Zeile oder aus einem attended Start — der Kommentar über
+  `server.ts:2009` argumentiert genau das ausdrücklich („an attended start IS a release").
+  Keiner der beiden bewegt je ein `pending` des Owners. **Verb 3 ist damit der dritte
+  Maschinen-Pfad nach `queued`, aber der erste ohne Owner-Akt dahinter** — die schwächere
+  Formulierung trägt seine Begründung, die Ausschließlichkeit hätte sie nur scheinbar getragen.
 
 Fehlend sind genau drei Glieder (Verben 1–3) plus die Wiederaufstellung des Produzenten
 (Verb 4) und die Land-Frage (Verb 5).
@@ -86,7 +99,11 @@ Eval-Gate wurde abgeschafft, weil seine Population die un-promoteten Entwürfe D
 waren — seine einzige Macht war, dessen Zögern hinter seinem Rücken zu starten. Die neue
 Population ist maschinell erzeugt (Steward-Claim), unabhängig beurteilt (Analyse), und ihr
 unbeaufsichtigter Start übergeht niemandes anstehende Entscheidung. Owner-Entwürfe bleiben
-owner-promotet.
+owner-promotet. **Auf welcher Prämisse dieser Absatz steht (präzisiert 2026-08-07, oben):** nicht
+darauf, dass nur der Owner-Promote nach `queued` führt — das ist falsch —, sondern darauf, dass
+hinter jedem heutigen Weg dorthin ein Owner-Akt steht. Verb 3 hebt genau diese Eigenschaft auf und
+muss sie ersetzen: das eigene Audit-Event ist deshalb kein Komfort, sondern das, was einen
+maschinellen Promote nachträglich von einem Owner-Akt unterscheidbar hält.
 
 **Schwelle:** die ersten 10 auto-promoteten Lanes werden im Review angesehen; liegt die
 Abbruch-/Müll-Quote über 3 von 10, geht das Verb aus und das Ritual (Verb 4) ist schuld,

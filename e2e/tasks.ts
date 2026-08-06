@@ -311,7 +311,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // restartSrv builds the spawn line from process.env and the wrapper only ever put that knob in
   // the SERVER's env, not this process's. ---
   {
-    interface HAn { verdict: string; blockers: string[]; reason: string; stale?: boolean; at?: number; attempts?: number }
+    interface HAn { verdict: string; blockers: string[]; reason: string; collides?: string[]; stale?: boolean; at?: number; attempts?: number }
     interface HRow { id: string; status: string; kind?: string; note?: string; slot?: number; analysis?: HAn }
     const hSess = async (): Promise<{ tasks: HRow[]; dispatch: { repo: string } }> =>
       (await (await get("/api/sessions")).json()) as { tasks: HRow[]; dispatch: { repo: string } };
@@ -492,6 +492,120 @@ export async function run(ctx: Ctx): Promise<void> {
       `DRAFT ${hpInj.split("DRAFT>>>").length - 1}/${hpInj.split("<<<DRAFT").length - 1}`
       + ` BRIEF ${hpInj.split("BRIEF>>>").length - 1}/${hpInj.split("<<<BRIEF").length - 1}`
       + ` LANES ${hpInj.split("LANES>>>").length - 1}/${hpInj.split("<<<LANES").length - 1}`);
+
+    // --- (h10) THE DISPATCHER READS THE COLLISION FIELD. `analysis.collides` was computed every
+    // sweep and consumed by NOTHING: the only thing keeping two released rows that rewrite the same
+    // file apart was FLEET_DISPATCH_MAX_LANES — a number that knows nothing about files, and so a
+    // cap that could never rise. Measured on the live queue 2026-08-06: six UI tasks carried the
+    // collision triangle F4 ↔ F2+F3 ↔ F6, and had the owner released all six, the dispatcher would
+    // have started F4 and F2+F3 — exactly the pair. Only the cap prevented it.
+    // The field is MIXED ("other task ids / open lane branches"), so both halves are probed, and
+    // both are real: a row analysed while its neighbour was still queued names that neighbour's ID,
+    // and once the neighbour is running the next sweep names its BRANCH instead. ---
+    {
+      // The stand-in is written TWICE, and the second time with the anchor's real id and branch
+      // baked into it. That is deliberate: deriving them from the prompt would make the fixture
+      // depend on which rows the sweep happened to batch together, and a check whose SETUP is a race
+      // proves nothing about the thing under test. What is asserted here is the DISPATCHER's
+      // behaviour given a collides list — so the list is produced exactly, from the live ids the
+      // server itself minted. The analyst-side plumbing (branches reaching the prompt at all) is
+      // pinned separately, against the pure builder, in (h9).
+      const collideScript = (byId: string, byBranch: string): string => [
+        "#!/bin/sh",
+        "cat | bun -e '",
+        "const input = await new Response(Bun.stdin.stream()).text();",
+        "const segs = input.split(/^TASK id=/m).slice(1);",
+        "const analyses = segs.map((seg) => ({ id: seg.split(/\\s/)[0],",
+        `  verdict: "ready", blockers: [], reason: "collision probe",`,
+        `  collides: seg.includes("CXCOLID") ? [${JSON.stringify(byId)}]`,
+        `    : seg.includes("CXCOLBR") ? [${JSON.stringify(byBranch)}] : [] }));`,
+        "console.log(JSON.stringify({ analyses }));",
+        "'",
+        "",
+      ].join("\n");
+      await writeAnalyst(collideScript("", "")); // nothing collides yet — the anchor must start
+      // the cap must NOT be what holds anything here: it is checked BEFORE the collision and would
+      // write its own note over the one under test. Four lanes are live at the peak (persistence +
+      // anchor + the clean probe + one released collider), so it is lifted clear of them.
+      await restartSrv({ ...hEnv, FLEET_DISPATCH_MAX_LANES: "6" });
+      await post("/api/dispatch", { on: true });
+      const cSess = async (): Promise<{ tasks: HRow[]; slots: { id: number; worktree: { branch: string } | null }[] }> =>
+        (await (await get("/api/sessions")).json()) as { tasks: HRow[]; slots: { id: number; worktree: { branch: string } | null }[] };
+      // a clean field: no foreign released row may win the tick ahead of these probes, no foreign
+      // lane may occupy the cap. The persistence lane stays — the restart section needs it alive.
+      for (const t of (await cSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+      for (const s of (await cSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+
+      const anchor = await mkTask("CXANCHOR — the running work every probe below claims to touch");
+      await post(`/api/tasks/${anchor}/queue`, {});
+      const anchorRow = await till(() => hRow(anchor), (r) => r?.status === "sent", 60);
+      const anchorSlot = anchorRow?.slot;
+      const anchorBranch = (await cSess()).slots.find((s) => s.id === anchorSlot)?.worktree?.branch ?? "";
+      check("(h10) fixture: the anchor is running in a lane, so a collision has something to be held against",
+        anchorRow?.status === "sent" && typeof anchorSlot === "number" && anchorBranch.startsWith("fleet/"),
+        JSON.stringify({ status: anchorRow?.status, slot: anchorSlot, branch: anchorBranch }));
+
+      // BOTH HALVES OF THE MIXED FIELD, against the same running work: the ID shape is what a row
+      // analysed while its neighbour was still queued carries (the F4/F2+F3 case), the BRANCH shape
+      // is what the next sweep writes once that neighbour is a lane. A consumer that compared only
+      // ids would pass every id assertion and still be half blind.
+      await writeAnalyst(collideScript(anchor, anchorBranch));
+      const colId = await mkTask("CXCOLID — collides with the running anchor by TASK ID");
+      const colBr = await mkTask("CXCOLBR — collides with the anchor's open LANE, by branch name");
+      const clean = await mkTask("CXCLEAN — touches nothing anyone else touches");
+      const colIdAn = await till(() => hFull(colId), (r) => (r?.analysis?.collides ?? []).includes(anchor));
+      check("(h10) fixture: the first collider is analysed as touching the anchor's files, by TASK ID",
+        (colIdAn?.analysis?.collides ?? []).includes(anchor), JSON.stringify(colIdAn?.analysis ?? null).slice(0, 200));
+      const colBrAn = await till(() => hFull(colBr), (r) => (r?.analysis?.collides ?? []).includes(anchorBranch));
+      check("(h10) fixture: the second collider is analysed as touching the anchor's LANE, by BRANCH name",
+        (colBrAn?.analysis?.collides ?? []).includes(anchorBranch), JSON.stringify(colBrAn?.analysis ?? null).slice(0, 200));
+      const cleanAn = await till(() => hFull(clean), (r) => !!r?.analysis);
+      check("(h10) fixture: the counter-probe is analysed and collides with nothing (the control)",
+        cleanAn?.analysis?.verdict === "ready" && (cleanAn?.analysis?.collides ?? ["x"]).length === 0,
+        JSON.stringify(cleanAn?.analysis ?? null).slice(0, 200));
+
+      // released colliders FIRST, so the clean row sits BEHIND both: a dispatcher that merely
+      // stopped at the first blocked row would never reach it either
+      await post(`/api/tasks/${colId}/queue`, {});
+      await post(`/api/tasks/${colBr}/queue`, {});
+      await post(`/api/tasks/${clean}/queue`, {});
+      // (d) THE COUNTER-PROBE, and it is the load-bearing one: a dispatcher that had stopped
+      // starting ANYTHING would satisfy every "did not start" assertion below. Waiting for the clean
+      // row to start is also what DATES the observation — at that instant a tick has provably run
+      // past both colliders to completion.
+      const cleanRow = await till(() => hRow(clean), (r) => r?.status === "sent", 60);
+      check("(h10)(d) counter-probe: a NON-colliding row still starts, from behind two held ones",
+        cleanRow?.status === "sent", JSON.stringify(cleanRow ?? null));
+      // (b) …and in that same window neither collider moved, each naming on its own row what it waits for
+      const idRow = await hRow(colId);
+      const brRow = await hRow(colBr);
+      check("(h10)(b) a row colliding with running work by TASK ID is held, and says why on its row",
+        idRow?.status === "queued" && (idRow.note ?? "").startsWith("waiting: collides with running work")
+        && (idRow.note ?? "").includes(anchor), JSON.stringify(idRow ?? null));
+      check("(h10)(b) a row colliding with an OPEN LANE by branch name is held the same way",
+        brRow?.status === "queued" && (brRow.note ?? "").startsWith("waiting: collides with running work")
+        && (brRow.note ?? "").includes(anchorBranch), JSON.stringify(brRow ?? null));
+
+      // (c) the hold is a WAIT, not a verdict. Retire the row before closing the lane: while it is
+      // `sent` its id IS running work, so killing the lane first would leave the id half standing.
+      await post(`/api/tasks/${anchor}/done`, {});
+      if (typeof anchorSlot === "number") await post(`/api/slots/${anchorSlot}/kill`, {});
+      const idGo = await till(() => hRow(colId), (r) => r?.status === "sent", 80);
+      const brGo = await till(() => hRow(colBr), (r) => r?.status === "sent", 80);
+      check("(h10)(c) with the colliding work gone both held rows start on their own",
+        idGo?.status === "sent" && brGo?.status === "sent",
+        JSON.stringify({ id: { s: idGo?.status, n: idGo?.note }, br: { s: brGo?.status, n: brGo?.note } }));
+
+      // cleanup — dispatcher off first (same requeue race as (e)), then retire every probe row
+      // (`delete` refuses a `sent` one, by design) and close the lanes they spawned.
+      await post("/api/dispatch", { on: false });
+      for (const id of [anchor, colId, colBr, clean]) {
+        const r = await hRow(id);
+        if (typeof r?.slot === "number") await post(`/api/slots/${r.slot}/kill`, {});
+        await post(`/api/tasks/${id}/done`, {});
+        await post(`/api/tasks/${id}/delete`, {});
+      }
+    }
 
     // cleanup — dispatcher off first (same requeue-race reason as (e)), then drop the probes. The
     // stand-in env dies with the NEXT restartSrv on its own: extra never enters process.env.

@@ -4670,7 +4670,33 @@ function qVerdictLine(t: TaskInfo): string {
   return [`${mark} ${tags || a.reason}`, a.stale ? "· stale, re-reading" : ""].filter(Boolean).join(" ");
 }
 const qTaskText = (id: string) => taskText.get(id) ?? "";
-const qFirstLine = (id: string) => (qTaskText(id).split("\n")[0] || "…").slice(0, 120);
+// THE ROW NAME. Two rules, both from watching the owner read his own queue and not recognise it.
+//
+// (1) Cut at the end of a SENTENCE, not at character 120. Every steward filing opens with one
+// summarising sentence — and a hard 120-char cut landed mid-word, so the row showed a fragment
+// that stopped before the point ("…aus drei regelkonformen Klicks drei L"). The lookbehind keeps
+// an abbreviation's dot ("z.B.") from ending the sentence early; the 40-char minimum keeps a
+// short opener from becoming the whole name.
+//
+// (2) Strip the filing tag ("[rundgang 08-05 17:56]"). It is WHO filed and WHEN, which the row's
+// second line already carries — at the front of the name it ate 25 of the visible characters
+// before the text even started, on every steward row.
+const QT_TAG = /^\[([^\]\n]{1,40})\]\s*/;
+const qFirstLine = (id: string) => {
+  const raw = (qTaskText(id).split("\n")[0] || "…").replace(QT_TAG, "");
+  const end = /(?<=[^.\s]{2})[.!?](?=\s|$)/g;
+  for (let m = end.exec(raw); m; m = end.exec(raw)) {
+    if (m.index + 1 < 40) continue;   // too short to be the summary — keep reading
+    if (m.index + 1 > 240) break;     // nothing sentence-shaped in range; fall through to the slice
+    const head = raw.slice(0, m.index + 1);
+    // a sentence cannot end while a bracket is still open: "(inkl." is an abbreviation, not an end.
+    // This is what the two-character lookbehind alone misses — it only catches "z.B."-shaped ones.
+    if (head.split("(").length !== head.split(")").length) continue;
+    return head;
+  }
+  return raw.slice(0, 160);
+};
+const qTag = (id: string) => QT_TAG.exec(qTaskText(id).split("\n")[0] ?? "")?.[1] ?? "";
 
 // returns whether the action actually took: the comment box clears its draft on the strength of
 // this, and clearing on a failed post is how a typed remark gets lost with nothing to show for it
@@ -5064,6 +5090,9 @@ function renderQueue() {
         // the verdict is the SECOND line now, not a hover: it is the reason the row is in this
         // group, and hiding the reason behind a mouse made the group unexplainable
         sub: [qVerdictLine(t),
+          // the filing tag, moved off the name and in among the other provenance facts where it
+          // belongs: the name says WHAT this is, the second line says who filed it and when
+          qTag(t.id),
           t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
           // a criterion awaiting the owner's confirm is the row-level half of the queuebtn's
           // hot flag — the lane behind it is parked until this is acted on

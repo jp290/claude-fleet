@@ -552,6 +552,25 @@ jq -r '.verdict' audit-adjudications.jsonl | sort | uniq -c
 # Audit-Trail
 jq -r '.event' audit.jsonl | sort | uniq -c | sort -rn
 
+# Schritt A, das Drift-Instrument: prüfen Lanes ihren Drift — und wie früh?
+# Schwelle §11.2: Anteil "vor dem letzten Drittel" über 20 GELANDETE Lanes. Unter 20 % ist die
+# CLAUDE.md-Anweisung als Mechanismus widerlegt und Schritt B wird Pflicht statt Option.
+# Join über den BRANCH, nicht die Slot-id (Slots werden recycelt); Lebenszeit aus dem
+# Outcome-Register (`ts` = Land, `sessionMs` = Dauer, also Start = ts - sessionMs).
+# Liest BEIDE Audit-Generationen — ein Leser nur von audit.jsonl ist rotationsblind und
+# meldet nach einer Rotation eine junge statt einer abgeschnittenen Historie.
+# Basiswert vor der Einführung (2026-08-06): landed 78, checked 0 — die Frage war unbeantwortbar.
+jq -rn --slurpfile o lane-outcomes.jsonl \
+       --slurpfile a <(cat audit.jsonl.1 audit.jsonl 2>/dev/null) '
+  ($a|map(select(.event=="self_drift"))) as $d
+  | ($o|map(select(.disposition=="landed" and .sessionMs>0))
+     | map(. as $l
+         | ($d|map(select((.detail//"")|startswith($l.branch+" ")))|map(.ts)|min) as $f
+         | {checked:($f!=null),
+            frac:(if $f==null then null else (($f-($l.ts-$l.sessionMs))/$l.sessionMs) end)}))
+  | {landed:length, checked:(map(select(.checked))|length),
+     early:(map(select(.frac!=null and .frac<(2/3)))|length)}'
+
 # Queue (der Engpass: gibt es überhaupt eine `queued`-Zeile?)
 jq -r '.tasks[]?|[.status,.kind,.source]|@tsv' fleet.json | sort | uniq -c
 jq -r '.tasks[]?|select(.analysis)|[.id,.status,.analysis.verdict]|@tsv' fleet.json

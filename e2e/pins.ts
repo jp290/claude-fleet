@@ -296,6 +296,104 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     `${markers} markers in ${docs.length} docs; ${bad.join("; ")}`);
 }
 
+// ================================================================================================
+// 5. The L1 rot detector — prose that has gone out of date with the code it describes
+// ================================================================================================
+// BACKLOG P-10, asked for in July and unbuilt until 2026-08-06. Two mechanical checks, both aimed
+// at the failure this repository measured rather than at doc quality in general: the shelf carried
+// claims nobody re-derived. `docs/README.md`'s own index failed its pointer check for two days
+// after the attic move — 10 of 61 pointers resolved, and the doc stating the rule was the one
+// breaking it. Separately, `BACKLOG.md` P-4 said "Client rendering still open" while `deployGap`
+// stood 5× in src/client.ts.
+//
+// These do NOT check whether prose is true. They check the two things a machine can: that a
+// pointer resolves, and that a symbol a doc calls ABSENT is in fact absent. Everything else stays
+// reading work — ./register.sh prints the open markers so a human can do it.
+
+{
+  // 5a. Every doc pointer in the index resolves. The pattern is the index's own — lowercase
+  // basenames in backticks — and that is deliberate: `docs/attic/…` and the neighbouring
+  // repository's `docs/fixtures.md` carry a slash, and the four unpublished security documents and
+  // the demo write-up are named WITHOUT an extension precisely so this check does not trip on files
+  // that are supposed to be absent. A check people learn to ignore is worse than no check.
+  const idx = read("docs/README.md");
+  const named = [...new Set([...idx.matchAll(/`([a-z0-9-]+\.md)`/g)].map((m) => m[1]))].sort();
+  pin("docs/README.md yields doc pointers to check", named.length > 0, `${named.length} pointers`);
+  const broken = named.filter((f) => !exists(`docs/${f}`));
+  pin("every doc pointer in docs/README.md resolves to a file", broken.length === 0, broken.join(", "));
+  // The other direction is NOT pinned, and that is a decision, not an oversight: the index names
+  // twelve OPERATIVE docs on purpose and the shelf holds more, so an unlisted doc is a call to make
+  // (index it, or attic it) rather than a defect to fail a land on. ./register.sh §5 prints it.
+}
+
+{
+  // 5b. No doc calls ABSENT a symbol that is present.
+  //
+  // The rule, stated so it survives a rewrite of every doc: a line that pairs an absence phrase
+  // with a backticked symbol is making a checkable claim, and the symbol must not occur in the
+  // source the claim is about — the .ts/.sh file named in the same clause, or server.ts by default,
+  // which is the wording BACKLOG P-10 used.
+  //
+  // The SUBJECT is bound to the clause, not to the line. That is what keeps this quiet on a corpus
+  // full of measurements: `docs/work-register-2026-08-06.md:52` reads "`FLEET_VERIFY_CMD` pro Repo
+  // — `verifyCmdFor`/`repoVerify` kommen **0×** vor", and only the two after the dash are claimed
+  // absent — `FLEET_VERIFY_CMD` itself is very much in server.ts. A line-wide scan would fail on a
+  // true sentence, and a pin that cries on truth gets switched off.
+  //
+  // Deliberately narrow, and the misses are known: a claim whose subject is prose rather than a
+  // backticked symbol is not checkable ("Client rendering still open"), and neither is one that
+  // wraps across two lines. Under-coverage that stays silent beats a net that has to be muted.
+  //
+  // THE ESCAPE HATCH, and why it is not optional (briefs/work-register.md §6). "Defined" is not
+  // "built": a symbol can exist, be read in two places, and still have nothing act on it — which
+  // is exactly what BACKLOG Track A says about the ladder, and it is a TRUE "unbuilt" claim about
+  // a symbol that is present. A detector with no answer to that fails on a true sentence at its
+  // first real case and gets switched off within the week. So a line may opt out with
+  //
+  //   <!-- rot-ok: defined but no consumer acts on it -->
+  //
+  // on the line itself or the one above it. The exemption is COUNTED and printed in the pin's
+  // detail: a silent exception is just drift again, wearing a comment.
+  const ABSENCE = /(?:\bungebaut|\bunbuilt|\bnicht gebaut|\bnot built|0\s*[×x]\s*\*{0,2}\s*vor\b)/gi;
+  const BOUNDARY = /[|—(),;:·„"“”]/;
+  const ROTOK = /<!--\s*rot-ok:/;
+  const docs = readdirSync(`${ROOT}/docs`).filter((f) => f.endsWith(".md")).map((f) => `docs/${f}`);
+  const claims: { where: string; sym: string; target: string }[] = [];
+  let exempt = 0;
+  for (const d of docs) {
+    const lines = read(d).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!ABSENCE.test(lines[i])) { ABSENCE.lastIndex = 0; continue; }
+      ABSENCE.lastIndex = 0;
+      if (ROTOK.test(lines[i]) || (i > 0 && ROTOK.test(lines[i - 1]))) { exempt++; continue; }
+      for (const m of lines[i].matchAll(ABSENCE)) {
+        const before = lines[i].slice(0, m.index);
+        let cut = 0;
+        for (let k = before.length - 1; k >= 0; k--) if (BOUNDARY.test(before[k])) { cut = k + 1; break; }
+        const clause = before.slice(cut);
+        // one backtick span = one token, never split further. A doc listing alternatives writes
+        // them as separate spans ("`verifyCmdFor`/`repoVerify`" is two), so splitting on the
+        // slash buys nothing and destroys the single-span route names ("`api/deploy`" is one).
+        const toks = [...clause.matchAll(/`([^`]+)`/g)].map((t) => t[1].trim()).filter(Boolean);
+        const files = toks.filter((t) => /\.(ts|sh)$/.test(t) && exists(t));
+        const syms = toks.filter((t) => /^[A-Za-z_][A-Za-z0-9_/-]*$/.test(t) && t.length >= 3);
+        for (const sym of syms)
+          for (const target of files.length ? files : ["server.ts"])
+            claims.push({ where: `${d}:${i + 1}`, sym, target });
+      }
+    }
+  }
+  const src = new Map<string, string>();
+  const live = claims.filter((c) => {
+    if (!src.has(c.target)) src.set(c.target, read(c.target));
+    return src.get(c.target)!.includes(c.sym);
+  });
+  pin("no doc calls \"unbuilt\" a symbol its own source defines",
+    live.length === 0,
+    `${claims.length} checkable claim(s) in ${docs.length} docs, ${exempt} rot-ok exemption(s); ` +
+    live.map((c) => `${c.where}: "${c.sym}" IS in ${c.target}`).join("; "));
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

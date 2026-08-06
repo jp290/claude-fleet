@@ -32,9 +32,12 @@ drei Namen (§4). Kein Prozess merkt es.
 - **Queue:** `GET /api/tasks`, alle nicht-`done`/nicht-`archived` Zeilen (14).
 - **Briefs:** Datum des letzten Commits je Datei + Gegenprobe, ob die beschriebene Arbeit im
   Baum steht. **Der naheliegende Test — „wird der Dateiname in einem Commit genannt?" — ist
-  untauglich:** `briefs/phantom-park.md` wird in **0** Commits genannt, seine Arbeit ist als
+  untauglich:** `briefs/phantom-park.md` wurde in **0** Commits genannt, seine Arbeit ist als
   `035c1a9` gelandet. Falsch-negativ-Rate zu hoch, deshalb wurde jeder August-Brief einzeln
-  entschieden.
+  entschieden. **Nachtrag 2026-08-06, beim Bauen von `register.sh` gemessen:** der Zähler steht
+  inzwischen auf **1**, und der eine Commit ist `adcd4ee` — dieser Absatz. Der Test zählt Prosa
+  ÜBER einen Brief, nicht seine Arbeit, und ist damit auch falsch-POSITIV. Das Skript druckt ihn
+  als Lesezeiger und schreibt als Urteil wörtlich „ungeprüft".
 - **Docs:** Suche nach offenen Markern (`offen`, `ungebaut`, `TODO`, `unbeantwortet`) und
   Lektüre der Trefferzeilen.
 - **BACKLOG:** das Register (Track A/B) gelesen, sechs P-Items und fünf B-Items per grep gegen
@@ -90,8 +93,8 @@ zuletzt) · Queue `1981be9a` (Autonomie-Bausteine, in Flug beim Owner) · `0be58
 (Entscheidungsnotiz, kein Auftrag).
 
 ### G7 · Plan-Hygiene — neu, und Voraussetzung für alles Weitere
-BACKLOG-Reconciliation (§4) · **P-10 L1-Rot-Detektor** (in BACKLOG selbst gefordert, `0` Treffer
-in `e2e/pins.ts` — ungebaut) · `register.sh` (§5) · BACKLOG P-6 Program-Board (`0` Treffer,
+BACKLOG-Reconciliation (§4) · ~~**P-10 L1-Rot-Detektor**~~ und ~~`register.sh`~~ **beide gebaut am
+2026-08-06** (§5 trägt die Fassung, die daraus wurde) · BACKLOG P-6 Program-Board (`0` Treffer,
 ungebaut, Owner-Entscheid „bauen oder nicht" steht seit Juli offen).
 
 **Nicht in einer Gruppe, weil erledigt:** BACKLOG P-5 (Lane-Pfad) ist durch die Platzierung im
@@ -129,13 +132,31 @@ Die Frage war: brauchen wir einen robusten Context-/Handoff-Mechanismus für Mai
 
 **Vorschlag, in dieser Reihenfolge:**
 
-1. **`register.sh`** — das Gegenstück zu `state.sh`, aber für Arbeit: leitet das offene Register
-   ab aus (a) der Queue, (b) Briefs ohne gelandete Arbeit, (c) Doc-Zeilen mit offenen Markern —
-   und druckt dazu die Kollisionsflächen, damit „was kann parallel laufen" eine **Ausgabe** ist
-   und keine Meinung. Kleinstmögliche Fassung zuerst; §3 dieses Dokuments ist ihr Muster.
-2. **Der L1-Rot-Detektor (BACKLOG P-10, seit Juli gefordert, ungebaut).** Zwei mechanische
-   Checks: jeder `docs/*.md`-Zeiger im Index löst auf; kein Doc nennt „ungebaut", was `server.ts`
-   definiert. **Beide hätten die Drift aus §4 sofort gefangen.**
+1. **`register.sh` — GEBAUT 2026-08-06.** Das Gegenstück zu `state.sh`, aber für Arbeit. Fünf
+   Abschnitte statt der drei vorgeschlagenen: die offenen Queue-Zeilen (aus `fleet.json` **auf
+   Platte**, nie über die API — deshalb läuft es aus einer Lane und stört keinen Land-Takt), die
+   Kollisionsflächen, die Briefs, die Doc-Marker, die Index-Drift. Zwei Dinge, die beim Bauen
+   anders kamen als hier vorgeschlagen, und beide sind Befunde:
+   - **Die Briefs bleiben `ungeprüft`, als Spalte.** §2 hatte den naheliegenden Test schon
+     widerlegt; ein besserer wurde nicht gefunden, also druckt der Abschnitt Fakten und ein
+     Urteil, das wörtlich „ungeprüft" heißt. Eine Absenz darf nicht wie eine Null aussehen —
+     dieselbe Regel gilt für die Queue, wenn `fleet.json` nicht lesbar ist.
+   - **Kollisionen werden pro DATEI berichtet, nicht als Gruppen.** Transitives Gruppieren über
+     eine Datei, die fast jede Zeile nennt, faltet die ganze Queue zu einer Komponente und
+     beantwortet nichts: `server.ts` steht bei **6 von 11** offenen Lane-Zeilen. Die Ausgabe
+     nennt darum die Datei mit ihren Zeilen und markiert eine so breite Fläche als schwaches
+     Indiz — daneben den Kollisionsgraphen des Analysten, der die Arbeit beurteilt hat und
+     nicht die Dateinamen. Die beiden stimmen **nicht** überein, und das ist die Information.
+2. **Der L1-Rot-Detektor (BACKLOG P-10) — GEBAUT 2026-08-06**, in `e2e/pins.ts` §5, also im
+   Millisekunden-Gate ohne Server-Boot. Check 1 wie vorgeschlagen. Check 2 bindet das Subjekt an
+   die **Klausel**, nicht an die Zeile: Zeile 52 dieses Dokuments nennt `FLEET_VERIFY_CMD` (in
+   `server.ts` vorhanden) und behauptet die Absenz von `verifyCmdFor`/`repoVerify` im selben
+   Satz — ein zeilenweiter Scan wäre an einer **wahren** Aussage rot geworden, und ein Pin, der
+   bei der Wahrheit schreit, wird abgeschaltet. Preis dafür ist bewusste Unterdeckung: ein
+   Subjekt in Prosa statt in Backticks („Client rendering still open") ist nicht prüfbar, ein
+   über zwei Zeilen umbrochener Satz auch nicht. Heute greifen **3** prüfbare Aussagen.
+   Gegenprobe beim Bauen: umbenanntes Doc **und** eine falsche `mergeJob`-Absenz → beide rot,
+   eine danebengestellte *wahre* Absenz derselben Form blieb grün.
 3. **Ein-Register-Regel.** Die Queue ist das Register. Dokumente sind Erzählung und zeigen auf
    Task-IDs, führen aber nie eine zweite Liste. `BACKLOG.md` wird danach zu Klasse D
    (`docs/attic/`), **nachdem** seine lebenden Zeilen als Queue-Zeilen existieren.

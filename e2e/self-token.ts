@@ -2,7 +2,7 @@
 // spawn env, and what /api/self/autos and /api/self/drift will and will not accept it for.
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, TOKEN, check, paneEnv, post } from "./harness";
+import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, post } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -111,6 +111,40 @@ export async function run(ctx: Ctx): Promise<void> {
   check("drift: another open lane's committed in-flight files are listed under otherLanes",
     !!otherEntry && otherEntry.files.includes("drift-other.txt"), JSON.stringify(d4.otherLanes));
   check("drift cleanup: the second lane is torn down", (await post(`/api/slots/${lnOther.slot}/kill`, {})).ok);
+
+  // --- the drift AUDIT TRAIL (autonomy map §11.3 step A). The route used to write nothing, so
+  // "does a lane ever check its drift, and how early in its life?" had no answer anywhere. What is
+  // pinned here is what makes that question computable: one event per FRESH answer, the branch in
+  // the detail as the join key to lane-outcomes (slot ids are recycled, branches are not), and the
+  // dedupe — a re-ask with no ref moved must stay silent, or a polling lane would rotate this log's
+  // own history off the end. The six reads above are the fixture: d0/d1/d2 each moved a ref (three
+  // events), d3 only dirtied the tree and d4 only moved ANOTHER lane's branch (no event), and the
+  // 409/401 attempts have no lane answer to book at all.
+  type Ev = { ts: number; event: string; slot?: number; detail?: string };
+  // /api/audit serves NEWEST FIRST (it ts-sorts descending, server.ts) — these assertions and the
+  // §11.2 metric both read forwards in time, so sort back to chronological here rather than let a
+  // positional check quietly encode the route's display order.
+  const driftEvents = async (): Promise<Ev[]> =>
+    ((await (await get("/api/audit?limit=1000")).json()) as { events: Ev[] }).events
+      .filter((e) => e.event === "self_drift" && (e.detail ?? "").startsWith(`${lnTok.branch} `))
+      .sort((a, b) => a.ts - b.ts);
+  // audit() is fire-and-forget on a shared chain: poll up to the expected count, THEN settle and
+  // re-read, so "exactly three" cannot pass on a fourth event that is merely still in flight.
+  let evs = await driftEvents();
+  for (let i = 0; i < 40 && evs.length < 3; i++) { await Bun.sleep(100); evs = await driftEvents(); }
+  await Bun.sleep(300);
+  evs = await driftEvents();
+  check("drift audit: exactly one event per FRESH answer — the three ref-moving reads, no more",
+    evs.length === 3, JSON.stringify(evs.map((e) => e.detail)));
+  check("drift audit: a re-ask with no ref moved books nothing (dirty-only and other-lane reads)",
+    evs.filter((e) => (e.detail ?? "").includes("dirty:true")).length === 0, JSON.stringify(evs.map((e) => e.detail)));
+  check("drift audit: the detail carries branch + the verdict fields the §11.2 metric joins on",
+    evs[0]?.detail === `${lnTok.branch} behind:0 conflict:false dirty:false`
+      && evs[1]?.detail === `${lnTok.branch} behind:1 conflict:false dirty:false`
+      && evs[2]?.detail === `${lnTok.branch} behind:2 conflict:true dirty:false`,
+    JSON.stringify(evs.map((e) => e.detail)));
+  check("drift audit: the event is attributed to the asking lane's own slot",
+    evs.every((e) => e.slot === lnTok.slot), JSON.stringify(evs.map((e) => e.slot)));
 
   // --- GET /api/self/gate: the live land-gate facts, served from the server's own process env.
   // The env pass-throughs (verify/cleanReview/…) are pinned by their own suites; what is tested

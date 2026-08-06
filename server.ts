@@ -627,6 +627,10 @@ type AuditEvent =
   // a lane's own account of a verify-suite run: one line per phase change, so a run that dies
   // without a verdict leaves a timeline behind instead of nothing (see the verify GATE region)
   | "verify_intent"
+  // a lane asked GET /api/self/drift and got a FRESH answer (cache miss). The one record that
+  // makes "do lanes check how far main moved past them, and how early?" answerable at all —
+  // detail carries the branch, because slot ids are recycled and the join is to lane-outcomes
+  | "self_drift"
   | "autos_quiet";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
@@ -7875,10 +7879,27 @@ Bun.serve<WSData>({
       // a plain session's credential is valid but the question is not askable: drift measures a
       // LANE against its integration branch. 409 with the why, not a generic 401 (same distinction
       // the disposition rail draws below: recognized credential, wrong scope, said plainly).
-      if (!s.worktree) return json({ error: "not a lane — drift measures a lane against its integration branch" }, 409);
+      const w = s.worktree;
+      if (!w) return json({ error: "not a lane — drift measures a lane against its integration branch" }, 409);
       const main = await laneBaseRef(s);
       if (!main) return json({ error: "no integration branch resolvable for this lane's repo" }, 409);
+      const seenKey = driftCache.get(s.id)?.key; // before the call — laneDrift is what fills it
       const d = await laneDrift(s, main);
+      // Instrumentation, autonomy map §11.3 step A. Until now this route wrote nothing, so
+      // "do lanes check their drift, and WHEN in their life?" was unanswerable — the instruction
+      // that produces the call lives once, in a gitignored spawn-time copy of CLAUDE.md, and
+      // whether it is ever followed was pure belief. The BRANCH is the key, never the slot id
+      // (slots get recycled): with lane-outcomes' `ts` and `sessionMs` giving land time and
+      // lifetime, the event's position in that lifetime is computable from the two ledgers alone.
+      // Only a FRESH answer is booked. laneDrift caches per slot on (branch tip, main tip), so a
+      // lane re-asking with nothing moved is a cache hit and writes nothing: the stream is bounded
+      // by real ref movement instead of by caller politeness, which keeps a polling loop from
+      // rotating this very log's history off the end (the AUDIT_ROTATE_BYTES hazard spelled out
+      // at STEWARD_JOURNAL_PER_HOUR). The first call of any lane always misses, and that is the
+      // one event §11.2's metric needs. Read the absence accordingly: no event means no fresh
+      // answer was served, NOT that the lane never asked.
+      if (d && driftCache.get(s.id)?.key !== seenKey)
+        audit("self_drift", s.id, `${w.branch} behind:${d.behind} conflict:${d.wouldConflict ?? "unknown"} dirty:${d.dirty}`);
       return d ? json(d) : json({ error: "drift could not be computed — a git read failed" }, 500);
     }
 

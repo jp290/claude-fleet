@@ -238,15 +238,25 @@ extra Klick**. (Owner denkt schon an agentisches Code-Review darauf — Anschlus
 offen halten, nicht bauen.)
 
 **Empfehlung:**
-- **Server, 3 Routen** (Owner-Auth, nie Guest): Tree (git-tracked Files des
-  Slot-Repos — `git ls-files` ist der billigste ehrliche Explorer und zeigt
-  keinen node_modules-Müll), File-GET (Größen-Cap ~1 MB, binary-Erkennung →
-  refuse), File-PUT (nur nach explizitem Edit-Klick im Client).
-- **Der eine Sicherheitsrand, der nicht verhandelbar ist:** Pfad wird gegen
-  `realpath(slot.cwd)` prefix-geprüft (Symlink-aufgelöst, wie `canonPath` es im
-  Dispatcher-Deckel vormacht) — die Route macht aus einem UI-Feature sonst
-  ein Read/Write-Gadget über die ganze Maschine. `.env` und `fleet.json`
-  zusätzlich hart ausschließen: das Repo ist public, der Server hält Secrets.
+- **Die Lese-Hälfte EXISTIERT schon — wiederverwenden, nicht neu bauen**
+  (Anschauungs-Befund, s. Nachtrag unten): `GET /api/file` (server.ts:9038)
+  liefert Datei-Bytes von Platte ODER aus einem Commit (`rev` via `git show`),
+  und `showFileView` (client.ts:3457) rendert sie bereits mit Versions-
+  Ehrlichkeit („as it is on disk right now" / „in commit X") — heute erreichbar
+  über das Review-Fenster („read the whole file"). F5 schrumpft damit auf:
+  **(a)** eine Tree-Route (`git ls-files` — billig, ehrlich, kein
+  node_modules-Müll), **(b)** den Explorer-Baum im Board als weiteren EINSTIEG
+  in dieselbe FileView, **(c)** die neue Write-Route + ✎-Edit-Zustand in der
+  FileView (nur nach explizitem Klick).
+- **Der eine Sicherheitsrand, der nicht verhandelbar ist — präzisiert auf die
+  WRITE-Route:** `/api/file` liest bewusst jeden absoluten Pfad (Owner-only;
+  dieselbe Philosophie, mit der der Picker die ganze Home browst — das ist
+  bestehendes Design, nicht anfassen). Die neue File-PUT-Route dagegen wird
+  gegen `realpath(slot.cwd)` prefix-geprüft (Symlink-aufgelöst, wie `canonPath`
+  es im Dispatcher-Deckel vormacht), mit Größen-Cap, binary-refuse und hartem
+  Ausschluss von `.env`/`fleet.json`: das Repo ist public, der Server hält
+  Secrets, und ein Schreib-Gadget über die Maschine ist die eine Route, die es
+  nie geben darf.
 - **Editor bewusst simpel:** `<textarea>` monospace + Zeilenzähler, dirty-Marker,
   Save, Esc. KEIN CodeMirror/Monaco im ersten Schnitt — 6.700 Zeilen client.ts
   brauchen keine Editor-Dependency, und „simpel aber robust" ist wörtlich der
@@ -311,6 +321,56 @@ anfangen; eigener Task, wenn F5/F6 gelandet sind.
 
 ---
 
+## Aus eigener Anschauung — Nachtrag (2026-08-06)
+
+Nach der Owner-Antwort-Runde wurde die UI real gefahren: isolierte Instanz nach
+dem sanktionierten Muster (Scratch-Kopie, `127.0.0.1:8877`, eigener tmux-Socket,
+`FLEET_CMD=true`, `FLEET_ANALYSIS_MS=0`/`FLEET_AUTO_REVIEW_MS=0` gegen
+Agenten-Spawns), geseedet mit 2 Repos, Main + arbeitender Lane (dirty + 1 ahead),
+Non-Git-Session und einem absichtlich verwaisten Worktree; per Browser bedient
+(Desktop 1440px + Phone 390px): Sidebar, Board Main + Lane, Diff-Fenster,
+Whole-File-View, Picker, Queue-Overlay, Mobile-Drawer. Was NICHT angesehen wurde:
+Share/Guest-Flows, Transcript-View, Audit/Outcome-Overlays (leer in der
+Test-Instanz), echte claude-Sessions in den Panes.
+
+**Funde, klein aber real (alle im Code verifiziert):**
+
+1. **Branch-Truncation zeigt das Ende nicht** — fleet-Branches teilen ~16
+   Zeichen Präfix (`fleet/260806142…`), und die lanes-Sektion schnitt im Test
+   BEIDE Lanes auf denselben String; unterscheidbar waren sie nur noch an den
+   Buttons. Die Identität steckt im SUFFIX (die Slot-Labels machen es richtig:
+   „webapp b2cb"). Fix: Mitte-Ellipsis oder Suffix behalten, eine CSS/JS-Zeile
+   in der bwtbr-Row (client.ts:2240).
+2. **Untracked-Tooltip lügt** — eine `??`-Datei zeigt „staged + unstaged
+   changes": in der Ternary-Kette (client.ts:1905) wird `x !== " "` vor
+   `f.startsWith("??")` geprüft, und bei `??` sind beide Porcelain-Spalten
+   gesetzt. Badge-Klasse ist korrekt (`new`), nur der title-Zweig gehört
+   umsortiert. Einzeiler.
+3. **⎇+ auf jeder leeren Row ist Rauschen** — 12 identische Quicklane-Chips,
+   sobald eine Repo-Session fokussiert ist (renderSlots hängt den Chip an JEDE
+   Empty-Row, client.ts:3753). Nach F3 gehört „⎇ neue Lane" an den
+   Stapel-Anker — dort steht der Kontext (WELCHES Repo), und die Empty-Rows
+   werden wieder still. In den F2/F3-Schnitt aufgenommen.
+4. **F3 nützt dem Phone am meisten** — im Mobile-Drawer trägt jede belegte Row
+   ihre rowacts-Leiste und ist damit doppelt so hoch; vier Sessions + zwölf
+   Empty-Rows füllen bereits mehr als eine Bildschirmhöhe. Der Drawer ist die
+   primäre Phone-Navigation; die Stapel halbieren ihn. Bestätigt die
+   Priorität von F2/F3, ändert nichts am Schnitt.
+5. **F5s Lese-Treppe existiert schon** — Diff-Fenster („to land"/„uncommitted",
+   per-File-Hunks) → „read the whole file" → FileView mit Quellen-Zeile. Der
+   Editor ist Stufe 3 derselben Treppe (✎ in der FileView), der Board-Explorer
+   nur ein weiterer Einstieg. §F5 oben entsprechend umgeschrieben — die Lane
+   baut KEINE parallele Datei-Ansicht.
+
+**Was der Rundgang bestätigt hat, ohne Änderungsbedarf:** die Board-Erzählung
+Main vs. Lane trägt (Main: clean/commits/agents; Lane: uncommitted → commit →
+land — genau die Owner-Reihenfolge aus F4, nur mit agents zu früh); der
+verwaiste Worktree ist in „lanes" mit open/close voll bedienbar (die
+Ghost-Rows aus §F3 machen ihn nur SICHTBAR, die Mechanik existiert); die
+Gate-Zeile benennt einen stale Suite-Lock ehrlich mit pid und Alter.
+
+---
+
 ## Reihenfolge & Schnitt (Empfehlung)
 
 1. **F4** — kleinster Eingriff, sofort sichtbarer Wert, baut das Gerüst, in das
@@ -372,10 +432,12 @@ Task-Texte (jeder verweist auf dieses Dossier — die Lane liest den Abschnitt,
 nicht eine Nacherzählung):
 
 1. `F4 Board-Neuordnung + git-HEAD — briefs/ui-next-level-2026-08-06.md §F4 lesen und exakt diesen Schnitt bauen. Reihenfolge deploy/gate→identity(+HEAD)→land-pending→commits→files→lanes→guest→agents(hinter "more ▸", zu per Default)→outline; head-Feld in Brief-Route+BriefInfo. Volle Gate-Verify.`
-2. `F2+F3 Projekt-Pastellfarben + Slot-Stapel — briefs/ui-next-level-2026-08-06.md §F2+§F3. Erst Farben (deterministisch aus Repo-Pfad, beide Themes), dann Gruppierung unter Ein-Anker-Main-Session mit den drei benannten Kanten (verwaiste Lanes, Fokus-schlägt-Collapse, Badge-Aggregation) plus Ghost-Rows für sessionslose Worktrees (adopt via bestehender attach-Route, lazy beim Aufklappen laden — NIE im 2s-Poll). Client-only bis auf Lazy-Fetches bestehender Routen.`
+2. `F2+F3 Projekt-Pastellfarben + Slot-Stapel — briefs/ui-next-level-2026-08-06.md §F2+§F3+Nachtrag. Erst Farben (deterministisch aus Repo-Pfad, beide Themes), dann Gruppierung unter Ein-Anker-Main-Session mit den drei benannten Kanten (verwaiste Lanes, Fokus-schlägt-Collapse, Badge-Aggregation) plus Ghost-Rows für sessionslose Worktrees (adopt via bestehender attach-Route, lazy beim Aufklappen laden — NIE im 2s-Poll). Dabei den ⎇+-Chip von den 12 Empty-Rows an den Stapel-Anker ziehen (Nachtrag Fund 3). Client-only bis auf Lazy-Fetches bestehender Routen.`
 3. `F6 Drag&Drop/Paste/📎-Uploads — briefs/ui-next-level-2026-08-06.md §F6. Upload-Route (multipart, Cap, Owner-Auth), Ablage AUSSERHALB des Worktrees (~/.claude-fleet/drops/<slot>/), Composer-Mention (Format erst verifizieren: triggert tmux-Paste die @-Mention?), 📎-Knopf für Mobile, Retention, e2e-Check für Auth+Cap.`
-4. `F5 Board-File-Explorer + Editor — briefs/ui-next-level-2026-08-06.md §F5. NACH F4 starten. git-ls-files-Tree, Read-Route mit realpath-Prefix-Guard + .env/fleet.json-Ausschluss, Edit erst nach extra Klick, Content-Hash-Konfliktschutz, security-e2e für Pfad-Escape.`
+4. `F5 Board-File-Explorer + Editor — briefs/ui-next-level-2026-08-06.md §F5 (inkl. Nachtrag Fund 5). NACH F4 starten. git-ls-files-Tree; LESEN über die existierende /api/file+showFileView-Treppe (nichts Paralleles bauen); NEU nur die Write-Route mit realpath-Prefix-Guard + .env/fleet.json-Ausschluss, ✎-Edit erst nach extra Klick, Content-Hash-Konfliktschutz, security-e2e für Pfad-Escape auf der WRITE-Route.`
 5. `F1 Pi-Spike (KEIN Umbau) — briefs/ui-next-level-2026-08-06.md §F1 lesen. Verifizieren was 'Pi' konkret ist (Primärquelle, nicht raten), user-lokal installieren (vom Owner 2026-08-06 sanktioniert: user-scope, kein sudo/brew-global), --help + Spawn/Resume/Modell/Effort-Flags dokumentieren, TUI-in-Pane kurz real in einem tmux testen. Ergebnis: Adapter-Brief (Harness-Interface gegen die echte CLI geschärft) — server.ts bleibt unangetastet, danach STOPPEN und berichten.`
+
+6. `Mini-Fixes aus dem UI-Rundgang — briefs/ui-next-level-2026-08-06.md, Nachtrag Funde 1+2. (a) Branch-Truncation in der lanes-Sektion Suffix-erhaltend machen (bwtbr, client.ts:2240) — fleet-Branches unterscheiden sich nur hinten. (b) Untracked-Tooltip-Ternary umsortieren (client.ts:1905): ?? zeigt fälschlich 'staged + unstaged changes'. Winzig, zusammen eine Lane.`
 
 Die Clarify-Vorfragen zu F1 sind beantwortet (§F1, Owner-Antworten) — der Spike
 ist damit queuebar wie die anderen vier.

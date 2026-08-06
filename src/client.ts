@@ -1184,20 +1184,19 @@ async function doCommitMain(slot: number, mode: "quick" | "agent", files: string
   if (ok) await doCommit(slot, mode, true); // the preview already carried the mid-run warning
 }
 
-async function newLane(repo: string, slot?: number): Promise<void> {
+async function newLane(repo: string): Promise<void> {
   if (laneReqBusy) return;
   laneReqBusy = true;
   try {
-    // with a target slot (the ⎇+ chip on an empty row) the lane opens THERE;
-    // without one (the board button) the server picks the first free slot
-    const r = slot
-      ? await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "" })
-      : await post("/api/lanes", { repo });
+    // the server picks the first free slot. The "open it in THIS slot" variant went away with the
+    // ⎇+ chip's move off the empty rows (§F3 / Nachtrag 3) — the chip now sits on a repo row, which
+    // says which repo but not which slot. `/api/slots/:id/open-worktree` keeps its other caller
+    // (the picker's "start a lane here", below).
+    const r = await post("/api/lanes", { repo });
     const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
     if (!r.ok) { alert(`Lane failed: ${j.error ?? "?"}`); return; }
     await refresh();
-    const target = slot ?? j.slot;
-    if (target) showSlot(target);
+    if (j.slot) showSlot(j.slot);
   } finally {
     laneReqBusy = false;
   }
@@ -2521,7 +2520,13 @@ function setLayout(n: number, assignments?: number[]) {
 // sidebar click: assign to the focused pane — unless the slot is already
 // visible in another pane (same slot twice = two sessions fighting over resize)
 function showSlot(id: number) {
-  if (!fleet[id - 1]?.cwd) return;
+  const s = fleet[id - 1];
+  if (!s?.cwd) return;
+  // §F3 edge 2 — focus beats fold. Whatever route got here (a ⏸ badge, an adopt, a merge job
+  // finishing, the board), the session you are now looking at must have a visible row: a pane
+  // showing a lane while the sidebar pretends it isn't there is worse than no folding at all.
+  const key = projectOf(s);
+  if (key && s.worktree && !stackOpen.has(key)) setStackOpen(key, true);
   setDrawer(false);
   const existing = panes.find((p) => p.slot === id);
   if (existing) { existing.focus(); existing.flash(); return; }
@@ -3748,6 +3753,128 @@ function baseName(p: string) {
   return parts[parts.length - 1] || "/";
 }
 
+// "this slot holds a session" as a type, so the row builders below never have to assert it
+type ActiveSlot = SlotInfo & { cwd: string };
+const isActive = (s: SlotInfo): s is ActiveSlot => !!s.cwd;
+
+// --- project colour: one hue per checkout, derived, never stored ---------------------------------
+// "which project is this" was only answerable by reading a path. Now every session and lane of the
+// same checkout carries the same pastel hue. Derived from the canonical repo path — a lane inherits
+// its main repo's colour through worktree.repo — so it survives reload, restart and re-slotting with
+// no state that could go stale or need migrating. The hue is the ONLY thing computed here;
+// saturation and lightness live in one place in the CSS (--proj-s/--proj-l), which is the whole
+// knob if this app ever grows a second palette. It has ONE today: there is no light theme, no
+// prefers-color-scheme block and no theme toggle anywhere in the client (verified 2026-08-06).
+//
+// Caveat inherited from the ⎇+ chip's `quickRepo` and kept deliberately: a plain session's repo key
+// is its cwd, so a session started in a SUBDIRECTORY of a checkout gets its own hue and does not
+// group with that repo's lanes. GitInfo carries no toplevel (src/protocol.ts), and asking the
+// server for one would put a git spawn on the 2 s poll — the one thing this feature must not do.
+function projectOf(s: SlotInfo): string | null {
+  if (!s.cwd) return null;
+  return s.worktree?.repo ?? s.cwd;
+}
+// Eight hues, not a continuum, and this is the one place §F2's recommendation was overruled — by
+// looking at it. A hash spread over all 360° is uniform, which is NOT the same as far apart: the
+// first two-repo fixture drew 260° and 236°, and rendered they were the same pale lavender twice.
+// §F2 says collisions are acceptable ("kollisionsfrei muss es nicht sein"); it does not say
+// near-misses are, and a near-miss is the worse of the two — two colours that are the same shade
+// but not the same colour tell you nothing while looking like they mean something. So: quantize.
+// Distinct projects are now 45° apart minimum and unmistakable; two projects CAN share a colour,
+// which reads as "same project" and is the failure §F2 already accepted. The wheel positions skip
+// the muddy yellow-brown band that turns grey against #141414.
+const PROJECT_HUES = [8, 45, 88, 135, 175, 205, 260, 315];
+function projectHue(path: string): number {
+  let h = 0x811c9dc5; // FNV-1a
+  for (let i = 0; i < path.length; i++) {
+    h ^= path.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return PROJECT_HUES[(h >>> 0) % PROJECT_HUES.length];
+}
+function tintProject(node: HTMLElement, key: string | null) {
+  if (!key) return;
+  node.style.setProperty("--proj-h", String(projectHue(key)));
+  node.classList.add("proj");
+}
+
+// --- slot stacks (F3): lanes fold under the main session of their project ------------------------
+// Grouping is a RENDER fact, not a data fact: slot ids, fleet.json and the server are untouched, and
+// nothing about a stack is persisted server-side. That is what makes the awkward case free — start a
+// new main session in a repo whose old lanes are still around and it simply IS the anchor on the
+// next render; kill it and the lanes fall back to a repo header. There is no stored stack that could
+// go stale, so there is nothing to migrate.
+interface Stack {
+  key: string;                // canonical repo path — also the colour key
+  anchor: ActiveSlot | null;  // lowest-id non-lane session in the repo; null = orphaned lanes only
+  lanes: ActiveSlot[];
+  at: number;                 // the slot position the whole stack renders at
+}
+// Open/closed per device, on purpose (§F3): a phone and a desktop are allowed to disagree about
+// what is unfolded. Default is CLOSED — the point of the feature is the folded overview.
+const STACK_LS = "fleet.stacks";
+const stackOpen = new Set<string>(((): string[] => {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(STACK_LS) ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch { return []; }
+})());
+function setStackOpen(key: string, on: boolean) {
+  if (on) stackOpen.add(key);
+  else {
+    stackOpen.delete(key);
+    ghostCache.delete(key); // reopening re-asks git rather than showing a stale parked-lane list
+  }
+  localStorage.setItem(STACK_LS, JSON.stringify([...stackOpen]));
+  renderSlots();
+}
+
+// Ghost rows: worktrees that exist on disk but hold no session. They were only ever visible in the
+// board's lanes section, so a parked lane was invisible from the sidebar. Loaded LAZILY on unfold,
+// never from the 2 s poll — /api/sessions is already the most expensive path in the app and this
+// route spawns several git processes per repo (server.ts, the /worktrees route runs status +
+// rev-list + worktreeRisk per tree). Same discipline, and the same reason, as loadGuest().
+const ghostCache = new Map<string, WtRow[]>();
+const ghostBusy = new Set<string>();
+let adoptBusy = false;
+async function loadGhosts(key: string, probeSlot: number): Promise<void> {
+  if (ghostBusy.has(key)) return;
+  ghostBusy.add(key);
+  try {
+    const r = await api(`/api/slots/${probeSlot}/worktrees`);
+    const j = r.ok ? ((await r.json()) as WtInfo) : null;
+    // slot === null IS the definition of a ghost: every other row is already a slot row above
+    ghostCache.set(key, j ? j.worktrees.filter((w) => w.slot === null) : []);
+  } catch {
+    ghostCache.set(key, []); // transient — the next unfold asks again
+  } finally {
+    ghostBusy.delete(key);
+  }
+  renderSlots();
+}
+
+// Which stacks exist right now. A repo with no lanes is NOT a stack — a lone session stays the plain
+// row it always was, and nothing gets a fold arrow that has nothing to fold.
+function stacksOf(): Map<string, Stack> {
+  const m = new Map<string, Stack>();
+  for (const s of fleet) {
+    if (!isActive(s)) continue;
+    const key = projectOf(s);
+    if (!key) continue;
+    let g = m.get(key);
+    if (!g) { g = { key, anchor: null, lanes: [], at: s.id }; m.set(key, g); }
+    if (s.worktree) g.lanes.push(s);
+    else if (!g.anchor) g.anchor = s; // fleet is id-ordered, so the first one found is the lowest
+  }
+  for (const [k, g] of m) {
+    if (!g.lanes.length) { m.delete(k); continue; }
+    // an anchored stack renders where its main session sits; an orphaned one where its first lane
+    // does, so lanes whose main was killed keep a place in the list instead of vanishing (§F3, edge 1)
+    g.at = g.anchor?.id ?? g.lanes[0].id;
+  }
+  return m;
+}
+
 function startRename(row: HTMLElement, s: SlotInfo) {
   // dblclick on a not-yet-focused slot: the first click's assign() rebuilds the sidebar,
   // so the dblclick lands on the detached old row — a rename input there would be invisible.
@@ -3794,44 +3921,177 @@ function updateTitle() {
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
 }
 
+// the pane's own project stripe: same hue as the slot row, painted down the 6px gutter the
+// terminal already leaves free (.paneterm is inset 6px on the left). Deliberately NOT the pane
+// border — that border is the focus signal in split layouts, and a project colour must not be able
+// to imitate or hide "this is the pane you are typing into".
+function paintPaneProjects() {
+  for (const p of panes) {
+    const s = p.slot ? fleet[p.slot - 1] : undefined;
+    p.root.classList.remove("proj");
+    p.root.style.removeProperty("--proj-h");
+    tintProject(p.root, s ? projectOf(s) : null);
+  }
+}
+
 function renderSlots() {
   updateTitle();
+  paintPaneProjects();
   if (slotsEl.querySelector(".renamein")) return; // never destroy an in-progress rename
   slotsEl.replaceChildren();
-  // every slot gets a row, always — slots are fixed places, so a session stays findable
-  // where it was started. An empty slot is itself the "new session here" affordance.
-  // quick-lane target: the focused session's repo (a lane's PRIMARY repo, never the lane
-  // dir itself — a lane off a lane would nest .worktrees inside the worktree)
-  const focSlot = panes[focused]?.slot;
-  const foc = focSlot ? fleet[focSlot - 1] : undefined;
-  const quickRepo = foc?.git && foc.cwd ? (foc.worktree?.repo ?? foc.cwd) : null;
+  // Every slot still gets a row and empty slots still hold their place — but a lane whose project
+  // has a home in this list now renders under it instead of at its own number. The "slots are fixed
+  // places" principle is bent HERE and only here, deliberately (§F3 edge 3): four sessions plus
+  // twelve empty rows overflowed a phone screen, and folding the lanes is what buys that back.
+  // Empty rows do not move, so "start a session in slot 7" still means the same place.
+  const stacks = stacksOf();
   for (const s of fleet) {
-    if (!s.cwd) {
-      const row = el("div", "slot empty");
-      row.dataset.slot = String(s.id);
-      row.appendChild(el("span", "n", String(s.id)));
-      row.appendChild(el("span", "lbl dim", "empty — start here"));
-      row.onclick = () => openPicker(s.id);
-      if (quickRepo) {
-        // one click from "empty" to a working lane in the focused repo — the picker
-        // path (browse → ⎇ new lane) stays for everything else
-        const q = el("span", "quicklane", "⎇+");
-        q.title = `new lane in ${baseName(quickRepo)} — one click, no picker`;
-        q.onclick = (e) => {
-          e.stopPropagation();
-          void newLane(quickRepo, s.id);
-        };
-        row.appendChild(q);
-      }
-      slotsEl.appendChild(row);
-      continue;
+    if (!isActive(s)) { slotsEl.appendChild(emptyRow(s)); continue; }
+    const g = stacks.get(projectOf(s) ?? "");
+    if (g && g.at === s.id) { renderStack(g); continue; }
+    if (g && s.worktree) continue;         // folded (or drawn) under its anchor above
+    slotsEl.appendChild(slotRow(s));       // plain session, or a second main in a stacked repo
+  }
+}
+
+function emptyRow(s: SlotInfo): HTMLElement {
+  const row = el("div", "slot empty");
+  row.dataset.slot = String(s.id);
+  row.appendChild(el("span", "n", String(s.id)));
+  row.appendChild(el("span", "lbl dim", "empty — start here"));
+  row.onclick = () => openPicker(s.id);
+  // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
+  // moment a repo session had focus, none of them saying which repo they meant. It lives on the
+  // stack anchor now (see slotRow), where the repo is named right next to it.
+  return row;
+}
+
+// The whole stack: its anchor row, and — when unfolded — the lane rows plus the parked worktrees
+// that have no session at all.
+function renderStack(g: Stack) {
+  const open = stackOpen.has(g.key);
+  slotsEl.appendChild(g.anchor ? slotRow(g.anchor, g) : repoHeaderRow(g, open));
+  if (!open) return;
+  for (const l of g.lanes) {
+    const r = slotRow(l);
+    r.classList.add("stacked");
+    slotsEl.appendChild(r);
+  }
+  // ghosts ride the unfold, never the poll. The probe can be any live slot of this repo — the
+  // route walks `git worktree list` from wherever it is asked (server.ts, /api/slots/:id/worktrees)
+  const probe = g.anchor?.id ?? g.lanes[0]?.id;
+  const ghosts = ghostCache.get(g.key);
+  if (!ghosts) { if (probe) void loadGhosts(g.key, probe); return; }
+  for (const w of ghosts) slotsEl.appendChild(ghostRow(g, w));
+}
+
+// Edge 1: lanes whose main session was killed (or that a dispatcher started with no main at all).
+// They used to render as ordinary rows and would now have nothing to fold under — so the project
+// itself becomes the anchor. Never invisible, never a stack without a head.
+function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
+  const row = el("div", "slot repohead");
+  tintProject(row, g.key);
+  row.appendChild(foldArrow(g, open));
+  const lbl = el("span", "lbl dim", baseName(g.key));
+  lbl.title = `${g.key}\nno session open in this checkout — only lanes`;
+  row.appendChild(lbl);
+  for (const c of stackChips(g, open)) row.appendChild(c);
+  row.appendChild(quickLaneChip(g.key));
+  row.onclick = () => setStackOpen(g.key, !open);
+  return row;
+}
+
+function quickLaneChip(repo: string): HTMLElement {
+  const q = el("span", "quicklane", "⎇+");
+  q.title = `new lane in ${baseName(repo)} — one click, no picker`;
+  q.onclick = (e) => { e.stopPropagation(); void newLane(repo); };
+  return q;
+}
+
+function foldArrow(g: Stack, open: boolean): HTMLElement {
+  const a = el("span", "stackfold", open ? "▾" : "▸");
+  a.title = open ? `fold ${baseName(g.key)}'s lanes away` : `unfold ${g.lanes.length} lane(s)`;
+  a.onclick = (e) => { e.stopPropagation(); setStackOpen(g.key, !open); };
+  return a;
+}
+
+// The anchor's own chips: how many lanes, what they need while hidden, and one way to start another.
+function stackChips(g: Stack, open: boolean): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const n = el("span", "stackn", `⎇${g.lanes.length}`);
+  n.title = `${g.lanes.length} lane${g.lanes.length === 1 ? "" : "s"} in ${baseName(g.key)}`;
+  out.push(n);
+  if (!open) {
+    // Aggregation, not decoration: these two are the "somebody has to look at this" signals, and
+    // folding must not be able to hide them. Clicking takes you to the lane that owns the signal —
+    // which means unfolding first, so what you land on is visible in the list you came from.
+    const pending = g.lanes.filter((l) => l.mergePending);
+    if (pending.length) {
+      const rb = el("span", "revb", pending.length > 1 ? `⏸${pending.length}` : "⏸");
+      rb.title = `${pending.length} folded lane(s) with agent conflict resolutions nobody has reviewed`;
+      rb.onclick = (e) => {
+        e.stopPropagation();
+        setStackOpen(g.key, true);
+        showSlot(pending[0].id);
+        setBoard(true);
+      };
+      out.push(rb);
     }
-    const visible = panes.some((p) => p.slot === s.id);
-    const isFocused = panes[focused]?.slot === s.id;
-    const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
-    row.dataset.slot = String(s.id);
-    row.appendChild(el("span", "n", String(s.id)));
-    {
+    const comments = g.lanes.reduce((a, l) => a + (l.share?.comments ?? 0), 0);
+    if (comments > 0) {
+      const cb = el("span", "cmtb", `💬${comments}`);
+      cb.title = `${comments} guest message(s) in folded lanes`;
+      out.push(cb);
+    }
+  }
+  return out;
+}
+
+// A worktree on disk that holds no session. Before this it existed only in the board's lanes
+// section, so a parked lane was invisible from the sidebar it belongs to. Adoption goes through the
+// attach route the board already uses — no new server code, and the same 409s guard it.
+function ghostRow(g: Stack, w: WtRow): HTMLElement {
+  const row = el("div", "slot ghost stacked");
+  tintProject(row, g.key);
+  row.appendChild(el("span", "n", "·"));
+  // fleet branches share a ~16-char prefix, so the identity is in the TAIL — keep the end, drop the
+  // middle. (The board's own lane list still truncates head-first; that row is a separate fix.)
+  const short = w.branch.replace(/^fleet\//, "");
+  const lbl = el("span", "lbl dim", `⎇ ${short.length > 20 ? `…${short.slice(-19)}` : short}`);
+  lbl.title = `${w.path}\n${w.branch} — ${w.dirty} uncommitted, ${w.ahead} to land, ${w.behind} behind`
+    + (w.note ? `\nshelved: ${w.note}` : "")
+    + "\non disk, no session — click to adopt it into a free slot";
+  row.appendChild(lbl);
+  row.appendChild(el("span", "ghosttag", "on disk"));
+  row.onclick = async () => {
+    if (adoptBusy) return;
+    adoptBusy = true;
+    try {
+      const r = await post("/api/lanes", { repo: g.key, attach: w.path });
+      const j = (await r.json().catch(() => ({}))) as { slot?: number; error?: string };
+      if (!r.ok) { alert(`Adopt failed: ${j.error ?? "?"}`); return; }
+      ghostCache.delete(g.key); // it is a real slot row now
+      await refresh();
+      if (j.slot) showSlot(j.slot);
+    } finally {
+      adoptBusy = false;
+    }
+  };
+  return row;
+}
+
+// One occupied slot. `stack` is set only when this row is the anchor of a fold — it carries the
+// arrow, the ⎇N chip, the quick-lane chip and, while folded, the badges of the lanes it hides.
+function slotRow(s: ActiveSlot, stack?: Stack): HTMLElement {
+  const open = stack ? stackOpen.has(stack.key) : false;
+  const visible = panes.some((p) => p.slot === s.id);
+  const isFocused = panes[focused]?.slot === s.id;
+  const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
+  row.dataset.slot = String(s.id);
+  tintProject(row, projectOf(s));
+  if (stack) row.appendChild(foldArrow(stack, open));
+  row.appendChild(el("span", "n", String(s.id)));
+  {
       const lbl = el("span", "lbl", s.label ?? baseName(s.cwd));
       lbl.title = s.cwd;
       lbl.ondblclick = (e) => {
@@ -3844,6 +4104,11 @@ function renderSlots() {
         b.title = "has scheduled prompts";
         row.appendChild(b);
       }
+      if (stack) for (const c of stackChips(stack, open)) row.appendChild(c);
+      // ⎇+ used to sit on all twelve empty rows at once, saying nothing about which repo it meant.
+      // Here it names its own repo by sitting on it. Not on lanes: a lane off a lane would nest
+      // .worktrees inside a worktree, which is the same rule the old `quickRepo` followed.
+      if (s.git && !s.worktree) row.appendChild(quickLaneChip(s.cwd));
       // row = identity + state: a lane's lifecycle color IS its land-readiness, shown as
       // ONE dot. The branch name and counts that used to fill a 96px badge move into the
       // tooltip — the name up top is already derived from this same branch (baseName(cwd))
@@ -3879,8 +4144,14 @@ function renderSlots() {
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
         row.appendChild(rb);
       }
-      // green = live in a pane, or a background session that just produced output
-      row.appendChild(el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS ? " hot" : "")));
+      // green = live in a pane, or a background session that just produced output. A FOLDED anchor
+      // also lights up for its hidden lanes: a lane that just produced output is exactly the kind of
+      // thing you must not have to unfold to notice (§F3 edge 2).
+      const hidHot = !!stack && !open && stack.lanes.some(
+        (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
+      const live = el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS || hidHot ? " hot" : ""));
+      if (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS) live.title = "a folded lane is active";
+      row.appendChild(live);
       const act = el("div", "slotact");
       if (s.git && !s.worktree) {
         // plain repo session: diff is available but secondary, so it stays in the hover row
@@ -3938,10 +4209,13 @@ function renderSlots() {
       if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
       if (s.worktree) mkact("⇲", "shelve (set aside + note)", () => { void doShelve(s.id); });
       row.appendChild(rowacts);
-      row.onclick = () => showSlot(s.id);
-    }
-    slotsEl.appendChild(row);
+      // §F3 click semantics, in the owner's words ("erst aufklappt und klickbar wenn man auf ihn
+      // drückt, bleibt dann auf"): clicking a FOLDED stack only unfolds it — it does not steal the
+      // pane. Once open the anchor is an ordinary row again and focuses its session. Folding back is
+      // the arrow's job alone, or focusing the main session would always cost you the open fold.
+      row.onclick = stack && !open ? () => setStackOpen(stack.key, true) : () => showSlot(s.id);
   }
+  return row;
 }
 
 function renderChips(chips: string[]) {
@@ -4100,7 +4374,9 @@ async function refresh() {
         // silently freezes it: `behind` was missing here while the lane dot's tooltip has shown
         // it since the dot existed, so a lane falling behind main kept the old count until some
         // OTHER field moved. Adding a rendered field here is not optional.
-        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind, !!s.worktree])]);
+        // worktree.repo, not just !!worktree: it is the stack's grouping key AND its colour key, so
+        // a row painted from it belongs in this list by the same rule that put `behind` here
+        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind, s.worktree?.repo ?? !!s.worktree])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

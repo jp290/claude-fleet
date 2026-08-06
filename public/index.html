@@ -221,6 +221,40 @@
   .slot .lcdot.ready { background: #9ece6a; }    /* clean, commits waiting to push/land */
   .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
   .slot .lanediff:hover { color: #bfe6ff; }
+  /* project colour (F2): the HUE is computed per repo path in projectHue() and lands on the row as
+     --proj-h. The pastel pair below is the only tuning knob and the only place a second palette
+     would ever be declared — the app has exactly one (dark) today. It wins over .slot.lane's blue
+     accent on purpose: after F3 the colour IS the stack identity, and laneness still reads from the
+     ⎇ chip and the lifecycle dot next to it. */
+  :root { --proj-s: 58%; --proj-l: 72%; }
+  .slot.proj { border-left: 3px solid hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.8); padding-left: 8px; }
+  .slot.proj.current, .slot.proj:hover { border-left-color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l)); }
+  /* the pane's stripe sits in the gutter .paneterm already leaves free, never on the pane border —
+     that border means "focused" and nothing else may speak in it */
+  .pane.proj::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.4); pointer-events: none; z-index: 1; }
+  /* slot stacks (F3): the anchor carries the arrow, its lanes are indented under it */
+  .slot .stackfold { flex: none; width: 12px; margin-left: -3px; color: #666; font-size: 10px;
+    text-align: center; cursor: pointer; }
+  .slot .stackfold:hover { color: #ccc; }
+  .slot .stackn { flex: none; font-size: 10.5px; font-weight: 700; padding: 0 4px; border-radius: 4px;
+    color: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l));
+    background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.16); }
+  /* small on purpose: the sidebar is 228px and a lane label is already tight, so the indent buys
+     "belongs to the row above" with the least width it can be read at */
+  .slot.stacked { margin-left: 10px; }
+  .slot.repohead { cursor: pointer; padding-top: 4px; padding-bottom: 4px; }
+  .slot.repohead .lbl { font-size: 11px; letter-spacing: 0.02em; }
+  /* a worktree on disk with no session: present but plainly not running */
+  .slot.ghost { opacity: 0.6; }
+  .slot.ghost:hover { opacity: 1; }
+  .slot.ghost .n { color: #444; }
+  .slot .ghosttag { flex: none; font-size: 9.5px; color: #666; border: 1px solid #333;
+    border-radius: 4px; padding: 0 4px; }
+  /* the 50px rail centres its rows and has no width to spend on hierarchy — drop the indent and
+     the text chips there; the fold arrow stays, so a stack is still openable from the rail */
+  #side.collapsed .slot.stacked { margin-left: 0; }
+  #side.collapsed .stackn, #side.collapsed .ghosttag { display: none; }
   .slot .diff { flex: none; font-size: 12px; color: #666; cursor: pointer; }
   .slot .diff:hover { color: #7dcfff; }
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */

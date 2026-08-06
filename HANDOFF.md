@@ -28,11 +28,25 @@ Danach F5 (`9534b49a`), aber **nicht neben Mini** (Kollision) und erst nach F4s 
 - **Kommentar-Kontrakt:** ein Kommentar wird **nie** in den Brief gefaltet, den eine Lane
   bekommt. Ein Check pinnt es. Folge, die man kennen muss: **der Analyst sieht Kommentare
   nicht** — was für die Maschine zählen soll, muss in den Brief (`POST /api/tasks/:id/brief`).
-- **Pi ist eine OPTION, kein Ersatz.** Der Owner hat die Abrechnung nachgeprüft: Fremd-Harness
-  läuft über extra usage, pro Token, nicht im Abo. Die lohnende Arbeit ist trotzdem da und ist
-  **nicht Pi-spezifisch** — drei Stellen im Server sind harness-blind (`claudeAlive`
-  server.ts:1698 winkt jede Nicht-claude-BASE_CMD durch · `MODEL_RE` server.ts:101 kennt nur
-  claude-Namen · ein unauflösbares Modell hinterlässt eine lebende Pane ohne Agenten).
+- **Pi bleibt interessant — die Abrechnungs-Absage war MEIN Fehler und ist zurückgenommen.**
+  Zwischenstand war „Fremd-Harness läuft pro Token über extra usage, also unattraktiv"; Quelle
+  war Pis eigene `docs/providers.md`, und die ist **veraltet** — sie beschreibt eine Änderung,
+  die Anthropic angekündigt und dann ausgesetzt hat. Primärquelle (support.claude.com,
+  Artikel 15036540, geholt 2026-08-06): *„We're pausing the changes … For now, nothing has
+  changed: Claude Agent SDK, `claude -p`, and third-party app usage still draw from your
+  subscription's usage limits."* Also **Abo-Kontingent, nicht extra usage** — und zwar für den
+  direkten Weg wie für die Bridge. **Lehre, die teurer war als sie aussieht:** eine
+  Drittanbieter-Doku ist kein Beleg über die Abrechnung eines anderen Unternehmens; der Owner
+  hat meiner Fehlaussage zugestimmt, und wir haben eine Richtungsentscheidung darauf gebaut.
+- **`elidickinson/pi-claude-bridge`** (254 ★, vom Owner eingebracht) ist **kein Umgehungstrick**:
+  eine Pi-Extension, die Claude Code über das offizielle Agent SDK als Inference-Provider
+  einbindet. Konsequenz für Fleet, die man vor dem Bauen kennen muss: ein Pi-Slot spawnt dann
+  `pi`, das darunter Claude Code startet — der Prozessbaum trägt BEIDE, und was der
+  Adapter-Brief zu `comm=pi` gemessen hat, gilt für den Bridge-Fall **nicht** ungeprüft.
+- Die lohnende Arbeit ist unabhängig davon **nicht Pi-spezifisch** — drei Stellen im Server sind
+  harness-blind (`claudeAlive` server.ts:1698 winkt jede Nicht-claude-BASE_CMD durch ·
+  `MODEL_RE` server.ts:101 kennt nur claude-Namen · ein unauflösbares Modell hinterlässt eine
+  lebende Pane ohne Agenten). Das trifft jede zweite Harness, nicht nur diese.
 - **Der Lane-Deckel bleibt bei 2.** Gemessen, nicht gefühlt — siehe unten.
 - **Zwei neue Queue-Zeilen beauftragt:** `fcd30f9e` (Dispatcher liest `collides`) und
   `1981be9a` (Autonomie-Bausteine, read-only Untersuchung mit „bereits entschieden"-Riegel).

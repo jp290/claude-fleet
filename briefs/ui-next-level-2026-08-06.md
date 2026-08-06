@@ -99,6 +99,26 @@ Sicherheitsrand: jeder Spawn-String landet in einer tmux-Shell-Zeile — pro Ada
 gilt dieselbe Validierungs-Disziplin wie `MODEL_RE` (server.ts:100-102), sonst ist
 das Options-Feld ein Injection-Vektor.
 
+**Owner-Antworten (2026-08-06, direkt eingeholt):**
+- **Keine der vier CLIs ist installiert; Pi ist das spannendste Ziel.** Harness #2
+  = Pi, opencode/Codex frühestens danach. Aus der Clarify-Lane wird damit ein
+  **Pi-Spike**: erst verifizieren, WAS „Pi" konkret ist (Primärquelle suchen —
+  der Name stammt aus dem Owner-Prompt, nicht aus dem Gedächtnis auf ein Paket
+  zeigen), dann installieren, dann `--help` der ECHTEN Installation als Wahrheit
+  für das Adapter-Interface nehmen.
+- **Installation ist Maschinen-Ebene**, außerhalb jedes Worktrees — normalerweise
+  stoppt eine Lane davor (shared reality). Der Owner hat den Spike sanktioniert:
+  Installation ausdrücklich erlaubt, aber **user-lokal** (~/.local, bun/npm
+  user-scope — keine System-Pfade, kein sudo, kein brew-global), und der Spike
+  baut NICHTS in server.ts um. Ergebnis ist ein Adapter-Brief, kein Code.
+- **Modus („robust und vernünftig", Owner war unsicher → Entscheid hier):
+  Interactive-TUI in der Pane ist die primäre Integrationsform** — Fleets gesamte
+  Maschinerie (paste-buffer-Send server.ts:1651, capture-pane, Idle-Erkennung,
+  Transcript-Anzeige) ist Pane-basiert; ein zweiter Harness in derselben Form
+  erbt sie alle. Ein print-/API-Modus wäre eine zweite Produktfläche und kommt
+  erst, wenn TUI-in-Pane an Pi einen realen Mangel zeigt — der Spike notiert
+  dann den Mangel, statt ihn still zu umbauen.
+
 **Done (nach Clarify):** ein Slot lässt sich mit Harness B spawnen, arbeitet in
 der Pane, und ALLE claude-only-Features sind auf diesem Slot sichtbar degradiert
 statt kaputt; `./e2e-claude-gate.sh` bleibt grün (der quoted-model-Check dort ist
@@ -182,7 +202,7 @@ Server-Feld, KEIN Neubau:
 | File-Explorer | — | **F5, neu** |
 | Worktrees | lanes, Platz 5 | rückt hinter F5 |
 | Gastzugang | guest, Platz 6 | bleibt relativ |
-| Summary/Review | **agents, Platz 4** | ans Ende — NICHT löschen, nur degradieren (③-Review schreibt weiter das Outcome-Ledger) |
+| Summary/Review | **agents, Platz 4** | ans Ende UND hinter „more ▸" (Owner-yep 2026-08-06), zugeklappt per Default — NICHT löschen (③-Review schreibt weiter das Outcome-Ledger) |
 | git-HEAD | fehlt im Brief | `head` (short-SHA) in die Brief-Route + `BriefInfo` (client.ts:675), Anzeige in identity neben Branch |
 
 Outline (prompts) bleibt letzter. **Done:** Board zeigt die neue Reihenfolge, HEAD
@@ -294,27 +314,24 @@ Server-Checks in `e2e/` neben die passende Familie, nie ans Runner-EOF.
 
 ---
 
-## Offene Fragen an den Owner (eine Antwort-Runde reicht)
+## Owner-Fragen — Stand nach der Antwort-Runde (2026-08-06)
 
-Gesammelt, damit sie in EINER Nachricht beantwortbar sind — alles andere im
-Dossier ist entschieden oder als Default markiert:
+Alle fünf gestellt, vier beantwortet, eine erklärt-und-als-Default-stehend:
 
-1. **F1:** Welche Agenten-CLIs sind auf der Maschine real installiert (und
-   welche willst du zuerst)? Pi/opencode/Codex sind bisher nur Namen aus deinem
-   Prompt — der Adapter-Brief braucht die zwei konkreten Ziele. (Flags/Effort
-   klärt dann die Clarify-Lane per `--help`, nicht du.)
-2. **F1:** Reicht dir Interactive-TUI-in-der-Pane pro Harness (wie claude heute),
-   oder erwartest du für einzelne davon print-/API-Modus mit eigener Anzeige?
-3. **Mobile-Ambition:** F5 (Explorer/Editor) ist im ersten Schnitt Desktop-only,
-   F6 bekommt dafür den 📎-Knopf fürs Handy. Einverstanden — oder ist
-   Editor-vom-Handy für dich Kernfall statt Kür?
-4. **F4:** Summary/Review ans Ende ist gesetzt. Sollen sie zusätzlich hinter
-   einen Aufklapper („more ▸") — oder sichtbar bleiben? Du nanntest sie
-   „wahrscheinlich ziemlich überholt"; gelöscht wird nichts (③ schreibt das
-   Outcome-Ledger weiter).
-5. **F3-Defaults abnicken:** Anker = niedrigste non-lane-Slot-ID; zweite
-   Main-Session im selben Repo bleibt flache Row in Projektfarbe; Zuklappen nur
-   über ▾/▸, nie über Row-Klick. Passt das so?
+1. **F1 — beantwortet:** keine der CLIs ist installiert; **Pi zuerst**. Details
+   und Konsequenzen (Pi-Spike, sanktionierte user-lokale Installation) in §F1.
+2. **F1 Modus — beantwortet** („robust und vernünftig", sonst unsicher):
+   übersetzt in den Entscheid TUI-in-der-Pane, §F1.
+3. **Mobile — beantwortet:** Desktop-only-Editor ist für den ersten Schnitt ok;
+   F6 behält den 📎-Handy-Pfad.
+4. **F4 Summary/Review — beantwortet (yep):** ans Ende UND hinter einen
+   „more ▸"-Aufklapper — zugeklappt per Default, nichts wird gelöscht.
+5. **F3-Defaults — nachgefragt, Frage kam nicht verständlich an.** Die Defaults
+   stehen im §F3 in Klartext (welcher Slot der Stapel-Kopf ist; was mit einer
+   zweiten Main-Session im selben Repo passiert; dass Zuklappen über einen
+   eigenen Pfeil geht, nicht über den Row-Klick). Sie gelten, bis der Owner beim
+   ersten Anfassen des Features widerspricht — die F2/F3-Lane baut sie so und
+   zeigt sie vor.
 
 ## Queue — fertige Task-Texte
 
@@ -333,11 +350,14 @@ curl -s -X POST "http://$FLEET_HOST:8790/api/tasks" \
 Task-Texte (jeder verweist auf dieses Dossier — die Lane liest den Abschnitt,
 nicht eine Nacherzählung):
 
-1. `F4 Board-Neuordnung + git-HEAD — briefs/ui-next-level-2026-08-06.md §F4 lesen und exakt diesen Schnitt bauen. Reihenfolge deploy/gate→identity(+HEAD)→land-pending→commits→files→lanes→guest→agents→outline; head-Feld in Brief-Route+BriefInfo. Volle Gate-Verify.`
+1. `F4 Board-Neuordnung + git-HEAD — briefs/ui-next-level-2026-08-06.md §F4 lesen und exakt diesen Schnitt bauen. Reihenfolge deploy/gate→identity(+HEAD)→land-pending→commits→files→lanes→guest→agents(hinter "more ▸", zu per Default)→outline; head-Feld in Brief-Route+BriefInfo. Volle Gate-Verify.`
 2. `F2+F3 Projekt-Pastellfarben + Slot-Stapel — briefs/ui-next-level-2026-08-06.md §F2+§F3. Erst Farben (deterministisch aus Repo-Pfad, beide Themes), dann Gruppierung unter Ein-Anker-Main-Session mit den drei benannten Kanten (verwaiste Lanes, Fokus-schlägt-Collapse, Badge-Aggregation). Client-only.`
 3. `F6 Drag&Drop/Paste/📎-Uploads — briefs/ui-next-level-2026-08-06.md §F6. Upload-Route (multipart, Cap, Owner-Auth), Ablage AUSSERHALB des Worktrees (~/.claude-fleet/drops/<slot>/), Composer-Mention (Format erst verifizieren: triggert tmux-Paste die @-Mention?), 📎-Knopf für Mobile, Retention, e2e-Check für Auth+Cap.`
 4. `F5 Board-File-Explorer + Editor — briefs/ui-next-level-2026-08-06.md §F5. NACH F4 starten. git-ls-files-Tree, Read-Route mit realpath-Prefix-Guard + .env/fleet.json-Ausschluss, Edit erst nach extra Klick, Content-Hash-Konfliktschutz, security-e2e für Pfad-Escape.`
-5. (kein Task) `F1 Harness-Auswahl` → erst Clarify-Gespräch, Fragen in §F1.
+5. `F1 Pi-Spike (KEIN Umbau) — briefs/ui-next-level-2026-08-06.md §F1 lesen. Verifizieren was 'Pi' konkret ist (Primärquelle, nicht raten), user-lokal installieren (vom Owner 2026-08-06 sanktioniert: user-scope, kein sudo/brew-global), --help + Spawn/Resume/Modell/Effort-Flags dokumentieren, TUI-in-Pane kurz real in einem tmux testen. Ergebnis: Adapter-Brief (Harness-Interface gegen die echte CLI geschärft) — server.ts bleibt unangetastet, danach STOPPEN und berichten.`
+
+Die Clarify-Vorfragen zu F1 sind beantwortet (§F1, Owner-Antworten) — der Spike
+ist damit queuebar wie die anderen vier.
 
 Nicht von hier queuebar (Lane, self-token ist slot-gebunden — geprüft an
 server.ts:9116, die Route verlangt Owner-Auth); darum liegen die Texte hier.

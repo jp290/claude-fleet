@@ -6459,6 +6459,17 @@ for (const s of slots) {
   if (!s.cwd) continue;
   await ensureSlot(s);
   s.offset = existsSync(streamPath(s.id)) ? (await stat(streamPath(s.id))).size : 0;
+  // ...and the same restart must not leave the pane looking IDLE SINCE THE EPOCH. `offset` is
+  // stamped so that everything written before now is not replayed as new output — but `lastOutput`
+  // stayed 0, so `now - s.lastOutput` read as ~1.79e12 ms for every restored lane until its next
+  // byte. Two consumers ACT on that number, and both were therefore disarmed by every deploy:
+  // canDeliver's busy gate (the one guard that keeps an auto, the merge author wake and a steward
+  // nudge from pasting into a WORKING pane) and the idle clause behind auto-③ (lane-signals.ts).
+  // A pane blocked on a long tool call is exactly the case that stays quiet AND must not be typed
+  // into. Boot time is the honest reading — this process has observed nothing yet, so idle is
+  // counted from when it started looking, the same "unknown is never permission" rule the pulse
+  // text already follows for lastOutput 0 (see pulseLastOutput's idle line).
+  s.lastOutput = Date.now();
   if (existsSync(historyPath(s.id))) {
     try {
       const h: unknown = await Bun.file(historyPath(s.id)).json();

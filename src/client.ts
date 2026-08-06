@@ -722,11 +722,14 @@ const commitBusy = new Map<number, "quick" | "agent">();
 // record); `ok: null` = nothing was measured — the command DECLINED (skipped), or `timedOut`
 // says our own clock killed it. Neither absence nor either non-measurement may render as green. `stale` is set at confirm-land when main moved
 // past the `mainSha` the verify ran against (the verdict is void once main moves past it).
-// mirrors MergeLast["verify"] in server.ts — `ok:null` is "nothing was measured", and `timedOut`
-// splits that into the command declining (SKIPPED) and our clock killing it (TIMED OUT). The
-// timing fields are optional on both sides: a record deserialized from an older server has none.
+// mirrors MergeLast["verify"] in server.ts — `ok:null` is "nothing was measured", and the two kill
+// flags split that three ways: the command declining (SKIPPED), our clock killing it while it
+// worked (TIMED OUT), and our clock killing it while it was still queued behind the suite mutex
+// (NEVER STARTED — it never looked at the tree). The timing fields are optional on both sides: a
+// record deserialized from an older server has none.
 type VerifyVerdict = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
-  timedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true; exitCode?: number | null };
+  timedOut?: true; waitedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
+  exitCode?: number | null };
 interface MergeState { running: boolean;
   // "interrupted" is the durable marker a merge run leaves about itself before it starts: a run
   // that never came back (the server was killed mid-job) is reported as such instead of as no
@@ -1051,21 +1054,30 @@ function spentText(v: VerifyVerdict): string {
 // "textually clean" isn't "semantically correct", so the owner gets one look before it merges.
 // the one deterministic land signal made visible (F-A.3): did the rebased tree pass verify.
 // Informational only — a red, skipped, timed-out or stale badge NEVER disables land (owner
-// latitude stands; confirm-land deliberately does not block on a non-green verify). The THREE
+// latitude stands; confirm-land deliberately does not block on a non-green verify). The FOUR
 // ways of having no verdict are told apart and none reads green: no command CONFIGURED reads
-// "unverified", a command that DECLINED to run reads "skipped", and one our own clock killed
-// reads "timed out" — the last says nothing whatever about the tree.
+// "unverified", a command that DECLINED to run reads "skipped", one our own clock killed while it
+// was working reads "timed out", and one killed while it was still queued behind the suite mutex
+// reads "never ran" — the last two say nothing whatever about the tree, the last not even "slow".
 function verifyBadge(v: VerifyVerdict | undefined): HTMLElement {
   if (!v) {
     const b = el("span", "vbadge none", "unverified");
     b.title = "no FLEET_VERIFY_CMD result on record for this rebased tree — the tree was not deterministically verified";
     return b;
   }
+  if (v.waitedOut) {
+    // the weakest of the six states, and the one that used to render RED: killed while still
+    // queued behind the suite mutex, so the gate never looked at this tree at all
+    const b = el("span", "vbadge skip", "verify — never ran");
+    b.title = `\`${v.cmd}\` never started${spentText(v)} — it was killed while still queued behind the suite mutex, so this is a fact about the machine and says NOTHING about the tree; click to view how far the chain got`;
+    b.onclick = (e) => { e.stopPropagation(); showVerifyOutput(v); };
+    return b;
+  }
   if (v.timedOut) {
     // wears the same `skip` tone on purpose: both are "nothing was measured", and the one thing
     // this badge must never do is look like the red one — a timeout says nothing about the tree
     const b = el("span", "vbadge skip", "verify — timed out");
-    b.title = `\`${v.cmd}\` was KILLED at the timeout${spentText(v)} — it verified NOTHING, and this is not a verdict about the tree; click to view how far it got`;
+    b.title = `\`${v.cmd}\` was KILLED at the work timeout${spentText(v)} — it verified NOTHING, and this is not a verdict about the tree; click to view how far it got`;
     b.onclick = (e) => { e.stopPropagation(); showVerifyOutput(v); };
     return b;
   }
@@ -1099,10 +1111,12 @@ function showVerifyOutput(v: VerifyVerdict): void {
   const overlay = el("div", "overlay riskoverlay");
   overlay.style.display = "flex";
   const panel = el("div", "panel riskpanel");
-  panel.appendChild(el("h2", "", v.timedOut ? "verify — timed out, output so far"
+  panel.appendChild(el("h2", "", v.waitedOut ? "verify — never started, output so far"
+    : v.timedOut ? "verify — timed out, output so far"
     : skipped ? "verify — skipped, output" : "verify ✗ — output"));
   panel.appendChild(el("div", `diffstat ${skipped ? "warn" : "err"}`,
-    `${v.cmd} · ${v.timedOut ? `killed at the timeout — nothing was checked${spentText(v)}`
+    `${v.cmd} · ${v.waitedOut ? `killed while still queued behind the suite mutex — this tree was never looked at${spentText(v)}`
+      : v.timedOut ? `killed at the work timeout — nothing was checked${spentText(v)}`
       : skipped ? "declined to verify this tree — nothing was checked" : "exit non-zero"}`));
   const box = el("div", "difftxt");
   box.textContent = v.out || "(no output captured)";

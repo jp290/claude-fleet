@@ -201,16 +201,17 @@ if git grep -qI VERIFYBAD -- . 2>/dev/null; then
   echo "verify FAIL: VERIFYBAD marker present in the rebased tree"
   exit 1
 fi
-# A gate that never answers, so FLEET_VERIFY_TIMEOUT_MS has to kill it. Shaped like the incident of
-# 2026-08-06: one chain step finishes and prints its ALL PASS, the next one blocks, and the clock
-# runs out with the log ending mid-sentence — which used to be recorded as `ok:false`, a reasoned
-# "no" over an output containing zero failures. The sleep's fds are redirected AWAY from the
-# inherited pipe on purpose: otherwise the grandchild keeps stdout open after the server SIGTERMs
-# its parent and the collecting read blocks for the sleep's full duration instead of returning what
-# was already printed (measured — with the redirect the read returns at the kill, output intact).
-# The suite-lock lines are part of the fixture, not decoration: they are what e2e-stage.sh prints
-# in a real chain, and the server sums them into verify.waitMs. Three staged steps, two of which
-# blocked, so the arithmetic under test (total, stages, blocked) has a distinguishable answer.
+# A gate that WORKS and never answers, so FLEET_VERIFY_TIMEOUT_MS — the WORK budget — has to kill
+# it. The sleep's fds are redirected AWAY from the inherited pipe on purpose: otherwise the
+# grandchild keeps stdout open after the server SIGTERMs its parent and the collecting read blocks
+# for the sleep's full duration instead of returning what was already printed (measured — with the
+# redirect the read returns at the kill, output intact).
+# The suite-lock lines are part of the fixture, not decoration: they are what e2e-stage.sh prints in
+# a real chain, and the server both sums them into verify.waitMs and reads them LIVE to decide which
+# of its two budgets is running. Three staged steps, two of which blocked (3s + 0s + 1s), and the
+# LAST lock line is an acquire — so this run is working when the clock kills it, and the 4s it spent
+# queueing must have been credited back to the work budget rather than eaten out of it. That is the
+# whole regression: before 2026-08-07 this would have died at the budget, not at budget + 4s.
 if git grep -qI VERIFYHANG -- . 2>/dev/null; then
   echo "[suite-lock] e2e-clean-review.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 04:11): /bin/sh ./e2e-isolated.sh"
   echo "[suite-lock] e2e-clean-review.sh acquired after 3s (pid 4243)"
@@ -218,12 +219,26 @@ if git grep -qI VERIFYHANG -- . 2>/dev/null; then
   echo "ALL PASS"
   echo "[suite-lock] e2e-security.sh acquired after 0s (pid 4244)"
   echo "[suite-lock] e2e-claude-gate.sh acquired after 1s (pid 4245)"
-  # and a fourth step that never gets in — the shape of a land killed WHILE queueing, which is the
-  # likelier timeout: it has heartbeats and no acquire line, so its wait exists only as a bound
-  echo "[suite-lock] e2e-postland-audit.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 09:00): /bin/sh ./e2e-isolated.sh"
-  echo "[suite-lock] e2e-postland-audit.sh waiting 12s for /tmp/fleet-e2e.lock — held by live pid 4242 (up 09:12): /bin/sh ./e2e-isolated.sh"
   sleep 30 </dev/null >/dev/null 2>&1
   echo "verify OK: the hang stand-in was never meant to reach this line"
+  exit 0
+fi
+# A gate that never gets to START, so FLEET_VERIFY_WAIT_MS has to kill it — and this, not the one
+# above, is the exact shape of the 2026-08-06 incident: one chain step got in and printed its ALL
+# PASS, the next one blocked behind somebody else's ~8-minute suite, and the clock ran out with the
+# log ending mid-sentence. That was recorded as `ok:false`, a reasoned "no" over an output holding
+# zero failures, and the affected lane went looking for a defect in its own work.
+# The LAST lock lines are heartbeats with no acquire after them: the step is still queued when the
+# run ends, so its wait is known only to the last heartbeat (waitPartial, a lower bound) — and the
+# run itself never verified anything at all.
+if git grep -qI VERIFYWAIT -- . 2>/dev/null; then
+  echo "[suite-lock] e2e-clean-review.sh acquired after 1s (pid 5101)"
+  echo "PASS  the one chain step that got in before the machine got busy"
+  echo "ALL PASS"
+  echo "[suite-lock] e2e-security.sh waiting 0s for /tmp/fleet-e2e.lock — held by live pid 5100 (up 07:41): /bin/sh ./e2e-isolated.sh"
+  echo "[suite-lock] e2e-security.sh waiting 2s for /tmp/fleet-e2e.lock — held by live pid 5100 (up 07:43): /bin/sh ./e2e-isolated.sh"
+  sleep 30 </dev/null >/dev/null 2>&1
+  echo "verify OK: the wait stand-in was never meant to reach this line"
   exit 0
 fi
 # The shape a REAL suite has, and the one the old tail-slice could not survive: hundreds of
@@ -322,6 +337,10 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # fakeverify path in this run is a git-grep and a few echoes, tens of milliseconds, so the margin
 # to a false timeout is ~100x — while 5000, the server's own floor, would buy 8 s of suite time
 # for a thinner one. e2e/merge.ts reads it back off process.env rather than restating the number.
+# FLEET_VERIFY_WAIT_MS=5000 does the same for the OTHER budget, and the gap between the two is what
+# makes the pair separable: the VERIFYWAIT fixture credits 1 s of reported wait and then queues
+# forever, so its kill falls at ~4 s — unambiguously the wait clock, with 4 s of load slack before
+# it could be confused with the 8 s work clock. Both numbers are read back off process.env there.
 # FLEET_AUTOS_TICK_MS / FLEET_DISPATCH_TICK_MS: the production 5 s / 8 s scheduler intervals are a
 # floor under every check that proves a NON-event (no auto fires while the kill-switch is off; the
 # dispatcher leaves a pending row alone) — those cannot poll, they must out-wait a full tick, and
@@ -329,7 +348,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # nothing is due, and the analyst is off here (FLEET_ANALYSIS_MS=0), so the git read inside
 # tickDispatch is not on this path either. e2e/harness.ts reads both back off process.env and
 # sizes the windows from them — same one-string discipline as FLEET_VERIFY_TIMEOUT_MS above.
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

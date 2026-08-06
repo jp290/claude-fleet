@@ -29,7 +29,11 @@ explicitly relative to it. This doc deliberately does not touch `gate-coverage.m
    a real land was stopped with `ok:false` over an output holding zero FAIL lines, ~255 s of whose
    300 s budget was spent queueing behind another suite (`suite-contention.md` §8). `runVerify` now
    records `ok:null` + `timedOut`, so `verified:null` reaches the ledger, and the record carries
-   `ms`/`waitMs` so the queueing is separable from the work.
+   `ms`/`waitMs` so the queueing is separable from the work. **Extended 2026-08-07:** that fix made
+   the wait legible but still charged it to the gate's budget. The budget is now two —
+   `FLEET_VERIFY_TIMEOUT_MS` for work, `FLEET_VERIFY_WAIT_MS` for queueing — and a run killed while
+   it was still queued records `ok:null` + `waitedOut`, a *third* non-measurement that says nothing
+   about the tree at all, not even "slow". `suite-contention.md` §8 has the table.
 > **Items 3 and 5 below are FIXED as of the 2026-07-28 gate** (§7/§8 carry the detail; this
 > ranking predates them): the gate now runs `e2e-clean-review` + `e2e-security` +
 > `e2e-claude-gate` — live land-path coverage — and its `tsc` list typechecks every standalone
@@ -219,6 +223,12 @@ And one finding about the gate **as it stands today**, which raising the content
 > chain must take the machine-wide suite mutex first, so it silently contains an unbounded wait
 > (~255 s of 300 s in that run). A timeout is now `ok:null` + `timedOut`, the record carries
 > `ms`/`waitMs`, and `e2e-stage.sh` says out loud who it is waiting for. `suite-contention.md` §8.
+>
+> **And the headroom arithmetic above is obsolete as of 2026-08-07, not merely corrected.** "120 s
+> against a measured 45–48 s gate (~2.5×)" was never a ratio between two comparable things, because
+> the numerator contained an unbounded queue. The wall clock is now split: the work budget is
+> charged only for verifying, so the ratio finally means what this section assumed it meant, and
+> the queue has a budget and a name of its own (`waitedOut`).
 
 **Verdict:** the full suite as an unconditional synchronous gate is affordable in wall-clock terms
 only if you accept ~6.4 min per clean land, ~19 min on the repair path, multiplied by however many

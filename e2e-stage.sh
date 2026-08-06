@@ -54,6 +54,11 @@
 # — including `after 0s`, so that the ABSENCE of the acquire line means "this command does not
 # report waits" rather than "it did not wait". server.ts's runVerify parses exactly that line
 # (SUITE_LOCK_RE) to split the run into work and wait; e2e/pins.ts holds the two sides together.
+# Since 2026-08-07 these lines are not only recorded, they are ACTED ON, and while the run is still
+# alive: runVerify streams this stdout and moves its clock between two budgets on them — queueing
+# spends FLEET_VERIFY_WAIT_MS, verifying spends FLEET_VERIFY_TIMEOUT_MS, and running out of each is
+# a differently named non-answer (`waitedOut` vs `timedOut`, never `ok:false`). So a format change
+# here is no longer merely a lost measurement: it puts a land's clock on the wrong budget.
 #
 # The three states carry the SAME vocabulary the server's suiteLockView() projects onto the board
 # (held · stale · parked, server.ts GateLockState), because they are the same three facts and a

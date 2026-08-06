@@ -232,6 +232,24 @@ Three changes, all narrow:
    format in `e2e/pins.ts`). A command that prints no such line gets no `waitMs` at all — "does not
    report" must not be recorded as "waited zero".
 
+**And the consequence, 2026-08-07.** The three changes above made the wait *legible* and left it
+*charged*: `runVerify` parsed the split out of the finished log, but its clock still started at
+`Bun.spawn` and ran straight through the queueing, so a land that never got in front of the mutex
+was still killed on a budget it had not spent. The budget is now two budgets, and the clock moves
+between them on the same `[suite-lock]` lines — read **live**, off a streamed stdout, because an
+acquire line parsed after the process is dead cannot stop it from being killed:
+
+| | budget | ran out while | records |
+|---|---|---|---|
+| work | `FLEET_VERIFY_TIMEOUT_MS` (live 300 000) | verifying | `ok:null` + `timedOut` |
+| wait | `FLEET_VERIFY_WAIT_MS` (live 900 000) | queued behind the mutex | `ok:null` + `waitedOut` |
+
+Never both, never `ok:false`, and both inside the never-auto-land group by construction. The work
+budget is *credited* the queueing the chain reported, capped at the wait budget — so a gate gets its
+full budget regardless of who else was on the machine, and a run still cannot outlast the sum of the
+two. The two kills are deliberately not worded alike anywhere the owner reads them: a timeout at
+least looked at the tree, a wait-out never did. `e2e/merge.ts` (C2) and (C3) hold the pair apart.
+
 **The orphan, found while reconstructing the above and NOT fixed here.** `p.kill()` SIGTERMs the
 `sh -c` that fronts the chain; the suite it had already started keeps running — `security` wrote
 trail rows for ~17 s past the kill, and it holds the mutex until its own EXIT trap fires. Two

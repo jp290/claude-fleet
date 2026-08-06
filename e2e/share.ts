@@ -80,6 +80,11 @@ export async function run(ctx: Ctx): Promise<void> {
   check("share brief readable with share cookie", shBrief.ok && typeof shBriefJ.branch === "string"
     && Array.isArray(shBriefJ.commits) && Array.isArray(shBriefJ.files), JSON.stringify(shBriefJ).slice(0, 100));
   check("share brief hides local paths (no worktree field)", !("worktree" in shBriefJ));
+  // §F4 gave the owner's board a SECOND commit list: the base branch's recent history. A guest is
+  // shared into one session, so that list is not theirs — and it must be dropped from the payload,
+  // not merely left unrendered, because a guest can call this route directly.
+  check("share brief withholds the base branch's history (repoCommits is owner-only)",
+    !("repoCommits" in shBriefJ), JSON.stringify(shBriefJ).slice(0, 120));
   check("share brief without cookie 401", (await fetch(BASE + `/s/${shInt.id}/brief`)).status === 401);
   check("share cookie scoped to its own share only", (await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shICookie } })).status === 401);
 

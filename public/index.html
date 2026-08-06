@@ -837,6 +837,18 @@
   .bstate { color: #aaa; line-height: 1.5; }
   .bstate .editing { color: #e0af68; } .bstate .ready { color: #9ece6a; }
   .bbranch { color: #7aa2f7; word-break: break-all; }
+  /* the commit the tree sits on — monospace-flavoured and click-to-copy, so it reads as the
+     handle you paste into a terminal rather than as prose */
+  .bhead { color: #7a8ba3; cursor: pointer; border-bottom: 1px dotted #3a4454; }
+  .bhead:hover { color: #b0c4de; }
+  /* the land actions live inside the TO LAND section: a plain group, no divider of its own —
+     the merge note below carries its own border where a real decision is pending */
+  .blandacts { margin-top: 2px; }
+  /* "more ▸" — the fold in front of the advisory AGENTS group (closed on every load) */
+  .bmore { display: block; width: 100%; text-align: left; margin: 0; padding: 5px 0;
+    border: none; background: none; color: #777; font-family: inherit; font-size: 10px;
+    letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+  .bmore:hover { color: #bbb; }
   /* a lifecycle status line: amber = uncommitted, green(ready) = something to land */
   .bnote { color: #8a8a8a; line-height: 1.5; margin-top: 4px; }
   .bnote.ready { color: #9ece6a; }

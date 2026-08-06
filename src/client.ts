@@ -675,13 +675,20 @@ let layout = 1;
 // git facts fetched fresh from /brief per render, and the prompt outline derived from
 // the SAME transcript feed the conversation view renders. No state of its own to drift.
 interface BriefCommit { hash: string; ts: number; subject: string }
-interface BriefInfo { branch: string | null; worktree: WorktreeInfo | null; sessionStart: number | null;
+interface BriefInfo { branch: string | null; head: string | null; worktree: WorktreeInfo | null;
+  sessionStart: number | null;
   uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
-  commits: BriefCommit[]; laneScoped: boolean; laneBase: string | null; ahead: number; behind: number;
-  gitOp?: boolean }
+  commits: BriefCommit[]; repoCommits: BriefCommit[]; laneScoped: boolean; laneBase: string | null;
+  ahead: number; behind: number; gitOp?: boolean }
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
+// the AGENTS group sits behind a "more ▸" disclosure, folded away by default (owner call
+// 2026-08-06): the advisory summary/review are the least-used part of the board and were
+// pushing the git story down. Deliberately NOT persisted — "folded by default" means every
+// page load starts folded — but it IS module state, so the board's 3s re-render cannot
+// snap it shut while you are reading a finding.
+let agentsOpen = false;
 // per-slot outline cursor, incremental like pollChat: full fetch once, then only new entries
 const outline = new Map<number, { total: number; source: string | null; prompts: string[] }>();
 // ✨ agent summary (BACKLOG #14 Phase 2): result of the server's short-lived
@@ -1787,11 +1794,13 @@ async function renderBoard() {
     const mg = mgRes?.ok ? ((await mgRes.json()) as MergeState) : null;
     if (mg?.running) mergeWatch.add(slot);
     const nodes: HTMLElement[] = [];
-    // the right board tells ONE story — the lane lifecycle: IDENTITY → WORK → LAND →
-    // AGENTS → LANES → OUTLINE. Every function of the old flat list is kept, only regrouped.
-    // GUEST sits between LANES and OUTLINE and is the one section that is NOT about this lane:
-    // it is machine-level, it only exists when FLEET_GUEST_CMD is configured, and it is placed
-    // there so an emergency control never ends up below a long prompt list.
+    // the right board tells ONE story, in the owner's order (§F4, 2026-08-06): IDENTITY →
+    // TO LAND → COMMITS → FILES → LANES → GUEST → AGENTS → OUTLINE. It runs from "what is
+    // pending" through "what is already done" to "what else exists" — so the freshest thing
+    // is always at the top and the advisory agents, folded, are at the bottom. Every function
+    // of the old flat list is kept, only regrouped. GUEST is the one section NOT about this
+    // lane: machine-level, present only when FLEET_GUEST_CMD is configured, and placed above
+    // the prompt list so an emergency control never ends up below dozens of rows.
 
     // 0 — GATE: machine-level, above the lane story on the owner's call (2026-08-04) because it
     // answers "can anything verify right now" before any question about THIS lane is worth asking.
@@ -1811,6 +1820,16 @@ async function renderBoard() {
     if (brief?.branch) {
       const b = el("div", "bstate");
       b.appendChild(el("span", "bbranch", brief.branch));
+      // the commit the tree actually sits on. A branch name says WHICH lane, not WHERE it is —
+      // and this is the one number you paste into a terminal to check anything by hand.
+      if (brief.head) {
+        b.appendChild(document.createTextNode(" · "));
+        const h = el("span", "bhead", brief.head);
+        h.title = "git HEAD — click to copy";
+        const sha = brief.head;
+        h.onclick = () => { copyText(sha); h.textContent = "copied"; setTimeout(() => { h.textContent = sha; }, 1200); };
+        b.appendChild(h);
+      }
       b.appendChild(document.createTextNode(brief.worktree ? " · fleet lane" : " · repo session"));
       // live working/idle state — the same signal as the sidebar dot, so you can see BEFORE
       // reaching for commit whether the session is mid-run (re-rendered every 3s)
@@ -1879,10 +1898,12 @@ async function renderBoard() {
       const ahead = brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0);
       const behind = brief.laneScoped ? brief.behind : (s.git?.behind ?? 0);
 
-      // 2 — WORK: the heart. Uncommitted state + the SAVE buttons, then this lane's commits
-      // and its committed footprint. The commit action fills the gap land/merge leave open.
+      // 2 — TO LAND: everything between "written" and "in main" — the uncommitted tree, the SAVE
+      // button, and (on a lane) the land action itself. Split out of the old WORK section on the
+      // owner's order (§F4, briefs/ui-next-level-2026-08-06.md): what is still PENDING comes
+      // before the history of what is already done, and commits/files below are that history.
       const work = el("div", "bsec");
-      work.appendChild(el("h3", "", "work"));
+      work.appendChild(el("h3", "", brief.worktree ? "to land" : "work"));
       // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges
       // commit + land here — surface it as an explicit, fixable state, not a silent refusal
       if (brief.gitOp) {
@@ -1973,47 +1994,11 @@ async function renderBoard() {
       }
       if (behind && brief.laneScoped)
         work.appendChild(el("div", "bnote", `↓${behind} behind ${brief.laneBase ?? "main"}`));
-      // this lane's commits vs its base (or the session's commits for a non-lane)
-      work.appendChild(el("div", "bsubhead", brief.laneScoped ? `commits on this lane (vs ${brief.laneBase ?? "main"})`
-        : brief.sessionStart ? "commits this session" : "recent commits"));
-      if (!brief.commits.length) work.appendChild(el("div", "bempty",
-        brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
-      for (const cm of brief.commits) {
-        const row = el("div", "brow");
-        row.appendChild(el("span", "bhash", cm.hash));
-        const sub = el("span", "bsub", cm.subject);
-        sub.title = cm.subject;
-        row.appendChild(sub);
-        work.appendChild(row);
-      }
-      // the committed footprint — what this lane/session changes vs its base
-      if (brief.files.length) {
-        work.appendChild(el("div", "bsubhead", brief.laneScoped ? `files changed vs ${brief.laneBase ?? "main"}`
-          : brief.sessionStart ? "changed this session" : "changed files"));
-        if (brief.shortstat) work.appendChild(el("div", "bstate", brief.shortstat));
-        for (const f of brief.files.slice(0, 30)) {
-          const row = el("div", "bfile");
-          row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
-          row.appendChild(document.createTextNode(f.slice(3)));
-          // every row here used to open the WHOLE working diff, whichever row you clicked — the
-          // card listed thirty files and answered the same way for all of them. It now opens the
-          // review window ON the file you clicked. `f` is porcelain ("M  path"), so the path
-          // starts at column 3.
-          const path = f.slice(3);
-          row.title = `${f} — click to see what changed in this file`;
-          row.onclick = () => void openReview(slot, "working", { k: "file", path });
-          work.appendChild(row);
-        }
-        if (brief.files.length > 30) work.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
-      }
-      nodes.push(work);
-
-      // 3 — LAND: the lane's endgame (lanes only). ± view diff + ONE land action whose label
-      // carries the auto-vs-review-needed distinction as text. doLand tries the direct /land
-      // path, then falls back to the /merge agent — the UI is collapsed to one control.
+      // the lane's endgame, in the same section because it is the same subject: ONE land action
+      // whose label carries the auto-vs-review-needed distinction as text. doLand tries the direct
+      // /land path, then falls back to the /merge agent — the UI is collapsed to one control.
       if (brief.worktree) {
-        const land = el("div", "bsec");
-        land.appendChild(el("h3", "", "land"));
+        const land = el("div", "blandacts");
         const l = !mg?.running && mg?.last && mg.last.branch === brief.worktree.branch ? mg.last : null;
         // an INTERRUPTED run that had already handed the conflicts to the agent needs the same
         // eye as a settled "resolved" verdict: the resolutions may be committed in the lane and
@@ -2088,145 +2073,57 @@ async function renderBoard() {
           vn.appendChild(verifyBadge(l.verify));
           land.appendChild(vn);
         }
-        nodes.push(land);
+        work.appendChild(land);
       }
+      nodes.push(work);
 
-      // 4 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review.
-      // recover a server-cached summary once per slot (GET never spawns the agent)
-      if (!sumCache.has(slot)) {
-        sumCache.set(slot, {});
-        void api(`/api/slots/${slot}/summary`).then(async (r) => {
-          if (!r.ok) return;
-          const j = (await r.json()) as SummaryInfo;
-          if (j.summary) { sumCache.set(slot, j); void renderBoard(); }
-        }).catch(() => { /* transient — the button still works */ });
-      }
-      // same one-shot cache recovery for the review (GET is a pure cache lookup server-side)
-      if (!revCache.has(slot)) {
-        revCache.set(slot, {});
-        void api(`/api/slots/${slot}/review`).then(async (r) => {
-          if (!r.ok) return;
-          const j = (await r.json()) as ReviewInfo;
-          if (j.findings) { revCache.set(slot, j); void renderBoard(); }
-        }).catch(() => { /* transient — the button still works */ });
-      }
-      // a result is pinned to the git state it was computed on — say so when that state moved on
-      const agedOut = (head?: string | null, dirty?: number) => {
-        const c0 = brief.commits[0];
-        return (!!head && !!c0 && !head.startsWith(c0.hash)) || dirty !== brief.uncommitted;
+      // 3 — COMMITS: the history, and deliberately TWO lists ("vllt beides", owner §F4) — what
+      // this lane/session added, and what the project got around it. The second list is empty
+      // whenever it would merely repeat the first (server: repoRecentCommits).
+      const commitRow = (cm: BriefCommit) => {
+        const row = el("div", "brow");
+        row.appendChild(el("span", "bhash", cm.hash));
+        const sub = el("span", "bsub", cm.subject);
+        sub.title = cm.subject;
+        row.appendChild(sub);
+        return row;
       };
-      const asec = el("div", "bsec");
-      asec.appendChild(el("h3", "", "agents"));
-      asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
-      const sum = sumCache.get(slot);
-      const sbtn = el("button", "bbtn accent",
-        sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "📋 re-summarize" : "📋 summarize") as HTMLButtonElement;
-      sbtn.disabled = sumBusy.has(slot);
-      sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
-      sbtn.onclick = async () => {
-        if (sumBusy.has(slot)) return;
-        sumBusy.add(slot);
-        sbtn.disabled = true;
-        sbtn.textContent = "… summarizing";
-        try {
-          const r = await post(`/api/slots/${slot}/summary`, {});
-          const j = (await r.json().catch(() => ({}))) as SummaryInfo;
-          sumCache.set(slot, r.ok ? j : { error: j.error ?? "summarizer failed" });
-        } catch {
-          sumCache.set(slot, { error: "summarizer failed — network error" });
-        } finally {
-          sumBusy.delete(slot);
-          void renderBoard();
-        }
-      };
-      asec.appendChild(sbtn);
-      if (sum?.summary) {
-        // visible aging: the summary is pinned to the git state it was computed on
-        if (agedOut(sum.head, sum.dirty))
-          asec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
-        asec.appendChild(el("div", "bsum", sum.summary));
-        if (sum.openThreads?.length) {
-          asec.appendChild(el("div", "bsumhead", "open threads"));
-          for (const t of sum.openThreads) asec.appendChild(el("div", "bsumrow", `· ${t}`));
-        }
-        if (sum.verification) asec.appendChild(el("div", "bsumver", `verified: ${sum.verification}`));
-        if (sum.model && sum.at)
-          asec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
-      } else if (sum?.error) {
-        asec.appendChild(el("div", "bsumerr", sum.error));
+      const csec = el("div", "bsec");
+      csec.appendChild(el("h3", "", "commits"));
+      csec.appendChild(el("div", "bsubhead", brief.laneScoped ? `on this lane (vs ${brief.laneBase ?? "main"})`
+        : brief.sessionStart ? "this session" : "recent"));
+      if (!brief.commits.length) csec.appendChild(el("div", "bempty",
+        brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
+      for (const cm of brief.commits) csec.appendChild(commitRow(cm));
+      if (brief.repoCommits.length) {
+        csec.appendChild(el("div", "bsubhead", brief.laneScoped
+          ? `already in ${brief.laneBase ?? "main"}` : "earlier in this repo"));
+        for (const cm of brief.repoCommits) csec.appendChild(commitRow(cm));
       }
-      // 🔍 review — a SECOND agent beside the summarizer, over this slot's code changes.
-      // Advisory only: it never gates or alters a land, a merge or a file.
-      const rev = revCache.get(slot);
-      const rbtn = el("button", "bbtn accent",
-        revBusy.has(slot) ? "… reviewing" : rev?.findings ? "🔍 re-review" : "🔍 review") as HTMLButtonElement;
-      rbtn.disabled = revBusy.has(slot);
-      rbtn.title = "run a short-lived read-only agent over this session's own code changes — one model call, advisory only";
-      rbtn.onclick = async () => {
-        if (revBusy.has(slot)) return;
-        revBusy.add(slot);
-        rbtn.disabled = true;
-        rbtn.textContent = "… reviewing";
-        try {
-          const r = await post(`/api/slots/${slot}/review`, {});
-          const j = (await r.json().catch(() => ({}))) as ReviewInfo;
-          revCache.set(slot, r.ok ? j : { error: j.error ?? "reviewer failed" });
-        } catch {
-          revCache.set(slot, { error: "reviewer failed — network error" });
-        } finally {
-          revBusy.delete(slot);
-          void renderBoard();
+      nodes.push(csec);
+
+      // 4 — FILES: the committed footprint — what this lane/session changes vs its base.
+      if (brief.files.length) {
+        const fsec = el("div", "bsec");
+        fsec.appendChild(el("h3", "", brief.laneScoped ? `files changed vs ${brief.laneBase ?? "main"}`
+          : brief.sessionStart ? "files changed this session" : "changed files"));
+        if (brief.shortstat) fsec.appendChild(el("div", "bstate", brief.shortstat));
+        for (const f of brief.files.slice(0, 30)) {
+          const row = el("div", "bfile");
+          row.appendChild(el("span", "bfst", f.slice(0, 2).trim() || "·"));
+          row.appendChild(document.createTextNode(f.slice(3)));
+          // every row here used to open the WHOLE working diff, whichever row you clicked — the
+          // card listed thirty files and answered the same way for all of them. It now opens the
+          // review window ON the file you clicked. `f` is porcelain ("M  path"), so the path
+          // starts at column 3.
+          const path = f.slice(3);
+          row.title = `${f} — click to see what changed in this file`;
+          row.onclick = () => void openReview(slot, "working", { k: "file", path });
+          fsec.appendChild(row);
         }
-      };
-      asec.appendChild(rbtn);
-      if (rev?.findings) {
-        if (agedOut(rev.head, rev.dirty))
-          asec.appendChild(el("div", "bstale", "⚠ reviewed an older state — re-run to refresh"));
-        if (!rev.findings.length) {
-          asec.appendChild(el("div", "bsumrow", "· no findings in the reviewed changes"));
-        } else {
-          asec.appendChild(el("div", "bsumhead", `findings — ${rev.findings.length}, worst first`));
-          for (const f of rev.findings) {
-            const row = el("div", `bfind ${f.impact}`);
-            const hd = el("div", "bfindhd");
-            hd.appendChild(el("span", "bfindimp", f.impact));
-            hd.appendChild(el("span", "bfindt", f.title || "(untitled)"));
-            row.appendChild(hd);
-            row.appendChild(el("div", "bfindcite", `${f.file}:${f.line} · ${f.basis}`));
-            if (f.detail) row.appendChild(el("div", "bfinddet", f.detail));
-            if (f.cost) row.appendChild(el("div", "bfindcost", `cost: ${f.cost}`));
-            asec.appendChild(row);
-          }
-        }
-        if (rev.notes) asec.appendChild(el("div", "bsumver", `not checked: ${rev.notes}`));
-        if (rev.scope) asec.appendChild(el("div", "bsummeta", rev.scope));
-        if (rev.model && rev.at)
-          asec.appendChild(el("div", "bsummeta", `${rev.model} · ${new Date(rev.at).toLocaleTimeString()}`));
-        // was this review worth anything? One tap, owner-only, joined by patchId (content identity,
-        // so the label survives the land-path rebase). A review with no patchId gets no buttons —
-        // there is no honest key to file the label under, and a guessed one is worse than none.
-        if (rev.patchId) {
-          const rref = rev.patchId;
-          const rcur = dispoOf("review3", rref);
-          const rlab = el("div", "ocdispo-row");
-          rlab.appendChild(el("span", "ocdispo-state" + (rcur ? ` is-${rcur}` : " is-none"),
-            rcur ? `dein Urteil: ${DISPO_WORD_UI[rcur]}` : "unbewertet"));
-          for (const [verdict, word] of [["accepted", "nützlich"], ["wrong", "falsch"]] as [DispositionVerdict, string][]) {
-            const b = el("button", `ocdispo-btn${rcur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
-            b.title = `label this review — records an owner \`${verdict}\` disposition on the rail`;
-            b.onclick = async () => {
-              b.disabled = true;
-              if (await labelDisposition("review3", rref, verdict)) void renderBoard();
-              else b.disabled = false;
-            };
-            rlab.appendChild(b);
-          }
-          asec.appendChild(rlab);
-        }
-      } else if (rev?.error) {
-        asec.appendChild(el("div", "bsumerr", rev.error));
+        if (brief.files.length > 30) fsec.appendChild(el("div", "bempty", `… ${brief.files.length - 30} more`));
+        nodes.push(fsec);
       }
-      nodes.push(asec);
 
       // 5 — LANES: the repo's lane map — every open worktree, who holds it, its state, and
       // the orphans (killed slot, worktree still on disk) with reattach/remove/discard +
@@ -2383,7 +2280,157 @@ async function renderBoard() {
     const gsec = guestSection();
     if (gsec) nodes.push(gsec);
 
-    // 7 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
+    if (brief) {
+      // 7 — AGENTS: advisory, read-only. ✨ summarize + 🔍 review. Last of the lane story and
+      // folded behind "more ▸", closed on every load (owner call §F4): the git story above is
+      // what the board is for, and these two were sitting in the middle of it. NOTHING is
+      // removed — the ③ auto-review keeps writing the outcome ledger either way; this decides
+      // only what the board shows unasked.
+      const asec = el("div", "bsec");
+      const more = el("button", "bmore",
+        `${agentsOpen ? "▾" : "▸"} more — agents (summary · review)`) as HTMLButtonElement;
+      more.title = "two advisory, read-only agents over this session: a summary and a code review";
+      more.onclick = () => { agentsOpen = !agentsOpen; void renderBoard(); };
+      asec.appendChild(more);
+      if (agentsOpen) {
+        // both cache reads happen on OPEN, not on render: a folded group must not spend two
+        // requests per slot on results nobody is looking at (GET never spawns the agent)
+        if (!sumCache.has(slot)) {
+          sumCache.set(slot, {});
+          void api(`/api/slots/${slot}/summary`).then(async (r) => {
+            if (!r.ok) return;
+            const j = (await r.json()) as SummaryInfo;
+            if (j.summary) { sumCache.set(slot, j); void renderBoard(); }
+          }).catch(() => { /* transient — the button still works */ });
+        }
+        // same one-shot cache recovery for the review (GET is a pure cache lookup server-side)
+        if (!revCache.has(slot)) {
+          revCache.set(slot, {});
+          void api(`/api/slots/${slot}/review`).then(async (r) => {
+            if (!r.ok) return;
+            const j = (await r.json()) as ReviewInfo;
+            if (j.findings) { revCache.set(slot, j); void renderBoard(); }
+          }).catch(() => { /* transient — the button still works */ });
+        }
+        // a result is pinned to the git state it was computed on — say so when that state moved on
+        const agedOut = (head?: string | null, dirty?: number) => {
+          const c0 = brief.commits[0];
+          return (!!head && !!c0 && !head.startsWith(c0.hash)) || dirty !== brief.uncommitted;
+        };
+        asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
+        const sum = sumCache.get(slot);
+        const sbtn = el("button", "bbtn accent",
+          sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "📋 re-summarize" : "📋 summarize") as HTMLButtonElement;
+        sbtn.disabled = sumBusy.has(slot);
+        sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
+        sbtn.onclick = async () => {
+          if (sumBusy.has(slot)) return;
+          sumBusy.add(slot);
+          sbtn.disabled = true;
+          sbtn.textContent = "… summarizing";
+          try {
+            const r = await post(`/api/slots/${slot}/summary`, {});
+            const j = (await r.json().catch(() => ({}))) as SummaryInfo;
+            sumCache.set(slot, r.ok ? j : { error: j.error ?? "summarizer failed" });
+          } catch {
+            sumCache.set(slot, { error: "summarizer failed — network error" });
+          } finally {
+            sumBusy.delete(slot);
+            void renderBoard();
+          }
+        };
+        asec.appendChild(sbtn);
+        if (sum?.summary) {
+          // visible aging: the summary is pinned to the git state it was computed on
+          if (agedOut(sum.head, sum.dirty))
+            asec.appendChild(el("div", "bstale", "⚠ computed for an older state — re-run to refresh"));
+          asec.appendChild(el("div", "bsum", sum.summary));
+          if (sum.openThreads?.length) {
+            asec.appendChild(el("div", "bsumhead", "open threads"));
+            for (const t of sum.openThreads) asec.appendChild(el("div", "bsumrow", `· ${t}`));
+          }
+          if (sum.verification) asec.appendChild(el("div", "bsumver", `verified: ${sum.verification}`));
+          if (sum.model && sum.at)
+            asec.appendChild(el("div", "bsummeta", `${sum.model} · ${new Date(sum.at).toLocaleTimeString()}`));
+        } else if (sum?.error) {
+          asec.appendChild(el("div", "bsumerr", sum.error));
+        }
+        // 🔍 review — a SECOND agent beside the summarizer, over this slot's code changes.
+        // Advisory only: it never gates or alters a land, a merge or a file.
+        const rev = revCache.get(slot);
+        const rbtn = el("button", "bbtn accent",
+          revBusy.has(slot) ? "… reviewing" : rev?.findings ? "🔍 re-review" : "🔍 review") as HTMLButtonElement;
+        rbtn.disabled = revBusy.has(slot);
+        rbtn.title = "run a short-lived read-only agent over this session's own code changes — one model call, advisory only";
+        rbtn.onclick = async () => {
+          if (revBusy.has(slot)) return;
+          revBusy.add(slot);
+          rbtn.disabled = true;
+          rbtn.textContent = "… reviewing";
+          try {
+            const r = await post(`/api/slots/${slot}/review`, {});
+            const j = (await r.json().catch(() => ({}))) as ReviewInfo;
+            revCache.set(slot, r.ok ? j : { error: j.error ?? "reviewer failed" });
+          } catch {
+            revCache.set(slot, { error: "reviewer failed — network error" });
+          } finally {
+            revBusy.delete(slot);
+            void renderBoard();
+          }
+        };
+        asec.appendChild(rbtn);
+        if (rev?.findings) {
+          if (agedOut(rev.head, rev.dirty))
+            asec.appendChild(el("div", "bstale", "⚠ reviewed an older state — re-run to refresh"));
+          if (!rev.findings.length) {
+            asec.appendChild(el("div", "bsumrow", "· no findings in the reviewed changes"));
+          } else {
+            asec.appendChild(el("div", "bsumhead", `findings — ${rev.findings.length}, worst first`));
+            for (const f of rev.findings) {
+              const row = el("div", `bfind ${f.impact}`);
+              const hd = el("div", "bfindhd");
+              hd.appendChild(el("span", "bfindimp", f.impact));
+              hd.appendChild(el("span", "bfindt", f.title || "(untitled)"));
+              row.appendChild(hd);
+              row.appendChild(el("div", "bfindcite", `${f.file}:${f.line} · ${f.basis}`));
+              if (f.detail) row.appendChild(el("div", "bfinddet", f.detail));
+              if (f.cost) row.appendChild(el("div", "bfindcost", `cost: ${f.cost}`));
+              asec.appendChild(row);
+            }
+          }
+          if (rev.notes) asec.appendChild(el("div", "bsumver", `not checked: ${rev.notes}`));
+          if (rev.scope) asec.appendChild(el("div", "bsummeta", rev.scope));
+          if (rev.model && rev.at)
+            asec.appendChild(el("div", "bsummeta", `${rev.model} · ${new Date(rev.at).toLocaleTimeString()}`));
+          // was this review worth anything? One tap, owner-only, joined by patchId (content identity,
+          // so the label survives the land-path rebase). A review with no patchId gets no buttons —
+          // there is no honest key to file the label under, and a guessed one is worse than none.
+          if (rev.patchId) {
+            const rref = rev.patchId;
+            const rcur = dispoOf("review3", rref);
+            const rlab = el("div", "ocdispo-row");
+            rlab.appendChild(el("span", "ocdispo-state" + (rcur ? ` is-${rcur}` : " is-none"),
+              rcur ? `dein Urteil: ${DISPO_WORD_UI[rcur]}` : "unbewertet"));
+            for (const [verdict, word] of [["accepted", "nützlich"], ["wrong", "falsch"]] as [DispositionVerdict, string][]) {
+              const b = el("button", `ocdispo-btn${rcur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
+              b.title = `label this review — records an owner \`${verdict}\` disposition on the rail`;
+              b.onclick = async () => {
+                b.disabled = true;
+                if (await labelDisposition("review3", rref, verdict)) void renderBoard();
+                else b.disabled = false;
+              };
+              rlab.appendChild(b);
+            }
+            asec.appendChild(rlab);
+          }
+        } else if (rev?.error) {
+          asec.appendChild(el("div", "bsumerr", rev.error));
+        }
+      }
+      nodes.push(asec);
+    }
+
+    // 8 — OUTLINE: prompt-jump navigation, kept at the bottom (lowest priority)
     const psec = el("div", "bsec");
     psec.appendChild(el("h3", "", `your prompts (${prompts.length})`));
     if (!prompts.length) psec.appendChild(el("div", "bempty", "no prompts in the transcript yet"));

@@ -1069,10 +1069,20 @@ async function diffPayload(cwd: string, base: string | null): Promise<{ branch: 
 // the deterministic session overview — recent commits, changed files, uncommitted
 // summary — shared by the owner sideboard and the guest info tab. Fresh git output per
 // request (never cached) so neither view can drift from reality. null = not a git repo.
-interface BriefPayload { branch: string | null; sessionStart: number | null;
+interface BriefPayload { branch: string | null; head: string | null; sessionStart: number | null;
   uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
-  commits: CommitRow[]; laneScoped: boolean; laneBase: string | null;
+  commits: CommitRow[]; repoCommits: CommitRow[]; laneScoped: boolean; laneBase: string | null;
   ahead: number; behind: number; gitOp: boolean }
+// the history the session is NOT scoped to — "what else happened in this project lately".
+// A lane's own commits are base..HEAD, so the complement is the BASE branch's recent history;
+// a time-scoped session's complement is the checkout's own recent history. When the primary
+// list already IS the repo history (a non-lane session with no known start reads `git log`
+// straight), this is deliberately empty: a second identical list is noise, not information.
+async function repoRecentCommits(cwd: string, ref: string | null): Promise<CommitRow[]> {
+  if (!ref) return [];
+  const lg = await git(cwd, "log", "--no-color", ref, "--format=%h%x09%ct%x09%s", "-10");
+  return lg.code === 0 ? parseCommitLog(lg.out) : [];
+}
 async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   const st = await statusLines(s.cwd!); // column-preserving — see statusLines
   if (st.code !== 0) return null;
@@ -1081,6 +1091,10 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
   // instead of a cryptic refusal the owner only meets when they next click commit/land
   const gitOp = await gitOpInProgress(s.cwd!);
   const br = await git(s.cwd!, "rev-parse", "--abbrev-ref", "HEAD");
+  // the commit the working tree actually sits on. The branch name alone does not say WHERE a
+  // lane is — two lanes off the same base read identically until one of them commits.
+  const hd = await git(s.cwd!, "rev-parse", "--short", "HEAD");
+  const head = hd.code === 0 && hd.out ? hd.out : null; // null on an unborn branch (no commit yet)
   // the concrete uncommitted work in this worktree — staged/unstaged/untracked, porcelain
   // codes intact so the client shows exactly what git sees. Shown for lanes and non-lanes.
   const uncommittedFiles = st.lines.slice(0, 200);
@@ -1101,11 +1115,12 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
     const ab = await git(s.cwd!, "rev-list", "--left-right", "--count", `${laneBase}...HEAD`);
     const abm = /^(\d+)\s+(\d+)$/.exec(ab.out); // left = base-only (behind), right = HEAD-only (ahead)
     return {
-      branch, sessionStart: sessionStart(s),
+      branch, head, sessionStart: sessionStart(s),
       uncommitted: uncommittedFiles.length, uncommittedFiles,
       files: sessionFiles(ns.code === 0 ? ns.out : "", "").slice(0, 200), // committed footprint, no untracked
       shortstat: sh.code === 0 ? sh.out : "",
       commits: lg.code === 0 ? parseCommitLog(lg.out) : [],
+      repoCommits: await repoRecentCommits(s.cwd!, laneBase), // what is already in the base branch
       laneScoped: true, laneBase,
       ahead: abm ? Number(abm[2]) : 0, behind: abm ? Number(abm[1]) : 0,
       gitOp,
@@ -1126,11 +1141,13 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
     files = uncommittedFiles.slice(0, 200);
   }
   return {
-    branch, sessionStart: start,
+    branch, head, sessionStart: start,
     uncommitted: uncommittedFiles.length, uncommittedFiles,
     files,
     shortstat: sh.code === 0 ? sh.out : "",
     commits: await sessionCommits(s),
+    // only when `commits` above is time-scoped — without a start it already reads plain `git log`
+    repoCommits: await repoRecentCommits(s.cwd!, start ? "HEAD" : null),
     laneScoped: false, laneBase: null,
     ahead: 0, behind: 0, // non-lane: the client uses the upstream-based gitInfo instead
     gitOp,
@@ -8125,7 +8142,12 @@ Bun.serve<WSData>({
         if (!s.cwd) return json({ error: "session gone" }, 404);
         const p = await briefPayload(s);
         if (!p) return json({ error: "not a git repository" }, 400);
-        return json(p);
+        // repoCommits is the OWNER's board field (§F4's second commit subhead): the base branch's
+        // recent history. A guest is shared into ONE session — handing them main's last ten commit
+        // subjects would widen the share to work they were never shown. Dropped here, not merely
+        // left unrendered: the guest can call this route directly.
+        const { repoCommits: _ownerOnly, ...guestBrief } = p;
+        return json(guestBrief);
       }
       // the guest reader: the conversation as text. A phone can't render a 233-col pty
       // raster readably — but it CAN render the transcript. Guests get a REDUCED cut of

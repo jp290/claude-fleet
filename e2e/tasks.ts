@@ -599,12 +599,12 @@ export async function run(ctx: Ctx): Promise<void> {
   // --- (j) ↻ refine: the brief compiler on the queue (briefs/task-refine.md). Three properties
   // carry the feature and each is pinned below: the compile PROPOSES and never rewrites the row it
   // read, only the owner's confirm mints anything, and every worker failure leaves the row exactly
-  // as it was. Needs its own server env (refine stand-in + an eval stand-in, so the parent can
+  // as it was. Needs its own server env (refine stand-in + an ANALYST stand-in, so the parent can
   // carry a verdict the children must NOT inherit), so this section restarts srv — FLEET_DISPATCH_REPO
   // rides along for the same reason as (h). ---
   {
     interface JRow { id: string; status: string; note?: string; kind?: string; source?: string; repo?: string;
-      eval?: { verdict: string }; refine?: { at: number; unchanged: boolean; count: number } }
+      analysis?: { verdict: string }; refine?: { at: number; unchanged: boolean; count: number } }
     interface JChild { text: string; doneCriterion?: string; verify?: string; files?: string[] }
     interface JFull extends JRow { text: string;
       refine?: JRow["refine"] & { model: string; proposal: { unchanged: boolean; reason?: string; tasks?: JChild[] } } }
@@ -619,19 +619,21 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.write(FAKEREFINE, `#!/bin/sh\ncat >/dev/null\ncat <<'JSON'\n${answer}\nJSON\n`);
       spawnSync("chmod", ["+x", FAKEREFINE]);
     };
-    // an evaluator that parks everything: the parent gets a real verdict, and nothing gets
-    // dispatched while the sweep is briefly on
-    const FAKEEVAL_R = `${ROOT}/fakeeval-refine`;
-    await Bun.write(FAKEEVAL_R, [
+    // an analyst that flags everything: the parent gets a real verdict, which is the whole reason
+    // the "children inherit none" check below can fail at all. Shape and vocabulary are the
+    // analyst's own (`analyses`, verdict ready|needs-you|unknown) — section (h) drives the same
+    // worker, and this section used to speak the retired eval gate's dialect instead.
+    const FAKEANALYST_R = `${ROOT}/fakeanalyst-refine`;
+    await Bun.write(FAKEANALYST_R, [
       "#!/bin/sh",
       "cat | bun -e '",
       "const input = await new Response(Bun.stdin.stream()).text();",
       "const segs = input.split(/^TASK id=/m).slice(1);",
-      "console.log(JSON.stringify({ verdicts: segs.map((s) => ({ id: s.split(/\\s/)[0], verdict: \"review\", reason: \"parked for the refine section\" })) }));",
+      "console.log(JSON.stringify({ analyses: segs.map((s) => ({ id: s.split(/\\s/)[0], verdict: \"needs-you\", blockers: [\"criterion\"], collides: [], reason: \"parked for the refine section\" })) }));",
       "'",
       "",
     ].join("\n"));
-    spawnSync("chmod", ["+x", FAKEEVAL_R]);
+    spawnSync("chmod", ["+x", FAKEANALYST_R]);
     const SPLIT = JSON.stringify({ unchanged: false, tasks: [
       { text: "part one: keep the pane's scrollback", doneCriterion: "10k lines survive a reconnect", verify: "./e2e-isolated.sh", files: ["server.ts"] },
       { text: "part two: colour the output", doneCriterion: "ANSI colour reaches the browser", verify: "./e2e-isolated.sh", files: ["src/client.ts"] },
@@ -639,17 +641,17 @@ export async function run(ctx: Ctx): Promise<void> {
     await fakeRefine(SPLIT);
     const jDispatchRepo = ((await (await get("/api/sessions")).json()) as { dispatch: { repo: string } }).dispatch.repo;
     await restartSrv({ FLEET_DISPATCH_REPO: jDispatchRepo, FLEET_REFINE_CMD: FAKEREFINE,
-      FLEET_EVAL_CMD: FAKEEVAL_R, FLEET_EVAL_MS: "1000" });
+      FLEET_ANALYSIS_CMD: FAKEANALYST_R, FLEET_ANALYSIS_MS: "1000" });
 
     // the parent carries a target repo AND a verdict — both must be observable on the children
-    // afterwards (repo inherited, verdict NOT), which is what makes those two checks non-vacuous
+    // afterwards (repo inherited, verdict NOT), which is what makes those two checks non-vacuous.
+    // No dispatch toggle any more: tickAnalysisSweep runs off FLEET_ANALYSIS_MS alone, and a pending
+    // row is unreachable for tickDispatch by construction now (it selects `queued` only).
     const jT = (await (await post("/api/tasks", { text: "refine parent: two bundled parts and no done-criterion", queue: false, repo: REPO })).json()) as { task: { id: string; repo?: string } };
-    await post("/api/dispatch", { on: true });
-    let jEval: JRow["eval"];
-    for (let i = 0; i < 40 && !jEval; i++) { jEval = (await jRow(jT.task.id))?.eval; if (!jEval) await Bun.sleep(500); }
-    await post("/api/dispatch", { on: false });
-    check("(j) fixture: the parent carries an eval verdict, so \"children inherit none\" can fail",
-      jEval?.verdict === "review", JSON.stringify(jEval ?? null));
+    let jAn: JRow["analysis"];
+    for (let i = 0; i < 40 && !jAn; i++) { jAn = (await jRow(jT.task.id))?.analysis; if (!jAn) await Bun.sleep(500); }
+    check("(j) fixture: the parent carries an analysis verdict, so \"children inherit none\" can fail",
+      jAn?.verdict === "needs-you", JSON.stringify(jAn ?? null));
 
     const jTextBefore = (await jFull(jT.task.id))?.text ?? "";
     const jr = await post(`/api/tasks/${jT.task.id}/refine`, {});
@@ -680,8 +682,8 @@ export async function run(ctx: Ctx): Promise<void> {
       jc.ok && jMinted.length === 2
       && jMinted.every((k) => k.kind === "lane" && k.source === "owner" && k.status === "pending" && k.repo === jT.task.repo),
       `${jc.status} ${JSON.stringify(jMinted)}`);
-    check("(j) the children carry NO eval verdict — a promoted split meets the gate fresh",
-      jMinted.every((k) => k.eval === undefined), JSON.stringify(jMinted.map((k) => k.eval ?? null)));
+    check("(j) the children carry NO analysis verdict — a promoted split meets the analyst fresh",
+      jMinted.every((k) => k.analysis === undefined), JSON.stringify(jMinted.map((k) => k.analysis ?? null)));
     const jKidFull = jMinted[0] ? await jFull(jMinted[0].id) : undefined;
     check("(j) a child's row text is the compiled brief: the request, then files, done and verify",
       (jKidFull?.text ?? "").startsWith("part one: keep the pane's scrollback")

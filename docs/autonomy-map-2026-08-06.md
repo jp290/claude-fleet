@@ -150,6 +150,14 @@ SKIPPED, Feld absent = unkonfiguriert. Ein Timeout ist der vierte Zustand und ha
 liest, verwechselt eine überzogene Uhr mit einem Urteil; und weil das Budget flottenweit gilt,
 trifft die Verwechslung jede Lane, nicht die, die die Suite verlängert hat.
 
+> **ÜBERHOLT — dieser Absatz ist ein Snapshot vom 06.08. und beschreibt Code, den es nicht mehr
+> gibt.** Noch am selben Tag wurde der Timeout zu `ok:null` + `timedOut`; am 07.08. kam das
+> Eigentliche dazu, das hier fehlt: das eine Budget war *wall-clock* und enthielt die Wartezeit am
+> Suite-Mutex. Es sind jetzt zwei (`FLEET_VERIFY_TIMEOUT_MS` für Arbeit,
+> `FLEET_VERIFY_WAIT_MS` für die Schlange), `/api/self/gate` liefert beide, und ein Lauf, der nie
+> drankam, heißt `waitedOut` statt `timedOut`. Das „hat kein Wort" oben gilt also nicht mehr —
+> es sind drei Wörter. `docs/suite-contention.md` §8.
+
 ---
 
 ## §5 Bereich 3 — Kollisionsvermeidung: die Zutat ist nicht da, wo der Brief sie vermutet
@@ -508,7 +516,7 @@ abbricht.**
 | **A. Audit-Event auf `/api/self/drift`** — **gebaut `2ada187`, 2026-08-06; die Messung läuft** (§11.3) | Anteil der Lanes, die ihren Drift *vor* dem letzten Drittel ihrer Lebenszeit prüfen | 20 gelandete Lanes | keins nötig — reine Messung, kein Verhalten ändert sich. Wenn nach 20 Lanes der Anteil <20 % ist, ist die CLAUDE.md-Anweisung als Mechanismus widerlegt und B wird Pflicht statt Option. |
 | **B. Drift-Hinweis in den Gründungsbrief** | dieselbe Quote wie A, nach der Einführung | 20 gelandete Lanes | steigt die Quote nicht um ≥30 Prozentpunkte, ist der Brief nicht der Träger — dann aufhören, nicht nachschärfen. |
 | **C. `otherLanes.files` auf uncommittete Dateien erweitern** (§5.2) | Anzahl der Lane-Paare, für die der Wert vor dem Spawn nichtleer gewesen wäre | 15 Spawns | liefert es in <3 von 15 Fällen etwas, ist Kollisionsvermeidung vor dem Spawn kein reales Problem dieser Flotte und der ganze Bereich 3 wird zurückgestellt. |
-| **D. Timeout als vierter Verify-Zustand** (§4/§9.3) | Anzahl der `verify.ok:false` mit `[verify timed out after …]` im Output | 30 Merge-Läufe | 0 Vorkommen in 30 → der Live-Fall vom 06.08. war ein Einzelfall, der Zustand bleibt ungetrennt (billiger als eine Unterscheidung, die nie greift). |
+| ~~**D. Timeout als vierter Verify-Zustand** (§4/§9.3) | Anzahl der `verify.ok:false` mit `[verify timed out after …]` im Output | 30 Merge-Läufe | 0 Vorkommen in 30 → der Live-Fall vom 06.08. war ein Einzelfall, der Zustand bleibt ungetrennt (billiger als eine Unterscheidung, die nie greift).~~ **ERLEDIGT — `9c1b73c` (2026-08-06), erweitert 2026-08-07.** Die Messgröße dieser Zeile ist seither **nicht mehr erhebbar**: ein Timeout ist kein `verify.ok:false` mehr, also kann die gesuchte Zahl nur noch 0 sein — und 0 hieße hier laut Stop-Kriterium „Einzelfall, ungetrennt lassen", also genau das Gegenteil dessen, was der Baum tut. Am 07.08. kam der fünfte Zustand dazu (`waitedOut`: die Uhr lief ab, während der Gate noch in der Mutex-Schlange stand und den Baum nie ansah). `docs/suite-contention.md` §8. |
 | **E. `DIGEST_TTL_MS` über das Puls-Intervall** (§6.1) | Anteil der Pulse mit `digest != null` | 10 Pulse | steigt er nicht über 50 %, ist die TTL nicht die Ursache und der Worker selbst ist es — dann messen statt drehen. |
 | **F. `stalled`-Instanz-Ledger** (beauftragt, §10) | 10 adjudizierte Instanzen, ≤2 Fehlalarme | siehe `briefs/lane-stalled-fact.md` | **zusätzlich:** jede Zeile trägt die Schwelle UND die Zahl der srv-Neustarts in ihrem Fenster; ohne die zweite Zahl ist die Stichprobe nicht auswertbar (§10.1). |
 | **G. Entscheidungs-Inbox** (Findings-Doc §4) | `resolved / raised` pro Item-Typ | 14 Tage | ein Typ, der nach 14 Tagen unter 30 % `resolved` liegt, fliegt aus der Inbox — er ist ein Archiv, und die Regel des Findings-Docs („kein Item ohne Auflöse-Aktion") gilt auch rückwirkend. |
@@ -536,7 +544,8 @@ wird.** In dieser Reihenfolge:
    Hauptsensor ohne Fehlermeldung leer bleibt.
 
 **Danach — die Sensoren, weil alles Automatische auf ihnen rechnet:** 6.2 (`sinceLastLook`
-nach Repo schlüsseln), 6.3 (`mtime`-Caveat oder Feld entfernen), **D** (Timeout-Zustand).
+nach Repo schlüsseln), 6.3 (`mtime`-Caveat oder Feld entfernen), ~~**D** (Timeout-Zustand)~~
+— **D ist erledigt**, siehe die durchgestrichene Zeile in der Tabelle oben.
 
 **Danach — Prävention, weil sie den Land-Pfad billiger macht:** 9.2 (requeueter Dispatch räumt
 seine Lane ab — das ist ein Leck, kein Feature), dann **C**, dann 5.3 (`files` als Feld am Kind

@@ -220,6 +220,18 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
 }
 
 {
+  // A knob the srv line sets under a name server.ts never reads is not a policy — it is a silent
+  // fallback to the default, the same failure shape as the FLEET_CLEAN_REVIEW typo above and just
+  // as invisible: the land keeps running, on numbers nobody chose. Stated as a rule over the spawn
+  // line's OWN assignments rather than as a list, so a knob added tomorrow is covered tomorrow.
+  const set = [...new Set([...spawnLine.matchAll(/\b(FLEET_[A-Z_0-9]+)=/g)].map((m) => m[1]))].sort();
+  pin("the srv-spawn line sets FLEET_* knobs this rule can check", set.length > 0, `${set.length} knobs`);
+  const unread = set.filter((k) => !new RegExp(`process\\.env\\.${k}\\b`).test(server));
+  pin("every FLEET_* knob the srv-spawn line sets is one server.ts actually reads",
+    unread.length === 0, unread.join(", "));
+}
+
+{
   // the type gate must see every entry file in the tree. It did not: fleet-e2e-postland-audit.ts was
   // absent from this list, so the harness guarding the whole tier-2 path had no type coverage at all.
   const tscArgs = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];

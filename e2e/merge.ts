@@ -455,21 +455,27 @@ export async function run(lc: LaneCtx): Promise<void> {
     await post("/api/worktrees/discard", { repo: REPO, path: lnVs.cwd, branch: lnVs.branch });
   }
 
-  // (C2) clean rebase whose verify command NEVER ANSWERS — the server kills it at
-  // FLEET_VERIFY_TIMEOUT_MS. The state this covers was a real verdict on 2026-08-06: a land
-  // stopped with `verify.ok:false` and "clean rebase, but verify failed" over an output holding
-  // zero FAIL lines, one suite's ALL PASS and a timeout note. The gate had been killed while
-  // queueing behind another suite's ~8-minute run; ~107 s of its 300 s budget was work and ~255 s
-  // was waiting. As `ok:false` that reads as a reasoned no about the tree, which is what sent the
-  // affected lane hunting a defect of its own. A timeout is a NON-answer, so it now lands in
-  // ok:null WITH `timedOut` — same never-land group as SKIPPED, different words.
-  // The three things asserted here are the three that could regress independently: the STATE
+  // (C2) clean rebase whose verify command WORKS and never answers — the server kills it at
+  // FLEET_VERIFY_TIMEOUT_MS, the WORK budget. A timeout is a NON-answer, so it lands in ok:null
+  // WITH `timedOut` — same never-land group as SKIPPED, different words. (The land that was
+  // actually stopped on 2026-08-06 was killed while QUEUED, not while working; that shape is C3
+  // below, and telling the two apart is the whole point of having two budgets.)
+  // The four things asserted here are the four that could regress independently: the STATE
   // (ok:null + timedOut, and explicitly NOT false), the SAFETY (no auto-land, commit not on main),
-  // and the ACCOUNTING (`ms` present and at least the budget).
+  // the ACCOUNTING (`ms` present, `waitMs` summed from the acquire lines), and the RE-ARM — that
+  // the 4s this run spent queueing was credited back to the work budget instead of eaten out of
+  // it, which is the difference between a gate that gets its full budget and one that gets
+  // whatever the machine leaves over.
   {
     const budget = Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 0) || 0;
+    const waitBudget = Number(process.env.FLEET_VERIFY_WAIT_MS ?? 0) || 0;
     check("V1 setup: the suite runs with a verify timeout small enough to be reachable (e2e-isolated.sh)",
       budget > 0 && budget <= 30_000, `FLEET_VERIFY_TIMEOUT_MS=${process.env.FLEET_VERIFY_TIMEOUT_MS ?? "(unset)"}`);
+    // the two budgets must be DIFFERENT and the wait one smaller, or neither of the two blocks
+    // below can tell which clock fired and both would pass on a server that only has one
+    check("V1 setup: the wait budget is separately configured and below the work budget",
+      waitBudget > 0 && waitBudget < budget,
+      `FLEET_VERIFY_WAIT_MS=${process.env.FLEET_VERIFY_WAIT_MS ?? "(unset)"} vs FLEET_VERIFY_TIMEOUT_MS=${budget}`);
     const lnVt = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
     await Bun.write(`${lnVt.cwd}/verify-hang.txt`, "lane work carrying a VERIFYHANG marker\n");
     spawnSync("git", ["-C", lnVt.cwd, "add", "verify-hang.txt"]);
@@ -502,21 +508,27 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("V1: the retained output keeps what the gate managed to print AND names the timeout",
       (vt?.out ?? "").includes("ALL PASS") && /\[verify TIMED OUT after \d+ms/.test(vt?.out ?? ""),
       JSON.stringify((vt?.out ?? "").slice(-260)));
-    check("V1: the verify record carries its duration — ms is set and at least the budget",
-      typeof vt?.ms === "number" && vt.ms >= budget, JSON.stringify({ ms: vt?.ms, startedAt: vt?.startedAt, budget }));
+    // THE RE-ARM, and the reason this check is worth more than the state checks above it. The
+    // stand-in reports 4s of queueing (3s + 0s + 1s) and then works until it is killed. Under one
+    // wall-clock budget the kill lands at `budget`; with the wait charged to its own budget it
+    // lands at `budget + 4s`, because the gate is owed its full work budget regardless of who else
+    // was on the machine. A land that spent 255s of a 300s budget queueing — the 2026-08-06 shape
+    // — got 45s of gate under the old arithmetic and calls that a verdict.
+    // the 500ms of slack is timer granularity, not room for doubt: the two answers this separates
+    // are `budget` and `budget + 4000`, and nothing lands in between
+    check("V1: the work budget is RE-ARMED past the reported queueing (killed at budget + 4s, not at budget)",
+      typeof vt?.ms === "number" && vt.ms >= budget + 3_500,
+      JSON.stringify({ ms: vt?.ms, startedAt: vt?.startedAt, budget, expected: budget + 4_000 }));
     // THE SPLIT: the stand-in prints the same `[suite-lock] … acquired after Ns` lines e2e-stage.sh
     // prints in a real chain — three staged steps, 3s + 0s + 1s. A total duration alone would have
     // said nothing about the 2026-08-06 land; the point of the field is that the queueing is
     // separable from the work, and only summing the reports the waiter itself wrote can do that.
-    // 3s + 0s + 1s from the three steps that got in, PLUS 12s from a fourth still queued when the
-    // clock ran out. That fourth is the case that matters most and the one a naive sum drops: a
-    // land killed WHILE waiting never sees its own acquire line, and reporting 0s for it would be
-    // this whole change telling the original lie again. Its heartbeat is a minute coarse, so the
-    // total is a lower bound and says so — `waitPartial`, and "at least" in the words.
-    check("V1: waitMs sums the reported waits AND the step still queued at the kill (3+0+1 +12)",
-      vt?.waitMs === 16_000 && vt?.waitPartial === true, JSON.stringify({ waitMs: vt?.waitMs, partial: vt?.waitPartial, ms: vt?.ms }));
-    check("V1: the reserved note counts only the steps that blocked, and marks the total a lower bound",
-      /\[suite mutex: at least 16s of this \d+s run was spent waiting for [^\n]*, not verifying \(2 of 3 staged steps blocked, and one more was still queued after 12s when the run ended\)\]/.test(vt?.out ?? ""),
+    // Every step here got in, so the total is EXACT and carries no `waitPartial` — the lower-bound
+    // case (a step still queued when the run ended) is now a kill of its own and lives in C3.
+    check("V1: waitMs sums the reported waits of the steps that got in (3+0+1), exactly, no lower bound",
+      vt?.waitMs === 4_000 && vt?.waitPartial === undefined, JSON.stringify({ waitMs: vt?.waitMs, partial: vt?.waitPartial, ms: vt?.ms }));
+    check("V1: the reserved note counts only the steps that blocked",
+      /\[suite mutex: 4s of this \d+s run was spent waiting for [^\n]*, not verifying \(2 of 3 staged steps blocked\)\]/.test(vt?.out ?? ""),
       JSON.stringify((vt?.out ?? "").slice(-360)));
     check("V1: the verdict's own sentence carries the split, so the owner reads it without opening the output",
       /queued behind the suite mutex rather than verifying/.test(vVt.last?.detail ?? ""), JSON.stringify(vVt.last?.detail));
@@ -534,6 +546,78 @@ export async function run(lc: LaneCtx): Promise<void> {
     // discarded, not landed: the marker would make every later clean lane in this suite hang too
     await post(`/api/slots/${lnVt.slot}/kill`, {});
     await post("/api/worktrees/discard", { repo: REPO, path: lnVt.cwd, branch: lnVt.branch });
+  }
+
+  // (C3) clean rebase whose verify command NEVER GETS TO START — it is still queued behind the
+  // suite mutex when FLEET_VERIFY_WAIT_MS runs out. THIS is the 2026-08-06 verdict in its real
+  // shape: a land stopped with `verify.ok:false` and "clean rebase, but verify failed" over an
+  // output holding zero FAIL lines and one suite's ALL PASS, because ~255s of its 300s budget had
+  // gone to queueing behind somebody else's ~8-minute run. As `ok:false` that reads as a reasoned
+  // no about the tree, and the affected lane spent an afternoon looking for a defect of its own.
+  // The distinction C2 cannot make and this block exists for: a timeout at least LOOKED at the
+  // tree, a wait-out never did. They are separate flags, never both set, and neither is `false`.
+  {
+    const budget = Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 0) || 0;
+    const waitBudget = Number(process.env.FLEET_VERIFY_WAIT_MS ?? 0) || 0;
+    const lnVw = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnVw.cwd}/verify-wait.txt`, "lane work carrying a VERIFYWAIT marker\n");
+    spawnSync("git", ["-C", lnVw.cwd, "add", "verify-wait.txt"]);
+    let vwCommitted = false;
+    for (let i = 0; i < 20 && !vwCommitted; i++) {
+      vwCommitted = spawnSync("git", ["-C", lnVw.cwd, "commit", "-qm", "verify-wait lane work"]).status === 0;
+      if (!vwCommitted) await Bun.sleep(150);
+    }
+    check("V1 setup: the queued-verify lane committed its marker (precondition for the wait-out below)",
+      vwCommitted, spawnSync("git", ["-C", lnVw.cwd, "status", "--porcelain"]).stdout.toString().trim());
+    await Bun.write(`${REPO}/vw-main.txt`, "main side\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", REPO, "add", "vw-main.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "vw main work"]);
+    await settleForMerge(lnVw.slot);
+    await post(`/api/slots/${lnVw.slot}/merge`, {});
+    const vVw = await waitMerge(lnVw.slot);
+    const vw = vVw.last?.verify;
+    check("V1: a verify killed while QUEUED records ok:null + waitedOut — it never looked at the tree",
+      vw?.ok === null && vw?.waitedOut === true, JSON.stringify(vw));
+    check("V1: the two kills are never both set — a wait-out is not also a timeout",
+      vw?.waitedOut === true && vw?.timedOut === undefined, JSON.stringify({ waitedOut: vw?.waitedOut, timedOut: vw?.timedOut }));
+    check("V1: a wait-out is NOT ok:false — the exact misreading that cost a lane an afternoon",
+      vw?.ok !== false, JSON.stringify(vw?.ok));
+    // WHICH CLOCK FIRED, in wall-clock terms. The stand-in credits 1s of reported wait and then
+    // queues forever, so the wait budget expires ~4s in — well before the 8s work budget could
+    // have. Under a single budget this run would have died at 8s wearing the timeout's words.
+    check("V1: it was the WAIT budget that ended the run, not the work budget",
+      typeof vw?.ms === "number" && vw.ms >= waitBudget - 1_000 && vw.ms < budget,
+      JSON.stringify({ ms: vw?.ms, waitBudget, workBudget: budget }));
+    check("V1: the verdict says NEVER STARTED in words — not failed, not timed out, not about the tree",
+      (vVw.last?.detail ?? "").includes("NEVER STARTED")
+        && !(vVw.last?.detail ?? "").includes("verify failed")
+        && !(vVw.last?.detail ?? "").includes("TIMED OUT"), JSON.stringify(vVw.last?.detail));
+    check("V1: the retained output keeps what the chain managed to print AND names the wait-out",
+      (vw?.out ?? "").includes("ALL PASS") && /\[verify NEVER STARTED — killed after \d+ms still queued/.test(vw?.out ?? ""),
+      JSON.stringify((vw?.out ?? "").slice(-300)));
+    // the LOWER-BOUND half of the wait accounting, which lives here now: the step that was still
+    // queued at the kill never got to write its own acquire line, so its wait is known only to its
+    // last heartbeat (1s reported + 4s heartbeat). Reporting 0s for it would be this whole change
+    // telling the original lie again — `waitPartial`, and "at least" in the words.
+    check("V1: waitMs counts the step still queued at the kill and marks the total a lower bound (1 +2)",
+      vw?.waitMs === 3_000 && vw?.waitPartial === true, JSON.stringify({ waitMs: vw?.waitMs, partial: vw?.waitPartial, ms: vw?.ms }));
+    check("V1: the reserved note marks the total a lower bound and names the still-queued step",
+      /\[suite mutex: at least 3s of this \d+s run was spent waiting for [^\n]*, not verifying \(1 of 1 staged step blocked, and one more was still queued after 2s when the run ended\)\]/.test(vw?.out ?? ""),
+      JSON.stringify((vw?.out ?? "").slice(-360)));
+    check("V1: a signal-killed run records exitCode:null rather than inventing an exit status",
+      vw?.exitCode === null, JSON.stringify(vw?.exitCode));
+    // THE SAFETY INVARIANT, again on the new flag: `verify` absent (unconfigured) is the only state
+    // that auto-lands. A wait-out that fell outside the never-land group would open an unattended
+    // land behind a gate that had not merely failed to finish — it had never begun.
+    check("V1: a wait-out does NOT auto-land (downgraded to resolved, lane kept)",
+      !vVw.gone && vVw.last?.status === "resolved" && vVw.last?.landed === false && exists(lnVw.cwd),
+      JSON.stringify(vVw.last));
+    const vwLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+    check("V1: the wait-out lane's commit has NOT reached main",
+      !vwLog.includes("verify-wait lane work"), vwLog.trim());
+    // discarded, not landed: the marker would make every later clean lane in this suite queue too
+    await post(`/api/slots/${lnVw.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: REPO, path: lnVw.cwd, branch: lnVw.branch });
   }
 
   // (D) a red verify whose log has the SHAPE a real suite's has: the failing check named once,

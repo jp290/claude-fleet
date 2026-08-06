@@ -152,7 +152,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const selfGate = (token?: string) => fetch(BASE + "/api/self/gate", {
     headers: token !== undefined ? { "x-fleet-self-token": token } : {},
   });
-  type Gate = { verify: { cmd: string; timeoutMs: number; skipExit: number } | null; cleanReview: string;
+  type Gate = { verify: { cmd: string; timeoutMs: number; waitMs: number; skipExit: number } | null; cleanReview: string;
     autoReview: { tickMs: number; idleMs: number } | null; postlandAudit: boolean;
     mergeRepairRounds: number; rulebookDrifted: boolean | null;
     suiteLock: { pid: number | null; alive: boolean | null; heldMs: number; state: string } | null };
@@ -178,8 +178,13 @@ export async function run(ctx: Ctx): Promise<void> {
       : g0.suiteLock?.pid === diskPid && g0.suiteLock.alive === true
         && (g0.suiteLock.state === "held" || g0.suiteLock.state === "overdue"),
     JSON.stringify({ disk: { exists: lockDirExists, pid: diskPid }, route: g0.suiteLock }));
+  // BOTH budgets, because one of them is what a lane's verify actually hangs on: `timeoutMs` is
+  // the work budget and `waitMs` the queueing one, and a route that named only the first would
+  // still be telling a lane that a 300s gate is a 300s gate when 255s of it can be somebody else's
+  // suite (VERIFY_WAIT_MS in server.ts, the 2026-08-06 incident).
   check("GET /api/self/gate: full shape, skipExit pinned to 42, no rulebook on either side reads null",
-    g0Res.ok && (g0.verify === null || (typeof g0.verify.cmd === "string" && g0.verify.skipExit === 42))
+    g0Res.ok && (g0.verify === null || (typeof g0.verify.cmd === "string" && g0.verify.skipExit === 42
+      && g0.verify.timeoutMs > 0 && g0.verify.waitMs > 0))
       && ["off", "gate", "shadow"].includes(g0.cleanReview)
       && (g0.autoReview === null || g0.autoReview.tickMs > 0)
       && typeof g0.postlandAudit === "boolean"

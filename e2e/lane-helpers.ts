@@ -13,12 +13,15 @@ export const setMergeMode = (m: string) => Bun.write(`${REPO.replace(/\/[^/]+$/,
 // `ok: null` is the SKIPPED state — the command declined to verify this tree (server.ts,
 // VERIFY_SKIP_EXIT). Distinct from ok:false (ran, failed) and from an absent field (no command
 // configured), and the type has to carry it or the checks below cannot tell a skip from a pass.
-// `timedOut` splits ok:null in two — the command DECLINED (skip) vs our clock killed it mid-run.
-// Both are "nothing was measured" and both stop the land; only the second says nothing whatever
-// about the tree. The timing fields are optional here for the same reason they are on the server:
-// a verdict deserialized from an older record carries none of them.
+// `timedOut` and `waitedOut` split ok:null three ways — the command DECLINED (skip), our clock
+// killed it while it was WORKING, or our clock killed it while it was still QUEUED behind the suite
+// mutex and it never started at all. All three are "nothing was measured" and all three stop the
+// land; the last two say nothing whatever about the tree, and the last one not even "slow".
+// The timing fields are optional here for the same reason they are on the server: a verdict
+// deserialized from an older record carries none of them.
 export type VerifyField = { cmd: string; ok: boolean | null; out: string; at: number; mainSha: string; stale?: boolean;
-  timedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true; exitCode?: number | null };
+  timedOut?: true; waitedOut?: true; startedAt?: number; ms?: number; waitMs?: number; waitPartial?: true;
+  exitCode?: number | null };
 // `cleanReview` is the ② advisory reviewer's verdict, present only when FLEET_CLEAN_REVIEW gates
 // (fleet-e2e-clean-review.ts's gate phase). Optional, so the modules that never see it are unaffected.
 // `conflicted` is the files whose resolution no human has seen yet — set on the conflict path, and

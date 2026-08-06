@@ -124,8 +124,32 @@ Obergrenze von 1+2 zusammen: ~215 s der 537 s — eine Decke, keine Zusage.
 
 ### In Flug / offen
 
-- **F4 (`3322990f`, Lane `fleet/260806162942-6102`, Slot 1)** — Stand bei Redaktionsschluss
-  unten nachgetragen.
+- **F4 ist GELANDET (`3e41cc3`) und deployed** — Gate `verify.ok:true`, exit 0, 110 s, 0 s
+  Lock-Warten, 0 FAIL, `confirmedByHuman:false` (also vollmaschinell verifiziert, anders als
+  F1). `bootHead == HEAD`, `bundleStale:false`, 8 Sessions haben den Neustart überlebt.
+  Sie hat zwei Dinge über den Auftrag hinaus geliefert: **`repoCommits` wird aus dem
+  GAST-Payload entfernt** (ein Gast ist in EINE Session geteilt, nicht in mains letzte zehn
+  Commit-Betreffs — beim Schreiben der Route aufgefallen, nicht beim Rendern), und ihr eigener
+  `pkill -f "bun server.ts"` hat den **LIVE-Server** getroffen (Watchdog respawnte in ~1 s, alle
+  8 Sessions überlebten). Die Regel dagegen steht jetzt in CLAUDE.md — von Hand, weil eine Lane
+  diese Datei nicht landen kann.
+- **RUNDE 2 IST DER NÄCHSTE SCHRITT:** F2+F3 (`cb607025`) + Mini (`547c7c36`) zusammen, danach
+  F5 (`9534b49a`) allein (kollidiert mit Mini). F6 (`2784427e`) trägt jetzt den Owner-Entscheid
+  „lane-lokal" im Brief und wird gerade neu analysiert.
+- **Slot 2 untersucht die Agenten-Sichtbarkeit** (`9e933b31`, Lane `fleet/260806172211-613f`,
+  per Hand gestartet). Owner-Frage: *„was Agenten aktuell wie sehen und wie sie bestimmte tools
+  benutzen"*, mit Subagenten-Auftrag. Der Brief zerlegt sie in **gewährt / erreichbar /
+  gewusst** — ein Fleet, in dem *erreichbar* > *gewährt* ist, hat ein Sicherheitsthema; eines,
+  in dem *gewusst* < *gewährt* ist, verschenkt gebaute Fähigkeiten. Leithypothese des Owners,
+  ausdrücklich als zu prüfen markiert: eine Session im Haupt-Checkout sieht mehr, weil
+  `fleet.json` dort liegt und den Owner-Token trägt — dann wäre die Mehrsicht ein Nebeneffekt
+  der Dateilage, kein entworfenes Recht. **Bericht steht aus — die nächste Session sammelt ihn
+  ein.**
+- **Vier neue Zeilen aus dieser Session**, alle `pending`: `fcd30f9e` (Dispatcher liest
+  `collides` — der Freischalter für einen höheren Lane-Deckel) · `1981be9a` (Autonomie-
+  Bausteine, read-only) · `0d39cc94` (Fleet harness-fähig — **ohne Login baubar**) ·
+  `944281c5` (Pi konkret anschließen — **braucht den Login des Owners**, er hat ihn zugesagt).
+- **Slot 5** hält eine Lane des Owners ohne Task — nicht angefasst.
 - **Slot 5 hält eine Lane des Owners ohne Task** (`fleet/260806163737-7852`, per `slot_open`,
   nicht per Dispatch). Bei letzter Prüfung ohne Commit und ohne uncommittete Datei.
 - **F6 wartet auf eine Owner-Entscheidung**, nicht auf Arbeit: Ablage in

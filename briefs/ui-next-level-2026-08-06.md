@@ -177,10 +177,31 @@ erhöhen.
   3. Das „fixed places"-Prinzip (client.ts:3739) wird hier bewusst gebogen:
      Empty-Slots bleiben flach an ihrem Platz, nur belegte Lane-Rows ziehen unter
      ihren Anker. Im Commit-Body festhalten, dass das Absicht ist.
+- **Kein Migrate-Zustand — Gruppierung wird abgeleitet, nie gespeichert** (Owner-
+  Frage 2026-08-06: „was, wenn eine neue Main anfängt, obwohl ein alter Worktree
+  noch existiert?"). Genau darum ist die Render-Ableitung die richtige Form: eine
+  neue Main-Session im Repo IST beim nächsten Render der Anker, die Lanes rutschen
+  von selbst unter sie; stirbt die Main, greift der Repo-Header (Kante 1). Es
+  existiert kein gespeicherter Stapel, der veralten oder migriert werden könnte.
+- **Ghost-Rows statt Migrate-Knopf (Erweiterung aus derselben Owner-Frage):**
+  Worktrees, die auf der Platte liegen, aber keine Session haben, sind heute NUR
+  im Board sichtbar (lanes-Sektion: „open" = reattach via `POST /api/lanes
+  {attach}`, client.ts:2265-2280; „close" mit Discard-Gate; Shelve-Note reist
+  mit, client.ts:2309). Der aufgeklappte Stapel zeigt sie als Ghost-Rows
+  („⎇ branch · on disk", gedimmt, in Projektfarbe) — Klick = adopt in einen
+  freien Slot über die EXISTIERENDE attach-Route, null neuer Server-Code. Der
+  Stapel wird damit die vollständige Projekt-Wahrheit: laufende UND geparkte
+  Lanes. **Poll-Disziplin:** die Worktree-Liste erst beim Aufklappen laden
+  (lazy, wie loadGuest), NIE im 2s-Poll — `/api/sessions` ist laut
+  Data-Saver-Befund schon der teuerste Pfad der App, und pro Repo git zu
+  spawnen würde ihn vervielfachen.
 
 **Done:** 2 Repos × (1 Main + 2 Lanes) rendern als 2 Stapel; auf/zu bleibt über
 Reload; Fokus auf eingeklappte Lane klappt auf; ⏸/💬/hot am Anker sichtbar, wenn
-zu. Client-only; `bun run build` + Sichtprüfung.
+zu; Main-Session killen → Lanes hängen am Repo-Header, neue Main im Repo starten
+→ sie ist ohne weiteres Zutun der neue Anker; ein sessionsloser Worktree
+erscheint als Ghost-Row und „adopt" hängt ihn in einen freien Slot. Client-only
+bis auf die Lazy-Fetch-Nutzung bestehender Routen; `bun run build` + Sichtprüfung.
 
 ## F4 — Board-Neuordnung + git-HEAD
 
@@ -351,7 +372,7 @@ Task-Texte (jeder verweist auf dieses Dossier — die Lane liest den Abschnitt,
 nicht eine Nacherzählung):
 
 1. `F4 Board-Neuordnung + git-HEAD — briefs/ui-next-level-2026-08-06.md §F4 lesen und exakt diesen Schnitt bauen. Reihenfolge deploy/gate→identity(+HEAD)→land-pending→commits→files→lanes→guest→agents(hinter "more ▸", zu per Default)→outline; head-Feld in Brief-Route+BriefInfo. Volle Gate-Verify.`
-2. `F2+F3 Projekt-Pastellfarben + Slot-Stapel — briefs/ui-next-level-2026-08-06.md §F2+§F3. Erst Farben (deterministisch aus Repo-Pfad, beide Themes), dann Gruppierung unter Ein-Anker-Main-Session mit den drei benannten Kanten (verwaiste Lanes, Fokus-schlägt-Collapse, Badge-Aggregation). Client-only.`
+2. `F2+F3 Projekt-Pastellfarben + Slot-Stapel — briefs/ui-next-level-2026-08-06.md §F2+§F3. Erst Farben (deterministisch aus Repo-Pfad, beide Themes), dann Gruppierung unter Ein-Anker-Main-Session mit den drei benannten Kanten (verwaiste Lanes, Fokus-schlägt-Collapse, Badge-Aggregation) plus Ghost-Rows für sessionslose Worktrees (adopt via bestehender attach-Route, lazy beim Aufklappen laden — NIE im 2s-Poll). Client-only bis auf Lazy-Fetches bestehender Routen.`
 3. `F6 Drag&Drop/Paste/📎-Uploads — briefs/ui-next-level-2026-08-06.md §F6. Upload-Route (multipart, Cap, Owner-Auth), Ablage AUSSERHALB des Worktrees (~/.claude-fleet/drops/<slot>/), Composer-Mention (Format erst verifizieren: triggert tmux-Paste die @-Mention?), 📎-Knopf für Mobile, Retention, e2e-Check für Auth+Cap.`
 4. `F5 Board-File-Explorer + Editor — briefs/ui-next-level-2026-08-06.md §F5. NACH F4 starten. git-ls-files-Tree, Read-Route mit realpath-Prefix-Guard + .env/fleet.json-Ausschluss, Edit erst nach extra Klick, Content-Hash-Konfliktschutz, security-e2e für Pfad-Escape.`
 5. `F1 Pi-Spike (KEIN Umbau) — briefs/ui-next-level-2026-08-06.md §F1 lesen. Verifizieren was 'Pi' konkret ist (Primärquelle, nicht raten), user-lokal installieren (vom Owner 2026-08-06 sanktioniert: user-scope, kein sudo/brew-global), --help + Spawn/Resume/Modell/Effort-Flags dokumentieren, TUI-in-Pane kurz real in einem tmux testen. Ergebnis: Adapter-Brief (Harness-Interface gegen die echte CLI geschärft) — server.ts bleibt unangetastet, danach STOPPEN und berichten.`

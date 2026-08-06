@@ -1,8 +1,126 @@
-# HANDOFF — Session 29 (2026-08-06: die fünf Verben, und das Register wird wahr) · 28/27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 30 (2026-08-06 abends: der Rückkanal, und die Suite wird vermessen) · 29/28/27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 30 (2026-08-06 abends): der Owner kann zurückschreiben, die Zeilen sagen was sie sind, und die Suite ist zum ersten Mal vermessen
+
+**Das Erste für die NÄCHSTE frische Session: Runde 2 des UI-Programms.** F2+F3 (`cb607025`)
+und Mini (`547c7c36`) zusammen freigeben — sie kollidieren nicht miteinander, beide `ready`.
+Danach F5 (`9534b49a`), aber **nicht neben Mini** (Kollision) und erst nach F4s Land. F6
+(`2784427e`) bleibt stehen, bis der Owner die Ablage entschieden hat (siehe „Offen").
+**Einzeln freigeben, nie als Stapel** — Begründung unten unter „Der Deckel".
+
+### Gelandet und live (alle vier deployed, `bootHead == HEAD`, `bundleStale:false`)
+
+| | |
+|---|---|
+| `035c1a9` | Phantom-Park: `landLane` räumt jetzt auch `mergeLast`, sonst schrieb `killSlot` den Eintrag Millisekunden später zurück. Lane-Fund, unabhängig nachgeprüft, Gate grün in 101 s. |
+| `debf0b6` | **Kommentare auf Task-Zeilen** — der erste Rückkanal vom Owner IN die Queue. Plus „Backlog — about to start". |
+| `bdcc63a` | Die Zeile heißt, was sie ist: Schnitt am Satzende statt bei Zeichen 120, Ablage-Stempel `[rundgang …]` raus aus dem Namen. |
+| `334d33d` | Der PI.agent-Adapter-Brief (F1-Spike, 251 Zeilen, `server.ts` unberührt). |
+
+### Owner-Entscheide dieser Session
+
+- **Kommentar-Kontrakt:** ein Kommentar wird **nie** in den Brief gefaltet, den eine Lane
+  bekommt. Ein Check pinnt es. Folge, die man kennen muss: **der Analyst sieht Kommentare
+  nicht** — was für die Maschine zählen soll, muss in den Brief (`POST /api/tasks/:id/brief`).
+- **Pi ist eine OPTION, kein Ersatz.** Der Owner hat die Abrechnung nachgeprüft: Fremd-Harness
+  läuft über extra usage, pro Token, nicht im Abo. Die lohnende Arbeit ist trotzdem da und ist
+  **nicht Pi-spezifisch** — drei Stellen im Server sind harness-blind (`claudeAlive`
+  server.ts:1698 winkt jede Nicht-claude-BASE_CMD durch · `MODEL_RE` server.ts:101 kennt nur
+  claude-Namen · ein unauflösbares Modell hinterlässt eine lebende Pane ohne Agenten).
+- **Der Lane-Deckel bleibt bei 2.** Gemessen, nicht gefühlt — siehe unten.
+- **Zwei neue Queue-Zeilen beauftragt:** `fcd30f9e` (Dispatcher liest `collides`) und
+  `1981be9a` (Autonomie-Bausteine, read-only Untersuchung mit „bereits entschieden"-Riegel).
+
+### Der Deckel: warum er bleibt, und was ihn freischaltet
+
+Gemessen am Register: **Median 8 Lands/Tag** (Spitze 14) · ein Land hält die Maschine
+~101 s Gate + **442 s** Tier-2-Audit ≈ 9 min exklusiv · Spitzentag 11 Audits = 81 min von
+24 h · **122 Lane-Paare mit überlappender Lebenszeit** bei 92 messbaren Lanes · Konflikte
+5/102. **Kapazität ist also NICHT der Grund.** Was der Deckel wirklich ersetzt:
+
+1. **Der Dispatcher ist kollisionsblind.** `tickDispatch` (server.ts:2317) wählt wörtlich die
+   erste `queued`-Zeile; `analysis.collides` wird berechnet und nie gelesen. Live vorgeführt:
+   die sechs UI-Tasks tragen das Dreieck F4 ↔ F2+F3 ↔ F6; eine Stapel-Freigabe hätte genau
+   das Paar gestartet. Der Deckel tut diese Arbeit **versehentlich**, weil 2 klein ist.
+2. **Der Gate läuft im Land-Request, nicht in einer Queue** („⑦ v2"). Das 300-s-Timeout ist
+   eine Wanduhr, die Wartezeit mitzählt.
+
+**Freischalter = `fcd30f9e`.** Danach hält die Maschine zurück statt eines Menschen.
+
+### Der Vorfall, der Punkt 2 innerhalb einer Stunde bewiesen hat
+
+F1s Land lief in den Verify-Timeout: **334 s gesamt, davon 303 s Warten auf
+`/tmp/fleet-e2e.lock`, 31 s echte Verifikation, NULL FAIL-Zeilen.** Der Server verhielt sich
+richtig (`verify.ok: null`, `timedOut: true`, „killed mid-run — this is not a verdict") und
+hielt die Lane zur Ansicht fest, statt ungeprüft zu landen. Die volle Kette wurde dann VON
+HAND auf demselben rebasten Baum gefahren (install/pins/tsc 0, drei Suiten ALL PASS, 0 FAIL),
+erst danach confirm-land.
+
+**Und daraus der Befund, der in keinem Ledger stand:** die Akte zu `334d33d` sagt
+`verify.ok: null`, `verified: null`, `confirmedByHuman: true`. Ein Leser kann **„Mensch hat
+blind bestätigt" nicht von „Mensch hat die volle Kette gefahren und dann bestätigt"
+unterscheiden.** Für eine autonome Kette ist genau das die tragende Unterscheidung. Liegt als
+Kommentar auf `1981be9a`, ausdrücklich als Eingangsmaterial, nicht als Antwort.
+
+### Die Suiten-Messung — zum ersten Mal aus dem Check-Trail gerechnet
+
+Owner-Frage war, ob Audits/Suiten parallel oder schneller laufen können. Antwort: **die Suite
+ist nicht CPU-gebunden, sie schläft.** Am Trail eines echten Audit-Laufs (1395 Checks, 537 s):
+
+- 1079 Checks (77 %) kosten zusammen **11,4 s** = 2,1 % · 29 Checks (2 %) kosten **254 s** = 47 %
+- **97,9 %** der Zeit liegt in Lücken ≥ 200 ms
+
+Drei Hebel, gemessen, mit Schnittlinie:
+
+1. **Feste Sleeps → Poll: 122 Aufrufe in `e2e/*.ts` = 166,6 s von 537 s (31 %).** Muster:
+   `Bun.sleep(9000) // past due + one 5s scheduler tick`. Der Poll-Helfer `till()` existiert
+   bereits — **lokal in `e2e/tasks.ts:324`, in keiner anderen Datei benutzt.** Timeout auf den
+   alten Sleep-Wert setzen, dann ist der Worst Case identisch und nur der Schlupf weg.
+2. **Deploy-Fakten von `tickGit` abkoppeln: 63,6 s in 14 Checks.** `refreshDeployFacts()` fährt
+   auf `setInterval(tickGit, 10_000)` mit (server.ts:1196), liest aber **nur das Haupt-Repo**
+   (drei git-Kommandos auf `REPO_DIR`, kein Lane-Worktree). Eigenes Intervall + Env-Knopf.
+   **`tickGit` selbst NICHT beschleunigen** — das ist der Poller aus `suite-contention.md` §2.
+3. **Der Mutex-Poll:** `e2e-stage.sh:100` wartet in `sleep 15`-Schritten (nur gegen einen
+   LEBENDEN Halter; ein totes Lock wird sofort gereapt). Verkürzt keine einzelne Suite, aber
+   jede Warteschlange — und der Gate nimmt das Lock 3× pro Lauf.
+
+— Schnittlinie. **Echte Parallelität lohnt nicht:** zwischen Suiten verkürzt sie einen
+einzelnen Lauf um null Sekunden, und die Messung von 2026-07-26, die sie verbietet, stammt von
+**vor** den Race-Fixes vom 28.07. — sie ist also nicht mehr widerlegt, sondern ungeprüft. Der
+ehrliche Weg dahin ist eine Messung NACH Hebel 1+2, nicht eine Meinung. Innerhalb eines Laufs
+teilen die Module einen Server, einen Socket und ein Repo und mutieren globalen Zustand.
+Obergrenze von 1+2 zusammen: ~215 s der 537 s — eine Decke, keine Zusage.
+
+### Korrekturen an eigenen Aussagen
+
+1. **Ich habe Pis Abrechnungs-Satz als Tatsache verkauft.** Er stammt aus
+   `docs/providers.md` von `@earendil-works/pi-coding-agent` — ein Drittanbieter über die
+   Abrechnung eines anderen Unternehmens. Korrekt zitiert, falsch gerahmt. (Der Owner hat ihn
+   dann selbst bestätigt gefunden — das ändert nichts daran, dass die Rahmung falsch war.)
+2. **Ich habe dem Owner ein erfundenes Wort hingelegt** („Satz-Schnitt") statt der Sache. Der
+   Fix war, das Vorher/Nachher an seinen echten Daten zu zeigen. Merke: eine UI-Änderung
+   erklärt man am gerenderten Ergebnis, nicht am Mechanismus.
+3. **Der Handoff von Session 29 führte F6 als `ready`** — die Zeile sagt `needs-you`.
+
+### In Flug / offen
+
+- **F4 (`3322990f`, Lane `fleet/260806162942-6102`, Slot 1)** — Stand bei Redaktionsschluss
+  unten nachgetragen.
+- **Slot 5 hält eine Lane des Owners ohne Task** (`fleet/260806163737-7852`, per `slot_open`,
+  nicht per Dispatch). Bei letzter Prüfung ohne Commit und ohne uncommittete Datei.
+- **F6 wartet auf eine Owner-Entscheidung**, nicht auf Arbeit: Ablage in
+  `~/.claude-fleet/drops/<slot>/` oder lane-lokal? Der Aufräum-Lauf löscht nach Slot-Nummer,
+  und dieselben Nummern benutzt der LIVE-Server — ein e2e-Lauf könnte dessen Ablage löschen.
+- **`1fb929e9` ist erledigt und kann archiviert werden**: die Prämisse (`FLEET_EVAL_CMD` in
+  `e2e/tasks.ts`) ist nachgeprüft falsch — der Name kommt in `server.ts` UND in `e2e/tasks.ts`
+  null mal vor, dort steht heute `FLEET_ANALYSIS_CMD` (Zeilen 364, 718).
+- Verben 2–5 unverändert ungebaut. 5 pending-Notes, 2 alte needs-you-Zeilen.
 
 ---
 

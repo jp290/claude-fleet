@@ -1,8 +1,80 @@
-# HANDOFF — Session 28 (2026-08-06: der Fakt, der Gate und die Landkarte) · 27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 29 (2026-08-06: die fünf Verben, und das Register wird wahr) · 28/27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
 Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
 Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 29 (2026-08-06 nachmittags): Schritt A + Verb 1 gelandet, das Verb-Programm steht, die Adjudikations-Schuld ist null
+
+**Das Erste für die NÄCHSTE frische Session: Verb 2, das Deploy-Verb** —
+`docs/autonomy-verbs-2026-08-06.md` ist der Arbeitsplan (Owner-Richtung wörtlich im Kopf),
+Verb 2 trägt Bauform, Rückweg-Antwort und Schwelle. Davor `./state.sh` und prüfen, ob die
+Phantom-Park-Lane (Slot 1, Task `f93deff8`) inzwischen gemeldet hat — ihr Land geht vor.
+
+### Gelandet und LIVE (deployed, bootHead == HEAD, je verifiziert)
+
+| | |
+|---|---|
+| `2ada187` | **Schritt A**: `self_drift`-Audit-Event auf `/api/self/drift` — nur frische Antworten (Dedupe über den Drift-Cache), Join-Key = Branch. §12-Recompute-Stanza in der Landkarte. Basiswert: landed 78, checked 0. |
+| `2a0047d` | `briefs/phantom-park.md` — §9.1-Auftrag samt der Falle (parkMergeVerdict aus killSlot streichen = Datenverlust) |
+| `9849f92` + `9c4b757` | `docs/autonomy-verbs-2026-08-06.md` — die fünf Verben mit Einschalt-Bedingungen; Verb 5 nach Owner-Einwand korrigiert |
+| `103d133` | **Verb 1**: `gate: gateView()` auf `/api/steward/sessions`, `suiteLock` auf `/api/self/gate` — der Sensor existierte (9c1b73c), nur die zwei Konsumenten waren blind. Checks gegen Platten-Wahrheit. |
+
+Parallel gelandet (eigene Lane, 417c): `briefs/ui-next-level-2026-08-06.md` — **ein** Doc,
+446 Zeilen, fünf Commits (Owner sagte „4 docs", die Messung sagt 1/5).
+
+### Owner-Entscheide dieser Session
+
+- **Die fünf Verben sind die Richtung** („run his findings autonomously … we basically got it").
+  Schnittlinie im Doc: Inbox, clarify-Umbau, Auto-Rollback, stalled-Handeln bleiben draußen.
+- **Auto-Land: JA als Richtung, Form = Kollisions-Reviewer** — der Owner hat meinen K2-Einwand
+  gekippt („an opus5 session with context would understand this"), und er hatte recht: der
+  K2-Richter hatte eine varianzlose Frage. Verb 5 = schlafende ②-Maschinerie mit Opus 5 auf
+  der main-seit-Fork-Kollisionsfrage, Shadow-Phase als Feuerprobe. Agent urteilt, Maschine landet.
+- **UI-Programm freigegeben** („der sollte passen") → 6 Tasks angelegt (`3322990f` F4 ·
+  `cb607025` F2+F3 · `2784427e` F6 · `9534b49a` F5 · `0bfd3d7e` F1-Spike · `547c7c36`
+  Mini-Fixes), **bewusst `pending` statt des im Doc vorgesehenen `queue:true`** (dispatch:true
+  läuft, Maschine war belegt). F4 + F2+F3 tragen bereits `ready`. Promote in Doc-Reihenfolge:
+  F4 zuerst, max. zwei UI-Lanes, F4 strikt vor F5.
+- **Beide Adjudikationen gefiled** (mit den Notizen der Slot-2-Lane): 28.7. → **`real`, der
+  erste im Register überhaupt** (Journal-Cap-Defekt, 38 min später in `07e5969` behoben) ·
+  3.8. → `flake` (Idle-Gate-Race, seit `0e4d65c` strukturell zu). **Register: 0 un-adjudizierte
+  Rote** (1 real / 3 flake / 2 stale-test / 8 unknowable). Konsequenz: Auto-Rollback bleibt
+  beerdigt (der Fix ging vorwärts), der Verb-5-Breaker ist durch genau diesen Fall validiert.
+- **Steward ist unbesetzt** (Owner-Kill 16:30, Autos leer) — Wiederaufstellung = Verb 4, mit
+  Ritual-Revision (Verfallsdatum trennt note/lane; kind:lane MIT Kriterium) + Digest-TTL (E).
+- **Queue geputzt** (Owner-OK): 4 beweisbar erledigte Notes + `81514506` archiviert (2a gebaut,
+  2b hängt an der 20-Lanes-Messung, 2c in Verb 4/5). `unarchive` existiert.
+
+### Korrekturen an eigenen Aussagen
+
+1. **`/api/audit` liefert NEUESTE ZUERST** — mein erster Drift-Check las positional-chronologisch
+   und fiel. Dritter Fall dieser Familie im Register. Die §12-jq nutzt `min`, ordnungsunabhängig.
+2. **Mein K2-Beleg gegen den Reviewer-Agenten war Überdehnung** — vom Owner gekippt, Korrektur
+   steht im Verbs-Doc §Verb 5 und im Body von `9c4b757`.
+3. **Adjudizieren hat KEINEN Board-Knopf** (steht in CLAUDE.md) — Owner-„mache ich" lief deshalb
+   ins Leere; API-only, diesmal von mir mit Owner-Wort gedrückt.
+
+### Live-Instrumente, frisch — und ihre Vergiftungs-Kaveats
+
+- **`self_drift`** fängt echte Events (Lane 417c 2× organisch). ABER: Briefs, die die Route
+  nennen (phantom-park tut es), vergiften die §11.2-Messung „findet die Lane sie selbst?" —
+  Lanes 5684/51bf beim Auswerten ausschließen.
+- **`suiteLock`/`gate`** auf beiden Flächen live (Steward-Notiz `05320523` war der Anlass).
+- Task-Sichtbarkeit im 🗒-Overlay per Playwright-Browser VERIFIZIERT (alle 6 malen) — „ich sehe
+  sie nicht" war Client-Cache/falsche Fläche, nicht der Server.
+
+### In Flug / offen
+
+- **Slot 1, Phantom-Park** (`f93deff8`, Brief `2a0047d`): arbeitet, uncommitted in server.ts +
+  e2e/merge.ts + Landkarten-Refs. Report abwarten, unabhängig verifizieren, landen.
+- **5 pending-Notes bleiben absichtlich**: 4 Befunde füttern Verb 4 / Map 6.2/6.3
+  (`05320523`, `94565a55`, `b759e8d9`, `9821035e`) + Owner-Idee `356333db` (Anzeige ungebaut).
+- 3 alte lane-Tasks mit needs-you (`0be58694`, `1fb929e9` — Prämisse vermutlich überholt,
+  Audits grün —, `cabf3c88`).
+- Verben 2–5 ungebaut. Reihenfolge im Doc: 2 Deploy → 3 Auto-Promote → 4 Steward → 5 Auto-Land.
 
 ---
 

@@ -1,8 +1,55 @@
-# HANDOFF — Session 31 (2026-08-06 nachts: sechs Lands, und die Fäden sortiert) · 30/29/28/27/26/25/24/23/22/21/20/19/18/17/16/15/14/13 darunter
+# HANDOFF — Session 32 (2026-08-07 nachts: das Register lebt, BACKLOG beerdigt, 63 neue Zeilen) · 31/30/29/… darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh`. Historie: `git log 75b2ca1..HEAD` mit Bodies (das
-Befund-Register — die Mechanismen stehen dort, nicht hier). Diese Datei trägt nur das
-Residuum: Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+*Zustand ist ein KOMMANDO: `./state.sh` **und jetzt auch `./register.sh`** (die Arbeitsliste,
+abgeleitet). Historie: `git log 75b2ca1..HEAD` mit Bodies. Diese Datei trägt nur das Residuum:
+Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 32: Register gebaut, alle Doc-Ideen dingfest, vier Ideen-Scouts
+
+**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` (NICHT mehr das
+work-register-Doc als Liste lesen — es ist Schnappschuss, das Skript ist die Ableitung).
+Die Queue ist DAS Register: ~80 offene Zeilen, alle `pending`, nichts startet von selbst.
+
+**Gelandet (4 Lands + 2 Direkt-Commits, alle Audits grün bzw. in Flug):**
+`e6203a1` register.sh + L1-Rot-Detektor (e2e/pins.ts §5, rot-ok-Fluchttür) ·
+`c366c66` BACKLOG.md → docs/attic/backlog-2026-07.md (39 Posten: 26 gelandet / 11 offen /
+2 überholt; 14 neue Zeilen) · `d139698` 0/12→1/15-Korrektur (4 Doc-Stellen) ·
+`f378d4c` e2e/pins.ts in die Gate-tsc-Liste — **aktiv erst nach `launchctl kickstart
+gui/$(id -u)/com.claude-fleet.watchdog` + srv-Respawn**; Session 32 macht das im
+Deploy-Fenster nach dem letzten Audit, sonst ist es DER erste Schritt der nächsten Session.
+
+**Woher die neuen Zeilen kommen (Provenienz steht in jedem Zeilentext):**
+- 21 aus der Doc-Aggregation (`891dfc49`, Lane `…4956-3b38`): alle offenen Punkte aus
+  autonomy-map/verbs/bausteine + agent-visibility + Briefs, G1–G7-gerastert.
+- 14 aus dem BACKLOG-Abgleich (Lane `…1017-324f`): 7 Lane-Zeilen mit Done-Kriterium,
+  5 Steward-Notes, 2 Owner-Zeilen.
+- 28 aus vier Ideen-Scouts (Präfix `[idee scout-A/B/C/D 08-07]`; A=Owner-UX, B=Betrieb
+  mit ECHTEN Messungen — 197k Trail-Zeilen, 26 verlorene Gespräche Slot 1, 166s Fest-sleep —,
+  C=Polish, D=kühn; 2 Quer-Merges: Tab-Ampel A+C, Tastatur/⌘K A+D). Die Scout-Vollreports
+  lagen nur im Session-Scratchpad (ephemär) — die Zeilen SIND die dauerhafte Fassung.
+
+**Korrekturen, die man kennen muss:** die 0/12-Basisrate ist 1/15 (ein echtes `real`,
+`07e5969`) · „nach `queued` nur durch Owner-Promote" ist FALSCH (zwei Maschinen-Pfade:
+requeue + Boot-Abgleich; CLAUDE.md Punkt (d) trägt die Korrektur) · das Rundgang-Ritual
+liegt getrackt unter `.claude/commands/rundgang.md` und ERLAUBT `kind:"lane"` schon
+(Zeile 36) — was fehlt, ist die Form (Done-Kriterium im Filing) · Scout B fand still
+gestorbene Brief-Kompilate (JSON-Parse-Fehler, server.log) — `1e0c9434` ist reanalysiert.
+
+**Offene Owner-Entscheidungen (blockieren die optimale Reihenfolge):**
+1. Verb 2 (Deploy) bauen — ja/nein? (`989cccf7`)
+2. Lane-Deckel anheben — erst nach G2 (`05ba5609`+`db02104d` als EINE Lane) ist der sichere Weg.
+3. Pi-Login (`944281c5`).
+4. Die 28 Scout-Ideen sichten — minten war absichtlich großzügig; archivieren ist dein Veto.
+5. `info-card-controls`: ist dein Wunsch von 08-03 mit F4 erfüllt? (Aggregation: „Owner-Frage")
+6. Slot 6 ist aktiv geteilt mit cwd=Haupt-Checkout (`56be77a3` führt die Messung).
+
+**Vorschlag erste Welle (unverändert gültig):** Lane A = G2 (`otherOpenLanes`, beide
+Fehlerrichtungen in EINER Lane) · Lane B = `1e0c9434` releasedBy (klein, schaltet G6 frei) ·
+danach `cccd76b2` (Verify-Budget ohne Lock-Warten — behebt die 469s/499s-Klasse) und
+`62302c47` (Schlaf-Uhr — verkürzt den 12-min-Takt selbst). Max. 2 server.ts-Lanes,
+Lands seriell, Takt ~12 min.
 
 ---
 

@@ -2331,46 +2331,78 @@ async function tickDispatch(): Promise<void> {
   try {
     // notes are never dispatchable (Task.kind) — skipping them here also shields legacy
     // fleet.json rows queued before the field existed.
-    const next = tasks.find((t) => t.kind === "lane" && t.status === "queued" && !dispatchingTasks.has(t.id));
-    if (!next) return;
-    // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
-    // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
-    // 8 s tick doesn't churn saveState.
-    const waiting = (note: string): void => {
-      if (next.note !== note) { next.note = note; saveState(); }
-    };
-    // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
-    // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
-    // with no signal
-    const repo = next.repo ?? DISPATCH_REPO;
-    const lanes = slots.filter((s) => inRepo(s, repo)).length;
-    if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); return; }
-    const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
-    if (!free) { waiting("waiting: no free slot"); return; }
-    // THE UNATTENDED INVARIANT: nothing starts on its own that has not been read against the tree
-    // it will actually run on, with the exact brief it will receive. `analysisStale` covers both —
-    // a moved integration tip and a brief the owner edited after the verdict. Fresh here means
-    // fresh NOW: the tip is re-read rather than taken from integrationTips, because a cache that
-    // lags by one land is exactly the cache that would green-light the case this guards.
-    // ...but only while there IS an analyst. With FLEET_ANALYSIS_MS=0 nobody would ever clear this
-    // gate, and a released queue that silently never drains is worse than an unread one: the guard
-    // would have become a deadlock dressed as a safety property. No reader configured, no read
-    // required — the same stance as an absent FLEET_VERIFY_CMD, which does not gate either.
-    if (ANALYSIS_TICK_MS) {
-      const a = next.analysis;
-      if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
-      const tip = await integrationHead(repoCanon(repo));
-      if (tip) integrationTips.set(repoCanon(repo), tip);
-      if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
+    const candidates = tasks.filter((t) => t.kind === "lane" && t.status === "queued" && !dispatchingTasks.has(t.id));
+    if (!candidates.length) return;
+    // WHAT IS RUNNING RIGHT NOW, in the two shapes `collides` speaks (analysis-prompt.ts: "the ids
+    // of other tasks in this batch, and the branch names of the open lanes"). Both are needed and
+    // neither is the rare one: a row analysed while its neighbour was still queued names that
+    // neighbour's ID, and once the neighbour is dispatched it is a BRANCH the next sweep names
+    // instead. A consumer that compared only ids would miss half the field and look like it worked.
+    // Mid-spawn rows count as running: dispatchTask reserves the id before its first await, so the
+    // task is a lane in all but status. No repo filter — both key spaces are globally unique, and
+    // narrowing them could only ever drop a match, i.e. weaken the very check this is.
+    const runningIds = new Set<string>(dispatchingTasks);
+    for (const t of tasks) if (t.status === "sent") runningIds.add(t.id);
+    const runningBranches = new Set(slots.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch));
+    for (const next of candidates) {
+      // a released task that cannot run RIGHT NOW says why on its own row instead of sitting silent
+      // until the owner digs (the stalled-queue finding, 2026-08-04). Written only on change, so the
+      // 8 s tick doesn't churn saveState.
+      const waiting = (note: string): void => {
+        if (next.note !== note) { next.note = note; saveState(); }
+      };
+      // count lanes in the task's TARGET repo: the cap bounds unattended fan-out per project —
+      // a hand-driven lane in an unrelated repo used to eat the budget and stall the queue
+      // with no signal
+      const repo = next.repo ?? DISPATCH_REPO;
+      const lanes = slots.filter((s) => inRepo(s, repo)).length;
+      if (lanes >= DISPATCH_MAX_LANES) { waiting(`waiting: ${lanes}/${DISPATCH_MAX_LANES} lanes busy in ${basename(repo)} — land or close one`); return; }
+      const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
+      if (!free) { waiting("waiting: no free slot"); return; }
+      // THE UNATTENDED INVARIANT: nothing starts on its own that has not been read against the tree
+      // it will actually run on, with the exact brief it will receive. `analysisStale` covers both —
+      // a moved integration tip and a brief the owner edited after the verdict. Fresh here means
+      // fresh NOW: the tip is re-read rather than taken from integrationTips, because a cache that
+      // lags by one land is exactly the cache that would green-light the case this guards.
+      // ...but only while there IS an analyst. With FLEET_ANALYSIS_MS=0 nobody would ever clear this
+      // gate, and a released queue that silently never drains is worse than an unread one: the guard
+      // would have become a deadlock dressed as a safety property. No reader configured, no read
+      // required — the same stance as an absent FLEET_VERIFY_CMD, which does not gate either.
+      if (ANALYSIS_TICK_MS) {
+        const a = next.analysis;
+        if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
+        const tip = await integrationHead(repoCanon(repo));
+        if (tip) integrationTips.set(repoCanon(repo), tip);
+        if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
+        // COLLISIONS ARE READ NOW, NOT LEFT TO THE CAP. The analyst has always computed which other
+        // work touches the same files and nothing consumed it: the only thing keeping two colliding
+        // lanes apart was DISPATCH_MAX_LANES, a number that knows nothing about files — which is
+        // exactly why that number could never rise. Three properties this check is built on:
+        //   · held ONLY against work that is actually running, never against another queued row.
+        //     Two rows naming each other would otherwise wait for each other forever, both of them
+        //     politely displaying why, and nobody would see a deadlock in two rows saying "waiting".
+        //   · held only on a FRESH analysis. This sits BELOW the staleness gate and inside the
+        //     "is there an analyst at all" block on purpose: a collision list nobody refreshes
+        //     would pin a row indefinitely on a fact that has expired — invisibly wrong, which is
+        //     worse than not checking. With ANALYSIS_TICK_MS = 0 there is no collision data being
+        //     produced, so none is read.
+        //   · it SKIPS rather than returns. Every gate above is a condition of the machine and
+        //     rightly stops the tick; this one is a property of one row, and a collision clears on
+        //     lane-land timescales. Blocking the queue head for hours on it would have replaced a
+        //     cap that starts too little with a check that starts nothing.
+        const hit = a.collides.find((c) => runningIds.has(c) || runningBranches.has(c));
+        if (hit) { waiting(`waiting: collides with running work (${hit}) — same files, says the analyst`.slice(0, 200)); continue; }
+      }
+      // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned (was
+      // synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet fleet leaves
+      // the task queued for the next eligible tick. No idle/alive gate: the target lane does not
+      // exist yet.
+      const pre = await canDeliver(free, { now: Date.now(), alive: false });
+      if (!pre.ok) return; // task stays queued
+      const r = await dispatchTask(next, free, false);
+      if (r.ok) await r.tail;
+      return; // serial by design — one lane per tick, whichever row got past every gate
     }
-    // master stop + quiet hours gate the dispatcher BEFORE a lane is spawned (was
-    // synergy-findings.md Tier-0 #1 — neither reached this path) — a paused or quiet fleet leaves
-    // the task queued for the next eligible tick. No idle/alive gate: the target lane does not
-    // exist yet.
-    const pre = await canDeliver(free, { now: Date.now(), alive: false });
-    if (!pre.ok) return; // task stays queued
-    const r = await dispatchTask(next, free, false);
-    if (r.ok) await r.tail;
   } finally {
     dispatchBusy = false;
   }

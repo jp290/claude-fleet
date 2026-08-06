@@ -45,6 +45,7 @@ Four further findings from the same audit, and where each one went:
 | an override was indistinguishable from an ordinary promote | releasing a flagged row writes a note and a `task_override` audit event |
 | priority inversion: an old pending row pre-empted a fresh promote | gone by construction — `pending` and `queued` no longer compete for a tick |
 | the reader could not see the running fleet | open lanes ride in the prompt; `collides` names branches, not just batch siblings |
+| `collides` was computed every sweep and read by nobody | `tickDispatch` holds a colliding row back (invariant 6) — before that, only the lane cap kept two colliding lanes apart |
 
 ## 3. The reading
 
@@ -79,6 +80,19 @@ analyst failing to *answer*, and that must never be able to read as either judge
 5. **An observation is not work.** A `note` cannot be released (409). `adopt` converts it
    into a `pending` brief — a conversion the *owner* performs, which is what keeps the
    steward from ever authoring runnable work.
+6. **Nothing starts unattended on top of work it was told it collides with.** A released
+   row whose `collides` names something *actually running* is held, with the match on its
+   own row, and starts by itself once that work is gone. Three boundaries make this a wait
+   rather than a new gate: it is held only against **running** work (never another queued
+   row — two rows naming each other would deadlock, invisibly, both displaying "waiting");
+   only on a **fresh** analysis (it sits below the staleness check and inside invariant 3's
+   "is there an analyst at all", because a collision list nobody refreshes would pin a row
+   on an expired fact); and it **skips to the next row** rather than stopping the tick,
+   since a collision clears on lane-land timescales and every other wait clears in seconds.
+   The field is mixed — task ids *and* branch names — so both are matched: ids against
+   `sent` rows, branches against open lanes. Reading only ids would look like it worked.
+   The attended button (`POST /api/tasks/:id/dispatch`) is untouched, like every other
+   automation bound. Proven end-to-end in `e2e/tasks.ts` (h10), counter-probe included.
 
 ## 5. Knobs
 

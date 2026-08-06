@@ -53,7 +53,15 @@ primitive plus three conventions:
    the point).
 
 2. **Safe: cwd is the dedicated worktree, never the main checkout.** The steward
-   lives in `<repo>.worktrees/steward` (branch `steward`). Rationale: the main
+   lives in `<repo>.worktrees/steward`. **Corrected 2026-08-07: the branch checked
+   out there is `steward-live`, not `steward`.** Both refs exist; `steward` was left
+   behind at `b5a140b` (2026-07-30) when the worktree was rebuilt on a fresh branch
+   off `main` (`steward-live` reflog: *"branch: Created from main"* at `184fc72`).
+   The live pairing is recorded independently in `docs/land-mechanics.md` (the paragraph
+   opening *"A worktree is a repo for this purpose"*), which measured `worktree.repo` =
+   `…/claude-fleet.worktrees/steward` with `worktree.base` = `steward-live`. Anyone
+   who merges or force-updates `steward` on the strength of the old sentence moves a
+   ref nothing reads. Rationale: the main
    checkout contains `fleet.json` with the plaintext owner token — a slot there is
    the confused-deputy exposure of Hardening #1 (BACKLOG). A worktree materializes
    only tracked files; `fleet.json` never exists there. `CLAUDE.md` (gitignored) is

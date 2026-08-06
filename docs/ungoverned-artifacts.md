@@ -14,10 +14,16 @@ are, respectively, the file that governs every lane and the data that will decid
   `dispositions.jsonl`, `audit.jsonl`, `steward-journal.jsonl`.
 - `git ls-files --error-unmatch CLAUDE.md` → *did not match any file known to git*. It is not
   merely ignored, it is **untracked**: no history, no diff, no blame, no review, no rollback.
-- It reaches lanes by a deliberate copy: `server.ts:868–877` copies `.env`, `CLAUDE.md`,
-  `.claude/settings.local.json` into a new worktree — and, by design, **only if the file is
-  git-ignored**, precisely so the copy cannot dirty the lane and block `land`. The mechanism is
-  well-built and well-commented; the consequences below are unintended.
+- It reaches lanes by a deliberate copy: the copy loop inside `createWorktree` — `server.ts:1256`
+  as read on 2026-08-07, but **grep `createWorktree`, not the number** — copies `.env`,
+  `CLAUDE.md`, `.claude/settings.local.json` into a new worktree — and, by design, **only if the
+  file is git-ignored**, precisely so the copy cannot dirty the lane and block `land`. The
+  mechanism is well-built and well-commented; the consequences below are unintended.
+  *Correction 2026-08-07: this line read `server.ts:868–877`, a range that pointed at unrelated
+  code. The reason it now carries a name and not just a number is measured, not stylistic:
+  `docs/agent-visibility-2026-08-06.md` corrected the same reference to `1251`, which was exact
+  at `04646d3` and was five lines off two commits later (`ed5c352`, `d49c6e8`) — a bare line
+  number into `server.ts` has a half-life of days.*
 - `OWNER.md` (15 KB, the safety-critical owner-model) is untracked *and* not in the copy list —
   so no lane has ever seen it. Probably intended; recorded because nothing states it.
 

@@ -20,12 +20,16 @@ explicitly relative to it. This doc deliberately does not touch `gate-coverage.m
    `verified:false` rows about work that was fine. It also makes `CLAUDE.md`'s "**no known
    flakes**" false as written, which matters because that sentence is the licence lanes use to
    treat a red suite as their own defect.
-2. **A verify timeout is recorded as a failure, not as a non-measurement (§5).** `runVerify`
+2. ~~**A verify timeout is recorded as a failure, not as a non-measurement (§5).** `runVerify`
    returns `ok: !timedOut && code === 0` (`server.ts:2550`), so a timeout is `ok:false` — it stops
    the land *and* writes `verified:false` to the outcome ledger, although the project has an
    `ok:null` "nothing was measured" state one line away. *Cost:* the same number-poisoning
    `gate-coverage.md` §4 documents for `verified:true`, in the opposite direction, and it gets
-   worse with every second added to the gate.
+   worse with every second added to the gate.~~ **FIXED 2026-08-06** — and it had fired by then:
+   a real land was stopped with `ok:false` over an output holding zero FAIL lines, ~255 s of whose
+   300 s budget was spent queueing behind another suite (`suite-contention.md` §8). `runVerify` now
+   records `ok:null` + `timedOut`, so `verified:null` reaches the ledger, and the record carries
+   `ms`/`waitMs` so the queueing is separable from the work.
 > **Items 3 and 5 below are FIXED as of the 2026-07-28 gate** (§7/§8 carry the detail; this
 > ranking predates them): the gate now runs `e2e-clean-review` + `e2e-security` +
 > `e2e-claude-gate` — live land-path coverage — and its `tsc` list typechecks every standalone
@@ -208,6 +212,13 @@ And one finding about the gate **as it stands today**, which raising the content
 > observed: I saw no timeout in any of the 19 suite runs measured here. The cost is that a machine-load artefact enters K1 as a
 > red verdict about a lane's *work* — the same class of number-poisoning `gate-coverage.md` §4
 > already documents for `verified:true`.
+>
+> **FIXED 2026-08-06, and the "INFERRED, not observed" caveat did not hold.** It was observed on
+> 2026-08-06: a land stopped with `ok:false` over an output with zero FAIL lines. The headroom
+> arithmetic above also missed the real driver — the budget is wall-clock and every step of the
+> chain must take the machine-wide suite mutex first, so it silently contains an unbounded wait
+> (~255 s of 300 s in that run). A timeout is now `ok:null` + `timedOut`, the record carries
+> `ms`/`waitMs`, and `e2e-stage.sh` says out loud who it is waiting for. `suite-contention.md` §8.
 
 **Verdict:** the full suite as an unconditional synchronous gate is affordable in wall-clock terms
 only if you accept ~6.4 min per clean land, ~19 min on the repair path, multiplied by however many

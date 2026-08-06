@@ -172,6 +172,35 @@ pin("watchdog.sh yields a VERIFY_CMD, an AUDIT_CMD and an srv-spawn line",
 }
 
 {
+  // The suite mutex reports its own wait, and server.ts's runVerify PARSES that report to split a
+  // verify run into work and waiting. Shell printf on one side, a RegExp on the other, and nothing
+  // between them — the shape this file exists for. If the format drifts, nothing breaks loudly:
+  // waitMs simply goes absent and the gate is back to a wall-clock number that silently contains
+  // an unbounded queue, which is the 2026-08-06 incident in full.
+  // Stated as a RULE, not a snapshot: render EVERY suite-lock format the script has and hold it
+  // against the server's one expression. Both directions matter and they fail differently — a
+  // format the parser cannot see at all is a wait recorded as zero; a heartbeat that classifies as
+  // an ACQUIRE would be summed a second time and inflate the reported wait.
+  const stage = read("e2e-stage.sh");
+  const fmts = [...stage.matchAll(/printf '(\[suite-lock\][^']*)\\n'/g)].map((m) => m[1]);
+  pin("e2e-stage.sh reports on the suite mutex it takes", fmts.length >= 2, `${fmts.length} formats`);
+  const lockSrc = /const SUITE_LOCK_RE = \/(.+?)\/([a-z]*);/.exec(server);
+  pin("server.ts states SUITE_LOCK_RE", !!lockSrc, lockSrc?.[1] ?? "");
+  if (lockSrc && fmts.length) {
+    // without `g`: .exec() on a global RegExp carries lastIndex between calls
+    const re = new RegExp(lockSrc[1], lockSrc[2].replace(/g/g, ""));
+    const rendered = fmts.map((f) => f.replace(/%s/g, "7"));
+    const parsed = rendered.map((l) => re.exec(l)?.[1] ?? null);
+    pin("every suite-lock line e2e-stage.sh prints is one runVerify can parse",
+      parsed.every((k) => k !== null), `${JSON.stringify(rendered.filter((_, i) => parsed[i] === null))}`);
+    pin("exactly one of them is the ACQUIRE runVerify sums; the rest are heartbeats",
+      parsed.filter((k) => k === "acquired after").length === 1
+        && parsed.filter((k) => k === "waiting").length === parsed.length - 1,
+      `parsed=${JSON.stringify(parsed)}`);
+  }
+}
+
+{
   // FLEET_CLEAN_REVIEW is three-valued and every unrecognised spelling falls through to "off".
   // A typo here does not fail — it silently disables the reviewer, which is why it is pinned to the
   // server's OWN parse expressions rather than to a list of words written down twice.

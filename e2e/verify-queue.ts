@@ -10,13 +10,16 @@
 //    server at a PRIVATE lock directory (FLEET_SUITE_LOCK, one srv restart) to drive the three
 //    states the real lock cannot be made to have on demand without breaking serialization for
 //    every other suite on this box: a dead holder, a hand-parked dir, and no lock at all. Touching
-//    the real lock to test them would be the one thing this feature must never do.
+//    the real lock to test them would be the one thing this feature must never do. §2b turns the
+//    same three states around and tests the WRITER — what e2e-stage.sh says out loud while it
+//    blocks, which is the half the land gate's silent 255 s wait went missing in.
 //  · The REPORTS are hearsay, and the checks say so: what is asserted is that the server binds a
 //    report to the TOKEN'S slot (never a `slot` field in the body), that a phase CHANGE reaches
 //    audit.jsonl while an identical re-post does not, and that a report dies with its lane.
 //
 // Nothing here asserts that a suite ran. Nothing in the feature runs one.
-import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, readText, restartSrv } from "./harness";
 
@@ -179,6 +182,94 @@ export async function run(): Promise<void> {
     rmSync(OWN_LOCK, { recursive: true, force: true });
     check("§2 the lock going away is visible on the next poll",
       (await gateOf()) == null, JSON.stringify(await gateOf()));
+  }
+
+  // ===== §2b the WRITER's side: what e2e-stage.sh says while it blocks =====
+  // §2 tests the server READING the lock. This tests the wrapper TAKING it, because the silence
+  // on that side is what the land gate paid for on 2026-08-06: FLEET_VERIFY_TIMEOUT_MS is a
+  // wall-clock budget, several steps of the gate chain must take this mutex first, and the loop
+  // that waits printed nothing at all. The expired `verify.out` therefore ended after somebody
+  // else's ALL PASS with no hint that ~255 s of its 300 s went into queueing.
+  // Driven against a PRIVATE lock dir and by sourcing the script directly — the real mutex is held
+  // by this very run, so contending for it here would deadlock the suite against itself.
+  // The three states must be told apart in WORDS, not merely reported: `held` resolves on its own,
+  // `stale` resolves this instant, and `parked` never resolves at all, and a waiter that cannot
+  // tell them apart cannot decide whether to keep waiting.
+  {
+    const SRC = ((): string => {
+      try { return dirname(readlinkSync(`${ROOT}/node_modules`)); } catch { return ROOT; }
+    })();
+    const STAGE = `${SRC}/e2e-stage.sh`;
+    const PROBE = `${TMP}/fleet-e2e-stagelock-${process.pid}`;
+    // sourcing the stage script IS taking the lock (that is the whole design), so a probe that
+    // must block is killed rather than waited out: the first line is printed before the loop's
+    // first `sleep 15`, which is precisely the property under test.
+    const stageSay = async (killAfterMs: number): Promise<string> => {
+      const p = Bun.spawn(["sh", "-c", `. "${STAGE}"`],
+        { cwd: SRC, env: { ...process.env, FLEET_SUITE_LOCK: PROBE }, stdout: "pipe", stderr: "pipe" });
+      const t = killAfterMs > 0 ? setTimeout(() => { try { p.kill(); } catch { /* already gone */ } }, killAfterMs) : null;
+      const out = `${await new Response(p.stdout).text()}${await new Response(p.stderr).text()}`;
+      await p.exited;
+      if (t) clearTimeout(t);
+      return out;
+    };
+    check("§2b fixture: the stage script is reachable from inside the instance (node_modules → source tree)",
+      existsSync(STAGE), STAGE);
+
+    // FREE: nothing to wait for. The acquire line is emitted ANYWAY, and that is load-bearing —
+    // runVerify's SUITE_LOCK_RE counts these lines, so "no line" has to mean "this command does
+    // not report its waits" and never "it waited zero".
+    rmSync(PROBE, { recursive: true, force: true });
+    const free = await stageSay(0);
+    // `[01]s`, not `0s`: the script times itself with `date +%s`, so a one-second granularity can
+    // report 1 for a millisecond of work whenever the two reads straddle a boundary. Asserting the
+    // exact 0 would buy nothing and cost a rare, unreproducible red.
+    check("§2b an uncontended lock still announces itself — an acquire line even at ~0s, so absence means 'does not report'",
+      /^\[suite-lock\][^\n]* acquired after [01]s \(pid \d+\)$/m.test(free), JSON.stringify(free.slice(0, 400)));
+    check("§2b an uncontended acquire says nothing about waiting",
+      !free.includes("waiting"), JSON.stringify(free.slice(0, 400)));
+
+    // HELD: a live holder. The line must name it, so "which suite is in front of me" is answered
+    // by the log rather than by a `ps` nobody runs after the fact.
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
+    writeFileSync(`${PROBE}/pid`, `${process.pid}\n`);
+    const held = await stageSay(2500);
+    check("§2b blocking on a LIVE holder speaks immediately, naming the pid it is waiting for",
+      /^\[suite-lock\][^\n]* waiting [01]s for [^\n]* — held by live pid \d+ \(up /m.test(held)
+        && held.includes(`held by live pid ${process.pid} `), JSON.stringify(held.slice(0, 400)));
+    check("§2b it never claims to have acquired a lock it is still waiting for",
+      !/ acquired after /.test(held), JSON.stringify(held.slice(0, 400)));
+    check("§2b the blocked probe left the holder's pid file untouched",
+      readFileSync(`${PROBE}/pid`, "utf8").trim() === String(process.pid), readFileSync(`${PROBE}/pid`, "utf8").trim());
+
+    // PARKED: a pid-LESS dir. Nothing reaps it, ever — the one state where "keep waiting" is the
+    // wrong answer, so the line has to say so instead of looking like a busy machine.
+    rmSync(`${PROBE}/pid`, { force: true });
+    const parkedSay = await stageSay(2500);
+    check("§2b a hand-parked (pid-less) dir is called parked, and says nothing will ever reap it",
+      /waiting [01]s for [^\n]* — parked — the dir carries NO pid file/.test(parkedSay)
+        && parkedSay.includes("rmdir it to release"), JSON.stringify(parkedSay.slice(0, 400)));
+    check("§2b parked is NOT reported as a live holder — a waiter must not read it as 'soon'",
+      !parkedSay.includes("held by live pid"), JSON.stringify(parkedSay.slice(0, 400)));
+
+    // STALE: a dead holder. Distinct words again, and it must actually reap and take the lock —
+    // the vocabulary is worthless if the third state is only ever described and never resolved.
+    rmSync(PROBE, { recursive: true, force: true });
+    mkdirSync(PROBE, { recursive: true });
+    const goneP = spawnSync("/bin/sh", ["-c", "exit 0"]).pid ?? 0;
+    let deadNow = false;
+    try { process.kill(goneP, 0); } catch { deadNow = true; }
+    check("§2b fixture: a pid that is genuinely no longer running", deadNow && goneP > 0, String(goneP));
+    writeFileSync(`${PROBE}/pid`, `${goneP}\n`);
+    const stale = await stageSay(5000);
+    check("§2b a dead holder is called stale, distinctly from parked and from held",
+      new RegExp(`waiting [01]s for [^\\n]* — stale — recorded pid ${goneP} is gone`).test(stale)
+        && !stale.includes("parked") && !stale.includes("held by live pid"), JSON.stringify(stale.slice(0, 400)));
+    check("§2b the stale holder is reaped and the lock actually taken (the state resolves, it is not just named)",
+      / acquired after \d+s \(pid \d+\)$/m.test(stale) && readFileSync(`${PROBE}/pid`, "utf8").trim() !== String(goneP),
+      JSON.stringify(stale.slice(0, 400)));
+    rmSync(PROBE, { recursive: true, force: true });
   }
   // back to the real lock for everything below — and back to the env every later module expects
   await restartSrv();

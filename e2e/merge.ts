@@ -438,6 +438,87 @@ export async function run(lc: LaneCtx): Promise<void> {
     await post("/api/worktrees/discard", { repo: REPO, path: lnVs.cwd, branch: lnVs.branch });
   }
 
+  // (C2) clean rebase whose verify command NEVER ANSWERS — the server kills it at
+  // FLEET_VERIFY_TIMEOUT_MS. The state this covers was a real verdict on 2026-08-06: a land
+  // stopped with `verify.ok:false` and "clean rebase, but verify failed" over an output holding
+  // zero FAIL lines, one suite's ALL PASS and a timeout note. The gate had been killed while
+  // queueing behind another suite's ~8-minute run; ~107 s of its 300 s budget was work and ~255 s
+  // was waiting. As `ok:false` that reads as a reasoned no about the tree, which is what sent the
+  // affected lane hunting a defect of its own. A timeout is a NON-answer, so it now lands in
+  // ok:null WITH `timedOut` — same never-land group as SKIPPED, different words.
+  // The three things asserted here are the three that could regress independently: the STATE
+  // (ok:null + timedOut, and explicitly NOT false), the SAFETY (no auto-land, commit not on main),
+  // and the ACCOUNTING (`ms` present and at least the budget).
+  {
+    const budget = Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 0) || 0;
+    check("V1 setup: the suite runs with a verify timeout small enough to be reachable (e2e-isolated.sh)",
+      budget > 0 && budget <= 30_000, `FLEET_VERIFY_TIMEOUT_MS=${process.env.FLEET_VERIFY_TIMEOUT_MS ?? "(unset)"}`);
+    const lnVt = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnVt.cwd}/verify-hang.txt`, "lane work carrying a VERIFYHANG marker\n");
+    spawnSync("git", ["-C", lnVt.cwd, "add", "verify-hang.txt"]);
+    // same retry as the skip cases: a server git poll holding index.lock makes a one-shot commit
+    // fail, and a lane with no marker committed would verify GREEN and land — reporting this
+    // check's own failure for the wrong reason
+    let vtCommitted = false;
+    for (let i = 0; i < 20 && !vtCommitted; i++) {
+      vtCommitted = spawnSync("git", ["-C", lnVt.cwd, "commit", "-qm", "verify-hang lane work"]).status === 0;
+      if (!vtCommitted) await Bun.sleep(150);
+    }
+    check("V1 setup: the hanging-verify lane committed its marker (precondition for the timeout below)",
+      vtCommitted, spawnSync("git", ["-C", lnVt.cwd, "status", "--porcelain"]).stdout.toString().trim());
+    await Bun.write(`${REPO}/vt-main.txt`, "main side\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", REPO, "add", "vt-main.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "vt main work"]);
+    await settleForMerge(lnVt.slot);
+    await post(`/api/slots/${lnVt.slot}/merge`, {});
+    // waitMerge's 60s ceiling comfortably covers this job: it blocks for the whole budget (8s)
+    // before the server can even record a verdict
+    const vVt = await waitMerge(lnVt.slot);
+    const vt = vVt.last?.verify;
+    check("V1: a verify KILLED by the timeout records ok:null + timedOut — a non-answer, not a failure",
+      vt?.ok === null && vt?.timedOut === true, JSON.stringify(vt));
+    check("V1: the timeout is NOT ok:false — it must never read as a reasoned no about the tree",
+      vt?.ok !== false, JSON.stringify(vt?.ok));
+    check("V1: the timed-out verdict says TIMED OUT in words, and does not blame the tree",
+      (vVt.last?.detail ?? "").includes("TIMED OUT") && !(vVt.last?.detail ?? "").includes("verify failed"),
+      JSON.stringify(vVt.last?.detail));
+    check("V1: the retained output keeps what the gate managed to print AND names the timeout",
+      (vt?.out ?? "").includes("ALL PASS") && /\[verify TIMED OUT after \d+ms/.test(vt?.out ?? ""),
+      JSON.stringify((vt?.out ?? "").slice(-260)));
+    check("V1: the verify record carries its duration — ms is set and at least the budget",
+      typeof vt?.ms === "number" && vt.ms >= budget, JSON.stringify({ ms: vt?.ms, startedAt: vt?.startedAt, budget }));
+    // THE SPLIT: the stand-in prints the same `[suite-lock] … acquired after Ns` lines e2e-stage.sh
+    // prints in a real chain — three staged steps, 3s + 0s + 1s. A total duration alone would have
+    // said nothing about the 2026-08-06 land; the point of the field is that the queueing is
+    // separable from the work, and only summing the reports the waiter itself wrote can do that.
+    // 3s + 0s + 1s from the three steps that got in, PLUS 12s from a fourth still queued when the
+    // clock ran out. That fourth is the case that matters most and the one a naive sum drops: a
+    // land killed WHILE waiting never sees its own acquire line, and reporting 0s for it would be
+    // this whole change telling the original lie again. Its heartbeat is a minute coarse, so the
+    // total is a lower bound and says so — `waitPartial`, and "at least" in the words.
+    check("V1: waitMs sums the reported waits AND the step still queued at the kill (3+0+1 +12)",
+      vt?.waitMs === 16_000 && vt?.waitPartial === true, JSON.stringify({ waitMs: vt?.waitMs, partial: vt?.waitPartial, ms: vt?.ms }));
+    check("V1: the reserved note counts only the steps that blocked, and marks the total a lower bound",
+      /\[suite mutex: at least 16s of this \d+s run was spent waiting for [^\n]*, not verifying \(2 of 3 staged steps blocked, and one more was still queued after 12s when the run ended\)\]/.test(vt?.out ?? ""),
+      JSON.stringify((vt?.out ?? "").slice(-360)));
+    check("V1: the verdict's own sentence carries the split, so the owner reads it without opening the output",
+      /queued behind the suite mutex rather than verifying/.test(vVt.last?.detail ?? ""), JSON.stringify(vVt.last?.detail));
+    check("V1: a signal-killed run records exitCode:null rather than inventing an exit status",
+      vt?.exitCode === null, JSON.stringify(vt?.exitCode));
+    // THE SAFETY INVARIANT: `verify` absent (unconfigured) is the only state that auto-lands.
+    // A form change at the gate that quietly moved the timeout out of the never-land group would
+    // open an unattended land behind a gate that measured nothing, and this is what catches it.
+    check("V1: a timed-out verify does NOT auto-land (downgraded to resolved, lane kept)",
+      !vVt.gone && vVt.last?.status === "resolved" && vVt.last?.landed === false && exists(lnVt.cwd),
+      JSON.stringify(vVt.last));
+    const vtLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
+    check("V1: the timed-out lane's commit has NOT reached main",
+      !vtLog.includes("verify-hang lane work"), vtLog.trim());
+    // discarded, not landed: the marker would make every later clean lane in this suite hang too
+    await post(`/api/slots/${lnVt.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: REPO, path: lnVt.cwd, branch: lnVt.branch });
+  }
+
   // (D) a red verify whose log has the SHAPE a real suite's has: the failing check named once,
   // buried among hundreds of PASS lines, only the count at the end, and a noisy stderr alongside.
   // The stored `verify.out` used to be `(stdout + stderr).slice(-2048)`, which on exactly this
@@ -568,6 +649,14 @@ export async function run(lc: LaneCtx): Promise<void> {
     // left the tree dirty or unrebased would have come back "error", not "resolved"
     check("② the author's resolution was git-verified, and verify ran against the rebased tree",
       vA2.last?.verify?.ok === true && (vA2.last?.verify?.cmd ?? "").endsWith("fakeverify"),
+      JSON.stringify(vA2.last?.verify));
+    // the negative half of the wait accounting, on the nearest readable verdict with a NORMAL run:
+    // this stand-in prints no `[suite-lock]` line, so the field must be ABSENT rather than 0. The
+    // two answers are different — "this command does not report its waits" versus "it waited none"
+    // — and a 0 here would read as a measurement nobody made. `ms` is present regardless.
+    check("② a verify that reports no lock waits carries NO waitMs at all (absent ≠ zero), but still carries ms",
+      vA2.last?.verify?.waitMs === undefined && vA2.last?.verify?.waitPartial === undefined
+        && typeof vA2.last?.verify?.ms === "number",
       JSON.stringify(vA2.last?.verify));
     const a2Log = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
     check("② the author's resolution has NOT reached main before the owner confirms",

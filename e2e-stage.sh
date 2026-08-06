@@ -41,17 +41,66 @@
 #   - A pid-LESS lock dir is a manual hold (a human parked the machine) and is never reaped.
 #   - The reap re-checks the pid VALUE before removing, shrinking the reap/re-acquire race to
 #     microseconds; two pollers at 15s cadence cannot practically collide inside it.
+#
+# --- AND THE WAIT SPEAKS (2026-08-06) ----------------------------------------------------------
+# This loop used to block in complete silence, and that silence had a price the land gate paid.
+# FLEET_VERIFY_TIMEOUT_MS is a WALL-CLOCK budget, but several steps of the gate chain must take
+# this lock first, and its holder may be any suite — including an ~8-minute ./e2e-isolated.sh. So
+# the budget silently contains an unbounded wait. Measured on 2026-08-06: a land was stopped with
+# `verify.ok:false` over an output that contained zero FAIL lines, and of its 300 s budget ~107 s
+# was work and ~255 s was this loop. The verdict read as a reasoned "no" and named nothing.
+#
+# One line when we first block, a heartbeat each minute after, and ALWAYS one line on acquisition
+# — including `after 0s`, so that the ABSENCE of the acquire line means "this command does not
+# report waits" rather than "it did not wait". server.ts's runVerify parses exactly that line
+# (SUITE_LOCK_RE) to split the run into work and wait; e2e/pins.ts holds the two sides together.
+#
+# The three states carry the SAME vocabulary the server's suiteLockView() projects onto the board
+# (held · stale · parked, server.ts GateLockState), because they are the same three facts and a
+# reader should not have to learn them twice:
+#   held   — a live pid holds it. Named with its elapsed time and its command line, so "which
+#            suite is in front of me" is answered by the line rather than by a follow-up `ps`.
+#   stale  — the recorded pid is gone. NOTHING is running; we reap it and take the lock.
+#   parked — the dir exists with NO pid file. A human parked the machine on purpose; this is the
+#            one state that never resolves on its own, and a waiter must not read it as "soon".
+# Every emission is throttled through _st_say_at, including the reap: a lock dir that resists
+# rmdir would otherwise spin this loop into a log flood.
 FLEET_SUITE_LOCK="${FLEET_SUITE_LOCK:-/tmp/fleet-e2e.lock}"
+_st_who=$(basename "$0" 2>/dev/null || echo suite)
+_st_t0=$(date +%s)
+_st_say_at=0   # elapsed seconds at which the next line is due; 0 = the first block always speaks
 while ! mkdir "$FLEET_SUITE_LOCK" 2>/dev/null; do
-  _st_hp=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null)
-  if [ -n "$_st_hp" ] && ! kill -0 "$_st_hp" 2>/dev/null; then
-    [ "$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null)" = "$_st_hp" ] \
-      && rm -f "$FLEET_SUITE_LOCK/pid" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null
+  # `|| true`: a missing pid file makes `cat` fail, and under a `set -e` caller (steward-arena.sh)
+  # a failing command substitution in an assignment would abort the whole run — on the PARKED
+  # state, i.e. exactly when it must instead be reported.
+  _st_hp=$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)
+  _st_dead=0
+  if [ -z "$_st_hp" ]; then
+    _st_why="parked — the dir carries NO pid file, so nothing will ever reap it (rmdir it to release)"
+  elif kill -0 "$_st_hp" 2>/dev/null; then
+    _st_why="held by live pid $_st_hp (up $(ps -o etime= -p "$_st_hp" 2>/dev/null | tr -d ' ')): $(ps -o command= -p "$_st_hp" 2>/dev/null | cut -c1-70)"
+  else
+    _st_dead=1
+    _st_why="stale — recorded pid $_st_hp is gone, nothing is running; reaping it"
+  fi
+  _st_el=$(( $(date +%s) - _st_t0 ))
+  if [ "$_st_el" -ge "$_st_say_at" ]; then
+    printf '[suite-lock] %s waiting %ss for %s — %s\n' "$_st_who" "$_st_el" "$FLEET_SUITE_LOCK" "$_st_why"
+    _st_say_at=$(( _st_el + 60 ))
+  fi
+  if [ "$_st_dead" = 1 ]; then
+    # `if` rather than the old `[ … ] && rm && rmdir` AND-OR chain: under `set -e` that list exits
+    # the caller whenever the pid changed under us or the rmdir loses the race — a normal outcome
+    # of the reap, turned into an abort.
+    if [ "$(cat "$FLEET_SUITE_LOCK/pid" 2>/dev/null || true)" = "$_st_hp" ]; then
+      rm -f "$FLEET_SUITE_LOCK/pid" && rmdir "$FLEET_SUITE_LOCK" 2>/dev/null || true
+    fi
     continue
   fi
   sleep 15
 done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
+printf '[suite-lock] %s acquired after %ss (pid %s)\n' "$_st_who" "$(( $(date +%s) - _st_t0 ))" "$$"
 
 # --- dead-socket reap (owner decision 2026-08-05, hygiene before continuous operation). tmux
 # never unlinks a -L socket file when its server exits, so every instance leaves one behind —

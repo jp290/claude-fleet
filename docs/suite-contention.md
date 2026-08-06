@@ -191,3 +191,55 @@ up only as the lock. Doing it from `e2e-stage.sh` needs the live server's host, 
 credential the wrapper has no business knowing — a real coupling, and the lock line already answers
 "something is running" for that case. Also, the info card is desktop-only (`renderBoard` returns
 early on mobile), so the phone sees none of this.
+
+## 8. The waiter speaks for itself (2026-08-06)
+
+§7 gave the mutex a *reader*: the board can now say who holds it. It could not help the one party
+that most needs the answer — the process **standing in the queue**, whose output is the only place
+that fact ever gets written down.
+
+The land gate paid for that on 2026-08-06. `FLEET_VERIFY_TIMEOUT_MS` is a wall-clock budget, but
+every step of the gate chain takes this mutex first, and its holder may be any suite on the box. So
+the budget silently contains an unbounded wait. Reconstructed from `e2e-trail/`:
+
+| | |
+|---|---|
+| 12:40:56 → 12:49:03 | an `isolated` run holds the lock (8 m 07 s, 1363 rows) |
+| ~12:44:55 | the land's verify starts — 300 s budget, and it blocks |
+| 12:49:11 | the chain's first suite finally stages (`clean-review`), 8 s after the holder let go |
+| 12:49:36 | `clean-review` green, `security` starts |
+| ~12:49:55 | the budget expires; the verify is killed |
+| 12:50:12 | `security` is **still writing trail rows** — see the orphan note below |
+
+The verdict was `verify.ok:false`, "clean rebase, but verify failed", over a retained output with
+zero FAIL lines. ~107 s of the budget was work and ~255 s was queueing, and nothing on the record
+said so. The affected lane went looking for a defect in its own 97 lines.
+
+Three changes, all narrow:
+
+1. **`e2e-stage.sh` prints while it blocks** — one line on first contention, a heartbeat a minute,
+   and *always* one on acquisition, `after 0s` included. It reuses §7's vocabulary (`held` · `stale`
+   · `parked`) because they are the same three facts, and it names the holder's pid, elapsed time
+   and command line, so "which suite is in front of me" is answered by the log rather than by a `ps`
+   nobody runs afterwards.
+2. **A timeout is its own state.** `runVerify` records `ok:null` + `timedOut` instead of `ok:false`
+   — a non-answer, not a reasoned no. It rides *inside* `ok:null` rather than as a fourth value of
+   `ok` so that it sits in the never-auto-land group structurally: every stop branch already keys on
+   `ok === null`, and a forgotten branch can only word the stop badly, never open a land.
+   `verified:null` (not `false`) reaches the outcome ledger, closing `verify-tiering.md` §0 item 2.
+3. **The verify record carries `ms`, `waitMs` and `exitCode`.** The split is *measured*: the server
+   sums the `acquired after Ns` lines the waiter itself wrote (`SUITE_LOCK_RE`, pinned to the shell
+   format in `e2e/pins.ts`). A command that prints no such line gets no `waitMs` at all — "does not
+   report" must not be recorded as "waited zero".
+
+**The orphan, found while reconstructing the above and NOT fixed here.** `p.kill()` SIGTERMs the
+`sh -c` that fronts the chain; the suite it had already started keeps running — `security` wrote
+trail rows for ~17 s past the kill, and it holds the mutex until its own EXIT trap fires. Two
+consequences worth knowing before anyone builds the next rung: an auto-retry would queue behind its
+own corpse, and a timeout leaves machine load the fleet has stopped accounting for. Killing the
+process *group* would be the cure and is a behaviour change, not a message change.
+
+**Still open:** raising the budget was considered and rejected — the wait is unbounded by
+construction (one queued `isolated` ≈ 8 min, two ≈ 16), so any fixed number only moves the
+threshold. Giving the land gate priority on the mutex is the structurally cleaner cure and is the
+owner's call, not a lane's.

@@ -7534,7 +7534,12 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
 async function handleStewardRoute(req: Request, url: URL): Promise<Response | null> {
   if (url.pathname === "/api/steward/sessions" && req.method === "GET") {
     const now = Date.now();
-    return json({ now, slots: stewardSlotsView(now), deployGap: await deployGap(), bundleStale: bundleStale() });
+    // gate: the machine-busy fact + live verify intents (autonomy verbs, Verb 1). The pulse's
+    // own note 05320523 named this blindness: without it the steward cannot tell a finished
+    // pane from one waiting on a suite, nor whether starting ANYTHING next is safe — the two
+    // judgments the Rundgang exists to make. Same gateView() the owner board reads: one
+    // computed answer, not a second hand-rolled one.
+    return json({ now, slots: stewardSlotsView(now), deployGap: await deployGap(), bundleStale: bundleStale(), gate: gateView() });
   }
   if (url.pathname === "/api/steward/digest" && req.method === "GET") {
     const home = stewardSlot();
@@ -7932,6 +7937,12 @@ Bun.serve<WSData>({
         postlandAudit: POSTLAND_AUDIT_CMD !== null,
         mergeRepairRounds: MERGE_REPAIR_ROUNDS,
         rulebookDrifted,
+        // the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a
+        // lane's verify will actually hang on (FLEET_VERIFY_TIMEOUT_MS is wall-clock, and a
+        // queued isolated run inside it cost a land 300s of silence — docs/suite-contention.md).
+        // Until now this route named the judge but not the queue in front of the courtroom.
+        // null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
+        suiteLock: suiteLockView(),
       });
     }
 

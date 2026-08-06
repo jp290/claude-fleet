@@ -1,6 +1,6 @@
 // The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in a lane pane's
 // spawn env, and what /api/self/autos and /api/self/drift will and will not accept it for.
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, post } from "./harness";
 import type { Ctx } from "./ctx";
@@ -154,9 +154,30 @@ export async function run(ctx: Ctx): Promise<void> {
   });
   type Gate = { verify: { cmd: string; timeoutMs: number; skipExit: number } | null; cleanReview: string;
     autoReview: { tickMs: number; idleMs: number } | null; postlandAudit: boolean;
-    mergeRepairRounds: number; rulebookDrifted: boolean | null };
+    mergeRepairRounds: number; rulebookDrifted: boolean | null;
+    suiteLock: { pid: number | null; alive: boolean | null; heldMs: number; state: string } | null };
   const g0Res = await selfGate(selfTok);
   const g0 = (await g0Res.json()) as Gate;
+  // --- suiteLock, the machine-busy fact (autonomy verbs, Verb 1): the one wait a lane's verify
+  // actually hangs on, now named by the route that names the judge. Pinned against DISK truth
+  // rather than an assumed harness shape: under a wrapper run the stage mutex is held by our own
+  // wrapper for the whole run, a standalone `bun fleet-e2e.ts` sees it free — the assertion is
+  // AGREEMENT with the lock dir, so it is deterministic in both forms instead of correct in one.
+  const lockDir = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock";
+  let lockDirExists = false; let diskPid: number | null = null;
+  try { lockDirExists = statSync(lockDir).isDirectory(); } catch { lockDirExists = false; }
+  if (lockDirExists) {
+    try {
+      const raw = readFileSync(`${lockDir}/pid`, "utf8").trim();
+      diskPid = /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null;
+    } catch { diskPid = null; }
+  }
+  check("gate: suiteLock agrees with the lock dir on disk (held by our wrapper, parked, or free)",
+    !lockDirExists ? g0.suiteLock === null
+      : diskPid === null ? g0.suiteLock?.state === "parked"
+      : g0.suiteLock?.pid === diskPid && g0.suiteLock.alive === true
+        && (g0.suiteLock.state === "held" || g0.suiteLock.state === "overdue"),
+    JSON.stringify({ disk: { exists: lockDirExists, pid: diskPid }, route: g0.suiteLock }));
   check("GET /api/self/gate: full shape, skipExit pinned to 42, no rulebook on either side reads null",
     g0Res.ok && (g0.verify === null || (typeof g0.verify.cmd === "string" && g0.verify.skipExit === 42))
       && ["off", "gate", "shadow"].includes(g0.cleanReview)

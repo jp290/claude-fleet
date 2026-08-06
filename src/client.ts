@@ -1926,8 +1926,11 @@ async function renderBoard() {
             // untracked → new; anything staged (X set, not '?') → staged; else unstaged-only → mod
             const cls = f.startsWith("??") ? "new" : x !== " " ? "staged" : "mod";
             const badge = el("span", `buncst ${cls}`, f.startsWith("??") ? "?" : f.slice(0, 2).trim() || "M");
-            badge.title = x !== " " && y !== " " ? "staged + unstaged changes"
-              : x !== " " ? "staged" : f.startsWith("??") ? "untracked" : "unstaged changes";
+            // untracked FIRST: porcelain sets both columns to '?', so every x/y test below
+            // matches it — asking them first labelled a new file "staged + unstaged changes"
+            badge.title = f.startsWith("??") ? "untracked"
+              : x !== " " && y !== " " ? "staged + unstaged changes"
+              : x !== " " ? "staged" : "unstaged changes";
             row.appendChild(badge);
             row.appendChild(document.createTextNode(f.slice(3)));
             // as with the committed list below: every row here opened the WHOLE working diff,
@@ -2137,7 +2140,16 @@ async function renderBoard() {
         for (const w of wts.worktrees) {
           const row = el("div", "bwt");
           row.appendChild(el("span", "lanechip", "⎇"));
-          const b = el("span", "bwtbr", w.branch);
+          // fleet branches share a ~16-char prefix (`fleet/260806142…`) and differ only at the
+          // end, so an end-ellipsis cut two distinct lanes down to the SAME string. Split the
+          // name into a head that shrinks and a tail that never does. The tail is the last
+          // `-`/`/` segment, capped at 12 chars so a long separator-less name can't grow into
+          // an unshrinkable block that pushes the state and buttons out of the row.
+          const sep = Math.max(w.branch.lastIndexOf("-"), w.branch.lastIndexOf("/")) + 1;
+          const tail = w.branch.slice(Math.max(sep, w.branch.length - 12));
+          const b = el("span", "bwtbr");
+          b.appendChild(el("span", "bwtbrh", w.branch.slice(0, w.branch.length - tail.length)));
+          b.appendChild(el("span", "bwtbrt", tail));
           b.title = w.path;
           row.appendChild(b);
           const state = w.dirty ? "editing" : w.ahead ? "ready" : "clean";

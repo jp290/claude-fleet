@@ -942,7 +942,11 @@
   .sweepvbadge { flex: none; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
   .sweepvreason { flex: 1; min-width: 120px; color: #aaa; }
   .bwt { display: flex; gap: 6px; align-items: center; padding: 2px 0; color: #aaa; line-height: 1.5; }
-  .bwt .bwtbr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9ab; }
+  /* the branch name is cut on the HEAD, never the tail: fleet branches share a long prefix and
+     carry their identity in the suffix, so only .bwtbrh shrinks/ellipsizes (src/client.ts, lanes) */
+  .bwt .bwtbr { flex: 1; min-width: 0; display: flex; color: #9ab; }
+  .bwt .bwtbr .bwtbrh { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bwt .bwtbr .bwtbrt { flex: none; white-space: nowrap; }
   .bwt .bwtstate { flex: none; font-size: 10px; color: #666; }
   .bwt .bwtstate.editing { color: #e0af68; } .bwt .bwtstate.ready { color: #9ece6a; }
   .bwtact { flex: none; padding: 1px 8px; border-radius: 6px; border: 1px solid #333; background: #262626;

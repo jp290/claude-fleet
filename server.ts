@@ -5255,11 +5255,19 @@ async function runVerify(cwd: string, repo: string, mainSha: string): Promise<Me
 // tree this profile's anchored Read(**) could never reach. That is the same escape the Read(**)
 // canary demonstrated on 2026-07-25, wearing a different hat. The server builds BOTH graphs — the
 // lane's and the side it merges into (buildCodeGraph) — and the agent only ever queries them.
-const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" "Bash(git checkout:*)" "Bash(git rebase:*)" "Bash(graphify query:*)" "Bash(graphify explain:*)" "Bash(graphify affected:*)" "Bash(graphify path:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
+// `git commit` is here because the REPAIR prompt's step 3 instructs it verbatim ("git add -A &&
+// git commit -m 'repair: …'") and a profile that denies what the contract demands fails SILENTLY:
+// dontAsk auto-denies, the tree stays dirty, and mergeJob's `git reset --hard HEAD` + break turns
+// the whole repair round into a no-op that writes no red. Latent, never observed — repairRounds is
+// 0 in all 104 ledger rows, i.e. the loop was never entered (docs/agent-visibility-2026-08-06.md
+// rank 1). The reach it adds is ~nil: `Bash(git rebase:*)` is already granted and a resolver's
+// `git rebase --continue` writes commits anyway, so this grants no capability the merge worker on
+// the same profile did not already have — it only lets the repair worker say so directly.
+const MERGE_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTools "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git add:*)" "Bash(git rm:*)" "Bash(git checkout:*)" "Bash(git rebase:*)" "Bash(git commit:*)" "Bash(graphify query:*)" "Bash(graphify explain:*)" "Bash(graphify affected:*)" "Bash(graphify path:*)" "Edit(**)" "Write(**)" "Read(**)" "Grep(**)" "Glob(**)"';
 // The ② clean reviewer's whole job is a verdict STRING — it inspects and answers, it never writes.
 // It runs on the one path nobody watches (FLEET_CLEAN_REVIEW on a clean auto-land) and, by design,
 // reads lane code another agent wrote — so it must not hold the resolver's write+exec primitives.
-// Dropped vs MERGE_TOOLS: Edit/Write and `git add`/`git rm`/`git checkout`/`git rebase` — the last
+// Dropped vs MERGE_TOOLS: Edit/Write and `git add`/`git rm`/`git checkout`/`git rebase`/`git commit` — `git rebase` being
 // being arbitrary command execution via `git rebase -x`, which the post-run `git reset --hard` can
 // never undo (it restores the tree, not network calls or writes outside the worktree). Kept: the
 // three read-only git subcommands its prompt names plus anchored Read/Grep/Glob. `--setting-sources ""`

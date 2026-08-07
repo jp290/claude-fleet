@@ -272,6 +272,21 @@ nicht die Ursache — dann den Resolver messen, nicht das Profil nachschärfen. 
 die Messung selbst:** treten in 60 Tagen keine 20 Repair-Eintritte auf, ist der Pfad zu selten, um
 ihn zu härten — dann gehört er entfernt, nicht repariert.
 
+> **ERLEDIGT 2026-08-08 (Zeile `25b79c23`).** `Bash(git commit:*)` steht in `MERGE_TOOLS`; die
+> Begründung im Code, warum der Reichweiten-Zuwachs ~null ist (`Bash(git rebase:*)` ist granted und
+> `git rebase --continue` committet ohnehin). **Der Canary aus der Schwelle wurde bewusst NICHT
+> gefahren, und das ist der Entscheid, nicht das Versäumnis:** er hätte beantwortet, ob der Defekt
+> LIVE ist, nicht ob der Fix richtig ist — feuert das Deny, war er nötig; feuert es nicht, macht er
+> das Profil ehrlich, ohne etwas zu öffnen. Ein Test, dessen beide Ausgänge dieselbe Handlung
+> tragen, entscheidet nichts. **Die Messung bleibt bestehen** (Repair-Läufe mit `repairRounds ≥ 1`
+> UND `verify.ok:true`, 20 Eintritte / 60 Tage) — sie ist jetzt die Probe darauf, ob der Pfad
+> überhaupt trägt, nicht mehr aufs Profil.
+> Der eigentliche Gewinn ist der **Familien-Check**, nicht der eine Verb: `e2e/prompts.ts` prüft
+> seither Prompt↔Profil als PAAR — jeder Worker-Prompt, dessen Text ein `git <subcommand>` nennt,
+> das sein Profil nicht trägt, macht ihn rot. Auf dem Baum vor dem Fix fiel er mit vier Treffern:
+> `repair:git commit` und dreimal `git <open set>` (merge, repair, cleanReview) — womit er die
+> Geschwister aus „Gesehen, bewusst nicht empfohlen" von selbst mitfand.
+
 ### 2. Der Fix für die benannte Steward-Blindheit sitzt auf der Route, die das Ritual nicht ruft
 
 **Rolle 2 · Lücke (c) · GEMESSEN**
@@ -406,6 +421,10 @@ Fähigkeitsschnitt, an den sich nichts anlagern kann. (GELESEN)
   `merge-prompt.ts:109-110` behauptet, alles außer „plain `git <subcommand>`" sei „auto-denied" und
   verbietet `--exec` im Fließtext — tatsächlich matcht `Bash(git rebase:*)` es, und der Code weiß es
   (`REVIEW_TOOLS` lässt `git rebase` genau deshalb weg, `MERGE_TOOLS` behält es).
+  **ERLEDIGT 2026-08-08:** beide RULES-Zeilen zählen jetzt die Verben auf, die das jeweilige Profil
+  wirklich trägt (`GIT_GRANT_MERGE` / `GIT_GRANT_REVIEW` in `merge-prompt.ts`), und das
+  `-c`/Alias/`--exec`-Verbot steht als Regel, die der Agent hält — nicht mehr als Zaun, der ihn
+  finge. Der ②-Reviewer erfährt damit seine drei Verben, statt in `git show` zu laufen.
 - **Credentials stehen in argv.** Self- und Steward-Token werden im tmux-Kommandostring exportiert
   (`server.ts:1502`) — während `server.ts:7842` für den Guest-Hook die Gegenregel formuliert:
   *„a credential goes in on STDIN and never in argv — argv is world-readable in `ps`"*. Die **Form**

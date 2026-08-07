@@ -2,6 +2,8 @@
 // the `done-looking` and `stalled` predicates (lane-signals.ts) and the continuity derivation
 // (continuity.ts), each clause asserted by its negation.
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "../merge-prompt";
+import { buildAnalysisPrompt } from "../analysis-prompt";
+import { buildEnhancePrompt } from "../enhance-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE,
   laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
@@ -49,7 +51,7 @@ export async function run(): Promise<void> {
     // reading lane code another agent wrote. It answers a verdict STRING — it never writes. Each
     // banned entry is a primitive the post-run `git reset --hard` cannot undo: Edit/Write reach
     // outside the worktree, and `git rebase` is arbitrary command execution via `git rebase -x`.
-    const banned = ["Edit(", "Write(", "git add", "git rm", "git checkout", "git rebase"];
+    const banned = ["Edit(", "Write(", "git add", "git rm", "git checkout", "git rebase", "git commit"];
     check("tool profiles: REVIEW_TOOLS holds no write/exec primitive, only the read-only git + file tools",
       banned.every((b) => !tools.REVIEW_TOOLS.includes(b))
       // positive half, so this can never pass by the profile being empty or renamed away
@@ -85,6 +87,81 @@ export async function run(): Promise<void> {
     check("model interpolation: every --model that reaches a shell command string is single-quoted",
       modelLines.length >= 2 && modelLines.every((l) => /--model '\$\{[^}]+\}'/.test(l)),
       modelLines.map((l) => l.trim().slice(0, 60)).join(" | "));
+  }
+
+  // --- PROMPT ↔ PROFILE: every git command a worker is TOLD to run, its profile must GRANT ---
+  // The two halves above and below this block each check one side alone: the profiles are asserted
+  // as strings, the prompts are asserted for the information they carry. Nothing checked the PAIR,
+  // and that is where the whole family of defects lives — a prompt instructs `git commit`, the
+  // profile lists no `Bash(git commit:*)`, `--permission-mode dontAsk` auto-denies it, and the
+  // failure is SILENT: no error, no log line, just a worker that cannot do the one thing its
+  // contract demands. Found in the repair worker (docs/agent-visibility-2026-08-06.md, rank 1) and
+  // latent there — the repair loop had never been entered, so no run ever hit it.
+  // A prompt that names the OPEN set (`git <subcommand>`, "any plain git invocation") is the same
+  // defect wearing a placeholder: it grants in prose what no profile grants, so it is modelled here
+  // as naming a subcommand no profile can carry, and the fix is to enumerate what the profile holds.
+  {
+    const src = await Bun.file(`${ROOT}/server.ts`).text();
+    // the git verbs a profile actually grants, read out of its anchored Bash( ) entries
+    const grantedVerbs = (profile: string): string[] =>
+      [...profile.matchAll(/"Bash\(git ([a-z][a-z-]*):/g)].map((m) => m[1]).sort();
+    // Real git subcommands, so that PROSE about git ("git re-verifies the tree", "establish it
+    // yourself with git before you answer") is not read as an invocation. This is a vocabulary,
+    // not a list of the known offenders — the check below never mentions a single worker by name.
+    const GIT_VERBS = new Set(["add", "am", "apply", "bisect", "blame", "branch", "checkout",
+      "cherry-pick", "clean", "clone", "commit", "config", "describe", "diff", "fetch", "grep",
+      "init", "log", "merge", "merge-base", "mv", "notes", "pull", "push", "rebase", "reflog",
+      "remote", "reset", "restore", "revert", "rm", "shortlog", "show", "stash", "status",
+      "submodule", "switch", "tag", "worktree"]);
+    const namedVerbs = (text: string): string[] =>
+      [...new Set([...text.matchAll(/git ([a-z][a-z-]*)/g)].map((m) => m[1]).filter((v) => GIT_VERBS.has(v)))].sort();
+    // `git <subcommand>` / `git <verb>` — an angle-bracket placeholder is an OPEN grant in prose
+    const namesOpenSet = (text: string): boolean => /\bgit\s+<[a-z]/.test(text);
+
+    const GRAPH = { lane: "/tmp/fleet-lane-graph-probe/graphify-out/graph.json", main: null };
+    // Every prompt builder whose output reaches an agent that the SERVER spawns with a tool
+    // profile. buildAuthorPrompt is deliberately absent: its text goes through sendText into the
+    // lane's OWN pane (see wakeAuthor), which is the owner's session and carries no profile —
+    // there is no pair to check. The ↻ refine worker is absent for a different reason: its prompt
+    // is a markdown brief (briefs/task-refine.md), not a builder this module can call.
+    const PAIRS: { worker: string; profile: "MERGE_TOOLS" | "REVIEW_TOOLS" | "TEXT_ONLY_TOOLS"; text: string }[] = [
+      { worker: "merge", profile: "MERGE_TOOLS", text: buildMergePrompt({ branch: "fleet/probe", main: "main",
+          mergeBase: "abc123", conflicted: ["server.ts"], laneTask: "t", laneLog: "a", mainLog: "b", graphs: GRAPH }) },
+      { worker: "repair", profile: "MERGE_TOOLS", text: buildRepairPrompt({ branch: "fleet/probe", main: "main",
+          verifyCmd: "bun run build", verifyOut: "TS2304", conflicted: ["server.ts"], graphs: GRAPH }) },
+      { worker: "cleanReview", profile: "REVIEW_TOOLS", text: buildCleanReviewPrompt({ branch: "fleet/probe",
+          main: "main", laneFiles: ["server.ts"], laneStat: "1 file changed", mainLog: "b", mainFiles: ["x.ts"],
+          mainCommitCount: 2, laneBrief: "t", otherLanes: [] }) },
+      { worker: "analysis", profile: "REVIEW_TOOLS", text: buildAnalysisPrompt("/repo",
+          [{ id: "t1", source: "owner", text: "do the thing", brief: null, files: null }],
+          [{ branch: "fleet/other", task: "other", files: [] }]) },
+      { worker: "enhance", profile: "TEXT_ONLY_TOOLS", text: buildEnhancePrompt("draft", null) },
+    ];
+
+    // PRECONDITION, asserted as ITSELF: this check reads two things out of the tree (the profile
+    // literals, the built prompts) and a silently-empty either side would make every assertion
+    // below pass for the wrong reason. So prove both were established before judging them.
+    const profiles = Object.fromEntries((["MERGE_TOOLS", "REVIEW_TOOLS", "TEXT_ONLY_TOOLS"] as const)
+      .map((n) => [n, profileOf(src, n)])) as Record<string, string>;
+    const granted = Object.fromEntries(Object.entries(profiles).map(([n, p]) => [n, grantedVerbs(p)])) as Record<string, string[]>;
+    check("prompt↔profile: both sides resolved — prompts built, profiles parsed, vocabulary covers what they grant",
+      PAIRS.every((p) => p.text.length > 200)
+      && granted.MERGE_TOOLS.length >= 7 && granted.REVIEW_TOOLS.length === 3
+      // TEXT_ONLY cuts tools entirely, so zero granted verbs is its CORRECT reading, not an empty parse
+      && granted.TEXT_ONLY_TOOLS.length === 0 && profiles.TEXT_ONLY_TOOLS.includes('--tools ""')
+      // and the vocabulary must contain every verb the profiles grant, or a typo in it would let a
+      // real instruction slip through unread
+      && [...granted.MERGE_TOOLS, ...granted.REVIEW_TOOLS].every((v) => GIT_VERBS.has(v)),
+      JSON.stringify({ lens: PAIRS.map((p) => `${p.worker}:${p.text.length}`),
+        granted: { m: granted.MERGE_TOOLS.length, r: granted.REVIEW_TOOLS.length, t: granted.TEXT_ONLY_TOOLS.length } }));
+
+    const mismatches = PAIRS.flatMap((p) => {
+      const g = granted[p.profile] ?? [];
+      const bad = namedVerbs(p.text).filter((v) => !g.includes(v)).map((v) => `${p.worker}:git ${v}`);
+      return namesOpenSet(p.text) ? [...bad, `${p.worker}:git <open set>`] : bad;
+    });
+    check("prompt↔profile: no worker is instructed to run a git command its own profile denies",
+      mismatches.length === 0, mismatches.join(" ") || "none");
   }
 
   // --- buildMergePrompt: PURE-function unit tests (no server needed) ---
@@ -142,9 +219,11 @@ export async function run(): Promise<void> {
     check("buildMergePrompt keeps the strict-JSON status contract",
       p.includes('{"status": "rebased", "detail": "..."} or {"status": "blocked", "detail": "..."}')
       && p.includes("STRICT JSON, no markdown fences"));
-    // 8. the sandboxed tool rules survive (plain git only, no build/test, abort-on-doubt)
+    // 8. the sandboxed tool rules survive (the granted git verbs named one by one, the -c/alias/
+    // --exec ban as a rule the agent keeps, no build/test, abort-on-doubt)
     check("buildMergePrompt keeps the sandboxed tool rules",
-      p.includes("use only plain `git <subcommand>` invocations")
+      p.includes("the git commands you may run are exactly git status, git diff, git log")
+      && p.includes("no -c, no aliases, no --exec, ever")
       && p.includes("Never run build/test commands")
       && p.includes("git rebase --abort"));
     // 9. an empty main log (main up to date) degrades gracefully, DATA block still closed
@@ -179,8 +258,10 @@ export async function run(): Promise<void> {
       pEmpty.includes("graphify") ? "leaked" : "clean");
     // and the map must never loosen the sandbox line that check 8 pins
     check("buildMergePrompt keeps the plain-git rule intact in BOTH map states",
-      p.includes("use only plain `git <subcommand>` invocations")
-      && pEmpty.includes("use only plain `git <subcommand>` invocations")
+      p.includes("no -c, no aliases, no --exec, ever")
+      && pEmpty.includes("no -c, no aliases, no --exec, ever")
+      && p.includes("the git commands you may run are exactly git status")
+      && pEmpty.includes("the git commands you may run are exactly git status")
       && p.includes("Never run build/test commands") && pEmpty.includes("Never run build/test commands"));
 
     // --- 2026-08-05: BOTH SIDES. Two gaps, one root cause — the resolver was handed its own side in
@@ -277,7 +358,10 @@ export async function run(): Promise<void> {
     // 6. strict-JSON contract with the repaired/blocked statuses + sandboxed git-only tools
     check("buildRepairPrompt keeps the strict-JSON contract and sandboxed tool rules",
       rp.includes('{"status": "repaired", "detail": "..."} or {"status": "blocked", "detail": "..."}')
-      && rp.includes("use only plain `git <subcommand>` invocations")
+      // the repair worker is the one told to COMMIT, so its grant line must actually carry the verb
+      && rp.includes("the git commands you may run are exactly git status")
+      && rp.includes("git rebase and git commit,")
+      && rp.includes("no -c, no aliases, no --exec, ever")
       && rp.includes("Never run build/test commands yourself"));
     // 7. empty verify output degrades gracefully, DATA block still closed
     const rpEmpty = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "", conflicted: [], graphs: { lane: null, main: null } });
@@ -357,9 +441,15 @@ export async function run(): Promise<void> {
     //    mode: a worker MARK would let this be served as the lane's own conversation's marker, a
     //    JSON contract corrupts a conversation nobody polls, and a tool sandbox line claims a
     //    restriction the author's session does not run under.
+    //    The sandbox half is an ABSENCE check, so it carries its own positive control: the same
+    //    anchor must be present in a worker prompt, or a reworded RULES line would make this pass
+    //    by nobody spelling the string anymore.
+    const SANDBOX_ANCHOR = "the git commands you may run are exactly";
+    const anchorLives = buildRepairPrompt({ branch: "b", main: "main", verifyCmd: "v", verifyOut: "",
+      conflicted: [], graphs: { lane: null, main: null } }).includes(SANDBOX_ANCHOR);
     check("buildAuthorPrompt carries no worker mark, no JSON contract and no tool-sandbox claim",
       !a.includes("STRICT JSON") && !a.includes('"detail": "..."')
-      && !a.includes("use only plain `git <subcommand>` invocations")
+      && anchorLives && !a.includes(SANDBOX_ANCHOR)
       && !a.includes("Work autonomously — nobody is watching"),
       a.includes("STRICT JSON") ? "JSON contract leaked" : "clean");
     // 8. degrades without a task or logs, DATA block still closed

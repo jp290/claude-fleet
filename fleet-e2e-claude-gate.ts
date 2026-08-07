@@ -18,7 +18,7 @@
 // the per-check trail's single emit site, so this suite's checks now leave durable rows
 // (docs/e2e-trail.md); ./e2e-claude-gate.sh stamps them with FLEET_E2E_SUITE=claude-gate.
 import { readFileSync, rmdirSync, rmSync } from "node:fs";
-import { BASE, ROOT, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
+import { AUTOS_TICK_MS, BASE, ROOT, afterTick, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
 import { FLEET_DEFAULT_MODEL } from "./src/protocol";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
@@ -33,7 +33,9 @@ const marker1 = "gate-must-not-type-this";
 const a1res = await post("/api/slots/1/autos", { text: marker1, inSec: 1, idleSec: 0 });
 const a1 = (await a1res.json()) as { auto: AutoInfo };
 check("create auto on dead-claude slot", a1res.ok && !!a1.auto?.id);
-await Bun.sleep(7000); // 1s due + one 5s tick + margin, same budget as the main suite's idle-gate check
+// inSec:1 due + one tickAutos + margin, sized from the same env the srv spawn got. A negative
+// control: nothing may reach the pane, so it has to out-wait the tick rather than poll.
+await Bun.sleep(afterTick(1000, AUTOS_TICK_MS));
 const cap1 = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("dead-claude gate: marker never reached the pane", !cap1.out.includes(marker1), cap1.out.slice(-120));
 const sess1 = (await (await get("/api/sessions")).json()) as { autos: AutoInfo[] };
@@ -55,7 +57,7 @@ const marker2 = "gate-must-type-this";
 const a2res = await post("/api/slots/2/autos", { text: marker2, inSec: 1, idleSec: 0 });
 const a2 = (await a2res.json()) as { auto: AutoInfo };
 check("create auto on alive-claude slot", a2res.ok && !!a2.auto?.id);
-await Bun.sleep(7000);
+await Bun.sleep(afterTick(1000, AUTOS_TICK_MS)); // same budget as branch 1, so the pair is comparable
 const cap2 = await tmuxOut("capture-pane", "-t", "s2", "-p");
 check("alive-claude gate: marker reached the pane", cap2.out.includes(marker2), cap2.out.slice(-160));
 const sess2 = (await (await get("/api/sessions")).json()) as { autos: AutoInfo[] };

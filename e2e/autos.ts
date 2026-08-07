@@ -1,7 +1,7 @@
 // Scheduled prompts: one-shots and the idle gate, perpetual beats, the global kill-switch and
 // quiet hours. Hands the two persistence probes to restart.ts.
 import { readFileSync } from "node:fs";
-import { check, get, plogRead, post, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, AUTO_MIN_EVERY_SEC_MS, afterTick, check, get, plogRead, post, tmuxOut } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -18,7 +18,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const aBusy = await post("/api/slots/1/autos", { text: "auto-must-wait", inSec: 2, idleSec: 3600 });
   const aBusyJ = (await aBusy.json()) as { auto: { id: string } };
   check("create idle-gated auto", aBusy.ok && !!aBusyJ.auto?.id);
-  await Bun.sleep(9000); // past due + one 5s scheduler tick
+  await Bun.sleep(afterTick(2000, AUTOS_TICK_MS)); // inSec:2 past due + one tickAutos
   const cap2a = await tmuxOut("capture-pane", "-t", "s2", "-p");
   check("due auto fired into its pane", cap2a.out.includes("auto-fire-check"));
   const cap1a = await tmuxOut("capture-pane", "-t", "s1", "-p");
@@ -51,7 +51,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const aCtlJ = (await aCtl.json()) as { auto?: { id: string } };
   check("perpetual requires a recurring interval (one-shot + perpetual -> 400)",
     (await post("/api/slots/2/autos", { text: "x", inSec: 2, perpetual: true })).status === 400);
-  await Bun.sleep(9000); // one fire + a 5s scheduler tick
+  await Bun.sleep(afterTick(1000, AUTOS_TICK_MS)); // inSec:1 + one tickAutos = both autos have fired once
   const sessP = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; runsLeft: number; lastResult: string | null; perpetual?: boolean }[] };
   const perp = sessP.autos.find((a) => a.id === aPerpJ.auto?.id);
   const ctl = sessP.autos.find((a) => a.id === aCtlJ.auto?.id);
@@ -77,12 +77,12 @@ export async function run(ctx: Ctx): Promise<void> {
     (JSON.parse(readFileSync("fleet.json", "utf8")) as { autosOn?: boolean }).autosOn === false);
   const aKill = await post("/api/slots/2/autos", { text: "killswitch-probe", inSec: 1, idleSec: 0 });
   const aKillJ = (await aKill.json()) as { auto?: { id: string } };
-  await Bun.sleep(7000); // well past when it would fire if automation were live
+  await Bun.sleep(afterTick(1000, AUTOS_TICK_MS)); // inSec:1 + a tick: well past when it would fire if automation were live
   const killed = ((await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null }[] }).autos.find((a) => a.id === aKillJ.auto?.id);
   check("no auto fires while the kill-switch is off", !!killed && killed.enabled === true && killed.lastResult === null, JSON.stringify(killed));
   check("owner re-enables the automation surface",
     ((await (await post("/api/autos/switch", { on: true })).json()) as { autosOn?: boolean }).autosOn === true);
-  await Bun.sleep(7000); // now it may fire
+  await Bun.sleep(afterTick(0, AUTOS_TICK_MS)); // already overdue — only a tick stands between it and the pane
   const resumed = ((await (await get("/api/sessions")).json()) as { autos: { id: string; lastResult: string | null }[] }).autos.find((a) => a.id === aKillJ.auto?.id);
   check("the same auto fires once automation is resumed", !!resumed && resumed.lastResult === "sent", JSON.stringify(resumed));
   if (aKillJ.auto) await post(`/api/autos/${aKillJ.auto.id}/delete`, {});
@@ -99,7 +99,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const aQuietRecJ = (await aQuietRec.json()) as { auto?: { id: string } };
   const aQuietOne = await post("/api/slots/2/autos", { text: "quiet-oneshot", inSec: 1, idleSec: 0 });
   const aQuietOneJ = (await aQuietOne.json()) as { auto?: { id: string } };
-  await Bun.sleep(9000);
+  await Bun.sleep(afterTick(1000, AUTOS_TICK_MS)); // both are inSec:1 — one tick decides which of them fires
   const sessQ = (await (await get("/api/sessions")).json()) as { autos: { id: string; enabled: boolean; lastResult: string | null; nextAt: number }[] };
   const qRec = sessQ.autos.find((a) => a.id === aQuietRecJ.auto?.id);
   const qOne = sessQ.autos.find((a) => a.id === aQuietOneJ.auto?.id);
@@ -109,7 +109,12 @@ export async function run(ctx: Ctx): Promise<void> {
     !!qOne && qOne.lastResult === "sent", JSON.stringify(qOne));
   check("clearing quiet hours nulls the window",
     ((await (await post("/api/autos/quiet", { start: null })).json()) as { quietHours: unknown }).quietHours === null);
-  await Bun.sleep(12000); // > everySec, so the held recurring pulse now fires
+  // NOT tick-bound, and the only wait here that a smaller tick cannot shrink: each quiet tick
+  // re-arms the held pulse a full everySec out (tickAutos, the quiet-hours branch), so after the
+  // clear it is due at most AUTO_MIN_EVERY_SEC (10, a route floor) seconds later — plus the one
+  // tick that delivers it. The old fixed 12000 measured the same window with ~200ms of worst-case
+  // margin against a 5s tick; this states the floor it actually depends on.
+  await Bun.sleep(afterTick(AUTO_MIN_EVERY_SEC_MS, AUTOS_TICK_MS));
   const qRec2 = ((await (await get("/api/sessions")).json()) as { autos: { id: string; lastResult: string | null }[] }).autos.find((a) => a.id === aQuietRecJ.auto?.id);
   check("the held recurring pulse fires once quiet hours are cleared", !!qRec2 && qRec2.lastResult === "sent", JSON.stringify(qRec2));
   if (aQuietRecJ.auto) await post(`/api/autos/${aQuietRecJ.auto.id}/delete`, {});

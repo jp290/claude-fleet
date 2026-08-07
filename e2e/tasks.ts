@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
-import { check, get, post, restartSrv, BASE, REPO, ROOT } from "./harness";
+import { check, get, post, restartSrv, afterTick, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
@@ -124,7 +124,9 @@ export async function run(ctx: Ctx): Promise<void> {
   // stayed queued because of the gate, not a dead queue. Preserves the persistence lane
   // (ctx.restartSelfSlot) that the restart section needs alive. ---
   {
-    const DISP_TICK_MS = 9000; // > the 8s tickDispatch interval, so a full tick fires within the wait
+    // wide enough that a full tickDispatch must have fired inside it — the only way to prove the
+    // two gates below suppress a dispatch, since a non-event cannot be polled for
+    const DISP_TICK_MS = afterTick(0, DISPATCH_TICK_MS);
     const sessJson = async (): Promise<{ slots: { id: number; cwd: string | null; worktree: unknown | null }[]; tasks: { id: string; status: string; note?: string }[]; dispatch: { on: boolean; maxLanes: number }; autosOn: boolean; quietHours: unknown }> =>
       (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[]; tasks: { id: string; status: string; note?: string }[]; dispatch: { on: boolean; maxLanes: number }; autosOn: boolean; quietHours: unknown };
     const laneIds = async (): Promise<number[]> => (await sessJson()).slots.filter((s) => s.worktree).map((s) => s.id);
@@ -165,7 +167,8 @@ export async function run(ctx: Ctx): Promise<void> {
     // (c) positive control: both gates open → the SAME task is dispatched (proves the gate is causal)
     await post("/api/autos/quiet", { start: null });
     let consumed = false;
-    for (let i = 0; i < 30; i++) { // up to ~15s (≈2 ticks) for the now-eligible task to be dispatched
+    // a positive control POLLS: it settles in one tick and the ceiling only bounds a failure
+    for (let i = 0; i < 30; i++) { // ceiling ~15s, ≥2 ticks at the production interval
       await Bun.sleep(500);
       if ((await taskStatus(tid)) !== "queued") { consumed = true; break; }
     }
@@ -200,7 +203,7 @@ export async function run(ctx: Ctx): Promise<void> {
       `lanes=${sessCap.slots.filter((s) => s.worktree).length}/${sessCap.dispatch.maxLanes}`);
     const cTask = (await (await post("/api/tasks", { text: "capacity-wait-probe", queue: true })).json()) as { task: { id: string } };
     let cNote = "";
-    for (let i = 0; i < 24; i++) { // a full 8s tick fires within this wait
+    for (let i = 0; i < 24; i++) { // polls: settles in one tick, the 12s ceiling only bounds a failure
       cNote = (await sessJson()).tasks.find((t) => t.id === cTask.task.id)?.note ?? "";
       if (cNote) break;
       await Bun.sleep(500);
@@ -380,7 +383,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (h2) THE INVERSION. Under the eval gate this exact row — pending, positive verdict — was
     // consumed unattended. It must now sit still: a verdict is not a release.
-    await Bun.sleep(9500); // more than one full 8 s dispatch tick with a "ready" pending row present
+    await Bun.sleep(afterTick(0, DISPATCH_TICK_MS)); // a full dispatch tick with a "ready" PENDING row present
     check("(h2) a READY pending task is NOT started — the analyst advises, it never releases",
       (await hRow(hP))?.status === "pending", JSON.stringify(await hRow(hP)));
 

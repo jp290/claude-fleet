@@ -1,7 +1,123 @@
-# HANDOFF — Session 34 (2026-08-07 vormittags: vier Lands, zwei Ernten, acht neue Zeilen) · 33/32/31/… darunter
+# HANDOFF — Session 35 (2026-08-07 mittags: fünf Lands, ein bewiesener Flake, ein Stern) · 34/33/32/… darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log e89c1bb..HEAD`
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 6b8965e..HEAD`
 mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 35: der Mittag, an dem die Maschine dreimal wusste, was sie niemandem sagte
+
+**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` ·
+`briefs/work-waves-2026-08-07.md` · **die ersten beiden Regeln in `CLAUDE.md`** — die zweite ist neu
+und stammt aus einem Fehler dieser Session.
+
+### Gelandet
+
+| SHA | Was | Gate | Audit |
+|---|---|---|---|
+| `9940ac3` | **die Akte** — `GET /api/lane?branch=…`, ein Join über Task/Prompts/Slot-Events/Commits/Outcome/`fleet/land`-Zettel/Audits **inkl. Adjudikation**, plus vierte Linse im Shell | 78 s | **rot** → adjudiziert `flake`, bewiesen |
+| `53abc60` | Mitarbeiter-Dokument fortgeschrieben (aus der Denk-Lane geerntet, doc-only) | — | — |
+| `ed4fb6a` | der Analyse-Sweep **löscht kein Urteil mehr** — Fehlschlag liegt daneben (`attempts` + `retry{at,reason}`) | 79 s | GREEN 569 s |
+| `23e6033` | der Digest trägt `gate`/`suiteLock` + `digestStatus` — ein stummer Kanal sagt, **warum** er stumm ist | 74 s | GREEN 575 s |
+| `5387e92` | **der dritte Puls bekommt seine Datei** — `.claude/commands/projekt-blick.md` (als `/projekt-blick` sofort registriert) + `briefs/steward-kritik-2026-08-07.md`; `rundgang.md` unberührt | 69 s | läuft bei Übergabe |
+
+Alle Gates `waitMs 0` — weil vor **jedem** Land der Mutex geprüft wurde. Deploy zweimal gefahren und
+am Owner-Poll verifiziert (`codeBehind:false`, `bundleStale.stale:false`, `errors:null`).
+
+### Der rote Audit — und warum daraus eine SECHSTE Flake-Familie wurde
+
+`9940ac3`s Tier-2 war rot: vier FAILs, **eine Wurzel** (`stalled setup: observed:false / lastOutput:0`
+— die drei Folge-Checks hängen daran). Beweisordnung eingehalten: **derselbe Baum erneut, seriell →
+ALL PASS**, exit 0. Zusatzbeleg aus dem Trail: dieselbe Signatur fiel **dreimal vor** diesem Land
+(06.08. 08:03Z + 08:16Z auf Baum `29c6799`, 07.08. 02:31Z), Basisrate **4 von 69** Läufen (~6 %).
+Adjudiziert `flake` mit der Kette in der Notiz. → Zeile **`32c89530`** (benennen + heilen).
+
+**Das billigste Werkzeug des Tages war der Trail.** 967 Läufe auf Platte haben „ist das bekannt?"
+in Sekunden beantwortet statt in einem 10-min-Beweislauf pro Instanz. Ich habe den Leser von Hand
+gebaut und weggeworfen — das ist genau das Argument von `6b9f77d0` („49 MB, 0 Leser").
+
+### Die zwei Fehler dieser Session, beide lehrreich
+
+**1. Ich habe zwei Owner-Entwürfe zerstört.** In den Composern von Slot 3/4 stand ungesendeter
+Owner-Text. Um „seine Worte ohne mein Wort" zu senden, habe ich `POST /send` mit leerem bzw.
+inhaltslosem Text + Enter benutzt — ein Weg, den niemand vermessen hat. Ergebnis: Composer leer,
+**Prompt nirgends im Transkript**, Anweisung weg. Repariert, indem ich den Text (den ich wörtlich
+zitiert hatte) normal nochmal geschickt habe. **Zwei Regeln daraus:** ein leerer/inhaltsloser
+`sendText` ist KEIN „Enter drücken" — `load-buffer` lehnt einen leeren Puffer ab (500), und ein
+Leerzeichen frisst den Entwurf. Und: **„Composer ist leer" beweist Zustellung NICHT.** Der harte
+Beleg ist, dass das Transkript wächst (`~/.claude/projects/<cwd-slug>/<id>.jsonl`).
+
+**2. Ich habe fast einen Diff falsch gelesen.** `git diff main <lane>` zeigt für eine Lane, die
+HINTER main liegt, die fremden Commits als Rückwärts-Änderungen — Slot 4 sah damit aus, als hätte
+sie `server.ts`/`src/client.ts` angefasst, obwohl ihre eigene Arbeit zwei neue Dateien war. **Der
+Anker ist die Merge-Basis** (`git diff $(git merge-base main <lane>) <lane>`), nie main selbst.
+
+### Der Rückkanal fehlt — dreimal gemessen, jetzt in Arbeit
+
+- **11:1x** Lane fertig, Main-Session merkt es 20 min nicht. Der Owner musste es sagen.
+- **12:4x** Watcher gelegt (`until <Bedingung>`), er feuert **einmal** korrekt — und hinterlässt ein
+  Loch, weil ein Watcher sich beenden muss, um zu wecken. Zwei fertige Lanes saßen wieder unbemerkt.
+  Der Owner musste es erneut sagen. **Die Krücke funktioniert und ist trotzdem unzureichend.**
+- Konsequenz: **`00e5f771` läuft** (Slot 5) mit beiden Fehlschlägen als Begründung im Brief. Offene
+  Frage, die der Zeilentext nicht beantwortet und die im Report stehen muss: `doneLooking` kann
+  MEHRFACH eintreten (auto-③ oder der Owner stupsen die Lane weiter) — was heißt „genau einmal" dann?
+
+In `CLAUDE.md` steht seit heute die Klausel, die vorher fehlte: die Regel sagte **wie** man eine Lane
+liest, nie **wann**. Neu: *bevor du dich abwendest, leg dir den Rückweg — als Mechanismus, nicht als
+Vorsatz*, Watcher vor Auto (ein Ereignis, kein Timer, und er schreibt in keine Pane).
+
+### Der Stern und der Projekt-Blick
+
+Slot 4 hat den Steward kritisch vermessen und einen **dritten Puls** entworfen: `Projekt-Blick`,
+eigene Ritualdatei, `rundgang.md` **unberührt** (löst den Serialisierungskonflikt mit `08f44054`).
+Konvention: **je Repo genau ein Slot, dessen Label mit `★` beginnt = das SENDEZIEL.** Der Steward
+sendet, er trägt den Stern nie — sein Label `⚙ steward` **ist seine Credential** (`server.ts`, grep
+`stewardExport`: der Token wird nur bei exakt diesem Label in die Pane gebacken, und nur beim SPAWN).
+
+**Übergabe-Reihenfolge, Owner-Entscheid:** erst die alte Main **entsternen**, dann die neue mit `★`
+öffnen. Dazwischen liegt ein Fenster mit NULL Sternen (fail-closed, der Puls bleibt lesend); die
+umgekehrte Reihenfolge hätte eines mit ZWEI (mehrdeutiges Ziel). **Offene Lücke, als Owner-Kommentar
+auf `f520e704`:** Klausel 2 des Rituals ist nur gegen den Null-Fall fail-closed und muss „**genau
+ein** ★-Slot, sonst kein Send" heißen.
+
+**Der Steward-Versuch hat den Entwurf korrigiert, bevor er gebaut wurde** — der billigste Ertrag der
+Maschine. Ein Puls an das ★-Ziel wurde mit `409 target slot not idle` abgewiesen, und der Steward hat
+daraus die Umkehrung gezogen, die der Entwurf nicht hatte: **das Idle-Gate SELEKTIERT auf den Moment,
+in dem der Owner an der Pane sitzt** — der Composer-Hazard ist also *wegen*, nicht trotz des Gates am
+wahrscheinlichsten. `submit:false` für Ziele ohne Worktree ist damit tragende Korrektur, nicht
+Höflichkeit. (Entwarnung: bei einem 409 wird nichts gepastet, es gibt keinen Halbzustand.) Er fand
+außerdem: drei Slots teilen `cwd = ~/claude-fleet`, ein Puls an #6/#13 zeigte denen fremde
+Land-Commits als eigene — und **beide Ausgänge zum Owner sind gleichzeitig zu** (Send per 409, Filen
+per `STEWARD_MAX_PENDING = 10` bei exakt 10 offenen Notes).
+
+### Was in Flug ist
+
+- **Slot 1** `7c890b09` — Sichtbarkeit des LAUFENDEN Post-Land-Audits (Owner-Wunsch). Der Server
+  WEISS es (`auditQueue` überlebt den Lauf, `auditDraining`), projiziert aber nur den fertigen.
+  Enthält zwei Auflagen: Laufzeit gegen die Ledger-Verteilung (p50 498 s / p90 581 s — **`min 16 s`
+  ist der 06.08. mitgetötete Lauf, keine Messung**), und „wartet" als eigener Zustand.
+- **Slot 3** `2009cd14` — `state.sh` lügt aus einer Lane. Der Kern ist **gelandet-reif**
+  (`ahead=2, dirty=0`); der Owner hat „fix den Ledger-Abschnitt auch" nachgeschoben. **Landbar,
+  Pane vorher lesen.**
+- **Slot 5** `00e5f771` — der Rückkanal (s. o.).
+- **Slot 12 ⚙ steward** — frisch von `main` besetzt, Token in der Pane. Schreibt seinen Puls-Befund
+  ins Journal, damit er einen `/clear` überlebt.
+- **Slot 8** `fleet/260804144705-6c1e` (`KI_Ausbildung`, `ahead=1`, seit 04.08.) — **NICHT aus dieser
+  Kette**, nicht angefasst. Jemand muss entscheiden, ob das Land oder Müll ist.
+
+### Owner-Griffe, die offen sind
+
+- **`f520e704`** — Kriterium steht auf `confirmedAt:null`. Bestätigen ist **unwiderruflich** (409 auf
+  jede spätere Änderung). BAU-A (server.ts, vier Teile) wartet auf einen freien `server.ts`-Platz;
+  BAU-B ist gebaut und landet gerade. Reihenfolge bleibt: **kein Live-Lauf des Projekt-Blicks vor
+  BAU-A** (`submit:false` existiert noch nicht).
+- **Neue Zeilen dieser Session:** `32c89530` (sechste Flake-Familie) · `7c890b09` (Audit-Fenster,
+  läuft) · `e1568641`/`2009cd14`/`190e5705` (aus der Denk-Lane) · `efc98cfa` (Groupchat, NOTIZ —
+  steht formal als `lane`, weil der Owner-POST kein `note` erzeugen kann: das ist `65af341f`).
+- **Sechs Zeilen tragen `unknown`** mit neuer Fehlerform (`JSON Parse error: Invalid escape character
+  4`, 09:13:53Z): `1cb6778e 16d5e973 65af341f 526ecd5e cf557dc4 a5030c42`. Der Fix `ed4fb6a` ist
+  gelandet, aber diese sechs Urteile sind **vorher** verloren gegangen — sie brauchen ein `reanalyse`.
+
 
 ---
 

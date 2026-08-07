@@ -46,6 +46,26 @@ export interface PostLandAuditInfo {
   mainSha?: string; covers?: string[]; reason?: string;
 }
 
+// --- post-land audit: the run that has NOT finished ---------------------------------------------
+// The companion to the row above, and a SEPARATE carrier on purpose (server: postLandAuditLiveView).
+// The whole object is `null` when nothing runs and nothing waits — never "unknown"; the one
+// genuinely indeterminate state is `running.phase === "starting"`, the drain lock held before a run
+// has stamped itself. `mainSha: null` is the same distinction one level down: the tip is resolved
+// inside the run, so until then the tree under audit is not known, and "" would be a claim.
+// `stats` is the runtime distribution of PAST runs of the same repo (null below three samples), and
+// it is what makes the elapsed number answerable — see auditCounts for which rows are allowed in.
+export interface PostLandAuditLiveInfo {
+  running: {
+    phase: "running" | "starting";
+    repo: string | null; main: string | null; mainSha: string | null;
+    startedAt: number | null; covers: string[];
+  } | null;
+  // lands whose audit has not begun: coalesced into the NEXT run, and today indistinguishable from
+  // "no audit planned" on every surface. `at` is when the land queued them.
+  waiting: { repo: string; main: string; branch: string; mainAfter: string; at: number }[];
+  stats: { n: number; p50: number; p90: number } | null;
+}
+
 // --- the fleet's default interactive model ------------------------------------------------------
 // Baked into every pane command that does not pin its own model. It lives here because
 // fleet-e2e-claude-gate.ts asserts the exact quoted form `--model 'claude-opus-5[1m]'` reaches the

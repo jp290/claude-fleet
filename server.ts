@@ -18,7 +18,7 @@ import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary
 import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  type GitInfo, type PostLandAuditInfo, type WorkerName,
+  type GitInfo, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
 } from "./src/protocol";
 
@@ -4735,6 +4735,59 @@ let lastPostLandAudit: PostLandAuditRow | null = null;
 // the current run finishes.
 const auditQueue = new Map<string, { main: string; covers: AuditCover[] }>();
 let auditDraining = false;
+// THE RUN IN FLIGHT, which until now existed nowhere but in `ps`. The state was already implied —
+// `auditQueue` deliberately carries its entry THROUGH the run (see the drain's own comment: the
+// entry is consumed only after the row is written, so a process death cannot lose the audit) and
+// `auditDraining` says the one-at-a-time lock is held — but nothing projected it, so the only way
+// to see a running audit was to poll `ps` or wait for the ledger row. Measured cost, 2026-08-07:
+// one session waited on four audits in a morning that way.
+// `mainSha` is nullable and starts null BY CONSTRUCTION: the tip is resolved by a `git rev-parse`
+// *inside* the run, so between the stamp and that resolution the tree under audit is genuinely not
+// known yet. Reporting "" there would be a claim; null is the absence of one.
+interface RunningAudit { repo: string; main: string; mainSha: string | null; covers: AuditCover[]; startedAt: number }
+let runningPostLandAudit: RunningAudit | null = null;
+// The RUNTIME DISTRIBUTION, per repo — the half that turns the elapsed number into an answer. "This
+// audit has run 4:12" does not tell the owner whether to keep waiting or start looking for a wedge;
+// "4:12, and p50 here is 8:18" does. Derived from the same ledger the view already owns, so this is
+// bookkeeping, not a new store: seeded once at boot and appended to per row.
+const auditDurations = new Map<string, number[]>();
+const AUDIT_DURATION_KEEP = 200;   // a rolling window — an audit's cost tracks the suite, and a
+                                   // year-old run is not evidence about today's
+const AUDIT_DURATION_MIN_N = 3;    // below this, say NOTHING: two samples are an anecdote wearing
+                                   // the clothes of a distribution
+// WHICH ROWS COUNT — named here rather than averaged silently, because the obvious "all rows" is
+// measurably wrong on this very trail:
+//   · only `green`/`red`. An `unknown` row's `ms` is a timeout ceiling, a failed spawn or a
+//     declined run — the duration of a NON-measurement, never of an audit (A4: unknown ≠ fast).
+//   · never a SIGNAL-SHAPED exit (129..165 = 128+N). Measured 2026-08-06: a lane's
+//     `pkill -f 'e2e-isolated.sh'` killed the SERVER's own audit 16 s in — zero checks run, exit
+//     143, recorded `red` because 143 ≠ 0, adjudicated `unknowable` afterwards. It is a red by
+//     exit code and a non-measurement in fact, and as a 16 s sample in a distribution whose real
+//     floor is ~5 min it drags every statistic built on it. That row is the `min 16 s` in the
+//     trail's own summary.
+//   · PERCENTILES, never a mean, for the residual this filter cannot catch: a run killed in a way
+//     that leaves an ordinary exit code still lands in the sample, and a percentile absorbs it.
+function auditCounts(row: PostLandAuditRow): boolean {
+  if (row.result !== "green" && row.result !== "red") return false;
+  if (row.exitCode !== null && row.exitCode > 128 && row.exitCode <= 165) return false;
+  return typeof row.ms === "number" && row.ms > 0;
+}
+function recordAuditDuration(row: PostLandAuditRow): void {
+  if (!auditCounts(row)) return;
+  const d = auditDurations.get(row.repo) ?? [];
+  d.push(row.ms);
+  if (d.length > AUDIT_DURATION_KEEP) d.splice(0, d.length - AUDIT_DURATION_KEEP);
+  auditDurations.set(row.repo, d);
+}
+// nearest-rank percentile on a copy — small arrays (≤ AUDIT_DURATION_KEEP), and the alternative
+// (keeping the window sorted) would cost the chronological order the rolling drop needs.
+function auditStats(repo: string): { n: number; p50: number; p90: number } | null {
+  const d = auditDurations.get(repo);
+  if (!d || d.length < AUDIT_DURATION_MIN_N) return null;
+  const s = [...d].sort((a, b) => a - b);
+  const at = (q: number): number => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
+  return { n: s.length, p50: at(0.5), p90: at(0.9) };
+}
 // ...and its DURABLE mirror. Measured gap (docs/mining-2026-07-26.md finding 1): four lands
 // between 18:31 and 18:37 on 2026-07-26 were followed by a watchdog respawn at 18:37:52, and every
 // pending audit died with the old process — no row, no `unknown` marker, nothing that could be
@@ -4810,6 +4863,12 @@ async function drainPostLandAudits(): Promise<void> {
     // nothing would ever drain, and that land's audit would simply never happen. Here no other
     // microtask can interleave — the loop's failing condition and this line are one turn.
     auditDraining = false;
+    // ...and the same turn ends the in-flight view. This is the ONLY place it is cleared, which is
+    // what makes it total: whether the loop ended normally, on an empty queue, or by a throw, no
+    // record can survive the drain that owns it. Between iterations there is nothing to clear —
+    // the next `runPostLandAudit` overwrites it synchronously, after the splice above has already
+    // consumed the covers the old record was masking.
+    runningPostLandAudit = null;
   }
 }
 // The audit runs against a CONTENT SNAPSHOT of the integration tip, extracted with `git archive`
@@ -4874,6 +4933,12 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   const cmd = POSTLAND_AUDIT_CMD;
   if (!cmd) return;
   const startedAt = Date.now();
+  // stamped SYNCHRONOUSLY, before the first await: the drain sets its lock and calls this in one
+  // turn, so there is no moment an HTTP handler can observe in which the lock is held and this is
+  // still null. `postLandAuditLiveView` does not rely on that — it reports the lock's own state as
+  // `starting` if it ever happens — but the cheap ordering is worth having anyway.
+  const running: RunningAudit = { repo, main, mainSha: null, covers, startedAt };
+  runningPostLandAudit = running;
   const dir = `${tmpdir()}/fleet-postland-audit-${randomBytes(6).toString("hex")}`;
   let mainSha = "";
   let result: PostLandAuditRow["result"] = "unknown";
@@ -4885,6 +4950,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     // every land folded into it, and the row must name the tree it actually measured.
     const tip = await git(repo, "rev-parse", main);
     mainSha = tip.code === 0 && tip.out ? tip.out : (covers[covers.length - 1]?.mainAfter ?? "");
+    // the live view stops saying "not resolved yet" the moment it is — and stays null if the tip
+    // could not be resolved at all, which is the case the next branch turns into an `unknown` row
+    if (mainSha) running.mainSha = mainSha;
     if (!mainSha) {
       reason = `could not resolve ${main} — nothing to audit`;
     } else {
@@ -4956,6 +5024,13 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     cmd, exitCode, out, covers,
   };
   lastPostLandAudit = row;
+  recordAuditDuration(row);
+  // NOT `runningPostLandAudit = null` here, deliberately. The frozen covers are still on the queue
+  // entry at this point (the drain consumes them only after this returns — its durability rule),
+  // and `postLandAuditLiveView` masks exactly those covers with this record. Clearing it here would
+  // open a window in which a land that was just audited reads as WAITING FOR AN AUDIT — precisely
+  // the confusion the view exists to remove. The drain clears it in the same synchronous block that
+  // consumes the entry; see its `finally`.
   appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   const named = covers.map((c) => c.branch).join(", ").slice(0, 120);
   audit("postland_audit", undefined,
@@ -4973,6 +5048,37 @@ function postLandAuditSummary(): PostLandAuditInfo | null {
   const r = lastPostLandAudit;
   return r ? { at: r.at, ms: r.ms, result: r.result, repo: basename(r.repo), main: r.main,
     mainSha: r.mainSha, covers: r.covers.map((c) => c.branch), ...(r.reason ? { reason: r.reason } : {}) } : null;
+}
+// ...and the projection for the run that has NOT finished. Deliberately a SECOND carrier rather
+// than fields bolted onto the one above: `postLandAudit` is the newest RESULT and a reader may keep
+// treating it as one — blending "the last verdict" with "what is happening now" is how a stale
+// green ends up looking live.
+//
+// `null` here means NOTHING IS RUNNING AND NOTHING IS WAITING — it is never "unknown". The one
+// state that could be mistaken for either has its own name: `starting` is the drain lock held with
+// no run stamped behind it, which says "a run is coming, its identity is not known yet" instead of
+// collapsing into the same null as an idle machine (A4, unknown ≠ zero).
+//
+// Same null-when-quiet rule as gateView: an untroubled fleet pays four bytes for this on a 2 s poll.
+function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
+  const r = runningPostLandAudit;
+  // the covers this run FROZE are the head of its repo's queue entry (the drain slices, it does not
+  // delete — see its comment), and `slice()` copies the objects BY REFERENCE. So identity separates
+  // "already being audited" from "arrived while it ran" without a second bookkeeping field.
+  const inflight = new Set<AuditCover>(r?.covers ?? []);
+  const waiting: PostLandAuditLiveInfo["waiting"] = [];
+  for (const [repo, q] of auditQueue)
+    for (const c of q.covers)
+      if (!inflight.has(c))
+        waiting.push({ repo: basename(repo), main: q.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at });
+  const running: PostLandAuditLiveInfo["running"] = r
+    ? { phase: "running", repo: basename(r.repo), main: r.main, mainSha: r.mainSha,
+        startedAt: r.startedAt, covers: r.covers.map((c) => c.branch) }
+    : auditDraining
+      ? { phase: "starting", repo: null, main: null, mainSha: null, startedAt: null, covers: [] }
+      : null;
+  if (!running && !waiting.length) return null;
+  return { running, waiting, stats: r ? auditStats(r.repo) : null };
 }
 
 // --- ADJUDICATION: a red audit must be able to say that somebody LOOKED AT IT --------------------
@@ -7437,6 +7543,22 @@ if (existsSync(POSTLAND_AUDIT_FILE)) {
     console.log("post-land audit trail: last row unreadable — the board starts without it");
   }
 }
+// ...and seed the RUNTIME DISTRIBUTION from the same trail. Rotation-safe (readLedger reads both
+// generations), unlike the single-generation read above — this one has no half-landed hunk in its
+// way. Without it the first audit after every restart would show an elapsed clock with nothing to
+// read it against, which is the state this whole surface exists to end: srv is restarted by the
+// deploy ritual precisely when lands are frequent, so "just after a restart" is the common case,
+// not the rare one.
+try {
+  const { rows } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+  for (const raw of rows) {
+    const row = raw as unknown as PostLandAuditRow;
+    if (typeof row.repo === "string" && row.repo) recordAuditDuration(row); // auditCounts filters the rest
+  }
+} catch (e) {
+  console.log(`post-land audit trail: runtime distribution not seeded (${e instanceof Error ? e.message : e})`
+    + " — the board shows an elapsed clock with no comparison until three audits have run.");
+}
 // the one-shot migration that retires the reds nobody can ever answer (see backfillUnknowableAudits).
 // Fire-and-forget: it reads two ledgers and appends at most a handful of rows, and nothing at boot
 // waits on the result — an un-backfilled red is simply an un-adjudicated one.
@@ -9095,6 +9217,10 @@ Bun.serve<WSData>({
         // or no land since boot). Advisory FACT for the owner — it gates nothing; the client's job
         // is to make a `red`/`unknown` result impossible to miss and to name the land it followed.
         postLandAudit: postLandAuditSummary(),
+        // ...and tier 2 as it is RIGHT NOW: the run in flight (with the elapsed clock's origin and
+        // the distribution to read it against) plus the lands still waiting for one. Null when the
+        // machine is idle — "no audit is running" is drawn nowhere, exactly like a green result.
+        postLandAuditLive: postLandAuditLiveView(),
         // the suite mutex and the lanes' own verify reports — null when neither has anything to
         // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
         gate: gateView(),

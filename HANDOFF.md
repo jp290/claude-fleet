@@ -1,3 +1,134 @@
+# HANDOFF — Session 38 (2026-08-07 nachts: drei Lands OHNE Ledger-Spur, Automation scharf, die Schwelle auf 40 %) · 37/36/35/… darunter
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 3341027..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 38: die Session, deren Arbeit in keinem Land-Ledger steht
+
+**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` · die ersten zwei Regeln in
+`CLAUDE.md` — **und dann die vier Zeilen, die ich heute eingefügt habe** (Direkt-Commit-Blindheit ·
+40-%-Schwelle · Sonden-Regel · `FLEET_HARNESS_AUTOMATION`). Sie stehen dort, weil sie sonst
+verloren gehen: `CLAUDE.md` ist gitignored.
+
+### DAS WICHTIGSTE, sonst liest du den Zustand falsch: drei Lands, NULL Ledger-Spur
+
+`0e2a672` · `4955444` · `efda3eb` — alle drei sind **Direkt-Commits auf main aus dem
+Haupt-Checkout** (der Owner sagte „arbeite selbst"), nicht Lands über eine Lane. Konsequenz,
+gemessen und nicht vermutet:
+
+- **kein** `git notes --ref=fleet/land` für die drei SHAs
+- **keine** Zeile in `lane-outcomes.jsonl`
+- **KEIN Post-Land-Audit** — `schedulePostLandAudit(repo, main, BRANCH, mainAfter)` hängt am
+  Land-Pfad, nicht an einer Bewegung von main. Das Audit-Ledger endet bei `6061b491` (Session 37).
+
+**Die Abdeckung ist trotzdem gleichwertig**, und das ist der Punkt: das Audit-Kommando IST
+`./e2e-isolated.sh`, und ich habe die volle Gate-Kette auf jedem Baum von Hand seriell gefahren —
+`pins` · `tsc --strict` (11 Ziele) · `e2e-clean-review` · `e2e-security` · `e2e-claude-gate` ·
+`e2e-isolated` (1635 Checks, 0 FAIL beim letzten Lauf). Was fehlt, ist der **EINTRAG**, nicht die
+Messung. Ich habe zweimal fast selbst darauf hereingefallen und dem Owner einmal fälschlich
+gemeldet, die Audits liefen. **`./state.sh`s Land-Health-Zahlen zählen Lanes — sie untertreiben
+diesen Tag.** Steht jetzt als Regel im Regelwerk.
+
+### Was gelandet ist (Bodies lesen, die tragen die Messungen)
+
+| SHA | Register-Zeile | Kern |
+|---|---|---|
+| `0e2a672` | `5388c07d` `04607d0b` `4544f602` `380d24ee` | vier stille Halbwahrheiten; die eigentliche Falle waren die FIXTURES |
+| `4955444` | `b28ce533` | Probe pro Slot — Fakt getrennt vom Gate, Entscheid blieb beim Owner |
+| `efda3eb` | (Owner-Auftrag) | Automation scharf, mit ZWEI Bedingungen statt einer |
+
+Fünf Register-Zeilen geschlossen, zwei neue eingereicht → **65 offen von 154**.
+
+### `FLEET_HARNESS_AUTOMATION=1` ist LIVE — und heute wirkungslos
+
+Owner-Entscheid. Live verifiziert am Config-Sensor (`./state.sh`: `live=1 | watchdog.sh` — der
+Sensor erfasst neue Variablen von selbst, es war keine Zusatzarbeit nötig).
+
+- **Zwei Bedingungen, nicht eine:** der Flag ist die Zustimmung des Operators,
+  `automatable: true` am Adapter ist der Anspruch des einzelnen Harness. Pflichtfeld → ein neuer
+  Adapter antwortet beim Compile. Ich hatte das in `4955444` falsch gebaut (ein globales `||`) und
+  es beim Prüfen VOR dem Flip repariert; sonst hätte die Container-Zeile `c3531b41` die Erlaubnis
+  stillschweigend geerbt.
+- **Wirkung am Tag des Einschaltens: NULL.** Kein Slot fährt einen fremden Harness (alle aktiven
+  tragen `harness: null`, an `fleet.json` geprüft). Der Flag bewaffnet eine Fähigkeit.
+- **Was er NICHT öffnet, und darum war er entscheidbar: kein Tick landet.** Die einzige
+  `mergeJob(`-Aufrufstelle ist eine Route. Jeder geöffnete Pfad tippt einen PROMPT in eine Pane.
+- Zurückdrehen = das eine Wort in `watchdog.sh`, dann `launchctl kickstart` **zuerst**, dann
+  srv killen. (Diese Reihenfolge live bestätigt: der kickstart tastet ein laufendes srv nicht an —
+  es lebte danach noch, ich musste es extra killen.)
+
+### Owner-Entscheid 2026-08-07: Kontext-Schwelle ~40 % statt 45 %
+
+Meine Empfehlung war 40 und **gegen 35**, mit Rechnung: Fixkosten ~10–11 % pro Session (davon
+**7,6 % nur Erdung**, an mir gemessen), also bleiben bei 40 % ~29 % produktiv, bei 35 % nur ~24 % =
+**1,42× so viele Sessions** für dieselbe Arbeit. Belegt an dieser Session: meine zwei ersten Lands
+kosteten 24,5 % (7,6 → 32,1) — bei 35 % hätte ich EINES geschafft.
+
+**Die Zahl ist der schwächere Teil. Der stärkere: fang keine Kette an, deren plausible Kosten dein
+Restbudget bis ~70 % übersteigen.** Ich habe das auf mich angewandt und den Trail-Umbau
+(`17068154`, plausibel 12–15 %) bei 32 % NICHT angefangen, sondern die Wissensschuld bezahlt.
+
+**Erster Datenpunkt der neuen Praxis (jeder Handoff notiert das ab jetzt):**
+`ctx` beim Übergeben = **37,1 %** (370.769 / 1M). Produziert: 3 Lands, 20 neue Checks, 3 Pins,
+2 Deploys, 5 Zeilen geschlossen, 2 eingereicht, 7 Regelwerk-Änderungen.
+
+### Die Lehre des Tages, dreimal bezahlt: bei einem roten Check an FRISCHER eigener Arbeit ist die SONDE der erste Verdächtige
+
+Dreimal rot, dreimal war der **Code richtig und mein Check falsch** — und jedes Mal lautete die
+naive Lesart „der neue Gate ist kaputt":
+
+1. `§6b` erwartete `no-agent` für einen Pi-Slot — **maschinenabhängig** (`pi` ist hier installiert).
+   Richtig ist `!== "unprobed"`: die einzige Antwort, die beweist, dass die Probe NICHT stattfand.
+2. `§6c` erzeugte seinen Probe-Auto mit `inSec: 0` → die Route weist das mit **400** ab
+   („one-shot needs inSec ≥ 1"), und mein Helfer **verschluckte den 400 still**.
+3. `§6b` verlangte von einem gerade zurückgesetzten Slot `unprobed` und bekam den Wert seiner
+   Pi-Phase — `agent` ist ein **git-Tick-Cache**, und ein beim `kill` schon fliegender Tick
+   schreibt NACH dem Neu-Öffnen zurück.
+
+**Das Werkzeug ist die SIGNATUR gegen die Erwartung zu lesen, nicht den Fehlschlag zu glauben:**
+bei (2) verriet es „`null` in BEIDEN Zeilen, auch der Gegenprobe" = nie gemessen; bei (3)
+„`no-agent` kann aus einer LEEREN comms-Liste strukturell nicht entstehen" = also war der Slot zum
+Messzeitpunkt noch pi. Konsequenz, jetzt Regel: **eine Sonde, die nicht laufen konnte, muss als SIE
+SELBST scheitern** — eigener `check()` auf ihre Voraussetzung.
+
+### Was dem Owner zur Entscheidung vorliegt (nicht erneut melden, er weiß es)
+
+- **`17068154`** (Trail-Deckel) — `GET /api/flakes` sagt `never-failed` über 741 verschwiegenen
+  Dateien. Drei Schnitte stehen in der Zeile; „Deckel hochsetzen" ist keiner. **Höchste Kosten von
+  allem Offenen**, weil ein geglaubtes Werkzeug schlimmer ist als keines.
+- **`d375c581`** (Trail-Reaper, ~4,4 MB/Tag) — hängt an `17068154`.
+- **`f520e704`** (Steward kritisch beleuchten) · **`2784427e`** (F6, Entwurf ≠ Brief beim Ablageort)
+- **NEU `96b72c22`** — billiges Fremdmodell an EINEN Wegwerf-Worker. **Der Seam existiert schon,
+  keine Server-Änderung nötig:** `runWorker` → `summaryViaSubprocess` (`Bun.spawn([cmd, "--model",
+  …])`, Prompt auf stdin), neun der zehn Worker haben ihr eigenes `FLEET_*_CMD`. Erster Kunde
+  `commitMsg`, weil seine Ausgabe begrenzt ist und sein Fehlschlag seit `0e2a672` SICHTBAR.
+  Braucht einen API-Key. Warze: `SUMMARY_MODEL` validiert gegen `MODEL_RE` (kein `/`), das Modell
+  muss also im Wrapper stehen. Preise belegt: $1,25/M in, $4,25/M out — **nicht** „cents".
+- **NEU `c3531b41`** — Slots/Worktrees in Container. Der teure Teil ist nicht das Starten, sondern
+  das ZUSEHEN: tmux, `git -C` und `projDir` sind alle drei host-lokal. Vorbedingung war
+  `b28ce533` — **die ist jetzt gelandet.**
+
+### Kleinigkeiten, die man wissen muss
+
+- **Slot 5 (`main-37`) ist geschlossen** — `fleet.json` führt ihn gar nicht mehr, und das schreibt
+  nur `killSlot`. Nicht mein Deploy (Beweis oben). 11 aktive Slots.
+- Der Steward-Puls `f2a34b1f` (Slot 12, `/inspektion`, stündlich) und mein Heartbeat `5e2229c3`
+  (Slot 7) laufen. **Fasst du Slot 12 an, leg sein Auto neu an** — der Puls stirbt beim Neu-Öffnen.
+- Adjudikations-Schuld: **0** (alle 18 roten Audits von 80 tragen ein Urteil).
+- `e2e-isolated` gemessen: **p50 8,7 min, p90 10,0 min** über 80 Läufe. Die drei Gate-Suiten sind
+  der schnelle Teil.
+- Die Suiten setzen `FLEET_HARNESS_AUTOMATION=0` jetzt **explizit** (`e2e-isolated.sh`): nicht
+  genannte Vars erbt der Test-Server aus der aufrufenden Shell, und `§6c` hängt an ihrem
+  Aus-Zustand.
+- **Nicht bestätigt, entgegen meiner eigenen früheren Behauptung:** die Suite-Mutex-Gewohnheit vor
+  jedem Land („warte auf einen freien Mutex") hat von MIR keine neue Evidenz — meine drei Commits
+  liefen nie durchs Land-Gate, es gibt also kein `waitMs`. Session 37s Beobachtung (8 Lands, alle
+  `waitMs 0`) steht weiter allein.
+
+---
+
 # HANDOFF — Session 37 (2026-08-07 abends: acht Lands, Pi ist angeschlossen, der 12-min-Takt ist Geschichte) · 36/35/34/… darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 5f84d53..HEAD`

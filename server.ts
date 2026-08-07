@@ -177,6 +177,17 @@ interface Task {
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
   status: "pending" | "queued" | "sent" | "done" | "archived";
+  releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
+  // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
+  // `confirmedByHuman`, which answers the LAND art ("did the owner press ⏫, or did it auto-land
+  // clean+green"): 77 of the 89 landed rows on the live trail carry `false` there although a human
+  // released every single one, so the moment an unattended land writes the same value the two
+  // populations are no longer separable. Absent means never released, or released before this
+  // field existed — never defaulted to "owner", because a guess here is precisely what the field
+  // exists to prevent (the same bargain `resolvedBy` documents: it cannot be recovered from rows
+  // that never recorded it). It records the LAST release, not the row's current state: an unqueue
+  // withdraws the release and leaves the stamp standing until the next one overwrites it, which is
+  // sound because the only consumer reads it at the dispatch that a release always precedes.
   created: number;
   slot: number | null; // set once dispatched
   note: string | null;
@@ -274,6 +285,12 @@ interface Slot {
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
   // create/attach time — optional, because lanes forked before it existed have none.
   model: string | null; // per-slot claude model (--model at spawn); null = FLEET_CMD default
+  releasedBy: "owner" | "machine" | null; // how the TASK that spawned this lane was released
+  // (Task.releasedBy), carried here because the outcome recorder runs at TEARDOWN — by then the
+  // task row has moved to `done`/`pending` and the slot is the only thing that still remembers.
+  // Same lifetime and same honesty rule as `model`: set at spawn, cleared on open/kill so a
+  // recycled slot never inherits it, null when this lane came from no queue row at all (a
+  // hand-opened lane) or from one released before the field existed.
   selfToken: string; // scoped credential for POST /api/self/autos — NEVER the owner token.
   // Minted fresh in openSlot every time the slot is (re)activated, so a recycled slot can't
   // be self-scheduled against by a session that was talking to whatever used to live here.
@@ -302,6 +319,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   awaiting: null,
   worktree: null,
   model: null,
+  releasedBy: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
   lastOutput: 0,
@@ -341,6 +359,21 @@ function capTasks(list: Task[]): Task[] {
   const keepDone = Math.max(0, MAX_TASKS - live.size);
   const keptDone = new Set(list.filter(taskTerminal).slice(-keepDone));
   return list.filter((t) => live.has(t) || keptDone.has(t));
+}
+// pending → queued: the RELEASE. A function, not a bare assignment, for one reason — it is the
+// transition a future UNATTENDED promote will make, and `by` must not be forgettable there. A new
+// code path writing `t.status = "queued"` on its own would record nothing, and a machine-released
+// row that records nothing is indistinguishable from the 77 attended lands already on the trail:
+// the abort criteria that select on this field would then look computable and return a number that
+// is mostly human work.
+//
+// Deliberately NOT used by the two MACHINE writes of "queued" that are not releases — the retry
+// after a failed post-spawn gate (briefAndSend's requeue) and the boot reconcile of an orphaned
+// `sent` row. Both restore a row to a state it was ALREADY released into; re-stamping them would
+// book the owner's decision as the machine's, which is the exact inversion this field prevents.
+function releaseTask(t: Task, by: "owner" | "machine"): void {
+  t.status = "queued";
+  t.releasedBy = by;
 }
 const MAX_TASK_TEXT = 20_000;
 // What a task looks like on /api/sessions. The prompt `text` is deliberately absent: that
@@ -743,8 +776,9 @@ let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; mission: string | null; awaiting: "owner" | null;
     sessionId: string | null;
-    worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null; selfToken: string }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, selfToken: s.selfToken };
+    worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null;
+    releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
@@ -1612,6 +1646,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // lane's pane env, so ensureSlot must see the final worktree tag, not a later patch-up
   s.worktree = worktree;
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
+  s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
+  // session's outcome row. The dispatcher stamps it back immediately after this call for the one
+  // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
   s.selfToken = randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
@@ -1678,6 +1715,7 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   parkMergeVerdict(s.id, false); // a reviewable ⏸ follows the branch into the park (reattach restores it); merged/blocked stay visible as before
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   s.model = null; // the per-slot model dies with the session it was chosen for
+  s.releasedBy = null; // ...as does the release that started it — same lifetime, same reason
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
@@ -1964,6 +2002,17 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
       baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) });
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
+    // An attended click IS a release, and the only one that never passes through `queued` — this
+    // route starts a `pending` row directly, so releaseTask never sees it. Stamped OVER whatever
+    // the row carried: if an unattended promote released it and the owner then pressed ▸ start,
+    // the lane that actually ran was attended, and a criterion counting unattended lanes must not
+    // have it. The tick's own path (ownerAct false) writes nothing here — it only ever picks rows
+    // that were already released, and inventing a value for a legacy row would be the guess the
+    // field exists to refuse.
+    if (ownerAct) next.releasedBy = "owner";
+    // ...and carry it onto the SLOT, which outlives the row: openSlot above has just cleared this
+    // (a recycled slot inherits nothing), so the write has to come after it.
+    free.releasedBy = next.releasedBy ?? null;
     next.status = "sent";
     next.slot = free.id;
     next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you` : `lane ${wt.branch}`;
@@ -4910,6 +4959,14 @@ interface LaneOutcome {
   model: string | null;  // s.model, or null when unpinned — recorded honestly, NEVER guessed
   briefHash: string | null; // stable short hash of the lane's FIRST owner/auto prompt (the
   // founding brief — dispatched lanes are briefed with source "auto", see laneOwnerPrompts)
+  // WHO released the task this lane ran (Task.releasedBy, carried via Slot.releasedBy). Written on
+  // EVERY disposition, not just a land, and that is the point: the criteria this exists to serve
+  // ask about lanes, not lands — an abort/scrap rate over unattended starts is unreadable off a
+  // trail that only attributes the ones that made it. Omitted, never guessed, where the lane had no
+  // queue row (hand-opened) or the row predates the field: absence says "this row cannot say",
+  // which a fallback value could not. Distinct from `confirmedByHuman` below on purpose — that is
+  // the LAND art, and reading it as the release counts 77 attended lands as unattended.
+  releasedBy?: "owner" | "machine";
   shortstat: string;
   commitCount: number;
   filesTouched: string[];
@@ -5092,6 +5149,12 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     disposition,
     model: s.model ?? null,
     briefHash: briefHashOf(firstText),
+    // read off the SLOT, not off `facts`: this is a lane-provenance fact like model/briefHash, and
+    // LandFacts only reaches a "landed" row — routing it there would leave every killed/shelved
+    // row blind, i.e. exactly the rows an abort-rate criterion counts. Omitted where the slot has
+    // none, for the same reason resolvedBy is: a key on every row makes "no queue row" and
+    // "release not recorded" the same reading.
+    ...(s.releasedBy ? { releasedBy: s.releasedBy } : {}),
     shortstat,
     commitCount,
     filesTouched,
@@ -5129,6 +5192,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
 // and the undo record. The landed work is exactly mainBefore..mainAfter on the integration branch.
 // model/briefHash/session proxies are unknowable server-side here → recorded honestly as null/0.
+// `releasedBy` is omitted for the same reason AND a second one: this lane already produced a
+// `landed` row carrying it, so stamping it again would double-count the release in any population
+// counted off this trail. Recover it the way the land-shape facts are recovered — join by branch.
 async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<LaneOutcome> {
   const sh = await git(repo, "diff", `${rec.mainBefore}...${rec.mainAfter}`, "--shortstat", "--no-color");
   const cc = await git(repo, "rev-list", "--count", `${rec.mainBefore}..${rec.mainAfter}`);
@@ -6635,6 +6701,11 @@ if (existsSync(STATE_FILE)) {
         .map((t) => ({ ...t,
           kind: t.kind === "lane" || t.kind === "note" ? t.kind : (t.source === "steward" ? "note" as const : "lane" as const),
           repo: typeof t.repo === "string" ? t.repo : null,
+          // rows released before this field existed stay ABSENT, and a malformed value degrades to
+          // absent too — never to "owner". The whole point of the field is that a released row can
+          // be told apart from one nobody recorded; a default would erase exactly that distinction
+          // on the 89 rows already on disk, and a hand-edit must not be able to mint either verdict.
+          releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
           // a hand-edited state file must not smuggle a "ready" verdict the sweep never wrote —
           // anything malformed degrades to "not yet analysed", never to a pass. The predecessor
           // field (`eval`, verdicts "auto"/"review") is deliberately NOT migrated: its criteria
@@ -6695,6 +6766,12 @@ if (existsSync(STATE_FILE)) {
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const pm = (v as { model?: unknown }).model;
         if (typeof pm === "string" && MODEL_RE.test(pm)) s.model = pm;
+        // the release survives a restart with the lane it started — a deploy in the middle of a
+        // lane's life must not turn its outcome row into "cannot say". Only the two recognised
+        // values come back, same stance as `awaiting` above: a hand-edited state file must not be
+        // able to book a lane as machine-released after the fact.
+        const prl = (v as { releasedBy?: unknown }).releasedBy;
+        if (prl === "owner" || prl === "machine") s.releasedBy = prl;
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
           && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")
@@ -7735,7 +7812,11 @@ const LEDGER_COLD_ROWS = 5;  // no usable anchor (first pulse, or a rotated-away
 interface LedgerAudit { at: number; result: string; main: string; mainSha: string; covers: string[]; reason?: string;
   adjudication?: { verdict: string; at: number; by: string; note?: string } }
 interface LedgerOutcome { ts: number; branch: string; disposition: string; verified: boolean | null;
-  confirmedByHuman: boolean; shadow: { verdict: string | null; at: number; raw: boolean } | null }
+  // both, or the pulse re-derives the misreading the release field was added to end: on its own
+  // `confirmedByHuman:false` reads as "nobody was watching", and it is `false` on 77 rows a human
+  // released. `releasedBy` is optional here exactly as on the row — absent means the row cannot say.
+  confirmedByHuman: boolean; releasedBy?: "owner" | "machine";
+  shadow: { verdict: string | null; at: number; raw: boolean } | null }
 interface LedgersView { since: number | null; auditConfigured: boolean; audits: LedgerAudit[]; outcomes: LedgerOutcome[] }
 async function ledgersView(prior: Record<string, unknown> | null): Promise<LedgersView> {
   const since = typeof prior?.ts === "number" ? prior.ts : null;
@@ -7774,6 +7855,7 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
         ts: num(r.ts), branch: str(r.branch), disposition: str(r.disposition),
         verified: typeof r.verified === "boolean" ? r.verified : null,
         confirmedByHuman: r.confirmedByHuman === true,
+        ...(r.releasedBy === "owner" || r.releasedBy === "machine" ? { releasedBy: r.releasedBy } : {}),
         // absent shadow = the measurement did not run (off/gate mode, or a non-clean land) — null,
         // never a manufactured pass. `raw: true` means ② produced no explicit verdict at all.
         shadow: shadow ? { verdict: typeof shadow.verdict === "string" ? shadow.verdict : null,
@@ -9509,6 +9591,10 @@ Bun.serve<WSData>({
         id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
         source: "owner", from: null, kind: "lane", repo: taskRepo,
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null, note: null,
+        // create-and-release in one call is still a release (see releaseTask, which the separate
+        // ▸ queue button routes through) — a row that arrives already queued was released by the
+        // owner who posted it. A row that arrives `pending` was not released at all: no field.
+        ...(body.queue === true ? { releasedBy: "owner" as const } : {}),
       };
       tasks = capTasks([...tasks, t]);
       saveState();
@@ -9768,7 +9854,7 @@ Bun.serve<WSData>({
         // is written here — overwrite the dispatcher's "waiting: not analysed yet" with a sentence
         // claiming a verdict that was never reached. (Caught by e2e (h6), which asserted the wait.)
         const over = t.analysis?.verdict === "needs-you";
-        t.status = "queued";
+        releaseTask(t, "owner");
         t.note = over ? `released over the analyst's "${t.analysis!.verdict}" — ${t.analysis!.reason}`.slice(0, 200) : null;
         if (over) audit("task_override", undefined, `${t.id}:${t.analysis!.verdict}`);
       }

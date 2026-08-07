@@ -16,6 +16,9 @@ export async function run(): Promise<void> {
       commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
       sessionMs: number | null; ownerPrompts: number;
       resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
+      // optional on purpose, and the checks below depend on it staying that way: a lane with no
+      // queue row behind it — and every row written before the field existed — has no answer here
+      releasedBy?: "owner" | "machine";
       review?: { state: string; findings?: unknown[]; model?: string; head?: string | null;
         patchId?: string | null; landedPatchId?: string | null;
         // optional here on purpose: rows written before discrepancy-audit F5 was fixed carry none
@@ -195,6 +198,58 @@ export async function run(): Promise<void> {
     check("outcome: clean auto-land record carries that job's verify verdict (verified:true), not null",
       rec7?.verified === true && rec7?.confirmedByHuman === false,
       JSON.stringify({ verified: rec7?.verified, confirmed: rec7?.confirmedByHuman }));
+
+    // (7b) WHO RELEASED IT, which is NOT who landed it. `confirmedByHuman` answers the land art —
+    // did the owner press ⏫, or did it auto-land clean+green — and on the live trail 77 of the 89
+    // landed rows carry `false` on it although a human released every single one. So an unattended
+    // land is not evidence of an unattended lane, and any criterion that selects "the first N
+    // machine-started lanes" off that field counts attended work. `releasedBy` is the field that
+    // does answer it, and this pin holds BOTH halves together: an owner-released task, landed
+    // through the same unattended clean path as (7), must record releasedBy:"owner" AND keep
+    // confirmedByHuman:false. Drop either half and the new field has silently become a rename.
+    const relMark = "released-by pin — an owner-released lane";
+    const relTask = (await (await post("/api/tasks", { text: relMark, repo: oRepo })).json()) as { task: { id: string } };
+    check("release pin setup: the owner promotes the draft (▸ queue — the release act itself)",
+      (await post(`/api/tasks/${relTask.task.id}/queue`, {})).ok);
+    const relD = await post(`/api/tasks/${relTask.task.id}/dispatch`, {});
+    const relJ = (await relD.json()) as { slot?: number; branch?: string };
+    check("release pin setup: the released task starts a lane in the outcomes repo",
+      relD.ok && typeof relJ.slot === "number" && typeof relJ.branch === "string", JSON.stringify(relJ));
+    const relSlot = relJ.slot ?? 0;
+    const relBranch = relJ.branch ?? "";
+    const relCwd = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+      .slots.find((s) => s.id === relSlot)?.cwd ?? "";
+    check("release pin setup: the dispatched lane has a worktree to commit in", !!relCwd, JSON.stringify({ relSlot, relCwd }));
+    // SETTLE, not an assertion — the delivery contract itself is pinned in e2e/tasks.ts (d). The
+    // wait exists because briefAndSend sleeps ~4 s before injecting the founding brief and then
+    // re-checks that the slot is still ITS lane; tearing the lane down inside that window makes it
+    // requeue the row, which is noise this check has no business generating.
+    for (let i = 0; i < 24; i++) {
+      const ps = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts;
+      if (ps.some((p) => p.source === "auto" && (p.text ?? "").includes(relMark))) break;
+      await Bun.sleep(500);
+    }
+    await Bun.write(`${relCwd}/released.e2e.ts`, "// owner-released lane test file\n");
+    spawnSync("git", ["-C", relCwd, "add", "released.e2e.ts"]);
+    spawnSync("git", ["-C", relCwd, "commit", "-qm", "owner-released lane work"]);
+    await Bun.write(`${oRepo}/released-main.txt`, "main side, second\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", oRepo, "add", "released-main.txt"]);
+    spawnSync("git", ["-C", oRepo, "commit", "-qm", "released-pin main work"]);
+    await settleForMerge(relSlot);
+    await post(`/api/slots/${relSlot}/merge`, {});
+    const vRel = await waitMerge(relSlot);
+    check("release pin setup: the owner-released lane lands UNATTENDED via the clean path (slot torn down)",
+      vRel.gone, JSON.stringify(vRel));
+    const recRel = forBranch(await readOutcomes(), relBranch);
+    check("outcome: an owner-released lane records releasedBy:\"owner\" — while the LAND art stays what it was (unattended clean land ⇒ confirmedByHuman:false)",
+      recRel?.disposition === "landed" && recRel?.releasedBy === "owner" && recRel?.confirmedByHuman === false,
+      JSON.stringify({ releasedBy: recRel?.releasedBy, confirmed: recRel?.confirmedByHuman, d: recRel?.disposition }));
+    // …and the complementary half: a lane that came from NO queue row (rec1 was opened by hand via
+    // POST /api/lanes) carries no key at all. Absence has to stay readable as "this row cannot
+    // say" — the moment it defaults to "owner", every pre-field row on disk starts claiming a
+    // release nobody recorded, which is the exact failure this field was added to prevent.
+    check("outcome: a hand-opened lane carries no releasedBy key at all (absence ≠ owner)",
+      !("releasedBy" in (rec1 ?? {})), JSON.stringify({ releasedBy: rec1?.releasedBy }));
 
     // (8) LANDED where verify did NOT run for this land, while a STALE green verdict sits on the
     // slot: an agent-resolved lane is left un-landed (verdict "resolved", verify.ok:true, kept for

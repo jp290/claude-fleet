@@ -1370,6 +1370,16 @@ async function tickGit(): Promise<void> {
 }
 
 
+// Where a lane's tree lives, as a PURE function of repo root + branch. Extracted because it is not
+// only a path this writes — it is a JOIN KEY that outlives the tree: prompts.jsonl records a lane's
+// prompts under `cwd` and `slot_open`'s audit detail IS that same cwd, so a landed lane whose
+// worktree is long gone is still findable by re-deriving this string from its branch name (see the
+// dossier region). Two copies of that derivation would rot apart silently — the reader would simply
+// find nothing and report an honest-looking "no prompts", which is the one answer this must never
+// give by accident.
+const worktreePathFor = (root: string, branch: string): string =>
+  `${root}.worktrees/${branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
@@ -1385,7 +1395,7 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   const branch = branchRaw.trim() || `fleet/${stamp}-${randomBytes(2).toString("hex")}`;
   const chk = await git(root, "check-ref-format", "--branch", branch);
   if (chk.code !== 0) throw new Error(`invalid branch name: ${branch}`);
-  const path = `${root}.worktrees/${branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+  const path = worktreePathFor(root, branch);
   if (existsSync(path)) throw new Error(`worktree path already exists: ${path}`);
   mkdirSync(`${root}.worktrees`, { recursive: true });
   // fork the lane off the integration branch explicitly, NOT the primary's HEAD — the primary
@@ -5366,6 +5376,260 @@ function emitLaneOutcome(o: LaneOutcome | null): void {
 }
 
 
+// --- THE DOSSIER: one lane read as one story ----------------------------------------------------
+// Everything a lane leaves behind is already durable, and every piece of it sits in a DIFFERENT
+// append-only file under a DIFFERENT key: the queue row that ordered it (fleet.json), the prompts
+// it was sent (prompts.jsonl, keyed by worktree path), what Fleet did to its slot (audit.jsonl,
+// keyed by slot id), how it ended (lane-outcomes.jsonl, keyed by branch), why it was allowed to
+// land (a git note under refs/notes/fleet/land, keyed by the commit main ended up at) and what the
+// full suite said afterwards (post-land-audits.jsonl, keyed by covers[].branch). So "why did this
+// land, and what did it cost afterwards" was a question the product could not answer: it took three
+// lenses of the activity window, the queue overlay and a terminal — and the land note, which is the
+// only place the VERBATIM verify command and its output survive, had no reader in the product at
+// all (`git notes --ref=fleet/land` appears in this file exactly once, as writeLandNote's `add -f`).
+//
+// This is the reading half, and it is a JOIN and nothing else: no new file, no new field on Task or
+// Slot, no writer, no migration. The key is the branch name, which every source either carries or
+// reduces to:
+//   · worktree path  — worktreePathFor is a pure function of repo root + branch, so a landed lane
+//                      whose tree is gone still yields the exact string prompts.jsonl holds in `cwd`
+//   · slot id        — `slot_open`'s audit detail IS that cwd (openSlot), which recovers the slot a
+//                      torn-down lane ran in, bounded to the window it actually occupied
+//   · landed commit  — the outcome row's `mainAfter`: the sha writeLandNote attached its note to,
+//                      and the sha a post-land audit's `covers` names
+//
+// THE HONESTY RULE, and the reason every source is wrapped rather than returned bare: an absent
+// source and an empty source are different answers, and collapsing them is exactly the failure this
+// window exists to prevent (the same bargain the outcome feed makes with "empty findings ≠ clean").
+// `read` means the source was opened and this is what it holds — an empty list there is a real
+// measurement. `unknown` means it could not be consulted at all, and it carries WHY. A renderer can
+// then say "not measured" without ever inventing "nothing happened".
+type Measured<T> = { state: "read"; value: T } | { state: "unknown"; why: string };
+const measured = <T>(value: T): Measured<T> => ({ state: "read", value });
+const unmeasured = <T>(why: string): Measured<T> => ({ state: "unknown", why });
+// rows plus the count they were cut from: `total > rows.length` says the tail was dropped, so a
+// capped list can never read as a complete one
+type Capped<T> = { rows: T[]; total: number };
+// keeps the HEAD of a list that is already newest-first (outcomes, audits, git log)
+const capped = <T>(all: T[], max: number): Capped<T> => ({ rows: all.slice(0, max), total: all.length });
+// ...and the TAIL of one that is oldest-first. Not interchangeable: the chronological streams
+// (prompts, slot events) are sorted ascending because they are read as a story, and cutting their
+// HEAD would drop the most recent rows — i.e. exactly how the lane ENDED, which is the half a
+// dossier is usually opened for. Both report `total`, so a cut is never silent either way.
+const cappedTail = <T>(all: T[], max: number): Capped<T> =>
+  ({ rows: all.slice(Math.max(0, all.length - max)), total: all.length });
+const DOSSIER_MAX_ROWS = 200;
+
+// The missing reader. Tri-state and deliberately not collapsible: a note that is ABSENT (the commit
+// was never landed by this fleet, or the best-effort write failed — writeLandNote swallows its own
+// failures by contract) is a different fact from a note that is there and does not parse. Neither
+// is an error of this route.
+type LandNoteRead =
+  | { state: "read"; sha: string; note: Record<string, unknown> }
+  | { state: "absent"; sha: string }
+  | { state: "unreadable"; sha: string; why: string };
+async function readLandNote(repo: string, sha: string): Promise<LandNoteRead> {
+  const r = await gitRead(repo, "notes", "--ref=fleet/land", "show", sha);
+  if (r.code !== 0) {
+    // git exits non-zero for BOTH "there is no note here" and "this ref/object is broken", so the
+    // exit code alone cannot tell an ordinary absence from a real read failure — the message does.
+    const why = (r.err || r.out).trim();
+    return /no note found/i.test(why) ? { state: "absent", sha } : { state: "unreadable", sha, why: why.slice(0, 200) };
+  }
+  try {
+    return { state: "read", sha, note: JSON.parse(r.out) as Record<string, unknown> };
+  } catch {
+    return { state: "unreadable", sha, why: "note is not the JSON writeLandNote writes" };
+  }
+}
+
+// how a queue row was tied to this lane, returned alongside the row so a reader can weigh it. The
+// three joins are not equally strong and pretending otherwise would be the same collapse the
+// Measured wrapper exists to prevent: "slot" is the live binding the rest of the server already
+// uses; the two hash joins compare the lane's FIRST prompt (what briefHashOf recorded on the
+// outcome) against what the dispatcher would have sent — exact when it matches, silent when the
+// text was edited in the pane before it ever became a prompt.
+type TaskMatch = "slot" | "brief-hash" | "text-hash";
+interface DossierTask { id: string; text: string; kind: Task["kind"]; source: Task["source"];
+  status: Task["status"]; releasedBy?: Task["releasedBy"]; note: string | null; repo: string | null;
+  files?: string[]; brief?: TaskBrief; criterion?: TaskCriterion; analysis?: TaskAnalysis;
+  match: TaskMatch }
+interface DossierAudit { at: number; result: string; mainSha: string; covers: string[];
+  reason?: string; exitCode: number | null; out: string; cmd: string;
+  adjudication?: AuditAdjudication }
+interface LaneDossier {
+  branch: string;
+  repo: string | null;      // the git toplevel this lane's work lives in, null when nothing knows it
+  worktree: string | null;  // the derived path — may be long gone; it is a KEY here, not a location
+  slot: number | null;      // the slot it ran in, live or recovered from slot_open
+  liveSlot: number | null;  // ...and whether that slot still holds this lane right now
+  task: Measured<DossierTask | null>;
+  prompts: Measured<Capped<Record<string, unknown>>>;
+  events: Measured<Capped<Record<string, unknown>>>;
+  commits: Measured<Capped<{ sha: string; at: number; author: string; subject: string }>>;
+  outcomes: Measured<Capped<Record<string, unknown>>>;
+  landNotes: Measured<LandNoteRead[]>;
+  audits: Measured<Capped<DossierAudit>>;
+}
+
+// Which queue row ordered this lane. Live lanes answer this the way the rest of the server does
+// (Task.slot); a torn-down lane cannot, because the slot has since been someone else's — so the
+// fallback compares the outcome row's briefHash (a hash of the lane's first owner/auto prompt)
+// against what a dispatch would have sent, which is `brief.text` when one was compiled and the raw
+// row text when none was (briefAndSend's `next.brief?.text ?? next.text`).
+// null is a MEASUREMENT ("no row in the live list matches"), not a failure — but it is not proof
+// that none existed: capTasks evicts terminal rows past MAX_TASKS, so an old lane's row may simply
+// be gone. That caveat belongs to the reader, which is why it is stated here and rendered there.
+function dossierTaskFor(branch: string, liveSlot: number | null, briefHash: string | null): DossierTask | null {
+  const facet = (t: Task, match: TaskMatch): DossierTask => ({
+    id: t.id, text: t.text, kind: t.kind, source: t.source, status: t.status,
+    ...(t.releasedBy ? { releasedBy: t.releasedBy } : {}),
+    note: t.note, repo: t.repo,
+    ...(t.files ? { files: t.files } : {}),
+    ...(t.brief ? { brief: t.brief } : {}),
+    ...(t.criterion ? { criterion: t.criterion } : {}),
+    ...(t.analysis ? { analysis: t.analysis } : {}),
+    match,
+  });
+  if (liveSlot !== null) {
+    const bound = tasks.find((t) => t.slot === liveSlot && t.status === "sent");
+    if (bound) return facet(bound, "slot");
+  }
+  if (!briefHash) return null;
+  const byBrief = tasks.find((t) => t.brief && briefHashOf(t.brief.text) === briefHash);
+  if (byBrief) return facet(byBrief, "brief-hash");
+  const byText = tasks.find((t) => briefHashOf(t.text) === briefHash);
+  return byText ? facet(byText, "text-hash") : null;
+}
+
+// The slot a torn-down lane ran in, and the exact window it held it. `slot_open` writes the cwd as
+// its detail, so the derived worktree path finds every open of THIS lane; the window ends at the
+// next open of the SAME slot, because from that moment the slot's audit rows belong to someone
+// else. A lane killed and reattached has several windows and gets all of them — which is the honest
+// answer, not a bug: that IS its slot history.
+interface SlotWindow { slot: number; from: number; to: number }
+function laneSlotWindows(events: Record<string, unknown>[], worktree: string): SlotWindow[] {
+  const opens = events.filter((e) => e.event === "slot_open" && typeof e.slot === "number"
+    && typeof e.ts === "number");
+  const wins: SlotWindow[] = [];
+  for (const o of opens) {
+    if (o.detail !== worktree) continue;
+    const from = o.ts as number;
+    const slot = o.slot as number;
+    const next = opens
+      .filter((e) => e.slot === slot && (e.ts as number) > from)
+      .reduce<number>((min, e) => Math.min(min, e.ts as number), Number.POSITIVE_INFINITY);
+    wins.push({ slot, from, to: next });
+  }
+  return wins;
+}
+
+// The join itself. Read-only from first line to last: every source is opened with the same reader
+// its own route uses, so this can never disagree with the lens it is assembled from.
+async function laneDossier(branch: string, repoHint: string | null): Promise<LaneDossier> {
+  const live = slots.find((s) => s.worktree?.branch === branch && s.cwd) ?? null;
+  // repo, in descending order of how much the source actually knows: the live lane states it, the
+  // outcome row recorded it at the land site, the caller may name it. Never the dispatch default —
+  // a guessed repository would make every git-backed source below quietly answer about a DIFFERENT
+  // tree, which is worse than answering "unknown".
+  const { rows: outcomeRows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  const mine = outcomeRows
+    .filter((o) => o.branch === branch)
+    .sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
+  const newest = mine[0];
+  const repo = live?.worktree?.repo
+    ?? (typeof newest?.repo === "string" ? newest.repo : null)
+    ?? repoHint;
+  const worktree = repo ? worktreePathFor(repo, branch) : null;
+
+  const { rows: auditRows } = await readLedger<Record<string, unknown>>(AUDIT_FILE);
+  const windows = worktree ? laneSlotWindows(auditRows, worktree) : [];
+  const slot = live?.id ?? (windows.length ? windows[windows.length - 1].slot : null);
+
+  const briefHash = typeof newest?.briefHash === "string" ? newest.briefHash : null;
+
+  // prompts: keyed by the worktree path, which is only derivable once the repo is known
+  const { rows: promptRows } = await readLedger<Record<string, unknown>>(PROMPT_LOG);
+  const prompts: Measured<Capped<Record<string, unknown>>> = worktree
+    ? measured(cappedTail(promptRows.filter((p) => p.cwd === worktree)
+      .sort((a, b) => (typeof a.ts === "number" ? a.ts : 0) - (typeof b.ts === "number" ? b.ts : 0)), DOSSIER_MAX_ROWS))
+    : unmeasured("the prompt log is keyed by worktree path, and no source names this lane's repository");
+
+  // slot events: only the rows inside a window this lane actually held the slot for
+  const events: Measured<Capped<Record<string, unknown>>> = !worktree
+    ? unmeasured("the audit trail is keyed by slot id, and no source names this lane's repository")
+    : !windows.length
+      ? unmeasured(`no slot_open row names ${worktree} — this lane's slot cannot be identified`)
+      : measured(cappedTail(auditRows
+        .filter((e) => typeof e.ts === "number"
+          && windows.some((w) => e.slot === w.slot && (e.ts as number) >= w.from && (e.ts as number) < w.to))
+        .sort((a, b) => (a.ts as number) - (b.ts as number)), DOSSIER_MAX_ROWS));
+
+  // commits: the lane's own, base..head. The outcome row carries both as COMMITS (baseSha, not the
+  // base branch name, on any row a land wrote), so this still resolves after the branch is deleted.
+  let commits: Measured<Capped<{ sha: string; at: number; author: string; subject: string }>>;
+  const base = typeof newest?.base === "string" ? newest.base : (live?.worktree?.baseSha ?? null);
+  const head = typeof newest?.headSha === "string" ? newest.headSha : (live ? branch : null);
+  if (!repo) commits = unmeasured("no source names this lane's repository");
+  else if (!base || !head) commits = unmeasured("no fork point on record for this lane — its own commits cannot be separated from the base");
+  else {
+    const lg = await gitRead(repo, "log", "--no-color", "--format=%H%x09%ct%x09%an%x09%s", `${base}..${head}`);
+    commits = lg.code !== 0
+      ? unmeasured(`git could not walk ${base.slice(0, 8)}..${head.slice(0, 8)}: ${(lg.err || lg.out).trim().slice(0, 160)}`)
+      : measured(capped(lg.out.split("\n").filter(Boolean).map((l) => {
+        const [sha, at, author, ...rest] = l.split("\t");
+        return { sha, at: Number(at) * 1000 || 0, author: author ?? "", subject: rest.join("\t") };
+      }), DOSSIER_MAX_ROWS));
+  }
+
+  // land notes: one per outcome row that moved main. Absence of a note is reported per sha, not
+  // folded into the list, because "landed and no note" is a real (best-effort) outcome.
+  const landedShas = mine
+    .map((o) => (typeof o.mainAfter === "string" ? o.mainAfter : null))
+    .filter((s): s is string => !!s);
+  const landNotes: Measured<LandNoteRead[]> = !repo
+    ? unmeasured("no source names this lane's repository")
+    : measured(await Promise.all([...new Set(landedShas)].map((sha) => readLandNote(repo, sha))));
+
+  // tier 2: every audit run whose `covers` names this branch, carrying its adjudication
+  const { rows: auditTrail } = await readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE);
+  const judged = await adjudicationsByAudit();
+  const audits = auditTrail
+    .filter((r) => Array.isArray(r.covers)
+      && (r.covers as unknown[]).some((c) => (c as AuditCover | null)?.branch === branch))
+    .sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0))
+    .map((r): DossierAudit => {
+      const adj = typeof r.at === "number" ? judged.get(r.at) : undefined;
+      return {
+        at: typeof r.at === "number" ? r.at : 0,
+        result: typeof r.result === "string" ? r.result : "unknown",
+        mainSha: typeof r.mainSha === "string" ? r.mainSha : "",
+        covers: (r.covers as AuditCover[]).map((c) => c?.branch).filter(Boolean),
+        ...(typeof r.reason === "string" ? { reason: r.reason } : {}),
+        exitCode: typeof r.exitCode === "number" ? r.exitCode : null,
+        out: typeof r.out === "string" ? r.out : "",
+        cmd: typeof r.cmd === "string" ? r.cmd : "",
+        ...(adj ? { adjudication: adj } : {}),
+      };
+    });
+
+  return {
+    branch, repo, worktree,
+    slot, liveSlot: live?.id ?? null,
+    task: measured(dossierTaskFor(branch, live?.id ?? null, briefHash)),
+    prompts, events, commits,
+    outcomes: measured(capped(mine, DOSSIER_MAX_ROWS)),
+    landNotes,
+    // tier 2 is CONFIGURED-or-not, and that distinction has to survive to the reader: with no
+    // FLEET_POSTLAND_AUDIT_CMD there is no measurement to be missing, which is a different sentence
+    // from "the suite ran and said nothing about this lane"
+    audits: POSTLAND_AUDIT_CMD || audits.length
+      ? measured(capped(audits, DOSSIER_MAX_ROWS))
+      : unmeasured("no post-land audit command is configured on this server — tier 2 never ran"),
+  };
+}
+
+
 // --- DISPOSITION rail: the owner's label channel for advisory output (docs/graduation-criteria.md
 // needs owner labels as ground truth, and Fleet's throwaway workers had none). One append-only
 // record per ruling, same discipline as the audit/outcome logs it sits beside: appendEvent's write
@@ -8896,6 +9160,50 @@ Bun.serve<WSData>({
     // keeps — it is a thing it cannot do.
     if (url.pathname === "/api/post-land-audits/adjudicate" && req.method === "POST")
       return await writeAuditAdjudication(await readJson(req));
+    // THE DOSSIER (see the dossier region): the same six sources the lenses above read one at a
+    // time, joined by branch into one lane's story — plus the fleet/land note, which no other route
+    // reads. Owner-only by POSITION exactly like its inputs, and read-only by construction: it
+    // opens no file for writing and runs no git command that can mutate a tree.
+    //
+    // Branch names carry slashes, so the key is a QUERY parameter and not a path segment — the
+    // idiom /api/commits and /api/dirinfo already use for path-shaped values, and the one that
+    // cannot be broken by a proxy normalizing %2F. Without it: the index, i.e. which lanes there
+    // are to read at all (every branch the outcome ledger knows, plus the lanes open right now,
+    // which by definition have no outcome row yet).
+    if (url.pathname === "/api/lane" && req.method === "GET") {
+      const branch = (url.searchParams.get("branch") ?? "").trim();
+      const repoHint = (url.searchParams.get("repo") ?? "").trim() || null;
+      if (branch) return json(await laneDossier(branch, repoHint));
+      const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+      const byBranch = new Map<string, { branch: string; repo: string | null; ts: number;
+        disposition: string | null; live: number | null }>();
+      for (const o of rows) {
+        if (typeof o.branch !== "string" || !o.branch) continue;
+        const ts = typeof o.ts === "number" ? o.ts : 0;
+        const prev = byBranch.get(o.branch);
+        if (prev && prev.ts >= ts) continue;
+        byBranch.set(o.branch, {
+          branch: o.branch, repo: typeof o.repo === "string" ? o.repo : null, ts,
+          disposition: typeof o.disposition === "string" ? o.disposition : null, live: null,
+        });
+      }
+      // an OPEN lane has no outcome row by definition — it has not ended. Listing only what ended
+      // would make the window a graveyard, and the lane the owner most wants to read is the running one.
+      for (const s of slots) {
+        if (!s.worktree?.branch || !s.cwd) continue;
+        const b = s.worktree.branch;
+        byBranch.set(b, { branch: b, repo: s.worktree.repo, ts: byBranch.get(b)?.ts ?? sessionStart(s) ?? 0,
+          disposition: byBranch.get(b)?.disposition ?? null, live: s.id });
+      }
+      // OPEN lanes first, then finished ones newest-first. Not one `ts` ordering for both: a live
+      // lane's `ts` is its session start, which is unreadable for a pane whose transcript does not
+      // exist yet (sessionStart returns null) — such a lane would sort to the very bottom, i.e. the
+      // lane most worth reading would be the hardest to find. Ranking by state instead of inventing
+      // a timestamp keeps the list honest AND useful.
+      const lanes = [...byBranch.values()]
+        .sort((a, b) => (a.live === null ? 1 : 0) - (b.live === null ? 1 : 0) || b.ts - a.ts);
+      return json({ lanes: lanes.slice(0, 500), total: lanes.length });
+    }
     // ── guest ops (briefs/guest-ops-panel.md) ──────────────────────────────────────────────
     // Owner-only by POSITION, the same property /api/file has and the same one a later block move
     // would silently break: this sits past tokenGate, BELOW the SHARE_HOSTS gate (so the public

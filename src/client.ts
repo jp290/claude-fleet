@@ -6799,7 +6799,278 @@ function renderOutcomeDetail(o: OutcomeRow) {
   }
 }
 
-// --- the activity window: three lenses on "what has been happening" ---
+// --- THE DOSSIER LENS: one lane read as one story ----------------------------------------------
+//
+// The three lenses below answer "what has been happening" across ALL lanes, each from its own
+// ledger. This one turns the question ninety degrees: everything about ONE lane, in the order it
+// happened. The join is the server's (GET /api/lane — see the dossier region in server.ts); this is
+// the reader, and its whole job is to render a tri-state source honestly.
+//
+// THE RULE, and the only rule that makes this window worth having: a source that could not be
+// consulted renders as NOT MEASURED, with the reason, and never as an empty section. An empty
+// section reads as "nothing happened in this lane", which is a claim — and the wrong one. Same
+// bargain the outcome feed makes with "empty findings ≠ clean".
+type LaneIndexRow = { branch: string; repo: string | null; ts: number; disposition: string | null; live: number | null };
+type Measured<T> = { state: "read"; value: T } | { state: "unknown"; why: string };
+type Capped<T> = { rows: T[]; total: number };
+type LandNoteRead = { state: "read" | "absent" | "unreadable"; sha: string;
+  note?: Record<string, unknown>; why?: string };
+type DossierTask = { id: string; text: string; kind: string; source: string; status: string;
+  releasedBy?: string; note: string | null; files?: string[];
+  brief?: { text: string; at: number; model: string; edited: boolean };
+  criterion?: { text: string; proposedAt: number; confirmedAt: number | null };
+  analysis?: { verdict: string; reason: string; blockers: string[]; collides: string[]; at: number };
+  match: string };
+type DossierAudit = { at: number; result: string; mainSha: string; covers: string[]; reason?: string;
+  exitCode: number | null; out: string; cmd: string;
+  adjudication?: { verdict: string; at: number; by: string; note?: string } };
+interface Dossier {
+  branch: string; repo: string | null; worktree: string | null;
+  slot: number | null; liveSlot: number | null;
+  task: Measured<DossierTask | null>;
+  prompts: Measured<Capped<{ ts?: number; text?: string; source?: string; label?: string }>>;
+  events: Measured<Capped<{ ts?: number; event?: string; slot?: number; detail?: string }>>;
+  commits: Measured<Capped<{ sha: string; at: number; author: string; subject: string }>>;
+  outcomes: Measured<Capped<Record<string, unknown>>>;
+  landNotes: Measured<LandNoteRead[]>;
+  audits: Measured<Capped<DossierAudit>>;
+}
+let akteData: LaneIndexRow[] = [];
+let akteTotal = 0;
+let aktePick: string | null = null;
+let akteDoc: Dossier | null = null;
+let akteBusy = false;
+
+// The one piece of rendering this lens is FOR. Everything else here is layout; this is the contract:
+// `unknown` prints the reason under a "not measured" heading and returns false, so the caller draws
+// no rows and no reassuring emptiness. `read` returns true and the caller renders what is there —
+// including nothing, which at that point is a measurement and says so in its own words.
+function akteSource<T>(host: HTMLElement, title: string, src: Measured<T>, emptyWord: string): T | null {
+  host.appendChild(el("div", "aktehead", title));
+  if (src.state === "unknown") {
+    const box = el("div", "akteunknown");
+    box.appendChild(el("div", "akteunknownw", "not measured"));
+    box.appendChild(el("div", "shrsub", src.why));
+    host.appendChild(box);
+    return null;
+  }
+  const v = src.value as unknown as { rows?: unknown[] } | unknown[] | null;
+  const n = Array.isArray(v) ? v.length : Array.isArray(v?.rows) ? v.rows.length : v === null ? 0 : 1;
+  if (n === 0) { host.appendChild(el("div", "shellhint", emptyWord)); return null; }
+  return src.value;
+}
+
+// one entry on the trail: when, which source it came from, what it says
+function akteStep(host: HTMLElement, kind: string, ts: number, title: string, sub?: string): HTMLElement {
+  const r = el("div", `aktestep step-${kind}`);
+  r.appendChild(el("span", "aktekind", kind));
+  const m = el("div", "shrmain");
+  m.appendChild(el("div", "shrname", title));
+  m.appendChild(el("div", "shrsub", `${ts ? fmtTs(ts) : "—"}${sub ? ` · ${sub}` : ""}`));
+  r.appendChild(m);
+  host.appendChild(r);
+  return r;
+}
+
+function renderAkte() {
+  const shell = ocShell;
+  if (!shell) return;
+  const ctl = el("div", "auditctl");
+  const loaded = akteData.length;
+  const count = akteTotal > loaded ? `latest ${loaded} of ${akteTotal} lanes` : `${loaded} lane${loaded === 1 ? "" : "s"}`;
+  ctl.appendChild(el("span", "auditcount", count));
+  shell.tools.appendChild(ctl);
+  shell.setSubtitle(count);
+
+  shell.list.replaceChildren();
+  const shRows: ShellRow[] = [];
+  let selIdx = -1;
+  if (!loaded) shell.list.appendChild(el("div", "histnone", "no lanes on record"));
+  for (const l of akteData) {
+    const r = el("div", "shellrow akterow");
+    r.title = l.repo ? `${l.branch} · ${l.repo}` : l.branch;
+    const m = el("div", "shrmain");
+    m.appendChild(el("div", "shrname", l.branch));
+    // a live lane has no disposition yet and saying "landed"/"—" for it would be a claim; "open"
+    // is the honest word for a lane whose story is still being written
+    const state = l.live !== null ? `open · slot ${l.live}` : l.disposition ?? "no outcome recorded";
+    // ts 0 means the server could not read a time for this lane (a live pane with no transcript
+    // yet) — printing the epoch there would be a fabricated date, so the field simply says nothing
+    m.appendChild(el("div", "shrsub", `${l.ts ? `${fmtTs(l.ts)} · ` : ""}${state}${l.repo ? ` · ${baseName(l.repo)}` : ""}`));
+    r.appendChild(m);
+    // the busy flag is set BEFORE the re-render, not inside the loader: renderActivity runs
+    // synchronously here, so a flag the loader sets afterwards would arrive one frame too late and
+    // the detail pane would keep showing the PREVIOUS lane while this one is being fetched
+    const act = () => {
+      aktePick = l.branch;
+      akteDoc = null;
+      akteBusy = true;
+      renderActivity();
+      void loadAkteDoc(l.branch);
+      shell.showDetail(true);
+    };
+    r.onclick = act;
+    shell.list.appendChild(r);
+    if (l.branch === aktePick) { r.classList.add("sel"); selIdx = shRows.length; }
+    shRows.push({ el: r, open: act });
+  }
+  shell.setRows(shRows);
+  if (selIdx >= 0) shell.select(selIdx, false, false);
+  if (akteDoc && akteDoc.branch === aktePick) renderAkteDetail(akteDoc);
+  else if (akteBusy) { shell.detail.replaceChildren(); shell.detail.appendChild(el("div", "shellhint", "reading…")); }
+}
+
+async function loadAkteDoc(branch: string) {
+  const res = await api(`/api/lane?branch=${encodeURIComponent(branch)}`);
+  akteBusy = false;
+  // the selection moved on while this was in flight — that answer is about a different lane now
+  if (aktePick !== branch) return;
+  const shell = ocShell;
+  if (!res.ok) {
+    // the route itself failing is its own state, and it must not be left looking like a lane with
+    // nothing in it — the same rule the sources inside the dossier follow
+    if (shell && actLens === "akte") {
+      shell.detail.replaceChildren();
+      shell.detail.appendChild(el("div", "akteunknown", `the dossier could not be read (HTTP ${res.status})`));
+    }
+    return;
+  }
+  akteDoc = (await res.json()) as Dossier;
+  if (shell?.isOpen() && actLens === "akte") renderAkteDetail(akteDoc);
+}
+
+// The trail itself, in the four movements a lane actually has: what it was asked to do, what it
+// did, how it landed, and what was measured afterwards.
+function renderAkteDetail(d: Dossier) {
+  const shell = ocShell;
+  if (!shell) return;
+  const host = shell.detail;
+  host.replaceChildren();
+  host.appendChild(el("div", "rvhead", d.branch));
+  host.appendChild(el("div", "diffstat",
+    `${d.repo ? baseName(d.repo) : "repository unknown"}`
+    + `${d.liveSlot !== null ? ` · open in slot ${d.liveSlot}` : d.slot !== null ? ` · ran in slot ${d.slot}` : " · slot unknown"}`));
+
+  // ① THE ORDER
+  const task = akteSource(host, "① the order", d.task,
+    "no queue row matches this lane — it was opened by hand, or its row aged out of the queue (capped at 200)");
+  if (task) {
+    const t = task as DossierTask;
+    host.appendChild(el("div", "aktetext", t.text));
+    // HOW the row was tied to this lane, because the three joins are not equally strong and a
+    // hash match on a torn-down lane is an inference, not a binding
+    host.appendChild(el("div", "shrsub", `${t.source} · ${t.kind} · ${t.status}`
+      + `${t.releasedBy ? ` · released by ${t.releasedBy}` : ""}`
+      + ` · matched by ${t.match === "slot" ? "live slot binding" : `${t.match} (inferred from the lane's first prompt)`}`));
+    if (t.criterion) {
+      host.appendChild(el("div", "aktehead", "done-criterion"));
+      host.appendChild(el("div", "aktetext", t.criterion.text));
+      host.appendChild(el("div", "shrsub", t.criterion.confirmedAt
+        ? `confirmed by the owner ${fmtTs(t.criterion.confirmedAt)}`
+        : "PROPOSED — never confirmed by the owner, so nothing was measured against it"));
+    }
+    if (t.brief) {
+      host.appendChild(el("div", "aktehead", "the brief it was sent"));
+      host.appendChild(el("div", "aktepre", t.brief.text));
+      host.appendChild(el("div", "shrsub", `${t.brief.model} · ${fmtTs(t.brief.at)}${t.brief.edited ? " · edited by the owner" : ""}`));
+    }
+    if (t.analysis) {
+      host.appendChild(el("div", "aktehead", "what the analyst said before it started"));
+      host.appendChild(el("div", "shrsub", `${t.analysis.verdict} · ${t.analysis.reason}`
+        + `${t.analysis.blockers.length ? ` · blockers: ${t.analysis.blockers.join(", ")}` : ""}`));
+    }
+  }
+
+  // ② WHAT IT DID — prompts, slot events and commits merged into one chronological stream, which
+  // is the whole point: they are three files today and one story in fact.
+  const prompts = akteSource(host, "② what it did", d.prompts, "no prompt was ever sent to this lane");
+  const events = d.events.state === "read" ? d.events.value : null;
+  const commits = d.commits.state === "read" ? d.commits.value : null;
+  type Step = { ts: number; kind: string; title: string; sub?: string };
+  const steps: Step[] = [];
+  for (const p of prompts?.rows ?? [])
+    steps.push({ ts: p.ts ?? 0, kind: "prompt", title: (p.text ?? "").slice(0, 400), sub: p.source ?? "" });
+  for (const e of events?.rows ?? [])
+    steps.push({ ts: e.ts ?? 0, kind: "slot", title: e.event ?? "", sub: e.detail ?? "" });
+  for (const c of commits?.rows ?? [])
+    steps.push({ ts: c.at, kind: "commit", title: c.subject, sub: `${c.sha.slice(0, 8)} · ${c.author}` });
+  steps.sort((a, b) => a.ts - b.ts);
+  // a cut list must say so. Silently showing 200 of 900 prompts is the same failure as rendering an
+  // unread source as empty: the reader believes they have seen the lane.
+  const cut = [
+    prompts && prompts.total > prompts.rows.length ? `${prompts.total - prompts.rows.length} older prompt(s)` : "",
+    events && events.total > events.rows.length ? `${events.total - events.rows.length} older slot event(s)` : "",
+    commits && commits.total > commits.rows.length ? `${commits.total - commits.rows.length} older commit(s)` : "",
+  ].filter(Boolean);
+  if (cut.length) host.appendChild(el("div", "shellhint", `not shown: ${cut.join(", ")} — this trail is capped at its most recent entries`));
+  for (const s of steps) akteStep(host, s.kind, s.ts, s.title, s.sub);
+  // the two sources that ride inside ② still get their own verdict line when they could not be read
+  if (d.events.state === "unknown") akteSource(host, "slot events", d.events, "");
+  if (d.commits.state === "unknown") akteSource(host, "commits", d.commits, "");
+
+  // ③ HOW IT LANDED — the outcome row, and the git note that says WHY it was allowed to. The note
+  // is the reason this window exists: it carries the verbatim verify command and its output, and
+  // before this reader nothing in the product could show it.
+  const outcomes = akteSource(host, "③ how it ended", d.outcomes, "this lane has not ended yet — no outcome row");
+  for (const o of (outcomes as Capped<Record<string, unknown>> | null)?.rows ?? []) {
+    const dispo = typeof o.disposition === "string" ? o.disposition : "?";
+    const r = akteStep(host, "outcome", typeof o.ts === "number" ? o.ts : 0, dispo,
+      `${o.commitCount ?? 0} commit(s) · ${o.shortstat || "no diffstat"}`
+      + ` · verify ${o.verified === true ? "green" : o.verified === false ? "RED" : "not run"}`
+      + ` · ${o.confirmedByHuman ? "confirm-landed by the owner" : "unattended"}`);
+    r.title = JSON.stringify(o, null, 1);
+  }
+  const notes = akteSource(host, "the land note (refs/notes/fleet/land)", d.landNotes,
+    "no land in this lane moved the integration branch, so no note was written");
+  for (const n of (notes as LandNoteRead[] | null) ?? []) {
+    if (n.state === "absent") {
+      akteStep(host, "note", 0, `no note on ${n.sha.slice(0, 8)}`,
+        "main moved for this land but no note is attached — the note write is best-effort and never fails a land");
+      continue;
+    }
+    if (n.state === "unreadable") { akteStep(host, "note", 0, `note on ${n.sha.slice(0, 8)} is unreadable`, n.why); continue; }
+    const note = n.note ?? {};
+    const v = note.verify as { cmd?: string; ok?: boolean | null; out?: string; ms?: number;
+      timedOut?: true; waitedOut?: true } | undefined;
+    akteStep(host, "note", typeof note.at === "number" ? note.at : 0, `landed onto ${n.sha.slice(0, 8)}`,
+      `${note.confirmedByHuman ? "confirmed by the owner" : "unattended"}`
+      + `${Array.isArray(note.conflicted) && note.conflicted.length ? ` · resolved ${note.conflicted.length} conflict(s)` : ""}`);
+    if (!v) {
+      host.appendChild(el("div", "shellhint", "no verify is recorded on this note — the land ran none"));
+      continue;
+    }
+    // the six verify states the merge verdict names, kept apart here for the same reason they are
+    // kept apart there: a skip and a timeout are not a pass, and neither is a failure
+    const word = v.ok === true ? "passed" : v.ok === false ? "FAILED"
+      : v.timedOut ? "was killed at the timeout — nothing was measured"
+        : v.waitedOut ? "never started (queued behind the suite mutex) — nothing was measured"
+          : "declined to verify (skipped) — nothing was measured";
+    host.appendChild(el("div", "aktehead", `verify ${word}`));
+    host.appendChild(el("div", "aktepre", v.cmd ?? "(no command recorded)"));
+    if (v.out) host.appendChild(el("div", "aktepre akteout", v.out));
+  }
+
+  // ④ WHAT IT COST AFTERWARDS — tier 2, which gates nothing and is therefore only ever as useful
+  // as its reader. This is that reader, per lane.
+  const audits = akteSource(host, "④ what was measured after it landed", d.audits,
+    "no post-land audit run names this lane");
+  for (const a of (audits as Capped<DossierAudit> | null)?.rows ?? []) {
+    const r = akteStep(host, `audit-${a.result}`, a.at, `tier-2 audit: ${a.result.toUpperCase()}`,
+      `${a.mainSha.slice(0, 8)} · covers ${a.covers.join(", ")}`
+      + `${a.reason ? ` · ${a.reason}` : ""}${a.exitCode !== null ? ` · exit ${a.exitCode}` : ""}`);
+    r.title = a.cmd;
+    // an un-adjudicated red is the state the whole adjudication rail exists to make visible:
+    // "nobody has looked at this yet" is different from "someone looked and called it noise"
+    if (a.adjudication)
+      host.appendChild(el("div", "shrsub", `owner ruled "${a.adjudication.verdict}" ${fmtTs(a.adjudication.at)}`
+        + `${a.adjudication.note ? ` — ${a.adjudication.note}` : ""}`));
+    else if (a.result === "red")
+      host.appendChild(el("div", "akteunknownw", "un-adjudicated — nobody has ruled on this red yet"));
+    if (a.out) host.appendChild(el("div", "aktepre akteout", a.out));
+  }
+}
+
+// --- the activity window: four lenses on "what has been happening" ---
 //
 // They were three separate overlays answering one question from three angles, and the gaps between
 // them were the problem. The outcome ledger is what FLEET landed — it cannot see a commit made by
@@ -6808,14 +7079,18 @@ function renderOutcomeDetail(o: OutcomeRow) {
 // vanished") was two clicks and a different overlay away from the outcome that explains it.
 //
 // One window, one switch. The lands lens is unchanged — its renderer carries contract wording that
-// e2e/outcomes.ts asserts over the source — and the other two are new views on existing data.
-type ActLens = "lands" | "commits" | "audit";
+// e2e/outcomes.ts asserts over the source — and the other three are new views on existing data.
+// The fourth, Akte, is the same argument one level up: the first three each read ONE ledger across
+// all lanes, and no ledger alone can answer "why did this land, and what did it cost afterwards".
+type ActLens = "lands" | "commits" | "audit" | "akte";
 let actLens: ActLens = "lands";
 const ACT_LENS: { k: ActLens; label: string; title: string }[] = [
   { k: "lands", label: "Lands", title: "the lane-outcome ledger — what Fleet landed, and what ③ review said" },
   { k: "commits", label: "Commits", title: "recent commits in a repo Fleet has open — including ones no ledger recorded" },
   { k: "audit", label: "Audit", title: "what Fleet did to each slot, and in which project — opened,"
     + " closed, shelved, self-healed, scheduled prompts fired" },
+  { k: "akte", label: "Akte", title: "one lane end to end — its order, its prompts and commits, the land"
+    + " note that says why it was allowed to land, and what tier 2 measured afterwards" },
 ];
 
 function renderActivity() {
@@ -6832,6 +7107,7 @@ function renderActivity() {
   shell.tools.appendChild(sw);
   if (actLens === "lands") renderOutcomes();
   else if (actLens === "commits") renderCommits();
+  else if (actLens === "akte") renderAkte();
   else renderAudit();
 }
 
@@ -6842,8 +7118,21 @@ async function switchLens(k: ActLens) {
   shell.detail.replaceChildren();
   shell.setTitle(k === "lands" ? "Outcome feed — what landed, and what review said"
     : k === "commits" ? "Commits — what is actually in the repo"
-    : "Audit trail — what Fleet did to each slot, and where");
+      : k === "akte" ? "Akte — one lane, end to end"
+        : "Audit trail — what Fleet did to each slot, and where");
   shell.setSubtitle("");
+  if (k === "akte") {
+    shell.foot.textContent = "Six append-only files, joined by branch name and read in the order things"
+      + " happened. Nothing here is new data and nothing is written: the order that started the lane,"
+      + " the prompts and commits it produced, the git note that records WHY it was allowed to land"
+      + " (with the verbatim verify command and its output), and what the post-land suite measured"
+      + " afterwards. A source that could not be consulted says \"not measured\" and why — never an"
+      + " empty section, which would read as \"nothing happened\".";
+    renderActivity();
+    await loadLens(k);
+    if (shell.isOpen()) renderActivity();
+    return;
+  }
   shell.foot.textContent = k === "lands"
     ? "↩ undo is one step — only the newest land can be reverted, from the board. It is deliberately"
       + " not offered per row here: rendering it on every row would imply a capability the land spine"
@@ -6875,6 +7164,13 @@ async function loadLens(k: ActLens) {
     }
   } else if (k === "commits") {
     await loadCommitsLens(null);
+  } else if (k === "akte") {
+    const res = await api("/api/lane");
+    if (res.ok) {
+      const data = (await res.json()) as { lanes?: LaneIndexRow[]; total?: number };
+      akteData = (data.lanes ?? []).filter((l): l is LaneIndexRow => typeof l?.branch === "string");
+      akteTotal = typeof data.total === "number" ? data.total : akteData.length;
+    }
   } else {
     const res = await api("/api/audit?limit=1000");
     if (res.ok) {
@@ -6902,6 +7198,10 @@ async function openActivity(lens: ActLens) {
   cmPick = null;
   ocPick = null;
   auditPick = null;
+  akteData = [];
+  aktePick = null;
+  akteDoc = null;
+  akteBusy = false;
   ocRowOf = new Map();
   actLens = lens;
   actLoaded.clear();

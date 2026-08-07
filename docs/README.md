@@ -31,7 +31,9 @@ Three places, and only the first is this folder:
 - **Commit bodies** — *this repo's finding register.* A defect, its mechanism, its
   measurement and its rejected alternatives are written where the change is:
   `git log <last handoff>..HEAD` with bodies, never a summary. Integration provenance
-  hangs off the commits too (`git notes --ref=fleet/land show <sha>`).
+  hangs off the commits too (`git notes --ref=fleet/land show <sha>`) — and since the
+  Akte lens it is also readable in the product, joined to the lane it belongs to
+  (`GET /api/lane?branch=…`, the dossier region in `server.ts`).
 - **Code comments at the decision site** — where a *why* would rot if it lived apart from
   the line it explains. `slotstats.ts` and `continuity.ts` carry their direction discipline
   in the file; `runReview`'s context delivery carries its rejected alternatives at the

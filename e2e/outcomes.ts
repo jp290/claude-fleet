@@ -251,6 +251,137 @@ export async function run(): Promise<void> {
     check("outcome: a hand-opened lane carries no releasedBy key at all (absence ≠ owner)",
       !("releasedBy" in (rec1 ?? {})), JSON.stringify({ releasedBy: rec1?.releasedBy }));
 
+    // (7c) THE DOSSIER — the same lanes read as ONE story instead of six ledgers. Every lane above
+    // is already a fixture for it: oc1 landed WITHOUT moving main (so it has no note, and that is a
+    // measurement), oc7 auto-landed and moved it (so it has one, carrying the verbatim verify
+    // command and output that no other route in this product reads), and the release-pin lane was
+    // dispatched from a queue row and then torn down (so its task can only be recovered by hash).
+    // The checks are split along the one line that matters: what the join FINDS, and what it says
+    // when it cannot look — an unreadable source must never render as an empty one.
+    {
+      type Measured<T> = { state: "read"; value: T } | { state: "unknown"; why: string };
+      type Note = { state: string; sha: string; note?: { branch?: string; confirmedByHuman?: boolean;
+        verify?: { cmd?: string; ok?: boolean | null; out?: string } }; why?: string };
+      type Dossier = { branch: string; repo: string | null; worktree: string | null;
+        slot: number | null; liveSlot: number | null;
+        task: Measured<{ id: string; text: string; match: string } | null>;
+        prompts: Measured<{ rows: { text?: string; source?: string }[]; total: number }>;
+        events: Measured<{ rows: { event?: string; slot?: number; detail?: string }[]; total: number }>;
+        commits: Measured<{ rows: { sha: string; subject: string }[]; total: number }>;
+        outcomes: Measured<{ rows: { disposition?: string; branch?: string }[]; total: number }>;
+        landNotes: Measured<Note[]>;
+        audits: Measured<{ rows: unknown[]; total: number }> };
+      const dossier = async (branch: string): Promise<Dossier> =>
+        (await (await get(`/api/lane?branch=${encodeURIComponent(branch)}`)).json()) as Dossier;
+
+      // the index: what there is to read. A landed lane comes off the outcome ledger; a lane that is
+      // still OPEN has no outcome row at all, and listing only the finished ones would make this a
+      // graveyard that never shows the lane the owner is actually watching.
+      const openLane = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; branch: string };
+      // asserted as its own step: every other check below reads through this lane, and a slot
+      // shortage here would otherwise surface as four unrelated-looking failures
+      check("dossier setup: an open lane exists to read (a free slot was available)",
+        typeof openLane.slot === "number" && !!openLane.branch, JSON.stringify(openLane));
+      const idx = (await (await get("/api/lane")).json()) as
+        { lanes: { branch: string; disposition: string | null; live: number | null }[]; total: number };
+      check("dossier: the index lists a LANDED lane with its disposition and an OPEN lane with its live slot",
+        idx.lanes.some((l) => l.branch === oc7.branch && l.disposition === "landed" && l.live === null)
+        && idx.lanes.some((l) => l.branch === openLane.branch && l.live === openLane.slot),
+        JSON.stringify(idx.lanes.slice(0, 6)));
+
+      // THE JOIN. oc7 auto-landed clean+green and its slot is gone — every source below has to be
+      // recovered from the branch name alone.
+      const d7 = await dossier(oc7.branch);
+      check("dossier: a torn-down lane still resolves its repo and the worktree path its trail is keyed by",
+        d7.repo === realpathSync(oRepo) && d7.worktree === `${realpathSync(oRepo)}.worktrees/${oc7.branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`,
+        JSON.stringify({ repo: d7.repo, worktree: d7.worktree }));
+      check("dossier: it carries the lane's own outcome row (landed), not the whole ledger",
+        d7.outcomes.state === "read" && d7.outcomes.value.rows.length === 1
+        && d7.outcomes.value.rows[0].disposition === "landed" && d7.outcomes.value.rows[0].branch === oc7.branch,
+        JSON.stringify(d7.outcomes));
+      // the commits resolve base..head AFTER the branch was landed and the worktree removed — the
+      // outcome row carries the fork point as a COMMIT, which is what keeps this readable.
+      check("dossier: a landed lane's own commits are still walkable after its worktree is gone",
+        d7.commits.state === "read" && d7.commits.value.rows.length === 1
+        && d7.commits.value.rows[0].subject === "clean auto-land lane work",
+        JSON.stringify(d7.commits));
+      // THE POINT OF THE WHOLE FEATURE: the fleet/land note, which until now had a writer and no
+      // reader anywhere in the product. It is where the verbatim verify command and its output live.
+      const n7 = d7.landNotes.state === "read" ? d7.landNotes.value[0] : null;
+      check("dossier: the fleet/land note is READ — with the verbatim verify command and its output",
+        d7.landNotes.state === "read" && d7.landNotes.value.length === 1 && n7?.state === "read"
+        && n7.sha === rec7?.mainAfter && n7.note?.branch === oc7.branch
+        && (n7.note?.verify?.cmd ?? "").includes("fakeverify") && n7.note?.verify?.ok === true
+        && typeof n7.note?.verify?.out === "string" && n7.note?.confirmedByHuman === false,
+        JSON.stringify(d7.landNotes));
+      // the slot events, bounded to the window this lane actually held the slot. `slot_open`'s
+      // detail IS the cwd, which is the only durable way back to a torn-down lane's slot.
+      check("dossier: the lane's slot is recovered from slot_open and its events are the lane's own",
+        d7.events.state === "read" && d7.slot === oc7.slot && d7.liveSlot === null
+        && d7.events.value.rows.some((e) => e.event === "slot_open" && e.detail === d7.worktree)
+        && d7.events.value.rows.every((e) => e.slot === oc7.slot),
+        JSON.stringify({ slot: d7.slot, live: d7.liveSlot, rows: d7.events.state === "read" ? d7.events.value.rows.length : d7.events }));
+
+      // the prompt trail, keyed by the derived worktree path — oc1 was sent an owner prompt before
+      // it landed, and the path it was recorded under no longer exists on disk.
+      const d1 = await dossier(oc1.branch);
+      check("dossier: prompts sent to a lane are still found by the derived worktree path after teardown",
+        d1.prompts.state === "read"
+        && d1.prompts.value.rows.some((p) => (p.text ?? "").includes("implement the feature exactly per this brief")),
+        JSON.stringify(d1.prompts));
+      // …and the honesty rule's first half: oc1's ⏏ land did NOT move main, so there is no note to
+      // read. `read` + empty is a MEASUREMENT ("we looked, this land wrote none"); it must not
+      // arrive as `unknown`, which would claim we could not look.
+      check("dossier: a land that never moved main reports NO note as a measurement, not as unknown",
+        d1.landNotes.state === "read" && d1.landNotes.value.length === 0
+        && !("mainAfter" in (rec1 ?? {})), JSON.stringify(d1.landNotes));
+
+      // the queue row behind a dispatched lane. Its slot has been recycled since, so the live
+      // binding is gone and only the brief hash can recover it — and the row says WHICH join fired,
+      // because the three are not equally strong.
+      const dRel = await dossier(relBranch);
+      check("dossier: a dispatched lane recovers its queue row by brief hash after teardown, and names the join",
+        dRel.task.state === "read" && dRel.task.value?.id === relTask.task.id
+        && dRel.task.value?.text === relMark && dRel.task.value?.match === "text-hash",
+        JSON.stringify(dRel.task));
+      // the complementary half: a hand-opened lane has no queue row, and `read` + null says exactly
+      // that — we consulted the list and nothing matched.
+      check("dossier: a hand-opened lane reports NO queue row as a measurement (read + null)",
+        d1.task.state === "read" && d1.task.value === null, JSON.stringify(d1.task));
+
+      // THE HONESTY RULE, second half: a branch nothing on this server has ever heard of. Every
+      // git-backed source needs a repository, and this one has none — so they must come back
+      // `unknown` WITH a reason. An empty `read` here would be the exact lie this window exists to
+      // prevent: "nothing happened in this lane" instead of "we could not look".
+      const dGhost = await dossier("fleet/never-existed");
+      check("dossier: an unknown branch invents no repository — it stays null rather than defaulting",
+        dGhost.repo === null && dGhost.worktree === null && dGhost.slot === null, JSON.stringify(dGhost.repo));
+      check("dossier: with no repository every git-backed source is UNKNOWN with a reason, never an empty list",
+        dGhost.prompts.state === "unknown" && !!dGhost.prompts.why
+        && dGhost.events.state === "unknown" && !!dGhost.events.why
+        && dGhost.commits.state === "unknown" && !!dGhost.commits.why
+        && dGhost.landNotes.state === "unknown" && !!dGhost.landNotes.why,
+        JSON.stringify({ p: dGhost.prompts, e: dGhost.events, c: dGhost.commits, n: dGhost.landNotes }));
+      // …while the source that genuinely IS empty stays a measurement: no lane by that name ended,
+      // and the outcome ledger can say so because reading it needs no repository at all.
+      check("dossier: the outcome ledger still answers for an unknown branch — read, and empty",
+        dGhost.outcomes.state === "read" && dGhost.outcomes.value.rows.length === 0, JSON.stringify(dGhost.outcomes));
+      // tier 2 is not configured in this harness, and "the suite never ran" is a different sentence
+      // from "the suite ran and found nothing about this lane". Both dossiers must say the first.
+      check("dossier: with no post-land audit command configured, tier 2 reads UNKNOWN — never a silent green",
+        d7.audits.state === "unknown" && /never ran|not configured/.test(d7.audits.why ?? ""),
+        JSON.stringify(d7.audits));
+
+      // an OPEN lane answers from the live slot instead of the ledger — no outcome row yet, and
+      // that absence is a measurement too (it has not ended).
+      const dOpen = await dossier(openLane.branch);
+      check("dossier: an open lane binds to its LIVE slot and honestly reports no outcome yet",
+        dOpen.liveSlot === openLane.slot && dOpen.slot === openLane.slot
+        && dOpen.outcomes.state === "read" && dOpen.outcomes.value.rows.length === 0
+        && dOpen.repo === realpathSync(oRepo), JSON.stringify({ live: dOpen.liveSlot, o: dOpen.outcomes, r: dOpen.repo }));
+      await post(`/api/slots/${openLane.slot}/kill`, {});
+    }
+
     // (8) LANDED where verify did NOT run for this land, while a STALE green verdict sits on the
     // slot: an agent-resolved lane is left un-landed (verdict "resolved", verify.ok:true, kept for
     // review), the owner pushes it and tears it down with the direct ⏏ land instead. That route
@@ -378,6 +509,31 @@ export async function run(): Promise<void> {
     check("client: the outcome renderer words raw:true as not-a-review and empty findings as not-clean",
       /r\.raw === true/.test(cliSrc) && /did not parse — this is NOT a review/.test(cliSrc)
       && /not a clean bill of/.test(cliSrc), "reviewBody in src/client.ts");
+
+    // (9d2) THE DOSSIER LENS, CLIENT HALF. Same method and the same stated limit as (9d): a regex
+    // over the source, not a rendered DOM. It pins the ONE property that makes the lens worth
+    // having — `akteSource` must send an `unknown` source down a path that prints the reason and
+    // returns null, so the caller draws no rows. The regression it catches is the one that would
+    // quietly undo the whole feature: someone rendering an unreadable source as an empty section,
+    // which reads as "nothing happened in this lane".
+    check("client: the dossier's source classifier prints \"not measured\" + the reason and yields NO rows",
+      /function akteSource[\s\S]{0,600}?src\.state === "unknown"[\s\S]{0,300}?"not measured"[\s\S]{0,200}?src\.why[\s\S]{0,120}?return null/.test(cliSrc),
+      "akteSource in src/client.ts");
+    // …and the verify verdict on a land note keeps the six states apart, for the same reason the
+    // merge verdict does: a skip, a timeout and a never-started run are each "nothing was measured",
+    // and none of the three may render as a pass.
+    check("client: a land note's verify renders skipped/timed-out/never-started as measurements that did NOT happen",
+      /v\.ok === true \? "passed" : v\.ok === false \? "FAILED"/.test(cliSrc)
+      && /timedOut \?[\s\S]{0,120}?nothing was measured/.test(cliSrc)
+      && /waitedOut \?[\s\S]{0,140}?nothing was measured/.test(cliSrc)
+      && /declined to verify \(skipped\) — nothing was measured/.test(cliSrc),
+      "renderAkteDetail in src/client.ts");
+    // an un-adjudicated RED tier-2 row must say so on the lane's own page: "nobody has looked at
+    // this" is the state the adjudication rail exists to make visible, and it is precisely the one
+    // that went unnoticed on 2026-07-26 when the trail had no reader at all.
+    check("client: the dossier flags an un-adjudicated red tier-2 audit as un-ruled, not as merely red",
+      /a\.result === "red"[\s\S]{0,160}?un-adjudicated — nobody has ruled on this red yet/.test(cliSrc),
+      "renderAkteDetail in src/client.ts");
 
     // (9e) THE DISPOSITION RAIL, CLIENT HALF. Same method and same limits as (9d): asserted over
     // the client SOURCE because this suite has no DOM harness — weaker than a render test, named

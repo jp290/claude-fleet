@@ -1775,6 +1775,71 @@ function deploySection(): HTMLElement | null {
   return sec;
 }
 
+// --- has the server thrown? -------------------------------------------------------------------
+// The counterpart to the audit trail: that one shows what Fleet DID, this one what broke while it
+// was doing it. Until now the only channel was an unrotated server.log that e2e-stage.sh calls
+// "a server.log nobody reads" in its own source — so a 500 on a button press left no mark anywhere
+// the owner looks. Machine-level like the gate and deploy lines, drawn ONLY when something has
+// actually thrown, and tolerant on the wire: an older server sends no `errors` at all and this
+// must then be absent, never "no errors" — which is a claim, and one nothing here has measured.
+interface ErrorsInfo {
+  total: number; distinct: number; since: number;
+  last: { at: number; where: string; msg: string; n: number };
+}
+interface ErrorRow { where: string; msg: string; first: number; last: number; n: number }
+let errorsInfo: ErrorsInfo | null = null;
+// the rows, fetched on the click that asks for them and never from the 3 s repaint (the rule
+// /api/sessions was shrunk for). `null` = not asked yet. The cache key carries `since` as well as
+// `total` BECAUSE the list dies with the server: after a restart both counters start again from
+// zero, so a total alone would match a stale cache and paint a dead process's errors as live ones.
+let errorRows: { key: string; rows: ErrorRow[] } | null = null;
+const errorKey = (e: ErrorsInfo): string => `${e.since}:${e.total}`;
+let errorsOpen = false;
+function errorsSection(): HTMLElement | null {
+  const e = errorsInfo;
+  if (!e) return null;
+  const sec = el("div", "bsec");
+  const many = e.total !== e.distinct;
+  const head = el("div", "bstate",
+    `⚠ ${e.total} server error${e.total === 1 ? "" : "s"}${many ? ` · ${e.distinct} distinct` : ""}`
+    + ` · since ${fmtTs(e.since)}`);
+  head.title = "Thrown by the server since it booted. Held in memory only — a restart clears this list,"
+    + " and server.log keeps the history. Click for the rows.";
+  // inline rather than a new class: the stylesheet lives in public/index.html, which the demo repo
+  // derives its own page from (CLAUDE.md) — and a lane cannot build that repo to check it. One
+  // property here has no reach outside this file; a rule there has one nothing available can test.
+  head.style.cursor = "pointer";
+  head.onclick = () => {
+    errorsOpen = !errorsOpen;
+    // one fetch per (boot, total): reopening after nothing new happened costs no request
+    if (errorsOpen && errorRows?.key !== errorKey(e)) {
+      void api("/api/errors").then(async (r) => {
+        if (!r.ok) return;
+        const j = (await r.json()) as { errors?: ErrorRow[] };
+        errorRows = { key: errorKey(e), rows: j.errors ?? [] };
+        void renderBoard();
+      });
+    }
+    void renderBoard();
+  };
+  sec.appendChild(head);
+  const last = e.last;
+  sec.appendChild(el("div", "bidmeta",
+    `last · ${last.where} · ${last.msg}${last.n > 1 ? ` ×${last.n}` : ""} · ${fmtTs(last.at)}`));
+  if (errorsOpen) {
+    // rows one poll behind the COUNTER are still drawn — a row that arrived a second ago is a true
+    // thing that happened, and blanking the list mid-fetch would hide it. Rows from a previous BOOT
+    // are not: this server never threw them, and the header above already says "since <this boot>".
+    const live = errorRows?.key.startsWith(`${e.since}:`) ? errorRows.rows : [];
+    for (const r of live) {
+      const row = el("div", "bidmeta", `${r.where} · ${r.msg}${r.n > 1 ? ` ×${r.n}` : ""} · ${fmtTs(r.last)}`);
+      row.title = r.n > 1 ? `${r.n}× — first ${fmtTs(r.first)}, last ${fmtTs(r.last)}` : `once, ${fmtTs(r.first)}`;
+      sec.appendChild(row);
+    }
+  }
+  return sec;
+}
+
 // --- the file explorer (§F5) --------------------------------------------------------------
 //
 // The tree is `git ls-files` and nothing else — see the /api/tree comment in server.ts for why,
@@ -1940,7 +2005,8 @@ async function renderBoard() {
       const gs = guestSection();
       const gt = gateSection();
       const dp = deploySection();
-      boardBody.replaceChildren(...(dp ? [dp] : []), ...(gt ? [gt] : []),
+      const er = errorsSection();
+      boardBody.replaceChildren(...(dp ? [dp] : []), ...(er ? [er] : []), ...(gt ? [gt] : []),
         el("div", "bempty", "no session in the focused pane"), ...(gs ? [gs] : []));
       return;
     }
@@ -1970,6 +2036,10 @@ async function renderBoard() {
     // looking at even the code that is running". Absent entirely unless something is due.
     const dsec0 = deploySection();
     if (dsec0) nodes.push(dsec0);
+    // between the two on purpose: "is the running code the code you think" comes first, then
+    // "has that code been throwing", and only then "can anything verify right now".
+    const esec0 = errorsSection();
+    if (esec0) nodes.push(esec0);
     const gsec0 = gateSection();
     if (gsec0) nodes.push(gsec0);
 
@@ -4591,7 +4661,7 @@ async function refresh() {
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
-      postLandAudit?: PostLandAuditInfo | null; gate?: GateInfo | null;
+      postLandAudit?: PostLandAuditInfo | null; gate?: GateInfo | null; errors?: ErrorsInfo | null;
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -4616,6 +4686,7 @@ async function refresh() {
     // read here, painted by the board's own timer — the gate line lives inside a panel that is
     // closed most of the time, so there is nothing to repaint from this hot path
     gateInfo = data.gate ?? null;
+    errorsInfo = data.errors ?? null;
     deployGapInfo = data.deployGap ?? null;
     bundleStaleInfo = data.bundleStale ?? null;
     serverNow = data.now;

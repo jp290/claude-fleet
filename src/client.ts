@@ -5172,6 +5172,11 @@ let qRepoIn: HTMLInputElement | null = null; // target-repo input, same once-per
 // Keyed by task id, because carrying one task's draft over to another row would be worse.
 let qCmBox: HTMLTextAreaElement | null = null;
 let qCmFor: string | null = null;
+// the task whose RAW start the owner has ticked off (see the guard in renderQueueDetail). Kept
+// across repaints — the 2 s poll rebuilds this pane — and keyed by ID, so an acknowledgment can
+// never carry over to the row you look at next. Dropped when the window closes: it is a decision
+// made in one sitting, not a setting.
+let qRawAck: string | null = null;
 // the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
 let qRowId = new Map<HTMLElement, string | null>();
 
@@ -5561,7 +5566,44 @@ function renderQueueDetail() {
   } else {
     // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher, which may be off
     const startable = t.status === "pending" || t.status === "queued";
-    if (startable) acts.appendChild(mk("▸ start lane", "dispatch", "shrbtn primary"));
+    // A RAW START is one nothing has vouched for: no analysis at all, or a verdict that asked for
+    // you. The route gates on none of it by design (server.ts, taskDispatch) — and that is exactly
+    // what made this click indistinguishable from starting a `ready` row: same blue button, same
+    // single gesture, same audit line. So a raw start now SAYS what it is starting, drops out of
+    // the primary style, and stays disabled until the line under it is ticked. Not a ban — a
+    // second, deliberate gesture — and the two paths that FIX the state (clarify, refine) stay in
+    // the same row, readable while you decide. The verdict is read from the digest like the
+    // release button's override below, that being the fresher of the two copies.
+    if (startable) {
+      const raw = !t.analysis || t.analysis.verdict !== "ready";
+      const blockers = (t.analysis?.blockers ?? []).map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
+      // the same state twice, in the two places it has to be legible: on the button as a label, and
+      // on the acknowledgment as the CONSEQUENCE — what the lane gets, not what the analyst said
+      const rawWhat = !t.analysis ? "unchecked"
+        : t.analysis.verdict === "unknown" ? "unread" : `flagged${blockers ? `: ${blockers}` : ""}`;
+      const rawWhy = !t.analysis ? "start it unchecked — nothing has read this row yet"
+        : t.analysis.verdict === "unknown" ? "start it unread — the analyst could not read this row"
+        : t.analysis.blockers.includes("criterion")
+          ? "start it without a done-criterion — the lane gets your draft unsharpened, and nothing says what done means"
+          : `start it flagged (${blockers || "the analyst wants you to look"}) — the lane gets your draft as it stands`;
+      const sb = mk(raw ? `▸ start lane — ${rawWhat}` : "▸ start lane", "dispatch",
+        raw ? "shrbtn qraw" : "shrbtn primary", raw ? { acknowledged: true } : {},
+        raw ? "a raw start — tick the line below to confirm it; clarify or refine fix the state instead" : undefined);
+      acts.appendChild(sb);
+      if (raw) {
+        sb.disabled = qRawAck !== t.id;
+        // its own line INSIDE the action row (flex-basis: 100%), directly under the button it
+        // unlocks — the alternatives stay one line below, where they are read as alternatives
+        const g = el("label", "qrawack");
+        const box = el("input", "") as HTMLInputElement;
+        box.type = "checkbox";
+        box.checked = qRawAck === t.id;
+        box.onchange = () => { qRawAck = box.checked ? t.id : null; renderQueueDetail(); };
+        g.appendChild(box);
+        g.appendChild(el("span", "", rawWhy));
+        acts.appendChild(g);
+      }
+    }
     // the same spawn with a different founding prompt: settle the done-criterion with the owner
     // before writing code. The standing answer to a "no done-criterion" blocker.
     if (startable) acts.appendChild(mk("▸ clarify first", "dispatch", "shrbtn", { clarify: true },
@@ -5709,12 +5751,13 @@ function openQueue() {
   qRepoIn = null;
   qCmBox = null;
   qCmFor = null;
+  qRawAck = null;
   const shell = openShell({
     id: "queue",
     title: "Task queue",
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
-    onClose: () => { qShell = null; qCompose = null; qRepoIn = null; qCmBox = null; qCmFor = null; qRowId = new Map(); },
+    onClose: () => { qShell = null; qCompose = null; qRepoIn = null; qCmBox = null; qCmFor = null; qRawAck = null; qRowId = new Map(); },
   });
   qShell = shell;
 

@@ -171,6 +171,10 @@ const taskSurface = (fix: string): Probe[] => [
   { path: `/api/tasks/${fix}/queue`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/archive`, method: "POST", body: {} },
   { path: `/api/tasks/${fix}/delete`, method: "POST", body: {} },
+  // a read, not a write, and on the matrix for what it READS: an error message quotes filesystem
+  // paths and git output off the owner's own machine, so it belongs to the owner alone. GET with
+  // no side effect at all, which makes it the cheapest possible positive control.
+  { path: "/api/errors", method: "GET", ownerSafe: true },
   { path: "/api/guest", method: "GET" },
   { path: "/api/guest/link", method: "GET" },
   { path: "/api/guest/claude-token", method: "POST", body: {} },

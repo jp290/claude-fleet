@@ -607,7 +607,7 @@ function saveHistory(s: Slot): void {
   historyChain = historyChain
     .then(() => Bun.write(historyPath(s.id), body))
     .then(() => chmodSync(historyPath(s.id), 0o600)) // prompts can carry secrets, like the stream
-    .catch((e: unknown) => console.log(`history save failed: ${e instanceof Error ? e.message : e}`));
+    .catch((e: unknown) => logError("saveHistory", e));
 }
 
 // global append-only prompt log: every composed send from every surface (owner compose,
@@ -630,7 +630,96 @@ function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "
   promptLogChain = promptLogChain
     .then(() => appendFile(PROMPT_LOG, line, { mode: 0o600 }))
     .then(() => chmodSync(PROMPT_LOG, 0o600)) // prompts can carry secrets, like the stream
-    .catch((e: unknown) => console.log(`prompt log failed: ${e instanceof Error ? e.message : e}`));
+    .catch((e: unknown) => logError("promptLog", e));
+}
+
+// --- THE ERROR CHANNEL -------------------------------------------------------------------------
+// Everything above reports its failures the same way: a line on stdout, which watchdog.sh redirects
+// into a `server.log` with no rotation and — measured, not guessed — no reader. e2e-stage.sh calls
+// it "a server.log nobody reads" in its own source. What that costs is concrete: on 2026-08-07 the
+// owner pressed ↩ kill, got a 500, and the only trace was a TypeError in that file; the same file
+// carries eighteen `analysis: brief compile failed` lines, i.e. eighteen drafts that never got an
+// analysis while their queue rows said `no-analysis` — indistinguishable from "not judged yet".
+//
+// This is the READING half, and it is deliberately small:
+//   · IN MEMORY, never a ledger. A restart is a true fact about this server; a revived error list
+//     would be an invented one. The durable history is server.log, which keeps its job.
+//   · KEYED BY SIGNATURE, not a flat ring. The one real sample says why: a plain ring of the last
+//     N would have been fifty copies of one repeating analysis failure, and the counter would read
+//     "50 errors" for one broken thing. `n` per signature is the honest shape, and it is also what
+//     lets a 2 s tick fail forever without flooding anything.
+//   · SUMMARY on /api/sessions (the 2 s poll, the endpoint data-saver.md exists to keep small) and
+//     `null` while nothing has failed, so the quiet case costs the poll ~14 bytes. The rows live
+//     behind GET /api/errors, fetched on a click — the same split postLandAudit already uses.
+//
+// NOT here, and each absence is a decision:
+//   · process.on("uncaughtException"/"unhandledRejection"). Measured on Bun 1.3.9: with no listener
+//     both print and exit 1; with a listener the process SURVIVES (exit 0, execution continues).
+//     So installing one converts "srv dies, the watchdog respawns it clean in ~60 s" into "srv
+//     limps on in an undefined state" — a robustness regression wearing an observability costume.
+//     Re-exiting from the handler avoids that but records into a buffer that dies microseconds
+//     later, which no poll can ever read. Fatal errors stay fatal; server.log keeps them.
+//   · most of the empty catches. `try { p.kill() } catch {}` is an already-dead process and the
+//     input/resize chains fail visibly in the pane itself. What is wired below is the set where
+//     silence hides a DECISION: a scheduler tick that threw did not do its round, and nothing
+//     anywhere said so.
+// The four state-write reporters above (saveHistory, promptLog, saveState, eventLog) were already
+// PRINTING their failures and now report here instead — same events, a surface that has a reader.
+// One deliberate loss in that swap: they printed every repeat and this prints only the first
+// sighting of a signature. The count is not lost, it moves to `n`; what is lost is a repeating
+// failure's ability to fill a log file that nothing rotates.
+const ERROR_KEEP = 50;          // distinct signatures held; the least-recently-seen is evicted
+const ERROR_MSG_MAX = 200;      // a message is a label here, not a payload — the stack goes to server.log
+const SERVER_BOOT_AT = Date.now();
+interface ServerErrorRow { where: string; msg: string; first: number; last: number; n: number }
+interface ErrorsInfo {
+  total: number; distinct: number; since: number;
+  last: { at: number; where: string; msg: string; n: number };
+}
+// insertion-ordered, and re-inserted on every repeat — so the first key is always the coldest
+// signature and eviction is LRU-by-last-seen without a second index to keep in step
+const serverErrors = new Map<string, ServerErrorRow>();
+let errorTotal = 0;
+function logError(where: string, e: unknown): void {
+  const raw = e instanceof Error ? (e.message || e.name) : String(e);
+  const msg = raw.replace(/\s+/g, " ").trim().slice(0, ERROR_MSG_MAX);
+  const at = Date.now();
+  errorTotal++;
+  // `where` is always a bare identifier from the call sites below — never a space — so this
+  // separator cannot make two different (where, msg) pairs collide on one key
+  const key = `${where} ${msg}`;
+  const prev = serverErrors.get(key);
+  if (prev) {
+    prev.last = at;
+    prev.n++;
+    serverErrors.delete(key); // re-insert at the tail: this signature is now the freshest
+    serverErrors.set(key, prev);
+    return; // the count is the record; printing every repeat is what fills an unrotated file
+  }
+  serverErrors.set(key, { where, msg, first: at, last: at, n: 1 });
+  if (serverErrors.size > ERROR_KEEP) {
+    const coldest = serverErrors.keys().next();
+    if (!coldest.done) serverErrors.delete(coldest.value);
+  }
+  // FIRST sighting of a signature, printed in full — server.log must not come out of this poorer
+  // than it went in. The stack is where the line number lives, which is the whole reason the ↩ kill
+  // incident was diagnosable at all; three frames is enough to name the site without a wall of text.
+  const stack = e instanceof Error && e.stack ? e.stack.split("\n").slice(0, 3).map((l) => l.trim()).join(" | ") : msg;
+  console.log(`error [${where}]: ${stack} — repeats of this are counted, not printed (GET /api/errors)`);
+}
+// One projection for /api/sessions, `null` while nothing has failed — same rule gateView follows,
+// for the same reason. `since` is load-bearing rather than decorative: the counts are meaningless
+// without the window they were counted over, and this buffer's window always starts at boot.
+function errorsView(): ErrorsInfo | null {
+  if (serverErrors.size === 0) return null;
+  const rows = [...serverErrors.values()];
+  const last = rows.reduce((a, b) => (b.last > a.last ? b : a));
+  return {
+    total: errorTotal,
+    distinct: rows.length,
+    since: SERVER_BOOT_AT,
+    last: { at: last.last, where: last.where, msg: last.msg, n: last.n },
+  };
 }
 
 // --- audit log: append-only, own write chain + mode 600 (same discipline as saveHistory/
@@ -716,9 +805,12 @@ function appendEvent(file: string, obj: Record<string, unknown>): void {
       chmodSync(file, 0o600); // append doesn't guarantee mode on a pre-existing file
     })
     .catch((e: unknown) => {
+      // the latch stays: this one is per-EVENT, so a wedged disk would otherwise call logError on
+      // every audited action. logError's own repeat-suppression counts those; this one drops them,
+      // which is the older and stricter promise and the one this file's readers already rely on.
       if (auditWriteFailed) return;
       auditWriteFailed = true;
-      console.log(`event log write failed, further failures suppressed: ${e instanceof Error ? e.message : e}`);
+      logError("eventLog", e);
     });
 }
 // The READ counterpart of appendEvent, rotation-aware (a single-file reader is invisible to
@@ -823,7 +915,7 @@ function saveState(): void {
     })
     .catch((e: unknown) => {
       try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* nothing more to do about the temp */ }
-      console.log(`state save failed: ${e instanceof Error ? e.message : e}`);
+      logError("saveState", e);
     });
 }
 // saveState, but AWAITABLE — the write is on disk when this resolves. saveState alone queues the
@@ -2209,7 +2301,13 @@ async function tickAnalysisSweep(): Promise<void> {
         } catch (e) {
           // no brief is a legitimate state — the lane gets the raw draft, and the analyst is told
           // to judge THAT as the brief. A failed compile must not stall the analysis behind it.
+          // Both records, because they answer different questions and neither replaces the other:
+          // the line names WHICH draft (server.log, one per draft), the channel groups by REASON
+          // so eighteen of these read as one broken compiler counted 18× instead of eighteen
+          // unread lines. That exact number is why this site is wired at all — the queue rows said
+          // `no-analysis`, which is what "not judged yet" also looks like.
           console.log(`analysis: brief compile failed for ${t.id}, judging the draft: ${e instanceof Error ? e.message : e}`);
+          logError("analysisBrief", e);
         }
       }));
     }
@@ -3715,8 +3813,10 @@ async function tickAutoReview(): Promise<void> {
       reviewAutoTried.set(s.id, rs.key);
       autoReviewRunning++;
       // fire-and-forget: the tick must never hold its own busy flag across a 180s agent run, and
-      // a failed auto-review is a non-event — no retry, no state change, nothing raised
-      void startReview(s, rs).p.catch(() => {}).finally(() => { autoReviewRunning--; });
+      // a failed auto-review changes nothing — no retry, no state change, no alarm. It is COUNTED
+      // though: reviewAutoTried was already set above, so a throw here means this tree has spent
+      // its one spawn and will never be auto-reviewed again, and that is worth being able to see.
+      void startReview(s, rs).p.catch((e: unknown) => logError("autoReview", e)).finally(() => { autoReviewRunning--; });
     }
   } finally {
     autoReviewBusy = false;
@@ -7004,23 +7104,28 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
   }
 }
 
+// THE SCHEDULER TICKS, and the reason every one of them now names itself to logError: a tick that
+// throws has skipped its whole round — no auto fired, no task dispatched, no draft analysed — and
+// until now the `.catch(() => {})` here made that indistinguishable from a round with nothing to
+// do. These are the empty catches where silence hid a decision (see THE ERROR CHANNEL); the
+// `p.kill()` and pty-chain ones are left exactly as they are, on purpose.
 setInterval(() => void poll(), 100);
-setInterval(() => void tickAutos().catch(() => {}), AUTOS_TICK_MS);
-setInterval(() => void tickGit().catch(() => {}), 10_000);
-void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
-setInterval(() => void tickDispatch().catch(() => {}), DISPATCH_TICK_MS);
+setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
+setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 10_000);
+void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
+setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
 // FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
 // harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
-if (ANALYSIS_TICK_MS) setInterval(() => void tickAnalysisSweep().catch(() => {}), ANALYSIS_TICK_MS);
-setInterval(() => void tickHarvest().catch(() => {}), 5000);
+if (ANALYSIS_TICK_MS) setInterval(() => void tickAnalysisSweep().catch((e: unknown) => logError("tickAnalysisSweep", e)), ANALYSIS_TICK_MS);
+setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
-if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch(() => {}), AUTO_REVIEW_MS);
+if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
   for (const s of slots) {
     if (restarting.has(s.id)) continue; // the ↻ route owns this pane's rebuild — see `restarting`
-    void ensureSlot(s).catch(() => {});
+    void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e));
   }
 }, 2000);
 
@@ -8154,6 +8259,17 @@ Bun.serve<WSData>({
   // Bun's default is 10s per request — the ✨ summary POST legitimately holds the
   // connection while its background claude session thinks (up to SUMMARY_TIMEOUT_MS)
   idleTimeout: 240,
+  // THE ROUTE-THROW PATH — the one the ↩ kill incident actually took (a TypeError in
+  // buildLaneOutcome; the owner saw a 500, and the only trace was a stack in server.log).
+  // Without this handler Bun prints the stack and returns its own 500, so the ONLY thing added
+  // here is the counted record: the stack still reaches server.log through logError, and the
+  // status stays 500. The body is deliberately opaque — this handler sits OUTSIDE the fetch
+  // block, so it has not seen the host gate and cannot know whether it is answering the owner
+  // or the public share tunnel. An internal message is for the error channel, not for a guest.
+  error(e: unknown) {
+    logError("http", e);
+    return new Response("internal error", { status: 500 });
+  },
   async fetch(req, server) {
     // Every response leaves through finishHttp (see the TRANSPORT region): it is the only place
     // that sees the finished body AND the request's accept-encoding — json(), which builds most
@@ -8560,6 +8676,10 @@ Bun.serve<WSData>({
         // the suite mutex and the lanes' own verify reports — null when neither has anything to
         // say. Sight, not control: see the verify GATE region for why nothing here reaps or runs.
         gate: gateView(),
+        // what this server has thrown since it booted — null while nothing has, so an untroubled
+        // fleet pays ~14 bytes for it. Sight only: nothing here retries, suppresses or heals
+        // anything. The rows are behind GET /api/errors (see THE ERROR CHANNEL).
+        errors: errorsView(),
         // the deploy facts, same names as on the steward routes so there is ONE vocabulary for
         // them across the fleet. Cached on the git tick; null until it has run once.
         deployGap: deployFacts?.gap ?? null,
@@ -8579,6 +8699,16 @@ Bun.serve<WSData>({
             mergePending: needsMergeReview(s.id),
           };
         }),
+      });
+    }
+    // the rows behind the poll's error counter, newest signature first. NOT in the 2 s poll, the
+    // same rule /api/guest states for itself: the summary rides the poll, the list is fetched on
+    // the click that asks for it. Owner-only by position (past tokenGate) — a message can quote a
+    // path or a git error, which is the owner's own machine talking.
+    if (url.pathname === "/api/errors" && req.method === "GET") {
+      return json({
+        since: SERVER_BOOT_AT, total: errorTotal, kept: ERROR_KEEP,
+        errors: [...serverErrors.values()].sort((a, b) => b.last - a.last),
       });
     }
     // print/PDF export: full scrollback as a self-contained light-theme page — plain capture

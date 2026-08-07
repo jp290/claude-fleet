@@ -38,6 +38,7 @@ import * as security from "./e2e/security";
 import * as guest from "./e2e/guest";
 import * as verifyQueue from "./e2e/verify-queue";
 import * as deployFacts from "./e2e/deploy-facts";
+import * as errors from "./e2e/errors";
 import * as trail from "./e2e/trail";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
@@ -112,6 +113,12 @@ await verifyQueue.run();
 // server at a fixture repo (FLEET_REPO_DIR) for a few checks and restarts srv back to the
 // wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
 await deployFacts.run();
+
+// --- the server's own thrown errors, on the owner's poll. Next to deployFacts for the same
+// reason as its neighbours: it restarts srv three times and it briefly breaks two state-write
+// paths on purpose, so it must not sit between two sections sharing a live fixture. It repairs
+// both and leaves the server on the wrapper's env, exactly as it found it.
+await errors.run();
 
 // --- steward principal: scoped token, typed+capped sends, read-only fleet-wide access ---
 {

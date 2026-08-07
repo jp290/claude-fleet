@@ -73,6 +73,67 @@ else:
     print(f"  check-trail runs (main checkout) {len(sorted(glob.glob(os.path.join(td, '*.jsonl'))))}" + tail)
 PY
 echo
+echo "=== land health (derived; the ledgers already carried all of this, nobody read it) ==="
+python3 - <<'PY'
+import json, os, subprocess
+from collections import Counter
+MAIN = os.environ.get('MAIN_CHECKOUT') or '.'
+def rows(p):
+    fp = os.path.join(MAIN, p)
+    return [json.loads(l) for l in open(fp) if l.strip()] if os.path.isfile(fp) else None
+
+o = rows('lane-outcomes.jsonl')
+if o is None:
+    print("  outcomes UNKNOWN — lane-outcomes.jsonl absent (not the same as none)")
+elif not o:
+    print("  outcomes 0 — the file exists and is empty")
+else:
+    disp = Counter(r.get('disposition') for r in o)
+    landed = disp.get('landed', 0)
+    never = len(o) - landed
+    print(f"  lanes {len(o)}: " + " · ".join(f"{k} {v}" for k, v in disp.most_common()))
+    # the denominator is the point: a land-success rate over lands only is a rate over survivors
+    print(f"    landed {landed}/{len(o)} = {landed*100//len(o)}% of ALL lanes — {never} never reached a merge")
+    res = sum(1 for r in o if r.get('resolvedConflict'))
+    rr = Counter(r.get('repairRounds') for r in o)
+    worst = max((k for k in rr if isinstance(k, int)), default=None)
+    print(f"    conflict resolver ran {res}/{len(o)} · repair rounds: max {worst}"
+          f" — the loop arms only on !clean AND verify red (server.ts, MERGE_REPAIR_ROUNDS)")
+
+# the gate's two budgets live on the land notes, not in the outcome rows. One cat-file --batch
+# reads every note in one process; GIT_OPTIONAL_LOCKS=0 keeps these read-only calls off .git/index.lock
+env = {**os.environ, 'GIT_OPTIONAL_LOCKS': '0'}
+def git(*a):
+    return subprocess.run(['git', '-C', MAIN, *a], capture_output=True, text=True, env=env)
+lst = git('notes', '--ref=fleet/land', 'list')
+if lst.returncode != 0:
+    print("  land notes UNKNOWN — `git notes --ref=fleet/land` failed (not the same as none)")
+else:
+    ids = [ln.split()[0] for ln in lst.stdout.splitlines() if ln.strip()]
+    p = subprocess.run(['git', '-C', MAIN, 'cat-file', '--batch'], input="\n".join(ids) + "\n",
+                       capture_output=True, text=True, env=env)
+    notes = []
+    for ln in p.stdout.split('\n'):
+        ln = ln.strip()
+        if ln.startswith('{'):
+            try: notes.append(json.loads(ln))
+            except Exception: pass
+    ok = Counter((n.get('verify') or {}).get('ok') for n in notes)
+    work = sorted(v for n in notes if isinstance((v := (n.get('verify') or {}).get('ms')), int))
+    wait = sorted(v for n in notes if isinstance((v := (n.get('verify') or {}).get('waitMs')), int))
+    def pct(a, q): return a[min(len(a) - 1, int(len(a) * q))] if a else None
+    print(f"  land notes {len(notes)} of {len(ids)} readable · verify.ok "
+          f"true {ok.get(True,0)} · skipped {ok.get(None,0)} · FAILED {ok.get(False,0)}")
+    if work:
+        print(f"    gate WORK  p50 {pct(work,.5)//1000}s p90 {pct(work,.9)//1000}s max {work[-1]//1000}s  (n={len(work)})")
+    if wait:
+        free = sum(1 for w in wait if w == 0)
+        print(f"    gate WAIT  p50 {pct(wait,.5)//1000}s p90 {pct(wait,.9)//1000}s max {wait[-1]//1000}s"
+              f"  — {free}/{len(wait)} waited 0s (suite mutex free)")
+    if not work and not wait:
+        print("    gate timing UNKNOWN — no note carries ms/waitMs yet (the fields postdate 08dc17a)")
+PY
+echo
 echo "=== is the running server the code on disk?  (main checkout: $MAIN_CHECKOUT) ==="
 for p in $(pgrep -f 'bun server.ts' 2>/dev/null); do
   cwd=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)

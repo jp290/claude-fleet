@@ -176,6 +176,15 @@ interface Task {
   repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
+  files?: string[]; // the paths this row declares it will touch. Written ONLY when a ↻ refine
+  // proposal is confirmed (refine-confirm, from RefineChild.files) — the refiner verified them
+  // against the tree and the owner then promoted them, which is what makes this the one file
+  // statement on a row that came from neither a guess nor a model run on the row's own text. It is
+  // also the only machine-readable surface a NOT-YET-STARTED task can have: a running lane has a
+  // git diff, a queued row has nothing else. It used to be folded into the row text as a `Files: …`
+  // prose line and nowhere else — readable by a person and by nothing else. That prose line stays
+  // (it is what the lane reads); this is the same fact in a form the collision check can consume.
+  // Absent means NOT DECLARED, which is an absence and never a claim that the row touches nothing.
   status: "pending" | "queued" | "sent" | "done" | "archived";
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
@@ -2314,11 +2323,17 @@ async function tickAnalysisSweep(): Promise<void> {
     saveState(); // briefs survive even if the analyst below then fails — they cost a worker each
 
     // --- the open lanes in this repo, so a collision can mean the running fleet and not merely
-    // the other rows of this batch
-    const lanes = slots.filter((s) => s.cwd && s.worktree && inRepo(s, repo)).map((s) => ({
-      branch: s.worktree!.branch,
-      task: tasks.find((x) => x.slot === s.id && x.status === "sent")?.text ?? null,
-    }));
+    // the other rows of this batch. Through laneSurfaces, which is the SAME derivation ② and the
+    // drift payload read: this used to be a second, inline one that carried a branch name and a
+    // line of task text and no files at all — so the analyst was asked which work touches the same
+    // files while being shown none, and the dispatcher then quoted it as "same files, says the
+    // analyst". The three-valued list rides through unflattened; the prompt states what each state
+    // means, and only laneSurfaces' own caps bound it.
+    const laneTask = new Map<string, string | null>();
+    for (const s of slots)
+      if (s.worktree) laneTask.set(s.worktree.branch,
+        tasks.find((x) => x.slot === s.id && x.status === "sent")?.text ?? null);
+    const lanes = (await laneSurfaces(repo)).map((l) => ({ ...l, task: laneTask.get(l.branch) ?? null }));
 
     let found: Map<string, { verdict: "ready" | "needs-you"; reason: string; blockers: AnalysisBlocker[]; collides: string[] }>;
     try {
@@ -2326,6 +2341,7 @@ async function tickAnalysisSweep(): Promise<void> {
         { worker: "analysis", cmd: ANALYSIS_CMD, tools: REVIEW_TOOLS, model: ANALYSIS_MODEL, timeoutMs: ANALYSIS_TIMEOUT_MS },
         buildAnalysisPrompt(repo, batch.map((t) => ({
           id: t.id, source: t.source, text: t.text, brief: t.brief?.text ?? null,
+          files: t.files ?? null,
         })), lanes), repo);
       const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       let j: { analyses?: unknown };
@@ -2391,6 +2407,16 @@ const REFINE_MODEL = process.env.FLEET_REFINE_MODEL && MODEL_RE.test(process.env
 const refineInflight = new Map<string, Promise<void>>();
 
 const clampStr = (v: unknown, max: number): string => (typeof v === "string" ? v : "").slice(0, max).trim();
+// A declared path list off the wire or off disk, clamped exactly like the refine proposal it comes
+// from so a hand-edited fleet.json cannot flood the analyst's prompt. An empty result is
+// `undefined` and NOT `[]`: on Task.files those two say different things — "not declared" versus
+// "declares it touches nothing" — and only the first is safe to infer from malformed input.
+const normFileList = (v: unknown): string[] | undefined => {
+  if (!Array.isArray(v)) return undefined;
+  const f = v.filter((e): e is string => typeof e === "string" && !!e.trim())
+    .map((e) => e.trim().slice(0, 300)).slice(0, MAX_REFINE_FILES);
+  return f.length ? f : undefined;
+};
 // The row text the owner actually promotes, composed from the child's fields in a fixed order.
 // Deterministic on purpose: it becomes the DRAFT of a fresh row, so the analysis sweep compiles a
 // brief from it and the analyst then judges both against the repo — and a person reads it in the
@@ -2539,10 +2565,18 @@ async function tickDispatch(): Promise<void> {
         const tip = await integrationHead(repoCanon(repo));
         if (tip) integrationTips.set(repoCanon(repo), tip);
         if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
-        // COLLISIONS ARE READ NOW, NOT LEFT TO THE CAP. The analyst has always computed which other
-        // work touches the same files and nothing consumed it: the only thing keeping two colliding
-        // lanes apart was DISPATCH_MAX_LANES, a number that knows nothing about files — which is
-        // exactly why that number could never rise. Three properties this check is built on:
+        // COLLISIONS ARE READ HERE, NOT LEFT TO THE CAP: the only thing that used to keep two
+        // colliding lanes apart was DISPATCH_MAX_LANES, a number that knows nothing about files —
+        // which is exactly why that number could never rise.
+        // WHAT `collides` IS WORTH, stated honestly, because this comment used to claim the
+        // opposite: until 2026-08-07 the analyst produced it having been shown no files at all —
+        // only branch names and a line of task text (its lane block carried nothing else) — while
+        // this row-note told the owner "same files". It now sees each running lane's in-flight
+        // surface and each task's declared paths, so the field has evidence behind it where that
+        // evidence exists. It remains the analyst's JUDGEMENT and not a computed intersection:
+        // a queued row's future files are a prediction, and where a list is missing the prompt is
+        // told to treat it as unknown rather than as "touches nothing".
+        // Three properties this check is built on:
         //   · held ONLY against work that is actually running, never against another queued row.
         //     Two rows naming each other would otherwise wait for each other forever, both of them
         //     politely displaying why, and nobody would see a deadlock in two rows saying "waiting".
@@ -5612,27 +5646,56 @@ async function runRepair(cwd: string, branch: string, main: string, conflicted: 
   }
 }
 
-// The concurrent-lane picture ② gets: every OTHER activated lane holding a worktree on the SAME repo,
-// with the files it has in flight right now. The reviewed lane is excluded by CWD (a worktree path is
-// unique per lane), not by slot id. Best-effort per lane and deliberately asymmetric: a lane whose git
-// read fails, or that has no resolvable fork point, is SKIPPED rather than listed with an empty file
-// list — "changed nothing yet" and "could not be read" must not look identical to the reviewer. Both
-// the lane count and each file list are capped so a busy fleet cannot flood the prompt.
+// THE IN-FLIGHT FILE SURFACE of the lanes open on a repo — ONE derivation, three readers: the ②
+// reviewer's prompt, GET /api/self/drift, and the queue analyst's collision block. It used to be
+// two derivations: this one, and a second inline one in tickAnalysisSweep that carried no files at
+// all, which is how the dispatcher came to hold rows back "because they touch the same files, says
+// the analyst" while the analyst had never been shown a file.
+//
+// THE BASE IS DERIVED FRESH, NEVER READ OFF THE SLOT. `worktree.baseSha` is the immutable fork
+// COMMIT (see Slot.worktree) — PROVENANCE, and the wrong fact to compare against: once a lane is
+// rebased onto a moved integration branch, main's own history is an ancestor of the lane tip, so
+// diffing against the stored fork reports everything main has gained since as this lane's work.
+// Three-dot does not save it, because the old fork REMAINS the merge-base — measured on the lane
+// this was found on, `29c6799..tip` and `29c6799...tip` both returned the same 37 files against a
+// true contribution of one. Resolving the base as a branch NAME instead makes `name...HEAD` take a
+// LIVE merge-base: self-healing, and it needs no write anywhere in the land path. It is the shape
+// laneDrift already uses for `overlap` a few lines below. A dispatcher-spawned lane records no
+// `base` at all (only the fork sha), so fall back to the repo's integration branch — which is what
+// that spawn site means by omitting it ("keeps today's live re-derivation").
+//
+// THREE-VALUED, because "holds nothing" and "could not be read" are different facts and a
+// collision check must never confuse them: `[]` is a lane in flight that is holding nothing,
+// `null` is a lane whose base did not resolve or whose git read failed.
 const OTHER_LANES_MAX = 8;
 const OTHER_LANE_FILES_MAX = 40;
-async function otherOpenLanes(cwd: string, repo: string): Promise<{ branch: string; files: string[] }[]> {
-  const out: { branch: string; files: string[] }[] = [];
+interface LaneSurface { branch: string; files: string[] | null }
+async function laneSurfaces(repo: string, excludeCwd?: string): Promise<LaneSurface[]> {
+  const out: LaneSurface[] = [];
   for (const s of slots) {
     if (out.length >= OTHER_LANES_MAX) break;
     const w = s.worktree;
-    if (!w || w.repo !== repo || !s.cwd || s.cwd === cwd) continue;
-    const base = w.baseSha ?? w.base;
-    if (!base) continue;
-    const d = await git(s.cwd, "diff", "--name-only", "--no-color", `${base}...HEAD`);
-    if (d.code !== 0) continue;
-    out.push({ branch: w.branch, files: d.out.split("\n").filter(Boolean).slice(0, OTHER_LANE_FILES_MAX) });
+    // `inRepo` and not a raw string compare: createWorktree stores the realpath-resolved toplevel,
+    // so a caller passing the symlinked path used to silently match no lane at all
+    if (!w || !s.cwd || !inRepo(s, repo) || s.cwd === excludeCwd) continue;
+    const baseRef = w.base ?? await integrationBranch(w.repo);
+    if (!baseRef) { out.push({ branch: w.branch, files: null }); continue; }
+    // read-only, so lock-free: this runs against a LIVE lane's worktree, and Fleet's own git reads
+    // taking .git/index.lock is exactly what the FIX1 flake was made of
+    const d = await gitRead(s.cwd, "diff", "--name-only", "--no-color", `${baseRef}...HEAD`);
+    out.push({ branch: w.branch,
+      files: d.code === 0 ? d.out.split("\n").filter(Boolean).slice(0, OTHER_LANE_FILES_MAX) : null });
   }
   return out;
+}
+// The SKIPPING view, for the two consumers that render a file list as a plain fact about a lane:
+// ②'s prompt and the drift payload. A lane that could not be read is left out entirely rather than
+// shown with an empty list — "changed nothing yet" and "could not be read" must not look identical
+// there. (The analyst gets the three-valued list instead: it is told what unknown means, and to it
+// a silently absent lane would read as "no such lane is running".)
+async function otherOpenLanes(cwd: string, repo: string): Promise<{ branch: string; files: string[] }[]> {
+  return (await laneSurfaces(repo, cwd))
+    .filter((l): l is { branch: string; files: string[] } => l.files !== null);
 }
 // --- lane drift: how far the integration branch has moved past a lane's COMMITTED work, and
 // whether bringing the lane up to date would conflict. Computed server-side so the lane's own
@@ -6806,6 +6869,10 @@ if (existsSync(STATE_FILE)) {
           // be told apart from one nobody recorded; a default would erase exactly that distinction
           // on the 89 rows already on disk, and a hand-edit must not be able to mint either verdict.
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
+          // the declared file surface degrades to ABSENT, never to an empty list: this feeds a
+          // collision check, and "[]" there would read as "touches nothing" — a claim a malformed
+          // state file must not be able to make on a row's behalf.
+          files: normFileList(t.files),
           // a hand-edited state file must not smuggle a "ready" verdict the sweep never wrote —
           // anything malformed degrades to "not yet analysed", never to a pass. The predecessor
           // field (`eval`, verdicts "auto"/"review") is deliberately NOT migrated: its criteria
@@ -9846,6 +9913,11 @@ Bun.serve<WSData>({
         // children land as `pending`, never `queued`: refining proposes work, releasing it stays a
         // separate owner act, and confirming a split must not smuggle four rows past that boundary.
         source: "owner", from: null, kind: "lane", repo: t.repo,
+        // the ONE thing a child inherits from the proposal besides its text: the paths the refiner
+        // verified against the tree, which the owner is confirming along with everything else. It
+        // is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
+        // are deliberately left off above so the child meets the sweep as the fresh draft it is.
+        ...(c.files.length ? { files: c.files.slice(0, MAX_REFINE_FILES) } : {}),
         status: "pending", created: now, slot: null, note: null,
       }));
       // append BEFORE archiving the original: capTasks may only evict TERMINAL rows, and the

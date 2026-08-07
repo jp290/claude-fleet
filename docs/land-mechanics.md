@@ -99,7 +99,7 @@ path adopted: ask the author first, the throwaway agent is the fallback.
 ## 5. A rebase moves the lane out from under Fleet's recorded fork point
 
 `worktree.baseSha` is stamped when the lane is created and is never updated.
-`buildLaneOutcome` (`server.ts:4151`) computes the outcome row's fingerprint against it.
+`buildLaneOutcome` (grep the symbol) computes the outcome row's fingerprint against it.
 
 Measured on the 08-05 land, after the lane rebased onto a target that had advanced 9
 commits: the outcome row reads
@@ -114,6 +114,32 @@ own commits, counted because the stale base predates them.
 Cosmetic while the ledger is display-only. Load-bearing the moment anything *reads*
 `commitCount` — a size heuristic, a cost model, a review trigger. **An automated rebase
 must re-anchor `baseSha`**, or the ledger errs in the direction of "bigger than it was".
+
+### 5b. …and the resolution is a SPLIT, not a re-anchor (2026-08-07)
+
+The same staleness reached a second consumer, and there it was not cosmetic. `otherOpenLanes`
+computed the file surface every *other* lane is holding from the same stored fork — so a
+rebased lane advertised main's whole history as its own in-flight work. Measured on lane
+`fleet/260806085148-3de0`: 37 files reported against a true contribution of **one**, and the
+three-dot form does not heal it, because after the rebase the old fork *is* the merge-base
+(`29c6799..tip` and `29c6799...tip` both return 37). Two other lanes read that number off
+`GET /api/self/drift` the same day and routed their work around files nobody was holding.
+
+The fix is **not** the re-anchor §5 asks for. `baseSha` is a *provenance* fact and a correct
+one; the bug was a second, *operative* question — "what is this lane holding right now" —
+being answered from it. Those are different facts and they no longer share a field:
+
+- **Operative** (`laneSurfaces`, the one derivation behind ②, the drift payload and the queue
+  analyst's collision block) resolves the base as a branch **name** and lets `name...HEAD`
+  take a live merge-base. Self-healing, no write anywhere in the land path.
+- **Historical** (`buildLaneOutcome`, and `runCleanReview`'s main side) keeps reading the fork
+  commit, and *should*. ② asks "what did main change that this lane's author never saw" —
+  after a rebase the lane contains those commits but the author still never reviewed them, so
+  the fork is the right anchor there. A "fix" that pointed it at the merge-base would blind the
+  reviewer to exactly the cross-change it exists to catch.
+
+So §5's open item stands unchanged and unmerged with this one: it is about the **ledger** on
+the `OWNER_LAND_FACTS`/killed/shelved paths, not about the surface.
 
 ## 6. `doneLooking` is idle + clean. A pane running a suite reads as done.
 

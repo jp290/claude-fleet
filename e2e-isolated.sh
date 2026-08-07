@@ -76,9 +76,33 @@ mkdir -p "$REPO"
   && printf 'link target original\n' > ctx-linked.txt \
   && git add code.txt .gitignore ctx-mod.txt ctx-big.txt ctx-linked.txt && git commit -qm init )
 
+# Two MORE throwaway repos, and they exist for exactly one question (P-7c): does a land in repo X
+# run the verify command configured for repo X? That is only answerable with more than one repo on
+# ONE server, and the map is read once at boot — so these have to exist before the srv spawn line,
+# not be built by the harness later.
+#   testrepo2 HAS an entry (FLEET_VERIFY_CMD_REPOS below) → its own gate, $DIR/fakeverify2
+#   testrepo3 has NONE → falls back to the global FLEET_VERIFY_CMD, which is the compatibility half
+# `pwd -P` rather than the path as written: TMPDIR here is under /var, itself a symlink to
+# /private/var. The server canonicalizes both sides before comparing (repoCanon), so the unresolved
+# spelling would match too — but only because of that, and a fixture whose key depends on the
+# server resolving it cannot then be used to test the resolution.
+REPO2="$DIR/testrepo2"
+REPO3="$DIR/testrepo3"
+for r in "$REPO2" "$REPO3"; do
+  mkdir -p "$r"
+  # -b main for the same reason as testrepo above (fakemerge rebases onto `main` BY NAME); gpgsign
+  # off so a signing prompt can never hang a lane's commit.
+  ( cd "$r" && git init -q -b main && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && printf 'root\n' > code.txt && git add code.txt && git commit -qm init )
+done
+REPO2_P=$(cd "$REPO2" && pwd -P)
+
 SHAREHOST=sharetest
 INTAKE=e2e-intake-secret
 export FLEET_E2E_REPO="$REPO"
+export FLEET_E2E_REPO2="$REPO2"
+export FLEET_E2E_REPO3="$REPO3"
 
 # stand-in summarizer: swallows the prompt on stdin, answers in claude -p's
 # --output-format json envelope — exercises the real gather→spawn→parse→cache path
@@ -255,10 +279,43 @@ if git grep -qI VERIFYNOISY -- . 2>/dev/null; then
   echo "1 FAILURES"
   exit 1
 fi
+# A gate that IGNORES THE TERM — the case the timeout alone could not end. The server declares the
+# timeout, sends SIGTERM, and then goes on awaiting a process that has decided not to leave; the
+# verdict is already `null`, so every second after that is the server waiting on an answer it has
+# promised never to use. The staffel (SIGTERM → grace → SIGKILL) is what ends it, and the two
+# outcomes are far apart on the clock: killed at budget+grace (~13s), or this stand-in's own exit
+# at 30s. `trap '' TERM` is inherited as ignored by the sleep too, which is the point — a real
+# gate chain is a shell blocked in `wait`, not a process choosing to be stubborn.
+# Same fd redirect as VERIFYHANG, same reason: the sleep must not hold the inherited stdout pipe
+# open after its parent dies, or the collecting read blocks for the sleep's full duration and the
+# escalation looks like it did nothing.
+if git grep -qI VERIFYNOKILL -- . 2>/dev/null; then
+  trap '' TERM
+  echo "PASS  the gate printed this before it stopped listening"
+  sleep 30 </dev/null >/dev/null 2>&1
+  echo "verify OK: the no-kill stand-in was never meant to reach this line"
+  exit 0
+fi
 echo "verify OK: no sabotage marker in the tree"
 exit 0
 EOF
 chmod +x "$DIR/fakeverify"
+
+# The SECOND repo's gate (FLEET_VERIFY_CMD_REPOS, P-7c). It deliberately does NOT know any of
+# $DIR/fakeverify's markers, and fakeverify does not know this one's: each repo's lane carries the
+# sabotage marker only the OTHER command ignores. So a resolution that picked the wrong command
+# comes back GREEN and auto-lands — a loud, differently-shaped failure rather than a pass that
+# looks identical to the right answer.
+cat > "$DIR/fakeverify2" <<'EOF'
+#!/bin/sh
+if git grep -qI VERIFY2BAD -- . 2>/dev/null; then
+  echo "verify2 FAIL: VERIFY2BAD marker present in the rebased tree"
+  exit 1
+fi
+echo "verify2 OK: no sabotage marker in the tree"
+exit 0
+EOF
+chmod +x "$DIR/fakeverify2"
 
 # stand-in 💾 commit-message agent: same {"result": …} envelope, answers a fixed
 # conventional-commit message so the agent-mode commit path round-trips without a model.
@@ -351,6 +408,11 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # makes the pair separable: the VERIFYWAIT fixture credits 1 s of reported wait and then queues
 # forever, so its kill falls at ~4 s — unambiguously the wait clock, with 4 s of load slack before
 # it could be confused with the 8 s work clock. Both numbers are read back off process.env there.
+# FLEET_VERIFY_CMD_REPOS names testrepo2 and NOTHING else on purpose: the suite then holds all three
+# resolution states at once — a repo with its own command, a repo (testrepo, testrepo3) falling back
+# to the global, and, after e2e/restart.ts drops FLEET_VERIFY_CMD, a repo with neither. The JSON's
+# double quotes survive to the inner shell the same way every single-quoted value here does; only
+# the assignment below needs them escaped.
 # FLEET_AUTOS_TICK_MS / FLEET_DISPATCH_TICK_MS: the production 5 s / 8 s scheduler intervals are a
 # floor under every check that proves a NON-event (no auto fires while the kill-switch is off; the
 # dispatcher leaves a pending row alone) — those cannot poll, they must out-wait a full tick, and
@@ -363,7 +425,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # foreign-harness policy in its CLOSED state, so an operator who exports the flag in their own shell
 # would flip a test's premise out from under it and the failure would read as a broken gate. The
 # live fleet turns it on (watchdog.sh); this line keeps the suite's answer independent of that.
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

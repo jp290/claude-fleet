@@ -3,7 +3,7 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { REPO, ROOT, check, get, plogRead, post, tmuxOut } from "./harness";
+import { REPO, REPO2, REPO3, ROOT, check, get, plogRead, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -618,6 +618,132 @@ export async function run(lc: LaneCtx): Promise<void> {
     // discarded, not landed: the marker would make every later clean lane in this suite queue too
     await post(`/api/slots/${lnVw.slot}/kill`, {});
     await post("/api/worktrees/discard", { repo: REPO, path: lnVw.cwd, branch: lnVw.branch });
+  }
+
+  // (C4) a verify command that IGNORES the term it is sent — the case a timeout alone cannot end.
+  // The clock fires, `timedOut` is set, SIGTERM goes out... and the server then awaits a process
+  // that has decided not to leave. The verdict is already `null` at that point, so every second
+  // after it is the server blocked on an answer it has promised never to use — and on the live
+  // fleet the budget is 300s, so "the gate is over" and "the merge job is over" could be five
+  // minutes apart with nothing saying so. The staffel (SIGTERM → VERIFY_KILL_GRACE_MS → SIGKILL,
+  // server.ts fire()) is what closes that, and it is the same one the post-land audit path has
+  // run since it was written.
+  // The two outcomes are far apart on the clock and that separation IS the measurement: killed at
+  // budget + grace (8s + 5s), or the stand-in's own exit at 30s. A check that only asserted the
+  // state would have passed against the un-escalated server too — it reached ok:null either way,
+  // just 17 seconds later.
+  {
+    const budget = Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 0) || 0;
+    // this block's own precondition, failing as ITSELF rather than as the thing it measures: with
+    // no reachable work budget the kill never fires at all and every assertion below would read as
+    // "the escalation is broken" when nothing was ever measured
+    check("V1 setup: a work budget small enough for the kill staffel to be reachable inside the suite",
+      budget > 0 && budget <= 30_000, `FLEET_VERIFY_TIMEOUT_MS=${process.env.FLEET_VERIFY_TIMEOUT_MS ?? "(unset)"}`);
+    const lnVk = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lnVk.cwd}/verify-nokill.txt`, "lane work carrying a VERIFYNOKILL marker\n");
+    spawnSync("git", ["-C", lnVk.cwd, "add", "verify-nokill.txt"]);
+    // same index.lock retry as the other verify fixtures: an uncommitted marker would make this
+    // lane verify GREEN and land, and the failure would name the wrong thing
+    let vkCommitted = false;
+    for (let i = 0; i < 20 && !vkCommitted; i++) {
+      vkCommitted = spawnSync("git", ["-C", lnVk.cwd, "commit", "-qm", "verify-nokill lane work"]).status === 0;
+      if (!vkCommitted) await Bun.sleep(150);
+    }
+    check("V1 setup: the term-ignoring lane committed its marker (precondition for the staffel below)",
+      vkCommitted, spawnSync("git", ["-C", lnVk.cwd, "status", "--porcelain"]).stdout.toString().trim());
+    await Bun.write(`${REPO}/vk-main.txt`, "main side\n"); // different file → clean rebase, no agent
+    spawnSync("git", ["-C", REPO, "add", "vk-main.txt"]);
+    spawnSync("git", ["-C", REPO, "commit", "-qm", "vk main work"]);
+    await settleForMerge(lnVk.slot);
+    await post(`/api/slots/${lnVk.slot}/merge`, {});
+    const vVk = await waitMerge(lnVk.slot);
+    const vk = vVk.last?.verify;
+    check("V1: a verify that ignores the term is still ended — ok:null + timedOut, same verdict as any timeout",
+      vk?.ok === null && vk?.timedOut === true, JSON.stringify(vk));
+    // THE MEASUREMENT. 30_000 is the stand-in's own sleep: a run that got there was never killed,
+    // it simply finished. The window is wide on purpose — the answer being separated is 13s vs
+    // 30s, and pinning the grace exactly would make this fail on a machine under load rather than
+    // on a regression.
+    check("V1: the SIGKILL escalation ends the run near budget+grace, far short of the stand-in's own 30s exit",
+      typeof vk?.ms === "number" && vk.ms >= budget && vk.ms < 25_000,
+      JSON.stringify({ ms: vk?.ms, budget, standInExitsAt: 30_000 }));
+    check("V1: a signal-killed run records exitCode:null rather than inventing an exit status",
+      vk?.exitCode === null, JSON.stringify(vk?.exitCode));
+    check("V1: what the gate printed before it stopped listening is still retained",
+      (vk?.out ?? "").includes("stopped listening") && /\[verify TIMED OUT after \d+ms/.test(vk?.out ?? ""),
+      JSON.stringify((vk?.out ?? "").slice(-260)));
+    check("V1: an escalated kill does NOT auto-land (downgraded to resolved, lane kept)",
+      !vVk.gone && vVk.last?.status === "resolved" && vVk.last?.landed === false && exists(lnVk.cwd),
+      JSON.stringify(vVk.last));
+    // discarded, not landed: the marker would make every later clean lane in this suite hang too
+    await post(`/api/slots/${lnVk.slot}/kill`, {});
+    await post("/api/worktrees/discard", { repo: REPO, path: lnVk.cwd, branch: lnVk.branch });
+  }
+
+  // (E) PER-REPO verify commands (P-7c). One FLEET_VERIFY_CMD had to serve every repo a lane could
+  // live in, so being right in more than one meant guarding on the tree and DECLINING elsewhere —
+  // and a decline costs that lane its auto-land (the SKIP contract, server.ts). The map gives a
+  // repo its own command instead, and the compatibility half is that a repo NOT in it keeps the
+  // global exactly as before.
+  //
+  // WHAT MAKES THIS MEASURABLE rather than merely green: the two commands know DIFFERENT sabotage
+  // markers, and each lane carries the one the other command ignores. testrepo2's lane trips
+  // fakeverify2 and would sail past fakeverify; testrepo3's lane trips fakeverify and would sail
+  // past fakeverify2. So the wrong resolution does not produce a differently-worded pass — it
+  // produces a GREEN verify and an auto-land, which the assertions below cannot mistake for the
+  // right answer. (The third state, a repo in NEITHER the map nor the global, cannot be reached on
+  // this server: the global is configured for the whole suite. It is asserted in e2e/restart.ts,
+  // against the server that boots without FLEET_VERIFY_CMD.)
+  {
+    // the block's own precondition. Empty/missing fixture repos mean nothing below was measured,
+    // and that must fail as ITSELF rather than as "per-repo resolution is broken".
+    const haveRepos = !!REPO2 && !!REPO3 && exists(REPO2) && exists(REPO3);
+    check("V1 setup: the two per-repo fixture repos exist (precondition — these checks are about WHICH of two commands ran)",
+      haveRepos, JSON.stringify({ REPO2, REPO3 }));
+    if (haveRepos) {
+      // repo, marker file, marker text, the command that MUST have run, and the words that command
+      // prints. Driven as a table so neither half can quietly stop being asserted.
+      const cases = [
+        { repo: REPO2, name: "r2", marker: "VERIFY2BAD", cmdEnds: "fakeverify2", says: "verify2 FAIL", why: "its own entry in FLEET_VERIFY_CMD_REPOS" },
+        { repo: REPO3, name: "r3", marker: "VERIFYBAD", cmdEnds: "fakeverify", says: "verify FAIL", why: "no entry — the global FLEET_VERIFY_CMD default" },
+      ] as const;
+      for (const c of cases) {
+        const ln = (await (await post("/api/lanes", { repo: c.repo })).json()) as { slot: number; cwd: string; branch: string };
+        check(`V1 setup: a lane opened in ${c.name} (precondition for the resolution check)`,
+          typeof ln.slot === "number" && typeof ln.cwd === "string" && exists(ln.cwd ?? ""), JSON.stringify(ln));
+        if (typeof ln.slot !== "number") continue;
+        await Bun.write(`${ln.cwd}/${c.name}-lane.txt`, `lane work carrying a ${c.marker} marker\n`);
+        spawnSync("git", ["-C", ln.cwd, "add", `${c.name}-lane.txt`]);
+        let committed = false;
+        for (let i = 0; i < 20 && !committed; i++) {
+          committed = spawnSync("git", ["-C", ln.cwd, "commit", "-qm", `${c.name} lane work`]).status === 0;
+          if (!committed) await Bun.sleep(150);
+        }
+        check(`V1 setup: the ${c.name} lane committed its marker (an uncommitted one verifies GREEN and lands)`,
+          committed, spawnSync("git", ["-C", ln.cwd, "status", "--porcelain"]).stdout.toString().trim());
+        await Bun.write(`${c.repo}/${c.name}-main.txt`, "main side\n"); // different file → clean rebase, no agent
+        spawnSync("git", ["-C", c.repo, "add", `${c.name}-main.txt`]);
+        spawnSync("git", ["-C", c.repo, "commit", "-qm", `${c.name} main work`]);
+        await settleForMerge(ln.slot);
+        await post(`/api/slots/${ln.slot}/merge`, {});
+        const v = await waitMerge(ln.slot);
+        const vr = v.last?.verify;
+        check(`P-7c: the land in ${c.name} ran ${c.cmdEnds} — ${c.why}`,
+          typeof vr?.cmd === "string" && vr.cmd.endsWith(c.cmdEnds), JSON.stringify(vr?.cmd));
+        check(`P-7c: ${c.name}'s gate is the one that SPOKE — its own words in the retained output, not the other command's`,
+          (vr?.out ?? "").includes(c.says) && (vr?.out ?? "").includes(c.marker), JSON.stringify((vr?.out ?? "").slice(0, 200)));
+        // the counter-probe, and the reason the markers are crossed: the OTHER command does not
+        // know this marker, so a mis-resolution reaches ok:true and the lane is gone
+        check(`P-7c: ${c.name}'s lane was judged RED and kept — a mis-resolved gate would have passed it and landed it`,
+          vr?.ok === false && !v.gone && v.last?.status === "resolved" && v.last?.landed === false,
+          JSON.stringify({ ok: vr?.ok, gone: v.gone, status: v.last?.status, landed: v.last?.landed }));
+        check(`P-7c: the ${c.name} lane's commit has NOT reached that repo's main`,
+          !spawnSync("git", ["-C", c.repo, "log", "--oneline", "-4"]).stdout.toString().includes(`${c.name} lane work`),
+          spawnSync("git", ["-C", c.repo, "log", "--oneline", "-4"]).stdout.toString().trim());
+        await post(`/api/slots/${ln.slot}/kill`, {});
+        await post("/api/worktrees/discard", { repo: c.repo, path: ln.cwd, branch: ln.branch });
+      }
+    }
   }
 
   // (D) a red verify whose log has the SHAPE a real suite's has: the failing check named once,

@@ -31,6 +31,12 @@ export const BASE = `http://${IP}:${PORT}`;
 export const ROOT = resolve(import.meta.dir, "..");
 // the throwaway git repo the worktree/dispatch checks spawn lanes from
 export const REPO = process.env.FLEET_E2E_REPO ?? "";
+// Two more, for the per-repo verify config only (P-7c). REPO2 has its own entry in the server's
+// FLEET_VERIFY_CMD_REPOS, REPO3 deliberately has none — the pair is what makes "each land gets ITS
+// command" separable from "everything gets the global". Empty when a wrapper does not build them,
+// which is why the checks that use them assert their own precondition first.
+export const REPO2 = process.env.FLEET_E2E_REPO2 ?? "";
+export const REPO3 = process.env.FLEET_E2E_REPO3 ?? "";
 
 // The server's two scheduler ticks, READ FROM THE SAME ENV THE SERVER GOT (the wrappers put
 // FLEET_*_TICK_MS on both the srv spawn line and this process's line). Every check that has to

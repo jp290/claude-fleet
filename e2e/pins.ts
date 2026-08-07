@@ -347,10 +347,13 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // which is the wording BACKLOG P-10 used.
   //
   // The SUBJECT is bound to the clause, not to the line. That is what keeps this quiet on a corpus
-  // full of measurements: `docs/work-register-2026-08-06.md:52` reads "`FLEET_VERIFY_CMD` pro Repo
-  // — `verifyCmdFor`/`repoVerify` kommen **0×** vor", and only the two after the dash are claimed
-  // absent — `FLEET_VERIFY_CMD` itself is very much in server.ts. A line-wide scan would fail on a
+  // full of measurements: the work-register row for P-7c used to read "`FLEET_VERIFY_CMD` pro Repo
+  // — `verifyCmdFor`/`repoVerify` kommen **0×** vor", and only the two after the dash were claimed
+  // absent — `FLEET_VERIFY_CMD` itself was very much in server.ts. A line-wide scan would fail on a
   // true sentence, and a pin that cries on truth gets switched off.
+  // That example is quoted from its OWN history on purpose: P-7c landed on 2026-08-08, `verifyCmdFor`
+  // exists, and the row was rewritten in the same change — which is this rule doing its job, one
+  // measurement's worth of it. Kept here because the shape is what the rule is about, not the row.
   //
   // Deliberately narrow, and the misses are known: a claim whose subject is prose rather than a
   // backticked symbol is not checkable ("Client rendering still open"), and neither is one that

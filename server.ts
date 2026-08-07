@@ -255,6 +255,11 @@ interface TaskAnalysis {
   head: string | null;             // integration tip this was judged against; a moved tip = stale
   briefAt: number | null;          // the brief revision this judged; the owner editing it = stale
   attempts: number;                // consecutive analyst failures, for the backoff (0 once answered)
+  retry?: { at: number; reason: string }; // the last re-reading that FAILED, recorded beside the
+  // verdict instead of over it (analysisFailed). Absent is the normal state and means "the verdict
+  // above is the last thing that happened to this row". Written on every `attempts` bump, but not
+  // guaranteed to accompany the counter — a hand-edited state file can carry one without the
+  // other, which is why analysisDue falls back to `at` for the backoff clock rather than assuming.
 }
 type AnalysisBlocker = (typeof ANALYSIS_BLOCKERS)[number];
 interface TaskCriterion { text: string; proposedAt: number; confirmedAt: number | null }
@@ -398,6 +403,11 @@ const MAX_TASK_TEXT = 20_000;
 interface AnalysisDigest {
   verdict: TaskAnalysis["verdict"]; blockers: AnalysisBlocker[]; reason: string;
   stale: boolean; hasBrief: boolean; at: number;
+  // "what you are reading is the last verdict that came back, and re-reading it keeps failing" is
+  // a ROW LABEL, so it rides the poll; the failure's own text rides GET /api/tasks like every
+  // other body. `attempts` comes along because the count is the whole point — one failed sweep
+  // and three of them are different situations, and only the second is worth a hand `reanalyse`.
+  retry?: { at: number; attempts: number };
 }
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "from" | "slot" | "note" | "repo">>
@@ -427,6 +437,7 @@ function taskDigest(t: Task): TaskDigest {
         // reading as its own opposite.
         reason: t.analysis.reason.slice(0, 140),
         stale: analysisStale(t), hasBrief: !!t.brief, at: t.analysis.at,
+        ...(t.analysis.retry ? { retry: { at: t.analysis.retry.at, attempts: t.analysis.attempts } } : {}),
       },
     } : {}),
     // same two-tier rule as `analysis`: the poll carries only whether a criterion exists and
@@ -2258,15 +2269,47 @@ const taskRepoOf = (t: Task): string | null => {
   const raw = t.repo ?? (DISPATCH_REPO || null);
   return raw === null ? null : repoCanon(raw);
 };
+// A reading that FAILED is recorded BESIDE the verdict, never over it. Until 2026-08-07 a worker
+// failure rewrote `t.analysis` wholesale for every row of the batch — verdict, reason, blockers and
+// collides gone, only `attempts` carried over — so a row somebody had read as "needs-you" became
+// indistinguishable from one nobody had ever read. Measured on the live queue that morning: one
+// batch of six lost four `needs-you` and two `ready` to `analyst returned no JSON` at 09:41, and
+// the register was blind for ~80 minutes until a backoff retry happened to succeed. At
+// ANALYSIS_MAX_ATTEMPTS it would have stayed that way until a hand `reanalyse`.
+//
+// What survives is not thereby claimed to be FRESH: `at`, `head` and `briefAt` stay the old
+// reading's own, so `analysisStale` keeps saying the ground moved under it and the dispatcher's
+// staleness gate (invariant 3) still holds a released row back — the row gains information, not
+// permission. With nothing to keep — never analysed, or the previous attempt already an absence —
+// this is the old behaviour unchanged, because "unknown" is what an unread row must say.
+function analysisFailed(t: Task, reason: string, head: string | null): TaskAnalysis {
+  const at = Date.now();
+  // reason cap 2000, not 200 — a 200-char cap once beheaded a verdict's decisive "— but …" clause
+  // and left it arguing for its own opposite.
+  const retry = { at, reason: reason.slice(0, 2000) };
+  const prev = t.analysis;
+  const attempts = (prev?.attempts ?? 0) + 1;
+  return prev && prev.verdict !== "unknown"
+    ? { ...prev, attempts, retry }
+    : { verdict: "unknown", reason: retry.reason, blockers: [], collides: [], at,
+      model: ANALYSIS_MODEL, head, briefAt: t.brief?.at ?? null, attempts, retry };
+}
 // ONE rule for "this row needs the analyst", so there is one place to read and one place to test:
-// never analysed · answered but the ground moved · or an "unknown" whose backoff has elapsed.
+// never analysed · answered but the ground moved · or a failed reading whose backoff has elapsed.
 function analysisDue(t: Task, now: number): boolean {
   if (t.kind !== "lane" || dispatchingTasks.has(t.id)) return false;
   if (t.status !== "pending" && t.status !== "queued") return false;
   const a = t.analysis;
   if (!a) return true;
-  if (a.verdict === "unknown")
-    return a.attempts < ANALYSIS_MAX_ATTEMPTS && now - a.at >= ANALYSIS_BACKOFF_MS * 2 ** a.attempts;
+  // A FAILING RE-READ OWNS THE SCHEDULE, whatever verdict the row still shows. This used to test
+  // `verdict === "unknown"`, which named the same set only because a failure erased the verdict;
+  // now that it doesn't, the attempt counter is the honest test (the verdict clause stays for a
+  // hand-edited state file that has one without the other). And the clock is the last FAILURE's,
+  // not `at`: with a preserved verdict `at` belongs to the older, successful reading, so keying
+  // the backoff on it would make the row hammer every tick or freeze, purely by that age.
+  if (a.verdict === "unknown" || a.attempts > 0)
+    return a.attempts < ANALYSIS_MAX_ATTEMPTS
+      && now - (a.retry?.at ?? a.at) >= ANALYSIS_BACKOFF_MS * 2 ** a.attempts;
   return analysisStale(t);
 }
 let analysisBusy = false;
@@ -2293,16 +2336,11 @@ async function tickAnalysisSweep(): Promise<void> {
     // one repo batch per tick, serial like the dispatcher — bounded fan-out, bounded prompt
     const repo = taskRepoOf(due[0])!;
     const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, ANALYSIS_BATCH_CAP);
-    // an "unknown" verdict, NOT a judgement: the batch could not be read, and that must never be
-    // storable as a finding about the work. reason cap 2000, not 200 — a 200-char cap once beheaded
-    // a verdict's decisive "— but …" clause and left it arguing for its own opposite.
+    // the batch could not be read. That is never storable as a finding about the work — and since
+    // 2026-08-07 it is never storable OVER one either: analysisFailed keeps whatever verdict the
+    // row already carried and files the failure next to it.
     const unknown = (reason: string): void => {
-      for (const t of batch)
-        t.analysis = {
-          verdict: "unknown", reason: reason.slice(0, 2000), blockers: [], collides: [],
-          at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
-          briefAt: t.brief?.at ?? null, attempts: (t.analysis?.attempts ?? 0) + 1,
-        };
+      for (const t of batch) t.analysis = analysisFailed(t, reason, integrationTips.get(repo) ?? null);
       saveState();
     };
     if (!existsSync(repo) || !statSync(repo).isDirectory()) { unknown(`repo not found: ${repo}`); return; }
@@ -2390,10 +2428,9 @@ async function tickAnalysisSweep(): Promise<void> {
           at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
           briefAt: t.brief?.at ?? null, attempts: 0 }
         // answered, but not about this row: an absent entry is an absent reading, so it takes the
-        // same "unknown" shape as a dead worker rather than quietly reading as either verdict
-        : { verdict: "unknown", reason: "the analyst returned no entry for this task", blockers: [], collides: [],
-          at: Date.now(), model: ANALYSIS_MODEL, head: integrationTips.get(repo) ?? null,
-          briefAt: t.brief?.at ?? null, attempts: (t.analysis?.attempts ?? 0) + 1 };
+        // same shape as a dead worker rather than quietly reading as either verdict — including
+        // the part that matters most, that it does not erase the last reading that did arrive
+        : analysisFailed(t, "the analyst returned no entry for this task", integrationTips.get(repo) ?? null);
     }
     saveState();
   } finally {
@@ -2572,6 +2609,11 @@ async function tickDispatch(): Promise<void> {
       if (ANALYSIS_TICK_MS) {
         const a = next.analysis;
         if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
+        // A row may now show a real verdict while its re-reading keeps failing (analysisFailed), so
+        // this gate no longer sees every failure. It does not need to: a failed re-read leaves the
+        // OLD `head`/`briefAt` in place, and the sweep only picks a row up when one of those has
+        // gone stale — so every such row is caught two lines down, by the staleness check, which is
+        // the gate that was always the right one for "read against a tree that has since moved".
         const tip = await integrationHead(repoCanon(repo));
         if (tip) integrationTips.set(repoCanon(repo), tip);
         if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
@@ -7155,7 +7197,11 @@ if (existsSync(STATE_FILE)) {
                 ? t.analysis.collides.filter((c): c is string => typeof c === "string").slice(0, 8) : [],
               at: Number(t.analysis.at) || 0, model: typeof t.analysis.model === "string" ? t.analysis.model : "",
               head: typeof t.analysis.head === "string" ? t.analysis.head : null,
-              briefAt: Number(t.analysis.briefAt) || null, attempts: Number(t.analysis.attempts) || 0 }
+              briefAt: Number(t.analysis.briefAt) || null, attempts: Number(t.analysis.attempts) || 0,
+              // the failure record degrades to absent, like every other malformed field here. It
+              // only ever ADDS a warning to a row, so a dropped one costs a label, never a pass.
+              ...(t.analysis.retry && typeof t.analysis.retry.reason === "string"
+                ? { retry: { at: Number(t.analysis.retry.at) || 0, reason: t.analysis.retry.reason.slice(0, 2000) } } : {}) }
             : undefined,
           // a malformed criterion degrades to "none proposed", never to a confirmed one — the
           // confirmation is an owner act and must not be forgeable by editing the state file

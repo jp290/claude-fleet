@@ -154,7 +154,11 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   // the queue analyst's reading. ADVISORY — it groups and labels a row, it never disables an
   // action. `reason` here is the poll's 140-char slice; the full one rides /api/tasks.
   analysis?: { verdict: AnalysisVerdict; blockers: string[]; reason: string;
-    stale: boolean; hasBrief: boolean; at: number };
+    stale: boolean; hasBrief: boolean; at: number;
+    // set while re-reading this row keeps failing. The verdict beside it is the last one that came
+    // back — older than the tree, but a reading; before it was kept, a failed re-read replaced it
+    // with an absence and the row read as "never analysed".
+    retry?: { at: number; attempts: number } };
   // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
   criterion?: { text?: string; proposedAt: number; confirmedAt: number | null };
   // ↻ refine: the poll says a proposal exists, how it came out and how many children it holds —
@@ -4722,8 +4726,11 @@ async function refresh() {
     // the detail actually paints, so hover and an in-progress criterion edit survive quiet polls.
     if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
+      // `analysis.at` alone stopped being enough when a failed re-reading started leaving the old
+      // verdict (and its timestamp) in place: the attempt counter is then the ONLY thing that
+      // moves, so without it here the pane would keep showing "failed 1×" through every retry.
       const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.analysis?.at,
-        t.analysis?.stale, t.criterion?.proposedAt, t.criterion?.confirmedAt,
+        t.analysis?.stale, t.analysis?.retry?.at, t.criterion?.proposedAt, t.criterion?.confirmedAt,
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies
         t.refine?.at, t.refining, t.comments?.n, t.comments?.at]) : "gone";
@@ -5228,7 +5235,8 @@ const taskText = new Map<string, string>();
 // bounded reason slice, and the truncated-reason defect (a review verdict whose visible reason
 // argued for its own opposite) is exactly what this cache exists to prevent in the detail panel
 interface FullAnalysis { verdict: AnalysisVerdict; blockers: string[]; reason: string;
-  collides: string[]; at: number; model: string; attempts: number }
+  collides: string[]; at: number; model: string; attempts: number;
+  retry?: { at: number; reason: string } }
 const taskAnalysisFull = new Map<string, FullAnalysis>();
 // the compiled brief — the exact bytes a lane will receive. Never on the poll (it is a whole
 // prompt); the detail pane shows and edits it from here.
@@ -5269,7 +5277,9 @@ let qRowId = new Map<HTMLElement, string | null>();
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
-  const key = tasksList.map((t) => `${t.id}:${t.analysis?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}`).join(",");
+  // `retry.at` rides along for the same reason it is in the detail key: a failed re-reading now
+  // leaves `analysis.at` untouched, and the failure's own text lives only in this fetch.
+  const key = tasksList.map((t) => `${t.id}:${t.analysis?.at ?? 0}:${t.analysis?.retry?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}`).join(",");
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
   let filled = false;
@@ -5345,7 +5355,12 @@ function qVerdictLine(t: TaskInfo): string {
   if (!a) return t.kind === "note" ? "" : "not analysed yet";
   const mark = a.verdict === "ready" ? "✓" : a.verdict === "unknown" ? "?" : "⚠";
   const tags = a.blockers.map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
-  return [`${mark} ${tags || a.reason}`, a.stale ? "· stale, re-reading" : ""].filter(Boolean).join(" ");
+  // "stale, re-reading" is a promise the row cannot keep while the re-reading FAILS, and saying it
+  // anyway is how a blind window looked like a busy one. When there is a failure record, it
+  // replaces that phrase — the verdict shown is the last one that came back, and it is not moving.
+  const n = a.retry?.attempts ?? 0;
+  return [`${mark} ${tags || a.reason}`,
+    n ? `· re-analysis failing (${n}×)` : a.stale ? "· stale, re-reading" : ""].filter(Boolean).join(" ");
 }
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 // THE ROW NAME. Two rules, both from watching the owner read his own queue and not recognise it.
@@ -5529,8 +5544,13 @@ function renderQueueDetail() {
   if (an) {
     const head = an.verdict === "ready" ? "the analyst found nothing to stop you"
       : an.verdict === "unknown" ? "the analyst could not read this" : "the analyst wants you to look";
+    // …and whether that reading is the CURRENT one. Three states, not two: fresh · stale and being
+    // re-read · stale and the re-read keeps failing. The third used to be invisible because the
+    // failure overwrote the verdict, so the row said "could not read this" and the reasoning that
+    // HAD been produced was gone. Now it says both, in that order: the verdict, then its age.
+    const rn = t.analysis?.retry?.attempts ?? 0;
     shell.detail.appendChild(el("div", "rvhead",
-      `${head}${t.analysis?.stale ? " · stale — the tree moved, it is being re-read" : ""}`));
+      `${head}${rn ? ` · re-reading it has failed ${rn}×` : t.analysis?.stale ? " · stale — the tree moved, it is being re-read" : ""}`));
     if (an.blockers.length) {
       const tags = el("div", "ocfacts");
       for (const b of an.blockers) tags.appendChild(chip(Q_BLOCKER_LABEL[b] ?? b, "warn"));
@@ -5541,6 +5561,10 @@ function renderQueueDetail() {
       `touches the same files as: ${anFull.collides.join(", ")}`));
     shell.detail.appendChild(el("div", "shellhint",
       `${anFull ? `${anFull.model}, ` : ""}${fmtTs(an.at)} — advisory: it never blocks an action here`));
+    // WHY it keeps failing, in the analyst's own words — the one thing a "re-analysis failing"
+    // label cannot carry and the only thing that says whether ↻ re-analyse would help.
+    if (anFull?.retry) shell.detail.appendChild(el("div", "shellhint",
+      `the last re-reading failed at ${fmtTs(anFull.retry.at)}: ${anFull.retry.reason}`));
   }
   // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
   // It exists in the UI at all because it used to be compiled at spawn time and fired straight
@@ -5752,7 +5776,7 @@ function renderQueue() {
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
     shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.analysis?.verdict,
-      t.analysis?.blockers.join(","), t.analysis?.stale,
+      t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n])]);
   if (key === qKey) return;

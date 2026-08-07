@@ -151,6 +151,10 @@ if tasks is not None:
             "verdict": a.get("verdict"),
             "vage": age(a.get("at")) if a else "",
             "stale": stale,
+            # how often re-reading this row has failed since the verdict beside it came back. Before
+            # 2026-08-07 this could not be nonzero on a row that still HAD a verdict — a failure
+            # overwrote it — so the register showed an absence where a reading existed.
+            "retries": (a.get("attempts") or 0) if a.get("retry") else 0,
             "collides": [c for c in (a.get("collides") or [])],
             "brief": bool(brief),
             "crit": bool((t.get("criterion") or {}).get("confirmedAt")),
@@ -173,6 +177,8 @@ if tasks is not None:
         v = (r["verdict"] or "no-analysis") + (f"({r['vage']})" if r["vage"] else "")
         if r["stale"]:
             v += "!" + "+".join(r["stale"])
+        if r["retries"]:
+            v += f"?x{r['retries']}"
         # Question 4: whose decision is it? Mechanical, from the row itself — never a guess.
         waits = "owner" if (r["kind"] == "note" or r["verdict"] == "needs-you") else \
                 "slot" if r["status"] == "sent" else "—"
@@ -185,8 +191,11 @@ if tasks is not None:
         print("  (no open rows)")
     print()
     print("  flags: b=compiled brief on the row   c=owner-confirmed done-criterion")
-    print("  verdict(age)!stale — !head = the tree moved since it judged, !brief = the brief was")
+    print("  verdict(age)!stale?xN — !head = the tree moved since it judged, !brief = the brief was")
     print("  rewritten since. A stale verdict is not wrong, it is UNVERIFIED: re-run POST reanalyse.")
+    print("  ?xN = re-reading this row has FAILED N times since that verdict came back; the verdict")
+    print("  is the last one that arrived, and it is not being refreshed. At N=3 the sweep gives up")
+    print("  and only POST reanalyse restarts it.")
     print("  The verdict is ADVISORY and gates nothing; 'unknown' is the analyst failing to answer,")
     print("  which is an absence and never one of the two judgements (server.ts, TaskAnalysis).")
 

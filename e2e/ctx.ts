@@ -31,6 +31,10 @@ export interface Ctx {
   // context-size proxy in the steward section
   plantedTranscript: string | null;
   plantedTranscriptBytes: number;
+  // ...and the model planted on that same slot: deliberately NOT the fleet default (no [1m]
+  // suffix), so the context-FILL check has a 200k denominator to divide by and a hardcoded 1M
+  // one cannot pass by accident.
+  plantedModel: string;
 }
 
 export const newCtx = (): Ctx => ({
@@ -38,7 +42,7 @@ export const newCtx = (): Ctx => ({
   aPersistId: "", aPerpPersistId: "",
   restartSelfTok: null, restartSelfSlot: 0,
   cmdEnv: "", gapEnv: "", gapRepo: "", auditPath: "",
-  plantedTranscript: null, plantedTranscriptBytes: 0,
+  plantedTranscript: null, plantedTranscriptBytes: 0, plantedModel: "",
 });
 
 // Fixtures that only cross module boundaries INSIDE the worktree-lane run (lanes/*.ts).

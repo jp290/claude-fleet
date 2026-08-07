@@ -148,7 +148,11 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean;
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
-  harness?: string; effort?: string }
+  harness?: string; effort?: string;
+  // how full this session's context is (server.ts, contextFill). null is an ANSWER — Fleet cannot
+  // tell for this slot (no pinned transcript, no usage line yet, a harness that writes none, or a
+  // model whose window it cannot name) — and must never be painted as an empty/fresh context.
+  ctx?: { usedTokens: number; windowTokens: number; pct: number } | null }
 // the static harness catalogue (GET /api/harnesses, fetched once). `supports` is the server's,
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
@@ -4730,6 +4734,22 @@ function slotRow(s: ActiveSlot, stack?: Stack): HTMLElement {
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
         row.appendChild(rb);
       }
+      // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
+      // unknown case is drawn as "ctx ?", never as 0% and never as an empty bar: a blank meter reads
+      // as "fresh session", which is the one wrong answer this fact must not be able to give.
+      // Rounded to whole percent because the render key below is keyed on what is painted — a live
+      // decimal would rebuild the sidebar every poll and kill hover state.
+      {
+        const c = s.ctx ?? null;
+        // "ctx" spelled out: a bare "?" next to the row's other glyphs would be unreadable, and "ctx NN%"
+        // is the vocabulary the owner's own terminal status line already uses for this number.
+        const cx = el("span", "ctxfill" + (c ? "" : " unknown"), c ? `ctx ${Math.round(c.pct)}%` : "ctx ?");
+        cx.title = c
+          ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
+          : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
+            + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
+        row.appendChild(cx);
+      }
       // green = live in a pane, or a background session that just produced output. A FOLDED anchor
       // also lights up for its hidden lanes: a lane that just produced output is exactly the kind of
       // thing you must not have to unfold to notice (§F3 edge 2).
@@ -4967,7 +4987,12 @@ async function refresh() {
         // OTHER field moved. Adding a rendered field here is not optional.
         // worktree.repo, not just !!worktree: it is the stack's grouping key AND its colour key, so
         // a row painted from it belongs in this list by the same rule that put `behind` here
-        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind, s.worktree?.repo ?? !!s.worktree])]);
+        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind, s.worktree?.repo ?? !!s.worktree,
+        // the context chip, at the SAME resolution the row paints it (whole percent). The raw pct
+        // moves on nearly every poll; keying on it would rebuild the sidebar continuously, and
+        // leaving it out entirely would freeze the chip until some other field moved — the exact
+        // bug `behind` above documents.
+        s.ctx ? Math.round(s.ctx.pct) : null])]);
     if (key !== lastRender) {
       lastRender = key;
       renderSlots();

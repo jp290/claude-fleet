@@ -91,12 +91,18 @@ export async function run(ctx: Ctx): Promise<void> {
   // planted for the surviving slot 2 while the server is down, and the transcript that uuid names
   // is written after the restart (its cwd is only known from the API).
   const PLANTED_SID = "e2e0feed-0000-4000-8000-000000000001";
+  const PLANTED_MODEL = "claude-sonnet-5"; // no [1m] suffix → a 200k window, unlike the fleet default
   {
     const stFile = `${ROOT}/fleet.json`;
     const st = JSON.parse(readFileSync(stFile, "utf8")) as
-      { slots?: Record<string, { cwd?: string; sessionId?: string }> };
+      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> };
     const rec = st.slots?.["2"];
     if (rec) rec.sessionId = PLANTED_SID;
+    // ...and a model that is NOT the fleet default, for the context-FILL checks that share this
+    // fixture. The default is a [1m] variant, so a sensor that hardcoded a 1M denominator would
+    // pass against it by accident; pinning the 200k twin here is what makes the live pct assertion
+    // able to fail. Restored from the state file like every other slot field (server.ts, SLOT_MODEL_RE).
+    if (rec) rec.model = PLANTED_MODEL;
     writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
   }
   // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
@@ -508,4 +514,5 @@ export async function run(ctx: Ctx): Promise<void> {
   ctx.auditPath = auditPath;
   ctx.plantedTranscript = PLANTED_TR;
   ctx.plantedTranscriptBytes = PLANTED_TR_BYTES;
+  ctx.plantedModel = PLANTED_MODEL;
 }

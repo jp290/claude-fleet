@@ -1,8 +1,99 @@
-# HANDOFF — Session 32 (2026-08-07 nachts: das Register lebt, BACKLOG beerdigt, 63 neue Zeilen) · 31/30/29/… darunter
+# HANDOFF — Session 33 (2026-08-07 nachts: sieben Lands, das Wellenprogramm läuft) · 32/31/30/… darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh` **und jetzt auch `./register.sh`** (die Arbeitsliste,
-abgeleitet). Historie: `git log 75b2ca1..HEAD` mit Bodies. Diese Datei trägt nur das Residuum:
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`** (die Arbeitsliste, abgeleitet).
+Historie: `git log dc2940e..HEAD` mit Bodies. Diese Datei trägt nur das Residuum:
 Absicht, Entscheide, was in Flug ist, und die Reihenfolge der nächsten Schritte.*
+
+---
+
+## Session 33: das Wellenprogramm, sieben Lands, ein adjudiziertes Rot
+
+**Das Erste für die nächste Session — in dieser Reihenfolge:** `./state.sh` · `./register.sh` ·
+**`briefs/work-waves-2026-08-07.md`**. Das dritte ist neu und ist ab jetzt DAS operative Dokument
+für die Reihenfolge: sieben Wellen entlang der harten Grenzen der Maschine, mit Stand je Zeile.
+`docs/work-register-2026-08-06.md` bleibt Schnappschuss, `register.sh` bleibt die Ableitung.
+
+**Gelandet, sieben Commits, alle Gates grün, `waitMs: 0` bei allen sechs gemessenen:**
+
+| SHA | Was |
+|---|---|
+| `7941c3f` | der Wellenplan selbst (Slot 2s Wert-Review, aus einer `.jsonl` gerettet) |
+| `3b22aa8` | vier belegte Doc-Falschaussagen · Gate 108 s |
+| `eacd52a` | `briefs/session-capabilities-2026-08-07.md`, 326 Z. |
+| `d122e29` | Scheduler-Ticks konfigurierbar · Gate 68 s |
+| `a00e127` | roher Start kostet eine zweite Geste (`rawAcknowledged`) · 70 s |
+| `08dc17a` | Land-Gate zahlt nicht mehr für die Schlange · 69 s |
+
+Der Takt hat sich dabei selbst halbiert: 108 s → 69 s, weil `d122e29` im Baum liegt. Das war der
+Zweck von Welle 1 und ist jetzt gemessen, nicht versprochen.
+
+**Deploy ist GEFAHREN und verifiziert.** `srv` pid 51878. Reihenfolge war die für `watchdog.sh`
+vorgeschriebene: `launchctl kickstart` ZUERST (Watchdog 91123 → 23453, `srv` dabei unangetastet,
+Audit überlebte), dann `srv`-Respawn. Beweis, dass es wirkte: `FLEET_VERIFY_WAIT_MS=900000` steht
+im Env des laufenden Prozesses. `bun run build` zweimal gefahren (`a00e127`, `08dc17a`).
+
+**Das eine Rot — adjudiziert, nicht weggeschaut.** Post-Land-Audit zu `08dc17a`: 4 FAILURES,
+`at=1786070439613`, adjudiziert als **`flake`**. Voller Beleg als Kommentar auf Zeile `6b9f77d0`.
+Kurz: alle vier sind EINE Kaskade aus einem Setup-Check (die Test-Lane produzierte keine
+Pane-Ausgabe → `lastOutput:0` → `observed:false` → das `stalled`-Prädikat kann nie greifen);
+derselbe Baum erneut gefahren gab ALL PASS mit `observed:true`; dieselben vier Checks waren am
+06.08. um 08:03Z und 08:16Z rot, **13 h bevor dieser Branch existierte**; und der Diff enthält
+NULL Zeilen mit `observed|lastOutput|stalled|doneLooking|idleMs`.
+
+**In Flug bei Übergabe:**
+- **Slot 2** — clarify-Lane `fleet/…5408-c8f3` für `05ba5609` **+** `db02104d` als EINE Klärung,
+  unter Owner-Weg (a). Sie schlägt ein Kriterium vor und STOPPT; `awaiting:"owner"`.
+- **Slot 1 + 4** — die zwei read-only-Messungen (`32fc334a`, `caaf8b16`). Stehen seit ~2,5 h still,
+  ohne Commits, mit unabgeschicktem Text im Composer. Wenn das nicht der Owner war, hängen sie.
+- **Slot 12 ⚙ steward** — frisch besetzt, Worktree neu von `main`, stündlicher `/rundgang` als auto.
+
+**Vier Owner-Entscheide sind in dieser Session gefallen und ausgeführt:** Share `d8eb7ba4`
+widerrufen · 13 Zeilen archiviert (77 → 64 offen; drei trugen Inhalt, der vorher auf lebende
+Zeilen weitergetragen wurde) · F2 Schwellen-Klasse wird in Bau + Auswertung getrennt · F1 Weg (a),
+der Analyst bekommt Dateien.
+
+**Korrekturen, die man kennen muss:**
+- **`kind: lane→note` hat keine Route.** `t.kind` wird an genau zwei Stellen gesetzt (`adopt`
+  note→lane und der Steward-Create). Deshalb war „die 3 Formfehler auf note ziehen" nur für
+  `0be58694` ausführbar; `10ac2528` und `63626cdb` stehen weiter als startbare `lane`-Zeilen da,
+  die sich selbst als „kein Arbeitsauftrag" deklarieren. Zeile `65af341f`.
+- **`files` fällt beim Refine-Confirm auf den Boden** — live gemessen: Vorschlag zu `cccd76b2` trug
+  acht Dateien, das Kind `028bdcc1` hat `files:None`. Macht `9e0fdc3b` zur Vorbedingung.
+- **Es gibt ZWEI Trails**: `e2e-trail/` im Haupt-Checkout (863 Läufe) und `$TMPDIR/fleet-e2e-trail/`
+  (35, dorthin schreiben die Audits). Wer nur einen liest, sieht die halbe Basisrate — beim Rot oben
+  hätte der Audit-Trail allein `1/21` gesagt und die entscheidenden 06.08.-Instanzen nicht enthalten.
+  Das ändert den Zuschnitt von `6b9f77d0`.
+- **Die Historien-Warnung in CLAUDE.md gilt für den `steward`-Branch nicht mehr**: `main..steward`
+  = 0 Commits, der Merge war ein Fast-Forward, nicht „421 fremde Commits". Für die übrigen ~70
+  lokalen Branches ist sie ungeprüft und bleibt stehen.
+- **Der Steward-Worktree existierte gar nicht** — dort lagen zwei leere Verzeichnisse.
+- **Kontext-Sensor**: eine Session kann ihren eigenen Stand aus dem Transcript rechnen
+  (`message.usage`, Summe aus `input_tokens + cache_creation + cache_read`). Er hinkt einen Zug
+  hinterher und liest damit ZU NIEDRIG — bei einem Schwellwert die gefährliche Richtung. Deshalb
+  beide Quellen lesen und den höheren nehmen. Details: `briefs/session-capabilities-2026-08-07.md`.
+
+**Offene Owner-Entscheide, die die Reihenfolge blockieren:**
+1. **`526ecd5e` freigeben?** Self-Credential für ALLE Sessions — Owner-Vorgabe „maximale
+   Möglichkeiten". Der Befund macht sie klein: `s.selfToken` existiert bereits für jeden Slot, der
+   Server erkennt es an (**409, nicht 401**), es wird nur nie in die Pane exportiert. Das Tor ist ein
+   Ternary in `server.ts:1506`. Nicht ohne den Owner gestartet, weil es eine Credential-Grenze
+   anfasst. Teil 3 ihres DONE ist bewusst ein *Verweigerungs*-Test: `/api/self/gate` und
+   `/api/self/drift` müssen einer Nicht-Lane weiter 409 geben.
+2. **Steward filing-blockiert**: Pending-Cap 10/10, vier Plätze halten die Juli-Notizen, die bewusst
+   liegen bleiben sollen. Entweder über die vier urteilen oder `FLEET_STEWARD_MAX_PENDING` hoch
+   (Env → srv-Restart).
+3. **Pi (`944281c5`) NICHT starten** — der Steward hat den Test gefahren, den die Zeile selbst
+   nennt: `~/.pi/agent/auth.json` ist 2 Bytes, unveränderter Vor-Login-Zustand. Eine Lane liefe bis
+   zur Anmeldung und verbrennt dabei Kontingent.
+4. F3 Verb 2 Deploy · F5 F6-Upload-Ablage (Entwurf und Brief widersprechen sich) · F6 F7 noch
+   gewollt? · F8–F12 unverändert aus `briefs/work-waves-2026-08-07.md` §3.
+
+**Reihenfolge der nächsten Schritte:** Slot 2s Klärung lesen und bestätigen → dann `1e0c9434`
+(releasedBy, klein) → dann Welle 3 (`3975427d` nach refine · `bbf2eea1`+`7d380d5e` als EINE Lane).
+`526ecd5e` und `65af341f` kollidieren beide mit der `2bd333ac`-Fläche, also strikt seriell danach.
+Deckel unverändert: max 2 `server.ts`-Lanes, Lands seriell, **vor jedem Land den Mutex prüfen**
+(`/tmp/fleet-e2e.lock`, die pid-Datei entscheidet) — das ist der Grund, warum alle sieben Gates
+`waitMs: 0` hatten.
 
 ---
 

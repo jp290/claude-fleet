@@ -115,8 +115,12 @@ export async function run(ctx: Ctx): Promise<void> {
   // must run with NO verify command so the V1 "no cmd → verify field absent, clean path lands
   // as today" case below is exercised against a genuinely unconfigured server (§3). The
   // configured-server verify cases run before this restart.
+  // FLEET_VERIFY_CMD_REPOS, by contrast, IS carried — and only because the global is not. That
+  // pairing is the third resolution state and the only server on which it exists: a per-repo map
+  // is configured, and a repo named in NEITHER it nor the (absent) global has no gate at all.
+  // "kein Eintrag" must stay `verify` ABSENT — unconfigured, never a silent green (P-7c).
   const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
-    "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO",
+    "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS",
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
@@ -233,6 +237,47 @@ export async function run(ctx: Ctx): Promise<void> {
       check("V1: with NO FLEET_VERIFY_CMD the resolved verdict omits the verify field (unverified, not silently green)",
         lastC?.status === "resolved" && lastC !== null && !("verify" in lastC), JSON.stringify(lastC));
       await post(`/api/slots/${lc.slot}/kill`, {});
+
+      // P-7c, the THIRD resolution state — the one no other server in this suite can hold. This
+      // server carries the per-repo MAP (forwarded above) but no global default, and testrepo3 is
+      // named in neither. That is "kein Eintrag", and it must land in the SAME state as an
+      // entirely unconfigured deployment: field absent, not `null`, and above all not green.
+      // The distinction being defended: `verify: null` is a gate that ran and returned no verdict
+      // (skipped / timed out / waited out) and never auto-lands; an ABSENT field is the owner's
+      // deployment-wide "no gate here" and lands as it always has. Collapsing the two in either
+      // direction is a silent policy change — which is why this asserts the KEY's absence and not
+      // a falsy value.
+      const REPO3_C = process.env.FLEET_E2E_REPO3 ?? "";
+      // its own precondition: with no fixture repo nothing below was measured, and that must fail
+      // as itself rather than as "per-repo fallback is broken"
+      check("V1 setup: the no-entry fixture repo exists (precondition for the absent-verify check)",
+        !!REPO3_C && existsSync(REPO3_C), REPO3_C || "(FLEET_E2E_REPO3 unset)");
+      if (REPO3_C && existsSync(REPO3_C)) {
+        const l3 = (await (await post("/api/lanes", { repo: REPO3_C })).json()) as { slot: number; cwd: string };
+        // conflict on the SAME file+line, so the verdict is `resolved` and READABLE — a clean
+        // rebase with no verify configured auto-lands and tears the slot down with the answer
+        await Bun.write(`${l3.cwd}/code.txt`, "root\nno-entry-lane\n");
+        spawnSync("git", ["-C", l3.cwd, "commit", "-aqm", "no-entry lane work"]);
+        await Bun.write(`${REPO3_C}/code.txt`, "root\nno-entry-main\n");
+        spawnSync("git", ["-C", REPO3_C, "commit", "-aqm", "no-entry main work"]);
+        for (let i = 0; i < 80; i++) {
+          const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+          const sl = sx.slots.find((x) => x.id === l3.slot);
+          if (sl && sx.now - sl.lastOutput >= 3000) break;
+          await Bun.sleep(150);
+        }
+        await post(`/api/slots/${l3.slot}/merge`, {});
+        let last3: { status?: string; verify?: unknown } | null = null;
+        for (let i = 0; i < 100; i++) {
+          const j = (await (await get(`/api/slots/${l3.slot}/merge`)).json()) as
+            { running?: boolean; last: { status?: string; verify?: unknown } | null };
+          if (!j.running) { last3 = j.last; break; }
+          await Bun.sleep(100);
+        }
+        check("P-7c: a repo in NEITHER the per-repo map nor the global omits the verify field entirely (absent, not null)",
+          last3?.status === "resolved" && last3 !== null && !("verify" in last3), JSON.stringify(last3));
+        await post(`/api/slots/${l3.slot}/kill`, {});
+      }
 
       // The OTHER half of case C, and the counterweight to the tri-state skip gate: "no verify
       // command configured" must keep BOTH halves of its existing shape — no verify field, and a

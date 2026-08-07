@@ -4853,6 +4853,54 @@ const CLEAN_REVIEW_TIMEOUT_MS = Math.max(30_000, Number(process.env.FLEET_CLEAN_
 // deterministic verify (design note §3): a per-repo command run against the REBASED tree.
 // Unset → no verify at all (verdict field absent, "unverified"). e.g. the CLAUDE.md tsc line.
 const VERIFY_CMD = process.env.FLEET_VERIFY_CMD ?? null;
+// PER-REPO verify commands (BACKLOG P-7c), and what they replace. One FLEET_VERIFY_CMD string had
+// to serve every repo a lane could live in, so the only way for it to be right in more than one
+// was to look at the tree in front of it and DECLINE elsewhere — the SKIP contract below, whose
+// stated cost is that a lane in a foreign repo stops for an owner click instead of auto-landing.
+// This map is the config that contract names as not existing yet:
+//   FLEET_VERIFY_CMD_REPOS='{"/path/to/repo":"<command>", …}'
+// keyed by the repo TOPLEVEL. Both sides are canonicalized (realpath) before they meet: the key
+// is whatever the operator's shell handed them, while the lookup arrives from createWorktree,
+// which stores the symlink-resolved toplevel — on a box where /tmp is a link to /private/tmp the
+// two spellings are the same repo and an exact string compare would silently miss. `repoCanon`
+// is the same helper the dispatch cap uses, for the same reason it was written.
+// RESOLUTION IS ENTRY-THEN-GLOBAL, and the order is the compatibility promise: a repo NOT in the
+// map keeps today's FLEET_VERIFY_CMD, so a deployment that never sets this behaves byte-for-byte
+// as it does now. A repo in neither has no gate at all — `verify` ABSENT (unconfigured), which is
+// the owner's deployment-wide "clean rebase = land" decision and never a silent green.
+const VERIFY_CMD_REPOS: Map<string, string> = (() => {
+  const m = new Map<string, string>();
+  const raw = process.env.FLEET_VERIFY_CMD_REPOS?.trim();
+  if (!raw) return m;
+  let obj: unknown;
+  // A malformed map is LOUD and then inert: it falls back to the global for every repo, which is
+  // the previous behavior — but the operator wrote this expecting a different command per repo,
+  // and a gate that quietly runs the wrong one is exactly the failure this feature exists to end.
+  try { obj = JSON.parse(raw); } catch (e) {
+    console.warn(`[verify] FLEET_VERIFY_CMD_REPOS is not valid JSON (${String(e)}) — ignored; every repo falls back to FLEET_VERIFY_CMD`);
+    return m;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    console.warn("[verify] FLEET_VERIFY_CMD_REPOS must be a JSON object of repo → command — ignored");
+    return m;
+  }
+  for (const [repo, cmd] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof cmd !== "string" || !cmd.trim()) {
+      console.warn(`[verify] FLEET_VERIFY_CMD_REPOS entry for ${repo} is not a non-empty command string — ignored`);
+      continue;
+    }
+    m.set(repoCanon(repo), cmd);
+  }
+  return m;
+})();
+// The resolver. `repo` is a toplevel, never a lane worktree: a worktree's own path is not a repo
+// identity — every lane of the same repo would need its own entry, and they come and go.
+const verifyCmdFor = (repo: string): string | null => VERIFY_CMD_REPOS.get(repoCanon(repo)) ?? VERIFY_CMD;
+// The GRACE in the verify kill staffel (fire() in runVerify): SIGTERM → this long → SIGKILL. Same
+// number and same reasoning as POSTLAND_AUDIT_KILL_GRACE_MS — long enough for a shell to run its
+// traps and reap its foreground child, short enough that the server is not quietly waiting out a
+// timeout it already declared.
+const VERIFY_KILL_GRACE_MS = 5_000;
 // The WORK budget: how long the gate may spend actually verifying. Since 2026-08-07 that is all it
 // is — the queueing in front of it is charged to VERIFY_WAIT_MS below, not to this.
 const VERIFY_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_VERIFY_TIMEOUT_MS ?? 120_000) | 0);
@@ -4967,10 +5015,16 @@ function retainRunOutput(out: string, err: string, cap: number): string {
 // deployment into a stop-and-review for a policy the owner already settled. A skip is decided at
 // RUNTIME by the command itself, from a guess about the tree in front of it — and that guess is
 // precisely what a moved/renamed sentinel file fools. It cannot be trusted to mean "this tree is
-// fine unverified", so it buys no autonomy. The honest cost is real and accepted: until per-repo
-// verify config exists (orchestrator-autonomy.md §6.2), a lane in a foreign repo no longer
-// auto-lands under a repo-guarded command — it stops for one owner click, with "verify skipped"
-// on the row saying why. Both states record `verified: null` in the ledger: neither is evidence.
+// fine unverified", so it buys no autonomy. The honest cost is real and accepted: a lane in a
+// foreign repo does not auto-land under a repo-guarded command — it stops for one owner click,
+// with "verify skipped" on the row saying why. Both states record `verified: null` in the ledger:
+// neither is evidence.
+//
+// SINCE P-7c the cost has a way out that is not a guess about the tree: FLEET_VERIFY_CMD_REPOS
+// (above) gives that repo its OWN command, so the gate no longer has to recognise where it is —
+// the operator says so, once, out of band. The guard stays supported and stays tri-state for
+// every repo left to the global default; what changed is that "the command declined" is now a
+// configuration the owner can fix rather than a shape the deployment is stuck in.
 const VERIFY_SKIP_EXIT = 42; // the command's way of saying "I verified nothing" — reserved, no real gate uses it
 // Legacy half of the contract: watchdog.sh's VERIFY_CMD string is baked into the srv-spawn line and
 // only reloads on `launchctl kickstart` — a server-only deploy keeps an older, `exit 0`-on-skip
@@ -5088,10 +5142,14 @@ async function drain(stream: ReadableStream<Uint8Array>, onLine?: (line: string)
 // exclusive by construction rather than by a check someone has to remember.
 // `mainSha` binds the result to the main the tree was rebased onto — a verdict is void once main
 // moves past it (§6 rule 3).
-async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verify"]> {
-  if (!VERIFY_CMD) return undefined;
+// `repo` is the lane's REPO TOPLEVEL, not its worktree: it is the key the per-repo command is
+// resolved on (verifyCmdFor), and the resolution happens HERE rather than at the call sites so
+// there is exactly one place that can answer "which gate ran on this tree".
+async function runVerify(cwd: string, repo: string, mainSha: string): Promise<MergeLast["verify"]> {
+  const cmd = verifyCmdFor(repo);
+  if (!cmd) return undefined;
   const startedAt = Date.now();
-  const p = Bun.spawn(["sh", "-c", VERIFY_CMD], { cwd, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe" });
   let timedOut = false, waitedOut = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   // wait the chain has finished and REPORTED (its `acquired after Ns` lines). The report supersedes
@@ -5101,10 +5159,27 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
   // not the heartbeat's number: the heartbeats are a minute coarse, and the first block always
   // speaks at 0s, so a wall clock started there is the finer of the two measurements.
   let queuedSince: number | null = null;
+  // the SIGKILL escalation armed by fire(), cleared in the finally so a dead process leaves no
+  // pending timer behind — and never cleared before then, because the whole point is to outlive
+  // a child that is refusing to die on the term.
+  let killTimer: ReturnType<typeof setTimeout> | null = null;
   const fire = (kind: "work" | "wait"): void => {
     if (timedOut || waitedOut) return; // whichever clock got here first owns the kill
     if (kind === "work") timedOut = true; else waitedOut = true;
+    // SIGTERM, then SIGKILL after a grace period — the same staffel the audit path has run since
+    // it was written (POSTLAND_AUDIT_KILL_GRACE_MS), and the reason it belongs here too: a verify
+    // command is a SHELL blocked in `wait`, which acts on the term only once its foreground child
+    // returns. A gate whose chain ignores or defers the term used to hold this await open for as
+    // long as it liked — the timeout had already been declared, so the server was waiting on a
+    // process whose answer it had promised never to use.
+    // Residual, stated rather than defined away: grandchildren can still outlive both signals, so
+    // a killed gate may leave its own scratch tmux socket or suite lock behind. What is NOT
+    // residual is the server — it stops waiting here.
+    // This changes no verdict: `timedOut`/`waitedOut` are already set above, so `verify.ok` stays
+    // `null` on this path whichever signal ends the process (a killed run is not a verdict).
     try { p.kill(); } catch {}
+    if (killTimer) clearTimeout(killTimer);
+    killTimer = setTimeout(() => { try { p.kill(9); } catch { /* already gone */ } }, VERIFY_KILL_GRACE_MS);
   };
   const arm = (): void => {
     if (timer) clearTimeout(timer);
@@ -5151,7 +5226,7 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
     const skipped = !timedOut && !waitedOut
       && (code === VERIFY_SKIP_EXIT || (code === 0 && VERIFY_SKIP_MARK.test(`${out}${err}`)));
     const kept = retainRunOutput(out, err, Math.max(0, VERIFY_OUT_CAP - byteLen(note)));
-    return { cmd: VERIFY_CMD, ok: timedOut || waitedOut || skipped ? null : code === 0,
+    return { cmd, ok: timedOut || waitedOut || skipped ? null : code === 0,
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(waitedOut ? { waitedOut: true as const } : {}),
       // p.exitCode, not the awaited status: Bun reports null for a signal death, which is the
@@ -5161,6 +5236,7 @@ async function runVerify(cwd: string, mainSha: string): Promise<MergeLast["verif
       ...(wait ? { waitMs: wait.waitMs, ...(wait.partialMs ? { waitPartial: true as const } : {}) } : {}), mainSha };
   } finally {
     if (timer) clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
   }
 }
 // --setting-sources "" is load-bearing, not tidiness: --allowedTools is ADDITIVE to the owner's
@@ -7325,7 +7401,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // field stays absent and today's behavior is unchanged. mainSha === the main just
         // rebased onto, reused below as mainBefore for the clean-path land.
         const mainSha = (await git(root, "rev-parse", main)).out;
-        let verify = await runVerify(cwd, mainSha);
+        let verify = await runVerify(cwd, root, mainSha);
         // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
         // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
         // than dead-end at a red verdict, feed the exact failure back to the resolver for up to
@@ -7357,7 +7433,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             const anc2 = await git(root, "merge-base", "--is-ancestor", main, branch);
             if (anc2.code !== 0) break; // repair broke the rebase onto main — abandon, keep prior state
             repairRounds = round;
-            const rv = await runVerify(cwd, mainSha);
+            const rv = await runVerify(cwd, root, mainSha);
             if (rv) verify = rv;
             if (verify && verify.ok) break; // repaired to green — done
           }
@@ -9983,8 +10059,11 @@ Bun.serve<WSData>({
       return json({
         // `timeoutMs` is the WORK budget and `waitMs` the queueing one — two numbers because a
         // single one is what let a land be killed by somebody else's suite (VERIFY_WAIT_MS).
-        verify: VERIFY_CMD
-          ? { cmd: VERIFY_CMD, timeoutMs: VERIFY_TIMEOUT_MS, waitMs: VERIFY_WAIT_MS, skipExit: VERIFY_SKIP_EXIT }
+        // The cmd is resolved for THIS LANE'S REPO, not read off the global: since P-7c the two
+        // can differ, and a self-report that showed the global would tell a lane in a repo with
+        // its own command about a gate it will never meet.
+        verify: verifyCmdFor(s.worktree.repo)
+          ? { cmd: verifyCmdFor(s.worktree.repo), timeoutMs: VERIFY_TIMEOUT_MS, waitMs: VERIFY_WAIT_MS, skipExit: VERIFY_SKIP_EXIT }
           : null,
         cleanReview: CLEAN_REVIEW_MODE,
         autoReview: AUTO_REVIEW_MS > 0 ? { tickMs: AUTO_REVIEW_MS, idleMs: AUTO_REVIEW_IDLE_MS } : null,

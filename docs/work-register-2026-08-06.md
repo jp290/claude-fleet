@@ -52,7 +52,7 @@ Gruppen nach **Kollisionsfläche**, nicht nach Thema (Begründung: `HANDOFF.md` 
 | Herkunft | Item | Fläche |
 |---|---|---|
 | Queue `25b79c23` | Repair-Worker darf nicht committen (`git commit` 0× in `MERGE_TOOLS`, `merge-prompt.ts:187` verlangt es). Latent: `repairRounds` = 0 in allen 104 Ledger-Zeilen | `server.ts` Profile, `merge-prompt.ts`, `e2e/prompts.ts` |
-| BACKLOG P-7c | `FLEET_VERIFY_CMD` pro Repo — `verifyCmdFor`/`repoVerify` kommen **0×** vor | `server.ts` Verify-Pfad |
+| BACKLOG P-7c | ~~`FLEET_VERIFY_CMD` pro Repo~~ **GELANDET 2026-08-08**: `FLEET_VERIFY_CMD_REPOS` (JSON repo→Kommando), Auflösung `verifyCmdFor` = Eintrag, sonst der globale Wert, sonst kein Gate (`verify` ABSENT). Die Absenz-Messung, die hier stand, ist damit überholt und wurde entfernt statt gepflegt — sie wäre heute eine Falschaussage, und `e2e/pins.ts` §5b prüft genau diese Sorte Satz | `server.ts` Verify-Pfad |
 
 ### G2 · Queue-Wahrheit (die eine Funktion `otherOpenLanes`)
 | Herkunft | Item | Fläche |

@@ -985,4 +985,88 @@ export async function run(ctx: Ctx): Promise<void> {
       && rpInj.includes("«escaped-delimiter»"),
       `markers: ${rpInj.split("DATA>>>").length - 1} close / ${rpInj.split("<<<DATA").length - 1} open`);
   }
+
+  // --- (k) THE RAW START. "▸ start lane" gates on nothing, by design: an attended click outranks
+  // every advisory. What that cost was legibility — starting a row nobody had read looked exactly
+  // like starting one the analyst had signed off: same button, one click, same audit line. The UI
+  // now asks for a second, explicit gesture (src/client.ts, .qrawack) and sends it here; this
+  // section pins the half a reader can check AFTERWARDS. The three checks are one property each:
+  // the old contract is unchanged, an acknowledged raw start is distinguishable, and the flag is
+  // not taken at its word. Note what is deliberately NOT pinned: no shape of this request is
+  // refused — a raw start stays possible, it just stops being invisible. ---
+  {
+    // marker-keyed like (h)'s stand-in: the verdict follows the task's own draft text, so a
+    // routing assertion below cannot pass by accident
+    const FAKEAN_K = `${ROOT}/fakeanalyst-k`;
+    await Bun.write(FAKEAN_K, [
+      "#!/bin/sh",
+      "cat | bun -e '",
+      "const input = await new Response(Bun.stdin.stream()).text();",
+      "const segs = input.split(/^TASK id=/m).slice(1);",
+      "console.log(JSON.stringify({ analyses: segs.map((s) => ({ id: s.split(/\\s/)[0],",
+      "  verdict: s.includes(\"RAWSTART-READY\") ? \"ready\" : \"needs-you\",",
+      "  blockers: s.includes(\"RAWSTART-READY\") ? [] : [\"criterion\"],",
+      "  collides: [], reason: \"raw-start probe\" })) }));",
+      "'",
+      "",
+    ].join("\n"));
+    spawnSync("chmod", ["+x", FAKEAN_K]);
+    const kRepo = ((await (await get("/api/sessions")).json()) as { dispatch: { repo: string } }).dispatch.repo;
+    await restartSrv({ FLEET_DISPATCH_REPO: kRepo, FLEET_ANALYSIS_CMD: FAKEAN_K, FLEET_ANALYSIS_MS: "1000" });
+
+    interface KRow { id: string; status: string; analysis?: { verdict: string } }
+    const kRows = async (): Promise<KRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { tasks: KRow[] }).tasks;
+    // the id is a prefix of the detail, so the space matters: an id-only `startsWith` would also
+    // match a longer id that happens to begin with this one
+    const kDetail = async (id: string): Promise<string | undefined> =>
+      ((await (await get("/api/audit?limit=100")).json()) as { events: { event?: string; detail?: string }[] })
+        .events.find((e) => e.event === "task_dispatch"
+          && ((e.detail ?? "") === id || (e.detail ?? "").startsWith(`${id} `)))?.detail;
+    const kMk = async (text: string): Promise<string> =>
+      ((await (await post("/api/tasks", { text, queue: false })).json()) as { task: { id: string } }).task.id;
+    const kStart = async (id: string, body: Record<string, unknown>):
+      Promise<{ status: number; j: { ok?: boolean; slot?: number; rawAcknowledged?: boolean }; detail?: string }> => {
+      const res = await post(`/api/tasks/${id}/dispatch`, body);
+      const j = (await res.json()) as { ok?: boolean; slot?: number; rawAcknowledged?: boolean };
+      const detail = await kDetail(id);
+      if (typeof j.slot === "number") await post(`/api/slots/${j.slot}/kill`, {});
+      return { status: res.status, j, detail };
+    };
+
+    // (k1) a raw row started WITHOUT the tick: the bare id stays the plain start's exact detail.
+    // That contract is what the clarify comment in server.ts promises and what (f) reads — a
+    // marker on every raw start would have re-pointed every existing bare-id line.
+    const kA = await kMk("raw-start probe A: no done-criterion, started without a tick");
+    const kAr = await kStart(kA, {});
+    check("(k1) a raw start with no acknowledgment is audited as a plain start — the bare id, unchanged",
+      kAr.status === 200 && kAr.j.ok === true && kAr.j.rawAcknowledged === false && kAr.detail === kA,
+      `${kAr.status} ${JSON.stringify(kAr)}`);
+
+    // (k2) the same shape of row started WITH the tick the UI collects: same event name, and a
+    // deliberate raw start is greppable in the log afterwards
+    const kB = await kMk("raw-start probe B: no done-criterion, started with the tick");
+    const kBr = await kStart(kB, { acknowledged: true });
+    check("(k2) an acknowledged raw start rides in the audit detail (same event, distinguishable line)",
+      kBr.status === 200 && kBr.j.rawAcknowledged === true && kBr.detail === `${kB} raw-acknowledged`,
+      `${kBr.status} ${JSON.stringify(kBr)}`);
+
+    // (k3) THE HONESTY CLAUSE. The flag is not taken at its word: on a row the analyst read as
+    // `ready` there was nothing to acknowledge, so the marker is dropped. The audit records a
+    // deliberation that HAPPENED — an audit line a caller can simply claim is worth less than none.
+    const kC = await kMk("raw-start probe C: RAWSTART-READY — the analyst found nothing to stop you");
+    let kCv = "";
+    for (let i = 0; i < 40 && kCv !== "ready"; i++) {
+      kCv = (await kRows()).find((t) => t.id === kC)?.analysis?.verdict ?? "";
+      if (kCv !== "ready") await Bun.sleep(250);
+    }
+    check("(k3) fixture: the probe row carries a READY verdict (so the drop below can fail)",
+      kCv === "ready", `verdict=${kCv || "none"}`);
+    const kCr = await kStart(kC, { acknowledged: true });
+    check("(k3) an acknowledgment on a READY row is DROPPED — the audit never records a deliberation that was only claimed",
+      kCr.status === 200 && kCr.j.rawAcknowledged === false && kCr.detail === kC,
+      `${kCr.status} ${JSON.stringify(kCr)}`);
+
+    for (const id of [kA, kB, kC]) await post(`/api/tasks/${id}/delete`, {});
+  }
 }

@@ -9409,14 +9409,24 @@ Bun.serve<WSData>({
       if (!free) return json({ error: "no free slot" }, 409);
       // `clarify`: same spawn, different founding prompt — settle the done-criterion with the
       // owner first (clarify-prompt.ts). Only reachable from this attended route.
-      const clarify = (await readJson(req))?.clarify === true;
+      const dBody = await readJson(req);
+      const clarify = dBody?.clarify === true;
+      // A RAW START is one no reading vouched for: no analysis at all, or a verdict that asked for
+      // the owner. This route still gates on none of it — an attended click outranks every
+      // advisory, which is the whole point of the button — but the acknowledgment the UI collects
+      // (src/client.ts, .qrawack) rides into the audit detail, so a deliberate raw start is
+      // afterwards distinguishable from a start off a `ready` row. Recorded only when the row
+      // REALLY was raw: a flag on a ready row would pin a deliberation that never happened, and
+      // an audit line that can be claimed rather than earned is worth less than no line at all.
+      const rawAck = dBody?.acknowledged === true && (!t.analysis || t.analysis.verdict !== "ready");
       const r = await dispatchTask(t, free, true, clarify);
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode rides in the audit detail, never a second event name: one "an owner started a
       // task" line stays greppable, and the bare id remains the normal path's exact detail
-      audit("task_dispatch", r.slot, clarify ? `${t.id} clarify` : t.id);
-      return json({ ok: true, slot: r.slot, branch: r.branch, clarify });
+      audit("task_dispatch", r.slot,
+        [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : ""].filter(Boolean).join(" "));
+      return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck });
     }
     // re-read this task from scratch: drop the verdict so the next sweep judges it again. An
     // explicit owner act, and the only way to force one — the sweep's own rule (never analysed,

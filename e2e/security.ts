@@ -460,14 +460,24 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // probe BOTH read "unprobed" (the fleet-wide empty set short-circuits paneAgentAt), so the two
   // rows below cannot both pass unless the resolution really moved from the fleet to the slot.
   // The agent field is a TICK cache, hence the bounded poll rather than a single read.
+  // Reads the SETTLED value, not the first non-null one — and that is not belt-and-braces, it is the
+  // documented contract: `agent` is a git-TICK cache ("Bericht, nie Gate"), the tick awaits
+  // paneAgentAt per slot, and a tick already in flight when a slot is killed and reopened can write
+  // the PREVIOUS occupant's answer after the reopen. Measured: this row read `no-agent` (the pi-era
+  // value) on a slot that had just become default again. So: wait for a first answer, then let one
+  // full tick interval pass and take the second. A stale value cannot survive that; a genuinely
+  // wrong one is unaffected, which is what keeps the row a real assertion.
+  const GIT_TICK_MS = 10_000; // server.ts: setInterval(tickGit, 10_000)
   const agentOf = async (slot: number): Promise<string | null> => {
-    for (let i = 0; i < 60; i++) {
+    const read = async (): Promise<string | null> => {
       const sx = (await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string | null }[] };
-      const a = sx.slots.find((x) => x.id === slot)?.agent ?? null;
-      if (a !== null) return a;
-      await Bun.sleep(200);
-    }
-    return null;
+      return sx.slots.find((x) => x.id === slot)?.agent ?? null;
+    };
+    let first: string | null = null;
+    for (let i = 0; i < 60 && first === null; i++) { first = await read(); if (first === null) await Bun.sleep(200); }
+    if (first === null) return null;
+    await Bun.sleep(GIT_TICK_MS + 1000);
+    return await read();
   };
   // The assertion is "genuinely probed", NOT a specific verdict: whether the answer is `alive` or
   // `no-agent` depends on whether `pi` happens to be installed on the machine running the suite,

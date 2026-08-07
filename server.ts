@@ -207,6 +207,15 @@ interface Harness {
   // Required, not optional: a new adapter that forgets this is a compile error rather than a slot
   // that reads dead (or, worse, waived) for reasons nobody would think to look for.
   comms: readonly string[] | null;
+  // May an UNATTENDED path drive this harness once the operator has enabled foreign-harness
+  // automation at all (HARNESS_AUTOMATION)? TWO conditions, not one, and deliberately so: the env
+  // flag is the operator's blanket consent, this field is the per-adapter claim that THIS harness
+  // is fit for it. A single global flag would hand unattended access to a harness added tomorrow
+  // that nobody assessed — the container adapter of queue row c3531b41 is exactly that case, and it
+  // is filed, not hypothetical. Widening on the ABSENCE of a judgement is the mistake the comms
+  // repair above exists to undo; it is not less wrong one field to the right. Required, so a new
+  // adapter answers this at compile time instead of inheriting an answer.
+  automatable: boolean;
   // The charset THIS harness's model names are judged by. null = "whatever the env rule says"
   // (SLOT_MODEL_RE), which is how the default adapter keeps MODEL_RE for an undeclared FLEET_CMD
   // and the declared-harness charset for a declared one — i.e. exactly today's behaviour.
@@ -236,6 +245,9 @@ const CLAUDE_HARNESS: Harness = {
   // empty set (→ "unprobed") for an undeclared FLEET_CMD like the suites' `true`. Not `["claude"]`
   // literally: that would strip the waiver every stand-in depends on.
   comms: null,
+  // the default adapter is automatable unconditionally — it is what every automation on this fleet
+  // has always driven, and the clause below never even consults the flag for it.
+  automatable: true,
   modelRe: null,
   effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
   supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true },
@@ -269,6 +281,13 @@ const PI_HARNESS: Harness = {
   // here for exactly that reason: it is absent between requests, and a comm that comes and goes
   // would make the answer flicker.
   comms: ["pi"],
+  // TRUE by owner decision (2026-08-07), and the honest caveat rides in `note` below: Pi ships no
+  // permission layer, so what the flag admits is unattended prompting of a sandbox-less agent. What
+  // it does NOT admit, and this is why the decision was answerable at all: no tick can land. The
+  // ONE mergeJob call site is a route (server.ts, grep `mergeJob(`), so the reachable set is
+  // scheduled autos, dispatch, steward sends, done-looking → /api/self/watch and auto-③ — every one
+  // of them a PROMPT into a pane, none of them a write to main.
+  automatable: true,
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
   modelRe: HARNESS_MODEL_RE,
@@ -2303,7 +2322,11 @@ function commsFor(s: Slot): string[] {
 // is the specific one ("this harness is not automatable") rather than the generic not-alive it would
 // otherwise collapse into — being skipped SILENTLY was the expensive half of the original defect.
 function harnessAutomatable(s: Slot): boolean {
-  return HARNESS_AUTOMATION || harnessOf(s.harness) === CLAUDE_HARNESS;
+  const h = harnessOf(s.harness);
+  // the default adapter never consults the flag: it is the harness every automation on this fleet
+  // already drives, and gating it would turn one env var into a fleet-wide kill switch by accident.
+  if (h === CLAUDE_HARNESS) return true;
+  return HARNESS_AUTOMATION && h.automatable;
 }
 
 async function claudeAlive(s: Slot): Promise<boolean> {

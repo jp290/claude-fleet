@@ -89,9 +89,17 @@ export async function run(): Promise<void> {
   // poll() has seen a first byte the field is 0, and `now - 0` is ~1.79e12 ms — the arithmetic
   // that made this very check fail on the first run by handing the message to a pane that had
   // produced nothing yet (server.ts, THE UNOBSERVED-PANE HOLE).
-  await tmuxOut("send-keys", "-t", `s${bId}`, "echo watch-busy-marker", "Enter");
   let observed = 0;
   for (let i = 0; i < 60 && !observed; i++) {
+    // the probe is RE-FIRED each round, not merely re-read, and that is the load-bearing half.
+    // The `open` above restarted this pane's pipe, and ensureSlot sets quietUntil = now + 1500
+    // when it does; poll() streams anything inside that window WITHOUT stamping lastOutput. One
+    // send therefore renders on the pane and still leaves the field at 0 — after which a
+    // read-only loop spins for its full 15 s against a pane that never prints again. Measured
+    // that way twice on the same tree, deterministically, not as a flake: this slot is recycled
+    // out of the stalled block just above, so the send always lands inside a fresh window.
+    // Same mechanism as docs/verify-tiering.md §11.2c, which is where the family is recorded.
+    await tmuxOut("send-keys", "-t", `s${bId}`, "echo watch-busy-marker", "Enter");
     await Bun.sleep(250);
     observed = ((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
       .slots.find((x) => x.id === bId)?.lastOutput ?? 0;

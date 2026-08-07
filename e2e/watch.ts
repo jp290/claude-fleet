@@ -13,7 +13,7 @@
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
 import { spawnSync } from "node:child_process";
-import { AUTOS_TICK_MS, REPO, check, get, plogRead, post, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, TOKEN, check, get, paneEnv, plogRead, post, tmuxOut } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
@@ -36,8 +36,10 @@ export async function run(): Promise<void> {
   spawnSync("git", ["-C", tgt.cwd, "commit", "-qm", "watch target lane work"]);
 
   // --- the receivers, both PLAIN slots: the session this feature exists for is a driving main
-  // checkout, which is exactly the slot shape that carries no FLEET_SELF_TOKEN (hence the owner
-  // route). `rcvA` is left quiet and gets idleSec:0; `rcvB` is deliberately kept busy. ---
+  // checkout, and that is also the shape the SELF route below is scoped to. Everything down to the
+  // teardown drives the OWNER route; the self twin gets its own block, on its own slot, so neither
+  // principal's pins can be satisfied by the other's. `rcvA` is left quiet and gets idleSec:0;
+  // `rcvB` is deliberately kept busy. ---
   const aId = await freeSlot();
   const openA = aId ? await post(`/api/slots/${aId}/open`, { cwd: REPO }) : null;
   check("watch setup: a plain receiver slot is open", !!openA?.ok, `${aId} ${openA?.status}`);
@@ -66,6 +68,164 @@ export async function run(): Promise<void> {
     check("watch on the ⚙ steward is refused even though it is a worktree lane",
       rStew.status === 409, `${rStew.status} ${await rStew.text()}`);
     await post(`/api/slots/${st.slot}/kill`, {});
+  }
+
+  // === THE SELF TWIN: POST /api/self/watch =====================================================
+  // Same mint (createWatchForSlot), different principal: `s` comes from the token instead of the
+  // URL. The delivery machinery is therefore already proven by the owner half above and is not
+  // re-run here — what is NOT shared, and is the whole subject of this block, is the auth binding
+  // and the refusals. Its subscriber rule runs the OPPOSITE way to the four lane-only self routes
+  // (drift/gate/criterion/verify-intent refuse a plain session 409; this one refuses a LANE 409),
+  // and that asymmetry is exactly the kind of thing a later reader "simplifies" into a copy.
+  {
+    const cId = await freeSlot();
+    const openC = cId ? await post(`/api/slots/${cId}/open`, { cwd: REPO }) : null;
+    check("self-watch setup: a third plain slot is open to subscribe from", !!openC?.ok, `${cId} ${openC?.status}`);
+    // The credential is read out of the PANE, not out of fleet.json, because "a session that was
+    // actually handed the token" is the thing being tested — a state read would pass even if the
+    // export never reached the pane. paneEnv is the deterministic probe (unique marker, anchored
+    // match, send-keys retried); a hand-rolled send-keys + sleep + capture-pane is the flake shape
+    // that harness function exists to have removed. null means the pane never answered, which is a
+    // harness failure and fails here rather than being mistaken for an absent variable.
+    const cTok = await paneEnv(`s${cId}`, "FLEET_SELF_TOKEN") ?? "";
+    check("self-watch setup: the plain subscriber's pane carries FLEET_SELF_TOKEN",
+      /^[0-9a-f]{32}$/.test(cTok), `[${cTok}]`);
+    const laneTok = await paneEnv(`s${tgt.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    check("self-watch setup: the target lane's pane carries its own, different FLEET_SELF_TOKEN",
+      /^[0-9a-f]{32}$/.test(laneTok) && laneTok !== cTok, `[${laneTok}]`);
+    const selfWatch = (tok: string | null, body: unknown): Promise<Response> =>
+      fetch(`${BASE}/api/self/watch`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
+        body: JSON.stringify(body),
+      });
+
+    // peer lanes: peers[0] is a VALID target, so the LANE refusal below can only be about the
+    // SUBSCRIBER — aimed at a non-lane it would 409 for the other reason and prove nothing. All
+    // five together are what fills WATCH_MAX_PER_SLOT at the end of this block.
+    const peers: { slot: number; branch: string }[] = [];
+    for (let i = 0; i < 5; i++)
+      peers.push((await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; branch: string });
+    check("self-watch setup: five peer lanes exist (a valid target, and the cap's population)",
+      peers.every((p) => p.slot > 0) && new Set(peers.map((p) => p.slot)).size === 5,
+      JSON.stringify(peers.map((p) => p.slot)));
+
+    // --- auth: the same three refusals every route in the self family carries. 401 and not 403,
+    // because none of these is a recognized credential in the wrong scope — they are not this
+    // route's credential at all. ---
+    check("self-watch: the owner token does not substitute for a selfToken",
+      (await fetch(`${BASE}/api/self/watch`, {
+        method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ target: peers[0].slot }),
+      })).status === 401);
+    check("self-watch: an unknown selfToken is rejected",
+      (await selfWatch("0".repeat(32), { target: peers[0].slot })).status === 401);
+    check("self-watch: a missing selfToken header is rejected",
+      (await selfWatch(null, { target: peers[0].slot })).status === 401);
+
+    // --- THE NEW RIEGEL, and the reason this block exists. A lane's credential is RECOGNIZED and
+    // the target is valid: the only thing that can refuse it is the subscriber rule. 409, never
+    // 401 — same convention as the four routes that refuse in the other direction, because a 401
+    // would send a session hunting for a token it already holds. ---
+    const swLane = await selfWatch(laneTok, { target: peers[0].slot });
+    const swLaneText = await swLane.text();
+    check("a LANE calling /api/self/watch is refused 409 with its own reason — the mirror of the four lane-only routes",
+      swLane.status === 409 && swLaneText.includes("a lane may not subscribe"),
+      `${swLane.status} ${swLaneText}`);
+
+    // --- the target refusals, re-asserted THROUGH the self path with their exact wording. Sharing
+    // createWatchForSlot is what makes them identical today; pinning the strings is what stops a
+    // future self-path-only branch from quietly answering something else. ---
+    const idle = await freeSlot();
+    check("self-watch setup: a genuinely inactive slot is available as a target", idle > 0, String(idle));
+    // the ⚙ steward case borrows peers[4] rather than minting a seventh lane: the label is what the
+    // check is about, and it is renamed back before the cap block uses that lane as a real target.
+    check("self-watch setup: peers[4] is temporarily labelled ⚙ steward",
+      (await post(`/api/slots/${peers[4].slot}/rename`, { label: "⚙ steward" })).ok);
+    const targetRejects: [string, unknown, number, string][] = [
+      ["a nonexistent slot", { target: 999 }, 400, "bad target"],
+      ["itself", { target: cId }, 400, "a session cannot watch itself"],
+      ["an inactive slot", { target: idle }, 400, "target slot not active"],
+      ["a non-lane slot", { target: aId }, 409, "target is not a lane — done-looking only classifies lanes"],
+      ["the ⚙ steward", { target: peers[4].slot }, 409, "the ⚙ steward is never classified done-looking"],
+    ];
+    for (const [what, body, status, reason] of targetRejects) {
+      const r = await selfWatch(cTok, body);
+      const text = await r.text();
+      check(`self-watch on ${what}: refused ${status} with the owner path's wording, verbatim`,
+        r.status === status && text.includes(reason), `${r.status} ${text}`);
+    }
+    check("self-watch setup: peers[4]'s label is restored, so the cap block targets a real lane",
+      (await post(`/api/slots/${peers[4].slot}/rename`, { label: "watch-peer" })).ok);
+
+    // --- the binding, and the reason a pane-typing route can be handed to a session at all: the
+    // RECEIVER is the token's slot. A `slot` field naming a different one is not validated and
+    // rejected, it is structurally never read — createWatchForSlot takes `s` and never the body.
+    //
+    // EVERY subscription in this block points at a PEER lane, never at `tgt`, and that is not
+    // arbitrary: `tgt` carries a commit, so it is on its way to done-looking and a watch on it
+    // fires by itself within a tick or two. Firing disarms — which would silently turn the armed
+    // count the cap checks below into 4, and the cap's refusal into a pass for the wrong reason.
+    // The peers have no commits (ahead 0), so the predicate never classifies them and an armed
+    // watch on one stays armed for as long as this block needs it to. ---
+    const sw = await selfWatch(cTok, { target: peers[0].slot, idleSec: 3600, slot: aId });
+    const swJ = (await sw.json()) as { ok?: boolean; watch?: WatchRow; existing?: boolean };
+    check("POST /api/self/watch: a plain session subscribes with its OWN pane-exported token",
+      sw.ok && swJ.watch?.armed === true && swJ.watch.target === peers[0].slot
+      && swJ.watch.targetBranch === peers[0].branch, `${sw.status} ${JSON.stringify(swJ)}`);
+    check("a spoofed `slot` field is ignored — the watch lands on the TOKEN's slot, not the named one",
+      swJ.watch?.slot === cId, `landed on ${swJ.watch?.slot}; token slot ${cId}, spoofed ${aId}`);
+    const swDup = (await (await selfWatch(cTok, { target: peers[0].slot })).json()) as
+      { watch?: WatchRow; existing?: boolean };
+    check("self-watch is idempotent too — re-subscribing returns the SAME watch, not a second",
+      swDup.existing === true && swDup.watch?.id === swJ.watch?.id
+      && (await watchRows()).filter((w) => w.slot === cId && w.armed).length === 1,
+      `${swDup.watch?.id} vs ${swJ.watch?.id}`);
+
+    // --- GET /api/self names them next to the autos: the read half of the same credential. Spent
+    // rows are served too, and that is load-bearing — a watch disarmed because its target died
+    // delivers NOTHING into the pane, so armed-only would make "still waiting" and "will never
+    // come" indistinguishable from inside the session, the one belief this surface exists to make
+    // impossible. Proven at the end of this block, after the peers are killed. ---
+    const selfRow = await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": cTok } })).json() as
+      { slot: number; watches?: WatchRow[]; autos?: unknown[] };
+    check("GET /api/self serves the session its OWN watches, beside its autos",
+      Array.isArray(selfRow.watches) && Array.isArray(selfRow.autos)
+      && selfRow.watches.some((w) => w.id === swJ.watch?.id)
+      && selfRow.watches.every((w) => w.slot === cId),
+      JSON.stringify(selfRow.watches?.map((w) => `${w.slot}:${w.id}`)));
+
+    // --- the cap. WATCH_MAX_PER_SLOT is shared, not re-implemented per principal, and this is what
+    // proves the self path did not route around it: peers[0] is already armed, peers[1..4] fill it
+    // to five, and a SIXTH distinct valid target — `tgt`, a real lane — is refused. The cap is the
+    // LAST check createWatchForSlot makes, so every earlier reason has to be excluded for the
+    // refusal to mean anything; that is why these are five live lanes and not five cheap bad ids. ---
+    for (const p of peers.slice(1)) {
+      const r = await selfWatch(cTok, { target: p.slot, idleSec: 3600 });
+      check(`self-watch fills the cap: subscribing to peer lane ${p.slot}`, r.ok, `${r.status} ${await r.text()}`);
+    }
+    const capped = await selfWatch(cTok, { target: tgt.slot, idleSec: 3600 });
+    const cappedText = await capped.text();
+    check("WATCH_MAX_PER_SLOT applies on the self path exactly as on the owner's — the sixth is refused",
+      capped.status === 400 && cappedText.includes("max 5 active watches per slot"),
+      `${capped.status} ${cappedText}`);
+    check("the cap counted armed watches, and the refusal minted nothing",
+      (await watchRows()).filter((w) => w.slot === cId && w.armed).length === 5,
+      JSON.stringify((await watchRows()).filter((w) => w.slot === cId).map((w) => `${w.target}:${w.armed}`)));
+
+    // the peers go away while all five watches are armed: each disarms WITH its reason, and the
+    // self row is where the subscribing session can still read that — the check the comment above
+    // promised. Nothing was typed into its pane about any of them.
+    for (const p of peers) await post(`/api/slots/${p.slot}/kill`, {});
+    const after = await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": cTok } })).json() as
+      { watches?: WatchRow[] };
+    const dead = (after.watches ?? []).filter((w) => !w.armed);
+    check("a session reads its own DISARMED watches too — 'will never come' is legible, not a silent gap",
+      dead.length === 5 && dead.every((w) => (w.lastResult ?? "").includes("target session ended")),
+      JSON.stringify(dead.map((w) => `${w.target}:${w.lastResult}`)));
+    check("and nothing was ever typed into the subscriber's pane — no watch here ever fired",
+      !(await plogRead()).some((e) => e.slot === cId && e.text.startsWith("[fleet] slot ")));
+    await post(`/api/slots/${cId}/kill`, {});
   }
 
   // --- the subscription itself ---

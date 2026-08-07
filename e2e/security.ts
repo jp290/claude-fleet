@@ -55,11 +55,19 @@ const PRE_AUTH_ROUTES = [
   // widening (server.ts, grep `selfExport`) hands it to every session with a cwd — the ⚙ steward
   // and a plain session in a foreign repo included. Recorded here because this list is where a
   // pre-auth decision is recorded, and this one moved the PRINCIPAL rather than the route set.
-  // What it grants is bounded by the two routes below that answer a non-lane at all: schedule a
-  // prompt into your OWN pane, and read your OWN row. The other four keep their non-lane 409s, and
-  // §2 below re-runs the whole dangerous owner surface against a plain session's token.
+  // What it grants is bounded by the three routes below that answer a non-lane at all: schedule a
+  // prompt into your OWN pane, subscribe your OWN pane to a lane's done-looking, and read your OWN
+  // row. The other four keep their non-lane 409s, and §2 below re-runs the whole dangerous owner
+  // surface against a plain session's token.
   '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
   '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
+  // added 2026-08-07, and it is the only entry on this list that WRITES INTO A PANE on a trigger
+  // the caller does not control. What bounds it: the receiver is the token's slot and nothing in
+  // the body can move it (createWatchForSlot takes `s`, never a body field), the message is one
+  // server-authored line, it fires at most once per subscription, and WATCH_MAX_PER_SLOT caps how
+  // many can be armed. Its subscriber rule runs the OTHER way to the four lane-only routes below:
+  // a lane is refused 409 here. All six 409s are pinned in e2e/self-token.ts and e2e/watch.ts.
+  '= /api/self/watch',    // same credential: subscribe your OWN pane to a lane's done-looking
   '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)
   '= /api/self/criterion', // same credential: the lane's PROPOSED done-criterion (slot-bound, owner confirms)

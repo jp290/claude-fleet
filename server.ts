@@ -2049,15 +2049,21 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
   return json({ ok: true, auto: a });
 }
 
-// mint a watch: slot `s` asks to be told, once, when slot `target` looks done. Owner principal
-// only — and the measurement that made it owner-only HAS EXPIRED, so read this as a scope line and
-// not as a finding: FLEET_SELF_TOKEN used to be baked into a LANE's pane and never a plain
-// session's, which meant the session this feature exists for — a driving main checkout — had no
-// self-credential to subscribe with, and a /api/self/ twin would have been reachable by exactly
-// the principal that did not ask for it. That premise is gone: every session with a cwd now
-// carries the credential (see the selfExport line in ensureSlot). A self twin is therefore now
-// POSSIBLE and is deliberately not built here — the line that widened the export widened
-// self-PLANNING only, and minting a watch is a different decision that deserves its own.
+// mint a watch: slot `s` asks to be told, once, when slot `target` looks done. TWO principals now
+// reach this function, and the history of why is worth one paragraph: it was owner-only, on a
+// MEASUREMENT — FLEET_SELF_TOKEN used to be baked into a LANE's pane and never a plain session's,
+// so the session this feature exists for (a driving main checkout) had no credential to subscribe
+// with, and a /api/self/ twin would have been reachable by exactly the principal that did not need
+// it. That premise expired when every session with a cwd started carrying the credential (the
+// selfExport line in ensureSlot), and the twin was built: POST /api/self/watch, which derives `s`
+// from the token instead of the URL and then calls straight into here.
+//
+// WHAT THAT DID NOT CHANGE — read this before adding a condition below. The self route carries its
+// own SUBSCRIBER rule (a lane may not subscribe; see the route) because that is a question about
+// the caller, and this function never sees a caller. Everything here is about the TARGET and is
+// identical for both principals. Same split as createAutoForSlot: the caller owns how `s` was
+// derived, this function trusts it and never reads a `slot` field from the body, so neither route
+// can put a watch anywhere but on `s`.
 //
 // EVERY REJECTION HERE ANSWERS THE SAME QUESTION: can this watch ever fire? A watch that cannot is
 // worse than no watch, because it is a silent forever-wait — the precise failure this whole surface
@@ -9158,6 +9164,15 @@ Bun.serve<WSData>({
     // createAutoForSlot already hands this same principal a full Auto object back on every mint,
     // so no field here is a class of information the credential could not already see.
     //
+    // The watches pass that same test and are served the same way: createWatchForSlot returns a
+    // full Watch row on every mint AND on every re-subscribe (the idempotent path returns the
+    // existing row verbatim), so a session can already read back any watch of its own by asking
+    // for it again. SPENT rows are included, not just armed ones, and that is the load-bearing
+    // half: a watch disarmed because its target died delivers NOTHING into the pane — only
+    // `lastResult` records it. Serving armed rows alone would make "still waiting" and "will never
+    // come" look identical from inside the session, which is the one belief this whole surface
+    // exists to make impossible (see dropWatchesFor). Bounded by WATCH_KEEP_SPENT, like the autos.
+    //
     // Same principal, same flat-cost auth and the same share-host unreachability as its siblings
     // below. Read-only, and it grants no capability at all.
     if (url.pathname === "/api/self" && req.method === "GET") {
@@ -9177,6 +9192,7 @@ Bun.serve<WSData>({
         idleMs: Math.max(0, Date.now() - s.lastOutput),
         observed: s.lastOutput > 0,
         autos: autos.filter((a) => a.slot === s.id),
+        watches: watches.filter((w) => w.slot === s.id),
       });
     }
 
@@ -9193,6 +9209,34 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
+    }
+
+    // the OUTBOUND twin of /autos, and the second capability a plain session gets: instead of
+    // guessing a delay and re-checking, it subscribes to another slot's done-looking and is told
+    // ONCE, into its own pane, when the predicate turns true. Same principal, same flat-cost auth,
+    // same hard binding — the RECEIVER is the token's slot and `createWatchForSlot` never reads a
+    // `slot` field from the body, so a spoofed one changes nothing. That binding is what makes
+    // this safe to hand out at all: the route types into a pane, and it can only ever type into
+    // the caller's own.
+    //
+    // AND IT IS THE MIRROR OF THE FOUR ROUTES BELOW, not a copy of them. They are LANE-only and
+    // answer a plain session 409; this one is NON-LANE-only and answers a lane 409. Same reason
+    // read in both directions — the question is meaningless for the other principal — but the
+    // asymmetry is the design, so it is spelled out rather than left to be re-derived. A lane
+    // waiting on a lane is a coupling Fleet does not have today, and it would be invisible: it
+    // would live inside a pane, on no board, in no ledger, while the owner still believes the two
+    // are independent. Widening this later costs an `if`; taking it back after sessions have been
+    // written against it does not. The predicate `s.worktree && s.label !== STEWARD_LABEL` is
+    // deliberately the SAME one done-looking classifies by (see laneSignalView) — so the rule
+    // reads exactly as "whoever can BE watched cannot watch", and the ⚙ steward, which that
+    // predicate excludes by name, may subscribe like any other planning session.
+    if (url.pathname === "/api/self/watch" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible" }, 409);
+      return createWatchForSlot(s, await readJson(req));
     }
 
     // the lane's own drift view — same principal, same flat-cost auth as /api/self/autos above.
@@ -10977,8 +11021,10 @@ Bun.serve<WSData>({
     }
     // subscribe slot :id to another slot's done-looking. The route's slot is the RECEIVER, exactly
     // as it is for /autos above — every path that types into a pane names the pane in the URL, and
-    // the thing being watched is body data. Owner principal (see createWatchForSlot on why there is
-    // no /api/self/ twin).
+    // the thing being watched is body data. The owner half of the pair; the self half is
+    // POST /api/self/watch, and it is the one that carries the not-a-lane subscriber rule. The
+    // owner keeps the wider reach here on purpose: pointing a lane at another lane is a coupling
+    // somebody has to be able to make, and the owner is the principal who can see it on the board.
     const watchCreate = /^\/api\/slots\/(\d+)\/watch$/.exec(url.pathname);
     if (req.method === "POST" && watchCreate) {
       const s = slotFrom(watchCreate[1]);

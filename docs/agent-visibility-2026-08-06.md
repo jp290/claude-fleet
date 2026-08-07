@@ -104,6 +104,16 @@ Haupt-Checkout-Session auch dann verschlossen, wenn sie sich ein `selfToken` aus
 > eigene Autos). Zeilennummern in dieser Tabelle sind seither gewandert; die 409-Texte sind der
 > stabile Anker.
 
+> **Nachtrag 2026-08-07 (zweiter) — die Zahl ist wieder gewandert, und die Richtung der Gate-Frage
+> ist jetzt nicht mehr einheitlich.** `POST /api/self/watch` ist dazugekommen (der Self-Zwilling
+> des Watch-Rückkanals): **drei von sieben** Routen antworten einer Nicht-Lane. Die vier oben
+> bleiben unverändert lane-only. Neu ist, dass eine Route **in die Gegenrichtung** gated — sie
+> weist eine **LANE** mit 409 ab (*„a lane may not subscribe — lane-waits-on-lane is a coupling
+> only the owner can make visible"*), weil ein Lane-wartet-auf-Lane niemand sieht; der ⚙ steward
+> zählt dabei nicht als Lane und darf abonnieren. Wer diesen Abschnitt als „die Lane sieht mehr
+> über sich selbst" liest, muss ihn ab hier zweiseitig lesen: es gibt jetzt auch eine Frage, die
+> *nur* die Nicht-Lane stellen darf.
+
 Nur `POST /api/self/autos` (7919) funktioniert auch für einen Nicht-Lane-Slot. Umgekehrt weist
 `/api/dispositions` **jede** Credential ab, die auf irgendein `selfToken` matcht — 403, *„the
 disposition rail is owner-only — a lane cannot label its own work"* (`server.ts:8049`, GELESEN;

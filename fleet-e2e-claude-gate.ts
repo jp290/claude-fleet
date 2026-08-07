@@ -2,12 +2,18 @@
 // app that must never fire: typing a scheduled prompt into a bare shell, where it would
 // EXECUTE as a command instead of landing in a claude conversation.
 //
-// The main suite (fleet-e2e.ts) can't exercise this: it runs with FLEET_CMD=true, which
-// makes claudeAlive() short-circuit `return true` unconditionally (server.ts's own
-// `if (!/^claude(\s|$)/.test(BASE_CMD)) return true`) — the pgrep/ps detection logic
-// itself has zero coverage under that setup. This harness runs a REAL claude-prefixed
-// FLEET_CMD against a compiled stand-in binary literally named `claude` on PATH, so the
-// exact same process-tree check the real feature relies on is what's under test.
+// The main suite (fleet-e2e.ts) can't exercise this: it runs with FLEET_CMD=true, an UNDECLARED
+// command (no FLEET_HARNESS_COMMS), for which the probe returns "unprobed" and claudeAlive() waives
+// the gate — correct, because a stand-in like `true` legitimately leaves no process behind, but it
+// means the ps/pgrep detection logic itself has zero coverage under that setup. This harness runs a
+// REAL claude-prefixed FLEET_CMD against a compiled stand-in binary literally named `claude` on
+// PATH, so the exact same process-tree check the real feature relies on is what's under test.
+//
+// This file is PHASE 1. Phase 2 (fleet-e2e-harness.ts, same wrapper) asks the same questions of a
+// harness that is not claude. The two are a pair and neither is complete alone: phase 2 proves a
+// foreign model charset is accepted, and the counter-proof that a CLAUDE fleet still rejects those
+// same shapes can only be made here — a widened shared MODEL_RE would pass phase 2 and be a
+// regression, and this file is what notices.
 //
 // Run via ./e2e-claude-gate.sh (builds the fake binary, starts an isolated instance,
 // invokes this file, tears down). Do not run directly against a live fleet.
@@ -40,7 +46,7 @@ const cap1 = await tmuxOut("capture-pane", "-t", "s1", "-p");
 check("dead-claude gate: marker never reached the pane", !cap1.out.includes(marker1), cap1.out.slice(-120));
 const sess1 = (await (await get("/api/sessions")).json()) as { autos: AutoInfo[] };
 const a1after = sess1.autos.find((a) => a.id === a1.auto.id);
-check("dead-claude gate: lastResult reports the skip", a1after?.lastResult === "skipped — claude not running in pane", a1after?.lastResult ?? "missing");
+check("dead-claude gate: lastResult reports the skip", a1after?.lastResult === "skipped — no agent running in pane", a1after?.lastResult ?? "missing");
 
 // --- branch 2: claude IS running (swap the fake binary for a hang variant, open a
 // fresh slot so the new pane resolves the new file) — the auto must fire normally ---
@@ -87,6 +93,23 @@ for (let i = 0; i < 60; i++) {
 }
 check("steward sessions: a dead-claude pane reads alive=false from the cache", sigDead?.alive === false, JSON.stringify(sigDead));
 
+// ...and the same pane on the OWNER poll, which is the surface that had nothing to say about this
+// at all. `alive:false` above is the steward's reduced question ("may I deliver"); it cannot tell a
+// pane that is GONE from a pane that is alive with no agent behind it, and only the second one is
+// silent — it accepts keystrokes and executes them. That distinction is the fact this names, and it
+// is claimed for every harness, so the CLAUDE path owes the proof as much as the foreign one does
+// (fleet-e2e-harness.ts branch 6 makes the same assertion under FLEET_CMD=harn).
+interface PollSlot { id: number; agent: string | null }
+let ownerAgent: string | null | undefined;
+for (let i = 0; i < 60; i++) {
+  ownerAgent = ((await (await get("/api/sessions")).json()) as { slots: PollSlot[] })
+    .slots.find((x) => x.id === 1)?.agent;
+  if (ownerAgent === "no-agent") break;
+  await Bun.sleep(250);
+}
+check("owner poll: a claude pane that outlived its agent reads agent=no-agent, not no-pane",
+  ownerAgent === "no-agent", String(ownerAgent));
+
 // cache-for-reads / fresh-for-gates: build a pane whose CACHED reading says alive but whose
 // claude is actually dead, and prove the delivery gate refuses anyway — i.e. the gate ran a
 // FRESH claudeAlive, never the ≤10s-stale tickGit cache (a stale-cache gate would type into
@@ -132,7 +155,7 @@ for (let attempt = 0; attempt < 3 && !freshProven; attempt++) {
   const r = await stewPost("/api/steward/send", { slot: 3, kind: "continue_nudge", ref: "continue" });
   const rj = (await r.json()) as { error?: string };
   const cacheAfter = (await sigFor(3))?.alive;
-  gateRefused = r.status === 409 && (rj.error ?? "").includes("claude not running");
+  gateRefused = r.status === 409 && (rj.error ?? "").includes("no agent running");
   sigDetail = `attempt ${attempt}: status=${r.status} error=${rj.error} cacheBefore=${cacheBefore} cacheAfter=${cacheAfter}`;
   if (!gateRefused) break; // a delivered send is a real gate failure — never retry past it
   // proof condition: the cache read alive on BOTH sides of the refusal, so the refusing
@@ -184,6 +207,17 @@ for (let i = 0; i < 40; i++) {
 check("the pane spawn command injects the default model when the slot pins none",
   startCmdDef.includes(`--model '${FLEET_DEFAULT_MODEL}'`), startCmdDef.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
+
+// --- THE COUNTER-PROOF for the harness phase (phase 2, fleet-e2e-harness.ts): a claude fleet must
+// keep REJECTING the foreign model shapes that phase accepts. This is the half that a widened
+// shared MODEL_RE would silently break, and it can only be asserted where BASE_CMD is claude — i.e.
+// here. Each of the three characters below is one the foreign charset admits: `/` (provider/id),
+// `:` (thinking suffix) and `*` (a glob, which zsh would abort the pane on if it ever escaped a
+// quote). A 200 on any of them means the two charsets have collapsed into one. ---
+for (const bad of ["anthropic/claude-sonnet-5", "sonnet:high", "*sonnet*"]) {
+  const r = await post("/api/slots/5/open", { cwd: process.cwd(), model: bad });
+  check(`claude fleet rejects the foreign model shape ${bad} (400)`, r.status === 400, String(r.status));
+}
 
 // --- branch 6: dispatcher POST-spawn re-check (server.ts tickDispatch, the fresh claudeAlive
 // gate after the 4s boot sleep). This is the highest-blast branch: the dispatcher spawns a lane

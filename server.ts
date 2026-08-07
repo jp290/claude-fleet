@@ -91,6 +91,12 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
   // found"), so an unquoted [1m] would kill every new pane at spawn. MODEL_RE forbids `'`, so a
   // plain single-quote wrap is closed, not merely escaped.
   if (claude) cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
+  // A declared foreign harness gets its model the same way, and under the same quoting rule — the
+  // charset it was validated against (HARNESS_MODEL_RE) admits `*`, so the single quotes carry more
+  // weight here than they do above, not less. No DEFAULT_MODEL fallback on this branch on purpose:
+  // that constant is a claude model id, and pinning it onto a foreign harness would name a model
+  // that harness has never heard of. A foreign slot with no model of its own passes no flag at all.
+  else if (HARNESS_MODEL_FLAG && model) cmd += ` ${HARNESS_MODEL_FLAG} '${model}'`;
   return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
 }
 // per-slot model (synergy-findings Tier-2): strict charset because the value lands in a
@@ -99,6 +105,69 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
 // reason a shell metacharacter may appear here — it is anchored to the end, bounded, and alnum-only,
 // and every shell interpolation of a model string is single-quoted (slotCmd, summaryViaSession).
 const MODEL_RE = /^[A-Za-z0-9._-]{1,64}(?:\[[A-Za-z0-9]{1,8}\])?$/;
+
+// --- harness adapters ---------------------------------------------------------------------------
+// FLEET_CMD does not have to be claude, and three questions have a DIFFERENT answer per harness:
+// which process proves the agent is running, which model strings it accepts, and how it is told
+// which model to run. All three used to be answered by the same `/^claude(\s|$)/` test, which made
+// "not claude" mean "no answer" — and for liveness an unanswered question read as a blind `true`.
+const IS_CLAUDE = /^claude(\s|$)/.test(BASE_CMD);
+// ANY of these comm prefixes found in the pane's process tree proves the agent is running. A LIST,
+// not a name, and that is the whole point: a harness that WRAPS another (an extension that spawns
+// Claude Code beneath itself) leaves BOTH commands in the tree, so a probe pinned to a single comm
+// name is wrong before it is built. Matching any one of them is the question actually being asked.
+// Empty = the operator never declared what their command leaves behind, and Fleet must not guess:
+// a stand-in like `true` legitimately leaves NO process, so a strict probe would call every such
+// slot dead. That case keeps today's waiver — but it is now the NAMED state "unprobed" on the owner
+// poll instead of a silent `true`, so "not gated" stops being indistinguishable from "gated, alive".
+const HARNESS_COMMS: string[] = IS_CLAUDE
+  ? ["claude"]
+  : (process.env.FLEET_HARNESS_COMMS ?? "")
+      .split(",").map((c) => c.trim()).filter((c) => /^[A-Za-z0-9._-]{1,32}$/.test(c));
+// Foreign model patterns carry `/` (provider/id), `:` (a thinking suffix) and globs. MODEL_RE allows
+// none of them, and must NOT be widened to: a claude slot has no use for those characters and every
+// character it never accepts is one that can never reach a claude pane line. Hence a second charset
+// rather than a looser shared one. What keeps it safe is unchanged and load-bearing: a model is
+// interpolated ONLY inside single quotes, and `'` is the one character that can terminate a
+// single-quoted shell word — so `'` stays out, as does `\`, whitespace and every other
+// metacharacter. `*` is admitted on purpose and is exactly why the quoting is not optional: it is a
+// zsh glob, and zsh ABORTS an unmatched one ("no matches found"), killing the pane at spawn — the
+// same mechanism the `[1m]` suffix already made load-bearing, now reached by a second route.
+// The bracket suffix rides along so this is a strict SUPERSET of MODEL_RE: a declared harness must
+// never lose a name a claude fleet would have taken, and `[` `]` are literal inside single quotes
+// under the same rule that already lets MODEL_RE carry them.
+const HARNESS_MODEL_RE = /^[A-Za-z0-9._\-/:*@]{1,96}(?:\[[A-Za-z0-9]{1,8}\])?$/;
+// how this harness is TOLD its model. Absent = pass none. That is today's behaviour for every
+// non-claude FLEET_CMD and the only safe default: appending a guessed flag to an unknown command
+// turns a working slot into a usage error, and the pane would fall straight through to `exec $SHELL`.
+const HARNESS_MODEL_FLAG = (() => {
+  const f = process.env.FLEET_HARNESS_MODEL_FLAG;
+  return f && /^--?[A-Za-z0-9][A-Za-z0-9-]{0,31}$/.test(f) ? f : null;
+})();
+// A foreign harness counts as DECLARED only once the operator has named what it leaves behind. One
+// variable, one concept: the same declaration that turns the liveness probe strict is what unlocks
+// the wider model charset, so a fleet can never be in the state "gate waived AND validation relaxed".
+const DECLARED_HARNESS = !IS_CLAUDE && HARNESS_COMMS.length > 0;
+// The probe set for the ONE path that may not take the undeclared-command waiver: wakeAuthor, which
+// pastes a prose brief and therefore needs a POSITIVE answer that something will read it as a
+// prompt. `claude` rides along unconditionally because this server recognises it whatever FLEET_CMD
+// is — it spawns claude workers itself — so a pane with a real claude in it is an agent by any
+// reading. That is also exactly the pre-adapter behaviour (the old probe asked about claude and
+// nothing else), so an undeclared fleet keeps the author path it has always had, and a DECLARED
+// harness gains it: with a bridge that runs Claude Code beneath itself, either comm answers.
+const AUTHOR_COMMS = [...new Set([...HARNESS_COMMS, "claude"])];
+// the ONE place that says which charset a SLOT's model is judged by. Two rules, not one widened:
+// an UNDECLARED command keeps MODEL_RE exactly — widening on the ABSENCE of information is the
+// mistake this whole change exists to undo, and it is not less wrong for models than it was for
+// liveness. (Measured: with the widening keyed on "not claude", fleet-e2e-security.ts §2 accepted a
+// 65-character model under FLEET_CMD=true, because the foreign charset's cap is 96. The suite
+// caught it.) Worker-tier models (SUMMARY/ANALYSIS/REFINE) keep MODEL_RE unconditionally — those
+// spawn claude directly through runWorker/summaryViaSession no matter what FLEET_CMD is.
+const SLOT_MODEL_RE = DECLARED_HARNESS ? HARNESS_MODEL_RE : MODEL_RE;
+// derived, not restated: the rejection message used to spell the claude charset by hand at three
+// routes, which under a foreign harness would name a rule the server is no longer applying — an
+// error that misdirects is worse than a terse one, because it sends the reader to fix the wrong end.
+const SLOT_MODEL_ERR = `bad model (must match ${SLOT_MODEL_RE.source})`;
 // the fleet's base model for interactive/lane sessions that don't pin their own. Absent this,
 // slotCmd omits --model and claude falls back to the owner's ambient /model default. FLEET_MODEL
 // overrides, but is charset-validated first — this value is baked into a tmux shell line, so an
@@ -109,7 +178,7 @@ const DEFAULT_MODEL =
 function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
   const m = body?.model;
   if (m === undefined || m === null || m === "") return { ok: true, model: null };
-  if (typeof m === "string" && MODEL_RE.test(m)) return { ok: true, model: m };
+  if (typeof m === "string" && SLOT_MODEL_RE.test(m)) return { ok: true, model: m };
   return { ok: false };
 }
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
@@ -1380,6 +1449,13 @@ const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git re
 // send/dispatch sites) must keep calling claudeAlive FRESH: a 10s-stale cache could gate a
 // nudge or a bare-shell dispatch into a pane that died seconds ago.
 const aliveInfo = new Map<number, boolean>();
+// the SAME probe, unreduced: `alive` above answers "may I deliver here", which deliberately folds an
+// undeclared harness's waiver into `true`. This keeps the reason, because one of its values is the
+// failure nothing in this app could name — a pane that is alive and typeable with no agent behind
+// it. Same tick, same reads-only contract as aliveInfo; it rides the owner poll (/api/sessions) and
+// gates nothing. Sight is the entire feature: the state is silent by construction, so an owner who
+// cannot see it has no way to learn it exists.
+const agentInfo = new Map<number, AgentState>();
 // wedged merge/rebase per slot, same tick + same reads-only contract as aliveInfo: the
 // steward overview needs it fleet-wide (the per-slot brief computes it fresh), and the
 // commit/land guards keep their own fresh gitOpInProgress calls.
@@ -1390,10 +1466,14 @@ async function tickGit(): Promise<void> {
   gitTickBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); aliveInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
       // liveness is independent of git state — compute it before the git branching so a
-      // non-repo cwd (st.code !== 0 below) still gets an alive reading.
-      aliveInfo.set(s.id, await claudeAlive(s.id));
+      // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
+      // `alive` is this state reduced to canDeliver's question, and computing them separately would
+      // pay two rounds of ps/pgrep to let them disagree across the gap between the calls.
+      const agentState = await paneAgentAt(sess(s.id), HARNESS_COMMS);
+      agentInfo.set(s.id, agentState);
+      aliveInfo.set(s.id, agentState === "alive" || agentState === "unprobed");
       // A merge/land job OWNS this worktree's git for its whole lifetime — rebase, abort, ff-merge.
       // Every value below is a DISPLAY cache (the badges); every gate that acts on git state calls
       // gitOpInProgress fresh at its own site. So hold the last reading for the job's duration
@@ -1964,37 +2044,56 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
 }
 
 // --- scheduled prompts ---
-// a dead claude leaves its pane at a plain shell (`claude; exec $SHELL`) — an unattended
-// prompt typed THERE would execute as shell commands. Only send when a `claude` child
-// still hangs under the pane process. (pane_current_command is useless here: it reports
-// the wrapper zsh even while claude runs.) Gate applies only when FLEET_CMD runs claude;
-// custom commands are intentionally whatever the operator chose.
+// a dead agent leaves its pane at a plain shell (`<cmd>; exec $SHELL`) — an unattended
+// prompt typed THERE would execute as shell commands. Only send when the harness's own
+// process still hangs under the pane process. (pane_current_command is useless here: it
+// reports the wrapper zsh even while the agent runs.) The gate applies to every DECLARED
+// harness, claude or not; an undeclared custom command is still intentionally whatever the
+// operator chose, and answers "unprobed" rather than a liveness claim nobody can support.
 async function claudeAlive(slotId: number): Promise<boolean> {
-  if (!/^claude(\s|$)/.test(BASE_CMD)) return true;
-  return claudeAliveAt(sess(slotId));
+  const st = await paneAgentAt(sess(slotId), HARNESS_COMMS);
+  // "unprobed" is the undeclared-command waiver this function has always granted — an operator who
+  // never said what their FLEET_CMD leaves behind keeps exactly today's behaviour. A DECLARED
+  // harness no longer gets it: that is the whole repair, and it is why "no-agent" now exists as a
+  // distinct answer instead of collapsing into the same `true` a live claude returns.
+  return st === "alive" || st === "unprobed";
 }
 
-// same check for an arbitrary tmux target (the summarizer's own session).
-// The pane process ITSELF can be claude (a single trailing command makes sh exec
-// it — unlike slotCmd's `; exec $SHELL`, which keeps claude a child), so check both.
-async function claudeAliveAt(target: string): Promise<boolean> {
+// Why the pane has, or has not, got a running agent — four answers, because the two that used to be
+// one are the interesting pair: "no-pane" (nothing to type into) and "no-agent" (a pane that is
+// alive and accepting keystrokes, with NO agent behind it) are different failures and only the
+// second is silent. That is the state an unresolvable model produces: the harness prints its error,
+// exits, and slotCmd's `; exec $SHELL` catches the pane — pane_dead=0, prompts accepted, executed
+// as shell commands. Nothing could name it before this, for ANY harness including claude.
+//
+// The pane process ITSELF can be the agent (a single trailing command makes sh exec it — unlike
+// slotCmd's `; exec $SHELL`, which keeps it a child), so both the pane pid and its children count.
+type AgentState = "alive" | "no-agent" | "no-pane" | "unprobed";
+async function paneAgentAt(target: string, comms: string[]): Promise<AgentState> {
+  if (!comms.length) return "unprobed";
   const p = await tmux("display-message", "-p", "-t", target, "#{pane_pid}");
   const panePid = Number(p.out);
-  if (!panePid) return false;
-  const self = Bun.spawn(["ps", "-o", "comm=", "-p", String(panePid)], { stdout: "pipe" });
-  const selfComm = (await new Response(self.stdout).text()).trim();
-  await self.exited;
-  if ((selfComm.split("/").pop() ?? "").startsWith("claude")) return true;
+  if (!panePid) return "no-pane";
+  const commOf = async (pid: string): Promise<string> => {
+    const c = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
+    const out = (await new Response(c.stdout).text()).trim();
+    await c.exited;
+    return out.split("/").pop() ?? "";
+  };
+  const isAgent = (comm: string) => comms.some((c) => comm.startsWith(c));
+  if (isAgent(await commOf(String(panePid)))) return "alive";
   const pg = Bun.spawn(["pgrep", "-P", String(panePid)], { stdout: "pipe" });
   const kids = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
   await pg.exited;
-  for (const pid of kids) {
-    const c = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
-    const comm = (await new Response(c.stdout).text()).trim();
-    await c.exited;
-    if ((comm.split("/").pop() ?? "").startsWith("claude")) return true;
-  }
-  return false;
+  for (const pid of kids) if (isAgent(await commOf(pid))) return "alive";
+  return "no-agent";
+}
+
+// same check for an arbitrary tmux target that is known to run claude REGARDLESS of FLEET_CMD —
+// the summarizer spawns `claude` by name, so it asks about claude by name, never about the
+// fleet's harness. Keeping this call site explicit is what lets HARNESS_COMMS move freely.
+async function claudeAliveAt(target: string): Promise<boolean> {
+  return (await paneAgentAt(target, ["claude"])) === "alive";
 }
 
 // shared by the owner route (POST /api/slots/:id/autos) and the self-scheduling route
@@ -2208,7 +2307,7 @@ async function tickAutos(): Promise<void> {
       if (!verdict.ok) {
         if (verdict.gate === "not-alive") {
           // NEVER type into a bare shell; count the run and move on
-          a.lastResult = "skipped — claude not running in pane";
+          a.lastResult = "skipped — no agent running in pane";
           audit("auto_skip", a.slot, a.lastResult);
           advanceAuto(a, now);
           dirty = true;
@@ -4129,7 +4228,7 @@ async function tickWatches(): Promise<void> {
         // there, and the pane will not come back as the same session.
         if (verdict.gate !== "not-alive") continue;
         w.armed = false;
-        w.lastResult = "skipped — claude not running in pane";
+        w.lastResult = "skipped — no agent running in pane";
         audit("watch_skip", w.slot, w.lastResult);
         dirty = true;
         continue;
@@ -6265,14 +6364,16 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
   // context intact (measured 2026-08-05) — without this step the author path would silently degrade
   // into "whatever session happens to still be running in that slot".
   await ensureSlot(s);
-  // The UN-waived alive probe, deliberately not canDeliver's. `claudeAlive` returns true
-  // unconditionally when FLEET_CMD is not claude (:1469, "custom commands are intentionally
-  // whatever the operator chose") — a waiver that is correct for an owner-written scheduled prompt
-  // and WRONG here: this path pastes a prose brief the SERVER composed, and a pane not running
-  // claude would execute prose as shell commands. That is verbatim the hazard claudeAlive's own
-  // comment describes; the author path therefore asks the strict question and falls back when the
-  // answer is no. (It is also why a fleet with a custom FLEET_CMD keeps today's behaviour exactly.)
-  if (!(await claudeAliveAt(sess(s.id)))) return "no-claude";
+  // The UN-waived alive probe, deliberately not canDeliver's. `claudeAlive` grants the "unprobed"
+  // waiver to an undeclared FLEET_CMD ("custom commands are intentionally whatever the operator
+  // chose") — correct for an owner-written scheduled prompt and WRONG here: this path pastes a
+  // prose brief the SERVER composed, and a pane with no agent behind it would execute that prose as
+  // shell commands. That is verbatim the hazard claudeAlive's own comment describes; the author path
+  // therefore demands a POSITIVE answer and falls back on anything else. AUTHOR_COMMS, not
+  // HARNESS_COMMS: this path must never take the "unprobed" waiver, and claude counts as an agent
+  // here whatever FLEET_CMD is — which both preserves the pre-adapter behaviour exactly and lets a
+  // declared foreign harness author its own conflict resolution for the first time.
+  if ((await paneAgentAt(sess(s.id), AUTHOR_COMMS)) !== "alive") return "no-claude";
   // ⏫ is an owner act, so the master stop and quiet hours are waived exactly as the land gate in
   // the merge route waives them — and the agent fallback honours neither either, so gating the
   // author on them would only push work to the LESS informed resolver. `alive: false` because the
@@ -7635,7 +7736,7 @@ if (existsSync(STATE_FILE)) {
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const pm = (v as { model?: unknown }).model;
-        if (typeof pm === "string" && MODEL_RE.test(pm)) s.model = pm;
+        if (typeof pm === "string" && SLOT_MODEL_RE.test(pm)) s.model = pm;
         // the release survives a restart with the lane it started — a deploy in the middle of a
         // lane's life must not turn its outcome row into "cannot say". Only the two recognised
         // values come back, same stance as `awaiting` above: a hand-edited state file must not be
@@ -8139,7 +8240,7 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   if (!verdict.ok) {
     release();
     if (verdict.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
-    if (verdict.gate === "not-alive") return json({ error: "claude not running in target pane" }, 409);
+    if (verdict.gate === "not-alive") return json({ error: "no agent running in target pane" }, 409);
     if (verdict.gate === "quiet-hours") return json({ error: "quiet hours — steward sends are muted" }, 409);
     return json({ error: "target slot not idle" }, 409);
   }
@@ -9615,6 +9716,11 @@ Bun.serve<WSData>({
           return {
             id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+            // "no-agent" is the one that matters: the pane is alive and accepting keystrokes with
+            // nothing behind it — what an unresolvable model leaves, and what typing into it means.
+            // Cached (git tick), so it is a REPORT, never a gate: every gate keeps its own fresh
+            // probe. null = the tick has not reached this slot yet, which is not an answer.
+            agent: agentInfo.get(s.id) ?? null,
             share: sh ? {
               id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
@@ -10034,7 +10140,7 @@ Bun.serve<WSData>({
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
       const laneModel = modelOf(body);
-      if (!laneModel.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
+      if (!laneModel.ok) return json({ error: SLOT_MODEL_ERR }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
@@ -11128,7 +11234,7 @@ Bun.serve<WSData>({
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
         const mo = modelOf(body);
-        if (!mo.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
+        if (!mo.ok) return json({ error: SLOT_MODEL_ERR }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -11148,7 +11254,7 @@ Bun.serve<WSData>({
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd || laneSpawn.has(s.id)) return json({ error: "slot already active — use a free slot" }, 400);
         const mo = modelOf(body);
-        if (!mo.ok) return json({ error: "bad model (charset [A-Za-z0-9._-], max 64)" }, 400);
+        if (!mo.ok) return json({ error: SLOT_MODEL_ERR }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
           const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model);

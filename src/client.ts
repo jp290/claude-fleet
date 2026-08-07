@@ -145,7 +145,15 @@ interface AutoInfo {
 }
 interface WorktreeInfo { repo: string; branch: string }
 interface SlotInfo { id: number; cwd: string | null; label: string | null; lastOutput: number;
-  share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean }
+  share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean;
+  // which agent this session runs. ABSENT means the default harness — the server omits the field
+  // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
+  harness?: string; effort?: string }
+// the static harness catalogue (GET /api/harnesses, fetched once). `supports` is the server's,
+// never a second copy maintained here: a feature this client hides must be hidden because the
+// registry says the harness cannot do it, not because someone wrote the same list twice.
+interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
+  effort: boolean; selfSchedule: boolean }; effortLevels: string[]; note: string | null; default: boolean }
 // what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
@@ -175,6 +183,27 @@ interface TaskRefineFull { at: number; model: string;
   proposal: { unchanged: boolean; reason?: string; tasks?: RefineChildView[] } }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
+// the harness catalogue, fetched ONCE (it is a server constant) the first time the picker opens.
+// Empty until then, and every reader treats empty as "only the default exists" — so a failed or
+// pending fetch degrades to exactly the pre-harness UI rather than to a broken one.
+let harnesses: HarnessInfo[] = [];
+let harnessesLoaded = false;
+async function loadHarnesses(): Promise<void> {
+  if (harnessesLoaded) return;
+  try {
+    const res = await api("/api/harnesses");
+    if (!res.ok) return;
+    harnesses = ((await res.json()) as { harnesses: HarnessInfo[] }).harnesses;
+    harnessesLoaded = true;
+  } catch { /* leave it empty: the picker then offers the default only, which always works */ }
+}
+// what a SLOT's harness can do. Absent id → the registry's default; unknown id (an old client
+// against a newer server, or vice versa) → assume the default's capabilities rather than hide
+// working features. Empty catalogue → every capability true, i.e. today's behaviour.
+function supportsOf(h: string | undefined): HarnessInfo["supports"] {
+  const found = harnesses.find((x) => x.id === h) ?? harnesses.find((x) => x.default);
+  return found?.supports ?? { resume: true, transcript: true, model: true, effort: true, selfSchedule: true };
+}
 let autosList: AutoInfo[] = [];
 let tasksList: TaskInfo[] = [];
 let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
@@ -334,6 +363,18 @@ class Pane {
     clearTimeout(this.chatTimer);
     if (v === "chat") void this.pollChat();
     else this.term.focus();
+  }
+
+  // 💬 only where a conversation can actually be read. A harness that writes no claude transcript
+  // has nothing behind this button, and the honest move is to not offer it — the alternative is a
+  // toggle that always lands on "no transcript yet", which reads as "nothing has been said yet"
+  // and is a different, and false, statement. Idempotent: called on assignment AND on every poll.
+  syncHarnessAffordances(): void {
+    const canChat = !this.slot || supportsOf(fleet.find((x) => x.id === this.slot)?.harness).transcript;
+    this.viewBtn.style.display = this.slot && canChat ? "block" : "none";
+    // a pane already sitting in the chat view must not be stranded there when its slot turns out
+    // to have no transcript behind it
+    if (this.slot && !canChat && this.view === "chat") this.setView("term");
   }
 
   private resetChat() {
@@ -583,9 +624,9 @@ class Pane {
     this.ws?.close();
     this.term.reset();
     this.resetChat();
-    this.viewBtn.style.display = slot ? "block" : "none";
     this.boardBtn.style.display = slot ? "block" : "none";
     this.reloadBtn.style.display = slot ? "block" : "none";
+    this.syncHarnessAffordances();
     if (slot && this.view === "chat") void this.pollChat();
     this.hint.style.display = slot ? "none" : "flex";
     // size the terminal to its container before connecting — the WS URL carries
@@ -2651,11 +2692,25 @@ async function renderBoard() {
           return (!!head && !!c0 && !head.startsWith(c0.hash)) || dirty !== brief.uncommitted;
         };
         asec.appendChild(el("div", "bagenthint", "advisory · read-only — these never change your files"));
+        // The summarizer's evidence is the TRANSCRIPT TAIL (server.ts, the "## transcript tail"
+        // block). On a harness that writes none, it would still run, still cost a model call, and
+        // still answer confidently — from the diff alone, with the conversation silently missing.
+        // So it is withdrawn and SAID, rather than offered and quietly degraded.
+        //
+        // 🔍 review below is deliberately NOT withdrawn: it reads the git diff (reviewContextBlocks
+        // takes a cwd, never a Slot), so it is unaffected by the harness. Checked, not assumed —
+        // the design note that grouped "✨/🔍" together was written before either was traced.
+        const canSum = supportsOf(fleet.find((x) => x.id === slot)?.harness).transcript;
         const sum = sumCache.get(slot);
+        if (!canSum)
+          asec.appendChild(el("div", "bstale",
+            "📋 summary needs a conversation transcript — this session's harness writes none"));
         const sbtn = el("button", "bbtn accent",
           sumBusy.has(slot) ? "… summarizing" : sum?.summary ? "📋 re-summarize" : "📋 summarize") as HTMLButtonElement;
-        sbtn.disabled = sumBusy.has(slot);
-        sbtn.title = "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call";
+        sbtn.disabled = sumBusy.has(slot) || !canSum;
+        sbtn.title = canSum
+          ? "run a short-lived read-only agent (background claude session in this checkout, uses the subscription) — one model call"
+          : "unavailable: this session's harness writes no transcript for the summarizer to read";
         sbtn.onclick = async () => {
           if (sumBusy.has(slot)) return;
           sumBusy.add(slot);
@@ -3553,9 +3608,14 @@ const SKEW_NOTE = "this page is newer than the server it is talking to — that 
 // fetch and left the placeholder on screen forever.
 type DirLoad = { st: "loading" } | { st: "ok"; info: DirInfoResp } | { st: "fail"; why: string };
 
+// the folder the detail pane is currently describing — so a late-arriving harness catalogue can
+// repaint the pane it belongs to, instead of the options row appearing only on the NEXT click
+let pkDetailPath: string | null = null;
+
 async function showDirDetail(path: string) {
   const shell = pkShell;
   if (!shell) return;
+  pkDetailPath = path;
   const seq = ++pkInfoSeq;
   renderDirDetail(path, { st: "loading" });
   const done = (load: DirLoad) => {
@@ -3568,6 +3628,99 @@ async function showDirDetail(path: string) {
   if (!res.ok) { done({ st: "fail", why: `the server answered ${res.status} for this folder` }); return; }
   const info = (await res.json().catch(() => null)) as DirInfoResp | null;
   done(info ? { st: "ok", info } : { st: "fail", why: "the server's answer was not readable JSON" });
+}
+
+// What the NEXT session started from this picker will be spawned as. Held here rather than read
+// off the DOM at click time because the detail pane is re-rendered on every dir load, and a
+// choice that survives re-render but not a click would be the worst of both.
+// Reset per picker OPEN (openPicker), not per directory: picking a harness and then browsing to
+// the folder you want it in is the normal order of doing this.
+let spawnHarness: string | null = null;
+let spawnModel = "";
+let spawnEffort = "";
+
+// The spawn-options row — the first spawn-options UI in this app at all. Two things it closes at
+// once: choosing a harness (which never existed), and sending `model`, which the server routes
+// have accepted since long before this and no client call ever sent.
+//
+// The quick paths (⎇+ quicklane, ⌘Enter) deliberately do NOT read any of this: they stay
+// one-click on defaults. Only the two buttons in THIS pane carry the options.
+function appendSpawnOptions(host: HTMLElement): void {
+  // empty catalogue (not fetched yet, or the fetch failed) → render nothing at all. The pane is
+  // then exactly the pre-harness pane, and both buttons still work on defaults.
+  if (harnesses.length < 2) return;
+  const row = el("div", "pkdopts");
+
+  const hSel = el("select", "pkdsel") as HTMLSelectElement;
+  for (const h of harnesses) {
+    const o = el("option", "", h.default ? `${h.id} (default)` : h.id) as HTMLOptionElement;
+    o.value = h.id;
+    if ((spawnHarness ?? harnesses.find((x) => x.default)?.id) === h.id) o.selected = true;
+    hSel.appendChild(o);
+  }
+  row.appendChild(labelled("harness", hSel));
+
+  const chosen = harnesses.find((h) => h.id === hSel.value) ?? harnesses.find((h) => h.default);
+
+  const mIn = el("input", "pkdin") as HTMLInputElement;
+  mIn.type = "text";
+  mIn.placeholder = "model (optional)";
+  mIn.value = spawnModel;
+  mIn.oninput = () => { spawnModel = mIn.value.trim(); };
+  if (chosen?.supports.model) row.appendChild(labelled("model", mIn));
+
+  // effort only exists for a harness that HAS the concept — the row simply does not offer it
+  // otherwise, which is the visible degradation: no dead control that silently does nothing.
+  if (chosen?.supports.effort && chosen.effortLevels.length) {
+    const eSel = el("select", "pkdsel") as HTMLSelectElement;
+    for (const lv of ["", ...chosen.effortLevels]) {
+      const o = el("option", "", lv || "default") as HTMLOptionElement;
+      o.value = lv;
+      if (spawnEffort === lv) o.selected = true;
+      eSel.appendChild(o);
+    }
+    eSel.onchange = () => { spawnEffort = eSel.value; };
+    row.appendChild(labelled("effort", eSel));
+  }
+
+  hSel.onchange = () => {
+    const next = harnesses.find((h) => h.id === hSel.value);
+    spawnHarness = next && !next.default ? next.id : null;
+    // a level from the harness being left behind must not ride along to the next one
+    if (!next?.supports.effort || !next.effortLevels.includes(spawnEffort)) spawnEffort = "";
+    if (!next?.supports.model) spawnModel = "";
+    renderSpawnOptions(host, row);
+  };
+
+  host.appendChild(row);
+  // the caveat a harness states about ITSELF, shown before it is ever spawned rather than
+  // discovered afterwards — for Pi that is "no sandbox", i.e. no permission layer at all.
+  if (chosen?.note) host.appendChild(el("div", "pkdwarn", `${chosen.id}: ${chosen.note}`));
+}
+
+// re-render the row in place after a harness change (the fields on offer depend on it)
+function renderSpawnOptions(host: HTMLElement, old: HTMLElement): void {
+  const note = old.nextElementSibling;
+  if (note?.classList.contains("pkdwarn")) note.remove();
+  old.remove();
+  appendSpawnOptions(host);
+}
+
+function labelled(text: string, control: HTMLElement): HTMLElement {
+  const wrap = el("label", "pkdopt");
+  wrap.appendChild(el("span", "pkdoptl", text));
+  wrap.appendChild(control);
+  return wrap;
+}
+
+// the options every spawn from this pane carries. Absent fields mean "the default", which is
+// exactly what the server reads them as.
+function spawnBody(): { harness?: string; model?: string; effort?: string } {
+  return {
+    ...(spawnHarness ? { harness: spawnHarness } : {}),
+    ...(spawnModel ? { model: spawnModel } : {}),
+    ...(spawnEffort ? { effort: spawnEffort } : {}),
+  };
 }
 
 function renderDirDetail(path: string, load: DirLoad) {
@@ -3597,6 +3750,7 @@ function renderDirDetail(path: string, load: DirLoad) {
     acts.appendChild(lane);
   }
   shell.detail.appendChild(acts);
+  appendSpawnOptions(shell.detail);
 
   if (load.st === "loading") { shell.detail.appendChild(el("div", "shellhint", "reading…")); return; }
   if (load.st === "fail") { shell.detail.appendChild(el("div", "diffstat err", load.why)); return; }
@@ -4033,10 +4187,15 @@ async function togglePin(path: string) {
 async function startSession(path: string) {
   if (!pickerSlot) return;
   const slot = pickerSlot;
-  const res = await post(`/api/slots/${slot}/open`, { cwd: path });
+  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...spawnBody() });
   if (!res.ok) {
+    // the options row can now make this fail for a reason the path field cannot express (an
+    // unknown harness, a model the chosen harness rejects) — say which, instead of only
+    // flashing the path box red as if the folder were at fault
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
     pkPathIn.classList.add("bad");
     setTimeout(() => pkPathIn.classList.remove("bad"), 1200);
+    if (err.error) alert(`Session failed: ${err.error}`);
     return;
   }
   closePicker();
@@ -4049,7 +4208,7 @@ async function startWorktree(repo: string) {
   const slot = pickerSlot;
   // branch names are plumbing, not something to type: the server auto-names the lane
   // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
-  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "" });
+  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...spawnBody() });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     pkPathIn.classList.add("bad");
@@ -4066,6 +4225,15 @@ function openPicker(slotId: number) {
   setDrawer(false);
   pkShell?.close();
   pickerSlot = slotId;
+  // a fresh picker is a fresh decision: the previous session's harness/model/effort must not be
+  // inherited by whatever this slot becomes next (the server clears the same three on recycle).
+  spawnHarness = null; spawnModel = ""; spawnEffort = "";
+  pkDetailPath = null;
+  // fetch-once, and only from here: the catalogue is needed exactly when a spawn is being
+  // composed, so it never costs anything on a board that is only being watched.
+  void loadHarnesses().then(() => {
+    if (pkShell?.isOpen() && pkDetailPath) void showDirDetail(pkDetailPath);
+  });
   const shell = openShell({
     id: "picker",
     title: `New session — slot ${slotId}`,
@@ -4351,6 +4519,10 @@ function paintPaneProjects() {
 function renderSlots() {
   updateTitle();
   paintPaneProjects();
+  // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
+  // started from another device (or another tab) changes what its slot can do, and a 💬 that
+  // only re-decides on click would keep offering a conversation view that has nothing behind it.
+  for (const p of panes) p.syncHarnessAffordances();
   if (slotsEl.querySelector(".renamein")) return; // never destroy an in-progress rename
   slotsEl.replaceChildren();
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project

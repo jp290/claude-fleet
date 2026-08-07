@@ -595,6 +595,16 @@
   .pkdwarn { font-size: 12px; color: var(--amber); background: #2a2320; border: 1px solid #5a4a2a;
     border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }
   .pkdacts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  /* spawn options — the row that sits under "Start session here"/"⎇ New lane here" and decides
+     what the next session is spawned AS. Wraps on narrow screens (this pane is reachable from
+     the phone), and the controls stay small: they are settings, not the action. */
+  .pkdopts { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin: -6px 0 12px; }
+  .pkdopt { display: flex; flex-direction: column; gap: 3px; }
+  .pkdoptl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+  .pkdsel, .pkdin { font: 12px ui-monospace, Menlo, Consolas, monospace; color: var(--text);
+    background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+  .pkdin { width: 190px; }
+  .pkdsel:focus, .pkdin:focus { outline: none; border-color: var(--sel); }
   /* "▸ start lane" on a row nothing vouched for: a warn-tinted button (never the blue one-click
      primary) plus the acknowledgment that unlocks it. The tick line takes a full flex row of its
      own so it sits directly under the button, with clarify/refine on the line below it. */

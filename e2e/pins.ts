@@ -406,6 +406,41 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     live.map((c) => `${c.where}: "${c.sym}" IS in ${c.target}`).join("; "));
 }
 
+{
+  // The DISPATCHER'S BOLT, pinned at the source because that is where it lives. Pi ships no
+  // permission layer at all (PI_HARNESS.note), and whether an UNATTENDED lane may run without one
+  // is an owner decision that has not been made — so until it is, the dispatcher spawns the
+  // default harness and nothing else.
+  //
+  // The bolt is openSlot's parameter DEFAULT: the two unattended spawn paths call it without a
+  // harness, so they cannot pass one. That is a stronger guarantee than a check inside the
+  // dispatcher (which a later edit could route around) — but it is also invisible, because it is
+  // an absence, and an absence is exactly what no compiler and no runtime test can notice. Hence
+  // a rule over the source: the unattended callers must keep passing openSlot the SHORT form.
+  //
+  // Stated over `openSlot(` call sites rather than a list of function names, so a third unattended
+  // spawn path added tomorrow is covered tomorrow. `harnessIdOf` is the marker of a call that took
+  // the choice from a REQUEST — every attended route reads it, no tick may.
+  // Bounded to dispatchTask's OWN body — the sole spawn path a tick can reach. An unbounded slice
+  // to EOF swallows every route and makes the pin vacuously true, which is how this pin failed the
+  // first time it was written.
+  const dStart = server.indexOf("async function dispatchTask");
+  const dBody = server.slice(dStart, server.indexOf("\n}\n", dStart));
+  pin("dispatchTask's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
+    dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
+  pin("the only spawn a tick can reach names no harness — Pi has no permission layer, so unattended stays default",
+    /openSlot\(/.test(dBody) && !/harness|effort/.test(dBody), dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 120) ?? "no openSlot call");
+  // ...and the choice can only ever enter through a request: harnessIdOf reads a BODY, so a caller
+  // that has no body cannot name a harness. Stated over the whole file so a third spawn path added
+  // tomorrow is covered tomorrow.
+  // call sites only — the declaration's parameter list is not a call, and it is the one occurrence
+  // carrying a type annotation, so `:` is what separates the two
+  const harnessSources = [...server.matchAll(/harnessIdOf\(([^)]*)\)/g)]
+    .map((m) => m[1].trim()).filter((a) => !a.includes(":"));
+  pin("a harness is only ever chosen from a request body, never from server state",
+    harnessSources.length > 0 && harnessSources.every((a) => a === "body"), harnessSources.join(" | "));
+}
+
 console.log(rows.join("\n"));
 console.log(failed ? `\n${failed} FAILURES` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

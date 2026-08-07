@@ -110,7 +110,6 @@ export async function run(ctx: Ctx): Promise<void> {
   const otherEntry = d4.otherLanes.find((l) => l.branch === lnOther.branch);
   check("drift: another open lane's committed in-flight files are listed under otherLanes",
     !!otherEntry && otherEntry.files.includes("drift-other.txt"), JSON.stringify(d4.otherLanes));
-  check("drift cleanup: the second lane is torn down", (await post(`/api/slots/${lnOther.slot}/kill`, {})).ok);
 
   // --- the drift AUDIT TRAIL (autonomy map §11.3 step A). The route used to write nothing, so
   // "does a lane ever check its drift, and how early in its life?" had no answer anywhere. What is
@@ -145,6 +144,31 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(evs.map((e) => e.detail)));
   check("drift audit: the event is attributed to the asking lane's own slot",
     evs.every((e) => e.slot === lnTok.slot), JSON.stringify(evs.map((e) => e.slot)));
+
+  // A REBASED lane reports its OWN contribution — never the history main gained underneath it.
+  // The surface used to be anchored on `worktree.baseSha`, the immutable FORK commit, which is
+  // PROVENANCE and not an operative comparison base: once a lane is rebased onto a moved
+  // integration branch, everything main gained since the fork sits inside the lane's own history
+  // and got reported as that lane's in-flight work. Three-dot does not heal it — the old fork
+  // stays an ancestor of the rebased tip, so `base...HEAD` degenerates to `base..HEAD` (measured
+  // on the lane this was found on: both forms returned the same 37 files, against a true
+  // contribution of one). Not a display wart: on 2026-08-06 two lanes read a phantom 37-file
+  // surface off this very payload and routed their work around files nobody was holding.
+  // Deliberately placed AFTER the audit-trail section: this fixture moves a ref, so the drift read
+  // below books a fourth event and the "exactly three" count above is about the d0..d4 fixture.
+  const intBr = spawnSync("git", ["-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
+  writeFileSync(`${REPO}/drift-rebase-main.txt`, "main gained this after the other lane forked\n");
+  spawnSync("git", ["-C", REPO, "add", "drift-rebase-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "drift: main moves under the other lane"]);
+  const reb = spawnSync("git", ["-C", lnOther.cwd, "rebase", intBr]);
+  check("drift fixture: the other lane rebases cleanly onto the moved integration branch",
+    reb.status === 0, `${reb.status} ${reb.stderr.toString().slice(0, 200)}`);
+  const d5 = (await (await selfDrift(selfTok)).json()) as Drift;
+  const rebEntry = d5.otherLanes.find((l) => l.branch === lnOther.branch);
+  check("drift: a REBASED lane reports only its own contribution, not what main gained under it",
+    !!rebEntry && rebEntry.files.length === 1 && rebEntry.files[0] === "drift-other.txt",
+    JSON.stringify(rebEntry ?? null));
+  check("drift cleanup: the second lane is torn down", (await post(`/api/slots/${lnOther.slot}/kill`, {})).ok);
 
   // --- GET /api/self/gate: the live land-gate facts, served from the server's own process env.
   // The env pass-throughs (verify/cleanReview/…) are pinned by their own suites; what is tested

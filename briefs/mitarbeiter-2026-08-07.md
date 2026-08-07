@@ -124,6 +124,13 @@ die als nächstes laufen sollen, gehen als erste in dieses Risiko.
 which is an absence and never one of the two judgements"*) — und niemand hat bemerkt, dass
 die Absenz ein Urteil ÜBERSCHREIBT. Das ist kein Lesefehler mehr, das ist Informationsverlust.
 
+**Nachtrag 11:33:** der Backoff-Retry hat das Register um ~11:00 selbst geheilt — alle sechs
+Zeilen tragen wieder Urteile, frisch gegen `438c326`. Das Fenster war ~80 Minuten blind, und
+`b3a81fd0` kam als `ready` zurück, wo vorher `needs-you` stand: der Flip ist legitim (der Baum
+hatte sich bewegt), aber **nirgends verzeichnet** — die Zeile trägt keine Urteils-Historie.
+Der Defekt bleibt exakt der beschriebene; nur die Dringlichkeit sinkt von „sechs Zeilen
+betroffen" auf „das nächste Worker-Husten blendet wieder einen ganzen Batch aus".
+
 **Warum das hierher gehört:** ich habe es nicht gefunden, indem ich Code gelesen habe. Ich
 habe es gefunden, indem ich die Ausgabe eines Instruments gegen den Zustand eines zweiten
 gehalten habe, zehn Minuten später. Das ist exakt die Arbeit, um die es in Teil 2 geht.
@@ -315,12 +322,62 @@ Ein gebauter Agent kostet Route, Prompt-Datei, e2e-Checks — und auf dem K2-Pr�
 
 ## 4 · Was sofort ansteht, unabhängig von der Entscheidung
 
-- **Der Analyse-Sweep überschreibt Urteile mit Absenzen** (§1, Live-Instanz von 09:41).
+- **Der Analyse-Sweep überschreibt Urteile mit Absenzen** (§1, Live-Fenster 09:41–~11:00).
   Der Fix ist klein und die Richtung ist im Repo schon entschieden: ein `unknown` darf ein
   bestehendes Verdict nur ERGÄNZEN (als Fehlschlagsnotiz + `attempts`), nicht ersetzen —
-  `Unknown ≠ zero`. Sechs Zeilen sind gerade betroffen.
+  `Unknown ≠ zero`. → Zeile R1 in §5.
 - **`state.sh` meldet aus einer Lane den Live-Server als „stray"** (§1a). Ein Vergleich
-  gegen das Repo-Toplevel statt gegen `$PWD` genügt.
-- **`briefs/mitarbeiter-2026-08-07.md`** — dieses Dokument gehört ins Repo. Es liegt derzeit
-  nur im Session-Scratchpad, und genau so sind am 06.08. vier Scout-Vollreports verschwunden.
-  Ein Commit vom Owner, kein Land nötig.
+  gegen das Repo-Toplevel statt gegen `$PWD` genügt. → Zeile R2 in §5.
+- Der `register.sh`-§2-Kollaps auf `server.ts` (39× BUSY) bekommt **bewusst keine eigene
+  Zeile**: er ist ein Symptom der fehlenden Dateiwahrheit und wird von Weg (a) —
+  `9e0fdc3b` (`files` als Feld) und `5aafbee4` (Kollisions-Sicht) — aufgelöst.
+
+---
+
+## 5 · Die drei Zeilen, fertig zum Filen (DONE + VERIFY im Text)
+
+**R1 — Sweep-Fix** (Fläche `server.ts`; NICHT neben `fleet/260807025408-c8f3` starten,
+dessen Diff `analysis-prompt.ts` + `server.ts` trägt):
+
+> Der Analyse-Sweep überschreibt ein stehendes Urteil mit einer Absenz. `unknown()` in
+> `tickAnalysisSweep` (`server.ts:2278-2287`) schreibt bei einem Worker-Fehlschlag
+> `t.analysis` für JEDE Zeile des Batches neu — verdict/reason/blockers/collides des letzten
+> Urteils sind weg, nur `attempts` überlebt. Live gemessen 07.08.: um 09:41 verlor ein
+> 6er-Batch vier `needs-you` und zwei `ready` an `unknown (analyst returned no JSON)`;
+> ~80 min später heilte der Backoff-Retry das Register, aber das Fenster war blind und der
+> Verdict-Flip (`b3a81fd0` needs-you→ready) ist nirgends verzeichnet. Nach 3 Fehlversuchen
+> bliebe die Zeile dauerhaft `unknown` bis zum Hand-`reanalyse`. Beleg:
+> `briefs/mitarbeiter-2026-08-07.md` §1. DONE: ein Worker-Fehlschlag lässt das letzte Urteil
+> auf der Zeile stehen (weiter als stale/retry behandelt) und vermerkt den Fehlschlag
+> daneben (`attempts` + Fehlgrund); UI/`register.sh` zeigen „Urteil X, Re-Analyse scheitert
+> seit N Versuchen" statt einer Absenz. VERIFY: neuer Check in `e2e/tasks.ts` — Zeile mit
+> stehendem Verdict, dann `FLEET_ANALYSIS_CMD` auf Fehlschlag gestellt: das Urteil bleibt
+> lesbar, `attempts` steigt; Gate-Suiten grün.
+
+**R2 — state.sh-Fix** (Fläche `state.sh`; shell-only, keine Suite):
+
+> `state.sh` erkennt den Live-Server nur aus dem Haupt-Checkout: Zeile 56-58 vergleicht die
+> Server-cwd mit `$PWD` — aus jeder Lane heißt der echte srv „stray pid … not the fleet",
+> und die deploy-gap-Zeile darunter hat keinen Anker. Gemessen 07.08. aus Lane
+> `denk-mitarbeiter` (pid des srv-Pane-Prozesses als „stray" gemeldet), Beleg:
+> `briefs/mitarbeiter-2026-08-07.md` §1a. CLAUDE.md weist jede Lane an, `./state.sh` zu
+> fahren — der Sensor sagt der Lane das Gegenteil des Zustands. DONE: der Vergleich läuft
+> gegen den kanonischen Haupt-Checkout-Pfad (realpath), aus einem Worktree gefahren druckt
+> `state.sh` dieselbe LIVE-Zeile wie aus dem Haupt-Checkout. VERIFY: `./state.sh` einmal aus
+> dem Haupt-Checkout, einmal aus einem Worktree — beide zeigen LIVE + up-since für dieselbe
+> pid; keine Suite nötig.
+
+**R3 — Mitarbeiter Lauf 2, UI-Linse, von Hand** (read-only, keine Dateien, kein Mutex):
+
+> Mitarbeiter Lauf 2 (UI-Linse), von Hand — VOR jedem Agent-Bau
+> (`briefs/mitarbeiter-2026-08-07.md` §3). Das Maß ist mit dieser Zeile versiegelt:
+> (1) Widersprüche gegen `register.sh` §2 bzw. das `collides` des Analysten, jede mit
+> file:line; (2) Überleben der eigenen Behauptungen nach 7 Tagen — die greps liegen dem
+> Report bei; (3) Owner-Akte auf Vorschläge. Abbruchregel: zwei Läufe in Folge mit
+> 0 Widersprüchen und 0 Owner-Akten → der Mitarbeiter wird nicht gebaut. DONE:
+> `briefs/mitarbeiter-lauf2-<datum>.md` liest ≥10 offene UI-Zeilen quer
+> (`src/client.ts`/`public/index.html`-Fläche), jede Behauptung als file:line oder
+> grep-Zähler, und liefert EINE benannte Lücke oder EINEN strukturellen Vorschlag in
+> propose/promote-Form — oder die begründete Null (die zählt als Strike 1 der
+> Abbruchregel). Read-only, kein Code, kein Commit außer dem Report. VERIFY: die greps des
+> Reports sind am Baum reproduzierbar; das Dokument ist committet.

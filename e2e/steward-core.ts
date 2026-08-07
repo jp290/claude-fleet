@@ -3,16 +3,18 @@
 // 403s, typed+capped sends across an audit rotation, the journal and the P3 digest.
 import { DONE_LOOKING_PROSE, STALLED_PROSE } from "../lane-signals";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type ContinuitySummary } from "../continuity";
-import { BASE, REPO, check, get, paneEnv, plogRead, post, readText, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 import { settleForMerge } from "./lane-helpers";
 
 export type DigJ = {
   now?: number; prior?: { kind?: string } | null; slots?: { id: number }[];
   digest?: { conditions?: Record<string, string>; changed?: string[]; attention?: string[] } | null;
-  digestAt?: number | null; digestAge?: number | null; waitMs?: number; error?: string;
+  digestAt?: number | null; digestAge?: number | null; digestStatus?: string; waitMs?: number; error?: string;
+  gate?: { lock: { pid: number | null; alive: boolean | null; heldMs: number; state: string } | null;
+    reports: { slot: number; label: string | null; phase: string; suite: string; exitCode: number | null; at: number }[] } | null;
 };
 
 export async function run(ctx: Ctx): Promise<StewardCtx> {
@@ -414,20 +416,23 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   const coldRes = await stewGet("/api/steward/digest?wait=0");
   const coldMs = Date.now() - coldT;
   const coldJ = (await coldRes.json()) as DigJ;
-  check("steward digest ?wait=0 on a cold cache returns instantly with fresh prior/slots and a null digest",
+  // digestStatus rides every one of these: a null digest used to mean three different things at
+  // once, and "a run is still going" is the one a reader must not confuse with "nothing to report".
+  check("steward digest ?wait=0 on a cold cache returns instantly with fresh prior/slots and a null digest marked pending",
     coldRes.ok && coldMs < 1500 && coldJ.digest === null && coldJ.digestAt === null && coldJ.digestAge === null
+    && coldJ.digestStatus === "pending" && coldJ.error === undefined
     && coldJ.waitMs === 0 && Array.isArray(coldJ.slots) && coldJ.slots.length > 0
     && coldJ.prior?.kind === "rundgang" && typeof coldJ.now === "number",
-    JSON.stringify({ coldMs, digest: coldJ.digest, digestAt: coldJ.digestAt, slots: coldJ.slots?.length, prior: coldJ.prior?.kind }));
+    JSON.stringify({ coldMs, digest: coldJ.digest, digestAt: coldJ.digestAt, digestStatus: coldJ.digestStatus, slots: coldJ.slots?.length, prior: coldJ.prior?.kind }));
 
   // (c-i) a second GET while the worker is still in flight, ?wait < worker time → joins the same
   //       inflight (no second spawn), times out, returns the still-null snapshot bounded by wait.
   const midT = Date.now();
   const midJ = (await (await stewGet("/api/steward/digest?wait=1")).json()) as DigJ;
   const midMs = Date.now() - midT;
-  check("steward digest ?wait below worker time returns the stale snapshot bounded by wait",
-    midJ.digest === null && midJ.waitMs === 1000 && midMs >= 900 && midMs < 2500,
-    JSON.stringify({ midMs, digest: midJ.digest, waitMs: midJ.waitMs }));
+  check("steward digest ?wait below worker time returns the stale snapshot bounded by wait, still marked pending",
+    midJ.digest === null && midJ.waitMs === 1000 && midMs >= 900 && midMs < 2500 && midJ.digestStatus === "pending",
+    JSON.stringify({ midMs, digest: midJ.digest, waitMs: midJ.waitMs, digestStatus: midJ.digestStatus }));
 
   // (b)+(c-ii) once the in-flight worker completes it writes the cache; a later GET returns the
   //   now-cached fresh digest INSTANTLY. digestAge >> the worker's 3s run proves it is the cached
@@ -441,8 +446,9 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     warmMs < 1500 && warmJ.digest?.conditions?.["1"] === "healthy-running"
     && warmJ.digest?.changed?.length === 1 && warmJ.digest?.changed?.[0] === "slot 1 committed"
     && Array.isArray(warmJ.digest?.attention) && warmJ.digest?.attention.length === 0
-    && typeof warmJ.digestAt === "number" && typeof warmJ.digestAge === "number" && (warmJ.digestAge ?? 0) >= 3000,
-    JSON.stringify({ warmMs, digest: warmJ.digest, digestAge: warmJ.digestAge }));
+    && typeof warmJ.digestAt === "number" && typeof warmJ.digestAge === "number" && (warmJ.digestAge ?? 0) >= 3000
+    && warmJ.digestStatus === "fresh" && warmJ.error === undefined,
+    JSON.stringify({ warmMs, digest: warmJ.digest, digestAge: warmJ.digestAge, digestStatus: warmJ.digestStatus }));
   // prior is recomputed FRESH each call, and since P-1a it is kind-FILTERED: a parked outcome
   // resolving into the journal between the two calls can no longer move the anchor, so the kind
   // is asserted exactly. now/slots must be fresh alongside the cached digest.
@@ -462,6 +468,98 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("steward digest serves the same route-computed bundle-staleness as the sessions route",
     bundleDigest?.stale === true && bundleDigest.appJsMtime === bs3?.shareJsMtime
       && bundleDigest.srcNewestMtime === bs3?.srcNewestMtime, JSON.stringify(bundleDigest));
+
+  // --- the GATE fact on the digest (docs/agent-visibility-2026-08-06.md §4 rank 2). It hung on
+  // /api/steward/sessions alone under a comment declaring the blindness closed, while the pulse's
+  // ritual makes exactly ONE call and it is this one — so the closed hole was open at its only
+  // consumer. Two halves, and both are asserted because they fail differently: the LOCK is a
+  // measurement against the mutex this very wrapper is holding (the identity is known here
+  // independently, from process.ppid — it is not taken from the answer under test), and the
+  // REPORTS are a lane's own hearsay, asserted as "the same object the sessions route serves",
+  // never as a second hand-rolled projection. Route-computed like its neighbours above: read with
+  // ?wait=0, so a dead digest worker cannot take the gate down with it. ---
+  {
+    const lnGate = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    let selfTok = "";
+    for (let i = 0; i < 60 && !/^[0-9a-f]{32}$/.test(selfTok); i++) {
+      // same race as security.ts's selfTokenOf: openSlot mints the credential and queues
+      // saveState BEFORE it awaits the pane spawn, so the file can lag the route by a hair
+      selfTok = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(lnGate.slot)]?.selfToken ?? "";
+      if (!/^[0-9a-f]{32}$/.test(selfTok)) await Bun.sleep(50);
+    }
+    const intent = await fetch(`${BASE}/api/self/verify-intent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": selfTok },
+      body: JSON.stringify({ phase: "running", suite: "./e2e-isolated.sh" }),
+    });
+    check("(gate setup) the throwaway lane reported a verify phase — otherwise the pins below assert an empty list",
+      intent.ok, `${intent.status} ${await intent.text()}`);
+    const gateDigest = ((await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ).gate;
+    const gateSess = ((await (await stewGet("/api/steward/sessions")).json()) as { gate?: DigJ["gate"] }).gate;
+    // `state` is deliberately NOT asserted: it is derived from alive + heldMs against a 20-minute
+    // overdue threshold, and this section runs late enough in a loaded run to cross it — pinning
+    // it would buy nothing and cost a flake.
+    check("the pulse's one call sees the suite mutex — the same holder the filesystem named to this wrapper",
+      gateDigest?.lock?.pid === process.ppid && gateDigest.lock.alive === true
+      && gateDigest.lock.heldMs > 0,
+      JSON.stringify({ lock: gateDigest?.lock, ppid: process.ppid }));
+    check("the pulse's one call sees the live verify intents, with the reporting lane's own slot and suite",
+      gateDigest?.reports.some((r) => r.slot === lnGate.slot && r.phase === "running"
+        && r.suite === "./e2e-isolated.sh" && r.exitCode === null) === true,
+      JSON.stringify(gateDigest?.reports));
+    // one computed answer, not two: the digest must not grow a second projection that can drift
+    // from the one the sessions route (and the owner board) already serves. heldMs is excluded on
+    // purpose — it is elapsed time and MUST differ between two back-to-back reads.
+    check("the digest's gate is the same computed fact the sessions route serves, not a second projection",
+      JSON.stringify(gateDigest?.reports) === JSON.stringify(gateSess?.reports)
+      && gateDigest?.lock?.pid === gateSess?.lock?.pid && gateDigest?.lock?.alive === gateSess?.lock?.alive,
+      JSON.stringify({ digest: gateDigest, sessions: gateSess }));
+
+    // --- the digest's own STATUS: what a null `digest` MEANS. A worker that dies must report as
+    // an ERROR, never as the same null a still-running worker produces — an advisory channel that
+    // goes quiet without a word is indistinguishable from one with nothing to report
+    // (docs/autonomy-map-2026-08-06.md §6.1, the cost paragraph). The stand-in exits non-zero on
+    // $DIR/digestfail. Note WHY the failure has to be forced through a steward MOVE: the TTL is
+    // now wider than the whole suite, so a fresh window would simply re-serve the good verdict and
+    // this pin would assert nothing. Moving the steward home is the one cache-drop the route
+    // already owns (a verdict is bound to the cwd it was computed in), and this section is the
+    // last user of the warm cache, so it can be spent here and re-warmed at the end. ---
+    const failFlag = `${REPO.replace(/\/[^/]+$/, "")}/digestfail`;
+    const beforeFail = (await (await stewGet("/api/steward/digest?wait=0")).json()) as DigJ;
+    check("(fail setup) the cache is serving a fresh verdict, so the failing run below has to displace one",
+      beforeFail.digestStatus === "fresh" && beforeFail.digest !== null,
+      JSON.stringify({ digestStatus: beforeFail.digestStatus }));
+    await Bun.write(failFlag, "1");
+    await post(`/api/slots/${lnStew.slot}/rename`, { label: "not-steward" }); // never two ⚙ at once
+    await post(`/api/slots/${lnGate.slot}/rename`, { label: "⚙ steward" });
+    const failJ = (await (await stewGet("/api/steward/digest?wait=30")).json()) as DigJ;
+    check("a DEAD digest worker reports as an error, never as the same null a running one produces",
+      failJ.digestStatus === "failed" && failJ.digest === null
+      && typeof failJ.error === "string" && failJ.error.includes("exited 7"),
+      JSON.stringify({ digestStatus: failJ.digestStatus, error: failJ.error }));
+    // and the failure must not HOLD the window: at a TTL wider than the pulse interval a poisoned
+    // cache would silence the channel for the rest of it — a worse failure than the one the TTL
+    // was widened to fix. Same steward home as the failing run, so only the error rule can be
+    // what lets this retry through.
+    await Bun.write(failFlag, "0");
+    const retryJ = (await (await stewGet("/api/steward/digest?wait=30")).json()) as DigJ;
+    check("a failed run never counts as fresh — the next GET retries instead of serving the error for the whole window",
+      retryJ.digestStatus === "fresh" && retryJ.digest?.conditions?.["1"] === "healthy-running"
+      && retryJ.error === undefined, JSON.stringify({ digestStatus: retryJ.digestStatus, error: retryJ.error }));
+
+    // put the section back exactly as it was found: the steward home returns to lnStew (which
+    // drops the cache again, by the same cwd rule), the throwaway lane dies — taking its verify
+    // report with it — and one last run re-warms the cache the sections below read with ?wait=0.
+    await post(`/api/slots/${lnGate.slot}/rename`, { label: "not-steward" });
+    await post(`/api/slots/${lnStew.slot}/rename`, { label: "⚙ steward" });
+    await post(`/api/slots/${lnGate.slot}/kill`, {});
+    const rewarmJ = (await (await stewGet("/api/steward/digest?wait=30")).json()) as DigJ;
+    check("(teardown) the steward home is back on its own lane with a fresh verdict, and the dead lane's report is gone",
+      rewarmJ.digestStatus === "fresh" && rewarmJ.digest !== null
+      && !(rewarmJ.gate?.reports ?? []).some((r) => r.slot === lnGate.slot),
+      JSON.stringify({ digestStatus: rewarmJ.digestStatus, reports: rewarmJ.gate?.reports }));
+  }
 
   // --- the CONTINUITY fact on the digest (continuity.ts holds the derivation + its unit tests):
   // per-slot time-to-next-action over a bounded window and which surface resolved each wait.

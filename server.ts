@@ -8185,7 +8185,31 @@ function clampDigest(v: unknown): StewardDigest | null {
 // caller-chosen ?wait (default ~30s, clamped ≤60s), and returns fresh-if-ready else the last
 // snapshot (or null on cold cache) plus digestAt/digestAge. INVARIANT: `curl -m` must be ≥ ?wait.
 interface DigestResult { digest: StewardDigest | null; model: string; error?: string; computedAt: number; slotCwd: string }
-const DIGEST_TTL_MS = 2 * 60 * 1000;      // "fresh enough" window — a repeat GET inside it skips the worker
+// What the `digest` field MEANS on this call. It could not say before, and that was the whole
+// cost: `digest:null` covered "a run is still going", "the run died" and "the worker had nothing
+// to say" with one indistinguishable value, so an advisory channel going quiet read exactly like
+// one with nothing to report (docs/autonomy-map-2026-08-06.md §6.1, the cost paragraph). Closed
+// over five states, computed in ONE place below, and `failed` always travels with `error`.
+type DigestStatus =
+  | "fresh"    // a verdict, computed inside the TTL window
+  | "stale"    // a verdict, but older than the window — served while a refresh is in flight/timed out
+  | "failed"   // the newest run produced no verdict; `error` says why (digest is null)
+  | "pending"  // nothing to serve yet and a run for THIS steward home is in flight
+  | "cold";    // nothing to serve and no run for this home (incl. a previous home's run draining)
+// The Rundgang's own cadence (`.claude/commands/rundgang.md`: "currently a perpetual hourly auto").
+// Not a knob — the TTL below is derived from it and is only meaningful relative to it.
+const DIGEST_PULSE_MS = 60 * 60 * 1000;
+// "fresh enough" window — a repeat GET inside it skips the worker. It was 2 minutes, i.e. far
+// BELOW the pulse interval, and that made the slow worker structurally invisible
+// (docs/autonomy-map-2026-08-06.md §6.1): every hourly pulse found the window cold, spawned a
+// worker, and waited ?wait (30s) on a run whose own budget is SUMMARY_TIMEOUT_MS (180s). A worker
+// needing 30–180s was therefore delivered to nobody, ever — the caller had left, and its result
+// expired long before the next pulse could read it. Above the pulse interval the PREVIOUS run
+// answers the next pulse instead of being thrown away.
+// KNOWN CONSEQUENCE, inherent to "fresh ⇒ don't run" and deliberately not hidden: a worker now
+// runs on every OTHER pulse, so the served verdict is up to one pulse old. `digestAge` gives the
+// number and `digestStatus` gives the word, on every response.
+const DIGEST_TTL_MS = DIGEST_PULSE_MS + 30 * 60 * 1000; // half a pulse of slack for a late-firing auto
 const DIGEST_WAIT_DEFAULT_MS = 30_000;    // fresh-preferring: today's pulse (curl -m 45) needs no ?wait
 const DIGEST_WAIT_MAX_MS = 60_000;        // no caller can request an unbounded block
 function clampDigestWait(raw: string | null): number {
@@ -8367,7 +8391,12 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // a cached digest is bound to one slot (cwd) — drop it if the steward slot moved
     if (digestCache && digestCache.slotCwd !== home.cwd) digestCache = null;
 
-    const fresh = digestCache && now - digestCache.computedAt < DIGEST_TTL_MS ? digestCache : null;
+    // A FAILED run never holds the window. It is still SERVED (as `failed`, with its error — that
+    // is the point of the status), but it can never count as fresh, so the next GET retries. At a
+    // 2-minute TTL a poisoned cache cost one pulse; at a window wider than the pulse interval it
+    // would cost the entire channel for as long as the window lasts, which would be a worse
+    // failure than the one this TTL was widened to fix.
+    const fresh = digestCache && !digestCache.error && now - digestCache.computedAt < DIGEST_TTL_MS ? digestCache : null;
     let snapshot: DigestResult | null = fresh;
     if (!fresh) {
       if (!digestInflight) {
@@ -8388,6 +8417,12 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // workers), answer cold, and the next GET starts fresh once it drains
     }
     const digestAt = snapshot ? snapshot.computedAt : null;
+    // the one place the five states are decided. Precedence matters: an errored snapshot is
+    // `failed` regardless of its age, because "the worker died 20 seconds ago" is not a fresher
+    // fact than "the worker died an hour ago" — it is the same fact, and the age is beside it.
+    const digestStatus: DigestStatus = snapshot
+      ? snapshot.error ? "failed" : now - snapshot.computedAt < DIGEST_TTL_MS ? "fresh" : "stale"
+      : digestInflightCwd === home.cwd ? "pending" : "cold";
     return json({
       now, prior, slots: slotsView,
       // deterministic per-lane delta vs the prior record's server-stamped lane map —
@@ -8416,9 +8451,19 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       // outcomes (incl. the powerless ② shadow verdict), delta'd against the SAME prior record.
       // Route-computed for the same reason as its neighbours above — a fact, not a worker's claim.
       ledgers: await ledgersView(prior),
+      // the machine-busy fact + live verify intents. It hung on /api/steward/sessions alone, with
+      // a comment declaring the blindness closed — but the pulse's ritual makes exactly ONE call,
+      // and it is this one (`.claude/commands/rundgang.md`: "One call gathers everything: GET
+      // /api/steward/digest"), so the closed hole was open at its only consumer
+      // (docs/agent-visibility-2026-08-06.md §4 rank 2). Same gateView() as the sessions route and
+      // the owner board: one computed answer, never a second hand-rolled one. Route-computed like
+      // its neighbours above — the two judgments it feeds (is this pane finished or waiting on a
+      // suite; is starting anything next safe) must not depend on the digest worker being alive.
+      gate: gateView(),
       digest: snapshot?.digest ?? null,
       digestAt,
       digestAge: digestAt !== null ? now - digestAt : null,
+      digestStatus,
       waitMs,
       model: snapshot?.model ?? SUMMARY_MODEL,
       ...(snapshot?.error ? { error: snapshot.error } : {}),

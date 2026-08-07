@@ -70,7 +70,7 @@ mkdir -p "$REPO"
 # were the stragglers. On macOS this changes nothing, which is the point: it makes an inherited
 # accident into a stated fact.
 ( cd "$REPO" && git init -q -b main && git config user.email t@t && git config user.name t \
-  && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\n' > .gitignore \
+  && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\nOWNER.md\n' > .gitignore \
   && awk 'BEGIN{for(i=0;i<24;i++)print "ctxmod-"i}' > ctx-mod.txt \
   && awk 'BEGIN{for(i=0;i<4000;i++)print "ctxbig-"i}' > ctx-big.txt \
   && printf 'link target original\n' > ctx-linked.txt \
@@ -265,6 +265,11 @@ chmod +x "$DIR/fakeverify"
 cat > "$DIR/fakecommit" <<'EOF'
 #!/bin/sh
 cat >/dev/null
+# $DIR/commitfail (default 0) makes the message worker DIE instead of answering, so the SAVE's
+# two halves are separable: the commit must still succeed (a save may never fail on the model)
+# while the answer says the agent message was not the one the button promised. Same knob shape
+# as fakedigest's digestfail.
+[ "$(cat "$(dirname "$0")/commitfail" 2>/dev/null || echo 0)" != 0 ] && exit 7
 printf '{"result": "{\\"message\\": \\"feat: stand-in commit message\\"}"}'
 EOF
 chmod +x "$DIR/fakecommit"

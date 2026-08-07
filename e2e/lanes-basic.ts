@@ -139,6 +139,89 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("the busy-blocked land started no merge job", busyAfter.running === false, JSON.stringify(busyAfter));
   }
 
+  // --- the 💾 commit route's own idle gate. The mid-run warning used to live ONLY in the client
+  // (confirmMidRun), so every other way in — a self-token auto, the raw owner API, a second tab —
+  // snapshotted a half-finished tree with no warning at all. The route now runs the same
+  // canDeliver(idleMs: MERGE_IDLE_MS) the land path runs, and `confirm` waives it. Deleting the
+  // gate does NOT pass this block: a clean lane without the gate answers 200 "nothing to commit",
+  // which is exactly what the confirm case below asserts, so the two checks pin both directions. ---
+  {
+    const isBusy = async (): Promise<boolean> => {
+      const sx = (await (await get("/api/sessions")).json()) as { now: number; slots: { id: number; lastOutput: number }[] };
+      const sl = sx.slots.find((x) => x.id === lnSlot);
+      return !!sl && sx.now - sl.lastOutput < MERGE_IDLE_MS - 1000; // ≥1s margin before the gate
+    };
+    let busyConfirmed = false;
+    let blocked: { committed?: boolean; reason?: string; error?: string } = {};
+    let status = 0;
+    for (let attempt = 0; attempt < 15 && !busyConfirmed; attempt++) {
+      await tmuxOut("send-keys", "-t", `s${lnSlot}`, `echo commitgate-busy-probe-${attempt}`, "Enter");
+      for (let i = 0; i < 12; i++) { // ≤600ms for the probe's output to register (100ms poll)
+        if (await isBusy()) { busyConfirmed = true; break; }
+        await Bun.sleep(50);
+      }
+      if (busyConfirmed) {
+        const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick" });
+        status = r.status;
+        blocked = (await r.json()) as typeof blocked;
+      }
+    }
+    check("commitgate setup: the lane pane reads BUSY before the commit (non-tautology guard)", busyConfirmed);
+    check("commit is BLOCKED server-side while the pane is actively working (not client-only)",
+      status === 409 && (blocked.reason ?? "").includes("actively working"), `${status} ${JSON.stringify(blocked)}`);
+    // and the confirm the client sends once its dialog was acknowledged waives the gate — else a
+    // confirmed mid-run save (the whole point of "commit anyway") would bounce off the new gate.
+    let confirmedStatus = 0;
+    let confirmed: { committed?: boolean; reason?: string } = {};
+    for (let attempt = 0; attempt < 15; attempt++) {
+      await tmuxOut("send-keys", "-t", `s${lnSlot}`, `echo commitgate-confirm-probe-${attempt}`, "Enter");
+      let busy = false;
+      for (let i = 0; i < 12; i++) { if (await isBusy()) { busy = true; break; } await Bun.sleep(50); }
+      if (!busy) continue;
+      const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick", confirm: true });
+      confirmedStatus = r.status;
+      confirmed = (await r.json()) as typeof confirmed;
+      break;
+    }
+    check("a confirmed commit waives the idle gate (reaches the tree, reports on it instead)",
+      confirmedStatus === 200 && confirmed.committed === false && !(confirmed.reason ?? "").includes("actively working"),
+      `${confirmedStatus} ${JSON.stringify(confirmed)}`);
+  }
+
+  // --- ✎ message: the agent half of the SAVE may fail, and the fallback to a wip message is
+  // RIGHT (a save must never fail on the model) — what was wrong is that it was silent, so the
+  // caller could not tell an agent-written subject from a wip one. Kill the message worker and
+  // assert both halves: the commit still happens, AND the answer says the message is a fallback. ---
+  // Its own throwaway lane, not lnSlot's: lnSlot travels on into e2e/merge.ts, and two extra
+  // commits on a shared fixture is the kind of coupling that makes a later module fail for a
+  // reason no one can find. Slot 5 is free again here (its e2e-lane landed above).
+  {
+    const modeDir = REPO.replace(/\/[^/]+$/, "");
+    const fbBranch = "e2e-msg-fallback";
+    const fbDir = `${REPO}.worktrees/${fbBranch}`;
+    const fbOpen = await post("/api/slots/5/open-worktree", { repo: REPO, branch: fbBranch });
+    check("throwaway lane for the ✎ message fallback opens", fbOpen.ok, String(fbOpen.status));
+    await Bun.write(`${fbDir}/code.txt`, "root\nfallback-probe\n");
+    await Bun.write(`${modeDir}/commitfail`, "1");
+    const r = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+    const j = (await r.json()) as { committed?: boolean; subject?: string; messageFallback?: boolean };
+    await Bun.write(`${modeDir}/commitfail`, "0");
+    check("a failed ✎ message still commits (the save never fails on the model)",
+      r.ok && j.committed === true && (j.subject ?? "").startsWith("wip:"), `${r.status} ${JSON.stringify(j)}`);
+    check("…and it SAYS so: the answer carries messageFallback instead of passing wip off as the agent's work",
+      j.messageFallback === true, JSON.stringify(j));
+    // the counter-case: a working worker must NOT set the flag, or the flag degrades to noise
+    await Bun.write(`${fbDir}/code.txt`, "root\nfallback-probe\nagent-ok-probe\n");
+    const r2 = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+    const j2 = (await r2.json()) as { committed?: boolean; subject?: string; messageFallback?: boolean };
+    check("a working ✎ message sets no fallback flag",
+      r2.ok && j2.committed === true && j2.subject === "feat: stand-in commit message" && j2.messageFallback === undefined,
+      `${r2.status} ${JSON.stringify(j2)}`);
+    await post("/api/slots/5/kill", {});
+    spawnSync("git", ["worktree", "remove", "--force", fbDir], { cwd: REPO });
+    spawnSync("git", ["-C", REPO, "branch", "-qD", fbBranch]);
+  }
+
   // --- integration-branch config (/api/repo-base): overrides the branch derived from the
   // primary's HEAD, so the primary can be parked off the integration branch. Set to a decoy
   // real branch, confirm the worktrees map reports it, then clear back to derived. ---

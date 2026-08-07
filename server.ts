@@ -1727,13 +1727,17 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
   // and would leave the lane permanently "dirty", blocking `land`. Gitignored copies stay
   // invisible to `git status`, so the lane is landable the moment its real work is committed.
-  for (const f of [".env", "CLAUDE.md", ".claude/settings.local.json"]) {
+  // OWNER.md rides along for the same reason CLAUDE.md does: it is the owner model the steward
+  // ritual names as a load duty, it is gitignored (so the copy cannot dirty the lane), and until
+  // now neither a lane nor the steward worktree ever saw it. Same snapshot caveat as CLAUDE.md —
+  // a long-lived lane's copy ages against the source (docs/ungoverned-artifacts.md).
+  for (const f of [".env", "CLAUDE.md", "OWNER.md", ".claude/settings.local.json"]) {
     if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`)) continue;
     if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
     if (f.includes("/")) mkdirSync(dirname(`${path}/${f}`), { recursive: true });
     // 0600 at creation, NOT "preserve the source's mode": .env is *the* documented place for a
     // secret, and the source is itself 0644 today — copying its mode faithfully would fan that
-    // bug out into every lane. The same floor covers all three files: they are owner-only
+    // bug out into every lane. The same floor covers all four files: they are owner-only
     // scaffolding, read by the lane's own session under the same uid, so 0600 costs nothing.
     // `mode` on create (never a chmod on a world-readable file) means the copy has no 0644
     // window; the chmod after only pins the exact bits, since `mode` is masked by the umask.
@@ -3502,6 +3506,44 @@ function sniffSummarizer(path: string): boolean {
   }
 }
 
+// projDir() names a directory by the cwd with every non-alphanumeric mapped to "-", so two
+// DIFFERENT cwds can slug to the SAME directory (…/claude-fleet and …/claude/fleet both become
+// -Users-owner-claude-fleet). transcriptFile's mtime fallback trusted that directory name
+// alone, so it could hand a slot a conversation from a foreign checkout — rendered as this
+// slot's own in the conversation view and fed to the ✨ summary as evidence. Claude Code writes
+// the real cwd into its transcript entries, so ask the FILE instead of trusting its folder.
+// Measured here 2026-08-07 over 529 files in one project dir: 125 carry a cwd and every one is a
+// real conversation (≥1183 bytes); the 404 without one are aborted stubs, all ≤685 bytes. So
+// "no cwd in the head" is never a transcript worth returning — and refusing it also stops the
+// fallback from handing back a freshly created empty stub just for having the newest mtime.
+const transcriptCwds = new Map<string, string>(); // POSITIVE only: a file still being written may
+// not have reached its first cwd-bearing entry yet, and a cached null would never be retried.
+function transcriptCwd(path: string): string | null {
+  const hit = transcriptCwds.get(path);
+  if (hit) return hit;
+  try {
+    const fd = openSync(path, "r");
+    const buf = Buffer.alloc(16_384);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    closeSync(fd);
+    for (const line of buf.toString("utf8", 0, n).split("\n")) {
+      if (!line.startsWith("{")) continue;
+      let j: unknown;
+      try { j = JSON.parse(line); } catch { continue; } // the last line is usually cut by the read
+      const c = (j as { cwd?: unknown }).cwd;
+      if (typeof c === "string" && c) { transcriptCwds.set(path, c); return c; }
+    }
+    return null;
+  } catch { return null; }
+}
+// same path, two spellings: Fleet may hold a symlinked path where the harness recorded the
+// resolved one (createWorktree stores the realpath'd toplevel). Compare literally first — the
+// realpath calls only run when that fails, and a failure there means "cannot prove it is ours".
+function sameCwd(a: string, b: string): boolean {
+  if (a === b) return true;
+  try { return realpathSync(a) === realpathSync(b); } catch { return false; }
+}
+
 function transcriptFile(s: Slot): string | null {
   // a harness that does not write CLAUDE-CODE transcripts has none HERE, whatever it writes
   // elsewhere. This guard must come before the fallback below, not after: that fallback answers
@@ -3516,9 +3558,10 @@ function transcriptFile(s: Slot): string | null {
     if (existsSync(pinned)) return pinned;
   }
   // adopted or pre-session-pinning slot: newest transcript in this cwd's project dir.
-  // Excluded: transcripts pinned to OTHER slots (several slots can share a cwd) and the
-  // summarizer's throwaway transcripts (see above). Pinned ids make this exact for every
-  // pane created from now on.
+  // Excluded: transcripts pinned to OTHER slots (several slots can share a cwd), the
+  // summarizer's throwaway transcripts (see above), and — since the slug is lossy — any file
+  // that does not name THIS cwd as its own (transcriptCwd, above). Pinned ids make this exact
+  // for every pane created from now on.
   const pinnedElsewhere = new Set<string>();
   for (const o of slots) if (o !== s && o.sessionId) pinnedElsewhere.add(`${o.sessionId}.jsonl`);
   try {
@@ -3526,7 +3569,14 @@ function transcriptFile(s: Slot): string | null {
       .filter((f) => f.endsWith(".jsonl") && !pinnedElsewhere.has(f) && !summarizerSids.has(f.slice(0, -6)))
       .map((f) => ({ f, m: statSync(`${dir}/${f}`).mtimeMs }))
       .sort((a, b) => b.m - a.m);
-    for (const { f } of files.slice(0, 8)) if (!sniffSummarizer(`${dir}/${f}`)) return `${dir}/${f}`;
+    for (const { f } of files.slice(0, 8)) {
+      const p = `${dir}/${f}`;
+      const own = transcriptCwd(p);
+      // no cwd to prove it, or a foreign one → skip. Absence is the honest answer here; handing
+      // back someone else's conversation is a same-user info disclosure, not a best effort.
+      if (!own || !sameCwd(own, s.cwd!)) continue;
+      if (!sniffSummarizer(p)) return p;
+    }
     return null;
   } catch {
     return null;
@@ -4562,11 +4612,16 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
     return json({ committed: false, reason: lane ? "nothing to commit — working tree clean" : "nothing tracked to commit — only untracked files, which a main-session commit leaves alone" });
   const wip = `wip: saved from Fleet dashboard ${new Date().toISOString()}`;
   let message = wip;
+  // the fallback itself is right — a SAVE must never fail on the model. What was wrong is that
+  // it was silent: the button promised an agent message and the caller got `subject: "wip: …"`
+  // with no way to tell "the model wrote this" from "the model half of the run died". So the
+  // failure travels as a flag. Only meaningful for mode "agent" — a quick commit never asked.
+  let messageFallback = false;
   if (mode === "agent") {
     try {
       const m = await agentCommitMessage(cwd);
-      if (m) message = m;
-    } catch { /* saving must NEVER fail on the model — keep the wip message */ }
+      if (m) message = m; else messageFallback = true; // empty = unparseable answer (see above)
+    } catch { messageFallback = true; /* saving must NEVER fail on the model — keep the wip message */ }
   }
   const ci = await gitRetry(cwd, "commit", "-m", message);
   if (ci.code !== 0) {
@@ -4576,7 +4631,8 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
     return json({ error: `git commit failed: ${(ci.err || ci.out).slice(0, 200)}`, code: 500 }, 500);
   }
   const hd = await git(cwd, "rev-parse", "--short", "HEAD");
-  return json({ committed: true, hash: hd.code === 0 ? hd.out : "", subject: message });
+  return json({ committed: true, hash: hd.code === 0 ? hd.out : "", subject: message,
+    ...(messageFallback ? { messageFallback: true } : {}) });
 }
 
 // --- ✨ prompt enhancer: a throwaway background claude session (same machinery as the
@@ -11000,6 +11056,17 @@ Bun.serve<WSData>({
       // it stays refused only if the cwd isn't a git repo, which commitLane's status check catches
       const body = await readJson(req);
       const mode = body?.mode === "agent" ? "agent" : "quick";
+      // the mid-run guard belongs HERE, not only in the client's confirm dialog: every other way
+      // into this route (a self-token auto, the raw owner API, a second tab) used to bypass the
+      // warning entirely and snapshot a half-finished tree. Same shape as the land path above —
+      // owner-initiated, so master stop / quiet hours / agent-liveness are deliberately waived
+      // and only the idle gate applies; `confirm` (the client sets it once the dialog or the
+      // main-session staging preview has been acknowledged) waives even that. The client's own
+      // threshold is LOOSER than MERGE_IDLE_MS, so anything the server blocks the dialog already
+      // covered — this closes the hole without adding a prompt the owner didn't have before.
+      const ciGate = await canDeliver(s, { now: Date.now(), killSwitch: false, alive: false,
+        quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
+      if (!ciGate.ok) return json({ committed: false, reason: "the session is actively working right now — a commit would snapshot a half-finished tree; let it settle, then commit" }, 409);
       if (commitInflight.has(s.id)) return json({ error: "a commit is already running for this slot" }, 409);
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) return json({ error: "a merge/land is in progress on this lane — try again once it finishes" }, 409);
       commitInflight.add(s.id);

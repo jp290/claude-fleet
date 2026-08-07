@@ -1,12 +1,45 @@
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, and the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase).
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { REPO, ROOT, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists } from "./lane-helpers";
 
 export async function run(lc: LaneCtx): Promise<void> {
+  // --- OWNER.md rides into a lane like CLAUDE.md does. It is the owner model the steward ritual
+  // names as a load duty, and until this landed neither a lane nor the steward worktree ever saw
+  // it. Two halves, and the second is the one that could break the fleet: its ABSENCE in the
+  // primary must not break a spawn (the copy loop skips a missing file), so the no-file case is
+  // asserted FIRST, on a tree where the file genuinely does not exist yet. ---
+  {
+    const ownerSrc = `${REPO}/OWNER.md`;
+    rmSync(ownerSrc, { force: true }); // start from provable absence
+    const noFile = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; error?: string };
+    check("a lane still spawns when the primary has no OWNER.md", typeof noFile.slot === "number" && exists(noFile.cwd),
+      JSON.stringify(noFile));
+    check("…and no OWNER.md is invented in the lane", !exists(`${noFile.cwd}/OWNER.md`));
+    await post(`/api/slots/${noFile.slot}/kill`, {});
+    spawnSync("git", ["worktree", "remove", "--force", noFile.cwd], { cwd: REPO });
+
+    writeFileSync(ownerSrc, "# the owner model\nnever push from this machine\n", { mode: 0o644 });
+    const withFile = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const copied = `${withFile.cwd}/OWNER.md`;
+    check("OWNER.md arrives in a freshly spawned lane",
+      exists(copied) && readFileSync(copied, "utf8").includes("never push from this machine"), copied);
+    // same 0600 floor as .env/CLAUDE.md: the source is 0644 here on purpose, so a mode-preserving
+    // copy would fail this — the floor is asserted, not the source's accident.
+    const mode = exists(copied) ? statSync(copied).mode & 0o777 : -1;
+    check("the copied OWNER.md is owner-only (0600)", mode === 0o600, mode === -1 ? "missing" : mode.toString(8));
+    // and it must not dirty the lane — a copied UNIGNORED file shows as untracked and blocks land
+    const lDiff = (await (await get(`/api/slots/${withFile.slot}/diff`)).json()) as { status: string[] };
+    check("the OWNER.md copy leaves the lane clean (gitignored, so land stays possible)",
+      lDiff.status.length === 0, JSON.stringify(lDiff.status));
+    await post(`/api/slots/${withFile.slot}/kill`, {});
+    spawnSync("git", ["worktree", "remove", "--force", withFile.cwd], { cwd: REPO });
+    rmSync(ownerSrc, { force: true });
+  }
+
   // --- issue 2: risk/merged checks measure against the integration branch, not the primary's
   // HEAD. A lane merged into a CONFIGURED integration branch (distinct from main) must read as
   // safe-to-remove — otherwise landLane's own removeWorktreeSafe would wedge after a

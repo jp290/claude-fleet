@@ -235,10 +235,14 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     const VISIBLE_MARKER = "visible-assistant-answer-marker";
     // tool_result: head marker within the first 400 chars (kept), tail marker past 400 (trimmed off)
     const toolContent = `TOOLHEAD_${"x".repeat(500)}_TOOLTAIL_MARKER_MUST_BE_TRIMMED_${"z".repeat(200)}`;
+    // `cwd` on each entry: the lane has no pinned session id, so the route reaches this file
+    // through transcriptFile's fallback, which now requires the file to name THIS cwd as its own
+    // (the project-dir slug is lossy — see e2e/history.ts's slug-collision block). A real claude
+    // transcript records it; a fixture without it is a file the server is right to refuse.
     const jsonl =
-      JSON.stringify({ type: "assistant", timestamp: "2026-01-01T00:00:00Z",
+      JSON.stringify({ type: "assistant", cwd: lnStew.cwd, timestamp: "2026-01-01T00:00:00Z",
         message: { content: [{ type: "thinking", thinking: THINK_MARKER }, { type: "text", text: VISIBLE_MARKER }] } }) + "\n" +
-      JSON.stringify({ type: "user", timestamp: "2026-01-01T00:00:01Z",
+      JSON.stringify({ type: "user", cwd: lnStew.cwd, timestamp: "2026-01-01T00:00:01Z",
         message: { content: [{ type: "tool_result", content: toolContent }] } }) + "\n";
     await Bun.write(`${projDir}/planted-redaction.jsonl`, jsonl);
     try {

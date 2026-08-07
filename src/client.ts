@@ -997,12 +997,19 @@ async function doCommit(slot: number, mode: "quick" | "agent", activeConfirmed =
   try {
     // the session is still producing output → confirm before snapshotting a half-finished tree.
     // main sessions already warn inside their staging preview, so they pass activeConfirmed.
-    if (!activeConfirmed && sessionActive(slot) && !(await confirmMidRun(slot))) return;
-    const r = await post(`/api/slots/${slot}/commit`, { mode });
+    const wasActive = sessionActive(slot);
+    if (!activeConfirmed && wasActive && !(await confirmMidRun(slot))) return;
+    // the server runs the same idle gate now (it is no longer client-only theater), so tell it
+    // the warning was already acknowledged — otherwise a confirmed mid-run commit bounces off it.
+    const r = await post(`/api/slots/${slot}/commit`, { mode, confirm: activeConfirmed || wasActive });
     const j = (await r.json().catch(() => ({}))) as
-      { committed?: boolean; hash?: string; subject?: string; reason?: string; error?: string };
-    if (!r.ok) alert(`Commit failed: ${j.error ?? r.status}`);
-    else if (j.committed) alert(`committed ${j.hash} — ${j.subject}`);
+      { committed?: boolean; hash?: string; subject?: string; reason?: string; error?: string;
+        messageFallback?: boolean };
+    if (!r.ok && !j.reason) alert(`Commit failed: ${j.error ?? r.status}`);
+    // the save succeeded but the model half of it did not — say so instead of passing off a
+    // wip message as the agent's work (the button promised one).
+    else if (j.committed) alert(`committed ${j.hash} — ${j.subject}`
+      + (j.messageFallback ? "\n\nagent message unavailable — saved as wip" : ""));
     else alert(j.reason ?? "nothing to commit");
   } catch {
     alert("Commit failed — network error");

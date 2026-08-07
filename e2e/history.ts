@@ -78,8 +78,12 @@ export async function run(): Promise<void> {
     const opened = free !== undefined && (await post(`/api/slots/${free}/open`, { cwd: markCwd })).ok;
     check("background-mark fixture: a free slot opens on a throwaway cwd", opened, `slot=${free}`);
     if (opened) {
-      const line = (text: string) =>
-        `${JSON.stringify({ type: "assistant", timestamp: new Date(0).toISOString(), message: { content: [{ type: "text", text }] } })}\n`;
+      // `cwd` is not decoration: a real claude transcript records the cwd it ran in, and
+      // transcriptFile's fallback now REQUIRES it to prove a file belongs to this slot (the
+      // project-dir slug is lossy — see the slug-collision block below). A fixture without it
+      // would be a file the server is right to refuse, and would test nothing.
+      const line = (text: string, cwd: string = markCwd) =>
+        `${JSON.stringify({ type: "assistant", cwd, timestamp: new Date(0).toISOString(), message: { content: [{ type: "text", text }] } })}\n`;
       for (const [name, contract] of Object.entries(WORKER_CONTRACTS)) {
         for (const f of readdirSync(markProj)) rmSync(`${markProj}/${f}`);
         // the slot's own conversation first, the worker's strictly newer — so the fallback prefers
@@ -100,6 +104,40 @@ export async function run(): Promise<void> {
       const ctl = (await (await get(`/api/slots/${free}/transcript`)).json()) as { source: string | null };
       check("control: an UNMARKED newer transcript is served (the rows above measure the mark)",
         ctl.source === "unmarked.jsonl", `source=${ctl.source}`);
+
+      // --- the SLUG COLLISION (same-user info disclosure, open since 2026-07-18). projDir maps
+      // every non-alphanumeric to "-", so `<tmp>/fleet-e2e-marks-N` and `<tmp>/fleet-e2e/marks-N`
+      // are TWO cwds that share ONE project dir. The fallback used to trust that dir name alone,
+      // so a slot without a pinned session id could be served a conversation from a different
+      // checkout. Both spellings are constructed from the same pid here, so the collision is
+      // demonstrated rather than asserted — if projDir ever stopped being lossy, `sameDir` below
+      // fails first and says so, instead of this block quietly testing nothing. ---
+      const foreignCwd = `${tmpdir()}/fleet-e2e/marks-${process.pid}`;
+      const slug = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-");
+      check("slug-collision fixture: two different cwds really do share one project dir",
+        slug(foreignCwd) === slug(markCwd) && foreignCwd !== markCwd, `${slug(foreignCwd)} vs ${slug(markCwd)}`);
+      for (const f of readdirSync(markProj)) rmSync(`${markProj}/${f}`);
+      writeFileSync(`${markProj}/own.jsonl`, line("this slot's own conversation"));
+      await Bun.sleep(15);
+      // strictly newer AND unmarked: on mtime alone this is the one the fallback would pick
+      writeFileSync(`${markProj}/foreign.jsonl`, line("the OTHER checkout's conversation", foreignCwd));
+      const coll = (await (await get(`/api/slots/${free}/transcript`)).json()) as { source: string | null };
+      check("a newer transcript from a slug-colliding cwd is NOT served as this slot's conversation",
+        coll.source === "own.jsonl", `source=${coll.source}`);
+      // and with nothing of its own left, the answer is ABSENCE — never the stranger's file
+      rmSync(`${markProj}/own.jsonl`);
+      const collOnly = (await (await get(`/api/slots/${free}/transcript`)).json()) as { source: string | null; total: number };
+      check("with only a foreign transcript present the slot has NO transcript (absence, not a stranger's)",
+        collOnly.source === null, `source=${collOnly.source} total=${collOnly.total}`);
+      // a cwd-LESS file is the same refusal for the same reason: nothing proves it is ours. On this
+      // machine every such file was an aborted stub ≤685 bytes (529 files measured 2026-08-07),
+      // so refusing it also stops a fresh empty stub from winning the fallback on mtime.
+      rmSync(`${markProj}/foreign.jsonl`);
+      writeFileSync(`${markProj}/nocwd.jsonl`,
+        `${JSON.stringify({ type: "assistant", timestamp: new Date(0).toISOString(), message: { content: [{ type: "text", text: "no cwd recorded" }] } })}\n`);
+      const noCwd = (await (await get(`/api/slots/${free}/transcript`)).json()) as { source: string | null };
+      check("a transcript that names no cwd is not served either (unprovable ≠ ours)",
+        noCwd.source === null, `source=${noCwd.source}`);
       await post(`/api/slots/${free}/kill`, {});
     }
     rmSync(markProj, { recursive: true, force: true }); // it lives outside the repo — do not leave it

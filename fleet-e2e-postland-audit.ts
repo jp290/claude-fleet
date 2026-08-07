@@ -83,6 +83,32 @@ const waitRunMode = async (mode: string, n: number, timeoutMs = 30_000): Promise
     await Bun.sleep(100);
   }
 };
+// THE RUN IN FLIGHT, as the board's poll sees it (server: postLandAuditLiveView). Typed loosely on
+// purpose, exactly like AuditRow above: a server WITHOUT this projection must make every assertion
+// below fail on its own rather than throw once and hide the rest.
+type LiveInfo = {
+  running: { phase: string; repo: string | null; main: string | null; mainSha: string | null;
+    startedAt: number | null; covers: string[] } | null;
+  waiting: { repo: string; main: string; branch: string; mainAfter: string; at: number }[];
+  stats: { n: number; p50: number; p90: number } | null;
+} | null;
+const live = async (): Promise<LiveInfo> => {
+  const r = await get("/api/sessions");
+  try { return ((await r.json()) as { postLandAuditLive?: LiveInfo }).postLandAuditLive ?? null; }
+  catch { return null; }
+};
+// poll the poll. Nothing in the fleet waits for tier 2, so every assertion ABOUT a moment of it has
+// to catch that moment here. Returns whatever it last saw on timeout, so the caller's own check
+// reports which property was missing rather than a bare "timed out".
+const waitLive = async (want: (l: LiveInfo) => boolean, timeoutMs = 30_000): Promise<LiveInfo> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const l = await live();
+    if (want(l) || Date.now() >= deadline) return l;
+    await Bun.sleep(100);
+  }
+};
+
 // the PENDING queue's durable mirror. Absent file = nothing pending, which is the assertion in
 // several checks below, so "missing" must be a distinguishable value rather than an exception.
 type QueueEntry = { main: string; covers: { branch: string; mainAfter: string; at: number }[] };
@@ -270,6 +296,12 @@ check("an audit that TIMES OUT records unknown, never green",
   h.result === "unknown" && (h.reason ?? "").includes("timed out"), JSON.stringify(h).slice(0, 300));
 check("the timeout is BOUNDED — a child that ignores SIGTERM does not hold the row (or the queue)",
   Date.now() - hStart < 20_000 && h.ms < 20_000, `waited=${Date.now() - hStart}ms row.ms=${h.ms}`);
+// ...and neither does the IN-FLIGHT view. The run is cleared in the same turn its row is written,
+// so a row that is readable proves the field was already released — a wedged child cannot leave a
+// clock ticking on the board forever. Read directly rather than polled, because that ordering makes
+// a poll meaningless: if it were not already null here, no amount of waiting is the fix.
+check("a KILLED run leaves no forever-running field — the in-flight view is clear once the row exists",
+  (await live()) === null, JSON.stringify(await live()));
 check("every non-measurement still names the land it followed (an unknown is attributable)",
   f.covers[0]?.branch === fox.branch && g.covers[0]?.branch === golf.branch && h.covers[0]?.branch === hotel.branch,
   `${f.covers[0]?.branch} ${g.covers[0]?.branch} ${h.covers[0]?.branch}`);
@@ -289,6 +321,101 @@ check("the trail answers 'which lands came after a red one'",
     === [hotel.branch, golf.branch, fox.branch, echoLane.branch].join(","),
   JSON.stringify(all.slice(0, firstRedIdx + 1).flatMap((r) => r.covers.map((c) => c.branch))));
 
+// ===== (I) THE RUN IN FLIGHT IS VISIBLE, AND SO ARE THE LANDS STILL WAITING FOR ONE =============
+// Everything above measures FINISHED audits. Until this projection existed there was no way to see
+// a running one at all: `auditQueue` carries its entry through the run and `auditDraining` holds the
+// lock, but neither reached a surface, so watching an audit meant polling `ps`. Two states had to
+// become distinguishable, and both are asserted here:
+//   · RUNNING — one run, its tree, its lands, and the clock's origin.
+//   · WAITING — a land that arrived DURING a run is folded into the NEXT one (the coalescing
+//     contract asserted in (D)). Those lands had no audit and no row, which on every surface looked
+//     exactly like "no audit was ever planned" — one of the three signatures the steward's Rundgang
+//     is asked to spot.
+// Placed after (C) on purpose: the sections above assert exact row counts, the ones below take
+// relative snapshots, so new rows belong here rather than earlier.
+
+// (I.0) first the row the DISTRIBUTION must refuse. `exit143` is the shape of a run somebody killed
+// — a red by exit code, a non-measurement in fact — and it is asserted as a red so that the check
+// below is about the STATISTIC's filter and not about the verdict, which must not change.
+await setAuditMode("exit143");
+const mike = await makeLane("mike");
+await landLane(mike);
+const rowsWithKilled = await waitRows(8);
+const killedRow = newest(rowsWithKilled);
+check("(I) a run that was KILLED is still recorded red — the exit code decides the verdict, as before",
+  killedRow.result === "red" && killedRow.exitCode === 143
+    && killedRow.covers[0]?.branch === mike.branch, JSON.stringify(killedRow).slice(0, 300));
+
+// (I.1) the in-flight view itself. `long` (12s) is roomy enough that a whole second land fits inside
+// the window — settle is paid up front for both lanes, as in (D).
+await setAuditMode("long");
+const kilo = await makeLane("kilo");
+const limaLane = await makeLane("lima");
+await settleForMerge(kilo.slot);
+await settleForMerge(limaLane.slot);
+const rowsBeforeInflight = (await auditRows()).length;
+const kLandStart = Date.now();
+const kLanded = await landLane(kilo);
+const inflight = await waitLive((l) => l?.running?.phase === "running");
+const run = inflight?.running ?? null;
+check("(I) a running audit is VISIBLE while it runs — the field the board polls is set, not null",
+  kLanded.gone && run !== null && run.phase === "running", JSON.stringify(inflight).slice(0, 300));
+check("(I) it names the tree it is measuring — repo, integration branch, and the tip once resolved",
+  run?.repo === "testrepo" && run?.main === "main" && (run?.mainSha ?? "").length === 40,
+  `${run?.repo} ${run?.main} ${run?.mainSha}`);
+check("(I) it names the land it stands for", JSON.stringify(run?.covers) === JSON.stringify([kilo.branch]),
+  JSON.stringify(run?.covers));
+// the clock's ORIGIN, which is the whole point of the field: the client derives the elapsed time
+// from it. It must sit between the land that triggered the run and now — an origin outside that
+// window would render a runtime that is simply wrong.
+check("(I) it carries startedAt, and it is the real start (after the land, not after now)",
+  typeof run?.startedAt === "number" && run.startedAt > kLandStart && run.startedAt <= Date.now(),
+  `startedAt=${run?.startedAt} landStarted=${kLandStart} now=${Date.now()}`);
+// (I.2) the distribution that makes the elapsed number answerable. The filter is the assertion: the
+// trail at this moment holds 3 green + 2 red + 3 unknown, and exactly ONE of those reds is the
+// killed run from (I.0). So the sample must be 4 — not 8 (everything), not 5 (unknowns excluded but
+// the killed run kept). Anything else and the numbers are being drawn from non-measurements.
+const trailNow = await auditRows();
+const verdicts = trailNow.filter((r) => r.result === "green" || r.result === "red").length;
+check("(I) p50/p90 are computed only from runs that MEASURED something — unknowns and the killed run are out",
+  inflight?.stats?.n === verdicts - 1 && verdicts - 1 > 0,
+  `n=${inflight?.stats?.n} verdicts=${verdicts} rows=${trailNow.length}`);
+check("(I) ...and the percentiles are real durations, ordered",
+  (inflight?.stats?.p50 ?? 0) > 0 && (inflight?.stats?.p90 ?? 0) >= (inflight?.stats?.p50 ?? 0),
+  JSON.stringify(inflight?.stats));
+
+// (I.3) a second land WHILE that run is in flight. It must appear as waiting — never as a second
+// running audit, which the coalescing contract makes impossible and this view must not imply.
+const lLanded = await landLane(limaLane);
+const both = await waitLive((l) => l?.waiting.some((w) => w.branch === limaLane.branch) === true);
+const waitingLima = both?.waiting.find((w) => w.branch === limaLane.branch) ?? null;
+check("(I) a land that arrives DURING a run shows up as WAITING, with the moment it landed",
+  lLanded.gone && waitingLima !== null && waitingLima.repo === "testrepo"
+    && waitingLima.main === "main" && waitingLima.mainAfter === headOf()
+    // the sharp claim: this land queued AFTER the run in flight had already started
+    && waitingLima.at > (run?.startedAt ?? 0) && waitingLima.at <= Date.now(), JSON.stringify(both?.waiting));
+check("(I) ...and it does NOT become a second running audit — one run, still the first one's lands",
+  both?.running?.phase === "running"
+    && JSON.stringify(both.running.covers) === JSON.stringify([kilo.branch]),
+  JSON.stringify(both?.running));
+// "waiting" and "no audit planned" are the two states this section exists to separate: the waiting
+// land has no row of its own yet, and that is exactly what used to make the two look alike.
+check("(I) the waiting land has no audit ROW yet — waiting is a state, not a missing audit",
+  !(await auditRows()).some((r) => r.covers.some((c) => c.branch === limaLane.branch)),
+  JSON.stringify((await auditRows()).map((r) => r.covers.map((c) => c.branch))));
+
+// (I.4) and it all goes away. `green` so the coalesced follow-up finishes at once rather than
+// costing another 12s.
+await setAuditMode("green");
+const inflightRows = await waitRows(rowsBeforeInflight + 2, 60_000);
+const settled = await waitLive((l) => l === null);
+check("(I) once every run has finished the view is null again — null means idle, never 'unknown'",
+  settled === null, JSON.stringify(settled));
+check("(I) both lands ended up on the ledger — the view is a window on the queue, it consumes nothing",
+  inflightRows.some((r) => r.covers.some((c) => c.branch === kilo.branch))
+    && inflightRows.some((r) => r.covers.some((c) => c.branch === limaLane.branch)),
+  JSON.stringify(inflightRows.slice(0, 2).map((r) => r.covers.map((c) => c.branch))));
+
 // ===== (E) THE PENDING QUEUE SURVIVES THE SERVER — the deploy ritual raced the audit ============
 // Measured incident (docs/mining-2026-07-26.md finding 1): four lands, then a srv restart seconds
 // later, then nothing — no rows, no unknowns, indistinguishable from "nothing landed". The queue
@@ -301,6 +428,12 @@ const iLanded = await landLane(india);
 // wait for the suite to actually START before killing the server: the point of this case is a
 // death MID-RUN, and the drain spends a moment on rev-parse + git archive before spawning
 const crashRun = await waitRunMode("crash", 1);
+// free, and the pairing is the point: the durable queue file and the live view describe the SAME
+// run from two sides — one for the process that dies, one for the owner watching it not finish.
+const liveBeforeDeath = await waitLive((l) => l?.running?.covers.includes(india.branch) === true, 10_000);
+check("(I) the in-flight view names the run that is about to be lost to the restart",
+  liveBeforeDeath?.running?.phase === "running"
+    && liveBeforeDeath.running.covers.includes(india.branch), JSON.stringify(liveBeforeDeath).slice(0, 300));
 const queuedOnDisk = await readQueueFile();
 check("a land's pending audit is written to the durable queue file, naming the land and its repo",
   iLanded.gone && queuedOnDisk !== null

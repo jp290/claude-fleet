@@ -58,6 +58,15 @@ chmod +x "$DIR/fakemerge"
 #   green (default) — exit 0 · red — a failure tail + exit 1 · slow — 6s, for the coalescing test
 #   decline — the reserved skip exit (42) · notrunnable — exec a missing binary (exit 127)
 #   hang — 30s, longer than FLEET_POSTLAND_AUDIT_TIMEOUT_MS, so the server's kill path is exercised
+#   long — 12s, for the IN-FLIGHT VIEW section. `slow`'s 6s is sized for the coalescing burst (three
+#          lands that already paid their idle gate); the in-flight case has to fit a full second
+#          land — settle, merge, land — inside the window and then still be running when it is read,
+#          so it gets its own, roomier mode rather than stretching `slow` and moving (D)'s floor.
+#   exit143 — an instant exit 143. Stands for the run somebody KILLED (measured 2026-08-06: a lane's
+#          `pkill -f e2e-isolated.sh` took the server's own audit down 16s in, zero checks run). It
+#          is a red by exit code and a non-measurement in fact, and the server's runtime
+#          distribution must refuse it — a 16s sample in a distribution whose floor is ~5 min
+#          poisons every number built on it.
 #   crash — 25s, for the durability section: long enough that the suite can kill srv with the audit
 #           demonstrably still in flight. It drops the busy lock immediately (an ORPHANED run
 #           outliving its dead server must not make the next run look like an OVERLAP)
@@ -72,7 +81,9 @@ case "$mode" in
   red)         rm -f "$d/auditbusy"; echo "FAIL  post-land audit sabotage check"; echo "3 FAILURES"; exit 1 ;;
   decline)     rm -f "$d/auditbusy"; echo "audit skipped: this stand-in declines to verify that tree"; exit 42 ;;
   notrunnable) rm -f "$d/auditbusy"; exec "$d/no-such-audit-binary" ;;
+  exit143)     rm -f "$d/auditbusy"; echo "terminated"; exit 143 ;;
   slow)        sleep 6 ;;
+  long)        sleep 12 ;;
   hang)        sleep 30 ;;
   crash)       rm -f "$d/auditbusy"; sleep 25 ;;
 esac

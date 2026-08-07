@@ -9,7 +9,8 @@ import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
   WS_INPUT_MAX_BYTES, DISPOSITION_VERDICTS,
-  type GitInfo, type PostLandAuditInfo, type DispositionWorker, type DispositionVerdict,
+  type GitInfo, type PostLandAuditInfo, type PostLandAuditLiveInfo,
+  type DispositionWorker, type DispositionVerdict,
 } from "./protocol";
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
@@ -1712,11 +1713,95 @@ let gateInfo: GateInfo | null = null;
 // Clamped because a report's age is a SERVER timestamp against this device's clock, and a phone
 // running a few seconds ahead must read "0s", never a negative age.
 const gateAge = (ms: number): string => (ms < 90_000 ? `${Math.max(0, Math.round(ms / 1000))}s` : fmtDur(Math.max(0, ms)));
+
+// --- ...and WHO is holding it: the post-land audit in flight ------------------------------------
+// The lock line above can say "held by pid 44219 for 4m" and nothing more — not whether that holder
+// is the tier-2 audit or a lane's own suite, and not which commit it is measuring. Both facts exist
+// on the server (server.ts, postLandAuditLiveView) and had no reader, so the only way to watch a
+// running audit was `ps`. This is that reader, and it lives INSIDE the gate section on purpose: the
+// audit usually IS the lock holder, so the identity belongs on the line right under the hold.
+//
+// Two things are drawn that a single elapsed number cannot say:
+//   · p50/p90 of past runs on this repo. "Running 4:12" is not an answer; "4:12, p50 8:18" is.
+//   · the lands that are WAITING. A land during a run is folded into the NEXT run (the coalescing
+//     contract), so there are routinely lands whose audit has not begun — today indistinguishable
+//     from "no audit planned", which is one of the three signatures the Rundgang is asked to spot.
+let postLandLive: PostLandAuditLiveInfo | null = null;
+// m:ss, not fmtDur's whole minutes. This number ticks once a second in front of someone deciding
+// whether to keep waiting, and a display that reads "8m" for sixty seconds looks frozen — which is
+// the state ("is it still going?") this surface exists to answer.
+const mmss = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+function auditLiveRows(): HTMLElement[] {
+  const live = postLandLive;
+  if (!live) return [];
+  const rows: HTMLElement[] = [];
+  const r = live.running;
+  if (r?.phase === "starting") {
+    // the drain holds its one-at-a-time lock but no run has stamped itself. Named rather than
+    // folded into "nothing is running", which is the one thing this state is NOT.
+    const row = el("div", "bstate", "⏳ post-land audit · starting — a run is claimed, its target is not stamped yet");
+    row.title = "The tier-2 drain holds its lock. This is not an idle machine and not a wedge; it is the moment before a run names its tree.";
+    rows.push(row);
+  } else if (r) {
+    const st = live.stats;
+    // the elapsed clock is derived from `startedAt` and THIS device's clock, so it ticks between
+    // polls. Clamped inside mmss for the same reason gateAge clamps: a phone a few seconds ahead of
+    // the server must read 0:00, never a negative age.
+    const age = el("span", "", mmss(Date.now() - (r.startedAt ?? Date.now())));
+    const iv = setInterval(() => {
+      if (!age.isConnected) { clearInterval(iv); return; }
+      age.textContent = mmss(Date.now() - (r.startedAt ?? Date.now()));
+    }, 1000);
+    const sha = (r.mainSha ?? "").slice(0, 8);
+    const row = el("div", "bstate");
+    // `mainSha: null` is "the run has not resolved its tip yet" — a real moment at the head of every
+    // run, and it says so rather than printing an empty sha that would read as a bug in this line.
+    row.appendChild(document.createTextNode(
+      `⏳ post-land audit · ${r.repo ?? "?"} ${r.main ?? "?"}@${sha || "(tip not resolved yet)"} · running `));
+    row.appendChild(age);
+    if (st) row.appendChild(document.createTextNode(` · p50 ${mmss(st.p50)} · p90 ${mmss(st.p90)} (n=${st.n})`));
+    row.title = st
+      ? `The full suite against the integration tip, tier 2 — it gates nothing. p50/p90 are past runs of this repo (n=${st.n}); past p90 is when a run stops looking ordinary.`
+      : "The full suite against the integration tip, tier 2 — it gates nothing. Too few past runs on this repo to say what normal looks like.";
+    rows.push(row);
+    if (r.covers.length) {
+      const c = el("div", "bidmeta", `covering ${r.covers.join(", ")}`);
+      c.title = "The land(s) this one run stands for. A run is coalesced: it audits a TREE, so it covers every land folded into that tree.";
+      rows.push(c);
+    }
+  }
+  for (const w of live.waiting) {
+    const row = el("div", "bidmeta", `waiting for an audit · ${w.branch} → ${w.main}@${w.mainAfter.slice(0, 8)} · landed ${gateAge(Date.now() - w.at)} ago`);
+    row.title = "This land has no audit yet — it is folded into the NEXT run. Not the same as 'no audit planned', which is what it used to look like.";
+    rows.push(row);
+  }
+  return rows;
+}
+
 function gateSection(): HTMLElement | null {
   const g = gateInfo;
-  if (!g) return null;
+  const liveRows = auditLiveRows();
+  // an audit can be in flight (or lands waiting) while the mutex says nothing — and the reverse.
+  // Neither half may suppress the other.
+  if (!g && !liveRows.length) return null;
   const sec = el("div", "bsec");
-  const lk = g.lock;
+  // ...but a server that sends no `gate` at all has MEASURED nothing, and "lock free" would be a
+  // claim. The mutex half is drawn only when the server actually spoke about it.
+  if (g) sec.appendChild(gateLockHead(g.lock));
+  for (const row of liveRows) sec.appendChild(row);
+  for (const r of g?.reports ?? []) {
+    const who = `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
+    const what = r.phase === "failed" && r.exitCode !== null ? `failed exit ${r.exitCode}` : r.phase;
+    const row = el("div", "bidmeta", `${who} · ${what} ${r.suite} · ${gateAge(Date.now() - r.at)}`);
+    row.title = "Self-reported by that lane. Advisory — the mutex, not this, decides what runs.";
+    sec.appendChild(row);
+  }
+  return sec;
+}
+function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   // the server names the state (it owns the overdue threshold — see SUITE_HOLD_OVERDUE_MS). The
   // fallback is for the deploy window where a newer bundle is served by an older server: it can
   // reproduce every state but `overdue`, so it under-warns rather than inventing one.
@@ -1738,15 +1823,7 @@ function gateSection(): HTMLElement | null {
     : state === "stale" ? "Nothing is running. A finished suite leaves its lock dir behind by design; the next suite clears it."
     : state === "overdue" ? "This holder is still alive but has held far longer than any suite on this machine takes — check whether it is wedged."
     : "The machine-wide suite mutex, read off disk. Fleet only reads it — reaping a dead holder belongs to the wrappers.";
-  sec.appendChild(head);
-  for (const r of g.reports) {
-    const who = `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
-    const what = r.phase === "failed" && r.exitCode !== null ? `failed exit ${r.exitCode}` : r.phase;
-    const row = el("div", "bidmeta", `${who} · ${what} ${r.suite} · ${gateAge(Date.now() - r.at)}`);
-    row.title = "Self-reported by that lane. Advisory — the mutex, not this, decides what runs.";
-    sec.appendChild(row);
-  }
-  return sec;
+  return head;
 }
 
 // --- is a deploy due? ------------------------------------------------------------------------
@@ -4665,7 +4742,8 @@ async function refresh() {
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
-      postLandAudit?: PostLandAuditInfo | null; gate?: GateInfo | null; errors?: ErrorsInfo | null;
+      postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
+      gate?: GateInfo | null; errors?: ErrorsInfo | null;
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -4690,6 +4768,9 @@ async function refresh() {
     // read here, painted by the board's own timer — the gate line lives inside a panel that is
     // closed most of the time, so there is nothing to repaint from this hot path
     gateInfo = data.gate ?? null;
+    // same rail, same timer: the running audit is drawn inside the gate section, which the board's
+    // own repaint owns. The elapsed clock does not wait on this poll — it ticks off the client.
+    postLandLive = data.postLandAuditLive ?? null;
     errorsInfo = data.errors ?? null;
     deployGapInfo = data.deployGap ?? null;
     bundleStaleInfo = data.bundleStale ?? null;

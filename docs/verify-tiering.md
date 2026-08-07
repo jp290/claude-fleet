@@ -719,6 +719,29 @@ job, not a doc's. Part (b) of `32c89530` remains open with this as its brief.
 **No free pass.** Four sightings make the family real; they do not make the next red one a flake.
 The proof order in §11.3 applies unchanged.
 
+### 11.2d A sibling, and NOT a member: `paneEnv` reads a wrapped probe line as "never answered"
+
+Recorded next to §11.2c because it wears the same symptom — *the pane probe reports that the pane
+never responded, while the pane responded fine* — and is a **different mechanism with a different
+character**: deterministic, not a flake, and already fixed.
+
+Found 2026-08-07 in lane `5d04` while building `d02f1ec`. `paneEnv` returned `null` for 20 s. The
+cause is not a race: `e2e/slots.ts` sets slot 2 to **55 columns**, and the probe line carrying a
+32-hex value is **63 characters**. tmux wraps it, and `capture-pane` without `-J` hands back the
+two physical lines separately, so the line-anchored match can never hit. Reproduced in isolation
+(tmux, 55 columns, the identical line): **without `-J` zero matches, with `-J` one.** Fix:
+`capture-pane -p -J`, landed with `d02f1ec`.
+
+**Why it slept until now.** Every value probed before this one was short or empty, so no probe line
+had ever exceeded the narrow pane's width. The trap was a function of the *value*, not of load —
+which is exactly why it is not a flake and why re-running would never have cleared it.
+
+**The rule this leaves behind.** A negative from a pane probe means *"no match in the captured
+text"*, never *"the pane stayed silent"* — three distinct causes now have measured instances: the
+quiet window (§11.2c), the wrap (here), and genuine silence. A fixture that treats the first two as
+the third accuses the wrong thing, and the accusation is expensive: §11.2c's cost is a ~10 min
+proof run per sighting.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

@@ -1,3 +1,118 @@
+# HANDOFF — Session 37 (2026-08-07 abends: acht Lands, Pi ist angeschlossen, der 12-min-Takt ist Geschichte) · 36/35/34/… darunter
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 5f84d53..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 37: der Abend, an dem die Doktrin nachgab und Pi hereinkam
+
+**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` · die ersten zwei Regeln in
+`CLAUDE.md` — **und diesmal auch die geänderten Regeln 15 und 23/24, siehe unten.**
+
+### Acht Lands, alle durchs Gate, alle `waitMs 0`
+
+| SHA | Was | Gate |
+|---|---|---|
+| `654761c` | Tempo-Analyse (`briefs/tempo-2026-08-07.md`) — die Minuten sind gemessen | direkt |
+| `62b9482` | sechste Flake-Familie GEHEILT (`e2e/review.ts`, Sonde im Poll statt Sleep) | 79 s |
+| `4e77909` | `/api/self/watch` — der Rückkanal-Zwilling für Nicht-Lane-Sessions | 87 s |
+| `a64b681` | Harness-Basis: die drei Stellen, die claude annahmen | 83 s |
+| `3276ee7` | Pi vermessen — alle vier offenen Punkte GEMESSEN | 82 s |
+| `01447be` | **der Harness-Picker** — Registry + erste Spawn-Options-UI | 82 s |
+| `832bb68` | Trail-Abfrage: `GET /api/flakes` + `/api/self/flakes` | 84 s |
+| `6061b49` | **Kontext-Sensor** — `ctx` an jeder Slot-Row | 84 s |
+
+Deploy viermal gefahren und je am Owner-Poll verifiziert. Audits: 21 grün / 3 rot heute, **alle drei
+Roten adjudiziert** (und alle drei stammen aus Sessions VOR dieser). Adjudikations-Schuld null.
+
+### Die Doktrin hat nachgegeben — das ist die folgenreichste Änderung des Tages
+
+Der Owner hat die zwei Tempo-Entscheide an die Regelwerk-Session delegiert („dein call"). Beide sind
+in `CLAUDE.md` umgesetzt, beide sind **einzeln rückdrehbare Textzeilen**:
+
+- **Zeile 15 — der 12-min-Land-Takt ist GESTRICHEN.** Seriell bleibt (das Gate serialisiert ohnehin),
+  aber die Wartepflicht auf den Post-Land-Audit ist weg. Beide alten Begründungen waren von der
+  Maschine überholt: `drainPostLandAudits` (`server.ts:5114`) existiert und hat **nie** gefeuert —
+  `covers`-Histogramm über alle Audits = `{1: N}`; und seit `08dc17a` sind Warte- und Arbeitsbudget
+  getrennt. **Wissentliches Restrisiko:** ein rotes Sammel-Audit nennt N Lands statt einem, und
+  `undo-land` deckt nur das neueste.
+- **Zeile 23/24 — `./e2e-isolated.sh` ist keine Pflicht mehr in jeder Lane**, nur noch bei `e2e/`,
+  Suite-Wrappern oder Merge-/Land-Pfad. Gemessen: ~165 min/Tag Mutex für **0 echte Vorschau-Funde in
+  zwei Tagen**.
+
+**ABER — was ich in der Praxis GEGEN die neue Doktrin gemacht habe, und es war jedes Mal richtig:**
+vor jedem Land habe ich auf einen freien Suite-Mutex gewartet (zweimal 440 s und 980 s). Ergebnis:
+alle acht Gates `waitMs 0`. Die gestrichene Regel betraf das AUDIT; ein fremder Suite-Lauf ist echte
+Contention und bleibt ein Grund zu warten. Das steht so nicht im Regelwerk — **wenn es sich hält,
+gehört es hinein.**
+
+### Pi ist angeschlossen — und der Login-Schritt entfiel ersatzlos
+
+Kette: Basis (`a64b681`) → Messung (`3276ee7`) → Picker (`01447be`). Du kannst im Picker jetzt
+**claude oder pi** wählen, plus Modell und Effort. Live gegengeprobt: unbekannter Harness → 400
+`{"error":"unknown harness (one of: claude, pi)"}`.
+
+- **Kein `/login` nötig.** `pi install npm:pi-claude-bridge` reicht: die Bridge läuft übers Claude
+  Agent SDK und nutzt die Anmeldung der Maschine. Beweis: 8 Modelle im Katalog bei LEERER
+  `~/.pi/agent/auth.json` (2 Bytes), plus ein Haiku-Call `→ OK`. Für die DIREKTEN Pi-Provider gilt
+  „auth-gated" weiter (gratis mitgemessen).
+- **Die Grenze, die du kennen musst: ein Pi-Slot ist für JEDE Automatik unsichtbar.**
+  `HARNESS_COMMS = IS_CLAUDE ? ["claude"] : (env…)` (`server.ts:123`) — auf diesem Fleet ist
+  `FLEET_CMD=claude`, also wird `FLEET_HARNESS_COMMS` nie gelesen. Es gibt keinen Env-Fix. Folge:
+  keine Autos, kein Dispatch, kein `done-looking`, kein Rückkanal, kein auto-③. Von Hand
+  funktioniert alles. → Zeile **`b28ce533`**, mit fertigem Lösungsvorschlag; der Entscheid
+  („welche Automatik darf einen sandbox-losen Agenten anfassen") gehört dem Owner.
+
+### Ein Defekt in frisch gelandeter Arbeit, gefunden BEIM VERIFIZIEREN des Deploys
+
+`GET /api/flakes` antwortet **`never-failed`**, wo der Trail 9 Fehlschläge auf 3 sauberen Bäumen
+kennt. Ursache: `TRAIL_MAX_FILES = 400` (`server.ts:9058`) ist eine harte Konstante, über die Route
+nicht steuerbar, und Dateien werden *newest-first* genommen — es fallen also genau die **älteren**
+741 von 1141 weg. `days=14` und `days=60` antworten byte-gleich. Gemessen: neueste 400 → 74 runs /
+**0** fails; die ausgelassenen 741 → 169 runs / **9** fails / **3** saubere Bäume.
+Kosten: eine Lane mit FIX1-Rot hört „never failed in 74 runs" — *positive* Evidenz der Abwesenheit —
+und sucht einen Regress, den es nicht gibt. **Teurer als kein Werkzeug, weil ein Werkzeug geglaubt
+wird.** → Zeile **`17068154`** mit drei möglichen Schnitten. „Deckel hochsetzen" ist keiner davon.
+
+### Vier Korrekturen an mir selbst
+
+1. **Mein Brief behauptete eine tsc-Listen-Pflicht, die es nicht gibt.** Ich nannte
+   `fleet-e2e-harness.ts` als Präzedenz für „neue Top-Level-Datei → in `watchdog.sh`". Die Lane hat
+   es empirisch widerlegt (absichtlicher Typfehler wird von der unveränderten Liste gemeldet) und
+   den Fall korrekt zerlegt: jenes ist ein **Entry-Point**, `trailstats.ts` ist **importiert** — wie
+   `slotstats.ts`, `continuity.ts`, `lane-signals.ts`, die alle nicht gelistet sind. Nachgeprüft,
+   sie hat recht. Ein Deploy-Schritt weniger.
+2. **Zweimal war mein eigener Prüfausdruck der Fehler, nicht der Code:** ein im Report
+   ABGESCHNITTENER Check-Name als Exact-Match (`/api/flakes` antwortete zu Recht `not-in-window`),
+   und ein geratener Feldname (`contextFill` statt **`ctx`**), der den frisch gelandeten Sensor wie
+   tot aussehen ließ. **Merke: bei einem Alarm zuerst die Sonde prüfen, dann den Code.**
+3. Der Heartbeat-Text auf Slot 5 ist **veraltet** — seine „startbereit"-Liste (`15a01b70`,
+   `fdabb575`, `32c89530`) ist heute komplett gelandet. Wer ihn erbt, schreibt ihn neu.
+4. Ich habe den Heartbeat einmal „nachgezogen", der 55 s zuvor korrekt gelegt worden war — mein
+   Schnappschuss war älter als die Welt. Duplikat gelöscht.
+
+### Was der OWNER entscheiden muss (nicht erneut melden, nur vorlegen)
+
+- **`b28ce533`** *(Probe pro Slot statt fleet-weit)* — macht einen Pi-Slot erst zum vollen Bürger.
+- **`17068154`** *(der Trail-Deckel)* — welcher der drei Schnitte.
+- **`f520e704`** *(Steward kritisch beleuchten)* — Kriterium `confirmedAt:null`, unwiderruflich.
+- **`2784427e`** *(F6 Drag&Drop)* — Entwurf und Brief widersprechen sich beim Ablageort.
+- **`d375c581`** *(der Reaper)* — der Trail wächst ~4,4 MB/Tag; hängt mit `17068154` zusammen.
+
+### Arbeitsweise, die sich heute bewährt hat und die ich weiterempfehle
+
+- **Kein Roh-Dispatch.** Jede der acht Zeilen bekam vor dem Start einen von mir kompilierten Brief
+  (`POST /api/tasks/:id/brief`), geerdet an echten Zeilennummern und Messwerten. Die Lanes haben
+  daraufhin *mich* an vier Stellen korrigiert — das ist der Ertrag, nicht der Aufwand.
+- **Briefe altern schnell.** Der Kontext-Sensor-Brief war vor dem Dispatch vier Lands alt; seine
+  Zeilenrefs waren gewandert UND `01447be` hatte eine neue Randbedingung geschaffen
+  (`transcriptFile` → `null` für Nicht-Transcript-Harness). Vor jedem Dispatch nachziehen.
+- **Watch statt Vorsatz:** `POST /api/slots/5/watch {"target":N,"idleSec":60}` hat heute achtmal
+  sauber geweckt. Für „warte auf einen freien Mutex" taugt er nicht — dafür ein Hintergrund-Watcher.
+
+---
+
 # HANDOFF — Session 36 (2026-08-07 nachmittags: fünf Lands, ein ECHTES Rot, der Steward diagnostiziert) · 35/34/33/… darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log ed4270c..HEAD`

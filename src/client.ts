@@ -7337,17 +7337,18 @@ async function cycleHist(dir: number) {
 
 // shared one-line failure notice for the non-destructive mutation handlers (task/auto/share/
 // dispatch toggles) — their views re-derive from refresh(), so a failed POST otherwise no-ops
-// silently. Self-contained styling so it needs no CSS-file change.
+// silently. Layout stays inline so it needs no CSS-file change; the one colour comes from the
+// page's --danger token, so the toast cannot drift away from the rest of the error red.
 function toast(msg: string) {
   const t = el("div", "", msg);
-  t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#f85149;color:#fff;padding:8px 14px;border-radius:6px;z-index:9999;font-size:13px;max-width:80%;box-shadow:0 2px 8px rgba(0,0,0,.4)";
+  t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--danger);color:#fff;padding:8px 14px;border-radius:6px;z-index:9999;font-size:13px;max-width:80%;box-shadow:0 2px 8px rgba(0,0,0,.4)";
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2600);
 }
 
 // --- compose box: Enter sends (bracketed paste + Enter server-side), Shift+Enter = newline ---
 function flashSendError() {
-  send.style.background = "#f85149";
+  send.style.background = "var(--danger)";
   setTimeout(() => { send.style.background = ""; }, 1200);
 }
 async function doSend() {
@@ -7465,7 +7466,7 @@ enhBtn.onclick = async () => {
       ta.focus();
     }
   } catch {
-    enhBtn.style.borderColor = "#f85149";
+    enhBtn.style.borderColor = "var(--danger)";
     setTimeout(() => { enhBtn.style.borderColor = ""; }, 1500);
   } finally {
     clearTimeout(slowNotice);

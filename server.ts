@@ -79,6 +79,11 @@ const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 // (~/.claude/projects/<cwd-slug>/<uuid>.jsonl) is known instead of guessed by mtime
 // model names are validated at SET time (MODEL_RE, the open/lane routes) — this string is
 // baked into a shell line, so nothing unvalidated may ever reach it
+//
+// This is ALSO the claude adapter's spawnCmd (see HARNESSES below, which calls this very
+// function rather than restating it): a slot that chose no harness is spawned by exactly the
+// code that spawned every slot before harnesses existed, so "byte-identical" is a property of
+// the call graph here, not a claim someone has to re-check by reading two implementations.
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
@@ -164,10 +169,9 @@ const AUTHOR_COMMS = [...new Set([...HARNESS_COMMS, "claude"])];
 // caught it.) Worker-tier models (SUMMARY/ANALYSIS/REFINE) keep MODEL_RE unconditionally — those
 // spawn claude directly through runWorker/summaryViaSession no matter what FLEET_CMD is.
 const SLOT_MODEL_RE = DECLARED_HARNESS ? HARNESS_MODEL_RE : MODEL_RE;
-// derived, not restated: the rejection message used to spell the claude charset by hand at three
-// routes, which under a foreign harness would name a rule the server is no longer applying — an
-// error that misdirects is worse than a terse one, because it sends the reader to fix the wrong end.
-const SLOT_MODEL_ERR = `bad model (must match ${SLOT_MODEL_RE.source})`;
+// (the rejection message that used to live here is now modelErrFor(), one region below: it has to
+// name the charset of the SLOT'S harness, not the server's, for the same reason it was derived
+// rather than restated in the first place — an error that misdirects sends the reader to the wrong end.)
 // the fleet's base model for interactive/lane sessions that don't pin their own. Absent this,
 // slotCmd omits --model and claude falls back to the owner's ambient /model default. FLEET_MODEL
 // overrides, but is charset-validated first — this value is baked into a tmux shell line, so an
@@ -175,12 +179,169 @@ const SLOT_MODEL_ERR = `bad model (must match ${SLOT_MODEL_RE.source})`;
 // summary worker keeps its own cheaper SUMMARY_MODEL — this is only the interactive tier.
 const DEFAULT_MODEL =
   process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : FLEET_DEFAULT_MODEL;
-function modelOf(body: Record<string, unknown> | null): { ok: true; model: string | null } | { ok: false } {
-  const m = body?.model;
-  if (m === undefined || m === null || m === "") return { ok: true, model: null };
-  if (typeof m === "string" && SLOT_MODEL_RE.test(m)) return { ok: true, model: m };
+
+// --- the harness REGISTRY: which agent a slot runs ------------------------------------------
+// The env knobs above answer "what is THIS FLEET's harness" — one answer for the whole server,
+// set by the operator in watchdog.sh. This answers a different question: which harness does THIS
+// SLOT run, chosen per session at spawn time. The two coexist on purpose. A slot that names no
+// harness (the default, and every slot that existed before this) is spawned by the env path,
+// unchanged down to the byte; a slot that names one is spawned by its adapter instead.
+//
+// `supports` is the whole point of the abstraction: every feature that used to ASSUME claude asks
+// its question here and degrades VISIBLY, instead of running against a file that will never exist
+// and reporting the emptiness as fact.
+interface Harness {
+  id: string;
+  // The spawn line, already shell-safe. Everything interpolated here has been validated at SET
+  // time (modelOf/effortOf against THIS adapter's rules) — the same discipline slotCmd documents.
+  spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null }): string;
+  // Does this harness take a session id at spawn? It decides whether s.sessionId is pinned at all,
+  // which is what makes a conversation survive a pane respawn.
+  pinsSession: boolean;
+  // The charset THIS harness's model names are judged by. null = "whatever the env rule says"
+  // (SLOT_MODEL_RE), which is how the default adapter keeps MODEL_RE for an undeclared FLEET_CMD
+  // and the declared-harness charset for a declared one — i.e. exactly today's behaviour.
+  modelRe: RegExp | null;
+  // The closed set of effort levels this harness accepts. Empty = it has no effort concept, and
+  // the routes reject any effort for it. A LITERAL allowlist rather than a regex on purpose: the
+  // value reaches a shell line, and membership in a fixed list of lowercase words is a stronger
+  // guarantee than any charset — there is no metacharacter it could carry.
+  effortLevels: readonly string[];
+  supports: { resume: boolean; transcript: boolean; model: boolean; effort: boolean; selfSchedule: boolean };
+  // one short caveat the picker shows BEFORE the slot is spawned, or null. Not decoration: it is
+  // where a harness states the thing an owner must know at the moment of choosing it.
+  note: string | null;
+}
+
+// Adapter #1 — the default. `spawnCmd` CALLS slotCmd rather than reimplementing it, so the
+// no-harness path cannot drift from what it was: there is only one implementation of it.
+// `pinsSession` mirrors slotCmd's own `claude` test, because that is the condition under which
+// slotCmd actually passes a session id — a stand-in FLEET_CMD (`true`, the e2e suites) pins none,
+// and ensureSlot must not record one it never passed.
+const CLAUDE_HARNESS: Harness = {
+  id: "claude",
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model),
+  pinsSession: IS_CLAUDE,
+  modelRe: null,
+  effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
+  supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true },
+  note: null,
+};
+
+// Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
+// read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
+// per line. The one flag this file does NOT take from that report is `transcript` — see below.
+const PI_HARNESS: Harness = {
+  id: "pi",
+  // `--session-id` is create-or-attach in ONE flag (measured (a): a second process with the same
+  // id continues the conversation, and the "creating a new session" warning is absent the second
+  // time). So `resume` is ignored here — claude needs two flags for the two roles, Pi needs one,
+  // and the respawn path (ensureSlot, ↻ restart) therefore works by passing the id it already has.
+  spawnCmd: (o) => {
+    let cmd = "pi";
+    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+    // single-quoted under the same rule as slotCmd, and it carries MORE weight here: a Pi model
+    // pattern may contain `*` (HARNESS_MODEL_RE admits it), which zsh — tmux's default-shell —
+    // aborts the whole line on when it matches nothing, killing the pane at spawn.
+    if (o.model) cmd += ` --model '${o.model}'`;
+    if (o.effort) cmd += ` --thinking ${o.effort}`;
+    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+  },
+  pinsSession: true,
+  // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
+  // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
+  modelRe: HARNESS_MODEL_RE,
+  effortLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], // `pi --help`, the real installation
+  supports: {
+    resume: true,       // measured (a), including the pane respawn ensureSlot actually performs
+    // FALSE, and this is where this file DISAGREES with the measurement report's summary table.
+    // The report says `true` and means "a session file exists and is findable by glob" — which is
+    // true, and is not the question this flag answers. What Fleet calls a transcript is a
+    // CLAUDE-CODE .jsonl under projDir() (~/.claude/projects/<cwd-slug>/<uuid>.jsonl), parsed by
+    // viewEntry into the conversation view and the ✨ summary's evidence. Pi writes a different
+    // format at a different path (~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl), and the
+    // report concedes the adapter for it "bleibt Arbeit". Until that work exists the honest answer
+    // is false — and it is load-bearing rather than cosmetic: transcriptFile()'s newest-by-mtime
+    // FALLBACK would otherwise hand a Pi slot some OTHER session's claude conversation from the
+    // same cwd and label it this one's. Failing visibly beats answering with a stranger's chat.
+    transcript: false,
+    model: true,        // measured — 8 bridge models, `--model` takes effect
+    effort: true,       // `--thinking <level>` exists in the real installation's --help. NOT measured
+    // end-to-end (no run varied the value), so this is the one supports flag standing on a help
+    // text rather than a measurement, and it is worth exactly that much.
+    // FALSE deliberately, and NOT a claim that the env is absent: ensureSlot exports
+    // FLEET_SELF_TOKEN into every pane with a cwd regardless of harness, so a Pi slot HAS the
+    // credential. What is unmeasured is whether Pi's own tooling ever uses it. The flag means
+    // "do not advertise this", which is the only thing an unmeasured capability may mean.
+    selfSchedule: false,
+  },
+  // Pi ships no permission layer at all — its own docs/security.md: built-in tools read, write and
+  // run shell commands with the permissions of the pi process. There is no `--dangerously-skip-
+  // permissions` because there is nothing to skip. An owner picking this must see that first.
+  note: "no sandbox",
+};
+
+// KNOWN LIMITATION, measured, and deliberately NOT fixed here (the per-slot probe was reserved for
+// an owner decision — this slice was told to report it, not build it).
+//
+// The LIVENESS PROBE is still global: it asks HARNESS_COMMS, which is `["claude"]` whenever
+// FLEET_CMD starts with claude. So on the live fleet a perfectly healthy Pi pane answers
+// "no-agent" — its process tree carries `pi` on depth 1 and no `claude` anywhere (measured: the
+// bridge's SDK child lives on depth 2 and only during a request, while the probe reads depth 1).
+//
+// What that costs, traced rather than guessed: canDeliver's not-alive gate refuses scheduled
+// autos, dispatch and steward sends into the slot; and aliveInfo feeds laneSignalView, so
+// `alive === true` never holds and a Pi LANE is never classified done-looking — no /api/self/watch
+// notification, no auto-③ review, and the steward reads it as unfinished.
+//
+// The remedy named in briefs/pi-messungen-2026-08-07.md (d) — set FLEET_HARNESS_COMMS=pi — CANNOT
+// work here, and that is the part the measurement did not reach: that variable is only read on the
+// `!IS_CLAUDE` branch above, so a claude fleet ignores it entirely. There is no env-level fix; the
+// probe set has to become per-slot (harness-declared comms) for a Pi slot to be reachable by any
+// automation path. Until then a Pi slot is a HAND-DRIVEN pane: spawn, type, resume and close all
+// work, and everything unattended skips it.
+
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS];
+// null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
+// them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
+const harnessOf = (id: string | null | undefined): Harness =>
+  HARNESSES.find((h) => h.id === id) ?? CLAUDE_HARNESS;
+
+// which harness a request asked for. Absent → null (the default), which is what every caller that
+// predates this field sends and must keep meaning.
+function harnessIdOf(body: Record<string, unknown> | null): { ok: true; harness: string | null } | { ok: false } {
+  const h = body?.harness;
+  if (h === undefined || h === null || h === "") return { ok: true, harness: null };
+  if (typeof h === "string" && HARNESSES.some((x) => x.id === h && x !== CLAUDE_HARNESS)) return { ok: true, harness: h };
+  // the default adapter is addressable by name too — it just persists as null, so that one slot
+  // state ("no harness chosen") has one representation instead of two that must stay in sync
+  if (h === CLAUDE_HARNESS.id) return { ok: true, harness: null };
   return { ok: false };
 }
+
+// Model validation is now a question about the SLOT's harness, not about the server's env. For the
+// default adapter this resolves to SLOT_MODEL_RE — i.e. unchanged — so no existing caller moves.
+function modelOf(body: Record<string, unknown> | null, h: Harness = CLAUDE_HARNESS): { ok: true; model: string | null } | { ok: false } {
+  const m = body?.model;
+  if (m === undefined || m === null || m === "") return { ok: true, model: null };
+  if (!h.supports.model) return { ok: false };
+  if (typeof m === "string" && (h.modelRe ?? SLOT_MODEL_RE).test(m)) return { ok: true, model: m };
+  return { ok: false };
+}
+const modelErrFor = (h: Harness) =>
+  h.supports.model ? `bad model (must match ${(h.modelRe ?? SLOT_MODEL_RE).source})` : `harness ${h.id} takes no model`;
+
+// Effort, judged against the harness's closed set. An adapter with no effort concept rejects any
+// value rather than dropping it silently — a flag the owner set and the pane never saw is the
+// failure mode this whole `supports` layer exists to make impossible.
+function effortOf(body: Record<string, unknown> | null, h: Harness): { ok: true; effort: string | null } | { ok: false } {
+  const e = body?.effort;
+  if (e === undefined || e === null || e === "") return { ok: true, effort: null };
+  if (typeof e === "string" && h.supports.effort && h.effortLevels.includes(e)) return { ok: true, effort: e };
+  return { ok: false };
+}
+const effortErrFor = (h: Harness) =>
+  h.supports.effort ? `bad effort (one of: ${h.effortLevels.join(", ")})` : `harness ${h.id} takes no effort`;
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
@@ -411,6 +572,13 @@ interface Slot {
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
   // create/attach time — optional, because lanes forked before it existed have none.
   model: string | null; // per-slot claude model (--model at spawn); null = FLEET_CMD default
+  harness: string | null; // which agent this session runs (HARNESSES). null = the default adapter,
+  // i.e. FLEET_CMD — which is what every slot predating this field is, so null must never be
+  // migrated to "claude": the two are the same state and one representation of it is enough.
+  // Same lifetime and same honesty rule as `model`: chosen at spawn (it decides the pane's very
+  // command line), cleared on open/kill so a recycled slot never inherits the previous occupant's.
+  effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
+  // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
   releasedBy: "owner" | "machine" | null; // how the TASK that spawned this lane was released
   // (Task.releasedBy), carried here because the outcome recorder runs at TEARDOWN — by then the
   // task row has moved to `done`/`pending` and the slot is the only thing that still remembers.
@@ -445,6 +613,8 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   awaiting: null,
   worktree: null,
   model: null,
+  harness: null,
+  effort: null,
   releasedBy: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -1011,8 +1181,9 @@ function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; mission: string | null; awaiting: "owner" | null;
     sessionId: string | null;
     worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null;
+    harness: string | null; effort: string | null;
     releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, releasedBy: s.releasedBy, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches, tasks,
@@ -1735,11 +1906,12 @@ const laneSpawn = new Set<number>();
 // worktree paths mid-attach — see the attach race note in /api/lanes
 const attachBusy = new Set<string>();
 
-async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null): Promise<{ cwd: string; branch: string }> {
+async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
+  harness: string | null = null, effort: string | null = null): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch);
   const base = await integrationBranch(wt.repo);
   const baseSha = await laneForkSha(wt.path, base);
-  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha }, model);
+  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha }, model, null, harness, effort);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -1786,12 +1958,22 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
   const has = await tmux("has-session", "-t", name);
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
+    const h = harnessOf(s.harness);
     // pane died but we know its claude session and its transcript still exists →
     // self-heal RESUMES the conversation instead of starting a blank one (verified:
     // --resume <id> continues in the same transcript file, id stays stable).
     // Otherwise: fresh claude, fresh pinned uuid — only if WE win the has-session/
     // new-session race below (the 2s self-heal loop and a fresh openSlot() can race)
-    const resume = !!s.sessionId && existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`);
+    //
+    // The EVIDENCE that a conversation is still there is harness-specific, and asking claude's
+    // question of another harness gets the wrong answer in the direction that loses work. For a
+    // transcript harness it is the .jsonl on disk (unchanged, and still the whole test for every
+    // slot that names no harness). For one without, the session id IS the evidence: Pi's
+    // `--session-id` is create-or-attach (measured), so passing the id it already has continues
+    // the conversation — while claude's existsSync would be false for it forever, mint a fresh
+    // uuid on every respawn, and quietly abandon the session on each self-heal.
+    const resume = !!s.sessionId && h.supports.resume
+      && (h.supports.transcript ? existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`) : true);
     // WHY a heal could not resume, not just THAT it could not — the two causes are different
     // bugs: no-session = nothing was ever pinned (a non-claude BASE_CMD, or the openSlot race
     // this function's spawn-block comment predicts); no-transcript = a pin exists but its .jsonl
@@ -1837,11 +2019,14 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     const stewardExport = s.label === STEWARD_LABEL && stewardToken
       ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
     const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
-      `${selfExport}${stewardExport}${slotCmd(candidate, resume, s.model)}`);
+      `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: s.model, effort: s.effort })}`);
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;
-      s.sessionId = /^claude(\s|$)/.test(BASE_CMD) ? candidate : null;
+      // record the pin only if the adapter actually PASSED it. For the default adapter this is
+      // still exactly `is FLEET_CMD claude` (CLAUDE_HARNESS.pinsSession), so a stand-in command
+      // keeps recording none; a harness that takes a session id records one and can resume.
+      s.sessionId = h.pinsSession ? candidate : null;
       saveState();
       audit(cause === "restart" ? "slot_restart" : "self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
       console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
@@ -1881,8 +2066,15 @@ function expandCwd(raw: string): string {
   return t;
 }
 
+// `harness`/`effort` default to null — i.e. the claude adapter — and that default is the
+// DISPATCHER'S BOLT, not a convenience: tickDispatch/openLaneInSlot call this without them, so an
+// unattended lane can only ever be spawned by the default harness. Pi has no permission layer
+// (see PI_HARNESS.note), and whether an autonomous lane may run without one is an owner decision
+// that has not been made — so this fails closed by construction rather than by a check that a
+// later caller could forget to write.
 async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null = null,
-  model: string | null = null, label: string | null = null): Promise<void> {
+  model: string | null = null, label: string | null = null,
+  harness: string | null = null, effort: string | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   // Detach before the teardown below, so a recycled slot's tasks carry THIS reason —
@@ -1926,6 +2118,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // the session that lives in it starts, and nothing below should have to ask which half is set.
   s.worktree = worktree;
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
+  s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
+  s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
+
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
@@ -1996,6 +2191,8 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   parkMergeVerdict(s.id, false); // a reviewable ⏸ follows the branch into the park (reattach restores it); merged/blocked stay visible as before
   s.worktree = null; // the worktree itself stays on disk — land removes it, kill never does
   s.model = null; // the per-slot model dies with the session it was chosen for
+  s.harness = null; // ...as does the harness that ran it: the next occupant of this slot is a new
+  s.effort = null;  // session and must be spawned by whatever IT chose, never by what was here
   s.releasedBy = null; // ...as does the release that started it — same lifetime, same reason
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
@@ -3305,6 +3502,13 @@ function sniffSummarizer(path: string): boolean {
 }
 
 function transcriptFile(s: Slot): string | null {
+  // a harness that does not write CLAUDE-CODE transcripts has none HERE, whatever it writes
+  // elsewhere. This guard must come before the fallback below, not after: that fallback answers
+  // "newest .jsonl in this cwd's project dir", and for a Pi slot sharing a cwd with a claude
+  // session it would return the CLAUDE session's file — a foreign conversation rendered as this
+  // slot's own, in the conversation view and as the ✨ summary's evidence. Null is the honest
+  // answer, and every caller already handles it (transcriptPayload → source:null).
+  if (!harnessOf(s.harness).supports.transcript) return null;
   const dir = projDir(s.cwd!);
   if (s.sessionId) {
     const pinned = `${dir}/${s.sessionId}.jsonl`;
@@ -3430,7 +3634,9 @@ async function tickHarvest(): Promise<void> {
   harvestBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd || !s.sessionId) continue;
+      // ...and a slot whose harness writes no claude transcript has nothing to harvest: its
+      // sessionId is a Pi session id, and projDir() would name a path that never exists.
+      if (!s.cwd || !s.sessionId || !harnessOf(s.harness).supports.transcript) continue;
       const file = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
       let size: number;
       try {
@@ -7735,8 +7941,19 @@ if (existsSync(STATE_FILE)) {
         if ((v as { awaiting?: unknown }).awaiting === "owner") s.awaiting = "owner";
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
+        // the harness comes back BEFORE the model, because it is what the model is judged by:
+        // restoring them the other way round would validate a Pi slot's `provider/id` against
+        // claude's charset and silently drop it, leaving the pane to respawn with no model.
+        // Only a REGISTERED id survives a reload — a hand-edited state file must not be able to
+        // name a harness the server has no adapter for (harnessOf would fall back to claude and
+        // the slot would quietly respawn as a different agent than the row claims).
+        const ph = (v as { harness?: unknown }).harness;
+        if (typeof ph === "string" && HARNESSES.some((x) => x.id === ph && x !== CLAUDE_HARNESS)) s.harness = ph;
+        const hOf = harnessOf(s.harness);
         const pm = (v as { model?: unknown }).model;
-        if (typeof pm === "string" && SLOT_MODEL_RE.test(pm)) s.model = pm;
+        if (typeof pm === "string" && (hOf.modelRe ?? SLOT_MODEL_RE).test(pm)) s.model = pm;
+        const pe = (v as { effort?: unknown }).effort;
+        if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
         // the release survives a restart with the lane it started — a deploy in the middle of a
         // lane's life must not turn its outcome row into "cannot say". Only the two recognised
         // values come back, same stance as `awaiting` above: a hand-edited state file must not be
@@ -9716,6 +9933,13 @@ Bun.serve<WSData>({
           return {
             id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
+            // OMITTED when null, which is the overwhelmingly common case — this is the 2s poll,
+            // already the app's most expensive path (data-saver), and a null per slot per poll is
+            // bytes for nothing. The client reads absent as "the default harness". What each
+            // harness SUPPORTS is not here at all: that is static, and rides GET /api/harnesses
+            // once, instead of being re-sent every two seconds for every slot.
+            ...(s.harness ? { harness: s.harness } : {}),
+            ...(s.effort ? { effort: s.effort } : {}),
             // "no-agent" is the one that matters: the pane is alive and accepting keystrokes with
             // nothing behind it — what an unresolvable model leaves, and what typing into it means.
             // Cached (git tick), so it is a REPORT, never a gate: every gate keeps its own fresh
@@ -10139,8 +10363,13 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/lanes" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
-      const laneModel = modelOf(body);
-      if (!laneModel.ok) return json({ error: SLOT_MODEL_ERR }, 400);
+      const laneH = harnessIdOf(body);
+      if (!laneH.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+      const laneHarness = harnessOf(laneH.harness);
+      const laneModel = modelOf(body, laneHarness);
+      if (!laneModel.ok) return json({ error: modelErrFor(laneHarness) }, 400);
+      const laneEffort = effortOf(body, laneHarness);
+      if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
@@ -10161,14 +10390,14 @@ Bun.serve<WSData>({
           if (slots.some((x) => x.cwd === wt.path)) return json({ error: "worktree already open in a slot" }, 409);
           const attachBase = await integrationBranch(top.out);
           await openSlot(free, wt.path, { repo: top.out, branch: wt.branch, base: attachBase ?? undefined,
-            baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model);
+            baseSha: await laneForkSha(wt.path, attachBase) }, laneModel.model, null, laneH.harness, laneEffort.effort);
           free.label = wt.branch.replace(/^fleet\//, "⎇ ");
           delete shelved[wt.path]; // resuming clears the shelve note — the lane is active again
           saveState();
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
@@ -10572,6 +10801,21 @@ Bun.serve<WSData>({
       } finally {
         commitInflight.delete(s.id);
       }
+    }
+    // the harness catalogue: what a session can be spawned as, and what each one can do. STATIC
+    // (the registry is a module constant), so the client fetches it once instead of the 2s poll
+    // carrying a copy per slot. This is what makes "degrade visibly" possible in the UI at all —
+    // without it the client would have to hardcode a second copy of `supports`, which is exactly
+    // the drift the registry exists to prevent.
+    if (url.pathname === "/api/harnesses" && req.method === "GET") {
+      return json({
+        harnesses: HARNESSES.map((h) => ({
+          id: h.id, supports: h.supports, effortLevels: h.effortLevels, note: h.note,
+          // the DEFAULT is a fact about this fleet, not about the adapter: it is the harness a
+          // slot gets when it names none, and the client must not assume which id that is.
+          default: h === CLAUDE_HARNESS,
+        })),
+      });
     }
     if (url.pathname === "/api/dirs") {
       try {
@@ -11233,8 +11477,14 @@ Bun.serve<WSData>({
       if (slotMatch[2] === "open") {
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
-        const mo = modelOf(body);
-        if (!mo.ok) return json({ error: SLOT_MODEL_ERR }, 400);
+        // harness FIRST — it is what the model and the effort are judged by
+        const ho = harnessIdOf(body);
+        if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+        const hh = harnessOf(ho.harness);
+        const mo = modelOf(body, hh);
+        if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+        const eo = effortOf(body, hh);
+        if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -11242,7 +11492,7 @@ Bun.serve<WSData>({
           return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
         const label = typeof body.label === "string" ? body.label.trim() || null : null;
         try {
-          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label);
+          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed" }, 400);
         }
@@ -11253,11 +11503,16 @@ Bun.serve<WSData>({
         const body = await readJson(req);
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd || laneSpawn.has(s.id)) return json({ error: "slot already active — use a free slot" }, 400);
-        const mo = modelOf(body);
-        if (!mo.ok) return json({ error: SLOT_MODEL_ERR }, 400);
+        const ho = harnessIdOf(body);
+        if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+        const hh = harnessOf(ho.harness);
+        const mo = modelOf(body, hh);
+        if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+        const eo = effortOf(body, hh);
+        if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort);
           return json({ ok: true, cwd: r.cwd, branch: r.branch });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);

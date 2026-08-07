@@ -19,7 +19,7 @@
 // a slot dies or is recycled (`server.ts` ~1147), and no secret reaches the audit log or any
 // non-owner-readable payload.
 import { readFileSync } from "node:fs";
-import { BASE, H, REPO, ROOT, TOKEN, check, get, post, readText } from "./harness";
+import { BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 
 interface FleetState {
@@ -377,4 +377,80 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     !auditRaw.includes(selfTok) && !auditRaw.includes(reTok)
     && Object.values(readState().slots ?? {}).every((s) => !s.selfToken || !auditRaw.includes(s.selfToken)));
   check("§5 the audit log never contains this section's share password", !auditRaw.includes(SHARE_PW));
+
+  // ===== §6 the model/effort charset is per HARNESS, and every adapter's is an allowlist =====
+  // Every spawn option is interpolated into a tmux shell line, so each adapter widening the
+  // charset re-opens the same question rather than inheriting an answer. `'` is THE character:
+  // it is the one that can terminate the single-quoted word the whole scheme rests on. A space or
+  // `;` would split the line; `*` is admitted on purpose and is exactly why the quotes are not
+  // decoration (zsh aborts an unmatched glob and takes the pane with it).
+  //
+  // This suite runs under FLEET_CMD=true — an UNDECLARED command — so the DEFAULT adapter here is
+  // judged by MODEL_RE. That is the counter-proof half: a per-slot harness must not have widened
+  // the charset for slots that never asked for one. (The live-agent half — that a declared foreign
+  // harness's models reach a real pane and the agent survives — is fleet-e2e-harness.ts, phase 2 of
+  // ./e2e-claude-gate.sh, and is not duplicated here.)
+  // a slot no other module touches: §6 recycles it repeatedly and asserts on the PANE's command
+  // line, so a fixture another section left behind would be read as this section's result
+  const HARNESS_SLOT = 10;
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
+  const cat = (await (await get("/api/harnesses")).json()) as
+    { harnesses: { id: string; default: boolean; supports: { transcript: boolean; effort: boolean }; effortLevels: string[]; note: string | null }[] };
+  const pi = cat.harnesses.find((h) => h.id === "pi");
+  const def = cat.harnesses.find((h) => h.default);
+  check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
+    cat.harnesses.map((h) => h.id).join(","));
+  // the caveat is part of the contract, not a UI string: an owner picks this harness from it
+  check("§6 the pi adapter states its missing permission layer at pick time", pi?.note === "no sandbox", String(pi?.note));
+
+  // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
+  for (const h of ["pi", "claude"]) {
+    const q = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: h, model: "a/b'c" });
+    check(`§6 harness ${h} rejects a model carrying a single quote (400)`, q.status === 400, String(q.status));
+  }
+  // --- ...and the shapes the WIDER charset exists for are still refused on the default adapter.
+  for (const bad of ["claude-bridge/claude-haiku-4-5", "sonnet:high", "anthropic/*"]) {
+    const r = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, model: bad });
+    check(`§6 the default adapter still rejects the foreign model shape ${bad} (400)`, r.status === 400, String(r.status));
+  }
+  // --- the glob DOES reach a pi pane, and it reaches it SHELL-QUOTED. A deliberately unresolvable
+  // provider: this asserts the spawn STRING (what tmux was told to run), which is recorded whether
+  // or not `pi` is installed here — so the pin is about the quoting and nothing else.
+  const GLOB = "e2e-probe/*";
+  const og = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi", model: GLOB, effort: "low" });
+  check("§6 a pi slot accepts a glob model and an effort level (200)", og.ok, String(og.status));
+  const gcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  check("§6 the pi spawn line quotes the glob model (an unquoted one aborts the pane under zsh)",
+    gcmd.includes(`--model '${GLOB}'`), gcmd.slice(-160));
+  check("§6 the pi spawn line pins a session id (--session-id is create-or-attach: it IS the resume path)",
+    /--session-id [0-9a-f-]{36}\b/.test(gcmd), gcmd.slice(-160));
+  check("§6 the pi spawn line carries the effort level as --thinking", gcmd.includes("--thinking low"), gcmd.slice(-160));
+  check("§6 ...and it spawns pi, not the fleet's FLEET_CMD", /(^|\s|;)pi --session-id/.test(gcmd), gcmd.slice(-160));
+
+  // --- effort is a CLOSED SET, not a charset: nothing outside it can reach the line at all, and a
+  // harness without the concept refuses one rather than accepting a flag it will silently drop.
+  const be = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi", effort: "low; rm -rf /" });
+  check("§6 a pi effort outside the declared level set is rejected (400)", be.status === 400, String(be.status));
+  const ce = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, effort: "high" });
+  check("§6 the default adapter refuses an effort it has no flag for, rather than dropping it (400)",
+    ce.status === 400, String(ce.status));
+  const uh = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "opencode" });
+  check("§6 an unregistered harness is refused (400) — the registry is an allowlist too", uh.status === 400, String(uh.status));
+
+  // --- the transcript degradation, proven where it actually bites. The slot's cwd is REPO, which
+  // this suite has had claude-less sessions in; what matters is that transcriptFile's newest-by-
+  // mtime FALLBACK is not consulted for a harness that writes no claude transcript. Its `source`
+  // is the observable: null means "no transcript", and for a pi slot it must be null ALWAYS,
+  // never "whatever .jsonl happened to be newest in this directory".
+  const tp = (await (await get(`/api/slots/${HARNESS_SLOT}/transcript?after=0`)).json()) as { source: string | null; entries: unknown[] };
+  check("§6 a pi slot reports NO transcript source (the mtime fallback must not hand it a stranger's conversation)",
+    tp.source === null && tp.entries.length === 0, `${String(tp.source)} / ${tp.entries.length}`);
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  // --- and the harness dies with the session: a recycled slot must not inherit the binary the
+  // previous occupant ran. Same rule (and same reason) as the selfToken rotation in §3.
+  check("§6 fixture: the slot is recycled with no harness named", (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO })).ok);
+  const rcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  check("§6 a recycled slot is spawned by the DEFAULT harness, never the previous occupant's",
+    !rcmd.includes("pi --session-id") && !rcmd.includes("--thinking"), rcmd.slice(-160));
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
 }

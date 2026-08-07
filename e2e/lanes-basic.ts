@@ -23,6 +23,20 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("copied .env is owner-only (0600)", wtEnvMode === 0o600, wtEnvMode === -1 ? "missing" : wtEnvMode.toString(8));
   const wtRefused = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
   check("open-worktree on an active slot is refused", wtRefused.status === 400);
+
+  // --- a LANE can name its harness too, and it travels a different road than a plain session's:
+  // the route hands it to openLaneInSlot, which hands it on to openSlot. Two extra parameter hops
+  // is exactly where a choice gets silently dropped, and a dropped harness is invisible — the lane
+  // simply comes up as claude and nobody is told. So the pane's own command line is the assertion.
+  // (The DEFAULT stays default for anything a tick spawns; that bolt is pinned in e2e/pins.ts.)
+  await post("/api/slots/7/kill", {}); // ensure the slot is free before opening (suite convention)
+  const hw = await post("/api/slots/7/open-worktree", { repo: REPO, branch: "e2e-lane-pi", harness: "pi", effort: "high" });
+  check("open-worktree accepts a harness for a hand-started lane", hw.ok, String(hw.status));
+  const hwCmd = (await tmuxOut("display-message", "-p", "-t", "s7", "#{pane_start_command}")).out;
+  check("a lane spawned with harness=pi actually runs pi, with its session pinned and effort passed",
+    /(^|\s|;)pi --session-id [0-9a-f-]{36}\b/.test(hwCmd) && hwCmd.includes("--thinking high"), hwCmd.slice(-160));
+  await post("/api/slots/7/kill", {});
+  spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-pi`], { cwd: REPO });
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
   // the copied .env is gitignored in the test repo, so it must NOT show as dirty — a fresh

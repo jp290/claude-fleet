@@ -50,13 +50,23 @@ print(f"  check-trail runs (main checkout) {len(t)}"
       "  — audits write to $TMPDIR/fleet-e2e-trail instead; see docs/e2e-trail.md")
 PY
 echo
-echo "=== is the running server the code on disk? ==="
+# The live server always runs in the MAIN checkout, but CLAUDE.md tells every LANE to run this
+# script too — and there $PWD is the worktree, so the real srv was reported as "stray" and the
+# deploy-gap line below lost its anchor. Anchor on the canonical main checkout instead: the common
+# git dir is shared by every worktree, so its parent is the same path from anywhere. Symlinks
+# resolved on both sides, because lsof reports the real path (and createWorktree stores one too).
+rp() { [ -n "${1:-}" ] && (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "${1:-}"; }
+MAIN_CHECKOUT=$(rp "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")")
+export MAIN_CHECKOUT
+
+echo "=== is the running server the code on disk?  (main checkout: $MAIN_CHECKOUT) ==="
 for p in $(pgrep -f 'bun server.ts' 2>/dev/null); do
   cwd=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)
-  case "$cwd" in
-    "$PWD") echo "  LIVE  pid $p  up since $(ps -o lstart= -p "$p" | xargs)";;
-    *) echo "  stray pid $p  cwd $cwd   <- not the fleet; a leaked e2e server if it is in TMPDIR";;
-  esac
+  if [ "$(rp "$cwd")" = "$MAIN_CHECKOUT" ]; then
+    echo "  LIVE  pid $p  up since $(ps -o lstart= -p "$p" | xargs)"
+  else
+    echo "  stray pid $p  cwd $cwd   <- not the fleet; a leaked e2e server if it is in TMPDIR"
+  fi
 done
 echo "  deploy gap = commits above newer than that start time (server code only;"
 echo "  client changes go live on 'bun run build' alone)"
@@ -68,16 +78,17 @@ echo "  suites running now:      $(ps -eo command | grep -c '^/bin/sh ./e2e-isol
 echo
 echo "=== config sensor (Ring 1.1: Wert+Quelle je FLEET_*; vorher hatten 31/42 Werte keinen Sensor) ==="
 python3 - <<'PY'
-import subprocess, re
+import subprocess, re, os
 def sh(cmd):
     try: return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10).stdout
     except Exception: return ''
 def clip(v): return (v[:44] + '…') if len(v) > 44 else v
-cwd_here = sh('pwd').strip()
+# Same anchor as the section above — from a lane, $PWD is the worktree and this sensor went blind.
+main_checkout = os.path.realpath(os.environ.get('MAIN_CHECKOUT') or '.')
 live = {}
 for p in sh("pgrep -f 'bun server.ts'").split():
     c = [l[1:] for l in sh(f'lsof -a -p {p} -d cwd -Fn').splitlines() if l.startswith('n')]
-    if c and c[0] == cwd_here:
+    if c and os.path.realpath(c[0]) == main_checkout:
         # ps eww hängt die Env an die Kommandozeile; mehrteilige Werte (die *_CMD) erscheinen
         # nur bis zum ersten Leerzeichen — für den Sensor reicht Existenz + Präfix
         for m in re.finditer(r'(FLEET_[A-Z_]+)=(\S*)', sh(f'ps eww -p {p}')):
@@ -101,7 +112,7 @@ for k, v in tmx.items():
 for k, v in env.items():
     if k in tmx and tmx[k] != v:
         print(f"  ⚠ {k}: .env={clip(v)} liegt UNTER tmux-global={clip(tmx[k])} (echte Env gewinnt)")
-if not live: print('  (kein LIVE-Server in diesem cwd — live-Spalte leer)')
+if not live: print('  (kein LIVE-Server im Haupt-Checkout — live-Spalte leer)')
 PY
 echo "  (watchdog.sh-Spalte = kommt in der Spawn-Zeile vor, eingefroren bis launchctl kickstart;"
 echo "   Werte, die NUR in server.ts-Defaults leben, haben weiterhin keinen Sensor — Ring 1.2)"

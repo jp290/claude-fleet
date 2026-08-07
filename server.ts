@@ -13,6 +13,7 @@ import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
+import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -9039,6 +9040,74 @@ async function slotStatsView(now: number): Promise<SlotStatsSummary> {
   return slotStats(rows, { now, malformed });
 }
 
+// --- the per-check trail, read (trailstats.ts). The rows have been written since 2026-07-27 and
+// nothing read them, so "is this red mine or a known flake?" still cost a ~7-minute same-tree
+// re-run per red (docs/verify-tiering.md §11.7). This is the read half.
+//
+// TWO DIRECTORIES, TWO POPULATIONS, and reading one alone silently drops the other: the main
+// checkout's `e2e-trail/` collects every wrapper run including every lane's (a linked worktree
+// shares the common dir, docs/e2e-trail.md §3), while the post-land audit runs against a `git
+// archive` snapshot that is no repository at all and falls back to the tmpdir. Both are OVERRIDES
+// away from being wrong, hence the env knob; trailStats itself names no path (it is a reader).
+const TRAIL_DIRS: string[] = (process.env.FLEET_TRAIL_DIRS ?? "").trim()
+  ? process.env.FLEET_TRAIL_DIRS!.split(",").map((s) => s.trim()).filter(Boolean)
+  : [`${import.meta.dir}/e2e-trail`, `${tmpdir()}/fleet-e2e-trail`];
+// ~220 KB and ~880 rows per run file (docs/e2e-trail.md §2) — 1115 files on this machine already.
+// Newest-by-mtime first and capped, so the cost of this route is bounded by the cap and not by how
+// long the fleet has been running; `filesOmitted` reports the cut rather than hiding it.
+const TRAIL_MAX_FILES = 400;
+const TRAIL_DEFAULT_DAYS = 14;
+
+interface TrailStatsView extends TrailSummary {
+  dirs: string[]; files: number; filesOmitted: number; unreadableFiles: number;
+}
+function trailStatsView(now: number, opts: { days?: number; suite?: string | null; check?: string | null }): TrailStatsView {
+  const days = Number.isFinite(opts.days) && (opts.days as number) > 0
+    ? Math.min(365, opts.days as number) : TRAIL_DEFAULT_DAYS;
+  const windowMs = days * 86_400_000;
+  const cutoff = now - windowMs;
+  const cand: { path: string; mtime: number }[] = [];
+  let unreadableFiles = 0;
+  for (const d of TRAIL_DIRS) {
+    let names: string[];
+    try { names = readdirSync(d); } catch { continue; } // an absent trail dir is not an error
+    for (const n of names) {
+      if (!n.endsWith(".jsonl")) continue;
+      try {
+        const st = statSync(`${d}/${n}`);
+        // mtime is a PRE-FILTER only, never the window itself: a file is skipped when it cannot
+        // hold an in-window row at all. Every kept row is still scoped by its own `ts` in the reader.
+        if (st.mtimeMs >= cutoff) cand.push({ path: `${d}/${n}`, mtime: st.mtimeMs });
+      } catch { unreadableFiles++; }
+    }
+  }
+  cand.sort((a, b) => b.mtime - a.mtime);
+  const take = cand.slice(0, TRAIL_MAX_FILES);
+  const records: TrailRecord[] = [];
+  let malformed = 0;
+  for (const f of take) {
+    let text: string;
+    try { text = readFileSync(f.path, "utf8"); } catch { unreadableFiles++; continue; }
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      try { records.push(JSON.parse(line) as TrailRecord); } catch { malformed++; } // torn mid-append row
+    }
+  }
+  return {
+    ...trailStats(records, { now, windowMs, suite: opts.suite ?? null, check: opts.check ?? null, malformed }),
+    dirs: TRAIL_DIRS, files: take.length, filesOmitted: Math.max(0, cand.length - take.length), unreadableFiles,
+  };
+}
+// the query-string half, shared verbatim by the owner route and the session route so the two can
+// never drift into answering the same question differently.
+function trailStatsFromQuery(url: URL): TrailStatsView {
+  return trailStatsView(Date.now(), {
+    days: Number(url.searchParams.get("days") ?? TRAIL_DEFAULT_DAYS),
+    suite: (url.searchParams.get("suite") ?? "").trim() || null,
+    check: (url.searchParams.get("check") ?? "").trim() || null,
+  });
+}
+
 // --- the two ledgers the Rundgang was structurally blind to (docs/mining-2026-07-26.md finding 5:
 // the only two RED post-land audits ever recorded were seen by nobody, because the pulse's single
 // gathering call carried no audit result, no outcome row and no shadow verdict). Both trails keep
@@ -9512,6 +9581,35 @@ Bun.serve<WSData>({
         autos: autos.filter((a) => a.slot === s.id),
         watches: watches.filter((w) => w.slot === s.id),
       });
+    }
+
+    // the flake question, asked from inside a session — /api/flakes with the scoped credential.
+    //
+    // IT HAS TO BE REACHABLE FROM A LANE OR IT SOLVES NOTHING: the proof order it replaces
+    // ("run the same tree again", ~425 s median plus the suite mutex) is an obligation CLAUDE.md
+    // puts on LANES, at the moment a lane sees a red check. An owner-only route would answer the
+    // question for the one principal who was not asked it.
+    //
+    // WHICH TIER, and why not one of its neighbours. The self family has three, not two, and this
+    // route joins the widest: /api/self and /api/self/autos answer EVERY session, the four routes
+    // below are lane-only, /api/self/watch is non-lane-only. The two narrow tiers are narrow
+    // because their content is meaningless to the other principal — land-gate knowledge to a
+    // session that will never land, a lane-waits-on-lane coupling nobody can see. Neither reason
+    // applies here: a lane adjudicating its own red and the owner adjudicating a post-land audit
+    // ask the identical question of the identical rows. Hanging it off /api/self/gate instead was
+    // the alternative and is wrong twice — it would make the answer lane-ONLY (re-introducing the
+    // gap above for the owner-side session), and gate is a parameterless read of this process's
+    // env, while this is a parameterised query over a ledger.
+    //
+    // It also grants no capability. The trail lives in the main checkout's `e2e-trail/`, which a
+    // lane can already reach through the shared common dir (docs/e2e-trail.md §3) — this route
+    // saves it a directory walk, it does not show it a file it could not open. Read-only, and the
+    // payload is aggregate: check names, tree shas and run ids, no `detail` and no prose.
+    if (url.pathname === "/api/self/flakes" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      return json(trailStatsFromQuery(url));
     }
 
     // self-scheduling: a session schedules its own future check-in, authenticated by its scoped
@@ -10050,6 +10148,16 @@ Bun.serve<WSData>({
     // Derived, never stored — the events were always there, only nobody aggregated them.
     if (url.pathname === "/api/slot-stats" && req.method === "GET") {
       return json(await slotStatsView(Date.now()));
+    }
+    // the per-check trail, read as the flake question (trailstats.ts): which checks fail, where
+    // the suite spends its wall clock, and — the one that replaces a seven-minute re-run — did
+    // check X fail on trees that do not contain my change. Same access model as /api/slot-stats
+    // above: derived, never stored, owner-only by POSITION (past the tokenGate, structurally 404
+    // on SHARE_HOSTS). ?check= turns on the point answer, ?suite= and ?days= narrow the window.
+    // It gates nothing and alarms nobody — a verdict here is EVIDENCE for the lane's own proof
+    // order, not a substitute for it.
+    if (url.pathname === "/api/flakes" && req.method === "GET") {
+      return json(trailStatsFromQuery(url));
     }
     // owner-only, read-only per-lane outcome trail — EXACT same access model as /api/audit above:
     // token-gated (past the tokenGate at the top of this block) and structurally 404 on SHARE_HOSTS

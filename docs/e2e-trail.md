@@ -116,7 +116,69 @@ use for it, and `restartSrv` filters `FLEET_E2E_*` out of the env it carries for
 
 `drills/drill-3.sh` writes no trail — its harness is a drill fixture, not a `check()` suite.
 
-## 7. Not in this layer
+## 7. The query over these rows
 
-No query, no flake ranking, no route. `GET /api/…` over these rows is the next piece, and
-`knowledge-currency.md` §5(b) is where it belongs.
+2026-08-07. What §7 called "the next piece" exists: `trailstats.ts` reads the rows, and two routes
+serve it. The reason it was worth building is in §1 — the proof order `CLAUDE.md` obliges a lane to
+on every red check starts with a same-tree re-run, ~425 s median plus the suite mutex, per red.
+
+**The whole trick is one sentence: a check that failed on ≥2 distinct CLEAN trees cannot be the
+diff of whoever is asking**, because no single working tree is two commits. Everything else is
+bookkeeping around that sentence.
+
+`trailstats.ts` is a READER in the sense `slotstats.ts` and `continuity.ts` are: no filesystem, no
+clock, no path — records, `now`, the window, the filters and the caps are all arguments, so a
+synthetic sequence yields a predictable summary and every semantic test runs without a server. It
+answers three questions and carries no field that answers none of them:
+
+- **flakes[]** — grouped by `suite`×`check`: failing runs, the denominator, and the number of
+  distinct clean trees the failure appeared on (`notYourDiff` = that count ≥ 2).
+- **slowest[]** — summed and median `msSincePrev` per check. Still cost-to-get-here, not runtime (§4).
+- **point** — `?check=` asks about one check and answers with the run ids and tree shas as evidence:
+  `not-your-diff` | `insufficient-evidence` | `never-failed`.
+
+Three exclusions carry the whole honesty of the answer, and each has already produced a wrong
+number somewhere:
+
+- **`dirty:true` is the common case, not the edge.** A lane measures its own uncommitted tree, so
+  the row's sha does not describe the code that ran. A dirty fail can never count toward the ≥2
+  proof; it is its own category and it is reported (`dirtyFailRuns`), never dropped.
+- **`tree:null`** (the post-land audit's `git archive` snapshot, §2) is a third category, never
+  folded into either of the other two.
+- **The denominator is "runs that ran THIS check", not "all runs".** A check added last week has a
+  small denominator and would otherwise read as catastrophic. Queue row `32c89530` shipped a
+  published "4 of 69 (~6 %)" built from two different denominators for exactly this reason.
+
+**Known limit, deliberately not solved: a renamed check is two checks here.** `check` is the join
+key verbatim and matching is exact. Fuzzy matching would silently merge two genuinely different
+checks — a worse failure than an honest split a reader can see. A ranking that suddenly shows a
+familiar check with a tiny denominator is the symptom; the cure is to read the two names.
+
+### The routes
+
+| route | principal | notes |
+| --- | --- | --- |
+| `GET /api/flakes` | owner | same access model as `/api/slot-stats`: past the token gate, 404 on `SHARE_HOSTS` |
+| `GET /api/self/flakes` | **any session** (`x-fleet-self-token`) | lane *and* plain session — see below |
+
+Both take `?check=`, `?suite=`, `?days=` and share one handler, so they cannot drift into answering
+the same question differently.
+
+The session route has to reach a **lane** or it solves nothing: the proof order it replaces is an
+obligation `CLAUDE.md` puts on lanes, at the moment a lane sees a red check. It joins the *widest*
+of the self family's three tiers — `/api/self` and `/api/self/autos` answer every session; the four
+lane-only routes and the non-lane-only `/api/self/watch` are narrow because their content is
+meaningless to the other principal. Neither reason applies here: a lane adjudicating its own red
+and the owner adjudicating a post-land audit ask the identical question of the identical rows. It
+grants no capability either — a lane can already open `e2e-trail/` through the shared common dir
+(§3); the route saves it a directory walk.
+
+The server reads **both** directories from §3 (`<checkout>/e2e-trail` and the tmpdir fallback),
+because reading either alone silently drops a whole population — the previews or the post-land
+audits. `FLEET_TRAIL_DIRS` overrides. Files are pre-filtered by mtime and capped at the newest 400
+(~28 MB, ~325 ms measured), with `filesOmitted` reporting the cut rather than hiding it.
+
+**It gates nothing and alarms nobody.** A verdict here is evidence *for* a lane's proof order, not
+a substitute for it — the same stance §5's "must never change a run's outcome" takes on the write
+side. And the retention question §3 left to "the query layer that will read it" is still open: the
+cap bounds the *read*, not the directory.

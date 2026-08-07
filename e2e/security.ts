@@ -68,6 +68,14 @@ const PRE_AUTH_ROUTES = [
   // many can be armed. Its subscriber rule runs the OTHER way to the four lane-only routes below:
   // a lane is refused 409 here. All six 409s are pinned in e2e/self-token.ts and e2e/watch.ts.
   '= /api/self/watch',    // same credential: subscribe your OWN pane to a lane's done-looking
+  // added 2026-08-07. Third entry on the every-session tier, and the widest READ on this list —
+  // it is the only self route whose payload is not this slot's own row but a fleet-wide ledger
+  // (the per-check e2e trail). What bounds it: read-only, aggregate (check names, tree shas, run
+  // ids — never a check's `detail` and never prose), and it discloses nothing a session could not
+  // already read off disk, since `e2e-trail/` sits in the main checkout's common dir that every
+  // lane worktree shares. It answers a LANE deliberately — the proof order it replaces is an
+  // obligation on lanes — so unlike its neighbours it has no 409 in either direction.
+  '= /api/self/flakes',   // same credential, read-only: the flake query over the e2e trail
   '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)
   '= /api/self/criterion', // same credential: the lane's PROPOSED done-criterion (slot-bound, owner confirms)

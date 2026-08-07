@@ -716,6 +716,26 @@ assumption without weakening any assertion. Not built here — the honest verifi
 serial `./e2e-isolated.sh` runs (~30 min of suite mutex, so never beside a land), which is a lane's
 job, not a doc's. Part (b) of `32c89530` remains open with this as its brief.
 
+**Closed — fixed in this lane.** Nothing above this paragraph was rewritten; the addendum is the
+whole change, so the `:327-340`/`:349` line refs above point at the code as it was *when the family
+was diagnosed*, not at today's. Part (b) was built exactly as the paragraph before it names: the
+fixed `Bun.sleep(2000)` is gone, the
+probe is re-fired *per round*, and the round's exit condition is read off the server's
+`observed`/`lastOutput` rather than off `paneEnv`'s return value — a pane that has been observed is
+left alone so its idle clock starts, and a 60 s upper bound fails the named setup check instead of
+running the block against a pane that never spoke. No assertion moved: the four checks this family
+shows up in are byte-identical, and the setup check that used to accept "paneEnv answered" now
+requires `observed`, which is strictly stronger. Proof: **three serial `./e2e-isolated.sh` runs on
+the fixed tree, all green, nothing else on the machine** — trail ids
+`isolated-20260807T133041Z-8248`, `isolated-20260807T133946Z-43828`,
+`isolated-20260807T134849Z-77993`, each `tree` `5f84d53` `dirty:true` (the fix was still
+uncommitted, as the rows say), each with **zero `ok:false` rows**. One green run would have proved
+nothing against a ~4-5 % base rate, which is why the price was paid.
+
+The trail also shows the loop is *cheaper* than the fixed wait it replaced: the setup check lands
+at `msSincePrev` 2132 / 2128 / 2140 ms across the three runs — two rounds, converging where the
+1500 ms `quietUntil` window ends, instead of a flat 2000 ms sleep plus the probes after it.
+
 **No free pass.** Four sightings make the family real; they do not make the next red one a flake.
 The proof order in §11.3 applies unchanged.
 

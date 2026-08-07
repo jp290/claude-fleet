@@ -305,10 +305,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
     type SvSlot = { id: number; stalled: boolean; stalledSince: number | null; doneLooking: boolean;
       observed: boolean; lastOutput: number };
-    const svSlot = async (slot: number): Promise<SvSlot | undefined> =>
+    const svAll = async (): Promise<SvSlot[]> =>
       ((await (await fetch(BASE + "/api/steward/sessions",
-        { headers: { authorization: `Bearer ${svTok}` } })).json()) as { slots: SvSlot[] })
-        .slots.find((x) => x.id === slot);
+        { headers: { authorization: `Bearer ${svTok}` } })).json()) as { slots: SvSlot[] }).slots;
+    const svSlot = async (slot: number): Promise<SvSlot | undefined> =>
+      (await svAll()).find((x) => x.id === slot);
 
     // (a) the subject: a lane that never commits anything and simply goes quiet
     const sl = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
@@ -329,20 +330,36 @@ export async function run(ctx: Ctx): Promise<void> {
     // which is exactly the "never observed" state the predicate refuses to accuse (measured: the
     // first version of this block failed here, with observed:false and idleMs 1.79e12). A real lane
     // paints within a second of spawning; the probe reproduces that, and only then does going quiet
-    // mean what the fact says it means. paneEnv is the sanctioned way to make a pane render (it
-    // retries send-keys until the marked line appears), so it doubles as proof the pane responded.
-    // The wait is load-bearing, not politeness: ensureSlot sets `quietUntil = now + 1500` when it
-    // starts piping, and poll() streams output inside that window WITHOUT stamping lastOutput — the
-    // repaint tmux just caused is not the session doing work (server.ts, both lines). A probe fired
-    // inside the window therefore renders on the pane, satisfies paneEnv, and still leaves
-    // lastOutput at 0. Measured exactly that way: the probes all reported success and the lane was
-    // still observed:false. Every window started at its own slot's open, all of which are above.
-    await Bun.sleep(2000);
+    // mean what the fact says it means. paneEnv is the sanctioned way to make a pane render — it
+    // retries send-keys until the marked line appears.
+    // A RENDERED PANE IS NOT AN OBSERVED PANE, and that gap is why this is a loop and not a probe:
+    // ensureSlot sets `quietUntil = now + 1500` when it starts piping, and poll() streams output
+    // inside that window WITHOUT stamping lastOutput — the repaint tmux just caused is not the
+    // session doing work (server.ts, both lines). A probe fired inside the window therefore renders,
+    // satisfies paneEnv, and still leaves lastOutput at 0. The shape that loses is one probe behind
+    // a fixed sleep: each pane's window starts at ITS OWN open, so under machine load the single
+    // probe is still inside it, `observed` never flips, and the poll below — which waits on
+    // `stalled`, a predicate `observed` gates — spins out and reports the setup failure four times
+    // over. That is the sixth flake family, ~4-5 % of runs (docs/verify-tiering.md §11.2c).
+    // So: re-fire the probe PER ROUND, and take the exit condition from the SERVER's view
+    // (observed/lastOutput), never from paneEnv's return value. The bound is an upper limit, not the
+    // load-bearing wait — reaching it fails the named setup check instead of running the rest of the
+    // block against a pane that never spoke.
     const panes = [sl.slot, ss.slot, ...(freeStalled ? [freeStalled.id] : [])];
     const spoke: number[] = [];
-    for (const target of panes) if ((await paneEnv(`s${target}`, "HOME")) !== null) spoke.push(target);
+    const rendered: number[] = [];
+    const spokeBy = Date.now() + 60_000;
+    while (spoke.length < panes.length && Date.now() < spokeBy) {
+      for (const target of panes) {
+        if (spoke.includes(target)) continue; // an observed pane is left alone: its idle clock runs now
+        if ((await paneEnv(`s${target}`, "HOME", 5_000)) !== null && !rendered.includes(target)) rendered.push(target);
+      }
+      for (const v of await svAll())
+        if (panes.includes(v.id) && !spoke.includes(v.id) && v.observed === true && v.lastOutput > 0) spoke.push(v.id);
+      if (spoke.length < panes.length) await Bun.sleep(500);
+    }
     check("stalled setup: every pane in this block produced output before going quiet",
-      spoke.length === panes.length, `spoke=[${spoke}] of [${panes}]`);
+      spoke.length === panes.length, `observed=[${spoke}] rendered=[${rendered}] of [${panes}]`);
 
     // the git facts ride the 10s tickGit, and the idle clock is the shrunk threshold on top
     let slView: SvSlot | undefined;

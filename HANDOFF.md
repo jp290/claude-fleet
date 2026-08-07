@@ -1,7 +1,118 @@
-# HANDOFF — Session 35 (2026-08-07 mittags: fünf Lands, ein bewiesener Flake, ein Stern) · 34/33/32/… darunter
+# HANDOFF — Session 36 (2026-08-07 nachmittags: fünf Lands, ein ECHTES Rot, der Steward diagnostiziert) · 35/34/33/… darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 6b8965e..HEAD`
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log ed4270c..HEAD`
 mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 36: der Nachmittag, an dem ein rotes Audit ausnahmsweise recht hatte
+
+**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` ·
+`briefs/work-waves-2026-08-07.md` · die ersten beiden Regeln in `CLAUDE.md`.
+
+### Gelandet — fünf durchs Gate, fünf direkt
+
+| SHA | Was | Gate | Audit |
+|---|---|---|---|
+| `c72fd14` | der laufende Post-Land-Audit wird sichtbar (`postLandAuditLive` + Wartende + p50/p90) | 77 s | grün 561 s |
+| `84b092d`+`e622f23` | `state.sh` lügt eine Lane nicht mehr an; fehlender Ledger = UNKNOWN statt 0 | 68 s | grün 523 s |
+| `241a083` | **sechste Flake-Familie** in `docs/verify-tiering.md` §11.2c + `CLAUDE.md` | direkt | — |
+| `b210681` | **der Rückkanal** — ein Slot abonniert eine Lane, wird einmal geweckt | 71 s | **ROT** 544 s |
+| `d2fbfcb` | der Fixture-Fehler, den dieses Rot aufgedeckt hat | direkt | — |
+| `1316fbb` | *der Träger bestimmt die Nutzung* (Fable-5-Untersuchung) | 73 s | grün 548 s |
+| `ca514eb` | `state.sh` bekommt **land health** — die Ledger trugen die Kennzahl längst | direkt | — |
+| `d02f1ec` | **jede Session bekommt ihr Self-Credential**; die vier Lane-Routen antworten 409 | 68 s | grün 660 s |
+| `bfe20e1` | §11.2d — die `paneEnv`-Schwester, ausdrücklich KEIN Familienmitglied | direkt | — |
+
+Alle fünf Gates `waitMs 0`. Deploy dreimal gefahren und je am Owner-Poll verifiziert.
+
+### Das rote Audit war ECHT — und meine erste Lesart war falsch
+
+`b210681`s Tier-2 war rot mit **einem** FAIL (`watch setup: … observed (lastOutput>0)`, Detail `0`).
+Ich habe zuerst auf „gleiche Wurzel wie Familie sechs, also Rauschen" getippt. **Der Beweislauf hat
+mich widerlegt:** derselbe Baum, sauber, seriell → *wieder* rot, derselbe Check, dasselbe Detail.
+„Fällt identisch am selben Baum" ist genau der Fall, in dem es **deins** ist.
+
+Ursache deterministisch: der busy receiver ist ein **recycelter** Slot, `open` startet die Pipe neu,
+`ensureSlot` setzt `quietUntil = now + 1500`, und die **eine** Sonde davor landet immer im Fenster.
+Die Fixture pollte bereits auf `observed` — und das ist die Hälfte, die **nicht** trägt. Die tragende
+ist, die **Sonde** je Runde neu zu feuern. Adjudiziert `real`, behoben in `d2fbfcb`.
+
+**Merke:** eine bekannte Familie ist kein Freifahrtschein. Der Beweislauf kostete 10 min und hat eine
+Fehldiagnose verhindert, die eine tautologische Testzeile im Baum gelassen hätte (die zwei Checks
+darunter liefen gegen `lastOutput=0` und bestanden aus dem falschen Grund).
+
+### Der Steward: nicht die Kadenz, nicht die Daten — die Anweisung
+
+Der Owner fragte, ob der Steward stündlich laufen solle. Die Messung sagt: er **lief** stündlich, und
+das war nie das Problem.
+
+| Kanal | Filings | `done` | `archived` |
+|---|---|---|---|
+| `[inspektion revier N]` | 5 | **5** | 0 |
+| `[rundgang …]` | 8 | **0** | 6 |
+
+Derselbe Agent, dieselben Daten, zwei Anweisungsdateien. Die **Inspektion** urteilt über Code —
+wahr oder nicht, `inspektion.md:9` erzwingt `file:line` + Kosten. Der **Rundgang** urteilt über
+*Lage*, und das ist die Frage, deren Antwort dem Owner gehört; seine Ausgabe landet als Meinung in
+einer Queue, die niemand leert. In 5 von 8 Fällen diagnostiziert er die **eigenen Sensoren** — der
+einzige Gegenstand, über den er mechanisch urteilen kann.
+
+**Getan (Owner-Freigabe):** der stündliche Puls steht jetzt auf `/inspektion` (`f2a34b1f`,
+`everySec 3600`, `idleSec 900`, `runs 100`). Bewusst **nicht** `perpetual` — der Deckel läuft um den
+11.08. aus und ist ein kostenloser Prüfpunkt, *sobald* die Absenz sichtbar ist (`e4f87152` (a)).
+
+**Vorher gefunden:** der Steward hatte **gar keinen** Puls mehr. `server.ts:1853/:1899` löschen beim
+(Neu-)Öffnen eines Slots alle seine Autos — richtig so, aber still. Session 35 hat um 12:10 einen
+frischen Steward geöffnet und damit dessen eigenen Puls gelöscht. Niemand hat es bemerkt.
+
+### Drei neue Zeilen, alle aus Messungen dieser Session
+
+- **`dabd1880`** — der Analyse-Sweep kann an einem Land-Tag **nie** konvergieren. Kapazität
+  **6 Zeilen / ~5 min** gegen **59 Entwertungen pro Land** (jedes Land macht jedes Urteil stale).
+  Um 12:23Z: **0 von 59** frisch. Die Vorzugsregel (`queued` zuerst) hat eine leere Population.
+- **`e4f87152`** — der Steward-Puls stirbt still beim Neu-Öffnen (oben).
+- **`15a01b70`** — der `/api/self/watch`-Zwilling. **Enthält den wörtlichen Owner-Entwurf**, der
+  ungesendet im Composer von Slot 2 stand und beim Land gestorben wäre.
+
+### Vier Korrekturen an mir selbst
+
+1. **Slot 8 gehört nicht zu claude-fleet** (`repo = ~/private-repo-a`). Ich habe ihn zweimal als
+   „unsere Lane, landen oder wegwerfen" geführt.
+2. **„Seit 25 min still" war der Schatten meines eigenen Deploys.** Sechs Panes trugen `lastOutput`
+   = `12:08:48Z`, auf die Sekunde der `srv`-Neustart. Slot 16 schweigt seit dem 03.08. und las sich
+   als „hat gerade gesprochen". `idleMs` ist der Eingang von `stalled` **und** `doneLooking`.
+3. **`postLandAuditLive: null` war mein eigener `.get()`-Default**, nicht die Antwort des Servers —
+   der Schlüssel fehlte, weil ich noch nicht deployt hatte. Absenz ≠ Wert, an mir selbst übersehen.
+4. **Ich habe „Klick auf `f520e704`" als „bestätige das Kriterium" gelesen.** Der Owner wollte, dass
+   Bezeichner *auflösbar* sind. Seitdem: **jede Id im Gespräch trägt einen Kurztitel.**
+
+### Was der Owner entscheiden muss (nichts davon ist Agenten-Arbeit)
+
+- **`f520e704`** (*Steward kritisch beleuchten*) — Kriterium `confirmedAt:null`, unwiderruflich,
+  seine Worte. **BAU-B ist längst gelandet** (`5387e92`), der Vorschlag weiß es nicht. BAU-A ist die
+  strukturelle Hälfte der Steward-Antwort oben.
+- **F5** aus dem Wellen-Brief: `2784427e` (*F6 Drag&Drop*) — Entwurf sagt Ablage **außerhalb**,
+  kompilierter Brief sagt **im** Worktree. Vor dem Start zu klären.
+- **F3/F4/F6–F12** unverändert offen (`briefs/work-waves-2026-08-07.md` §3).
+
+### Startbereit, mit Brief, in dieser Reihenfolge
+
+1. **`15a01b70`** (*Watch-Zwilling*) — Vorbedingung erfüllt seit `d02f1ec`, vier Klärfragen im Text.
+2. **`fdabb575`** (*Kontext-Sensor*) — Owner-Entscheid liegt vor: **nur Sensor + Anzeige**, keine
+   Auto-Migration. Braucht einen Pin auf das Statuszeilen-Format.
+3. **`32c89530`** Teil (b) — der `e2e/review.ts`-Fix. Mechanismus seit `d2fbfcb` bekannt; teuer ist
+   nur der Nachweis: **drei serielle Läufe** (~30 min Mutex), nie neben ein Land.
+
+`8235c4bc` (*Wellen-Gruppierung*) bleibt hinter `9e0fdc3b` (*`files` als Feld*): `analysis.files` ist
+auf **allen** Zeilen mit Analyse leer — gemessen, nicht vermutet.
+
+### Der Rückkanal funktioniert, deckt aber die häufigste Wartelage nicht ab
+
+`b210681` hat heute **einmal echt geliefert** (Slot 2 → mein Slot 4). Aber `doneLooking` verlangt
+`ahead>0` **und** eine Lane. Von den sieben wartenden Sessions auf dieser Maschine ist damit **genau
+eine** erreichbar. *„Eine Session ist fertig und stellt dir eine Frage"* — Slot 16 seit dem 03.08.,
+Slot 8 seit dem 04.08. — hat weiterhin keinen Kanal.
 
 ---
 

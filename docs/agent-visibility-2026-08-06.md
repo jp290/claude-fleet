@@ -273,6 +273,16 @@ durchgehend belegt (`{"alive":true,"state":"held"}`, `heldMs` > 300 000, GEMESSE
 Pulse**. Unter 50 % ist nicht die Route der Träger, sondern das Ritual — dann aufhören, nicht
 nachschärfen.
 
+**GEBAUT — 2026-08-07** (Queue-Zeile `7d380d5e`). `gate: gateView()` hängt jetzt auch an
+`GET /api/steward/digest`, route-berechnet neben `sinceLastLook`/`deployGap`/`bundleStale` — also
+unabhängig davon, ob der Digest-Worker lebt. **Dieselbe** `gateView()` wie die Sessions-Route und
+das Owner-Board: eine berechnete Antwort, keine zweite von Hand gebaute, und ein Pin in
+`e2e/steward-core.ts` hält die beiden Antworten aneinander fest. Der GEMESSEN-Befund oben („kein
+`gate`") beschreibt damit den Stand vor diesem Datum; die Zeilenrefs auf `server.ts:7593/7595`
+waren schon bei der Untersuchung an ihrem Baum verankert und sind nicht nachgezogen worden.
+Die Schwelle bleibt offen — sie zählt Journaleinträge über 10 Pulse und war von der bauenden Lane
+nicht erhebbar.
+
 ### 3. Die Lane erfährt zwei ihrer fünf Fähigkeiten nirgends
 
 **Rolle 1 · Lücke (c) · GEMESSEN**

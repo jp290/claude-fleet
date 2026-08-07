@@ -255,6 +255,25 @@ unsichtbar bleibt.
 nicht unterscheidbar. Die billigste Kur ist eine Zahl, nicht Code: `DIGEST_TTL_MS` über das
 Puls-Intervall heben, damit der *vorherige* Lauf noch gilt.
 
+**GEBAUT — 2026-08-07** (Queue-Zeile `bbf2eea1`; die Konstanten-Tabelle darüber und ihre
+Zeilenrefs beschreiben den Stand VOR dieser Änderung und werden bewusst nicht nachgezogen — sie
+sind der Befund, nicht der Code). Drei Teile, und der zweite ist der, der die Rate erst
+interpretierbar macht:
+
+1. `DIGEST_TTL_MS` wird aus `DIGEST_PULSE_MS` (60 min, die Kadenz aus `.claude/commands/rundgang.md`)
+   abgeleitet und liegt eine halbe Puls-Länge darüber. **Bekannte Folge, nicht versteckt:** „frisch
+   ⇒ kein Lauf" heißt zwangsläufig, dass der Worker nur noch bei JEDEM ZWEITEN Puls läuft und das
+   ausgelieferte Urteil bis zu einen Puls alt ist. `digestAge` nennt die Zahl, `digestStatus` das Wort.
+2. `digestStatus` (`fresh | stale | failed | pending | cold`) auf jeder Antwort. `digest:null` trug
+   vorher drei verschiedene Lagen — „läuft noch", „gestorben", „nichts zu sagen" — in einem Wert;
+   genau das ist die Ununterscheidbarkeit aus dem Kosten-Absatz. `failed` reist immer mit `error`.
+3. Ein FEHLGESCHLAGENER Lauf gilt nie als frisch. Ohne diese Regel hätte die Verbreiterung des
+   Fensters den Kanal bei einem einzigen toten Worker für die ganze Stunde stillgelegt — ein
+   schlimmerer Fehler als der, gegen den sie gebaut wurde.
+
+Die Schwelle aus §11.2 Zeile E bleibt offen: sie ist eine LIVE-Messung über 10 Pulse und war von
+der bauenden Lane nicht erhebbar.
+
 ### 6.2 `sinceLastLook` schlüsselt nach Branchname — offen, und die Fehlerform ist präziser als gedacht
 
 `laneFacts()` schreibt `out[wt.branch] = {…}` (`server.ts:7187`) und überspringt bei
@@ -517,7 +536,7 @@ abbricht.**
 | **B. Drift-Hinweis in den Gründungsbrief** | dieselbe Quote wie A, nach der Einführung | 20 gelandete Lanes | steigt die Quote nicht um ≥30 Prozentpunkte, ist der Brief nicht der Träger — dann aufhören, nicht nachschärfen. |
 | **C. `otherLanes.files` auf uncommittete Dateien erweitern** (§5.2) | Anzahl der Lane-Paare, für die der Wert vor dem Spawn nichtleer gewesen wäre | 15 Spawns | liefert es in <3 von 15 Fällen etwas, ist Kollisionsvermeidung vor dem Spawn kein reales Problem dieser Flotte und der ganze Bereich 3 wird zurückgestellt. |
 | ~~**D. Timeout als vierter Verify-Zustand** (§4/§9.3) | Anzahl der `verify.ok:false` mit `[verify timed out after …]` im Output | 30 Merge-Läufe | 0 Vorkommen in 30 → der Live-Fall vom 06.08. war ein Einzelfall, der Zustand bleibt ungetrennt (billiger als eine Unterscheidung, die nie greift).~~ **ERLEDIGT — `9c1b73c` (2026-08-06), erweitert 2026-08-07.** Die Messgröße dieser Zeile ist seither **nicht mehr erhebbar**: ein Timeout ist kein `verify.ok:false` mehr, also kann die gesuchte Zahl nur noch 0 sein — und 0 hieße hier laut Stop-Kriterium „Einzelfall, ungetrennt lassen", also genau das Gegenteil dessen, was der Baum tut. Am 07.08. kam der fünfte Zustand dazu (`waitedOut`: die Uhr lief ab, während der Gate noch in der Mutex-Schlange stand und den Baum nie ansah). `docs/suite-contention.md` §8. |
-| **E. `DIGEST_TTL_MS` über das Puls-Intervall** (§6.1) | Anteil der Pulse mit `digest != null` | 10 Pulse | steigt er nicht über 50 %, ist die TTL nicht die Ursache und der Worker selbst ist es — dann messen statt drehen. |
+| **E. `DIGEST_TTL_MS` über das Puls-Intervall** (§6.1) — **GEBAUT 2026-08-07; die Messung läuft** | Anteil der Pulse mit `digest != null` | 10 Pulse | steigt er nicht über 50 %, ist die TTL nicht die Ursache und der Worker selbst ist es — dann messen statt drehen. **Nachtrag zur Auswertbarkeit:** die Antwort trägt seit dem Bau `digestStatus`, also ist die Zahl jetzt nach Ursache aufschlüsselbar (`failed` = der Worker, `pending` = zu kurz gewartet, `stale`/`fresh` = die TTL trägt). Ein Ergebnis unter 50 % OHNE `failed`-Anteil widerlegt die TTL nicht, es widerlegt die Wartezeit. |
 | **F. `stalled`-Instanz-Ledger** (beauftragt, §10) | 10 adjudizierte Instanzen, ≤2 Fehlalarme | siehe `briefs/lane-stalled-fact.md` | **zusätzlich:** jede Zeile trägt die Schwelle UND die Zahl der srv-Neustarts in ihrem Fenster; ohne die zweite Zahl ist die Stichprobe nicht auswertbar (§10.1). |
 | **G. Entscheidungs-Inbox** (Findings-Doc §4) | `resolved / raised` pro Item-Typ | 14 Tage | ein Typ, der nach 14 Tagen unter 30 % `resolved` liegt, fliegt aus der Inbox — er ist ein Archiv, und die Regel des Findings-Docs („kein Item ohne Auflöse-Aktion") gilt auch rückwirkend. |
 
@@ -540,8 +559,11 @@ wird.** In dieser Reihenfolge:
    **Die Instrumentierungs-Gruppe beginnt damit bei 9.1.**
 2. **9.1** (der Phantom-`mergeParked`-Eintrag). Kein Messproblem, ein Bug mit Live-Beleg, und er
    verfälscht ausgerechnet den Item-Typ, den die Inbox als erstes zeigen würde. Billig.
-3. **E** (Digest-TTL). Eine Zahl. Ohne sie ist Bereich 4 nicht bewertbar, weil sein
-   Hauptsensor ohne Fehlermeldung leer bleibt.
+3. ~~**E** (Digest-TTL). Eine Zahl. Ohne sie ist Bereich 4 nicht bewertbar, weil sein
+   Hauptsensor ohne Fehlermeldung leer bleibt.~~
+   **ERLEDIGT — 2026-08-07** (§6.1, Block „GEBAUT"). Es blieb nicht bei der Zahl: die Zahl allein
+   hätte den Kanal gefüllt, ohne die Frage zu beantworten, WARUM er leer war — deshalb sagt die
+   Antwort jetzt auch, was ein `digest:null` bedeutet. Die Messung über 10 Pulse ist offen.
 
 **Danach — die Sensoren, weil alles Automatische auf ihnen rechnet:** 6.2 (`sinceLastLook`
 nach Repo schlüsseln), 6.3 (`mtime`-Caveat oder Feld entfernen), ~~**D** (Timeout-Zustand)~~

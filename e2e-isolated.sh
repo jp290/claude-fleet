@@ -277,6 +277,10 @@ cat > "$DIR/fakedigest" <<'EOF'
 # keep the prompt: the done-looking rule the worker is handed is GENERATED from the same clause
 # list the deterministic predicate iterates, and the test asserts that here (anti-drift, §3)
 cat > "$(dirname "$0")/digestprompt"
+# $DIR/digestfail (default 0) makes the worker DIE instead of answering, so the route's
+# failed-vs-null distinction is testable: runWorker turns a non-zero exit into the `error`
+# the digest reports, and a channel that goes quiet without one is the thing under test.
+[ "$(cat "$(dirname "$0")/digestfail" 2>/dev/null || echo 0)" != 0 ] && exit 7
 delay="$(cat "$(dirname "$0")/digestdelay" 2>/dev/null || echo 0)"
 [ "$delay" != 0 ] && sleep "$delay"
 printf '{"result": "{\\"digest\\": {\\"conditions\\": {\\"1\\": \\"healthy-running\\"}, \\"changed\\": [\\"slot 1 committed\\"], \\"attention\\": []}}"}'

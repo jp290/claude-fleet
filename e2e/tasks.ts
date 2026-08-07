@@ -314,7 +314,8 @@ export async function run(ctx: Ctx): Promise<void> {
   // restartSrv builds the spawn line from process.env and the wrapper only ever put that knob in
   // the SERVER's env, not this process's. ---
   {
-    interface HAn { verdict: string; blockers: string[]; reason: string; collides?: string[]; stale?: boolean; at?: number; attempts?: number }
+    interface HAn { verdict: string; blockers: string[]; reason: string; collides?: string[]; stale?: boolean; at?: number; attempts?: number;
+      head?: string | null; briefAt?: number | null; retry?: { at: number; reason?: string; attempts?: number } }
     interface HRow { id: string; status: string; kind?: string; note?: string; slot?: number; analysis?: HAn }
     const hSess = async (): Promise<{ tasks: HRow[]; dispatch: { repo: string } }> =>
       (await (await get("/api/sessions")).json()) as { tasks: HRow[]; dispatch: { repo: string } };
@@ -381,6 +382,14 @@ export async function run(ctx: Ctx): Promise<void> {
       anP?.analysis?.verdict === "ready" && anQ?.analysis?.verdict === "ready",
       JSON.stringify({ pending: anP?.analysis?.verdict, queued: anQ?.analysis?.verdict }));
 
+    // …and one row that gets its verdict HERE, while the analyst still works, to be re-read in
+    // (h5b) once it is broken. Built now rather than there on purpose: (h5b) must not restore a
+    // working analyst even for a moment, or (h6)'s unread row could be answered behind its back.
+    // No ANALYST-READY marker, so the stand-in flags it — a verdict WITH blockers and a reason is
+    // what (h5b) then watches for survival.
+    const hKeep = await mkTask("analyst probe K: flagged on purpose — its verdict must survive a broken re-read");
+    const keptBefore = await till(() => hFull(hKeep), (r) => !!r?.analysis);
+
     // (h2) THE INVERSION. Under the eval gate this exact row — pending, positive verdict — was
     // consumed unattended. It must now sit still: a verdict is not a release.
     await Bun.sleep(afterTick(0, DISPATCH_TICK_MS)); // a full dispatch tick with a "ready" PENDING row present
@@ -422,6 +431,50 @@ export async function run(ctx: Ctx): Promise<void> {
     const brokeFull = await hFull(hBroke);
     check("(h5) the failure is counted, so the retry can back off instead of hammering",
       (brokeFull?.analysis?.attempts ?? 0) >= 1, JSON.stringify(brokeFull?.analysis));
+
+    // (h5b) …BUT AN ABSENCE MUST NOT OVERWRITE A JUDGEMENT. The other half of (h5), and the half
+    // that was wrong until 2026-08-07: the failure record was written over `t.analysis` for every
+    // row of the batch, so a row that HAD been read lost its verdict, reason, blockers and collides
+    // and became byte-identical to one nobody had ever read. Measured live that morning — one batch
+    // of six lost four `needs-you` and two `ready` to `analyst returned no JSON`, and the register
+    // was blind for ~80 minutes. Editing the brief is what makes hKeep due again (its `briefAt` no
+    // longer matches, so `analysisStale` is true), and the analyst is still broken from (h5).
+    const keptVerdict = keptBefore?.analysis?.verdict;
+    await post(`/api/tasks/${hKeep}/brief`, { text: "edited so the sweep must read this row again" });
+    const kept = await till(() => hFull(hKeep), (r) => (r?.analysis?.attempts ?? 0) >= 1);
+    check("(h5b) a failed re-reading leaves the standing verdict ON the row instead of erasing it",
+      keptVerdict === "needs-you" && kept?.analysis?.verdict === "needs-you"
+      && (kept?.analysis?.blockers ?? []).includes("criterion")
+      && (kept?.analysis?.reason ?? "").startsWith("probe ")
+      && kept?.analysis?.at === keptBefore?.analysis?.at,
+      JSON.stringify({ before: keptBefore?.analysis, after: kept?.analysis }).slice(0, 400));
+    check("(h5b) the failure is recorded BESIDE it — counted, timed, and with the reason named",
+      (kept?.analysis?.attempts ?? 0) >= 1 && !!kept?.analysis?.retry
+      && (kept.analysis.retry.reason ?? "").includes("analyst failed"),
+      JSON.stringify(kept?.analysis?.retry ?? null).slice(0, 300));
+    // …and it is NOT thereby claimed to be fresh. `head`/`briefAt` stay the old reading's, which is
+    // the whole reason the dispatcher needs no new gate for this state: the row is still stale, so
+    // invariant 3 holds it exactly as before. The pre-fix code refreshed `briefAt` to the edit it
+    // had just failed to read, which quietly cleared the staleness it was supposed to answer.
+    check("(h5b) the surviving verdict keeps ITS OWN ground — head and briefAt are not refreshed",
+      kept?.analysis?.head === keptBefore?.analysis?.head
+      && kept?.analysis?.briefAt === keptBefore?.analysis?.briefAt,
+      JSON.stringify({ before: [keptBefore?.analysis?.head, keptBefore?.analysis?.briefAt],
+        after: [kept?.analysis?.head, kept?.analysis?.briefAt] }));
+    // the 2 s poll has to carry it too, or the row label cannot say "re-analysis failing" — the
+    // digest is where every queue row gets its verdict line from
+    const keptRow = await hRow(hKeep);
+    check("(h5b) the poll digest carries the failure, so the row can label it without a second fetch",
+      keptRow?.analysis?.verdict === "needs-you" && (keptRow.analysis.retry?.attempts ?? 0) >= 1,
+      JSON.stringify(keptRow?.analysis ?? null).slice(0, 300));
+    // AND IT BACKS OFF. The preserved verdict is stale (that is what made it due), so a rule that
+    // fell through to the staleness test instead of letting the failure own the schedule would
+    // re-run this row on every 1 s tick and burn all three attempts in seconds.
+    const attemptsAfterFail = kept?.analysis?.attempts ?? 0;
+    await Bun.sleep(4000);
+    check("(h5b) …and then waits: a stale row whose re-read failed backs off instead of every tick",
+      ((await hFull(hKeep))?.analysis?.attempts ?? 0) === attemptsAfterFail,
+      JSON.stringify({ atFail: attemptsAfterFail, after4s: (await hFull(hKeep))?.analysis?.attempts }));
 
     // (h6) UNKNOWN NEVER STARTS. Releasing a row the analyst could not read must leave it waiting
     // with a visible reason — this is the gate the dispatcher keeps even though the verdict does not.

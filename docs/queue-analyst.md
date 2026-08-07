@@ -41,7 +41,7 @@ Four further findings from the same audit, and where each one went:
 |---|---|
 | the gate judged the raw draft; the lane ran a sonnet-tier rewrite of it | the brief is compiled **in the sweep**, stored, judged, and sent verbatim (`Task.brief`) |
 | a verdict never expired, though criterion 1 is time-dependent | the verdict records the integration tip and the brief revision it judged (`analysisStale`) |
-| a worker timeout became a permanent verdict for its whole batch | a failure is `verdict: "unknown"` with `attempts` and exponential backoff — an absence, never a finding |
+| a worker timeout became a permanent verdict for its whole batch | a failure is an absence with `attempts` and exponential backoff, never a finding — and since 2026-08-07 never a deletion either (§3a) |
 | an override was indistinguishable from an ordinary promote | releasing a flagged row writes a note and a `task_override` audit event |
 | priority inversion: an old pending row pre-empted a fresh promote | gone by construction — `pending` and `queued` no longer compete for a tick |
 | the reader could not see the running fleet | open lanes ride in the prompt; `collides` names branches, not just batch siblings |
@@ -63,6 +63,41 @@ was, until now, a promise in the enhancer's own prompt with nothing checking it.
 
 Verdicts: `ready` · `needs-you` · `unknown`. Three-valued on purpose — `unknown` is the
 analyst failing to *answer*, and that must never be able to read as either judgement.
+
+## 3a. A failure is an absence — and an absence must not delete a reading
+
+`unknown` was built so a broken worker could not produce a finding. It could still produce
+a *deletion*, and for three months it did: a failure rewrote `t.analysis` wholesale for
+every row of the batch, keeping only `attempts`. Verdict, reason, blockers and collides
+were gone, and the row became indistinguishable from one nobody had ever read.
+
+Measured on the live queue, 2026-08-07: at 09:41 one batch of six lost **four `needs-you`
+and two `ready`** to `analyst returned no JSON`. A backoff retry healed the register ~80
+minutes later; at `ANALYSIS_MAX_ATTEMPTS` it would not have healed at all. The sweep sorts
+**released rows first**, so the rows nearest to running went into that window first.
+
+Since then (`analysisFailed`) a failure is filed **beside** the verdict:
+
+| field | after a failed re-reading |
+|---|---|
+| `verdict` `reason` `blockers` `collides` | the last reading that arrived — unchanged |
+| `at` `head` `briefAt` | that reading's own, so `analysisStale` keeps telling the truth |
+| `attempts` | +1 |
+| `retry` | `{at, reason}` — when the re-reading failed and why |
+
+Two consequences worth stating, because both are load-bearing:
+
+- **Nothing gains trust.** The preserved verdict keeps its old `head`/`briefAt`, so it is
+  still stale — and a row only ever reaches this code path *because* it went stale. The
+  dispatcher's invariant 3 holds it back exactly as before; what changed is that the owner
+  can now read what the last reading said while it waits.
+- **The failure owns the schedule.** `analysisDue` keys the backoff on `retry.at`, not on
+  `at`. Keyed on `at` — which now belongs to the older, successful reading — a preserved
+  verdict would hammer every tick or freeze, decided by nothing but how old it happened to
+  be. Proven in `e2e/tasks.ts` (h5b), which also counter-probes the hammering case.
+
+A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue and
+`verdict(age)!stale?xN` in `register.sh`, with the failure's own words in the detail pane.
 
 ## 4. Invariants
 
@@ -103,7 +138,8 @@ analyst failing to *answer*, and that must never be able to read as either judge
 | `FLEET_ANALYSIS_TIMEOUT_MS` | 420000 | its own, not the summarizer's 180 s: this worker reads files for a whole batch |
 | `FLEET_ANALYSIS_CMD` | — | subprocess stand-in for harnesses |
 
-Batch cap 6, max 3 attempts, backoff `60s × 2^attempts`, brief compiles 3 at a time. A
+Batch cap 6, max 3 attempts, backoff `60s × 2^attempts` **from the last failure** (§3a),
+brief compiles 3 at a time. A
 harness without a stand-in **must** set `FLEET_ANALYSIS_MS=0` or the suite spawns a real
 agent — the same rule `FLEET_AUTO_REVIEW_MS` already carries.
 

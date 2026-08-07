@@ -132,6 +132,11 @@ rulebook revision. Reuses the existing token, channel and state; no new process.
 >   defect (`docs/attic/lane-context.md` §2 — no file a lane can read tells it what will gate it).
 > · `POST /api/self/criterion` (2026-08-05) — not from this list at all: a clarify lane writes its
 >   PROPOSED done-criterion onto its founding task, which the owner then confirms.
+> · `GET /api/self` (2026-08-07) — the sixth, and the first one that is not about a lane at all: the
+>   session's own row (slot, label, cwd, mission, awaiting, `lane`, idle, its own autos). It arrived
+>   with the change that made this whole item apply to more than lanes — `FLEET_SELF_TOKEN` is now
+>   exported into EVERY session's pane, not only a worktree's, so "a lane read surface" is now a
+>   SESSION read surface. The four lane-only routes keep their non-lane 409s.
 > Still unbuilt from the clause list: **the flake ranking from (a)**. The trail has the data; nothing
 > reads it. That is the honest remainder of this item.
 

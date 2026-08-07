@@ -93,6 +93,17 @@ Haupt-Checkout-Session auch dann verschlossen, wenn sie sich ein `selfToken` aus
 | `POST /api/self/criterion` | *„not a lane — a criterion belongs to a lane's founding task"* | 8009 |
 | `POST /api/self/verify-intent` | *„not a lane — verify-intent reports a lane's own gate run"* | 8036 |
 
+> **Korrektur 2026-08-07 — die Prämisse „holt sich ein `selfToken` aus `fleet.json`" ist weg.**
+> Der Export hängt nicht mehr an `s.worktree`: **jede** Session mit cwd bekommt `FLEET_SELF_TOKEN`
+> + `FLEET_SELF_SLOT` in die Pane (`server.ts`, grep `selfExport`) — auch der ⚙ steward, auch eine
+> plain session in einem fremden Repo. Die Tabelle darüber bleibt **gültig**: die vier Routen sind
+> weiterhin hart auf `s.worktree` gegated und antworten einer Nicht-Lane genau diese vier 409-Texte;
+> das war nie die Frage, die der Export beantwortet hat. Was sich ändert, ist nur die Zahl darunter:
+> es sind jetzt **zwei von sechs** Routen, die einer Nicht-Lane antworten — `POST /api/self/autos`
+> und die neue `GET /api/self` (das eigene Slot-Row: Label, cwd, mission, awaiting, `lane`, idle,
+> eigene Autos). Zeilennummern in dieser Tabelle sind seither gewandert; die 409-Texte sind der
+> stabile Anker.
+
 Nur `POST /api/self/autos` (7919) funktioniert auch für einen Nicht-Lane-Slot. Umgekehrt weist
 `/api/dispositions` **jede** Credential ab, die auf irgendein `selfToken` matcht — 403, *„the
 disposition rail is owner-only — a lane cannot label its own work"* (`server.ts:8049`, GELESEN;
@@ -119,6 +130,10 @@ gilt **pro Token**, nicht gegen einen Leser, der alle Token hat.
 | 3 Projekt-Session | n/a | Metadaten GEMESSEN, Feldstruktur GELESEN |
 | 4 Wegwerf-Worker | n/a | **GELESEN**, vollständig |
 | 5 Gast | nein | Container-/VM-Zustand GEMESSEN, Routen GELESEN |
+
+*Spalte 2 ist ein Schnappschuss vom 06.08. und seit dem 07.08. überholt: Rolle 2 und Rolle 3 halten
+jetzt beide ihr eigenes `FLEET_SELF_TOKEN` (s. die Korrektur in §1.2). Die Status-Spalte bleibt, wie
+sie war — sie sagt, was damals gemessen wurde, und das altert nicht.*
 
 **Warum Rolle 4 vollständig ist, ohne dass man suchen muss:** jeder Wegwerf-Spawn geht durch
 `runWorker`, dessen `tools` ein Pflichtfeld mit geschlossenem Union-Typ ist (`ToolProfile`).

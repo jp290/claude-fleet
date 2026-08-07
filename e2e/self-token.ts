@@ -1,5 +1,6 @@
-// The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in a lane pane's
-// spawn env, and what /api/self/autos and /api/self/drift will and will not accept it for.
+// The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in EVERY session's
+// spawn env (lane or not, since 2026-08-07), and what the six /api/self routes will and will not
+// accept it for — including the four that answer a non-lane 409, which is half the contract.
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, post } from "./harness";
@@ -18,11 +19,31 @@ export async function run(ctx: Ctx): Promise<void> {
   check("FLEET_SELF_TOKEN + FLEET_SELF_SLOT present in a lane slot's spawn env",
     /^[0-9a-f]{32}$/.test(laneTok ?? "") && Number(laneSlot) === lnTok.slot, `tok=[${laneTok}] slot=[${laneSlot}]`);
   const selfTok = laneTok ?? "";
-  // the NEGATIVE half: a plain (non-lane) slot's shell must report the variable as unset. An
-  // empty string is the assertion; null (pane never answered) fails, so a silent probe can never
-  // be mistaken for "no token".
+  // The other half — and the decision this file records. A PLAIN (non-lane) slot's pane carries
+  // the credential TOO. This check asserted the opposite until 2026-08-07, when the export stopped
+  // being keyed on `s.worktree`: that carve-out was never a security boundary, only a withheld
+  // capability. `selfToken` was already minted and persisted for every slot, and the server already
+  // authenticated a plain slot's token — it answered it 409 "not a lane" where an unknown one gets
+  // 401 (both pinned below). Flipping the export handed the pane a credential the routes already
+  // knew. Same probe rules as the lane pair above: null (pane never answered) is a harness failure
+  // and fails, so a silent probe can never be mistaken for a present token.
   const plainTok = await paneEnv("s2", "FLEET_SELF_TOKEN");
-  check("FLEET_SELF_TOKEN absent for a non-lane slot", plainTok === "", `[${plainTok}]`);
+  const plainSlotVar = await paneEnv("s2", "FLEET_SELF_SLOT");
+  // ...and it must be slot 2's OWN credential, not merely a well-shaped one: read the persisted row
+  // and compare. openSlot mints the token and queues saveState BEFORE it awaits the pane spawn, so
+  // the file can lag the route by a hair — poll for the shape, then assert the equality (a timeout
+  // still yields the last value read, so a genuine mismatch fails here instead of hiding in a retry).
+  let plainSelf = "";
+  for (let i = 0; i < 40 && !/^[0-9a-f]{32}$/.test(plainSelf); i++) {
+    try { plainSelf = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { selfToken?: string }> }).slots?.["2"]?.selfToken ?? ""; } catch { /* mid-write */ }
+    if (!/^[0-9a-f]{32}$/.test(plainSelf)) await Bun.sleep(100);
+  }
+  check("FLEET_SELF_TOKEN + FLEET_SELF_SLOT present in a PLAIN (non-lane) slot's spawn env too",
+    /^[0-9a-f]{32}$/.test(plainTok ?? "") && Number(plainSlotVar) === 2, `tok=[${plainTok}] slot=[${plainSlotVar}]`);
+  check("the plain slot's exported token is that slot's OWN persisted credential, not just 32 hex",
+    plainTok === plainSelf && plainSelf !== selfTok,
+    `pane=[${(plainTok ?? "").slice(0, 8)}…] state=[${plainSelf.slice(0, 8)}…] lane=[${selfTok.slice(0, 8)}…]`);
 
   const selfAuto = (opts: { token?: string; body?: unknown }) => fetch(BASE + "/api/self/autos", {
     method: "POST",
@@ -44,6 +65,72 @@ export async function run(ctx: Ctx): Promise<void> {
   const selfPerp = await selfAuto({ token: selfTok, body: { text: "self immortal", inSec: 5, everySec: 10, perpetual: true } });
   check("a self-token lane cannot mint a perpetual auto (owner-only, 403)", selfPerp.status === 403, String(selfPerp.status));
 
+  // --- THE CAPABILITY THE WIDENED EXPORT EXISTS FOR, driven end-to-end from the plain session's
+  // OWN pane-exported token (not a state read): a non-lane session schedules its own check-in.
+  // /api/self/autos never had a lane check — createAutoForSlot asks only for `s.cwd` — so this
+  // pins that the whole feature really is one export line, and that the slot binding survives the
+  // widening: the spoofed `slot` in the body must still be ignored in favour of the token's own. ---
+  const plainOk = await selfAuto({ token: plainTok ?? "", body: { text: "plain session self check-in", inSec: 3600, slot: lnTok.slot } });
+  const plainOkJ = (await plainOk.json()) as { ok?: boolean; auto?: { id: string; slot: number; text: string } };
+  check("POST /api/self/autos succeeds for a PLAIN session with its own exported token",
+    plainOk.ok && !!plainOkJ.auto, `${plainOk.status} ${JSON.stringify(plainOkJ)}`);
+  check("a plain session's auto lands on ITS OWN slot — a spoofed `slot` field is still ignored",
+    plainOkJ.auto?.slot === 2, JSON.stringify(plainOkJ.auto));
+  const plainPerp = await selfAuto({ token: plainTok ?? "", body: { text: "plain immortal", inSec: 5, everySec: 10, perpetual: true } });
+  check("a plain session cannot mint a perpetual auto either (the widening moved no guard rail)",
+    plainPerp.status === 403, String(plainPerp.status));
+
+  // --- GET /api/self: the session's own row, the read half of the family and the one route here
+  // that is not about a lane. Pinned for BOTH principals — a plain session (where `lane` is null)
+  // and the lane (where it names the branch), because that field is what makes the four 409s below
+  // predictable instead of surprising. ---
+  const selfState = (token?: string) => fetch(BASE + "/api/self", {
+    headers: token !== undefined ? { "x-fleet-self-token": token } : {},
+  });
+  type Self = { slot: number; label: string | null; cwd: string; mission: string | null;
+    awaiting: "owner" | null; lane: { repo: string; branch: string } | null;
+    idleMs: number; observed: boolean; autos: { id: string; slot: number; text: string }[] };
+  const pRes = await selfState(plainTok ?? "");
+  const pSelf = (await pRes.json()) as Self;
+  check("GET /api/self: a plain session reads its own row — its slot, its cwd, lane:null",
+    pRes.ok && pSelf.slot === 2 && pSelf.cwd === process.env.HOME && pSelf.lane === null
+      && typeof pSelf.idleMs === "number" && pSelf.idleMs >= 0 && typeof pSelf.observed === "boolean",
+    JSON.stringify({ slot: pSelf.slot, cwd: pSelf.cwd, lane: pSelf.lane, idleMs: pSelf.idleMs, observed: pSelf.observed }));
+  check("GET /api/self serves the session its OWN autos and only those",
+    pSelf.autos.some((a) => a.id === plainOkJ.auto?.id) && pSelf.autos.every((a) => a.slot === 2),
+    JSON.stringify(pSelf.autos.map((a) => `${a.slot}:${a.id}`)));
+  const lRes = await selfState(selfTok);
+  const lSelf = (await lRes.json()) as Self;
+  check("GET /api/self: a lane reads the same row shape, with `lane` naming its own branch",
+    lRes.ok && lSelf.slot === lnTok.slot && lSelf.cwd === lnTok.cwd && lSelf.lane?.branch === lnTok.branch,
+    JSON.stringify({ slot: lSelf.slot, lane: lSelf.lane }));
+  check("GET /api/self: the owner token does not substitute for a selfToken", (await selfState(TOKEN)).status === 401);
+  check("GET /api/self: a missing selfToken header is rejected", (await selfState(undefined)).status === 401);
+  check("GET /api/self: an unknown selfToken is rejected", (await selfState("0".repeat(32))).status === 401);
+  if (plainOkJ.auto) check("delete the plain session's auto (cleanup)", (await post(`/api/autos/${plainOkJ.auto.id}/delete`, {})).ok);
+
+  // --- THE REFUSALS ARE THE FEATURE. Widening the export handed the credential to sessions that
+  // can never land, so the four lane-only routes have to keep saying so — and say it as 409
+  // ("recognized credential, unanswerable question"), never as 401, which would read as "not a
+  // credential at all" and send a session hunting for a token it already holds. Driven with the
+  // plain pane's OWN token. drift and gate are additionally pinned inside their own sections
+  // below, where their fixtures live; this covers the family in one place, including the two POSTs
+  // that have no section of their own. ---
+  const laneOnly: [string, RequestInit][] = [
+    ["/api/self/drift", { method: "GET" }],
+    ["/api/self/gate", { method: "GET" }],
+    ["/api/self/criterion", { method: "POST", body: JSON.stringify({ text: "a plain session has no founding task" }) }],
+    ["/api/self/verify-intent", { method: "POST", body: JSON.stringify({ phase: "start" }) }],
+  ];
+  const refusals = await Promise.all(laneOnly.map(async ([path, init]) => {
+    const r = await fetch(BASE + path, {
+      ...init, headers: { "content-type": "application/json", "x-fleet-self-token": plainTok ?? "" },
+    });
+    return `${path}:${r.status}`;
+  }));
+  check("the four lane-only self routes answer a PLAIN session 409 not-a-lane — never 401, never 200",
+    refusals.every((r) => r.endsWith(":409")), refusals.join(" "));
+
   // --- GET /api/self/drift: the lane-facing read of "how far has the integration branch moved
   // past me". Committed state only — the probe (`git merge-tree`) simulates a merge, and `dirty`
   // is the flag that says uncommitted work was not assessed. ---
@@ -61,15 +148,8 @@ export async function run(ctx: Ctx): Promise<void> {
   check("drift: the owner token does not substitute for a selfToken", (await selfDrift(TOKEN)).status === 401);
   check("drift: a missing selfToken header is rejected", (await selfDrift(undefined)).status === 401);
   // a plain session's selfToken is a RECOGNIZED credential asking an unanswerable question — the
-  // route must say so (409, "not a lane"), never collapse it into 401's "not a credential at all"
-  let plainSelf = "";
-  for (let i = 0; i < 40 && !/^[0-9a-f]{32}$/.test(plainSelf); i++) {
-    try { plainSelf = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-      { slots?: Record<string, { selfToken?: string }> }).slots?.["2"]?.selfToken ?? ""; } catch { /* mid-write */ }
-    if (!/^[0-9a-f]{32}$/.test(plainSelf)) await Bun.sleep(100);
-  }
-  check("drift fixture: plain slot 2's selfToken is readable from persisted state",
-    /^[0-9a-f]{32}$/.test(plainSelf), `[${plainSelf.slice(0, 8)}…]`);
+  // route must say so (409, "not a lane"), never collapse it into 401's "not a credential at all".
+  // `plainSelf` is slot 2's persisted credential, read and proved equal to its pane's export above.
   const plainRes = await selfDrift(plainSelf);
   check("drift: a plain (non-lane) slot's selfToken answers 409 not-a-lane, never a generic 401",
     plainRes.status === 409, String(plainRes.status));

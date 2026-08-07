@@ -1,3 +1,118 @@
+# HANDOFF — Session 34 (2026-08-07 vormittags: vier Lands, zwei Ernten, acht neue Zeilen) · 33/32/31/… darunter
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log e89c1bb..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 34: der Vormittag, an dem „idle" dreimal etwas anderes hieß
+
+**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` ·
+`briefs/work-waves-2026-08-07.md` — und **die neue erste Regel in `CLAUDE.md`**, weil sie
+diese Session dreimal Zeit gekostet hat (s. u.).
+
+**Gelandet, vier Lands + zwei Doc-Commits, alle Gates grün, `waitMs: 0` bei ALLEN vier:**
+
+| SHA | Was | Gate | Audit |
+|---|---|---|---|
+| `d046ceb` | zwei Messberichte aus Panes geerntet (doc-only, Direkt-Commit) | — | — |
+| `0e345c6` | `releasedBy` auf `Task`/`LaneOutcome` | 68 s | GREEN 542 s |
+| `438c326` | der Fehlerkanal — `/api/errors`, Ringpuffer nach Signatur | 70 s | GREEN 649 s |
+| `22415f5` | Denk-Session „Überblick + Mitarbeiter" geerntet (doc-only) | — | — |
+| `6cd79fd` | Token-Umbau, dreizehn Töne bekommen einen Namen | 73 s | GREEN 534 s |
+| `86f99f1` | Kollisionsfläche als Git-Fakt, Analyst sieht Dateien | 72 s | GREEN 524 s |
+
+**Deploy gefahren und verifiziert** (srv pid 81145, 09:31): `watchdog.sh` unberührt → normale
+Reihenfolge, `bun run build` → `srv` kill → Respawn. Am Prozess-Env geprüft:
+`FLEET_VERIFY_WAIT_MS=900000`, `e2e/pins.ts` im Gate. **Der zweite Deploy ist ebenfalls gefahren** (srv pid 3590, 10:31): `bun run build` +
+srv-Respawn nach `6cd79fd`+`86f99f1`. Verifiziert am Owner-Poll: `codeBehind:false`,
+`bundleStale.stale:false`, `errors:null`, Health 200. **Beim Deployen gilt: erst das Audit
+abwarten** — ein srv-Kill tötet den laufenden Audit (das ist die `unknowable`-Todesart vom 06.08.).
+
+---
+
+## Die Regel, die diese Session gekostet hat — steht jetzt in `CLAUDE.md`
+
+**„Idle" heißt nicht „fertig". Vier Zustände sehen identisch aus, nur einer ist landbar.**
+Dreimal gestolpert:
+
+1. **Slot 1+4 morgens** — fertig seit ~4 h, aber `FILES: keine` (reine Messzeilen): `ahead=0` ist
+   ihr SOLL, ihr Ergebnis war ein Pane-Bericht. Geerntet als `d046ceb`, sonst wäre er mit dem
+   Slot gestorben.
+2. **Slot 2** — Kriterium bestätigt, aber die Lane hat davon nie erfahren. **Ein
+   `criterion-confirm` öffnet nur das Tor, es stupst niemanden an.** Sie saß am leeren Prompt und
+   hätte beliebig lange gewartet. Erst ein `POST /send` hat sie gestartet.
+3. **Slot 1 (`21c6eb4b`)** — hat einen Brief kompiliert statt gebaut, völlig zu Recht: die Zeile
+   war eine Scout-**Idee**. Mein Fehler war, sie mit `▸ start lane` zu starten, weil der Refine
+   `unchanged:true` sagte. **`unchanged` heißt „nichts zu schneiden", nicht „das ist ein Auftrag".**
+
+---
+
+## Was in Flug ist
+
+- **Slot 3 `denk/mitarbeiter`** — Denk-Session, fertig, Dokument geerntet (`22415f5`). Der Baum
+  lebt noch; er darf abgeräumt werden (`ahead=0`, nichts zu landen).
+- **Slot 1 — eine Lane, die NICHT von dieser Session gestartet wurde**: `ba18d3c8`
+  (`fleet/260807082852-df5a`, 10:28:53, über den Board-Knopf). **Sie ist der dritte Fall der Regel
+  oben und noch nicht bemerkt worden:** die Zeile ist eine Scout-IDEE, und `server.log:1645` sagt
+  zusätzlich „analysis: brief compile failed for ba18d3c8 … summarizer timed out". Die Lane hat
+  also den ROHEN Ideentext als Gründungsprompt bekommen, ohne kompilierten Brief. Erwartung: sie
+  liefert einen Brief statt Code — das ist dann richtig, nicht falsch. Erst lesen, dann urteilen.
+- Alle vier Audits dieser Session waren GREEN (542 / 649 / 534 / 524 s), null offene Rote.
+
+## Acht neue Queue-Zeilen, alle mit hartem DONE + Verify-Weg
+
+**Dringend, weil es das Register beschädigt:**
+- **`197c7766`** — eine fehlgeschlagene Re-Analyse **löscht** das Urteil, das sie ersetzen
+  sollte. `unknown()` (`server.ts:2280-2287`) weist `t.analysis` komplett neu zu und rettet nur
+  `attempts`. Um `07:41:11Z` sind so **sechs** offene Zeilen gekippt (4 begründete `needs-you`,
+  2 `ready` → `"analyst returned no JSON"`). Batch-Cap 6, ein Batch. Verschärfend: der Sweep
+  sortiert **released rows first**. Die sechs brauchen ein `reanalyse`, ihre alten Urteile sind weg.
+
+**Aus der Denk-Session:** `00e5f771` — es gibt **keine Benachrichtigung, in keine Richtung**
+(Browser-`Notification` 0 · `document.title` 0 · Audio 0 · Webhook 0). Die Fakten existieren alle
+auf dem 2-s-Poll und tragen im Code den Vermerk, dass niemand sie liest. Zwei Empfänger, zwei
+Mechanismen — Owner = `1cb6778e` (Tab-Ampel), treibende Session = `autos` (Verrohrung existiert,
+nur der Auslöser fehlt).
+
+**UI-Kette, Owner-Entscheid 2026-08-07 „Neuentwurf der ganzen Fläche, NACH `21c6eb4b`":**
+`c0a8366b` (Stapel-Anker auf `lastOutput` — heute gewinnt die niedrigste Slot-Nummer, der Stapel
+hing unter einer übergebenen Session) → `ed4a318c` (Main behält die Nummer, **Lanes** werden frei;
+Teil A Anzeige, Teil B Zuteilung über clarify) → `c8e2ddd7` (Queue-Neuentwurf, **erster Knopf ist
+`▸ clarify first`**) · dazu `f5cf00dd` (Worktree benannt starten — der Knopf existiert als
+`⎇ New lane here`, kann aber keinen Namen und versteckt sich innerhalb eines Worktrees) und
+`5d55bcfc` (Bewegungs-Vokabular, geschärftes Kind von `bb0475b8`).
+
+**Aus den Ernten:** `cf557dc4` (`docs/data-saver.md` §2+§5) · `a5030c42` (der `instr`-Filter, weil
+der jq-Block sonst dauerhaft 11 % liefert — knapp unter seiner eigenen Schwelle, rein als Artefakt).
+
+## Korrekturen, die man kennen muss
+
+- **`CLAUDE.md` schickte zum `bundleStale`-Check auf `/api/steward/sessions`** — die Route ist
+  steward-only und gibt dem Owner-Token **404**. Beide Deploy-Fakten liegen längst auf
+  `/api/sessions`. Gefixt.
+- **Der „merge droppt still main-Arbeit"-Satz stimmt so nicht.** Nachgeschlagen
+  (`docs/attic/lane-autonomy-future.md:17`): beobachtet wurde, dass eine *Merge-Auflösung* eine
+  `const` samt ihrer einzigen Verwendung fallen ließ und das tsc-grün blieb — ein Befund über die
+  Tauglichkeit des Gates, kein Argument für Rebase. Der echte Grund für Rebase ist, dass der Land
+  **`--ff-only`** ist und der Rebase dessen Vorbedingung. Sein Preis steht in
+  `docs/land-mechanics.md` §5 (stale `baseSha` → Ledger erhöht Größen) — und genau den hat
+  `86f99f1` gerade weggebaut.
+- **`releasedBy` bleibt auf Lanes leer, die vor dem 09:31-Deploy gespawnt wurden** — das Feld wird
+  beim Spawn gesetzt. Kein Defekt.
+- **Die Denk-Session fand `state.sh:56-58`**: vergleicht gegen `$PWD` und meldet aus einer Lane den
+  LIVE-Server als „stray", während `CLAUDE.md` jede Lane anweist, `./state.sh` zu fahren. Steht in
+  `briefs/mitarbeiter-2026-08-07.md`, **noch keine Queue-Zeile**.
+
+## Unverändert blockiert auf den Owner
+
+`526ecd5e` (Self-Credential für alle Sessions — fasst eine Credential-Grenze an) · Steward-Cap
+10/10 · Pi (`944281c5`) nicht starten (`~/.pi/agent/auth.json` = 2 Bytes) · **in mehreren
+Composern steht ungesendeter Owner-Text — dort NICHTS hineinsenden** (`sendText` ist
+paste-buffer + Enter ohne Clearing).
+
+---
+
 # HANDOFF — Session 33 (2026-08-07 nachts: sieben Lands, das Wellenprogramm läuft) · 32/31/30/… darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`** (die Arbeitsliste, abgeleitet).

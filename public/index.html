@@ -219,6 +219,11 @@
   .slot .lcdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6a7080; }
   .slot .lcdot.editing { background: var(--amber); }  /* uncommitted work in progress */
   .slot .lcdot.ready { background: var(--add); }    /* clean, commits waiting to push/land */
+  /* context fill — a reading, not a warning: one muted tone at every level, deliberately with no
+     threshold colour, so the row never implies an action nobody built. `?` (unknown) is dimmer
+     still, and is never an empty bar — a blank meter would read as a fresh session. */
+  .slot .ctxfill { flex: none; font-size: 10px; color: #8b93a7; font-variant-numeric: tabular-nums; }
+  .slot .ctxfill.unknown { color: #5a6072; }
   .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
   .slot .lanediff:hover { color: #bfe6ff; }
   /* the palette. Names are share.html's (the guest page) wherever the role is the same — the VALUES

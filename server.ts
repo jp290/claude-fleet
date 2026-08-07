@@ -17,7 +17,7 @@ import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
-  WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark,
+  WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
   type GitInfo, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
@@ -8611,6 +8611,98 @@ function transcriptFact(s: Slot): { bytes: number; mtime: number } | null {
   }
 }
 
+// --- context FILL: the same question transcriptFact above answers with a proxy, answered with the
+// number itself. It stands NEXT TO that fact rather than replacing it, because the two are not the
+// same measurement and the older one says so in its own first rule: "bytes are a PROXY, not a token
+// count … it can never be turned into a percentage". This one can, from a different field of the
+// same file — claude writes a `message.usage` object on every assistant line, and the three INPUT
+// counters in it are what the model is holding.
+//
+// output_tokens is deliberately NOT in the sum. The fill is what lies in the window as input; the
+// completion is not in it yet. That is not a convention picked here — it is what makes this agree
+// with what the owner's own status line shows (measured 2026-08-07: 150 349 summed input tokens
+// against a 1M window = 15.0%, and the pane read 15%).
+//
+// FIVE absences, and every one of them is `null` — never 0, for the reason transcriptFact states
+// and this inherits wholesale ("a fact that silently swaps subject is worse than no fact"):
+//   1. no pinned sessionId. transcriptFile's newest-by-mtime fallback can flap between files when
+//      several slots share a cwd, so an unpinned slot is "cannot tell", not "guess".
+//   2. no transcript on disk yet — claude writes it on the first prompt.
+//   3. a transcript with no usage record in its tail.
+//   4. a harness that writes no CLAUDE-CODE transcripts (`supports.transcript` false). Fleet cannot
+//      know a foreign harness's fill; the honest answer is that it cannot, not a number read out of
+//      whatever file happened to be newest in the same directory.
+//   5. a model whose context window this server cannot name (contextWindowFor → null). Tokens
+//      without a denominator are not a percentage, so the whole fact goes, not just the pct.
+const CTX_TAIL_BYTES = 512 * 1024;
+interface ContextFill { usedTokens: number; windowTokens: number; pct: number }
+// parsed usedTokens per slot, keyed by the file identity it was read from — a transcript grows to
+// megabytes and this rides the 2 s owner poll, so an unchanged file must cost one stat and nothing
+// else. The window is NOT cached with it: it comes from the slot's model, which can change without
+// the file moving, and a cached denominator would keep answering for the previous model.
+const ctxCache = new Map<number, { key: string; used: number | null }>();
+function contextFill(s: Slot): ContextFill | null {
+  if (!s.cwd || !s.sessionId) return null;
+  // the SAME question transcriptFile asks first, asked here rather than by calling it: its
+  // newest-by-mtime fallback is a readdir plus up to eight head-reads, and this rides the 2 s poll
+  // where it would run for every unpinned slot on every request. The answer it would give is
+  // rejected here anyway — this fact is pinned-only, for transcriptFact's reason — so the cheap
+  // form is also the exact form. Both branches must stay: an undeclared harness has no claude
+  // transcript at all, and a pinned path that does not exist yet is not a licence to guess.
+  if (!harnessOf(s.harness).supports.transcript) return null;
+  const pinned = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
+  const windowTokens = contextWindowFor(s.model ?? DEFAULT_MODEL);
+  if (windowTokens === null) return null;
+  let used: number | null;
+  try {
+    const st = statSync(pinned);
+    const key = `${st.size}:${st.mtimeMs}`;
+    const hit = ctxCache.get(s.id);
+    if (hit && hit.key === key) {
+      used = hit.used;
+    } else {
+      used = readUsedTokens(pinned, st.size);
+      ctxCache.set(s.id, { key, used });
+    }
+  } catch {
+    return null;
+  }
+  if (used === null) return null;
+  return { usedTokens: used, windowTokens, pct: Math.round((used / windowTokens) * 1000) / 10 };
+}
+// the newest `message.usage` in the file's TAIL. Tail-read for the same reason pulseLastOutput is:
+// a transcript runs to megabytes and neither the poll nor a tick may slurp one. A usage line that
+// sits entirely beyond the tail therefore reads as "no usage line" → null, which is the honest
+// answer this file's rules already demand for every other thing it cannot see.
+function readUsedTokens(file: string, size: number): number | null {
+  const from = Math.max(0, size - CTX_TAIL_BYTES);
+  let text: string;
+  try {
+    const fd = openSync(file, "r");
+    const buf = Buffer.alloc(size - from);
+    const n = readSync(fd, buf, 0, buf.length, from);
+    closeSync(fd);
+    text = buf.toString("utf8", 0, n);
+  } catch {
+    return null;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"usage"')) continue;
+    let u: unknown;
+    try { u = (JSON.parse(lines[i]) as { message?: { usage?: unknown } }).message?.usage; }
+    catch { continue; } // torn line (the tail's first line is usually a fragment) — keep walking back
+    if (typeof u !== "object" || u === null) continue;
+    const num = (k: string): number => {
+      const v = (u as Record<string, unknown>)[k];
+      return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+    };
+    // input + both cache tiers. output_tokens is absent from this sum on purpose — see the region note.
+    return num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+  }
+  return null;
+}
+
 function stewardSlotsView(now: number) {
   return slots.map((s) => {
     const sig = laneSignalView(s, now);
@@ -10043,6 +10135,13 @@ Bun.serve<WSData>({
             // Cached (git tick), so it is a REPORT, never a gate: every gate keeps its own fresh
             // probe. null = the tick has not reached this slot yet, which is not an answer.
             agent: agentInfo.get(s.id) ?? null,
+            // how full this session's context is, from its own transcript's newest usage record.
+            // Present on every slot (never omitted like `harness` above) because its null is an
+            // ANSWER — "Fleet cannot tell for this slot" — and a reader must be able to see the
+            // difference between that and an empty context. Cached against the file's identity, so
+            // an unchanged transcript costs one stat here. SIGHT ONLY: no threshold, no alarm, and
+            // nothing in this server reads it.
+            ctx: contextFill(s),
             share: sh ? {
               id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,

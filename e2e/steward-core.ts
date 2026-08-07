@@ -115,6 +115,63 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   check("transcript fact: an empty slot is null and the field is present on every slot",
     tfSlots.every((s) => "transcriptFact" in s) && tfSlots.filter((s) => !s.cwd).every((s) => s.transcriptFact === null),
     JSON.stringify(tfSlots.map((s) => [s.id, s.transcriptFact?.bytes ?? null])));
+
+  // --- context FILL: the same question one field further, on the OWNER's poll. The proxy above is
+  //     bytes and says so ("can never be turned into a percentage"); this reads claude's own
+  //     `message.usage` out of the pinned transcript and divides by the slot's model's window.
+  //     Shares this section's fixture: slot 2 is the one PINNED slot in the suite, and the state
+  //     plant gave it a non-default (200k) model so a hardcoded 1M denominator cannot pass here. ---
+  {
+    type Fill = { usedTokens: number; windowTokens: number; pct: number } | null;
+    const fills = async (): Promise<{ id: number; cwd: string | null; model: string | null; ctx: Fill }[]> =>
+      ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; cwd: string | null; model: string | null; ctx: Fill }[] }).slots;
+
+    // (a) the fixture as restart.ts left it: 4097 bytes of filler, i.e. a PINNED transcript with no
+    //     usage record anywhere in it. That is "cannot tell", and the one answer it must not give
+    //     is 0 — an empty context and an unmeasurable one are different states.
+    const noUsage = await fills();
+    check("context fill: a pinned transcript with no usage record is null, never 0",
+      noUsage.find((s) => s.id === 2)?.ctx === null, JSON.stringify(noUsage.find((s) => s.id === 2)?.ctx));
+    // positive control for the model plant — if this ever comes back as the fleet default, the
+    // denominator assertion below stops being able to fail.
+    check("context fill: the fixture slot carries the planted NON-default model (200k window)",
+      noUsage.find((s) => s.id === 2)?.model === ctx.plantedModel,
+      String(noUsage.find((s) => s.id === 2)?.model));
+    // (b) an UNPINNED active slot: null for the same reason transcriptFact refuses the fallback —
+    //     a fact that silently swaps subject is worse than no fact.
+    check("context fill: an UNPINNED active slot is null (no newest-by-mtime guess)",
+      noUsage.find((s) => s.id === lnStew.slot)?.ctx === null,
+      JSON.stringify(noUsage.find((s) => s.id === lnStew.slot)?.ctx));
+    check("context fill: an empty slot is null and the field is present on every slot",
+      noUsage.every((s) => "ctx" in s) && noUsage.filter((s) => !s.cwd).every((s) => s.ctx === null),
+      JSON.stringify(noUsage.map((s) => [s.id, s.ctx?.usedTokens ?? null])));
+
+    // (c) the real measurement, against KNOWN numbers. output_tokens is planted at a value that
+    //     would be impossible to miss in the sum (9_000_000) precisely because leaving it out is
+    //     the thing that makes this agree with the owner's own status line — a sensor that added
+    //     it would still look plausible against a hand-checked total, but not against this.
+    if (ctx.plantedTranscript) {
+      const older = JSON.stringify({ type: "assistant", timestamp: "2026-01-01T00:00:00Z",
+        message: { usage: { input_tokens: 1, cache_creation_input_tokens: 1, cache_read_input_tokens: 1, output_tokens: 1 } } });
+      const newest = JSON.stringify({ type: "assistant", timestamp: "2026-01-01T00:00:01Z",
+        message: { usage: { input_tokens: 2, cache_creation_input_tokens: 1_946, cache_read_input_tokens: 148_401, output_tokens: 9_000_000 } } });
+      // a trailing non-usage line, so "newest usage" is proven to be a SEARCH backwards and not
+      // "parse the last line" — a real transcript's final entry is often a user/tool_result row.
+      const after = JSON.stringify({ type: "user", timestamp: "2026-01-01T00:00:02Z", message: { content: [{ type: "text", text: "no usage here" }] } });
+      writeFileSync(ctx.plantedTranscript, `${older}\n${newest}\n${after}\n`);
+      const EXPECT_USED = 2 + 1_946 + 148_401; // 150 349 — the measured calibration reading
+      let filled: Fill = null;
+      for (let i = 0; i < 20 && filled === null; i++) { filled = (await fills()).find((s) => s.id === 2)?.ctx ?? null; if (!filled) await Bun.sleep(250); }
+      check("context fill: reads the NEWEST usage record's three INPUT counters (output_tokens excluded)",
+        filled?.usedTokens === EXPECT_USED, JSON.stringify(filled));
+      // the denominator is the SLOT's model, not a constant: 150 349 against 200k is 75.2%, against
+      // the fleet default's 1M window it would read 15.0%. Both are plausible-looking numbers, which
+      // is exactly why this has to be asserted rather than eyeballed.
+      check("context fill: pct divides by the SLOT's model window (200k → 75.2%, not the default 1M's 15%)",
+        filled?.windowTokens === 200_000 && filled?.pct === 75.2, JSON.stringify(filled));
+    }
+  }
   if (ctx.plantedTranscript) (await import("node:fs")).rmSync(ctx.plantedTranscript, { force: true });
 
   // --- bundle-staleness fact: deployGap's twin. public/*.js are gitignored BUILD artifacts, so

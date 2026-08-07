@@ -73,6 +73,31 @@ export interface PostLandAuditLiveInfo {
 // own copy of the string — a copy that would keep passing after the server's default moved.
 export const FLEET_DEFAULT_MODEL = "claude-opus-5[1m]";
 
+// --- how many tokens a model's context window holds ---------------------------------------------
+// The DENOMINATOR of the context-fill sensor, and the reason that sensor cannot be a single number:
+// the same 150k tokens are 15% of a 1M window and 75% of a 200k one. The variant is spelled in the
+// model NAME — MODEL_RE's optional bracket suffix (`claude-opus-5[1m]`) exists for exactly this, so
+// the window is a pure function of the name and needs no table of model ids to stay current.
+//
+// Three answers, and the third is the point: an UNRECOGNISED suffix returns null — "cannot tell" —
+// rather than falling back to a default. A wrong denominator does not fail, it publishes a
+// confident percentage that is off by a factor of five, which is worse than showing nothing. The
+// no-suffix case is not a guess of the same kind: every claude model without a variant suffix is
+// 200k, and that IS the base window rather than a stand-in for an unknown one.
+//
+// Scope: claude models. Every caller reaches this only for a harness whose `supports.transcript` is
+// true (server.ts, contextFill) — a foreign harness's fill is unknowable one step earlier, from the
+// absence of a claude transcript, so this function is never asked about a `provider/id` name.
+export const CONTEXT_WINDOW_BASE = 200_000;
+export const CONTEXT_WINDOW_1M = 1_000_000;
+export function contextWindowFor(model: string | null): number | null {
+  if (!model) return null;
+  const m = /^([^[]+)(?:\[([A-Za-z0-9]{1,8})\])?$/.exec(model);
+  if (!m) return null;
+  if (m[2] === undefined) return CONTEXT_WINDOW_BASE;
+  return m[2].toLowerCase() === "1m" ? CONTEXT_WINDOW_1M : null;
+}
+
 // --- background-worker contracts ----------------------------------------------------------------
 // Every throwaway claude this fleet spawns runs through server.ts's runWorker, and each one owes two
 // strings that used to be written by hand in two places each:

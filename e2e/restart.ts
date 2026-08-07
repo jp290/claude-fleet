@@ -114,6 +114,12 @@ export async function run(ctx: Ctx): Promise<void> {
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
+    // same reason, for the two scheduler ticks: dropping them here would silently restore the
+    // 5s/8s production intervals for everything that runs after this restart (steward-outcomes
+    // polls for a dispatch), while the harness kept sizing its windows from the wrapper's value.
+    // This list is hand-kept — harness.restartSrv() forwards every FLEET_* and this one does not
+    // — so a new server knob has to be added in both places.
+    "FLEET_AUTOS_TICK_MS", "FLEET_DISPATCH_TICK_MS",
     // without this the post-restart server reverts to the prod journal cap (6) and the honest
     // filter-then-count cap 429s the later anchor fixtures — the leaky slice-window cap used to
     // let exactly those extra POSTs through, which is how this gap stayed invisible until the fix

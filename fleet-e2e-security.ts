@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 // covers the live PORT as well as the live socket. check() there is the per-check trail's single
 // emit site, so this suite's checks now leave durable rows (docs/e2e-trail.md), stamped
 // FLEET_E2E_SUITE=security by the wrapper.
-import { BASE, check, failures, get, IP, PORT, post, results, ROOT, TOKEN } from "./e2e/harness";
+import { afterTick, BASE, check, DISPATCH_TICK_MS, failures, get, IP, PORT, post, results, ROOT, TOKEN } from "./e2e/harness";
 
 const REPO = process.env.FLEET_E2E_REPO ?? "";
 const DISPATCH_REPO = process.env.FLEET_DISPATCH_REPO ?? "";
@@ -235,9 +235,10 @@ if (INTAKE && DISPATCH_REPO) {
   };
   const lanes0 = await laneCount();
   check("§5 dispatcher switched on", (await post("/api/dispatch", { on: true })).ok);
-  // 20s spans two full dispatcher ticks (8s apart) — well past the point a QUEUED task would
-  // have been taken (the positive control below settles in one tick plus the 4s boot sleep)
-  await Bun.sleep(20_000);
+  // A non-event cannot be polled for: to prove the dispatcher LEFT this row alone, wait a window
+  // a full tickDispatch must have fired inside. Sized from the same env the srv spawn got
+  // (e2e-security.sh sets both), so it can never drift from the server's actual interval.
+  await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
   const t1 = await taskOf();
   check("§5 the dispatcher never takes a PENDING task — no lane, still pending",
     t1?.status === "pending" && (await laneCount()) === lanes0,

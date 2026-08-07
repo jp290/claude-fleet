@@ -583,7 +583,7 @@ export async function run(sc: StewardCtx): Promise<void> {
     const sigTid = sigTask.task.id;
     await post(`/api/tasks/${sigTid}/queue`, {});
     let sigLaneSlot = 0;
-    for (let i = 0; i < 80; i++) { // dispatch tick (8s) + 4s boot re-gate → give it ~40s
+    for (let i = 0; i < 80; i++) { // polls: one dispatch tick + the 4s boot re-gate; ~40s ceiling
       const found = (await sigSessions()).slots.find((x) => x.task?.id === sigTid && x.task.status === "sent");
       if (found) { sigLaneSlot = found.id; break; }
       await Bun.sleep(500);

@@ -456,6 +456,19 @@ const AUTO_MAX_RUNS = 100;
 const AUTO_MAX_PER_SLOT = 5;
 const AUTO_KEEP_DONE = 5; // completed one-shots kept per slot before the oldest are pruned
 const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer before skipping
+// THE TWO SCHEDULER TICKS, deployment parameters like ANALYSIS_TICK_MS / AUTO_REVIEW_MS rather
+// than laws. They were literals at the setInterval calls, and that made them the floor under every
+// suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
+// fires while the kill-switch is off". A non-event cannot be polled for — you wait a window wide
+// enough that the tick must have fired inside it — so those checks slept 7-20s each and the tick
+// literal WAS the suite's runtime. Measured on the trail: 20.0s of security's 35.5s sat in one
+// such check. The suites now set these small and size their windows from the same value.
+// 0 is deliberately NOT "off" here, unlike its two neighbours: pausing these surfaces is what
+// autosOn / dispatchOn already do, and setInterval(fn, 0) would spin. Hence a floor instead —
+// 100ms, the cadence poll() has always run at. Unset is bit-identical to the old literals.
+const TICK_FLOOR_MS = 100;
+const AUTOS_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_AUTOS_TICK_MS ?? 5000) | 0);
+const DISPATCH_TICK_MS = Math.max(TICK_FLOOR_MS, Number(process.env.FLEET_DISPATCH_TICK_MS ?? 8000) | 0);
 const GIT_TIMEOUT_MS = Number(process.env.FLEET_GIT_TIMEOUT_MS) || 30_000;
 const MERGE_IDLE_MS = 3000; // don't start a rebase while the pane is actively producing output
 let persistedToken: string | null = null;
@@ -6792,10 +6805,10 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
 }
 
 setInterval(() => void poll(), 100);
-setInterval(() => void tickAutos().catch(() => {}), 5000);
+setInterval(() => void tickAutos().catch(() => {}), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch(() => {}), 10_000);
 void tickGit().catch(() => {}); // warm the badge cache so the first paint isn't blank
-setInterval(() => void tickDispatch().catch(() => {}), 8000);
+setInterval(() => void tickDispatch().catch(() => {}), DISPATCH_TICK_MS);
 // FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
 // harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
 if (ANALYSIS_TICK_MS) setInterval(() => void tickAnalysisSweep().catch(() => {}), ANALYSIS_TICK_MS);

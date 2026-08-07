@@ -94,8 +94,15 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_AUTO_REVIEW_MS=0 turns the auto-③ tick OFF here: this harness configures no
 # FLEET_REVIEW_CMD stand-in, so an auto-review of a done-looking lane would spawn a REAL
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
+# The two scheduler intervals are shortened from their 5 s / 8 s production defaults. Both aliveness
+# branches below are negative-or-paired controls on a scheduled auto — they must out-wait a full
+# tickAutos rather than poll — and the dispatcher's post-spawn gate is only reachable once
+# tickDispatch has fired. AUTOS_TICK must be set on BOTH lines: the server acts on it, and
+# fleet-e2e-claude-gate.ts sizes its windows from the same variable instead of restating a number.
+AUTOS_TICK=250
+DISP_TICK=250
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
@@ -109,7 +116,7 @@ sleep 0.5
 cd "$DIR" || exit 1
 # FLEET_E2E_SUITE names this suite in every trail row the run writes (e2e/trail-emit.ts); without
 # it the rows would claim to come from the isolated suite, which is the emitter's default.
-FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 bun fleet-e2e-claude-gate.ts
+FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK bun fleet-e2e-claude-gate.ts
 code=$?
 
 tmux -L "$SOCK" kill-server 2>/dev/null

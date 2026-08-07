@@ -32,6 +32,20 @@ export const ROOT = resolve(import.meta.dir, "..");
 // the throwaway git repo the worktree/dispatch checks spawn lanes from
 export const REPO = process.env.FLEET_E2E_REPO ?? "";
 
+// The server's two scheduler ticks, READ FROM THE SAME ENV THE SERVER GOT (the wrappers put
+// FLEET_*_TICK_MS on both the srv spawn line and this process's line). Every check that has to
+// out-wait a tick sizes its window from these instead of hard-coding a number that silently
+// stops matching the server the day a default moves. Defaults mirror server.ts's.
+export const AUTOS_TICK_MS = Number(process.env.FLEET_AUTOS_TICK_MS ?? 5000) | 0;
+export const DISPATCH_TICK_MS = Number(process.env.FLEET_DISPATCH_TICK_MS ?? 8000) | 0;
+// A window wide enough that the tick MUST have fired inside it: the auto's own due delay (whole
+// seconds — inSec is a seconds field) + one full tick + slack for a loaded machine. This is the
+// only honest shape for a negative control; a positive one should poll instead.
+export const afterTick = (dueMs: number, tickMs: number): number => dueMs + tickMs + 1500;
+// mirrors server.ts's AUTO_MIN_EVERY_SEC — the smallest recurring interval the route accepts, and
+// therefore a floor no tick setting can shrink. Named so the checks that hit it say so.
+export const AUTO_MIN_EVERY_SEC_MS = 10_000;
+
 export const results: string[] = [];
 let failed = 0;
 export const failures = (): number => failed;

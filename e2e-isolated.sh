@@ -322,7 +322,14 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # fakeverify path in this run is a git-grep and a few echoes, tens of milliseconds, so the margin
 # to a false timeout is ~100x — while 5000, the server's own floor, would buy 8 s of suite time
 # for a thinner one. e2e/merge.ts reads it back off process.env rather than restating the number.
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+# FLEET_AUTOS_TICK_MS / FLEET_DISPATCH_TICK_MS: the production 5 s / 8 s scheduler intervals are a
+# floor under every check that proves a NON-event (no auto fires while the kill-switch is off; the
+# dispatcher leaves a pending row alone) — those cannot poll, they must out-wait a full tick, and
+# on the trail they were the most expensive checks in this suite. Both ticks are cheap no-ops when
+# nothing is due, and the analyst is off here (FLEET_ANALYSIS_MS=0), so the git read inside
+# tickDispatch is not on this path either. e2e/harness.ts reads both back off process.env and
+# sizes the windows from them — same one-string discipline as FLEET_VERIFY_TIMEOUT_MS above.
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

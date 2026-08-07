@@ -28,6 +28,15 @@ mkdir -p "$DIR" "$FAKEBIN"
 # because fleet-e2e-claude-gate.ts imports them; nothing here names them.
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e-claude-gate.ts || exit 1
+# Phase 2 (the NON-claude harness) gets its OWN instance dir, unlike e2e-clean-review.sh's two
+# phases which deliberately share one to reuse a journal. Here the state file is the thing that
+# must not carry over: phase 1 leaves four slots pinned to the `claude` stand-in, and phase 2's
+# question is what the server makes of panes spawned by a DIFFERENT command. Adopting phase 1's
+# slots would answer it with the wrong panes.
+DIR2="${TMPDIR:-/tmp}/fleet-e2e-harness-instance-$$"
+rm -rf "$DIR2"
+mkdir -p "$DIR2"
+stage_instance "$SRC" "$DIR2" server.ts fleet-e2e-harness.ts || exit 1
 
 # a throwaway git repo the dispatcher spawns lanes from — needed to exercise the
 # post-spawn re-check (server.ts tickDispatch): the gate suite's fake `claude` can die
@@ -57,6 +66,16 @@ EOF
 "$CC" -O0 -o "$FAKEBIN/claude-hang" "$FAKEBIN/claude-hang.c" || exit 1
 cp "$FAKEBIN/claude-exit" "$FAKEBIN/claude"
 chmod +x "$FAKEBIN/claude" "$FAKEBIN/claude-hang"
+
+# ...and the same pair under a name that is NOT claude, for phase 2. The name is arbitrary on
+# purpose: the server learns it only from FLEET_HARNESS_COMMS at boot, so a `harn` that nothing in
+# server.ts has ever heard of is what proves no harness is compiled in. Same two variants, same
+# reason — exit = the harness that died on an unresolvable model and left the pane to `exec $SHELL`,
+# hang = a resident agent the probe must find.
+"$CC" -O0 -o "$FAKEBIN/harn-exit" "$FAKEBIN/claude-exit.c" || exit 1
+"$CC" -O0 -o "$FAKEBIN/harn-hang" "$FAKEBIN/claude-hang.c" || exit 1
+cp "$FAKEBIN/harn-hang" "$FAKEBIN/harn"
+chmod +x "$FAKEBIN/harn" "$FAKEBIN/harn-exit" "$FAKEBIN/harn-hang"
 
 # stand-in ✨ enhancer: tickDispatch compiles a queued task's text into the lane brief before
 # sending (2026-08-04). Without this stand-in every dispatched lane would spawn a real enhance
@@ -116,10 +135,40 @@ sleep 0.5
 cd "$DIR" || exit 1
 # FLEET_E2E_SUITE names this suite in every trail row the run writes (e2e/trail-emit.ts); without
 # it the rows would claim to come from the isolated suite, which is the emitter's default.
+echo "--- phase: claude (FLEET_CMD=claude) ---"
 FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_STEWARD_MIN_IDLE_MS=800 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK bun fleet-e2e-claude-gate.ts
 code=$?
 
+# Phase 2: the same machinery under a harness that is NOT claude. kill-server, not kill-session:
+# phase 1's panes are running its `claude` stand-in, and phase 2 probes for a different comm
+# entirely — leaving them up would put panes in the socket that answer the wrong question.
+if [ "$code" = 0 ]; then
+  tmux -L "$SOCK" kill-server 2>/dev/null
+  tmux -L "$SOCK" new-session -d -s srv \
+    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model exec bun server.ts >> server.log 2>&1"
+  # default-shell decides what interprets every pane command tmux builds, and one phase-2 check
+  # depends on it being zsh: an unquoted glob model is fatal under zsh ("no matches found" aborts
+  # the line, pane and all) and HARMLESS under sh, which leaves an unmatched pattern literal. Under
+  # sh that check would still pass while proving nothing, so say so rather than weaken it silently.
+  ZSH="$(command -v zsh)"
+  if [ -n "$ZSH" ]; then
+    tmux -L "$SOCK" set -g default-shell "$ZSH"
+  else
+    echo "e2e-claude-gate.sh: no zsh — the glob-model pane check runs, but cannot fail as designed" >&2
+  fi
+  for _ in $(seq 1 60); do
+    _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+    [ "$_hc" != "000" ] && break
+    sleep 0.5
+  done
+  sleep 0.5
+  cd "$DIR2" || exit 1
+  echo "--- phase: harness (FLEET_CMD=harn, a harness server.ts has never heard of) ---"
+  FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_AUTOS_TICK_MS=$AUTOS_TICK bun fleet-e2e-harness.ts
+  code=$?
+fi
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 # unique-per-run dirs: clean up on success, keep for post-mortem on failure
-if [ "$code" = 0 ]; then rm -rf "$DIR" "$FAKEBIN"; else echo "kept test instance for inspection: $DIR"; fi
+if [ "$code" = 0 ]; then rm -rf "$DIR" "$DIR2" "$FAKEBIN"; else echo "kept test instances for inspection: $DIR $DIR2"; fi
 exit $code

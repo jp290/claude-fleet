@@ -1722,11 +1722,33 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     // found by the inspection pulse on the first day of the measurement it poisoned).
     const healDetail = resume ? "resumed" : s.sessionId ? "created:no-transcript" : "created:no-session";
     const candidate = resume ? s.sessionId! : crypto.randomUUID();
-    // self-scheduling credential: only baked into a LANE's pane (never a plain session) —
-    // a session running inside its own worktree can POST /api/self/autos to check in on
-    // itself later, scoped to exactly this slot, without ever touching the owner token
-    const selfExport = s.worktree
-      ? `export FLEET_SELF_TOKEN='${s.selfToken}'; export FLEET_SELF_SLOT='${s.id}'; ` : "";
+    // self-scheduling credential: EVERY session with a cwd gets it, lane or not. It can check in
+    // on itself later and read its own row, scoped to exactly this slot, without ever touching the
+    // owner token. This used to be keyed on `s.worktree`, and that carve-out was never a security
+    // boundary — `selfToken` is minted for every slot (openSlot) and persisted for every slot
+    // (saveState), and the routes below already AUTHENTICATE a plain session's token: measured
+    // 2026-08-07 against the live server, a plain slot's credential answers /api/self/gate 409
+    // "not a lane", where an unknown one answers 401. The server recognized the principal all
+    // along and simply never handed it to the pane, so what the widening adds is one export line,
+    // not a new credential class. What it grants is the self-PLANNING family — /api/self/autos
+    // (which has no lane check at all) and /api/self (its own row). The two lane-only questions
+    // keep their 409s and MUST: a plain session has no integration branch to be measured against
+    // (drift) and no land for a gate to judge, so answering them would be answering nonsense.
+    //
+    // The real widening, named honestly: a plain session in a FOREIGN repo now holds a Fleet
+    // credential it did not hold before. Its entire reach is scheduling prompts into its OWN pane
+    // (AUTO_MAX_PER_SLOT, AUTO_MIN_EVERY_SEC, the mandatory run cap, and the perpetual-403 all
+    // still apply) — and it is smaller than the status quo it replaces, in which a session whose
+    // cwd is the install directory simply reads the owner token out of fleet.json. This closes no
+    // hole (same uid, same file); it removes the reason to walk through it.
+    //
+    // The ⚙ steward is included deliberately (it lands here because its cwd is set and its
+    // `s.worktree` is null — a physical git worktree Fleet did not create). Its pane already
+    // carries FLEET_STEWARD_TOKEN, which is strictly broader: it reads every session and sends
+    // into other slots. Withholding the NARROWER credential from that one pane protects nothing
+    // and would only deny the longest-lived session on the board the ability to schedule its own
+    // next look — which is precisely what a watching role needs most.
+    const selfExport = `export FLEET_SELF_TOKEN='${s.selfToken}'; export FLEET_SELF_SLOT='${s.id}'; `;
     // the steward principal's scoped token, baked with the same exposure as FLEET_SELF_TOKEN
     // above but keyed on the steward LABEL (not the worktree flag): the pane that is currently
     // the ⚙ steward can then self-serve /api/steward/* (the Rundgang) without the owner token.
@@ -1817,8 +1839,11 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   s.label = label;
   s.mission = null; // a re-opened slot is a NEW session: the previous occupant's standing
   // intention must never read as this one's (it is the anchor staleness is judged against)
-  // worktree is set BEFORE ensureSlot spawns the pane below — FLEET_SELF_TOKEN is only baked into a
-  // lane's pane env, so ensureSlot must see the final worktree tag, not a later patch-up
+  // worktree is set BEFORE ensureSlot spawns the pane below. The coupling that once made this
+  // ordering load-bearing is GONE — the pane's FLEET_SELF_TOKEN export used to key on this very
+  // flag and no longer does (see selfExport in ensureSlot), so a later patch-up would no longer
+  // cost the lane its credential. Kept in this order anyway: the slot's row must be whole before
+  // the session that lives in it starts, and nothing below should have to ask which half is set.
   s.worktree = worktree;
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
@@ -2025,10 +2050,14 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
 }
 
 // mint a watch: slot `s` asks to be told, once, when slot `target` looks done. Owner principal
-// only — and that is a MEASUREMENT, not a preference. FLEET_SELF_TOKEN is baked into a LANE's pane
-// and never a plain session's (see the selfExport line in ensureSlot), so the session this feature
-// exists for — a driving main checkout — has no self-credential to subscribe with. A /api/self/
-// twin would therefore be reachable by exactly the principal that did not ask for it.
+// only — and the measurement that made it owner-only HAS EXPIRED, so read this as a scope line and
+// not as a finding: FLEET_SELF_TOKEN used to be baked into a LANE's pane and never a plain
+// session's, which meant the session this feature exists for — a driving main checkout — had no
+// self-credential to subscribe with, and a /api/self/ twin would have been reachable by exactly
+// the principal that did not ask for it. That premise is gone: every session with a cwd now
+// carries the credential (see the selfExport line in ensureSlot). A self twin is therefore now
+// POSSIBLE and is deliberately not built here — the line that widened the export widened
+// self-PLANNING only, and minting a watch is a different decision that deserves its own.
 //
 // EVERY REJECTION HERE ANSWERS THE SAME QUESTION: can this watch ever fire? A watch that cannot is
 // worse than no watch, because it is a silent forever-wait — the precise failure this whole surface
@@ -9115,13 +9144,50 @@ Bun.serve<WSData>({
       if (!pub) return new Response("not found", { status: 404 });
     }
 
-    // self-scheduling: a session running INSIDE a lane schedules its own future check-in,
-    // authenticated by its scoped FLEET_SELF_TOKEN (baked into the pane env — see ensureSlot)
-    // instead of the owner token. Deliberately unreachable on the public share host (this
-    // sits AFTER that gate, unlike /intake) — it's a local-machine credential, not a public
-    // one. The target slot is HARD-DERIVED from which slot's token matches — any `slot`
-    // field in the body is structurally never read (createAutoForSlot takes `s` directly),
-    // so this route cannot be pointed at any slot but the token's own.
+    // the session's own row — the read half of the self family, and the one that belongs to EVERY
+    // session rather than to a lane. It exists because /api/self/gate is the wrong carrier for it:
+    // that route's payload (verify, cleanReview, mergeRepairRounds, rulebookDrifted) is land-gate
+    // knowledge, meaningless to a session that will never land, which is why it answers a non-lane
+    // 409 and keeps doing so. What a plain session actually lacks is duller and more useful — who
+    // am I on this board, and what have I already scheduled for myself.
+    //
+    // The cut is deliberately narrow: every field here is THIS slot's own row, nothing global and
+    // nothing about another slot. `lane` is null for a plain session, and that is the field that
+    // makes its siblings' 409s predictable instead of surprising — a session can ask once whether
+    // the lane-only routes will answer it at all. The autos are served verbatim because
+    // createAutoForSlot already hands this same principal a full Auto object back on every mint,
+    // so no field here is a class of information the credential could not already see.
+    //
+    // Same principal, same flat-cost auth and the same share-host unreachability as its siblings
+    // below. Read-only, and it grants no capability at all.
+    if (url.pathname === "/api/self" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      return json({
+        slot: s.id,
+        label: s.label,
+        cwd: s.cwd,
+        mission: s.mission,
+        awaiting: s.awaiting,
+        lane: s.worktree ? { repo: s.worktree.repo, branch: s.worktree.branch } : null,
+        // idleMs and `observed` carry the same honesty rule laneSignalView states: lastOutput 0
+        // means this pane's output was never observed, NOT that it has been idle since the epoch.
+        // Serving idleMs alone would hand a fresh session a ~1.79e12 and read as "long idle".
+        idleMs: Math.max(0, Date.now() - s.lastOutput),
+        observed: s.lastOutput > 0,
+        autos: autos.filter((a) => a.slot === s.id),
+      });
+    }
+
+    // self-scheduling: a session schedules its own future check-in, authenticated by its scoped
+    // FLEET_SELF_TOKEN (baked into the pane env — see ensureSlot) instead of the owner token.
+    // Deliberately unreachable on the public share host (this sits AFTER that gate, unlike
+    // /intake) — it's a local-machine credential, not a public one. The target slot is
+    // HARD-DERIVED from which slot's token matches — any `slot` field in the body is structurally
+    // never read (createAutoForSlot takes `s` directly), so this route cannot be pointed at any
+    // slot but the token's own. No lane check, and never had one: this is the capability the
+    // widened export exists to hand a plain session.
     if (url.pathname === "/api/self/autos" && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;

@@ -50,7 +50,16 @@ async function selfTokenOf(slot: number, not = ""): Promise<string> {
 const PRE_AUTH_ROUTES = [
   '= /',                  // login (?token=, tokenGate'd) AND the share-host landing page
   '= /api/dispositions',  // pre-check only: 403s a self token, then falls through to the owner gate
-  '= /api/self/autos',    // the scoped per-lane credential
+  // The self family's principal is per-SLOT, not per-lane. It was per-lane until 2026-08-07: the
+  // credential was minted for every slot all along, but exported into a lane's pane only, and the
+  // widening (server.ts, grep `selfExport`) hands it to every session with a cwd — the ⚙ steward
+  // and a plain session in a foreign repo included. Recorded here because this list is where a
+  // pre-auth decision is recorded, and this one moved the PRINCIPAL rather than the route set.
+  // What it grants is bounded by the two routes below that answer a non-lane at all: schedule a
+  // prompt into your OWN pane, and read your OWN row. The other four keep their non-lane 409s, and
+  // §2 below re-runs the whole dangerous owner surface against a plain session's token.
+  '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
+  '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
   '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)
   '= /api/self/criterion', // same credential: the lane's PROPOSED done-criterion (slot-bound, owner confirms)
@@ -237,19 +246,29 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const fixT = (await (await post("/api/tasks", { text: "sec-matrix-fixture", queue: false })).json()) as { task: { id: string } };
   await post(`/api/tasks/${fixT.task.id}/done`, {});
   const probes = [...dangerous(idle?.id ?? 16), ...taskSurface(fixT.task.id)];
-  // a lane's scoped credential, taken from state rather than a pane probe (deterministic, and it
-  // is the same string the pane exports — server.ts ~1084 reads it from exactly here)
-  const st0 = readState();
-  const someSelf = Object.values(st0.slots ?? {}).map((s) => s.selfToken).find(Boolean) ?? "";
-  check("§2 fixtures: a real lane selfToken and a real guest cookie are available as principals",
-    /^[0-9a-f]{32}$/.test(someSelf) && /^share_[0-9a-f]+=/.test(ctx.shICookie),
-    `self=${someSelf.slice(0, 8)}… cookie=${ctx.shICookie.slice(0, 16)}…`);
+  // A scoped self credential, taken from state rather than a pane probe (deterministic, and it is
+  // the same string the pane exports — server.ts reads it from exactly here). SLOT 2 BY NAME, and
+  // that name is the point: it is a PLAIN (non-lane) session, and since 2026-08-07 its pane carries
+  // this credential too (see the self family's note in PRE_AUTH_ROUTES). The widening handed a real
+  // Fleet token to sessions that can never land, so the whole dangerous owner surface is fired
+  // against one — an escalation shows up here as a status that is neither 401 nor 403.
+  //
+  // This used to read `Object.values(slots).map(s => s.selfToken).find(Boolean)` under the name "a
+  // lane selfToken", which was a mislabel: state keys are slot ids, so it returned whichever slot
+  // sorted first and was active — empirically slot 2, the plain one. Nothing is lost by naming it,
+  // because the matrix asserts a property of the credential CLASS (the owner gate never honours a
+  // self token, whoever holds it); a real LANE's token is exercised against the self routes it CAN
+  // reach in §3 below and throughout e2e/self-token.ts.
+  const plainSelf = await selfTokenOf(2);
+  check("§2 fixtures: a PLAIN session's selfToken and a real guest cookie are available as principals",
+    /^[0-9a-f]{32}$/.test(plainSelf) && /^share_[0-9a-f]+=/.test(ctx.shICookie),
+    `plain=${plainSelf.slice(0, 8)}… cookie=${ctx.shICookie.slice(0, 16)}…`);
   const principals: { name: string; headers: Record<string, string> }[] = [
     { name: "no credential", headers: {} },
     { name: "an unknown bearer token", headers: { authorization: "Bearer 00000000000000000000000000000000" } },
     { name: "a guest share cookie", headers: { cookie: ctx.shICookie } },
-    { name: "a lane selfToken offered as the owner token", headers: { authorization: `Bearer ${someSelf}` } },
-    { name: "a lane selfToken in its own header", headers: { "x-fleet-self-token": someSelf } },
+    { name: "a plain session's selfToken offered as the owner token", headers: { authorization: `Bearer ${plainSelf}` } },
+    { name: "a plain session's selfToken in its own header", headers: { "x-fleet-self-token": plainSelf } },
     { name: "the steward token", headers: { authorization: `Bearer ${sc.token}` } },
   ];
   for (const p of principals) {

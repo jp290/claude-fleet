@@ -158,6 +158,16 @@ export const readText = async (p: string): Promise<string> => {
 // send-keys RETRIED until the marked output line appears or the deadline passes. Returns the
 // variable's value ("" when it is unset — the assertion its callers make) or null if the pane
 // never answered, which is a harness failure, not an absent variable.
+//
+// FOURTH RACER, and it is not a race at all — the PANE'S WIDTH. capture-pane returns the pane's
+// physical rows, so an answer longer than the pane is wide arrives as two lines and the anchored
+// match never fires: the probe then times out and reports null, which reads as "the pane never
+// answered". Measured 2026-08-07 on a 55-column pane (e2e/slots.ts resizes slot 2 to 55 for the
+// reseed checks): `envprobe-fleet-self-token-N=[<32 hex>]` is 63 characters, wrapped, invisible —
+// while the same probe for a 1-character value on the same pane answered instantly. The trap was
+// dormant only because every value probed here used to be short or empty. `-J` joins wrapped
+// lines back into one logical line, which is what the caller means by "the line the pane printed"
+// (and it trims trailing whitespace, closing the same hole for a `$`-anchored match).
 let probeSeq = 1;
 export async function paneEnv(target: string, varName: string, timeoutMs = 20_000): Promise<string | null> {
   const marker = `envprobe-${varName.toLowerCase().replaceAll("_", "-")}-${probeSeq++}`;
@@ -166,7 +176,7 @@ export async function paneEnv(target: string, varName: string, timeoutMs = 20_00
   while (Date.now() < deadline) {
     await tmuxOut("send-keys", "-t", target, `printf '${marker}=[%s]\\n' "$${varName}"`, "Enter");
     for (let i = 0; i < 30 && Date.now() < deadline; i++) {
-      const m = line.exec((await tmuxOut("capture-pane", "-t", target, "-p")).out);
+      const m = line.exec((await tmuxOut("capture-pane", "-t", target, "-p", "-J")).out);
       if (m) return m[1];
       await Bun.sleep(100);
     }

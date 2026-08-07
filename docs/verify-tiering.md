@@ -670,6 +670,55 @@ one write before it settles. **Not root-caused**, same as the fourth family. Rec
 The proof order in §11.3 applies unchanged, and it is what cleared the 2026-08-01 instance: the
 same tree, re-run serially on an idle machine, came back 993 PASS / 0 FAIL.
 
+### 11.2c A sixth family: the `stalled` fixture's pane-observation race (2026-08-06 → 2026-08-07)
+
+Signature: up to four FAILs inside `e2e/review.ts`'s `stalled` block with **one** root —
+
+> `stalled setup: the lane's output was observed, so idle means idle and not 'never spoke'`
+> detail `{"observed":false,"lastOutput":0}`
+
+The other three (`stalled is served as a fact…`, `a stalled lane is NOT done-looking…`,
+`stalled-since is served next to it…`) are dependents, not separate defects: `stalled` requires
+`observed`, so a lane whose pane was never observed cannot satisfy the predicate at all.
+
+**Four instances, read out of the trail rather than out of a report:**
+
+| run | tree | FAILs |
+|---|---|---|
+| `isolated-20260806T080357Z-16324` | `29c67997` | 3 |
+| `isolated-20260806T081615Z-58444` | `29c67997` | 4 |
+| `isolated-20260807T023150Z-20894` | null | 4 |
+| `isolated-20260807T091218Z-63718` | null | 4 |
+
+The last one is the red post-land audit of `9940ac3`, adjudicated `flake`. The first has only three
+because **the root check did not exist yet**: that run's setup line was `stalled setup: a non-lane
+slot sits on a clean clone with nothing ahead`, and it passed. The root check was added between
+08:03Z and 08:16Z on 2026-08-06.
+
+**The base rate is two numbers, and folding them is what makes it wrong.** 4 of the 77 trail runs
+that carry the dependent check (5.2 %); 3 of the 76 that carry the root check (3.9 %). Queue row
+`32c89530` states it as "4 von 69 (~6 %)" — one figure over a denominator that does not cover the
+first instance. This is the corrected reading; the row's own VERIFIKATION clause (every cited run
+id must exist in the trail and carry `ok:false`) is what produced it.
+
+**Mechanism — from the fixture's own comment (`e2e/review.ts:327-340`), not inferred.** This
+harness runs `FLEET_CMD=true`, so a freshly opened pane emits no bytes and `lastOutput` stays 0.
+`ensureSlot` sets `quietUntil = now + 1500` when it starts piping, and `poll()` streams output
+inside that window *without* stamping `lastOutput` — a repaint tmux just caused is not the session
+working. A probe fired inside the window therefore renders, satisfies `paneEnv`, and still leaves
+`lastOutput` at 0. The fixture's guard against that is a fixed `await Bun.sleep(2000)` (`:340`),
+and a fixed wait is exactly what machine load defeats.
+
+**It is fixable, and the fix is named.** The poll below the probes (`:349`) waits on `stalled`,
+not on `observed`; when `observed` never flips, it spins its full 40 s and the setup check fails
+anyway. Re-firing the probe *inside* a poll on `observed === true` removes the fixed wait's
+assumption without weakening any assertion. Not built here — the honest verification is three
+serial `./e2e-isolated.sh` runs (~30 min of suite mutex, so never beside a land), which is a lane's
+job, not a doc's. Part (b) of `32c89530` remains open with this as its brief.
+
+**No free pass.** Four sightings make the family real; they do not make the next red one a flake.
+The proof order in §11.3 applies unchanged.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

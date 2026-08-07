@@ -701,6 +701,41 @@
   .auditrow.cat-repo      { border-left-color: #bb9af7; } .auditrow.cat-repo .aud-kind      { color: #bb9af7; }
   .auditrow.cat-other     { border-left-color: var(--faint); }    .auditrow.cat-other .aud-kind     { color: var(--dim); }
 
+  /* Akte — the fourth lens: one lane's whole trail, joined by branch (GET /api/lane). Reuses the
+     audit lens's control row (.auditctl) and the shell's row anatomy; the only new vocabulary is
+     the SOURCE heading and the not-measured box, because "this could not be read" is the one
+     statement none of the other lenses needed to make. */
+  .shellrow.akterow { border-left: 3px solid var(--faint); }
+  .aktehead { margin: 14px 0 5px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--line-soft); padding-bottom: 3px; }
+  /* deliberately loud: an unread source is the failure mode this window exists to surface, and a
+     quiet grey "n/a" is exactly how two red audits went unread in the first place */
+  .akteunknown { padding: 6px 9px; border-radius: 7px; background: #38290f; border: 1px solid var(--amber); }
+  .akteunknownw { font-size: 11px; font-weight: 700; color: var(--amber); text-transform: uppercase;
+    letter-spacing: 0.04em; }
+  .aktetext { font-size: 12.5px; color: var(--text); white-space: pre-wrap; word-break: break-word;
+    margin: 4px 0; }
+  .aktepre { font-size: 11px; color: #aaa; background: #141414; border: 1px solid var(--line-soft);
+    border-radius: 6px; padding: 7px 9px; margin: 4px 0; white-space: pre-wrap; word-break: break-word;
+    max-height: 280px; overflow: auto; }
+  .aktepre.akteout { color: var(--dim); }
+  .aktestep { display: flex; gap: 8px; align-items: baseline; padding: 5px 9px; border-radius: 7px;
+    border-left: 3px solid var(--faint); margin: 2px 0; }
+  .aktestep:hover { background: var(--raised); }
+  .aktestep .aktekind { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--faint); min-width: 52px; }
+  .aktestep .shrname { font-size: 12px; color: #ddd; white-space: pre-wrap; word-break: break-word; }
+  .aktestep .shrsub { font-size: 10.5px; color: #6f6f6f; word-break: break-word; }
+  .aktestep.step-prompt { border-left-color: var(--accent); } .aktestep.step-prompt .aktekind { color: var(--accent); }
+  .aktestep.step-commit { border-left-color: #bb9af7; } .aktestep.step-commit .aktekind { color: #bb9af7; }
+  .aktestep.step-outcome { border-left-color: var(--add); } .aktestep.step-outcome .aktekind { color: var(--add); }
+  .aktestep.step-note { border-left-color: var(--amber); } .aktestep.step-note .aktekind { color: var(--amber); }
+  /* tier 2 keeps its three states apart here exactly as the board's alarm does: green says nothing,
+     red is a measured failure, unknown is a measurement that never happened */
+  .aktestep.step-audit-green { border-left-color: var(--add); } .aktestep.step-audit-green .aktekind { color: var(--add); }
+  .aktestep.step-audit-red { border-left-color: var(--del); } .aktestep.step-audit-red .aktekind { color: var(--del); }
+  .aktestep.step-audit-unknown { border-left-color: var(--amber); } .aktestep.step-audit-unknown .aktekind { color: var(--amber); }
+
   /* outcome feed — the lane-outcome ledger rendered (docs/perception-layer.md §6).
      Reuses the audit overlay's control row (.auditctl) and the board's finding rows (.bfind*)
      rather than growing a second vocabulary for the same two things. */

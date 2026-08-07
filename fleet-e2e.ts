@@ -41,6 +41,7 @@ import * as verifyQueue from "./e2e/verify-queue";
 import * as deployFacts from "./e2e/deploy-facts";
 import * as errors from "./e2e/errors";
 import * as trail from "./e2e/trail";
+import * as trailstats from "./e2e/trailstats";
 
 // the suite kills slots 1-3 and restarts srv — a bare `bun fleet-e2e.ts` must never
 // hit the live fleet by accident. The isolated wrappers set FLEET_SOCK to their own socket.
@@ -85,6 +86,10 @@ if (REPO) {
   await landProvenance.run();
   await concurrency.run();
   await selfToken.run(ctx);
+  // the READ half of the trail family — here, not next to trail.run() at the end, because its
+  // route checks need a LANE's selfToken alive (ctx.restartSelfTok, which restart.run() tears
+  // down) to prove the query reaches the principal the proof order it replaces actually binds.
+  await trailstats.run(ctx);
   await refAdvance.run();
   await outcomes.run();
   // what the merge/land path can still say after the process running it was killed. Last in the

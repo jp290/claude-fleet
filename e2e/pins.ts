@@ -439,6 +439,35 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     .map((m) => m[1].trim()).filter((a) => !a.includes(":"));
   pin("a harness is only ever chosen from a request body, never from server state",
     harnessSources.length > 0 && harnessSources.every((a) => a === "body"), harnessSources.join(" | "));
+
+  // --- the liveness probe resolves its comm set PER SLOT. Both consumers (the git/alive tick and
+  // claudeAlive) must go through commsFor; a call that reaches back for the fleet-wide HARNESS_COMMS
+  // would silently re-pin every slot to the server's own harness, which is the exact defect
+  // b28ce533 was filed about — and it would break NO test, because on a claude fleet the two
+  // answers agree for every claude slot. An absence again, so: a rule over the source.
+  // The three legitimate readers are named, and each for a stated reason.
+  // comment lines stripped first: this file DISCUSSES HARNESS_COMMS at length, and a pin that counts
+  // prose counts the wrong thing — it failed exactly that way when first written (13 vs 5).
+  const serverCode = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const commsReaders = [...serverCode.matchAll(/HARNESS_COMMS/g)].length;
+  const commsAllowed = [ // matched against the full source: these four are code, and one spans two lines
+    /const HARNESS_COMMS: string\[\]/,                   // the declaration
+    /return own \? \[\.\.\.own\] : HARNESS_COMMS;/,       // commsFor's default-adapter fallback
+    /DECLARED_HARNESS = !IS_CLAUDE && HARNESS_COMMS\.length/, // the declared-harness definition
+    /AUTHOR_COMMS = \[\.\.\.new Set\(\[\.\.\.HARNESS_COMMS, "claude"\]\)\]/, // wakeAuthor's superset
+  ].filter((re) => re.test(server)).length;
+  pin("HARNESS_COMMS has exactly its four named readers — the probe resolves per slot through commsFor",
+    commsAllowed === 4 && commsReaders === 5, `${commsReaders} occurrences, ${commsAllowed}/4 named forms present`);
+  pin("both liveness consumers ask commsFor(s), never the fleet-wide set",
+    [...server.matchAll(/paneAgentAt\(sess\(s\.id\), ([A-Za-z_]+(?:\(s\))?)\)/g)]
+      .map((m) => m[1]).every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS"),
+    [...server.matchAll(/paneAgentAt\(sess\(s\.id\), ([A-Za-z_]+(?:\(s\))?)\)/g)].map((m) => m[1]).join(" | "));
+  // ...and the POLICY is not the probe: aliveInfo (a gate) carries harnessAutomatable, agentInfo
+  // (a fact) must not. Reversing them would either lie on the board or open the gates by accident.
+  pin("the fact layer stays unconditional while the gate carries the harness policy",
+    /agentInfo\.set\(s\.id, agentState\);/.test(server)
+    && /aliveInfo\.set\(s\.id, \(agentState === "alive" \|\| agentState === "unprobed"\) && harnessAutomatable\(s\)\);/.test(server),
+    "agentInfo unconditional + aliveInfo gated");
 }
 
 console.log(rows.join("\n"));

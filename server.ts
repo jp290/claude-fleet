@@ -199,6 +199,14 @@ interface Harness {
   // Does this harness take a session id at spawn? It decides whether s.sessionId is pinned at all,
   // which is what makes a conversation survive a pane respawn.
   pinsSession: boolean;
+  // The comm prefixes that prove THIS harness's agent is running in a pane. null = "whatever the
+  // env rule says" (HARNESS_COMMS) — the same null-means-defer shape as modelRe below, and for the
+  // same reason: the DEFAULT adapter must keep answering exactly what an undeclared FLEET_CMD
+  // answered before, including the "unprobed" waiver a stand-in like `true` depends on. A named
+  // harness declares its own, so the probe stops asking about claude in a pane that never ran it.
+  // Required, not optional: a new adapter that forgets this is a compile error rather than a slot
+  // that reads dead (or, worse, waived) for reasons nobody would think to look for.
+  comms: readonly string[] | null;
   // The charset THIS harness's model names are judged by. null = "whatever the env rule says"
   // (SLOT_MODEL_RE), which is how the default adapter keeps MODEL_RE for an undeclared FLEET_CMD
   // and the declared-harness charset for a declared one — i.e. exactly today's behaviour.
@@ -223,6 +231,11 @@ const CLAUDE_HARNESS: Harness = {
   id: "claude",
   spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model),
   pinsSession: IS_CLAUDE,
+  // null = defer to HARNESS_COMMS, which IS the pre-per-slot behaviour for every slot that names no
+  // harness: ["claude"] on a claude fleet, the operator's declaration on a declared one, and the
+  // empty set (→ "unprobed") for an undeclared FLEET_CMD like the suites' `true`. Not `["claude"]`
+  // literally: that would strip the waiver every stand-in depends on.
+  comms: null,
   modelRe: null,
   effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
   supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true },
@@ -249,6 +262,13 @@ const PI_HARNESS: Harness = {
     return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   pinsSession: true,
+  // Depth 1 is enough, and that is a MEASUREMENT, not an assumption: briefs/pi-messungen-2026-08-07.md
+  // (d) found `pi` itself on depth 1, while the bridge's Claude-Agent-SDK child sits on depth 2 and
+  // exists only for the duration of a request — so a probe that reaches depth 1 (paneAgentAt does)
+  // answers from `pi` alone and never depends on a request being in flight. `claude` is NOT listed
+  // here for exactly that reason: it is absent between requests, and a comm that comes and goes
+  // would make the answer flicker.
+  comms: ["pi"],
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
   modelRe: HARNESS_MODEL_RE,
@@ -282,25 +302,26 @@ const PI_HARNESS: Harness = {
   note: "no sandbox",
 };
 
-// KNOWN LIMITATION, measured, and deliberately NOT fixed here (the per-slot probe was reserved for
-// an owner decision — this slice was told to report it, not build it).
+// The probe is now PER SLOT (commsFor, one region below), which fixes a FACT that used to be a lie:
+// a healthy Pi pane answered "no-agent" on the owner poll, because the probe asked about claude —
+// `HARNESS_COMMS` is `["claude"]` whenever FLEET_CMD starts with claude, so the escape hatch named
+// in briefs/pi-messungen-2026-08-07.md (d), "set FLEET_HARNESS_COMMS=pi", could never fire on this
+// fleet: that variable is only read on the `!IS_CLAUDE` branch above. There was no env-level fix.
 //
-// The LIVENESS PROBE is still global: it asks HARNESS_COMMS, which is `["claude"]` whenever
-// FLEET_CMD starts with claude. So on the live fleet a perfectly healthy Pi pane answers
-// "no-agent" — its process tree carries `pi` on depth 1 and no `claude` anywhere (measured: the
-// bridge's SDK child lives on depth 2 and only during a request, while the probe reads depth 1).
+// What is DELIBERATELY NOT changed by that repair is which automations may then touch the slot.
+// Those are two different questions and the queue row (b28ce533) reserved the second one for the
+// owner: making a foreign-harness slot automation-eligible pulls it into scheduled autos, dispatch,
+// steward sends, done-looking → /api/self/watch and auto-③. Pi ships NO permission layer (its own
+// note: "no sandbox"), so the question is not "does the probe work" but "may an unattended path
+// drive a sandbox-less agent". Hence HARNESS_AUTOMATION below: the fact layer tells the truth
+// immediately, the gates stay exactly as closed as they were until the owner flips one variable.
+// Deciding it in code would have been deciding it for him.
 //
-// What that costs, traced rather than guessed: canDeliver's not-alive gate refuses scheduled
-// autos, dispatch and steward sends into the slot; and aliveInfo feeds laneSignalView, so
-// `alive === true` never holds and a Pi LANE is never classified done-looking — no /api/self/watch
-// notification, no auto-③ review, and the steward reads it as unfinished.
-//
-// The remedy named in briefs/pi-messungen-2026-08-07.md (d) — set FLEET_HARNESS_COMMS=pi — CANNOT
-// work here, and that is the part the measurement did not reach: that variable is only read on the
-// `!IS_CLAUDE` branch above, so a claude fleet ignores it entirely. There is no env-level fix; the
-// probe set has to become per-slot (harness-declared comms) for a Pi slot to be reachable by any
-// automation path. Until then a Pi slot is a HAND-DRIVEN pane: spawn, type, resume and close all
-// work, and everything unattended skips it.
+// The remaining honest gap, unchanged and worth naming: an ELIGIBLE-but-foreign slot is proven by
+// its own comm only. `claudeAliveAt` still asks about claude by name (the summarizer spawns claude
+// whatever FLEET_CMD is) and `AUTHOR_COMMS` still unions claude in for wakeAuthor, because that
+// path pastes prose and must have a positive answer. Neither moves per slot, and neither should.
+const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
 const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
@@ -1643,9 +1664,18 @@ async function tickGit(): Promise<void> {
       // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
       // `alive` is this state reduced to canDeliver's question, and computing them separately would
       // pay two rounds of ps/pgrep to let them disagree across the gap between the calls.
-      const agentState = await paneAgentAt(sess(s.id), HARNESS_COMMS);
+      const agentState = await paneAgentAt(sess(s.id), commsFor(s));
+      // THE FACT, per slot and unconditional: what is actually running in that pane, asked about the
+      // binary the slot's own harness runs. Before commsFor this asked every slot about claude, so a
+      // healthy Pi pane was reported `no-agent` — the board stating something untrue about reality.
       agentInfo.set(s.id, agentState);
-      aliveInfo.set(s.id, agentState === "alive" || agentState === "unprobed");
+      // THE GATE, which is a different question and must not inherit the fact's answer: aliveInfo
+      // feeds laneSignalView, so `alive` is what makes a lane done-looking — and that reaches
+      // /api/self/watch and auto-③. A foreign-harness slot therefore stays ineligible until the
+      // owner opts in (HARNESS_AUTOMATION), exactly as canDeliver's `harness` gate does for autos,
+      // dispatch and steward sends. Same policy, two consumers; the fact above tells the truth in
+      // both cases, so the owner poll shows a live Pi slot as alive while nothing unattended moves.
+      aliveInfo.set(s.id, (agentState === "alive" || agentState === "unprobed") && harnessAutomatable(s));
       // A merge/land job OWNS this worktree's git for its whole lifetime — rebase, abort, ff-merge.
       // Every value below is a DISPLAY cache (the badges); every gate that acts on git state calls
       // gitOpInProgress fresh at its own site. So hold the last reading for the job's duration
@@ -2252,12 +2282,38 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
 // reports the wrapper zsh even while the agent runs.) The gate applies to every DECLARED
 // harness, claude or not; an undeclared custom command is still intentionally whatever the
 // operator chose, and answers "unprobed" rather than a liveness claim nobody can support.
-async function claudeAlive(slotId: number): Promise<boolean> {
-  const st = await paneAgentAt(sess(slotId), HARNESS_COMMS);
+// Which comms prove THIS slot's agent. The fleet-wide HARNESS_COMMS is now only the DEFAULT
+// adapter's answer (comms: null defers to it), so a slot running a named harness is probed for the
+// binary it actually runs. This is the whole per-slot repair, and it lives in one function so both
+// consumers — the git/alive tick and claudeAlive — cannot drift apart; e2e/pins.ts pins that neither
+// reads HARNESS_COMMS directly any more.
+// a `function` declaration, not a const arrow, and that is deliberate: tickGit() reads it from a
+// line ABOVE this one, and openSlot/killSlot reach tickGit at boot. A const would sit in its
+// temporal dead zone on that path and throw a ReferenceError only at startup — the same ordering
+// hazard projDir already documents one region up.
+function commsFor(s: Slot): string[] {
+  const own = harnessOf(s.harness).comms;
+  return own ? [...own] : HARNESS_COMMS;
+}
+
+// May an UNATTENDED path drive this slot? Separate from "is it alive" on purpose — see the
+// HARNESS_AUTOMATION note above. A slot on the default adapter is unaffected forever (that is every
+// slot on this fleet today); a slot running a named harness is refused until the owner opts in,
+// whatever the probe says. Checked BEFORE the liveness probe by every gate, so the reported reason
+// is the specific one ("this harness is not automatable") rather than the generic not-alive it would
+// otherwise collapse into — being skipped SILENTLY was the expensive half of the original defect.
+function harnessAutomatable(s: Slot): boolean {
+  return HARNESS_AUTOMATION || harnessOf(s.harness) === CLAUDE_HARNESS;
+}
+
+async function claudeAlive(s: Slot): Promise<boolean> {
+  const st = await paneAgentAt(sess(s.id), commsFor(s));
   // "unprobed" is the undeclared-command waiver this function has always granted — an operator who
   // never said what their FLEET_CMD leaves behind keeps exactly today's behaviour. A DECLARED
   // harness no longer gets it: that is the whole repair, and it is why "no-agent" now exists as a
-  // distinct answer instead of collapsing into the same `true` a live claude returns.
+  // distinct answer instead of collapsing into the same `true` a live claude returns. Note that a
+  // named harness declares its comms through the ADAPTER, so it loses the waiver too — a pi slot on
+  // a `FLEET_CMD=true` fleet is genuinely probed, where before it inherited the empty set.
   return st === "alive" || st === "unprobed";
 }
 
@@ -2464,16 +2520,30 @@ function inQuietHours(ts: number): boolean {
 // `alive` MUST stay a fresh claudeAlive call (never a cached read — a 10s-stale cache could fire
 // into a pane that died seconds ago). Returns the FIRST failing gate so callers keep their own
 // bespoke reaction (record+advance vs 409 vs requeue vs "blocked").
-type DeliveryGate = "kill-switch" | "not-alive" | "quiet-hours" | "busy";
+// "harness" is not a failure — it is a POLICY refusal, and it is a distinct value precisely so a
+// caller can tell "nothing is running there" from "something is running there and no unattended
+// path may drive it". Collapsing the two would recreate the silent skip this row was filed about.
+type DeliveryGate = "kill-switch" | "harness" | "not-alive" | "quiet-hours" | "busy";
 async function canDeliver(s: Slot, opts: {
   now: number;
   killSwitch?: boolean; // honor autosOn (default true)
+  // honor the foreign-harness POLICY (default true). Pass false for an act the OWNER initiated:
+  // landing, ⏫ author, 💾 commit. The policy answers "may something unattended drive this slot",
+  // and an owner clicking a button is not that — refusing his land on a pi lane would be answering
+  // a different question than the one asked. It is a separate opt-out from `alive` on purpose:
+  // those callers waive the PROBE (a git ff must not wait on ps) and that is not the same waiver.
+  harness?: boolean;
   alive?: boolean;      // honor a FRESH claudeAlive (default true) — never a cache
   quietHours?: boolean; // honor quiet hours (default true; pass false for one-shots / owner acts)
   idleMs?: number;      // idle threshold in ms; 0/undefined disables the busy gate
 }): Promise<{ ok: true } | { ok: false; gate: DeliveryGate }> {
   if ((opts.killSwitch ?? true) && !autosOn) return { ok: false, gate: "kill-switch" };
-  if ((opts.alive ?? true) && !(await claudeAlive(s.id))) return { ok: false, gate: "not-alive" };
+  // BEFORE the liveness probe, and deliberately not behind the `alive` opt-out: the callers that
+  // pass `alive: false` waive a PROBE they cannot afford (an owner-initiated git ff must not wait on
+  // ps), not the policy question of who may be driven unattended. It is also the cheap check —
+  // no tmux, no ps — so putting it first costs nothing and names the reason precisely.
+  if ((opts.harness ?? true) && !harnessAutomatable(s)) return { ok: false, gate: "harness" };
+  if ((opts.alive ?? true) && !(await claudeAlive(s))) return { ok: false, gate: "not-alive" };
   if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
   if (opts.idleMs && opts.now - s.lastOutput < opts.idleMs) return { ok: false, gate: "busy" };
   return { ok: true };
@@ -2507,6 +2577,16 @@ async function tickAutos(): Promise<void> {
         idleMs: a.idleSec === 0 ? 0 : a.idleSec * 1000,
       });
       if (!verdict.ok) {
+        // a POLICY refusal, unlike every other gate here, does not resolve by waiting: it holds
+        // until the owner flips FLEET_HARNESS_AUTOMATION. So it is recorded and the run is spent
+        // rather than retried in silence every interval — the silent skip is the defect this names.
+        if (verdict.gate === "harness") {
+          a.lastResult = `skipped — harness ${harnessOf(s.harness).id} is not automatable (FLEET_HARNESS_AUTOMATION off)`;
+          audit("auto_skip", a.slot, a.lastResult);
+          advanceAuto(a, now);
+          dirty = true;
+          continue;
+        }
         if (verdict.gate === "not-alive") {
           // NEVER type into a bare shell; count the run and move on
           a.lastResult = "skipped — no agent running in pane";
@@ -4483,6 +4563,16 @@ async function tickWatches(): Promise<void> {
         // notification dropped because its receiver happened to be working is precisely the hole
         // the background-watcher crutch had. Only a dead pane spends it: nothing can be typed
         // there, and the pane will not come back as the same session.
+        // a policy refusal spends the watch for the same reason it spends an auto: it cannot
+        // resolve on its own, and an armed watch that can never fire is the "waiting" that is
+        // indistinguishable from "never coming" — the exact state /api/self documents against.
+        if (verdict.gate === "harness") {
+          w.armed = false;
+          w.lastResult = `skipped — harness ${harnessOf(s.harness).id} is not automatable (FLEET_HARNESS_AUTOMATION off)`;
+          audit("watch_skip", w.slot, w.lastResult);
+          dirty = true;
+          continue;
+        }
         if (verdict.gate !== "not-alive") continue;
         w.armed = false;
         w.lastResult = "skipped — no agent running in pane";
@@ -6643,7 +6733,7 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
   // strict probe above already answered that. The IDLE gate is the one that carries weight here:
   // it is the "or busy" half of the owner's decision, and pasting a conflict brief over an author
   // mid-task is precisely what it prevents.
-  const gate = await canDeliver(s, { now: Date.now(), killSwitch: false, alive: false,
+  const gate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false,
     quietHours: false, idleMs: MERGE_IDLE_MS });
   if (!gate.ok) return gate.gate;
   // Both logs are computed the same way runMerge computes them, for the same reason: the author
@@ -8486,6 +8576,10 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   const policy = await canDeliver(s, { now: Date.now(), alive: false });
   if (!policy.ok) {
     if (policy.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
+    // the else-branch used to ASSUME quiet hours, which was true while those were the only two
+    // gates this call could return. A third one made the assumption a wrong answer.
+    if (policy.gate === "harness")
+      return json({ error: `harness ${harnessOf(s.harness).id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` }, 409);
     return json({ error: "quiet hours — steward sends are muted" }, 409);
   }
   const recent = await stewardRecentSends();
@@ -8516,6 +8610,8 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
     if (verdict.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
     if (verdict.gate === "not-alive") return json({ error: "no agent running in target pane" }, 409);
     if (verdict.gate === "quiet-hours") return json({ error: "quiet hours — steward sends are muted" }, 409);
+    if (verdict.gate === "harness")
+      return json({ error: `harness ${harnessOf(s.harness).id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` }, 409);
     return json({ error: "target slot not idle" }, 409);
   }
   try {
@@ -10798,7 +10894,7 @@ Bun.serve<WSData>({
         // so it deliberately waives the master stop + quiet hours (opts off) and only honors the
         // idle gate — and a confirm-land waives even that (idleMs 0), since it's a pure ff of an
         // already-reviewed resolution whose trailing pane output must not block it.
-        const landGate = await canDeliver(s, { now: Date.now(), killSwitch: false, alive: false, quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
+        const landGate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false, quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
         if (!landGate.ok) return json({ status: "blocked", detail: "the session is actively working right now — let it settle for a moment, then land" });
         const main = await integrationBranch(repo);
         if (!main) return json({ error: "cannot resolve the repo's main branch" }, 400);
@@ -11064,7 +11160,7 @@ Bun.serve<WSData>({
       // main-session staging preview has been acknowledged) waives even that. The client's own
       // threshold is LOOSER than MERGE_IDLE_MS, so anything the server blocks the dialog already
       // covered — this closes the hole without adding a prompt the owner didn't have before.
-      const ciGate = await canDeliver(s, { now: Date.now(), killSwitch: false, alive: false,
+      const ciGate = await canDeliver(s, { now: Date.now(), killSwitch: false, harness: false, alive: false,
         quietHours: false, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS });
       if (!ciGate.ok) return json({ committed: false, reason: "the session is actively working right now — a commit would snapshot a half-finished tree; let it settle, then commit" }, 409);
       if (commitInflight.has(s.id)) return json({ error: "a commit is already running for this slot" }, 409);

@@ -453,6 +453,82 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const tp = (await (await get(`/api/slots/${HARNESS_SLOT}/transcript?after=0`)).json()) as { source: string | null; entries: unknown[] };
   check("§6 a pi slot reports NO transcript source (the mtime fallback must not hand it a stranger's conversation)",
     tp.source === null && tp.entries.length === 0, `${String(tp.source)} / ${tp.entries.length}`);
+  // --- §6b THE PROBE IS PER SLOT, and this fleet is the sharpest place to prove it: FLEET_CMD is
+  // `true`, an UNDECLARED command, so HARNESS_COMMS is empty and every default-adapter slot takes
+  // the "unprobed" waiver. A pi slot declares its comms through the ADAPTER, so it is genuinely
+  // probed — and since `pi` is not running in that pane, it answers "no-agent". Before the per-slot
+  // probe BOTH read "unprobed" (the fleet-wide empty set short-circuits paneAgentAt), so the two
+  // rows below cannot both pass unless the resolution really moved from the fleet to the slot.
+  // The agent field is a TICK cache, hence the bounded poll rather than a single read.
+  const agentOf = async (slot: number): Promise<string | null> => {
+    for (let i = 0; i < 60; i++) {
+      const sx = (await (await get("/api/sessions")).json()) as { slots: { id: number; agent: string | null }[] };
+      const a = sx.slots.find((x) => x.id === slot)?.agent ?? null;
+      if (a !== null) return a;
+      await Bun.sleep(200);
+    }
+    return null;
+  };
+  // The assertion is "genuinely probed", NOT a specific verdict: whether the answer is `alive` or
+  // `no-agent` depends on whether `pi` happens to be installed on the machine running the suite,
+  // and §6 above says why that must never decide a row. `unprobed` is the only answer that proves
+  // the probe did NOT happen — it is what the fleet-wide empty set returns by short-circuit — so
+  // "not unprobed" is exactly the discriminator and nothing more.
+  const piAgent = await agentOf(HARNESS_SLOT);
+  check("§6b a pi slot is genuinely PROBED (adapter-declared comms), not waived like the undeclared FLEET_CMD",
+    piAgent !== null && piAgent !== "unprobed", String(piAgent));
+  // the counter-case, and it is what makes the row above about the SLOT rather than a blanket
+  // strictness: a default-adapter slot on the same fleet still takes the undeclared waiver.
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  check("§6b fixture: the same slot reopens on the default harness", (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO })).ok);
+  const defAgent = await agentOf(HARNESS_SLOT);
+  check("§6b ...while a default-adapter slot keeps the unprobed waiver (agent=unprobed)",
+    defAgent === "unprobed", String(defAgent));
+
+  // --- §6c THE POLICY, which is a DIFFERENT question from the probe and stays closed by default:
+  // may an unattended path drive a foreign-harness slot? FLEET_HARNESS_AUTOMATION is off here (the
+  // suite sets nothing), so the answer is no — and the refusal must NAME the harness instead of
+  // reporting a generic not-idle/quiet-hours, because being skipped silently was the expensive half
+  // of the defect this closes. Asserted through the steward send, the one gated path with a
+  // synchronous error body; the auto/watch paths carry the same reason in their lastResult.
+  // Driven through a scheduled AUTO rather than a steward send: same choke-point (canDeliver), no
+  // steward token or kind vocabulary in the way, and it exercises the REPORTING too — the refusal
+  // has to land in the auto's own lastResult, which is where an owner would actually read it.
+  // The auto text is a shell no-op (`:`) on purpose: if a gate ever wrongly opened, what reaches
+  // the pane is a bare shell, and this must not be the row that runs something there.
+  // `inSec: 1`, not 0: a one-shot with inSec < 1 is refused 400 ("one-shot needs inSec ≥ 1"), and
+  // the first version of this helper swallowed that refusal and returned null — which read as "the
+  // gate did not fire" for BOTH rows, including the counter-case. Hence the check() on creation:
+  // a probe that cannot run must fail as itself, never as the thing it was meant to measure.
+  const autoResultOn = async (slot: number, label: string): Promise<string | null> => {
+    const c = await post(`/api/slots/${slot}/autos`, { text: ": e2e-harness-policy-probe", everySec: null, inSec: 1, idleSec: 0 });
+    const cj = (await c.json()) as { auto?: { id?: string }; error?: string };
+    check(`§6c fixture: the probe auto was created (${label})`, c.ok && !!cj.auto?.id, `${c.status} ${JSON.stringify(cj)}`);
+    const id = cj.auto?.id ?? "";
+    if (!id) return null;
+    for (let i = 0; i < 80; i++) { // nextAt is +1s and FLEET_AUTOS_TICK_MS is 250 here
+      const sx = (await (await get("/api/sessions")).json()) as { autos: { id: string; lastResult: string | null }[] };
+      const row = sx.autos.find((a) => a.id === id);
+      if (row?.lastResult) return row.lastResult;
+      await Bun.sleep(100);
+    }
+    return null;
+  };
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  check("§6c fixture: a pi slot for the policy gate", (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi" })).ok);
+  const polRes = await autoResultOn(HARNESS_SLOT, "pi");
+  check("§6c an unattended auto into a foreign-harness slot is refused, and the reason NAMES the harness",
+    (polRes ?? "").includes("harness pi is not automatable"), String(polRes));
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  // the counter-case: the identical auto on a DEFAULT-adapter slot is not refused for that reason.
+  // Without it the row above would also pass if every auto were simply broken.
+  check("§6c fixture: the same slot on the default harness", (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO })).ok);
+  const polRes2 = await autoResultOn(HARNESS_SLOT, "default");
+  check("§6c ...and a default-adapter slot is never refused for the harness reason",
+    polRes2 !== null && !polRes2.includes("not automatable"), String(polRes2));
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  check("§6c fixture: the pi slot is restored for the recycle check below",
+    (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi" })).ok);
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
   // --- and the harness dies with the session: a recycled slot must not inherit the binary the
   // previous occupant ran. Same rule (and same reason) as the selfToken rotation in §3.

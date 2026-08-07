@@ -12,6 +12,15 @@
 set -u
 cd "$(dirname "$0")" || exit 1
 
+# CLAUDE.md tells every LANE to run this script, but the things it senses — the running server, the
+# gitignored ledgers — live in the MAIN checkout, and from a lane $PWD is the worktree. So anchor
+# once, here, on the canonical main checkout: the common git dir is shared by every worktree, so
+# its parent is the same path from anywhere. Symlinks resolved, because lsof reports the real path
+# (and createWorktree stores a realpath'd toplevel too). Outside a repo this degrades to $PWD.
+rp() { [ -n "${1:-}" ] && (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "${1:-}"; }
+MAIN_CHECKOUT=$(rp "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")")
+export MAIN_CHECKOUT
+
 SINCE=${2:-$(git log --format=%H -1 --grep='docs(handoff)' 2>/dev/null)}
 [ -n "${SINCE:-}" ] || SINCE=$(git log --format=%H -1)
 
@@ -26,39 +35,44 @@ echo "=== lanes on disk ==="
 git worktree list | tail -n +2 | sed 's/^/  /'
 echo "  a worktree with no slot is an orphan: land it or discard it"
 echo
-echo "=== ledgers ==="
+echo "=== ledgers (fleet-wide, gitignored — they exist only in the main checkout) ==="
 python3 - <<'PY'
-import json, glob
+import json, glob, os
 from collections import Counter
+# Read from the MAIN checkout, not the cwd: a lane has none of these files, and the old code
+# turned that into zeros — "post-land audits 0 | {}" reads like "no audit ever ran" instead of
+# "I cannot see them". So absence returns None and prints UNKNOWN; only a file that exists and
+# is empty may print 0. Same rule the rest of this codebase follows for wouldConflict/verify.ok.
+MAIN = os.environ.get('MAIN_CHECKOUT') or '.'
 def rows(p):
-    try:
-        return [json.loads(l) for l in open(p) if l.strip()]
-    except FileNotFoundError:
-        return []
+    fp = os.path.join(MAIN, p)
+    if not os.path.isfile(fp):
+        return None
+    return [json.loads(l) for l in open(fp) if l.strip()]
 o = rows('lane-outcomes.jsonl')
-s = [r for r in o if r.get('cleanReviewShadow')]
-ws = sum(1 for r in s if (r.get('cleanReviewShadow') or {}).get('verdict') == 'would_stop')
-print(f"  outcomes {len(o)} | shadow {len(s)} | would_stop EVER {ws}")
+if o is None:
+    print("  outcomes UNKNOWN — lane-outcomes.jsonl absent (not the same as none)")
+else:
+    s = [r for r in o if r.get('cleanReviewShadow')]
+    ws = sum(1 for r in s if (r.get('cleanReviewShadow') or {}).get('verdict') == 'would_stop')
+    print(f"  outcomes {len(o)} | shadow {len(s)} | would_stop EVER {ws}")
 a = rows('post-land-audits.jsonl')
-print(f"  post-land audits {len(a)} | {dict(Counter(r.get('result') for r in a))}")
-if a:
-    last = a[-1]
-    print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}"
-          f" covering {[c.get('branch','')[-9:] for c in last.get('covers',[])]}")
-t = sorted(glob.glob('e2e-trail/*.jsonl'))
-print(f"  check-trail runs (main checkout) {len(t)}"
-      "  — audits write to $TMPDIR/fleet-e2e-trail instead; see docs/e2e-trail.md")
+if a is None:
+    print("  post-land audits UNKNOWN — post-land-audits.jsonl absent (not the same as none)")
+else:
+    print(f"  post-land audits {len(a)} | {dict(Counter(r.get('result') for r in a))}")
+    if a:
+        last = a[-1]
+        print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}"
+              f" covering {[c.get('branch','')[-9:] for c in last.get('covers',[])]}")
+td = os.path.join(MAIN, 'e2e-trail')
+tail = "  — audits write to $TMPDIR/fleet-e2e-trail instead; see docs/e2e-trail.md"
+if not os.path.isdir(td):
+    print("  check-trail runs UNKNOWN — e2e-trail/ absent" + tail)
+else:
+    print(f"  check-trail runs (main checkout) {len(sorted(glob.glob(os.path.join(td, '*.jsonl'))))}" + tail)
 PY
 echo
-# The live server always runs in the MAIN checkout, but CLAUDE.md tells every LANE to run this
-# script too — and there $PWD is the worktree, so the real srv was reported as "stray" and the
-# deploy-gap line below lost its anchor. Anchor on the canonical main checkout instead: the common
-# git dir is shared by every worktree, so its parent is the same path from anywhere. Symlinks
-# resolved on both sides, because lsof reports the real path (and createWorktree stores one too).
-rp() { [ -n "${1:-}" ] && (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "${1:-}"; }
-MAIN_CHECKOUT=$(rp "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")")
-export MAIN_CHECKOUT
-
 echo "=== is the running server the code on disk?  (main checkout: $MAIN_CHECKOUT) ==="
 for p in $(pgrep -f 'bun server.ts' 2>/dev/null); do
   cwd=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)

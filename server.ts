@@ -160,6 +160,49 @@ interface Auto {
   lastResult: string | null;
 }
 
+// --- a WATCH: the event-triggered sibling of an Auto. Same delivery (one prompt typed into one
+// pane, through canDeliver), different trigger — a fact about ANOTHER slot instead of a clock.
+//
+// WHY IT EXISTS. Fleet computes `doneLooking` on the 2s poll and, until now, told nobody: auto-③
+// consumed it, and every other consumer was someone who was already looking. So a session that
+// dispatched a lane and turned away had no way back except remembering to check. Measured twice on
+// 2026-08-07: a driving session missed a finished 807-line lane for ~20 minutes, then replaced the
+// habit with a background `until`-loop — which fires once by construction and left the same hole on
+// the next lane. A watcher the RECEIVER has to re-arm fails exactly when the receiver is busy,
+// which is every time it matters. This one is armed on the server and survives a restart.
+//
+// WHAT IT IS NOT: it delivers TEXT and nothing else — no land, no review, no kill. Same boundary
+// auto-③ keeps, for the same reason (docs/attic/perception-layer.md §4): the predicate is idle+clean+
+// ahead, which reads identically for a lane running a suite, a lane parked on the owner, and a lane
+// that compiled a brief instead of building. It removes a WAIT, never a CHECK.
+//
+// The trigger is LEVEL, not edge (tickWatches): `doneLooking` is a standing property of the target's
+// facts, so a watch on an already-done-looking lane fires at once — the honest answer to "tell me
+// when it looks done" is "it already does". Firing spends the watch (`armed:false`); a target that
+// goes back to work and finishes again is a NEW question and needs a new watch. That is the narrow
+// reading on purpose: an armed-forever watch is a repeating nudge, and nothing here should be able
+// to type into a pane on a cadence nobody chose.
+interface Watch {
+  id: string;
+  slot: number;    // who gets typed into. Same meaning `slot` has on an Auto, so the delivery
+  // path, the per-slot cap and the teardown rules all read the same field.
+  target: number;  // the slot being watched. Never the same as `slot` (a session watching itself
+  // learns nothing) and never a slot the predicate cannot classify — see createWatchForSlot.
+  // the target's IDENTITY at subscribe time, because `target` alone is not one: slot ids are
+  // recycled, so an id-only watch would survive its subject and then fire about whatever lane
+  // moved in next. Teardown drops watches already (dropWatchesFor); these two are the second
+  // lock, and the tick refuses to fire on a target whose cwd or branch changed underneath it.
+  targetCwd: string;
+  targetBranch: string;
+  idleSec: number; // the WATCHER's idle gate, same field and same default as an Auto. Not a
+  // limitation but the point: the message should arrive when the receiving session comes to rest,
+  // which is the exact moment it would otherwise turn away without knowing.
+  armed: boolean;
+  created: number;
+  firedAt: number | null;
+  lastResult: string | null;
+}
+
 // a queued feature request. Owner-created or submitted via the public /intake address
 // (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
 // the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
@@ -356,6 +399,7 @@ let repoBases: Record<string, string> = {};
 let shares: Share[] = [];
 let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
+let watches: Watch[] = [];
 let tasks: Task[] = [];
 // worktree path -> shelve note ("what's left"), set when a lane is shelved. killSlot keeps the
 // worktree on disk as any kill does; this note is what makes "set aside for later" a real state
@@ -509,6 +553,11 @@ const AUTO_MAX_RUNS = 100;
 const AUTO_MAX_PER_SLOT = 5;
 const AUTO_KEEP_DONE = 5; // completed one-shots kept per slot before the oldest are pruned
 const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer before skipping
+// the same two ceilings for watches, kept separate from the auto ones so a session can hold both
+// without either surface starving the other: a driving session watching two lanes must not lose
+// its ability to schedule a check-in, and vice versa.
+const WATCH_MAX_PER_SLOT = 5;
+const WATCH_KEEP_SPENT = 5; // fired/disarmed watches kept per slot before the oldest are pruned
 // THE TWO SCHEDULER TICKS, deployment parameters like ANALYSIS_TICK_MS / AUTO_REVIEW_MS rather
 // than laws. They were literals at the setInterval calls, and that made them the floor under every
 // suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
@@ -797,6 +846,10 @@ type AuditEvent =
   | "land_recovered" | "land_recover_fail"
   | "postland_audit"
   | "autos_switch"
+  // the doneLooking outbound channel (Watch): one row when a subscription is delivered, one when
+  // it is disarmed without delivering. The pair is what makes "the machine noticed and said so"
+  // countable at all — the same reason `stalled` was given a name before anything acted on it.
+  | "watch_fire" | "watch_skip"
   | "dispatch_switch"
   | "guest_action"
   // a lane's own account of a verify-suite run: one line per phase change, so a run that dies
@@ -893,7 +946,7 @@ function saveState(): void {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, tasks,
+  const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
@@ -1798,6 +1851,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branc
   // never permission to act (lane-signals.ts: null git → not done-looking).
   gitInfo.delete(s.id);
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
+  dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   await rm(historyPath(s.id), { force: true });
   recents = [cwd, ...recents.filter((r) => r !== cwd)].slice(0, MAX_RECENTS);
   audit("slot_open", s.id, cwd);
@@ -1843,6 +1897,7 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   for (const sh of shares) if (sh.slot === s.id) closeShareClients(s, sh.id);
   shares = shares.filter((x) => x.slot !== s.id); // a share must not outlive its session
   autos = autos.filter((x) => x.slot !== s.id); // neither must a scheduled prompt
+  dropWatchesFor(s.id); // and a watch on THIS slot must stop promising news that cannot come
   saveState();
   await tmux("kill-session", "-t", sess(s.id));
   await rm(streamPath(s.id), { force: true });
@@ -1967,6 +2022,78 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
   }
   saveState();
   return json({ ok: true, auto: a });
+}
+
+// mint a watch: slot `s` asks to be told, once, when slot `target` looks done. Owner principal
+// only — and that is a MEASUREMENT, not a preference. FLEET_SELF_TOKEN is baked into a LANE's pane
+// and never a plain session's (see the selfExport line in ensureSlot), so the session this feature
+// exists for — a driving main checkout — has no self-credential to subscribe with. A /api/self/
+// twin would therefore be reachable by exactly the principal that did not ask for it.
+//
+// EVERY REJECTION HERE ANSWERS THE SAME QUESTION: can this watch ever fire? A watch that cannot is
+// worse than no watch, because it is a silent forever-wait — the precise failure this whole surface
+// removes. So a target the predicate does not classify is refused at CREATE time, loudly, instead
+// of being accepted and then never firing.
+function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Response {
+  if (!s.cwd) return json({ error: "slot not active" }, 400);
+  const targetId = Number((body ?? {}).target ?? NaN) | 0;
+  const t = slotFrom(targetId);
+  if (!t) return json({ error: "bad target" }, 400);
+  if (t.id === s.id) return json({ error: "a session cannot watch itself" }, 400);
+  // the three shapes done-looking refuses by construction (lane-signals.ts + stewardSlotsView):
+  // no live session, no worktree, or the planning pane. Each gets its own reason — "never fires"
+  // is the same outcome but three different mistakes.
+  if (!t.cwd) return json({ error: "target slot not active" }, 400);
+  if (!t.worktree) return json({ error: "target is not a lane — done-looking only classifies lanes" }, 409);
+  if (t.label === STEWARD_LABEL) return json({ error: "the ⚙ steward is never classified done-looking" }, 409);
+  // idempotent: a second subscribe on the same target returns the SAME watch. Two armed watches
+  // would deliver the same news twice into one pane, and the discipline a lane is given for
+  // self-scheduling ("at most one check-in per idle point") should not depend on the caller here.
+  const dup = watches.find((w) => w.armed && w.slot === s.id && w.target === t.id);
+  if (dup) return json({ ok: true, watch: dup, existing: true });
+  if (watches.filter((w) => w.armed && w.slot === s.id).length >= WATCH_MAX_PER_SLOT)
+    return json({ error: `max ${WATCH_MAX_PER_SLOT} active watches per slot` }, 400);
+  const w: Watch = {
+    id: randomBytes(4).toString("hex"),
+    slot: s.id,
+    target: t.id,
+    targetCwd: t.cwd,
+    targetBranch: t.worktree.branch,
+    idleSec: Math.min(86_400, Math.max(0, Number((body ?? {}).idleSec ?? 60) | 0)),
+    armed: true,
+    created: Date.now(),
+    firedAt: null,
+    lastResult: null,
+  };
+  watches = [...watches, w];
+  pruneSpentWatches(s.id);
+  saveState();
+  return json({ ok: true, watch: w });
+}
+
+// spent watches are never otherwise removed — an owner (or a lane) subscribing all day could grow
+// fleet.json without bound. Same bounded-tail rule as AUTO_KEEP_DONE.
+function pruneSpentWatches(slotId: number): void {
+  const spent = watches.filter((w) => w.slot === slotId && !w.armed);
+  if (spent.length <= WATCH_KEEP_SPENT) return;
+  const drop = new Set(spent.slice(0, spent.length - WATCH_KEEP_SPENT).map((w) => w.id));
+  watches = watches.filter((w) => !drop.has(w.id));
+}
+
+// slot teardown (open OR kill), from both sides, and they are NOT symmetric:
+//   · the WATCHER is gone → nobody left to tell. Drop the row.
+//   · the TARGET is gone → the news can never come. Disarm with the reason ATTACHED rather than
+//     deleting, because a watch that vanishes silently is indistinguishable from one that is still
+//     waiting, and "still waiting" is the state this feature exists to make impossible to believe
+//     falsely. The owner sees "target session ended" on /api/sessions instead of an empty list.
+function dropWatchesFor(slotId: number): void {
+  watches = watches.filter((w) => w.slot !== slotId);
+  for (const w of watches) {
+    if (w.target !== slotId || !w.armed) continue;
+    w.armed = false;
+    w.lastResult = "target session ended — no notification will come";
+    audit("watch_skip", w.slot, w.lastResult);
+  }
 }
 
 function advanceAuto(a: Auto, now: number): void {
@@ -3836,7 +3963,7 @@ async function runReview(s: Slot, head: string | null, dirty: number): Promise<R
 }
 
 // --- auto-③: run the reviewer on a lane that has gone done-looking, so findings exist BEFORE the
-// owner looks (docs/perception-layer.md §4). Automating WHEN ③ runs changes nothing about what it
+// owner looks (docs/attic/perception-layer.md §4). Automating WHEN ③ runs changes nothing about what it
 // may do — it is not wired to land/merge/dispatch, and nothing reads its result to decide anything.
 // It removes a WAIT, never a CHECK.
 // Guard rails, each one load-bearing:
@@ -3907,6 +4034,121 @@ async function tickAutoReview(): Promise<void> {
   } finally {
     autoReviewBusy = false;
   }
+}
+
+// --- the OUTBOUND channel for `doneLooking` (Watch, above). Deliberately its own tick and not a
+// branch inside tickAutoReview: that one breaks out of its loop at AUTO_REVIEW_MAX_CONCURRENT and
+// skips every lane with a review inflight, so folding this in would make a notification depend on
+// review capacity it has nothing to do with. It reads the same predicate, through the same
+// function, and that is the whole coupling.
+//
+// Runs on the AUTOS cadence, not the review cadence, because what it does is DELIVER: same tick
+// speed, same choke-point (canDeliver), same master stop. FLEET_AUTO_REVIEW_MS=0 does not disable
+// it — it spawns no agent and costs nothing while no watch is armed.
+let watchTickBusy = false;
+async function tickWatches(): Promise<void> {
+  if (!watches.some((w) => w.armed)) return; // the common case: no armed watch, no tmux calls at all
+  if (watchTickBusy) return; // canDeliver shells out (ps/pgrep); a slow round must not overlap
+  watchTickBusy = true;
+  try {
+    const now = Date.now();
+    let dirty = false;
+    for (const w of watches) {
+      if (!w.armed) continue;
+      const s = slotFrom(w.slot);
+      const t = slotFrom(w.target);
+      // teardown already drops/disarms these (dropWatchesFor); this is the second lock, and it
+      // also covers the paths that move a slot without going through either — a recycled target
+      // whose cwd or branch changed is a DIFFERENT lane, and must never be reported as this one.
+      if (!s?.cwd || !t?.cwd || t.cwd !== w.targetCwd || t.worktree?.branch !== w.targetBranch) {
+        w.armed = false;
+        w.lastResult = "session gone or replaced — no notification will come";
+        audit("watch_skip", w.slot, w.lastResult);
+        dirty = true;
+        continue;
+      }
+      const sig = laneSignalView(t, now);
+      if (!laneDoneLooking(sig, AUTO_REVIEW_IDLE_MS)) continue; // not yet — stay armed, ask again
+      // THE UNOBSERVED-PANE HOLE, and it is this trigger's alone to close. canDeliver's busy gate
+      // is `now - s.lastOutput < idleMs`, and `lastOutput` is 0 until poll() sees a first byte —
+      // which that subtraction turns into ~1.79e12 ms, i.e. "idle forever", i.e. permission. It is
+      // the same arithmetic lane-signals.ts calls out for `stalled`, and every other caller of
+      // canDeliver is shielded from it by TIME: an auto is created with a future nextAt, a dispatch
+      // lane waives the gate outright. A watch is the one path that can become deliverable in the
+      // same second its receiver's pane was opened — measured here, a receiver that had produced
+      // nothing yet was handed the message despite idleSec:3600.
+      // So an UNOBSERVED pane is unknown, never idle: hold, exactly as a busy one is held. It
+      // resolves itself the moment the pane prints anything, and idleSec:0 remains the explicit
+      // opt-out for a caller that wants the message regardless.
+      if (w.idleSec > 0 && s.lastOutput === 0) continue;
+      // gates, and the ONE that is waived: quiet hours. A watch is a specific, one-shot intent
+      // exactly like a one-shot auto, and tickAutos waives the quiet window for those for the same
+      // reason — the owner asked for this message, not for a nightly cadence. The kill-switch and
+      // the claude-alive gate are NOT waived: a paused fleet types nothing, and an unattended
+      // prompt into a dead pane's bare shell would execute as shell commands.
+      const verdict = await canDeliver(s, { now, quietHours: false, idleMs: w.idleSec * 1000 });
+      if (!verdict.ok) {
+        // "busy" and "kill-switch" keep the watch ARMED and retry — the news does not expire, and a
+        // notification dropped because its receiver happened to be working is precisely the hole
+        // the background-watcher crutch had. Only a dead pane spends it: nothing can be typed
+        // there, and the pane will not come back as the same session.
+        if (verdict.gate !== "not-alive") continue;
+        w.armed = false;
+        w.lastResult = "skipped — claude not running in pane";
+        audit("watch_skip", w.slot, w.lastResult);
+        dirty = true;
+        continue;
+      }
+      const text = watchMessage(t, sig);
+      try {
+        await sendText(s, text, true);
+      } catch (e) {
+        // sendText throws on a tmux failure; record the truth and spend the watch rather than
+        // retry-storming a pane that just died between the alive check and the send
+        w.armed = false;
+        w.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
+        audit("watch_skip", w.slot, w.lastResult);
+        dirty = true;
+        continue;
+      }
+      s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
+      saveHistory(s);
+      // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the
+      // machine typed this, unattended" and three distinct machine paths share it (scheduled autos,
+      // the dispatcher's founding brief, the merge idle guard). The audit trail below is where a
+      // watch is told apart from those.
+      logPrompt(s, text, "auto", now);
+      w.armed = false;
+      w.firedAt = now;
+      w.lastResult = "sent";
+      audit("watch_fire", w.slot, `${w.id} target=${w.target}`);
+      pruneSpentWatches(w.slot);
+      dirty = true;
+      console.log(`watch ${w.id}: told slot ${w.slot} that slot ${w.target} looks done`);
+    }
+    if (dirty) saveState();
+  } finally {
+    watchTickBusy = false;
+  }
+}
+
+// what the receiving session actually reads. Three jobs, in order:
+//   1. name the subject unambiguously — slot AND branch, because slot ids are recycled and the
+//      branch is what the reader will `git log`.
+//   2. carry the facts the predicate fired on (ahead/dirty), so the reader can tell the landable
+//      case from the "FILES: keine" measurement lane without asking.
+//   3. say LOOKS done and say why that is not "is done". The predicate is idle + clean + ahead>0,
+//      and CLAUDE.md's four look-alike states (finished-with-commits, finished-with-nothing-to-
+//      commit, waiting-on-you, compiled-a-brief-instead-of-building) are indistinguishable to it.
+//      A message that reads as a verdict would turn a wait-remover into a land-trigger, which is
+//      the one thing this surface must never become. One line: it is pasted into a composer.
+function watchMessage(t: Slot, sig: ReturnType<typeof laneSignalView>): string {
+  const g = sig.git;
+  return `[fleet] slot ${t.id} (${t.worktree?.branch ?? "?"}) now LOOKS done — pane idle, tree clean, `
+    + `${g?.ahead ?? "?"} ahead / ${g?.dirty ?? "?"} dirty. That is the server's predicate over facts `
+    + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
+    + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
+    + `Read the pane before you act, and never land on this message alone.`;
 }
 
 // --- 💾 lane commit: the load-bearing SAVE. land/merge both refuse a dirty tree, so
@@ -7247,6 +7489,16 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Auto).id === "string" && typeof (x as Auto).slot === "number"
         && typeof (x as Auto).text === "string" && typeof (x as Auto).nextAt === "number"
         && typeof (x as Auto).runsLeft === "number" && typeof (x as Auto).enabled === "boolean");
+    // an armed watch MUST survive a restart — the deploy ritual is `kill-session -t srv` ~10×/day
+    // (see STALLED_IDLE_MS's note), and a subscription that died with the process would be a
+    // promise broken by the most routine thing this machine does.
+    if (Array.isArray((persisted as { watches?: unknown }).watches))
+      watches = ((persisted as { watches: unknown[] }).watches).filter((x): x is Watch =>
+        typeof x === "object" && x !== null
+        && typeof (x as Watch).id === "string" && typeof (x as Watch).slot === "number"
+        && typeof (x as Watch).target === "number" && typeof (x as Watch).targetCwd === "string"
+        && typeof (x as Watch).targetBranch === "string" && typeof (x as Watch).idleSec === "number"
+        && typeof (x as Watch).armed === "boolean");
     if (Array.isArray(persisted.shares))
       shares = persisted.shares.filter((x): x is Share =>
         typeof x === "object" && x !== null
@@ -7487,6 +7739,15 @@ if (ls.code === 0) {
 // a share whose session didn't survive the downtime must not come back — same for schedules
 shares = shares.filter((sh) => slotFrom(sh.slot)?.cwd);
 autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
+// same rule for a watch, on BOTH of its slots: a receiver that didn't come back has nobody to tell,
+// and a target that didn't come back has no news to give. The identity re-check (cwd + branch) is
+// the one that matters across a restart — a slot id that came back holding a DIFFERENT lane must
+// not inherit the subscription.
+watches = watches.filter((w) => {
+  const s = slotFrom(w.slot);
+  const t = slotFrom(w.target);
+  return !!s?.cwd && !!t?.cwd && t.cwd === w.targetCwd && t.worktree?.branch === w.targetBranch;
+});
 // a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
 // slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
 // instead of leaving it "sent" forever with nothing running
@@ -7610,6 +7871,8 @@ if (existsSync(POSTLAND_AUDIT_QUEUE_FILE)) {
 // `p.kill()` and pty-chain ones are left exactly as they are, on purpose.
 setInterval(() => void poll(), 100);
 setInterval(() => void tickAutos().catch((e: unknown) => logError("tickAutos", e)), AUTOS_TICK_MS);
+// the event-triggered delivery next to the time-triggered one — same cadence, same choke-point
+setInterval(() => void tickWatches().catch((e: unknown) => logError("tickWatches", e)), AUTOS_TICK_MS);
 setInterval(() => void tickGit().catch((e: unknown) => logError("tickGit", e)), 10_000);
 void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge cache so the first paint isn't blank
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
@@ -9207,6 +9470,11 @@ Bun.serve<WSData>({
         // once it goes stale — "old client after a deploy" must not look like a regression
         v: bundleV(),
         autos,
+        // the event-triggered siblings, served next to them: who is waiting to be told what, and
+        // what became of the ones that are spent. There is no board button yet — the surface is
+        // the route — but an armed subscription nobody can SEE is the same silent state this
+        // feature exists to remove, so it rides the owner poll from the first commit.
+        watches,
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
@@ -10640,6 +10908,24 @@ Bun.serve<WSData>({
       const s = slotFrom(autoCreate[1]);
       if (!s) return json({ error: "bad slot" }, 400);
       return createAutoForSlot(s, await readJson(req), { allowPerpetual: true }); // owner may mint a perpetual (heartbeat) auto
+    }
+    // subscribe slot :id to another slot's done-looking. The route's slot is the RECEIVER, exactly
+    // as it is for /autos above — every path that types into a pane names the pane in the URL, and
+    // the thing being watched is body data. Owner principal (see createWatchForSlot on why there is
+    // no /api/self/ twin).
+    const watchCreate = /^\/api\/slots\/(\d+)\/watch$/.exec(url.pathname);
+    if (req.method === "POST" && watchCreate) {
+      const s = slotFrom(watchCreate[1]);
+      if (!s) return json({ error: "bad slot" }, 400);
+      return createWatchForSlot(s, await readJson(req));
+    }
+    const watchAct = /^\/api\/watches\/([a-z0-9]+)\/delete$/.exec(url.pathname);
+    if (req.method === "POST" && watchAct) {
+      const w = watches.find((x) => x.id === watchAct[1]);
+      if (!w) return json({ error: "unknown watch" }, 404);
+      watches = watches.filter((x) => x.id !== w.id);
+      saveState();
+      return json({ ok: true });
     }
     const autoAct = /^\/api\/autos\/([a-z0-9]+)\/(delete|toggle)$/.exec(url.pathname);
     if (req.method === "POST" && autoAct) {

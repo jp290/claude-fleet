@@ -814,6 +814,56 @@ let pins: string[] = []; // owner-pinned project roots, surfaced first in the pi
 // sits on the integration branch. Setting it lets the owner park the primary on a working
 // branch (e.g. `desk`) while lanes still land onto `main` without touching that dirty tree.
 let repoBases: Record<string, string> = {};
+// repo root → worker name → the executable that worker runs as, for THAT repo.
+//
+// The FLEET_*_CMD stand-ins are module constants read from the server's env, which makes each of
+// them FLEET-WIDE: pointing one at a third-party wrapper sends EVERY repo's diff to that vendor,
+// including repos whose contents the owner never meant to hand out. That is the whole reason a
+// built, measured commit-message wrapper (worker-deepseek.py) sat unused — there was no way to
+// say "this repo, not that one".
+//
+// Two-layer, the same shape as the dispatcher's `dispatchOn` over FLEET_DISPATCH_REPO: the env
+// value stays the DEFAULT, so a deployment that stores nothing behaves byte-for-byte as it does
+// now, and a stored entry wins over it for its repo only. STORED rather than an env map (the
+// FLEET_VERIFY_CMD_REPOS shape) because the owner makes this choice in operation: an env map
+// would still cost a watchdog.sh edit plus `launchctl kickstart` per change, which is not the
+// runtime setting that was asked for.
+//
+// Keyed by WORKER NAME, so extending to a second worker is one entry in REPO_WORKER_KEYS rather
+// than a second mechanism. Deliberately NOT extended yet: merge/repair write code, and
+// review/cleanReview issue the verdicts a land is gated on — choosing a model for those is a
+// different decision from choosing one to phrase a commit subject, and it should be made on its
+// own evidence rather than inherited from this one.
+let repoWorkers: Record<string, Record<string, string>> = {};
+// Only names that something actually CONSULTS may be stored. A route that accepted any
+// WorkerName would let the owner configure a worker nothing reads and see it echoed back — a
+// setting that looks applied and does nothing, which is worse than a 400.
+const REPO_WORKER_KEYS: WorkerName[] = ["commitMsg"];
+// The stored value is a PATH TO AN EXECUTABLE, never a command line. runWorker spawns it as
+// `Bun.spawn([cmd, "--model", …])` — array form, no shell — so a value carrying arguments would
+// not be split into any, it would be looked up as one absurd filename. Rejecting that shape at
+// the door is what keeps it true: nobody later "fixes" the confusing failure by adding a split()
+// here, which is exactly how a shell would come back into a path that has none. Absolute,
+// because a relative path resolves against the spawn's cwd — for a lane, a tree the lane writes.
+const WORKER_CMD_RE = /^\/[A-Za-z0-9._\-\/]+$/;
+function workerCmdProblem(cmd: string): string | null {
+  if (!WORKER_CMD_RE.test(cmd))
+    return "expected an absolute path to an executable — no arguments, no whitespace, no shell metacharacters";
+  // stored and AUDITED verbatim, so it has to say what it points at: `/a/../b/worker` names the
+  // same file as `/b/worker` while reading as a different one on the trail that records the choice
+  if (cmd.split("/").includes("..")) return "path must not traverse with ..";
+  let st: ReturnType<typeof statSync>;
+  try { st = statSync(cmd); } catch { return "no such file"; }
+  if (!st.isFile()) return "not a file";
+  if (!(st.mode & 0o111)) return "not executable";
+  return null;
+}
+// entry-then-env, and that ORDER is the compatibility promise (same stance, and the same reason,
+// as VERIFY_CMD_REPOS): a repo with no entry keeps the env default, and a repo with neither keeps
+// the production session path. Nothing about a deployment that never calls the route changes.
+function workerCmdFor(worker: WorkerName, repo: string | null, envDefault: string | null): string | null {
+  return (repo === null ? undefined : repoWorkers[repoCanon(repo)]?.[worker]) ?? envDefault;
+}
 let shares: Share[] = [];
 let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
@@ -1260,6 +1310,10 @@ type AuditEvent =
   // resumes by construction whenever a transcript exists, so booking it as a heal would inflate
   // exactly the rate it is not evidence for. Same detail vocabulary, different question.
   | "slot_restart"
+  // the owner chose which executable a repo's throwaway worker runs as. On the trail because the
+  // value decides where that repo's DIFF is sent — the one setting here whose blast radius is
+  // another party's servers rather than this machine. Detail names the repo, worker and path.
+  | "repo_worker"
   | "repo_undo_land"
   | "land_note_fail"
   // a land that was interrupted between "main moved" and "the land is recorded", settled at boot:
@@ -1375,7 +1429,7 @@ function saveState(): void {
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
+    repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
   }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
@@ -4999,9 +5053,19 @@ function sanitizeCommitMsg(raw: string): string {
   return raw.replace(/[`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100);
 }
 
+// The repo a session's work belongs to, canonical — the key repoWorkers is stored under. A lane
+// already carries it (createWorktree records `git rev-parse --show-toplevel`); a plain checkout
+// is asked, because s.cwd may be a subdirectory. Both sides go through repoCanon so a symlinked
+// spelling and the resolved one are the same repo, the same reason the dispatch cap does it.
+async function repoKeyOf(s: Slot): Promise<string | null> {
+  if (s.worktree) return repoCanon(s.worktree.repo);
+  const top = await git(s.cwd!, "rev-parse", "--show-toplevel");
+  return top.code === 0 && top.out ? repoCanon(top.out) : null;
+}
+
 // ask the agent for ONE conventional-commit line from the diff only. Returns "" on any
 // failure/unparseable answer — the caller falls back to the wip message.
-async function agentCommitMessage(cwd: string): Promise<string> {
+async function agentCommitMessage(cwd: string, repo: string | null): Promise<string> {
   // --cached: describe exactly what is STAGED (commitLane stages before calling us), so the
   // message can't drift from the committed tree the way a working-tree diff read seconds
   // before the commit could. --stat gives per-file line counts, so the model sees which files
@@ -5022,7 +5086,7 @@ async function agentCommitMessage(cwd: string): Promise<string> {
     "", "## diff (truncated)", (d.code === 0 ? d.out.slice(0, 30_000) : "") || "(none)",
   ].join("\n");
   const text = await runWorker(
-    { worker: "commitMsg", cmd: COMMIT_CMD, tools: TEXT_ONLY_TOOLS }, prompt, cwd);
+    { worker: "commitMsg", cmd: workerCmdFor("commitMsg", repo, COMMIT_CMD), tools: TEXT_ONLY_TOOLS }, prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { message?: unknown };
@@ -5063,7 +5127,7 @@ async function commitLane(s: Slot, mode: "quick" | "agent"): Promise<Response> {
   let messageFallback = false;
   if (mode === "agent") {
     try {
-      const m = await agentCommitMessage(cwd);
+      const m = await agentCommitMessage(cwd, await repoKeyOf(s));
       if (m) message = m; else messageFallback = true; // empty = unparseable answer (see above)
     } catch { messageFallback = true; /* saving must NEVER fail on the model — keep the wip message */ }
   }
@@ -8577,6 +8641,30 @@ if (existsSync(STATE_FILE)) {
     if (typeof prb === "object" && prb !== null && !Array.isArray(prb))
       for (const [k, v] of Object.entries(prb as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "string" && v) repoBases[k] = v;
+    // Per-repo worker overrides, RE-VALIDATED on the way in rather than trusted. The route
+    // already checks, but this file is hand-editable and the value gets SPAWNED, so the same
+    // stance as `awaiting`/`harness` above applies with more at stake: a state file must not be
+    // able to name a worker nothing reads, nor a path that has since been deleted or lost its
+    // +x. A rejected entry is LOUD and then inert — the repo falls back to the env default,
+    // which is the previous behavior, but the owner configured this expecting a different model
+    // and a silent revert is exactly the surprise the log line exists to prevent.
+    const prw = (persisted as { repoWorkers?: unknown }).repoWorkers;
+    if (typeof prw === "object" && prw !== null && !Array.isArray(prw))
+      for (const [repo, v] of Object.entries(prw as Record<string, unknown>)) {
+        if (!repo || typeof v !== "object" || v === null || Array.isArray(v)) continue;
+        for (const [w, cmd] of Object.entries(v as Record<string, unknown>)) {
+          if (!REPO_WORKER_KEYS.includes(w as WorkerName)) {
+            console.warn(`[worker] fleet.json names worker "${w}" for ${repo}, which nothing reads — dropped`);
+            continue;
+          }
+          const bad = typeof cmd === "string" ? workerCmdProblem(cmd) : "not a string";
+          if (bad) {
+            console.warn(`[worker] fleet.json: ${repo} ${w}=${String(cmd)} rejected (${bad}) — dropped, this repo falls back to the env default`);
+            continue;
+          }
+          (repoWorkers[repo] ??= {})[w] = cmd as string;
+        }
+      }
     if (typeof (persisted as { dispatch?: unknown }).dispatch === "boolean")
       dispatchOn = (persisted as { dispatch: boolean }).dispatch;
     if (typeof (persisted as { autosOn?: unknown }).autosOn === "boolean")
@@ -11615,6 +11703,37 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true, repo: top.out, base: repoBases[top.out] ?? null });
     }
+    // Per-repo worker override (see repoWorkers): set with a cmd, clear with an empty one.
+    // OWNER-ONLY BY POSITION (past the tokenGate above), and here that is the point rather than
+    // an accident of placement — this value chooses where a repo's contents get SENT, so the
+    // steward token, a lane's self token and a guest must all be structurally unable to reach it.
+    if (url.pathname === "/api/repo-worker" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo, worker, cmd }" }, 400);
+      const worker = typeof body.worker === "string" ? body.worker.trim() : "";
+      if (!REPO_WORKER_KEYS.includes(worker as WorkerName))
+        return json({ error: `worker must be one of: ${REPO_WORKER_KEYS.join(", ")}` }, 400);
+      const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
+      if (top.code !== 0) return json({ error: "not a git repository" }, 400);
+      const repo = repoCanon(top.out);
+      const cmd = typeof body.cmd === "string" ? body.cmd.trim() : "";
+      if (cmd) {
+        const bad = workerCmdProblem(cmd);
+        // rejected means UNCHANGED: a bad value must not clear a good one on its way to a 400
+        if (bad) return json({ error: `bad cmd: ${bad}` }, 400);
+        (repoWorkers[repo] ??= {})[worker] = cmd;
+      } else if (repoWorkers[repo]) {
+        delete repoWorkers[repo][worker];
+        if (Object.keys(repoWorkers[repo]).length === 0) delete repoWorkers[repo];
+      }
+      saveState();
+      audit("repo_worker", undefined, `${repo} ${worker}=${cmd || "(cleared)"}`);
+      return json({ ok: true, repo, worker, cmd: repoWorkers[repo]?.[worker] ?? null });
+    }
+    // ...and the read. `workers` is only what is STORED; `keys` is what may be stored at all, so a
+    // caller can tell "no override" from "that worker was never wired up" without guessing.
+    if (url.pathname === "/api/repo-workers" && req.method === "GET")
+      return json({ keys: REPO_WORKER_KEYS, workers: repoWorkers });
     // ↩ undo the last land on a repo — the one reversible pointer for the one action that
     // mutates main. GIT decides, never optimism: reset main back to where it was ONLY while
     // it is still EXACTLY where the land left it (nobody landed/committed on top) AND that

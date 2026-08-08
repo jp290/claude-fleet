@@ -70,6 +70,23 @@ export async function run(ctx: Ctx): Promise<void> {
   // makes process.env the single source restartSrv already reads, for every future caller.
   process.env.FLEET_REPO_DIR = GAP_REPO;
 
+  // --- per-repo worker override: the owner's whole ask was a SETTING, not an env flip, so its
+  // load-bearing property is that it outlives an srv restart (the deploy ritual runs ~10×/day and
+  // would otherwise silently move a repo's diffs back to the fleet-wide default). Planted on the
+  // SECOND repo on purpose — the commit tests in e2e/lanes-basic.ts own the first one's entry, and
+  // two modules writing the same key would make whichever ran second the only real assertion.
+  const workerRepo = process.env.FLEET_E2E_REPO2 ?? "";
+  // the second repo's sibling stand-in, created by e2e-isolated.sh next to it. Set only when
+  // REPO2 is, which is the same condition as the guard below.
+  const workerCmd = `${workerRepo.replace(/\/[^/]+$/, "")}/fakecommit2`;
+  let workerCanon = "";
+  if (workerRepo) {
+    const wr = (await (await post("/api/repo-worker", { repo: workerRepo, worker: "commitMsg", cmd: workerCmd })).json()) as
+      { ok?: boolean; repo?: string };
+    workerCanon = wr.repo ?? "";
+    check("repo-worker override planted before the restart", wr.ok === true && !!workerCanon, JSON.stringify(wr));
+  }
+
   // --- restart persistence ---
   const srvKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
   await srvKill.exited;
@@ -151,6 +168,12 @@ export async function run(ctx: Ctx): Promise<void> {
   check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
   check("after restart: slot 1 still empty", api.slots[0].cwd === null);
   check("after restart: label persisted", api.slots[1].label === "research-agent");
+  if (workerCanon) {
+    const wrAfter = (await (await get("/api/repo-workers")).json()) as { workers?: Record<string, Record<string, string>> };
+    check("after restart: the per-repo worker override survived (it is a stored setting, not an env flip)",
+      wrAfter.workers?.[workerCanon]?.commitMsg === workerCmd, JSON.stringify(wrAfter.workers));
+    await post("/api/repo-worker", { repo: workerRepo, worker: "commitMsg", cmd: "" });
+  }
   // A restored pane must not read as idle since the epoch. `offset` is seeded so pre-restart bytes
   // are not replayed, which means nothing sets `lastOutput` until the pane's NEXT byte — and a pane
   // blocked on a long tool call may emit none for minutes. Two consumers act on that number

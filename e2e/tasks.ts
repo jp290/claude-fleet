@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
-import { check, get, post, restartSrv, afterTick, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
+import { check, get, post, restartSrv, afterTick, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
@@ -194,6 +194,23 @@ export async function run(ctx: Ctx): Promise<void> {
       && !autoRows.some((p) => (p.text ?? "").includes("dispatch-gate-probe")),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
 
+    // (d2) THE TICK INHERITS NOTHING. The row above was consumed by the DISPATCHER, not by a
+    // button, so the lane it spawned is the one unattended spawn on this fleet — and it must be the
+    // default adapter whatever the attended route can now name. This fleet runs
+    // FLEET_HARNESS_AUTOMATION=0 (stated explicitly in e2e-isolated.sh), so a foreign harness here
+    // would be the exact thing the flag is supposed to withhold. The structural half — that the
+    // tick's call site passes no harness at all — is pinned in e2e/pins.ts; this is the running
+    // proof next to it, because a pin over source text and a pane are different kinds of evidence.
+    const dispRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; slot?: number | null }[] })
+      .tasks.find((x) => x.id === tid);
+    const tickCmd = typeof dispRow?.slot === "number"
+      ? (await tmuxOut("display-message", "-p", "-t", `s${dispRow.slot}`, "#{pane_start_command}")).out : "";
+    // asserted as the line's SUFFIX rather than as "no foreign binary appears anywhere": the pane
+    // command begins with an export of THIS machine's PATH, and a negative match over that is an
+    // expectation about the host, not about the server (the failure mode CLAUDE.md names for probes)
+    check("the lane the TICK spawned runs the default adapter — no unattended path names a harness",
+      /;\s*true; exec \S+$/.test(tickCmd.trim()), `slot=${dispRow?.slot ?? null} ${tickCmd.slice(-160)}`);
+
     // (e) capacity honesty: saturate the dispatch repo to the cap with a hand-opened lane, queue
     // one more task — the tick must write WHY on the row instead of leaving it silent.
     const capLane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot?: number };
@@ -265,6 +282,109 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await fSess()).tasks.find((t) => t.id === aT.task.id)?.status === "pending",
       JSON.stringify((await fSess()).tasks.find((t) => t.id === aT.task.id)));
     await post(`/api/tasks/${aT.task.id}/delete`, {});
+  }
+
+  // --- (f2) the manual start may name the AGENT — and the queue row keeps its lane link across
+  // the choice. Until this, a foreign-harness lane could only be started the /api/lanes way, which
+  // takes no task id: the row kept no `slot`, so nothing requeued it when a post-spawn gate held,
+  // no outcome row carried it, and the owner closed it by hand. The LINK is the gain; passing the
+  // harness is what makes the gain reachable.
+  //
+  // Every assertion here is on the PANE's own command line or on the row, never on the route's 200:
+  // a dropped harness answers 200 exactly as happily as a carried one, which is the failure mode
+  // this section exists for (same argument as the lane routes in e2e/lanes-basic.ts). ---
+  {
+    interface FRow { id: string; status: string; slot?: number | null; note?: string }
+    const f2Rows = async (): Promise<FRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { tasks: FRow[] }).tasks;
+    const f2Row = async (id: string): Promise<FRow | undefined> => (await f2Rows()).find((t) => t.id === id);
+    // a provider-qualified id: the `/` is admitted by HARNESS_MODEL_RE and by nothing the default
+    // adapter accepts, so the SAME string serves both halves of the split below
+    const FOREIGN_MODEL = "openai/gpt-5-codex";
+    const xT = (await (await post("/api/tasks", { text: "harness-dispatch-probe", queue: false })).json()) as { task: { id: string } };
+    const xd = await post(`/api/tasks/${xT.task.id}/dispatch`, { harness: "codex", model: FOREIGN_MODEL });
+    const xdJ = (await xd.json()) as { ok?: boolean; slot?: number; error?: string };
+    check("▸ start accepts a harness + a foreign model for the codex adapter",
+      xd.ok && xdJ.ok === true && typeof xdJ.slot === "number", `${xd.status} ${JSON.stringify(xdJ)}`);
+    // captured IMMEDIATELY: the post-spawn alive gate requeues this lane ~4 s from now (the probe
+    // below asserts exactly that), and the teardown takes the pane with it
+    const xCmd = typeof xdJ.slot === "number"
+      ? (await tmuxOut("display-message", "-p", "-t", `s${xdJ.slot}`, "#{pane_start_command}")).out : "";
+    check("a DISPATCHED lane spawns the named harness — the pane runs codex, sandboxed, with the model it was given",
+      /(^|\s|;)codex --sandbox workspace-write --ask-for-approval never --model 'openai\/gpt-5-codex'/.test(xCmd),
+      xCmd.slice(-160));
+    // THE POINT OF THE ROUTE, and the half /api/lanes cannot give: the row is bound to the lane
+    const xRow = await f2Row(xT.task.id);
+    check("the foreign-harness task is bound to its lane before the route answers (the link /api/lanes never makes)",
+      xRow?.status === "sent" && xRow.slot === xdJ.slot, JSON.stringify(xRow));
+    // ...and the link is what the failure path RUNS ON: kill the slot inside briefAndSend's 4 s
+    // boot sleep, and the identity re-check must requeue the row, clear its slot and take the
+    // worktree with it — exactly what a claude lane does. Without the link there is nothing to
+    // requeue: that is the whole state a /api/lanes-started foreign lane leaves behind.
+    //
+    // The kill is ALSO why this section does not sit and wait for the alive gate to hold. This
+    // fleet's FLEET_CMD is `true`, but the pane command carries the HOST's PATH, and `codex` is
+    // installed on it — so the pane really does boot codex, and a suite must not leave a live
+    // foreign agent sitting on a brief. (Measured: the first version of this check expected a
+    // not-alive requeue and got a `sent` row, because the agent was genuinely there. The probe was
+    // wrong, not the server.) Same discipline as e2e/lanes-basic.ts, which kills its codex lane
+    // one line after asserting the spawn.
+    check("kill the foreign-harness lane inside the boot sleep (setup for the requeue below)",
+      typeof xdJ.slot === "number" && (await post(`/api/slots/${xdJ.slot}/kill`, {})).ok, JSON.stringify(xdJ));
+    let xReq: FRow | undefined;
+    for (let i = 0; i < 30; i++) { // ceiling ~15 s; the boot sleep alone is 4 s
+      xReq = await f2Row(xT.task.id);
+      if (xReq?.status === "queued") break;
+      await Bun.sleep(500);
+    }
+    check("a lost lane requeues the foreign-harness row and lets go of the slot (unchanged from today)",
+      xReq?.status === "queued" && !xReq.slot && /requeued/.test(xReq.note ?? ""), JSON.stringify(xReq));
+    await post(`/api/tasks/${xT.task.id}/delete`, {});
+
+    // ...and the OTHER failure shape, the one that never reaches a pane: a spawn that throws must
+    // restore the row's ENTRY status with the harness named exactly as it does without one. A plain
+    // directory passes the create boundary and createWorktree then throws (the same fixture the
+    // repo-binding section uses), so no agent is started at all.
+    const SPAWNFAIL = `${ROOT}/plain-dir-harness-probe`;
+    mkdirSync(SPAWNFAIL, { recursive: true });
+    const sT = (await (await post("/api/tasks", { text: "harness-spawnfail-probe", queue: false, repo: SPAWNFAIL })).json()) as { task: { id: string } };
+    const sd = await post(`/api/tasks/${sT.task.id}/dispatch`, { harness: "codex", model: FOREIGN_MODEL });
+    const sRow = await f2Row(sT.task.id);
+    check("a failed spawn on a named harness restores the row where it was, with the why (no lane, no orphan)",
+      sd.status === 500 && sRow?.status === "pending" && !sRow.slot && (sRow.note ?? "").startsWith("dispatch failed"),
+      `${sd.status} ${JSON.stringify(sRow)}`);
+    await post(`/api/tasks/${sT.task.id}/delete`, {});
+
+    // COMPATIBILITY, as its own row rather than an assumption: a dispatch that names no harness
+    // must still take the default adapter — i.e. BASE_CMD (`true` in this harness) and no foreign
+    // binary anywhere on the line. The 200 is silent about this; the pane is not.
+    const dT = (await (await post("/api/tasks", { text: "default-harness-dispatch-probe", queue: false })).json()) as { task: { id: string } };
+    const dd = await post(`/api/tasks/${dT.task.id}/dispatch`, {});
+    const ddJ = (await dd.json()) as { ok?: boolean; slot?: number };
+    const dCmd = typeof ddJ.slot === "number"
+      ? (await tmuxOut("display-message", "-p", "-t", `s${ddJ.slot}`, "#{pane_start_command}")).out : "";
+    // same suffix form as (d2), and for the same reason: the PATH export in front of it is the
+    // host's, not the server's, and no assertion here should depend on what is in it
+    check("a dispatch that names no harness spawns the DEFAULT adapter, byte-shape unchanged",
+      dd.ok && /;\s*true; exec \S+$/.test(dCmd.trim()), dCmd.slice(-160));
+    if (typeof ddJ.slot === "number") await post(`/api/slots/${ddJ.slot}/kill`, {});
+    await post(`/api/tasks/${dT.task.id}/delete`, {});
+
+    // THE MODEL SPLIT stays two charsets, asserted with the SAME string on both sides so the rows
+    // cannot drift apart: a foreign-only pattern is accepted for codex (above) and refused for the
+    // default adapter here. This is the isolated suite's half — FLEET_CMD=true is UNDECLARED, so
+    // SLOT_MODEL_RE is MODEL_RE. The claude-fleet half (BASE_CMD really `claude`) is the
+    // counter-proof in fleet-e2e-claude-gate.ts, phase 1.
+    const mT = (await (await post("/api/tasks", { text: "dispatch-model-charset-probe", queue: false })).json()) as { task: { id: string } };
+    const mBad = await post(`/api/tasks/${mT.task.id}/dispatch`, { model: FOREIGN_MODEL });
+    const mBadJ = (await mBad.json()) as { error?: string };
+    check("the default adapter still refuses a foreign model shape on ▸ start (400, the two charsets have not collapsed)",
+      mBad.status === 400 && /bad model/.test(mBadJ.error ?? ""), `${mBad.status} ${JSON.stringify(mBadJ)}`);
+    check("an unknown harness is refused at the button rather than silently ignored (400)",
+      (await post(`/api/tasks/${mT.task.id}/dispatch`, { harness: "not-a-harness" })).status === 400);
+    check("a refused dispatch leaves the row untouched — no lane, no status change",
+      (await f2Row(mT.task.id))?.status === "pending", JSON.stringify(await f2Row(mT.task.id)));
+    await post(`/api/tasks/${mT.task.id}/delete`, {});
   }
 
   // --- (g) per-task repo binding: the TASK decides where its lane spawns (owner-only) ---

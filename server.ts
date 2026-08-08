@@ -86,6 +86,13 @@ const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 // code that spawned every slot before harnesses existed, so "byte-identical" is a property of
 // the call graph here, not a claim someone has to re-check by reading two implementations.
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model)}; exec ${SHELL}`;
+}
+// the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
+// for exactly one caller: the container adapter wraps THIS line in a `docker exec` rather than
+// restating the flag rules, so "the sandboxed slot runs the same agent the fleet runs" is a
+// property of the call graph instead of two implementations someone has to diff.
+function agentCmd(sessionId: string | null, resume: boolean, model: string | null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -103,7 +110,7 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
   // that constant is a claude model id, and pinning it onto a foreign harness would name a model
   // that harness has never heard of. A foreign slot with no model of its own passes no flag at all.
   else if (HARNESS_MODEL_FLAG && model) cmd += ` ${HARNESS_MODEL_FLAG} '${model}'`;
-  return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+  return cmd;
 }
 // per-slot model (synergy-findings Tier-2): strict charset because the value lands in a
 // tmux shell command — never widen without revisiting slotCmd
@@ -321,6 +328,88 @@ const PI_HARNESS: Harness = {
   note: "no sandbox",
 };
 
+// The container this adapter execs into. A docker name/id charset MINUS the quote, because the
+// value is interpolated into the tmux shell line: `'` is the one character that could terminate
+// the single-quoted word, and docker never admits it in a name anyway. An operator value that
+// fails the charset falls back to the default rather than reaching a shell — the same discipline
+// as HARNESS_MODEL_FLAG one region up.
+const CONTAINER_NAME = (() => {
+  const c = process.env.FLEET_CONTAINER;
+  return c && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(c) ? c : "fleet";
+})();
+
+// Adapter #3 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
+// docs/container.md's "Why the whole app, never the slots" is the argument it has to survive: that
+// section rejects a boundary THROUGH the bundle (server, tmux, claude, git), because it blinds
+// every transcript-derived feature at once AND leaves Fleet's own unattended workers outside. This
+// boundary is drawn elsewhere. tmux stays host-local (the pane is a host pane; the agent is a
+// child of it via `docker exec`), git stays host-local (`git -C <worktree>` on the host still reads
+// the real tree, so ahead/dirty, doneLooking, the land path and /api/self/drift are untouched), and
+// only the transcript falls — one degradation the registry already has a word for. The half that
+// section calls self-defeating ("give the container the same $HOME") is exactly what is NOT done
+// here: the container has its OWN $HOME, which is why `transcript` below is false rather than a
+// resolved projDir.
+//
+// What Fleet does NOT do, and this is stage 1 by owner decision: it never creates, starts, mounts
+// or probes the container. The operator does that by hand; `note` says so at pick time. A missing
+// container is therefore a visible docker error in the pane, followed by `exec $SHELL` — the pane
+// survives and shows what is wrong, rather than a slot that looks open and is not.
+const CONTAINER_HARNESS: Harness = {
+  id: "container",
+  // `-w "$PWD"` carries the pane's OWN cwd into the container, and that encodes the adapter's one
+  // hard requirement: the worktree must be bind-mounted at the IDENTICAL path. Same path is what
+  // keeps the host's git and the container's agent talking about one tree — an absolute path the
+  // agent prints is then a path the owner (and the land path) can use. Double-quoted, not single:
+  // the value must expand in the pane shell, and a worktree path may contain spaces.
+  // The agent line itself is agentCmd's, verbatim: whatever this fleet runs on the host, this slot
+  // runs in the box, under the same validated quoting.
+  spawnCmd: (o) =>
+    `${PATH_EXPORT}docker exec -it -w "$PWD" '${CONTAINER_NAME}' ${agentCmd(o.sessionId, o.resume, o.model)}; exec ${SHELL}`,
+  // mirrors CLAUDE_HARNESS, and for its reason rather than by imitation: agentCmd passes a session
+  // id only when BASE_CMD is claude, so a stand-in FLEET_CMD pins none here either.
+  pinsSession: IS_CLAUDE,
+  // `docker`, and NOT whatever runs inside. The probe (paneAgentAt) walks the HOST pane's process
+  // tree, and the agent is in a different pid namespace — on this machine, inside colima's VM
+  // entirely. What the host can see is the `docker exec` client, and that is a real liveness
+  // signal rather than a consolation prize: it is the process the exec session hangs off, so it
+  // exits when the agent inside exits. Declaring it also means this adapter takes NO "unprobed"
+  // waiver — a container slot whose exec died reads `no-agent` instead of a blind alive.
+  comms: ["docker"],
+  // FALSE, and not as a placeholder: the owner decision on unattended container slots has not been
+  // made (the comment on `automatable` names this adapter as the case), so it fails closed. Setting
+  // it true would widen on the ABSENCE of a judgement, which is the mistake the comms repair exists
+  // to undo. Note what that costs and does not cost: an owner may still open, drive and land this
+  // slot by hand — only unattended paths (autos, dispatch, steward sends, done-looking, auto-③)
+  // are shut, and they stay shut even with FLEET_HARNESS_AUTOMATION on.
+  automatable: false,
+  // null = the same charset a default-adapter slot is judged by (SLOT_MODEL_RE). Consistent rather
+  // than lax: the command inside the box IS agentCmd's, so widening the charset here would admit
+  // names the very same binary would reject on the host. A container that one day runs a foreign
+  // agent is a different adapter, not a wider regex on this one.
+  modelRe: null,
+  effortLevels: [], // agentCmd has no effort flag to pass — same absence as the default adapter
+  supports: {
+    resume: true,
+    // FALSE, and this is the SHARPER version of the pi case rather than a copy of it. A claude
+    // inside the container writes ~/.claude/projects/<slug>/<uuid>.jsonl against the CONTAINER's
+    // $HOME; projDir() reads the HOST's. And because the mount is at the identical path, the slug
+    // is IDENTICAL too — so transcriptFile()'s newest-by-mtime fallback would not merely miss, it
+    // would hand this slot an earlier HOST-side conversation from the same worktree and label it
+    // this session's. A hopeful `true` here is how that lands in the conversation view and in the
+    // ✨ summary's evidence as fact. Failing visibly beats answering with a stranger's chat.
+    transcript: false,
+    model: true,
+    effort: false,
+    // FALSE by construction, which is stronger than pi's unmeasured false: `docker exec` does not
+    // inherit the CLIENT's environment. ensureSlot exports FLEET_SELF_TOKEN into the host pane, and
+    // the agent inside the box never sees it — so there is no credential to self-schedule with.
+    selfSchedule: false,
+  },
+  // the caveat an owner must have BEFORE picking this: Fleet is not the thing providing the
+  // isolation, and it cannot tell them the container is missing until the pane says so.
+  note: `you start container '${CONTAINER_NAME}' and bind-mount the worktree at the SAME path — Fleet never does`,
+};
+
 // The probe is now PER SLOT (commsFor, one region below), which fixes a FACT that used to be a lie:
 // a healthy Pi pane answered "no-agent" on the owner poll, because the probe asked about claude —
 // `HARNESS_COMMS` is `["claude"]` whenever FLEET_CMD starts with claude, so the escape hatch named
@@ -342,7 +431,7 @@ const PI_HARNESS: Harness = {
 // path pastes prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, CONTAINER_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
@@ -11631,6 +11720,10 @@ Bun.serve<WSData>({
       return json({
         harnesses: HARNESSES.map((h) => ({
           id: h.id, supports: h.supports, effortLevels: h.effortLevels, note: h.note,
+          // whether an UNATTENDED path may ever drive this harness. The adapter's claim, not the
+          // fleet's answer: the operator's FLEET_HARNESS_AUTOMATION is the second condition and is
+          // deliberately not published here — a `false` on this field means "never, flag or not".
+          automatable: h.automatable,
           // the DEFAULT is a fact about this fleet, not about the adapter: it is the harness a
           // slot gets when it names none, and the client must not assume which id that is.
           default: h === CLAUDE_HARNESS,

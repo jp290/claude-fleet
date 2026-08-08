@@ -407,7 +407,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const HARNESS_SLOT = 10;
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
   const cat = (await (await get("/api/harnesses")).json()) as
-    { harnesses: { id: string; default: boolean; supports: { transcript: boolean; effort: boolean }; effortLevels: string[]; note: string | null }[] };
+    { harnesses: { id: string; default: boolean; automatable: boolean; supports: { transcript: boolean; effort: boolean }; effortLevels: string[]; note: string | null }[] };
   const pi = cat.harnesses.find((h) => h.id === "pi");
   const def = cat.harnesses.find((h) => h.default);
   check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
@@ -544,11 +544,73 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6c fixture: the pi slot is restored for the recycle check below",
     (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi" })).ok);
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+
+  // ===== §6d THE CONTAINER ADAPTER =====
+  // Stage 1: a slot whose agent runs inside a container the OPERATOR started. There is deliberately
+  // no docker here and there must never be — a container runtime in the gate is an external
+  // dependency no lane has (docs/container.md says the same about ./docker-verify.sh). So what is
+  // asserted is the SPAWN STRING tmux was told to run, which is recorded whether or not the
+  // container (or docker itself) exists. That splits cleanly: the wrapper is the new code and is
+  // pinned here; the agent line inside it is agentCmd's, already proven by every slotCmd row in
+  // this suite and in ./e2e-claude-gate.sh.
+  const con = cat.harnesses.find((h) => h.id === "container");
+  check("§6d the catalogue carries the container adapter", !!con, cat.harnesses.map((h) => h.id).join(","));
+  // automatable is published for exactly this: `false` means "no unattended path, flag or not",
+  // which is a property an owner cannot otherwise see. The pi row is the counter-case — without it
+  // this would also pass if the field were hardcoded false for everyone.
+  check("§6d the container adapter is NOT automatable, while pi (owner-decided) is",
+    con?.automatable === false && pi?.automatable === true, `${String(con?.automatable)} / ${String(pi?.automatable)}`);
+  check("§6d the container adapter declares no transcript and no effort concept",
+    con?.supports.transcript === false && con?.supports.effort === false && con?.effortLevels.length === 0,
+    JSON.stringify(con?.supports));
+  // the note is the ONLY place an owner learns that Fleet does not provide the container. It has to
+  // name the very container the spawn line will exec into, or the caveat points at nothing.
+  check("§6d the container adapter states at pick time that the owner supplies the container",
+    !!con?.note && con.note.includes("'fleet'") && /mount/i.test(con.note), String(con?.note));
+
+  const oc = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "container" });
+  check("§6d a slot opens on the container harness (200)", oc.ok, String(oc.status));
+  const ccmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  // `-w "$PWD"` is the adapter's one hard requirement made mechanical: the worktree must be mounted
+  // at the IDENTICAL path. Double quotes, not single — it has to expand in the pane shell.
+  // Backslashes stripped first: tmux RE-QUOTES pane_start_command for display, escaping `"` and `$`
+  // — so the raw capture reads `-w \"\$PWD\"`. The pi rows above never noticed because a single
+  // quote is not escaped by that rendering. Nothing else here contains a backslash.
+  const ccmdRaw = ccmd.replaceAll("\\", "");
+  check("§6d the container spawn line execs into the named container at the pane's OWN cwd",
+    ccmdRaw.includes(`docker exec -it -w "$PWD" 'fleet' `), ccmd.slice(-160));
+  // ...and what it execs is this fleet's agent line verbatim (FLEET_CMD=true here), not a second
+  // implementation of the flag rules. A reimplementation would drift and nothing else would notice.
+  check("§6d ...and the command inside the box is agentCmd's, not a restatement",
+    ccmd.includes(`'fleet' true;`), ccmd.slice(-160));
+  // the pane must survive a missing container: docker prints its error, then the shell catches it.
+  check("§6d the container spawn line keeps the `; exec $SHELL` fallback (a missing container must"
+    + " leave a live pane, not a dead slot)", /;\s*exec\s+\S+$/.test(ccmd.trim()), ccmd.slice(-80));
+  // the transcript degradation, and it bites HARDER here than for pi: the mount is at the identical
+  // path, so the projDir slug is identical too — the mtime fallback would hand this slot an earlier
+  // HOST-side conversation from the same directory and label it this session's.
+  const ctp = (await (await get(`/api/slots/${HARNESS_SLOT}/transcript?after=0`)).json()) as { source: string | null; entries: unknown[] };
+  check("§6d a container slot reports NO transcript source (identical mount path makes the mtime fallback WORSE, not better)",
+    ctp.source === null && ctp.entries.length === 0, `${String(ctp.source)} / ${ctp.entries.length}`);
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+
+  // --- the rejections. Every one of them is a value that would otherwise reach a tmux shell line.
+  const cq = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "container", model: "a/b'c" });
+  check("§6d a container model carrying a single quote is refused (400)", cq.status === 400, String(cq.status));
+  const ce2 = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "container", effort: "high" });
+  check("§6d the container adapter refuses an effort it has no flag for (400)", ce2.status === 400, String(ce2.status));
+  // modelRe: null means it is judged by the SAME charset as a default slot — the widened foreign
+  // shapes must still bounce. This is the row that fails if someone "helpfully" widens the adapter.
+  for (const bad of ["claude-bridge/claude-haiku-4-5", "sonnet:high", "anthropic/*"]) {
+    const r = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "container", model: bad });
+    check(`§6d the container adapter did not widen the model charset: ${bad} refused (400)`, r.status === 400, String(r.status));
+  }
+
   // --- and the harness dies with the session: a recycled slot must not inherit the binary the
   // previous occupant ran. Same rule (and same reason) as the selfToken rotation in §3.
   check("§6 fixture: the slot is recycled with no harness named", (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO })).ok);
   const rcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
   check("§6 a recycled slot is spawned by the DEFAULT harness, never the previous occupant's",
-    !rcmd.includes("pi --session-id") && !rcmd.includes("--thinking"), rcmd.slice(-160));
+    !rcmd.includes("pi --session-id") && !rcmd.includes("--thinking") && !rcmd.includes("docker exec"), rcmd.slice(-160));
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
 }

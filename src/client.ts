@@ -8099,6 +8099,90 @@ enhBtn.onclick = async () => {
   }
 };
 
+// --- 📎 drops: hand a FILE to the focused session (drag&drop, paste, or the button) ----------
+// Three gestures, one path, because they differ only in where the FileList comes from. All three
+// exist on purpose: drag&drop is the desktop reflex, paste is what a screenshot actually is, and
+// the button is the only one of them that exists on a phone — a drop-only version would be the
+// feature for half the devices the owner runs Fleet on.
+//
+// What lands in the composer is a PATH, never the bytes. The file is written into the session's
+// own working directory and the box is handed one line naming it; the owner still writes the
+// prompt around it. The wording of that line comes from the SERVER (dropMention), so the mention
+// format is decided in one place rather than re-guessed here.
+const dropBtn = $("dropbtn") as HTMLButtonElement;
+const dropFile = $("dropfile") as HTMLInputElement;
+const dropLay = $("droplay");
+const mainEl = $("main");
+
+async function uploadDrops(files: File[]): Promise<void> {
+  if (!files.length) return;
+  const slot = panes[focused]?.slot;
+  if (!slot) { toast("no session focused — pick one first"); return; }
+  dropBtn.disabled = true;
+  dropBtn.textContent = "…";
+  try {
+    // sequential, not Promise.all: the mentions are appended to a shared box in the order the
+    // owner picked the files, and the cap is per file — a parallel burst would only make a
+    // multi-file rejection harder to read.
+    for (const f of files) {
+      const fd = new FormData();
+      fd.append("file", f, f.name);
+      // no content-type header: the browser must set its own multipart boundary
+      const res = await api(`/api/slots/${slot}/upload`, { method: "POST", body: fd });
+      const j = (await res.json().catch(() => ({}))) as { mention?: string; error?: string };
+      // stop at the first failure instead of soldiering on — the usual cause (over the cap, or a
+      // repo that does not ignore the drop directory) applies to the whole batch, and a toast per
+      // file would bury it.
+      if (!res.ok || !j.mention) { toast(j.error ?? `upload failed (${res.status})`); return; }
+      ta.value = ta.value.trim() ? `${ta.value.replace(/\s+$/, "")}\n${j.mention}` : j.mention;
+    }
+    updateChips();
+    ta.focus();
+  } finally {
+    dropBtn.disabled = false;
+    dropBtn.textContent = "📎";
+  }
+}
+
+const dragHasFiles = (e: DragEvent): boolean => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+// A file dropped ANYWHERE on the page is, by browser default, a navigation to that file — the
+// board would simply disappear. So the page-level default is cancelled everywhere while only
+// #main actually accepts a drop; a miss then does nothing instead of destroying the session view.
+document.addEventListener("dragover", (e) => { if (dragHasFiles(e)) e.preventDefault(); });
+document.addEventListener("drop", (e) => { if (dragHasFiles(e)) e.preventDefault(); });
+mainEl.addEventListener("dragover", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  dropLay.classList.add("on");
+});
+// only when the pointer actually left #main — dragleave also fires when crossing between the
+// pane and the composer inside it, and hiding on those would make the target flicker
+mainEl.addEventListener("dragleave", (e) => {
+  const to = e.relatedTarget;
+  if (to instanceof Node && mainEl.contains(to)) return;
+  dropLay.classList.remove("on");
+});
+mainEl.addEventListener("drop", (e) => {
+  dropLay.classList.remove("on");
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  void uploadDrops(Array.from(e.dataTransfer?.files ?? []));
+});
+// a paste with no files is an ordinary text paste and must fall through untouched
+ta.addEventListener("paste", (e) => {
+  const files = Array.from(e.clipboardData?.files ?? []);
+  if (!files.length) return;
+  e.preventDefault();
+  void uploadDrops(files);
+});
+dropBtn.onclick = () => dropFile.click();
+dropFile.addEventListener("change", () => {
+  const files = Array.from(dropFile.files ?? []);
+  dropFile.value = ""; // so picking the SAME file again still fires a change
+  void uploadDrops(files);
+});
+
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 void (async () => {
   await refresh();

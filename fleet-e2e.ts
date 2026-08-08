@@ -24,6 +24,7 @@ import * as watch from "./e2e/watch";
 import * as lanesLifecycle from "./e2e/lanes-lifecycle";
 import * as merge from "./e2e/merge";
 import * as laneRisk from "./e2e/lane-risk";
+import * as drops from "./e2e/drops";
 import * as landProvenance from "./e2e/land-provenance";
 import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
@@ -83,6 +84,10 @@ if (REPO) {
   await lanesLifecycle.run(lc);
   await merge.run(lc);
   await laneRisk.run();
+  // the upload surface. In the lane block because its whole point is a property of a WORKTREE
+  // (an untracked drop blocks the land), on its own slot and its own branch, and it tears both
+  // down again — so it shares no fixture with the sections around it.
+  await drops.run();
   await landProvenance.run();
   await concurrency.run();
   await selfToken.run(ctx);

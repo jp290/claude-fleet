@@ -411,7 +411,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const HARNESS_SLOT = 10;
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
   const cat = (await (await get("/api/harnesses")).json()) as
-    { harnesses: { id: string; default: boolean; automatable: boolean; supports: { transcript: boolean; effort: boolean }; effortLevels: string[]; note: string | null }[] };
+    { harnesses: { id: string; default: boolean; automatable: boolean; supports: { transcript: boolean; effort: boolean; resume: boolean }; effortLevels: string[]; note: string | null }[] };
   const pi = cat.harnesses.find((h) => h.id === "pi");
   const def = cat.harnesses.find((h) => h.default);
   check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
@@ -420,7 +420,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6 the pi adapter states its missing permission layer at pick time", pi?.note === "no sandbox", String(pi?.note));
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
-  for (const h of ["pi", "claude"]) {
+  for (const h of ["pi", "claude", "codex"]) {
     const q = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: h, model: "a/b'c" });
     check(`§6 harness ${h} rejects a model carrying a single quote (400)`, q.status === 400, String(q.status));
   }
@@ -621,11 +621,84 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check(`§6d the container adapter did not widen the model charset: ${bad} refused (400)`, r.status === 400, String(r.status));
   }
 
+  // ===== §6e THE CODEX ADAPTER =====
+  // `@openai/codex`, adapter #4. Same discipline as §6d: what is asserted is the SPAWN STRING tmux
+  // was told to run, which is recorded whether or not codex is installed on the machine running the
+  // suite — a gate must never depend on a third-party CLI being present.
+  const cx = cat.harnesses.find((h) => h.id === "codex");
+  check("§6e the catalogue carries the codex adapter", !!cx, cat.harnesses.map((h) => h.id).join(","));
+  // automatable=false is published for exactly this, and the reason is measured rather than
+  // procedural: an un-authenticated codex pane sits on its sign-in screen with the node wrapper
+  // RUNNING, so the probe says alive and an unattended brief would be typed into a login form and
+  // lost. The pi row is the counter-case — without it this passes if the field were hardcoded.
+  check("§6e the codex adapter is NOT automatable (an un-authenticated pane probes alive), while pi is",
+    cx?.automatable === false && pi?.automatable === true, `${String(cx?.automatable)} / ${String(pi?.automatable)}`);
+  // resume: false is the one that separates codex from BOTH earlier adapters — `codex resume` is an
+  // interactive picker, not a spawn-time flag, so a respawned pane cannot be handed its
+  // conversation. transcript/effort false for the reasons in the adapter literal.
+  check("§6e the codex adapter declares no resume, no transcript and no effort concept",
+    cx?.supports.transcript === false && cx?.supports.effort === false && cx?.effortLevels.length === 0
+    && cx?.supports.resume === false, JSON.stringify(cx?.supports));
+  // the note is the only place an owner learns, at pick time, that the login is theirs to do
+  check("§6e the codex adapter states at pick time that authentication is the owner's act",
+    !!cx?.note && /codex login/.test(cx.note), String(cx?.note));
+
+  const ox = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex" });
+  check("§6e a slot opens on the codex harness (200)", ox.ok, String(ox.status));
+  const xcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  // THE ROW THAT MATTERS MOST HERE. codex's own --help calls
+  // --dangerously-bypass-approvals-and-sandbox "EXTREMELY DANGEROUS" and scopes it to externally
+  // sandboxed environments; a lane worktree on the owner's dev box is not one. The conservative
+  // pair keeps the sandbox ON while never stopping to ask, and widening it is an OWNER decision —
+  // so the bypass flag must not be reachable from this line by any edit that still passes.
+  check("§6e the codex spawn line keeps the sandbox and never asks — and never carries the bypass flag",
+    xcmd.includes("codex --sandbox workspace-write --ask-for-approval never")
+    && !xcmd.includes("dangerously-bypass"), xcmd.slice(-160));
+  // ...and it spawns codex, not the fleet's FLEET_CMD (`true` in this suite)
+  check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --sandbox/.test(xcmd), xcmd.slice(-160));
+  // no session id anywhere: pinsSession is false, and a pinned-but-unpassed id is the shape that
+  // makes a respawn silently resume nothing while the state file claims a conversation
+  check("§6e the codex spawn line pins NO session id (codex resume is a picker, not a spawn flag)",
+    !/--session-id/.test(xcmd), xcmd.slice(-160));
+  check("§6e the codex spawn line keeps the `; exec $SHELL` fallback (a missing binary must leave a"
+    + " live pane, not a dead slot)", /;\s*exec\s+\S+$/.test(xcmd.trim()), xcmd.slice(-80));
+  // the transcript degradation, same bite as pi's: codex writes its rollout files under $CODEX_HOME,
+  // so transcriptFile's newest-by-mtime fallback in ~/.claude/projects/<slug>/ must not be consulted.
+  const xtp = (await (await get(`/api/slots/${HARNESS_SLOT}/transcript?after=0`)).json()) as { source: string | null; entries: unknown[] };
+  check("§6e a codex slot reports NO transcript source (codex writes under $CODEX_HOME, not projDir)",
+    xtp.source === null && xtp.entries.length === 0, `${String(xtp.source)} / ${xtp.entries.length}`);
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+
+  // --- the QUOTING, on the shape that makes it load-bearing. The bracket suffix is the context
+  // variant (`claude-opus-5[1m]`) and zsh — tmux's default-shell — aborts the whole line on an
+  // unmatched glob, pane and all. It is also the SUPERSET proof: a declared foreign harness must
+  // never lose a model name a claude fleet would have taken.
+  const BR = "codex-probe-5[1m]";
+  const obr = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", model: BR });
+  check("§6e a codex slot accepts a bracket-suffixed model (the foreign charset is a superset)", obr.ok, String(obr.status));
+  const brcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  check("§6e the codex spawn line quotes the bracket model (an unquoted one aborts the pane under zsh)",
+    brcmd.includes(`--model '${BR}'`), brcmd.slice(-160));
+  // --- §6e-probe: the adapter declares its own comms, so it takes NO "unprobed" waiver. Same
+  // discriminator as §6b and for the same reason: whether the verdict is `alive` or `no-agent`
+  // depends on whether `codex` happens to be installed on the machine running the suite, and that
+  // must never decide a row. `unprobed` is the only answer that proves the probe did not happen —
+  // it is what the fleet-wide empty set (FLEET_CMD=true here) returns by short-circuit.
+  const cxAgent = await agentOf(HARNESS_SLOT);
+  check("§6e a codex slot is genuinely PROBED (adapter-declared comms), never waived like the undeclared FLEET_CMD",
+    cxAgent !== null && cxAgent !== "unprobed", String(cxAgent));
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  // --- the rejections. Every value here would otherwise reach a tmux shell line.
+  const xe = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "high" });
+  check("§6e the codex adapter refuses an effort it has no flag for, rather than dropping it (400)",
+    xe.status === 400, String(xe.status));
+
   // --- and the harness dies with the session: a recycled slot must not inherit the binary the
   // previous occupant ran. Same rule (and same reason) as the selfToken rotation in §3.
   check("§6 fixture: the slot is recycled with no harness named", (await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO })).ok);
   const rcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
   check("§6 a recycled slot is spawned by the DEFAULT harness, never the previous occupant's",
-    !rcmd.includes("pi --session-id") && !rcmd.includes("--thinking") && !rcmd.includes("docker exec"), rcmd.slice(-160));
+    !rcmd.includes("pi --session-id") && !rcmd.includes("--thinking") && !rcmd.includes("docker exec")
+    && !rcmd.includes("codex"), rcmd.slice(-160));
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
 }

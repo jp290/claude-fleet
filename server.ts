@@ -439,6 +439,112 @@ const CONTAINER_HARNESS: Harness = {
   note: `you start container '${CONTAINER_NAME}' on docker --context '${CONTAINER_CONTEXT}' and bind-mount the worktree at the SAME path — Fleet never does`,
 };
 
+// Adapter #4 — Codex (`@openai/codex`, the OpenAI CLI). Every flag below is MEASURED against the
+// real installation on 2026-08-08 (`codex --version` → codex-cli 0.147.0), not read off a README;
+// the run and its output are briefs/codex-adapter-2026-08-08.md, cited per line.
+//
+// The package matters and is a documented trap: the canonical one is `@openai/codex`, and a
+// separate `@openai/codex-security` exists next to it. Installed user-locally here
+// (`npm install -g --prefix ~/.local @openai/codex`) — this machine's npm default prefix is
+// /opt/homebrew, so a bare `npm i -g` would have been a brew-global write, which a worktree lane
+// may not make. `~/.local/bin` is already on PATH_EXPORT (watchdog.sh exports it), so the pane
+// resolves `codex` by the same route it resolves `claude`.
+const CODEX_HARNESS: Harness = {
+  id: "codex",
+  // No subcommand: `codex` alone is the interactive TUI, which is the form a slot wants
+  // (`codex exec` is the headless one and is NOT what a pane should run).
+  //
+  // The approval/sandbox pair is the CONSERVATIVE equivalent of this fleet's own
+  // `--dangerously-skip-permissions`, and deliberately not the matching one: Codex ships
+  // `--dangerously-bypass-approvals-and-sandbox`, whose own help calls it EXTREMELY DANGEROUS and
+  // scopes it to externally-sandboxed environments — a lane worktree on the owner's dev box is not
+  // that. `--sandbox workspace-write --ask-for-approval never` keeps the agent unattended-usable
+  // (it never stops to ask, so a pane cannot silently wedge on a prompt) while leaving the sandbox
+  // ON. Widening that to the bypass flag is an owner question, and it belongs in a report rather
+  // than in this literal. Both values are from `codex --help`'s own possible-value lists, and both
+  // are fixed literals — nothing operator-supplied reaches this line except the model.
+  spawnCmd: (o) => {
+    let cmd = "codex --sandbox workspace-write --ask-for-approval never";
+    // single-quoted under the same rule as slotCmd and PI_HARNESS: HARNESS_MODEL_RE admits `*` and
+    // the `[1m]` suffix, and tmux's default-shell here is zsh, which ABORTS the whole line on an
+    // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
+    // that constant is a claude model id and Codex has never heard of it.
+    if (o.model) cmd += ` --model '${o.model}'`;
+    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+  },
+  // Codex has no `--session-id` at all. Resumption is the `codex resume` SUBCOMMAND, an interactive
+  // picker (`--last` for the newest) — a different shape from claude's flag and from Pi's
+  // create-or-attach id, and nothing this adapter can pin at spawn. So no id is recorded, and
+  // `supports.resume` is false to match: a pane respawn starts a new conversation.
+  pinsSession: false,
+  // MEASURED, and this is the one field a reader will want to argue with. The process tree is
+  // `zsh → node (bin/codex.js) → <native codex>`, and the native child's comm is the FULL vendor
+  // path (…/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex). paneAgentAt takes the
+  // basename, but it walks the pane pid and its DIRECT children only — so on a slot the native
+  // binary sits on depth 2 and is out of reach. `["codex"]` alone would therefore report a
+  // perfectly healthy Codex pane as `no-agent`: exactly the defect 4955444 repaired for Pi, and it
+  // would be re-introduced here by a comms list that reads right.
+  //
+  // Hence `node` as well, and the case for it is that the probe is SCOPED, not that the name is
+  // specific: paneAgentAt asks about THIS pane's own pid and its own children, never the machine's
+  // process table — the only `node` it can ever see is the one this slot started. What is given up
+  // is narrower than it looks: a Codex pane where the wrapper lives and the native agent has died
+  // would still read `alive`. That is a strictly smaller hole than the alternative, which reports
+  // every healthy pane dead.
+  //
+  // The rejected alternative, stated so it is not re-proposed: spawn the native binary directly and
+  // declare `["codex"]` only. It buys a one-name comms list at the price of baking
+  // `codex-darwin-arm64/vendor/aarch64-apple-darwin` into the spawn line — an arch- AND
+  // version-specific path inside node_modules, which breaks on an `npm update`, on a different Mac,
+  // and on any non-arm64 host, silently and at spawn time. A wrapper that resolves its own vendor
+  // binary is the supported entry point; going around it to make a probe prettier is the wrong
+  // trade.
+  comms: ["codex", "node"],
+  // FALSE, and unlike the container adapter's this is not merely "the owner has not decided yet" —
+  // there is a measured reason to keep it shut. `codex login status` on this machine says
+  // "Not logged in", and an unauthenticated Codex pane sits on its sign-in screen with the node
+  // wrapper RUNNING: the probe answers `alive` (correctly — a process is there), so an unattended
+  // path would type a brief into a sign-in screen and the brief would be gone with no error
+  // anywhere. Authentication is an owner act, and the pane state it produces is not one the fact
+  // layer can distinguish. So: attended only until a Codex lane has been watched running end to
+  // end, exactly the standard the container adapter's comment sets. What that costs is unchanged
+  // from there: an owner may still open, drive and land such a slot by hand.
+  automatable: false,
+  // the foreign charset, for the same reason Pi takes it: Codex model names carry `:` (the local
+  // provider tags under `--oss`, e.g. an ollama `qwen2.5-coder:7b`) and `/` (provider-qualified
+  // ids), neither of which MODEL_RE admits. It is a strict SUPERSET of MODEL_RE, so nothing a
+  // claude fleet would have accepted is lost — and the widening stays off the default adapter,
+  // which is what e2e/security.ts §6's counter-rows exist to prove.
+  modelRe: HARNESS_MODEL_RE,
+  // empty: Codex has no effort FLAG. Reasoning effort exists as config (`-c`), and a `-c key=value`
+  // pass-through is a second injection surface into the pane line for a knob nobody asked for.
+  // Empty means the routes REJECT an effort for this harness rather than dropping it silently.
+  effortLevels: [],
+  supports: {
+    // false: see pinsSession — `codex resume` is an interactive picker, not a spawn-time flag, so a
+    // respawned pane cannot be handed back its conversation.
+    resume: false,
+    // FALSE for the same reason as pi's, and it is load-bearing rather than cosmetic: what Fleet
+    // calls a transcript is a CLAUDE-CODE .jsonl under projDir(), parsed by viewEntry for the
+    // conversation view and the ✨ summary's evidence. Codex writes its own rollout files under
+    // $CODEX_HOME (~/.codex), a different format at a different path. A hopeful `true` would send
+    // transcriptFile()'s newest-by-mtime FALLBACK looking in ~/.claude/projects/<cwd-slug>/ and
+    // hand this slot some OTHER session's claude conversation from the same cwd, labelled as its
+    // own. Failing visibly beats answering with a stranger's chat.
+    transcript: false,
+    model: true,   // `-m, --model <MODEL>`, read from `codex --help` on the real installation
+    effort: false, // no flag — see effortLevels
+    // FALSE, and it is the pi caveat, not the container one: ensureSlot exports FLEET_SELF_TOKEN
+    // into every pane with a cwd whatever the harness, so a Codex slot HAS the credential. What is
+    // unmeasured is whether Codex's own tooling would ever use it. "Do not advertise this" is the
+    // only thing an unmeasured capability may mean.
+    selfSchedule: false,
+  },
+  // the caveat an owner must have BEFORE picking this, and it is the one above stated for the
+  // picker: an unauthenticated pane LOOKS alive, because it is.
+  note: "you run `codex login` yourself — an un-authenticated pane waits on its sign-in screen and still probes alive",
+};
+
 // The probe is now PER SLOT (commsFor, one region below), which fixes a FACT that used to be a lie:
 // a healthy Pi pane answered "no-agent" on the owner poll, because the probe asked about claude —
 // `HARNESS_COMMS` is `["claude"]` whenever FLEET_CMD starts with claude, so the escape hatch named
@@ -460,7 +566,7 @@ const CONTAINER_HARNESS: Harness = {
 // path pastes prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, CONTAINER_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>

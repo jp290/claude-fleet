@@ -50,6 +50,23 @@ export async function run(lc: LaneCtx): Promise<void> {
     hcCmd.includes(`docker --context 'default' exec -it -w "$PWD" 'fleet' `), hcCmd.slice(-160));
   await post("/api/slots/7/kill", {});
   spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-container`], { cwd: REPO });
+  // ...and the ONE-CLICK lane route, which is a THIRD road to the same choice: /api/lanes picks the
+  // free slot itself, so the harness travels body → harnessIdOf → openLaneInSlot → openSlot without
+  // a slot id anywhere in it. The two routes are asserted separately on purpose — a harness dropped
+  // on one of them is invisible on the other, and invisible either way from the response, which is
+  // why the assertion is the PANE's command line rather than the 200.
+  const lnRes = await post("/api/lanes", { repo: REPO, harness: "codex", model: "gpt-5-codex" });
+  const lnJson = (await lnRes.json()) as { slot?: number; error?: string };
+  check("POST /api/lanes accepts a harness and a model for the codex adapter", lnRes.ok && !!lnJson.slot, JSON.stringify(lnJson));
+  if (lnJson.slot) {
+    const lnCmd = (await tmuxOut("display-message", "-p", "-t", `s${lnJson.slot}`, "#{pane_start_command}")).out;
+    check("a lane spawned with harness=codex runs codex, sandboxed, with --model in the measured form",
+      /(^|\s|;)codex --sandbox workspace-write --ask-for-approval never --model 'gpt-5-codex'/.test(lnCmd), lnCmd.slice(-160));
+    const lnSess = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
+    const lnBranch = lnSess.slots.find((x) => x.id === lnJson.slot)?.worktree?.branch ?? "";
+    await post(`/api/slots/${lnJson.slot}/kill`, {});
+    if (lnBranch) spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/${lnBranch}`], { cwd: REPO });
+  }
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
   // the copied .env is gitignored in the test repo, so it must NOT show as dirty — a fresh

@@ -453,6 +453,32 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("the container adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
     /\n  automatable: false,/.test(cBody) && /\n    transcript: false,/.test(cBody),
     cBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
+  // The same rule for the CODEX adapter, and it carries one clause the container's does not. Two of
+  // its three properties are absences that no runtime check can see on a suite fleet:
+  //   - `automatable: false` — every suite runs with FLEET_HARNESS_AUTOMATION off, so a wrongly
+  //     `true` field is indistinguishable from a right `false` at runtime. Same argument as above.
+  //   - `comms` NON-NULL — this is what strips the "unprobed" waiver. A `null` here would silently
+  //     defer to the fleet-wide HARNESS_COMMS, and on an undeclared FLEET_CMD that is the empty set,
+  //     i.e. every codex slot would read `unprobed` and no gate would ever hold it. The runtime row
+  //     (e2e/security.ts §6e) proves the probe HAPPENS; this proves it cannot stop happening.
+  //   - and the sandbox pair. codex ships --dangerously-bypass-approvals-and-sandbox, whose own help
+  //     calls it EXTREMELY DANGEROUS; whether a lane may run that way is an OWNER decision, and the
+  //     failure mode of getting it wrong is not a red check but an un-sandboxed agent nobody
+  //     re-read the literal to notice. Scoped to this adapter's own object literal, so the string
+  //     appearing in a comment elsewhere cannot satisfy or break it.
+  const xStart = server.indexOf("const CODEX_HARNESS: Harness = {");
+  const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
+  pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
+    xStart > 0 && xBody.length > 500 && xBody.length < 12_000, `${xBody.length} bytes`);
+  pin("the codex adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
+    /\n  automatable: false,/.test(xBody) && /\n    transcript: false,/.test(xBody),
+    xBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
+  pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
+    /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
+  pin("the codex spawn line keeps the sandbox and never reaches for the bypass flag (an owner decision, not an edit)",
+    /codex --sandbox workspace-write --ask-for-approval never/.test(xBody) && !/dangerously-bypass/.test(
+      xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")),
+    xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
   // ...and its docker is PINNED, never ambient — the rule guest-ctl.sh already states for the guest
   // containers ('Pinned, never ambient'). Stated over the whole file because the harm is a bare
   // `docker` ANYWHERE on this path, not only in the adapter literal: the active context is a user

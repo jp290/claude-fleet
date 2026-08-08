@@ -17,7 +17,7 @@ set -eu
 
 if [ "$(id -u)" = "0" ]; then
   if [ "${FLEET_FIREWALL:-0}" = "1" ]; then
-    /usr/local/bin/guest-firewall.sh
+    /usr/local/bin/container-firewall.sh
   else
     echo "docker-entrypoint: running as root WITHOUT FLEET_FIREWALL=1 — no egress rules applied" >&2
   fi

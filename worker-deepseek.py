@@ -19,7 +19,7 @@ Two things it does NOT do, both deliberate:
 
 The key is read from a 0600 file OUTSIDE the repository (this file is public). Never an
 argument: an argv value is visible in `ps` to every process on the machine, which is the
-same reason guest-ctl.sh takes its token on stdin.
+same reason a credential never travels in argv.
 """
 import json
 import os

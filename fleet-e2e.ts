@@ -37,7 +37,6 @@ import * as restart from "./e2e/restart";
 import * as stewardCore from "./e2e/steward-core";
 import * as stewardOutcomes from "./e2e/steward-outcomes";
 import * as security from "./e2e/security";
-import * as guest from "./e2e/guest";
 import * as verifyQueue from "./e2e/verify-queue";
 import * as deployFacts from "./e2e/deploy-facts";
 import * as errors from "./e2e/errors";
@@ -113,13 +112,8 @@ await intake.run(ctx);
 // --- file permissions, kill semantics, restart persistence, the audit log ---
 await restart.run(ctx);
 
-// --- the guest ops hook: the closed verb set and its owner-only position. Sits next to restart.run
-// because it too restarts srv several times (to turn FLEET_GUEST_CMD on and off again), and it
-// leaves the server unconfigured, exactly as it found it.
-await guest.run();
-
 // --- the verify gate made visible: the suite mutex projected on /api/sessions, and the phases
-// lanes report about their own gate runs. Next to guest.run() for the same reason — it too points
+// lanes report about their own gate runs. Next to restart.run() for the same reason — it too points
 // the server at a knob for a few checks (its own private lock dir) and restarts srv back to the
 // wrapper's env afterwards, so it must not sit between two sections sharing a live fixture.
 await verifyQueue.run();

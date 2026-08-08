@@ -135,11 +135,6 @@ while true; do
     # it permits ("waited 15 min, never started") is a true sentence about the machine, and the one
     # it replaces was a false sentence about a lane's work.
     #
-    # FLEET_GUEST_CMD is the guest ops hook (briefs/guest-ops-panel.md). Pointing it at the script
-    # is the whole configuration: the server gains GET /api/guest and four verbs, the info card
-    # gains its buttons, and neither knows what a guest IS. Remove the variable and the feature
-    # disappears — routes 404, no buttons. The script needs ~/.claude-fleet-guest/expose.env to do
-    # anything; without it `status` still answers honestly (vm absent, nothing exposed).
     # FLEET_HARNESS_AUTOMATION=1 — owner decision 2026-08-07. It admits UNATTENDED paths to a slot
     # running a non-default harness (scheduled autos, dispatch, steward sends, done-looking →
     # /api/self/watch and auto-③), and only for an adapter that also declares `automatable: true`
@@ -150,7 +145,7 @@ while true; do
     # harness (verified against fleet.json), so it arms a capability rather than changing behaviour.
     # Turning it back off is this one word; nothing else depends on it.
     if tmux -L claudefleet new-session -d -s srv \
-      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_VERIFY_WAIT_MS=900000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 FLEET_GUEST_CMD='$FLEET_DIR/guest-ctl.sh' exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=300000 FLEET_VERIFY_WAIT_MS=900000 FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_ANALYSIS_MS=0 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=2 exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

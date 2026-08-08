@@ -588,20 +588,19 @@ const CONTAINER_NAME = (() => {
   return c && CONTAINER_NAME_RE.test(c) ? c : "fleet";
 })();
 // ...and WHICH DOCKER. This is not decoration and it is not defensive: `docker` on this machine
-// resolves through a CONTEXT, the current one is a user setting, and it is measured (2026-08-08)
-// that the active context here is `colima-fleetguest` — the VM holding two RUNNING guest
-// containers with other people's live sessions. An unpinned `docker exec` would therefore not have
-// picked "some" daemon, it would have picked exactly that one, and it would change under the
-// operator's feet the next time they switch. guest-ctl.sh already solved this and states the rule
-// ('Pinned, never ambient', its slot_conf/d()); this borrows the pattern rather than reinventing it.
+// resolves through a CONTEXT, the current one is a USER SETTING, and it was measured (2026-08-08)
+// that a dev box can carry several — a colima VM per purpose, each with its own running
+// containers. An unpinned `docker exec` therefore does not pick "some" daemon, it picks whichever
+// one the operator last switched to, and it changes under their feet when they switch again.
+// Pinned, never ambient.
 //
 // The DEFAULT is `default` on purpose, and it is the one place this adapter refuses to decide for
-// the owner: which VM a slot container belongs in is a resource decision with consequences (the
-// fleetguest profile is 2 CPU / 2 GiB shared with the guests), not a formality. `default` is the
-// neutral answer — it can never silently land in the guests' VM, and on a machine where that
-// socket is dead the pane shows docker's own "cannot connect" instead. Note the coupling that
-// follows: an IMAGE lives in one daemon, so whichever context is pinned must be the one the image
-// was built in (`claude-fleet:guest` exists on colima-fleetguest and nowhere else).
+// the owner: which VM a slot container belongs in is a resource decision with consequences (a
+// colima profile is a fixed CPU/RAM budget shared by everything in it), not a formality. `default`
+// is the neutral answer — it can never silently land in a VM the owner meant for something else,
+// and on a machine where that socket is dead the pane shows docker's own "cannot connect" instead.
+// Note the coupling that follows: an IMAGE lives in one daemon, so whichever context is pinned
+// must be the one the image was built in.
 const CONTAINER_CONTEXT = (() => {
   const c = process.env.FLEET_CONTAINER_CONTEXT;
   return c && CONTAINER_CONTEXT_RE.test(c) ? c : "default";
@@ -624,10 +623,10 @@ const CONTAINER_CONTEXT = (() => {
 // container is therefore a visible docker error in the pane, followed by `exec $SHELL` — the pane
 // survives and shows what is wrong, rather than a slot that looks open and is not.
 //
-// AND THE MOUNT IS THE OPPOSITE OF THE GUEST PROTOTYPE'S, which is the one thing not to copy from
-// it. A guest container (guest-ctl.sh `provision`) hangs off three NAMED VOLUMES — state, work and
-// .claude — precisely because they survive `docker rm`: that persistence IS the guest's identity,
-// and the whole point is that their work is not the owner's tree. Here the requirement inverts. The
+// AND THE MOUNT IS THE OPPOSITE OF WHAT AN ISOLATED INSTANCE WANTS, which is the one shape not to
+// copy here. An instance meant to hold its own separate world hangs off NAMED VOLUMES — state,
+// work and .claude — precisely because they survive `docker rm`: that persistence IS its identity,
+// and the whole point is that its work is not the owner's tree. Here the requirement inverts. The
 // worktree must BE the host worktree, bind-mounted, because every number Fleet reports about this
 // slot comes from `git -C <worktree>` on the HOST: ahead, dirty, doneLooking, the diff, the land
 // path. On a named volume those would still be computed, still be shown, and describe a tree nobody
@@ -11879,56 +11878,6 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   return null;
 }
 
-// ── guest ops ────────────────────────────────────────────────────────────────────────────────
-// One configured command with verbs, and this file learns nothing about colima, Docker, tunnels
-// or audit files (briefs/guest-ops-panel.md). Unset → the feature does not exist: the routes 404
-// and the client draws no buttons, which is the same available-but-off shape as DISPATCH_REPO.
-const GUEST_CMD = process.env.FLEET_GUEST_CMD ?? "";
-// The verb reaches an argv, so it is a CLOSED SET validated at the boundary — the same treatment
-// as MODEL_RE, and never a passthrough. It is also spawned as argv, not through `sh -c`: even a
-// verb that got past this set could not become a second command. `status` is the GET; these are
-// the writes. `stop` is here rather than being the panic button on purpose — `cut` is the one you
-// reach for under attack, because it severs the attacker without destroying the guest's work.
-const GUEST_ACTIONS = new Set(["start", "cut", "stop", "renew"]);
-const GUEST_RENEW_MAX_DAYS = 30; // a renew button, not a lease negotiation
-// Guests are slots on the operator's disk (one directory each). The id reaches an argv, so it gets
-// the same treatment as the verb: a closed range validated here, never a passthrough.
-const GUEST_MAX_SLOT = 9;
-function guestSlot(v: unknown): number | null {
-  const n = typeof v === "string" ? Number(v) : v;
-  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= GUEST_MAX_SLOT ? n : null;
-}
-// One at a time. `start` takes tens of seconds (a VM boots), and a double-tap must not race two
-// of them — the second press is told no rather than queued.
-let guestBusy = false;
-async function runGuest(args: string[], stdin?: string): Promise<{ exit: number; out: string; timedOut: boolean }> {
-  let p: Bun.Subprocess<"ignore" | "pipe", "pipe", "pipe">;
-  try {
-    // a credential goes in on STDIN and never in argv — argv is world-readable in `ps` for the
-    // lifetime of the call, and the only thing this hook is ever handed is somebody's subscription
-    p = stdin === undefined
-      ? Bun.spawn([GUEST_CMD, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
-      : Bun.spawn([GUEST_CMD, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    if (stdin !== undefined && typeof p.stdin === "object" && p.stdin !== null) {
-      p.stdin.write(stdin);
-      await p.stdin.end();
-    }
-  } catch (e) {
-    // a mistyped or non-executable FLEET_GUEST_CMD is an operator error, and it must read as one
-    // rather than as a 500 — this is the most likely way the feature is ever misconfigured
-    return { exit: -1, out: `guest hook could not be started: ${e instanceof Error ? e.message : String(e)}`, timedOut: false };
-  }
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; try { p.kill(); } catch {} }, VERIFY_TIMEOUT_MS);
-  try {
-    const out = await new Response(p.stdout).text();
-    const err = await new Response(p.stderr).text();
-    const exit = await p.exited;
-    return { exit, out: `${out}${err}`.trim().slice(0, 4_000), timedOut };
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 Bun.serve<WSData>({
   hostname: HOST,
@@ -12539,7 +12488,7 @@ Bun.serve<WSData>({
       });
     }
     // the rows behind the poll's error counter, newest signature first. NOT in the 2 s poll, the
-    // same rule /api/guest states for itself: the summary rides the poll, the list is fetched on
+    // the same rule the guest ops panel stated for itself: the summary rides the poll, the list is fetched on
     // the click that asks for it. Owner-only by position (past tokenGate) — a message can quote a
     // path or a git error, which is the owner's own machine talking.
     if (url.pathname === "/api/errors" && req.method === "GET") {
@@ -12726,101 +12675,6 @@ Bun.serve<WSData>({
       const lanes = [...byBranch.values()]
         .sort((a, b) => (a.live === null ? 1 : 0) - (b.live === null ? 1 : 0) || b.ts - a.ts);
       return json({ lanes: lanes.slice(0, 500), total: lanes.length });
-    }
-    // ── guest ops (briefs/guest-ops-panel.md) ──────────────────────────────────────────────
-    // Owner-only by POSITION, the same property /api/file has and the same one a later block move
-    // would silently break: this sits past tokenGate, BELOW the SHARE_HOSTS gate (so the public
-    // tunnel 404s it even with a valid owner token) and BELOW the steward gate (a steward token
-    // is answered there and never arrives here; a lane's self token is not the owner token, so it
-    // dies at tokenGate with a 401). Nothing below is reachable without FLEET_GUEST_CMD.
-    //
-    // NOT in the 2s poll on purpose: /api/sessions is the endpoint data-saver.md shrank, and a
-    // subprocess per poll would put back exactly what was removed. The client calls this when the
-    // info card opens and after each action — nothing else ever calls it.
-    if (url.pathname === "/api/guest" && req.method === "GET") {
-      if (!GUEST_CMD) return new Response("not found", { status: 404 });
-      const r = await runGuest(["status"]);
-      if (r.timedOut || r.exit !== 0) return json({ error: "guest status failed", out: r.out }, 502);
-      try {
-        return json({ configured: true, ...(JSON.parse(r.out) as Record<string, unknown>) });
-      } catch {
-        // the hook is the operator's own script: say the output was unreadable, never guess a state
-        return json({ error: "guest status: output was not JSON", out: r.out }, 502);
-      }
-    }
-    // the invite: address + the guest instance's own owner token, to hand to the person being
-    // invited. A SEPARATE route from the status above, and that separation is the point — status
-    // is read on every card open and after every action, so a credential riding along on it would
-    // be a credential in every log that captures one. This is fetched only when the owner asks.
-    if (url.pathname === "/api/guest/link" && req.method === "GET") {
-      if (!GUEST_CMD) return new Response("not found", { status: 404 });
-      // absent means slot 1, the same default the actions take — a caller that names no guest
-      // means the original one, and only a slot that is PRESENT and wrong is an error
-      const slot = guestSlot(url.searchParams.get("slot") ?? 1);
-      if (slot === null) return json({ error: `slot must be a whole number from 1 to ${GUEST_MAX_SLOT}` }, 400);
-      const r = await runGuest(["link", String(slot)]);
-      if (r.timedOut || r.exit !== 0) return json({ error: "guest link failed", out: r.out }, 502);
-      try {
-        return json(JSON.parse(r.out) as Record<string, unknown>);
-      } catch {
-        return json({ error: "guest link: output was not JSON" }, 502);
-      }
-    }
-    // GIVE a guest the Claude credential its panes need — the other half of the invite. Its own
-    // route, not a member of GUEST_ACTIONS, because it is the only one that carries a secret IN:
-    // it never appears in argv (see runGuest), it is never echoed back, and it is never audited
-    // beyond the fact that it happened. Shape-checked before it is passed on, so a typo cannot
-    // silently recreate a container around a garbage credential.
-    if (url.pathname === "/api/guest/claude-token" && req.method === "POST") {
-      if (!GUEST_CMD) return new Response("not found", { status: 404 });
-      const body = await readJson(req);
-      const slot = guestSlot(body?.slot ?? 1);
-      if (slot === null) return json({ error: `slot must be a whole number from 1 to ${GUEST_MAX_SLOT}` }, 400);
-      const tok = typeof body?.token === "string" ? body.token.trim() : "";
-      if (!/^sk-ant-oat[A-Za-z0-9._-]{16,400}$/.test(tok))
-        return json({ error: "expected a `claude setup-token` value (sk-ant-oat…)" }, 400);
-      if (guestBusy) return json({ error: "a guest action is already running" }, 409);
-      guestBusy = true;
-      try {
-        const r = await runGuest(["claude-token", String(slot)], tok);
-        const ok = !r.timedOut && r.exit === 0;
-        audit("guest_action", undefined, `claude-token:${ok ? "ok" : r.timedOut ? "timeout" : `exit ${r.exit}`}`);
-        // the hook prints a confirmation, never the value — but strip defensively anyway
-        const out = r.out.replaceAll(tok, "«token»");
-        return json({ ok, verb: "claude-token", exit: r.exit, timedOut: r.timedOut, out }, ok ? 200 : 502);
-      } finally {
-        guestBusy = false;
-      }
-    }
-    const guestAct = /^\/api\/guest\/([a-z]+)$/.exec(url.pathname);
-    if (guestAct && req.method === "POST") {
-      if (!GUEST_CMD) return new Response("not found", { status: 404 });
-      const verb = guestAct[1] ?? "";
-      if (!GUEST_ACTIONS.has(verb)) return json({ error: `unknown guest verb: ${verb}` }, 400);
-      const body = await readJson(req);
-      // which guest. Same treatment as the verb: a closed numeric range checked here, passed as
-      // its own argv element, never interpolated — it names a directory on the operator's disk.
-      const slot = guestSlot(body?.slot ?? 1);
-      if (slot === null) return json({ error: `slot must be a whole number from 1 to ${GUEST_MAX_SLOT}` }, 400);
-      const args = [verb, String(slot)];
-      if (verb === "renew") {
-        // the only operand any verb takes, and it is a number or it is refused — a renew that
-        // accepted a string would hand the script's argv to whoever can reach this route
-        const days = body?.days ?? 7;
-        if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > GUEST_RENEW_MAX_DAYS)
-          return json({ error: `days must be a whole number from 1 to ${GUEST_RENEW_MAX_DAYS}` }, 400);
-        args.push(String(days));
-      }
-      if (guestBusy) return json({ error: "a guest action is already running" }, 409);
-      guestBusy = true;
-      try {
-        const r = await runGuest(args);
-        const ok = !r.timedOut && r.exit === 0;
-        audit("guest_action", undefined, `${verb}:${ok ? "ok" : r.timedOut ? "timeout" : `exit ${r.exit}`}`);
-        return json({ ok, verb, exit: r.exit, timedOut: r.timedOut, out: r.out }, ok ? 200 : 502);
-      } finally {
-        guestBusy = false;
-      }
     }
     // the transport ledger (see the TRANSPORT region): bytes actually sent since boot, per peer
     // and per path. Its OWN route on purpose — /api/sessions is the endpoint being shrunk and is

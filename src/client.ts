@@ -3753,7 +3753,8 @@ function appendSpawnOptions(host: HTMLElement): void {
 
   host.appendChild(row);
   // the caveat a harness states about ITSELF, shown before it is ever spawned rather than
-  // discovered afterwards — for Pi that is "no sandbox", i.e. no permission layer at all.
+  // discovered afterwards — for Pi that is the shape of its write fence, and what the fence does
+  // NOT cover (reads, network), which is the half an owner has to weigh before picking it.
   if (chosen?.note) host.appendChild(el("div", "pkdwarn", `${chosen.id}: ${chosen.note}`));
 }
 

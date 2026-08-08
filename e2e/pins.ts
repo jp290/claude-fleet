@@ -610,6 +610,33 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     /codex --sandbox workspace-write --ask-for-approval never/.test(xBody) && !/dangerously-bypass/.test(
       xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")),
     xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
+  // The PI adapter's fence, and it is a rule over the SOURCE for the reason the codex sandbox pin
+  // gives one line up: the failure mode of losing it is not a red check anywhere, it is an
+  // un-fenced agent that behaves exactly like the fenced one until the day it writes outside its
+  // lane. e2e/lanes-basic.ts runs the profile and proves it FENCES; this proves the spawn line
+  // cannot stop carrying one. Two clauses, because they are two different regressions:
+  //   - no bare `pi` — every path out of spawnCmd either goes through sandbox-exec or starts no
+  //     agent at all. An `if` added above the fence that returns the old line would compile.
+  //   - the FAIL-CLOSED branch. A profile that cannot be built must not degrade to "spawn it
+  //     anyway"; without PI_FENCE_FAILED on that path the degradation is silent and looks healthy.
+  const pStart = server.indexOf("const PI_HARNESS: Harness = {");
+  const pBody = pStart < 0 ? "" : server.slice(pStart, server.indexOf("\n};\n", pStart));
+  pin("the pi adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
+    pStart > 0 && pBody.length > 500 && pBody.length < 12_000, `${pBody.length} bytes`);
+  const pSpawn = pBody.slice(pBody.indexOf("spawnCmd: (o) => {"), pBody.indexOf("worker: () => null"));
+  const pCode = pSpawn.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("every pi spawn line runs the agent inside sandbox-exec, or runs no agent at all",
+    /sandbox-exec -p "\$FLEET_PI_SB" \$\{cmd\}/.test(pCode) && !/\$\{PATH_EXPORT\}\$\{cmd\}/.test(pCode),
+    pCode.match(/return `[^`]*`/g)?.join(" | ").slice(0, 200) ?? "no return");
+  pin("a pi fence that cannot be built starts no pi — the refusal is loud, not a fall-through",
+    /if \(!profile\) return[^\n]*PI_FENCE_FAILED/.test(pCode), pCode.match(/if \(!profile\)[^\n]*/)?.[0] ?? "no fail-closed branch");
+  // ...and the doctrine clause, which is the one a well-meaning edit would remove first: a lane that
+  // cannot commit looks broken, and re-granting `.git` is the obvious "fix". It is not one — the
+  // host commits (POST /api/slots/:id/commit), owner decision 2026-08-08.
+  const pProf = server.slice(server.indexOf("function piSandboxProfile("), server.indexOf("const PI_FENCE_FAILED"));
+  pin("the pi fence denies .git back — the lane produces, the host commits",
+    /deny file-write\* \$\{sub\(`\$\{root\}\/\.git`\)\}/.test(pProf), pProf.match(/deny file-write\*[^\n]*/g)?.join(" | ") ?? "no deny clause");
+
   // --- the WORKER spawn, and why it is a rule over the source rather than a test -----------------
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
   // and which the sibling pin above states "names no harness" for the dispatcher) and

@@ -35,6 +35,76 @@ export async function run(lc: LaneCtx): Promise<void> {
   const hwCmd = (await tmuxOut("display-message", "-p", "-t", "s7", "#{pane_start_command}")).out;
   check("a lane spawned with harness=pi actually runs pi, with its session pinned and effort passed",
     /(^|\s|;)pi --session-id [0-9a-f-]{36}\b/.test(hwCmd) && hwCmd.includes("--thinking high"), hwCmd.slice(-160));
+  // ...and it runs it INSIDE a write fence. Two claims, kept apart because they fail apart: that
+  // the line is shaped like a fence, and that the fence the line actually carries FENCES. Only the
+  // second is worth anything, and it is the reason this section runs the profile rather than
+  // reading it — a profile that grants everything would pass any assertion about its text.
+  //
+  // The profile is lifted out of the pane's own command line, not rebuilt here: a copy would be a
+  // second implementation, and the failure mode that matters is precisely a server that stops
+  // emitting the fence. Backslashes stripped for the same reason the container line above strips
+  // them (tmux escapes `"` and `$` for display) — safe because SANDBOX_PATH_RE admits no backslash,
+  // so the profile can never legitimately contain one.
+  // De-escaped ONCE and used for every clause below. Splitting that was this check's own first red:
+  // the profile came out of the stripped copy while the assertion next to it read the RAW one,
+  // where tmux renders the same words as `-p \"\$FLEET_PI_SB\"` — so the check failed while the
+  // four canary checks under it all passed, which is the signature of a broken probe rather than a
+  // broken fence.
+  const hwFlat = hwCmd.replaceAll("\\", "");
+  const piSb = /FLEET_PI_SB='([^']*)'/.exec(hwFlat)?.[1] ?? "";
+  check("the pi lane's spawn line carries a sandbox-exec write fence and starts no bare pi",
+    piSb.startsWith("(version 1)") && /if sandbox-exec -p "\$FLEET_PI_SB" \/usr\/bin\/true/.test(hwFlat)
+      && !/(^|\s|;)pi --session-id/.test(hwFlat.slice(0, hwFlat.indexOf("sandbox-exec"))), piSb.slice(0, 120));
+  // The canary, and its first duty is to be able to fail AS ITSELF. Two ways it could silently not
+  // run — no lane on disk, or no profile extracted — and neither may look like a pass: an empty
+  // `-p` argument would make sandbox-exec run the command UNFENCED, i.e. the writes below would all
+  // succeed and read as "the fence is gone" rather than "nothing was measured". So both collapse to
+  // a marker string that no assertion here accepts.
+  //
+  // The lane path is resolved through exists() for the reason stated at the top of this file: a
+  // bare realpathSync on a lane that failed to spawn throws while evaluating a check()'s ARGUMENTS
+  // and takes every later result in the suite with it. One missing lane must cost these four
+  // checks, not the run.
+  const piWtRaw = `${REPO}.worktrees/e2e-lane-pi`;
+  const piWt = exists(piWtRaw) ? realpathSync(piWtRaw) : "";
+  const sb = (sh: string, fenced = true): string => {
+    if (!piWt || (fenced && !piSb)) return "PROBE-DID-NOT-RUN";
+    const r = fenced
+      ? spawnSync("sandbox-exec", ["-p", piSb, "/bin/sh", "-c", sh], { encoding: "utf8" })
+      : spawnSync("/bin/sh", ["-c", sh], { encoding: "utf8" });
+    return `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `spawn:${r.error.message}` : ""}`;
+  };
+  // OUTSIDE must be outside every writable root, which rules out the obvious choices: ROOT and the
+  // lane both sit under $TMPDIR on this machine, and $TMPDIR is granted. /private/var/tmp is not
+  // /tmp and not $TMPDIR, so it is genuinely beyond the fence while still being scratch space.
+  const outside = `/private/var/tmp/fleet-e2e-pi-canary-${process.pid}`;
+  const inside = sb(`echo x > '${piWt}/canary' && echo WROTE`);
+  check("canary: the fenced agent MAY write inside its own lane", inside.includes("WROTE"), inside.trim().slice(0, 160));
+  const denied = sb(`echo x > '${outside}'`);
+  check("canary: a write outside the lane is refused MECHANICALLY, not politely",
+    denied.includes("Operation not permitted"), denied.trim().slice(0, 160) || "(no output — nothing was refused)");
+  // The control, without which the two above measure nothing: the SAME probe at the SAME path has
+  // to succeed unfenced. A probe that could never write there would look identical to a fence.
+  const control = sb(`echo x > '${outside}' && echo WROTE`, false);
+  check("canary control: the identical probe DOES write there without the fence", control.includes("WROTE"), control.trim().slice(0, 160));
+  rmSync(outside, { force: true });
+  // ...and `.git` back off, which is the owner doctrine the fence encodes: the lane produces, the
+  // host commits. Asserted separately from the outside-write because it is a different clause of
+  // the profile and a widening of the writable set would leave the one above green.
+  //
+  // The TARGET is `.git` itself, not a path under it, and that is a measured correction rather than
+  // a style choice: in a linked worktree `.git` is a FILE, so `.git/canary` comes back "Not a
+  // directory" — the probe would fail for a reason that has nothing to do with the fence and read
+  // as a pass for the wrong one. `subpath` covers the path itself, so this clause holds for both
+  // the file and the directory form. Non-destructive when the fence works (measured: the deny
+  // precedes truncation, the file's content is intact afterwards); when it does not, this check is
+  // red and the lane is torn down on the next line anyway.
+  //
+  // Its control is the in-lane write two checks up: writes under this same root DO succeed, so a
+  // refusal at this one path is attributable to the deny clause and to nothing else.
+  const gitDenied = sb(`echo x > '${piWt}/.git'`);
+  check("canary: .git is denied INSIDE the writable root — the lane produces, the host commits",
+    gitDenied.includes("Operation not permitted"), gitDenied.trim().slice(0, 160) || "(no output — nothing was refused)");
   await post("/api/slots/7/kill", {});
   spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-pi`], { cwd: REPO });
   // ...and the same road for the container harness, which is the one where the lane path MATTERS:

@@ -86,6 +86,29 @@ den Griff ausführt.
 **Schwelle:** die ersten 10 automatischen Deploys je mit grüner Selbstverifikation; ein
 einziger Deploy, der `bootHead != HEAD` hinterlässt und es NICHT meldet, stoppt das Verb.
 
+**GEBAUT 2026-08-08** — `POST /api/deploy` + `GET /api/deploys` (Owner und Steward; `server.ts`,
+grep `VERB 2, DEPLOY`). Der harte Kern stand nicht in der Bauform oben und ist die eigentliche
+Konstruktion: **das Verb tötet seinen eigenen Verifizierer.** `tmux kill-session -t srv` beendet den
+Prozess, der die Route bedient — eine Selbstverifikation NACH dem Kill kann dieser Prozess
+strukturell nicht mehr ausführen. Gelöst in drei Teilen, jeder einzeln geprüft
+(`e2e/deploy-facts.ts` §5):
+
+1. **Die Antwort ist nie `ok:true`.** Ein laufender Deploy antwortet 202 mit
+   `ok:null, stage:"restarting"` — „noch nicht verifiziert", ausgesprochen. Ein `ok:true` an dieser
+   Stelle WÄRE das stille Scheitern, das das Verb abschafft, nur als Erfolg verkleidet.
+2. **Der Verifizierer ist der NÄCHSTE BOOT.** Vor dem Kill liegt ein durabler Marker
+   (`deploy-inflight.json`) auf Platte; der Prozess, der hochkommt, liest ihn, vergleicht
+   `deployGap`/`bundleStale` und schreibt das Urteil nach `deploys.jsonl`. Dreiwertig: `false` =
+   gemessener Fehlschlag, `null` = nicht feststellbar, und keines wird je zu einem Pass geglättet.
+3. **Der Build läuft zuerst und allein** — die eine Phase, die der lebende Prozess selbst beurteilen
+   kann. Ein fehlgeschlagener Build kommt am Kill nicht vorbei.
+
+Die Vorbedingung prüft das Verb selbst: bei laufendem Post-Land-Audit **409 mit Grund**, kein Warten
+und kein Kill (geprüft in `fleet-e2e-postland-audit.ts` (I.1b) — der einzigen Suite, in der
+`runningPostLandAudit` überhaupt gesetzt sein kann). **Von keinem Tick aufgerufen**: es ist eine
+Route und nur eine Route, dieselbe Linie wie beim Landen. Wer sie zieht — und ob je etwas
+Unbeaufsichtigtes —, bleibt Owner-Entscheid; die Schwelle oben ist damit noch nicht angefangen.
+
 ## Verb 3 — Auto-Promote, das eine neue Glied
 
 Ein Tick befördert `pending → queued` für Tasks mit **allen** vier Eigenschaften:

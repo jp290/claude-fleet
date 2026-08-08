@@ -87,7 +87,10 @@ Gruppen nach **Kollisionsfläche**, nicht nach Thema (Begründung: `HANDOFF.md` 
 Login des Owners**) · Brief `pi-adapter-2026-08-06.md` ist der Beleg dazu, keine offene Arbeit.
 
 ### G6 · Autonomie: Verben 2–5 + Rückkanal
-Verb 2 Deploy (**`api/deploy` kommt 0× vor** — ungebaut) · Verb 3 Auto-Promote · Verb 4 Steward
+~~Verb 2 Deploy~~ **gebaut 2026-08-08** (`POST /api/deploy` + `GET /api/deploys`, Owner und
+Steward; Build vor dem Kill, Verdikt vom NÄCHSTEN BOOT über einen Marker auf Platte, Ablehnung
+bei laufendem Post-Land-Audit. **Von keinem Tick aufgerufen** — wer sie zieht, bleibt
+Owner-Entscheid) · Verb 3 Auto-Promote · Verb 4 Steward
 auf neuen Schienen (Steward ist **unbesetzt**) · Verb 5 Auto-Land · Map **G** (Inbox, bewusst
 zuletzt) · Queue `1981be9a` (Autonomie-Bausteine, in Flug beim Owner) · `0be58694`
 (Entscheidungsnotiz, kein Auftrag).

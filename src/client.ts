@@ -4399,7 +4399,7 @@ function tintProject(node: HTMLElement, key: string | null) {
 // go stale, so there is nothing to migrate.
 interface Stack {
   key: string;                // canonical repo path — also the colour key
-  anchor: ActiveSlot | null;  // lowest-id non-lane session in the repo; null = orphaned lanes only
+  anchor: ActiveSlot | null;  // most recently active non-lane session; null = orphaned lanes only
   lanes: ActiveSlot[];
   at: number;                 // the slot position the whole stack renders at
 }
@@ -4457,7 +4457,16 @@ function stacksOf(): Map<string, Stack> {
     let g = m.get(key);
     if (!g) { g = { key, anchor: null, lanes: [], at: s.id }; m.set(key, g); }
     if (s.worktree) g.lanes.push(s);
-    else if (!g.anchor) g.anchor = s; // fleet is id-ordered, so the first one found is the lowest
+    // The anchor is the repo's MOST RECENTLY ACTIVE main session, not its lowest id. A stack of
+    // worktrees belongs under the session you are actually working in; picking the lowest id put
+    // it under whichever main session happened to be started first, which is a long-dead pane as
+    // often as not. lastOutput already rides the 2 s poll (SlotInfo), so this costs no request.
+    // The tie is decided HERE and not by the iteration order: two sessions that have produced
+    // nothing yet both read lastOutput 0, and an anchor that jumps between renders is worse than
+    // one that stands still — on equal recency the LOWER id wins, i.e. the old behaviour.
+    else if (!g.anchor
+      || s.lastOutput > g.anchor.lastOutput
+      || (s.lastOutput === g.anchor.lastOutput && s.id < g.anchor.id)) g.anchor = s;
   }
   for (const [k, g] of m) {
     if (!g.lanes.length) { m.delete(k); continue; }

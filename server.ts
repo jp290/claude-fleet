@@ -4564,12 +4564,19 @@ function transcriptFile(s: Slot): string | null {
   if (s.sessionId) {
     const pinned = `${dir}/${s.sessionId}.jsonl`;
     if (existsSync(pinned)) return pinned;
+    // Identity is stronger than either pane-time proposal. An age fence would need a tmux
+    // session_created read (and a cache on this 2 s poll path); a young-pane grace period would
+    // only make the wrong answer less likely after N seconds. Fleet itself passed this UUID to
+    // this pane, so a differently named file cannot be its conversation at ANY age. Until claude
+    // writes the pinned file, null is the honest answer. This keeps the mtime fallback solely for
+    // the case it exists to serve — adopted/pre-pinning panes, which have no sessionId at all —
+    // and needs neither a hot-path subprocess nor a guessed time window.
+    return null;
   }
   // adopted or pre-session-pinning slot: newest transcript in this cwd's project dir.
   // Excluded: transcripts pinned to OTHER slots (several slots can share a cwd), the
   // summarizer's throwaway transcripts (see above), and — since the slug is lossy — any file
-  // that does not name THIS cwd as its own (transcriptCwd, above). Pinned ids make this exact
-  // for every pane created from now on.
+  // that does not name THIS cwd as its own (transcriptCwd, above).
   const pinnedElsewhere = new Set<string>();
   for (const o of slots) if (o !== s && o.sessionId) pinnedElsewhere.add(`${o.sessionId}.jsonl`);
   try {

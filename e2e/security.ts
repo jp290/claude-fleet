@@ -18,7 +18,8 @@
 // Plus the invariants whose only statement today is a code comment: credentials are revoked when
 // a slot dies or is recycled (`server.ts` ~1147), and no secret reaches the audit log or any
 // non-owner-readable payload.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 
@@ -417,13 +418,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
     cat.harnesses.map((h) => h.id).join(","));
   // the caveat is part of the contract, not a UI string: an owner picks this harness from it. What
-  // it must state is BOTH halves of the fence Fleet now spawns Pi behind — that writes are confined
-  // (and therefore that commits are the host's job) and that reads and the network deliberately are
-  // not. A note that advertised only the fence would read as "isolated", which is the one wrong
-  // impression an owner must not take into the pick.
+  // it must state BOTH halves of the fence Fleet now spawns Pi behind: writes include shared roots
+  // besides the worktree (and commits are the host's job), while reads and the network deliberately
+  // remain open. Calling this "only its own worktree" would conceal cross-slot writable state.
   const piNote = pi?.note ?? "";
-  check("§6 the pi adapter states its write fence AND what the fence does not cover, at pick time",
-    /write fence/.test(piNote) && /host commits/.test(piNote) && /reads and network stay open/.test(piNote), piNote);
+  check("§6 the pi adapter names its shared write roots AND what the fence does not cover, at pick time",
+    /write fence/.test(piNote) && /shared temp/.test(piNote) && /~\/\.pi/.test(piNote)
+    && /Bun cache/.test(piNote) && /\/dev/.test(piNote) && /lane \.git closed/.test(piNote)
+    && /host commits/.test(piNote) && /reads and network stay open/.test(piNote), piNote);
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
   for (const h of ["pi", "claude", "codex"]) {
@@ -448,6 +450,55 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     /--session-id [0-9a-f-]{36}\b/.test(gcmd), gcmd.slice(-160));
   check("§6 the pi spawn line carries the effort level as --thinking", gcmd.includes("--thinking low"), gcmd.slice(-160));
   check("§6 ...and it spawns pi, not the fleet's FLEET_CMD", /(^|\s|;)pi --session-id/.test(gcmd), gcmd.slice(-160));
+
+  // Execute the profile rather than trusting its text. This root is what makes `bunx tsc` usable
+  // in a Pi lane: Bun writes packages under ~/.bun/install/cache even though its denial says
+  // "tempdir". The extraction is its OWN fixture check so a missing profile cannot make all three
+  // filesystem rows read like fence failures. The lane write is the positive control for the
+  // outside-home denial; a profile that simply allowed every write would fail that denial row.
+  // De-escaped FIRST, for the reason e2e/lanes-basic.ts already carries in full: tmux renders `"`
+  // and `$` escaped in pane_start_command, so the raw string yields `(subpath \"/path\")` and SBPL
+  // reads the backslash-quote as an unbound variable. Stripping backslashes is safe here because
+  // SANDBOX_PATH_RE admits none, so a legitimate profile can never contain one. This exact trap was
+  // that check's first red and then this one's — hence the executable fixture below rather than a
+  // second textual assertion.
+  const gcmdFlat = gcmd.replaceAll("\\", "");
+  const fenceMatch = gcmdFlat.match(/FLEET_PI_SB='([^']+)'/);
+  const fenceProfile = fenceMatch?.[1] ?? "";
+  // The fixture's whole job is to fail AS ITSELF, and text cannot do that: `(version 1)` and
+  // `(deny file-write*)` contain no quote, so both survive the mangling above and three fence
+  // claims fail instead of the one probe that broke. So the fixture EXECUTES the profile on
+  // /usr/bin/true — the same self-test the server runs before it starts pi at all (server.ts, the
+  // `sandbox-exec -p "$FLEET_PI_SB" /usr/bin/true` clause). A profile SBPL will not accept fails
+  // here, once, by name.
+  const fenceUsable = fenceProfile
+    ? spawnSync("sandbox-exec", ["-p", fenceProfile, "/usr/bin/true"], { encoding: "utf8" })
+    : null;
+  check("§6 fence fixture: the Pi spawn line exposes one SBPL profile that sandbox-exec accepts",
+    fenceProfile.startsWith("(version 1)") && fenceProfile.includes("(deny file-write*)")
+    && fenceUsable?.status === 0, `${fenceProfile.slice(0, 90)} | ${String(fenceUsable?.status)} ${fenceUsable?.stderr.trim() ?? ""}`);
+  // gated on USABLE, not merely present: a profile sandbox-exec rejects makes every probe below
+  // exit non-zero, which reads as "the fence denies everything" when nothing was measured at all.
+  if (fenceUsable?.status === 0) {
+    const nonce = `${process.pid}-${Date.now()}`;
+    const cacheProbe = `${process.env.HOME ?? ""}/.bun/install/cache/fleet-e2e-pi-${nonce}`;
+    const laneProbe = `${REPO}/fleet-e2e-pi-${nonce}`;
+    const deniedProbe = `${process.env.HOME ?? ""}/fleet-e2e-pi-${nonce}`;
+    const touch = (path: string) => spawnSync("sandbox-exec", ["-p", fenceProfile, "/usr/bin/touch", path], { encoding: "utf8" });
+    const cacheWrite = touch(cacheProbe);
+    check("§6 the Pi fence actually permits a Bun-cache write needed by bunx tsc",
+      cacheWrite.status === 0 && existsSync(cacheProbe), `${String(cacheWrite.status)} ${cacheWrite.stderr.trim()}`);
+    const laneWrite = touch(laneProbe);
+    check("§6 fence control: the same write probe succeeds inside its lane",
+      laneWrite.status === 0 && existsSync(laneProbe), `${String(laneWrite.status)} ${laneWrite.stderr.trim()}`);
+    const deniedWrite = touch(deniedProbe);
+    check("§6 the Pi fence still denies a write elsewhere in HOME (the new root is narrow, not allow-all)",
+      deniedWrite.status !== 0 && /Operation not permitted/.test(deniedWrite.stderr),
+      `${String(deniedWrite.status)} ${deniedWrite.stderr.trim()}`);
+    rmSync(cacheProbe, { force: true });
+    rmSync(laneProbe, { force: true });
+    rmSync(deniedProbe, { force: true });
+  }
 
   // --- effort is a CLOSED SET, not a charset: nothing outside it can reach the line at all, and a
   // harness without the concept refuses one rather than accepting a flag it will silently drop.

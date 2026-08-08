@@ -61,11 +61,31 @@ def main() -> None:
     if not prompt.strip():
         die("empty prompt on stdin")
 
-    body = json.dumps({
+    payload = {
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-    }).encode()
+    }
+    # Thinking OFF by default, and this is MEASURED rather than taken from documentation
+    # (2026-08-08, same prompt, five runs incl. a control):
+    #     default              prompt 163  completion 100  reasoning  89   1.8s
+    #     thinking disabled    prompt  84  completion   6  reasoning  --   1.0s
+    #     invented field       prompt 163  completion  69  reasoning  59   1.3s   <- the control
+    # The control is the point: an OpenAI-compatible endpoint SILENTLY IGNORES unknown fields, so
+    # "no error" proves nothing about a parameter. Only the collapse of reasoning_tokens does.
+    # 100 -> 6 completion tokens at equal answer quality is the whole cost of this tier.
+    #
+    # It also explains a gap the provider's docs attribute to "different tokenization methods":
+    # prompt_tokens is 163 with thinking and 84 without ON THE SAME MODEL, so the ~79 extra tokens
+    # are the thinking scaffold, not a tokenizer difference.
+    #
+    # NOT taken from the same advice, deliberately: a hard `stop: ["\n"]` and `max_tokens: 64`.
+    # They suit a commit SUBJECT and would silently truncate any other worker that one day points
+    # its FLEET_*_CMD here — a wrapper that quietly cuts a reviewer's answer in half is worse than
+    # one that is merely slow. The output contract belongs to the worker's prompt, not to this file.
+    if os.environ.get("FLEET_DEEPSEEK_THINKING") != "1":
+        payload["thinking"] = {"type": "disabled"}
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(API, data=body, method="POST", headers={
         "content-type": "application/json",
         "authorization": f"Bearer {read_key()}",

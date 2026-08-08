@@ -144,3 +144,50 @@ already applies to `.env`.)
 - [ ] **Silent complement:** the surrounding parameters the agent must hold in mind (call sites, edge cases, adjacent state, "what would make this wrong") — reasoned internally.
 - [ ] **Output contract:** emit only the relevant slice, plus a one-line flag of anything unresolved.
 - [ ] **No worktree dirt:** deliver via launch/prompt, or a gitignored path — never an untracked file that blocks `land`.
+
+## 8. When the reader is a cheaper model
+
+Everything above assumes a reader that can *reconstruct* the complement it was only
+pointed at. §2's whole economy rests on that: you shape the environment, the agent
+silently derives the surrounding parameters, and you pay for the slice alone. A cheaper
+or foreign model breaks that assumption in one specific place — **it derives less** — and
+the repair is the same in every case: what was *induced* must become *stated*.
+
+That inversion costs tokens in the brief. It is affordable for exactly the reason the
+cheap model was reached for: those tokens are the cheap ones. A brief that would be
+over-stuffed for Opus (§5, first failure mode) is merely adequate for a small model.
+
+**Two seams where a foreign model can enter Fleet, and they need different briefs**
+(both measured on the tree 2026-08-08; neither has yet been *run* with a foreign model):
+
+- **The worker tier** — `runWorker`'s subprocess path (`summaryViaSubprocess`): a shell
+  wrapper behind one of the nine `FLEET_*_CMD` knobs. The "brief" here is a **prompt
+  template in the repo**, not a launch message, and it is reused thousands of times, so
+  the cost of stating the complement is paid once. State the output contract literally —
+  the shape, an example, and what to emit when the answer is "I cannot": a small model
+  that improvises an envelope produces a parse failure, not a wrong answer, and the two
+  look nothing alike in the ledger.
+- **A lane's harness** — a worktree whose agent is a foreign model (today: the `pi`
+  adapter with a foreign provider). Here the brief IS the launch message, and the lane
+  discipline in `CLAUDE.md` rides along only if that harness loads context files at all
+  (`pi` does — verified live, it prints `[Context] CLAUDE.md` at boot; do not assume it
+  of the next adapter, check the pane). What must move from induced to stated: the
+  verification command **in full**, the done-criterion as a testable sentence rather than
+  a goal, and the named prohibitions — a weaker model follows a listed rule far more
+  reliably than it infers an unlisted one.
+
+**The rule that does not relax with model tier:** the done-criterion and its verification
+command (§7). A cheap model may be given a smaller task; it may not be given a vaguer one.
+Scope down before you brief down.
+
+**Credentials, and this is a mechanism not a preference.** A foreign provider needs a key,
+and there are two wrong places for it. Not on a command line — it is then visible in `ps`
+to every process on the machine (`guest-ctl.sh` takes its token on stdin for exactly this
+reason, and says so at the call site). And not in the **server's** environment when it is
+the *wrapper* that needs it: `summaryViaSubprocess` spawns with the server's env inherited,
+so a key placed there is handed to every worker rather than the one that asked for it.
+The narrow placement is a file the wrapper reads, owned by the wrapper, `0600`.
+
+**What this section is not:** a measurement. No foreign model has run either seam on this
+fleet. It is the discipline to brief under, and the first real run is what will correct it —
+append what it teaches rather than rewriting this from imagination.

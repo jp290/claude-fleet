@@ -169,6 +169,28 @@ Pins grün. Wirkung live bestätigt: die nächste Codex-Lane las es **in einem Z
 auch fällt · die sechs `needs-you`-Zeilen aus Sols Durchgang (`785ce63d`, `9bf62ae6`, `df5b74ba`,
 `10ac2528`, `c8e2ddd7`, `dabd1880`).
 
+### NACHTRÄGE, nach dem Schreiben des Obigen entstanden
+
+- **`ec91075` ist der Direkt-Commit** (`watchdog.sh` + `AGENTS.md` + dieser Handoff), von Hand voll
+  verifiziert, ohne Land-Ledger-Eintrag. Der erste `./e2e-claude-gate.sh`-Lauf war rot (exit 1) —
+  Phase 2 starb am Boot an `ENOENT` auf ihre eigene `fleet.json`, **null Checks gelaufen**. Als
+  Nicht-Determinismus bewiesen durch einen Wiederholungslauf auf DEMSELBEN Baum (exit 0, beide
+  Phasen ALL PASS). Beweisordnung eingehalten: erst denselben Baum, kein HEAD-Worktree.
+- **`CLAUDE.md` hat einen neuen Abschnitt: „WENN DU EINE GPT-LANE BRIEFST, RECHNE MIT 258 400"** —
+  Owner-Vorgabe, dass die MAIN-Session das Fenster beim Briefen mitdenkt. Er trägt die drei Zahlen
+  (Fenster · 96 % des Verbrauchs ist Input · Fixkosten fallen in Bytes an) und eine Checkliste für
+  den Brief. **Die Datei ist gitignored — sie ist in KEINEM Commit.** Kopie:
+  `~/claude-fleet-private/codex-analysis-2026-08-08/CLAUDE.md.installed-final`.
+- **Owner-Korrektur, die im Register nicht fehlen darf:** „gpt verbraucht weniger token beim
+  reasoning, deswegen ist der Vergleich nicht ganz fair" — richtig, und gemessen: Reasoning ist
+  40,2 % des Outputs (6 717 von 16 701). Es trifft aber nur die 4 %, die das Modell erzeugt; die
+  96 % Input (Gesprächsverlauf + Tool-Ausgaben) sind harness-getrieben und schrumpfen nicht. Meine
+  Fassung „eine GPT-Lane schafft ungefähr eine der heutigen Aufgaben" war damit **zu pessimistisch**.
+- **Neue Zeile `e2784b16`:** ein GPT-Slot zeigt `ctx: null` — wir sind blind, wo das Fenster ein
+  Viertel groß ist. Zwei Ursachen getrennt, das Rollout-Schema als Datenquelle für Codex benannt,
+  und für **pi ausdrücklich ungemessen**, ob es host-seitig überhaupt etwas Lesbares schreibt.
+
+
 # HANDOFF — Session 41 (2026-08-08 nachmittags: Codex ist Adapter #4, und die Sandbox wurde vermessen statt geglaubt) · 40/39/38 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 1c2a77a..HEAD`

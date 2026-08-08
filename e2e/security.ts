@@ -621,6 +621,103 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     check(`§6d the container adapter did not widen the model charset: ${bad} refused (400)`, r.status === 400, String(r.status));
   }
 
+  // ----- §6d2 THE BOX IS PER SLOT -----
+  // Which container, and on which docker daemon, used to be two module constants read once from the
+  // process env — so changing either meant editing watchdog.sh and restarting, and every container
+  // slot on the fleet got the same answer. That is the same KIND of decision as `model`, which has
+  // been per-slot since the registry existed, and this section proves the pair moved.
+  //
+  // Two slots AT ONCE is the load-bearing shape: a single slot carrying a non-default value would
+  // pass just as well if the value were still fleet-wide and merely settable at boot. Only two
+  // simultaneous panes disagreeing about their box prove the resolution is per session.
+  const BOX_SLOT_A = HARNESS_SLOT, BOX_SLOT_B = 11; // 11 is untouched by every other module
+  const paneOf = async (id: number) =>
+    (await tmuxOut("display-message", "-p", "-t", `s${id}`, "#{pane_start_command}")).out.replaceAll("\\", "");
+  const oa = await post(`/api/slots/${BOX_SLOT_A}/open`,
+    { cwd: REPO, harness: "container", container: "box-a", containerContext: "ctx-a" });
+  const ob = await post(`/api/slots/${BOX_SLOT_B}/open`,
+    { cwd: REPO, harness: "container", container: "box-b", containerContext: "ctx-b" });
+  check("§6d2 two container slots open with DIFFERENT boxes (200/200)", oa.ok && ob.ok, `${oa.status}/${ob.status}`);
+  const pa = await paneOf(BOX_SLOT_A), pb = await paneOf(BOX_SLOT_B);
+  check("§6d2 slot A execs into its OWN container on its OWN docker context",
+    pa.includes(`docker --context 'ctx-a' exec -it -w "$PWD" 'box-a' `), pa.slice(-160));
+  check("§6d2 ...and slot B into a different one, at the same time — the pair is per slot, not per fleet",
+    pb.includes(`docker --context 'ctx-b' exec -it -w "$PWD" 'box-b' `) && pa !== pb, pb.slice(-160));
+  // the values reach the line SHELL-QUOTED, which is the whole reason the charsets exclude `'`.
+  // Asserted on the raw line rather than inferred from the includes above: a future line that
+  // interpolated them bare would still contain the substring if the surrounding quotes moved.
+  check("§6d2 both values are single-quoted in the spawn line (an unquoted one is a shell injection point)",
+    /--context 'ctx-a' exec -it -w "\$PWD" 'box-a'/.test(pa), pa.slice(-160));
+
+  // ...and the row can ANSWER "which VM am I in" — the question that motivated this. RESOLVED, and
+  // present even when the slot chose nothing, because a default that sends no field leaves the
+  // question exactly as unanswerable as the env did.
+  const sb = (await (await get("/api/sessions")).json()) as
+    { slots: { id: number; harness?: string; container?: string; containerContext?: string }[] };
+  const rowA = sb.slots.find((x) => x.id === BOX_SLOT_A);
+  check("§6d2 /api/sessions reports slot A's box and daemon",
+    rowA?.container === "box-a" && rowA?.containerContext === "ctx-a", JSON.stringify(rowA));
+  // a slot on a harness with no box concept must not carry the fields at all — an owner reading
+  // "container: fleet" on a plain claude slot would be reading a fiction
+  const rowPlain = sb.slots.find((x) => x.id !== BOX_SLOT_A && x.id !== BOX_SLOT_B && !x.harness && x.container !== undefined);
+  check("§6d2 ...and no default-harness slot carries them (they would be a fiction there)",
+    rowPlain === undefined, JSON.stringify(rowPlain));
+
+  // the box survives a PANE RESPAWN — it is slot state, not a spawn argument that dies with the
+  // first pane. ↻ restart is the cheapest observable form of that (ensureSlot rebuilds the line).
+  const rs = await post(`/api/slots/${BOX_SLOT_A}/restart`, {});
+  check("§6d2 fixture: the slot restarts (200)", rs.ok, String(rs.status));
+  check("§6d2 the respawned pane re-enters the SAME box — a persisted choice, not a spawn-time argument",
+    (await paneOf(BOX_SLOT_A)).includes(`docker --context 'ctx-a' exec -it -w "$PWD" 'box-a' `),
+    (await paneOf(BOX_SLOT_A)).slice(-160));
+  await post(`/api/slots/${BOX_SLOT_B}/kill`, {});
+
+  // --- ABSENCE. The one property the env default existed for, and the one a per-slot field could
+  // quietly lose: nothing given must fall to the NEUTRAL default, never to docker's ambient
+  // context (on this machine that is the VM holding the guests' live sessions).
+  check("§6d2 fixture: a container slot naming neither field", (await post(`/api/slots/${BOX_SLOT_A}/open`,
+    { cwd: REPO, harness: "container" })).ok);
+  check("§6d2 absence falls back to the fleet default, never to the ambient docker context",
+    (await paneOf(BOX_SLOT_A)).includes(`docker --context 'default' exec -it -w "$PWD" 'fleet' `),
+    (await paneOf(BOX_SLOT_A)).slice(-160));
+  // ...and each half falls back on its own: "the usual box, over in that VM" is a real request,
+  // and demanding both would make the common case the awkward one.
+  check("§6d2 fixture: a slot naming only the context", (await post(`/api/slots/${BOX_SLOT_A}/open`,
+    { cwd: REPO, harness: "container", containerContext: "ctx-only" })).ok);
+  check("§6d2 a context without a container keeps the DEFAULT container — the halves are independent",
+    (await paneOf(BOX_SLOT_A)).includes(`docker --context 'ctx-only' exec -it -w "$PWD" 'fleet' `),
+    (await paneOf(BOX_SLOT_A)).slice(-160));
+  await post(`/api/slots/${BOX_SLOT_A}/kill`, {});
+
+  // --- THE REJECTIONS, and they are 400s rather than a silent fold to the default. The env path
+  // folds on purpose (one typo in watchdog.sh must not kill every container slot at boot); a spawn
+  // request is one owner's one click, and folding it would open a box other than the one they named.
+  // The seven metacharacters are the model rows' set: each is a value that would otherwise be
+  // interpolated into a single-quoted word on a tmux command line.
+  for (const bad of ["a'b", "a b", "a;b", "a$b", "a`b", "a|b", "a&b"]) {
+    const rc = await post(`/api/slots/${BOX_SLOT_A}/open`, { cwd: REPO, harness: "container", container: bad });
+    check(`§6d2 a container name carrying ${JSON.stringify(bad)} is refused (400)`, rc.status === 400, String(rc.status));
+    const rx = await post(`/api/slots/${BOX_SLOT_A}/open`, { cwd: REPO, harness: "container", containerContext: bad });
+    check(`§6d2 a docker context carrying ${JSON.stringify(bad)} is refused (400)`, rx.status === 400, String(rx.status));
+  }
+  // a leading `-` would be read by docker as a FLAG, not a name — the charset requires alphanumeric
+  // first, and that is the reason, not tidiness
+  const rdash = await post(`/api/slots/${BOX_SLOT_A}/open`, { cwd: REPO, harness: "container", container: "-rm" });
+  check("§6d2 a container name starting with a dash is refused (docker would read it as a flag)",
+    rdash.status === 400, String(rdash.status));
+  // ...and NAMED FOR A HARNESS THAT HAS NO BOX: refused, not dropped. Dropping it is the failure
+  // that matters most in this family — the owner would believe the session is contained.
+  for (const h of ["claude", "pi", "codex"]) {
+    const rh = await post(`/api/slots/${BOX_SLOT_A}/open`, { cwd: REPO, harness: h, container: "box-a" });
+    check(`§6d2 harness ${h} refuses a container it would never enter (400, never silently dropped)`,
+      rh.status === 400, String(rh.status));
+  }
+  // and the lane route takes the same body — the two spawn paths must not disagree about the box,
+  // the way they once could about the model
+  const lb = await post(`/api/slots/${BOX_SLOT_A}/open-worktree`, { repo: REPO, harness: "container", container: "a'b" });
+  check("§6d2 the lane spawn route validates the box too (400) — not just /open", lb.status === 400, String(lb.status));
+  await post(`/api/slots/${BOX_SLOT_A}/kill`, {});
+
   // ===== §6e THE CODEX ADAPTER =====
   // `@openai/codex`, adapter #4. Same discipline as §6d: what is asserted is the SPAWN STRING tmux
   // was told to run, which is recorded whether or not codex is installed on the machine running the

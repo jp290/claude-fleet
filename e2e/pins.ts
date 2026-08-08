@@ -472,6 +472,15 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("the container adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
     /\n  automatable: false,/.test(cBody) && /\n    transcript: false,/.test(cBody),
     cBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
+  // ...and its box comes off the SLOT, never off the module constant. The runtime rows
+  // (e2e/security.ts §6d2) prove two slots disagree; this proves the source cannot quietly go back,
+  // and a reversion is one plausible edit away: `CONTAINER_NAME` still exists (it is the DEFAULT),
+  // so typing it into the spawn line again compiles, passes tsc, and re-freezes every container
+  // slot onto one box — a regression whose only symptom is that a per-slot choice stops arriving.
+  const cSpawn = cBody.match(/spawnCmd: \(o\) =>[\s\S]*?exec \$\{SHELL\}`,/)?.[0] ?? "";
+  pin("the container adapter's spawn line reads its box from the SLOT, not from the fleet-wide constant",
+    /\$\{o\.containerContext\}/.test(cSpawn) && /\$\{o\.container\}/.test(cSpawn)
+    && !/CONTAINER_NAME|CONTAINER_CONTEXT/.test(cSpawn), cSpawn.slice(-140) || "no spawn line");
   // The same rule for the CODEX adapter, and it carries one clause the container's does not. Two of
   // its three properties are absences that no runtime check can see on a suite fleet:
   //   - `automatable: false` — every suite runs with FLEET_HARNESS_AUTOMATION off, so a wrongly

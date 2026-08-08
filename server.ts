@@ -202,7 +202,13 @@ interface Harness {
   id: string;
   // The spawn line, already shell-safe. Everything interpolated here has been validated at SET
   // time (modelOf/effortOf against THIS adapter's rules) — the same discipline slotCmd documents.
-  spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null }): string;
+  // `container`/`containerContext` are ALREADY RESOLVED here — never null, never the slot's raw
+  // field. The slot stores an absence (see Slot.container) and boxFor() turns it into the effective
+  // pair exactly once, so the spawn line and the row an owner reads on /api/sessions can never
+  // disagree about which box and which daemon this session is in. Adapters with no container
+  // concept ignore both, the same way every adapter but Pi ignores `effort`.
+  spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
+    container: string; containerContext: string }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -247,7 +253,13 @@ interface Harness {
   // value reaches a shell line, and membership in a fixed list of lowercase words is a stronger
   // guarantee than any charset — there is no metacharacter it could carry.
   effortLevels: readonly string[];
-  supports: { resume: boolean; transcript: boolean; model: boolean; effort: boolean; selfSchedule: boolean };
+  // `container`: does a slot on this harness run inside one — i.e. may the spawn request name a
+  // container and a docker context, and does the row report which. FALSE for every adapter but
+  // one, and the routes REJECT the fields for those rather than dropping them: a box the owner
+  // named and the pane never entered is the same failure `effort` is guarded against, and here it
+  // would be the worse one — the owner would believe the session is isolated.
+  supports: { resume: boolean; transcript: boolean; model: boolean; effort: boolean; selfSchedule: boolean;
+    container: boolean };
   // one short caveat the picker shows BEFORE the slot is spawned, or null. Not decoration: it is
   // where a harness states the thing an owner must know at the moment of choosing it.
   note: string | null;
@@ -286,7 +298,7 @@ const CLAUDE_HARNESS: Harness = {
   automatable: true,
   modelRe: null,
   effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
-  supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true },
+  supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true, container: false },
   note: null,
 };
 
@@ -357,6 +369,7 @@ const PI_HARNESS: Harness = {
     // credential. What is unmeasured is whether Pi's own tooling ever uses it. The flag means
     // "do not advertise this", which is the only thing an unmeasured capability may mean.
     selfSchedule: false,
+    container: false,
   },
   // Pi ships no permission layer at all — its own docs/security.md: built-in tools read, write and
   // run shell commands with the permissions of the pi process. There is no `--dangerously-skip-
@@ -369,9 +382,21 @@ const PI_HARNESS: Harness = {
 // the single-quoted word, and docker never admits it in a name anyway. An operator value that
 // fails the charset falls back to the default rather than reaching a shell — the same discipline
 // as HARNESS_MODEL_FLAG one region up.
+//
+// SINCE THE PER-SLOT FIELD (Slot.container) THIS IS ONLY THE DEFAULT, and the two paths answer a
+// bad value differently ON PURPOSE. A typo in watchdog.sh is read once at boot and would otherwise
+// kill EVERY container slot at once, so it folds to the default; a typo in a spawn request is one
+// owner's one click, and folding it would open a box other than the one they named — so boxOf
+// returns 400. Asymmetric, and the asymmetry is the blast radius, not a mood.
+// The two charsets, named once because they are now judged in three places, not one: the operator's
+// env DEFAULT below, a per-slot value arriving in a spawn request (boxOf), and a value coming back
+// off disk after a restart. Three call sites of one rule is exactly the shape that drifts if the
+// literal is retyped — and a drifted one here is a quote reaching a tmux line.
+const CONTAINER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const CONTAINER_CONTEXT_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const CONTAINER_NAME = (() => {
   const c = process.env.FLEET_CONTAINER;
-  return c && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(c) ? c : "fleet";
+  return c && CONTAINER_NAME_RE.test(c) ? c : "fleet";
 })();
 // ...and WHICH DOCKER. This is not decoration and it is not defensive: `docker` on this machine
 // resolves through a CONTEXT, the current one is a user setting, and it is measured (2026-08-08)
@@ -390,7 +415,7 @@ const CONTAINER_NAME = (() => {
 // was built in (`claude-fleet:guest` exists on colima-fleetguest and nowhere else).
 const CONTAINER_CONTEXT = (() => {
   const c = process.env.FLEET_CONTAINER_CONTEXT;
-  return c && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(c) ? c : "default";
+  return c && CONTAINER_CONTEXT_RE.test(c) ? c : "default";
 })();
 
 // Adapter #3 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
@@ -427,8 +452,14 @@ const CONTAINER_HARNESS: Harness = {
   // the value must expand in the pane shell, and a worktree path may contain spaces.
   // The agent line itself is agentCmd's, verbatim: whatever this fleet runs on the host, this slot
   // runs in the box, under the same validated quoting.
+  //
+  // Both values come off the SLOT (already resolved against the env defaults by boxFor) rather than
+  // off the module constants, and that is the whole of queue row `[isolation, Stufe 2]`: which VM a
+  // session runs in is the same KIND of decision as which model it runs — a fact about this session
+  // — and it was the only one still frozen fleet-wide in the process env. Quoting is unchanged and
+  // still load-bearing: both are single-quoted, and both charsets exclude `'` for that reason.
   spawnCmd: (o) =>
-    `${PATH_EXPORT}docker --context '${CONTAINER_CONTEXT}' exec -it -w "$PWD" '${CONTAINER_NAME}' `
+    `${PATH_EXPORT}docker --context '${o.containerContext}' exec -it -w "$PWD" '${o.container}' `
     + `${agentCmd(o.sessionId, o.resume, o.model)}; exec ${SHELL}`,
   // NULL, and this is the case the whole member exists for — it is also STAGE 2 of the queue row
   // this adapter came from. A claude inside the box writes its transcript against the CONTAINER's
@@ -477,10 +508,22 @@ const CONTAINER_HARNESS: Harness = {
     // inherit the CLIENT's environment. ensureSlot exports FLEET_SELF_TOKEN into the host pane, and
     // the agent inside the box never sees it — so there is no credential to self-schedule with.
     selfSchedule: false,
+    // TRUE, and this adapter is the only one: the two fields below decide WHICH box and WHICH
+    // daemon this slot's agent runs in, and they are per-slot for the same reason `model` is —
+    // it is a fact about this session, not about the fleet. See boxOf/boxFor.
+    container: true,
   },
   // the caveat an owner must have BEFORE picking this: Fleet is not the thing providing the
   // isolation, and it cannot tell them the container is missing until the pane says so.
-  note: `you start container '${CONTAINER_NAME}' on docker --context '${CONTAINER_CONTEXT}' and bind-mount the worktree at the SAME path — Fleet never does`,
+  //
+  // It says DEFAULTS, and it has to: since the pair is per-slot, a note phrased as this fleet's
+  // answer would be a sentence that is false for any slot that named its own. Naming them as
+  // defaults keeps the note's actual job — an owner at the picker learns which box and which daemon
+  // they get if they type nothing — without claiming a fleet-wide fact that no longer exists. The
+  // per-slot ANSWER is on the slot's own row (/api/sessions carries the resolved pair), which is
+  // where a question about one session belongs.
+  note: `defaults: container '${CONTAINER_NAME}' on docker --context '${CONTAINER_CONTEXT}' — both settable per slot at spawn.`
+    + " You start the container and bind-mount the worktree at the SAME path — Fleet never does",
 };
 
 // Adapter #4 — Codex (`@openai/codex`, the OpenAI CLI). Every flag below is MEASURED against the
@@ -589,6 +632,7 @@ const CODEX_HARNESS: Harness = {
     // unmeasured is whether Codex's own tooling would ever use it. "Do not advertise this" is the
     // only thing an unmeasured capability may mean.
     selfSchedule: false,
+    container: false,
   },
   // the caveat an owner must have BEFORE picking this, and it is the one above stated for the
   // picker: an unauthenticated pane LOOKS alive, because it is.
@@ -677,6 +721,32 @@ function effortOf(body: Record<string, unknown> | null, h: Harness): { ok: true;
 }
 const effortErrFor = (h: Harness) =>
   h.supports.effort ? `bad effort (one of: ${h.effortLevels.join(", ")})` : `harness ${h.id} takes no effort`;
+
+// WHICH BOX and WHICH DAEMON this one session runs in — the pair that used to be frozen fleet-wide
+// in the process env. Absence is the important case and it has exactly one meaning: "the fleet's
+// default", which is the NEUTRAL context, never the operator's ambient one. That property is the
+// reason the env default exists at all (an ambient `docker` here would have resolved to the VM
+// holding the guest containers), and a per-slot field must not be able to lose it — so a missing
+// field falls back through boxFor and nothing on this path ever reads the active context.
+interface BoxPin { container: string | null; containerContext: string | null }
+const NO_BOX: BoxPin = { container: null, containerContext: null };
+function boxOf(body: Record<string, unknown> | null, h: Harness):
+  { ok: true; box: BoxPin } | { ok: false; why: string } {
+  const c = body?.container;
+  const x = body?.containerContext;
+  const given = (v: unknown) => v !== undefined && v !== null && v !== "";
+  if (!given(c) && !given(x)) return { ok: true, box: NO_BOX };
+  // named for a harness that has no box: refused, not dropped. Dropping it would open a session the
+  // owner believes is contained and is not — the one failure in this family that is not cosmetic.
+  if (!h.supports.container) return { ok: false, why: `harness ${h.id} takes no container` };
+  if (given(c) && !(typeof c === "string" && CONTAINER_NAME_RE.test(c)))
+    return { ok: false, why: `bad container (must match ${CONTAINER_NAME_RE.source})` };
+  if (given(x) && !(typeof x === "string" && CONTAINER_CONTEXT_RE.test(x)))
+    return { ok: false, why: `bad containerContext (must match ${CONTAINER_CONTEXT_RE.source})` };
+  // each half falls back on its own: naming a context without a container is the normal way to say
+  // "the usual box, in that VM", and forcing both to be given would make the common case the noisy one
+  return { ok: true, box: { container: given(c) ? (c as string) : null, containerContext: given(x) ? (x as string) : null } };
+}
 const CHIPS = (process.env.FLEET_CHIPS ?? "")
   .split(",").map((c) => c.trim()).filter(Boolean);
 const MAX_LABEL = 40;
@@ -923,6 +993,16 @@ interface Slot {
   // migrated to "claude": the two are the same state and one representation of it is enough.
   // Same lifetime and same honesty rule as `model`: chosen at spawn (it decides the pane's very
   // command line), cleared on open/kill so a recycled slot never inherits the previous occupant's.
+  container: string | null; // WHICH BOX this session's agent runs in, and on WHICH docker-daemon
+  // context — the pin over this file forbids a bare `docker ` outside `docker --context`, prose included.
+  containerContext: string | null; // Only meaningful for a harness whose supports.container is true
+  // (the routes refuse them for any other). NULL IS NOT "none" — it is "this fleet's default", and
+  // it resolves through boxFor, never through docker's ambient context: the active context on this
+  // machine is the VM holding the guest containers, so an unpinned value would not have picked
+  // "some" daemon but exactly that one. Same lifetime and same honesty rule as `model`: baked into
+  // the pane's command line at spawn, cleared on open/kill so a recycled slot never inherits the
+  // previous occupant's box. Persisted, so a respawn re-enters the SAME container rather than
+  // silently falling back to the default one.
   effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
   // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
   releasedBy: "owner" | "machine" | null; // how the TASK that spawned this lane was released
@@ -960,6 +1040,8 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   worktree: null,
   model: null,
   harness: null,
+  container: null,
+  containerContext: null,
   effort: null,
   releasedBy: null,
   selfToken: randomBytes(16).toString("hex"),
@@ -1581,6 +1663,14 @@ async function tmux(...args: string[]): Promise<{ out: string; code: number }> {
   return { out: out.trim(), code };
 }
 
+// The ONE place a slot's absent box becomes an effective one. Both the spawn line (ensureSlot) and
+// the row an owner reads (/api/sessions) go through it, so "which VM am I in" has a single answer
+// by construction — two resolutions of the same fallback is how the board comes to say one thing
+// while the pane does another.
+function boxFor(s: Slot): { container: string; containerContext: string } {
+  return { container: s.container ?? CONTAINER_NAME, containerContext: s.containerContext ?? CONTAINER_CONTEXT };
+}
+
 // writes are serialized: overlapping fire-and-forget writes to the same file can interleave
 let saveChain: Promise<unknown> = Promise.resolve();
 let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the pid makes it unique across
@@ -1589,8 +1679,12 @@ function saveState(): void {
     sessionId: string | null;
     worktree: LaneRef | null; model: string | null;
     harness: string | null; effort: string | null;
+    container: string | null; containerContext: string | null;
     releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, releasedBy: s.releasedBy, selfToken: s.selfToken };
+  // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
+  // pair would freeze today's env default into the state file, and a slot that never chose a box
+  // would stop following a changed FLEET_CONTAINER after one restart
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches, tasks,
@@ -2423,7 +2517,8 @@ const laneSpawn = new Set<number>();
 const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
-  harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree"): Promise<{ cwd: string; branch: string }> {
+  harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
+  box: BoxPin = NO_BOX): Promise<{ cwd: string; branch: string }> {
   const wt = await createWorktree(repo, branch, form);
   const base = await integrationBranch(wt.repo);
   const baseSha = await laneForkSha(wt.path, base);
@@ -2434,7 +2529,7 @@ async function openLaneInSlot(s: Slot, repo: string, branch: string, model: stri
   // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
   // would report an absence as a fact about the lane.
   await syncLaneRefs(ref, wt.path);
-  await openSlot(s, wt.path, ref, model, null, harness, effort);
+  await openSlot(s, wt.path, ref, model, null, harness, effort, box);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -2542,7 +2637,7 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     const stewardExport = s.label === STEWARD_LABEL && stewardToken
       ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
     const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
-      `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: s.model, effort: s.effort })}`);
+      `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: s.model, effort: s.effort, ...boxFor(s) })}`);
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;
@@ -2601,7 +2696,12 @@ function expandCwd(raw: string): string {
 // the guarantee no longer rests on an absence alone. `effort` remains unreachable from here.
 async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null,
   model: string | null = null, label: string | null = null,
-  harness: string | null = null, effort: string | null = null): Promise<void> {
+  harness: string | null = null, effort: string | null = null,
+  // one trailing parameter rather than two, because the pair is never chosen apart: a container and
+  // the daemon it lives on are one decision, and a positional list where the caller can pass the
+  // second and forget the first is the argument-order bug this shape cannot have. Defaulted, so the
+  // three callers that spawn no container (attach, the dispatcher, a plain open) say nothing at all.
+  box: BoxPin = NO_BOX): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
   // Detach before the teardown below, so a recycled slot's tasks carry THIS reason —
@@ -2647,6 +2747,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
+  s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
+  s.containerContext = box.containerContext; // which is the same rule one step further out
 
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
@@ -8920,6 +9022,14 @@ if (existsSync(STATE_FILE)) {
         if (typeof pm === "string" && (hOf.modelRe ?? SLOT_MODEL_RE).test(pm)) s.model = pm;
         const pe = (v as { effort?: unknown }).effort;
         if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
+        // ...and the box, judged by the harness AND the charset on the way back in, for the reason
+        // the model above is: the state file is on disk, and a hand-edit must not be able to put a
+        // value into a tmux line that a request could never have put there. A rejected value stays
+        // absent, which is the default box — never a half-restored one.
+        const pc = (v as { container?: unknown }).container;
+        if (typeof pc === "string" && hOf.supports.container && CONTAINER_NAME_RE.test(pc)) s.container = pc;
+        const px = (v as { containerContext?: unknown }).containerContext;
+        if (typeof px === "string" && hOf.supports.container && CONTAINER_CONTEXT_RE.test(px)) s.containerContext = px;
         // the release survives a restart with the lane it started — a deploy in the middle of a
         // lane's life must not turn its outcome row into "cannot say". Only the two recognised
         // values come back, same stance as `awaiting` above: a hand-edited state file must not be
@@ -11451,6 +11561,13 @@ Bun.serve<WSData>({
             // once, instead of being re-sent every two seconds for every slot.
             ...(s.harness ? { harness: s.harness } : {}),
             ...(s.effort ? { effort: s.effort } : {}),
+            // WHICH BOX AND WHICH DAEMON — RESOLVED, and carried whenever the slot's harness has a
+            // container concept at all, including when the slot chose neither. That is the opposite
+            // rule from `harness`/`effort` above, and it is the point of the row: "which VM did I
+            // get" is unanswerable if the default case sends nothing, which is exactly the state
+            // this replaced. It costs two short strings on the rare slot that runs in a box and
+            // nothing on every other, so the 2s poll does not notice.
+            ...(harnessOf(s.harness).supports.container ? boxFor(s) : {}),
             // "no-agent" is the one that matters: the pane is alive and accepting keystrokes with
             // nothing behind it — what an unresolvable model leaves, and what typing into it means.
             // Cached (git tick), so it is a REPORT, never a gate: every gate keeps its own fresh
@@ -11918,6 +12035,8 @@ Bun.serve<WSData>({
       if (!laneModel.ok) return json({ error: modelErrFor(laneHarness) }, 400);
       const laneEffort = effortOf(body, laneHarness);
       if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
+      const laneBox = boxOf(body, laneHarness);
+      if (!laneBox.ok) return json({ error: laneBox.why }, 400);
       const laneForm = laneFormOf(body);
       if (!laneForm.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
@@ -11947,7 +12066,7 @@ Bun.serve<WSData>({
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
@@ -12438,6 +12557,12 @@ Bun.serve<WSData>({
           // slot gets when it names none, and the client must not assume which id that is.
           default: h === CLAUDE_HARNESS,
         })),
+        // the fleet's box defaults, published for the same reason `default` above is: they are a
+        // fact about THIS fleet (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is
+        // the client hardcoding "fleet"/"default" — a second copy of a server constant, which is
+        // the drift this catalogue exists to prevent. The picker shows them as placeholders, so an
+        // owner sees what typing nothing will get them.
+        containerDefaults: { container: CONTAINER_NAME, containerContext: CONTAINER_CONTEXT },
       });
     }
     if (url.pathname === "/api/dirs") {
@@ -13189,6 +13314,8 @@ Bun.serve<WSData>({
         if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+        const bo = boxOf(body, hh);
+        if (!bo.ok) return json({ error: bo.why }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -13196,7 +13323,7 @@ Bun.serve<WSData>({
           return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
         const label = typeof body.label === "string" ? body.label.trim() || null : null;
         try {
-          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort);
+          await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed" }, 400);
         }
@@ -13214,11 +13341,13 @@ Bun.serve<WSData>({
         if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+        const bo = boxOf(body, hh);
+        if (!bo.ok) return json({ error: bo.why }, 400);
         const fo = laneFormOf(body);
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);

@@ -149,6 +149,10 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
   harness?: string; effort?: string;
+  // WHICH BOX and WHICH DAEMON this session's agent runs in. Present — RESOLVED, never null —
+  // exactly when the slot's harness has a container concept, absent otherwise; that is the one
+  // question the fleet-wide env could not answer per session.
+  container?: string; containerContext?: string;
   // how full this session's context is (server.ts, contextFill). null is an ANSWER — Fleet cannot
   // tell for this slot (no pinned transcript, no usage line yet, a harness that writes none, or a
   // model whose window it cannot name) — and must never be painted as an empty/fresh context.
@@ -157,7 +161,7 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
 interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
-  effort: boolean; selfSchedule: boolean }; effortLevels: string[]; note: string | null; default: boolean }
+  effort: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null; default: boolean }
 // what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
@@ -192,12 +196,19 @@ let fleet: SlotInfo[] = [];
 // pending fetch degrades to exactly the pre-harness UI rather than to a broken one.
 let harnesses: HarnessInfo[] = [];
 let harnessesLoaded = false;
+// this fleet's box defaults, from the same fetch — shown as the container fields' placeholders so
+// the owner sees what leaving them empty gets. Never hardcoded here: they are server constants
+// (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and a second copy would drift silently.
+let containerDefaults: { container: string; containerContext: string } | null = null;
 async function loadHarnesses(): Promise<void> {
   if (harnessesLoaded) return;
   try {
     const res = await api("/api/harnesses");
     if (!res.ok) return;
-    harnesses = ((await res.json()) as { harnesses: HarnessInfo[] }).harnesses;
+    const cat = (await res.json()) as { harnesses: HarnessInfo[]; containerDefaults?: { container: string; containerContext: string } };
+    harnesses = cat.harnesses;
+    containerDefaults = cat.containerDefaults ?? null; // absent against an older server: the fields
+    // then carry no placeholder, which is a missing hint and not a broken control
     harnessesLoaded = true;
   } catch { /* leave it empty: the picker then offers the default only, which always works */ }
 }
@@ -206,7 +217,10 @@ async function loadHarnesses(): Promise<void> {
 // working features. Empty catalogue → every capability true, i.e. today's behaviour.
 function supportsOf(h: string | undefined): HarnessInfo["supports"] {
   const found = harnesses.find((x) => x.id === h) ?? harnesses.find((x) => x.default);
-  return found?.supports ?? { resume: true, transcript: true, model: true, effort: true, selfSchedule: true };
+  // `container` is the one that falls back FALSE rather than true: every other field's optimistic
+  // default means "do not hide a working feature", but an optimistic container would offer a box
+  // control on a harness that has none — inventing a capability instead of degrading to today's UI.
+  return found?.supports ?? { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false };
 }
 let autosList: AutoInfo[] = [];
 let tasksList: TaskInfo[] = [];
@@ -3656,6 +3670,8 @@ async function showDirDetail(path: string) {
 let spawnHarness: string | null = null;
 let spawnModel = "";
 let spawnEffort = "";
+let spawnContainer = "";
+let spawnContainerContext = "";
 
 // The spawn-options row — the first spawn-options UI in this app at all. Two things it closes at
 // once: choosing a harness (which never existed), and sending `model`, which the server routes
@@ -3701,12 +3717,37 @@ function appendSpawnOptions(host: HTMLElement): void {
     row.appendChild(labelled("effort", eSel));
   }
 
+  // the box: which container, and on which docker daemon. Only for a harness that runs in one —
+  // the same visible degradation as effort. Empty means the fleet default (the placeholder says
+  // which), never docker's ambient context. The two belong together: an IMAGE lives in exactly one
+  // daemon, so a context without this container's image is a pane full of docker's own error.
+  if (chosen?.supports.container) {
+    const cIn = el("input", "pkdin") as HTMLInputElement;
+    cIn.type = "text";
+    cIn.placeholder = containerDefaults?.container ?? "container";
+    cIn.value = spawnContainer;
+    cIn.oninput = () => { spawnContainer = cIn.value.trim(); };
+    row.appendChild(labelled("container", cIn));
+
+    const xIn = el("input", "pkdin") as HTMLInputElement;
+    xIn.type = "text";
+    xIn.placeholder = containerDefaults?.containerContext ?? "docker context";
+    xIn.value = spawnContainerContext;
+    xIn.title = "which docker daemon — an image lives in exactly one, so this must be the context the"
+      + " container's image was built in";
+    xIn.oninput = () => { spawnContainerContext = xIn.value.trim(); };
+    row.appendChild(labelled("docker context", xIn));
+  }
+
   hSel.onchange = () => {
     const next = harnesses.find((h) => h.id === hSel.value);
     spawnHarness = next && !next.default ? next.id : null;
     // a level from the harness being left behind must not ride along to the next one
     if (!next?.supports.effort || !next.effortLevels.includes(spawnEffort)) spawnEffort = "";
     if (!next?.supports.model) spawnModel = "";
+    // ...and a box must not either: the server refuses one for a harness without the concept, so
+    // carrying it over would turn a harness change into a 400 the owner cannot see the cause of
+    if (!next?.supports.container) { spawnContainer = ""; spawnContainerContext = ""; }
     renderSpawnOptions(host, row);
   };
 
@@ -3733,11 +3774,13 @@ function labelled(text: string, control: HTMLElement): HTMLElement {
 
 // the options every spawn from this pane carries. Absent fields mean "the default", which is
 // exactly what the server reads them as.
-function spawnBody(): { harness?: string; model?: string; effort?: string } {
+function spawnBody(): { harness?: string; model?: string; effort?: string; container?: string; containerContext?: string } {
   return {
     ...(spawnHarness ? { harness: spawnHarness } : {}),
     ...(spawnModel ? { model: spawnModel } : {}),
     ...(spawnEffort ? { effort: spawnEffort } : {}),
+    ...(spawnContainer ? { container: spawnContainer } : {}),
+    ...(spawnContainerContext ? { containerContext: spawnContainerContext } : {}),
   };
 }
 
@@ -4245,7 +4288,7 @@ function openPicker(slotId: number) {
   pickerSlot = slotId;
   // a fresh picker is a fresh decision: the previous session's harness/model/effort must not be
   // inherited by whatever this slot becomes next (the server clears the same three on recycle).
-  spawnHarness = null; spawnModel = ""; spawnEffort = "";
+  spawnHarness = null; spawnModel = ""; spawnEffort = ""; spawnContainer = ""; spawnContainerContext = "";
   pkDetailPath = null;
   // fetch-once, and only from here: the catalogue is needed exactly when a spawn is being
   // composed, so it never costs anything on a board that is only being watched.

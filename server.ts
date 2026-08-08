@@ -244,6 +244,26 @@ interface Harness {
   // repair above exists to undo; it is not less wrong one field to the right. Required, so a new
   // adapter answers this at compile time instead of inheriting an answer.
   automatable: boolean;
+  // Which working-copy FORM a lane on this harness wants when the caller names none (LaneForm).
+  // null = no opinion, which is every adapter whose agent runs on the host with the owner's own
+  // reach — the lane stays a worktree and the persisted slot record stays byte-identical.
+  // "clone" is the answer for a harness whose agent runs behind a WRITE FENCE that ends at the
+  // working directory. MEASURED, on the first real Codex lane (2026-08-08, slot 9): a linked
+  // worktree keeps its metadata in the PRIMARY repo (<main>/.git/worktrees/<lane>/), i.e. outside
+  // `--sandbox workspace-write`'s roots, so `git commit` dies on
+  // `Unable to create '.../index.lock': Operation not permitted`. A lane that cannot commit cannot
+  // land — the failure is silent in the sense that matters: the tree is correct, the work is there,
+  // and nothing on the board says why it will never land.
+  //
+  // WHY THE ADAPTER AND NOT THE CALLER, which is the same argument `comms` and `modelRe` make: a
+  // property every sender must remember to attach is a property that gets forgotten, and the first
+  // forgetting produces exactly that mute un-committable lane. An adapter states it once.
+  //
+  // It is a PREFERENCE, not a capability: an explicit `form` in the request WINS (laneFormOf). A
+  // Codex lane in worktree form is legal — the owner may want one knowingly, it just cannot commit
+  // itself — which is why this is not modelled like the container fields, where a harness that
+  // cannot enter a box rejects the request with 400 rather than carrying an option it will drop.
+  laneForm: LaneForm | null;
   // The charset THIS harness's model names are judged by. null = "whatever the env rule says"
   // (SLOT_MODEL_RE), which is how the default adapter keeps MODEL_RE for an undeclared FLEET_CMD
   // and the declared-harness charset for a declared one — i.e. exactly today's behaviour.
@@ -296,6 +316,9 @@ const CLAUDE_HARNESS: Harness = {
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
   // has always driven, and the clause below never even consults the flag for it.
   automatable: true,
+  // null: the default adapter's agent runs on the host with the owner's own reach, so a linked
+  // worktree is fine — and this is the lane form every caller, script and suite already produces.
+  laneForm: null,
   modelRe: null,
   effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
   supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true, container: false },
@@ -343,6 +366,9 @@ const PI_HARNESS: Harness = {
   // scheduled autos, dispatch, steward sends, done-looking → /api/self/watch and auto-③ — every one
   // of them a PROMPT into a pane, none of them a write to main.
   automatable: true,
+  // null: Pi ships no sandbox at all (its own `note`), so nothing fences it out of the primary's
+  // worktree metadata — the reason the clone form exists does not apply here.
+  laneForm: null,
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
   modelRe: HARNESS_MODEL_RE,
@@ -486,6 +512,13 @@ const CONTAINER_HARNESS: Harness = {
   // slot by hand — only unattended paths (autos, dispatch, steward sends, done-looking, auto-③)
   // are shut, and they stay shut even with FLEET_HARNESS_AUTOMATION on.
   automatable: false,
+  // null, and NOT because this adapter has been shown to need nothing: it is the same "no
+  // judgement has been made" this adapter's `automatable` records. A container slot's fence is a
+  // MOUNT, not a write filter, and whether a linked worktree's metadata is reachable across it has
+  // never been measured here — an unmeasured guess in either direction would be worse than the
+  // status quo, which is the form every container lane in the suite already runs in. The day that
+  // is measured, this line is where the answer goes.
+  laneForm: null,
   // null = the same charset a default-adapter slot is judged by (SLOT_MODEL_RE). Consistent rather
   // than lax: the command inside the box IS agentCmd's, so widening the charset here would admit
   // names the very same binary would reject on the host. A container that one day runs a foreign
@@ -603,6 +636,14 @@ const CODEX_HARNESS: Harness = {
   // end, exactly the standard the container adapter's comment sets. What that costs is unchanged
   // from there: an owner may still open, drive and land such a slot by hand.
   automatable: false,
+  // "clone", and it is the one field here that changes what a lane IS rather than how it is
+  // described. `--sandbox workspace-write` fences WRITES to [workdir, /tmp, $TMPDIR]; a linked
+  // worktree's metadata lives in the primary repo, outside all three, so `git commit` in a Codex
+  // worktree lane dies on `index.lock: Operation not permitted` (measured, first real Codex lane,
+  // 2026-08-08). A clone's `.git` is a directory INSIDE the workdir, so the same commit is an
+  // ordinary write. See the field's own comment for why the preference sits here and not on the
+  // caller — and note that it stays a preference: `form: "worktree"` in the request still wins.
+  laneForm: "clone",
   // the foreign charset, for the same reason Pi takes it: Codex model names carry `:` (the local
   // provider tags under `--oss`, e.g. an ollama `qwen2.5-coder:7b`) and `/` (provider-qualified
   // ids), neither of which MODEL_RE admits. It is a strict SUPERSET of MODEL_RE, so nothing a
@@ -679,12 +720,19 @@ const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? nu
 
 // which harness a request asked for. Absent → null (the default), which is what every caller that
 // predates this field sends and must keep meaning.
-// Which working-copy form a lane request asks for. Absent is "worktree" and always will be: this
-// is the shape every caller, script and test already sends, and a default that had to be written
-// out would make the addition of clones a change to lanes that are not clones.
-function laneFormOf(body: Record<string, unknown> | null): { ok: true; form: LaneForm } | { ok: false } {
+// Which working-copy form a lane request asks for — THE one resolution, asked by every path that
+// makes a lane (/api/lanes, open-worktree, dispatchTask). Two rules, in this order:
+//   1. an explicit `form` WINS, over any adapter preference. A Codex lane in worktree form is a
+//      thing an owner may knowingly want (it simply cannot commit itself, Harness.laneForm), and
+//      a preference that could not be overridden would be a capability wearing the wrong name.
+//   2. only on ABSENCE does the harness answer (Harness.laneForm), and only then does the last
+//      fallback apply: "worktree", the shape every caller, script and test already sends. A
+//      default written out at the call sites is how the second one drifts from the first.
+// dispatchTask has no request body at all and passes `null` — the same call, one rule.
+function laneFormOf(body: Record<string, unknown> | null, h: Harness = CLAUDE_HARNESS):
+  { ok: true; form: LaneForm } | { ok: false } {
   const f = body?.form;
-  if (f === undefined || f === null || f === "") return { ok: true, form: "worktree" };
+  if (f === undefined || f === null || f === "") return { ok: true, form: h.laneForm ?? "worktree" };
   return f === "worktree" || f === "clone" ? { ok: true, form: f } : { ok: false };
 }
 
@@ -3275,14 +3323,30 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   const wasStatus = next.status;
   laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
   try {
+    // WHICH FORM the working copy takes, resolved through the same one function the two lane
+    // routes ask. There is no request body here — the button sends no `form` and neither does the
+    // tick — so this is exactly the "absence" branch: the harness answers, and for every adapter
+    // but Codex the answer is the worktree this path has always made. Deriving it from `spawnH`
+    // rather than recomputing the harness is the point: the dispatch route already resolved which
+    // agent runs, and two derivations of one choice are how they come apart.
+    const dForm = laneFormOf(null, spawnH);
+    if (!dForm.ok) return { ok: false, error: "form must be 'worktree' or 'clone'" }; // unreachable: no body, no user input
     // the task's own target repo wins; the env default covers every unbound row
-    const wt = await createWorktree(next.repo ?? DISPATCH_REPO, "");
+    const wt = await createWorktree(next.repo ?? DISPATCH_REPO, "", dForm.form);
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
     // model/harness ride in from the attended request only (DEFAULT_SPAWN is the tick's shape and
     // is the claude adapter); `label` stays null here because the line below names the slot.
-    await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
-      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) }, spawn.model, null, spawn.harness);
+    const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
+      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
+      // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
+      // persisted record must stay byte-identical to the one every dispatch before this produced.
+      ...(dForm.form === "clone" ? { form: dForm.form } : {}) };
+    // A fresh clone's branch exists only in the clone — mirror it up NOW, for openLaneInSlot's
+    // reason: until the root has the ref, every root-side reader (drift, risk, the land path)
+    // reports an absence as a fact about the lane. A no-op for a worktree lane.
+    await syncLaneRefs(dRef, wt.path);
+    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness);
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release, and the only one that never passes through `queued` — this
     // route starts a `pending` row directly, so releaseTask never sees it. Stamped OVER whatever
@@ -12037,7 +12101,7 @@ Bun.serve<WSData>({
       if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
       const laneBox = boxOf(body, laneHarness);
       if (!laneBox.ok) return json({ error: laneBox.why }, 400);
-      const laneForm = laneFormOf(body);
+      const laneForm = laneFormOf(body, laneHarness); // explicit form wins; absent → the adapter's
       if (!laneForm.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
@@ -13343,7 +13407,7 @@ Bun.serve<WSData>({
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
         const bo = boxOf(body, hh);
         if (!bo.ok) return json({ error: bo.why }, 400);
-        const fo = laneFormOf(body);
+        const fo = laneFormOf(body, hh); // explicit form wins; absent → the adapter's
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {

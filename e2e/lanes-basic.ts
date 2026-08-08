@@ -37,6 +37,19 @@ export async function run(lc: LaneCtx): Promise<void> {
     /(^|\s|;)pi --session-id [0-9a-f-]{36}\b/.test(hwCmd) && hwCmd.includes("--thinking high"), hwCmd.slice(-160));
   await post("/api/slots/7/kill", {});
   spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-pi`], { cwd: REPO });
+  // ...and the same road for the container harness, which is the one where the lane path MATTERS:
+  // its whole cut is that git stays host-local while only the agent moves into the box, so a lane
+  // is its primary shape. `-w "$PWD"` is what carries the worktree's own path in — the pane's cwd
+  // is the host worktree, and the mount must be at that same path.
+  const hc = await post("/api/slots/7/open-worktree", { repo: REPO, branch: "e2e-lane-container", harness: "container" });
+  check("open-worktree accepts the container harness for a hand-started lane", hc.ok, String(hc.status));
+  // backslashes stripped: tmux re-quotes pane_start_command for display and escapes `"` and `$`,
+  // so the raw capture reads `-w \"\$PWD\"`. Nothing else in this line carries a backslash.
+  const hcCmd = (await tmuxOut("display-message", "-p", "-t", "s7", "#{pane_start_command}")).out.replaceAll("\\", "");
+  check("a lane spawned with harness=container execs into the container at the lane's own cwd",
+    hcCmd.includes(`docker exec -it -w "$PWD" 'fleet' `), hcCmd.slice(-160));
+  await post("/api/slots/7/kill", {});
+  spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-container`], { cwd: REPO });
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
   // the copied .env is gitignored in the test repo, so it must NOT show as dirty — a fresh

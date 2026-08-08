@@ -438,8 +438,21 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   const dBody = server.slice(dStart, server.indexOf("\n}\n", dStart));
   pin("dispatchTask's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
     dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
-  pin("the only spawn a tick can reach names no harness — Pi has no permission layer, so unattended stays default",
+  pin("the only spawn a tick can reach names no harness — no foreign adapter has a permission layer, so unattended stays default",
     /openSlot\(/.test(dBody) && !/harness|effort/.test(dBody), dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 120) ?? "no openSlot call");
+  // The bolt above is generic (it names no adapter), which is what makes it cover an adapter added
+  // tomorrow. This one is specific and belongs next to it: the CONTAINER adapter's automatable is an
+  // owner decision that has NOT been made, so it fails closed — and unlike pi's `true`, nothing at
+  // runtime can tell a wrong `true` from a right one on a fleet with FLEET_HARNESS_AUTOMATION off
+  // (which is every suite). An absence again, so: a rule over the source, scoped to that adapter's
+  // own object literal rather than the file, or a `automatable: false` anywhere would satisfy it.
+  const cStart = server.indexOf("const CONTAINER_HARNESS: Harness = {");
+  const cBody = cStart < 0 ? "" : server.slice(cStart, server.indexOf("\n};\n", cStart));
+  pin("the container adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
+    cStart > 0 && cBody.length > 500 && cBody.length < 8_000, `${cBody.length} bytes`);
+  pin("the container adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
+    /\n  automatable: false,/.test(cBody) && /\n    transcript: false,/.test(cBody),
+    cBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
   // ...and the choice can only ever enter through a request: harnessIdOf reads a BODY, so a caller
   // that has no body cannot name a harness. Stated over the whole file so a third spawn path added
   // tomorrow is covered tomorrow.

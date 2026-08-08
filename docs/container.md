@@ -18,6 +18,63 @@ which is the half that acts unattended. It is not mechanically impossible: give 
 the same `$HOME` and mount the worktree at the *identical* path and `projDir` resolves. It is
 self-defeating, which is different — you would be handing back exactly what the container is for.
 
+## The `container` harness — a different cut, not that one
+
+The section above rejects a boundary *through* the bundle. The `container` adapter
+(`CONTAINER_HARNESS`, `server.ts`) draws one somewhere else, and the distinction is the whole
+reason it exists rather than being the idea already refused here.
+
+What stays on the host: **tmux** (the pane is a host pane; the agent is a child of it through
+`docker exec`, so `send-keys`/`capture-pane`/`pipe-pane` are untouched) and **git** (`git -C
+<worktree>` still reads the real tree, so ahead/dirty, `doneLooking`, the land path and
+`/api/self/drift` all keep working). Fleet's own unattended workers — merge resolver, reviewers,
+summarizer — also stay on the host, which is the half the section above objects to leaving
+outside: here they are *supposed* to be outside, because the thing being sandboxed is the
+interactive agent, not Fleet.
+
+What falls: **the transcript**, and only that. The agent inside writes
+`~/.claude/projects/<slug>/<uuid>.jsonl` against the *container's* `$HOME`, while `projDir` reads
+the host's — so `supports.transcript` is `false` and the conversation view, `transcriptFact`, the
+summary and auto-③ degrade visibly instead of reading emptiness as fact. The trap is sharper
+than for the Pi adapter: the mount is at the **identical path**, so the projDir slug is identical
+too, and `transcriptFile`'s newest-by-mtime fallback would hand the slot an earlier *host-side*
+conversation from the same worktree and label it this session's.
+
+The adapter's other answers, each an owner-visible fact rather than a default:
+
+- **`automatable: false`.** No unattended path (autos, dispatch, steward sends, done-looking,
+  auto-③) may drive a container slot — and unlike Pi, that holds even with
+  `FLEET_HARNESS_AUTOMATION=1`. The owner decision has not been made, so it fails closed.
+- **`comms: ["docker"]`.** The liveness probe walks the *host* pane's process tree, and the agent
+  is in another pid namespace (inside colima's VM, on this machine). The `docker exec` client is
+  what the host can see, and it exits when the agent inside exits.
+- **`supports.selfSchedule: false`**, by construction: `docker exec` does not inherit the client's
+  environment, so `FLEET_SELF_TOKEN` — exported into the host pane — never reaches the agent.
+- **The model charset is not widened** (`modelRe: null`, i.e. the same rule a default slot gets).
+  The command inside the box *is* `agentCmd`'s, so a wider charset would admit names that same
+  binary rejects on the host.
+
+### What Fleet does not do, and the two things you must do
+
+Stage 1 by owner decision: **Fleet never creates, starts, mounts or probes the container.** A
+missing one is a docker error printed in the pane, followed by `; exec $SHELL` — the pane survives
+and shows what is wrong. The adapter's `note` says this at pick time.
+
+So the operator owes it two things, and the second is the one that bites:
+
+1. A running container, named by `FLEET_CONTAINER` (default `fleet`).
+2. The worktree bind-mounted at the **identical path**. `spawnCmd` passes `-w "$PWD"`, i.e. the
+   pane's own host cwd. Mounting it anywhere else makes every `docker exec` fail with a bad
+   working directory, and it would also break the only thing that keeps host git and the
+   in-container agent talking about one tree.
+
+The hand-run that establishes this — container up, bind-mount, and a canary write to a file in
+`$HOME` *outside* the repo that must fail mechanically — is the owner's, not a lane's: docker,
+`$HOME` and running containers are shared reality outside this repo. Nothing in the suite touches
+docker; the checks assert the spawn *string* (`e2e/security.ts` §6d, `e2e/lanes-basic.ts`), which
+is recorded whether or not a container runtime exists, for the same reason `./docker-verify.sh` is
+not a gate: no lane has one.
+
 ## What `./docker-verify.sh` attests, and what it does not
 
 It builds the image and runs the full `./e2e-isolated.sh` inside it, with **no mounts at all**:

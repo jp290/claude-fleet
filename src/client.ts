@@ -978,9 +978,11 @@ async function doShelve(slot: number) {
   await refresh();
 }
 
-// ↩ undo the last land on a repo — reset main back to where the land found it. The server
-// decides with git (only if main hasn't moved since and the commit is on no remote) and
-// refuses safely otherwise. The landed branch survives, so the work is recoverable either way.
+// ↩ undo the last land on a repo — reset main back to where THAT land found it. One press
+// reverses one land off the top of the server's capped undo stack; press again for the one
+// below it. The server decides with git (only if main hasn't moved since and no commit of the
+// land is on a remote) and refuses safely otherwise. The landed branch survives, so the work is
+// recoverable either way.
 async function doUndoLand(repo: string, branch: string): Promise<void> {
   if (!confirm(`Undo the last land (${branch}) — reset main back to before it? The '${branch}' branch is kept, so the work stays recoverable.`)) return;
   const r = await post("/api/repos/undo-land", { repo });
@@ -4919,7 +4921,7 @@ function postLandAlarm(a: PostLandAuditInfo | null, ackedAt: number): PlaAlarm |
   ].join(" · ");
   return tone === "red"
     ? { tone, where, headline: "POST-LAND AUDIT FAILED — the full suite is failing on the integration tip",
-        note: "This audit gates nothing and nothing was rolled back. ↩ undo-land reverses only the NEWEST land." }
+        note: "This audit gates nothing and nothing was rolled back. ↩ undo-land reverses the newest lands, one press per land, at most 3 deep — and which of them broke it is still yours to find." }
     : { tone, where, headline: "POST-LAND AUDIT DID NOT MEASURE — no verdict exists for this land",
         note: "A measurement that did not happen is not a pass. Nothing about the integration tip has been checked." };
 }
@@ -6494,8 +6496,9 @@ const DISPO_WORD_UI: Record<DispositionVerdict, string> = {
 //   · `verified: false` also fires when the gate could not RUN at all (F9: a lane without installed
 //     deps), so the wording is "verify red", never "unsound".
 //   · `sessionMs` is the lane's LIFETIME, not work time — labelled as such, never as effort.
-//   · `↩ undo` is one-step (only the newest land is undoable), so it is deliberately NOT offered
-//     per row; the board's single undo button stays the only affordance.
+//   · `↩ undo` walks the newest lands back one press at a time (a capped stack, 3 deep), so it is
+//     still deliberately NOT offered per row — a row is not addressable, only the top of the stack
+//     is; the board's single undo button stays the only affordance.
 let ocShell: Shell | null = null;
 let ocPick: string | null = null;              // landRef() of the selected outcome
 let ocRowOf = new Map<HTMLElement, OutcomeRow>(); // which outcome a list row stands for

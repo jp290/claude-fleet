@@ -41,14 +41,19 @@ explicitly relative to it. This doc deliberately does not touch `gate-coverage.m
 > `watchdog.sh`, not an unchosen 120 s default. Read §0 as the 2026-07-26 snapshot it is.
 
 3. **The gate has zero coverage of the land path — and tier 2's trigger lives there (§3, §6d).**
-   `grep` for `landLane|advanceIntegration|recordLand|emitLaneOutcome|runCleanReview|undoLast` in
+   `grep` for `landLane|advanceIntegration|recordLand|emitLaneOutcome|runCleanReview|undoStack` in
    the gate harness = 0. `schedulePostLandAudit` is called from `recordLand`. *Cost:* one
    regression can take out the undo record and the auditor together, and its symptom is an empty
    trail — indistinguishable from "nothing landed". The auditor cannot audit its own trigger.
-4. **`undo-land`, the rollback tier 2 names, is a one-land, until-the-next-land guarantee (§6c).**
+4. ~~**`undo-land`, the rollback tier 2 names, is a one-land, until-the-next-land guarantee (§6c).**
    One record per repo (`server.ts:2599`); the route refuses *and deletes the record* once main
    moved past it. *Cost:* in the exact burst tier 2's coalescing was built for (three lands in
-   ~110 s), the earlier lands are already un-undoable when the audit reports on them.
+   ~110 s), the earlier lands are already un-undoable when the audit reports on them.~~
+   **Widened 2026-08-08**: the record is a CAPPED STACK (`UNDO_STACK_MAX = 3`, `pushUndo` /
+   `undoStack` in `server.ts`), so the burst tier 2 coalesces stays reversible up to three lands
+   deep, one ↩ per land. Still not version control, and the rest of §6c stands: the fourth land
+   back ages out, a hand commit on main truncates the chain at the gap, and a collective red still
+   has to be attributed by hand before anything is rewound.
 5. **Three tracked `.ts` files are never typechecked — all three are the standalone harnesses
    (§4).** *Cost:* the gate's own harness is the one place type rot is invisible to the gate.
    Measured cost of fixing: 1.5 s → 1.538 s, zero new errors.
@@ -138,7 +143,7 @@ The six check families, all six about `claudeAlive()`:
 | 6 | dispatcher post-spawn re-check (`:237–264`) | 5 | externally-sourced task text never reaches a bare-shell lane |
 
 `gate-coverage.md`'s characterisation of the scope is right and I confirm it independently:
-`grep -c "landLane\|advanceIntegration\|recordLand\|emitLaneOutcome\|runCleanReview\|undoLast"
+`grep -c "landLane\|advanceIntegration\|recordLand\|emitLaneOutcome\|runCleanReview\|undoStack"
 fleet-e2e-claude-gate.ts` = **0**. The gate contains no reference to any symbol on the land path.
 
 While correcting counts nobody is standing on: the main suite emitted **759** result lines today
@@ -300,12 +305,18 @@ each has a class the other structurally cannot see.
   `covers[]` field exists because of this. That is the right engineering choice for a background
   auditor, and it is also a permanent limit on what its red means.
 - **(c) A rollback that is not needed** — because the one it would need is narrower than the phrase
-  "↩ undo-land is the rollback" suggests. VERIFIED at `server.ts:5121–5148`: `undoLast` holds **one
-  record per repo** (`server.ts:2599`), and the route refuses *and permanently deletes the record*
-  as soon as main moved past `mainAfter`, or as soon as the commit is on any remote. So in the exact
+  "↩ undo-land is the rollback" suggests. VERIFIED at `server.ts:5121–5148` (2026-07-26): `undoLast`
+  held **one record per repo**, and the route refused *and permanently deleted the record* as soon
+  as main moved past `mainAfter`, or as soon as the commit was on any remote. So in the exact
   scenario tier 2's coalescing was built for — "three lands arrived within ~110 s on 2026-07-25",
-  its own comment — **the first two lands are already un-undoable by the time an audit covering all
-  three reports.** The rollback exists for the newest land, and only until the next one.
+  its own comment — **the first two lands were already un-undoable by the time an audit covering all
+  three reported.**
+  **Corrected 2026-08-08**: `undoStack` now holds up to `UNDO_STACK_MAX = 3` records per repo, so a
+  three-land burst is reversible land by land (one ↩ per land, each with its own git gate and its
+  own `reverted` ledger row). What did NOT change, and is the reason this paragraph stays: the
+  fourth land back is dropped with a stated reason, a commit fleet did not land truncates the chain
+  at the gap, and a red that names three lands still identifies none of them — the bisect is the
+  owner's. The rollback is a pointer with a short memory, not history.
 - **(d) Coverage of the auditor's own trigger.** `schedulePostLandAudit` is called at the end of
   `recordLand`, the same function that writes the undo record (`server.ts:2643–2645` plus the
   sibling lane's addition). Both are invisible to tier 1 (§3: zero mentions). A land-path regression
@@ -405,9 +416,11 @@ Read first-hand: `git -C …/post-land-audit diff main...HEAD` (5 lane commits, 
    red can be closed there. Still open: **no client rendering at all** — the board shows only the
    newest row's summary, and the only way to WRITE a judgement is a curl to the route. The owner
    cannot adjudicate from the UI.
-3. **The rollback it names is mostly unavailable in the burst case it optimises for** (§6c). Worth
+3. ~~**The rollback it names is mostly unavailable in the burst case it optimises for** (§6c). Worth
    saying in the doc it ships with, because "↩ undo-land is the rollback" reads as a general
-   guarantee and is a one-land, until-the-next-land guarantee.
+   guarantee and is a one-land, until-the-next-land guarantee.~~ **Resolved 2026-08-08** for the
+   burst case up to three lands (§6c, capped stack); it remains a short memory, never a general
+   guarantee.
 4. **It cannot cover its own trigger** (§6d), and its trigger lives in the untested-by-tier-1 land
    path.
 5. It leaves tier 1's content untouched — after it lands, "green" still means types + 25

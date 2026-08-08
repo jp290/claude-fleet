@@ -401,6 +401,10 @@ nicht mechanisiert werden, sie muss nur nicht mehr von Hand gewusst werden.
 - `undoableFor` (`server.ts:4013`) hält genau **einen** Eintrag pro Repo. `fleet.json.undoLands`
   bestätigt das live: zwei Repos, zwei Einträge. In einem Schub von vier Lands wie heute ist der
   Rückweg für die ersten drei weg, bevor irgendein Alarm eintrifft.
+  **Korrektur 2026-08-08:** `undoLands` ist ein gedeckelter STACK (`UNDO_STACK_MAX = 3`, `pushUndo`
+  in `server.ts`) — in einem Schub von vier Lands ist der Rückweg für die letzten DREI da, für das
+  älteste nicht (und die Verweigerung sagt das). Der Rest des Befunds steht: das ist ein Zeiger mit
+  kurzem Gedächtnis, keine Historie.
 
 ---
 
@@ -514,8 +518,9 @@ Analyse kommen:
 2. **Kein Auto-Rollback auf ein rotes Tier-2.** Historische Trefferquote: 1 von 15 adjudizierten
    Roten war `real` (§7.1; Korrektur 2026-08-06, vorher 0/12 — `docs/autonomy-bausteine-2026-08-06.md`
    §1.1). Ein Auslöser, der in 14 von 15 Fällen grundlos ausgelöst hätte, macht
-   `main` instabiler, nicht stabiler. Dazu kommt: `undoableFor` hält einen Eintrag pro Repo (§8),
-   im Schub ist der Rückweg ohnehin weg.
+   `main` instabiler, nicht stabiler. (Der Zusatz „`undoableFor` hält einen Eintrag pro Repo (§8),
+   im Schub ist der Rückweg ohnehin weg" ist seit 2026-08-08 überholt — Stack bis 3, s. §8. Die
+   Trefferquote trägt den Entscheid allein.)
 3. **Kein serverseitiger Sender an Lanes**, solange `/api/self/drift` kein Audit-Event schreibt
    (§5.1) und `/send` keine eigene Quelle für „Maschine, mit Owner-Credential" hat (§2.3). Beides
    ist Vorbedingung, nicht Politur: Provenienz lässt sich nachträglich nicht reparieren

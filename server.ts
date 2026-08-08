@@ -1596,7 +1596,8 @@ function saveState(): void {
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches, tasks,
     comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoLast), landPending: Object.fromEntries(landPending),
+    repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
+    landPending: Object.fromEntries(landPending),
   }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
@@ -5975,12 +5976,98 @@ function needsMergeReview(id: number): boolean {
 
 // --- ↩ undo-last-land: the one reversible pointer for the one action that mutates main.
 // On every land that ADVANCED the integration branch we record where main was before and
-// after, keyed by repo (last land per repo). Undo is git-gated (see /api/repos/undo-land):
-// it resets main back to mainBefore ONLY while main is still exactly at mainAfter and that
-// commit has not reached any remote — otherwise it refuses. The landed branch is kept by
-// land, so a reset leaves the work fully recoverable by reopening the lane.
+// after, keyed by repo. Undo is git-gated (see /api/repos/undo-land): it resets main back to
+// mainBefore ONLY while main is still exactly at mainAfter and no commit it would discard has
+// reached a remote — otherwise it refuses. The landed branch is kept by land, so a reset leaves
+// the work fully recoverable by reopening the lane.
 interface LandRecord { repo: string; main: string; branch: string; mainBefore: string; mainAfter: string; at: number }
-const undoLast = new Map<string, LandRecord>(); // repo toplevel -> its most recent undoable land
+// A POINTER WITH A SHORT MEMORY — deliberately not version control. One record per repo was the
+// v1, and the doctrine that made it sufficient (never land again until the post-land audit
+// reported) was retired on 2026-08-08: lands may now follow each other while a ~9.4-min tier-2
+// audit runs, and `drainPostLandAudits` states in its own contract that one audit may cover N
+// lands. A collective RED therefore names lands that the single record had already forgotten —
+// the rollback tier 2 points at did not exist for them.
+// THE CAP IS 3, and the number is a judgement, not a measurement:
+//   · a land takes ~110 s of gate, an audit ~9.4 min — so a burst that ONE audit can cover is
+//     realistically 2–5 lands. 3 covers the common burst without pretending to cover every one.
+//   · the deeper the stack, the further a single button can rewind main, and the weaker the
+//     owner's ability to hold the whole chain in their head. 2 would already forget a plain
+//     land-land-land afternoon; beyond 3 this stops being "the newest lands" and becomes history.
+//   · nothing here removes the bisect: a collective red still has to be attributed by hand. The
+//     stack only keeps the rewind AVAILABLE while that happens.
+const UNDO_STACK_MAX = 3;
+const undoStack = new Map<string, LandRecord[]>(); // repo toplevel -> undoable lands, OLDEST FIRST
+// Why records left the stack, so an empty stack can say more than "nothing here". Kept per repo
+// and never reset: a land that aged out stays un-undoable forever, so the statement stays true
+// however long afterwards it is read. `n` is the running count, `why` the MOST RECENT reason —
+// enough to tell "aged out" from "never landed", not a per-record history (which would be the
+// version control this deliberately is not).
+interface UndoDrop { n: number; why: string }
+const undoDropped = new Map<string, UndoDrop>();
+function dropUndo(repo: string, n: number, why: string): void {
+  if (n <= 0) return;
+  undoDropped.set(repo, { n: (undoDropped.get(repo)?.n ?? 0) + n, why });
+}
+// Push a land onto its repo's stack. THREE cases, and only the first is the ordinary one:
+//  · contiguous  → push, and evict the oldest once the cap is exceeded.
+//  · REPLAY      → recordLand is idempotent by contract (a death between the main-move and the
+//    clearLandIntent replays it at boot), so an identical top record is REPLACED, never stacked
+//    twice. Without this the replay would look like a gap to the check below and wipe the stack.
+//  · GAP         → the new land does not start where the previous one ended. Usually a commit
+//    fleet did not land (a hand commit on main, a hand rewind); it also catches a land whose
+//    recorded `mainBefore` went stale under a concurrent land on the same repo, which is why the
+//    wording states the FACT (the chain broke) and not a guess at the cause. Every record below
+//    the gap is then unreachable — undoing them would require main to be at a SHA it can no
+//    longer reach — so they are dropped HERE, at the one site that knows both SHAs, rather than
+//    discovered one confusing refusal at a time later. Contiguity is checked, never assumed:
+//    it is the invariant the undo route relies on when it pops records one after another.
+function pushUndo(repo: string, rec: LandRecord): void {
+  const st = undoStack.get(repo) ?? [];
+  const top = st[st.length - 1];
+  if (top && top.mainBefore === rec.mainBefore && top.mainAfter === rec.mainAfter) {
+    st[st.length - 1] = rec; // the replay — same land, re-recorded
+  } else {
+    if (top && top.mainAfter !== rec.mainBefore) {
+      dropUndo(repo, st.length, `the next land did not start where the previous land ended (${rec.main} was left at ${top.mainAfter.slice(0, 8)}, the next land started at ${rec.mainBefore.slice(0, 8)}), so nothing below that break can be rewound`);
+      st.length = 0;
+    }
+    st.push(rec);
+    while (st.length > UNDO_STACK_MAX) {
+      st.shift();
+      dropUndo(repo, 1, `the undo stack keeps at most ${UNDO_STACK_MAX} lands`);
+    }
+  }
+  undoStack.set(repo, st);
+}
+// A permanent refusal on the TOP record kills the whole stack: every older record is reachable
+// only THROUGH the one being refused (undoing it needs main at ITS mainAfter, which lies below
+// the refused range), so leaving them would offer a button that can never succeed.
+function killUndoStack(repo: string, why: string): void {
+  const st = undoStack.get(repo);
+  if (!st?.length) return;
+  dropUndo(repo, st.length, why);
+  undoStack.delete(repo);
+}
+// THE SAFETY GATE, over the RANGE and not just its tip. An undo discards every commit in
+// mainBefore..mainAfter, so "has this reached a remote" has to be asked about all of them: a
+// remote branch parked on an INTERMEDIATE commit of a landed range leaves the tip contained by
+// nothing, and a tip-only probe would happily rewind past shared history. Returns the refusal
+// reason, or null when nothing in the range is on a remote. Fail-CLOSED: if the range cannot be
+// listed we refuse rather than guess — this is the check that stands between a button and
+// rewritten shared history.
+async function remoteHoldsLandedRange(repo: string, rec: LandRecord): Promise<string | null> {
+  const range = `${rec.mainBefore}..${rec.mainAfter}`;
+  const all = await git(repo, "rev-list", range);
+  if (all.code !== 0) return `cannot list the commits ${range} that this undo would discard (${(all.err || all.out).slice(0, 120)}) — refusing rather than guessing whether they are shared`;
+  const local = await git(repo, "rev-list", range, "--not", "--remotes");
+  if (local.code !== 0) return `cannot tell which of ${range} are already on a remote (${(local.err || local.out).slice(0, 120)}) — refusing rather than guessing`;
+  const keep = new Set(local.out.split("\n").filter(Boolean));
+  const held = all.out.split("\n").filter(Boolean).find((sha) => !keep.has(sha));
+  if (!held) return null;
+  const where = await git(repo, "branch", "-r", "--contains", held);
+  const branch = where.out.trim().split("\n")[0]?.trim() || "a remote branch";
+  return `${held.slice(0, 8)} — part of this land — is already on a remote (${branch}); undo would rewrite shared history. Revert it by hand instead.`;
+}
 // --- the land-in-flight marker: the durable half of "main is about to move".
 // `advanceIntegration` moves main; `recordLand` writes the undo record, the provenance note and
 // the tier-2 audit trigger — and everything between the two is a hole. A restart there (the
@@ -5994,9 +6081,11 @@ const undoLast = new Map<string, LandRecord>(); // repo toplevel -> its most rec
 interface LandPending { repo: string; main: string; branch: string; mainBefore: string; laneTip: string;
   at: number; prov: LandProvenance }
 const landPending = new Map<string, LandPending>(); // repo toplevel -> the land it is in the middle of
-// what the board needs to show/hide the undo button for a lane's repo — nulled once undone
+// what the board needs to show/hide the undo button for a lane's repo — the TOP of the stack,
+// i.e. the land the next ↩ would reverse; null once nothing is left to undo
 function undoableFor(repo: string): { branch: string; at: number } | null {
-  const r = undoLast.get(repo);
+  const st = undoStack.get(repo);
+  const r = st?.[st.length - 1];
   return r ? { branch: r.branch, at: r.at } : null;
 }
 // --- provenance note (design note §4, "own your work"): on every land that MOVES main, the
@@ -6037,8 +6126,8 @@ async function writeLandNote(repo: string, branch: string, mainBefore: string, m
 // Declare the land BEFORE the integration branch moves, and wait for that declaration to be on
 // disk. Everything recordLand needs to finish afterwards rides along, so a process that dies in
 // the window can be finished by the next one instead of leaving an unattributed commit on main.
-// Keyed by repo, one in flight at a time — the same shape (and the same assumption of one land
-// per repo at a time) `undoLast` already has.
+// Keyed by repo, one in flight at a time — the same assumption of one land per repo AT A TIME
+// the undo stack makes (that stack keeps several lands, but only ever one of them is in flight).
 async function markLandIntent(repo: string, main: string, branch: string, mainBefore: string,
   laneTip: string, prov: LandProvenance): Promise<void> {
   landPending.set(repo, { repo, main, branch, mainBefore, laneTip, at: Date.now(), prov });
@@ -6054,7 +6143,7 @@ function clearLandIntent(repo: string): void {
 // provenance note (no advance = no integration-history event to attach the story to).
 async function recordLand(repo: string, main: string, branch: string, mainBefore: string, mainAfter: string, prov: LandProvenance): Promise<void> {
   if (!mainBefore || !mainAfter || mainBefore === mainAfter) { clearLandIntent(repo); return; }
-  undoLast.set(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
+  pushUndo(repo, { repo, main, branch, mainBefore, mainAfter, at: Date.now() });
   saveState(); // the undo record is persisted state — persist it AT the main-move, so it
   // survives a restart even when a downstream saveState is skipped (e.g. the mergeJob tail's
   // recycle guard on the slot-recycled teardown-failure sub-case).
@@ -6068,7 +6157,7 @@ async function recordLand(repo: string, main: string, branch: string, mainBefore
   schedulePostLandAudit(repo, main, branch, mainAfter);
   // ...and only now is the land fully recorded. Clearing LAST, after the note and the audit
   // trigger, is deliberate: a death anywhere above leaves the marker, boot re-runs this whole
-  // function, and every step of it is idempotent (`undoLast.set` of the identical record, a
+  // function, and every step of it is idempotent (`pushUndo` REPLACES the identical record, a
   // `notes add -f`, one extra audit row — b5e6's at-least-once direction). Clearing first would
   // trade a rare duplicate row for a silent miss, which is the bug being fixed.
   clearLandIntent(repo);
@@ -8913,15 +9002,33 @@ if (existsSync(STATE_FILE)) {
           shelved[k] = { at: (v as { at: number }).at, note: (v as { note: string }).note };
     // undoable lands survive deploys — the reversibility pointer must outlast a restart, or a
     // deploy right after a land would silently strip the owner's one chance to undo it
+    // MIGRATION, and it is load-bearing rather than cosmetic: the pre-stack shape was ONE record
+    // per repo (`undoLands: { "<repo>": {…} }`), and the deploy ritual restarts this server ~10×
+    // a day. A boot that only understood the array would read every land recorded before the
+    // upgrade as "no land", silently deleting the owner's undo at exactly the moment the upgrade
+    // was meant to widen it. A bare object is therefore read as a one-element stack.
     const pul = (persisted as { undoLands?: unknown }).undoLands;
+    const landRecordFrom = (k: string, v: unknown): LandRecord | null =>
+      typeof v === "object" && v !== null
+      && typeof (v as LandRecord).main === "string" && typeof (v as LandRecord).branch === "string"
+      && typeof (v as LandRecord).mainBefore === "string" && typeof (v as LandRecord).mainAfter === "string"
+      && typeof (v as LandRecord).at === "number"
+        ? { repo: k, main: (v as LandRecord).main, branch: (v as LandRecord).branch,
+            mainBefore: (v as LandRecord).mainBefore, mainAfter: (v as LandRecord).mainAfter, at: (v as LandRecord).at }
+        : null;
     if (typeof pul === "object" && pul !== null && !Array.isArray(pul))
-      for (const [k, v] of Object.entries(pul as Record<string, unknown>))
+      for (const [k, v] of Object.entries(pul as Record<string, unknown>)) {
+        if (typeof k !== "string") continue;
+        const recs = (Array.isArray(v) ? v : [v]).map((r) => landRecordFrom(k, r)).filter((r): r is LandRecord => r !== null);
+        // a file written by a server with a LARGER cap must not out-argue this one's
+        if (recs.length) undoStack.set(k, recs.slice(-UNDO_STACK_MAX));
+      }
+    const pud = (persisted as { undoDrops?: unknown }).undoDrops;
+    if (typeof pud === "object" && pud !== null && !Array.isArray(pud))
+      for (const [k, v] of Object.entries(pud as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "object" && v !== null
-          && typeof (v as LandRecord).main === "string" && typeof (v as LandRecord).branch === "string"
-          && typeof (v as LandRecord).mainBefore === "string" && typeof (v as LandRecord).mainAfter === "string"
-          && typeof (v as LandRecord).at === "number")
-          undoLast.set(k, { repo: k, main: (v as LandRecord).main, branch: (v as LandRecord).branch,
-            mainBefore: (v as LandRecord).mainBefore, mainAfter: (v as LandRecord).mainAfter, at: (v as LandRecord).at });
+          && typeof (v as UndoDrop).n === "number" && typeof (v as UndoDrop).why === "string")
+          undoDropped.set(k, { n: (v as UndoDrop).n, why: (v as UndoDrop).why });
     // ...and so does the land that was still IN FLIGHT. Restored here, resolved against git a few
     // lines below (finishLandsInFlight) — the restore only reads the file.
     const plp = (persisted as { landPending?: unknown }).landPending;
@@ -11944,36 +12051,51 @@ Bun.serve<WSData>({
     // caller can tell "no override" from "that worker was never wired up" without guessing.
     if (url.pathname === "/api/repo-workers" && req.method === "GET")
       return json({ keys: REPO_WORKER_KEYS, workers: repoWorkers });
-    // ↩ undo the last land on a repo — the one reversible pointer for the one action that
-    // mutates main. GIT decides, never optimism: reset main back to where it was ONLY while
-    // it is still EXACTLY where the land left it (nobody landed/committed on top) AND that
-    // commit has reached no remote (undoing a pushed land would rewrite shared history).
-    // Otherwise refuse with a precise reason — a safe refusal is the correct v1. The landed
+    // ↩ undo the last land on a repo — the reversible pointer for the one action that mutates
+    // main. ONE record per call, off the top of the repo's stack: two lands are reversed by two
+    // calls, each with its own git gate and its own `reverted` ledger row, because each is a
+    // separate statement about main. GIT decides, never optimism: reset main back to where it was
+    // ONLY while it is still EXACTLY where that land left it (nobody landed/committed on top) AND
+    // no commit the reset would discard has reached a remote (that would rewrite shared history).
+    // Otherwise refuse with a precise reason — a safe refusal is the correct answer. The landed
     // branch is kept by land, so a reset leaves the work fully recoverable by reopening the lane.
     if (url.pathname === "/api/repos/undo-land" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
       const top = await git(resolve(expandCwd(body.repo)), "rev-parse", "--show-toplevel");
       if (top.code !== 0) return json({ error: "not a git repository" }, 400);
-      const rec = undoLast.get(top.out);
-      if (!rec) return json({ error: "nothing to undo — no recorded land for this repo" }, 404);
+      const stack = undoStack.get(top.out) ?? [];
+      const rec = stack[stack.length - 1];
+      if (!rec) {
+        // an empty stack is not always the same emptiness: say WHY when records left it, so
+        // "this repo never landed" and "that land aged out of a 3-deep memory" never read alike
+        const gone = undoDropped.get(top.out);
+        return json({ error: gone
+          ? `nothing to undo — ${gone.n} land${gone.n === 1 ? "" : "s"} left this repo's undo stack: ${gone.why}. Revert by hand instead; the landed branches still exist.`
+          : "nothing to undo — no recorded land for this repo" }, 404);
+      }
       const cur = await git(top.out, "rev-parse", rec.main);
       if (cur.code !== 0) return json({ error: `cannot resolve ${rec.main}` }, 400);
-      // main moved since the land → the record is permanently unusable; consume it and refuse
+      // main moved since the land → the record is permanently unusable, and so is everything
+      // under it (each older record needs main at a SHA further back than this one)
       if (cur.out !== rec.mainAfter) {
-        undoLast.delete(top.out); saveState();
+        killUndoStack(top.out, `${rec.main} moved past the recorded land (now at ${cur.out.slice(0, 8)})`);
+        saveState();
         return json({ error: `${rec.main} moved since this land (landed at ${rec.mainAfter.slice(0, 8)}, now at ${cur.out.slice(0, 8)}) — nothing safely undoable. The '${rec.branch}' branch still exists if you need the work.` }, 409);
       }
-      // already pushed → undo would rewrite shared history; permanent refusal, consume the record
-      const onRemote = await git(top.out, "branch", "-r", "--contains", rec.mainAfter);
-      if (onRemote.out.trim()) {
-        undoLast.delete(top.out); saveState();
-        return json({ error: `this land is already on a remote (${onRemote.out.trim().split("\n")[0].trim()}) — undo would rewrite shared history; revert it by hand instead.` }, 409);
+      // any commit of THIS land already pushed → undo would rewrite shared history; permanent
+      // refusal, and the records below it die with it for the same reason as above
+      const shared = await remoteHoldsLandedRange(top.out, rec);
+      if (shared) {
+        killUndoStack(top.out, `a commit of the '${rec.branch}' land is on a remote`);
+        saveState();
+        return json({ error: shared }, 409);
       }
       const reset = await resetIntegration(top.out, rec.main, rec.mainAfter, rec.mainBefore);
       if (reset) return json({ error: reset.error }, 409); // transient (dirty holder etc.) — record kept for a retry
-      emitLaneOutcome(await buildRevertedOutcome(top.out, rec)); // strongest negative outcome — record BEFORE consuming the undo record
-      undoLast.delete(top.out); // an undo can be undone once
+      emitLaneOutcome(await buildRevertedOutcome(top.out, rec)); // strongest negative outcome — one row per record, written BEFORE the record is consumed
+      stack.pop(); // this land is undone; the one below it becomes the next ↩
+      if (stack.length === 0) undoStack.delete(top.out); else undoStack.set(top.out, stack);
       saveState();
       audit("repo_undo_land", undefined, `${basename(top.out)} ${rec.branch} ${rec.mainAfter.slice(0, 8)}->${rec.mainBefore.slice(0, 8)}`);
       return json({ ok: true, repo: top.out, main: rec.main, branch: rec.branch, from: rec.mainAfter, to: rec.mainBefore,

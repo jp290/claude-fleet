@@ -468,6 +468,15 @@ const harnessOf = (id: string | null | undefined): Harness =>
 
 // which harness a request asked for. Absent → null (the default), which is what every caller that
 // predates this field sends and must keep meaning.
+// Which working-copy form a lane request asks for. Absent is "worktree" and always will be: this
+// is the shape every caller, script and test already sends, and a default that had to be written
+// out would make the addition of clones a change to lanes that are not clones.
+function laneFormOf(body: Record<string, unknown> | null): { ok: true; form: LaneForm } | { ok: false } {
+  const f = body?.form;
+  if (f === undefined || f === null || f === "") return { ok: true, form: "worktree" };
+  return f === "worktree" || f === "clone" ? { ok: true, form: f } : { ok: false };
+}
+
 function harnessIdOf(body: Record<string, unknown> | null): { ok: true; harness: string | null } | { ok: false } {
   const h = body?.harness;
   if (h === undefined || h === null || h === "") return { ok: true, harness: null };
@@ -710,6 +719,17 @@ const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's j
 const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
 const MAX_REFINE_FILES = 20;
 
+// HOW a lane's working copy relates to the repo it came from. Absent/"worktree" is every lane
+// Fleet ever made: `git worktree add`, sharing the primary's object database. "clone" is a full
+// `git clone --no-hardlinks` — its own .git, its own hooks, its own config, one self-contained
+// directory. The distinction exists for ISOLATION, and it is not cosmetic: a worktree's `.git` is
+// a FILE pointing at the primary's common dir, so a worktree handed to a sandbox is a directory
+// git cannot work in at all — and mounting the common dir alongside it hands the sandbox
+// `.git/hooks`, whose contents run on the HOST under the owner's uid on his next commit.
+// `.git/config` (aliases, core.pager, fsmonitor) is the same vector. A clone has neither.
+type LaneForm = "worktree" | "clone";
+interface LaneRef { repo: string; branch: string; base?: string; baseSha?: string; form?: LaneForm }
+
 interface Slot {
   id: number;
   cwd: string | null; // null = slot not activated; self-heal only touches activated slots
@@ -726,7 +746,7 @@ interface Slot {
   // in the owner's stead). Without it a waiting lane is simply an idle lane, i.e. a nudge target.
   // Cleared by the owner's own send, by the criterion confirmation, and with the label on
   // open/kill. Persisted: a restart must not re-open the hole.
-  worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; // set when Fleet created this slot's
+  worktree: LaneRef | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
   // create/attach time — optional, because lanes forked before it existed have none.
@@ -1346,7 +1366,7 @@ let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; mission: string | null; awaiting: "owner" | null;
     sessionId: string | null;
-    worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null; model: string | null;
+    worktree: LaneRef | null; model: string | null;
     harness: string | null; effort: string | null;
     releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, releasedBy: s.releasedBy, selfToken: s.selfToken };
@@ -1827,7 +1847,13 @@ async function tickGit(): Promise<void> {
       // belt to gitRead's braces: it removes Fleet's own contention outright, while gitRead covers
       // the pollers this guard cannot reach (the lane's own session, another worktree's reader).
       if (mergeInflight.has(s.id) || mergeStart.has(s.id)) continue;
-      gitOpInfo.set(s.id, await gitOpInProgress(s.cwd));
+      const gitOp = await gitOpInProgress(s.cwd);
+      gitOpInfo.set(s.id, gitOp);
+      // A clone lane's two sides only agree because this tick keeps them agreeing — without it the
+      // numbers below measure the clone against the base branch as it stood at clone time, and
+      // `behind` would read 0 forever. Skipped mid-rebase for the same reason the merge guard above
+      // exists: a lane whose git is being rewritten is not a lane to write refs into.
+      if (!gitOp) await syncLaneRefs(s.worktree, s.cwd);
       const st = await gitRead(s.cwd, "status", "--porcelain=v2", "--branch");
       if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
       let branch = "", ahead = 0, behind = 0, dirty = 0;
@@ -1873,7 +1899,7 @@ const worktreePathFor = (root: string, branch: string): string =>
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
-async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ repo: string; path: string; branch: string }> {
+async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree"): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const repoDir = resolve(expandCwd(repoRaw));
   if (!existsSync(repoDir) || !statSync(repoDir).isDirectory()) throw new Error(`not a directory: ${repoDir}`);
   const top = await git(repoDir, "rev-parse", "--show-toplevel");
@@ -1893,10 +1919,30 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
   // the integration branch. Unset config → integrationBranch is the primary's HEAD, so this is
   // the same start point as the bare `worktree add -b` default (no-op today).
   const start = await integrationBranch(root);
-  const add = start
-    ? await git(root, "worktree", "add", "-b", branch, path, start)
-    : await git(root, "worktree", "add", "-b", branch, path);
-  if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
+  if (form === "clone") {
+    // A clone lane's branch is mirrored back into the root under the SAME NAME (syncLaneRefs), and
+    // that mirror is FORCED — a rebase rewrites the lane tip, so a fast-forward-only push-back
+    // would wedge on the first rebase. Forced means it would also clobber a pre-existing branch of
+    // that name, so refuse here instead: this is the one moment the collision is cheap to see.
+    // (The worktree path guard above is the same check in its own vocabulary — `worktree add -b`
+    // refuses a duplicate branch itself; a clone creates its branch in the clone, where the root's
+    // branches are invisible, so nothing would refuse without this.)
+    if ((await git(root, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).code === 0)
+      throw new Error(`branch already exists in ${root}: ${branch} — a clone lane mirrors its branch back under this name`);
+    // --no-hardlinks, and it is the whole point rather than a tuning knob: the default local-clone
+    // optimisation HARDLINKS the object files, so the two repos would share the very bytes this
+    // form exists to separate. Measured on this repo: ~98 MB of objects per clone.
+    // --no-local implies it; --no-hardlinks is the narrower, explicit statement.
+    const cl = await git(root, "clone", "--no-hardlinks", ...(start ? ["--branch", start] : []), root, path);
+    if (cl.code !== 0) throw new Error(`clone failed: ${(cl.err || cl.out).slice(0, 300)}`);
+    const co = await git(path, "checkout", "-b", branch);
+    if (co.code !== 0) throw new Error(`clone checkout failed: ${(co.err || co.out).slice(0, 300)}`);
+  } else {
+    const add = start
+      ? await git(root, "worktree", "add", "-b", branch, path, start)
+      : await git(root, "worktree", "add", "-b", branch, path);
+    if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
+  }
   // copy env scaffolding a fresh checkout lacks — but ONLY files git IGNORES in the source
   // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
   // and would leave the lane permanently "dirty", blocking `land`. Gitignored copies stay
@@ -1918,7 +1964,50 @@ async function createWorktree(repoRaw: string, branchRaw: string): Promise<{ rep
     writeFileSync(`${path}/${f}`, readFileSync(`${root}/${f}`), { mode: 0o600 });
     chmodSync(`${path}/${f}`, 0o600);
   }
-  return { repo: root, path, branch };
+  return { repo: root, path, branch, form };
+}
+
+// THE ONE SEAM that keeps a clone lane from being a rewrite of this file. Everything Fleet knows
+// about a lane is read either root-side by branch name (drift, worktreeRisk, advanceIntegration,
+// `branch --merged`) or tree-side against the base branch (the git tick's ahead/behind,
+// laneSurfaces, tryScriptRebase). A worktree satisfies both at once because it shares the root's
+// refs. A clone satisfies neither — until both refs are mirrored, and then it satisfies both with
+// no caller changed: the root gets `refs/heads/<branch>` at the clone's tip, the clone gets its
+// local base branch at the root's tip.
+//
+// FORCED IN BOTH DIRECTIONS, each for its own reason: a rebase rewrites the lane branch (so the
+// push-back is not a fast-forward), and `undo-land` rewinds main (so the pull-down is not one
+// either). Neither ref is ever committed to on the side it is written — the clone never checks out
+// its base, the root never checks out a lane branch — so "mirror" is the literal contract.
+//
+// Objects travel clone → root only on the push-back, which is the TRUSTED direction. The clone
+// never gains a path to the root's hooks, config or object database; that is the property the
+// whole form exists for, and a `fetch` from the host side is how it stays true even when the
+// clone is bind-mounted into a sandbox that cannot see the root at all.
+async function syncLaneRefs(w: LaneRef | null, cwd: string | null): Promise<{ error: string } | null> {
+  if (!w || !cwd || w.form !== "clone") return null; // worktree lanes share refs — nothing to mirror
+  const base = w.base ?? await integrationBranch(w.repo);
+  if (base) {
+    const down = await git(cwd, "fetch", w.repo, `+refs/heads/${base}:refs/heads/${base}`);
+    if (down.code !== 0) return { error: `could not mirror ${base} into the clone: ${(down.err || down.out).slice(0, 200)}` };
+  }
+  const up = await git(w.repo, "fetch", cwd, `+refs/heads/${w.branch}:refs/heads/${w.branch}`);
+  if (up.code !== 0) return { error: `could not mirror ${w.branch} back into ${w.repo}: ${(up.err || up.out).slice(0, 200)}` };
+  return null;
+}
+
+// Is the root's mirror of this lane's branch still the clone's actual tip? Read fresh, never
+// cached: the answer is the reason every root-side number about a clone lane may be a moment old,
+// and a stale-but-confident number is the failure this whole form is supposed to make impossible.
+// `null` = could not be determined, which is NOT "fresh" (same three-valued stance as drift's
+// wouldConflict). A worktree lane is never stale — there is no copy to be stale.
+async function laneRefsStale(w: LaneRef | null, cwd: string | null): Promise<boolean | null> {
+  if (!w || !cwd || w.form !== "clone") return false;
+  const here = await gitRead(cwd, "rev-parse", "HEAD");
+  const there = await gitRead(w.repo, "rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`);
+  if (here.code !== 0 || !here.out) return null;
+  if (there.code !== 0 || !there.out) return true; // no mirror at all is maximally stale
+  return here.out !== there.out;
 }
 
 // every open worktree of a repo, primary checkout first — `git worktree list` is the
@@ -1985,16 +2074,38 @@ async function worktreeRisk(repo: string, path: string): Promise<WorktreeRisk> {
 // "safe to drop" checks + removal, shared by land and orphan cleanup: git's OWN
 // dirty/unmerged refusal in `worktree remove` is the backstop — on top we refuse while
 // commits are neither pushed to any remote nor merged, so removal can never eat work
-async function removeWorktreeSafe(repo: string, path: string, branch: string): Promise<{ error: string; code: number } | null> {
+async function removeWorktreeSafe(repo: string, path: string, branch: string, form: LaneForm = "worktree"): Promise<{ error: string; code: number } | null> {
   const st = await git(path, "status", "--porcelain");
   if (st.code !== 0) return { error: "git status failed — worktree gone?", code: 400 };
+  // A clone's commits are invisible to the root until mirrored, and the "is this work preserved"
+  // question below is answered root-side (`branch --merged`). Refreshing the mirror FIRST is what
+  // makes the answer about this tree rather than about whatever the tree looked like last tick.
+  // A failed mirror is fatal here on purpose: it means the safety check would run on a stale ref,
+  // and this function's whole job is to be the thing that never eats work.
+  const sync = form === "clone" ? await syncLaneRefs({ repo, branch, form }, path) : null;
+  if (sync) return { error: `${sync.error} — lane kept, its state could not be verified`, code: 409 };
   const risk = await worktreeRisk(repo, path);
   if (risk.dirtyFiles.length) return { error: `worktree has uncommitted changes:\n${risk.dirtyFiles.join("\n").slice(0, 400)}`, code: 409 };
   if (risk.unpushedCommits.length)
     return { error: `unpushed commits:\n${risk.unpushedCommits.map((c) => `${c.hash} ${c.subject}`).join("\n").slice(0, 400)}`, code: 409 };
-  const rmv = await git(repo, "worktree", "remove", path);
-  if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
-  delete shelved[path]; // the worktree is gone — drop any shelve note with it
+  if (form === "clone") {
+    // No `git worktree remove` to hide behind: the clone is an ordinary directory and git's own
+    // refusal — the backstop the worktree path leans on — does not exist here. The two checks
+    // above are therefore the WHOLE guard, which is why the mirror had to be fresh. Scoped to a
+    // path Fleet itself derived (worktreePathFor) and re-verified as a git toplevel, so this can
+    // never be pointed at the primary checkout or a hand-made directory.
+    const top = await git(path, "rev-parse", "--show-toplevel");
+    if (top.code !== 0 || resolve(top.out) !== resolve(path))
+      return { error: `refusing to remove ${path}: not the toplevel of its own repository (lane kept)`, code: 409 };
+    if (resolve(path) === resolve(repo))
+      return { error: "refusing to remove the primary checkout", code: 409 };
+    try { rmSync(path, { recursive: true, force: true }); }
+    catch (e) { return { error: `clone removal failed (lane kept): ${e instanceof Error ? e.message : "unknown"}`, code: 409 }; }
+  } else {
+    const rmv = await git(repo, "worktree", "remove", path);
+    if (rmv.code !== 0) return { error: `worktree remove failed (lane kept): ${(rmv.err || rmv.out).slice(0, 300)}`, code: 409 };
+  }
+  delete shelved[path]; // the tree is gone — drop any shelve note with it
   return null;
 }
 
@@ -2008,7 +2119,7 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ er
   // assemble the "landed" outcome while the worktree still exists (git reads need the tree);
   // emit only AFTER teardown succeeds, so a failed removeWorktreeSafe records no false land.
   const landed = await buildLaneOutcome(s, "landed", facts);
-  const fail = await removeWorktreeSafe(repo, path, branch);
+  const fail = await removeWorktreeSafe(repo, path, branch, s.worktree.form ?? "worktree");
   if (fail) return fail;
   // the branch is landed and gone — a parked ⏸ must not outlive it. BOTH keyed views have to go,
   // because the park is RE-CREATED from the slot-keyed one: killSlot below calls parkMergeVerdict,
@@ -2086,11 +2197,18 @@ const laneSpawn = new Set<number>();
 const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
-  harness: string | null = null, effort: string | null = null): Promise<{ cwd: string; branch: string }> {
-  const wt = await createWorktree(repo, branch);
+  harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree"): Promise<{ cwd: string; branch: string }> {
+  const wt = await createWorktree(repo, branch, form);
   const base = await integrationBranch(wt.repo);
   const baseSha = await laneForkSha(wt.path, base);
-  await openSlot(s, wt.path, { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha }, model, null, harness, effort);
+  const ref: LaneRef = { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha,
+    ...(form === "clone" ? { form } : {}) }; // absent for a worktree lane — the persisted shape of
+  // every lane that predates this field must stay byte-identical, so the default is written nowhere
+  // A fresh clone's branch exists only in the clone. Mirror it up NOW rather than on the first
+  // tick: until the root has the ref, worktreeRisk and drift read a branch that is not there and
+  // would report an absence as a fact about the lane.
+  await syncLaneRefs(ref, wt.path);
+  await openSlot(s, wt.path, ref, model, null, harness, effort);
   // a manual lane (no branch given → createWorktree auto-named it `fleet/<stamp>-<hex>`)
   // has no task text to derive a label from the way the dispatcher does (~tickDispatch,
   // `⎇ ${next.from} ...`) — so it must NEVER surface that raw uniqueness timestamp as the
@@ -2251,7 +2369,7 @@ function expandCwd(raw: string): string {
 // (see PI_HARNESS.note), and whether an autonomous lane may run without one is an owner decision
 // that has not been made — so this fails closed by construction rather than by a check that a
 // later caller could forget to write.
-async function openSlot(s: Slot, cwdRaw: string, worktree: { repo: string; branch: string; base?: string; baseSha?: string } | null = null,
+async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null,
   model: string | null = null, label: string | null = null,
   harness: string | null = null, effort: string | null = null): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
@@ -2864,7 +2982,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 // explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
 // documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
 // shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
-async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string },
+async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
   // WITH a done-criterion, and a task that reached this button is precisely one where that cannot
@@ -2905,7 +3023,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     if (other) {
       kept = `; lane kept (slot ${other.id} holds it)`;
     } else {
-      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch);
+      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch, wt.form);
       if (fail) kept = `; lane kept (${fail.error.split("\n")[0]})`;
       else if (ours) await killSlot(free, "reopen");
     }
@@ -7172,6 +7290,12 @@ interface DriftInfo {
   conflictFiles: string[];
   overlap: string[];             // files BOTH sides touched since the merge-base
   otherLanes: { branch: string; files: string[] }[];
+  stale: boolean | null;         // the branch side of every number above was read from the ROOT. For
+  // a worktree lane that IS the lane's branch, so this is always false. For a CLONE lane the root
+  // holds a mirror, and a commit made since the last mirror makes these numbers describe an
+  // earlier version of this lane. `null` = could not be determined, which is never "fresh".
+  // Reported rather than repaired: laneDrift is deliberately read-only (it runs against a LIVE
+  // lane, see above), and a mirroring fetch is a write. The git tick does the repairing.
 }
 const DRIFT_FILES_MAX = 50; // same flood cap stance as OTHER_LANE_FILES_MAX
 // keyed per slot on (branch tip, main tip): the probes rerun only when a ref actually moved.
@@ -7181,6 +7305,7 @@ const driftCache = new Map<number, { key: string; core: DriftCore }>();
 async function laneDrift(s: Slot, main: string): Promise<DriftInfo | null> {
   const w = s.worktree;
   if (!w || !s.cwd) return null;
+  const stale = await laneRefsStale(w, s.cwd);
   const bTip = await gitRead(w.repo, "rev-parse", w.branch);
   const mTip = await gitRead(w.repo, "rev-parse", main);
   if (bTip.code !== 0 || !bTip.out || mTip.code !== 0 || !mTip.out) return null;
@@ -7223,7 +7348,7 @@ async function laneDrift(s: Slot, main: string): Promise<DriftInfo | null> {
   // files move independently of the two refs the key watches. An unreadable tree reports dirty —
   // the safe direction, since `dirty` exists to say "the probe did not assess everything here".
   const st = await gitRead(s.cwd, "status", "--porcelain");
-  return { branch: w.branch, main, ...core, dirty: st.code !== 0 || st.out !== "",
+  return { branch: w.branch, main, ...core, dirty: st.code !== 0 || st.out !== "", stale,
     otherLanes: await otherOpenLanes(s.cwd, w.repo) };
 }
 // --- the verify GATE, made VISIBLE (briefs/verify-queue-2026-08-04.md) -------------------------
@@ -7605,6 +7730,12 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // tree clean AND main an ancestor of the lane branch, checked against the shared
       // refs, not the claim. An unparseable answer over a git-verified rebase proceeds;
       // over an unverified lane it fails exactly like a false "rebased" claim.
+      // "the shared refs" is what a CLONE lane does not have: the rebase just now happened in the
+      // clone, and until it is mirrored the root still holds the pre-rebase tip — so this check
+      // would call a perfectly rebased lane unrebased and blame the agent for it. Measured, not
+      // predicted: that is exactly how the first clone land failed.
+      const ancSync = await syncLaneRefs(s.worktree, cwd);
+      if (ancSync) throw new Error(`${ancSync.error} — the rebase could not be verified, nothing was landed`);
       const st = await git(cwd, "status", "--porcelain");
       const anc = await git(root, "merge-base", "--is-ancestor", main, branch);
       if (st.code !== 0 || st.out || anc.code !== 0) {
@@ -7752,6 +7883,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             // land it — the state-changing step on the integration branch is the SERVER's, never the
             // agent's: advanceIntegration ff-merges (git refuses over a dirty tree) or advances the ref.
             const mainBefore = mainSha;
+            // the job's own rebase (and any resolver commits on top of it) rewrote the lane tip;
+            // the root's mirror still points at where this lane started. Both lines below read the
+            // branch ROOT-side, so the mirror has to catch up before either of them runs.
+            const landSync = await syncLaneRefs(s.worktree, cwd);
+            if (landSync) throw new Error(`${landSync.error} — nothing was landed`);
             // declare the land before making it — the marker is on disk before main moves, so a
             // restart in the advance→record window is finishable at boot instead of unrecoverable
             const prov: LandProvenance = { verify, confirmedByHuman: false };
@@ -10549,7 +10685,10 @@ Bun.serve<WSData>({
       // one event §11.2's metric needs. Read the absence accordingly: no event means no fresh
       // answer was served, NOT that the lane never asked.
       if (d && driftCache.get(s.id)?.key !== seenKey)
-        audit("self_drift", s.id, `${w.branch} behind:${d.behind} conflict:${d.wouldConflict ?? "unknown"} dirty:${d.dirty}`);
+        audit("self_drift", s.id, `${w.branch} behind:${d.behind} conflict:${d.wouldConflict ?? "unknown"} dirty:${d.dirty}`
+          + (d.stale === false ? "" : ` stale:${d.stale ?? "unknown"}`)); // a reading of a stale mirror is
+        // still a reading, but booking it as an unqualified fact is how the ledger would come to
+        // hold numbers about a lane version that no longer exists. Absent = the ordinary fresh case.
       return d ? json(d) : json({ error: "drift could not be computed — a git read failed" }, 500);
     }
 
@@ -11306,7 +11445,13 @@ Bun.serve<WSData>({
     if (req.method === "GET" && wtsMatch) {
       const s = slotFrom(wtsMatch[1]);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
-      const top = await git(s.cwd, "rev-parse", "--show-toplevel");
+      // From a CLONE lane, `--show-toplevel` is the clone itself — a self-contained repo whose
+      // only worktree is the lane, which would render the lane map as "this repo has one lane, me".
+      // The recorded repo is the one fact that still points at the origin, so it wins where it
+      // exists. A worktree lane answers identically either way (it shares the root's git).
+      const top = s.worktree?.form === "clone"
+        ? { code: 0, out: s.worktree.repo, err: "" }
+        : await git(s.cwd, "rev-parse", "--show-toplevel");
       if (top.code !== 0) return json({ error: "not a git repository" }, 400);
       const list = await listWorktrees(top.out);
       const primary = list.find((w) => w.primary);
@@ -11314,8 +11459,17 @@ Bun.serve<WSData>({
       // ahead/behind measured against the integration branch, not the primary's HEAD (which may
       // be parked off it) — matches what land actually integrates onto
       const intb = (await integrationBranch(primary.path)) ?? "HEAD";
+      // `git worktree list` is the source of truth for worktree lanes and CANNOT see a clone lane —
+      // a clone is not a worktree of this repo, it is its own repository. Left out, a clone lane
+      // would be missing from the one surface whose whole job is "every lane open on this repo",
+      // and the omission would read as "no such lane" rather than "a lane this list cannot see".
+      // Only clones of THIS repo, and only live ones: a clone has no on-disk registry, so unlike a
+      // worktree there is no orphan of it to rediscover after its slot is gone.
+      const cloneLanes: WtEntry[] = slots
+        .filter((x) => x.cwd && x.worktree?.form === "clone" && x.worktree.repo === top.out)
+        .map((x) => ({ path: x.cwd!, branch: x.worktree!.branch, primary: false }));
       const rows = [];
-      for (const w of list) {
+      for (const w of [...list, ...cloneLanes]) {
         if (w.primary) continue;
         const st = await git(w.path, "status", "--porcelain");
         const ab = await git(primary.path, "rev-list", "--left-right", "--count", `${w.branch}...${intb}`);
@@ -11355,6 +11509,8 @@ Bun.serve<WSData>({
       if (!laneModel.ok) return json({ error: modelErrFor(laneHarness) }, 400);
       const laneEffort = effortOf(body, laneHarness);
       if (!laneEffort.ok) return json({ error: effortErrFor(laneHarness) }, 400);
+      const laneForm = laneFormOf(body);
+      if (!laneForm.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
       const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // the slot is reserved below, but for attach the WORKTREE is the contended resource too:
@@ -11382,8 +11538,8 @@ Bun.serve<WSData>({
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort);
-        return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch });
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form);
+        return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
       } finally {
@@ -11513,6 +11669,14 @@ Bun.serve<WSData>({
         if (st.out) return json({ status: "blocked",
           detail: `uncommitted changes — commit them (or ask the session to) first:\n${st.out.slice(0, 400)}` });
         if (await gitOpInProgress(cwd)) return json({ status: "blocked", detail: "a git merge/rebase is in progress in this lane — finish or abort it in the session first" });
+        // EVERY branch below reads one side against the other by ref: the confirm-land's ancestry
+        // check and `branch --merged` are root-side, the rebase is clone-side. On a clone lane none
+        // of that is true until the two are mirrored, and each would fail in its own confident way
+        // — "main is not an ancestor" for a lane that is perfectly rebased, or a rebase onto the
+        // base branch as it stood at clone time. Fail the whole request rather than proceed on refs
+        // that do not describe this lane. (No-op for a worktree lane.)
+        const laneSync = await syncLaneRefs(s.worktree, cwd);
+        if (laneSync) return json({ status: "blocked", detail: `${laneSync.error} — nothing was merged or landed.` });
         // the idle gate guards a run that STARTS the agent — a confirm-land is a pure git ff
         // of an already-reviewed resolution, so the agent's own trailing pane output must not
         // block it (otherwise every confirm right after a resolve bounces off "let it settle").
@@ -11601,6 +11765,10 @@ Bun.serve<WSData>({
             if (anc.code !== 0) return json({ status: "error",
               detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
           }
+          // the re-rebase above (if it ran) rewrote the lane tip — the root's mirror is now behind
+          // the very commits about to be landed, and markLandIntent/advanceIntegration both read it
+          const rebasedSync = await syncLaneRefs(s.worktree, cwd);
+          if (rebasedSync) return json({ status: "error", detail: `${rebasedSync.error} — lane kept, nothing landed` }, 409);
           const mainBefore = (await git(repo, "rev-parse", main)).out;
           // stale-verify guard: `verify.mainSha` bound the verdict to the main it verified
           // against — if main moved past it since (the replay above), the recorded green
@@ -12577,10 +12745,12 @@ Bun.serve<WSData>({
         if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+        const fo = laneFormOf(body);
+        if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort);
-          return json({ ok: true, cwd: r.cwd, branch: r.branch });
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form);
+          return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);
         } finally {

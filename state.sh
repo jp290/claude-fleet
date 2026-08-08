@@ -19,6 +19,13 @@ cd "$(dirname "$0")" || exit 1
 # (and createWorktree stores a realpath'd toplevel too). Outside a repo this degrades to $PWD.
 rp() { [ -n "${1:-}" ] && (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "${1:-}"; }
 MAIN_CHECKOUT=$(rp "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")")
+# ...unless this is a CLONE lane, where that anchor lands on the lane's OWN .git and the whole
+# sensor would report on the clone while claiming to report on the fleet. A clone is self-contained
+# by design, so the common dir cannot lead home — `origin` is what still points there.
+if [ ! -f "$MAIN_CHECKOUT/server.ts" ]; then
+  ORIGIN=$(rp "$(git config --get remote.origin.url 2>/dev/null)")
+  [ -f "$ORIGIN/server.ts" ] && MAIN_CHECKOUT=$ORIGIN
+fi
 export MAIN_CHECKOUT
 
 SINCE=${2:-$(git log --format=%H -1 --grep='docs(handoff)' 2>/dev/null)}
@@ -33,6 +40,13 @@ echo "  (read the BODIES, not just the subjects: git log $SINCE..HEAD)"
 echo
 echo "=== lanes on disk ==="
 git worktree list | tail -n +2 | sed 's/^/  /'
+# A CLONE lane is its own repository, so `git worktree list` cannot see it and this section would
+# under-report by exactly the lanes whose whole point is that they are separate. Same directory
+# convention, so the same glob finds them; the discriminator is that their .git is a directory.
+for d in "$MAIN_CHECKOUT".worktrees/*/; do
+  [ -d "${d}.git" ] || continue
+  echo "  ${d%/}  [clone: $(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)]"
+done
 echo "  a worktree with no slot is an orphan: land it or discard it"
 echo
 echo "=== ledgers (fleet-wide, gitignored — they exist only in the main checkout) ==="

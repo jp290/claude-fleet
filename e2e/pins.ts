@@ -475,6 +475,29 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("a harness is only ever chosen from a request body, never from server state",
     harnessSources.length > 0 && harnessSources.every((a) => a === "body"), harnessSources.join(" | "));
 
+  // --- the CLONE lane form. Its one reason to exist is that the working copy shares nothing with
+  // the repo it came from — no object database, and therefore no `.git/hooks` reachable from a
+  // sandbox that holds the tree. `git clone` from a local path HARDLINKS objects by default, so a
+  // second call site written without --no-hardlinks would silently give back the very sharing the
+  // form removes, and every check in the suite would still pass: the tree is correct, the boundary
+  // is gone. Nothing in TypeScript can see that, and neither can a test that only reads git's
+  // answers. Same comment-stripping as the docker rule above, same reason.
+  pin("every clone server.ts emits refuses hardlinked objects (a shared object DB is the boundary this form removes)",
+    [...serverExec.matchAll(/"clone",(?! *"--no-hardlinks")/g)].length === 0,
+    [...serverExec.matchAll(/.{0,30}"clone",(?! *"--no-hardlinks").{0,40}/g)].map((m) => m[0]).join(" | ") || "none");
+  // ...and the OTHER half of the form: a clone's branch exists only in the clone until syncLaneRefs
+  // mirrors it, so every root-side reader of it (the ancestry check, markLandIntent,
+  // advanceIntegration) is reading a copy. The rule is that the copy is refreshed on the way in.
+  // Stated as "the land path calls it" rather than as a list of readers, because the readers are
+  // what will grow. A land site that skips it does not fail loudly — it fast-forwards main to an
+  // earlier version of the lane, which is the worst failure this file guards against.
+  const advCalls = [...serverExec.matchAll(/\badvanceIntegration\(/g)]
+    .filter((m) => !/(async function|await advanceIntegration in)/.test(serverExec.slice(m.index - 30, m.index)));
+  const advUnsynced = advCalls.filter((m) => !serverExec.slice(Math.max(0, m.index - 2500), m.index).includes("syncLaneRefs("));
+  pin("every advanceIntegration call site refreshes the lane mirror first (a clone lands from the mirror, not from the tree)",
+    advCalls.length > 0 && advUnsynced.length === 0,
+    `${advCalls.length} call sites, ${advUnsynced.length} without a preceding syncLaneRefs`);
+
   // --- the liveness probe resolves its comm set PER SLOT. Both consumers (the git/alive tick and
   // claudeAlive) must go through commsFor; a call that reaches back for the fleet-wide HARNESS_COMMS
   // would silently re-pin every slot to the server's own harness, which is the exact defect

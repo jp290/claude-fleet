@@ -416,8 +416,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const def = cat.harnesses.find((h) => h.default);
   check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
     cat.harnesses.map((h) => h.id).join(","));
-  // the caveat is part of the contract, not a UI string: an owner picks this harness from it
-  check("§6 the pi adapter states its missing permission layer at pick time", pi?.note === "no sandbox", String(pi?.note));
+  // the caveat is part of the contract, not a UI string: an owner picks this harness from it. What
+  // it must state is BOTH halves of the fence Fleet now spawns Pi behind — that writes are confined
+  // (and therefore that commits are the host's job) and that reads and the network deliberately are
+  // not. A note that advertised only the fence would read as "isolated", which is the one wrong
+  // impression an owner must not take into the pick.
+  const piNote = pi?.note ?? "";
+  check("§6 the pi adapter states its write fence AND what the fence does not cover, at pick time",
+    /write fence/.test(piNote) && /host commits/.test(piNote) && /reads and network stay open/.test(piNote), piNote);
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
   for (const h of ["pi", "claude", "codex"]) {

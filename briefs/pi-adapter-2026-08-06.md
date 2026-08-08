@@ -140,6 +140,20 @@ einzige verfügbare Bremse ist die Werkzeug-Allowlist (`--tools read,grep,find,l
 = read-only). **Owner-Entscheid nötig**, bevor ein Pi-Slot spawnbar wird — und
 besonders, bevor ein *Gast* einen bekommt.
 
+> **Nachtrag 2026-08-08 — die *Messung* oben steht, ihre *Kostenzeile* nicht mehr.**
+> Pi selbst hat weiterhin keine Berechtigungs-Schicht (`pi --help` kennt weder
+> sandbox noch approval/permission/restrict). Was sich geändert hat: die Bremse
+> muss nicht aus Pi kommen. `PI_HARNESS.spawnCmd` legt den Zaun jetzt von **außen**
+> um die Spawn-Zeile — `sandbox-exec` (macOS seatbelt, dasselbe Werkzeug, das Codex
+> für sein `--sandbox workspace-write` benutzt) mit einem pro Lane aus ihrem cwd
+> erzeugten SBPL-Profil. Damit ist „ein Pi-Slot ist ab dem ersten Prompt
+> `--dangerously-skip-permissions`" falsch: er kann außerhalb seiner eigenen
+> Arbeitskopie **nicht schreiben**. Die Werkzeug-Allowlist ist nicht mehr die
+> einzige Bremse. Was der Zaun NICHT ist, und das bleibt die offene Hälfte:
+> **kein Lese-Zaun und kein Netz-Zaun** (Owner-Entscheid: „netz anbindung waere
+> schon sehr gut, auch fuer research") — Lese-Reichweite ist damit
+> Exfiltrations-Reichweite, dieselbe Vertrauensfrage wie bei Codex.
+
 **2 — `claudeAlive` gibt für jede Nicht-claude-BASE_CMD blind `true` zurück**
 (server.ts:1698). Heute ist das folgenlos (es gibt keinen zweiten Harness); mit Pi
 wäre ein Pi-Slot dauerhaft „alive", und `canDeliver`s Gate (server.ts:1818) wäre

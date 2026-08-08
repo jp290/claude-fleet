@@ -207,8 +207,14 @@ interface Harness {
   // pair exactly once, so the spawn line and the row an owner reads on /api/sessions can never
   // disagree about which box and which daemon this session is in. Adapters with no container
   // concept ignore both, the same way every adapter but Pi ignores `effort`.
+  //
+  // `cwd` is the slot's OWN working directory, and it is here for one adapter only: a write fence
+  // is anchored at a path, so a harness that carries one cannot be built from fleet-wide constants
+  // (PI_HARNESS.spawnCmd). It is the pane's real cwd — tmux is given the same value with `-c`, so
+  // the fence and the shell can never disagree about which directory this is. Adapters without a
+  // fence ignore it, the same way every adapter but the container one ignores `container`.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
-    container: string; containerContext: string }): string;
+    container: string; containerContext: string; cwd: string }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -325,6 +331,90 @@ const CLAUDE_HARNESS: Harness = {
   note: null,
 };
 
+// --- Pi's write fence. `/usr/bin/sandbox-exec` is macOS's seatbelt front end, and it is what Codex
+// uses for its own `--sandbox workspace-write` (its binary carries `sandbox-exec`, `seatbelt`,
+// `(version 1)`, `deny default`). Apple marks the tool DEPRECATED in its own man page; that is a
+// fact to know, not a reason to skip it — there is no supported replacement for fencing a
+// third-party CLI you did not write, and the vendor of the other agent on this machine made the
+// same call.
+//
+// WHY PI AND NOT THE HARNESS'S OWN FLAG: it has none. `pi --help` on the real installation knows
+// neither sandbox nor approval nor permission nor restrict (measured 2026-08-08, grep empty), and
+// its own docs/security.md says the built-in tools read, write and run shell with the permissions
+// of the pi process. So the fence cannot be a flag Fleet passes — it has to WRAP the spawn line.
+//
+// AND THAT WRAPPING IS THE WHOLE DIFFICULTY, because it makes this profile a different shape from
+// the one Codex's rollouts show (`turn_context.permission_profile`: root=read, workdir=write,
+// /tmp + $TMPDIR=write, workdir/.git + .agents + .codex back to read). That profile fences the
+// commands Codex RUNS; Codex itself is outside it, which is how it keeps writing ~/.codex. Here the
+// fence is around the AGENT, so the agent's own state directory has to be inside it. Measured, not
+// reasoned: with ~/.pi denied, pi does not degrade, it dies at startup —
+// `Error: EPERM ... mkdir '~/.pi/agent/sessions/<cwd-slug>'`, an uncaught throw out
+// of getDefaultSessionDir, before any prompt. It is on the startup path precisely because this
+// adapter pins `--session-id`.
+//
+// THE NETWORK IS DELIBERATELY OPEN — no `(deny network*)`, and Codex's `network:restricted` is NOT
+// copied. Owner decision 2026-08-08 ("netz anbindung waere schon sehr gut, auch fuer research"),
+// and it is a real difference rather than an oversight: Codex's restriction is its own default,
+// while a Pi slot reaches its provider natively, so a network fence there would not be strict, it
+// would be broken. What it costs is named rather than hidden: with reads open (there is no read
+// fence) and the network open, read reach is exfiltration reach. That is the same trust question
+// CLAUDE.md already puts to Codex's read reach — and it is not a regression, because a claude lane
+// today has full reads, full network AND no write fence at all.
+const SANDBOX_PATH_RE = /^\/[A-Za-z0-9_.@+\-/ ]*$/;
+// The temp roots, resolved ONCE and through realpath because SBPL compares against the path the
+// kernel resolved: on macOS `/tmp` is a symlink to `/private/tmp` and $TMPDIR lives under
+// `/private/var/folders/...`, so the literal strings are not what a subpath rule would match.
+const SANDBOX_TMP_ROOTS: readonly string[] = (() => {
+  const out = new Set<string>();
+  for (const p of ["/tmp", tmpdir()]) {
+    // an absent temp root is simply not granted — there is nothing to allow and nothing to report
+    try { out.add(realpathSync(p)); } catch { continue; }
+  }
+  return [...out];
+})();
+// null = NO FENCE COULD BE BUILT, and the caller must then refuse to start pi rather than start it
+// bare. Two ways to get there, both about the same hazard: the path could not be resolved, or it
+// carries a character outside the charset. That charset is not defensive decoration — this string
+// is interpolated into a single-quoted shell word inside a tmux command string AND into SBPL's own
+// double-quoted strings, so `'`, `"` and `\` are each an escape out of one of the two. Nothing here
+// is operator-supplied (it is a realpath of the slot's cwd), which is exactly why a violation means
+// something is wrong rather than something needs escaping.
+function piSandboxProfile(cwd: string): string | null {
+  let root: string;
+  try { root = realpathSync(cwd); } catch { return null; }
+  // `/dev` is in the writable set because it is MEASURED to be required, not on principle: an
+  // INHERITED fd survives the fence (a pane's stdout still paints — verified in a scratch tmux),
+  // but an explicit open does not, and `echo x > /dev/null` and `> /dev/tty` both come back
+  // `Operation not permitted` without it. A TUI that puts the terminal in raw mode opens /dev/tty,
+  // and node's own plumbing writes /dev/null. Granting the whole tree rather than a literal list is
+  // the honest trade: the raw block devices it nominally adds need root, and the fence's subject is
+  // the owner's files.
+  const write = [root, ...SANDBOX_TMP_ROOTS, `${HOME}/.pi`];
+  if (!write.every((p) => SANDBOX_PATH_RE.test(p))) return null;
+  const sub = (p: string) => `(subpath "${p}")`;
+  // allow-default + a single deny of file-write*, re-granted narrowly. NOT Codex's `deny default`:
+  // that shape has to re-allow process-exec, sysctls and mach lookups by hand, and every one it
+  // misses is a crash rather than a denied write. This fence claims to be one thing only — a write
+  // fence — and a profile that claims exactly what it does is one that can be read.
+  return `(version 1)(allow default)(deny file-write*)`
+    + `(allow file-write* ${write.map(sub).join(" ")} (subpath "/dev"))`
+    // ...and `.git` back OFF, which is the OWNER DOCTRINE of 2026-08-08 in one line: "comitten
+    // sollte einfach wieder die main session selbst". A foreign agent never needs write on the
+    // repository metadata, because the HOST commits for it (POST /api/slots/:id/commit). Codex's
+    // profile demotes the same three paths, and this is where it stops looking like a defect to
+    // route around and starts being the intended default: the lane produces, the host records.
+    + `(deny file-write* ${sub(`${root}/.git`)})`;
+}
+// The one thing that must NEVER be quiet. If the fence cannot be established, pi is not started at
+// all — a pane that fell through to `exec $SHELL` with pi running unfenced would be the exact
+// failure this whole adapter exists to prevent. The pane survives and says why (a dead pane hides
+// the reason), and it is mechanically detectable rather than only readable: no `pi` process means
+// `comms: ["pi"]` finds nothing and the fact layer reports `no-agent` on the owner's poll. Contains
+// no apostrophe by construction — it lives inside the same single-quoted shell word.
+const PI_FENCE_FAILED = "fleet: pi was NOT started — its write fence (sandbox-exec) could not be established. "
+  + "This pane is a plain shell, not an agent.";
+
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
 // per line. The one flag this file does NOT take from that report is `transcript` — see below.
@@ -342,7 +432,31 @@ const PI_HARNESS: Harness = {
     // aborts the whole line on when it matches nothing, killing the pane at spawn.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
-    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+    // ...and the whole of it goes INSIDE the fence (piSandboxProfile above for what it grants and
+    // why each grant is there).
+    const profile = piSandboxProfile(o.cwd);
+    if (!profile) return `${PATH_EXPORT}echo '${PI_FENCE_FAILED}' >&2; exec ${SHELL}`;
+    // The profile is bound to a shell VARIABLE and expanded twice rather than pasted twice. Not
+    // brevity: `"$FLEET_PI_SB"` is a variable expansion, so its content is never re-parsed as
+    // shell, which is what makes the SBPL double-quotes and parentheses inert on the second use.
+    // The assignment itself is the single-quoted word the charset above guards.
+    //
+    // The `if` is a SELF-TEST, and it exists because of how this fails otherwise. A missing
+    // sandbox-exec or an invalid profile makes the line die and the pane fall through to
+    // `exec $SHELL` — a shell that takes keystrokes and looks like an agent. Running the fence over
+    // `/usr/bin/true` first separates "the fence is broken" (sandbox-exec absent → not found;
+    // bad profile → exit 65, measured) from "pi exited", which an exit code alone cannot do. So the
+    // probe fails AS ITSELF, and pi is never started outside its fence.
+    //
+    // The trailing `exec ${SHELL}` stays OUTSIDE the fence, and that is deliberate rather than an
+    // omission: the fence's subject is the AGENT, and whoever reaches that shell is the owner at
+    // their own pane. What must not happen is an UNATTENDED path typing into it once pi has exited
+    // — and that is already shut by the same mechanism the failure branch relies on rather than by
+    // a second fence: with no pi process, `comms: ["pi"]` finds nothing, so the slot reads
+    // `no-agent` and canDeliver's alive gate refuses autos, dispatch and steward sends.
+    return `${PATH_EXPORT}FLEET_PI_SB='${profile}'; `
+      + `if sandbox-exec -p "$FLEET_PI_SB" /usr/bin/true 2>/dev/null; then sandbox-exec -p "$FLEET_PI_SB" ${cmd}; `
+      + `else echo '${PI_FENCE_FAILED}' >&2; fi; exec ${SHELL}`;
   },
   // NULL — Pi cannot host a worker session, and for the same measured reason `supports.transcript`
   // is false: it keeps no ~/.claude/projects/<slug>/<uuid>.jsonl, and that file IS the worker's
@@ -359,15 +473,26 @@ const PI_HARNESS: Harness = {
   // here for exactly that reason: it is absent between requests, and a comm that comes and goes
   // would make the answer flicker.
   comms: ["pi"],
-  // TRUE by owner decision (2026-08-07), and the honest caveat rides in `note` below: Pi ships no
-  // permission layer, so what the flag admits is unattended prompting of a sandbox-less agent. What
-  // it does NOT admit, and this is why the decision was answerable at all: no tick can land. The
+  // TRUE by owner decision (2026-08-07). The caveat that used to ride here — "what the flag admits
+  // is unattended prompting of a SANDBOX-LESS agent" — is retired by the fence above, and the
+  // decision it qualified only gets stronger: what an unattended path now prompts is an agent that
+  // cannot write outside its own working copy. What it does NOT admit, and this is why the decision
+  // was answerable before the fence existed at all: no tick can land. The
   // ONE mergeJob call site is a route (server.ts, grep `mergeJob(`), so the reachable set is
   // scheduled autos, dispatch, steward sends, done-looking → /api/self/watch and auto-③ — every one
   // of them a PROMPT into a pane, none of them a write to main.
   automatable: true,
-  // null: Pi ships no sandbox at all (its own `note`), so nothing fences it out of the primary's
-  // worktree metadata — the reason the clone form exists does not apply here.
+  // STILL null, and the fence above is exactly the reason a reader will expect "clone" here — so
+  // the reason it stays is worth stating rather than leaving as an oversight. A fenced Pi lane
+  // cannot commit: `.git` is denied on purpose (piSandboxProfile's last clause). But the clone form
+  // does not fix that, MEASURED on a Codex clone lane 2026-08-08 — `git commit` died on the lane's
+  // OWN path (`<lane>/.git/index.lock: Operation not permitted`), because Codex's permission
+  // profile demotes `<workdir>/.git` by NAME, independent of the working copy's form. Here the deny
+  // is ours and equally form-independent, so a clone would buy nothing and would still change what
+  // every existing Pi lane, script and suite produces.
+  //
+  // The answer is the owner doctrine of 2026-08-08 instead: the HOST commits
+  // (POST /api/slots/:id/commit). A Pi lane produces and is landable; it simply does not record.
   laneForm: null,
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
@@ -397,10 +522,16 @@ const PI_HARNESS: Harness = {
     selfSchedule: false,
     container: false,
   },
-  // Pi ships no permission layer at all — its own docs/security.md: built-in tools read, write and
-  // run shell commands with the permissions of the pi process. There is no `--dangerously-skip-
-  // permissions` because there is nothing to skip. An owner picking this must see that first.
-  note: "no sandbox",
+  // Pi still ships no permission layer of its own — its docs/security.md: built-in tools read,
+  // write and run shell commands with the permissions of the pi process, and there is no
+  // `--dangerously-skip-permissions` because there is nothing to skip. What changed is that Fleet
+  // now supplies one from outside (piSandboxProfile), so the old "no sandbox" would be false.
+  //
+  // The note states the two halves that are STILL open, because those are what an owner must know
+  // at the moment of picking: the fence stops writes, not reads, and the network is deliberately
+  // open — so what this agent can read, it can send. `git` is named separately because it is the
+  // one consequence an owner would otherwise discover at the end of a lane instead of the start.
+  note: "write fence: only its own worktree (no commits — the host commits); reads and network stay open",
 };
 
 // The container this adapter execs into. A docker name/id charset MINUS the quote, because the
@@ -689,9 +820,11 @@ const CODEX_HARNESS: Harness = {
 // What is DELIBERATELY NOT changed by that repair is which automations may then touch the slot.
 // Those are two different questions and the queue row (b28ce533) reserved the second one for the
 // owner: making a foreign-harness slot automation-eligible pulls it into scheduled autos, dispatch,
-// steward sends, done-looking → /api/self/watch and auto-③. Pi ships NO permission layer (its own
-// note: "no sandbox"), so the question is not "does the probe work" but "may an unattended path
-// drive a sandbox-less agent". Hence HARNESS_AUTOMATION below: the fact layer tells the truth
+// steward sends, done-looking → /api/self/watch and auto-③. At the time that was decided Pi shipped
+// NO permission layer and Fleet supplied none, so the question was not "does the probe work" but
+// "may an unattended path drive a sandbox-less agent" — and it is worth recording that the answer
+// (yes, by owner decision) predates the write fence PI_HARNESS now spawns behind, rather than
+// resting on it. Hence HARNESS_AUTOMATION below: the fact layer tells the truth
 // immediately, the gates stay exactly as closed as they were until the owner flips one variable.
 // Deciding it in code would have been deciding it for him.
 //
@@ -2685,7 +2818,10 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
     const stewardExport = s.label === STEWARD_LABEL && stewardToken
       ? `export FLEET_STEWARD_TOKEN='${stewardToken}'; ` : "";
     const created = await tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", s.cwd,
-      `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: s.model, effort: s.effort, ...boxFor(s) })}`);
+      // `cwd: s.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
+      // one variable to both is the point: Pi's write fence is anchored at it, so a fence built
+      // from anything else would grant a directory the pane is not in.
+      `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: s.model, effort: s.effort, cwd: s.cwd, ...boxFor(s) })}`);
     if (created.code === 0) {
       s.cols = 200;
       s.rows = 50;

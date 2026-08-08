@@ -8,8 +8,12 @@ It is git-ignored, so it cannot be tracked and cannot be quoted here — but it 
 lane, so read it. This file carries only what you must not get wrong before you get there.
 
 **Why two files.** `AGENTS.md` is the Codex convention: Codex reads it, and does not read
-`CLAUDE.md`. Claude and pi read `CLAUDE.md` and ignore this one. The container harness runs Claude
-inside a box, so it is on the `CLAUDE.md` side too. Nothing here restates `CLAUDE.md`; when the two
+`CLAUDE.md`. Claude reads `CLAUDE.md` and ignores this one; the container harness runs Claude
+inside a box, so it is on that side too. **pi reads THIS file, not `CLAUDE.md`** — measured at a
+live pane on 2026-08-08, hours after this file first landed: pi's startup `[Context]` listed
+`AGENTS.md` alone, with both files present in the worktree. Before this file existed pi loaded
+`CLAUDE.md`, so its arrival silently moved pi from the full rulebook to this pointer. That is why
+the sentence above — read it — is load-bearing for pi and not merely polite. Nothing here restates `CLAUDE.md`; when the two
 disagree, `CLAUDE.md` is the rulebook and this file is the bug.
 
 ## Before you start

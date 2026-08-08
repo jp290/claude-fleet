@@ -1,3 +1,174 @@
+# HANDOFF — Session 42 (2026-08-08 abends: die GPT-Wende, und ein Kontingent, das in zwei Tagen alle war) · 41/40/39/38 darunter
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 35c5a1f..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 42: der Tag, an dem das Claude-Kontingent zur harten Grenze wurde
+
+**ctx beim Übergeben: ~46 %.** Produziert: **3 Lands** (`b3c08e6` AGENTS.md · `c473ba7` Klon-Form ·
+dazu `69c94da` aus S41s Lane geerbt), ein **Direkt-Commit** im Haupt-Checkout, `CLAUDE.md` komplett
+umgeschrieben, **7 tote Queue-Zeilen archiviert**, **4 neue Zeilen mit Messungen**, ein
+Kontingent-Befund, der die Marschrichtung geändert hat, und **vier fremde Modelle in echter Arbeit**
+(gpt-5.6-sol ×2, gpt-5.6-terra, claude-fable-5).
+
+### DIE OWNER-VORGABE, die ab jetzt alles andere sortiert
+
+**Wortlaut, 2026-08-08 abends: „ab jetzt sollten wir die gpt modelle für alles benutzen".**
+Vorgeschichte in einem Satz: das Claude-Wochenlimit war nach **zwei Tagen** fast erreicht.
+
+**Was heute schon geht — beides an lebenden Panes bewiesen, nicht abgeleitet:**
+- **Eine pi-Lane auf einem GPT-Modell.** `POST /api/lanes {harness:"pi", model:"openai-codex/gpt-5.6-sol", effort:"high"}`
+  — hochgekommen, Sonde sieht `pi` im Prozessbaum. Fleet brauchte **keine Änderung**:
+  `HARNESS_MODEL_RE` lässt den `/` durch, `PI_HARNESS` reicht `--model '<wert>'` single-quoted weiter,
+  pi löst `openai-codex/gpt-5.6-sol` eindeutig auf (`pi --list-models '<muster>'` gegengeprüft).
+  **Das ist der bevorzugte Weg**, denn pi kann, was Codex nicht kann: `pinsSession` (Respawn behält das
+  Gespräch) und `--thinking` (Effort-Stufen bis `max`; Codex' Adapter deklariert `effortLevels: []`).
+- **Eine Codex-Lane.** Kommt seit `c473ba7` automatisch als Klon. Sie produziert, **der Host committet**.
+
+**Was NICHT geht, mit dem Grund, damit es niemand erneut versucht:** die **Worker-Ebene** (summary,
+review, commitMsg, enhance, merge, repair, cleanReview, digest, refine, analysis) läuft weiter auf
+claude und kann heute nicht auf pi oder codex. Mechanisch: `runWorker` liest die Antwort aus einem
+HOST-seitigen Transkript, `PI_HARNESS.worker` gibt darum `null` zurück, und der Aufruf endet in einer
+benannten Verweigerung statt in einem Ergebnis. `FLEET_WORKER_HARNESS` ist die Naht, aber sie zeigt
+heute auf nichts Brauchbares. **Der einzige heute offene Ausweg ist `POST /api/repo-worker`** (owner-only,
+absoluter Pfad auf ein Executable) — und er ist nur für `commitMsg` verdrahtet. `worker-deepseek.py`
+liegt im Baum, ungenutzt.
+
+**Nicht getan und bewusst nicht:** `FLEET_CMD` fleet-weit auf pi zu stellen. Das träfe JEDEN neuen Slot,
+auch die in fremden Repos (`private-repo-a`, `private-repo-b`), und ist ein anderer Blast-Radius
+als „meine Lanes fahren GPT". Wenn der Owner das will, ist es eine Zeile in `watchdog.sh` plus
+`launchctl kickstart` — aber es ist seine Entscheidung, nicht die Fortsetzung dieser.
+
+### DER KONTINGENT-BEFUND, und der Hebel, der schon gezogen ist
+
+Gemessen an den Worker-Transcripts der letzten 48 h in `~/.claude/projects/*claude-fleet*/`
+(749 Dateien, nach Contract-Mark aus `src/protocol.ts:126-140` klassifiziert):
+
+| Läufe (48 h) | Worker | |
+|---:|---|---|
+| **445** | `analysis` | der Queue-Analyst |
+| 122 | `enhance` | |
+| 71 | `review` | |
+| 11 · 7 | `digest` · `refine` | |
+| 93 | Slots/Lanes | die eigentliche Arbeit, 106 MB |
+
+**445 Analyst-Läufe in zwei Tagen für Urteile, auf die nichts gated.** Ursache im Code, nicht geraten:
+`analysisStale` vergleicht den `head` des Urteils mit dem Integrations-Tip — **jedes Land entwertet das
+Urteil JEDER offenen Zeile**, und der Sweep judged sie zu 6 (`ANALYSIS_BATCH_CAP`) im 60-s-Takt nach.
+Bei ~59 offenen Zeilen sind das ~10 Worker-Aufrufe pro Land-Welle.
+
+**GEZOGEN: `FLEET_ANALYSIS_MS=0` steht seit heute in `watchdog.sh`**, aktiviert per
+`launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` + srv-Kill, am `./state.sh`-Config-Sensor
+verifiziert (`live=0`). **Preis, benannt:** die `ready`/`needs-you`-Urteile frieren ein. Sie waren nur
+beratend — und Sols Durchgang hat gezeigt, dass 22 von 28 `needs-you` schlicht falsch waren.
+Rückfalltür: die Zeile zurückdrehen, wieder kickstart.
+
+**Nicht gezogen, mit Zahl, damit der Nachfolger es entscheiden kann statt zu suchen:**
+`FLEET_AUTO_REVIEW_MS=0` (71 Läufe — nützlich, nimmt Wartezeit ab) und `enhance` (122 Läufe, von mir
+NICHT untersucht — der drittgrößte Posten und die offenste Frage).
+
+### WAS IN FLUG IST
+
+**(A) Slot 1, `fleet/260808145308-514e`, Zeile `f7deea4b`** — der **pi-Zaun**: `sandbox-exec -f <profil>`
+um die Spawn-Zeile, Profil pro Lane aus ihrem cwd. Gemessen dazu: `/usr/bin/sandbox-exec` existiert,
+Codex benutzt genau das (`seatbelt`, `(version 1)`, `deny default` im Binary), **pi hat selbst gar nichts**
+(kein `--sandbox`, keine Approval-Option). Owner-Entscheid im Brief UND als Kommentar auf der Zeile:
+**Schreibzaun ja, Netz OFFEN** („netz anbindung wäre schon sehr gut, auch für research") — das SBPL-Profil
+trägt also keine network-Regel, und der Canary-Test darf **nicht** um eine Netz-Sonde erweitert werden.
+
+**(B) Slot 5, `fleet/260808150917-94b8`** — die pi+GPT-Beweis-Lane. Hat KEINEN Auftrag, nur den Boot
+bewiesen. **Killen UND discarden**, sonst wird sie re-adoptiert (siehe unten).
+
+**(C) Slot 2, `fleet/260808114656-6e86`, `e1a9a20`** — die ToS-Lane, weiter **zurückgestellt, nicht tot**.
+Ihr Gate ist grün (3 Suiten, exit 0, geerntet). Zwei Dinge beim späteren Land, die kein Ledger trägt:
+`watchdog.sh` ändert sich (braucht `launchctl kickstart`), und `CLAUDE.md` kann nur der Haupt-Checkout
+nachziehen. **Neu dazu:** sie benennt `guest-firewall.sh` in `container-firewall.sh` um — in `main` heißt
+die Datei noch alt, wer den Container-Zaun sucht, sucht unter dem alten Namen.
+
+### KORREKTUREN — vier, und drei davon widerlegen etwas, das heute selbst behauptet wurde
+
+1. **Die Klon-Form löst das Codex-Commit-Problem NICHT.** `c473ba7` landete mit der Begründung, ein Klon
+   habe sein `.git` in der Schreibwurzel. An einer echten Klon-Lane gegengemessen: `git commit` stirbt
+   erneut, jetzt am eigenen Pfad. Grund im `permission_profile` der Session: Codex stuft `<workdir>/.git`
+   **ausdrücklich auf `access:"read"`** herab (samt `.agents`, `.codex`), unabhängig von der Form.
+   Die Klon-Form behält ihren anderen Wert (selbst-enthaltenes Verzeichnis, kein Zugriff auf Hooks/Config
+   des Roots, die Form, die ein Bind-Mount braucht). **Owner-Doktrin macht daraus einen Nicht-Defekt:**
+   „comitten sollte einfach wieder die main session selbst" — also braucht kein fremder Agent je
+   Schreibrecht auf `.git`, und `sandbox_workspace_write.writable_roots` ist eine Zeile, die man NICHT
+   ziehen will. Verifiziert: `POST /api/slots/:id/commit` → `{"committed":true,"hash":"34b460a"}`.
+2. **`pi` lädt seit `b3c08e6` NICHT mehr `CLAUDE.md`, sondern `AGENTS.md`.** An einer Live-Pane gemessen,
+   beide Dateien im Baum. Das eigene Land von heute hat pi still vom vollen Regelbuch auf den dünnen
+   Zeiger verschoben. `AGENTS.md` behauptete selbst „Claude and pi read `CLAUDE.md`" — korrigiert.
+3. **`git worktree list` ist für Klon-Lanes BLIND** (`server.ts` sagt es selbst). Ich habe damit „ein
+   Worktree übrig" gemeldet und einen verwaisten 27-MB-Klon übersehen; **`./state.sh` hätte ihn gezeigt**
+   (globbt das Verzeichnis, unterscheidet an `.git` als Verzeichnis, `state.sh:43`). Benutz das Instrument
+   des Repos, nicht das rohe Kommando.
+4. **Kontextfenster der GPT-Modelle: 272 000 nominal, 258 400 effektiv** (`effective_context_window_percent: 95`),
+   und `max_context_window` steht ebenfalls auf 272000 — es gibt auf diesem Zugangsweg keine größere Stufe.
+   Zwei unabhängige Quellen, beide von Codex selbst (sein `models_cache.json` und ein nativer Rollout);
+   pi verkleinert nichts. **Konsequenz für die Arbeitsteilung:** ein GPT-Slot hat ~¼ des Fensters einer
+   Opus-1M-Session. Für einen umrissenen Lane-Schnitt reichlich, für eine MAIN-Session zu wenig.
+
+### EIN DEFEKT, DER MICH SELBST ERWISCHT HAT — und einer, der Geld kostet
+
+- **`/send` an eine noch bootende fremde TUI geht STILL verloren** (Zeile `2975afe9`). Route meldet
+  `ok:true`, Text steht in `Slot.history`, kein Modell hat ihn je gesehen. `sendText` macht
+  paste-buffer + Enter; eine TUI im Boot nimmt beides an und verwirft es. **Der Worker-Pfad löst dasselbe
+  Rennen längst** (`summaryViaSession` wartet auf `alive` UND schläft 2500 ms). Zwei Fragen werden heute
+  von einer Bedingung beantwortet: *darf* zugestellt werden (Berechtigung, vom Owner-Pfad zu Recht
+  gewaivt) und *kann* zugestellt werden (Bereitschaft, gar nicht geprüft).
+- **Ein Kill re-adoptiert die Lane sofort wieder** (Messung als Kommentar auf `34a12839`): nach vier Kills
+  erschienen binnen 17 s vier `slot_open` auf DIESELBEN Pfade in ANDEREN Slots, mit frisch gespawnten
+  claude-Sessions. Die Belegung sinkt durch Killen nie, und jede Runde kostet Geld. **Der Ausweg ist Kill
+  UND `POST /api/worktrees/discard`** — die Route verweigert bewusst, solange ein Slot den Baum hält.
+  Offen und vom Owner eingegrenzt: ein Klick auf eine `on-disk`-Geisterzeile hat zwei Bäume erzeugt;
+  ob der Knopf ANHÄNGT oder NEU ANLEGT, ist ungemessen und entscheidet, welcher Defekt vorliegt.
+
+### DER DIREKT-COMMIT — und was er dem Ledger schuldig bleibt
+
+`watchdog.sh` (+`FLEET_ANALYSIS_MS=0`) und `AGENTS.md` (pi-Korrektur) sind **im Haupt-Checkout direkt
+committet**, nicht über eine Lane. Das ist für jedes land-seitige Ledger unsichtbar: keine `git notes
+--ref=fleet/land`, keine Zeile in `lane-outcomes.jsonl`, **kein Post-Land-Audit**. Verifikation darum von
+Hand vollständig gefahren: `bun e2e/pins.ts` ALL PASS · tsc über alle 11 Dateien exit 0 · `bun run build`
+ok · die drei Gate-Suiten. Wer `./state.sh`s Land-Health-Zahlen liest: sie zählen Lanes, untertreiben an
+diesem Tag also.
+
+### DIE ARBEIT DER FREMDEN MODELLE — alles gesichert, nichts im Scratchpad gelassen
+
+`~/claude-fleet-private/codex-analysis-2026-08-08/` (das Repo ist public, hier gehört es nicht hinein):
+- `sol-analysis-workflow.md` (v1.0) und **`-v1.1.md`** — das Instrument, mit dem Terra Codex-Sessions auf
+  Ineffizienz prüft. v1.1 adressiert vier Defekte, die erst der echte Lauf zeigte; der schwerste: der
+  Pflicht-`jq`-Filter erzeugte ~80 k Tokens und wurde abgeschnitten. Sol hat die Vollabdeckung NICHT
+  aufgeweicht, sondern Chunk-Zähler eingeführt, die aufgehen müssen.
+- `terra-run-01.json` + `-notes.md` — der Probelauf. Ein qualifizierter Fund (58 388 Tokens für einen
+  breiten Read, wo ein `rg -n` verfügbar war) und, wertvoller, die Kritik am Instrument.
+- `sol-backlog-pass.md` — der Durchgang durch 63 offene Zeilen. **Von 28 `needs-you` überleben 6.**
+  7 tote Zeilen sind archiviert (jede mit dem Commit kommentiert, der sie erledigt hat).
+- `codex-session-analysis-package.md`, `queue-open-rows.json`, `CLAUDE.md.backup/.candidate/.installed-final`.
+
+**`CLAUDE.md` wurde von Fable 5 umgeschrieben:** 144 Zeilen mit 77 über 200 Zeichen → **794 Zeilen, null
+über 200**, Faktenmenge als Teilmenge belegt (510 Backtick-Spans, 30 SHAs, 22 Zahl+Einheit-Tokens),
+Pins grün. Wirkung live bestätigt: die nächste Codex-Lane las es **in einem Zug**, ohne `dd`.
+
+### REIHENFOLGE FÜR DICH
+
+1. **`f7deea4b` (pi-Zaun) landen**, wenn sie fertig meldet. Danach Slot 5 killen UND discarden.
+2. **Ab da alle neuen Lanes als pi+GPT spawnen** — das ist die Vorgabe, und es ist der Weg, der heute
+   funktioniert. Codex direkt nur, wenn `pinsSession`/Effort egal sind.
+3. **`f85d1244`** — Codex repariert seinen eigenen Adapter (Effort via `-c model_reasoning_effort`,
+   `resume --last`, Transcript-Schicht aus dem vermessenen Rollout-Schema). Drei Messungen liegen bei.
+   **Das ist die Zeile, die die Worker-Ebene öffnen könnte**: wer Codex' Transkript lesbar macht, hat den
+   Grund entfernt, aus dem `PI_HARNESS.worker` null zurückgibt.
+4. **`2975afe9`** (das stille `/send`) — klein, und es hat heute eine Stunde gekostet.
+5. `d9b9b4c4` (Harness im Ledger — ohne das bleibt „wie viel hat GPT geleistet" unbeantwortbar),
+   `29cd2610` / `54af57d6` bleiben Zielbilder und gehören durch `▸ clarify first`.
+
+**Was WIRKLICH beim Owner liegt:** ob `FLEET_CMD` fleet-weit auf pi geht · ob `FLEET_AUTO_REVIEW_MS=0`
+auch fällt · die sechs `needs-you`-Zeilen aus Sols Durchgang (`785ce63d`, `9bf62ae6`, `df5b74ba`,
+`10ac2528`, `c8e2ddd7`, `dabd1880`).
+
 # HANDOFF — Session 41 (2026-08-08 nachmittags: Codex ist Adapter #4, und die Sandbox wurde vermessen statt geglaubt) · 40/39/38 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 1c2a77a..HEAD`

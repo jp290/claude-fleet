@@ -7,8 +7,13 @@ mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korre
 
 ## Session 40: der Tag, an dem ein fremdes Harness normal wurde
 
-**ctx beim Übergeben: ~40 %.** Produziert: 4 Lands über Lanes (alle unter **Pi**, alle mit
-Gate-Note + LaneOutcome + grünem Audit), 4 Direkt-Commits, 5 Queue-Zeilen eingereicht,
+**ctx beim Übergeben: ~42 %.** Produziert: 4 Lands über Lanes (alle unter **Pi**, alle mit
+Gate-Note + LaneOutcome). **KORREKTUR, eingetragen NACH dem ersten Entwurf dieses Abschnitts:
+der Post-Land-Audit des letzten Lands (`b320c24`, Klon) kam ROT zurück** — `exitCode 1`, 778 s,
+Testinstanz stehengelassen unter `$TMPDIR/fleet-e2e-instance-85037`. Un-adjudiziert bei der
+Übergabe; main-41 hat den Auftrag samt Beweisordnung in der Pane. Die anderen drei Audits sind
+grün. **`undo-land` gilt nur für dieses eine Land und nur bis zum nächsten** — Slot 5 zu landen
+verbraucht ihn, 4 Direkt-Commits, 5 Queue-Zeilen eingereicht,
 3 geschlossen, 1 gelöscht-und-ersetzt. Zum Vergleich für die Schwellen-Kalibrierung:
 S39 = ~31 % bei 9 Lands, S38 = 37,1 % bei 3 Lands. **Der teure Posten dieser Session waren
 NICHT die Lands, sondern meine eigenen Grabungen** (Container-Untersuchung, DeepSeek-Wrapper) —

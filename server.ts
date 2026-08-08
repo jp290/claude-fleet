@@ -2739,7 +2739,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 // explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
 // documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
 // shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
-async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: string },
+async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string },
   ownerAct: boolean, clarify = false): Promise<void> {
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
   // WITH a done-criterion, and a task that reached this button is precisely one where that cannot
@@ -2755,9 +2755,38 @@ async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: 
   // is the same destination for both paths: the tick only ever runs tasks the owner released, and
   // an attended start IS a release. (Deliberately unlike dispatchTask's catch, where the failure is
   // persistent — a bad repo — and the row goes back to the status it came from instead of looping.)
-  const requeue = (note: string): void => {
+  // ...and it takes the LANE WITH IT. The row going back to `queued` used to be the whole of this
+  // function: the worktree it had just created and the slot holding it stayed standing, owned by
+  // nobody — the task no longer pointed at them and no land would ever come. Every retry then
+  // spawned another pair, so the one path in fleet that retries by design was also the one that
+  // leaked. Teardown runs in landLane's order and for landLane's reason: the worktree FIRST, while
+  // the slot is still intact, so a refused removal leaves a lane that is still fully recoverable
+  // rather than a torn-down slot pointing at an orphaned tree.
+  //
+  // THE EDGE, decided here rather than left implicit: a pane that has already produced something
+  // is not disposable. removeWorktreeSafe is the existing answer and it fits unchanged — it refuses
+  // an uncommitted tree and unpushed commits, with git's own `worktree remove` refusal behind it —
+  // so a dirty lane is KEPT, slot and all, and the reason is written onto the row. A worktree
+  // silently kept would be the same defect in new clothes, which is why the note carries it.
+  //
+  // Two paths reach here with the slot no longer ours (identity lost during the boot sleep) or with
+  // the tree adopted by another session; killing/removing then would end a lane this dispatch never
+  // owned. Both are read from the live slot list rather than assumed, and `next.slot` is cleared
+  // either way: a `queued` row must not keep pointing at a slot it has let go of.
+  const requeue = async (note: string): Promise<void> => {
+    const ours = free.cwd === wt.path && free.worktree?.branch === wt.branch;
+    const other = slots.find((s) => s.id !== free.id && s.cwd === wt.path);
+    let kept = "";
+    if (other) {
+      kept = `; lane kept (slot ${other.id} holds it)`;
+    } else {
+      const fail = await removeWorktreeSafe(wt.repo, wt.path, wt.branch);
+      if (fail) kept = `; lane kept (${fail.error.split("\n")[0]})`;
+      else if (ours) await killSlot(free, "reopen");
+    }
     next.status = "queued";
-    next.note = note;
+    next.slot = null;
+    next.note = `${note}${kept}`.slice(0, 200);
     saveState();
   };
   // the owner may have killed/re-opened this slot during the boot sleep — re-verify it
@@ -2768,15 +2797,15 @@ async function briefAndSend(next: Task, free: Slot, wt: { path: string; branch: 
   // fresh claude-alive gate (was synergy-findings.md Tier-0 #2). Requeue on any failure — the
   // lane exists, the prompt waits. With the compile gone there is only ONE gate/send window left
   // to keep tight; the second round-trip the compile used to need went with it.
-  if (identityLost()) { requeue("slot changed during spawn — requeued"); return; }
+  if (identityLost()) { await requeue("slot changed during spawn — requeued"); return; }
   const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
-  if (!boot.ok) { requeue(`dispatch held (${boot.gate}) — requeued`); return; }
+  if (!boot.ok) { await requeue(`dispatch held (${boot.gate}) — requeued`); return; }
   try {
     await sendText(free, brief, true);
     logPrompt(free, brief, "auto", Date.now());
     console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
   } catch (e) {
-    requeue(`dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 200));
+    await requeue(`dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 120));
   }
 }
 

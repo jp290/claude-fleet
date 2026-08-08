@@ -1,7 +1,7 @@
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
 // brief, and the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase).
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { REPO, ROOT, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists } from "./lane-helpers";
@@ -90,6 +90,93 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify(wmap2.worktrees.find((w) => w.path === sh.cwd)));
     check("shelve rejects a non-worktree slot", (await post("/api/slots/2/shelve", { note: "x" })).status === 400);
     await post(`/api/slots/${reopen.slot ?? 0}/kill`, {}); // free the slot for later tests
+  }
+
+  // --- the OTHER teardown, and the one that had none: a dispatch that requeues after the lane is
+  // already spawned. briefAndSend's post-spawn gate is retry-shaped — the row goes back to `queued`
+  // — and until this landed the worktree and the slot it had just created stayed standing, owned by
+  // nobody. Same edge as shelve above, opposite answer: shelve KEEPS a tree because the owner said
+  // so, a requeue keeps one only when it holds work, and must say so on the row.
+  //
+  // The gate is made genuinely red (master stop, flipped inside briefAndSend's 4 s boot sleep), not
+  // simulated: the requeue has to actually run for "no worktree left" to mean anything. Every
+  // precondition the probe depends on is asserted as ITS OWN check — a lane that never spawned, or
+  // a queue that never moved, must fail as a broken probe and never as a clean teardown.
+  {
+    type Sess = { slots: { id: number; cwd: string | null; worktree: { repo: string } | null }[];
+      tasks: { id: string; status: string; slot?: number; note?: string }[];
+      dispatch: { on: boolean; maxLanes: number; repo: string } };
+    const sess = async (): Promise<Sess> => (await (await get("/api/sessions")).json()) as Sess;
+    const rowOf = (s: Sess, id: string): Sess["tasks"][number] | undefined => s.tasks.find((t) => t.id === id);
+    // poll rather than sleep: the dispatch tick is 250 ms here and the boot sleep is 4 s, so the
+    // flip we are waiting for has to be caught, not timed
+    const until = async (id: string, status: string): Promise<Sess> => {
+      const t0 = Date.now();
+      let last = await sess();
+      while (Date.now() - t0 < 15000) {
+        if (rowOf(last, id)?.status === status) return last;
+        await Bun.sleep(50);
+        last = await sess();
+      }
+      return last;
+    };
+    const queue = async (text: string): Promise<string> =>
+      ((await (await post("/api/tasks", { text, queue: true })).json()) as { task: { id: string } }).task.id;
+
+    await post("/api/autos/switch", { on: true });
+    await post("/api/dispatch", { on: true });
+    const pre = await sess();
+    // the cap the DISPATCHER applies, measured the way it measures: lanes in the dispatch repo,
+    // not occupied slots. Paths are compared through realpath because a lane stores the git
+    // toplevel (/var → /private/var) while the env keeps whatever the operator typed.
+    const canon = (p: string): string => { try { return realpathSync(p); } catch { return p; } };
+    const lanesNow = pre.slots.filter((s) => s.worktree && canon(s.worktree.repo) === canon(pre.dispatch.repo)).length;
+    check("requeue probe precondition: dispatcher on, a free slot, dispatch-repo lanes under the cap",
+      pre.dispatch.on === true && pre.slots.some((s) => !s.cwd) && lanesNow < pre.dispatch.maxLanes,
+      `on=${pre.dispatch.on} free=${pre.slots.filter((s) => !s.cwd).length} lanes=${lanesNow}/${pre.dispatch.maxLanes}`);
+
+    // (a) EMPTY lane → the requeue takes the whole lane with it
+    const emptyId = await queue("requeue-teardown-empty");
+    const sentE = await until(emptyId, "sent");
+    const slotE = rowOf(sentE, emptyId)?.slot;
+    const cwdE = sentE.slots.find((s) => s.id === slotE)?.cwd ?? "";
+    check("requeue probe (empty): the lane really spawned — worktree on disk, slot held",
+      typeof slotE === "number" && cwdE !== "" && exists(cwdE), `slot=${slotE} cwd=${cwdE}`);
+    await post("/api/autos/switch", { on: false }); // master stop → the post-spawn gate fails for real
+    const backE = await until(emptyId, "queued");
+    const noteE = rowOf(backE, emptyId)?.note ?? "";
+    check("requeue probe (empty): the row went back to queued through the GATE, not some other path",
+      rowOf(backE, emptyId)?.status === "queued" && noteE.includes("kill-switch"), `note=${noteE}`);
+    check("an empty lane is torn down by its own requeue — no worktree left behind", !exists(cwdE), cwdE);
+    check("…and no slot left held by it either",
+      backE.slots.find((s) => s.id === slotE)?.cwd === null && rowOf(backE, emptyId)?.slot === undefined,
+      `cwd=${backE.slots.find((s) => s.id === slotE)?.cwd} slot=${rowOf(backE, emptyId)?.slot}`);
+    await post(`/api/tasks/${emptyId}/delete`, {});
+
+    // (b) DIRTY lane → kept, and the row says why. A silently kept worktree is the same defect.
+    await post("/api/autos/switch", { on: true });
+    const dirtyId = await queue("requeue-teardown-dirty");
+    const sentD = await until(dirtyId, "sent");
+    const slotD = rowOf(sentD, dirtyId)?.slot;
+    const cwdD = sentD.slots.find((s) => s.id === slotD)?.cwd ?? "";
+    check("requeue probe (dirty): the lane really spawned — worktree on disk, slot held",
+      typeof slotD === "number" && cwdD !== "" && exists(cwdD), `slot=${slotD} cwd=${cwdD}`);
+    if (cwdD) await Bun.write(`${cwdD}/half-written.txt`, "the pane got here first\n");
+    check("requeue probe (dirty): the tree is genuinely dirty before the gate fires",
+      spawnSync("git", ["-C", cwdD || REPO, "status", "--porcelain"]).stdout.toString().includes("half-written.txt"));
+    await post("/api/autos/switch", { on: false });
+    const backD = await until(dirtyId, "queued");
+    const noteD = rowOf(backD, dirtyId)?.note ?? "";
+    check("requeue probe (dirty): the row went back to queued through the GATE",
+      rowOf(backD, dirtyId)?.status === "queued" && noteD.includes("kill-switch"), `note=${noteD}`);
+    check("a requeue never eats work: a dirty lane is KEPT and the row names the reason",
+      exists(cwdD) && exists(`${cwdD}/half-written.txt`) && noteD.includes("lane kept")
+        && noteD.includes("uncommitted"), `note=${noteD} tree=${exists(cwdD)}`);
+    await post(`/api/tasks/${dirtyId}/delete`, {});
+    await post("/api/dispatch", { on: false });
+    if (typeof slotD === "number") await post(`/api/slots/${slotD}/kill`, {});
+    if (cwdD) spawnSync("git", ["worktree", "remove", "--force", cwdD], { cwd: REPO });
+    await post("/api/autos/switch", { on: true });
   }
 
   // --- ↻ restart: the one slot verb that is NOT a teardown. Every other exit (kill, shelve, the

@@ -29,7 +29,12 @@ import urllib.request
 
 KEY_FILE = os.path.expanduser("~/.claude-fleet-workers/deepseek.key")
 API = "https://api.deepseek.com/chat/completions"
-MODEL = "deepseek-chat"
+# Asked the provider rather than assumed (GET /models, 2026-08-08): this key reaches exactly
+# `deepseek-v4-flash` and `deepseek-v4-pro`. The first version of this file pinned
+# `deepseek-chat`, which ANSWERED but is no longer in the catalogue — a name that is served but
+# unlisted is the kind that disappears without warning. Overridable so flash/pro can be compared
+# on the same seam; an unknown name is the provider's 400 to give, not ours to guess at.
+MODEL = os.environ.get("FLEET_DEEPSEEK_MODEL") or "deepseek-v4-flash"
 TIMEOUT_S = 120
 
 

@@ -1,7 +1,7 @@
 // Worktree lanes, the base layer: create/diff/land, the one-click /api/lanes route, the worktrees
 // map, the land gate against a busy pane, and the integration-branch config.
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { ROOT, REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
@@ -247,6 +247,72 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("a working ✎ message sets no fallback flag",
       r2.ok && j2.committed === true && j2.subject === "feat: stand-in commit message" && j2.messageFallback === undefined,
       `${r2.status} ${JSON.stringify(j2)}`);
+
+    // --- PER-REPO worker override (/api/repo-worker). FLEET_COMMIT_CMD is a module constant read
+    // from the server's env, so it is fleet-WIDE: pointing it at a wrapper that ships the diff to
+    // a third party would ship EVERY repo's diff there, which is why a finished wrapper could not
+    // be switched on. Both halves are asserted by SUBJECT, because subject is the only externally
+    // visible difference between the two stand-ins — a resolution that silently ignored the stored
+    // entry would otherwise come back as an ordinary passing commit.
+    {
+      const alt = `${modeDir}/fakecommit2`;
+      const canon = realpathSync(REPO);
+      const setR = await post("/api/repo-worker", { repo: REPO, worker: "commitMsg", cmd: alt });
+      const setJ = (await setR.json()) as { ok?: boolean; repo?: string; cmd?: string | null };
+      // the key is CANONICAL, not the spelling the caller used: lanes arrive from createWorktree
+      // carrying the symlink-resolved toplevel, so a raw-string key would be written once and
+      // never matched again (the dispatch cap and VERIFY_CMD_REPOS canonicalize for this reason)
+      check("repo-worker stores a commitMsg override under the CANONICAL repo path",
+        setR.ok && setJ.cmd === alt && setJ.repo === canon, `${setR.status} ${JSON.stringify(setJ)} want repo=${canon}`);
+      await Bun.write(`${fbDir}/code.txt`, "root\nfallback-probe\nagent-ok-probe\nper-repo-probe\n");
+      const r3 = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+      const j3 = (await r3.json()) as { committed?: boolean; subject?: string; messageFallback?: boolean };
+      check("a repo WITH an override runs it instead of the fleet-wide FLEET_COMMIT_CMD",
+        r3.ok && j3.committed === true && j3.subject === "feat: per-repo stand-in commit message"
+        && j3.messageFallback === undefined, `${r3.status} ${JSON.stringify(j3)}`);
+
+      // The value is spawned in ARRAY form with no shell, so anything that is not a bare absolute
+      // path to an executable is refused rather than coerced — accepting one would create the
+      // pressure to split it here later, which is how a shell gets back into a path that has none.
+      const bad: [string, string][] = [
+        ["a command line with arguments", `${alt} --model x`],
+        ["a shell metacharacter", `${alt};id`],
+        ["a relative path (it would resolve against the lane's own tree)", "fakecommit2"],
+        ["a .. traversal", `${modeDir}/../${REPO.replace(/^.*\//, "")}/../fakecommit2`],
+        ["a file that is not executable", `${ROOT}/package.json`],
+        ["a path that does not exist", `${modeDir}/no-such-worker`],
+      ];
+      for (const [why, cmd] of bad) {
+        const rb = await post("/api/repo-worker", { repo: REPO, worker: "commitMsg", cmd });
+        check(`repo-worker rejects ${why}`, rb.status === 400, `${rb.status} ${await rb.text()}`);
+      }
+      // a worker NOTHING consults: storing it would echo back a setting that does nothing, which
+      // reads as applied and is worse than a refusal
+      const rw = await post("/api/repo-worker", { repo: REPO, worker: "merge", cmd: alt });
+      check("repo-worker rejects a worker name nothing resolves through it", rw.status === 400, String(rw.status));
+      const rn = await post("/api/repo-worker", { repo: `${modeDir}/definitely-not-a-repo`, worker: "commitMsg", cmd: alt });
+      check("repo-worker rejects a path that is not a git repository", rn.status === 400, String(rn.status));
+      // every refusal above must have left the GOOD value alone — a rejected write that cleared
+      // the stored one would silently move the repo's diffs back to the fleet-wide default
+      const rd = (await (await get("/api/repo-workers")).json()) as
+        { keys?: string[]; workers?: Record<string, Record<string, string>> };
+      check("a rejected value changes nothing: the stored override is still there",
+        rd.workers?.[canon]?.commitMsg === alt, JSON.stringify(rd.workers));
+      check("...and the read names which workers can be configured at all, so 'no override' is"
+        + " distinguishable from 'never wired up'", (rd.keys ?? []).includes("commitMsg"), JSON.stringify(rd.keys));
+
+      // THE COMPATIBILITY HALF, proven rather than asserted: with the entry gone, this repo must
+      // behave exactly as it did before the feature existed — the env default, same subject as the
+      // check a few lines above.
+      const clr = await post("/api/repo-worker", { repo: REPO, worker: "commitMsg", cmd: "" });
+      const clrJ = (await clr.json()) as { ok?: boolean; cmd?: string | null };
+      check("repo-worker clears an override", clr.ok && clrJ.cmd === null, `${clr.status} ${JSON.stringify(clrJ)}`);
+      await Bun.write(`${fbDir}/code.txt`, "root\nfallback-probe\nagent-ok-probe\nper-repo-probe\ncleared-probe\n");
+      const r4 = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+      const j4 = (await r4.json()) as { committed?: boolean; subject?: string };
+      check("a repo with NO entry is unchanged: back to the fleet-wide env default",
+        r4.ok && j4.committed === true && j4.subject === "feat: stand-in commit message", `${r4.status} ${JSON.stringify(j4)}`);
+    }
     await post("/api/slots/5/kill", {});
     spawnSync("git", ["worktree", "remove", "--force", fbDir], { cwd: REPO });
     spawnSync("git", ["-C", REPO, "branch", "-qD", fbBranch]);

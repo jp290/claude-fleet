@@ -465,6 +465,20 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("every docker invocation server.ts emits pins its context (guest-ctl.sh's rule, same reason)",
     [...serverExec.matchAll(/\bdocker (?!--context )/g)].length === 0,
     [...serverExec.matchAll(/.{0,40}\bdocker (?!--context ).{0,40}/g)].map((m) => m[0]).join(" | ") || "none");
+  // REPO_WORKER_KEYS is what /api/repo-worker will STORE; workerCmdFor is what actually resolves a
+  // stored entry at a worker's call site. tsc holds neither to the other — both sides are a plain
+  // WorkerName — so the two failures this invites are silent in opposite directions: a name in the
+  // list with no call site is a setting the owner configures, sees echoed back, and which changes
+  // nothing; a call site with no listed name is a resolution nobody can ever reach. The rule is
+  // stated as set EQUALITY for that reason, not as one-way coverage.
+  const declared = (serverExec.match(/const REPO_WORKER_KEYS: WorkerName\[\] = \[([^\]]*)\]/)?.[1] ?? "")
+    .split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  const resolved = [...new Set([...serverExec.matchAll(/workerCmdFor\("([A-Za-z]+)"/g)].map((m) => m[1]))];
+  pin("server.ts yields a non-empty REPO_WORKER_KEYS (an unparsed one would make the rule below vacuous)",
+    declared.length > 0, declared.join(", ") || "none");
+  pin("every per-repo-configurable worker is resolved through workerCmdFor, and vice versa",
+    declared.length === resolved.length && declared.every((k) => resolved.includes(k)),
+    `declared=[${declared.join(", ")}] resolved=[${resolved.join(", ")}]`);
   // ...and the choice can only ever enter through a request: harnessIdOf reads a BODY, so a caller
   // that has no body cannot name a harness. Stated over the whole file so a third spawn path added
   // tomorrow is covered tomorrow.

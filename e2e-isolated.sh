@@ -331,6 +331,19 @@ printf '{"result": "{\\"message\\": \\"feat: stand-in commit message\\"}"}'
 EOF
 chmod +x "$DIR/fakecommit"
 
+# The PER-REPO ✎ commit-message worker (/api/repo-worker). Never named in SRV_ENV: the whole point
+# of the feature is that this is chosen at RUNTIME and stored, so a test that could only reach it
+# through the server's environment would prove the opposite of what is claimed. Its answer differs
+# from $DIR/fakecommit's by one word, which is the entire assertion — the two paths are otherwise
+# indistinguishable from the outside, so a resolution that ignored the stored entry and fell
+# through to the env default would come back as a PASSING commit with the wrong subject.
+cat > "$DIR/fakecommit2" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '{"result": "{\\"message\\": \\"feat: per-repo stand-in commit message\\"}"}'
+EOF
+chmod +x "$DIR/fakecommit2"
+
 # stand-in 🧭 steward-digest worker: same envelope, answers a fixed digest so the
 # compose→spawn→parse→clamp pipeline round-trips without a model. Sleeps for the seconds
 # in $DIR/digestdelay (default 0) so the P3 bounded-wait race is deterministically testable

@@ -281,6 +281,109 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     lying.length === 0, `denied=[${denied}] but run=[${lying}]`);
 }
 
+{
+  // AGENTS.md is the same gate written out for a reader — Codex's convention, and the only rulebook
+  // a Codex lane ever sees (it does not read CLAUDE.md, which is git-ignored and therefore cannot be
+  // tracked into a worktree at all). So it must be TRACKED, it must not leak the deploy identity
+  // into a public repo, and above all its verify block must not drift away from what actually gates.
+  // That last one is why this sits at the end of the VERIFY_CMD family rather than in section 4:
+  // the pair is AGENTS.md ↔ watchdog.sh's own line, and it rots the moment a suite is added to one.
+  const AGENTS = "AGENTS.md";
+  let agents: string | null = null;
+  try { agents = read(AGENTS); } catch { /* absent → every rule below says so under its own name */ }
+
+  // tracked-ness read out of the git index, never shelled out to: this file is fs-only by design.
+  // `.git` is a directory in the main checkout and a file pointing at `…/.git/worktrees/<name>` in
+  // a lane; the index that governs THIS tree lives beside whichever of the two it is. Unreadable →
+  // SKIP, because "could not look" and "not tracked" are different answers.
+  const indexPath = ((): string | null => {
+    try {
+      if (statSync(`${ROOT}/.git`).isDirectory()) return `${ROOT}/.git/index`;
+      const m = /gitdir:\s*(\S+)/.exec(readFileSync(`${ROOT}/.git`, "utf8"));
+      return m ? `${m[1]}/index` : null;
+    } catch { return null; }
+  })();
+  const RULE_TRACKED = "AGENTS.md exists at the repo root and is tracked (an untracked one reaches no lane)";
+  if (agents === null) pin(RULE_TRACKED, false, "no AGENTS.md in this tree");
+  else if (indexPath === null) skip(RULE_TRACKED, "git index not locatable from here");
+  else {
+    let idx: string | null = null;
+    try { idx = readFileSync(indexPath, "latin1"); } catch { /* unreadable */ }
+    if (idx === null) skip(RULE_TRACKED, "git index unreadable");
+    else {
+      const inIndex = idx.includes(`${AGENTS}\0`);
+      pin(RULE_TRACKED, inIndex, inIndex ? "on disk and in the index" : "present on disk, absent from the index");
+    }
+  }
+
+  // the leak rule is stated in SHAPES, not in the secrets themselves — naming them here would put
+  // them in a public tracked file, which is the very thing being prevented. An IPv4 literal and an
+  // absolute URL are the two forms the deploy identity takes; neither has any business in a file
+  // whose whole job is to point at CLAUDE.md for the operational detail.
+  const RULE_SECRET = "AGENTS.md carries no deploy identity (no IPv4 literal, no absolute URL)";
+  if (agents === null) skip(RULE_SECRET, "no AGENTS.md in this tree");
+  else {
+    const ips = (agents.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []).length;
+    const urls = (agents.match(/\bhttps?:\/\/\S+/g) ?? []).length;
+    pin(RULE_SECRET, ips === 0 && urls === 0, `${ips} ip-shaped, ${urls} url(s)`);
+  }
+
+  // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
+  // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
+  // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2
+  // harness with no type coverage at all. Scoped to the fenced ```sh block so that prose ABOUT a
+  // suite (this file names ./e2e-isolated.sh in the paragraph below it, correctly, as NOT a gate)
+  // is not read as a claim to run it.
+  const RULE_VERIFY = "AGENTS.md's verify block runs exactly what watchdog.sh's VERIFY_CMD gates";
+  const fence = agents === null ? null : /```sh\n([\s\S]*?)```/.exec(agents)?.[1] ?? null;
+  if (fence === null) pin(RULE_VERIFY, false, agents === null ? "no AGENTS.md" : "no ```sh verify block");
+  else {
+    const same = (a: string[], b: string[]): string =>
+      [...new Set(a.filter((x) => !b.includes(x)))].sort().join(",");
+    const docSuites = [...fence.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => m[1]);
+    // the tsc invocation only: from `bunx tsc` to the end of its backslash continuation, so a future
+    // `bun something.ts` line elsewhere in the block is not mistaken for a type-gate entry
+    const tscLines = ((): string => {
+      const ls = fence.split("\n");
+      const at = ls.findIndex((l) => l.includes("bunx tsc"));
+      if (at < 0) return "";
+      let to = at;
+      while (to < ls.length - 1 && ls[to].trimEnd().endsWith("\\")) to++;
+      return ls.slice(at, to + 1).join(" ");
+    })();
+    const docTsc = tscLines.split(/\s+/).filter((t) => /\.ts$/.test(t));
+    // recomputed rather than borrowed from the block above: these rows must keep working whoever
+    // edits the neighbouring family, and the expression is the same one line either way
+    const gateTsc = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
+    const missSuite = same(gateSuites, docSuites), extraSuite = same(docSuites, gateSuites);
+    const missTsc = same(gateTsc, docTsc), extraTsc = same(docTsc, gateTsc);
+    pin(RULE_VERIFY,
+      docSuites.length > 0 && docTsc.length > 0
+      && !missSuite && !extraSuite && !missTsc && !extraTsc,
+      `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
+  }
+
+  // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md
+  // is a spawn-time copy. This file is tracked, so the tree it ships with is the tree it describes.
+  // CLAUDE.md is the one exception and it is named rather than derived: it is git-ignored, so a
+  // fresh clone of this public repo has no copy, and its absence there says nothing about drift.
+  const RULE_ANCHORS = "every path AGENTS.md cites resolves in this tree";
+  if (agents === null) skip(RULE_ANCHORS, "no AGENTS.md in this tree");
+  else {
+    // fenced blocks come out FIRST. A ```sh fence is itself made of backticks, so a naive span scan
+    // swallows the whole block as one "span" and silently mis-pairs every backtick after it — the
+    // failure mode being a rule that reports one anchor and calls the file covered. What is inside
+    // the fence is the verify block, and the rule above already holds it against watchdog.sh.
+    const prose = agents.replace(/```[\s\S]*?```/g, "\n");
+    const cited = [...new Set([...prose.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))]
+      .filter((t) => /^\.?\/?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:md|ts|sh|json)$/.test(t))
+      .map((t) => t.replace(/^\.\//, ""))
+      .filter((t) => t !== "CLAUDE.md");
+    const dead = cited.filter((p) => !exists(p));
+    pin(RULE_ANCHORS, cited.length > 0 && dead.length === 0, `${cited.length} cited, dead=[${dead}]`);
+  }
+}
+
 // ================================================================================================
 // 4. Docs that state the live land-path configuration
 // ================================================================================================

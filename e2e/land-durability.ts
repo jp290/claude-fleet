@@ -11,9 +11,9 @@
 //     it, because recordLand returns early on mainBefore === mainAfter.
 // Both are reproduced here against a REAL kill of the real server, not a simulated one.
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
-import { setMergeMode, settleForMerge } from "./lane-helpers";
+import { setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 const g = (dir: string, ...a: string[]): { out: string; err: string; code: number } => {
   const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
@@ -203,6 +203,68 @@ export async function run(): Promise<void> {
     check("…and says so on the audit trail instead of guessing a mainAfter",
       evs2.some((e) => e.event === "land_recover_fail" && (e.detail ?? "").includes("fleet/unaccounted")),
       JSON.stringify(evs2.slice(0, 2)));
+  }
+
+  // === D — the undo stack must READ the pre-stack shape it replaced =====================
+  // `undoLands` changed from one record per repo to a capped stack of them. The deploy ritual is
+  // `tmux kill-session -t srv`, ~10×/day, so a state file written by the previous shape is boot
+  // input on the very first deploy after the upgrade — and a boot that only understood the array
+  // would read every land recorded before it as "no land", deleting the owner's reversibility at
+  // exactly the moment the change was meant to widen it. A silent loss: nothing fails, the button
+  // is simply gone. So the old shape is planted here for real and booted onto.
+  {
+    const repo = `${REPO}.undomigrate`;
+    spawnSync("git", ["init", "-q", "-b", "main", repo]);
+    spawnSync("git", ["-C", repo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", repo, "config", "user.name", "e2e"]);
+    spawnSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
+    await Bun.write(`${repo}/base.txt`, "base\n");
+    spawnSync("git", ["-C", repo, "add", "base.txt"]);
+    spawnSync("git", ["-C", repo, "commit", "-qm", "base"]);
+    const lane = (await (await post("/api/lanes", { repo })).json()) as { slot: number; cwd: string; branch: string };
+    await Bun.write(`${lane.cwd}/mig.txt`, "work recorded under the old shape\n");
+    spawnSync("git", ["-C", lane.cwd, "add", "mig.txt"]);
+    spawnSync("git", ["-C", lane.cwd, "commit", "-qm", "migration lane work"]);
+    const migBefore = g(repo, "rev-parse", "main").out;
+    await setMergeMode("blocked");
+    await settleForMerge(lane.slot);
+    await post(`/api/slots/${lane.slot}/merge`, {});
+    await waitMerge(lane.slot);
+    const migAfter = g(repo, "rev-parse", "main").out;
+    check("(setup D) a land was recorded for the repo whose state file is about to be rewritten",
+      migAfter !== migBefore, `${migBefore.slice(0, 8)} -> ${migAfter.slice(0, 8)}`);
+
+    // rewrite the QUIESCENT state file from the stack shape back to the single-record shape
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const path = `${ROOT}/fleet.json`;
+    const st = JSON.parse(readFileSync(path, "utf8")) as { undoLands?: Record<string, unknown> };
+    // the state file keys by the CANONICAL repo path (createWorktree realpaths it), which on this
+    // machine is /private/var/... where the test holds /var/... — look the key up instead of
+    // assuming it, or the rewrite below silently edits nothing and the whole section passes
+    // vacuously on an untouched file (measured: it did, on the first run of this check)
+    const key = Object.keys(st.undoLands ?? {}).find((k) => k === repo || k === realpathSync(repo));
+    check("(setup D) the planted land is findable in the state file (probe fails as itself, not as the server)",
+      !!key, `looked for ${repo} / ${realpathSync(repo)} in ${Object.keys(st.undoLands ?? {}).join(", ")}`);
+    const stacked = key ? st.undoLands?.[key] : undefined;
+    check("(setup D) the current server persists the land as a STACK (an array of records)",
+      Array.isArray(stacked) && stacked.length === 1, JSON.stringify(stacked));
+    if (st.undoLands && key && Array.isArray(stacked)) st.undoLands[key] = stacked[stacked.length - 1] as unknown;
+    writeFileSync(path, JSON.stringify(st, null, 2), { mode: 0o600 });
+    chmodSync(path, 0o600);
+    const replanted = key ? (JSON.parse(readFileSync(path, "utf8")) as { undoLands?: Record<string, unknown> }).undoLands?.[key] : undefined;
+    check("(setup D) the planted file really carries the OLD one-object shape",
+      !!replanted && !Array.isArray(replanted) && typeof (replanted as { mainAfter?: unknown }).mainAfter === "string",
+      JSON.stringify(replanted));
+    await restartSrv();
+
+    const migUndo = await post("/api/repos/undo-land", { repo });
+    const migJ = (await migUndo.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    check("a land persisted in the PRE-STACK shape is read back as a one-element stack and is still undoable",
+      migJ.ok === true && g(repo, "rev-parse", "main").out === migBefore,
+      `${migUndo.status} ${JSON.stringify(migJ)} now=${g(repo, "rev-parse", "main").out.slice(0, 8)} want=${migBefore.slice(0, 8)}`);
+    check("…and that migrated stack holds exactly the one record it was given (nothing invented under it)",
+      (await post("/api/repos/undo-land", { repo })).status === 404);
   }
 
   await setMergeMode("blocked"); // leave the shared mode file as the other modules expect it

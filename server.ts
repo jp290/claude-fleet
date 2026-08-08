@@ -337,6 +337,25 @@ const CONTAINER_NAME = (() => {
   const c = process.env.FLEET_CONTAINER;
   return c && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(c) ? c : "fleet";
 })();
+// ...and WHICH DOCKER. This is not decoration and it is not defensive: `docker` on this machine
+// resolves through a CONTEXT, the current one is a user setting, and it is measured (2026-08-08)
+// that the active context here is `colima-fleetguest` — the VM holding two RUNNING guest
+// containers with other people's live sessions. An unpinned `docker exec` would therefore not have
+// picked "some" daemon, it would have picked exactly that one, and it would change under the
+// operator's feet the next time they switch. guest-ctl.sh already solved this and states the rule
+// ('Pinned, never ambient', its slot_conf/d()); this borrows the pattern rather than reinventing it.
+//
+// The DEFAULT is `default` on purpose, and it is the one place this adapter refuses to decide for
+// the owner: which VM a slot container belongs in is a resource decision with consequences (the
+// fleetguest profile is 2 CPU / 2 GiB shared with the guests), not a formality. `default` is the
+// neutral answer — it can never silently land in the guests' VM, and on a machine where that
+// socket is dead the pane shows docker's own "cannot connect" instead. Note the coupling that
+// follows: an IMAGE lives in one daemon, so whichever context is pinned must be the one the image
+// was built in (`claude-fleet:guest` exists on colima-fleetguest and nowhere else).
+const CONTAINER_CONTEXT = (() => {
+  const c = process.env.FLEET_CONTAINER_CONTEXT;
+  return c && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(c) ? c : "default";
+})();
 
 // Adapter #3 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
 // docs/container.md's "Why the whole app, never the slots" is the argument it has to survive: that
@@ -354,6 +373,15 @@ const CONTAINER_NAME = (() => {
 // or probes the container. The operator does that by hand; `note` says so at pick time. A missing
 // container is therefore a visible docker error in the pane, followed by `exec $SHELL` — the pane
 // survives and shows what is wrong, rather than a slot that looks open and is not.
+//
+// AND THE MOUNT IS THE OPPOSITE OF THE GUEST PROTOTYPE'S, which is the one thing not to copy from
+// it. A guest container (guest-ctl.sh `provision`) hangs off three NAMED VOLUMES — state, work and
+// .claude — precisely because they survive `docker rm`: that persistence IS the guest's identity,
+// and the whole point is that their work is not the owner's tree. Here the requirement inverts. The
+// worktree must BE the host worktree, bind-mounted, because every number Fleet reports about this
+// slot comes from `git -C <worktree>` on the HOST: ahead, dirty, doneLooking, the diff, the land
+// path. On a named volume those would still be computed, still be shown, and describe a tree nobody
+// can land — the failure would be silent and would look like the agent doing nothing.
 const CONTAINER_HARNESS: Harness = {
   id: "container",
   // `-w "$PWD"` carries the pane's OWN cwd into the container, and that encodes the adapter's one
@@ -364,7 +392,8 @@ const CONTAINER_HARNESS: Harness = {
   // The agent line itself is agentCmd's, verbatim: whatever this fleet runs on the host, this slot
   // runs in the box, under the same validated quoting.
   spawnCmd: (o) =>
-    `${PATH_EXPORT}docker exec -it -w "$PWD" '${CONTAINER_NAME}' ${agentCmd(o.sessionId, o.resume, o.model)}; exec ${SHELL}`,
+    `${PATH_EXPORT}docker --context '${CONTAINER_CONTEXT}' exec -it -w "$PWD" '${CONTAINER_NAME}' `
+    + `${agentCmd(o.sessionId, o.resume, o.model)}; exec ${SHELL}`,
   // mirrors CLAUDE_HARNESS, and for its reason rather than by imitation: agentCmd passes a session
   // id only when BASE_CMD is claude, so a stand-in FLEET_CMD pins none here either.
   pinsSession: IS_CLAUDE,
@@ -407,7 +436,7 @@ const CONTAINER_HARNESS: Harness = {
   },
   // the caveat an owner must have BEFORE picking this: Fleet is not the thing providing the
   // isolation, and it cannot tell them the container is missing until the pane says so.
-  note: `you start container '${CONTAINER_NAME}' and bind-mount the worktree at the SAME path — Fleet never does`,
+  note: `you start container '${CONTAINER_NAME}' on docker --context '${CONTAINER_CONTEXT}' and bind-mount the worktree at the SAME path — Fleet never does`,
 };
 
 // The probe is now PER SLOT (commsFor, one region below), which fixes a FACT that used to be a lie:

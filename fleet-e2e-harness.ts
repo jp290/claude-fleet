@@ -22,13 +22,44 @@
 //
 // Run via ./e2e-claude-gate.sh. Do not run directly against a live fleet — e2e/harness.ts refuses
 // the live socket and the live port on import, before anything here can act.
-import { AUTOS_TICK_MS, afterTick, check, failures, get, post, results, tmuxOut } from "./e2e/harness";
+import { AUTOS_TICK_MS, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
+
+// The empty-comms waiver is immutable server configuration, so the wrapper gives it a fresh
+// phase-2 process and enters only this counter-proof. Keep the precondition explicit: if the pane
+// was observed before /send, a fast result would prove the lastOutput fast path, not the waiver.
+if (process.env.FLEET_GATE_UNPROBED === "1") {
+  const opened = await post("/api/slots/1/open", { cwd: "~" });
+  check("unprobed fixture: the FLEET_CMD=true slot opened", opened.ok, String(opened.status));
+  const before = ((await (await get("/api/sessions")).json()) as
+    { slots: { id: number; lastOutput: number }[] }).slots.find((s) => s.id === 1)?.lastOutput;
+  check("unprobed fixture: the pane is still unobserved before /send", before === 0, String(before));
+
+  const marker = "unprobed-send-arrived";
+  const started = Date.now();
+  const sent = await post("/send", { slot: 1, text: `printf '${marker}\\n'` });
+  const elapsed = Date.now() - started;
+  check("an empty comms set is never readiness-delayed", sent.ok && elapsed < 1500,
+    `${sent.status} ${elapsed}ms`);
+
+  // This is the probe's OWN verdict. Only after it passes may marker absence mean /send was lost;
+  // otherwise this branch would reproduce the boot race and mislabel a probe failure as success.
+  const paneProbe = await paneEnv("s1", "FLEET_SELF_SLOT");
+  check("unprobed fixture probe: paneEnv itself ran in the stand-in shell", paneProbe === "1",
+    paneProbe ?? "probe did not run");
+  const cap = await tmuxOut("capture-pane", "-t", "s1", "-p", "-J");
+  check("the non-delayed unprobed send still arrives byte-for-byte",
+    cap.out.includes(marker), cap.out.slice(-180));
+
+  console.log(results.join("\n"));
+  console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+  process.exit(failures() ? 1 : 0);
+}
 
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
 interface AutoInfo { id: string; slot: number; lastResult: string | null }
 type AgentState = "alive" | "no-agent" | "no-pane" | "unprobed";
-interface PollSlot { id: number; agent: AgentState | null }
+interface PollSlot { id: number; agent: AgentState | null; lastOutput: number }
 
 const slotAgent = async (slot: number): Promise<AgentState | null | undefined> =>
   ((await (await get("/api/sessions")).json()) as { slots: PollSlot[] }).slots.find((x) => x.id === slot)?.agent;
@@ -42,6 +73,20 @@ async function awaitAgent(slot: number, want: AgentState): Promise<AgentState | 
     seen = await slotAgent(slot);
     if (seen === want) return seen;
     await Bun.sleep(250);
+  }
+  return seen;
+}
+
+const slotLastOutput = async (slot: number): Promise<number | undefined> =>
+  ((await (await get("/api/sessions")).json()) as { slots: PollSlot[] })
+    .slots.find((x) => x.id === slot)?.lastOutput;
+
+async function awaitObserved(slot: number): Promise<number | undefined> {
+  let seen: number | undefined;
+  for (let i = 0; i < 40; i++) {
+    seen = await slotLastOutput(slot);
+    if (seen !== undefined && seen > 0) return seen;
+    await Bun.sleep(100);
   }
   return seen;
 }
@@ -61,11 +106,56 @@ async function startCmdOf(target: string): Promise<string> {
 // a fresh inode per swap, never a mutation of the one a running pane still maps: overwriting an
 // executable in place invalidates the code signature of every process mapping it (AMFI, Apple
 // Silicon) and kills them at their next exec. Phase 1 learned this the expensive way.
-async function installHarn(variant: "hang" | "exit"): Promise<void> {
+async function installHarn(variant: "boot" | "hang" | "exit"): Promise<void> {
   await Bun.$`rm -f ${FAKEBIN}/harn`.quiet();
   await Bun.write(`${FAKEBIN}/harn`, await Bun.file(`${FAKEBIN}/harn-${variant}`).arrayBuffer());
   await Bun.$`chmod +x ${FAKEBIN}/harn`.quiet();
 }
+
+// --- branch 0: the boot race itself. harn-boot first execs a process whose comm is NOT declared;
+// for two seconds it suppresses echo and then FLUSHES every queued input byte. Only afterwards does
+// it exec harnready, which the probe may call alive. The old immediate paste is therefore genuinely
+// lost; the readiness wait plus adapter settle moves delivery past the flush, and the stand-in
+// prints only the line its "model" actually read.
+await installHarn("boot");
+const bootOpen = await post("/api/slots/9/open", { cwd: "~" });
+check("boot-race fixture: the delayed foreign TUI opened", bootOpen.ok, String(bootOpen.status));
+const bootBefore = await slotLastOutput(9);
+check("boot-race fixture: the pane is still unobserved before immediate /send",
+  bootBefore === 0, String(bootBefore));
+const bootMarker = "boot-send-model-marker";
+const bootStarted = Date.now();
+const bootSend = await post("/send", { slot: 9, text: bootMarker });
+const bootElapsed = Date.now() - bootStarted;
+check("immediate /send waits for the foreign TUI settle instead of feeding its boot flush",
+  bootSend.ok && bootElapsed >= 1000, `${bootSend.status} ${bootElapsed}ms`);
+
+// Probe verdict first, payload verdict second. If paneEnv cannot run after the stand-in exits, the
+// marker assertion is not allowed to impersonate a boot-race measurement.
+const bootPaneProbe = await paneEnv("s9", "FLEET_SELF_SLOT");
+check("boot-race fixture probe: paneEnv itself ran after the delayed TUI",
+  bootPaneProbe === "9", bootPaneProbe ?? "probe did not run");
+const bootCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
+check("the delayed TUI's model received the immediate send byte-for-byte",
+  bootCap.out.includes(`harn-received=[${bootMarker}]`), bootCap.out.slice(-220));
+
+// The same pane has now printed. Establish that precondition positively from Fleet's own signal,
+// then prove the next send takes today's direct paste path: no readiness settle and exact bytes.
+const observedAt = await awaitObserved(9);
+check("observed-pane fixture: Fleet recorded the pane's first output",
+  observedAt !== undefined && observedAt > 0, String(observedAt));
+const observedMarker = "observed-send-arrived";
+const observedStarted = Date.now();
+const observedSend = await post("/send", { slot: 9, text: `printf '${observedMarker}\\n'` });
+const observedElapsed = Date.now() - observedStarted;
+check("a pane that already printed takes the unchanged no-delay send path",
+  observedSend.ok && observedElapsed < 1000, `${observedSend.status} ${observedElapsed}ms`);
+const observedProbe = await paneEnv("s9", "FLEET_SELF_SLOT");
+check("observed-pane fixture probe: paneEnv itself ran after the direct send",
+  observedProbe === "9", observedProbe ?? "probe did not run");
+const observedCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
+check("the observed-pane direct send preserves its bytes",
+  observedCap.out.includes(observedMarker), observedCap.out.slice(-220));
 
 // --- branch 1: the probe FINDS a foreign agent. The positive control, and it has to come first:
 // without it, a probe that simply answered "no-agent" to everything would satisfy every negative
@@ -175,6 +265,40 @@ await dispatchProbe("dispatch-effort-absent", { harness: "pi", model: DISPATCH_M
 // Before this, claudeAlive() returned `true` here without looking, so the marker below would have
 // been typed into a bare shell and executed. ---
 await installHarn("exit");
+
+// The bounded failure side: a declared comm never appears and the pane remains unobserved. /send
+// must still preserve the owner's ability to type into the surviving shell, but it must wait only
+// the short route budget and leave a durable, text-free audit row instead of returning a silent OK.
+const timeoutOpen = await post("/api/slots/10/open", { cwd: "~" });
+check("boot-timeout fixture: the dead foreign harness opened onto its shell",
+  timeoutOpen.ok, String(timeoutOpen.status));
+const timeoutBefore = await slotLastOutput(10);
+check("boot-timeout fixture: the pane is still unobserved before /send",
+  timeoutBefore === 0, String(timeoutBefore));
+const timeoutMarker = "boot-timeout-send-arrived";
+const timeoutStarted = Date.now();
+const timeoutSend = await post("/send", { slot: 10, text: `printf '${timeoutMarker}\\n'` });
+const timeoutElapsed = Date.now() - timeoutStarted;
+check("a readiness timeout is bounded and still sends — never 409/refusal",
+  timeoutSend.ok && timeoutElapsed >= 2800 && timeoutElapsed < 6000,
+  `${timeoutSend.status} ${timeoutElapsed}ms`);
+const timeoutProbe = await paneEnv("s10", "FLEET_SELF_SLOT");
+check("boot-timeout fixture probe: paneEnv itself ran in the surviving shell",
+  timeoutProbe === "10", timeoutProbe ?? "probe did not run");
+const timeoutCap = await tmuxOut("capture-pane", "-t", "s10", "-p", "-J");
+check("the owner send is delivered after timeout, preserving the dead-agent pane capability",
+  timeoutCap.out.includes(timeoutMarker), timeoutCap.out.slice(-220));
+let timeoutAudit: { event?: string; slot?: number; detail?: string } | undefined;
+for (let i = 0; i < 30 && !timeoutAudit; i++) {
+  const rows = ((await (await get("/api/audit?limit=100")).json()) as
+    { events: { event?: string; slot?: number; detail?: string }[] }).events;
+  timeoutAudit = rows.find((e) => e.event === "send_boot_timeout" && e.slot === 10);
+  if (!timeoutAudit) await Bun.sleep(100);
+}
+check("the readiness timeout is visible on the audit trail",
+  !!timeoutAudit && timeoutAudit.detail === "harness=default budget=3000ms",
+  JSON.stringify(timeoutAudit ?? null));
+
 const o6 = await post("/api/slots/6/open", { cwd: "~" });
 check("open slot 6 (dead foreign agent branch)", o6.ok, String(o6.status));
 await Bun.sleep(1500); // let the stand-in exit and `exec $SHELL` take the pane

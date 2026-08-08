@@ -47,7 +47,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   // so the raw capture reads `-w \"\$PWD\"`. Nothing else in this line carries a backslash.
   const hcCmd = (await tmuxOut("display-message", "-p", "-t", "s7", "#{pane_start_command}")).out.replaceAll("\\", "");
   check("a lane spawned with harness=container execs into the container at the lane's own cwd",
-    hcCmd.includes(`docker exec -it -w "$PWD" 'fleet' `), hcCmd.slice(-160));
+    hcCmd.includes(`docker --context 'default' exec -it -w "$PWD" 'fleet' `), hcCmd.slice(-160));
   await post("/api/slots/7/kill", {});
   spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-container`], { cwd: REPO });
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };

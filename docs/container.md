@@ -48,6 +48,13 @@ The adapter's other answers, each an owner-visible fact rather than a default:
 - **`comms: ["docker"]`.** The liveness probe walks the *host* pane's process tree, and the agent
   is in another pid namespace (inside colima's VM, on this machine). The `docker exec` client is
   what the host can see, and it exits when the agent inside exits.
+- **The docker context is pinned, never ambient** (`FLEET_CONTAINER_CONTEXT`, default `default`).
+  This is the same rule `guest-ctl.sh` states for the guest containers, and it is not theoretical:
+  measured 2026-08-08, this machine has three contexts (`default`, `colima`, `colima-fleetguest`)
+  and the **active one is `colima-fleetguest`** — the VM running two live guest containers. An
+  unpinned `docker exec` would land there, and would move the next time the operator switches
+  context. The default is deliberately the neutral `default` rather than the guests' VM: see the
+  decision below.
 - **`supports.selfSchedule: false`**, by construction: `docker exec` does not inherit the client's
   environment, so `FLEET_SELF_TOKEN` — exported into the host pane — never reaches the agent.
 - **The model charset is not widened** (`modelRe: null`, i.e. the same rule a default slot gets).
@@ -62,11 +69,43 @@ and shows what is wrong. The adapter's `note` says this at pick time.
 
 So the operator owes it two things, and the second is the one that bites:
 
-1. A running container, named by `FLEET_CONTAINER` (default `fleet`).
+1. A running container, named by `FLEET_CONTAINER` (default `fleet`), **on the daemon named by
+   `FLEET_CONTAINER_CONTEXT`**. Those two travel together: an image lives in one daemon, so
+   `claude-fleet:guest` (912 MB, built in the `fleetguest` VM) exists on `colima-fleetguest` and
+   nowhere else. Pinning a context whose daemon lacks the image is the same failure as naming a
+   container that does not exist.
 2. The worktree bind-mounted at the **identical path**. `spawnCmd` passes `-w "$PWD"`, i.e. the
    pane's own host cwd. Mounting it anywhere else makes every `docker exec` fail with a bad
    working directory, and it would also break the only thing that keeps host git and the
    in-container agent talking about one tree.
+
+### Bind-mount, not named volumes — the one thing not to copy from the guest prototype
+
+Fleet already runs containers on this machine, and it is tempting to reuse their shape. Do not
+reuse this part of it. A guest container (`guest-ctl.sh provision`) hangs off **three named
+volumes** — `<ctr>-state` → `/home/fleet/claude-fleet`, `<ctr>-work` → `/home/fleet/work`,
+`<ctr>-claude` → the `CLAUDE_CONFIG_DIR`. They are named volumes *because* they survive
+`docker rm`: that persistence is the guest's identity, and the whole point is that their work is
+not the owner's tree.
+
+A slot container needs the exact opposite. The worktree must **be** the host worktree, because
+every number Fleet reports about that slot comes from `git -C <worktree>` on the host — `ahead`,
+`dirty`, `doneLooking`, the diff, the land path. On a named volume all of those would still be
+computed and still be displayed, and would describe a tree nobody can land. That failure is
+silent, and it looks like the agent doing nothing.
+
+### The undecided part: which VM
+
+Measured 2026-08-08 (`colima list`): `default` Stopped (2 CPU / 8 GiB), `fleetbuild` Stopped
+(2 / 2 GiB), `fleetguest` **Running** (2 CPU / 2 GiB / 20 GiB, aarch64) with both guest containers
+in it. So "put slot containers in the running VM" means sharing 2 GiB and 2 CPUs with two other
+people's live sessions, in the same daemon as containers that hold their credentials and run with
+`NET_ADMIN`. The alternative is a dedicated profile — `guest-ctl.sh`'s own note prices a second VM
+at roughly 200 MB of host RAM at idle, a second container at ~25 MB.
+
+That is a resource-and-blast-radius decision, so the adapter does not take it: it defaults to the
+neutral `default` context, which fails visibly rather than quietly borrowing the guests' VM. Set
+`FLEET_CONTAINER_CONTEXT` to choose.
 
 The hand-run that establishes this — container up, bind-mount, and a canary write to a file in
 `$HOME` *outside* the repo that must fail mechanically — is the owner's, not a lane's: docker,

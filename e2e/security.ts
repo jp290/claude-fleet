@@ -567,6 +567,10 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // name the very container the spawn line will exec into, or the caveat points at nothing.
   check("§6d the container adapter states at pick time that the owner supplies the container",
     !!con?.note && con.note.includes("'fleet'") && /mount/i.test(con.note), String(con?.note));
+  // the note must also name the DAEMON, not just the container: with three docker contexts on this
+  // machine, "container 'fleet'" is an ambiguous sentence until the context is part of it.
+  check("§6d ...and which docker it means, since a container name alone does not identify one",
+    !!con?.note && con.note.includes("docker --context 'default'"), String(con?.note));
 
   const oc = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "container" });
   check("§6d a slot opens on the container harness (200)", oc.ok, String(oc.status));
@@ -578,7 +582,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // quote is not escaped by that rendering. Nothing else here contains a backslash.
   const ccmdRaw = ccmd.replaceAll("\\", "");
   check("§6d the container spawn line execs into the named container at the pane's OWN cwd",
-    ccmdRaw.includes(`docker exec -it -w "$PWD" 'fleet' `), ccmd.slice(-160));
+    ccmdRaw.includes(`docker --context 'default' exec -it -w "$PWD" 'fleet' `), ccmd.slice(-160));
+  // THE ROW THAT MATTERS MOST HERE, and it is not defensive: `docker` resolves through a context,
+  // the current one is a user setting, and on the machine this was written the ACTIVE context was
+  // the VM running two guest containers with other people's live sessions. An ambient `docker exec`
+  // would have landed there. So: the spawn line must never contain a bare `docker exec`.
+  check("§6d the spawn line pins the docker CONTEXT — never ambient (the active one is a user setting)",
+    !/docker exec/.test(ccmdRaw) && /docker --context '[A-Za-z0-9][A-Za-z0-9_.-]*' exec/.test(ccmdRaw),
+    ccmd.slice(-160));
   // ...and what it execs is this fleet's agent line verbatim (FLEET_CMD=true here), not a second
   // implementation of the flag rules. A reimplementation would drift and nothing else would notice.
   check("§6d ...and the command inside the box is agentCmd's, not a restatement",

@@ -617,17 +617,31 @@ jq -r '.event' audit.jsonl | sort | uniq -c | sort -rn
 # Outcome-Register (`ts` = Land, `sessionMs` = Dauer, also Start = ts - sessionMs).
 # Liest BEIDE Audit-Generationen — ein Leser nur von audit.jsonl ist rotationsblind und
 # meldet nach einer Rotation eine junge statt einer abgeschnittenen Historie.
-# Basiswert vor der Einführung (2026-08-06): landed 78, checked 0 — die Frage war unbeantwortbar.
+# Der NENNER ist auf die instrumentierte Ära beschnitten (`.ts >= $instr`): vor dem ersten
+# `self_drift`-Event gab es die Sonde nicht, diese Lands konnten strukturell nie „checked"
+# werden. Ungefiltert zählen sie trotzdem mit und drücken die Quote — der alte Basiswert
+# (2026-08-06: landed 78, checked 0) ist GENAU diese Population, und genau das schließt der
+# Filter jetzt aus. Gemessen 2026-08-08: ungefiltert {117,38,25} = 32,5 %, gefiltert
+# {39,38,25} = 97,4 % — dieselbe Maschine, zwei Seiten der 20-%-Schwelle. Eine Zahl, die je
+# nach Messtag die Schwelle wechselt, ist kein Messwert, sondern ein Artefakt des Nenners.
+# $instr wird IM BLOCK aus $d abgeleitet, nie als Literal eingetragen — ein eingetragener ts
+# altert still gegen eine Rotation und niemand sieht es.
+# Leere instrumentierte Population ⇒ alle Felder `null` = UNBEKANNT, nicht „0 %". Ohne diesen
+# Zweig liefert derselbe Block {landed:117, checked:0}, was sich wie eine Widerlegung des
+# Mechanismus liest, obwohl nur die Sonde fehlt (nachgemessen, s. o.). Eine Messung, die ihre
+# Voraussetzung nicht herstellen konnte, muss als sie selbst scheitern.
 jq -rn --slurpfile o lane-outcomes.jsonl \
        --slurpfile a <(cat audit.jsonl.1 audit.jsonl 2>/dev/null) '
   ($a|map(select(.event=="self_drift"))) as $d
-  | ($o|map(select(.disposition=="landed" and .sessionMs>0))
+  | ($d|map(.ts)|min) as $instr
+  | if $instr==null then {instrumentedSince:null, landed:null, checked:null, early:null}
+    else ($o|map(select(.disposition=="landed" and .sessionMs>0 and .ts>=$instr))
      | map(. as $l
          | ($d|map(select((.detail//"")|startswith($l.branch+" ")))|map(.ts)|min) as $f
          | {checked:($f!=null),
             frac:(if $f==null then null else (($f-($l.ts-$l.sessionMs))/$l.sessionMs) end)}))
-  | {landed:length, checked:(map(select(.checked))|length),
-     early:(map(select(.frac!=null and .frac<(2/3)))|length)}'
+  | {instrumentedSince:$instr, landed:length, checked:(map(select(.checked))|length),
+     early:(map(select(.frac!=null and .frac<(2/3)))|length)} end'
 
 # Queue (der Engpass: gibt es überhaupt eine `queued`-Zeile?)
 jq -r '.tasks[]?|[.status,.kind,.source]|@tsv' fleet.json | sort | uniq -c

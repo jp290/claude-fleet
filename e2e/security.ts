@@ -799,8 +799,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     cxAgent !== null && cxAgent !== "unprobed", String(cxAgent));
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
   // --- the rejections. Every value here would otherwise reach a tmux shell line.
-  const xe = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "high" });
-  check("§6e the codex adapter refuses an effort it has no flag for, rather than dropping it (400)",
+  // codex DOES take an effort now (`-c model_reasoning_effort=<level>`, 8e154dd), so the old row here
+  // — "it refuses an effort it has no flag for" — stopped describing the adapter and started
+  // describing history. The block's own purpose is the one that survives: every value in it would
+  // otherwise reach a tmux shell line, so what belongs here is not "any effort" but an effort that
+  // is shell-dangerous. The fixed-list rejection has its own row at §6e above; this one proves the
+  // list is a MEMBERSHIP test rather than a charset filter that a clever value could satisfy.
+  const xe = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "high; id" });
+  check("§6e the codex adapter refuses a shell-dangerous effort, rather than dropping it (400)",
     xe.status === 400, String(xe.status));
 
   // --- and the harness dies with the session: a recycled slot must not inherit the binary the

@@ -29,10 +29,17 @@ const exists = (rel: string): boolean => { try { statSync(`${ROOT}/${rel}`); ret
 
 const rows: string[] = [];
 let failed = 0;
-function pin(name: string, ok: boolean, detail = ""): void {
-  rows.push(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
-  if (!ok) failed++;
+// `soft` is for a rule that RAN but whose subject cannot be held against this tree — section 6's
+// stale rulebook copy is the only case. It prints its findings and does not fail, because a lane
+// carrying a month-old copy did not break the anchor it names. WARN, not PASS: a violation that
+// prints as a pass is how a check stops being read.
+function pin(name: string, ok: boolean, detail = "", soft = false): void {
+  rows.push(`${ok ? "PASS" : soft ? "WARN" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+  if (!ok && !soft) failed++;
 }
+// a rule that could not be evaluated at all must say SO, under its own name. A skipped rule that
+// prints PASS is vacuum-green: the same word for "measured, fine" and "never measured".
+function skip(name: string, why: string): void { rows.push(`SKIP  ${name}  (${why})`); }
 
 const shellScripts = [
   ...readdirSync(ROOT).filter((f) => f.endsWith(".sh")),
@@ -471,6 +478,137 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     /agentInfo\.set\(s\.id, agentState\);/.test(server)
     && /aliveInfo\.set\(s\.id, \(agentState === "alive" \|\| agentState === "unprobed"\) && harnessAutomatable\(s\)\);/.test(server),
     "agentInfo unconditional + aliveInfo gated");
+}
+
+// ================================================================================================
+// 6. CLAUDE.md — the one steering document with no drift pin at all
+// ================================================================================================
+// Section 5 walks `docs/`. CLAUDE.md is not in `docs/`, and it is the document every session and
+// every lane is told to obey FIRST — so it was the only one whose anchors nothing checked. Its
+// anchors rot the same way a doc's do: `BACKLOG.md` moved to the attic, a script gets renamed, a
+// `grep X server.ts` outlives the symbol, and the rulebook keeps sending readers at nothing.
+//
+// TWO CONSTRAINTS shape everything below, and both are the difference between a pin that survives
+// and one that gets switched off within the week:
+//
+// (1) THREE-VALUED, like server.ts's `rulebookDrifted`. CLAUDE.md is gitignored: a lane holds a
+//     COPY taken at spawn time. Absent → the rule is SKIPped under its own name. Present but
+//     differing from the source checkout, or not comparable to it → findings print as WARN. Only a
+//     copy that IS the source (main checkout) or matches it byte for byte is held hard. An old lane
+//     did not break the anchor its old copy names, and a pin that reds every lane guards nothing.
+//
+// (2) NO CONTENT LEAVES THIS FILE. CLAUDE.md carries the deploy host and IP; this repo is public
+//     and pin output lands in logs, reports and the land record. So the emitted detail is: the
+//     violated rule's name, the line NUMBER, and the dead anchor itself — never the line it sits
+//     on. The two extractors only ever yield tokens from narrow charsets (a path shape with no
+//     whitespace; a grep needle), safe() truncates and redacts an IPv4 literal on top, and nothing
+//     else in this section touches the text.
+{
+  const CLAUDE = "CLAUDE.md";
+  const safe = (s: string): string =>
+    s.replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, "<ip>").slice(0, 60);
+
+  // --- the three values. The source of a lane's copy is the checkout its worktree hangs off:
+  // `.git` is a DIRECTORY in the main checkout and a FILE pointing at `…/.git/worktrees/<name>`
+  // in a lane. Read, never shelled out to — this file is fs-only by design.
+  let copy: string | null = null;
+  try { copy = read(CLAUDE); } catch { /* absent → not comparable */ }
+  const sourcePath = ((): string | null => {
+    try {
+      if (statSync(`${ROOT}/.git`).isDirectory()) return `${ROOT}/${CLAUDE}`; // the copy IS the source
+      const m = /gitdir:\s*(\S+)/.exec(readFileSync(`${ROOT}/.git`, "utf8"));
+      const i = m ? m[1].indexOf("/.git/worktrees/") : -1;
+      return i > 0 ? `${m![1].slice(0, i)}/${CLAUDE}` : null;
+    } catch { return null; }
+  })();
+  const source = ((): string | null => {
+    try { return sourcePath ? readFileSync(sourcePath, "utf8") : null; } catch { return null; }
+  })();
+  const state = copy === null ? "absent" : source === null ? "unpaired" : source === copy ? "current" : "stale";
+  const soft = state !== "current";
+
+  // the rule NAMES are the same in every branch — a reader grepping the report for a rule must find
+  // its row whether it passed, warned or was never evaluated
+  const RULE_PATHS = "every path CLAUDE.md cites still resolves";
+  const RULE_GREPS = "every grep CLAUDE.md sends the reader on still finds something";
+  const RULE_SUBJ = "CLAUDE.md yields anchors of both classes (a rule with no subject is not a pass)";
+
+  if (copy === null) {
+    skip(RULE_SUBJ, `no rulebook in this tree (state=${state})`);
+    skip(RULE_PATHS, "no rulebook in this tree");
+    skip(RULE_GREPS, "no rulebook in this tree");
+  } else {
+    // --- what counts as a citation THIS repo can be held to. Three filters, each for a class of
+    // false red that would otherwise land on a correct rulebook:
+    //   · git-ignored → a runtime artifact (fleet.json, the .jsonl ledgers, graphify-out/). Its
+    //     absence in a worktree is its normal state and proves nothing. Unparseable .gitignore →
+    //     everything counts as ignored, i.e. the pin under-covers rather than cries.
+    //   · absolute or under .git/ → not this tree's to own (`/tmp/fleet-e2e.lock`, `.git/index.lock`).
+    //   · not attributable to this repo → a path whose first segment is not a directory that exists
+    //     here (`demo/src/demo.ts` lives in the neighbouring demo repo, as this very file explains),
+    //     and any BARE top-level `.ts`/`.json` name, which is the shape that repo's modules have
+    //     too (`build.ts`) and cannot be told apart by name. Top-level `.sh` and `.md` stay in:
+    //     those are ours, and a renamed wrapper or an attic'd register is the case this pin is for.
+    const ignorePats = ((): string[] | null => {
+      try { return read(".gitignore").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")); }
+      catch { return null; }
+    })();
+    const ignored = (p: string): boolean => {
+      if (ignorePats === null) return true;
+      return ignorePats.some((raw) => {
+        const pat = raw.replace(/\/+$/, "").replace(/^\/+/, "");
+        const re = new RegExp(`^${pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`);
+        return re.test(p) || (!pat.includes("/") && p.split("/").some((seg) => re.test(seg)));
+      });
+    };
+    const topDirs = new Set(readdirSync(ROOT).filter((f) => { try { return statSync(`${ROOT}/${f}`).isDirectory(); } catch { return false; } }));
+    const PATH_SHAPE = /^\.?\/?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:md|ts|sh|json|jsonl|html|js|lock|plist|yml|yaml)$/;
+    const attributable = (p: string): boolean => {
+      if (p.startsWith("/") || p.startsWith(".git/") || ignored(p)) return false;
+      const seg = p.split("/");
+      return seg.length > 1 ? topDirs.has(seg[0]) : /\.(sh|md)$/.test(p);
+    };
+
+    const lines = copy.split("\n");
+    // --- class A: a cited path that no longer resolves
+    const deadPaths: string[] = [];
+    let paths = 0;
+    for (let i = 0; i < lines.length; i++)
+      for (const t of new Set([...lines[i].matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()))) {
+        if (!PATH_SHAPE.test(t)) continue;
+        const p = t.replace(/^\.\//, "");
+        if (!attributable(p)) continue;
+        paths++;
+        if (!exists(p)) deadPaths.push(`${CLAUDE}:${i + 1} ${safe(p)}`);
+      }
+
+    // --- class B: an errand the rulebook sends the reader on — `…, grep \`sym\`` — that finds
+    // nothing. The needle is the backticked span AFTER the word; the haystack is the nearest
+    // backticked .ts/.sh file named just before it, server.ts by default, which is the form every
+    // one of these takes today. A `grep` INSIDE a backtick span is a shell command being quoted,
+    // not an errand, and is left alone — that is what keeps the redaction probe (which names the
+    // real host) out of this rule entirely.
+    const deadGreps: string[] = [];
+    let greps = 0;
+    for (let i = 0; i < lines.length; i++)
+      for (const m of lines[i].matchAll(/(?<!`)\bgrep\s+`([^`]+)`/g)) {
+        const before = lines[i].slice(Math.max(0, m.index - 140), m.index);
+        const named = [...before.matchAll(/`([^`]+\.(?:ts|sh))`/g)].map((x) => x[1]);
+        const target = named.length ? named[named.length - 1] : "server.ts";
+        greps++;
+        let hay: string | null = null;
+        try { hay = read(target); } catch { /* target itself is gone */ }
+        if (hay === null) deadGreps.push(`${CLAUDE}:${i + 1} ${safe(target)} (target missing)`);
+        else if (!hay.includes(m[1])) deadGreps.push(`${CLAUDE}:${i + 1} ${safe(m[1])} not in ${safe(target)}`);
+      }
+
+    // both classes non-empty, or the two rules below are measuring nothing and saying "fine"
+    pin(RULE_SUBJ, paths > 0 && greps > 0, `state=${state}; ${paths} path(s), ${greps} grep errand(s)`);
+    pin(RULE_PATHS, deadPaths.length === 0,
+      `${state === "current" ? "" : `${state} copy — advisory; `}${deadPaths.join("; ")}`, soft);
+    pin(RULE_GREPS, deadGreps.length === 0,
+      `${state === "current" ? "" : `${state} copy — advisory; `}${deadGreps.join("; ")}`, soft);
+  }
 }
 
 console.log(rows.join("\n"));

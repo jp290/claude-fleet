@@ -1,7 +1,7 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { check, get, post, restartSrv, afterTick, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
@@ -313,6 +313,20 @@ export async function run(ctx: Ctx): Promise<void> {
     check("a DISPATCHED lane spawns the named harness — the pane runs codex, sandboxed, with the model it was given",
       /(^|\s|;)codex --sandbox workspace-write --ask-for-approval never --model 'openai\/gpt-5-codex'/.test(xCmd),
       xCmd.slice(-160));
+    // ...and the WORKING-COPY FORM travels this road too, which is the road the owner actually
+    // uses. The dispatch path has no request body to carry a `form`, so it is the pure absence
+    // case: the adapter answers, and for Codex the answer is a clone — a linked worktree keeps its
+    // metadata in the primary repo, outside `--sandbox workspace-write`, so a Codex worktree lane
+    // cannot `git commit` at all. Asserted on the `.git` ENTRY, same as the lane routes: only the
+    // disk can contradict a response that claims a form it did not make. Captured immediately, for
+    // the same reason xCmd is — the kill below takes the tree with it.
+    const xSess = (await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; worktree: { form?: string } | null }[] };
+    const xSlot = xSess.slots.find((s) => s.id === xdJ.slot);
+    check("a DISPATCHED codex lane gets the adapter's clone form — the owner's own road, not just /api/lanes",
+      xSlot?.worktree?.form === "clone"
+      && !!xSlot.cwd && existsSync(`${xSlot.cwd}/.git`) && lstatSync(`${xSlot.cwd}/.git`).isDirectory(),
+      `${xSlot?.worktree?.form} @ ${xSlot?.cwd}`);
     // THE POINT OF THE ROUTE, and the half /api/lanes cannot give: the row is bound to the lane
     const xRow = await f2Row(xT.task.id);
     check("the foreign-harness task is bound to its lane before the route answers (the link /api/lanes never makes)",
@@ -367,6 +381,16 @@ export async function run(ctx: Ctx): Promise<void> {
     // host's, not the server's, and no assertion here should depend on what is in it
     check("a dispatch that names no harness spawns the DEFAULT adapter, byte-shape unchanged",
       dd.ok && /;\s*true; exec \S+$/.test(dCmd.trim()), dCmd.slice(-160));
+    // ...and the same row for the FORM, which is the one that matters most: an adapter with no
+    // opinion must leave this path exactly where it was — a linked worktree, and a slot record
+    // with no `form` key at all. The absence is the assertion; a state file that grew a field here
+    // would read as a different shape to every reader of the old one.
+    const dState = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+      { slots: Record<string, { cwd?: string; worktree?: Record<string, unknown> } | undefined> }).slots[String(ddJ.slot)];
+    check("a dispatch that names no harness still makes a WORKTREE, and its record carries no form key",
+      !!dState?.cwd && existsSync(`${dState.cwd}/.git`) && lstatSync(`${dState.cwd}/.git`).isFile()
+      && !!dState.worktree && !("form" in dState.worktree),
+      `${dState?.cwd} / ${JSON.stringify(dState?.worktree)}`);
     if (typeof ddJ.slot === "number") await post(`/api/slots/${ddJ.slot}/kill`, {});
     await post(`/api/tasks/${dT.task.id}/delete`, {});
 

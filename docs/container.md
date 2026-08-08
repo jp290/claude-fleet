@@ -117,9 +117,20 @@ directory**, which is the shape a bind-mount needs. `--no-hardlinks` is the poin
 knob: the default local-clone optimisation hardlinks the object files and would re-share the very
 bytes the form removes (~98 MB of objects per clone on this repo, against 36 GB free).
 
-**Clones sit ALONGSIDE worktrees.** `form` defaults to `worktree`, and that default is unchanged
-down to the absent `form` field in `fleet.json` — asserted as its own check. Nothing that exists
-today becomes a clone.
+**Clones sit ALONGSIDE worktrees.** An absent `form` still resolves to `worktree` — down to the
+absent `form` field in `fleet.json`, asserted as its own check — for every harness that has no
+opinion, which is claude, pi and the container adapter. Nothing that existed before this becomes a
+clone.
+
+**Who chooses, since 2026-08-08: the ADAPTER, on absence only.** `Harness.laneForm` (`null` = no
+opinion, `"clone"` for Codex) is consulted by exactly one function, `laneFormOf`, and an explicit
+`form` in the request wins over it — so a Codex lane in worktree form stays legal, it simply cannot
+commit itself. That is why this is a *preference* and not modelled like `container`/`containerContext`,
+which a harness that cannot serve them rejects with 400. All three lane-creating paths ask the one
+function: `POST /api/lanes`, `POST /api/slots/:id/open-worktree` and `dispatchTask` (which has no
+request body at all, so it is the pure absence case). Two pins hold it: every `createWorktree` call
+site passes a form, and every form it passes came from `laneFormOf` rather than from a second
+`if harness === …` derivation somewhere down a road nobody re-reads.
 
 #### The one seam: the branch is mirrored, in both directions
 
@@ -171,6 +182,26 @@ This is not container-only, which is why it comes first. **Guest mode** has the 
 the other side: a guest works in a named volume (`fleet-guest-work`), i.e. nowhere — it cannot work
 on *this* repo at all. The clone is the mechanism that gives a guest a real working copy without
 handing over the object database and the hooks. One mechanism, two customers.
+
+#### The third customer, and the one that arrived first: Codex
+
+Measured on the first real Codex lane (2026-08-08, slot 9): `git commit` died on
+`fatal: Unable to create '<main>/.git/worktrees/<lane>/index.lock': Operation not permitted`.
+Codex's `--sandbox workspace-write` fences **writes** to `[workdir, /tmp, $TMPDIR]`, and a linked
+worktree's metadata lives in the primary repo — outside all three. A lane that cannot commit cannot
+land, and it fails in the quietest way this system has: the tree is right, the work is there, the
+board says `idle`.
+
+Note what this customer is *not*. There is no container and no mount here — the sandbox is a write
+filter around a process on the host. The clone form answers it anyway, and for the same one reason
+it answers the other two: the working copy is self-contained, so its `.git` is inside the workdir
+and an ordinary write. That is the argument for `Harness.laneForm` sitting on the adapter — the
+next harness with a write fence gets the right form without anyone remembering to ask for it.
+
+Still open and deliberately untouched here: a Codex lane's sandbox also blocks tmux and the network,
+so it cannot run the suites or `curl /api/self/drift`. Not blocking — the land gate runs
+**server-side**, the in-lane suites are preview — but it means such a lane produces and cannot
+self-verify. Widening the sandbox hands back reach and is an owner decision.
 
 ### The undecided part: which VM
 

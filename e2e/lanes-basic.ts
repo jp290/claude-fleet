@@ -1,7 +1,7 @@
 // Worktree lanes, the base layer: create/diff/land, the one-click /api/lanes route, the worktrees
 // map, the land gate against a busy pane, and the integration-branch config.
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { ROOT, REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
@@ -56,17 +56,67 @@ export async function run(lc: LaneCtx): Promise<void> {
   // on one of them is invisible on the other, and invisible either way from the response, which is
   // why the assertion is the PANE's command line rather than the 200.
   const lnRes = await post("/api/lanes", { repo: REPO, harness: "codex", model: "gpt-5-codex" });
-  const lnJson = (await lnRes.json()) as { slot?: number; error?: string };
+  const lnJson = (await lnRes.json()) as { slot?: number; cwd?: string; form?: string; error?: string };
   check("POST /api/lanes accepts a harness and a model for the codex adapter", lnRes.ok && !!lnJson.slot, JSON.stringify(lnJson));
   if (lnJson.slot) {
     const lnCmd = (await tmuxOut("display-message", "-p", "-t", `s${lnJson.slot}`, "#{pane_start_command}")).out;
     check("a lane spawned with harness=codex runs codex, sandboxed, with --model in the measured form",
       /(^|\s|;)codex --sandbox workspace-write --ask-for-approval never --model 'gpt-5-codex'/.test(lnCmd), lnCmd.slice(-160));
+    // --- THE ADAPTER PICKS THE WORKING-COPY FORM. This request named NO form, and it must come
+    // back a clone: Codex's `--sandbox workspace-write` fences writes to the workdir, and a linked
+    // worktree keeps its metadata in the PRIMARY repo — so `git commit` there dies on index.lock
+    // and the lane can never land. The assertion is the `.git` ENTRY on disk, not the route's
+    // `form` field: a response that says "clone" over a gitdir-file tree would be the exact lie
+    // this is for. (The form's own boundary properties are proven in e2e/lanes-lifecycle.ts; this
+    // is only about WHO chose it.)
+    const lnCwd = lnJson.cwd ?? "";
+    check("a codex lane that names no form comes back a CLONE — the adapter's preference, not the caller's",
+      lnJson.form === "clone" && exists(`${lnCwd}/.git`) && lstatSync(`${lnCwd}/.git`).isDirectory(),
+      `${lnJson.form} @ ${lnCwd}`);
+    // ...and it is PERSISTED, because the form outlives the request: removeWorktreeSafe, the land
+    // path and every restart read it off the slot record, and a lane whose form is forgotten at
+    // the first save is a lane that gets torn down as the wrong thing.
+    const lnState = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+      { slots: Record<string, { worktree?: { form?: string } } | undefined> }).slots[String(lnJson.slot)];
+    check("the clone form is persisted on the slot record (it outlives the request that chose it)",
+      lnState?.worktree?.form === "clone", JSON.stringify(lnState?.worktree));
     const lnSess = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
     const lnBranch = lnSess.slots.find((x) => x.id === lnJson.slot)?.worktree?.branch ?? "";
     await post(`/api/slots/${lnJson.slot}/kill`, {});
-    if (lnBranch) spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/${lnBranch}`], { cwd: REPO });
+    // a clone is an ordinary directory, NOT a worktree of REPO — `git worktree remove` has nothing
+    // to remove, and the branch it mirrored back into REPO at spawn has to go with it. The path is
+    // the route's own `cwd`, never a rebuilt `${REPO}.worktrees/${branch}`: worktreePathFor SLUGS
+    // the branch (`fleet/ab12` → `fleet-ab12`), so a rebuilt path for an auto-named lane points at
+    // nothing and the teardown quietly does not happen.
+    if (lnCwd) rmSync(lnCwd, { recursive: true, force: true });
+    if (lnBranch) spawnSync("git", ["branch", "-qD", lnBranch], { cwd: REPO });
   }
+  // ...and the preference is a PREFERENCE: an explicit form wins over it. A Codex lane in worktree
+  // form is legal — the owner may knowingly want one, it simply cannot commit itself — which is why
+  // this is not modelled like the container fields, where a harness that cannot serve them answers
+  // 400. If this ever flips to "the adapter overrules the caller", the field has quietly become a
+  // capability and the 400 is the honest shape instead.
+  const lnW = (await (await post("/api/lanes", { repo: REPO, harness: "codex", form: "worktree" })).json()) as
+    { slot?: number; cwd?: string; branch?: string; form?: string };
+  check("an explicit form:worktree still wins over the adapter's preference (a preference, not a capability)",
+    lnW.form === "worktree" && exists(`${lnW.cwd ?? ""}/.git`) && lstatSync(`${lnW.cwd}/.git`).isFile(),
+    `${lnW.form} @ ${lnW.cwd}`);
+  if (lnW.slot) await post(`/api/slots/${lnW.slot}/kill`, {});
+  if (lnW.cwd) spawnSync("git", ["worktree", "remove", "--force", lnW.cwd], { cwd: REPO });
+  // THE NON-REGRESSION ROW, and the most important one here: a lane with no harness is still a
+  // worktree AND its persisted record carries no `form` key at all. The absence is the assertion —
+  // every lane that predates this field must serialize byte-identically, or a state file written by
+  // this server reads as a different shape to every reader of the old one.
+  const lnD = (await (await post("/api/lanes", { repo: REPO })).json()) as
+    { slot?: number; cwd?: string; branch?: string; form?: string };
+  const lnDState = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
+    { slots: Record<string, { worktree?: Record<string, unknown> } | undefined> }).slots[String(lnD.slot)];
+  check("a lane with no harness is a worktree, and its slot record carries NO form key (the shape is unchanged)",
+    lnD.form === "worktree" && exists(`${lnD.cwd ?? ""}/.git`) && lstatSync(`${lnD.cwd}/.git`).isFile()
+    && !!lnDState?.worktree && !("form" in lnDState.worktree),
+    `${lnD.form} / ${JSON.stringify(lnDState?.worktree)}`);
+  if (lnD.slot) await post(`/api/slots/${lnD.slot}/kill`, {});
+  if (lnD.cwd) spawnSync("git", ["worktree", "remove", "--force", lnD.cwd], { cwd: REPO });
   const sessWt = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
   check("slot 5 tagged as a worktree lane", sessWt.slots[4].worktree?.branch === "e2e-lane", JSON.stringify(sessWt.slots[4].worktree));
   // the copied .env is gitignored in the test repo, so it must NOT show as dirty — a fresh

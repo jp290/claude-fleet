@@ -721,9 +721,15 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // form removes, and every check in the suite would still pass: the tree is correct, the boundary
   // is gone. Nothing in TypeScript can see that, and neither can a test that only reads git's
   // answers. Same comment-stripping as the docker rule above, same reason.
+  // ANCHORED on the delimiter that makes `"clone"` an ARGV ELEMENT — a `,` or a `[` before it — and
+  // not on the bare literal: the string also occurs as a VALUE now (Harness.laneForm), where
+  // --no-hardlinks would be meaningless. The unanchored version failed on exactly that the day the
+  // adapter gained the field, and a rule that fires on a line it cannot describe teaches its
+  // readers to loosen it.
+  const cloneArgv = /[,[]\s*"clone",(?! *"--no-hardlinks")/g;
   pin("every clone server.ts emits refuses hardlinked objects (a shared object DB is the boundary this form removes)",
-    [...serverExec.matchAll(/"clone",(?! *"--no-hardlinks")/g)].length === 0,
-    [...serverExec.matchAll(/.{0,30}"clone",(?! *"--no-hardlinks").{0,40}/g)].map((m) => m[0]).join(" | ") || "none");
+    [...serverExec.matchAll(cloneArgv)].length === 0,
+    [...serverExec.matchAll(/.{0,30}[,[]\s*"clone",(?! *"--no-hardlinks").{0,40}/g)].map((m) => m[0]).join(" | ") || "none");
   // ...and the OTHER half of the form: a clone's branch exists only in the clone until syncLaneRefs
   // mirrors it, so every root-side reader of it (the ancestry check, markLandIntent,
   // advanceIntegration) is reading a copy. The rule is that the copy is refreshed on the way in.
@@ -736,6 +742,27 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("every advanceIntegration call site refreshes the lane mirror first (a clone lands from the mirror, not from the tree)",
     advCalls.length > 0 && advUnsynced.length === 0,
     `${advCalls.length} call sites, ${advUnsynced.length} without a preceding syncLaneRefs`);
+  // ...and WHO chooses the form. `createWorktree`'s third parameter defaults to "worktree", so a
+  // new lane-creating path that simply omits it compiles, runs, and is correct for every adapter
+  // but one — while a Codex lane made that way cannot `git commit` at all (its metadata would sit
+  // in the primary repo, outside `--sandbox workspace-write`). Nothing fails loudly: the lane just
+  // never lands, and the board says only "idle". So the rule is that every caller ASKS, and it is
+  // a rule over the source because the mistake is an ABSENCE — the same shape as the bolt above.
+  // Deliberately about the call sites and not about laneFormOf's body: the resolution is one
+  // function precisely so that the interesting question is who fails to call it.
+  const cwCalls = [...serverExec.matchAll(/await createWorktree\(([^;]*?)\)/g)].map((m) => m[1]);
+  const cwUnasked = cwCalls.filter((a) => !/\bform\b/.test(a.split(",").slice(2).join(",")));
+  pin("every lane-creating call site asks laneFormOf for the form — none takes createWorktree's default",
+    cwCalls.length >= 2 && cwUnasked.length === 0,
+    `${cwCalls.length} call sites, ${cwUnasked.length} passing no form: ${cwUnasked.join(" | ") || "none"}`);
+  // ...and the values those call sites pass really do come from the ONE resolution. A second
+  // derivation ("if harness === codex then clone") would satisfy the rule above and be exactly the
+  // drift the single function exists to prevent — it is how the adapter's answer and the request's
+  // override come apart on one road and not the other.
+  const formSources = [...new Set(cwCalls.map((a) => (a.split(",")[2] ?? "").trim().split(".")[0]))];
+  const notFromLaneFormOf = formSources.filter((v) => !new RegExp(`(const ${v} = laneFormOf\\(|\\b${v}: LaneForm)`).test(server));
+  pin("each of those form values is a laneFormOf result (or the parameter carrying one), not a second derivation",
+    formSources.length > 0 && notFromLaneFormOf.length === 0, notFromLaneFormOf.join(" | ") || formSources.join(" | "));
 
   // --- the liveness probe resolves its comm set PER SLOT. Both consumers (the git/alive tick and
   // claudeAlive) must go through commsFor; a call that reaches back for the fleet-wide HARNESS_COMMS

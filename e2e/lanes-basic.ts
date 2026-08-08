@@ -1,8 +1,8 @@
 // Worktree lanes, the base layer: create/diff/land, the one-click /api/lanes route, the worktrees
 // map, the land gate against a busy pane, and the integration-branch config.
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
-import { REPO, check, get, post, tmuxOut } from "./harness";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { ROOT, REPO, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { MERGE_IDLE_MS, exists, settleForMerge } from "./lane-helpers";
 
@@ -161,7 +161,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         await Bun.sleep(50);
       }
       if (busyConfirmed) {
-        const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick" });
+        const r = await post(`/api/slots/${lnSlot}/commit`, { mode: "quick" }); // gate-proof: unconfirmed on purpose
         status = r.status;
         blocked = (await r.json()) as typeof blocked;
       }
@@ -186,6 +186,23 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("a confirmed commit waives the idle gate (reaches the tree, reports on it instead)",
       confirmedStatus === 200 && confirmed.committed === false && !(confirmed.reason ?? "").includes("actively working"),
       `${confirmedStatus} ${JSON.stringify(confirmed)}`);
+
+    // ROT GUARD for the exception above. This gate fires on machine LOAD, not on the tree: any
+    // OTHER commit probe that omits `confirm` becomes a flake whose failing check moves from run
+    // to run — 4 of the gate's first 16 suite runs, plus two red audits (docs/verify-tiering.md
+    // §11.2e). The rule, not a list of today's call sites: a commit POST may omit `confirm` only
+    // where it marks itself as the gate's own proof, which is the line a few lines above this one.
+    const GATE_PROOF_MARK = "gate-proof: unconfirmed on purpose";
+    const offenders: string[] = [];
+    for (const f of readdirSync(`${ROOT}/e2e`).filter((x) => x.endsWith(".ts"))) {
+      readFileSync(`${ROOT}/e2e/${f}`, "utf8").split("\n").forEach((line, i) => {
+        if (!/post\([^)]*\/commit["`]/.test(line)) return;
+        if (/confirm/.test(line) || line.includes(GATE_PROOF_MARK)) return;
+        offenders.push(`${f}:${i + 1}`);
+      });
+    }
+    check("every other commit probe in the suite sends confirm (an unconfirmed one is a load-dependent flake)",
+      offenders.length === 0, offenders.join(", "));
   }
 
   // --- ✎ message: the agent half of the SAVE may fail, and the fallback to a wip message is

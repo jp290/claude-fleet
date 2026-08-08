@@ -354,7 +354,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     spawnSync("git", ["-C", cl.cwd, "commit", "-qm", "seed"]);
     await Bun.write(`${cl.cwd}/tracked.txt`, "x changed\n");    // tracked modify
     await Bun.write(`${cl.cwd}/fresh-untracked.txt`, "u\n");    // untracked
-    const clRes = (await (await post(`/api/slots/${cl.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean };
+    const clRes = (await (await post(`/api/slots/${cl.slot}/commit`, { mode: "quick", confirm: true })).json()) as { committed?: boolean };
     const clStatus = spawnSync("git", ["-C", cl.cwd, "status", "--porcelain"]).stdout.toString().trim();
     check("lane commit stages untracked too (add -A) → clean tree", clRes.committed === true && clStatus === "",
       `committed=${clRes.committed} status=${JSON.stringify(clStatus)}`);
@@ -373,7 +373,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("open a main (non-lane) session for commit test", mOpen.ok, JSON.stringify(await mOpen.json().catch(() => ({}))));
     await Bun.write(`${mainRepo}/f.txt`, "2\n");                 // tracked modify
     await Bun.write(`${mainRepo}/scratch.txt`, "secret\n");     // untracked — must NOT be committed
-    const mRes = (await (await post("/api/slots/9/commit", { mode: "quick" })).json()) as { committed?: boolean };
+    const mRes = (await (await post("/api/slots/9/commit", { mode: "quick", confirm: true })).json()) as { committed?: boolean };
     const mStatus = spawnSync("git", ["-C", mainRepo, "status", "--porcelain"]).stdout.toString();
     check("main-session commit stages tracked (add -u), leaves untracked untracked",
       mRes.committed === true && /\?\? scratch\.txt/.test(mStatus) && !/f\.txt/.test(mStatus),
@@ -382,7 +382,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     // (c) a detached HEAD is refused (would otherwise be a dangling commit)
     spawnSync("git", ["-C", mainRepo, "checkout", "-q", "--detach"]);
     await Bun.write(`${mainRepo}/f.txt`, "3\n");
-    const dRes = (await (await post("/api/slots/9/commit", { mode: "quick" })).json()) as { committed?: boolean; reason?: string };
+    const dRes = (await (await post("/api/slots/9/commit", { mode: "quick", confirm: true })).json()) as { committed?: boolean; reason?: string };
     check("commit refuses a detached HEAD", dRes.committed === false && (dRes.reason ?? "").includes("detached"), JSON.stringify(dRes));
     await post("/api/slots/9/kill", {});
 
@@ -404,7 +404,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     spawnSync("git", ["-C", gl.cwd, "rebase", gopMain]);          // stops mid-rebase on the conflict
     const glBrief = (await (await get(`/api/slots/${gl.slot}/brief`)).json()) as { gitOp?: boolean };
     check("brief flags an interrupted rebase (gitOp)", glBrief.gitOp === true, JSON.stringify(glBrief.gitOp));
-    const glCommit = (await (await post(`/api/slots/${gl.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean; reason?: string };
+    const glCommit = (await (await post(`/api/slots/${gl.slot}/commit`, { mode: "quick", confirm: true })).json()) as { committed?: boolean; reason?: string };
     check("commit is blocked during an interrupted rebase", glCommit.committed === false && (glCommit.reason ?? "").includes("in progress"), JSON.stringify(glCommit));
     spawnSync("git", ["-C", gl.cwd, "rebase", "--abort"]);
     await post(`/api/slots/${gl.slot}/kill`, {});

@@ -34,7 +34,7 @@ export async function run(): Promise<void> {
     const og = await freshRepo("onegesture");
     const lane = (await (await post("/api/lanes", { repo: og.repo })).json()) as { slot: number; cwd: string; branch: string };
     await Bun.write(`${lane.cwd}/feature.txt`, "feature work\n"); // uncommitted — the friction one-gesture removes
-    const ogCommit = (await (await post(`/api/slots/${lane.slot}/commit`, { mode: "agent" })).json()) as { committed?: boolean; subject?: string };
+    const ogCommit = (await (await post(`/api/slots/${lane.slot}/commit`, { mode: "agent", confirm: true })).json()) as { committed?: boolean; subject?: string };
     check("one-gesture land: the dirty tree is committed first (agent message)",
       ogCommit.committed === true && ogCommit.subject === "feat: stand-in commit message", JSON.stringify(ogCommit));
     check("one-gesture land: direct /land refuses the committed-but-unmerged lane (→ /merge fallback)",
@@ -110,7 +110,7 @@ export async function run(): Promise<void> {
     const cfLane = (await (await post("/api/lanes", { repo: cf.repo })).json()) as { slot: number; cwd: string };
     await Bun.write(`${cfLane.cwd}/base.txt`, "base\nlane-side\n"); // uncommitted — one-gesture commits it
     check("regression guard: one-gesture commits the dirty conflicting lane",
-      ((await (await post(`/api/slots/${cfLane.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean }).committed === true);
+      ((await (await post(`/api/slots/${cfLane.slot}/commit`, { mode: "quick", confirm: true })).json()) as { committed?: boolean }).committed === true);
     await Bun.write(`${cf.repo}/base.txt`, "base\nmain-side\n"); // same line → rebase conflict → agent path
     spawnSync("git", ["-C", cf.repo, "commit", "-aqm", "main conflict"]);
     const cfMainBefore = headOf(cf.repo, cf.main);

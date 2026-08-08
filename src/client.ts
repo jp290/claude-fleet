@@ -888,7 +888,12 @@ async function doLand(slot: number) {
     if (risk.dirtyFiles.length) {
       const ok = await showRiskPreview(`Land lane ${s.worktree.branch}? — your uncommitted work is committed first, then landed`, risk, "commit + land");
       if (!ok) return;
-      const cr = await post(`/api/slots/${slot}/commit`, { mode: "agent" });
+      // `confirm`: the preview above IS the acknowledgement the route's idle gate asks for (it
+      // says, in as many words, that the uncommitted work is committed first) — same reasoning as
+      // doCommit's activeConfirmed. Without it a land on a lane that is still producing output
+      // bounces off the gate with a 409 whose body carries no `error`, i.e. the alert below reads
+      // "could not commit the work first: undefined" for a tree that is perfectly fine.
+      const cr = await post(`/api/slots/${slot}/commit`, { mode: "agent", confirm: true });
       const cj = (await cr.json().catch(() => ({}))) as { committed?: boolean; reason?: string; error?: string };
       if (!cr.ok) { alert(`Land failed — could not commit the work first: ${cj.error ?? cr.status}`); return; }
       // commit refused for an UNSAFE tree (a half-finished git op, or a detached HEAD) → never

@@ -19,6 +19,10 @@ audit-adjudications.jsonl
 audit-adjudications.jsonl.1
 post-land-audit-queue.json
 post-land-audit-queue.json.tmp
+deploys.jsonl
+deploys.jsonl.1
+deploy-inflight.json
+deploy-inflight.json.tmp
 e2e-trail/
 *.log
 public/app.js

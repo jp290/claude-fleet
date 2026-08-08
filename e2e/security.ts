@@ -91,6 +91,10 @@ const STATIC_ROUTES = ["/", "/app.js", "/share.js", "/xterm.css", "/manifest.web
 // The steward token bypasses the owner gate entirely (server.ts ~4499), so its route set is a
 // second pre-auth surface — pinned for the same reason.
 const STEWARD_ROUTES = [
+  // VERB 2 is the one pair here that is NOT under /api/steward/: the deploy verb and its ledger are
+  // the same two functions the owner's routes call, reached by the principal that SEES the gap
+  // (deployGap/bundleStale on /api/steward/sessions) and until now could only file a note about it.
+  "= /api/deploy", "= /api/deploys",
   "= /api/dispositions", "= /api/steward/autos", "= /api/steward/digest", "= /api/steward/journal",
   "= /api/steward/send", "= /api/steward/sessions", "= /api/steward/tasks",
   String.raw`~ /^\/api\/steward\/slots\/(\d+)\/brief$/`,

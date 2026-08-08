@@ -1125,6 +1125,10 @@ type AuditEvent =
   // recovered (note + undo record + tier-2 audit written late) or unaccountable (audited, dropped)
   | "land_recovered" | "land_recover_fail"
   | "postland_audit"
+  // the deploy verb (Verb 2): one row when a build fails, one when a restart is launched, one when
+  // the NEXT BOOT judges it. The trio is what makes "was the deploy verified?" answerable at all —
+  // the verb kills the process that would otherwise report its own result.
+  | "deploy"
   | "autos_switch"
   // the doneLooking outbound channel (Watch): one row when a subscription is delivered, one when
   // it is disarmed without delivering. The pair is what makes "the machine noticed and said so"
@@ -9187,6 +9191,303 @@ function bundleStale(): BundleStale {
   return { appJsMtime, shareJsMtime, srcNewestMtime, stale };
 }
 
+// --- VERB 2, DEPLOY: the two facts above, given a hand ------------------------------------------
+// Landed work is silently NOT LIVE until someone runs `bun run build` and kills srv. That gap is
+// the largest expiring class of steward notes (472aba10: 7 commits, 150 min of bundle lag, nobody
+// delivered) — the facts were built, read, and then not acted on.
+//
+// THE CONSTRUCTION PROBLEM, and it is the whole of this region: THE VERB KILLS ITS OWN PROCESS.
+// `tmux kill-session -t srv` ends the process serving this route, so the answer "did it work?"
+// is structurally unavailable to the caller's own request — the code that would check is gone.
+// Three consequences, each a rule below:
+//   1. THE ANSWER IS NEVER `ok:true` ON THE WAY OUT. A restarting deploy answers 202 with
+//      `ok:null, stage:"restarting"` — the state "not verified yet" said out loud. Answering
+//      true here would BE the silent failure this verb exists to end, dressed as a success.
+//   2. THE VERIFIER IS THE NEXT BOOT. Before the kill, a durable marker names the deploy; the
+//      process that comes up reads it, compares the facts, and appends the verdict to DEPLOY_FILE.
+//      That is the only observer that can see the far side of the restart.
+//   3. THE BUILD RUNS FIRST AND ALONE. It is the one phase the living process CAN judge, so it is
+//      judged synchronously and a failing build never reaches the kill: an unbuildable tree must
+//      leave the running server exactly where it was.
+// The verdict is THREE-VALUED for the same honesty rule the facts themselves follow: `false` is a
+// measured miss (booted commit is not HEAD, or the bundle is still older than src/), `null` is
+// "could not tell", and neither is ever softened into a pass.
+//
+// PRECONDITION THE VERB CHECKS ITSELF, not its caller: no deploy while a post-land audit is in
+// flight. The audit QUEUE survives an srv kill (it is a file, resumed at boot), the RUNNER does
+// not — and an audit killed that way lands in the register as a RED that measured nothing. That
+// is not hypothetical: 2026-08-06, exit 143 after 15.6 s, zero checks run, adjudicated
+// `unknowable`. So this rejects with 409 and says why; it never waits, and it never kills.
+//
+// NOT WIRED TO ANYTHING. No tick calls this, no auto, no dispatch path — it is a route and only a
+// route, the same line the land path holds (the single `mergeJob(` call site is a route too).
+// Who may pull it, and whether anything unattended ever does, is the owner's decision, not this
+// region's.
+const DEPLOY_FILE = `${import.meta.dir}/deploys.jsonl`;
+// The in-flight marker: the ONLY thing that crosses the restart. Next to the other state files
+// (same directory rule as the audit queue) so a scratch instance carries its own.
+const DEPLOY_MARKER_FILE = `${import.meta.dir}/deploy-inflight.json`;
+const DEPLOY_BUILD_CMD = process.env.FLEET_DEPLOY_BUILD_CMD ?? "bun run build";
+// Default derived from SOCK, not hard-coded: a test instance's verb must kill ITS srv, never the
+// live one. Same reason every other tmux call in this file goes through the same variable.
+const DEPLOY_RESTART_CMD = process.env.FLEET_DEPLOY_RESTART_CMD ?? `tmux -L ${SOCK} kill-session -t srv`;
+const DEPLOY_BUILD_TIMEOUT_MS = Math.max(5_000, Number(process.env.FLEET_DEPLOY_BUILD_TIMEOUT_MS ?? 300_000) | 0);
+const DEPLOY_OUT_CAP = 4096;   // byte budget for the retained build output, same helper as verify.out
+// let the HTTP response reach the socket before the process is killed. Small, and the failure mode
+// if it is ever too small is benign: the caller sees a dropped connection where it would have seen
+// a 202 — the marker is already durable, so the deploy still gets its verdict at the next boot.
+const DEPLOY_RESTART_DELAY_MS = 250;
+// A marker this old whose process is STILL ALIVE is the proof that the restart never took — this
+// same process wrote it and should not have survived it. Resolving it (rather than blocking on it
+// forever) is what keeps one failed restart from wedging the verb.
+const DEPLOY_INFLIGHT_MAX_MS = 10 * 60_000;
+
+type DeployBy = "owner" | "steward";
+interface DeployMarker {
+  id: string; at: number; by: DeployBy;
+  target: string;                 // the HEAD this deploy set out to put in the running process
+  bootHeadBefore: string | null;  // what was running when it was pulled — makes a no-op deploy visible
+  buildMs: number; buildCmd: string; restartCmd: string;
+}
+interface DeployRow {
+  at: number; id: string; by: DeployBy;
+  stage: "build" | "restart" | "boot";
+  ok: boolean | null;             // three-valued: null is "could not tell", never a pass
+  target: string | null;
+  bootHead: string | null; head: string | null; hitTarget: boolean | null;
+  bundleStale: boolean | null;
+  reason?: string;
+  exitCode?: number | null;
+  out?: string;
+  ms?: number;
+}
+
+function appendDeployRow(row: DeployRow): void {
+  appendEvent(DEPLOY_FILE, row as unknown as Record<string, unknown>);
+}
+
+function readDeployMarker(): DeployMarker | null {
+  try {
+    const m = JSON.parse(readFileSync(DEPLOY_MARKER_FILE, "utf8")) as DeployMarker;
+    return typeof m?.id === "string" && typeof m.target === "string" && typeof m.at === "number" ? m : null;
+  } catch {
+    return null; // absent, or torn — either way there is no deploy this process can account for
+  }
+}
+function writeDeployMarker(m: DeployMarker): void {
+  const tmp = `${DEPLOY_MARKER_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(m), { mode: 0o600 });
+  renameSync(tmp, DEPLOY_MARKER_FILE); // atomic: a half-written marker would be a deploy nobody can judge
+}
+function clearDeployMarker(): void {
+  try { rmSync(DEPLOY_MARKER_FILE, { force: true }); } catch { /* already gone */ }
+}
+
+// THE VERDICT. Same inputs the owner's board reads, computed FRESH (never `deployFacts`, which is
+// a 10 s cache and at boot is still null). Called from exactly two places: the next boot, and the
+// preflight that finds a marker its own process outlived.
+async function judgeDeploy(m: DeployMarker, stage: DeployRow["stage"], extra?: string): Promise<DeployRow> {
+  const gap = await deployGap();
+  const bundle = bundleStale();
+  const reasons: string[] = extra ? [extra] : [];
+  // `extra` is a MEASURED failure of the deploy itself (the restart did not take), so it decides
+  // the verdict outright — the fact checks below only add detail to a verdict already settled.
+  let ok: boolean | null = extra ? false : true;
+  if (gap.bootHead === null || gap.head === null) {
+    if (ok !== false) ok = null;
+    reasons.push("the deploy gap is unknown — the repo could not be read, so nothing was verified");
+  } else if (gap.bootHead !== gap.head) {
+    ok = false;
+    reasons.push(`still behind: the process booted ${gap.bootHead.slice(0, 7)}, HEAD is ${gap.head.slice(0, 7)}`
+      + (gap.behindCount === null ? "" : ` (${gap.behindCount} commit${gap.behindCount === 1 ? "" : "s"})`));
+  }
+  if (bundle.stale === null) {
+    if (ok !== false) ok = null;
+    reasons.push("bundle staleness is unknown — the bundle or src/ could not be stat'd");
+  } else if (bundle.stale) {
+    ok = false;
+    reasons.push("the bundle is older than src/ — the build did not reach public/");
+  }
+  return {
+    at: Date.now(), id: m.id, by: m.by, stage, ok,
+    target: m.target, bootHead: gap.bootHead, head: gap.head,
+    hitTarget: gap.bootHead === null ? null : gap.bootHead === m.target,
+    bundleStale: bundle.stale,
+    ...(reasons.length ? { reason: reasons.join("; ") } : {}),
+    ms: Date.now() - m.at,
+  };
+}
+
+// Boot half of rule 2. Runs at module load, i.e. once per process and before Bun.serve below, so a
+// deploy's verdict is on the ledger by the time anything can ask for it.
+// The marker is cleared BEFORE the row is appended, deliberately: a marker that outlived its own
+// resolution would mint a fresh verdict at every boot for a deploy that happened once. A lost row
+// is a missing record; a duplicated row is a fabricated deploy, and that is the worse of the two.
+async function resolveDeployMarker(): Promise<void> {
+  const m = readDeployMarker();
+  if (!m) return;
+  clearDeployMarker();
+  const row = await judgeDeploy(m, "boot");
+  appendDeployRow(row);
+  audit("deploy", undefined, `${m.id} ${row.ok === true ? "verified" : row.ok === false ? "FAILED" : "unverified"}`
+    + (row.reason ? `: ${row.reason.slice(0, 160)}` : ""));
+  if (row.ok !== true) console.log(`deploy ${m.id}: ${row.ok === false ? "FAILED" : "unverified"} — ${row.reason ?? ""}`);
+}
+
+// The precondition, checked by the verb and not by its caller. Only the RUNNER blocks: the queue is
+// a file that is replayed at boot (see the audit queue's own comment), so a waiting audit loses
+// nothing to a restart — a running one loses its measurement and leaves a red behind.
+function deployBlocker(): string | null {
+  if (runningPostLandAudit)
+    return `a post-land audit is running on ${basename(runningPostLandAudit.repo)} — killing srv now would leave a red that measured nothing`;
+  if (auditDraining)
+    return "a post-land audit is starting — killing srv now would leave a red that measured nothing";
+  return null;
+}
+
+async function runDeployBuild(): Promise<{ exitCode: number | null; out: string; ms: number }> {
+  const startedAt = Date.now();
+  const p = Bun.spawn(["sh", "-c", DEPLOY_BUILD_CMD], { cwd: REPO_DIR, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const outP = new Response(p.stdout).text().catch(() => "");
+  const errP = new Response(p.stderr).text().catch(() => "");
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((res) => {
+    timer = setTimeout(() => { timedOut = true; res("timeout"); }, DEPLOY_BUILD_TIMEOUT_MS);
+  });
+  let exitCode: number | null = null;
+  try {
+    const settled = await Promise.race([p.exited, deadline]);
+    if (settled === "timeout") { try { p.kill(); } catch { /* already gone */ } }
+    else exitCode = settled;
+  } finally {
+    clearTimeout(timer);
+  }
+  const grab = (pr: Promise<string>): Promise<string> =>
+    timedOut ? Promise.race([pr, Bun.sleep(1000).then(() => "")]) : pr;
+  const out = retainRunOutput(await grab(outP), await grab(errP), DEPLOY_OUT_CAP).trim();
+  return { exitCode, out, ms: Date.now() - startedAt };
+}
+
+// Phase 3, after the response has been flushed. Normally this function does not return — the
+// command it runs kills this process. It only gets to finish when the restart FAILED, and that is
+// the one case it has to report: the marker is dropped and the deploy is closed as failed HERE,
+// because no next boot is coming to close it.
+async function runDeployRestart(m: DeployMarker): Promise<void> {
+  const p = Bun.spawn(["sh", "-c", m.restartCmd], { cwd: REPO_DIR, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const out = retainRunOutput(await new Response(p.stdout).text().catch(() => ""),
+    await new Response(p.stderr).text().catch(() => ""), DEPLOY_OUT_CAP).trim();
+  const exitCode = await p.exited;
+  if (exitCode === 0) return; // expected: this process is on its way out, the next boot judges it
+  if (!readDeployMarker()) return; // something else already closed it
+  clearDeployMarker();
+  // judged with the SAME function the next boot uses, so the row names the residual gap rather than
+  // just the exit code: this is the `bootHead != HEAD` case, measured by the process that caused it.
+  appendDeployRow({
+    ...await judgeDeploy(m, "restart",
+      `the restart command failed (exit ${exitCode}) — the server is still running the old code`),
+    exitCode, out,
+  });
+  audit("deploy", undefined, `${m.id} FAILED: restart command exit ${exitCode}`);
+}
+
+// In-memory one-at-a-time lock, held across the BUILD. The durable marker cannot cover this window
+// — it is written only after the build succeeds — so two requests arriving a second apart would
+// otherwise run two builds over the same tree and mint two markers, the second of which would
+// silently overwrite the first and leave one deploy that no boot will ever account for.
+let deployRunning = false;
+// The verb itself. Both principals reach it (owner below tokenGate, steward via handleStewardRoute)
+// — the steward is the pulse that SEES the gap, the owner is the hand that has always closed it.
+async function deployVerb(by: DeployBy): Promise<Response> {
+  if (deployRunning)
+    return json({ ok: false, stage: "preflight", reason: "a deploy is already building — one at a time" }, 409);
+  deployRunning = true;
+  try {
+    return await deployRun(by);
+  } finally {
+    // released even on the success path: from here the DURABLE marker is what keeps a second
+    // deploy out, and this process may not live long enough to release anything later
+    deployRunning = false;
+  }
+}
+async function deployRun(by: DeployBy): Promise<Response> {
+  const blocked = deployBlocker();
+  if (blocked) return json({ ok: false, stage: "preflight", reason: blocked }, 409);
+  const pending = readDeployMarker();
+  if (pending) {
+    // Still ours and still young: a second deploy would race the first one's verdict.
+    if (Date.now() - pending.at < DEPLOY_INFLIGHT_MAX_MS)
+      return json({ ok: false, stage: "preflight", id: pending.id,
+        reason: `a deploy is already in flight (${pending.id}) — its verdict is written by the next boot` }, 409);
+    // Old, and WE are still alive to read it: the restart never took. Close it as failed rather
+    // than blocking the verb forever on a deploy that will never be resolved by anyone else.
+    clearDeployMarker();
+    appendDeployRow(await judgeDeploy(pending, "restart",
+      "no boot ever claimed this deploy — the process that wrote the marker is still running, so the restart did not take"));
+    audit("deploy", undefined, `${pending.id} FAILED: restart never took`);
+  }
+  const hd = await git(REPO_DIR, "rev-parse", "HEAD");
+  if (hd.code !== 0 || !/^[0-9a-f]{40}$/.test(hd.out))
+    return json({ ok: false, stage: "preflight",
+      reason: "HEAD is unreadable — a deploy whose target cannot be named cannot be verified either" }, 409);
+  const target = hd.out;
+  const id = randomBytes(4).toString("hex");
+
+  // PHASE 1 — the build, judged by the process that ran it. A failing build returns here and the
+  // server is never touched: rule 3.
+  const build = await runDeployBuild();
+  if (build.exitCode !== 0) {
+    appendDeployRow({
+      at: Date.now(), id, by, stage: "build", ok: false, target,
+      bootHead: BOOT_HEAD, head: target, hitTarget: BOOT_HEAD === null ? null : BOOT_HEAD === target,
+      bundleStale: bundleStale().stale,
+      reason: build.exitCode === null
+        ? `the build timed out after ${DEPLOY_BUILD_TIMEOUT_MS}ms — srv was not restarted`
+        : `the build failed (exit ${build.exitCode}) — srv was not restarted`,
+      exitCode: build.exitCode, out: build.out, ms: build.ms,
+    });
+    audit("deploy", undefined, `${id} FAILED: build exit ${build.exitCode ?? "timeout"}`);
+    return json({ ok: false, stage: "build", id, target, exitCode: build.exitCode, out: build.out, ms: build.ms,
+      reason: "the build failed — the running server was left alone" }, 500);
+  }
+
+  // PHASE 2 — the marker, durable BEFORE anything can kill us, then the answer, then the kill.
+  const marker: DeployMarker = {
+    id, at: Date.now(), by, target, bootHeadBefore: BOOT_HEAD,
+    buildMs: build.ms, buildCmd: DEPLOY_BUILD_CMD, restartCmd: DEPLOY_RESTART_CMD,
+  };
+  writeDeployMarker(marker);
+  audit("deploy", undefined, `${id} build ok in ${build.ms}ms, restarting for ${target.slice(0, 7)}`);
+  setTimeout(() => { void runDeployRestart(marker); }, DEPLOY_RESTART_DELAY_MS);
+  return json({
+    ok: null, stage: "restarting", id, target, buildMs: build.ms,
+    note: "the restart kills this process — the verdict is written by the next boot; read it at GET /api/deploys",
+  }, 202);
+}
+
+function deployView(rows: DeployRow[], total: number, malformed: number): Record<string, unknown> {
+  const inFlight = readDeployMarker();
+  return {
+    deploys: rows, total, malformed,
+    buildCmd: DEPLOY_BUILD_CMD, restartCmd: DEPLOY_RESTART_CMD,
+    // `null` when nothing is in flight — never a manufactured "idle" object
+    inFlight: inFlight ? { id: inFlight.id, at: inFlight.at, by: inFlight.by, target: inFlight.target } : null,
+    blocked: deployBlocker(),
+  };
+}
+async function deploysRoute(url: URL): Promise<Response> {
+  const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 50) | 0));
+  const { rows, total, malformed } = await readLedger<DeployRow>(DEPLOY_FILE);
+  rows.sort((a, b) => (typeof b.at === "number" ? b.at : 0) - (typeof a.at === "number" ? a.at : 0));
+  return json(deployView(rows.slice(0, limit), total, malformed));
+}
+
+// rule 2's boot half, fired at module load — before Bun.serve, so no request can observe a
+// resolved deploy still sitting in the marker.
+await resolveDeployMarker().catch((e: unknown) => {
+  console.log(`deploy marker: not resolved (${e instanceof Error ? e.message : e}) — the deploy stays unaccounted for`);
+});
+
 // --- commit-cursor fact layer: facts are shared, cursors are per-consumer (git-remote model).
 // The server computes ONE deterministic per-lane fact — {head, base, landed, repo} keyed by
 // branch, plus each lane repo's primary checkout keyed by ITS branch (owner-side lands become
@@ -9568,6 +9869,11 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // computed answer, not a second hand-rolled one.
     return json({ now, slots: stewardSlotsView(now), deployGap: await deployGap(), bundleStale: bundleStale(), gate: gateView() });
   }
+  // VERB 2 for the principal that SEES the gap. The steward reads deployGap/bundleStale on the
+  // route above and until now could only file a note about them — the expiring class that made the
+  // verb necessary (472aba10). Same two functions the owner's routes call, no second copy.
+  if (url.pathname === "/api/deploys" && req.method === "GET") return await deploysRoute(url);
+  if (url.pathname === "/api/deploy" && req.method === "POST") return await deployVerb("steward");
   if (url.pathname === "/api/steward/digest" && req.method === "GET") {
     const home = stewardSlot();
     if (!home?.cwd) return json({ error: "no steward slot active" }, 404);
@@ -10583,6 +10889,11 @@ Bun.serve<WSData>({
     // keeps — it is a thing it cannot do.
     if (url.pathname === "/api/post-land-audits/adjudicate" && req.method === "POST")
       return await writeAuditAdjudication(await readJson(req));
+    // VERB 2 (see the deploy region): build + restart srv, verified by the next boot. Owner-only by
+    // POSITION here; the steward reaches the same two functions through handleStewardRoute. Nothing
+    // else calls them — no tick, no auto.
+    if (url.pathname === "/api/deploys" && req.method === "GET") return await deploysRoute(url);
+    if (url.pathname === "/api/deploy" && req.method === "POST") return await deployVerb("owner");
     // THE DOSSIER (see the dossier region): the same six sources the lenses above read one at a
     // time, joined by branch into one lane's story — plus the fleet/land note, which no other route
     // reads. Owner-only by POSITION exactly like its inputs, and read-only by construction: it

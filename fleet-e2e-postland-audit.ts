@@ -371,6 +371,23 @@ check("(I) it names the land it stands for", JSON.stringify(run?.covers) === JSO
 check("(I) it carries startedAt, and it is the real start (after the land, not after now)",
   typeof run?.startedAt === "number" && run.startedAt > kLandStart && run.startedAt <= Date.now(),
   `startedAt=${run?.startedAt} landStarted=${kLandStart} now=${Date.now()}`);
+// (I.1b) VERB 2's PRECONDITION, and this is the only harness where it can be reached at all: the
+// main suite runs with tier 2 unconfigured, so `runningPostLandAudit` is null there by construction.
+// The deploy verb kills srv; the audit QUEUE survives that (section (E) below), the RUNNER does not
+// — and an audit killed mid-run lands in the register as a RED that measured nothing (measured
+// 2026-08-06: exit 143 after 15.6 s, zero checks run, adjudicated `unknowable`). So the verb refuses
+// while a run is in flight, and it refuses ITSELF rather than trusting its caller to check.
+const depRefused = await post("/api/deploy", {});
+const depBody = (await depRefused.json()) as { ok: unknown; stage?: string; reason?: string };
+check("(I) the deploy verb REFUSES while a post-land audit runs — a killed audit is a red that measured nothing",
+  depRefused.status === 409 && depBody.ok === false && depBody.stage === "preflight"
+    && /post-land audit/.test(depBody.reason ?? ""), `${depRefused.status} ${JSON.stringify(depBody)}`);
+// the refusal is a NO-OP, not a partial deploy: it rejects before the build and before the kill.
+const stillRunning = await waitLive((l) => l?.running?.phase === "running");
+check("(I) ...and the refusal costs nothing — the audit still runs and srv was never killed",
+  JSON.stringify(stillRunning?.running?.covers) === JSON.stringify([kilo.branch])
+    && (await get("/api/sessions")).ok, JSON.stringify(stillRunning?.running));
+
 // (I.2) the distribution that makes the elapsed number answerable. The filter is the assertion: the
 // trail at this moment holds 3 green + 2 red + 3 unknown, and exactly ONE of those reds is the
 // killed run from (I.0). So the sample must be 4 — not 8 (everything), not 5 (unknowns excluded but

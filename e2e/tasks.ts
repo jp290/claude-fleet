@@ -157,9 +157,9 @@ export async function run(ctx: Ctx): Promise<void> {
       (await taskStatus(tid)) === "queued" && (await laneIds()).length === lanes0.size, `status=${await taskStatus(tid)} lanes=${(await laneIds()).length} (was ${lanes0.size})`);
 
     // (b) quiet hours: quiet fleet must NOT consume the still-queued task either
-    await post("/api/autos/switch", { on: true });
     const dQh = new Date().getHours();
     await post("/api/autos/quiet", { start: dQh, end: (dQh + 2) % 24 });
+    await post("/api/autos/switch", { on: true });
     await Bun.sleep(DISP_TICK_MS);
     check("quiet hours keep a dispatch task QUEUED — dispatcher suppressed like the autos surface",
       (await taskStatus(tid)) === "queued" && (await laneIds()).length === lanes0.size, `status=${await taskStatus(tid)} lanes=${(await laneIds()).length} (was ${lanes0.size})`);

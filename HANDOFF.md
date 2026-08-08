@@ -1,7 +1,84 @@
-# HANDOFF — Session 40 (2026-08-08 vormittags: vier Lands über Pi-Lanes, der Container-Strang steht, DeepSeek ist vermessen) · 39/38 darunter
+# HANDOFF — Session 41 (2026-08-08 nachmittags: Codex ist Adapter #4, und die Sandbox wurde vermessen statt geglaubt) · 40/39/38 darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 86cecf7..HEAD`
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 1c2a77a..HEAD`
 mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 41: der Tag, an dem ein fremdes Modell mitarbeiten durfte — und die Grenze gemessen wurde
+
+**ctx beim Übergeben: ~39 %.** Produziert: **6 Lands**, alle mit Gate-Note + LaneOutcome + grünem
+Audit (`b64cd54` Worker-pro-Repo · `be7ba33` Codex-Adapter · `aaae2e6` Sonden-Race *von einer
+Codex-Lane geschrieben* · `11d113a` Dispatch reicht Harness durch · `2a86cec` Worker-Spawn durch den
+Adapter · `ece2957` undo-land als Stack). Dazu: 1 rotes Audit adjudiziert, **8 neue Queue-Zeilen**
+(alle mit Brief oder als Zielbild markiert), 2 Maschinen-Installationen, 4 CLAUDE.md-Abschnitte.
+Zur Schwellen-Kalibrierung: S40 ~42 % bei 4 Lands + 2 eigenen Grabungen, S39 ~31 % bei 9 Lands,
+S38 37,1 % bei 3. **Diese Session: 6 Lands + zwei Messkampagnen für ~31 Punkte** — die Lands waren
+wieder der billige Posten, die Messungen der teure. Das bestätigt die Regel in `CLAUDE.md`.
+
+### WAS IN FLUG IST
+
+**Slot 5, Lane `fleet/260808115720-7017`, Zeile `25e7c086`** (Container UND Docker-Kontext pro
+SLOT). Der nächste Baustein der Isolationskette des Owners. **Der Watch darauf war MEINER und stirbt
+mit meinem Slot** — setz sofort einen neuen: `POST /api/self/watch {"target":5,"idleSec":60}`.
+Sie trägt jetzt einen `slot`-Link (seit `11d113a`), schließt sich beim Land also selbst.
+
+**Slot 14 gehört dem OWNER** — eine Codex-Lane, die er selbst geöffnet hat und in der er probiert.
+NICHT anfassen, nicht landen, nicht killen.
+
+### DIE MESSUNG, DIE DIESE SESSION TRÄGT — und die in `CLAUDE.md` steht, nicht hier
+
+Codex' `--sandbox workspace-write` ist ein **Schreib**-Zaun, **kein Lese**-Zaun. Mit Kontrollgruppe
+auf dem echten Agenten-Pfad belegt: `cat` außerhalb des Workspace gelingt in 0 ms, Schreiben
+außerhalb wird mechanisch verweigert. Ein Codex-Slot kann `~/private-repo-a` lesen, egal wo er
+läuft — und was ein Agent liest, geht an seinen Anbieter. Daraus folgen drei Zeilen, die
+zusammengehören: **`29cd2610`** (Repo auf der Main-Maschine, Container auf der Dev-Maschine — mit
+der Bind-Mount-Falle als zentraler Warnung), **`54af57d6`** (der Codex app-server als zweiter
+Slot-Typ und der erste Kontrollpunkt, an dem Fleet einem fremden Agenten etwas VERBIETEN kann),
+**`25e7c086` → `0234283e`** (die Bauteile; `0234283e` ist gelandet).
+
+### KORREKTUREN AN DINGEN, DIE VORHER ANDERS IM UMLAUF WAREN
+
+- **Der Dispatch-Knopf KANN jetzt Harness+Modell** (seit `11d113a`). Der Umweg über `/api/lanes` +
+  `/send` ist nur noch nötig, wenn gar kein Task existiert. Er kostet weiterhin den `slot`-Link —
+  heute dreimal von Hand geschlossen, bis die Zeile landete.
+- **Eine Codex-Lane in einem WORKTREE kann nicht committen** (Metadaten liegen im Haupt-Repo,
+  außerhalb der Schreibwurzel), keine Suite fahren, nicht ans Netz. Der Land-Gate läuft aber
+  SERVER-seitig — sie ist trotzdem landbar, sie kann sich nur nicht selbst prüfen. Fix ist die
+  KLON-Form (`e30b3a7f`), und die Vorarbeit dafür liegt seit heute früh im Baum.
+- **Pi spart kein Kontingent.** `~/.pi/agent/auth.json` ist `{}`, die einzige Erweiterung ist
+  `pi-claude-bridge` — es läuft über Claude. Unabhängige Budgets: Codex (Owner-Plan) und DeepSeek.
+- **Ein Adapter je Harness bleibt die Vorgabe**, eine universelle Pi-Brücke ist der Sonderfall —
+  Begründung mit Messung in `CLAUDE.md` (die Sonde geht eine Ebene tief und sähe nur die Brücke).
+- **`FLEET_WORKER_HARNESS` steht NICHT in `watchdog.sh`.** `2a86cec` bewaffnet eine Fähigkeit,
+  ändert aber das Verhalten des Live-Fleets nicht.
+
+### WAS BEIM OWNER LIEGT — vorlegen, nicht selbst entscheiden
+
+1. **`automatable: true` für Codex** — erst nach der Isolationskette. Seine eigene Reihenfolge.
+2. **DeepSeek einschalten.** Owner-Wortlaut: *„es sollte einfach sicher in einem container laufen"* —
+   also NICHT nackt fragen, sondern erst über den Adapter. `0234283e` ist gelandet, der nächste
+   Schritt ist die Verdrahtung. Key liegt, Wrapper ist live getestet (65/12 Token, exit 0).
+3. **Reicht `workspace-write` im Betrieb** — Netz/Pfade sind nicht vermessen. Antwort wäre
+   `--add-dir` oder eine Owner-Entscheidung über den Bypass, keine stille Literal-Erweiterung.
+4. **Wochenkontingent stand bei 77 %** (Reset 12.08., 20 Uhr). Die Post-Land-Audits kosten daran
+   nichts (kein Modell), die Lanes schon.
+
+### REIHENFOLGE FÜR DICH, und das Warum
+
+`25e7c086` läuft. Danach **`e30b3a7f`** (Klon-Form) — sie schaltet Codex-Lanes überhaupt erst
+nutzbar, und der Owner arbeitet bereits in einer. Dann **`2e577447`** (`AGENTS.md`: die
+Lane-Disziplin reist bei Codex nicht mit, ich habe es heute von Hand kompensiert — eine Krücke, die
+jeder künftige Absender vergisst). `29cd2610` und `54af57d6` sind **Zielbilder** und gehören vor dem
+Start durch `▸ clarify first`, nicht in einen Dispatch.
+
+### EINE BEOBACHTUNG, DIE SICH HEUTE SIEBENMAL BESTÄTIGT HAT
+
+**Bei einem roten Check an frisch geschriebener Arbeit war die SONDE der erste Verdächtige — und
+sie war es jedes Mal.** Sieben Instanzen in einer Session, vier davon haben die Lanes selbst
+gefunden und als solche berichtet. Zwei Lanes haben von sich aus einen Check ergänzt, der die Sonde
+*als sich selbst* scheitern lässt. Die Regel im Regelbuch trägt sich inzwischen selbst; sie braucht
+keine Verschärfung, sondern nur, dass sie drinbleibt.
 
 ---
 
@@ -452,3 +529,4 @@ in main — aber mains Fassung **weicht ab** (132+/99−). Ob die 99 Zeilen des 
 inhaltlich abgedeckt sind, ist **ungeprüft**; wer es beantworten will:
 `git diff 0de526c main -- docs/autonomy-bausteine-2026-08-06.md`. Ein verwaister Commit
 überlebt kein `git gc` mit Ablauf — wer die Antwort braucht, holt sie besser früh.
+

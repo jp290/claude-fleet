@@ -7,7 +7,7 @@ mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korre
 
 ## Session 41: der Tag, an dem ein fremdes Modell mitarbeiten durfte — und die Grenze gemessen wurde
 
-**ctx beim Übergeben: ~39 %.** Produziert: **6 Lands**, alle mit Gate-Note + LaneOutcome + grünem
+**ctx beim Übergeben: ~42 %.** Produziert: **6 Lands**, alle mit Gate-Note + LaneOutcome + grünem
 Audit (`b64cd54` Worker-pro-Repo · `be7ba33` Codex-Adapter · `aaae2e6` Sonden-Race *von einer
 Codex-Lane geschrieben* · `11d113a` Dispatch reicht Harness durch · `2a86cec` Worker-Spawn durch den
 Adapter · `ece2957` undo-land als Stack). Dazu: 1 rotes Audit adjudiziert, **8 neue Queue-Zeilen**
@@ -16,15 +16,46 @@ Zur Schwellen-Kalibrierung: S40 ~42 % bei 4 Lands + 2 eigenen Grabungen, S39 ~31
 S38 37,1 % bei 3. **Diese Session: 6 Lands + zwei Messkampagnen für ~31 Punkte** — die Lands waren
 wieder der billige Posten, die Messungen der teure. Das bestätigt die Regel in `CLAUDE.md`.
 
-### WAS IN FLUG IST
+### WAS IN FLUG IST — zwei Lanes, und sie kollidieren auf denselben drei Dateien
 
-**Slot 5, Lane `fleet/260808115720-7017`, Zeile `25e7c086`** (Container UND Docker-Kontext pro
-SLOT). Der nächste Baustein der Isolationskette des Owners. **Der Watch darauf war MEINER und stirbt
-mit meinem Slot** — setz sofort einen neuen: `POST /api/self/watch {"target":5,"idleSec":60}`.
-Sie trägt jetzt einen `slot`-Link (seit `11d113a`), schließt sich beim Land also selbst.
+**Die Watches auf beide waren MEINE und sterben mit meinem Slot.** Setz sofort neue:
+`POST /api/self/watch {"target":5,"idleSec":60}` und dasselbe für 2.
 
-**Slot 14 gehört dem OWNER** — eine Codex-Lane, die er selbst geöffnet hat und in der er probiert.
-NICHT anfassen, nicht landen, nicht killen.
+**(A) Slot 5, Lane `fleet/260808115720-7017`, Zeile `25e7c086`** — Container UND Docker-Kontext pro
+SLOT. Der nächste Baustein der Isolationskette. Trägt einen `slot`-Link (seit `11d113a`), schließt
+sich beim Land also selbst. **Sie landet ZUERST — Owner-Entscheid.**
+
+**(B) Slot 2, Lane `fleet/260808114656-6e86`, Commit `e1a9a20` — ZURÜCKGESTELLT, nicht tot.**
+Der Owner hat sie schreiben lassen, damit das Repo beim Release nicht gegen die Anthropic-ToS
+verstößt: die **Gast-Konsole fällt ganz** (−2144/+95 über 25 Dateien). Begründung im Commit-Body —
+nicht §2 der Consumer Terms direkt (jeder Gast brachte sein eigenes Token), sondern die FORM:
+Instanzen für Dritte provisionieren, Invites ausgeben, fremde Credentials halten. Sie liest sich
+als „provide the Services to third parties" und ist überflüssig, sobald Kollaboration über
+ARTEFAKTE läuft (Repo, Issue, PR, Intake-Notiz) statt über eine Konversation.
+
+**Was ich ihr per `/send` aufgetragen habe (Owner-Entscheid, Stand beim Übergeben):** Gate-Suiten zu
+Ende laufen lassen und ihr **Ergebnis berichten** (sie hatte korrekt nichts behauptet, solange sie
+liefen — ohne das weißt du nicht, ob `e1a9a20` grün ist), eine Übergabe schreiben, **dann STOPP**.
+Kein Commit 2 (`mode` fällt aus Share), kein Historien-Squash. Branch und Worktree bleiben.
+
+**DIE KOLLISION, und warum sie nur technisch ist:** (A) und (B) fassen beide `server.ts`,
+`watchdog.sh` und `e2e/security.ts` an — aber verschiedene Regionen (`FLEET_CONTAINER*` vs.
+`FLEET_GUEST_CMD`, §6-Container-Checks vs. §8-Gast-Block). Inhaltlich sind sie EINIG: Owner-Wortlaut
+*„der container ist ja eigene infrastruktur, das sollte komplett konform zu den tos sein und nur
+technisch mit e1a9a20 kollidieren"*, und die ToS-Lane hat aus eigenem Antrieb `guest-firewall.sh`
+als `container-firewall.sh` gerettet, weil es der Egress-Zaun des SANDBOX-Pfads ist. (B) rebased
+später über (A) — die teurere Richtung, bewusst in Kauf genommen.
+
+**ZWEI DINGE, DIE DU BEIM LAND VON (B) WISSEN MUSST — und die kein Ledger dir sagt:**
+1. **`watchdog.sh` ändert sich** (`FLEET_GUEST_CMD` fällt). Ein srv-Kill aktiviert das NICHT —
+   es braucht `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog`. Wer das vergisst,
+   deployt eine Hälfte und wundert sich.
+2. **`CLAUDE.md` ist DEINE Aufgabe** — gitignored, stirbt mit dem Worktree, die Lane kann es nicht.
+   Nach dem Land ist der ganze `FLEET_GUEST_CMD`-Absatz falsch, und ihr eigener Pfad-Pin hat schon
+   `CLAUDE.md:121` gestellt (nennt `guest-ctl.sh`). Sie meldet dir die Stellen als Text.
+
+**Slot 14 war eine Codex-Lane des OWNERS** — beim Übergeben geschlossen. Falls er wieder eine
+öffnet: nicht anfassen.
 
 ### DIE MESSUNG, DIE DIESE SESSION TRÄGT — und die in `CLAUDE.md` steht, nicht hier
 

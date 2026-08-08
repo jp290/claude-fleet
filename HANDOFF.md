@@ -1,7 +1,163 @@
-# HANDOFF — Session 39 (2026-08-08 nachts: neun Lands über Lanes, und die „siebte Flake-Familie" war keine) · 38/37 darunter
+# HANDOFF — Session 40 (2026-08-08 vormittags: vier Lands über Pi-Lanes, der Container-Strang steht, DeepSeek ist vermessen) · 39/38 darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 6cd299e..HEAD`
-mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 86cecf7..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 40: der Tag, an dem ein fremdes Harness normal wurde
+
+**ctx beim Übergeben: ~40 %.** Produziert: 4 Lands über Lanes (alle unter **Pi**, alle mit
+Gate-Note + LaneOutcome + grünem Audit), 4 Direkt-Commits, 5 Queue-Zeilen eingereicht,
+3 geschlossen, 1 gelöscht-und-ersetzt. Zum Vergleich für die Schwellen-Kalibrierung:
+S39 = ~31 % bei 9 Lands, S38 = 37,1 % bei 3 Lands. **Der teure Posten dieser Session waren
+NICHT die Lands, sondern meine eigenen Grabungen** (Container-Untersuchung, DeepSeek-Wrapper) —
+das ist die Messung, auf der die neue Schwellen-Regel in `CLAUDE.md` steht.
+
+### WAS IN FLUG IST — genau eine Sache, und sie braucht dich sofort
+
+**Slot 5, Lane `fleet/260808070310-a01f`, Queue-Zeile `9a437d5d`** (Worker pro Repo gespeichert).
+Beim Übergeben: `ahead 1`, `dirty 0`, Pane nicht gelesen. **Der Watch darauf war MEINER und stirbt
+mit meinem Slot** — setz dir sofort einen neuen:
+`POST /api/self/watch {"target":5,"idleSec":60}` (Nicht-Lane-only, self-token).
+Dann: Pane LESEN (nicht dem Prädikat glauben), Diff prüfen, landen, Audit abwarten, deployen,
+Zeile schließen. Der Land-Weg ist `POST /api/slots/5/merge` — **nicht** `/land`.
+
+### Die vier Lands
+
+| SHA | Zeile | Kern |
+|---|---|---|
+| `ec7d191`+`2c97c49` | `c3531b41` | **Container-Adapter #3.** Slot leiht sich einen Container, das Bündel bleibt ganz: tmux + git bleiben host-lokal, nur das Transcript fällt. `automatable:false` (fail closed), Docker-Kontext **gepinnt** statt ambient. |
+| `86cecf7` | `2784427e` | **F6 Drag&Drop/Paste/📎-Upload.** Ablage im Worktree, `drops/` in `.gitignore`, und die Route fährt `git check-ignore` VOR dem Schreiben (fail-closed) — ein Upload kann eine Lane nicht mehr still unlandbar machen. |
+| `ff5d713`+`b320c24` | `eac67cc4` | **Arbeitskopie als KLON** neben dem Worktree (`form:"clone"`, Default unverändert `worktree`). Die tragende Scheibe für Container UND Gast-Modus. |
+
+Dazu vier Direkt-Commits aus dem Haupt-Checkout — **die tragen per Konstruktion keine Land-Note,
+keine LaneOutcome-Zeile und keinen Post-Land-Audit**, wer `post-land-audits.jsonl` liest, findet
+sie dort korrekt-aber-irreführend nicht: `aac524e` (S39s Handoff, lag uncommitted), `92fab85`
+(`docs/tailored-context.md` §8), `ce7cf98`+`c3bba61` (`worker-deepseek.py`), `eb40c2e`
+(HANDOFF-Kürzung).
+
+### Pi ist jetzt der Normalfall, und was das kostet
+
+**Alle vier Lands kamen von Pi-Lanes.** Keine Sonderbehandlung: dasselbe Gate, dieselben Suiten,
+dasselbe Ledger — `LaneOutcome.model` trägt `claude-bridge/claude-opus-5`, ohne dass jemand etwas
+nachrüsten musste. Pi lädt `CLAUDE.md` von selbst (an der Pane verifiziert: `[Context] CLAUDE.md`
+beim Boot), die Lane-Disziplin reist also mit.
+
+**Der Umweg, den du kennen musst:** `POST /api/tasks/:id/dispatch` liest `harness` NICHT (die vier
+`harnessIdOf`-Stellen sind `/api/lanes`, Slot-Open, Slot-Lane). Für eine Nicht-claude-Lane also
+`POST /api/lanes {repo,harness,model}` + Brief per `POST /send`. Preis: die Queue-Zeile bekommt
+keinen `slot`-Link, also kein Requeue bei Spawn-Fehler und keine automatische Zuordnung — **die
+Zeile schließt du am Ende von Hand.** Landen/Ledger/Audit sind unberührt. Steht auch in `CLAUDE.md`.
+
+### DeepSeek: vermessen, gelandet, NICHT eingeschaltet
+
+`worker-deepseek.py` hängt an der Subprocess-Naht (`summaryViaSubprocess`), Key liegt **0600 unter
+`~/.claude-fleet-workers/deepseek.key`**, außerhalb des Repos und NICHT in `.env` (der Server-Env
+würde ihn an jeden Worker vererben). Katalog dieses Keys: **genau zwei Modelle**,
+`deepseek-v4-flash` (Default) und `deepseek-v4-pro`.
+
+**Der Befund, der über DeepSeek hinausgeht:** ein OpenAI-kompatibler Endpunkt **ignoriert
+unbekannte Felder stillschweigend**. Ein frei erfundener Parameter lief mit 200 durch und änderte
+nichts. „Kein Fehler" beweist dort also NIE, dass ein Parameter existiert — nur eine Wirkung tut
+es. Damit gemessen: `thinking:{"type":"disabled"}` senkt die Completion von 100 auf **6 Token**
+bei gleicher Antwortqualität, und erklärt nebenbei die 163-vs-84-`prompt_tokens`-Lücke als
+**Thinking-Gerüst** — was der Anbieter-Doku („unterschiedliche Tokenisierung je Modell")
+widerspricht.
+
+**Offen und deiner:** `FLEET_COMMIT_CMD` ist fleet-WEIT, und dieses Fleet fährt Slots in
+`private-repo-a` und `private-repo-b` — ein Flip schickte deren Diffs mit. Der Owner hat
+**Option 1 gewählt: pro Repo gespeichert** (nicht bloß eine Env-Zuordnung — er sagte ausdrücklich
+„gespeichert"). Das IST Zeile `9a437d5d`, die gerade in Slot 5 gebaut wird. Nach ihrem Land ist
+das Einschalten ein Owner-Akt.
+
+### Der Container-Strang, in der Reihenfolge, in der er gebaut werden will
+
+`eac67cc4` (Klon) **gelandet** → `25e7c086` (Container + Docker-Kontext **pro Slot**, heute nur
+fleet-weit im Env) → `0234283e` (Worker-Spawn über den Adapter) → Container-Worker.
+
+**Zwei Befunde, die diese Reihenfolge erzwingen — beide gemessen, nicht argumentiert:**
+1. **Ein Worktree ist nicht selbst-enthalten.** Sein `.git` ist eine DATEI mit `gitdir:` auf den
+   common dir des Haupt-Checkouts. Nur den Worktree zu mounten macht git im Container arbeitsunfähig;
+   die gemeinsame `.git` mitzumounten gibt der Sandbox `.git/hooks` — **ein `post-commit` dort läuft
+   beim nächsten Commit auf dem HOST unter deiner uid.** Deshalb der Klon.
+2. **`summaryViaSession` baut seine Agent-Kommandozeile SELBST** (`claude --session-id …` hart im
+   Code), während der Slot-Spawn längst über die Registry läuft. Es gibt also zwei
+   Spawn-Implementierungen, und der Container-Adapter deckt nur eine. Das ist `0234283e`.
+   **Hindernis, das dort nicht wegdefiniert werden darf:** dieser Pfad holt seine ANTWORT aus der
+   host-seitigen Transcript-Datei, nicht aus stdout — containerisiert käme sie nie an.
+
+### Owner-Entscheide dieser Session, die als Regel in `CLAUDE.md` stehen
+
+- **Schwelle ~44 %, Anker ~36 % für einen Lane-Start, halb dynamisch.** Und der Fehler, den ich
+  live gemacht habe: **die Schwelle ist der Startpunkt der Übergabe, keine Decke, unter die die
+  fertige Arbeit passen muss.** Ich hatte die Handoff-Reserve auf die Schwelle addiert und deshalb
+  eine fertig gebriefte Lane liegen lassen, die bequem gepasst hätte.
+- **Kosten hängen an der ART der Restarbeit:** eine Lane ist billig (~2,5/Land) und vorhersagbar,
+  eine eigene Grabung ist teuer und schlecht schätzbar. Bei knappem Budget: Lane starten, nicht
+  selbst graben.
+- **HANDOFF.md ist das Residuum, nicht das Archiv** (2861 → 397 Zeilen, `eb40c2e`). Ältere
+  Sessions: `git log --follow -p -- HANDOFF.md`.
+
+### Was auf dich wartet, Owner
+
+- **`0c4a9481` (Codex als Adapter #4)** braucht EINEN Satz von dir: die Installation ist
+  Maschinen-Ebene außerhalb jedes Worktrees, eine Lane stoppt korrekt davor. Beim Pi-Spike hattest
+  du sie ausdrücklich sanktioniert (user-lokal, kein sudo, kein brew-global). Ohne denselben Satz
+  für Codex passiert nichts.
+- **Kein `⚙ steward` läuft** — du hattest ihn um 06:56 geschlossen (Audit-Log, `slot_kill … owner`).
+  Der Worktree steht noch. Empfehlung aus dieser Session: den Steward auf **claude** zurückholen,
+  nicht auf Pi — sein Ritual sind die `.claude/commands/`, Pis Kontext-Entdeckung ist
+  `AGENTS.md`/`CLAUDE.md`, und ein billigeres Modell wäre bei der urteilslastigsten Rolle genau
+  falsch herum.
+- Unverändert offen aus S39: `17068154` (Trail-Deckel) · `d375c581` (Trail-Reaper — die 324 MB
+  e2e-Scratch und 2 verwaisten Sockets aus `./state.sh` sind sein Fall) · `f520e704` · `96b72c22`
+  · `9bcc460e` · `e7d61b59`.
+
+### Owner-Vorgabe zu Harness-Rechten (2026-08-08, am Ende der Session) — und die Spannung darin
+
+Wörtlich: *„sowohl pi als auch codex sollten auch vollen maschinen zugriff haben. Falls wir keinen
+vollen zugriff geben wollen können wir einen container benutzen."* Also: **Vollzugriff ist der
+Default, der Container ist die Ausnahme** — nicht umgekehrt. Das ist auch der Status quo
+(`FLEET_CMD` ist `claude --dangerously-skip-permissions`), Pi hat ohnehin keine Permission-Schicht
+(`note: "no sandbox"`).
+
+**Die harte Grenze, die daraus folgt und die niemand wegargumentieren kann:** der Owner will, dass
+ein Agent **Screenshots** machen kann. Screen-Capture ist auf macOS eine TCC-Berechtigung des
+BINARYS auf dem Host; ein Linux-Container hat zum Display dieser Maschine gar keinen Zugang.
+**„Im Container" und „kann Screenshots" schließen sich auf dieser Maschine aus.** Der Container ist
+damit keine universelle Antwort — die Isolationsfrage muss pro FÄHIGKEIT entschieden werden, nicht
+pro Harness.
+
+**Die Spannung, die im selben Absatz steht:** der Owner sagt zugleich, er traue *(OpenAI)* mit
+seinen Daten nicht wirklich. Wenn das die Sorge ist, dann ist **Codex genau der Harness, der KEINEN
+Vollzugriff bekommen sollte** — und der Container ist für exakt diesen Fall gebaut. Vollzugriff für
+pi/claude und ein geschnittener Pfad für Codex ist die Auflösung, die beide Sätze erfüllt; „beide
+voll" erfüllt nur den ersten. **Nicht von mir entschieden — vorgelegt.**
+
+**Offene Frage des Owners an die nächste Session:** „können wir uns für Codex manches an
+Berechtigungen sparen?" Antwort steht noch aus und gehört in den Codex-Spike (`0c4a9481`), weil sie
+nur gemessen zu haben ist. Was dabei aus diesem Repo gilt: `--allowedTools` ist ADDITIV zur
+Allow-Liste in `~/.claude/settings.json`, geklammerte Muster binden erst mit `--setting-sources ""`
+(empirisch 2026-07-25) — und **eine Modell-Weigerung beweist NICHTS**, nur eine mechanische
+Verweigerung zählt, wörtlich zitiert. Was immer Codex über seine Rechte behauptet, wird mit einem
+Canary geprüft.
+
+**Als IDEE abgelegt, ausdrücklich nicht jetzt zu tun** (Owner: „das sollten wir aber nur als idee
+ablegen und bald darauf zurückkommen"): die Daten auf dieser Maschine aufräumen und Claude Fleet im
+Zweifel von der Main-Session des Owners auf diesem Rechner fahren. Motiv ist dasselbe
+Vertrauensthema. Nicht anfangen, ohne dass der Owner es aufruft.
+
+### Korrekturen, die man kennen muss
+
+- **`post-land-audits.jsonl` führt das Ergebnis als `result` (`green`/`red`), nicht als `ok`.**
+  Ich habe in dieser Session einmal auf `ok` gelesen, `None` bekommen und beinahe einen grünen
+  Audit als „nicht feststellbar" gemeldet.
+- **Das Feld einer LaneOutcome-Zeile heißt `disposition`, nicht `outcome`** — darüber ist auch
+  eine Lane gestolpert.
+- **Sechs Sonden-Defekte an einem Tag, jedes Mal war der CODE richtig** (drei in F6, zwei im
+  Container, einer im Klon). Die Regel im Regelbuch steht damit auf sechs Instanzen aus einem Tag,
+  nicht auf dreien.
 
 ---
 
@@ -246,125 +402,7 @@ SELBST scheitern** — eigener `check()` auf ihre Voraussetzung.
 
 ---
 
-# HANDOFF — Session 37 (2026-08-07 abends: acht Lands, Pi ist angeschlossen, der 12-min-Takt ist Geschichte)
-
-*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 5f84d53..HEAD`
-mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
-
----
-
-## Session 37: der Abend, an dem die Doktrin nachgab und Pi hereinkam
-
-**Das Erste für die nächste Session:** `./state.sh` · `./register.sh` · die ersten zwei Regeln in
-`CLAUDE.md` — **und diesmal auch die geänderten Regeln 15 und 23/24, siehe unten.**
-
-### Acht Lands, alle durchs Gate, alle `waitMs 0`
-
-| SHA | Was | Gate |
-|---|---|---|
-| `654761c` | Tempo-Analyse (`briefs/tempo-2026-08-07.md`) — die Minuten sind gemessen | direkt |
-| `62b9482` | sechste Flake-Familie GEHEILT (`e2e/review.ts`, Sonde im Poll statt Sleep) | 79 s |
-| `4e77909` | `/api/self/watch` — der Rückkanal-Zwilling für Nicht-Lane-Sessions | 87 s |
-| `a64b681` | Harness-Basis: die drei Stellen, die claude annahmen | 83 s |
-| `3276ee7` | Pi vermessen — alle vier offenen Punkte GEMESSEN | 82 s |
-| `01447be` | **der Harness-Picker** — Registry + erste Spawn-Options-UI | 82 s |
-| `832bb68` | Trail-Abfrage: `GET /api/flakes` + `/api/self/flakes` | 84 s |
-| `6061b49` | **Kontext-Sensor** — `ctx` an jeder Slot-Row | 84 s |
-
-Deploy viermal gefahren und je am Owner-Poll verifiziert. Audits: 21 grün / 3 rot heute, **alle drei
-Roten adjudiziert** (und alle drei stammen aus Sessions VOR dieser). Adjudikations-Schuld null.
-
-### Die Doktrin hat nachgegeben — das ist die folgenreichste Änderung des Tages
-
-Der Owner hat die zwei Tempo-Entscheide an die Regelwerk-Session delegiert („dein call"). Beide sind
-in `CLAUDE.md` umgesetzt, beide sind **einzeln rückdrehbare Textzeilen**:
-
-- **Zeile 15 — der 12-min-Land-Takt ist GESTRICHEN.** Seriell bleibt (das Gate serialisiert ohnehin),
-  aber die Wartepflicht auf den Post-Land-Audit ist weg. Beide alten Begründungen waren von der
-  Maschine überholt: `drainPostLandAudits` (`server.ts:5114`) existiert und hat **nie** gefeuert —
-  `covers`-Histogramm über alle Audits = `{1: N}`; und seit `08dc17a` sind Warte- und Arbeitsbudget
-  getrennt. **Wissentliches Restrisiko:** ein rotes Sammel-Audit nennt N Lands statt einem, und
-  `undo-land` deckt nur das neueste.
-- **Zeile 23/24 — `./e2e-isolated.sh` ist keine Pflicht mehr in jeder Lane**, nur noch bei `e2e/`,
-  Suite-Wrappern oder Merge-/Land-Pfad. Gemessen: ~165 min/Tag Mutex für **0 echte Vorschau-Funde in
-  zwei Tagen**.
-
-**ABER — was ich in der Praxis GEGEN die neue Doktrin gemacht habe, und es war jedes Mal richtig:**
-vor jedem Land habe ich auf einen freien Suite-Mutex gewartet (zweimal 440 s und 980 s). Ergebnis:
-alle acht Gates `waitMs 0`. Die gestrichene Regel betraf das AUDIT; ein fremder Suite-Lauf ist echte
-Contention und bleibt ein Grund zu warten. Das steht so nicht im Regelwerk — **wenn es sich hält,
-gehört es hinein.**
-
-### Pi ist angeschlossen — und der Login-Schritt entfiel ersatzlos
-
-Kette: Basis (`a64b681`) → Messung (`3276ee7`) → Picker (`01447be`). Du kannst im Picker jetzt
-**claude oder pi** wählen, plus Modell und Effort. Live gegengeprobt: unbekannter Harness → 400
-`{"error":"unknown harness (one of: claude, pi)"}`.
-
-- **Kein `/login` nötig.** `pi install npm:pi-claude-bridge` reicht: die Bridge läuft übers Claude
-  Agent SDK und nutzt die Anmeldung der Maschine. Beweis: 8 Modelle im Katalog bei LEERER
-  `~/.pi/agent/auth.json` (2 Bytes), plus ein Haiku-Call `→ OK`. Für die DIREKTEN Pi-Provider gilt
-  „auth-gated" weiter (gratis mitgemessen).
-- **Die Grenze, die du kennen musst: ein Pi-Slot ist für JEDE Automatik unsichtbar.**
-  `HARNESS_COMMS = IS_CLAUDE ? ["claude"] : (env…)` (`server.ts:123`) — auf diesem Fleet ist
-  `FLEET_CMD=claude`, also wird `FLEET_HARNESS_COMMS` nie gelesen. Es gibt keinen Env-Fix. Folge:
-  keine Autos, kein Dispatch, kein `done-looking`, kein Rückkanal, kein auto-③. Von Hand
-  funktioniert alles. → Zeile **`b28ce533`**, mit fertigem Lösungsvorschlag; der Entscheid
-  („welche Automatik darf einen sandbox-losen Agenten anfassen") gehört dem Owner.
-
-### Ein Defekt in frisch gelandeter Arbeit, gefunden BEIM VERIFIZIEREN des Deploys
-
-`GET /api/flakes` antwortet **`never-failed`**, wo der Trail 9 Fehlschläge auf 3 sauberen Bäumen
-kennt. Ursache: `TRAIL_MAX_FILES = 400` (`server.ts:9058`) ist eine harte Konstante, über die Route
-nicht steuerbar, und Dateien werden *newest-first* genommen — es fallen also genau die **älteren**
-741 von 1141 weg. `days=14` und `days=60` antworten byte-gleich. Gemessen: neueste 400 → 74 runs /
-**0** fails; die ausgelassenen 741 → 169 runs / **9** fails / **3** saubere Bäume.
-Kosten: eine Lane mit FIX1-Rot hört „never failed in 74 runs" — *positive* Evidenz der Abwesenheit —
-und sucht einen Regress, den es nicht gibt. **Teurer als kein Werkzeug, weil ein Werkzeug geglaubt
-wird.** → Zeile **`17068154`** mit drei möglichen Schnitten. „Deckel hochsetzen" ist keiner davon.
-
-### Vier Korrekturen an mir selbst
-
-1. **Mein Brief behauptete eine tsc-Listen-Pflicht, die es nicht gibt.** Ich nannte
-   `fleet-e2e-harness.ts` als Präzedenz für „neue Top-Level-Datei → in `watchdog.sh`". Die Lane hat
-   es empirisch widerlegt (absichtlicher Typfehler wird von der unveränderten Liste gemeldet) und
-   den Fall korrekt zerlegt: jenes ist ein **Entry-Point**, `trailstats.ts` ist **importiert** — wie
-   `slotstats.ts`, `continuity.ts`, `lane-signals.ts`, die alle nicht gelistet sind. Nachgeprüft,
-   sie hat recht. Ein Deploy-Schritt weniger.
-2. **Zweimal war mein eigener Prüfausdruck der Fehler, nicht der Code:** ein im Report
-   ABGESCHNITTENER Check-Name als Exact-Match (`/api/flakes` antwortete zu Recht `not-in-window`),
-   und ein geratener Feldname (`contextFill` statt **`ctx`**), der den frisch gelandeten Sensor wie
-   tot aussehen ließ. **Merke: bei einem Alarm zuerst die Sonde prüfen, dann den Code.**
-3. Der Heartbeat-Text auf Slot 5 ist **veraltet** — seine „startbereit"-Liste (`15a01b70`,
-   `fdabb575`, `32c89530`) ist heute komplett gelandet. Wer ihn erbt, schreibt ihn neu.
-4. Ich habe den Heartbeat einmal „nachgezogen", der 55 s zuvor korrekt gelegt worden war — mein
-   Schnappschuss war älter als die Welt. Duplikat gelöscht.
-
-### Was der OWNER entscheiden muss (nicht erneut melden, nur vorlegen)
-
-- **`b28ce533`** *(Probe pro Slot statt fleet-weit)* — macht einen Pi-Slot erst zum vollen Bürger.
-- **`17068154`** *(der Trail-Deckel)* — welcher der drei Schnitte.
-- **`f520e704`** *(Steward kritisch beleuchten)* — Kriterium `confirmedAt:null`, unwiderruflich.
-- **`2784427e`** *(F6 Drag&Drop)* — Entwurf und Brief widersprechen sich beim Ablageort.
-- **`d375c581`** *(der Reaper)* — der Trail wächst ~4,4 MB/Tag; hängt mit `17068154` zusammen.
-
-### Arbeitsweise, die sich heute bewährt hat und die ich weiterempfehle
-
-- **Kein Roh-Dispatch.** Jede der acht Zeilen bekam vor dem Start einen von mir kompilierten Brief
-  (`POST /api/tasks/:id/brief`), geerdet an echten Zeilennummern und Messwerten. Die Lanes haben
-  daraufhin *mich* an vier Stellen korrigiert — das ist der Ertrag, nicht der Aufwand.
-- **Briefe altern schnell.** Der Kontext-Sensor-Brief war vor dem Dispatch vier Lands alt; seine
-  Zeilenrefs waren gewandert UND `01447be` hatte eine neue Randbedingung geschaffen
-  (`transcriptFile` → `null` für Nicht-Transcript-Harness). Vor jedem Dispatch nachziehen.
-- **Watch statt Vorsatz:** `POST /api/slots/5/watch {"target":N,"idleSec":60}` hat heute achtmal
-  sauber geweckt. Für „warte auf einen freien Mutex" taugt er nicht — dafür ein Hintergrund-Watcher.
-
----
-
-
----
-
-# Ältere Sessions (36 und darunter): in der git-Historie dieser Datei, nicht mehr hier
+# Ältere Sessions (37 und darunter): in der git-Historie dieser Datei, nicht mehr hier
 
 Bis 2026-08-08 sammelte diese Datei **jede** Session im Detail — 2861 Zeilen, Session 13 bis 39.
 Gekürzt auf die drei jüngsten, Owner-Entscheid: „die letzten paar sind ja vielleicht noch

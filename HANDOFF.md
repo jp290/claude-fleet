@@ -53,16 +53,34 @@ Slot-Typ und der erste Kontrollpunkt, an dem Fleet einem fremden Agenten etwas V
 - **`FLEET_WORKER_HARNESS` steht NICHT in `watchdog.sh`.** `2a86cec` bewaffnet eine Fähigkeit,
   ändert aber das Verhalten des Live-Fleets nicht.
 
-### WAS BEIM OWNER LIEGT — vorlegen, nicht selbst entscheiden
+### WAS BEIM OWNER LIEGT — und was NICHT (er hat mich dafür gerügt, zu Recht)
 
-1. **`automatable: true` für Codex** — erst nach der Isolationskette. Seine eigene Reihenfolge.
-2. **DeepSeek einschalten.** Owner-Wortlaut: *„es sollte einfach sicher in einem container laufen"* —
-   also NICHT nackt fragen, sondern erst über den Adapter. `0234283e` ist gelandet, der nächste
-   Schritt ist die Verdrahtung. Key liegt, Wrapper ist live getestet (65/12 Token, exit 0).
-3. **Reicht `workspace-write` im Betrieb** — Netz/Pfade sind nicht vermessen. Antwort wäre
-   `--add-dir` oder eine Owner-Entscheidung über den Bypass, keine stille Literal-Erweiterung.
-4. **Wochenkontingent stand bei 77 %** (Reset 12.08., 20 Uhr). Die Post-Land-Audits kosten daran
-   nichts (kein Modell), die Lanes schon.
+Ich hatte hier zuerst drei Punkte stehen. Der Owner fragte: *„wieso sind die offen für mich, kannst
+du die nicht selbst angehen?"* — und bei zweien hatte er recht. Sie sind umsortiert, **nicht**
+weggeräumt:
+
+1. **`workspace-write` ausreichend? — BEREITS BEANTWORTET, war nie eine Owner-Frage.** Die
+   gescheiterte Codex-Lane hat es vermessen: kein Netz, keine tmux-Sockets, kein Schreiben auf
+   `.git` außerhalb des Baums. Für Produzieren reicht es, für eine Worktree-Lane nicht. Der Inhalt
+   davon ist `e30b3a7f`.
+2. **DeepSeek — eine ANWEISUNG, kein Entscheid.** Owner-Wortlaut: *„es sollte einfach sicher in
+   einem container laufen"*. Als `b634236c` abgelegt, mit dem Maschinen-Befund: der `default`-
+   Docker-Kontext ist TOT, es gibt keinen Container `fleet`, und die einzigen laufenden sind die
+   GAST-Container mit Credentials + NET_ADMIN (dort gehört kein Worker hinein). Sequenziert hinter
+   `25e7c086`.
+3. **`automatable: true` für Codex ist KEINE Owner-Entscheidung, sondern eine unerfüllte
+   Bedingung** — die alte Formulierung klang, als müsse er nur ja sagen. Die Bedingung, benannt:
+   ein unbeaufsichtigter Pfad darf einen Codex-Slot fahren, wenn eine Codex-Lane **committen kann**
+   (`e30b3a7f`) **und** ihre Lese-Reichweite begrenzt ist (`29cd2610` Ort, oder `54af57d6`
+   Approval-Policy). Vorher wäre ein Flip der Vertrauensvorschuss, den der Owner ausgeschlossen hat.
+
+**Echt beim Owner liegt nur noch:** das Wochenkontingent stand bei 77 % (Reset 12.08., 20 Uhr) —
+die Post-Land-Audits kosten daran nichts (kein Modell), die Lanes schon. Und Slot 14, seine eigene
+Codex-Lane.
+
+**Die Lehre für dich, Nachfolger:** bevor du etwas als „liegt beim Owner" schreibst, prüfe, ob es
+(a) längst gemessen ist, (b) eine Anweisung ist, die du nur nicht ausgeführt hast, oder (c) eine
+Bedingung, die du BENENNEN statt zur Frage machen kannst. Blieb keines davon übrig, ist es seins.
 
 ### REIHENFOLGE FÜR DICH, und das Warum
 

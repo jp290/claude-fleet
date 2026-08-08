@@ -3,11 +3,62 @@
 // the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { laneDoneLooking, laneHostCommitLooking, type LaneSignalView } from "../lane-signals";
 import { BASE, REPO, ROOT, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(lc: LaneCtx): Promise<void> {
+  // --- the second completion FACT is served beside doneLooking, with the same lane-only scope.
+  // The isolated server keeps foreign-harness automation OFF, so its policy-reduced `alive` fact
+  // cannot honestly manufacture the positive Pi case here; prompts.ts owns that positive matrix.
+  // This integration half proves the served field is present and remains false for the identical
+  // dirty+zero-ahead shape on Claude — paired with positive git/adapter reads, never a null reader.
+  {
+    const hostShape: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 1, ahead: 0 },
+      gitOp: false, merge: null, observed: true, awaiting: null, hostCommits: true };
+    check("hostCommitLooking accepts fenced dirty+zero-ahead work, but not identical Claude dirt or awaiting-owner",
+      laneHostCommitLooking(hostShape, 1500) === true
+      && laneHostCommitLooking({ ...hostShape, hostCommits: false }, 1500) === false
+      && laneHostCommitLooking({ ...hostShape, awaiting: "owner" }, 1500) === false);
+    check("hostCommitLooking and doneLooking are disjoint on both completion shapes",
+      laneDoneLooking(hostShape, 1500) === false
+      && laneHostCommitLooking({ ...hostShape, git: { dirty: 0, ahead: 1 } }, 1500) === false
+      && laneDoneLooking({ ...hostShape, git: { dirty: 0, ahead: 1 } }, 1500) === true);
+
+    type SignalSlot = { id: number; git: { dirty: number; ahead: number } | null;
+      hostCommits: boolean; hostCommitLooking: boolean; doneLooking: boolean };
+    const svTok = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+    const signal = async (slot: number): Promise<SignalSlot | undefined> =>
+      ((await (await fetch(BASE + "/api/steward/sessions",
+        { headers: { authorization: `Bearer ${svTok}` } })).json()) as { slots: SignalSlot[] })
+        .slots.find((s) => s.id === slot);
+
+    const clRes = await post("/api/lanes", { repo: REPO });
+    const cl = (await clRes.json()) as { ok?: boolean; slot?: number; cwd?: string; error?: string };
+    check("host-commit fact probe setup: a Claude lane was created",
+      clRes.ok && cl.ok === true && typeof cl.slot === "number" && typeof cl.cwd === "string",
+      `${clRes.status} ${JSON.stringify(cl)}`);
+    if (clRes.ok && cl.ok && cl.slot && cl.cwd) {
+      await Bun.write(`${cl.cwd}/host-commit-fact.txt`, "dirty tree on self-committing harness\n");
+      let clV: SignalSlot | undefined;
+      for (let i = 0; i < 60; i++) {
+        clV = await signal(cl.slot);
+        if (clV?.git?.dirty === 1 && clV.git.ahead === 0 && clV.hostCommits === false) break;
+        await Bun.sleep(500);
+      }
+      const readerReady = clV?.git?.dirty === 1 && clV.git.ahead === 0 && clV.hostCommits === false;
+      check("host-commit fact probe prerequisite: steward reads the dirty+zero-ahead tree and adapter fact",
+        readerReady, JSON.stringify(clV));
+      if (readerReady) {
+        check("hostCommitLooking is served false for Claude dirt (that state stays stalled-dirty)",
+          clV?.hostCommitLooking === false && clV.doneLooking === false, JSON.stringify(clV));
+      }
+    }
+    if (cl.slot) await post(`/api/slots/${cl.slot}/kill`, {});
+    if (cl.cwd) spawnSync("git", ["worktree", "remove", "--force", cl.cwd], { cwd: REPO });
+  }
+
   // --- OWNER.md rides into a lane like CLAUDE.md does. It is the owner model the steward ritual
   // names as a load duty, and until this landed neither a lane nor the steward worktree ever saw
   // it. Two halves, and the second is the one that could break the fleet: its ABSENCE in the

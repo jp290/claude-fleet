@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
-import { laneDoneLooking, laneQuietSince, DONE_LOOKING_PROSE,
-  laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
+import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
+  laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
@@ -248,6 +248,11 @@ interface Harness {
   // Required, not optional: a new adapter that forgets this is a compile error rather than a slot
   // that reads dead (or, worse, waived) for reasons nobody would think to look for.
   comms: readonly string[] | null;
+  // Who records a lane's produced files in git. true means the harness is intentionally fenced
+  // out of its lane's .git and the HOST commits through POST /api/slots/:id/commit; false means no
+  // such ownership transfer is declared. Required and explicit: a new adapter must answer this
+  // instead of inheriting a guess based on its id or working-copy form.
+  hostCommits: boolean;
   // May an UNATTENDED path drive this harness once the operator has enabled foreign-harness
   // automation at all (HARNESS_AUTOMATION)? TWO conditions, not one, and deliberately so: the env
   // flag is the operator's blanket consent, this field is the per-adapter claim that THIS harness
@@ -263,10 +268,9 @@ interface Harness {
   // "clone" is the answer for a harness whose agent runs behind a WRITE FENCE that ends at the
   // working directory. MEASURED, on the first real Codex lane (2026-08-08, slot 9): a linked
   // worktree keeps its metadata in the PRIMARY repo (<main>/.git/worktrees/<lane>/), i.e. outside
-  // `--sandbox workspace-write`'s roots, so `git commit` dies on
-  // `Unable to create '.../index.lock': Operation not permitted`. A lane that cannot commit cannot
-  // land — the failure is silent in the sense that matters: the tree is correct, the work is there,
-  // and nothing on the board says why it will never land.
+  // `--sandbox workspace-write`'s roots. The current permission profile additionally demotes
+  // `<workdir>/.git` itself, so clone form does NOT transfer commit ownership back to Codex; the
+  // host records either form. Clone remains a working-copy preference, not an ownership signal.
   //
   // WHY THE ADAPTER AND NOT THE CALLER, which is the same argument `comms` and `modelRe` make: a
   // property every sender must remember to attach is a property that gets forgotten, and the first
@@ -328,6 +332,8 @@ const CLAUDE_HARNESS: Harness = {
   // empty set (→ "unprobed") for an undeclared FLEET_CMD like the suites' `true`. Not `["claude"]`
   // literally: that would strip the waiver every stand-in depends on.
   comms: null,
+  // Claude owns its repository metadata; Fleet has not fenced it out of commits.
+  hostCommits: false,
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
   // has always driven, and the clause below never even consults the flag for it.
   automatable: true,
@@ -488,6 +494,8 @@ const PI_HARNESS: Harness = {
   // here for exactly that reason: it is absent between requests, and a comm that comes and goes
   // would make the answer flicker.
   comms: ["pi"],
+  // piSandboxProfile denies this lane's .git explicitly: the lane produces, the host records.
+  hostCommits: true,
   // TRUE by owner decision (2026-08-07). The caveat that used to ride here — "what the flag admits
   // is unattended prompting of a SANDBOX-LESS agent" — is retired by the fence above, and the
   // decision it qualified only gets stronger: what an unattended path now prompts is an agent that
@@ -652,6 +660,11 @@ const CONTAINER_HARNESS: Harness = {
   // exits when the agent inside exits. Declaring it also means this adapter takes NO "unprobed"
   // waiver — a container slot whose exec died reads `no-agent` instead of a blind alive.
   comms: ["docker"],
+  // FALSE deliberately: this adapter adds no write fence of its own, and its operator-provided
+  // mount contract has never established that repository metadata is unreachable. `laneForm`
+  // records that same unmeasured mount question below. Without a positive ownership transfer,
+  // claiming that Fleet's host must commit would turn an unknown container setup into permission.
+  hostCommits: false,
   // FALSE, and not as a placeholder: the owner decision on unattended container slots has not been
   // made (the comment on `automatable` names this adapter as the case), so it fails closed. Setting
   // it true would widen on the ABSENCE of a judgement, which is the mistake the comms repair exists
@@ -777,6 +790,9 @@ const CODEX_HARNESS: Harness = {
   // binary is the supported entry point; going around it to make a probe prettier is the wrong
   // trade.
   comms: ["codex", "node"],
+  // Codex's workspace-write profile demotes <workdir>/.git; by owner doctrine the host records the
+  // files even when the adapter prefers clone form. Form is not ownership and must not be guessed.
+  hostCommits: true,
   // FALSE, and unlike the container adapter's this is not merely "the owner has not decided yet" —
   // there is a measured reason to keep it shut. `codex login status` on this machine says
   // "Not logged in", and an unauthenticated Codex pane sits on its sign-in screen with the node
@@ -788,12 +804,12 @@ const CODEX_HARNESS: Harness = {
   // from there: an owner may still open, drive and land such a slot by hand.
   automatable: false,
   // "clone", and it is the one field here that changes what a lane IS rather than how it is
-  // described. `--sandbox workspace-write` fences WRITES to [workdir, /tmp, $TMPDIR]; a linked
-  // worktree's metadata lives in the primary repo, outside all three, so `git commit` in a Codex
-  // worktree lane dies on `index.lock: Operation not permitted` (measured, first real Codex lane,
-  // 2026-08-08). A clone's `.git` is a directory INSIDE the workdir, so the same commit is an
-  // ordinary write. See the field's own comment for why the preference sits here and not on the
-  // caller — and note that it stays a preference: `form: "worktree"` in the request still wins.
+  // described. A linked worktree's metadata lives in the primary repo, outside Codex's writable
+  // roots; clone form keeps Fleet's lane repository and mirror self-contained. It does NOT make
+  // Codex the committer: the current permission profile demotes `<workdir>/.git` by name too, so
+  // `hostCommits:true` remains true for both forms and POST /api/slots/:id/commit is the recording
+  // path. See the field's own comment for why the preference sits here and not on the caller — and
+  // note that it stays a preference: `form: "worktree"` in the request still wins.
   laneForm: "clone",
   // the foreign charset, for the same reason Pi takes it: Codex model names carry `:` (the local
   // provider tags under `--oss`, e.g. an ollama `qwen2.5-coder:7b`) and `/` (provider-qualified
@@ -999,22 +1015,22 @@ interface Auto {
 // --- a WATCH: the event-triggered sibling of an Auto. Same delivery (one prompt typed into one
 // pane, through canDeliver), different trigger — a fact about ANOTHER slot instead of a clock.
 //
-// WHY IT EXISTS. Fleet computes `doneLooking` on the 2s poll and, until now, told nobody: auto-③
-// consumed it, and every other consumer was someone who was already looking. So a session that
+// WHY IT EXISTS. Fleet computes completion facts on the 2s poll; auto-③ consumes only the original
+// `doneLooking`, and every other consumer was someone who was already looking. So a session that
 // dispatched a lane and turned away had no way back except remembering to check. Measured twice on
 // 2026-08-07: a driving session missed a finished 807-line lane for ~20 minutes, then replaced the
 // habit with a background `until`-loop — which fires once by construction and left the same hole on
 // the next lane. A watcher the RECEIVER has to re-arm fails exactly when the receiver is busy,
 // which is every time it matters. This one is armed on the server and survives a restart.
 //
-// WHAT IT IS NOT: it delivers TEXT and nothing else — no land, no review, no kill. Same boundary
-// auto-③ keeps, for the same reason (docs/attic/perception-layer.md §4): the predicate is idle+clean+
-// ahead, which reads identically for a lane running a suite, a lane parked on the owner, and a lane
-// that compiled a brief instead of building. It removes a WAIT, never a CHECK.
+// WHAT IT IS NOT: it delivers TEXT and nothing else — no commit, land, review or kill. The original
+// predicate remains idle+clean+ahead and carries its old warning; the host-commit sibling is weaker
+// and says that uncommitted+zero-ahead is intended and requires a host commit. Both remove a WAIT,
+// never a CHECK.
 //
-// The trigger is LEVEL, not edge (tickWatches): `doneLooking` is a standing property of the target's
-// facts, so a watch on an already-done-looking lane fires at once — the honest answer to "tell me
-// when it looks done" is "it already does". Firing spends the watch (`armed:false`); a target that
+// The trigger is LEVEL, not edge (tickWatches): either predicate is a standing property of the
+// target's facts, so a watch on an already-matching lane fires at once. Firing spends the watch
+// (`armed:false`); a target that
 // goes back to work and finishes again is a NEW question and needs a new watch. That is the narrow
 // reading on purpose: an armed-forever watch is a repeating nudge, and nothing here should be able
 // to type into a pane on a cadence nobody chose.
@@ -5455,11 +5471,10 @@ async function tickAutoReview(): Promise<void> {
   }
 }
 
-// --- the OUTBOUND channel for `doneLooking` (Watch, above). Deliberately its own tick and not a
-// branch inside tickAutoReview: that one breaks out of its loop at AUTO_REVIEW_MAX_CONCURRENT and
-// skips every lane with a review inflight, so folding this in would make a notification depend on
-// review capacity it has nothing to do with. It reads the same predicate, through the same
-// function, and that is the whole coupling.
+// --- the OUTBOUND channel for both completion facts (Watch, above). Deliberately its own tick and
+// not a branch inside tickAutoReview: auto-③ remains on doneLooking alone, and also breaks out at
+// AUTO_REVIEW_MAX_CONCURRENT / skips lanes with a review inflight. Folding delivery there would
+// both widen review onto uncommitted work and make notification depend on unrelated capacity.
 //
 // Runs on the AUTOS cadence, not the review cadence, because what it does is DELIVER: same tick
 // speed, same choke-point (canDeliver), same master stop. FLEET_AUTO_REVIEW_MS=0 does not disable
@@ -5487,7 +5502,8 @@ async function tickWatches(): Promise<void> {
         continue;
       }
       const sig = laneSignalView(t, now);
-      if (!laneDoneLooking(sig, AUTO_REVIEW_IDLE_MS)) continue; // not yet — stay armed, ask again
+      const watchSignal = laneWatchSignal(sig, AUTO_REVIEW_IDLE_MS);
+      if (!watchSignal) continue; // neither completion predicate yet — stay armed, ask again
       // THE UNOBSERVED-PANE HOLE, and it is this trigger's alone to close. canDeliver's busy gate
       // is `now - s.lastOutput < idleMs`, and `lastOutput` is 0 until poll() sees a first byte —
       // which that subtraction turns into ~1.79e12 ms, i.e. "idle forever", i.e. permission. It is
@@ -5528,7 +5544,7 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
-      const text = watchMessage(t, sig);
+      const text = laneWatchMessage(t.id, t.worktree?.branch ?? "?", sig, watchSignal);
       try {
         await sendText(s, text, true);
       } catch (e) {
@@ -5561,24 +5577,8 @@ async function tickWatches(): Promise<void> {
   }
 }
 
-// what the receiving session actually reads. Three jobs, in order:
-//   1. name the subject unambiguously — slot AND branch, because slot ids are recycled and the
-//      branch is what the reader will `git log`.
-//   2. carry the facts the predicate fired on (ahead/dirty), so the reader can tell the landable
-//      case from the "FILES: keine" measurement lane without asking.
-//   3. say LOOKS done and say why that is not "is done". The predicate is idle + clean + ahead>0,
-//      and CLAUDE.md's four look-alike states (finished-with-commits, finished-with-nothing-to-
-//      commit, waiting-on-you, compiled-a-brief-instead-of-building) are indistinguishable to it.
-//      A message that reads as a verdict would turn a wait-remover into a land-trigger, which is
-//      the one thing this surface must never become. One line: it is pasted into a composer.
-function watchMessage(t: Slot, sig: ReturnType<typeof laneSignalView>): string {
-  const g = sig.git;
-  return `[fleet] slot ${t.id} (${t.worktree?.branch ?? "?"}) now LOOKS done — pane idle, tree clean, `
-    + `${g?.ahead ?? "?"} ahead / ${g?.dirty ?? "?"} dirty. That is the server's predicate over facts `
-    + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
-    + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
-    + `Read the pane before you act, and never land on this message alone.`;
-}
+// The one-line receiver text is composed beside the two pure predicates in lane-signals.ts, so
+// its weaker host-commit wording and the signal selecting it are testable from the same facts.
 
 // --- 💾 lane commit: the load-bearing SAVE. land/merge both refuse a dirty tree, so
 // uncommitted work in a lane could only be saved from inside the session — one kill from
@@ -9937,6 +9937,7 @@ function laneSignalView(s: Slot, now: number) {
     // (lane-signals.ts). done-looking ignores it and is unaffected.
     observed: s.lastOutput > 0,
     awaiting: s.awaiting,
+    hostCommits: harnessOf(s.harness).hostCommits,
   };
 }
 
@@ -10170,6 +10171,11 @@ function stewardSlotsView(now: number) {
       // trigger's own answer, and it is what auto-③ acts on.
       doneLooking: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
         && laneDoneLooking(sig, AUTO_REVIEW_IDLE_MS),
+      // the second, deliberately weaker lane completion fact: a fenced harness leaves produced
+      // work dirty and zero-ahead because the host owns the commit. It is a fact, not a gate;
+      // tickWatches reads it, while auto-③ remains on doneLooking alone.
+      hostCommitLooking: !!s.cwd && !!s.worktree && s.label !== STEWARD_LABEL
+        && laneHostCommitLooking(sig, AUTO_REVIEW_IDLE_MS),
       // second tier (lane-signals.ts): the epoch ms at which every non-clock clause already held
       // and the pane went quiet — null when a fact is unknown or this is not a reviewable lane.
       // `doneLooking` flips AUTO_REVIEW_IDLE_MS after this; nothing acts on it, it exists so a

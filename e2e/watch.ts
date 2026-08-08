@@ -1,7 +1,7 @@
-// THE OUTBOUND CHANNEL for `doneLooking` (server.ts, interface Watch + tickWatches). Fleet has
-// computed this predicate on the 2s poll since the perception layer landed and told nobody: auto-③
-// consumed it, every other reader was already looking. A watch is a subscription — one slot asks to
-// be told, ONCE, when another slot's lane looks done.
+// THE OUTBOUND CHANNEL for the two completion predicates (server.ts, Watch + tickWatches): the
+// original clean+ahead `doneLooking`, and the distinct dirty+zero-ahead `hostCommitLooking` for a
+// fenced harness whose host owns the commit. A watch is a subscription — one slot asks to be told,
+// ONCE, when another slot reaches either shape.
 //
 // What these checks are really guarding is the difference between a notification and a verdict.
 // The message must carry the facts it fired on (branch, ahead/dirty) AND say that "looks done" is a
@@ -13,6 +13,7 @@
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
 import { spawnSync } from "node:child_process";
+import { laneWatchMessage, laneWatchSignal, type LaneSignalView } from "../lane-signals";
 import { AUTOS_TICK_MS, BASE, REPO, TOKEN, check, get, paneEnv, plogRead, post, tmuxOut } from "./harness";
 
 interface WatchRow {
@@ -28,7 +29,27 @@ const freeSlot = async (): Promise<number> =>
     .slots.find((x) => x.cwd === null)?.id ?? 0;
 
 export async function run(): Promise<void> {
-  // --- the subject: a lane that commits and goes quiet (idle + clean + ahead>0) ---
+  // --- THE HOST-COMMIT SIBLING. The isolated server deliberately runs with foreign-harness
+  // automation OFF (a policy family later proves that refusal), so manufacturing a live Pi target
+  // here would be a broken probe: its policy-reduced `alive` fact is correctly false. Exercise the
+  // pure selector+text that tickWatches calls instead; the runtime block below proves that the same
+  // tick delivers, spends and logs the selected message exactly once.
+  {
+    const h: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 1, ahead: 0 }, gitOp: false,
+      merge: null, observed: true, awaiting: null, hostCommits: true };
+    const signal = laneWatchSignal(h, 1500);
+    check("watch selector accepts the host-committed dirty+zero-ahead completion shape",
+      signal === "host-commit-looking", String(signal));
+    if (signal) {
+      const text = laneWatchMessage(7, "host-branch", h, signal);
+      check("host-commit watch text names the weaker fact and exact host action",
+        text.includes("LOOKS ready for a host commit")
+        && text.includes("The work is UNCOMMITTED, 0 ahead is expected for this harness, and the next step is a host commit via POST /api/slots/7/commit.")
+        && text.includes("server's weaker predicate") && text.includes("NOT a report from that lane"), text);
+    }
+  }
+
+  // --- the original subject: a lane that commits and goes quiet (idle + clean + ahead>0) ---
   const tgt = (await (await post("/api/lanes", { repo: REPO })).json()) as
     { slot: number; cwd: string; branch: string };
   await Bun.write(`${tgt.cwd}/watch-target.txt`, "the work the watcher is waiting for\n");

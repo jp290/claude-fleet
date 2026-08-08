@@ -721,6 +721,7 @@ const CODEX_HARNESS: Harness = {
     // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
     // that constant is a claude model id and Codex has never heard of it.
     if (o.model) cmd += ` --model '${o.model}'`;
+    if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
     return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   // NULL, and here it is over-determined — worth stating in full, because a reader who fixes only
@@ -729,10 +730,12 @@ const CODEX_HARNESS: Harness = {
   // that id. (2) It writes no ~/.claude transcript in the shape projDir()/viewEntry parse. (3) Its
   // sandbox is a WRITE fence with no ToolProfile equivalent — `--tools ""` has no counterpart.
   worker: () => null,
-  // Codex has no `--session-id` at all. Resumption is the `codex resume` SUBCOMMAND, an interactive
-  // picker (`--last` for the newest) — a different shape from claude's flag and from Pi's
-  // create-or-attach id, and nothing this adapter can pin at spawn. So no id is recorded, and
-  // `supports.resume` is false to match: a pane respawn starts a new conversation.
+  // Codex has no spawn-time `--session-id`. MEASURED: `codex resume --last <prompt>` bypasses the
+  // picker and genuinely continued the newest cwd-matched conversation (same rollout/session id,
+  // with an earlier marker retained). But `--last` identifies by recency, not by this Fleet slot:
+  // with multiple conversations recorded for the cwd, an unpinned respawn cannot know which one it
+  // owns. Fleet's resume promise is identity, not "whichever ran last", so no id is recorded and
+  // `supports.resume` stays false.
   pinsSession: false,
   // MEASURED, and this is the one field a reader will want to argue with. The process tree is
   // `zsh → node (bin/codex.js) → <native codex>`, and the native child's comm is the FULL vendor
@@ -781,13 +784,13 @@ const CODEX_HARNESS: Harness = {
   // claude fleet would have accepted is lost — and the widening stays off the default adapter,
   // which is what e2e/security.ts §6's counter-rows exist to prove.
   modelRe: HARNESS_MODEL_RE,
-  // empty: Codex has no effort FLAG. Reasoning effort exists as config (`-c`), and a `-c key=value`
-  // pass-through is a second injection surface into the pane line for a knob nobody asked for.
-  // Empty means the routes REJECT an effort for this harness rather than dropping it silently.
-  effortLevels: [],
+  // Codex exposes reasoning effort through config (`-c`) rather than a dedicated flag. Keep this
+  // fixed list as the request validation boundary: only this key and these measured values may
+  // reach the quoted pane command, never a general operator-supplied config pass-through.
+  effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
   supports: {
-    // false: see pinsSession — `codex resume` is an interactive picker, not a spawn-time flag, so a
-    // respawned pane cannot be handed back its conversation.
+    // false: see pinsSession — `--last` skips the picker but cannot identify this unpinned pane's
+    // conversation when the cwd has more than one.
     resume: false,
     // FALSE for the same reason as pi's, and it is load-bearing rather than cosmetic: what Fleet
     // calls a transcript is a CLAUDE-CODE .jsonl under projDir(), parsed by viewEntry for the
@@ -798,7 +801,7 @@ const CODEX_HARNESS: Harness = {
     // own. Failing visibly beats answering with a stranger's chat.
     transcript: false,
     model: true,   // `-m, --model <MODEL>`, read from `codex --help` on the real installation
-    effort: false, // no flag — see effortLevels
+    effort: true,  // `-c model_reasoning_effort=<level>` — fixed values only; see effortLevels
     // FALSE, and it is the pi caveat, not the container one: ensureSlot exports FLEET_SELF_TOKEN
     // into every pane with a cwd whatever the harness, so a Codex slot HAS the credential. What is
     // unmeasured is whether Codex's own tooling would ever use it. "Do not advertise this" is the

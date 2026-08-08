@@ -1,7 +1,124 @@
-# HANDOFF — Session 38 (2026-08-07 nachts: drei Lands OHNE Ledger-Spur, Automation scharf, die Schwelle auf 40 %) · 37/36/35/… darunter
+# HANDOFF — Session 39 (2026-08-08 nachts: neun Lands über Lanes, und die „siebte Flake-Familie" war keine) · 38/37/36/… darunter
 
-*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 3341027..HEAD`
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 6cd299e..HEAD`
 mit Bodies. Diese Datei trägt nur das Residuum: Absicht, Entscheide, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 39: acht Lands, alle über Lanes, alle mit Ledger-Spur
+
+**Das Erste:** `./state.sh` · `./register.sh` · die ersten zwei Regeln in `CLAUDE.md` — **und die
+zwei Zeilen, die ich dort geändert habe** (der Verb-2-Absatz im Deploy-Abschnitt · die
+`BACKLOG.md`-Korrektur in Zeile 12). `CLAUDE.md` ist gitignored, sie stehen in keinem Commit.
+
+### Was in Flug ist
+
+**NICHTS.** Alle neun Lands sind durch, alle Zeilen geschlossen, keine Lane auf Platte außer dem
+Steward, Suite-Mutex frei, Adjudikations-Schuld null. Der letzte Post-Land-Audit (`59f59b9`) ist
+**grün** (639 s) — der erste grüne Audit nach zwei roten, und zwar auf genau dem Baum, der die
+Commit-Sonden umgebaut hat. Deploy ist verifiziert: `codeBehind:false`, `bundleStale:false`,
+`errors:null`. Du startest auf einem sauberen Brett; **prüf es trotzdem selbst.**
+
+### Die acht Lands (Bodies lesen, die tragen die Messungen)
+
+| SHA | Zeile(n) | Kern |
+|---|---|---|
+| `11eea2a` | `8bdf0e81` `8830dddc` | Verify-Gate: SIGTERM→SIGKILL-Staffel **und** `FLEET_VERIFY_CMD_REPOS` pro Repo |
+| `1241abd` | `25b79c23` | Repair-Worker darf committen; ein Check hält Prompt↔Profil zusammen |
+| `3280a10` | `a5030c42` | Drift-Block filtert den Nenner auf die instrumentierte Population |
+| `374f29a` | `118ad609` | **`CLAUDE.md` hat einen Drift-Pin** (`e2e/pins.ts` §6), dreiwertig und stumm |
+| `0db08ac` | `cf557dc4` | `docs/data-saver.md` §2 + §5 nachgeschrieben |
+| `2216de8` | `2c92a467` | Requeue nimmt seine Lane mit — außer sie trägt Arbeit |
+| `53f5ce8` | `c0a8366b` | Worktree-Stapel hängt unter der zuletzt aktiven Main-Session |
+| `4311c92` | `989cccf7` | **Verb 2 (Deploy) gebaut** — und nie gezogen |
+| `59f59b9` | `560b7196` | die „siebte Flake-Familie" war **keine** — plus ein echter Client-Defekt |
+
+Zehn Zeilen geschlossen, drei eingereicht (davon eine sofort erledigt) → **59 offen von 157**.
+Alle neun Lands mit Gate-Note, LaneOutcome UND Post-Land-Audit; die Ledger-Lücke aus Session 38
+wächst nicht weiter.
+
+### Die „siebte Flake-Familie" — und warum sie am Ende keine war
+
+Signatur: ein Check der Commit-Familie fällt mit
+`{"committed":false,"reason":"the session is actively working right now …"}`. **Welcher Check es
+trifft, wechselt von Lauf zu Lauf** — fünf Sichtungen an einem Tag (drei Lanes, zwei
+Post-Land-Audits), in `docs/verify-tiering.md` vorher **null** mal geführt.
+
+**Die Auflösung, und sie widerlegt mein eigenes erstes Urteil: der Commit-Gate feuerte KORREKT.**
+Die Sonden hatten nur nie erklärt, dass sie den Baum meinen — sie posteten `/commit` ohne
+`confirm`, und die Wache kam ihrer eigentlichen Absage zuvor (`detached-HEAD` und `FIX4` fielen
+mit dem FALSCHEN Grund). Nicht der Baum war schuld, sondern der Test. Ich hatte beide roten Audits
+als `flake` adjudiziert; **nach dem Fix habe ich beide auf `stale-test` korrigiert** (neuestes
+Urteil gewinnt). Adjudikations-Schuld null.
+
+Der Fix wählte `confirm:true` statt Abwarten, mit einem Argument, das man kennen sollte: Warten
+wäre keine Wartezeit, sondern eine Retry-Schleife in genau der `send-keys+sleep`-Form, die §11.2c
+verboten hat — ≥3 s × 16 Aufrufstellen pro Lauf. Die Wache bleibt scharf (ein Beweisblock in
+`e2e/lanes-basic.ts` hält beide Richtungen), und ein **Rot-Schutz als Regel statt Liste** scannt
+`e2e/*.ts` auf Commit-POSTs ohne `confirm`. Drei serielle Läufe grün gegen ~25 % Basisrate.
+
+**Ein echter Produktdefekt fiel dabei heraus:** `doLand` (`src/client.ts`) committete ohne
+`confirm`, obwohl die gerade bestätigte Risk-Preview wörtlich sagt, dass zuerst committet wird —
+auf einer noch schreibenden Lane also 409, und weil der Body `reason` statt `error` trägt, las der
+Alert `could not commit the work first: undefined` für einen **gesunden** Baum.
+
+**Die Beweisform, die ich gelernt habe und die schärfer ist als die dokumentierte:** beim ersten
+Rot war der Rerun desselben Baums NICHT grün — es fielen **zwei andere Checks derselben Familie**.
+Verschiedene Checks auf identischem Baum belegen Nicht-Determiniertheit *direkter* als ein grüner
+Lauf, denn ein grüner kann auch „die Flake hat diesmal nicht gefeuert" heißen.
+
+**Und ein Argument für den Trail, ungeplant:** die Ausgabe des zweiten roten Audits hatte ihre
+eigene `FAIL`-Zeile durch Retention verloren („1 FAILURES", null FAIL-Zeilen). Der Trail trug alle
+1698 Zeilen, genau eine mit `ok:false`, mit Detail. Das macht `17068154` (Trail-Deckel) **teurer**,
+nicht billiger: das Werkzeug wird gerade wertvoll, während seine Selbstaussage unbelegt ist.
+
+### Verb 2 ist gebaut und wartet auf DEINE Hand
+
+`POST /api/deploy` / `GET /api/deploys`, Owner **und** Steward-Token. **Kein Tick ruft sie** — der
+erste Zug ist dein Entscheid, und ich habe alle acht Deploys dieser Session bewusst von Hand
+gefahren statt die frische Route auf sich selbst loszulassen. Konstruktion: der Deploy tötet
+seinen eigenen Verifizierer, also verifiziert der **nächste Boot** über `deploy-inflight.json` →
+`deploys.jsonl`; `ok:null` = „nicht feststellbar", nie ein Pass; Build zuerst und allein; 409 bei
+laufendem Post-Land-Audit. Details stehen jetzt in `CLAUDE.md`, Deploy-Abschnitt.
+
+### Was ICH falsch gemacht habe (beides billig, beides lehrreich)
+
+1. **Eine Schleifenbedingung gegen einen SHA aus dem Gedächtnis.** Die erfundene Langform von
+   `374f29a` stimmte nicht, die Bedingung war sofort wahr, mein Watcher meldete „fertig", während
+   das Land noch lief. Kein Schaden — aber die Regel „nie eine Zahl aus dem Gedächtnis" gilt
+   besonders dort, wo sie still falsch wird statt laut.
+2. **Geschätzte `ctx`-Zahlen berichtet.** Ich nannte ~33 %, gemessen waren 19,8 %. Der Sensor ist
+   an der Slot-Row (`ctx`), er kostet einen Poll — schätz ihn nie.
+
+Dazu ein Fast-Fehler, der die Lese-Regel bestätigt: direkt nach `bun run build` meldete der Poll
+weiter `bundleStale:true` mit dem **alten** `appJsMtime`, während `stat` frische Dateien zeigte.
+Derselbe alte Wert in der Antwort = **gecachter Fakt**, nicht „Build hat nicht geschrieben".
+
+### Was der Brief-Kompiler wert war (für die Frage „lohnt das?")
+
+**Jede** der acht Zeilen hatte veraltete Zeilenrefs — mehrfach um 1000+ Zeilen (`MERGE_TOOLS` stand
+als 4007 in der Zeile, real 5258; `briefAndSend` als 1993, real 2742). Zweimal war die *Begründung*
+der Zeile überholt: `a5030c42` argumentierte mit „11 %, unter der Schwelle" — gemessen waren es
+32,5 %, also darüber. Und dreimal fand die Lane einen Fehler in MEINEM Brief (die §5-SHAs waren
+Zwillinge der umgeschriebenen Historie; `/api/steward/sessions` trug die Deploy-Fakten längst).
+**Der Kompiler ist der Grund, warum keine dieser acht Lanes auf eine tote Referenz gebaut hat.**
+
+### Kontext-Praxis (zweiter Datenpunkt)
+
+`ctx` beim Übergeben = **32,9 %** (329.496 / 1M, am Poll gelesen). Produziert: 9 Lands · 10 Zeilen geschlossen · 3 eingereicht ·
+2 rote Audits beurteilt (und nach besserem Wissen korrigiert) · 2 `CLAUDE.md`-Korrekturen ·
+1 verwaister Worktree entfernt. Session 38 übergab bei 37,1 % mit 3 Lands. Die Fixkosten-Rechnung hält: der Unterschied
+ist nicht Sparsamkeit, sondern dass Lanes die Arbeit tragen und die Main-Session nur brieft,
+landet und urteilt.
+
+### Für dich offen (unverändert Owner-Sache, nicht erneut vorlegen)
+
+`17068154` (Trail-Deckel — jetzt teurer, s. o.) · `d375c581` (Trail-Reaper) · `f520e704` ·
+`2784427e` · `96b72c22` · `c3531b41`. Neu von mir eingereicht: `9bcc460e` (mtime-Fallback serviert
+fremde Konversation, an HEAD verifiziert) · `e7d61b59` (immutable-Cache-Widerspruch, als NOTIZ
+gemeint — die Owner-Route setzt `kind` hart auf `lane`, siehe `65af341f`).
+
+Maschinen-Hygiene, ungeräumt: 2 verwaiste e2e-tmux-Sockets, **325 MB** TMPDIR-Scratch.
 
 ---
 

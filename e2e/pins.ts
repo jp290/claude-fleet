@@ -637,6 +637,61 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("the pi fence denies .git back — the lane produces, the host commits",
     /deny file-write\* \$\{sub\(`\$\{root\}\/\.git`\)\}/.test(pProf), pProf.match(/deny file-write\*[^\n]*/g)?.join(" | ") ?? "no deny clause");
 
+  // The picker note is the owner's decision-time description of this profile. Derive the writable
+  // set from the profile's source rather than repeating it: every expression in `const write` plus
+  // every direct `(subpath "…")` grant on the allow line. The table translates source expressions
+  // into the words the note uses; crucially, an expression absent from the table is a FAILURE, so
+  // adding tomorrow's root cannot silently shrink this rule's coverage. The reverse comparison
+  // catches a note that still claims a known grant after its source expression is removed.
+  const ppStart = server.indexOf("function piSandboxProfile(");
+  const ppEnd = server.indexOf("\n}\n", ppStart);
+  const ppBody = ppStart >= 0 && ppEnd > ppStart ? server.slice(ppStart, ppEnd) : "";
+  const ppCode = ppBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("piSandboxProfile's source is bounded and non-empty (an unfound profile would make its write-root rule vacuous)",
+    ppStart > 0 && ppEnd > ppStart && ppCode.length > 300 && ppCode.length < 8_000, `${ppCode.length} bytes of code`);
+
+  const writeDecls = [...ppCode.matchAll(/\bconst write = \[([^\]\n]*)\];/g)];
+  const allowLines = ppCode.split("\n").filter((l) => l.includes("+ `(allow file-write*"));
+  const arrayRoots = writeDecls.length === 1
+    ? writeDecls[0][1].split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  const directRoots = allowLines.length === 1
+    ? [...allowLines[0].matchAll(/\(subpath "([^"]+)"\)/g)].map((m) => JSON.stringify(m[1]))
+    : [];
+  const writeRoots = [...new Set([...arrayRoots, ...directRoots])];
+  pin("piSandboxProfile yields one write declaration and its direct subpath grants",
+    writeDecls.length === 1 && allowLines.length === 1 && arrayRoots.length > 0 && directRoots.length > 0,
+    `${writeDecls.length} write declaration(s), ${arrayRoots.length} array root(s), ${directRoots.length} direct grant(s)`);
+
+  const pBodyCode = pBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const noteMatches = [...pBodyCode.matchAll(/\n  note: "([^"\n]*)",/g)];
+  const piNote = noteMatches.length === 1 ? noteMatches[0][1] : "";
+  pin("PI_HARNESS yields exactly one non-empty note (an unfound picker claim would make its write-root rule vacuous)",
+    noteMatches.length === 1 && piNote.length > 0, `${noteMatches.length} note field(s), ${piNote.length} bytes`);
+
+  const writeRootTerms = new Map<string, string>([
+    ["root", "worktree"],
+    ["...SANDBOX_TMP_ROOTS", "temp"],
+    ["`${HOME}/.pi`", "~/.pi"],
+    ["`${HOME}/.bun/install/cache`", "Bun cache"],
+    ["\"/dev\"", "/dev"],
+  ]);
+  const unmapped = writeRoots.filter((root) => !writeRootTerms.has(root));
+  const unnamed = writeRoots.filter((root) => {
+    const term = writeRootTerms.get(root);
+    return term !== undefined && !piNote.includes(term);
+  });
+  pin("every pi write root is mapped and named in PI_HARNESS.note",
+    writeRoots.length > 0 && piNote.length > 0 && unmapped.length === 0 && unnamed.length === 0,
+    [...unmapped.map((root) => `unmapped write root: ${root}`),
+      ...unnamed.map((root) => `note missing ${writeRootTerms.get(root)} for ${root}`)].join("; "));
+
+  const ungrantedClaims = [...writeRootTerms.entries()]
+    .filter(([root, term]) => piNote.includes(term) && !writeRoots.includes(root))
+    .map(([root, term]) => `${term} claims absent write root: ${root}`);
+  pin("PI_HARNESS.note names no mapped write root that piSandboxProfile does not grant",
+    writeRoots.length > 0 && piNote.length > 0 && ungrantedClaims.length === 0, ungrantedClaims.join("; "));
+
   // --- the WORKER spawn, and why it is a rule over the source rather than a test -----------------
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
   // and which the sibling pin above states "names no harness" for the dispatcher) and

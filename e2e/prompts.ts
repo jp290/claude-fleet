@@ -7,7 +7,7 @@ import { buildEnhancePrompt } from "../enhance-prompt";
 import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE,
   laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
-import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M } from "../src/protocol";
+import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDOW_GPT } from "../src/protocol";
 import { check, ROOT } from "./harness";
 
 // The three tool profiles every throwaway agent is spawned with, read out of server.ts's SOURCE.
@@ -926,6 +926,13 @@ export async function run(): Promise<void> {
     check("context window: an unknown bracket variant is null, never a fallback to the base window",
       contextWindowFor("claude-opus-9[4m]") === null && contextWindowFor("claude-opus-9[xl]") === null,
       JSON.stringify([contextWindowFor("claude-opus-9[4m]"), contextWindowFor("claude-opus-9[xl]")]));
+    check("context window: GPT ids use the measured 258,400 EFFECTIVE window, with or without provider/thinking",
+      CONTEXT_WINDOW_GPT === 258_400 && contextWindowFor("gpt-5-codex") === CONTEXT_WINDOW_GPT
+      && contextWindowFor("openai-codex/gpt-5.6-sol") === CONTEXT_WINDOW_GPT
+      && contextWindowFor("openai/gpt-5-codex:high") === CONTEXT_WINDOW_GPT,
+      JSON.stringify(CONTEXT_WINDOW_GPT));
+    check("context window: an unrelated foreign model stays unknown, never Claude's 200k fallback",
+      contextWindowFor("anthropic/claude-haiku-4-5") === null);
     check("context window: no model name is null (the caller has nothing to divide by)",
       contextWindowFor(null) === null && contextWindowFor("") === null);
   }

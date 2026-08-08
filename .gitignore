@@ -36,3 +36,8 @@ graphify-out/
 # graphify hook config carries a machine-local absolute path (account name) — advisory hook stays local-only
 .claude/settings.json
 inspektion-register.jsonl
+
+# uploads the owner drops into a session (POST /api/slots/:id/upload). Ignored on purpose: an
+# untracked file blocks a lane land, and the route REFUSES to write where this line is missing.
+# Keeping a drop is then a deliberate `git add -f` — losing it is the default.
+drops/

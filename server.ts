@@ -1231,6 +1231,9 @@ type AuditEvent =
   // rule as slot_open: what changed the machine is recorded, and the detail names the FILE, never
   // its contents (the trail is read by people who are not entitled to the file's text).
   | "file_write"
+  // the owner dropped/pasted a file INTO a session's working directory. Same rule as file_write:
+  // the detail names the file and its size, never a byte of its contents.
+  | "file_drop"
   // the owner restarted a pane on purpose (↻ bring session back). Deliberately NOT
   // self_heal_recreate: slotstats reads that event as "the pane died and the loop rebuilt it"
   // and divides resumed/heals to measure the durability promise. An owner-triggered rebuild
@@ -3664,6 +3667,61 @@ const TREE_CAP = 4000;
 // integrity, which is not text a textarea should be able to touch. Matched against the path
 // RELATIVE to the working directory, so it cannot be sidestepped by depth.
 const FILE_WRITE_DENY = /(^|\/)(\.env(\.[^/]*)?|fleet\.json|\.git)(\/|$)/;
+
+// --- drops: a file the owner hands to a session --------------------------------------------
+// WHERE the bytes land was the decision here, and it is the owner's (2026-08-06): "lane-lokal
+// koennte sogar reichen wenn ich so drueber nachdenke, ansonsten kann die session das ja auch
+// selbst comitten" — i.e. INSIDE the session's working directory, not in a fleet-owned store
+// outside every repo. That buys the entire retention story for nothing: `git worktree remove`
+// deletes the drops along with the lane (measured), so there is no age sweep, no delete-on-kill,
+// and above all no deletion keyed by SLOT NUMBER — the live server and a test instance share
+// those numbers, and a sweeper that trusted them could reach into the wrong fleet's store.
+//
+// It costs exactly one thing, and it is paid at the route rather than left as a footgun: a file
+// dropped into a worktree is UNTRACKED, and an untracked file blocks the land (CLAUDE.md, lane
+// discipline). So the drop directory must be ignored by the repo it lands in, and the route
+// REFUSES when it is not — see the check-ignore gate in POST /api/slots/:id/upload. Keeping a
+// drop then costs a deliberate `git add -f`, which is the intended friction: losing an upload is
+// the default, keeping one is a decision.
+const DROP_DIR = "drops";
+const UPLOAD_CAP = 20 * 1024 * 1024;
+// multipart wraps the bytes in boundaries and part headers; the content-length pre-check has to
+// allow for that or it would reject a file that is legally at the cap. The authoritative check is
+// over the decoded part's own size, below — this one only exists to refuse a huge body before
+// buffering it, and a declared length is the client's claim, never a fact.
+const UPLOAD_ENVELOPE_SLACK = 64 * 1024;
+// The stored name is REBUILT, not validated. A browser-supplied filename is untrusted input that
+// reaches a filesystem path, and the set of names worth preserving is much smaller than the set of
+// names an attacker can send; anything outside a conservative charset becomes an underscore, and
+// the leading timestamp both keeps two drops of the same name apart and makes the directory
+// readable in the order things arrived. Empty or all-junk names get a neutral one rather than a
+// refusal — the bytes are what the owner meant to send.
+function dropName(raw: string): string {
+  const base = (raw.split(/[/\\]/).pop() ?? "").normalize("NFC");
+  const safe = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[._]+/, "").slice(0, 80);
+  return safe || "drop";
+}
+// How the path is announced in the composer. Plain prose, deliberately NOT `@/abs/path`, and the
+// reason is the opposite of the expected one — measured in a live claude pane, not assumed:
+// a bracketed paste carrying `@/abs/path` DOES open the CLI's file-mention autocomplete, and that
+// is precisely what makes it unusable here. With the popup open the next Enter is consumed by the
+// completion instead of submitting, and sendText sends exactly one (paste-buffer, 150 ms, Enter) —
+// so an @-mention would leave the prompt sitting unsent in the composer, looking delivered. It
+// took a second Enter by hand to submit. The plain sentence submits on the first Enter and the
+// session reads the file either way (verified on two PNGs and a text file: the agent described
+// both images correctly and quoted the file's contents). One function, so the client and any later
+// caller cannot drift from what was measured.
+const dropMention = (path: string): string => `attached: ${path} — read it`;
+// Read a request body to its end and throw it away, at flat memory cost. Only for the path that
+// REFUSES a request before consuming it — see the upload route's size pre-check for the failure
+// this prevents and the three variants that did not.
+async function drainBody(req: Request): Promise<void> {
+  if (!req.body) return;
+  const reader = req.body.getReader();
+  try {
+    for (;;) if ((await reader.read()).done) return;
+  } catch { /* the client hung up mid-send: nothing left to discard */ }
+}
 // What the folder CONTAINS — the question "which of these two checkouts is it" is answered by the
 // files, not by the branch name. Returns null rather than an empty list when the directory cannot be
 // read: "nothing is in here" and "I was not allowed to look" are different facts and the pane says so.
@@ -11921,6 +11979,73 @@ Bun.serve<WSData>({
       writeFileSync(target, next);
       audit("file_write", s.id, `${rel} · ${next.length}b`);
       return json({ ok: true, path: target, hash: createHash("sha256").update(next).digest("hex"), size: next.length });
+    }
+    // --- the OTHER write: a file the OWNER hands to a session (drag&drop, paste, 📎) ----------
+    //
+    // Containment is the same shape as /api/file/write above and for the same reason — the target
+    // is built inside ONE slot's realpath'd working directory and can address nothing else. Two
+    // things differ, and both make this route the easier of the pair to reason about: the owner
+    // never names a path (the server does, from DROP_DIR), and the filename that does arrive is
+    // rebuilt rather than validated (dropName).
+    //
+    // The landability gate below is the load-bearing line. Dropping into the worktree is what
+    // makes retention free (see DROP_DIR), but an untracked file in a lane blocks its land, and
+    // that failure would be SILENT: the upload succeeds, the agent works for an hour, and the land
+    // refuses over a screenshot. So the route asks git whether the file it is about to write would
+    // be ignored, and refuses if not. Fail-closed, and the refusal carries the one line that fixes
+    // it. Verified as three separate facts in a scratch repo: with `drops/` ignored, `git status
+    // --porcelain` stays empty and `git worktree remove` succeeds and takes the drops with it;
+    // without it, status shows `?? drops/` and the remove refuses outright.
+    const upMatch = /^\/api\/slots\/(\d+)\/upload$/.exec(url.pathname);
+    if (upMatch && req.method === "POST") {
+      const s = slotFrom(upMatch[1]);
+      if (!s?.cwd) return json({ error: "slot not active" }, 400);
+      const capMb = Math.round(UPLOAD_CAP / 1024 / 1024);
+      // Refuse an oversized body BEFORE buffering it — a cap enforced only after the bytes are in
+      // memory is not a cap, and req.formData() would hold the whole thing. Advisory only: the
+      // authoritative check is over the decoded part's own size, below.
+      //
+      // THE DISCARD IS NOT OPTIONAL, and it has to be a READ rather than a cancel. Answering while
+      // the client is still sending leaves an unconsumed request body, and the next request on that
+      // connection then hangs — forever, not with an error. Measured against this route: a valid
+      // 1 KB upload issued after one over-cap upload never returned (15 s timeout, Bun's fetch).
+      // `req.body.cancel()` did NOT fix it and neither did answering `connection: close`; reading
+      // the stream to its end did. Draining is also what keeps the pre-check worth having: the
+      // bytes pass through a reader and are dropped, so memory stays flat where formData's would
+      // not. (curl and the browser tolerate the early answer either way — verified — so this is
+      // about every OTHER client, which is exactly the kind of thing not to leave to luck.)
+      if (Number(req.headers.get("content-length") ?? 0) > UPLOAD_CAP + UPLOAD_ENVELOPE_SLACK) {
+        await drainBody(req);
+        return json({ error: `too large — the cap is ${capMb} MB` }, 413);
+      }
+      let file: File | null = null;
+      try {
+        const f = (await req.formData()).get("file");
+        if (f instanceof File) file = f;
+      } catch {
+        return json({ error: "expected a multipart form with a `file` part" }, 400);
+      }
+      if (!file) return json({ error: "expected a multipart form with a `file` part" }, 400);
+      if (file.size === 0) return json({ error: "that file is empty" }, 400);
+      if (file.size > UPLOAD_CAP)
+        return json({ error: `${(file.size / 1024 / 1024).toFixed(1)} MB is over the ${capMb} MB upload cap` }, 413);
+      let root: string;
+      try { root = realpathSync(s.cwd); } catch { return json({ error: "this session's directory is gone" }, 400); }
+      const rel = `${DROP_DIR}/${Date.now()}-${dropName(file.name)}`;
+      // THE LANDABILITY GATE. Read-only git, so it runs lock-free like every other probe Fleet
+      // makes into a directory a live session is also using. A non-zero exit is treated as "not
+      // ignored" whether it means that (1) or means git could not answer at all (128) — the
+      // refusal must not depend on a probe succeeding.
+      const inTree = await gitRead(root, "rev-parse", "--is-inside-work-tree");
+      if (inTree.code === 0 && inTree.out === "true") {
+        if ((await gitRead(root, "check-ignore", "-q", rel)).code !== 0)
+          return json({ error: `this repository does not ignore ${DROP_DIR}/ — an upload here would leave an untracked file and block the land. Add "${DROP_DIR}/" to its .gitignore.` }, 409);
+      }
+      const target = `${root}/${rel}`;
+      mkdirSync(`${root}/${DROP_DIR}`, { recursive: true });
+      writeFileSync(target, Buffer.from(await file.arrayBuffer()));
+      audit("file_drop", s.id, `${rel} · ${file.size}b`);
+      return json({ ok: true, path: target, name: rel.split("/").pop(), size: file.size, mention: dropMention(target) });
     }
     // one commit's change, for the Commits lens's detail pane. Same membership rule as the per-slot
     // route above and for the same reason: the hash must be one the list THIS ROUTE computes just

@@ -169,6 +169,10 @@ const dangerous = (slot: number): Probe[] => [
   // is what lets them carry the positive control; the containment guards themselves (realpath
   // prefix, the .env/fleet.json refusal, the hash conflict) are proved in fleet-e2e-security.ts §10.
   { path: "/api/file/write", method: "POST", body: {}, ownerSafe: true },
+  // the second write route: the owner's drop lands as a FILE inside a session's working directory,
+  // so an auth regression here is the same class of thing. An empty JSON body names no active slot,
+  // so the owner's own call is a side-effect-free 400 and carries the positive control.
+  { path: `/api/slots/${slot}/upload`, method: "POST", body: {}, ownerSafe: true },
   { path: "/api/tree", method: "GET", ownerSafe: true },
   { path: "/api/sessions", method: "GET", ownerSafe: true },
   { path: "/api/audit", method: "GET", ownerSafe: true },

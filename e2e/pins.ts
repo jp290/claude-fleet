@@ -540,10 +540,14 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   const dBody = server.slice(dStart, server.indexOf("\n}\n", dStart));
   pin("dispatchTask's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
     dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
-  // `effort` stays unreachable from the dispatch path entirely: nothing plumbs it, and a call that
-  // grew one would be naming a flag no dispatched lane has ever been asked whether it wants.
-  pin("the dispatch spawn passes model+harness and nothing more — effort never reaches a dispatched lane",
-    /openSlot\(/.test(dBody) && !/effort/.test(dBody), dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 160) ?? "no openSlot call");
+  // The attended route may name all three adapter choices. The tick still calls the short form
+  // below, so DEFAULT_SPAWN is its entire spawn decision; pin every field to null rather than
+  // relying on an optional property whose absence could acquire a meaning later.
+  pin("the attended dispatch carries model+harness+effort, while the tick default keeps all three null",
+    /type DispatchSpawn = \{ harness: string \| null; model: string \| null; effort: string \| null \};/.test(server)
+    && /const DEFAULT_SPAWN: DispatchSpawn = \{ harness: null, model: null, effort: null \};/.test(server)
+    && /openSlot\(free, wt\.path, dRef, spawn\.model, null, spawn\.harness, spawn\.effort\)/.test(dBody),
+    dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 180) ?? "no openSlot call");
   const tStart = server.indexOf("async function tickDispatch");
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
   pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",

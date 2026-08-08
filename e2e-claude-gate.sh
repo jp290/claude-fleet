@@ -152,7 +152,7 @@ code=$?
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container FLEET_DISPATCH_REPO='$WORKER_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
   # default-shell decides what interprets every pane command tmux builds, and one phase-2 check
   # depends on it being zsh: an unquoted glob model is fatal under zsh ("no matches found" aborts
   # the line, pane and all) and HARMLESS under sh, which leaves an unmatched pattern literal. Under

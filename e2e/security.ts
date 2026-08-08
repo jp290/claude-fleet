@@ -507,6 +507,32 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const ce = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, effort: "high" });
   check("§6 the default adapter refuses an effort it has no flag for, rather than dropping it (400)",
     ce.status === 400, String(ce.status));
+
+  // ▸ start is its own spawn reader, so repeat both effort rejections at that boundary rather
+  // than inferring them from /open. The error TEXT is part of the contract: a generic 400 could
+  // come from the task, repo or capacity checks and would not prove effortOf judged the request.
+  const deT = await post("/api/tasks", { text: "dispatch-effort-rejection-probe", queue: false });
+  const deId = ((await deT.json()) as { task?: { id: string } }).task?.id ?? "";
+  check("§6 dispatch-effort fixture: a pending task exists for rejection probes", deT.ok && !!deId,
+    `${deT.status} id=${deId || "missing"}`);
+  if (deId) {
+    const badDispatchEffort = await post(`/api/tasks/${deId}/dispatch`,
+      { harness: "pi", effort: "high; id" });
+    const badDispatchJ = (await badDispatchEffort.json()) as { error?: string };
+    const piEffortErr = `bad effort (one of: ${pi?.effortLevels.join(", ") ?? ""})`;
+    check("§6 ▸ start rejects a pi effort outside effortLevels with effortErrFor's exact text",
+      badDispatchEffort.status === 400 && badDispatchJ.error === piEffortErr,
+      `${badDispatchEffort.status} ${JSON.stringify(badDispatchJ)}`);
+
+    const noEffortHarness = await post(`/api/tasks/${deId}/dispatch`,
+      { harness: "container", effort: "high" });
+    const noEffortJ = (await noEffortHarness.json()) as { error?: string };
+    check("§6 ▸ start rejects effort on a harness without the capability with effortErrFor's exact text",
+      noEffortHarness.status === 400 && noEffortJ.error === "harness container takes no effort",
+      `${noEffortHarness.status} ${JSON.stringify(noEffortJ)}`);
+    await post(`/api/tasks/${deId}/delete`, {});
+  }
+
   const uh = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "opencode" });
   check("§6 an unregistered harness is refused (400) — the registry is an allowlist too", uh.status === 400, String(uh.status));
 

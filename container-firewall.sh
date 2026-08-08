@@ -1,22 +1,23 @@
 #!/bin/sh
-# Egress firewall for a GUEST Fleet container. Runs as root inside the container, before the
-# server starts (docker-entrypoint.sh), and needs --cap-add NET_ADMIN --cap-add NET_RAW.
+# Egress firewall for a Fleet container. Runs as root inside the container, before the server or
+# the agent starts (docker-entrypoint.sh, opt-in via FLEET_FIREWALL=1), and needs
+# --cap-add NET_ADMIN --cap-add NET_RAW.
 #
-# WHAT IT CLOSES, and it was measured rather than imagined: a guest container on this host could
-# reach the owner's tailnet. From inside, `curl http://<owner-tailscale-ip>:8790/` answered 200 on
-# the live fleet's login page (the API answered 401, so the token gate held — but "protected by a
-# token" is weaker than "cannot get there"). The concern is not the friend as a person; it is the
-# agent running as them, which with --dangerously-skip-permissions and a hostile repository can be
-# made to knock on every address it can route to.
+# WHAT IT CLOSES, and it was measured rather than imagined: a container on this host could reach
+# the owner's tailnet. From inside, `curl http://<owner-tailscale-ip>:8790/` answered 200 on the
+# live fleet's login page (the API answered 401, so the token gate held — but "protected by a
+# token" is weaker than "cannot get there"). The concern is not the container's occupant; it is the
+# AGENT running in it, which with --dangerously-skip-permissions and a hostile repository can be
+# made to knock on every address it can route to. That is the whole reason a sandboxed agent gets
+# a network boundary and not just a filesystem one.
 #
 # SHAPE: a DENYLIST of the owner's private space, not an allowlist of the internet. That is a
 # deliberate trade and the reasoning matters more than the rules:
 #
 #   * An allowlist (Anthropic's init-firewall.sh does this: DROP by default, permit the Anthropic
-#     API, GitHub, npm) is strictly stronger against exfiltration. It also breaks the guest's whole
-#     purpose — "he takes his git project with him" means pushing to a remote nobody listed in
-#     advance, and every such break looks to him like a mysterious hang. An allowlist that gets
-#     disabled the first weekend protects nothing.
+#     API, GitHub, npm) is strictly stronger against exfiltration. It also breaks ordinary work —
+#     a push to a remote nobody listed in advance just hangs, with no sign of why — and an
+#     allowlist that gets disabled the first time it bites protects nothing.
 #   * The measured risk was reachability into the owner's network. That is exactly what a denylist
 #     of RFC1918 + CGNAT + link-local removes, completely and without maintenance.
 #
@@ -26,7 +27,7 @@
 
 set -eu
 
-command -v iptables >/dev/null 2>&1 || { echo "guest-firewall: iptables missing" >&2; exit 1; }
+command -v iptables >/dev/null 2>&1 || { echo "container-firewall: iptables missing" >&2; exit 1; }
 
 # Order matters. ESTABLISHED/RELATED is accepted FIRST, and it is load-bearing rather than
 # boilerplate: a reply to an inbound dashboard request is an OUTPUT packet addressed back to the
@@ -72,4 +73,4 @@ if command -v ip6tables >/dev/null 2>&1 && ip6tables -L OUTPUT >/dev/null 2>&1; 
   done
 fi
 
-echo "guest-firewall: private ranges rejected (tailnet, RFC1918, link-local); internet open"
+echo "container-firewall: private ranges rejected (tailnet, RFC1918, link-local); internet open"

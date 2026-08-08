@@ -91,8 +91,9 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 **Running it somewhere else**
 - **`container.md`** — the `Dockerfile` and what `./docker-verify.sh` attests (the harness,
   not the agent), plus the three traps: publishing needs `FLEET_ALLOWED_HOSTS` as well as a
-  bind, the instance's identity lives in the app directory with no override, and a guest's
-  credentials must never be the owner's. Read before standing an instance up anywhere but here.
+  bind, the instance's identity lives in the app directory with no override, and a container
+  that runs untrusted work must never hold the owner's credentials. Read before standing an
+  instance up anywhere but here.
 
 **Measured programs**
 - **`data-saver.md`** — the bandwidth program: `/api/sessions` was the cause, not the

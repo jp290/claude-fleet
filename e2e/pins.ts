@@ -811,16 +811,15 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
   pin("no adapter offers a worker session it could not read the answer from (worker ⇔ supports.transcript)",
     wrongWorker.length === 0, wrongWorker.map((a) => a.name).join(", ") || "all four agree");
 
-  // ...and its docker is PINNED, never ambient — the rule guest-ctl.sh already states for the guest
-  // containers ('Pinned, never ambient'). Stated over the whole file because the harm is a bare
-  // `docker` ANYWHERE on this path, not only in the adapter literal: the active context is a user
-  // setting, and on this machine it is the VM holding the running guest containers. The runtime row
+  // ...and its docker is PINNED, never ambient. Stated over the whole file because the harm is a
+  // bare `docker` ANYWHERE on this path, not only in the adapter literal: the active context is a
+  // user setting, and a dev box can carry several VMs with unrelated containers. The runtime row
   // (e2e/security.ts §6d) proves the spawn line; this proves no second call site grows without one.
   // COMMENT LINES STRIPPED FIRST. This region discusses docker at length, and a pin that counts
   // prose counts the wrong thing — it failed exactly that way when first written (10 hits, every
   // one of them a sentence). Same lesson, same fix as the HARNESS_COMMS rule below.
   const serverExec = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("every docker invocation server.ts emits pins its context (guest-ctl.sh's rule, same reason)",
+  pin("every docker invocation server.ts emits pins its context (pinned, never ambient)",
     [...serverExec.matchAll(/\bdocker (?!--context )/g)].length === 0,
     [...serverExec.matchAll(/.{0,40}\bdocker (?!--context ).{0,40}/g)].map((m) => m[0]).join(" | ") || "none");
   // REPO_WORKER_KEYS is what /api/repo-worker will STORE; workerCmdFor is what actually resolves a

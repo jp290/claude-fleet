@@ -85,7 +85,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // server's env line from process.env, so a module that restarts srv after this one would silently
   // drop a server-ONLY variable and every deploy-gap/bundle-staleness fact below it would go null
   // while still looking like a real failure. Measured exactly that way (12 reds in steward-core,
-  // 2026-08-03, when e2e/guest.ts started restarting srv further down the run). Planting it here
+  // 2026-08-03, when another module started restarting srv further down the run). Planting it here
   // makes process.env the single source restartSrv already reads, for every future caller.
   process.env.FLEET_REPO_DIR = GAP_REPO;
 

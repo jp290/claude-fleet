@@ -1,7 +1,7 @@
 # Feature intake — an email address that files tasks
 
 The dashboard has a public **task inbox**: `POST /intake`, reachable on the share
-host (the Cloudflare-tunnelled domain) alongside the guest share routes. Anyone
+host (the Cloudflare-tunnelled domain) alongside the share routes. Anyone
 with the shared secret can drop a feature request; it lands in the queue as a
 **`pending`** task. Nothing runs until *you* promote it to `queued` in the queue
 panel (🗒). External text is never a command — it is a note you review.

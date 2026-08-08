@@ -182,8 +182,7 @@ Scope down before you brief down.
 
 **Credentials, and this is a mechanism not a preference.** A foreign provider needs a key,
 and there are two wrong places for it. Not on a command line — it is then visible in `ps`
-to every process on the machine (`guest-ctl.sh` takes its token on stdin for exactly this
-reason, and says so at the call site). And not in the **server's** environment when it is
+to every process on the machine (a credential therefore travels on stdin, never in argv). And not in the **server's** environment when it is
 the *wrapper* that needs it: `summaryViaSubprocess` spawns with the server's env inherited,
 so a key placed there is handed to every worker rather than the one that asked for it.
 The narrow placement is a file the wrapper reads, owned by the wrapper, `0600`.

@@ -1200,7 +1200,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // --- the wait is a STATE: while a clarify lane waits, no steward send may reach it ---
     const iSlot = iJ.slot as number;
     // the steward principal travels as a Bearer token (server.ts, tokenFrom → the steward
-    // intercept above the owner gate), same as e2e/guest.ts reads it
+    // intercept above the owner gate)
     // retried: saveState writes tmp+rename, and a read that lands mid-write throws — the same
     // guard e2e/self-token.ts uses for this file
     let persisted: { stewardToken?: string; slots?: Record<string, { selfToken?: string }> } = {};

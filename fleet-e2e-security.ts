@@ -366,47 +366,6 @@ if (INTAKE && DISPATCH_REPO) {
         !(await onShare.text()).includes(TOKEN));
     }
   }
-
-  // The guest ops routes hold the same property for a WRITE: they can start and stop a machine and
-  // close a public door, and they are owner-only by position alone. The pair below is what keeps
-  // the share-host half honest — a 404 there proves nothing unless the same request on the owner
-  // host is proven to answer, which is why this suite configures a FLEET_GUEST_CMD stand-in.
-  {
-    const owner = await fetch(`${BASE}/api/guest`, { headers: { authorization: `Bearer ${TOKEN}` } });
-    check("§8 /api/guest answers on the owner host when a hook is configured", owner.ok, String(owner.status));
-    check("§8 /api/guest refuses a request with no owner token",
-      (await fetch(`${BASE}/api/guest`)).status === 401);
-    check("§8 a guest ACTION refuses a request with no owner token",
-      (await fetch(`${BASE}/api/guest/stop`, { method: "POST", body: "{}" })).status === 401);
-    // the invite route hands out the guest instance's own owner credential, so it is the guest
-    // surface with the highest cost of being reachable from the wrong place
-    const invite = await fetch(`${BASE}/api/guest/link`, { headers: { authorization: `Bearer ${TOKEN}` } });
-    check("§8 /api/guest/link answers on the owner host", invite.ok, String(invite.status));
-    const noTokInvite = await fetch(`${BASE}/api/guest/link`);
-    check("§8 /api/guest/link refuses a request with no owner token", noTokInvite.status === 401);
-    check("§8 …and that refusal carries none of the guest's credential",
-      !(await noTokInvite.text()).includes("e2e-guest-invite-secret"));
-    // the route that takes a credential IN is owner-only by the same position rule
-    check("§8 the guest claude-token route refuses a request with no owner token",
-      (await fetch(`${BASE}/api/guest/claude-token`, { method: "POST", body: "{}" })).status === 401);
-    if (SHARE_HOST) {
-      check("§8 the guest claude-token route does not exist on the public share host",
-        (await fetch(`${BASE}/api/guest/claude-token`,
-          { method: "POST", headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` }, body: "{}" })).status === 404);
-      check("§8 /api/guest does not exist on the public share host, even WITH the owner token",
-        (await fetch(`${BASE}/api/guest`,
-          { headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` } })).status === 404);
-      check("§8 …nor can a guest action be reached there with the owner token",
-        (await fetch(`${BASE}/api/guest/stop`,
-          { method: "POST", headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` }, body: "{}" })).status === 404);
-      const shareInvite = await fetch(`${BASE}/api/guest/link`,
-        { headers: { host: SHARE_HOST, authorization: `Bearer ${TOKEN}` } });
-      check("§8 the guest INVITE is not reachable on the public share host either",
-        shareInvite.status === 404, String(shareInvite.status));
-      check("§8 …and that answer leaks no part of the guest's credential",
-        !(await shareInvite.text()).includes("e2e-guest-invite-secret"));
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------

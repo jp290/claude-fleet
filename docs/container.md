@@ -49,13 +49,12 @@ The adapter's other answers, each an owner-visible fact rather than a default:
   is in another pid namespace (inside colima's VM, on this machine). The `docker exec` client is
   what the host can see, and it exits when the agent inside exits.
 - **The docker context is pinned, never ambient** (`FLEET_CONTAINER_CONTEXT`, now the *default* —
-  see "Per slot, not per fleet" below).
-  This is the same rule `guest-ctl.sh` states for the guest containers, and it is not theoretical:
-  measured 2026-08-08, this machine has three contexts (`default`, `colima`, `colima-fleetguest`)
-  and the **active one is `colima-fleetguest`** — the VM running two live guest containers. An
-  unpinned `docker exec` would land there, and would move the next time the operator switches
-  context. The default is deliberately the neutral `default` rather than the guests' VM: see the
-  decision below.
+  see "Per slot, not per fleet" below). Not theoretical: measured 2026-08-08, this machine had
+  three contexts (`default`, `colima`, and a purpose-built colima profile) and the **active one was
+  the purpose-built profile**, with live containers in it. An unpinned `docker exec` would land
+  there, and would move the next time the operator switches context. The fleet default is
+  deliberately the neutral `default` rather than whatever is currently active: see the decision
+  below.
 - **`supports.selfSchedule: false`**, by construction: `docker exec` does not inherit the client's
   environment, so `FLEET_SELF_TOKEN` — exported into the host pane — never reaches the agent.
 - **The model charset is not widened** (`modelRe: null`, i.e. the same rule a default slot gets).
@@ -72,23 +71,21 @@ So the operator owes it two things, and the second is the one that bites:
 
 1. A running container, named by the slot's `container` (fleet default `FLEET_CONTAINER`, itself
    defaulting to `fleet`), **on the daemon named by the slot's `containerContext`** (fleet default
-   `FLEET_CONTAINER_CONTEXT` → `default`). Those two travel together: an image lives in one daemon, so
-   `claude-fleet:guest` (912 MB, built in the `fleetguest` VM) exists on `colima-fleetguest` and
-   nowhere else. Pinning a context whose daemon lacks the image is the same failure as naming a
-   container that does not exist.
+   `FLEET_CONTAINER_CONTEXT` → `default`). Those two travel together: an image lives in one daemon,
+   so an image built inside one colima VM (~912 MB, measured) exists on that daemon and nowhere
+   else. Pinning a context whose daemon lacks the image is the same failure as naming a container
+   that does not exist.
 2. The worktree bind-mounted at the **identical path**. `spawnCmd` passes `-w "$PWD"`, i.e. the
    pane's own host cwd. Mounting it anywhere else makes every `docker exec` fail with a bad
    working directory, and it would also break the only thing that keeps host git and the
    in-container agent talking about one tree.
 
-### Bind-mount, not named volumes — the one thing not to copy from the guest prototype
+### Bind-mount, not named volumes — the one shape not to copy here
 
-Fleet already runs containers on this machine, and it is tempting to reuse their shape. Do not
-reuse this part of it. A guest container (`guest-ctl.sh provision`) hangs off **three named
-volumes** — `<ctr>-state` → `/home/fleet/claude-fleet`, `<ctr>-work` → `/home/fleet/work`,
-`<ctr>-claude` → the `CLAUDE_CONFIG_DIR`. They are named volumes *because* they survive
-`docker rm`: that persistence is the guest's identity, and the whole point is that their work is
-not the owner's tree.
+An instance meant to hold its own separate world hangs off **named volumes** — one for state, one
+for work, one for the `CLAUDE_CONFIG_DIR`. They are named volumes *because* they survive
+`docker rm`: that persistence is the instance's identity, and the point of that shape is that its
+work is *not* the owner's tree. It is a tempting shape to copy. Do not copy it here.
 
 A slot container needs the exact opposite. The worktree must **be** the host worktree, because
 every number Fleet reports about that slot comes from `git -C <worktree>` on the host — `ahead`,
@@ -176,14 +173,7 @@ section and for its own anchor (from a clone lane the common dir leads to the cl
 back to `origin`). Unlike a worktree there is no on-disk registry, so a killed clone lane leaves a
 directory nothing will rediscover as an orphan.
 
-#### The second customer
-
-This is not container-only, which is why it comes first. **Guest mode** has the same problem from
-the other side: a guest works in a named volume (`fleet-guest-work`), i.e. nowhere — it cannot work
-on *this* repo at all. The clone is the mechanism that gives a guest a real working copy without
-handing over the object database and the hooks. One mechanism, two customers.
-
-#### The third customer, and the one that arrived first: Codex
+#### The second customer, and the one that arrived first: Codex
 
 Measured on the first real Codex lane (2026-08-08, slot 9): `git commit` died on
 `fatal: Unable to create '<main>/.git/worktrees/<lane>/index.lock': Operation not permitted`.
@@ -194,7 +184,7 @@ board says `idle`.
 
 Note what this customer is *not*. There is no container and no mount here — the sandbox is a write
 filter around a process on the host. The clone form answers it anyway, and for the same one reason
-it answers the other two: the working copy is self-contained, so its `.git` is inside the workdir
+it answers the container: the working copy is self-contained, so its `.git` is inside the workdir
 and an ordinary write. That is the argument for `Harness.laneForm` sitting on the adapter — the
 next harness with a write fence gets the right form without anyone remembering to ask for it.
 
@@ -205,15 +195,15 @@ self-verify. Widening the sandbox hands back reach and is an owner decision.
 
 ### The undecided part: which VM
 
-Measured 2026-08-08 (`colima list`): `default` Stopped (2 CPU / 8 GiB), `fleetbuild` Stopped
-(2 / 2 GiB), `fleetguest` **Running** (2 CPU / 2 GiB / 20 GiB, aarch64) with both guest containers
-in it. So "put slot containers in the running VM" means sharing 2 GiB and 2 CPUs with two other
-people's live sessions, in the same daemon as containers that hold their credentials and run with
-`NET_ADMIN`. The alternative is a dedicated profile — `guest-ctl.sh`'s own note prices a second VM
-at roughly 200 MB of host RAM at idle, a second container at ~25 MB.
+Measured 2026-08-08 (`colima list`): a dev box carries several profiles, each a fixed budget — here
+`default` Stopped (2 CPU / 8 GiB), a build profile Stopped (2 / 2 GiB), and one **Running** at
+2 CPU / 2 GiB / 20 GiB with live containers in it. So "put slot containers in whichever VM is
+already running" means sharing that fixed 2 GiB and 2 CPUs with whatever else lives there, in the
+same daemon. The alternative is a dedicated profile: roughly 200 MB of host RAM at idle for a second
+VM, ~25 MB for a second container.
 
 That is a resource-and-blast-radius decision, so the adapter does not take it: it defaults to the
-neutral `default` context, which fails visibly rather than quietly borrowing the guests' VM. Set
+neutral `default` context, which fails visibly rather than quietly borrowing a VM the owner meant for something else. Set
 `FLEET_CONTAINER_CONTEXT` for the fleet, or the slot's own `containerContext` for one session.
 
 ## Per slot, not per fleet (2026-08-08)
@@ -315,50 +305,32 @@ the mirror image: a rebuilt image no longer reaches that instance — updating m
 the volume. Fine for a trial, wrong as a permanent arrangement. The real fix is a state-dir
 override in `server.ts`, and it should come before anyone depends on an instance.
 
-## Trap 3 — the guest's credentials, and whose they are
+## Trap 3 — credentials, and whose they are
 
-`CLAUDE_CONFIG_DIR` is what makes a guest instance a guest instance: credentials, settings and
-transcripts all land under it, so a volume mounted there is that person's entire Claude
-identity, billed to their own subscription. It is set *before* the CLI install in the
+`CLAUDE_CONFIG_DIR` is what makes a container instance its own: credentials, settings and
+transcripts all land under it, so a volume mounted there is a whole Claude identity, billed to
+whichever subscription minted it. It is set *before* the CLI install in the
 Dockerfile on purpose — with it set after, the installer writes one path and every later run
 reads another, and every `claude` invocation opens with "configuration file not found", in
 every pane of every session.
 
-**Never mount a host `~/.claude` into a guest container.** That file holds an OAuth
-`refreshToken` — a ~19-day credential that mints access tokens against the owner's
-subscription and rate-limit tier. Anthropic states the matching warning for dev containers:
-with `--dangerously-skip-permissions` (Fleet's unattended mode) a container does not prevent a
-hostile project from exfiltrating what is inside it. A remote guest also cannot complete the
-browser OAuth callback; have them run `claude setup-token` on their own machine and pass
-`CLAUDE_CODE_OAUTH_TOKEN` into the container.
-
-## Standing a guest instance up: `./guest-bootstrap.sh`
-
-Copy it to the target box, run it as a normal user, and read the traps above first — the script
-encodes them but not the reasoning. It refuses to start without `BIND=<ip>:<port>` and has no
-default for it on purpose: the obvious default publishes a Fleet to the whole internet, and a
-Fleet a stranger can reach is a shell. Give it a Tailscale address.
-
-**If the box is an Oracle Cloud "Always Free" instance, convert the account to Pay-As-You-Go
-first.** Oracle reclaims idle Always Free compute — 7-day window, CPU 95th percentile under 20%
-*and* network under 20% *and* memory under 20%. A guest Fleet used a few times a week meets all
-three without effort: idling, it is a few hundred MB of the 12 GB and almost no CPU. So the
-instance disappears precisely after the quiet stretch that makes a shared instance worth having.
-Pay-As-You-Go is the documented exemption and keeps the Always Free allotment free while you
-stay inside it; the exposure it adds is that overruns now bill, which Oracle's own docs answer
-with compartment quotas. (Checked 2026-08-03, together with the June 2026 halving of that tier
-from 4 OCPU/24 GB to 2/12 — a vendor policy, so re-check it rather than trusting this line.)
+**Never mount a host `~/.claude` into a container that runs untrusted work.** That file holds an
+OAuth `refreshToken` — a ~19-day credential that mints access tokens against the owner's
+subscription and rate-limit tier. Anthropic states the matching warning for dev containers: with
+`--dangerously-skip-permissions` (Fleet's unattended mode) a container does not prevent a hostile
+project from exfiltrating what is inside it. That is the whole reason the egress firewall below
+exists as well: the filesystem boundary alone does not bound where a credential can be sent.
 
 ## The egress firewall, and the trade it makes
 
-A guest container is isolated in its filesystem and its credentials. It is **not** isolated in its
+A container is isolated in its filesystem and its credentials. It is **not** isolated in its
 network: measured from inside one, `curl http://<owner-tailscale-ip>:8790/` answered 200 on the
 live fleet's login page. The API answered 401, so the token gate held — but "protected by a token"
-is weaker than "cannot get there", and the concern is not the guest as a person. It is the agent
-running as them, which with `--dangerously-skip-permissions` and a hostile repository can be
-steered at every address it can route to.
+is weaker than "cannot get there". The concern is the AGENT inside, which with
+`--dangerously-skip-permissions` and a hostile repository can be steered at every address it can
+route to.
 
-`guest-firewall.sh` closes that. It runs as root inside the container before the server starts
+`container-firewall.sh` closes that. It runs as root inside the container before the server starts
 (`docker-entrypoint.sh`, which then drops to `fleet` via `setpriv`) and needs two capabilities:
 
     --user root --cap-add NET_ADMIN --cap-add NET_RAW -e FLEET_FIREWALL=1
@@ -366,91 +338,13 @@ steered at every address it can route to.
 **It is a denylist of the owner's private space, not an allowlist of the internet**, and that is
 the trade to understand rather than the rules. Anthropic's reference `init-firewall.sh` does the
 stronger thing — DROP by default, permit the Anthropic API, GitHub, npm — and it is strictly
-better against exfiltration. It also breaks the guest's whole purpose: "they take their git
-project with them" means pushing to a remote nobody listed in advance, and each such break
-presents as a mysterious hang. An allowlist that gets switched off the first weekend protects
-nothing. The measured risk was reachability into the owner's network; RFC1918 + CGNAT
+better against exfiltration. It also breaks ordinary work: a push to a remote nobody listed in
+advance presents as a mysterious hang. An allowlist that gets switched off the first time it bites
+protects nothing. The measured risk was reachability into the owner's network; RFC1918 + CGNAT
 (100.64.0.0/10, where Tailscale addresses live) + link-local removes exactly that, permanently and
 without maintenance. **So: it does not stop a compromised agent from reaching the internet.** If
 that is in scope, switch to the allowlist — the shape is in Anthropic's script, and the cost is
 the maintenance it implies.
-
-## Exposing a guest instance on a public hostname
-
-A tailnet address and a public hostname are different security problems, and Fleet's own design
-says so. `tokenGate` (`server.ts`) delays a wrong token by 400 ms and audits it — and that is all.
-There is no lockout. The share-auth path a few lines below it *is* throttled and locked at 50
-attempts an hour, and its comment says why: `(public-facing)`. The owner gate was never meant to
-face the internet, which is the same sentence `server.ts:23` writes as "a reachable fleet is
-remote code execution as your user".
-
-Note what this means for the existing public tunnel: the owner's `cowork.*` hostname reaches the
-live fleet, but that host is listed in `FLEET_SHARE_HOSTS`, so the dashboard and the whole owner
-API **404 there, even with a valid token**. That share-only gate is the thing making public
-exposure safe today — and a guest who needs their own dashboard cannot use it.
-
-So a public guest instance needs an authenticating proxy in front, not a tunnel alone:
-
-1. **Identity at the edge** (Cloudflare Access or equivalent) so an unauthenticated request never
-   reaches Fleet at all. The guest signs in with their own identity; Fleet's token is then a
-   second factor rather than the only one.
-2. **Tunnel, never an open port** — the existing `cloudflared` ingress pattern, pointed at the
-   container's loopback publish.
-3. **The hostname in `FLEET_ALLOWED_HOSTS`**, or every route answers 403 (trap 1).
-4. **The firewall above**, because a publicly reachable container is exactly the one that must not
-   be able to knock on the owner's tailnet.
-
-Order matters: put the edge policy in place *before* the DNS record resolves. Doing it the other
-way leaves a window in which an unprotected owner dashboard is on the internet, and that window is
-indexed by scanners in minutes.
-
-**The owner's standing decision (2026-08-03) is no edge identity check, and a bounded window
-instead** — `guest-expose.sh up [DAYS] | cut | resume | down | status`, default 7 days, enforced by
-an hourly launchd job rather than by anyone's memory. The reasoning, so it can be revisited honestly: the
-measured pre-auth surface is small (only `/` and the share password page answer without a
-credential; `/api/*`, `/ws` and `/intake` all 401), and the token is 192 bits, so guessing is not
-the risk. Leaking is — Fleet accepts the token in the query string, which puts it in browser
-history and proxy logs. With the egress firewall in place a leak costs the guest their container
-and their own subscription, not the owner's machine; what it still costs the owner is that abuse
-traffic would leave from their address. A window measured in days, that closes itself, is what
-that trade bought.
-
-Two things learned building it, both the expensive way:
-
-- **The ingress rule is the switch, not DNS.** `cloudflared tunnel route dns` creates a record and
-  cannot delete one; removing a hostname through DNS needs an API token this machine has no reason
-  to hold. Delete the ingress rule instead and the hostname falls through to the tunnel's
-  `http_status:404`, so the DNS record can stay forever pointing at nothing.
-- **Changing that config costs a brief outage of every hostname on the tunnel.** SIGHUP does not
-  hot-reload this cloudflared build — it terminates, launchd restarts it, and for ~30 s the owner's
-  website and every other hostname answer 502 before recovering unattended. Toggling exposure is
-  therefore not free. Validate the config *before* signalling: on a restart-not-reload, a bad
-  config does not fail to apply, it keeps everything down.
-
-### Driving it from the dashboard: `FLEET_GUEST_CMD`
-
-Point that variable at `./guest-ctl.sh` and the info card grows a `guest` section: whether the door
-is open, until when, how many wrong tokens the guest instance has logged in the last hour and day,
-and four buttons — `start`, `cut`, `renew 7 days`, `stop`. Unset the variable and none of it
-exists: the routes 404 and the client draws nothing. `server.ts` never learns what a guest is; it
-learns that a command with those verbs exists (the design record is `briefs/guest-ops-panel.md`).
-
-Two properties worth knowing before relying on it:
-
-- **`cut` keeps the deadline, `renew` moves it.** Cutting is the panic button — the door shuts, the
-  container keeps running with the guest's work intact, and the window keeps counting down, so
-  pressing `start` afterwards returns to the *original* deadline. Extending is a separate press by
-  design. Only the script's `down` verb forgets a window; no button does.
-- **`status` is not polled.** It spawns docker/colima/cloudflared probes, so the client reads it
-  when the card opens and after each action, never on the 2 s session poll (`docs/data-saver.md`).
-
-The auth-failure counts come from the guest instance's *own* `audit.jsonl` — the `owner_auth_fail`
-lines `tokenGate` has been writing since the day it started, which nothing has ever read. The line
-this deliberately does not cross: **security events yes, content no.** The owner sees that somebody
-knocked, never what was done inside; that separation is the whole reason the container exists.
-
-Deployment identity — hostnames, tunnel ids, addresses — lives in the gitignored `.env` and never
-in a tracked file; this repository is public.
 
 ## The finding that outlived the container work
 

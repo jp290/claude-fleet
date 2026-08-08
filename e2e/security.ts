@@ -211,9 +211,6 @@ const taskSurface = (fix: string): Probe[] => [
   // paths and git output off the owner's own machine, so it belongs to the owner alone. GET with
   // no side effect at all, which makes it the cheapest possible positive control.
   { path: "/api/errors", method: "GET", ownerSafe: true },
-  { path: "/api/guest", method: "GET" },
-  { path: "/api/guest/link", method: "GET" },
-  { path: "/api/guest/claude-token", method: "POST", body: {} },
 ];
 
 const fire = (p: Probe, headers: Record<string, string>): Promise<Response> =>

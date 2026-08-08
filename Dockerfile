@@ -19,7 +19,7 @@ FROM debian:bookworm-slim
 
 # tmux is the session substrate, git is the work substrate, ripgrep is what the agent searches
 # with. procps/less are what an interactive session in a pane expects to exist.
-# iptables is only used by guest-firewall.sh, which only runs when the container is started as
+# iptables is only used by container-firewall.sh, which only runs when the container is started as
 # root with FLEET_FIREWALL=1 — it is inert in every other mode, including all the e2e runs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git tmux ripgrep unzip procps less iptables \
@@ -95,9 +95,9 @@ EXPOSE 8790
 # The entrypoint is a passthrough unless the container is started as root: then it applies the
 # egress firewall (with FLEET_FIREWALL=1) and drops to `fleet` before exec'ing the command. The
 # image's own USER is still fleet, so nothing changes for a normal run or for the e2e suites.
-COPY --chown=root:root docker-entrypoint.sh guest-firewall.sh /usr/local/bin/
+COPY --chown=root:root docker-entrypoint.sh container-firewall.sh /usr/local/bin/
 USER root
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/guest-firewall.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/container-firewall.sh
 USER fleet
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["bun", "server.ts"]

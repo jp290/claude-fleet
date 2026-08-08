@@ -417,6 +417,70 @@ export async function run(): Promise<void> {
     /"🔍 review"/.test(boardSrc) && /"📋 summarize"/.test(boardSrc)
     && /post\(`\/api\/slots\/\$\{slot\}\/review`/.test(boardSrc), "the agents group in renderBoard");
 
+  // --- (§F3) WHICH main session a worktree stack hangs under. Same cut-out-and-run method as the
+  // data-saver plan above: the ANCHOR CHOICE is the decision, so it is executed against a fixture
+  // rather than described by a regex. The rule is "most recently active non-lane session"
+  // (lastOutput, already on the 2 s poll) — not the lowest id, which parked the stack under
+  // whichever main session happened to be started first. A green run here must FAIL on the old
+  // `else if (!g.anchor)` body; a check that cannot build its fixture fails as ITSELF below.
+  {
+    const cut = (from: string, to: string): string => {
+      const a = cliSrc.indexOf(from), b = cliSrc.indexOf(to);
+      return a >= 0 && b > a ? cliSrc.slice(a, b) : "";
+    };
+    const deps = cut("const isActive = ", "// --- project colour")
+      + cut("function projectOf(", "// Eight hues");
+    const stackSrc = cut("function stacksOf()", "function startRename(");
+    type FxSlot = { id: number; cwd: string | null; lastOutput: number;
+      worktree?: { repo: string; branch: string } | null };
+    type FxStack = { key: string; anchor: FxSlot | null; lanes: FxSlot[]; at: number };
+    let stacksOf: ((f: FxSlot[]) => Map<string, FxStack>) | null = null;
+    try {
+      stacksOf = new Function("fleet",
+        new Bun.Transpiler({ loader: "ts" }).transformSync(deps + stackSrc) + "\nreturn stacksOf();") as
+        (f: FxSlot[]) => Map<string, FxStack>;
+    } catch { stacksOf = null; } // unextractable → the probe check right below fails, loudly
+    // THE PROBE'S OWN PRECONDITION. Two non-lane sessions under one projectOf key, plus a lane —
+    // if this fixture cannot be built (or stacksOf cannot be lifted out of the client at all),
+    // the checks after it would be vacuously green, so it fails as itself instead.
+    const REPO = "/repo/one";
+    const fx: FxSlot[] = [
+      { id: 1, cwd: REPO, lastOutput: 1000 },                                   // older main
+      { id: 2, cwd: `${REPO}/wt/a`, lastOutput: 500, worktree: { repo: REPO, branch: "fleet/a" } },
+      { id: 3, cwd: REPO, lastOutput: 9000 },                                   // newer main, HIGHER id
+    ];
+    let got: FxStack | undefined;
+    try { got = stacksOf?.(fx).get(REPO); } catch { got = undefined; }
+    check("probe: stacksOf is liftable out of src/client.ts and the two-main fixture builds",
+      !!stacksOf && !!got && got.lanes.length === 1
+      && fx.filter((s) => !s.worktree && s.cwd === REPO).length === 2,
+      stackSrc.slice(0, 70) || "no stacksOf()…startRename block in src/client.ts");
+    check("stack anchor: the stack hangs under the LAST ACTIVE main session, not the lowest id",
+      got?.anchor?.id === 3, `anchor=${JSON.stringify(got?.anchor?.id ?? null)} (want 3)`);
+    check("stack anchor: g.at follows the anchor — it is derived from it, never picked separately",
+      got?.at === 3, `at=${JSON.stringify(got?.at ?? null)} (want 3)`);
+    // ties are decided in the code, not by iteration order: an anchor that flips between renders
+    // is worse than one that stands still. Equal lastOutput → the lower id, deliberately.
+    const tie: FxSlot[] = [
+      { id: 4, cwd: REPO, lastOutput: 0 },
+      { id: 5, cwd: REPO, lastOutput: 0 },
+      { id: 6, cwd: `${REPO}/wt/b`, lastOutput: 0, worktree: { repo: REPO, branch: "fleet/b" } },
+    ];
+    let tied: FxStack | undefined;
+    try { tied = stacksOf?.(tie).get(REPO); } catch { tied = undefined; }
+    check("stack anchor: equal lastOutput is broken deterministically by the lower id",
+      tied?.anchor?.id === 4 && stacksOf?.([...tie].reverse()).get(REPO)?.anchor?.id === 4,
+      `${JSON.stringify(tied?.anchor?.id ?? null)} / reversed ${JSON.stringify(stacksOf?.([...tie].reverse()).get(REPO)?.anchor?.id ?? null)}`);
+    // the §F3 edge case the change must NOT touch: no main session at all → the stack still
+    // renders, at its first lane, instead of vanishing from the sidebar.
+    const orph = stacksOf?.([
+      { id: 7, cwd: `${REPO}/wt/c`, lastOutput: 3, worktree: { repo: REPO, branch: "fleet/c" } },
+      { id: 8, cwd: `${REPO}/wt/d`, lastOutput: 9, worktree: { repo: REPO, branch: "fleet/d" } },
+    ]).get(REPO);
+    check("stack anchor: an orphaned stack (no main session) still renders at its first lane",
+      orph?.anchor === null && orph?.at === 7, JSON.stringify({ a: orph?.anchor, at: orph?.at }));
+  }
+
   const wsNoTok = await new Promise<boolean>((resolve) => {
     let opened = false;
     const ws = new WebSocket(`ws://${IP}:${PORT}/ws/1`);

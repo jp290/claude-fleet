@@ -1,9 +1,81 @@
 // Prompt history per slot, the global append-only prompt log and the /api/prompts directory
 // served from it, plus the transcript and session-brief reads.
-import { statSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { statSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { check, get, post, plogPath, plogRead } from "./harness";
+import { check, get, post, plogPath, plogRead, ROOT } from "./harness";
 import { WORKER_CONTRACTS } from "../src/protocol";
+
+// Runs under the claude-gate harness, not run() below: the main history suite deliberately uses
+// FLEET_CMD=true and therefore has no pinned session identity. Keeping the probe in this family
+// still matters — this is a transcript-selection regression, while the claude harness supplies
+// the one prerequisite the ordinary suite structurally cannot: a real --session-id pin.
+export async function runFreshPinnedTranscriptIsolation(slot: number): Promise<void> {
+  const cwd = `${tmpdir()}/fleet-e2e-fresh-transcript-${process.pid}`;
+  const dir = `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const foreign = "ended-foreign-session.jsonl";
+  const line = `${JSON.stringify({
+    type: "assistant", cwd, timestamp: new Date(0).toISOString(),
+    message: { content: [{ type: "text", text: "content from the ENDED foreign session" }] },
+  })}\n`;
+  let fixtureReady = false;
+  let fixtureDetail = `dir=${dir}`;
+  let foreignMtime = 0;
+  try {
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/${foreign}`, line);
+    foreignMtime = statSync(`${dir}/${foreign}`).mtimeMs;
+    fixtureReady = readdirSync(dir).includes(foreign);
+  } catch (e) {
+    fixtureDetail = e instanceof Error ? e.message : String(e);
+  }
+  if (fixtureReady) await Bun.sleep(20); // make "older than this pane" an observed ordering
+  const openAt = Date.now();
+  const fixtureValid = fixtureReady && foreignMtime < openAt;
+  check("fresh-transcript fixture: an older foreign .jsonl exists in this cwd before the pane opens",
+    fixtureValid, `${fixtureDetail} mtime=${foreignMtime} openAt=${openAt}`);
+  if (!fixtureValid) {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    return;
+  }
+
+  let opened = false;
+  try {
+    const res = await post(`/api/slots/${slot}/open`, { cwd });
+    opened = res.ok;
+    check("fresh-transcript fixture: a fresh claude pane opens on the contaminated cwd",
+      opened, `${res.status} ${JSON.stringify(await res.clone().json().catch(() => null))}`);
+    if (!opened) return;
+
+    let pin: string | null = null;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { sessionId?: string | null }> };
+        pin = state.slots?.[String(slot)]?.sessionId ?? null;
+      } catch { pin = null; }
+      if (pin) break;
+      await Bun.sleep(100);
+    }
+    check("fresh-transcript fixture: the new pane has its own pinned session identity",
+      !!pin, `slot=${slot} pin=${pin}`);
+
+    if (opened && pin) {
+      const payload = (await (await get(`/api/slots/${slot}/transcript`)).json()) as
+        { source: string | null; total: number };
+      // Before the new claude has written <pin>.jsonl, absence is the only identity-preserving
+      // answer. Its own file is also valid if the real agent wins the race; the ended file never is.
+      check("a fresh pinned pane never receives an older ended session's conversation",
+        payload.source === null || payload.source === `${pin}.jsonl`,
+        `source=${payload.source} pin=${pin} total=${payload.total}`);
+    }
+  } finally {
+    if (opened) await post(`/api/slots/${slot}/kill`, {});
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}
 
 export async function run(): Promise<void> {
   // --- prompt history: composed sends recorded, raw WS typing deliberately not ---

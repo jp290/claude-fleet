@@ -736,18 +736,22 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // lost. The pi row is the counter-case — without it this passes if the field were hardcoded.
   check("§6e the codex adapter is NOT automatable (an un-authenticated pane probes alive), while pi is",
     cx?.automatable === false && pi?.automatable === true, `${String(cx?.automatable)} / ${String(pi?.automatable)}`);
-  // resume: false is the one that separates codex from BOTH earlier adapters — `codex resume` is an
-  // interactive picker, not a spawn-time flag, so a respawned pane cannot be handed its
-  // conversation. transcript/effort false for the reasons in the adapter literal.
-  check("§6e the codex adapter declares no resume, no transcript and no effort concept",
-    cx?.supports.transcript === false && cx?.supports.effort === false && cx?.effortLevels.length === 0
-    && cx?.supports.resume === false, JSON.stringify(cx?.supports));
+  // `resume` stays false after measurement: `resume --last` skips the picker and genuinely resumes,
+  // but recency cannot identify this unpinned pane when a cwd has multiple conversations.
+  // Transcript remains false; effort is the fixed config-key capability asserted below.
+  check("§6e the codex adapter declares effort, but no identity-safe resume and no transcript",
+    cx?.supports.transcript === false && cx?.supports.effort === true
+    && JSON.stringify(cx?.effortLevels) === JSON.stringify(["low", "medium", "high", "xhigh", "max", "ultra"])
+    && cx?.supports.resume === false, JSON.stringify(cx));
   // the note is the only place an owner learns, at pick time, that the login is theirs to do
   check("§6e the codex adapter states at pick time that authentication is the owner's act",
     !!cx?.note && /codex login/.test(cx.note), String(cx?.note));
 
-  const ox = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex" });
-  check("§6e a slot opens on the codex harness (200)", ox.ok, String(ox.status));
+  const bx = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "off" });
+  check("§6e codex rejects an effort outside its fixed list (400, never config pass-through)",
+    bx.status === 400, String(bx.status));
+  const ox = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "ultra" });
+  check("§6e a slot opens on the codex harness with a declared effort (200)", ox.ok, String(ox.status));
   const xcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
   // THE ROW THAT MATTERS MOST HERE. codex's own --help calls
   // --dangerously-bypass-approvals-and-sandbox "EXTREMELY DANGEROUS" and scopes it to externally
@@ -759,9 +763,12 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     && !xcmd.includes("dangerously-bypass"), xcmd.slice(-160));
   // ...and it spawns codex, not the fleet's FLEET_CMD (`true` in this suite)
   check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --sandbox/.test(xcmd), xcmd.slice(-160));
+  check("§6e the codex spawn line passes only the fixed effort key, with its value single-quoted",
+    xcmd.includes(" -c model_reasoning_effort='ultra'")
+    && (xcmd.match(/(?:^|\s)-c(?:\s|$)/g) ?? []).length === 1, xcmd.slice(-180));
   // no session id anywhere: pinsSession is false, and a pinned-but-unpassed id is the shape that
   // makes a respawn silently resume nothing while the state file claims a conversation
-  check("§6e the codex spawn line pins NO session id (codex resume is a picker, not a spawn flag)",
+  check("§6e the codex spawn line pins NO session id (`--last` cannot identify this pane)",
     !/--session-id/.test(xcmd), xcmd.slice(-160));
   check("§6e the codex spawn line keeps the `; exec $SHELL` fallback (a missing binary must leave a"
     + " live pane, not a dead slot)", /;\s*exec\s+\S+$/.test(xcmd.trim()), xcmd.slice(-80));

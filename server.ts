@@ -2094,10 +2094,14 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
     // above are therefore the WHOLE guard, which is why the mirror had to be fresh. Scoped to a
     // path Fleet itself derived (worktreePathFor) and re-verified as a git toplevel, so this can
     // never be pointed at the primary checkout or a hand-made directory.
+    // realpath on both sides, not `resolve`: git answers with the symlink-resolved toplevel
+    // (/tmp → /private/tmp here), and a lexical compare would refuse a legitimate removal over a
+    // symlinked path component — fail-closed, but it would wedge the lane as permanently unlandable.
+    const real = (p: string): string => { try { return realpathSync(p); } catch { return resolve(p); } };
     const top = await git(path, "rev-parse", "--show-toplevel");
-    if (top.code !== 0 || resolve(top.out) !== resolve(path))
+    if (top.code !== 0 || real(top.out) !== real(path))
       return { error: `refusing to remove ${path}: not the toplevel of its own repository (lane kept)`, code: 409 };
-    if (resolve(path) === resolve(repo))
+    if (real(path) === real(repo))
       return { error: "refusing to remove the primary checkout", code: 409 };
     try { rmSync(path, { recursive: true, force: true }); }
     catch (e) { return { error: `clone removal failed (lane kept): ${e instanceof Error ? e.message : "unknown"}`, code: 409 }; }

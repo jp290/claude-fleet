@@ -762,6 +762,94 @@ quiet window (§11.2c), the wrap (here), and genuine silence. A fixture that tre
 the third accuses the wrong thing, and the accusation is expensive: §11.2c's cost is a ~10 min
 proof run per sighting.
 
+### 11.2e A seventh family: the 💾 commit route's idle gate fires against the suite's own probes (2026-08-08)
+
+Signature: a check of the **commit family** fails, and *which* check it is changes from run to run.
+The tell is in the detail, when the check prints one —
+
+> `{"committed":false,"reason":"the session is actively working right now — a commit would snapshot
+> a half-finished tree; let it settle, then commit"}`
+
+— and where the check passes only a boolean to `check()`, the detail is empty and the family is
+recognisable solely by *which* checks fell. Two of the six sightings look like that.
+
+**Mechanism, read off the route and not inferred.** `POST /api/slots/:id/commit` runs
+`canDeliver(…, idleMs: body?.confirm ? 0 : MERGE_IDLE_MS)` (`server.ts`, grep `actively working`)
+and refuses with 409 unless the pane has been quiet for `MERGE_IDLE_MS` = 3000 ms. The suite's
+commit probes post within a second or two of spawning a lane (or of opening a main session on
+slot 9), so whether the pane still counts as *working* at that instant is a function of **machine
+load**, not of the tree the check is about. `confirm` waives the gate — that is the parameter the
+client sends once its own dialog was acknowledged.
+
+**The family has a birth date, which is what makes the base rate readable.** The gate is
+`0e2a672` (2026-08-07 19:20 Z); before it the mid-run warning was client-only, so no probe could
+ever hit it. Counted over the trail, restricted to `isolated-*` runs that actually carry a
+commit-family check: **0 of the 196 runs before the gate, 4 of the 16 after it (25 %)** — plus two
+red post-land audits, which do not write into that trail set. This is not a rare flake; it is a
+regression that arrived with a feature and was mistaken for one, six times in four hours.
+
+**Six sightings, six distinct checks, 2026-08-07 23:04 Z → 2026-08-08 03:22 Z.** Read out of `e2e-trail/` and
+`post-land-audits.jsonl`, not out of a report:
+
+| run / source | tree | commit-family FAIL(s) |
+|---|---|---|
+| `isolated-20260807T230406Z-4575` | `6cd299e` dirty | `regression guard: one-gesture commits the dirty conflicting lane` |
+| `isolated-20260808T003324Z-29738` | `3280a10` dirty | `lane commit stages untracked too (add -A) → clean tree` |
+| post-land audit of `53f5ce8`, red, adjudicated `flake` | `53f5ce8` | `commit agent mode lands the agent-supplied conventional-commit message` |
+| `isolated-20260808T023149Z-80240` | `2216de8` dirty | `main-session commit stages tracked (add -u)…` · `commit refuses a detached HEAD` (2 of that run's 16 FAILs) |
+| `isolated-20260808T025929Z-76832` | `53f5ce8` clean | `regression guard: one-gesture commits the dirty conflicting lane` |
+| post-land audit of `4311c92`, red, adjudicated `flake` | `4311c92` | `FIX4: commit refuses a lane with a git op in progress` |
+
+Both `one-gesture` sightings drag a **dependent** FAIL with them (`regression guard: a conflicting
+land PAUSES…`): the conflict that check needs is created by the commit that did not happen. Same
+shape as §11.2c — one root, several red lines.
+
+**The proof here is sharper than the prescribed one, and worth keeping as a pattern.** §11.3 says:
+re-run the same tree; green clears it. The rerun of `53f5ce8` (row 5 above) was *not* green — it
+failed with **two different checks of the same family**. Different checks on a byte-identical tree
+is a stronger statement than a green repeat, which always retains the reading "the flake did not
+fire this time". A green repeat proves non-determinism only against a known base rate; a *moved*
+failure proves it outright.
+
+**Fix — the probes send `confirm`; the gate is not touched.** Both halves matter:
+
+- Every commit probe in `e2e/` except one now posts `confirm: true`. These probes are about the
+  **tree** (does `add -A` sweep untracked, does a detached HEAD refuse, does agent mode carry the
+  model's subject) — the gate is not their subject and its refusal pre-empts theirs, which is why
+  the detached-HEAD and FIX4 checks failed *with the wrong reason* rather than with none.
+- The one exception is the gate's own proof block in `e2e/lanes-basic.ts`, which asserts both
+  directions — refused while busy, waived by `confirm` — off a **non-tautology busy setup** that
+  first proves the pane reads busy. Waiving the gate everywhere else therefore costs no coverage:
+  deleting the gate still fails that block.
+- The alternative — every probe waits out the idle threshold — was rejected. It is not a wait but a
+  retry loop (nothing stops the pane emitting again), it is the send-keys-and-sleep shape this repo
+  banned after §11.2c, and it would add ≥3 s × 16 call sites to every run to re-prove, badly, what
+  one block already proves well.
+- A **rot guard** rides along, in the gate block itself: it scans `e2e/*.ts` and fails if any
+  commit POST omits `confirm` without marking itself as the gate proof. A rule, not a list of
+  today's 16 call sites — the next probe someone adds is the one this family would otherwise
+  come back through.
+
+**One real defect fell out of it, in the product and not in the suite.** `doLand` (`src/client.ts`)
+committed a dirty lane *without* `confirm`, although the risk preview the owner had just accepted
+says in as many words that the uncommitted work is committed first. On a lane still producing
+output that 409s, and the body carries `reason`, not `error`, so the owner's alert read
+`Land failed — could not commit the work first: undefined` for a perfectly healthy tree. Now
+`confirm: true`, same reasoning as `doCommit`'s `activeConfirmed`. The e2e probe at
+`e2e/land-provenance.ts:37` says it mirrors `doLand`, and mirrors it again.
+
+**Proof, at the price §11.2c set: three serial `./e2e-isolated.sh` runs on the fixed tree, nothing
+else on the machine, all green** — trail ids `isolated-20260808T034334Z-27704`,
+`isolated-20260808T035408Z-67289`, `isolated-20260808T040442Z-6006`, each `tree` `4311c92`
+`dirty:true` (the fix was still uncommitted, as the rows say), each 1699 rows with **zero
+`ok:false`**. Against a 25 % per-run base rate three clean runs is ~0.4 % under the null, which is
+why one run would not have been worth printing. The rest of the gate chain
+(`bun e2e/pins.ts`, tsc, `bun run build`, clean-review, security, claude-gate) is green on the same
+tree.
+
+**No free pass**, as with every family here: six sightings make it real, they do not make the next
+red commit check a flake — and after this fix a commit-family red has one fewer excuse, not more.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

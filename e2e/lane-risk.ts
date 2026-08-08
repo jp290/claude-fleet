@@ -38,7 +38,11 @@ export async function run(): Promise<void> {
   // Commit-only (never push/land); reversible by the owner. lnDirty is dirty here (its
   // uncommitted code.txt edit) — quick mode must commit it and leave the tree clean.
   interface CommitRes { committed?: boolean; hash?: string; subject?: string; reason?: string; error?: string }
-  const ciQuick = await post(`/api/slots/${lnDirty.slot}/commit`, { mode: "quick" });
+  // `confirm` throughout this block, and it is not laziness: the route's idle gate refuses an
+  // unconfirmed commit while the pane counts as working, which on a freshly spawned lane depends on
+  // machine load and not on the tree. These probes are about the TREE. The gate itself is proven —
+  // both directions, with a non-tautology busy setup — in e2e/lanes-basic.ts. (§11.2e)
+  const ciQuick = await post(`/api/slots/${lnDirty.slot}/commit`, { mode: "quick", confirm: true });
   const ciQuickJ = (await ciQuick.json()) as CommitRes;
   check("commit quick mode commits a dirty lane and returns a short hash",
     ciQuick.ok && ciQuickJ.committed === true && /^[0-9a-f]{7,}$/.test(ciQuickJ.hash ?? ""), JSON.stringify(ciQuickJ));
@@ -47,19 +51,19 @@ export async function run(): Promise<void> {
   const riskAfterCommit = (await (await get(`/api/slots/${lnDirty.slot}/risk`)).json()) as WtRiskRow;
   check("lane tree is clean after commit (no dirty files remain)",
     riskAfterCommit.dirtyFiles.length === 0, JSON.stringify(riskAfterCommit.dirtyFiles));
-  const ciClean = await post(`/api/slots/${lnDirty.slot}/commit`, { mode: "quick" });
+  const ciClean = await post(`/api/slots/${lnDirty.slot}/commit`, { mode: "quick", confirm: true });
   const ciCleanJ = (await ciClean.json()) as CommitRes;
   check("commit on a clean lane is an idempotent no-op (committed:false + reason)",
     ciClean.ok && ciCleanJ.committed === false && (ciCleanJ.reason ?? "").includes("clean"), JSON.stringify(ciCleanJ));
   // agent mode on a fresh dirty lane: the FLEET_COMMIT_CMD stand-in supplies the message
   const lnAgent = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   await Bun.write(`${lnAgent.cwd}/code.txt`, "root\nagent-commit\n");
-  const ciAgent = await post(`/api/slots/${lnAgent.slot}/commit`, { mode: "agent" });
+  const ciAgent = await post(`/api/slots/${lnAgent.slot}/commit`, { mode: "agent", confirm: true });
   const ciAgentJ = (await ciAgent.json()) as CommitRes;
   check("commit agent mode lands the agent-supplied conventional-commit message",
     ciAgent.ok && ciAgentJ.committed === true && ciAgentJ.subject === "feat: stand-in commit message", JSON.stringify(ciAgentJ));
   await post(`/api/slots/${lnAgent.slot}/kill`, {});
-  check("commit refuses a non-lane (plain repo) slot", (await post("/api/slots/2/commit", { mode: "quick" })).status === 400);
+  check("commit refuses a non-lane (plain repo) slot", (await post("/api/slots/2/commit", { mode: "quick", confirm: true })).status === 400);
 
   await post(`/api/slots/${lnDirty.slot}/kill`, {});
   await post(`/api/slots/${lnClean2.slot}/kill`, {});

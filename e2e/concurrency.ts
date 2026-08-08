@@ -50,7 +50,7 @@ export async function run(): Promise<void> {
     // commit path: needs a DIRTY tree (clean tree short-circuits before the guard) + MERGE_HEAD
     await Bun.write(`${ln.cwd}/code.txt`, "root\nhalf-merge\n");
     await Bun.write(`${gd}/MERGE_HEAD`, `${head}\n`);
-    const ciJ = (await (await post(`/api/slots/${ln.slot}/commit`, { mode: "quick" })).json()) as { committed?: boolean; reason?: string };
+    const ciJ = (await (await post(`/api/slots/${ln.slot}/commit`, { mode: "quick", confirm: true })).json()) as { committed?: boolean; reason?: string };
     check("FIX4: commit refuses a lane with a git op in progress",
       ciJ.committed === false && (ciJ.reason ?? "").includes("in progress"), JSON.stringify(ciJ));
     // merge path: needs a CLEAN tree (uncommitted check precedes the guard) + MERGE_HEAD
@@ -155,7 +155,7 @@ export async function run(): Promise<void> {
 
     // FIX 5 (commit side): while the merge job is inflight, a commit is refused with the
     // cross-guard 409 — deterministic, mergeInflight is held for the job's whole lifetime.
-    const ciDuring = await post(`/api/slots/${ln.slot}/commit`, { mode: "quick" });
+    const ciDuring = await post(`/api/slots/${ln.slot}/commit`, { mode: "quick", confirm: true });
     const ciDuringJ = (await ciDuring.json()) as { error?: string };
     check("FIX5: commit is refused (409) while a merge/land is in progress",
       ciDuring.status === 409 && (ciDuringJ.error ?? "").includes("merge/land is in progress"), `${ciDuring.status} ${JSON.stringify(ciDuringJ)}`);

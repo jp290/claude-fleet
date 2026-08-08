@@ -77,7 +77,7 @@ export const settleForMerge = async (slot: number): Promise<void> => {
 };
 
 // --- ② the AUTHOR-path fixture: make ONE lane pane look like a live claude ---------------------
-// The author path asks the STRICT alive question (server.ts, claudeAliveAt) rather than the waived
+// The author path asks the STRICT alive question (server.ts, paneAgentAt with AUTHOR_COMMS) rather than the waived
 // one, precisely because it pastes a prose brief and a non-claude pane would run prose as shell
 // commands. This whole suite boots the server with FLEET_CMD=true (e2e-isolated.sh), so every lane
 // pane runs a bare shell and that question answers "no" — which is why every OTHER merge check in
@@ -85,7 +85,7 @@ export const settleForMerge = async (slot: number): Promise<void> => {
 //
 // To cover the author path itself, satisfy the server's predicate for exactly one pane instead of
 // changing FLEET_CMD for the whole run (which would re-point every alive gate, self-heal and
-// dispatch check in the suite at a different code path). claudeAliveAt reads `ps -o comm=` of the
+// dispatch check in the suite at a different code path). paneAgentAt reads `ps -o comm=` of the
 // pane pid and matches the BASENAME against /^claude/ — so a `claude` that is really /bin/cat,
 // exec'd in the pane, is a live "claude" by the server's own definition, and one that also behaves
 // usefully: it keeps the pane alive and echoes whatever is pasted into it, so the brief's arrival
@@ -125,7 +125,7 @@ export const fakeClaudeInPane = async (slot: number, timeoutMs = 20_000): Promis
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     // `exec` replaces the shell, so the PANE PID itself becomes the fake claude — that is the first
-    // branch of claudeAliveAt and needs no child walk to be found.
+    // branch of paneAgentAt and needs no child walk to be found.
     await tmuxOut("send-keys", "-t", target, `exec '${bin}'`, "Enter");
     for (let i = 0; i < 30 && Date.now() < deadline; i++) {
       if (await paneRunsClaude(target)) return true;

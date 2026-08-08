@@ -203,6 +203,21 @@ interface Harness {
   // The spawn line, already shell-safe. Everything interpolated here has been validated at SET
   // time (modelOf/effortOf against THIS adapter's rules) — the same discipline slotCmd documents.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null }): string;
+  // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
+  // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
+  // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
+  // slot's, which is why it is a second member rather than a flag on the first:
+  //   - it carries a TOOL PROFILE, a capability floor no slot line has;
+  //   - it must NOT end in `; exec $SHELL` — the session is meant to die with the agent;
+  //   - its ANSWER is read from the host transcript at projDir(cwd)/<sessionId>.jsonl, so a session
+  //     id is mandatory (not optional as it is for a slot) and the file must be HOST-readable.
+  // Hence `null` is a real and required answer: a harness that cannot satisfy the last point cannot
+  // host a worker, and saying so is what turns "waits 3 minutes for a file that will never appear"
+  // into a named refusal at the call site. `comms` rides along rather than being read off `comms`
+  // above, because the readiness probe must ask about the binary THIS LINE starts — which for the
+  // default adapter is literally `claude` regardless of FLEET_CMD (see the worker-tier note at
+  // SLOT_MODEL_RE), i.e. not the same question the slot probe asks.
+  worker(o: { sessionId: string; model: string; tools: ToolProfile }): { cmd: string; comms: string[] } | null;
   // Does this harness take a session id at spawn? It decides whether s.sessionId is pinned at all,
   // which is what makes a conversation survive a pane respawn.
   pinsSession: boolean;
@@ -246,6 +261,20 @@ interface Harness {
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
   spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model),
+  // The worker line, verbatim what summaryViaSession built for itself before this member existed —
+  // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
+  // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
+  // spawns claude by name whatever FLEET_CMD is (the note at SLOT_MODEL_RE states the same rule for
+  // the worker MODELS, and it is one rule, not two) — which is exactly why routing this through
+  // spawnCmd would have been the wrong kind of consistency: it would have handed the suites' stand-in
+  // `FLEET_CMD=true` to the merge resolver.
+  // `comms: ["claude"]` for that same reason, and it is where the old free-standing claudeAliveAt
+  // literal now lives: the probe follows the line it belongs to instead of sitting a thousand lines
+  // away from it, so an adapter whose worker runs something else cannot forget to move it.
+  worker: (o) => ({
+    cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' ${o.tools}`,
+    comms: ["claude"],
+  }),
   pinsSession: IS_CLAUDE,
   // null = defer to HARNESS_COMMS, which IS the pre-per-slot behaviour for every slot that names no
   // harness: ["claude"] on a claude fleet, the operator's declaration on a declared one, and the
@@ -280,6 +309,13 @@ const PI_HARNESS: Harness = {
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
+  // NULL — Pi cannot host a worker session, and for the same measured reason `supports.transcript`
+  // is false: it keeps no ~/.claude/projects/<slug>/<uuid>.jsonl, and that file IS the worker's
+  // return channel. A hopeful line here would spawn a real agent, cost a real run, and then poll a
+  // path that never appears until the timeout — the expensive way to learn what this null says
+  // for free. The second, independent blocker (stated so a future transcript feature does not read
+  // as the only gap): ToolProfile is a claude CLI flag set, and Pi has no equivalent to `--tools ""`.
+  worker: () => null,
   pinsSession: true,
   // Depth 1 is enough, and that is a MEASUREMENT, not an assumption: briefs/pi-messungen-2026-08-07.md
   // (d) found `pi` itself on depth 1, while the bridge's Claude-Agent-SDK child sits on depth 2 and
@@ -394,6 +430,14 @@ const CONTAINER_HARNESS: Harness = {
   spawnCmd: (o) =>
     `${PATH_EXPORT}docker --context '${CONTAINER_CONTEXT}' exec -it -w "$PWD" '${CONTAINER_NAME}' `
     + `${agentCmd(o.sessionId, o.resume, o.model)}; exec ${SHELL}`,
+  // NULL, and this is the case the whole member exists for — it is also STAGE 2 of the queue row
+  // this adapter came from. A claude inside the box writes its transcript against the CONTAINER's
+  // $HOME while projDir() reads the HOST's, so the worker's answer would never arrive; worse, the
+  // bind mount is at the identical path, so the slug matches and the mtime fallback would serve an
+  // unrelated host-side conversation as this worker's reply (the same trap `supports.transcript`
+  // names one field down). Containerising the worker therefore is not a spawn-line change: it needs
+  // an answer channel that is host-local by construction, and that decision is not made here.
+  worker: () => null,
   // mirrors CLAUDE_HARNESS, and for its reason rather than by imitation: agentCmd passes a session
   // id only when BASE_CMD is claude, so a stand-in FLEET_CMD pins none here either.
   pinsSession: IS_CLAUDE,
@@ -472,6 +516,12 @@ const CODEX_HARNESS: Harness = {
     if (o.model) cmd += ` --model '${o.model}'`;
     return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
+  // NULL, and here it is over-determined — worth stating in full, because a reader who fixes only
+  // the first reason would still have nothing. (1) `pinsSession: false`: Codex has no --session-id
+  // flag at all, so there is no id to name a transcript by, and the worker path finds its answer by
+  // that id. (2) It writes no ~/.claude transcript in the shape projDir()/viewEntry parse. (3) Its
+  // sandbox is a WRITE fence with no ToolProfile equivalent — `--tools ""` has no counterpart.
+  worker: () => null,
   // Codex has no `--session-id` at all. Resumption is the `codex resume` SUBCOMMAND, an interactive
   // picker (`--last` for the newest) — a different shape from claude's flag and from Pi's
   // create-or-attach id, and nothing this adapter can pin at spawn. So no id is recorded, and
@@ -561,9 +611,10 @@ const CODEX_HARNESS: Harness = {
 // Deciding it in code would have been deciding it for him.
 //
 // The remaining honest gap, unchanged and worth naming: an ELIGIBLE-but-foreign slot is proven by
-// its own comm only. `claudeAliveAt` still asks about claude by name (the summarizer spawns claude
-// whatever FLEET_CMD is) and `AUTHOR_COMMS` still unions claude in for wakeAuthor, because that
-// path pastes prose and must have a positive answer. Neither moves per slot, and neither should.
+// its own comm only. The WORKER probe still asks about claude by name (the summarizer spawns claude
+// whatever FLEET_CMD is — the literal now lives in CLAUDE_HARNESS.worker, next to the line it
+// describes) and `AUTHOR_COMMS` still unions claude in for wakeAuthor, because that path pastes
+// prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
 const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
@@ -571,6 +622,16 @@ const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, CONTAINER_HAR
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
   HARNESSES.find((h) => h.id === id) ?? CLAUDE_HARNESS;
+
+// Which harness the WORKER tier runs. A separate question from any slot's, and separately answered:
+// a worker is not attached to a slot at all (it runs in a cwd — a lane worktree for the merge
+// resolver, the checkout for a summary), so deriving it from the slot's harness would be a policy
+// invention, not a lookup. Default `claude`, which is what every worker on this fleet has always
+// spawned by name; FLEET_WORKER_HARNESS is the seam a container-hosted worker will arrive through
+// (stage 2), and the ONLY thing it can do today is point the tier at an adapter that answers `null`
+// — i.e. turn every worker into a named refusal, loudly and immediately, rather than silently.
+// Unknown id → the default, same fail-toward-safe rule as harnessOf.
+const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? null);
 
 // which harness a request asked for. Absent → null (the default), which is what every caller that
 // predates this field sends and must keep meaning.
@@ -2781,12 +2842,11 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
   return "no-agent";
 }
 
-// same check for an arbitrary tmux target that is known to run claude REGARDLESS of FLEET_CMD —
-// the summarizer spawns `claude` by name, so it asks about claude by name, never about the
-// fleet's harness. Keeping this call site explicit is what lets HARNESS_COMMS move freely.
-async function claudeAliveAt(target: string): Promise<boolean> {
-  return (await paneAgentAt(target, ["claude"])) === "alive";
-}
+// (The fourth probe set — the worker session's — used to be a `claudeAliveAt` wrapper here, pinning
+// the literal ["claude"] a thousand lines from the spawn line it described. It now rides on the
+// adapter that BUILDS that line (Harness.worker), so the two cannot drift: an adapter whose worker
+// runs something else carries its own comms, and one that runs nothing carries none. Still four
+// sets, still literal for the default adapter — only no longer restated out of reach of its cause.)
 
 // shared by the owner route (POST /api/slots/:id/autos) and the self-scheduling route
 // (POST /api/self/autos) — every guard rail (AUTO_MAX_PER_SLOT, min interval, mandatory
@@ -4475,18 +4535,31 @@ async function summaryViaSession(prompt: string, cwd: string, doneMark: string,
   summarizerSids.add(sid);
   const name = `sum-${sid.slice(0, 8)}`;
   const started = Date.now();
+  // The spawn line comes from the WORKER_HARNESS adapter — this function no longer names an agent
+  // binary, a session flag or a model flag of its own, which is the point: there were two spawn
+  // implementations in this file and the harness registry covered one.
   // opts.model: a MODEL_RE-validated override for the one worker whose judgment the owner priced
-  // above the summary tier (eval gate → EVAL_MODEL). Single-quoted like every model interpolation
-  // (the [1m] variants glob under zsh) — MODEL_RE forbids `'`, so the quote wrap stays closed.
-  const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50",
-    `${PATH_EXPORT}claude --session-id ${sid} --model '${opts.model ?? SUMMARY_MODEL}' ${opts.tools}`);
+  // above the summary tier (eval gate → EVAL_MODEL). It is single-quoted inside the adapter, like
+  // every model interpolation (the [1m] variants glob under zsh) — MODEL_RE forbids `'`, so the
+  // quote wrap stays closed.
+  const w = WORKER_HARNESS.worker({ sessionId: sid, model: opts.model ?? SUMMARY_MODEL, tools: opts.tools });
+  // A refusal, not a timeout, and it must stay that way: the alternative is spawning a real agent
+  // (a real spend) and then polling for a transcript that cannot appear until SUMMARY_TIMEOUT_MS.
+  // Thrown before the session exists, so there is nothing to clean up on this path.
+  if (!w) {
+    summarizerSids.delete(sid);
+    throw new Error(`harness "${WORKER_HARNESS.id}" cannot host a worker session `
+      + `(the worker's answer is read from a host-side transcript; this harness writes none)`);
+  }
+  const sp = await tmux("new-session", "-d", "-s", name, "-c", cwd, "-x", "200", "-y", "50", w.cmd);
   if (sp.code !== 0) throw new Error("summarizer session failed to start");
   const file = `${projDir(cwd)}/${sid}.jsonl`;
   try {
-    // the transcript file only appears AFTER the first prompt — readiness is
-    // "a claude child process hangs under the pane" (same check as the auto gate),
-    // plus a short settle so the TUI actually accepts input
-    while (!(await claudeAliveAt(name))) {
+    // the transcript file only appears AFTER the first prompt — readiness is "the agent process
+    // hangs under the pane" (same probe as the auto gate), plus a short settle so the TUI actually
+    // accepts input. The comms come from the adapter that built the line above, so the probe asks
+    // about the binary this worker REALLY runs instead of a literal that happens to match it.
+    while ((await paneAgentAt(name, w.comms)) !== "alive") {
       if (Date.now() - started > 30_000) throw new Error("summarizer session never initialized");
       await Bun.sleep(500);
     }

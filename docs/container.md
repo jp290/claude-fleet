@@ -205,7 +205,8 @@ verified by anything: a real Claude session inside a real Fleet pane in a contai
 
 One fixture in the suite is deliberately platform-aware and is the first thing to suspect if this
 run goes red on Debian while macOS is green: `fakeClaudeInPane` (`e2e/lane-helpers.ts`), which the
-② author-path checks use to satisfy the server's strict `claudeAliveAt` probe for exactly one pane.
+② author-path checks use to satisfy the server's strict author probe (`paneAgentAt` over
+`AUTHOR_COMMS`) for exactly one pane.
 It makes a `claude` that is really `/bin/cat` — by SYMLINK on macOS (a copied platform binary is
 SIGKILLed there) and by COPY on Linux (`/proc/<pid>/comm` is the executed file's basename, so a
 symlink would report `cat`). The macOS half is measured; the Linux half is reasoned from comm

@@ -163,6 +163,34 @@ const a6after = sess6.autos.find((a) => a.id === a6.auto.id);
 check("dead foreign agent: lastResult reports the skip",
   a6after?.lastResult === "skipped — no agent running in pane", a6after?.lastResult ?? "missing");
 
+// --- branch 7: the WORKER tier under a harness that cannot host one. A different spawn from every
+// branch above — summaryViaSession, not a slot — and it used to be the one this file's premise did
+// not reach: it built `claude --session-id …` for itself, so "nothing about any specific harness is
+// compiled into server.ts" was true of the slot path and false one function over.
+//
+// The wrapper points FLEET_WORKER_HARNESS at `container`, whose `worker` answers null. What has to
+// be proven is not that it fails — a wrong implementation fails too — but HOW: the worker's answer
+// is read from a host-side transcript, so a harness that writes none produces a file that never
+// appears, and the naive shape spends a real agent run and then waits out SUMMARY_TIMEOUT_MS (180 s)
+// before saying anything. Hence both halves below: the message NAMES the harness and the reason,
+// and it arrives in seconds rather than after the readiness timeout.
+const WORKER_REPO = process.env.WORKER_REPO!;
+const o7 = await post("/api/slots/8/open", { cwd: WORKER_REPO });
+check("open a slot on a real repo for the worker branch", o7.ok, String(o7.status));
+const t7 = Date.now();
+const r7 = await post("/api/slots/8/summary", {});
+const b7 = (await r7.json()) as { error?: string };
+const took = Date.now() - t7;
+check("a worker on a transcript-less harness is REFUSED (500 with an error)",
+  r7.status === 500 && !!b7.error, `${r7.status} ${b7.error ?? "(no error field)"}`);
+check("...and the refusal names the harness and the reason, so the fix is not a guess",
+  (b7.error ?? "").includes('harness "container"') && (b7.error ?? "").includes("transcript"),
+  b7.error ?? "(no error field)");
+// the timing half. Generous on purpose — this asserts "did not wait out a timeout", not a latency
+// budget: the readiness loop alone is 30 s and SUMMARY_TIMEOUT_MS is 180 s, so anything under 10 s
+// can only be the refusal, on any load this suite tolerates elsewhere.
+check("...and it refuses BEFORE spawning, not after a timeout", took < 10_000, `${took}ms`);
+
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
 process.exit(failures() ? 1 : 0);

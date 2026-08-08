@@ -38,6 +38,13 @@ rm -rf "$DIR2"
 mkdir -p "$DIR2"
 stage_instance "$SRC" "$DIR2" server.ts fleet-e2e-harness.ts || exit 1
 
+# a throwaway git repo for phase 2's WORKER branch: the ✨ summary route refuses a non-repo cwd
+# before it ever reaches a worker, so the branch needs a real one to ask its question at all.
+WORKER_REPO="$DIR2/workerrepo"
+mkdir -p "$WORKER_REPO"
+( cd "$WORKER_REPO" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && printf 'root\n' > code.txt && git add code.txt && git commit -qm init )
+
 # a throwaway git repo the dispatcher spawns lanes from — needed to exercise the
 # post-spawn re-check (server.ts tickDispatch): the gate suite's fake `claude` can die
 # after the boot sleep, so the fresh claudeAlive gate here is the ONLY thing that stops
@@ -145,7 +152,7 @@ code=$?
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   tmux -L "$SOCK" new-session -d -s srv \
-    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model exec bun server.ts >> server.log 2>&1"
+    "cd '$DIR2' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_CMD=harn FLEET_HARNESS_COMMS=harn FLEET_HARNESS_MODEL_FLAG=--model FLEET_WORKER_HARNESS=container exec bun server.ts >> server.log 2>&1"
   # default-shell decides what interprets every pane command tmux builds, and one phase-2 check
   # depends on it being zsh: an unquoted glob model is fatal under zsh ("no matches found" aborts
   # the line, pane and all) and HARMLESS under sh, which leaves an unmatched pattern literal. Under
@@ -164,7 +171,7 @@ if [ "$code" = 0 ]; then
   sleep 0.5
   cd "$DIR2" || exit 1
   echo "--- phase: harness (FLEET_CMD=harn, a harness server.ts has never heard of) ---"
-  FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" FLEET_AUTOS_TICK_MS=$AUTOS_TICK bun fleet-e2e-harness.ts
+  FLEET_E2E_SUITE=claude-gate FLEET_PORT=$PORT FLEET_SOCK=$SOCK FAKE_CLAUDE_DIR="$FAKEBIN" WORKER_REPO="$WORKER_REPO" FLEET_AUTOS_TICK_MS=$AUTOS_TICK bun fleet-e2e-harness.ts
   code=$?
 fi
 

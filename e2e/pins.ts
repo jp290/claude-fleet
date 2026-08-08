@@ -498,6 +498,62 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     /codex --sandbox workspace-write --ask-for-approval never/.test(xBody) && !/dangerously-bypass/.test(
       xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")),
     xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
+  // --- the WORKER spawn, and why it is a rule over the source rather than a test -----------------
+  // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
+  // and which the sibling pin above states "names no harness" for the dispatcher) and
+  // summaryViaSession, which built `claude --session-id … --model … <tools>` for itself. Nothing
+  // could notice the second one: it is the path behind the merge resolver and the ② reviewer, every
+  // suite drives it through a FLEET_*_CMD subprocess stand-in instead, and a re-grown literal there
+  // would be invisible until a fleet ran a harness that is not claude. So: a rule over the body.
+  //
+  // Bounded to summaryViaSession's OWN body for the same reason dispatchTask's is — an unbounded
+  // slice reaches the whole file and makes the rule vacuously false rather than vacuously true,
+  // which is the louder failure but still the wrong one.
+  const wStart = server.indexOf("async function summaryViaSession(");
+  const wBody = wStart < 0 ? "" : server.slice(wStart, server.indexOf("\n}\n", wStart));
+  // TRAILING comments stripped as well as whole-line ones, unlike the docker rule above. This body
+  // ends in `await tmux("kill-session", …); // never leave an unattended claude behind` — a sentence
+  // about the cleanup, which a leading-`//` filter alone leaves in and the rule below then reads as
+  // a re-grown spawn literal. (It did, on the first run: the pin failed on prose. Same lesson as
+  // the docker rule, reached by a second route, so the strip is spelled out here rather than shared:
+  // stripping trailing `//` file-wide would cut into string literals that carry `//`.)
+  const stripComments = (s: string): string =>
+    s.split("\n").filter((l) => !l.trim().startsWith("//")).map((l) => l.replace(/\s+\/\/.*$/, "")).join("\n");
+  const wExec = stripComments(wBody);
+  pin("summaryViaSession's body is bounded and non-empty (an unfound one would make the rules below vacuous)",
+    wStart > 0 && wExec.length > 800 && wExec.length < 8_000, `${wExec.length} bytes of code`);
+  pin("the worker spawn names no agent binary and no spawn flags of its own — the line comes from the adapter",
+    /WORKER_HARNESS\.worker\(/.test(wExec) && !/\bclaude\b/.test(wExec)
+      && !/--session-id|--model|--tools/.test(wExec),
+    wExec.match(/.{0,30}(claude|--session-id|--model|--tools).{0,30}/)?.[0] ?? "no agent literal");
+  // ...and the readiness probe follows the line rather than restating what it expects to find. A
+  // literal comms list here is what the removed claudeAliveAt was, and it would go on answering
+  // "claude" for a worker line the adapter had since changed.
+  pin("the worker readiness probe asks the adapter's comms, never a literal",
+    /paneAgentAt\(name, w\.comms\)/.test(wExec) && !/paneAgentAt\([^)]*\["/.test(wExec),
+    wExec.match(/paneAgentAt\([^)]*\)/)?.[0] ?? "no paneAgentAt call");
+
+  // The worker's answer is READ FROM a host-side transcript, so `worker` and `supports.transcript`
+  // are two statements of one fact and may not disagree. The direction that matters is the one that
+  // fails silently: an adapter offering a worker line it cannot read the answer from spawns a real
+  // agent, spends a real run, and then polls a path that never appears until the timeout. Stated
+  // over EVERY adapter literal, so the one added tomorrow is covered tomorrow.
+  const adapters = [...server.matchAll(/const ([A-Z_]+)_HARNESS: Harness = \{/g)]
+    .map((m) => ({ name: m[1], body: server.slice(m.index!, server.indexOf("\n};\n", m.index!)) }));
+  pin("server.ts yields its harness adapter literals (an unparsed set would make the rule below vacuous)",
+    adapters.length >= 4 && adapters.every((a) => a.body.length > 300),
+    adapters.map((a) => `${a.name}:${a.body.length}B`).join(" "));
+  // `supports` is written inline on one adapter and one-field-per-line on the other three, so the
+  // field is matched WITHOUT its leading newline — anchoring on the layout would have made this
+  // rule true for three adapters and unaskable for the fourth.
+  const wrongWorker = adapters.filter((a) => {
+    const exec = stripComments(a.body);
+    const hosts = !/\n {2}worker: \(\) => null,/.test(exec);
+    return hosts !== /\btranscript: true\b/.test(exec);
+  });
+  pin("no adapter offers a worker session it could not read the answer from (worker ⇔ supports.transcript)",
+    wrongWorker.length === 0, wrongWorker.map((a) => a.name).join(", ") || "all four agree");
+
   // ...and its docker is PINNED, never ambient — the rule guest-ctl.sh already states for the guest
   // containers ('Pinned, never ambient'). Stated over the whole file because the harm is a bare
   // `docker` ANYWHERE on this path, not only in the adapter literal: the active context is a user

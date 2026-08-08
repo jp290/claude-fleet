@@ -634,8 +634,9 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // cannot commit looks broken, and re-granting `.git` is the obvious "fix". It is not one — the
   // host commits (POST /api/slots/:id/commit), owner decision 2026-08-08.
   const pProf = server.slice(server.indexOf("function piSandboxProfile("), server.indexOf("const PI_FENCE_FAILED"));
+  const piFenceDeniesGit = /deny file-write\* \$\{sub\(`\$\{root\}\/\.git`\)\}/.test(pProf);
   pin("the pi fence denies .git back — the lane produces, the host commits",
-    /deny file-write\* \$\{sub\(`\$\{root\}\/\.git`\)\}/.test(pProf), pProf.match(/deny file-write\*[^\n]*/g)?.join(" | ") ?? "no deny clause");
+    piFenceDeniesGit, pProf.match(/deny file-write\*[^\n]*/g)?.join(" | ") ?? "no deny clause");
 
   // The picker note is the owner's decision-time description of this profile. Derive the writable
   // set from the profile's source rather than repeating it: every expression in `const write` plus
@@ -737,6 +738,34 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("server.ts yields its harness adapter literals (an unparsed set would make the rule below vacuous)",
     adapters.length >= 4 && adapters.every((a) => a.body.length > 300),
     adapters.map((a) => `${a.name}:${a.body.length}B`).join(" "));
+  // Repository-write ownership is an adapter declaration, never an id/form guess. Match each
+  // literal's executable source and require exactly one explicit boolean so an adapter added
+  // tomorrow cannot inherit an answer.
+  const hostCommitFields = adapters.map((a) => ({
+    name: a.name,
+    values: [...stripComments(a.body).matchAll(/\n  hostCommits: (true|false),/g)].map((m) => m[1]),
+  }));
+  pin("every harness adapter literal explicitly answers who commits (no optional/default answer)",
+    hostCommitFields.length >= 4 && hostCommitFields.every((a) => a.values.length === 1),
+    hostCommitFields.map((a) => `${a.name}:${a.values.join("|") || "missing"}`).join(" "));
+  const hostCommitsOf = (name: string): string | undefined =>
+    hostCommitFields.find((a) => a.name === name)?.values[0];
+  // Pi is mechanically derivable: its own profile either denies <root>/.git or it does not, and
+  // hostCommits must move with that clause rather than preserve today's value as a snapshot.
+  pin("PI_HARNESS.hostCommits follows piSandboxProfile's .git deny clause",
+    hostCommitsOf("PI") === String(piFenceDeniesGit),
+    `deny=${piFenceDeniesGit} declared=${hostCommitsOf("PI") ?? "missing"}`);
+  // These three are intentionally pinned OWNER DECISIONS, not derivations: Claude has no Fleet
+  // fence, Codex's fence lives inside its binary, and Container's reach depends on operator mounts.
+  const ownerHostCommitExpected: Record<string, string> = {
+    CLAUDE: "false", CONTAINER: "false", CODEX: "true",
+  };
+  const wrongOwnerDecision = Object.entries(ownerHostCommitExpected)
+    .filter(([name, expected]) => hostCommitsOf(name) !== expected);
+  pin("Claude, Container and Codex keep their explicit owner-decided commit ownership",
+    wrongOwnerDecision.length === 0,
+    wrongOwnerDecision.map(([name, expected]) => `${name}:${hostCommitsOf(name) ?? "missing"} expected=${expected}`).join(" ")
+      || "all three agree");
   // `supports` is written inline on one adapter and one-field-per-line on the other three, so the
   // field is matched WITHOUT its leading newline — anchoring on the layout would have made this
   // rule true for three adapters and unaskable for the fourth.

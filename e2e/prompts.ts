@@ -4,7 +4,8 @@
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "../merge-prompt";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildEnhancePrompt } from "../enhance-prompt";
-import { laneDoneLooking, laneQuietSince, DONE_LOOKING_RULES, DONE_LOOKING_PROSE,
+import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, laneQuietSince,
+  DONE_LOOKING_RULES, DONE_LOOKING_PROSE, HOST_COMMIT_LOOKING_RULES,
   laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
 import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDOW_GPT } from "../src/protocol";
@@ -634,7 +635,7 @@ export async function run(): Promise<void> {
   // pane, a wedged rebase or a dirty tree and nobody would notice until an agent spawned there. ---
   {
     const OK: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 0, ahead: 2 }, gitOp: false, merge: null,
-      observed: true, awaiting: null };
+      observed: true, awaiting: null, hostCommits: false };
     const T = 1000; // idle threshold
     check("done-looking: true on idle + clean + git.ahead>0", laneDoneLooking(OK, T) === true);
     check("done-looking: false on a DIRTY tree",
@@ -686,6 +687,68 @@ export async function run(): Promise<void> {
       && DONE_LOOKING_PROSE.endsWith("→ done-looking"), DONE_LOOKING_PROSE);
   }
 
+  // --- `host-commit-looking`: the distinct completion shape for a harness whose lane produces
+  // files but whose HOST owns the commit. This is intentionally NOT done-looking with relaxed
+  // thresholds: the dirty+zero-ahead shape on Claude remains stalled-dirty, and awaiting-owner is
+  // parked by design. Every permission-shaped unknown is exercised in the false direction. ---
+  {
+    const HC: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 2, ahead: 0 }, gitOp: false,
+      merge: null, observed: true, awaiting: null, hostCommits: true };
+    const T = 1000;
+    check("host-commit-looking: true for an idle host-committed lane with dirty>0 and ahead===0",
+      laneHostCommitLooking(HC, T) === true);
+    check("host-commit-looking: false for the identical dirty tree on a self-committing Claude harness",
+      laneHostCommitLooking({ ...HC, hostCommits: false }, T) === false);
+    check("host-commit-looking: false while the lane is parked awaiting the owner",
+      laneHostCommitLooking({ ...HC, awaiting: "owner" }, T) === false);
+    check("host-commit-looking: false when clean, ahead, active, dead, in a git op, or merge-blocked",
+      laneHostCommitLooking({ ...HC, git: { dirty: 0, ahead: 0 } }, T) === false
+      && laneHostCommitLooking({ ...HC, git: { dirty: 2, ahead: 1 } }, T) === false
+      && laneHostCommitLooking({ ...HC, idleMs: T - 1 }, T) === false
+      && laneHostCommitLooking({ ...HC, alive: false }, T) === false
+      && laneHostCommitLooking({ ...HC, gitOp: true }, T) === false
+      && laneHostCommitLooking({ ...HC, merge: { status: "blocked" } }, T) === false);
+    check("host-commit-looking: unknown alive/git/idle/git-op facts never become yes",
+      laneHostCommitLooking({ ...HC, alive: null }, T) === false
+      && laneHostCommitLooking({ ...HC, git: null }, T) === false
+      && laneHostCommitLooking({ ...HC, idleMs: null }, T) === false
+      && laneHostCommitLooking({ ...HC, gitOp: null }, T) === false);
+    check("host-commit-looking: exactly the idle clause is a clock",
+      HOST_COMMIT_LOOKING_RULES.filter((r) => r.clock).length === 1
+      && HOST_COMMIT_LOOKING_RULES.find((r) => r.clock)?.prose === "idle");
+    check("watch selector: the host-commit shape selects the second arm; Claude dirt and awaiting-owner select none",
+      laneWatchSignal(HC, T) === "host-commit-looking"
+      && laneWatchSignal({ ...HC, hostCommits: false }, T) === null
+      && laneWatchSignal({ ...HC, awaiting: "owner" }, T) === null);
+    const hostText = laneWatchMessage(7, "lane-branch", HC, "host-commit-looking");
+    check("watch text: the weaker arm says UNCOMMITTED, expected zero-ahead, and the exact host commit action",
+      hostText.includes("LOOKS ready for a host commit")
+      && hostText.includes("The work is UNCOMMITTED, 0 ahead is expected for this harness, and the next step is a host commit via POST /api/slots/7/commit.")
+      && hostText.includes("server's weaker predicate") && hostText.includes("NOT a report from that lane"),
+      hostText);
+    // Product proof, not a comment: ahead>0 and ahead===0 keep the two completion predicates
+    // disjoint across unknowns, harness ownership, dirty state and awaiting-owner.
+    let both = 0, hostSeen = 0, doneSeen = 0, cases = 0;
+    for (const hostCommits of [true, false]) for (const alive of [true, false, null])
+      for (const idleMs of [null, 0, 5000])
+        for (const git of [null, { dirty: 0, ahead: 0 }, { dirty: 1, ahead: 0 },
+          { dirty: 0, ahead: 1 }, { dirty: 1, ahead: 1 }])
+          for (const gitOp of [null, false, true])
+            for (const merge of [null, { status: "blocked" }, { status: "merged" }])
+              for (const awaiting of [null, "owner"] as const) {
+                const v: LaneSignalView = { hostCommits, alive, idleMs, git, gitOp, merge,
+                  observed: true, awaiting };
+                const h = laneHostCommitLooking(v, T), d = laneDoneLooking(v, T);
+                cases++;
+                if (h) hostSeen++;
+                if (d) doneSeen++;
+                if (h && d) both++;
+              }
+    check("done-looking and host-commit-looking are disjoint across every combination of facts",
+      both === 0 && hostSeen > 0 && doneSeen > 0,
+      `cases=${cases} both=${both} host=${hostSeen} done=${doneSeen}`);
+  }
+
   // --- `stalled` as a DETERMINISTIC predicate (briefs/lane-stalled-fact.md): the same pure-function
   // treatment, and it needs it MORE than its neighbour. done-looking is a positive claim, so an
   // unknown fact makes it false — silence. `stalled` is an accusation, so a missing fact must not be
@@ -695,7 +758,7 @@ export async function run(): Promise<void> {
   {
     // a lane that is alive, has been observed, has committed NOTHING, and has gone quiet
     const ST: LaneSignalView = { alive: true, idleMs: 120_000, git: { dirty: 0, ahead: 0 }, gitOp: false,
-      merge: null, observed: true, awaiting: null };
+      merge: null, observed: true, awaiting: null, hostCommits: false };
     const T = 60_000; // stalled threshold
     check("stalled: true on alive + observed + idle + git.ahead=0 (the state that freezes the fleet)",
       laneStalled(ST, T) === true);
@@ -724,7 +787,7 @@ export async function run(): Promise<void> {
     // reports idleMs ~1.79e12 — past every threshold — while its git facts are still unknown. Read
     // through `!doneLooking` it is "stalled" two seconds after the owner opened it.
     const RECYCLED: LaneSignalView = { alive: true, idleMs: 1.79e12, git: null, gitOp: null,
-      merge: null, observed: false, awaiting: null };
+      merge: null, observed: false, awaiting: null, hostCommits: false };
     check("stalled: false for a JUST-RECYCLED slot (lastOutput 0 reads as ~1.79e12ms idle, git unknown)",
       laneStalled(RECYCLED, T) === false && laneDoneLooking(RECYCLED, T) === false,
       `idleMs=${RECYCLED.idleMs} observed=${RECYCLED.observed}`);
@@ -751,7 +814,8 @@ export async function run(): Promise<void> {
       for (const alive of alives) for (const idleMs of idles) for (const git of gits)
         for (const gitOp of ops) for (const merge of merges)
           for (const observed of [true, false]) for (const awaiting of [null, "owner"] as const) {
-            const v: LaneSignalView = { alive, idleMs, git, gitOp, merge, observed, awaiting };
+            const v: LaneSignalView = { alive, idleMs, git, gitOp, merge, observed, awaiting,
+              hostCommits: false };
             cases++;
             if (laneStalled(v, T)) everStalled++;
             if (laneStalled(v, T) && laneDoneLooking(v, T)) both++;

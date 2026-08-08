@@ -26,6 +26,10 @@ export interface LaneSignalView {
   observed: boolean;
   // the owner's parking brake (Slot.awaiting) — a clarify lane told to report and wait
   awaiting: "owner" | null;
+  // adapter-declared ownership of the repository write: true means the lane produces files while
+  // Fleet's HOST records them (POST /api/slots/:id/commit). This is a fact supplied by server.ts,
+  // not something this pure predicate guesses from a harness id.
+  hostCommits: boolean;
 }
 
 // a merge the owner has to look at is not a lane that finished its work
@@ -56,6 +60,56 @@ export const DONE_LOOKING_PROSE =
 
 export function laneDoneLooking(v: LaneSignalView, idleThresholdMs: number): boolean {
   return DONE_LOOKING_RULES.every((r) => r.holds(v, idleThresholdMs));
+}
+
+// --- `host-commit-looking`: a SECOND predicate, not a relaxed done-looking.
+//
+// A host-committed harness cannot make done-looking true: its intended finished shape is dirty>0
+// and ahead===0 until the host records the work. The same git shape on a self-committing harness is
+// merely stalled-dirty, so adapter ownership is a required positive fact here. `awaiting:null`
+// excludes a clarify lane parked by design. As above, every permission-shaped fact is tested in
+// the positive direction; an unknown alive/git/idle/git-op never becomes permission to notify.
+// The ahead===0 clause also makes this predicate disjoint from done-looking by construction.
+export const HOST_COMMIT_LOOKING_RULES: readonly LaneRule[] = [
+  { prose: "host commits for this harness", holds: (v) => v.hostCommits === true },
+  { prose: "alive", holds: (v) => v.alive === true },
+  { prose: "idle", holds: (v, t) => v.idleMs !== null && v.idleMs >= t, clock: true },
+  { prose: "no git op in progress", holds: (v) => v.gitOp === false },
+  { prose: "no blocked/errored merge", holds: (v) => !MERGE_BLOCKING.includes(v.merge?.status ?? "") },
+  { prose: "dirty tree", holds: (v) => v.git !== null && v.git.dirty > 0 },
+  { prose: "git.ahead===0", holds: (v) => v.git !== null && v.git.ahead === 0 },
+  { prose: "awaiting:null", holds: (v) => v.awaiting === null },
+];
+
+export function laneHostCommitLooking(v: LaneSignalView, idleThresholdMs: number): boolean {
+  return HOST_COMMIT_LOOKING_RULES.every((r) => r.holds(v, idleThresholdMs));
+}
+
+// The watch needs not only the OR but which disjoint predicate supplied it, because the receiver's
+// next action differs. Keeping the selector pure makes the new arm testable without weakening the
+// fleet-wide foreign-harness automation policy merely to create an integration fixture.
+export type LaneWatchSignal = "done-looking" | "host-commit-looking";
+export function laneWatchSignal(v: LaneSignalView, idleThresholdMs: number): LaneWatchSignal | null {
+  if (laneDoneLooking(v, idleThresholdMs)) return "done-looking";
+  if (laneHostCommitLooking(v, idleThresholdMs)) return "host-commit-looking";
+  return null;
+}
+
+export function laneWatchMessage(slot: number, branch: string, v: LaneSignalView,
+  signal: LaneWatchSignal): string {
+  const g = v.git;
+  if (signal === "host-commit-looking") {
+    return `[fleet] slot ${slot} (${branch}) now LOOKS ready for a host commit — pane idle, `
+      + `${g?.ahead ?? "?"} ahead / ${g?.dirty ?? "?"} dirty. The work is UNCOMMITTED, 0 ahead is expected `
+      + `for this harness, and the next step is a host commit via POST /api/slots/${slot}/commit. This is the `
+      + `server's weaker predicate over facts (host commits + idle + dirty>0 + ahead===0 + awaiting:null), `
+      + `NOT a report from that lane. Read the pane before you commit, review, or land.`;
+  }
+  return `[fleet] slot ${slot} (${branch}) now LOOKS done — pane idle, tree clean, `
+    + `${g?.ahead ?? "?"} ahead / ${g?.dirty ?? "?"} dirty. That is the server's predicate over facts `
+    + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
+    + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
+    + `Read the pane before you act, and never land on this message alone.`;
 }
 
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already

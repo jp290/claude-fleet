@@ -230,6 +230,13 @@ interface Harness {
   // default adapter is literally `claude` regardless of FLEET_CMD (see the worker-tier note at
   // SLOT_MODEL_RE), i.e. not the same question the slot probe asks.
   worker(o: { sessionId: string; model: string; tools: ToolProfile }): { cmd: string; comms: string[] } | null;
+  // A context reader is deliberately separate from `supports.transcript`: the latter promises a
+  // CLAUDE-CODE conversation that viewEntry can parse, while this narrower adapter hook promises
+  // only a host-readable usage file and therefore cannot accidentally enable transcript/summary.
+  context: {
+    file(o: { cwd: string; sessionId: string }): string | null;
+    used(file: string, size: number): number | null;
+  } | null;
   // Does this harness take a session id at spawn? It decides whether s.sessionId is pinned at all,
   // which is what makes a conversation survive a pane respawn.
   pinsSession: boolean;
@@ -313,6 +320,8 @@ const CLAUDE_HARNESS: Harness = {
     cmd: `${PATH_EXPORT}claude --session-id ${o.sessionId} --model '${o.model}' ${o.tools}`,
     comms: ["claude"],
   }),
+  // The default adapter follows the exact pinned path and parser contextFill used before the hook.
+  context: { file: (o) => `${projDir(o.cwd)}/${o.sessionId}.jsonl`, used: readUsedTokens },
   pinsSession: IS_CLAUDE,
   // null = defer to HARNESS_COMMS, which IS the pre-per-slot behaviour for every slot that names no
   // harness: ["claude"] on a claude fleet, the operator's declaration on a declared one, and the
@@ -469,6 +478,8 @@ const PI_HARNESS: Harness = {
   // for free. The second, independent blocker (stated so a future transcript feature does not read
   // as the only gap): ToolProfile is a claude CLI flag set, and Pi has no equivalent to `--tools ""`.
   worker: () => null,
+  // Pi's session file is not a Fleet transcript, but it does carry host-readable usage counters.
+  context: { file: piContextFile, used: readPiUsedTokens },
   pinsSession: true,
   // Depth 1 is enough, and that is a MEASUREMENT, not an assumption: briefs/pi-messungen-2026-08-07.md
   // (d) found `pi` itself on depth 1, while the bridge's Claude-Agent-SDK child sits on depth 2 and
@@ -630,6 +641,7 @@ const CONTAINER_HARNESS: Harness = {
   // names one field down). Containerising the worker therefore is not a spawn-line change: it needs
   // an answer channel that is host-local by construction, and that decision is not made here.
   worker: () => null,
+  context: null, // the container's usage file is not host-readable, just like its transcript
   // mirrors CLAUDE_HARNESS, and for its reason rather than by imitation: agentCmd passes a session
   // id only when BASE_CMD is claude, so a stand-in FLEET_CMD pins none here either.
   pinsSession: IS_CLAUDE,
@@ -734,6 +746,7 @@ const CODEX_HARNESS: Harness = {
   // that id. (2) It writes no ~/.claude transcript in the shape projDir()/viewEntry parse. (3) Its
   // sandbox is a WRITE fence with no ToolProfile equivalent — `--tools ""` has no counterpart.
   worker: () => null,
+  context: null, // Codex is deliberately left for its rollout-format integration, not guessed here
   // Codex has no spawn-time `--session-id`. MEASURED: `codex resume --last <prompt>` bypasses the
   // picker and genuinely continued the newest cwd-matched conversation (same rollout/session id,
   // with an earlier marker retained). But `--last` identifies by recency, not by this Fleet slot:
@@ -9953,48 +9966,61 @@ function transcriptFact(s: Slot): { bytes: number; mtime: number } | null {
 // with what the owner's own status line shows (measured 2026-08-07: 150 349 summed input tokens
 // against a 1M window = 15.0%, and the pane read 15%).
 //
-// FIVE absences, and every one of them is `null` — never 0, for the reason transcriptFact states
+// SIX absences, and every one of them is `null` — never 0, for the reason transcriptFact states
 // and this inherits wholesale ("a fact that silently swaps subject is worse than no fact"):
 //   1. no pinned sessionId. transcriptFile's newest-by-mtime fallback can flap between files when
 //      several slots share a cwd, so an unpinned slot is "cannot tell", not "guess".
-//   2. no transcript on disk yet — claude writes it on the first prompt.
-//   3. a transcript with no usage record in its tail.
-//   4. a harness that writes no CLAUDE-CODE transcripts (`supports.transcript` false). Fleet cannot
-//      know a foreign harness's fill; the honest answer is that it cannot, not a number read out of
-//      whatever file happened to be newest in the same directory.
+//   2. no usage file on disk yet — claude and pi write one only after starting the session.
+//   3. a usage file with no usage record in its tail.
+//   4. a harness with no host-side context reader. This is intentionally NOT supports.transcript:
+//      Pi supplies the narrow fact without promising a CLAUDE-CODE conversation to other features.
 //   5. a model whose context window this server cannot name (contextWindowFor → null). Tokens
 //      without a denominator are not a percentage, so the whole fact goes, not just the pct.
+//   6. a reader that cannot map exactly one identity-anchored file to the slot. In particular,
+//      multiple Pi files naming the same pinned id are ambiguity, never a licence to pick by mtime.
 const CTX_TAIL_BYTES = 512 * 1024;
 interface ContextFill { usedTokens: number; windowTokens: number; pct: number }
-// parsed usedTokens per slot, keyed by the file identity it was read from — a transcript grows to
+// Positive source resolutions are cached separately: Pi needs one directory read + session-head
+// validation to find its timestamped filename, but after that an unchanged file must cost exactly
+// one stat and nothing else on the 2 s owner poll. Identity includes harness/cwd/session so recycling
+// a slot cannot inherit the previous occupant's path.
+const ctxFiles = new Map<number, { identity: string; file: string }>();
+// parsed usedTokens per slot, keyed by the file identity it was read from — a usage file grows to
 // megabytes and this rides the 2 s owner poll, so an unchanged file must cost one stat and nothing
 // else. The window is NOT cached with it: it comes from the slot's model, which can change without
 // the file moving, and a cached denominator would keep answering for the previous model.
 const ctxCache = new Map<number, { key: string; used: number | null }>();
 function contextFill(s: Slot): ContextFill | null {
   if (!s.cwd || !s.sessionId) return null;
-  // the SAME question transcriptFile asks first, asked here rather than by calling it: its
-  // newest-by-mtime fallback is a readdir plus up to eight head-reads, and this rides the 2 s poll
-  // where it would run for every unpinned slot on every request. The answer it would give is
-  // rejected here anyway — this fact is pinned-only, for transcriptFact's reason — so the cheap
-  // form is also the exact form. Both branches must stay: an undeclared harness has no claude
-  // transcript at all, and a pinned path that does not exist yet is not a licence to guess.
-  if (!harnessOf(s.harness).supports.transcript) return null;
-  const pinned = `${projDir(s.cwd)}/${s.sessionId}.jsonl`;
-  const windowTokens = contextWindowFor(s.model ?? DEFAULT_MODEL);
+  const h = harnessOf(s.harness);
+  const reader = h.context;
+  if (!reader) return null;
+  // Only the default adapter actually receives DEFAULT_MODEL when its slot has no explicit model.
+  // A foreign harness's ambient model is unknown; borrowing Claude's default would fabricate 1M.
+  const windowTokens = contextWindowFor(s.model ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL : null));
   if (windowTokens === null) return null;
+
+  const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
+  const known = ctxFiles.get(s.id);
+  const file = known?.identity === identity ? known.file : reader.file({ cwd: s.cwd, sessionId: s.sessionId });
+  if (!file) return null;
+  if (known?.identity !== identity) ctxFiles.set(s.id, { identity, file });
+
   let used: number | null;
   try {
-    const st = statSync(pinned);
-    const key = `${st.size}:${st.mtimeMs}`;
+    const st = statSync(file);
+    const key = `${file}:${st.size}:${st.mtimeMs}`;
     const hit = ctxCache.get(s.id);
     if (hit && hit.key === key) {
       used = hit.used;
     } else {
-      used = readUsedTokens(pinned, st.size);
+      used = reader.used(file, st.size);
       ctxCache.set(s.id, { key, used });
     }
   } catch {
+    // A timestamped Pi file can be replaced across a resume. Forget the positive resolution so the
+    // next poll re-runs the identity check rather than holding a dead path forever.
+    ctxFiles.delete(s.id);
     return null;
   }
   if (used === null) return null;
@@ -10029,6 +10055,86 @@ function readUsedTokens(file: string, size: number): number | null {
     };
     // input + both cache tiers. output_tokens is absent from this sum on purpose — see the region note.
     return num("input_tokens") + num("cache_creation_input_tokens") + num("cache_read_input_tokens");
+  }
+  return null;
+}
+
+// Pi puts the timestamp in the filename, so the pinned UUID is a suffix rather than the whole
+// basename. The directory slug narrows by cwd, then the mandatory session header proves BOTH cwd
+// and id. No mtime participates; zero or several valid candidates is absence/ambiguity → null.
+function piContextFile(o: { cwd: string; sessionId: string }): string | null {
+  // REALPATH FIRST, and it is not a nicety: pi is a node process, and `process.cwd()` returns the
+  // PHYSICAL path, so the slug it derives is the symlink-resolved one. Measured 2026-08-08 — a slot
+  // opened on `/var/folders/…` produced `--private-var-folders-…--` on disk. A lane under
+  // `<repo>.worktrees/…` traverses no symlink, so the raw form works there and this defect would
+  // have stayed invisible until the first cwd that does; the e2e instances live under $TMPDIR, which
+  // is exactly such a path, which is why the check caught it. Falling back to the raw cwd keeps an
+  // unresolvable path answering `null` from the readdir below rather than throwing here.
+  let real: string;
+  try { real = realpathSync(o.cwd); } catch { real = o.cwd; }
+  const slug = `--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
+  const dir = `${HOME}/.pi/agent/sessions/${slug}`;
+  let names: string[];
+  try { names = readdirSync(dir).filter((n) => n.endsWith(`_${o.sessionId}.jsonl`)); }
+  catch { return null; }
+  const valid: string[] = [];
+  for (const name of names) {
+    const file = `${dir}/${name}`;
+    let fd: number | null = null;
+    try {
+      fd = openSync(file, "r");
+      const buf = Buffer.alloc(16 * 1024);
+      const n = readSync(fd, buf, 0, buf.length, 0);
+      const text = buf.toString("utf8", 0, n);
+      const end = text.indexOf("\n");
+      if (end < 0) continue;
+      const row = JSON.parse(text.slice(0, end)) as { type?: unknown; id?: unknown; cwd?: unknown };
+      // ...and the header's own cwd is compared against BOTH forms for the same reason: pi records
+      // the physical path, while s.cwd is whatever the request named. Accepting either does not
+      // weaken the anchor — the candidate is already narrowed to this directory AND this pinned
+      // UUID; the header is corroboration, and rejecting a real match over a symlink would only make
+      // the fact absent where it is knowable.
+      if (row.type === "session" && row.id === o.sessionId
+        && (row.cwd === o.cwd || row.cwd === real)) valid.push(file);
+    } catch { continue; }
+    finally { if (fd !== null) try { closeSync(fd); } catch { /* best effort */ } }
+  }
+  return valid.length === 1 ? valid[0] : null;
+}
+
+// Pi's newest assistant usage record, tail-read under the same bounded contract as Claude's. Input
+// plus cacheRead plus cacheWrite is what is currently IN the window: cached input still occupies
+// context even when it was not newly paid for. output (and reasoning, which is part of completion)
+// is excluded for the same reason Claude's output_tokens is excluded above.
+function readPiUsedTokens(file: string, size: number): number | null {
+  const from = Math.max(0, size - CTX_TAIL_BYTES);
+  let text: string;
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const buf = Buffer.alloc(size - from);
+    const n = readSync(fd, buf, 0, buf.length, from);
+    text = buf.toString("utf8", 0, n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) try { closeSync(fd); } catch { /* best effort */ }
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"usage"')) continue;
+    let row: { type?: unknown; message?: { role?: unknown; usage?: unknown } };
+    try { row = JSON.parse(lines[i]) as typeof row; }
+    catch { continue; } // torn first tail line — keep walking back
+    const u = row.message?.usage;
+    if (row.type !== "message" || row.message?.role !== "assistant" || typeof u !== "object" || u === null) continue;
+    const num = (k: string): number | null => {
+      const v = (u as Record<string, unknown>)[k];
+      return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+    };
+    const input = num("input"), cacheRead = num("cacheRead"), cacheWrite = num("cacheWrite");
+    if (input === null || cacheRead === null || cacheWrite === null) continue;
+    return input + cacheRead + cacheWrite;
   }
   return null;
 }

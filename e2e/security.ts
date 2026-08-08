@@ -18,7 +18,7 @@
 // Plus the invariants whose only statement today is a code comment: credentials are revoked when
 // a slot dies or is recycled (`server.ts` ~1147), and no secret reaches the audit log or any
 // non-owner-readable payload.
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { BASE, H, REPO, ROOT, TOKEN, check, get, post, readText, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
@@ -518,6 +518,72 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const tp = (await (await get(`/api/slots/${HARNESS_SLOT}/transcript?after=0`)).json()) as { source: string | null; entries: unknown[] };
   check("§6 a pi slot reports NO transcript source (the mtime fallback must not hand it a stranger's conversation)",
     tp.source === null && tp.entries.length === 0, `${String(tp.source)} / ${tp.entries.length}`);
+
+  // --- the SEPARATE context reader. Keep transcript=false above: this fact comes from Pi's own
+  // host-side usage file, identity-pinned by cwd + session UUID, and enables no conversation view.
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const piCtxOpen = await post(`/api/slots/${HARNESS_SLOT}/open`,
+    { cwd: REPO, harness: "pi", model: "openai-codex/gpt-5.6-sol" });
+  check("§6 ctx fixture: a Pi GPT slot opens for the usage-file probe", piCtxOpen.ok, String(piCtxOpen.status));
+  const piCtxCmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
+  const piSid = piCtxCmd.match(/--session-id ([0-9a-f-]{36})\b/)?.[1] ?? "";
+  check("§6 ctx fixture: the probe has the pinned Pi session UUID it must identify",
+    /^[0-9a-f-]{36}$/.test(piSid), piCtxCmd.slice(-160));
+  // REALPATH, because that is where pi itself writes: it is a node process and `process.cwd()`
+  // returns the physical path, so a slot opened on $TMPDIR (a symlink on macOS) produces a
+  // `--private-var-folders-…--` slug. Deriving this fixture from the RAW REPO was this check's own
+  // first red — it planted the file in a directory pi would never use, and the failure then read
+  // like "the reader is broken" while nothing had been measured. It also exposed the same blind spot
+  // in the reader itself, which is the finding this row exists to protect.
+  const piSessionDir = `${process.env.HOME}/.pi/agent/sessions/--${realpathSync(REPO).replace(/^\/+/, "").replaceAll("/", "-")}--`;
+  mkdirSync(piSessionDir, { recursive: true });
+  const matchingPiFiles = (): string[] => readdirSync(piSessionDir)
+    .filter((n) => n.endsWith(`_${piSid}.jsonl`)).map((n) => `${piSessionDir}/${n}`);
+  for (const file of matchingPiFiles()) rmSync(file, { force: true });
+  check("§6 ctx fixture: the pinned Pi session has NO readable file before the absence probe",
+    piSid !== "" && matchingPiFiles().length === 0, matchingPiFiles().join(","));
+  type PiFill = { usedTokens: number; windowTokens: number; pct: number } | null;
+  const piFill = async (): Promise<PiFill> => {
+    const sx = (await (await get("/api/sessions")).json()) as { slots: { id: number; ctx: PiFill }[] };
+    return sx.slots.find((s) => s.id === HARNESS_SLOT)?.ctx ?? null;
+  };
+  check("§6 Pi context absence stays absence: no readable session yields ctx=null, never 0%",
+    await piFill() === null);
+
+  // the header carries the PHYSICAL path, because that is what pi records: it is a node process and
+  // `process.cwd()` resolves symlinks. Writing the raw REPO here was this fixture's second red — the
+  // file then sat in the right directory under the right UUID and was still rejected by the header
+  // check, which is indistinguishable from "the reader is broken" unless you look at the row. A
+  // fixture that does not model what the real producer writes cannot prove anything about the reader.
+  const session = JSON.stringify({ type: "session", version: 3, id: piSid,
+    timestamp: "2026-08-08T00:00:00.000Z", cwd: realpathSync(REPO) });
+  const piFile = `${piSessionDir}/2026-08-08T00-00-00.000Z_${piSid}.jsonl`;
+  const piDuplicate = `${piSessionDir}/2026-08-08T00-00-01.000Z_${piSid}.jsonl`;
+  writeFileSync(piFile, `${session}\n`);
+  writeFileSync(piDuplicate, `${session}\n`);
+  check("§6 ctx fixture: two independently readable files claim the same cwd + pinned UUID",
+    existsSync(piFile) && existsSync(piDuplicate));
+  check("§6 ambiguous Pi identity stays absent (two matching files are never resolved by mtime)",
+    await piFill() === null);
+  rmSync(piDuplicate, { force: true });
+  const older = JSON.stringify({ type: "message", message: { role: "assistant",
+    usage: { input: 1, output: 9_000_000, cacheRead: 2, cacheWrite: 3, reasoning: 4, totalTokens: 9_000_006 } } });
+  const newest = JSON.stringify({ type: "message", message: { role: "assistant",
+    usage: { input: 1_167, output: 585, cacheRead: 51_712, cacheWrite: 0, reasoning: 116, totalTokens: 53_464 } } });
+  const trailing = JSON.stringify({ type: "message", message: { role: "user", content: "tail" } });
+  writeFileSync(piFile, `${session}\n${older}\n${newest}\n${trailing}\n`);
+  check("§6 ctx fixture: exactly one cwd+UUID-pinned Pi usage file remains",
+    matchingPiFiles().length === 1 && matchingPiFiles()[0] === piFile, matchingPiFiles().join(","));
+  let measured: PiFill = null;
+  for (let i = 0; i < 20 && measured === null; i++) {
+    measured = await piFill();
+    if (measured === null) await Bun.sleep(100);
+  }
+  check("§6 Pi context reads newest input+cache usage, excludes completion, and uses 258,400 effective",
+    measured?.usedTokens === 52_879 && measured.windowTokens === 258_400 && measured.pct === 20.5,
+    JSON.stringify(measured));
+  rmSync(piFile, { force: true });
+
   // --- §6b THE PROBE IS PER SLOT, and this fleet is the sharpest place to prove it: FLEET_CMD is
   // `true`, an UNDECLARED command, so HARNESS_COMMS is empty and every default-adapter slot takes
   // the "unprobed" waiver. A pi slot declares its comms through the ADAPTER, so it is genuinely

@@ -85,14 +85,20 @@ export const FLEET_DEFAULT_MODEL = "claude-opus-5[1m]";
 // no-suffix case is not a guess of the same kind: every claude model without a variant suffix is
 // 200k, and that IS the base window rather than a stand-in for an unknown one.
 //
-// Scope: claude models. Every caller reaches this only for a harness whose `supports.transcript` is
-// true (server.ts, contextFill) — a foreign harness's fill is unknowable one step earlier, from the
-// absence of a claude transcript, so this function is never asked about a `provider/id` name.
+// Scope: claude models plus GPT model ids, including a provider prefix and Pi's optional thinking
+// suffix. GPT's 258,400 is the USABLE window measured from Codex's own 272,000 nominal window at
+// `effective_context_window_percent: 95` (2026-08-08). Using 272,000 here would make the warning
+// instrument systematically optimistic. Everything else remains null rather than borrowing either
+// provider's denominator.
 export const CONTEXT_WINDOW_BASE = 200_000;
 export const CONTEXT_WINDOW_1M = 1_000_000;
+export const CONTEXT_WINDOW_GPT = 258_400;
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;
-  const m = /^([^[]+)(?:\[([A-Za-z0-9]{1,8})\])?$/.exec(model);
+  if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
+    return CONTEXT_WINDOW_GPT;
+  }
+  const m = /^(claude-[^[]+)(?:\[([A-Za-z0-9]{1,8})\])?$/.exec(model);
   if (!m) return null;
   if (m[2] === undefined) return CONTEXT_WINDOW_BASE;
   return m[2].toLowerCase() === "1m" ? CONTEXT_WINDOW_1M : null;

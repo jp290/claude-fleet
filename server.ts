@@ -2528,11 +2528,15 @@ function expandCwd(raw: string): string {
 }
 
 // `harness`/`effort` default to null — i.e. the claude adapter — and that default is the
-// DISPATCHER'S BOLT, not a convenience: tickDispatch/openLaneInSlot call this without them, so an
-// unattended lane can only ever be spawned by the default harness. Pi has no permission layer
-// (see PI_HARNESS.note), and whether an autonomous lane may run without one is an owner decision
-// that has not been made — so this fails closed by construction rather than by a check that a
-// later caller could forget to write.
+// DISPATCHER'S BOLT, not a convenience. Pi has no permission layer (see PI_HARNESS.note), and
+// whether an autonomous lane may run without one is an owner decision that has not been made — so
+// this fails closed by construction rather than by a check that a later caller could forget.
+// WHERE THE BOLT NOW SITS, corrected: dispatchTask does hand a harness through, because the
+// attended ▸ start button may name one (a task started the /api/lanes way keeps no queue link,
+// which is the whole reason that plumbing exists). What is unattended is not the FUNCTION but the
+// CALL: tickDispatch passes no `spawn`, so the tick still reaches only this default — and
+// dispatchTask now carries the same two-condition refusal every other unattended path uses, so
+// the guarantee no longer rests on an absence alone. `effort` remains unreachable from here.
 async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null,
   model: string | null = null, label: string | null = null,
   harness: string | null = null, effort: string | null = null): Promise<void> {
@@ -3079,8 +3083,26 @@ const dispatchingTasks = new Set<string>();
 // `clarify` opens the lane to SETTLE the done-criterion with the owner instead of executing
 // (owner ask 2026-08-05, the third answer to an eval:review verdict — see clarify-prompt.ts).
 // Owner-only by construction: no tick passes it, only the attended button does.
-async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false):
+//
+// `spawn` is the same choice /api/lanes takes — WHICH AGENT runs the lane — and it exists here for
+// one reason: a foreign-harness lane started the other way (POST /api/lanes + a hand-sent brief)
+// leaves the queue row unlinked, so nothing requeues it on a failed spawn, no outcome row carries
+// it, and the row must be closed by hand. The default is the tick's shape and stays the default
+// adapter, byte-for-byte what every caller before this sent.
+type DispatchSpawn = { harness: string | null; model: string | null };
+const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null };
+async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
+  spawn: DispatchSpawn = DEFAULT_SPAWN):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
+  // THE BOLT, restated where the choice now arrives. It used to be openSlot's parameter default
+  // alone: the tick called the short form, so it COULD not name a harness. That absence still
+  // holds (tickDispatch passes no `spawn`, pinned in e2e/pins.ts) — this is the second lock, for
+  // the case the absence cannot cover: a future unattended caller that does pass one. Same two
+  // conditions every other unattended path answers to, and in the same order, so the reason a
+  // start was refused is the specific one rather than a generic failure.
+  const spawnH = harnessOf(spawn.harness);
+  if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
+    return { ok: false, error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` };
   if (dispatchingTasks.has(next.id)) return { ok: false, error: "task is already being dispatched" };
   dispatchingTasks.add(next.id);
   // captured BEFORE any mutation, restored on every failure path: an eval-auto row enters as
@@ -3094,8 +3116,10 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     const wt = await createWorktree(next.repo ?? DISPATCH_REPO, "");
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
+    // model/harness ride in from the attended request only (DEFAULT_SPAWN is the tick's shape and
+    // is the claude adapter); `label` stays null here because the line below names the slot.
     await openSlot(free, wt.path, { repo: wt.repo, branch: wt.branch,
-      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) });
+      baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)) }, spawn.model, null, spawn.harness);
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release, and the only one that never passes through `queued` — this
     // route starts a `pending` row directly, so releaseTask never sees it. Stamped OVER whatever
@@ -3200,7 +3224,14 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // is still OUR lane before injecting external text, or we'd prompt an unrelated session
   const identityLost = (): boolean =>
     free.cwd !== wt.path || free.worktree?.branch !== wt.branch || next.slot !== free.id;
-  const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false } : { idleMs: 0 };
+  // `harness: false` on the OWNER path, and only there — the same waiver land/⏫ author/💾 commit
+  // already take, for the same reason canDeliver's own comment gives: the policy answers "may
+  // something UNATTENDED drive this slot", and a click that named the harness is not that. Without
+  // it an attended foreign-harness start is a lane that spawns and then never receives its brief:
+  // the gate would hold, the row requeue, and the worktree be torn down — the automation flag
+  // silently deciding an attended question. The ALIVE gate is not waived and is the one that
+  // matters here: a pane whose agent failed to boot is a bare shell, and the brief would run there.
+  const gateOpts = ownerAct ? { idleMs: 0, killSwitch: false, quietHours: false, harness: false } : { idleMs: 0 };
   // fresh claude-alive gate (was synergy-findings.md Tier-0 #2). Requeue on any failure — the
   // lane exists, the prompt waits. With the compile gone there is only ONE gate/send window left
   // to keep tight; the second round-trip the compile used to need went with it.
@@ -12532,12 +12563,24 @@ Bun.serve<WSData>({
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task can be started` }, 409);
       if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
-      const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
-      if (!free) return json({ error: "no free slot" }, 409);
       // `clarify`: same spawn, different founding prompt — settle the done-criterion with the
       // owner first (clarify-prompt.ts). Only reachable from this attended route.
       const dBody = await readJson(req);
       const clarify = dBody?.clarify === true;
+      // WHICH AGENT runs it, read the same way every attended spawn route reads it. Absent → null →
+      // the default adapter, so a body that predates this field takes exactly the path it always
+      // took. Validated BEFORE the free-slot lookup on purpose: a malformed request should be told
+      // it is malformed, not handed a 409 about machine capacity that would disappear on retry.
+      const dh = harnessIdOf(dBody);
+      if (!dh.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+      // ...and the model is judged by THAT harness's charset, never by one shared widened rule: a
+      // claude slot keeps MODEL_RE, a foreign one gets HARNESS_MODEL_RE. Two charsets, and the
+      // counter-proof that they have not collapsed lives in fleet-e2e-claude-gate.ts (phase 1).
+      const dHarness = harnessOf(dh.harness);
+      const dModel = modelOf(dBody, dHarness);
+      if (!dModel.ok) return json({ error: modelErrFor(dHarness) }, 400);
+      const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
+      if (!free) return json({ error: "no free slot" }, 409);
       // A RAW START is one no reading vouched for: no analysis at all, or a verdict that asked for
       // the owner. This route still gates on none of it — an attended click outranks every
       // advisory, which is the whole point of the button — but the acknowledgment the UI collects
@@ -12546,13 +12589,15 @@ Bun.serve<WSData>({
       // REALLY was raw: a flag on a ready row would pin a deliberation that never happened, and
       // an audit line that can be claimed rather than earned is worth less than no line at all.
       const rawAck = dBody?.acknowledged === true && (!t.analysis || t.analysis.verdict !== "ready");
-      const r = await dispatchTask(t, free, true, clarify);
+      const r = await dispatchTask(t, free, true, clarify, { harness: dh.harness, model: dModel.model });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode rides in the audit detail, never a second event name: one "an owner started a
       // task" line stays greppable, and the bare id remains the normal path's exact detail
+      // the harness rides in the SAME detail for the same reason, and only when one was named:
+      // a default start must keep producing the exact line it produced before this field existed
       audit("task_dispatch", r.slot,
-        [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : ""].filter(Boolean).join(" "));
+        [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : "", dh.harness ? `harness=${dh.harness}` : ""].filter(Boolean).join(" "));
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck });
     }
     // re-read this task from scratch: drop the verdict so the next sweep judges it again. An

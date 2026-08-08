@@ -218,6 +218,23 @@ for (const bad of ["anthropic/claude-sonnet-5", "sonnet:high", "*sonnet*"]) {
   const r = await post("/api/slots/5/open", { cwd: process.cwd(), model: bad });
   check(`claude fleet rejects the foreign model shape ${bad} (400)`, r.status === 400, String(r.status));
 }
+// ...and the SAME counter-proof for ▸ start, which since 2026-08-08 takes the same {harness, model}
+// pair the open/lane routes take. It is asserted separately rather than assumed from the rows
+// above: the dispatch route reads the body at its own site, so a fourth spawn path that validated
+// against one widened charset would pass every check up to here. The refusal must also be the
+// MODEL's — a task with no repo would 400 for a different reason and read like a pass.
+{
+  const cT = await post("/api/tasks", { text: "dispatch-model-charset-counterproof", queue: false });
+  const cId = ((await cT.json()) as { task?: { id: string } }).task?.id ?? "";
+  check("queue a task for the dispatch-route charset counter-proof", !!cId, String(cT.status));
+  for (const bad of ["anthropic/claude-sonnet-5", "sonnet:high", "*sonnet*"]) {
+    const r = await post(`/api/tasks/${cId}/dispatch`, { model: bad });
+    const rj = (await r.json()) as { error?: string };
+    check(`claude fleet rejects the foreign model shape ${bad} at ▸ start too (400, bad model)`,
+      r.status === 400 && /bad model/.test(rj.error ?? ""), `${r.status} ${JSON.stringify(rj)}`);
+  }
+  if (cId) await post(`/api/tasks/${cId}/delete`, {});
+}
 
 // --- branch 6: dispatcher POST-spawn re-check (server.ts tickDispatch, the fresh claudeAlive
 // gate after the 4s boot sleep). This is the highest-blast branch: the dispatcher spawns a lane

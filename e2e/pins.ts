@@ -422,24 +422,43 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // is an owner decision that has not been made — so until it is, the dispatcher spawns the
   // default harness and nothing else.
   //
-  // The bolt is openSlot's parameter DEFAULT: the two unattended spawn paths call it without a
-  // harness, so they cannot pass one. That is a stronger guarantee than a check inside the
-  // dispatcher (which a later edit could route around) — but it is also invisible, because it is
-  // an absence, and an absence is exactly what no compiler and no runtime test can notice. Hence
-  // a rule over the source: the unattended callers must keep passing openSlot the SHORT form.
+  // WHERE THE BOLT MOVED, and why the rule below is now stated over the CALL SITE rather than over
+  // dispatchTask's body. The bolt used to be openSlot's parameter default: dispatchTask called the
+  // short form, so it could not pass a harness at all. That stopped being true when the attended
+  // ▸ start button gained the choice (a foreign-harness lane started the /api/lanes way keeps no
+  // queue link, which is what that plumbing buys). dispatchTask therefore DOES name a harness now —
+  // the one it was handed — and the property that must hold is one level up: the unattended caller
+  // hands it nothing. Two pins, because that absence and the second lock are different claims and a
+  // single one of them would be a weaker guarantee than the pair reads as.
   //
-  // Stated over `openSlot(` call sites rather than a list of function names, so a third unattended
-  // spawn path added tomorrow is covered tomorrow. `harnessIdOf` is the marker of a call that took
-  // the choice from a REQUEST — every attended route reads it, no tick may.
-  // Bounded to dispatchTask's OWN body — the sole spawn path a tick can reach. An unbounded slice
-  // to EOF swallows every route and makes the pin vacuously true, which is how this pin failed the
-  // first time it was written.
+  // Bounded to the callers' OWN bodies — an unbounded slice to EOF swallows every route and makes
+  // the rule vacuously true, which is how this pin failed the first time it was written.
   const dStart = server.indexOf("async function dispatchTask");
   const dBody = server.slice(dStart, server.indexOf("\n}\n", dStart));
   pin("dispatchTask's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
     dStart > 0 && dBody.length > 500 && dBody.length < 20_000, `${dBody.length} bytes`);
-  pin("the only spawn a tick can reach names no harness — no foreign adapter has a permission layer, so unattended stays default",
-    /openSlot\(/.test(dBody) && !/harness|effort/.test(dBody), dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 120) ?? "no openSlot call");
+  // `effort` stays unreachable from the dispatch path entirely: nothing plumbs it, and a call that
+  // grew one would be naming a flag no dispatched lane has ever been asked whether it wants.
+  pin("the dispatch spawn passes model+harness and nothing more — effort never reaches a dispatched lane",
+    /openSlot\(/.test(dBody) && !/effort/.test(dBody), dBody.match(/openSlot\([^;]*/)?.[0]?.slice(0, 160) ?? "no openSlot call");
+  const tStart = server.indexOf("async function tickDispatch");
+  const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
+  pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
+    tStart > 0 && tBody.length > 500 && tBody.length < 20_000, `${tBody.length} bytes`);
+  // THE ABSENCE, at the one call a tick can make. A `spawn` argument here — from a Task field, an
+  // env default, anything — is the change that would hand an unattended lane a foreign agent, and
+  // it is invisible to tsc (the parameter is optional) and to every runtime test on a fleet with
+  // FLEET_HARNESS_AUTOMATION off, which is every suite.
+  const tickCalls = [...tBody.matchAll(/dispatchTask\(([^)]*)\)/g)].map((m) => m[1].trim());
+  pin("the tick's own dispatch call names no harness — the choice enters only through an attended request body",
+    tickCalls.length === 1 && tickCalls[0] === "next, free, false", tickCalls.join(" | ") || "no dispatchTask call");
+  // THE SECOND LOCK, for the case the absence above cannot cover: a future unattended caller that
+  // does pass one. Same two conditions as every other unattended path (the operator's env flag AND
+  // the adapter's own claim), so a harness added tomorrow inherits the refusal rather than the
+  // permission — the mistake the comms repair exists to undo, one field to the right.
+  pin("dispatchTask refuses a foreign harness on an UNATTENDED call — the flag and the adapter's claim, both",
+    /!ownerAct && !\(HARNESS_AUTOMATION && spawnH\.automatable\)/.test(dBody),
+    dBody.match(/spawnH[^\n]*/)?.[0]?.slice(0, 140) ?? "no unattended guard");
   // The bolt above is generic (it names no adapter), which is what makes it cover an adapter added
   // tomorrow. This one is specific and belongs next to it: the CONTAINER adapter's automatable is an
   // owner decision that has NOT been made, so it fails closed — and unlike pi's `true`, nothing at
@@ -510,10 +529,22 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // tomorrow is covered tomorrow.
   // call sites only — the declaration's parameter list is not a call, and it is the one occurrence
   // carrying a type annotation, so `:` is what separates the two
+  // The accepted shape is `…Body`, not the single name `body`: the dispatch route already had a
+  // `dBody` of its own when it gained the choice, and a rule that forced one spelling would have
+  // been answered by renaming a variable rather than by keeping the property. What the rule is
+  // actually about is the SOURCE — a readJson(req) result and never server state — and every such
+  // variable in this file is named for it.
   const harnessSources = [...server.matchAll(/harnessIdOf\(([^)]*)\)/g)]
     .map((m) => m[1].trim()).filter((a) => !a.includes(":"));
   pin("a harness is only ever chosen from a request body, never from server state",
-    harnessSources.length > 0 && harnessSources.every((a) => a === "body"), harnessSources.join(" | "));
+    harnessSources.length > 0 && harnessSources.every((a) => /^[a-z]*[Bb]ody$/.test(a)), harnessSources.join(" | "));
+  // ...and every one of those names really is a parsed request body at its own site — the half the
+  // name-shape rule above cannot see. A `const fooBody = someCache.get(...)` would satisfy the
+  // spelling and break the property, which is the whole point of the rule.
+  const bodyDecls = [...new Set(harnessSources)].filter((n) =>
+    !new RegExp(`const ${n} = await readJson\\(req\\)`).test(server));
+  pin("each of those body variables is a readJson(req) result, not a lookalike name",
+    bodyDecls.length === 0, bodyDecls.join(" | ") || "all bound to readJson(req)");
 
   // --- the CLONE lane form. Its one reason to exist is that the working copy shares nothing with
   // the repo it came from — no object database, and therefore no `.git/hooks` reachable from a

@@ -390,7 +390,11 @@ function piSandboxProfile(cwd: string): string | null {
   // and node's own plumbing writes /dev/null. Granting the whole tree rather than a literal list is
   // the honest trade: the raw block devices it nominally adds need root, and the fence's subject is
   // the owner's files.
-  const write = [root, ...SANDBOX_TMP_ROOTS, `${HOME}/.pi`];
+  // Bun's package cache is the one extra verify root: in a fenced Pi pane, `bunx tsc`
+  // failed with `bun is unable to write files to tempdir: PermissionDenied`, a direct write to
+  // ~/.bun/install/cache failed with `Operation not permitted`, and redirecting that exact cache
+  // to an already-granted temp root made bunx run. Do not widen this to all of ~/.bun.
+  const write = [root, ...SANDBOX_TMP_ROOTS, `${HOME}/.pi`, `${HOME}/.bun/install/cache`];
   if (!write.every((p) => SANDBOX_PATH_RE.test(p))) return null;
   const sub = (p: string) => `(subpath "${p}")`;
   // allow-default + a single deny of file-write*, re-granted narrowly. NOT Codex's `deny default`:
@@ -531,7 +535,7 @@ const PI_HARNESS: Harness = {
   // at the moment of picking: the fence stops writes, not reads, and the network is deliberately
   // open — so what this agent can read, it can send. `git` is named separately because it is the
   // one consequence an owner would otherwise discover at the end of a lane instead of the start.
-  note: "write fence: only its own worktree (no commits — the host commits); reads and network stay open",
+  note: "write fence: worktree plus shared temp, ~/.pi, Bun cache and /dev; lane .git closed (host commits); reads and network stay open",
 };
 
 // The container this adapter execs into. A docker name/id charset MINUS the quote, because the

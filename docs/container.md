@@ -48,7 +48,8 @@ The adapter's other answers, each an owner-visible fact rather than a default:
 - **`comms: ["docker"]`.** The liveness probe walks the *host* pane's process tree, and the agent
   is in another pid namespace (inside colima's VM, on this machine). The `docker exec` client is
   what the host can see, and it exits when the agent inside exits.
-- **The docker context is pinned, never ambient** (`FLEET_CONTAINER_CONTEXT`, default `default`).
+- **The docker context is pinned, never ambient** (`FLEET_CONTAINER_CONTEXT`, now the *default* —
+  see "Per slot, not per fleet" below).
   This is the same rule `guest-ctl.sh` states for the guest containers, and it is not theoretical:
   measured 2026-08-08, this machine has three contexts (`default`, `colima`, `colima-fleetguest`)
   and the **active one is `colima-fleetguest`** — the VM running two live guest containers. An
@@ -69,8 +70,9 @@ and shows what is wrong. The adapter's `note` says this at pick time.
 
 So the operator owes it two things, and the second is the one that bites:
 
-1. A running container, named by `FLEET_CONTAINER` (default `fleet`), **on the daemon named by
-   `FLEET_CONTAINER_CONTEXT`**. Those two travel together: an image lives in one daemon, so
+1. A running container, named by the slot's `container` (fleet default `FLEET_CONTAINER`, itself
+   defaulting to `fleet`), **on the daemon named by the slot's `containerContext`** (fleet default
+   `FLEET_CONTAINER_CONTEXT` → `default`). Those two travel together: an image lives in one daemon, so
    `claude-fleet:guest` (912 MB, built in the `fleetguest` VM) exists on `colima-fleetguest` and
    nowhere else. Pinning a context whose daemon lacks the image is the same failure as naming a
    container that does not exist.
@@ -181,7 +183,39 @@ at roughly 200 MB of host RAM at idle, a second container at ~25 MB.
 
 That is a resource-and-blast-radius decision, so the adapter does not take it: it defaults to the
 neutral `default` context, which fails visibly rather than quietly borrowing the guests' VM. Set
-`FLEET_CONTAINER_CONTEXT` to choose.
+`FLEET_CONTAINER_CONTEXT` for the fleet, or the slot's own `containerContext` for one session.
+
+## Per slot, not per fleet (2026-08-08)
+
+`container` and `containerContext` are **spawn options on the slot**, exactly like `model`:
+`POST /api/slots/:id/open`, `POST /api/slots/:id/open-worktree` and `POST /api/lanes` take them in
+the body, the picker offers them, and `GET /api/sessions` reports the **resolved** pair on every
+slot whose harness has a container concept. Before this they were two module constants read once
+from the process env — so "which VM did I get" was a question about `watchdog.sh`, not about the
+session, and changing it meant a `launchctl kickstart`.
+
+Four properties this keeps, each of which a per-slot field could have quietly lost:
+
+- **Absence still means the neutral default**, never docker's ambient context. Each half falls back
+  on its own, so naming only a context means "the usual box, over in that VM".
+- **A bad value is a 400, not a fold to the default.** The env path folds on purpose — one typo in
+  `watchdog.sh` must not kill every container slot at boot — but a spawn request is one owner's one
+  click, and folding it would open a box other than the one they named.
+- **Naming a box for a harness that has none is refused**, not dropped: dropping it would leave the
+  owner believing a session is contained when it is not.
+- **The pair is persisted** (`fleet.json`) and re-read against both the harness and the charset, so
+  a pane respawn re-enters the same container and a hand-edited state file cannot put a value into
+  a tmux line that a request could not.
+
+The catalogue's `note` therefore names the two values **as defaults** rather than as this fleet's
+answer — a note phrased fleet-wide would be false for any slot that chose its own. Runtime proof:
+`e2e/security.ts` §6d2, whose load-bearing row is *two slots on different boxes at the same time*;
+source proof that the spawn line cannot go back to the constant: `e2e/pins.ts`.
+
+What did **not** change: Fleet still never creates, starts, mounts or probes a container, and
+`automatable` is still `false`. And the image↔daemon coupling above is still the operator's to get
+right — Fleet cannot tell you a context lacks your image, because it never asks docker anything;
+you find out from docker's own error in the pane.
 
 The hand-run that establishes this — container up, bind-mount, and a canary write to a file in
 `$HOME` *outside* the repo that must fail mechanically — is the owner's, not a lane's: docker,

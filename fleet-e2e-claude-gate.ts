@@ -222,8 +222,8 @@ for (const bad of ["anthropic/claude-sonnet-5", "sonnet:high", "*sonnet*"]) {
   const r = await post("/api/slots/5/open", { cwd: process.cwd(), model: bad });
   check(`claude fleet rejects the foreign model shape ${bad} (400)`, r.status === 400, String(r.status));
 }
-// ...and the SAME counter-proof for ▸ start, which since 2026-08-08 takes the same {harness, model}
-// pair the open/lane routes take. It is asserted separately rather than assumed from the rows
+// ...and the SAME counter-proof for ▸ start, which takes the same {harness, model, effort}
+// choices the open/lane routes take. It is asserted separately rather than assumed from the rows
 // above: the dispatch route reads the body at its own site, so a fourth spawn path that validated
 // against one widened charset would pass every check up to here. The refusal must also be the
 // MODEL's — a task with no repo would 400 for a different reason and read like a pass.

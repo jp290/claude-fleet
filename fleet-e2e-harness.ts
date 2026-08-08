@@ -132,6 +132,44 @@ const cmd5 = await startCmdOf("s5");
 check("a foreign slot with no model of its own passes no --model flag",
   cmd5.length > 0 && !cmd5.includes("--model"), cmd5.slice(-200));
 
+// --- branch 5b: ▸ start carries Pi's effort choice into the lane's REAL pane command. This must
+// live in phase 2: the main suite runs FLEET_CMD=true and cannot prove an adapter flag reached an
+// agent command. The positive row is also the pane-line reader's control; only after it has read
+// `--thinking high` is the absence row meaningful rather than a probe that always returns empty.
+const DISPATCH_MODEL = "openai-codex/gpt-5.6-sol";
+const dispatchProbe = async (text: string, body: Record<string, unknown>): Promise<void> => {
+  const taskRes = await post("/api/tasks", { text, queue: false });
+  const taskId = ((await taskRes.json()) as { task?: { id: string } }).task?.id ?? "";
+  check(`dispatch-effort fixture: pending task exists (${text})`, taskRes.ok && !!taskId,
+    `${taskRes.status} id=${taskId || "missing"}`);
+  if (!taskId) return;
+
+  const dispatchRes = await post(`/api/tasks/${taskId}/dispatch`, body);
+  const dispatchJ = (await dispatchRes.json()) as { ok?: boolean; slot?: number; error?: string };
+  const slot = typeof dispatchJ.slot === "number" ? dispatchJ.slot : null;
+  check(`dispatch-effort fixture: ▸ start accepted the spawn (${text})`,
+    dispatchRes.ok && dispatchJ.ok === true && slot !== null,
+    `${dispatchRes.status} ${JSON.stringify(dispatchJ)}`);
+  if (slot === null) { await post(`/api/tasks/${taskId}/delete`, {}); return; }
+
+  const cmd = await startCmdOf(`s${slot}`);
+  check(`dispatch-effort fixture: the Pi pane command is readable (${text})`,
+    cmd.length > 0 && /(^|\s|;)pi --session-id/.test(cmd), cmd.slice(-220));
+  if (body.effort === "high") {
+    check("▸ start passes effort=high to Pi as --thinking high",
+      cmd.includes("--thinking high"), cmd.slice(-220));
+  } else {
+    check("▸ start with no effort preserves null: the Pi pane command has no --thinking flag",
+      !cmd.includes("--thinking"), cmd.slice(-220));
+  }
+
+  const killed = await post(`/api/slots/${slot}/kill`, {});
+  check(`dispatch-effort fixture: the probe lane is released (${text})`, killed.ok, String(killed.status));
+  await post(`/api/tasks/${taskId}/delete`, {});
+};
+await dispatchProbe("dispatch-effort-positive", { harness: "pi", model: DISPATCH_MODEL, effort: "high" });
+await dispatchProbe("dispatch-effort-absent", { harness: "pi", model: DISPATCH_MODEL });
+
 // --- branch 6: THE CORE. A DEAD foreign agent — the exit variant stands in for the harness that
 // exited on an unresolvable model — must read as not-alive, and the delivery gate must refuse.
 // Before this, claudeAlive() returned `true` here without looking, so the marker below would have

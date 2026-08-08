@@ -2913,7 +2913,8 @@ function expandCwd(raw: string): string {
 // which is the whole reason that plumbing exists). What is unattended is not the FUNCTION but the
 // CALL: tickDispatch passes no `spawn`, so the tick still reaches only this default — and
 // dispatchTask now carries the same two-condition refusal every other unattended path uses, so
-// the guarantee no longer rests on an absence alone. `effort` remains unreachable from here.
+// the guarantee no longer rests on an absence alone. An attended dispatch may carry effort too;
+// the tick's DEFAULT_SPAWN keeps that choice null, alongside harness and model.
 async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null,
   model: string | null = null, label: string | null = null,
   harness: string | null = null, effort: string | null = null,
@@ -3472,8 +3473,8 @@ const dispatchingTasks = new Set<string>();
 // leaves the queue row unlinked, so nothing requeues it on a failed spawn, no outcome row carries
 // it, and the row must be closed by hand. The default is the tick's shape and stays the default
 // adapter, byte-for-byte what every caller before this sent.
-type DispatchSpawn = { harness: string | null; model: string | null };
-const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null };
+type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null };
+const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null };
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
   spawn: DispatchSpawn = DEFAULT_SPAWN):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
@@ -3507,8 +3508,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     const wt = await createWorktree(next.repo ?? DISPATCH_REPO, "", dForm.form);
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
-    // model/harness ride in from the attended request only (DEFAULT_SPAWN is the tick's shape and
-    // is the claude adapter); `label` stays null here because the line below names the slot.
+    // model/harness/effort ride in from the attended request only (DEFAULT_SPAWN is the tick's
+    // all-null shape and is the claude adapter); `label` stays null here because the line below names the slot.
     const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
       baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
       // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
@@ -3518,7 +3519,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // reason: until the root has the ref, every root-side reader (drift, risk, the land path)
     // reports an absence as a fact about the lane. A no-op for a worktree lane.
     await syncLaneRefs(dRef, wt.path);
-    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness);
+    await openSlot(free, wt.path, dRef, spawn.model, null, spawn.harness, spawn.effort);
     free.label = `⎇ ${next.from ?? "task"} ${wt.branch.replace(/^fleet\//, "")}`.slice(0, MAX_LABEL);
     // An attended click IS a release, and the only one that never passes through `queued` — this
     // route starts a `pending` row directly, so releaseTask never sees it. Stamped OVER whatever
@@ -13225,6 +13226,8 @@ Bun.serve<WSData>({
       const dHarness = harnessOf(dh.harness);
       const dModel = modelOf(dBody, dHarness);
       if (!dModel.ok) return json({ error: modelErrFor(dHarness) }, 400);
+      const dEffort = effortOf(dBody, dHarness);
+      if (!dEffort.ok) return json({ error: effortErrFor(dHarness) }, 400);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
       // A RAW START is one no reading vouched for: no analysis at all, or a verdict that asked for
@@ -13235,7 +13238,8 @@ Bun.serve<WSData>({
       // REALLY was raw: a flag on a ready row would pin a deliberation that never happened, and
       // an audit line that can be claimed rather than earned is worth less than no line at all.
       const rawAck = dBody?.acknowledged === true && (!t.analysis || t.analysis.verdict !== "ready");
-      const r = await dispatchTask(t, free, true, clarify, { harness: dh.harness, model: dModel.model });
+      const r = await dispatchTask(t, free, true, clarify,
+        { harness: dh.harness, model: dModel.model, effort: dEffort.effort });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode rides in the audit detail, never a second event name: one "an owner started a

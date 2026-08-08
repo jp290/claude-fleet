@@ -1,10 +1,11 @@
 // Lane lifecycle: risk vs the configured integration branch, shelve → resume, the lane-scoped
-// brief, and the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase).
+// brief, the 💾 commit endpoint (lane vs main-session staging, detached HEAD, wedged rebase), and
+// the CLONE lane form — same lifecycle, a working copy that is its own repository.
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { REPO, ROOT, check, get, post, tmuxOut } from "./harness";
+import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { BASE, REPO, ROOT, check, get, post, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
-import { exists } from "./lane-helpers";
+import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(lc: LaneCtx): Promise<void> {
   // --- OWNER.md rides into a lane like CLAUDE.md does. It is the owner model the steward ritual
@@ -408,5 +409,208 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("commit is blocked during an interrupted rebase", glCommit.committed === false && (glCommit.reason ?? "").includes("in progress"), JSON.stringify(glCommit));
     spawnSync("git", ["-C", gl.cwd, "rebase", "--abort"]);
     await post(`/api/slots/${gl.slot}/kill`, {});
+  }
+
+  // --- THE LANE FORM: a working copy that is its own repository. A worktree's `.git` is a FILE
+  // pointing into the primary's common dir, so a worktree is not self-contained: handed alone to a
+  // sandbox it is a directory git cannot work in, and handed WITH its common dir it carries
+  // `.git/hooks`, whose contents run on the HOST on the owner's next commit. A clone lane has its
+  // own object database, hooks and config. Everything below exists to prove that the boundary is
+  // real AND that the lane is still a lane: same board numbers, same land, same ledgers.
+  {
+    const g = (repo: string, ...a: string[]): string =>
+      spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" }).stdout.toString().trim();
+    const cRepo = `${REPO}.cloneform`;
+    rmSync(cRepo, { recursive: true, force: true });
+    spawnSync("git", ["init", "-q", "-b", "main", cRepo]);
+    spawnSync("git", ["-C", cRepo, "config", "user.email", "e2e@test"]);
+    spawnSync("git", ["-C", cRepo, "config", "user.name", "e2e"]);
+    writeFileSync(`${cRepo}/base.txt`, "base\n");
+    spawnSync("git", ["-C", cRepo, "add", "base.txt"]);
+    spawnSync("git", ["-C", cRepo, "commit", "-qm", "base"]);
+
+    const cl = (await (await post("/api/lanes", { repo: cRepo, form: "clone" })).json()) as
+      { ok?: boolean; slot?: number; cwd?: string; branch?: string; form?: string; error?: string };
+    check("a lane opens with form=clone", cl.ok === true && cl.form === "clone" && typeof cl.cwd === "string",
+      JSON.stringify(cl));
+    check("an unknown lane form is refused rather than silently defaulted",
+      (await post("/api/lanes", { repo: cRepo, form: "shallow" })).status === 400);
+    const cCwd = cl.cwd ?? "";
+    const cSlot = cl.slot ?? -1;
+    const cBranch = cl.branch ?? "";
+
+    // THE BOUNDARY, as a measurement and not a claim. `--git-common-dir` is the directory git
+    // would read hooks and config from: for a worktree it is the PRIMARY's, for a clone it must be
+    // the clone's own. The pair is asserted together, because "the clone is isolated" and "the
+    // worktree still is not" are the two halves of one fact — and the second is what makes the
+    // first worth having.
+    const commonDir = (dir: string): string =>
+      g(dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const cCommon = commonDir(cCwd);
+    check("a clone lane's git common dir is its OWN .git, not the repo's",
+      cCommon !== "" && realpathSync(cCommon) === realpathSync(`${cCwd}/.git`)
+      && realpathSync(cCommon) !== realpathSync(`${cRepo}/.git`),
+      `${cCommon} vs ${cRepo}/.git`);
+    check("the repo's hooks directory is not reachable from inside a clone lane",
+      !exists(`${cCommon}/../../.git/hooks`) || realpathSync(`${cCommon}/hooks`) !== realpathSync(`${cRepo}/.git/hooks`),
+      `${cCommon}/hooks`);
+    check("a clone lane's .git is a directory (a worktree lane's is a gitdir FILE)",
+      exists(`${cCwd}/.git`) && lstatSync(`${cCwd}/.git`).isDirectory()
+      && exists(`${lc.lnPath}/.git`) && lstatSync(`${lc.lnPath}/.git`).isFile(),
+      `clone=${exists(`${cCwd}/.git`) ? lstatSync(`${cCwd}/.git`).isDirectory() : "missing"}`);
+    // --no-hardlinks is the whole point of the form: an `alternates` file or shared object inodes
+    // would leave the two repos reading the same bytes, which is the separation this is for.
+    check("a clone lane borrows no objects from the repo (no alternates file)",
+      !exists(`${cCwd}/.git/objects/info/alternates`));
+    check("a clone lane is invisible to `git worktree list` — it is not a worktree of the repo",
+      !g(cRepo, "worktree", "list", "--porcelain").includes(cCwd), cCwd);
+    // ...which is exactly why the lane map has to add it back: that surface answers "every lane
+    // open on this repo", and an omission there would read as "no such lane".
+    const cMap = (await (await get(`/api/slots/${cSlot}/worktrees`)).json()) as
+      { repo?: string; worktrees?: { path: string; branch: string; slot: number | null }[] };
+    check("the lane map lists a clone lane, anchored on the REPO and not on the clone itself",
+      realpathSync(cMap.repo ?? "/") === realpathSync(cRepo)
+      && (cMap.worktrees ?? []).some((w) => w.path === cCwd && w.branch === cBranch && w.slot === cSlot),
+      JSON.stringify(cMap).slice(0, 300));
+
+    // THE MIRROR. Everything Fleet knows about a lane is read either root-side by branch name
+    // (drift, risk, `branch --merged`, the ff-merge) or tree-side against the base branch (the git
+    // tick's ahead/behind, the rebase). A clone satisfies neither until both refs are mirrored.
+    check("a fresh clone lane's branch is mirrored into the repo at spawn, not at the first tick",
+      g(cRepo, "rev-parse", "--verify", `refs/heads/${cBranch}`) === g(cCwd, "rev-parse", "HEAD"),
+      `${g(cRepo, "rev-parse", "--verify", `refs/heads/${cBranch}`)} vs ${g(cCwd, "rev-parse", "HEAD")}`);
+
+    writeFileSync(`${cCwd}/lane.txt`, "clone lane work\n");
+    spawnSync("git", ["-C", cCwd, "add", "lane.txt"]);
+    spawnSync("git", ["-C", cCwd, "commit", "-qm", "clone lane work"]);
+    writeFileSync(`${cRepo}/main.txt`, "main side\n"); // different file → no conflict
+    spawnSync("git", ["-C", cRepo, "add", "main.txt"]);
+    spawnSync("git", ["-C", cRepo, "commit", "-qm", "clone-form main work"]);
+
+    // The board's numbers, from the clone. `behind` is the one that can only be right if the tick
+    // mirrors the base branch DOWN into the clone — without it the clone measures against main as
+    // it stood at clone time and reports 0 forever, which is a confident wrong answer rather than
+    // a missing one. Polled past one full tick because that tick IS the mechanism under test.
+    type Sess = { slots: { id: number; git: { branch: string; ahead: number; behind: number; dirty: number } | null }[] };
+    let cGit: Sess["slots"][number]["git"] = null;
+    for (let i = 0; i < 160; i++) {
+      cGit = ((await (await get("/api/sessions")).json()) as Sess).slots.find((x) => x.id === cSlot)?.git ?? null;
+      if (cGit && cGit.ahead === 1 && cGit.behind === 1) break;
+      await Bun.sleep(150);
+    }
+    check("the board reads branch/ahead/behind/dirty for a clone lane out of the clone",
+      cGit?.branch === cBranch && cGit.ahead === 1 && cGit.behind === 1 && cGit.dirty === 0,
+      JSON.stringify(cGit));
+    check("the tick mirrors the lane's new commit back into the repo",
+      g(cRepo, "rev-parse", `refs/heads/${cBranch}`) === g(cCwd, "rev-parse", "HEAD"));
+
+    // STALENESS, said out loud. Every root-side number about a clone lane is read off the mirror,
+    // so it can be a moment old — and a stale-but-confident number is precisely the failure this
+    // form must not introduce. A worktree lane has no copy and is never stale.
+    // Its own lane in its own repo: the probe has to WEDGE a rebase to hold the mirror still, and
+    // a wedged lane is the last thing to leave lying next to the one about to be landed.
+    const driftOf = async (slot: number): Promise<{ stale?: boolean | null; behind?: number; error?: string }> => {
+      let tok = "";
+      try {
+        tok = ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { selfToken?: string }> }).slots?.[String(slot)]?.selfToken) ?? "";
+      } catch { /* state file mid-write — an empty token fails as unauthorized, which is honest */ }
+      return (await (await fetch(`${BASE}/api/self/drift`, { headers: { "x-fleet-self-token": tok } })).json()) as
+        { stale?: boolean | null; behind?: number; error?: string };
+    };
+    check("drift on a synced clone lane reports itself fresh", (await driftOf(cSlot)).stale === false,
+      JSON.stringify(await driftOf(cSlot)));
+    check("drift on a worktree lane is never stale — there is no copy to be stale",
+      (await driftOf(lc.lnSlot)).stale === false, JSON.stringify(await driftOf(lc.lnSlot)));
+    {
+      const sRepo = `${REPO}.clonestale`;
+      rmSync(sRepo, { recursive: true, force: true });
+      spawnSync("git", ["init", "-q", "-b", "main", sRepo]);
+      spawnSync("git", ["-C", sRepo, "config", "user.email", "e2e@test"]);
+      spawnSync("git", ["-C", sRepo, "config", "user.name", "e2e"]);
+      writeFileSync(`${sRepo}/f.txt`, "base\n");
+      spawnSync("git", ["-C", sRepo, "add", "f.txt"]);
+      spawnSync("git", ["-C", sRepo, "commit", "-qm", "base"]);
+      const sl = (await (await post("/api/lanes", { repo: sRepo, form: "clone" })).json()) as
+        { ok?: boolean; slot?: number; cwd?: string };
+      const sSlot = sl.slot ?? -1;
+      const sCwd = sl.cwd ?? "";
+      check("stale probe precondition: a second clone lane opened", sl.ok === true && sCwd !== "", JSON.stringify(sl));
+      // Deterministic, not a race against the 10 s tick: the tick deliberately does not write refs
+      // into a lane whose git is mid-operation, so a wedged rebase pins the mirror where it is for
+      // as long as the probe needs. That is also the real scenario worth pinning — while a lane is
+      // being rewritten, Fleet must not report its root-side numbers as current.
+      writeFileSync(`${sCwd}/f.txt`, "lane side\n");
+      spawnSync("git", ["-C", sCwd, "commit", "-aqm", "stale-probe lane edit"]);
+      writeFileSync(`${sRepo}/f.txt`, "main side\n");
+      spawnSync("git", ["-C", sRepo, "commit", "-aqm", "stale-probe main edit"]);
+      spawnSync("git", ["-C", sCwd, "fetch", "-q", sRepo, "+refs/heads/main:refs/heads/main"]);
+      spawnSync("git", ["-C", sCwd, "rebase", "main"]); // halts on the conflict, mid-rebase
+      check("stale probe precondition: the clone lane is genuinely wedged mid-rebase",
+        exists(`${sCwd}/.git/rebase-merge`) || exists(`${sCwd}/.git/rebase-apply`));
+      let staleSeen: boolean | null | undefined;
+      for (let i = 0; i < 120; i++) {
+        staleSeen = (await driftOf(sSlot)).stale;
+        if (staleSeen === true) break;
+        await Bun.sleep(150);
+      }
+      check("drift SAYS SO when the repo's mirror no longer matches the clone", staleSeen === true,
+        JSON.stringify(await driftOf(sSlot)));
+      spawnSync("git", ["-C", sCwd, "rebase", "--abort"]);
+      let backFresh: boolean | null | undefined;
+      for (let i = 0; i < 160; i++) {
+        backFresh = (await driftOf(sSlot)).stale;
+        if (backFresh === false) break;
+        await Bun.sleep(150);
+      }
+      check("...and once the lane's git is free again the tick clears the staleness by itself",
+        backFresh === false, JSON.stringify(await driftOf(sSlot)));
+      await post(`/api/slots/${sSlot}/kill`, {});
+      rmSync(sCwd, { recursive: true, force: true }); // kill keeps the tree; nothing else will collect a clone
+    }
+
+    // THE LAND. Same verbs, same ledgers: the branch reaches the repo by fetch instead of by
+    // shared refs, and everything downstream of that is the path a worktree lane takes.
+    const cMainBefore = g(cRepo, "rev-parse", "main");
+    await setMergeMode("blocked"); // the agent, if wrongly consulted, would block — it must not be
+    await settleForMerge(cSlot);
+    await post(`/api/slots/${cSlot}/merge`, {});
+    const cV = await waitMerge(cSlot);
+    check("a clone lane lands through the ordinary script path, agent never consulted", cV.gone,
+      JSON.stringify(cV));
+    check("the clone lane's commit reached the repo's main",
+      g(cRepo, "log", "--oneline", "-8").includes("clone lane work"), g(cRepo, "log", "--oneline", "-3"));
+    check("landing a clone lane removes the clone from disk", !exists(cCwd), cCwd);
+    const cMainAfter = g(cRepo, "rev-parse", "main");
+    const cNote = spawnSync("git", ["-C", cRepo, "notes", "--ref=fleet/land", "show", cMainAfter], { encoding: "utf8" });
+    check("a clone land is recorded like any other: git-note provenance on the landed tip",
+      cNote.status === 0 && cMainAfter !== cMainBefore
+      && (JSON.parse(cNote.stdout.toString().trim()) as { branch?: string }).branch === cBranch,
+      `${cNote.status} ${cNote.stdout.toString().slice(0, 160)}`);
+    const cOut = ((await (await get("/api/lane-outcomes?limit=1000")).json()) as
+      { outcomes: { branch: string; disposition: string; verified: boolean | null }[] }).outcomes;
+    const cRow = cOut.find((o) => o.branch === cBranch);
+    check("a clone land emits its LaneOutcome unchanged",
+      cRow?.disposition === "landed" && cRow.verified === true,
+      JSON.stringify(cRow).slice(0, 200));
+
+    // THE DEFAULT, unchanged: a lane asked for without a form is still a worktree, sharing the
+    // repo's git. Asserted here rather than assumed, because the whole cut of this change is
+    // "clones ALONGSIDE worktrees" — if the default moved, that cut did not hold.
+    const dflt = (await (await post("/api/lanes", { repo: cRepo })).json()) as
+      { ok?: boolean; slot?: number; cwd?: string; form?: string };
+    check("a lane requested with no form is still a worktree sharing the repo's git",
+      dflt.ok === true && dflt.form === "worktree"
+      && lstatSync(`${dflt.cwd}/.git`).isFile()
+      && realpathSync(commonDir(dflt.cwd ?? "")) === realpathSync(`${cRepo}/.git`),
+      `form=${dflt.form} common=${commonDir(dflt.cwd ?? "")}`);
+    const dfltSess = (await (await get("/api/sessions")).json()) as
+      { slots: { id: number; worktree: { form?: string } | null }[] };
+    check("...and it persists with no form field at all — today's shape, byte for byte",
+      dfltSess.slots.find((x) => x.id === dflt.slot)?.worktree?.form === undefined,
+      JSON.stringify(dfltSess.slots.find((x) => x.id === dflt.slot)?.worktree));
+    await post(`/api/slots/${dflt.slot ?? 0}/kill`, {});
+    spawnSync("git", ["-C", cRepo, "worktree", "remove", "--force", dflt.cwd ?? ""]);
+    await setMergeMode("blocked");
   }
 }

@@ -94,6 +94,82 @@ every number Fleet reports about that slot comes from `git -C <worktree>` on the
 computed and still be displayed, and would describe a tree nobody can land. That failure is
 silent, and it looks like the agent doing nothing.
 
+### ...but a worktree is not a thing you can hand over, and that is what the clone form is for
+
+The section above says *which tree* to mount. It does not answer whether a worktree can be mounted
+at all, and measured at the tree on 2026-08-08 it cannot — not alone:
+
+- A lane's `.git` is a **file**, one line: `gitdir: /…/claude-fleet/.git/worktrees/<name>`.
+  `git rev-parse --git-common-dir` from inside the lane points at the primary's `.git` (98 MB).
+  Mount only the lane and the agent gets a directory git refuses to work in — no status, no index,
+  no commit.
+- Mount the common dir alongside it and the agent gets **`.git/hooks`**, which for a worktree
+  lives in the common dir. A `post-commit` written there runs **on the host, under the owner's
+  uid, at his next commit**. `.git/config` (aliases, `core.pager`, `fsmonitor`) is the same vector.
+  Covering each read-only is whack-a-mole against a set git deliberately keeps open, and a sandbox
+  whose first act is to open an escape route is not one.
+
+So a lane gets a second FORM: `POST /api/lanes {repo, form:"clone"}` makes the working copy a full
+`git clone --no-hardlinks` — own object database, own hooks, own config, **one self-contained
+directory**, which is the shape a bind-mount needs. `--no-hardlinks` is the point, not a tuning
+knob: the default local-clone optimisation hardlinks the object files and would re-share the very
+bytes the form removes (~98 MB of objects per clone on this repo, against 36 GB free).
+
+**Clones sit ALONGSIDE worktrees.** `form` defaults to `worktree`, and that default is unchanged
+down to the absent `form` field in `fleet.json` — asserted as its own check. Nothing that exists
+today becomes a clone.
+
+#### The one seam: the branch is mirrored, in both directions
+
+Everything Fleet knows about a lane is read either **root-side by branch name** (drift,
+`worktreeRisk`, `branch --merged`, the ancestry check, `advanceIntegration`) or **tree-side against
+the base branch** (the git tick's ahead/behind, `tryScriptRebase`). A worktree satisfies both at
+once by sharing refs; a clone satisfies neither. `syncLaneRefs` is the whole answer, and it is why
+this is one seam rather than a rewrite: the root gets `refs/heads/<branch>` at the clone's tip, the
+clone gets its local base branch at the root's tip, and **every existing caller is unchanged**.
+
+Forced in both directions, each for its own reason: a rebase rewrites the lane branch (so the
+push-back is not a fast-forward) and `undo-land` rewinds main (so the pull-down is not one either).
+Neither ref is ever committed to on the side it is written. Objects travel clone → root only, the
+trusted direction — the clone never gains a path to the root's hooks, config or object database,
+and the fetch runs from the host, so that stays true even when the clone is mounted into a sandbox
+that cannot see the root.
+
+It runs at spawn, on the git tick (skipped while the lane's git is mid-operation, the same guard
+the merge cache uses), at every land site, and inside `removeWorktreeSafe` — that last one
+**fatally on failure**: "is this work preserved" is answered root-side, and a clone has no `git
+worktree remove` behind it to refuse a dirty tree, so the two safety checks are the whole guard and
+they must not run on a stale ref.
+
+Measured, not predicted: the first clone land failed at `merge-base --is-ancestor main branch` —
+root-side, run before the mirror caught up — and reported a perfectly rebased lane as *"reported
+rebased, but the lane is not rebased onto main"*, blaming the agent for a ref that had not moved.
+That call site is now the earliest of the land-path syncs, and a pin holds every
+`advanceIntegration` call site to having one before it.
+
+#### What it costs, said out loud
+
+Root-side numbers about a clone lane are read off a mirror and can be a moment old. `GET
+/api/self/drift` therefore carries **`stale`** — `false` for every worktree lane (there is no copy
+to be stale), `true` when the mirror no longer matches the clone, `null` for undetermined, which is
+never "fresh". Reported, not repaired: `laneDrift` is deliberately read-only against a live lane;
+the tick does the repairing. The `self_drift` audit row carries it too, so the ledger cannot come
+to hold confident numbers about a lane version that no longer exists.
+
+The other abandoned assumption: **`git worktree list` cannot see a clone lane.** The lane map (`GET
+/api/slots/:id/worktrees`) adds live clone lanes back and anchors on the recorded repo — from a
+clone, `--show-toplevel` is the clone itself. `state.sh` does the same for its "lanes on disk"
+section and for its own anchor (from a clone lane the common dir leads to the clone, so it falls
+back to `origin`). Unlike a worktree there is no on-disk registry, so a killed clone lane leaves a
+directory nothing will rediscover as an orphan.
+
+#### The second customer
+
+This is not container-only, which is why it comes first. **Guest mode** has the same problem from
+the other side: a guest works in a named volume (`fleet-guest-work`), i.e. nowhere — it cannot work
+on *this* repo at all. The clone is the mechanism that gives a guest a real working copy without
+handing over the object database and the hooks. One mechanism, two customers.
+
 ### The undecided part: which VM
 
 Measured 2026-08-08 (`colima list`): `default` Stopped (2 CPU / 8 GiB), `fleetbuild` Stopped

@@ -879,11 +879,11 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("each of those form values is a laneFormOf result (or the parameter carrying one), not a second derivation",
     formSources.length > 0 && notFromLaneFormOf.length === 0, notFromLaneFormOf.join(" | ") || formSources.join(" | "));
 
-  // --- the liveness probe resolves its comm set PER SLOT. Both consumers (the git/alive tick and
-  // claudeAlive) must go through commsFor; a call that reaches back for the fleet-wide HARNESS_COMMS
-  // would silently re-pin every slot to the server's own harness, which is the exact defect
-  // b28ce533 was filed about — and it would break NO test, because on a claude fleet the two
-  // answers agree for every claude slot. An absence again, so: a rule over the source.
+  // --- every slot probe resolves its comm set PER SLOT. The git/alive tick, claudeAlive and the
+  // fresh-pane send readiness wait must go through commsFor; a call that reaches back for the
+  // fleet-wide HARNESS_COMMS would silently re-pin every slot to the server's own harness, which
+  // is the exact defect b28ce533 was filed about — and it would break NO test, because on a claude
+  // fleet the two answers agree for every claude slot. An absence again, so: a rule over the source.
   // The three legitimate readers are named, and each for a stated reason.
   // comment lines stripped first: this file DISCUSSES HARNESS_COMMS at length, and a pin that counts
   // prose counts the wrong thing — it failed exactly that way when first written (13 vs 5).
@@ -897,10 +897,16 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   ].filter((re) => re.test(server)).length;
   pin("HARNESS_COMMS has exactly its four named readers — the probe resolves per slot through commsFor",
     commsAllowed === 4 && commsReaders === 5, `${commsReaders} occurrences, ${commsAllowed}/4 named forms present`);
-  pin("both liveness consumers ask commsFor(s), never the fleet-wide set",
-    [...server.matchAll(/paneAgentAt\(sess\(s\.id\), ([A-Za-z_]+(?:\(s\))?)\)/g)]
-      .map((m) => m[1]).every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS"),
-    [...server.matchAll(/paneAgentAt\(sess\(s\.id\), ([A-Za-z_]+(?:\(s\))?)\)/g)].map((m) => m[1]).join(" | "));
+  const slotProbeArgs = [...server.matchAll(/paneAgentAt\(sess\(s\.id\), ([A-Za-z_]+(?:\(s\))?)\)/g)]
+    .map((m) => m[1]);
+  const sendStart = server.indexOf("async function sendText(");
+  const sendBody = sendStart < 0 ? "" : server.slice(sendStart, server.indexOf("// --- scheduled prompts", sendStart));
+  const sendProbeResolved = /const comms = commsFor\(s\);/.test(sendBody)
+    && /paneAgentAt\(sess\(s\.id\), comms\)/.test(sendBody);
+  pin("every slot liveness/readiness probe resolves through commsFor(s), never the fleet-wide set",
+    sendProbeResolved && slotProbeArgs.length > 0 && slotProbeArgs.filter((a) => a === "comms").length === 1
+      && slotProbeArgs.every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS" || a === "comms"),
+    `${sendProbeResolved ? "send-resolved" : "send-unresolved"}: ${slotProbeArgs.join(" | ")}`);
   // ...and the POLICY is not the probe: aliveInfo (a gate) carries harnessAutomatable, agentInfo
   // (a fact) must not. Reversing them would either lie on the board or open the gates by accident.
   pin("the fact layer stays unconditional while the gate carries the harness policy",

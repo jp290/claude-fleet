@@ -34,9 +34,14 @@ stage_instance "$SRC" "$DIR" server.ts fleet-e2e-claude-gate.ts || exit 1
 # question is what the server makes of panes spawned by a DIFFERENT command. Adopting phase 1's
 # slots would answer it with the wrong panes.
 DIR2="${TMPDIR:-/tmp}/fleet-e2e-harness-instance-$$"
-rm -rf "$DIR2"
-mkdir -p "$DIR2"
+DIR3="${TMPDIR:-/tmp}/fleet-e2e-unprobed-instance-$$"
+rm -rf "$DIR2" "$DIR3"
+mkdir -p "$DIR2" "$DIR3"
 stage_instance "$SRC" "$DIR2" server.ts fleet-e2e-harness.ts || exit 1
+# Phase 2's waiver counter-proof needs the opposite server declaration: the same unknown default
+# harness, but with an EMPTY comms set. A separate instance keeps that immutable boot-time fact
+# honest instead of trying to fake a per-slot waiver the production model does not have.
+stage_instance "$SRC" "$DIR3" server.ts fleet-e2e-harness.ts || exit 1
 
 # a throwaway git repo for phase 2's WORKER branch: the ✨ summary route refuses a non-repo cwd
 # before it ever reaches a worker, so the branch needs a real one to ask its question at all.
@@ -69,8 +74,66 @@ cat > "$FAKEBIN/claude-hang.c" <<'EOF'
 #include <unistd.h>
 int main(void) { for (;;) pause(); }
 EOF
+# A TUI-shaped boot stand-in with two process names. `harn` immediately execs `fleetwarm` (NOT a
+# declared comm), which disables echo and after 2 s discards everything typed so far. It then
+# execs `harnready` (a declared comm) and reads one submitted line. The pre-fix /send therefore
+# disappears for real; the new readiness wait sees only the post-flush process, then applies the
+# unknown-adapter's low settle. Finally it exits to the wrapper shell so paneEnv() can prove itself.
+cat > "$FAKEBIN/harn-boot.c" <<'EOF'
+#include <libgen.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <termios.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  (void)argc;
+  char path[PATH_MAX];
+  if (!realpath(argv[0], path)) return 2;
+  char dirbuf[PATH_MAX], basebuf[PATH_MAX];
+  snprintf(dirbuf, sizeof(dirbuf), "%s", path);
+  snprintf(basebuf, sizeof(basebuf), "%s", path);
+  char *dir = dirname(dirbuf), *base = basename(basebuf);
+  char next[PATH_MAX];
+  if (strcmp(base, "harn") == 0) {
+    snprintf(next, sizeof(next), "%s/fleetwarm", dir);
+    execl(next, next, (char *)0);
+    return 3;
+  }
+  if (strcmp(base, "fleetwarm") == 0) {
+    struct termios boot;
+    if (tcgetattr(STDIN_FILENO, &boot) == 0) {
+      boot.c_lflag &= ~ECHO;
+      tcsetattr(STDIN_FILENO, TCSANOW, &boot);
+    }
+    usleep(2000000);
+    tcflush(STDIN_FILENO, TCIFLUSH);
+    snprintf(next, sizeof(next), "%s/harnready", dir);
+    execl(next, next, (char *)0);
+    return 4;
+  }
+  char line[4096] = {0};
+  char *got = fgets(line, sizeof(line), stdin);
+  struct termios ready;
+  if (tcgetattr(STDIN_FILENO, &ready) == 0) {
+    ready.c_lflag |= ECHO;
+    tcsetattr(STDIN_FILENO, TCSANOW, &ready);
+  }
+  if (got) {
+    line[strcspn(line, "\r\n")] = 0;
+    printf("harn-received=[%s]\n", line);
+    fflush(stdout);
+  }
+  return 0;
+}
+EOF
 "$CC" -O0 -o "$FAKEBIN/claude-exit" "$FAKEBIN/claude-exit.c" || exit 1
 "$CC" -O0 -o "$FAKEBIN/claude-hang" "$FAKEBIN/claude-hang.c" || exit 1
+"$CC" -O0 -o "$FAKEBIN/harn-boot" "$FAKEBIN/harn-boot.c" || exit 1
+cp "$FAKEBIN/harn-boot" "$FAKEBIN/fleetwarm"
+cp "$FAKEBIN/harn-boot" "$FAKEBIN/harnready"
+chmod +x "$FAKEBIN/fleetwarm" "$FAKEBIN/harnready"
 cp "$FAKEBIN/claude-exit" "$FAKEBIN/claude"
 chmod +x "$FAKEBIN/claude" "$FAKEBIN/claude-hang"
 
@@ -175,7 +238,26 @@ if [ "$code" = 0 ]; then
   code=$?
 fi
 
+# Phase 2b is the waiver half of the same foreign-harness question. The empty declaration is a
+# SERVER boot fact, so it cannot share phase 2a's process; FLEET_CMD=true is the repository's
+# canonical stand-in and deliberately leaves no process for a readiness probe to find.
+if [ "$code" = 0 ]; then
+  tmux -L "$SOCK" kill-server 2>/dev/null
+  tmux -L "$SOCK" new-session -d -s srv \
+    "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
+  for _ in $(seq 1 60); do
+    _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+    [ "$_hc" != "000" ] && break
+    sleep 0.5
+  done
+  sleep 0.5
+  cd "$DIR3" || exit 1
+  echo "--- phase: harness waiver (FLEET_CMD=true, empty comms) ---"
+  FLEET_E2E_SUITE=claude-gate FLEET_GATE_UNPROBED=1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK bun fleet-e2e-harness.ts
+  code=$?
+fi
+
 tmux -L "$SOCK" kill-server 2>/dev/null
 # unique-per-run dirs: clean up on success, keep for post-mortem on failure
-if [ "$code" = 0 ]; then rm -rf "$DIR" "$DIR2" "$FAKEBIN"; else echo "kept test instances for inspection: $DIR $DIR2"; fi
+if [ "$code" = 0 ]; then rm -rf "$DIR" "$DIR2" "$DIR3" "$FAKEBIN"; else echo "kept test instances for inspection: $DIR $DIR2 $DIR3"; fi
 exit $code

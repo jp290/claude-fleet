@@ -248,6 +248,10 @@ interface Harness {
   // Required, not optional: a new adapter that forgets this is a compile error rather than a slot
   // that reads dead (or, worse, waived) for reasons nobody would think to look for.
   comms: readonly string[] | null;
+  // Once a freshly spawned agent process is visible, how long its TUI needs before it accepts
+  // input. Optional because this is an estimate, not a capability fact: unknown adapters take the
+  // deliberately low default at sendText rather than being forced to claim false precision.
+  bootSettleMs?: number;
   // Who records a lane's produced files in git. true means the harness is intentionally fenced
   // out of its lane's .git and the HOST commits through POST /api/slots/:id/commit; false means no
   // such ownership transfer is declared. Required and explicit: a new adapter must answer this
@@ -332,6 +336,11 @@ const CLAUDE_HARNESS: Harness = {
   // empty set (→ "unprobed") for an undeclared FLEET_CMD like the suites' `true`. Not `["claude"]`
   // literally: that would strip the waiver every stand-in depends on.
   comms: null,
+  // summaryViaSession's 2500 ms is this repo's only measured TUI-readiness anchor, and its worker
+  // is literally claude. Keep that measured answer when this default adapter really launches
+  // claude; an operator-supplied FLEET_CMD is an unknown TUI and inherits the low, explicitly
+  // provisional default instead of pretending this number transfers to it.
+  ...(IS_CLAUDE ? { bootSettleMs: 2500 } : {}),
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
@@ -1804,7 +1813,10 @@ type AuditEvent =
   // makes "do lanes check how far main moved past them, and how early?" answerable at all —
   // detail carries the branch, because slot ids are recycled and the join is to lane-outcomes
   | "self_drift"
-  | "autos_quiet";
+  | "autos_quiet"
+  // an owner-capable send exhausted the bounded fresh-pane readiness wait and was delivered
+  // anyway. The row makes the possible loss visible without turning it into a refusal.
+  | "send_boot_timeout";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -3065,11 +3077,49 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.clients.clear();
 }
 
+// A route send is interactive, and 30 seconds (the worker readiness budget) would make the board
+// itself look wedged. Three seconds is reserved for the one state that can actually be booting —
+// an unobserved, positively probed pane — and bounds a failed probe to one noticeable interaction,
+// not a route-scale hang. Timeout deliberately falls through to delivery: the owner may be typing
+// into a pane whose agent died, and that capability must not be turned into an alive gate.
+const SEND_BOOT_WAIT_MS = 3000;
+// Unknown adapters get one short terminal/redraw beat, not Claude's estimate by accident. 250 ms
+// is deliberately low because no readiness measurement exists for them; Claude declares the only
+// measured anchor (2500 ms) on its adapter above.
+const DEFAULT_BOOT_SETTLE_MS = 250;
+
 async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
   // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
   // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
   const task = s.inputChain.then(async () => {
+    // Only a pane Fleet has NEVER observed may still be booting. Once it has printed, no probe and
+    // no sleep is inserted: its agent may be alive or dead, and delivery is the sender's decision.
+    // Empty comms is the intentional "unprobed" waiver used by FLEET_CMD=true stand-ins, so it is
+    // the other byte-for-byte fast path. Readiness uses the exact per-slot resolution used by the
+    // alive gate; no fleet-wide or literal comm list is a truthful substitute here.
+    if (s.lastOutput === 0) {
+      const comms = commsFor(s);
+      if (comms.length > 0) {
+        const started = Date.now();
+        let alive = false;
+        while (s.lastOutput === 0 && Date.now() - started < SEND_BOOT_WAIT_MS) {
+          const state = await paneAgentAt(sess(s.id), comms);
+          // Count probe time against the same budget: a slow ps/pgrep must not turn a nominally
+          // bounded route into the 30-second worker wait this cut explicitly rejects.
+          if (state === "alive" && Date.now() - started < SEND_BOOT_WAIT_MS) { alive = true; break; }
+          if (Date.now() - started < SEND_BOOT_WAIT_MS) await Bun.sleep(100);
+        }
+        if (alive) {
+          await Bun.sleep(harnessOf(s.harness).bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS);
+        } else if (s.lastOutput === 0) {
+          // No prompt text in the trail. This row says exactly what could have happened: delivery
+          // proceeds (owner capability preserved), but the pane never became observably ready.
+          audit("send_boot_timeout", s.id,
+            `harness=${s.harness ?? "default"} budget=${SEND_BOOT_WAIT_MS}ms`);
+        }
+      }
+    }
     const buf = `fleetbuf${s.id}`;
     const p = Bun.spawn(["tmux", "-L", SOCK, "load-buffer", "-b", buf, "-"], { stdin: "pipe" });
     p.stdin.write(text);

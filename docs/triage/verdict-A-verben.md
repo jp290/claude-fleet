@@ -1,0 +1,77 @@
+# Verdikt A-verben — Autonomie-Verben, Provenienz und Auto-Land
+
+**Worker:** pi/gpt-5.6-sol  ·  **Baum:** d92a1aa  ·  2026-08-09
+**Werkzeug-Probe:** ast-grep lief (`ast-grep 0.45.1`)  ·  rg ja
+
+## Übersicht
+| Zeile | Verdikt | Konfidenz | Größe | Einzeiler |
+|---|---|---|---|---|
+| `f0a710db` | unklar | hoch | L | `releasedBy` ist gelandet, aber Population, Analyst und Tagesventil erfüllen den Startpunkt heute nicht. |
+| `08f44054` | unklar | mittel | L | Aus der Programmzeile ist nur Ritualform plus Sensor baubar; die 20-Puls-Auswertung gehört dem Owner. |
+| `acb5839d` | unklar | hoch | M | Die Merge-Grenze steht und der Tool-Blocker ist weg; ob die Feuerprobe noch fehlt, steht nur im unsichtbaren Ledger. |
+| `785ce63d` | unklar | hoch | L | Der Code lebt die Eigenquellen-Regel, aber die verlangte irreversible Owner-Entscheidung ist nicht dokumentiert. |
+| `9b565be8` | bauen | hoch | L | Erst Parkungs-Markierung, nach Live-Abnahme separat das Instanz-Ledger; nicht beides als einen Auftrag starten. |
+| `5ff7233f` | unklar | hoch | L | Route und Mutex-Fakt existieren, doch Trägerwahl und 20-Lanes-Auswertung sind außerhalb der Lane. |
+| `3d707a1d` | unklar | mittel | L | Eine Richtungsnotiz mit drei Programmen; der erste Rückkanal ist inzwischen gebaut, aber ausgeschaltet. |
+
+## Je Zeile
+
+### `f0a710db` — unklar, Konfidenz hoch
+- **Warum:** Eine eigene Vorbedingung ist erfüllt: `0e345c6` baute `releasedBy` und den einzigen Release-Choke-Point. Der Verhaltensschnitt ist trotzdem heute nicht startbar: am 09.08. waren alle 21 Steward-Zeilen `note`, keine `lane`, der produktive Analyst ist mit `FLEET_ANALYSIS_MS=0` aus, und die spätere Rangliste verlangt Verb 4 vor Verb 3 sowie ein Tagesventil. Ob die geforderte Population inzwischen existiert, **braucht fleet.json, die eine Lane nicht sieht**.
+- **Beleg:** `0e345c6`; `server.ts:1388-1401`, `server.ts:14092`; `docs/auftragsweg-2026-08-09.md:38-47`, `watchdog.sh:153`; `docs/autonomy-bausteine-2026-08-06.md:176-195` und `:360`. Der heutige Code hat keinen Maschinen-Aufrufer: `releaseTask(` steht außer der Definition nur mit `"owner"` an `server.ts:14092`.
+- **Größe:** L (erst Betriebsvoraussetzungen und Owner-Entscheid, danach eine Lane). Baubar wäre später nur der Tick: frische Steward-`lane`+`ready`-Zeile → `releaseTask(t,"machine")`, eigenes Audit, Owner-Negativprobe und ein gewähltes Tagesventil.
+- **Was noch fehlt, bevor man es starten kann:** Hostbeleg `≥5` Steward-`lane`, davon `≥2 ready`; Analyst eingeschaltet; Owner-Zahl für das Auto-Promote-Tagesventil. Diese Schwellen nicht waiven.
+- **Nicht geprüft:** `fleet.json`, Audit-/Outcome-Ledger und Live-Konfiguration außer der getrackten Watchdog-Spawn-Zeile. Quellenrisiko: `docs/autonomy-verbs-2026-08-06.md:75-92` zeigt am HEAD auf Verb 2 und damit für diese Behauptung ins Leere; der Pin `@1e46b8b` löst dagegen exakt auf Verb 3 auf.
+
+### `08f44054` — unklar, Konfidenz mittel
+- **Warum:** Die Zeile bündelt drei verschiedene Dinge. Digest-Reparatur und Maschinen-Fakt sind bereits gebaut; offen bleibt die Ritualform. Der heutige Rundgang hat die richtige Sicherheitsgrenze schon grob: Default `note`, `lane` nur für einen wirklich ausführbaren, selbständigen Brief. Die pauschalen Beispiele „Deploy aussteht / Review reif / Rot offen → lane“ wären dagegen oft Owner-Griffe, keine Worktree-Aufträge. Ob ein engerer Zusatz „jede beanspruchte lane nennt Done+Verify“ nennenswert hilft, **braucht fleet.json und steward-journal.jsonl, die eine Lane nicht sieht**.
+- **Beleg:** `.claude/commands/rundgang.md:36-44`; `server.ts:11761-11809` erzwingt Steward-Create als `pending`, Default `note`, explizites `lane`; Digest E ist als gebaut markiert in `docs/autonomy-map-2026-08-06.md:544`, Maschinen-Fakten stehen auf `server.ts:11632`, `:11717` und `:12201`. Der Owner-Kommentar in `docs/triage/batch-A-verben.md:30-33` entscheidet bereits, Bau und 20-Puls-Auswertung zu trennen.
+- **Größe:** L in der vorliegenden Form. Baubarer Schnitt: (1) nur die Ritualregel „wenn `kind:"lane"`, dann harter Done- und Verify-Weg“, (2) ein gepinnter Sensor, der Filing-Kind und späteres Analyseverdikt zählt; die 20-Puls-Entscheidung wird eine eigene `note`.
+- **Was noch fehlt, bevor man es starten kann:** Vollständiger Sensor-Done aus dem abgeschnittenen Owner-Kommentar; Host-Ausgangszahl; Owner-Entscheid, ob die drei vergänglichen Beispiele überhaupt `lane` statt `note` sein sollen.
+- **Nicht geprüft:** Die zwei ungetrackten Betriebsdateien und der aktuelle Steward-Slot. Quellenrisiko: `docs/autonomy-verbs-2026-08-06.md:94-111` zeigt am HEAD auf den gebauten Deploy-Abschnitt und damit für Verb 4 ins Leere; `@1e46b8b` löst den historischen Beleg korrekt auf.
+
+### `acb5839d` — unklar, Konfidenz hoch
+- **Warum:** Die für diesen Batch entscheidende Grenze steht: `grep -n 'mergeJob(' server.ts` findet vier Texttreffer, aber `ast-grep --pattern 'mergeJob($$$)'` genau einen ausführbaren Aufruf, in der Owner-Route bei `server.ts:13384`; kein Tick ruft `mergeJob`. Auch die eigene Vorbedingung `25b79c23` ist seit `1241abd` erfüllt: `MERGE_TOOLS` erlaubt den vom Repair-Prompt verlangten Commit. Ob `repairRounds ≥ 1` und `resolvedBy` inzwischen bereits in beobachteten Feldläufen vorkamen, **braucht lane-outcomes.jsonl, die eine Lane nicht sieht**.
+- **Beleg:** `server.ts:513`, `:8862`, `:10985`, `:13384`; `1241abd`, `server.ts:6720-6728`; die simulierte Pfadprobe existiert in `e2e/land-provenance.ts:475-491`, ist aber kein Feldbeleg. `docs/agent-visibility-2026-08-06.md:275-281` markiert den alten Tool-Blocker ausdrücklich als erledigt.
+- **Größe:** M, falls der Host die Feldbedingung als weiterhin offen bestätigt: genau eine Drill-Lane mit gestelltem Konflikt und gestelltem Rot→Repair→Grün, zwei Outcome-Zeilen und zitierten Transkripten; keinerlei Auto-Land-Code.
+- **Was noch fehlt, bevor man es starten kann:** Host zählt die aktuellen Outcome-Zeilen und liefert die zugehörigen Transkripte oder bestätigt ihre Absenz; Owner autorisiert den absichtlich konfliktbehafteten Drill. Erst danach darf überhaupt über Verb 5 entschieden werden.
+- **Nicht geprüft:** Ledger, Transkripte und reale Agenten-Toolausübung. Quellenrisiko: `docs/autonomy-verbs-2026-08-06.md:113-159` ist am HEAD verschoben und mischt Verb 3/4 mit dem Beginn von Verb 5; nur `@1e46b8b` liefert den vollständig zitierten Verb-5-Block.
+
+### `785ce63d` — unklar, Konfidenz hoch
+- **Warum:** Die zwei Alternativen sind eine Owner-Policy, kein Lane-Entscheid. Der heutige Baum folgt faktisch der Landkartenposition: `/send` protokolliert `owner`, Steward-Sends `steward`, andere serverseitige Sender `auto`; ein sechster Quellwert existiert nicht. Das genügt als Ist-Befund, aber nicht als die verlangte, irreversible Festlegung im Commit-Body.
+- **Beleg:** `server.ts:1663`, die Maschinen-Aufrufer `server.ts:3486`, `:3672`, `:3871`, `:5873-6092` und `:8466`; Steward `server.ts:10429`; Owner-Route `server.ts:14360-14374`. Die Regel „eigene Route/eigene Quelle, `/send` bleibt Owner“ steht bereits in `docs/autonomy-map-2026-08-06.md:71-78`.
+- **Größe:** L, weil zuerst Entscheidung. Danach ist die Map-Variante S (Regel/Pin, kein Union-Umbau); die sechste Quelle wäre M und müsste alle Produzenten und Leser tragen.
+- **Was noch fehlt, bevor man es starten kann:** Owner wählt ausdrücklich: bestehende Eigenquellen-Regel festschreiben oder sechsten Wert einführen. Hartes Done für Variante 1: alle automatischen `logPrompt`-Aufrufer verwenden `auto|steward`, `/send` allein `owner`, strukturell gepinnt.
+- **Nicht geprüft:** Kein Prompt-Ledger und keine externen Clients, die mit Owner-Credential `/send` aufrufen könnten. Quellenrisiko: der erste Pin `1e46b8b:docs/autonomy-map-2026-08-06.md:71-78` trägt; der zweite `:489-492` zeigt am HEAD heute auf den Stalled-Auftrag und damit ins Leere, löst am gepinnten Commit aber korrekt auf §11.1 Punkt 3.
+
+### `9b565be8` — bauen, Konfidenz hoch
+- **Warum:** Das strukturelle Loch besteht: `Slot` kennt `awaiting`, aber keine owner-gesetzte Parkungs-Markierung; `STALLED_RULES` zieht nur `awaiting:null` ab. Damit bleibt eine absichtlich stille Notiz-Lane als `stalled` klassifizierbar, und ohne Instanz-Ledger kann die eigene n=10-Feuerprobe nicht entstehen. Die Zeile ist aber als ein Auftrag zu groß: Teil 1 muss gebaut, deployt und live abgenommen sein, bevor Teil 2 eine einzige Episode schreibt.
+- **Beleg:** `server.ts:1197-1223`; `lane-signals.ts:159-176`; die begründete Reihenfolge und Randbedingungen stehen in `briefs/stalled-parked-and-ledger.md:8-55` und `:58-128`. Das spätere Rückkanal-Dokument bestätigt „erst die Uhr, dann die Nachricht“ in `docs/rueckkanal-2026-08-09.md:94-102`.
+- **Kosten, wenn nicht gebaut:** Absichtlich geparkte Slots bleiben Fehlalarm-Kandidaten, und jede spätere Aktion oder Nachricht auf `stalled` hätte weder einen belastbaren Nenner noch adjudizierbare Instanzen.
+- **Größe:** L als Programm. Schnitt A ist M: persistiertes, owner-gesetztes Feld mit Grund, nur `stalled` abziehen, sichtbar, auf open/kill sicher gelöscht. Schnitt B ist eine eigene M-Lane erst nach Live-Abnahme: Episoden-Ledger an `tickGit`, Dwell, Branch+Repo-Identität, Restart-Lücke und Schwelle pro Zeile.
+- **Was noch fehlt, bevor man es starten kann:** Zwei getrennte Done-Kriterien. A: Fixture-Pins plus Host-Abnahme an den realen Notiz-Worktrees. Danach Owner-Go für B; die Frage „ob das Ledger den Betriebspreis wert ist“ bleibt ausdrücklich Owner-Entscheid.
+- **Nicht geprüft:** Die zwei realen Worktrees und `fleet.json`; deshalb wird ihre heutige Zahl nicht behauptet. `CLAUDE.md` wurde gemäß Triage-Vertrag nicht als Beleg benutzt.
+
+### `5ff7233f` — unklar, Konfidenz hoch
+- **Warum:** Beide Fähigkeiten existieren im Code, fehlen aber im getrackten Lane-Template. Dieses Template sagt zugleich, dass der Dispatcher heute anders brieft; seine Änderung beweist daher keine flotteweite Adoption. Der Zeilentext braucht den gitignorierten Regelträger und eine 20-Lanes-Messung: **braucht CLAUDE.md, die eine Lane nicht sieht**; außerdem **braucht audit.jsonl und lane-outcomes.jsonl, die eine Lane nicht sieht**.
+- **Beleg:** `server.ts:8632-8737`, `:12201`, `:12237-12243`; `docs/lane-brief-template.md:5-10` grenzt den Dispatcherweg ab, und die Datei enthält weder `verify-intent` noch `suiteLock`. Der Owner-Kommentar in `docs/triage/batch-A-verben.md:98-101` trennt Sensorbau und spätere Schwellenentscheidung bereits verbindlich.
+- **Größe:** L in der Zeile. Der baubare getrackte Schnitt ist S: die zwei Fähigkeiten im Gründungsbrief/Template benennen und das Vorhandensein der Strings pinnen. Die eigentliche Trägeränderung und Auswertung bleiben Host-/Owner-Arbeit.
+- **Was noch fehlt, bevor man es starten kann:** Der Owner liefert den aktuellen Regelbuchausschnitt und entscheidet den Träger; hartes Lane-Done darf nur „Text vorhanden und Pin grün“ sein. Eine separate `note` wertet nach 20 gelandeten Lanes die Audit-Events aus.
+- **Nicht geprüft:** Regelbuchinhalt, Audit- und Outcome-Ledger sowie tatsächliche Nutzung. Keine Aussage, ob die dokumentierte Nullpopulation seit dem 07.08. gekippt ist.
+
+### `3d707a1d` — unklar, Konfidenz mittel
+- **Warum:** Die Zeile ist eine Richtungsnotiz über drei Programme, ohne Done, Verify oder gewählte Reihenfolge. Ihr schärfster damaliger Befund ist inzwischen teilweise überholt: `54ea616` baute `tickAuditPing`, der ein unadjudiziertes Rot einmalig mit Messsignatur und Output-Tail an eine Main-Session meldet, ohne Rollback oder Urteil; im getrackten Deployment ist der Tick aber nicht eingeschaltet. Ob danach zusätzlich ein autonomer Bisect-/Untersuchungs-Worker nennenswert wäre, ist angesichts der in §7 beerdigten 14/15-Fehlalarmbasis ein Owner-Entscheid.
+- **Beleg:** `54ea616`; `server.ts:5646`, `:5801-5877`, `:10186`; `docs/rueckkanal-2026-08-09.md:83-102`. Die Land-Grenze bleibt unverändert (`server.ts:13384` ist der einzige strukturelle `mergeJob`-Aufruf). Kein Auto-Rollback: `docs/work-register-2026-08-06.md:218-230`.
+- **Größe:** L. Baubarer erster Schnitt wäre nicht „Main abschaffen“, sondern höchstens ein read-only Untersuchungs-Vorschlag für genau ein unadjudiziertes Rot, hinter Opt-in und ohne Merge/Rollback; vorher sollte der vorhandene Ping eingeschaltet und gemessen werden.
+- **Was noch fehlt, bevor man es starten kann:** Owner beantwortet zuerst „darf ein Tick je `mergeJob` rufen?“ und separat „reicht Ping+Adjudikation oder soll eine Untersuchung starten?“. Idle-Zustände gehen in `9b565be8`; Wissenspflege braucht eine eigene Zeile mit konkretem Regal, Trigger und Done.
+- **Nicht geprüft:** Live-Env, offene rote Audits und Reaktionszeit auf Pings; diese Betriebsdaten liegen in ungetrackten Quellen. Der K2-Shadow-Richter und Auto-Rollback werden ausdrücklich nicht wieder geöffnet.
+
+## Kalibrierung
+- Meine drei stärksten Aussagen: `acb5839d` (genau ein struktureller `mergeJob`-Call, Route; `1241abd` beseitigt den benannten Tool-Blocker); `f0a710db` (`releasedBy` ist erledigt, aber aktueller getrackter Stand zeigt leere Steward-Lane-Population und Analyst aus); `9b565be8` (Parkungsfeld fehlt im `Slot` und in `STALLED_RULES`, der Zweiteiler ist im Brief ausdrücklich geordnet).
+- Meine schwächste Aussage (hier zuerst nachprüfen): `3d707a1d` — der vorhandene Audit-Ping reduziert den Nutzen des vorgeschlagenen Untersuchungs-Ticks, aber ohne Live-Reaktionsdaten kann ich nicht sagen, ob er ihn gegenstandslos macht oder nur vorbereitet.
+- Was ich gemessen vs. nur gelesen habe: Gemessen wurden `ast-grep 0.45.1`, der eine strukturelle `mergeJob($$$)`-Aufruf, die vier `grep 'mergeJob('`-Texttreffer, Release-Aufrufer, Git-Historie/Bodies und die Auflösung der `@1e46b8b`-Quellen. Gelesen wurden gezielte Codebereiche, Briefs und Docs. Keine Suite, keine API-Route, kein `fleet.json`, kein Ledger.
+
+## Batch-Ebene
+- Zusammenlegungen, die ich sehe: Keine vollständige Zusammenlegung im Sinn des Verdiktvokabulars. Nur der Idle-Teil von `3d707a1d` gehört in `9b565be8`; die restliche Richtungsnotiz ist keine Teilmenge davon. Batch-übergreifender Kandidat: Wave-G-Zeile `b8716d0e` nennt `f0a710db`, `08f44054` und `acb5839d` wegen Belegdrift (`docs/triage/verdict-G-notizen.md:96-101`). Das ist Evidenzpflege, nicht dieselbe Bauarbeit; die SHA-Pins lösen auf.
+- Reihenfolge, falls eine Zeile eine andere voraussetzt: Für die vier wechselseitig als Kollision markierten Zeilen: **`9b565be8` A → `9b565be8` B → `785ce63d` Owner-Entscheid → `f0a710db` → `acb5839d` → erst später Verb 5**. `9b565be8` ist die Sicherheits-/Messwurzel („erst die Uhr“), nicht die Typ-Vorbedingung von `785ce63d`; wegen gemeinsamer `server.ts`-/e2e-Fläche trotzdem zuerst serialisieren. Die harte Typkette ist `785ce63d` (Senderprovenienz) → `f0a710db` (Maschinenfreigabe; `releasedBy` als eigene Vorbedingung bereits erfüllt) → `acb5839d` (Feuerprobe vor Auto-Land; `25b79c23` bereits erfüllt). Zusätzlich muss der enge Verb-4-Schnitt aus `08f44054` die `≥5/≥2`-Population **vor** `f0a710db` liefern; die spätere Korrektur `docs/autonomy-bausteine-2026-08-06.md:176-195` schlägt damit die ältere Doc-Reihenfolge 3→4.
+- Was diesem Batch als GANZEM fehlt: Keine weitere „Autonomie-Lane“, sondern fünf getrennte Owner-Anker: Provenienz-Policy, Auto-Promote-Rate, Ritual-/Trägerwahl, Drill-Autorisierung und die Grundsatzantwort auf tick→`mergeJob`. Erst danach kleine Mechanismen mit je eigener Feldmessung. Vier Quellenkoordinaten driften am HEAD; die `@1e46b8b`-Pins retten den historischen Inhalt, ersetzen aber keinen aktuellen Codebeleg.

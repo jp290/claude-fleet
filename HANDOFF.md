@@ -1,3 +1,332 @@
+# HANDOFF — Session 44 (2026-08-09 nachts: drei GPT-Lands, und ein `checkout --`, das fremde Arbeit fraß) · 43/42/41/40/39/38 darunter
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 3863b29..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 44: drei pi/GPT-Lanes, drei Lands, und der erste Live-Beweis des Rückkanals
+
+**ctx beim Übergeben: ~28 %.** Produziert: **3 Lands** (alle aus pi/gpt-5.6-sol-Lanes über den
+Dispatch-Knopf, alle drei Queue-Zeilen haben sich beim Land SELBST geschlossen), **3 grüne
+Tier-2-Audits**, **2 Deploys**, **1 neue Queue-Zeile mit Messung**, **3 Regelbuch-Einträge**, und ein
+`graphify update`.
+
+| Commit | was |
+|---|---|
+| `5358a2a` | die Zaun-Pin: Schreibwurzeln von `piSandboxProfile` ↔ `PI_HARNESS.note`, beide Richtungen, unmapped = FAIL |
+| `4354048` | der Rückkanal: `laneHostCommitLooking` als ZWEITES Prädikat + `Harness.hostCommits` als Pflichtfeld |
+| `76e948c` | `POST /api/tasks/:id/dispatch` reicht `effort` durch (bis dahin still ignoriert → Adapter-Default) |
+
+Audits: `5358a2a` green · `4354048` green · `76e948c` **lief beim Übergeben noch** — nachsehen, nicht
+annehmen (`tail -1 post-land-audits.jsonl`). Deploy-Stand beim Übergeben: `4354048` ist deployt,
+**`76e948c` ist es NICHT** (`codeBehind: true`, 1 dahinter) — der srv-Restart wartet auf das Ende
+seines Audits, weil ein srv-Kill mitten im Audit ihn GAR KEINE Zeile schreiben lässt.
+
+### KORREKTUR an Session 43s Handoff
+
+**`3863b29` HAT einen Audit-Eintrag** — der neue Boot hat ihn nachgeholt (`result: "green"`,
+`exitCode 0`, 678 s). S43 schrieb, er fehle und das sei Absicht; die Abdeckungslücke im Register
+existiert nicht. Der Mechanismus dahinter bleibt aber wahr und ist die eigentliche Lehre: stirbt srv
+selbst, schreibt der Audit keine Zeile — aber der nächste Boot fährt ihn nach.
+
+### MEIN FEHLER, und er ist der teuerste Posten dieser Session
+
+**`git checkout -- server.ts` im Lane-Worktree hat 98 Zeilen uncommittete Lane-Arbeit gelöscht.** Ich
+hatte eine Mutationsprobe gefahren (Adapter-Wert flippen, Pin muss rot werden) und danach
+zurückgesetzt. Bei der Lane davor war exakt dieselbe Probe harmlos, weil `server.ts` dort unberührt
+war — **daraus wurde ein Handgriff, und der Handgriff war die Falle.** Seit der Arbeitsteilung ist der
+Normalfall, dass eine fremde Lane fertige Arbeit UNCOMMITTET hält (sie KANN nicht committen), also
+gibt es im Lane-Worktree keinen sicheren `checkout --` mehr.
+
+Erholung: die Lane hat ihre sieben Stellen aus dem eigenen Gedächtnis neu eingetragen — **der Compiler
+war das Netz**, weil `lane-signals.ts` und die vier `e2e/`-Dateien die neuen Namen schon
+referenzierten, und der Diff kam auf dieselben 98 Zeilen. Kosten: ein zweiter 11-min-Suite-Lauf.
+Steht als Regel in `CLAUDE.md`: `git stash push -- <datei>` oder eine Kopie — besser noch **erst der
+Host-Commit, dann die Probe**, dann ist `checkout --` wieder harmlos.
+
+### DER RÜCKKANAL IST LIVE — und die Messung an ihm ist wertvoller als das Feature
+
+`4354048` gibt einer eingezäunten Lane einen Namen für ihren Fertig-Zustand (`dirty>0 && ahead===0`,
+disjunkt zu `doneLooking` per `ahead`-Klausel) und lässt `POST /api/self/watch` darauf feuern. **Ich
+habe es unmittelbar nach dem Deploy auf die nächste laufende pi-Lane scharf gestellt**, und das
+Ergebnis ist zweigeteilt:
+
+- **Das Prädikat trägt, live bewiesen:** `hostCommitLooking` kippte auf der Steward-Sicht von `false`
+  auf `true`, genau als `idleMs` die 60-s-Schwelle passierte (41810 → 54013 → **66203 = erster
+  true**), bei `dirty 6 / ahead 0 / alive / gitOp false / awaiting null`.
+- **Die Nachricht kam NICHT an**, ~25 min lang `armed:true, firedAt:null`, obwohl das Ziel-Prädikat
+  818 s true stand. Ursache ist das Busy-Gate der Zustellung, nicht das Prädikat: `canDeliver` prüft
+  `now - s.lastOutput` am EMPFÄNGER, und **eine Claude-Code-Pane repaintet während eines Tool-Calls**
+  (Spinner/Token-Zähler) — mein `idleMs` stand bei **64 ms** mitten in einer Kette, in der 10 min
+  nichts Sichtbares in die Pane ging. Also: **der Watch erreicht eine PARKENDE Session, nicht eine
+  ARBEITENDE** — und letztere ist genau der Fall, für den `00e5f771` gebaut wurde.
+- Zweitbefund: **es gibt keine Route, einen Watch zu entwaffnen oder umzuhängen** (kein `DELETE` in
+  `server.ts`), und ein zweites Abo auf dasselbe Ziel gibt denselben zurück. Der dokumentierte
+  `idleSec:0`-Opt-out ist damit unerreichbar, sobald ein Watch mit `idleSec>0` existiert — daran ist
+  mein Zustellungs-Beweis gescheitert.
+
+Beides steht mit Messwerten und drei offenen Fragen in der neuen Zeile **`fc47f1e1`**. **Nicht
+nebenbei anfassen:** die naheliegende Reparatur (`lastOutput` soll Spinner-Bytes von Agenten-Bytes
+trennen) hängt an JEDEM `canDeliver`-Aufrufer — Autos, Steward-Send, auto-③. Der kleine Schnitt ist
+die Entwaffnungs-Route.
+
+### WAS DIE ARBEITSTEILUNG DIESE SESSION GEKOSTET UND GEBRACHT HAT
+
+Dreimal derselbe Takt, und er funktioniert: **briefen → Lane produziert → HOST fährt
+`./e2e-isolated.sh` (~11 min) → HOST committet mit echtem Body → landen → Audit → deployen.**
+
+- **Der Host-Lauf ist Pflicht, nicht Vorsicht.** Alle drei Lanes hatten Checks in Familien, die eine
+  eingezäunte Lane strukturell nicht fahren kann (`e2e/lanes-lifecycle.ts`, `e2e/watch.ts`,
+  `e2e/prompts.ts`, `e2e/security.ts` §6, `fleet-e2e-harness.ts`). Vier Läufe, alle grün — die Lanes
+  haben blind geschrieben und richtig geschrieben.
+- **Eine Runde Nachschärfen ist billig und lohnt.** Bei `5358a2a` hatte die Lane eine hartkodierte
+  Erwartungstabelle gebaut — genau der Schnappschuss, den `e2e/pins.ts`' eigener Kopf verbietet. Ein
+  `POST /send` mit einer präzisen Anweisung, und sie hat die pi-Hälfte aus der `.git`-Deny-Klausel
+  ABGELEITET; für claude/codex/container blieb eine benannte Owner-Entscheidung, weil im Baum nichts
+  steht, woraus sie ableitbar wäre. **Vorher fragen, ob die Regel eine Regel ist.**
+- **Kosten, gemessen:** ~9 Punkte meines Fensters für drei Lands inkl. zweier Suite-Wiederholungen.
+  Lane-Verbrauch: 20 % / 56 % / 36 % ihres 258 400er Fensters.
+
+### KLEINKRAM, der Zeit spart
+
+- **Der Owner-Poll will `authorization: Bearer <token>`** — `x-fleet-token` gibt es nicht,
+  `x-fleet-self-token` ist nur der Self-Pfad. Token: `python3 -c "import json;print(json.load(open('fleet.json'))['token'])"`,
+  Steward-Token analog aus `stewardToken`. Hat mich zwei Fehlversuche gekostet.
+- **Die Merge-/Land-Route ist `POST /api/slots/:id/merge`**, nicht `.../land`. Der Owner-Send ist
+  `POST /send` mit `{slot, text}` — **nicht** `/api/slots/:id/send` (404).
+- **Ein Watcher auf eine fremde Lane braucht ZWEI unabhängige Klauseln.** Stille allein reicht nicht:
+  ein GPT-Modell schweigt während eines langen Denkzuges minutenlang, und 120 s Ruhe haben mich einmal
+  mitten in der Arbeit geweckt (die Lane editierte gerade `server.ts`). Was trägt:
+  `#{session_activity}` bewegt sich ≥3 min nicht **UND**
+  `capture-pane -p | grep -c 'Working\.\.\.\|Esc to interrupt'` = 0 **UND** `git status --porcelain`
+  nicht leer. Steht so im Regelbuch.
+- **`e2e-isolated.sh` puffert:** die Log-Datei bleibt ~11 min bei zwei Lock-Zeilen und schreibt dann
+  alles. Ein `tail` nach 2 min sieht wie ein Hänger aus. Und ein `grep -c '^FAIL'` mit 0 Treffern
+  liefert exit 1 — das liest sich in der Task-Notification als „failed", ist aber grün.
+- **Meine `until`-Warteschleifen wurden zweimal bei 10 min abgeschnitten** (Tool-Timeout-Deckel), der
+  Hintergrundprozess lief weiter. Für >10 min: `run_in_background` und auf die Notification warten.
+
+### REIHENFOLGE, die ich empfehle
+
+1. **`76e948c` deployen**, sobald sein Audit durch ist (`tmux -L claudefleet kill-session -t srv`,
+   dann `deployGap.codeBehind` + `bundleStale` + `errors` auf `/api/sessions` prüfen). Kein
+   `bun run build` nötig — kein Client-Quellcode in diesen drei Lands.
+2. **`fc47f1e1`** — der Rückkanal-Befund oben. Erst entscheiden, welcher der beiden Schnitte
+   (Entwaffnungs-Route vs. `lastOutput`-Semantik); der zweite ist weitreichend.
+3. Aus dem Register mit hartem Kriterium und in-Domain: **`2975afe9`** (ein `/send` an eine noch
+   bootende fremde TUI geht ins Leere) — `ready`, Fläche `e2e-claude-gate.sh` + `server.ts`.
+4. **Nicht neu untersuchen:** die needs-you-Zeilen (Sols Durchgang von 2026-08-08 gilt weiter, seine
+   ZEILENANGABEN sind gedriftet, seine Urteile nicht) und das Attic-Backlog (beerdigt 2026-08-07).
+
+### IN FLUG BEIM ÜBERGEBEN
+
+Der Post-Land-Audit zu `76e948c`. Slot 2 (`fleet/260808114656-6e86`) ist weiterhin die
+ZURÜCKGESTELLTE ToS-Lane: nicht landen, nicht killen. Sonst nichts.
+
+---
+
+# HANDOFF — Session 43 (2026-08-08 nachts: der erste GPT-Arbeitstag, und drei Sonden, die vor dem Code kaputt waren) · 42/41/40/39/38 darunter
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log f8665ac..HEAD`
+mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*
+
+---
+
+## Session 43: drei GPT-Lanes, drei Lands, und die Erkenntnis, dass die Arbeitsteilung der Endzustand ist
+
+**ctx beim Übergeben: ~38 %.** Produziert: **3 Lands** aus pi/gpt-5.6-sol-Lanes, **1 Direkt-Commit**,
+**1 rotes Tier-2-Audit adjudiziert**, **2 neue Queue-Zeilen**, **4 Regelbuch-Einträge**, und eine
+Bewertung von zwei Owner-Vorschlägen, die beide anders ausgingen als gedacht.
+
+| Commit | was |
+|---|---|
+| `8e154dd` | Codex-Effort via `-c model_reasoning_effort`, feste Liste; `resume --last` gemessen statt pauschal verneint |
+| `6cc8283` | **Direkt-Commit** — die zurückgebliebene §6e-Behauptung, die das Tier-2-Audit fand |
+| `2682bdc` | pi-Zaun: `~/.bun/install/cache` als Schreibwurzel, wahre Picker-Notiz, ausführbare Fixture |
+| `08c7787` | pi-ctx-Sensor: eigener `Harness.context`-Hook, GPT-Fenster 258 400, sechste Absenz |
+
+**EIN POST-LAND-AUDIT ÜBERLEBT EINEN srv-KILL — gemessen 2026-08-08 an `3863b29`.** Der Deploy kam
+mitten in seinem Audit (Owner-Entscheid; der Audit war ohnehin redundant, weil das Land ein
+Fast-Forward auf genau den Commit war, den ich host-seitig schon grün vermessen hatte). Ergebnis:
+**der Audit lief zu Ende und schrieb `green`, 678 s, `exit 0`** — dieselbe Laufzeit wie ein
+ungestörter.
+
+**Ich hatte hier zuerst das Gegenteil stehen**, weil ich ~4 min nach dem Kill nachsah, keine Zeile
+fand und daraus einen Mechanismus schloss („stirbt srv, schreibt der Audit gar keine Zeile"). Beobachtet
+hatte ich nur „noch keine Zeile" — ein Audit braucht ~11 min. Derselbe Fehler wie bei den drei Watchern:
+eine Momentaufnahme als Gesetz gelesen.
+
+**Der Mechanismus ist NICHT gemessen** (überlebt der Kindprozess verwaist? schreibt der neu gebootete srv
+die Zeile? beides plausibel) — also bau nichts darauf. Was gilt: **der Fall von 2026-08-06 bleibt der
+gefährliche, und er ist ein ANDERER** — dort traf `pkill -f 'e2e-isolated.sh'` die Suite selbst, srv lebte
+und protokollierte `exit 143` als falsches Rot. Regel unverändert: **nie ein Namensmuster killen**, die
+notierte PID nehmen. Ein srv-Kill ist danach *nicht* dasselbe wie ein Suite-Kill.
+
+**`6cc8283` ist ein Direkt-Commit und darum für jedes land-seitige Ledger unsichtbar** — kein
+`fleet/land`-Note, keine `lane-outcomes`-Zeile, **kein automatischer Post-Land-Audit**. Die
+Verifikation ist von Hand vollständig gefahren (`./e2e-isolated.sh` → exit 0, 0 FAIL, ALL PASS).
+Wer `post-land-audits.jsonl` liest, schließt sonst korrekt-aber-falsch, er sei nie vermessen worden.
+
+### DIE ARBEITSTEILUNG IST DER ENDZUSTAND, nicht eine Übergangslösung
+
+Das ist der Satz, der die nächste Session am meisten spart. Gemessen (`2682bdc`), nicht geschlossen:
+
+- **Eine pi-Lane KANN hinter ihrem Zaun:** `bun e2e/pins.ts`, `bunx tsc`, `bun run build`,
+  `./e2e-security.sh`.
+- **Sie KANN NICHT:** alles claude-Abhängige — `./e2e-claude-gate.sh` stirbt an `ENOENT` auf eine
+  Transkript-Datei unter `~/.claude/projects/…`, `./e2e-isolated.sh` an `EPERM` beim Anlegen ebendort.
+- **`~/.claude` aufzumachen ist der falsche Fix.** Lane produziert, Host verifiziert — und eine
+  ehrliche Grenze ist mehr wert als eine aufgeweichte.
+
+**Operative Folge, plan sie ein:** wer eine fremde Lane briefet, plant **einen host-seitigen
+`./e2e-isolated.sh`-Lauf ein (~11 min)** — besonders, wenn die Arbeit in `e2e/*.ts` liegt, denn diese
+Familie läuft NUR dort. Ich habe ihn heute viermal gefahren und er hat dreimal etwas gefunden.
+
+Ebenso gemessen: **Buns Meldung `unable to write files to tempdir: PermissionDenied` meint NICHT
+`$TMPDIR`**, sondern seinen Package-Cache. Der Fehlermeldung zu glauben hätte die falsche Wurzel
+geöffnet.
+
+**WAS EINE FREMDE LANE AN ORIENTIERUNG HAT — und es ist weniger, als man denkt** (gemessen
+2026-08-08). **Keinen graphify-Graphen**: `graphify-out/` ist gitignored (`.gitignore:35`), ein
+Worktree bekommt nur getrackte Dateien — das gilt für JEDE Lane, auch claude, ist also kein
+GPT-Nachteil. **`.claude/commands` und `.claude/skills` SIND im Baum** (15 getrackte Dateien, sie
+reisen mit) — **aber für pi/codex tote Buchstaben**, das sind Claude-Code-Konventionen, die kein
+fremder Agent liest. **Hooks hat sie gar keine** (die leben in `~/.claude/settings.json`, außerhalb
+des Repos). Was bleibt: `AGENTS.md`, der getrackte Baum, `rg`/`ast-grep`, und dein Brief. **Der Brief
+IST ihre Orientierungsschicht, weil es sonst keine gibt** — das ist der eigentliche Grund, warum die
+Datei:Zeile-Disziplin so viel trägt und nicht bloß Höflichkeit ist.
+
+### DIE LEHRE DES TAGES: die Sonde war viermal der erste Verdächtige — und einmal war BEIDES kaputt
+
+Vier rote Läufe, jeder an frisch geschriebener Arbeit, jeder aufgelöst durch das Lesen der SIGNATUR
+statt durch das Glauben des Fehlschlags:
+
+1. **Die Escaping-Falle, zum ZWEITEN Mal in diesem Repo.** Profil aus `#{pane_start_command}`
+   gehoben, tmux escaped `"`, SBPL liest `\"` als unbound variable — drei Zaun-Behauptungen fielen,
+   ohne den Zaun je befragt zu haben. `e2e/lanes-basic.ts:53` löst das seit `f18c1ec` und nennt es im
+   Kommentar „this check's own first red"; 400 Zeilen weiter wurde es wiederholt. **Das Wissen stand
+   geschrieben und ist nicht angekommen.**
+2. **Die Fixture daneben konnte es strukturell nicht fangen**, weil sie auf `(version 1)` und
+   `(deny file-write*)` prüfte — **beide enthalten kein Anführungszeichen** und überleben die
+   Verstümmelung. Daraus die Regel, die über Sandboxen hinausgeht und jetzt im Regelbuch steht:
+   **eine Fixture für ein ausführbares Artefakt muss es AUSFÜHREN.**
+3. **Der realpath-Slug — und hier war die Sonde kaputt UND der Code.** pi ist ein node-Prozess,
+   `process.cwd()` liefert den physischen Pfad, also legt es `--private-var-folders-…--` an, während
+   Fleet `/var/folders/…` kennt. Eine Lane unter `<repo>.worktrees/…` durchquert keinen Symlink —
+   dort hätte der Defekt jahrelang richtig ausgesehen. **Wer nach der ersten Erklärung aufhört,
+   repariert die Hälfte und hält es für fertig.**
+4. **Eine Sonden-Anordnung, die nichts beweist, ohne rot zu werden.** Der Absenz-Check und der
+   Mehrdeutigkeits-Check des ctx-Sensors erwarten BEIDE `null` — sie bestehen also auch, wenn der
+   Leser ausnahmslos `null` liefert. Sie sind nur gültig, weil der positive Check HINTER ihnen steht.
+   Wer die Reihenfolge dreht oder ihn entfernt, nimmt beiden die Beweiskraft, und nichts wird rot.
+   **Ich habe diese drei Grünen zuerst selbst als Entlastung gelesen. Waren sie nicht.**
+
+### DAS ROTE TIER-2-AUDIT: der benannte Preis wurde zum ERSTEN MAL fällig
+
+`8e154dd` gab codex eine Effort-Fähigkeit; `e2e/security.ts` behauptete an einer zweiten Stelle noch
+den alten Kontrakt und wurde rot — **9 min nach dem Land, in der am 2026-08-07 vorhergesagten Form und
+Frist.** Adjudiziert als `stale-test`, repariert in `6cc8283`. **Der Entscheid bleibt richtig**, und
+der Mechanismus hat funktioniert.
+
+**Korrektur an meiner eigenen Regelbuch-Zeile von zwei Stunden vorher:** ich schrieb erst „wenn du
+`e2e/*.ts` anfasst" — das zielt daneben. Die Lane änderte einen **Adapter-Wert in `server.ts`**; die
+zurückgebliebene Behauptung lag woanders. Der richtige Auslöser ist: **du änderst eine Aussage, über
+die irgendwo eine Behauptung steht** (ein `supports.*`, ein `effortLevels`, eine `note`, ein
+Kontrakt-Default). Steht so korrigiert in CLAUDE.md.
+
+### DIE BEWERTUNG, um die der Owner gebeten hat (Lint · Backlog · needs-you)
+
+**Lint: kein Linter — es gibt schon zwei Lint-Schichten.** `tsc --strict` für TS↔TS, und
+**`e2e/pins.ts` ist die zweite** (73 Regeln, „die Muss-Paare, deren ANDERE SEITE KEIN TYPESCRIPT
+IST", erste Stufe der Verify-Kette). Der Test, den ich angelegt habe, ist empirisch: **hätte ein
+Linter irgendeinen der fünf Fehlschläge von heute gefunden? Null von fünf.** Der stärkste
+Gegeneinwand (`no-floating-promises` in einem async-Server) wurde geprüft und verliert an
+`server.ts:1629-1635`: das Fehlen eines `unhandledRejection`-Handlers ist eine **Messung**, nicht
+eine Lücke — „with a listener the process SURVIVES … a robustness regression wearing an
+observability costume". Die Prozess-Ebene ist bewusst „fatal bleibt fatal, der Watchdog respawnt
+sauber".
+
+**Was stattdessen lohnt: EINE neue Pin** — die Schreibwurzeln des pi-Zauns gegen die `note`, die sie
+dem Owner beschreibt. Genau dieser Defekt ist heute passiert (drei geteilte Wurzeln, Notiz sagte
+„only its own worktree"), gefunden von einem ②-Reviewer statt von einem Gate. Klein, echtes
+pins-Genre, verhindert die Wiederholung.
+
+**needs-you: liegt fertig vor, heute Morgen von Sol.**
+`~/claude-fleet-private/codex-analysis-2026-08-08/sol-backlog-pass.md` — **alle 28** Zeilen,
+Drei-Test-Urteil, `VERIFIED`/`INFERRED` getrennt, ein entsperrender Satz je Zeile, **6/28**
+überleben, plus gerankte Kurzliste von 7 **mit Schnittlinie**. Nicht neu machen lassen.
+**Gemessener Vorbehalt:** verankert auf `69c94da`, seither vier Lands — Stichprobe: Sol zitiert
+`server.ts:794-810` als `TaskAnalysis`, dort steht heute `CODEX_HARNESS.effortLevels`. **Die Urteile
+stehen, die Zeilenangaben nicht.**
+
+**Das Attic-Backlog NICHT öffnen** — am 2026-08-07 ausdrücklich beerdigt.
+
+### IN FLUG BEIM ÜBERGEBEN — nichts mehr; `9bcc460e` ist GELANDET (`3863b29`)
+
+Sols Nummer 1 ist erledigt, und **die Lösung ist eine dritte, die die Queue-Zeile nicht kannte** —
+lies den Commit-Body, er ist die eigentliche Fundstelle. Kurz: die Zeile bot eine Alters-Schranke oder
+ein Kein-Fallback-für-junge-Panes an; **beide messen ZEIT und brauchen die Pane-Startzeit, die nirgends
+gelesen wird** (`session_created` kommt in `server.ts` nicht vor). Die Lane nahm stattdessen
+IDENTITÄT: ist eine `sessionId` gepinnt und ihre Datei noch nicht da → `null`, statt in den
+mtime-Fallback zu fallen. Fleet hat die UUID selbst übergeben, **also kann eine anders benannte Datei
+ihre Konversation in keinem Alter sein** — kein Subprozess auf dem 2-s-Poll, kein geratenes Fenster.
+Der Fallback bleibt für seinen einzigen Zweck: adoptierte Panes, die gar keine `sessionId` haben —
+genau der Fall, den eine Alters-Schranke getötet hätte.
+
+**Der neue Check läuft im LAND-GATE, nicht nur in Tier 2:** er liegt in der `history`-Familie, wird
+aber aus `fleet-e2e-claude-gate.ts` aufgerufen, weil die normale Suite mit `FLEET_CMD=true` gar keine
+echte `--session-id`-Pin hat. War vor dem Fix rot (`source=ended-foreign-session.jsonl, total=1` →
+danach `source=null, total=0`).
+
+**`08c7787` ist an einer LEBENDEN pi-Pane bestätigt**, nicht nur durch die Suite:
+`{"usedTokens":30352,"windowTokens":258400,"pct":11.7}`. Wichtig für den nächsten, der hinsieht:
+**unmittelbar nach dem Lane-Start steht dort `ctx: null`, und das ist RICHTIG** — pi hat noch keine
+`usage`-Zeile geschrieben, Absenz bleibt Absenz statt 0 %. Ich bin selbst darauf hereingefallen.
+
+### REIHENFOLGE, die ich empfehle
+
+1. **`08c7787` deployen**, sobald sein Post-Land-Audit durch ist (`bun run build` +
+   `tmux -L claudefleet kill-session -t srv`, dann `bundleStale`/`deployGap` auf `/api/sessions`).
+   Gelandet ist es: `verify.ok true` (79 s), `disposition: landed`. Ob der Deploy schon lief, sagt
+   `deployGap.codeBehind` — nie das Gedächtnis.
+2. **Die Zaun-Pin** aus dem Lint-Abschnitt oben — die einzige Lint-Arbeit, die ich für lohnend halte.
+3. **`40eb5c1a`** (doneLooking kann eine eingezäunte Lane strukturell nie melden — `ahead>0` ist
+   unmöglich, wenn der Host committet; ich habe es heute viermal mit einem Hintergrund-Watcher
+   überbrückt, und **drei dieser Watcher waren kaputt** — siehe Kleinkram). Danach **`6443be0e`**
+   (`dispatch` reicht kein `effort` durch).
+4. **`graphify update .` im Haupt-Checkout.** Gemessen 2026-08-08: `graphify-out/graph.json` ist von
+   18:51, `server.ts` von 21:05 — der Graph kennt die letzten drei Lands nicht. Der Hook verlangt bei
+   jedem Aufruf, ihn zu benutzen, und zeigt auf einen veralteten Stand. Kostet nichts (AST-only).
+
+### KLEINKRAM, der Zeit spart
+
+- **Der Dispatch-Knopf erhält den `slot`-Link, und das zahlt sich aus:** `f85d1244` und `b7780848`
+  standen nach ihrem Land von selbst auf `done`. Nur der Umweg über `POST /api/lanes` kostet das.
+- **Der Commit-Msg-Worker fiel zweimal auf `wip: saved from Fleet dashboard`.** In diesem Repo sind
+  die Bodies das Befund-Register — von Hand nachschreiben (`git commit --amend -F`).
+- **Der Host committet für eine fremde Lane** über `POST /api/slots/:id/commit`; ein direktes
+  `git commit` im Lane-Worktree geht vom Haupt-Checkout aus genauso und spart das Amend.
+- **WATCHER AUF EINE FREMDE LANE — hier sind DREI Fehlschläge von mir, alle derselbe Fehler.** Es
+  gibt für eine eingezäunte Lane keinen Rückkanal (`40eb5c1a`), also baut man einen; alle drei Male
+  war die SONDE falsch, nicht die Lane:
+  - `until [ "$(git log -1 --format=%h)" != "<sha>" ]` mit einem **veralteten Basis-SHA** beendet
+    sofort und beweist nichts. Gegen den Kopf prüfen, der beim START des Watchers wirklich stand.
+  - **`idleSec` gibt es im Owner-Poll NICHT** (`/api/sessions` liefert `idleSec: null`, ebenso
+    `idle`/`observed` — gemessen 2026-08-08). Ein `[ "$I" -gt 150 ]` darauf ist immer falsch, der
+    Watcher feuert **nie** und wartet ewig. Nimm tmux direkt:
+    `tmux -L claudefleet display-message -p -t s<N> '#{session_activity}'`.
+  - **`sessionId` liefert der Poll ebenfalls nicht** (Data-Saver). Es steht in `fleet.json`, und die
+    Slots dort sind ein **Objekt mit String-Schlüsseln**, keine Liste — `for s in d['slots']` iteriert
+    sonst über die Schlüssel und wirft `AttributeError`.
+  **Die brauchbare Bedingung für eine fertige fremde Lane ist: `git status --porcelain` im Worktree
+  ist nicht leer UND `#{session_activity}` bewegt sich seit N Sekunden nicht.** Nichts davon aus dem
+  Poll.
+- **Ein GPT-Brief kostet die Lane ~9 % ihres Fensters** (gemessen an `e2784b16`: 9,2 % von 272k nach
+  dem Brief). Das ist der Preis der Schärfe und er ist es wert — aber er ist real.
+
+---
+
 # HANDOFF — Session 42 (2026-08-08 abends: die GPT-Wende, und ein Kontingent, das in zwei Tagen alle war) · 41/40/39/38 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 35c5a1f..HEAD`

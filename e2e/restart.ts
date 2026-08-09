@@ -7,14 +7,33 @@ import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
 
+const statOrNull = (path: string): ReturnType<typeof statSync> | null => {
+  try { return statSync(path); } catch { return null; }
+};
+
 export async function run(ctx: Ctx): Promise<void> {
   // --- file permissions ---
-  const streamMode = statSync(`${ROOT}/streams/s1.raw`).mode & 0o777;
-  const stateMode = statSync(`${ROOT}/fleet.json`).mode & 0o777;
-  check("stream file is 600", streamMode === 0o600, streamMode.toString(8));
-  check("fleet.json is 600", stateMode === 0o600, stateMode.toString(8));
-  const histMode = statSync(`${ROOT}/streams/s2.history.json`).mode & 0o777;
-  check("history file is 600", histMode === 0o600, histMode.toString(8));
+  const streamPath = `${ROOT}/streams/s1.raw`;
+  const streamStat = statOrNull(streamPath);
+  check("precondition: slot 1 has a stream file", streamStat !== null, streamPath);
+  if (streamStat) {
+    const streamMode = Number(streamStat.mode) & 0o777;
+    check("stream file is 600", streamMode === 0o600, streamMode.toString(8));
+  }
+  const statePath = `${ROOT}/fleet.json`;
+  const stateStat = statOrNull(statePath);
+  check("precondition: fleet state file exists", stateStat !== null, statePath);
+  if (stateStat) {
+    const stateMode = Number(stateStat.mode) & 0o777;
+    check("fleet.json is 600", stateMode === 0o600, stateMode.toString(8));
+  }
+  const histPath = `${ROOT}/streams/s2.history.json`;
+  const histStat = statOrNull(histPath);
+  check("precondition: slot 2 has a history file", histStat !== null, histPath);
+  if (histStat) {
+    const histMode = Number(histStat.mode) & 0o777;
+    check("history file is 600", histMode === 0o600, histMode.toString(8));
+  }
 
   // --- legacy lane (forked BEFORE worktree.baseSha existed): set it up HERE, while slot 1 is still
   // occupied, so it can never take the slot the restart section asserts is empty. The field is
@@ -95,11 +114,15 @@ export async function run(ctx: Ctx): Promise<void> {
   // worktree record, so the restarted server restores it in its pre-field shape
   if (legacyLane) {
     const stFile = `${ROOT}/fleet.json`;
-    const st = JSON.parse(readFileSync(stFile, "utf8")) as
-      { slots?: Record<string, { worktree?: { baseSha?: string } | null }> };
-    const wtRec = st.slots?.[String(legacyLane.slot)]?.worktree;
+    let st: { slots?: Record<string, { worktree?: { baseSha?: string } | null }> } | null = null;
+    let stError = "";
+    try { st = JSON.parse(readFileSync(stFile, "utf8")) as
+      { slots?: Record<string, { worktree?: { baseSha?: string } | null }> }; }
+    catch (e) { stError = e instanceof Error ? e.message : String(e); }
+    check("precondition: fleet state is readable before legacy-lane mutation", st !== null, stError);
+    const wtRec = st?.slots?.[String(legacyLane.slot)]?.worktree;
     if (wtRec) delete wtRec.baseSha;
-    writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+    if (st) writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
   }
   // --- context-size proxy setup (consumed in the steward section below): the fact is PINNED-slot
   // only, and this suite runs with FLEET_CMD=true, so no slot ever gets a session uuid pinned at
@@ -111,16 +134,20 @@ export async function run(ctx: Ctx): Promise<void> {
   const PLANTED_MODEL = "claude-sonnet-5"; // no [1m] suffix → a 200k window, unlike the fleet default
   {
     const stFile = `${ROOT}/fleet.json`;
-    const st = JSON.parse(readFileSync(stFile, "utf8")) as
-      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> };
-    const rec = st.slots?.["2"];
+    let st: { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> } | null = null;
+    let stError = "";
+    try { st = JSON.parse(readFileSync(stFile, "utf8")) as
+      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> }; }
+    catch (e) { stError = e instanceof Error ? e.message : String(e); }
+    check("precondition: fleet state is readable before context fixture mutation", st !== null, stError);
+    const rec = st?.slots?.["2"];
     if (rec) rec.sessionId = PLANTED_SID;
     // ...and a model that is NOT the fleet default, for the context-FILL checks that share this
     // fixture. The default is a [1m] variant, so a sensor that hardcoded a 1M denominator would
     // pass against it by accident; pinning the 200k twin here is what makes the live pct assertion
     // able to fail. Restored from the state file like every other slot field (server.ts, SLOT_MODEL_RE).
     if (rec) rec.model = PLANTED_MODEL;
-    writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+    if (st) writeFileSync(stFile, JSON.stringify(st, null, 2), { mode: 0o600 });
   }
   // inherit FLEET_CMD rather than hardcoding one — restarting with a baked-in
   // `--dangerously-skip-permissions` would silently leave the server in unattended
@@ -440,13 +467,17 @@ export async function run(ctx: Ctx): Promise<void> {
   check("audit log never contains the guessed guest password", !auditRaw.includes("totally-wrong"));
   check("audit log never contains a share secret", !auditRaw.includes("viewpass123") && !auditRaw.includes("interpass123"));
   check("audit log never contains the owner token", !auditRaw.includes(TOKEN));
-  const auditMode = statSync(auditPath).mode & 0o777;
-  check("audit log file is 600", auditMode === 0o600, auditMode.toString(8));
+  const auditStat = statOrNull(auditPath);
+  check("precondition: audit log exists before permission and rotation checks", auditStat !== null, auditPath);
+  if (auditStat) {
+    const auditMode = Number(auditStat.mode) & 0o777;
+    check("audit log file is 600", auditMode === 0o600, auditMode.toString(8));
+  }
 
   // --- rotation: restart with the threshold pinned to the CURRENT file size, so the very
   // next audit event is guaranteed to push it over and trigger exactly one rotation —
   // deterministic regardless of how many bytes the rest of the suite happened to produce
-  const auditSizeBeforeRotate = statSync(auditPath).size;
+  const auditSizeBeforeRotate = auditStat?.size ?? 0;
   check("audit log has content to rotate", auditSizeBeforeRotate > 0, `${auditSizeBeforeRotate} bytes`);
   const rotKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
   await rotKill.exited;
@@ -469,13 +500,18 @@ export async function run(ctx: Ctx): Promise<void> {
   // one cheap, deterministic audit event: a failed owner-token request (no state mutated)
   await fetch(BASE + "/api/sessions", { headers: { authorization: "Bearer wrong-for-rotation-test" } });
   await Bun.sleep(300); // let the fire-and-forget audit write chain flush
-  const auditRotExists = ((): boolean => { try { return statSync(`${auditPath}.1`).isFile(); } catch { return false; } })();
+  const auditRotStat = statOrNull(`${auditPath}.1`);
+  const auditRotExists = auditRotStat?.isFile() === true;
   check("audit log rotates to .1 once the size threshold is crossed", auditRotExists);
-  if (auditRotExists) {
-    const rotSize = statSync(`${auditPath}.1`).size;
+  if (auditRotStat?.isFile()) {
+    const rotSize = auditRotStat.size;
     check("rotated .1 preserves the pre-rotation history", rotSize >= auditSizeBeforeRotate, `${rotSize} vs ${auditSizeBeforeRotate}`);
-    const freshSize = statSync(auditPath).size;
-    check("post-rotation audit.jsonl starts fresh, smaller than what rotated out", freshSize < auditSizeBeforeRotate, `${freshSize} vs ${auditSizeBeforeRotate}`);
+    const freshStat = statOrNull(auditPath);
+    check("precondition: live audit log remains readable after rotation", freshStat !== null, auditPath);
+    if (freshStat) {
+      const freshSize = freshStat.size;
+      check("post-rotation audit.jsonl starts fresh, smaller than what rotated out", freshSize < auditSizeBeforeRotate, `${freshSize} vs ${auditSizeBeforeRotate}`);
+    }
   }
 
   // --- rotation VISIBILITY: what the routes still show once .1 exists. Rotation is single-

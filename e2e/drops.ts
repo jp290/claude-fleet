@@ -66,7 +66,19 @@ export async function run(): Promise<void> {
 
   // the rule the refusal asked for, committed IN THE LANE so the tree it protects stays clean
   const ignore = `${wt}/.gitignore`;
-  await Bun.write(ignore, `${existsSync(ignore) ? readFileSync(ignore, "utf8") : ""}drops/\n`);
+  let ignoreBefore: string | null = "";
+  let ignoreError = "";
+  try { if (existsSync(ignore)) ignoreBefore = readFileSync(ignore, "utf8"); }
+  catch (e) { ignoreBefore = null; ignoreError = e instanceof Error ? e.message : String(e); }
+  check("drops fixture precondition: an existing .gitignore is readable before mutation",
+    ignoreBefore !== null, ignoreError);
+  if (ignoreBefore === null) {
+    await post(`/api/slots/${SLOT}/kill`, {});
+    spawnSync("git", ["worktree", "remove", "--force", wt], { cwd: REPO });
+    spawnSync("git", ["-C", REPO, "branch", "-D", BRANCH]);
+    return;
+  }
+  await Bun.write(ignore, `${ignoreBefore}drops/\n`);
   spawnSync("git", ["-C", wt, "commit", "-aqm", "ignore drops/"]);
   check("drops: fixture — the lane is clean again after committing the ignore rule",
     statusOf(wt) === "", JSON.stringify(statusOf(wt)));

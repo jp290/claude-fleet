@@ -443,11 +443,16 @@ tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
+code=000
 for _ in $(seq 1 60); do
   code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
   [ "$code" != "000" ] && break
   sleep 0.5
 done
+if [ "$code" = "000" ]; then
+  stage_server_start_failed "e2e-isolated.sh" "isolated suite server" "$DIR"
+  exit 3
+fi
 sleep 0.5
 
 cd "$DIR" || exit 1

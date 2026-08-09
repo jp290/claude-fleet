@@ -107,6 +107,20 @@ done
 echo "$$" > "$FLEET_SUITE_LOCK/pid"
 printf '[suite-lock] %s acquired after %ss (pid %s)\n' "$_st_who" "$(( $(date +%s) - _st_t0 ))" "$$"
 
+# Exit 3 means the suite's server prerequisite never came up; ordinary check failures use exit 1.
+# The caller exits immediately after this returns, so its normal success-only directory cleanup is
+# bypassed and the named instance (including server.log) remains available for inspection.
+stage_server_start_failed() {
+  printf '%s: server did not come up (phase: %s; instance kept: %s)\n' "$1" "$2" "$3" >&2
+  if [ -f "$3/server.log" ]; then
+    printf '%s: tail of %s/server.log:\n' "$1" "$3" >&2
+    tail -n 40 "$3/server.log" >&2
+  else
+    printf '%s: no server.log exists in %s\n' "$1" "$3" >&2
+  fi
+  return 3
+}
+
 # --- dead-socket reap (owner decision 2026-08-05, hygiene before continuous operation). tmux
 # never unlinks a -L socket file when its server exits, so every instance leaves one behind —
 # the machine had accumulated 171 dead sockets in days. Reap here, holding the suite lock, the

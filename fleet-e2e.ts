@@ -50,6 +50,8 @@ if (SOCK === "claudefleet" && !process.env.FLEET_E2E_ALLOW_LIVE)
   throw new Error("refusing to run against live socket 'claudefleet' — use ./e2e-isolated.sh (or set FLEET_E2E_ALLOW_LIVE=1)");
 
 const ctx = newCtx();
+let completed = false;
+try {
 
 // --- PURE-function unit tests (no server needed) ---
 await prompts.run();
@@ -146,6 +148,12 @@ await errors.run();
 // --- the run's own per-check trail. Last on purpose: it compares its row count against every
 // check the suite has recorded, so it must see all of them.
 await trail.run();
+completed = true;
+} finally {
+  // A late section may still throw, but it must not erase the checks that already ran. Printing in
+  // finally preserves that evidence; the original error is deliberately rethrown by try/finally.
+  if (!completed && results.length) console.log(results.join("\n"));
+}
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

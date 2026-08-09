@@ -81,7 +81,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       exists(copied) && readFileSync(copied, "utf8").includes("never push from this machine"), copied);
     // same 0600 floor as .env/CLAUDE.md: the source is 0644 here on purpose, so a mode-preserving
     // copy would fail this — the floor is asserted, not the source's accident.
-    const mode = exists(copied) ? statSync(copied).mode & 0o777 : -1;
+    const mode = ((): number => { try { return statSync(copied).mode & 0o777; } catch { return -1; } })();
     check("the copied OWNER.md is owner-only (0600)", mode === 0o600, mode === -1 ? "missing" : mode.toString(8));
     // and it must not dirty the lane — a copied UNIGNORED file shows as untracked and blocks land
     const lDiff = (await (await get(`/api/slots/${withFile.slot}/diff`)).json()) as { status: string[] };
@@ -269,15 +269,25 @@ export async function run(lc: LaneCtx): Promise<void> {
     // DELTA off a baseline, never an absolute count: opening this lane already wrote a
     // self_heal_recreate row of its own (ensureSlot audits its FIRST spawn too), and slot ids are
     // recycled across the suite, so this id legitimately carries older rows.
-    const slotAudit = (): string[] => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
-      .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number }; } catch { return null; } })
-      .filter((r): r is { event?: string; slot?: number } => !!r && r.slot === rs.slot)
-      .map((r) => String(r.event ?? ""));
+    let slotAuditError = "";
+    const slotAudit = (): string[] => {
+      try {
+        return readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+          .map((l) => { try { return JSON.parse(l) as { event?: string; slot?: number }; } catch { return null; } })
+          .filter((r): r is { event?: string; slot?: number } => !!r && r.slot === rs.slot)
+          .map((r) => String(r.event ?? ""));
+      } catch (e) {
+        slotAuditError = e instanceof Error ? e.message : String(e);
+        return [];
+      }
+    };
 
     await Bun.sleep(300); // saveState/audit writes are chained and fire-and-forget — let the setup land before baselining
     const recBefore = await slotRecord();
     const outBefore = (await outcomes()).length;
     const auditBefore = slotAudit().length;
+    check("restart fixture precondition: audit.jsonl is readable before the delta baseline",
+      slotAuditError === "", slotAuditError);
     const paneBefore = (await tmuxOut("display-message", "-p", "-t", `s${rs.slot}`, "#{pane_pid}")).out.trim();
 
     const rsRes = await post(`/api/slots/${rs.slot}/restart`, {});

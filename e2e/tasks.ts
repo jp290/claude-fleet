@@ -30,15 +30,46 @@ export async function run(ctx: Ctx): Promise<void> {
     const PREFIX = "[fleet backlog]";
     const NUDGE_TICK_MS = 500;
     const COOLDOWN_MS = 1500;
-    type SRow = { id: number; cwd: string | null; label: string | null; awaiting: "owner" | null;
-      worktree: unknown | null };
+    // `awaiting` is deliberately NOT on SRow: GET /api/sessions does not carry it. Claiming it in
+    // this cast makes `undefined === "owner"` compile and turns a broken probe into a product FAIL.
+    type SRow = { id: number; cwd: string | null; label: string | null; worktree: unknown | null };
+    type Persisted = { slots?: Record<string, { awaiting?: "owner" | null }> };
+    type AwaitingSnapshot = { id: number; cwd: string; had: boolean; value: "owner" | null | undefined };
     const sessions = async (): Promise<SRow[]> =>
       ((await (await get("/api/sessions")).json()) as { slots: SRow[] }).slots;
+    const readPersisted = (): { state: Persisted | null; error: string } => {
+      try { return { state: JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as Persisted, error: "" }; }
+      catch (e) { return { state: null, error: e instanceof Error ? e.message : String(e) }; }
+    };
 
-    // No inherited plain receiver may make "longest idle" pass by accident. The one cross-module
-    // fixture that survives this far is a lane (ctx.restartSelfSlot), and is deliberately retained
-    // as one of the negative subjects below.
-    for (const s of await sessions()) if (s.cwd && !s.worktree) await post(`/api/slots/${s.id}/kill`, {});
+    // No inherited plain receiver may make "longest idle" pass by accident. Do NOT kill those
+    // cross-module fixtures: a slot also owns its label, history, shares and schedules. The server's
+    // backlog filter excludes awaiting-owner sessions both when choosing and after canDeliver, so a
+    // reversible persisted flag makes them ineligible without destroying state we do not own.
+    const inherited = (await sessions()).filter((s): s is SRow & { cwd: string } => !!s.cwd && !s.worktree);
+    const inheritedAwaiting: AwaitingSnapshot[] = [];
+    await tmuxOut("kill-session", "-t", "srv");
+    const quarantined = readPersisted();
+    check("backlog nudge setup precondition: fleet.json is readable before inherited-slot quarantine",
+      quarantined.state !== null, quarantined.error);
+    if (quarantined.state) {
+      for (const s of inherited) {
+        const row = quarantined.state.slots?.[String(s.id)];
+        if (!row) continue;
+        inheritedAwaiting.push({ id: s.id, cwd: s.cwd,
+          had: Object.prototype.hasOwnProperty.call(row, "awaiting"), value: row.awaiting });
+        row.awaiting = "owner";
+      }
+      await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(quarantined.state)}\n`);
+    }
+    await restartSrv();
+    const quarantinedReload = readPersisted();
+    check("backlog nudge setup: inherited plain slots are awaiting-owner without being killed",
+      inherited.length > 0 && inheritedAwaiting.length === inherited.length
+      && inherited.every((s) => quarantinedReload.state?.slots?.[String(s.id)]?.awaiting === "owner"),
+      JSON.stringify({ ids: inherited.map((s) => s.id), error: quarantinedReload.error }));
+
+    try {
     const free = (await sessions()).filter((s) => !s.cwd).map((s) => s.id);
     check("backlog nudge setup: four free slots exist for two mains, steward and awaiting-owner",
       free.length >= 4, `free=[${free.join(",")}]`);
@@ -93,12 +124,13 @@ export async function run(ctx: Ctx): Promise<void> {
       // This isolates the awaiting clause from the lane clause instead of testing both on one lane.
       await Bun.sleep(200);
       await tmuxOut("kill-session", "-t", "srv");
-      const persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-        { slots?: Record<string, { awaiting?: "owner" }> };
-      const awaitingRow = persisted.slots?.[String(awaitingMain)];
+      const persisted = readPersisted();
+      check("backlog nudge setup precondition: fleet.json is readable before awaiting-owner mutation",
+        persisted.state !== null, persisted.error);
+      const awaitingRow = persisted.state?.slots?.[String(awaitingMain)];
       check("backlog nudge setup: awaiting-owner fixture has a persisted active slot row", !!awaitingRow);
       if (awaitingRow) awaitingRow.awaiting = "owner";
-      await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(persisted)}\n`);
+      if (persisted.state) await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(persisted.state)}\n`);
       await restartSrv({
         FLEET_BACKLOG_NUDGE_MS: String(NUDGE_TICK_MS),
         FLEET_BACKLOG_NUDGE_IDLE_MS: "100",
@@ -107,10 +139,17 @@ export async function run(ctx: Ctx): Promise<void> {
       });
 
       const loaded = await sessions();
+      // The owner poll proves this is still a plain session; awaiting lives only in persisted state
+      // (and laneSignalView), so ask the source the server just loaded and let that probe fail alone.
+      const reloadedAwaitingState = readPersisted();
+      const reloadedAwaiting = reloadedAwaitingState.state?.slots?.[String(awaitingMain)]?.awaiting ?? null;
+      check("backlog nudge setup precondition: fleet.json is readable after awaiting-owner reload",
+        reloadedAwaitingState.state !== null, reloadedAwaitingState.error);
+      check("backlog nudge setup: the awaiting-owner flag survived the reload",
+        reloadedAwaiting === "owner", `awaiting=${reloadedAwaiting}`);
       check("backlog nudge setup: reload preserves a PLAIN session awaiting the owner",
-        loaded.find((s) => s.id === awaitingMain)?.awaiting === "owner"
-        && loaded.find((s) => s.id === awaitingMain)?.worktree === null,
-        JSON.stringify(loaded.find((s) => s.id === awaitingMain)));
+        loaded.find((s) => s.id === awaitingMain)?.worktree === null && reloadedAwaiting === "owner",
+        JSON.stringify({ awaiting: reloadedAwaiting, slot: loaded.find((s) => s.id === awaitingMain) }));
       // Pane activity is measured through the shared deterministic probe, never a hand-rolled
       // send/capture race. A is touched first and therefore is the longest-idle eligible main.
       const aEnv = await paneEnv(`s${mainA}`, "HOME");
@@ -244,6 +283,36 @@ export async function run(ctx: Ctx): Promise<void> {
       // The wrapper exports 0 into the harness process; restartSrv() therefore removes every short
       // test knob above and returns subsequent queue checks to the production-default OFF shape.
       await restartSrv();
+    }
+    } finally {
+      // Restore exactly the one field borrowed above. The slots themselves were never recycled, so
+      // every other fixture (label, history, share, schedule, stream) remains byte-for-byte owned by
+      // its original section rather than being guessed and rebuilt here.
+      await tmuxOut("kill-session", "-t", "srv");
+      const restoredState = readPersisted();
+      check("backlog nudge cleanup precondition: fleet.json is readable before awaiting restoration",
+        restoredState.state !== null, restoredState.error);
+      if (restoredState.state) {
+        for (const prior of inheritedAwaiting) {
+          const row = restoredState.state.slots?.[String(prior.id)];
+          if (!row) continue;
+          if (prior.had) row.awaiting = prior.value;
+          else delete row.awaiting;
+        }
+        await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(restoredState.state)}\n`);
+      }
+      await restartSrv();
+      const restoredReload = readPersisted();
+      const restoredSlots = await sessions();
+      check("backlog nudge cleanup: inherited plain slots kept their cwd and original awaiting state",
+        inheritedAwaiting.length === inherited.length && inheritedAwaiting.every((prior) => {
+          const persistedRow = restoredReload.state?.slots?.[String(prior.id)];
+          const liveRow = restoredSlots.find((s) => s.id === prior.id);
+          const awaitingRestored = prior.had
+            ? persistedRow?.awaiting === prior.value
+            : !!persistedRow && !Object.prototype.hasOwnProperty.call(persistedRow, "awaiting");
+          return awaitingRestored && liveRow?.cwd === prior.cwd && liveRow.worktree === null;
+        }), JSON.stringify({ ids: inherited.map((s) => s.id), error: restoredReload.error }));
     }
   }
 

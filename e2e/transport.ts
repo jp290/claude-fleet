@@ -25,7 +25,13 @@ const bytes = async (r: Response): Promise<Buffer> => Buffer.from(new Uint8Array
 
 export async function run(): Promise<void> {
   const appJs = `${ROOT}/public/app.js`;
-  const original = existsSync(appJs) ? readFileSync(appJs) : null;
+  let original: Buffer | null | undefined;
+  let originalError = "";
+  try { original = existsSync(appJs) ? readFileSync(appJs) : null; }
+  catch (e) { originalError = e instanceof Error ? e.message : String(e); }
+  check("precondition: an existing app.js is readable before the transport fixture replaces it",
+    original !== undefined, originalError);
+  if (original === undefined) return;
   try {
     writeFileSync(appJs, fixture("v1"));
     const onDisk = (): Buffer => readFileSync(appJs);

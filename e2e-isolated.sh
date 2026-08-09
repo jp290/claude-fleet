@@ -439,3 +439,25 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # would flip a test's premise out from under it and the failure would read as a broken gate. The
 # live fleet turns it on (watchdog.sh); this line keeps the suite's answer independent of that.
 SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+tmux -L "$SOCK" new-session -d -s srv \
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
+# wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
+# ANY HTTP status means it's listening (401 without a token still proves the port is up).
+for _ in $(seq 1 60); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
+  [ "$code" != "000" ] && break
+  sleep 0.5
+done
+sleep 0.5
+
+cd "$DIR" || exit 1
+# the SAME env the srv spawn got — see the SRV_ENV comment above for why the two must be one string.
+# FLEET_E2E_SUITE rides in FRONT of it, not inside it: it is a harness-only label (the name every
+# trail row this run writes is stamped with, e2e/trail-emit.ts) and the server has no use for it.
+eval "FLEET_E2E_SUITE=isolated $SRV_ENV bun fleet-e2e.ts"
+code=$?
+
+tmux -L "$SOCK" kill-server 2>/dev/null
+# unique-per-run DIR: clean up on success, keep for post-mortem on failure
+if [ "$code" = 0 ]; then rm -rf "$DIR"; else echo "kept test instance for inspection: $DIR"; fi
+exit $code

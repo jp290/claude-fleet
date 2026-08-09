@@ -85,6 +85,33 @@ const shellScripts = [
     `${calls.length} stagers; calls-without-source=[${callsNoSource}] source-without-call=[${sourceNoCall}]`);
 }
 
+{
+  // The DECAPITATION rule, and it is a measured one. 613faa3 rewrote the SRV_ENV line at the end of
+  // e2e-isolated.sh and took the 22 lines behind it with it — srv spawn, port wait, `bun
+  // fleet-e2e.ts`, teardown, `exit $code`. The truncated file is still valid sh: it assigns a
+  // variable and falls off the end with status 0. So the tier-2 audit reported GREEN on two
+  // consecutive lands having measured NOTHING (1.8s instead of ~690s, zero PASS lines), and
+  // state.sh reported that green to the next session as fact.
+  // Neither tsc nor any existing pin could see it: the pin 613faa3 itself added
+  // (FLEET_MIGRATE_PCT is armed in e2e-isolated.sh) reads the SRV_ENV line, which SURVIVED.
+  // A stager that does not run a runner, or does not end by propagating its exit code, has stopped
+  // being a suite while still looking like one — this is the only place that can say so.
+  // Scoped to the root `e2e-*.sh` suite wrappers, which is the set whose ONLY product is a verdict.
+  // drills/drill-3.sh and steward-arena.sh stage an instance too and are deliberately out: a drill
+  // is a hand-driven rig and the arena is a long-lived fixture — neither returns a pass/fail, so
+  // "ends by propagating its exit code" would be a rule about something they never claimed to be.
+  const stagers = shellScripts.filter((f) =>
+    /^e2e-[a-z-]+\.sh$/.test(f) && /^\s*stage_instance\s+\S/m.test(read(f)));
+  const noRunner = stagers.filter((f) => !/\bbun\s+fleet-e2e[a-z-]*\.ts\b/.test(read(f)));
+  const noExit = stagers.filter((f) => {
+    const lines = read(f).split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    return lines[lines.length - 1] !== "exit $code";
+  });
+  pin("every staged suite RUNS a runner and ends by propagating its exit code (a decapitated wrapper exits 0 having measured nothing)",
+    stagers.length > 0 && noRunner.length === 0 && noExit.length === 0,
+    `${stagers.length} stagers; no-runner=[${noRunner}] no-exit=[${noExit}]`);
+}
+
 // ================================================================================================
 // 2. Port bands — the table in e2e-isolated.sh against the wrappers that claim a band
 // ================================================================================================

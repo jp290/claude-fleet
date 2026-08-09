@@ -901,10 +901,11 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     .map((m) => m[1]);
   const sendStart = server.indexOf("async function sendText(");
   const sendBody = sendStart < 0 ? "" : server.slice(sendStart, server.indexOf("// --- scheduled prompts", sendStart));
-  const sendProbeResolved = /const comms = commsFor\(s\);/.test(sendBody)
-    && /paneAgentAt\(sess\(s\.id\), comms\)/.test(sendBody);
+  const sendLocalProbes = [...sendBody.matchAll(/paneAgentAt\(sess\(s\.id\), comms\)/g)].length;
+  const sendProbeResolved = /const comms = commsFor\(s\);/.test(sendBody) && sendLocalProbes > 0;
   pin("every slot liveness/readiness probe resolves through commsFor(s), never the fleet-wide set",
-    sendProbeResolved && slotProbeArgs.length > 0 && slotProbeArgs.filter((a) => a === "comms").length === 1
+    sendProbeResolved && slotProbeArgs.length > 0
+      && slotProbeArgs.filter((a) => a === "comms").length === sendLocalProbes
       && slotProbeArgs.every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS" || a === "comms"),
     `${sendProbeResolved ? "send-resolved" : "send-unresolved"}: ${slotProbeArgs.join(" | ")}`);
   // ...and the POLICY is not the probe: aliveInfo (a gate) carries harnessAutomatable, agentInfo

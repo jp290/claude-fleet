@@ -1,8 +1,129 @@
-# HANDOFF — Session 47 (2026-08-09 nachmittags: die Queue liegt auf Eis, und Codex-Worker beurteilen sie — Welle 1 von 3 geerntet) · 46/45/44/43/42/41/40/39/38 darunter
+# HANDOFF — Session 47 (2026-08-09 nachmittags: die Queue liegt auf Eis, und acht Codex-Worker haben sie vollstaendig beurteilt) · 46/45/44/43/42/41/40/39/38 darunter
 
-**ctx beim Übergeben: ~60 %.** Ich war eine ZWEITE Main-Session, parallel zu einer landenden — deshalb
-habe ich keine Suite gefahren und nichts gelandet. Produziert: `git log 94b1362..HEAD` mit Bodies
-(vier Doc-Commits). Die Bodies tragen die Begründungen; hier steht nur, was git nicht tragen kann.
+**ctx beim Übergeben: ~68 %.** Ich war eine ZWEITE Main-Session, parallel zu einer landenden — deshalb
+keine Suite, kein Land, nur Doc-Commits. Produziert: `git log 94b1362..HEAD` mit Bodies (sieben
+Commits). Die Bodies tragen die Begründungen; hier steht nur, was git nicht tragen kann.
+
+---
+
+## Der Owner-Auftrag, wörtlich, und wo die Kette steht
+
+> „das wichtigste gerade für die tasks ist … das wir erstmal alles auf Eis legen und dann gucken wie
+> was muss und wie wir was angehen. Also alles auf eis und dann lassen wir codex worker für die
+> aufgaben laufen (müssen vernünftigen Kontext haben) um herauszufinden welche sinn machen bzw. uns
+> insgesamt noch nennenswerte verbesserungen bringen. Und dann müssen wir das ganze vernünftig in
+> klar strukturierten pools aufsetzen"
+
+**Schritt 1 (Eis) und Schritt 2 (Triage) sind FERTIG. Schritt 3 (Pools) ist deine Arbeit.**
+
+### Schritt 1 — EIS ✅
+`fleet.json.dispatch = false`, persistiert, überlebt srv-Neustart. Bewusst NICHT archiviert
+(`archived` ist terminal und hätte 70 Zeilen in den Räumungs-Pool von `capTasks` geschoben).
+**Der Dispatcher bleibt AUS, bis der Owner die neue Struktur gesehen hat.** Ihn vorher wieder
+einzuschalten macht Schritt 1 rückgängig, ohne dass jemand es merkt.
+
+### Schritt 2 — TRIAGE ✅ alle 70 Zeilen, 8 Verdikte unter `docs/triage/`
+**bauen 30 · unklar 23 · streichen 16 · zusammenlegen 1.**
+
+### Schritt 3 — POOLS: das Material liegt, der Entwurf fehlt
+**Die Verteilung je Batch ist zu scharf für Zufall und nennt die Achse selbst:**
+
+```
+G-notizen      1 bauen              12 streichen    <- gesichertes Wissen, doppelt abgelegt
+A-verben       1 bauen   6 unklar                   <- unentschiedene RICHTUNG
+D1-sicht       7 bauen   1 unklar                   <- entscheidbare ARBEIT
+D2-bedienung   5 bauen   4 unklar    1 streichen
+B-rueckkanal   5 bauen   3 unklar    1 streichen  1 zusammenlegen
+C-queue        5 bauen   5 unklar    1 streichen
+E-harness      3 bauen   1 unklar    1 streichen
+F-wissen       3 bauen   3 unklar
+```
+
+Drei Populationen im selben Behälter, und `kind` trennt sie nicht — es trennt nach **Absender**
+(`lane` = Owner/Intake, `note` = Steward), nicht nach **Art**. Dazu drei bestätigte Datenfehler
+(`10ac2528`, `63626cdb`, `efc98cfa` tragen `kind:lane`, obwohl ihr erster Satz „kein
+Arbeitsauftrag" sagt).
+
+**`unklar` ist kein Versagen der Worker** — das ist der teuerste Lesefehler dieser Zahlen. Der
+Auftrag verlangt `unklar` statt eines Rateschritts, und die Berichte nennen die fehlende Tatsache
+beim Namen: meist eine **Owner-Entscheidung** oder eine Quelle, die eine Lane strukturell nicht
+sieht. Die 23 messen, wie viel dieses Registers auf eine *Entscheidung* wartet statt auf Arbeit.
+
+---
+
+## Die Reihenfolge für dich
+
+1. **Adjudizieren, bevor irgendetwas an `fleet.json` geändert wird.** Die Verdikte sind Vorschläge.
+   Prüfe mindestens: jedes `streichen` mit Konfidenz `mittel`, und in jedem Verdikt den Abschnitt
+   **„Kalibrierung"** — dort benennt jeder Worker seine eigene schwächste Aussage. Das ist die
+   billigste Stichprobe, die es gibt.
+2. **Ein Verdikt ist von mir als STRITTIG markiert und NICHT verifiziert:** `dabd1880` bekam
+   `streichen`, weil der Analyse-Sweep, dessen Nichtkonvergenz die Zeile misst, abgeschaltet ist.
+   Das Argument trägt nur, solange er aus bleibt.
+3. **Dann Schritt 3, die Pools** — aus der Verteilung oben, nicht aus Geschmack.
+4. **Erst danach** Streichungen/Archivierungen ausführen und dem Owner die neue Struktur zeigen.
+
+---
+
+## Was die Worker taugen — gemessen, nicht gehofft
+
+**Sie widersprechen belegt, und zwei Korrekturen trafen Zeilen, die ich selbst angelegt hatte:**
+- `29829dac` — mein Verify-Weg war falsch geschnitten: `server.ts:11143` behandelt `exitCode === 0`
+  des Restart-Kommandos als erwarteten Erfolg, mein `FLEET_DEPLOY_RESTART_CMD=true` hätte gar
+  keinen Fehlschlag erzeugt. Am Code nachgeprüft, bestätigt.
+- `0ae22c2d` — Vorbedingung `4455adca` ist gelandet (`d695e7e`). Es fehlt nur noch „ein Audit mit
+  `checks.ran > 0` abwarten", dann ist die Audit-Ping-Empfehlung fällig.
+- `983e063f` → `streichen` (a): vollständig als `613faa3` gelandet. Nachgeprüft.
+- `34a12839` → `streichen`: der Boot adoptiert tmux-Sessions, nicht verwaiste Worktrees.
+
+**E-harness hat seinen eigenen Zaun VERMESSEN statt ihn zu zitieren** — und liefert eine
+Präzisierung, die CLAUDE.md so nicht hat: **`~/.claude` ist LESBAR, aber nicht schreibbar** (belegt
+über `test -w` und über eine Claude-Code-Zweitmeinung, die an `EPERM … mkdir '~/.claude/projects/…'`
+scheiterte). Das Regelbuch führt es schlicht als „gesperrt". Ebenfalls gemessen: `codex-cli 0.147.0`,
+Netz offen (https → 200), Worktree schreibbar / `.git` nicht.
+
+---
+
+## Das Rezept, falls du weitere Worker fährst
+
+1. `POST /api/lanes {repo, harness:"pi", model:"openai-codex/gpt-5.6-sol", effort:"high"}`
+2. **Warten bis `agent === "alive"`** — nie vorher senden, eine Pane ohne Agent ist eine Shell.
+3. Brief per `POST /send {slot, text}`. Aufbau: Leseauftrag in fester Reihenfolge (README →
+   `AGENTS.md` → §7 Beerdigt-Liste → eigener Batch) · **vier batch-spezifische Sätze „das macht
+   DIESEN Batch besonders — prüf es, glaub es nicht" mit nachprüfbaren Prämissen** · Disziplin ·
+   Budget-Arithmetik · „dein Urteil ist ein Vorschlag". Die Struktur erzeugt die Qualität, nicht die
+   Länge.
+4. **Warten auf PANE-STILLE, nicht auf die Datei.** Teuer gelernt: mein erster Watcher feuerte auf
+   Datei-Existenz, alle drei Dateien lagen da, während zwei Worker noch daran schrieben.
+5. **Ernten per HOST-KOPIE** (`cp <worktree>/docs/triage/verdict-*.md docs/triage/` + Commit im
+   Haupt-Checkout) — eine pi-Lane kann nicht committen, und ein Land nähme den Suite-Mutex.
+6. **Aufräumen:** `POST /api/slots/:id/kill`, dann `git worktree remove --force`, dann
+   `git worktree prune`. Kill allein lässt den Worktree als Waise stehen.
+
+**Kontextverbrauch gemessen:** 11 Zeilen / 42 KB Batch-Datei → **83 % von 272k**. 10 Zeilen → 50–60 %.
+Über 11 Zeilen je Batch wird es eng.
+
+---
+
+## Die zwei Analysen darunter
+
+`docs/rueckkanal-2026-08-09.md` (`bbb5dbd`) und `docs/auftragsweg-2026-08-09.md` (`ee15044`), beide
+mit ausdrücklicher Trennung „gemessen vs. nur gelesen". Die zwei Sätze, die am meisten kosten, wenn
+du sie nicht kennst:
+
+1. **Es fehlt kein Kanal — es fehlt eine Zustellung.** Fünf Nachrichten-Ticks laufen durch EINE
+   Klausel (`canDeliver`, `server.ts:3596`); eine arbeitende Claude-Pane ist per Byte-Sensor nie
+   idle. Latenz, kein Verlust — die Ereignisse verfallen nicht.
+2. **Der Analyst ist AUS (`FLEET_ANALYSIS_MS=0`), der Dispatcher war AN.** Der gesamte „unattended
+   invariant" steht in einem `if (ANALYSIS_TICK_MS)` (`server.ts:4269-4308`). Seit dem Freeze
+   entschärft — wer den Dispatcher einschaltet, holt es zurück.
+
+**Acht offene Entscheidungen als Queue-Entwürfe** (`pending`, nie freigegeben): `0ae22c2d`
+`58d03512` `d45898cb` `29829dac` `08230c93` (Rückkanal) · `391a6cab` `684a9d99` `6d07877f`
+(Auftragsweg).
+
+**Nicht anfassen, solange eine andere Main-Session arbeitet:** Merge/Land und jede Suite — ein
+Suite-Mutex.
 
 ---
 

@@ -56,9 +56,9 @@ const PRE_AUTH_ROUTES = [
   // widening (server.ts, grep `selfExport`) hands it to every session with a cwd — the ⚙ steward
   // and a plain session in a foreign repo included. Recorded here because this list is where a
   // pre-auth decision is recorded, and this one moved the PRINCIPAL rather than the route set.
-  // What it grants is bounded by the three routes below that answer a non-lane at all: schedule a
-  // prompt into your OWN pane, subscribe your OWN pane to a lane's done-looking, and read your OWN
-  // row. The other four keep their non-lane 409s, and §2 below re-runs the whole dangerous owner
+  // What it grants is bounded by the routes below: schedule/subscribe/read on your OWN pane, plus
+  // the explicit main-session handoff that opens one successor and retires only the caller. The
+  // lane-only questions keep their non-lane 409s, and §2 below re-runs the whole dangerous owner
   // surface against a plain session's token.
   '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
   '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
@@ -67,9 +67,11 @@ const PRE_AUTH_ROUTES = [
   // the body can move it (createWatchForSlot takes `s`, never a body field), the message is one
   // server-authored line, it fires at most once per subscription, and WATCH_MAX_PER_SLOT caps how
   // many can be armed. Its subscriber rule runs the OTHER way to the four lane-only routes below:
-  // a lane is refused 409 here. All six 409s are pinned in e2e/self-token.ts and e2e/watch.ts.
+  // a lane is refused 409 here. The opposite-scope 409s are pinned in self-token.ts/watch.ts.
   '= /api/self/watch',    // same credential: subscribe your OWN pane to a lane's done-looking
-  // added 2026-08-07. Third entry on the every-session tier, and the widest READ on this list —
+  '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
+  '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
+  // added 2026-08-07. The widest READ on the every-session tier —
   // it is the only self route whose payload is not this slot's own row but a fleet-wide ledger
   // (the per-check e2e trail). What bounds it: read-only, aggregate (check names, tree shas, run
   // ids — never a check's `detail` and never prose), and it discloses nothing a session could not

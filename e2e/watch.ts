@@ -12,9 +12,10 @@
 // (FLEET_AUTOS_TICK_MS), but the git facts the predicate reads refresh on the 10s tickGit, so the
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { laneWatchMessage, laneWatchSignal, type LaneSignalView } from "../lane-signals";
-import { AUTOS_TICK_MS, BASE, REPO, TOKEN, check, get, paneEnv, plogRead, post, tmuxOut } from "./harness";
+import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
@@ -357,4 +358,100 @@ export async function run(): Promise<void> {
   check("killing the RECEIVER drops its watches entirely — nobody left to tell",
     !(await watchRows()).some((w) => w.slot === bId), JSON.stringify(await watchRows()));
   await post(`/api/slots/${aId}/kill`, {});
+
+  // === MAIN-SESSION EXIT: tickMigrate ==========================================================
+  // The isolated wrapper explicitly arms the otherwise-default-off tick at 44%. FLEET_CMD=true
+  // pins no session id, so this fixture plants identities exactly as the restart/context tests do;
+  // that is what makes three above-threshold controls distinguishable from ctx:null.
+  {
+    const openPlain = async (label?: string): Promise<number> => {
+      const id = await freeSlot();
+      if (!id) return 0;
+      const r = await post(`/api/slots/${id}/open`, { cwd: REPO, ...(label ? { label } : {}) });
+      return r.ok ? id : 0;
+    };
+    const mainId = await openPlain("migrate-main");
+    const lane = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
+    const stewardId = await openPlain("⚙ steward");
+    const unknownId = await openPlain("migrate-unknown");
+    check("migration tick setup: main, lane, steward and ctx-unknown controls are all active",
+      mainId > 0 && lane.slot > 0 && stewardId > 0 && unknownId > 0,
+      JSON.stringify({ mainId, lane: lane.slot, stewardId, unknownId }));
+
+    // Stop before editing fleet.json: a live saveState chain is allowed to replace the file, so an
+    // edit made while srv runs would be a probe racing its subject. restartSrv starts it again with
+    // the same FLEET_* env after the identities and usage files are in place.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const statePath = `${ROOT}/fleet.json`;
+    const state = JSON.parse(readFileSync(statePath, "utf8")) as
+      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> };
+    const ids = new Map<number, string>([
+      [mainId, "e2e0feed-0000-4000-8000-000000000101"],
+      [lane.slot, "e2e0feed-0000-4000-8000-000000000102"],
+      [stewardId, "e2e0feed-0000-4000-8000-000000000103"],
+    ]);
+    for (const [id, sid] of ids) if (state.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
+    writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+
+    const usageFiles: string[] = [];
+    for (const [id, sid] of ids) {
+      const cwd = state.slots?.[String(id)]?.cwd ?? "";
+      const dir = `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      mkdirSync(dir, { recursive: true });
+      const file = `${dir}/${sid}.jsonl`;
+      writeFileSync(file, `${JSON.stringify({ message: { usage: {
+        input_tokens: 100_000, cache_creation_input_tokens: 100_000,
+        cache_read_input_tokens: 300_000, output_tokens: 9_000_000,
+      } } })}\n`);
+      usageFiles.push(file);
+    }
+    await restartSrv();
+
+    type CtxRow = { id: number; ctx: { pct: number; windowTokens: number } | null };
+    const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
+    const ctxOf = (id: number) => ctxRows.find((x) => x.id === id)?.ctx;
+    check("migration tick setup: main/lane/steward are measurably above 44%, while the unpinned control is ctx:null",
+      ctxOf(mainId)?.pct === 50 && ctxOf(lane.slot)?.pct === 50 && ctxOf(stewardId)?.pct === 50
+        && ctxOf(unknownId) === null,
+      JSON.stringify({ main: ctxOf(mainId), lane: ctxOf(lane.slot), steward: ctxOf(stewardId), unknown: ctxOf(unknownId) }));
+
+    const migratePrompts = async (slot: number) => (await plogRead())
+      .filter((e) => e.slot === slot && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+    let nudges = await migratePrompts(mainId);
+    for (let i = 0; i < 80 && nudges.length === 0; i++) {
+      await Bun.sleep(100);
+      nudges = await migratePrompts(mainId);
+    }
+    check("tickMigrate sends exactly one prompt to an above-threshold NON-LANE main session",
+      nudges.length === 1, `${nudges.length} prompt(s)`);
+    const nudge = nudges[0]?.text ?? "";
+    check("the migration prompt names measured pct+window, says server predicate, then HANDOFF commit before self/succeed",
+      nudge.includes("50%") && nudge.includes("1000000 Tokens im Fenster")
+        && nudge.includes("Server-Prädikat, keine Meldung von dir")
+        && nudge.indexOf("HANDOFF.md schreiben UND committen") < nudge.indexOf("POST /api/self/succeed")
+        && nudge.includes("x-fleet-self-token aus $FLEET_SELF_TOKEN"), nudge);
+    check("tickMigrate never nudges a lane, the ⚙ steward, or a ctx:null slot",
+      (await migratePrompts(lane.slot)).length === 0
+        && (await migratePrompts(stewardId)).length === 0
+        && (await migratePrompts(unknownId)).length === 0,
+      JSON.stringify({ lane: (await migratePrompts(lane.slot)).length,
+        steward: (await migratePrompts(stewardId)).length, unknown: (await migratePrompts(unknownId)).length }));
+
+    const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
+    await Bun.sleep(tickMs * 4 + 500);
+    check("a second migration tick inside MIGRATE_COOLDOWN_MS sends no second prompt",
+      (await migratePrompts(mainId)).length === 1, `${(await migratePrompts(mainId)).length} prompt(s)`);
+
+    // Restart resets the process-local marker. With the threshold still armed this same 50% slot
+    // would be nudged again; overriding it to zero proves the stronger default-off contract: no
+    // timer is registered, rather than a timer that merely decides not to send.
+    await restartSrv({ FLEET_MIGRATE_PCT: "0" });
+    await Bun.sleep(tickMs * 4 + 500);
+    check("FLEET_MIGRATE_PCT=0 registers no migration tick — an eligible fresh process sends nothing",
+      (await migratePrompts(mainId)).length === 1, `${(await migratePrompts(mainId)).length} total prompt(s)`);
+
+    for (const id of [mainId, lane.slot, stewardId, unknownId]) if (id) await post(`/api/slots/${id}/kill`, {});
+    for (const file of usageFiles) rmSync(file, { force: true });
+  }
 }

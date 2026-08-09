@@ -30,6 +30,18 @@ import { runFreshPinnedTranscriptIsolation } from "./e2e/history";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
 interface AutoInfo { id: string; slot: number; lastResult: string | null }
+interface SendPollSlot { id: number; agent: "alive" | "no-agent" | "no-pane" | "unprobed" | null; lastOutput: number }
+
+async function awaitAgent(slot: number, want: SendPollSlot["agent"]): Promise<SendPollSlot | undefined> {
+  let seen: SendPollSlot | undefined;
+  for (let i = 0; i < 80; i++) {
+    seen = ((await (await get("/api/sessions")).json()) as { slots: SendPollSlot[] })
+      .slots.find((s) => s.id === slot);
+    if (seen?.agent === want) return seen;
+    await Bun.sleep(250);
+  }
+  return seen;
+}
 
 // --- branch 1: claude is NOT running (fake binary exits immediately, `exec $SHELL`
 // takes over the pane) — the auto must be skipped, and NOTHING may reach the pane ---
@@ -60,6 +72,28 @@ await Bun.$`chmod +x ${FAKEBIN}/claude`.quiet();
 const o2 = await post("/api/slots/2/open", { cwd: "~" });
 check("open slot 2 (alive-claude branch)", o2.ok);
 await Bun.sleep(1500); // let the fake binary actually start and settle as a pane child
+
+// Regression for the distinction lastOutput cannot make: this agent is positively alive but its
+// hang stand-in never prints a byte. It must not pay Claude's 2500 ms settle forever. Keep it on a
+// separate slot so the existing alive-gate check below retains its original never-printed fixture.
+const silentOpen = await post("/api/slots/9/open", { cwd: "~" });
+check("silent-alive fixture: open a second live claude that never prints", silentOpen.ok,
+  String(silentOpen.status));
+const silentBefore = await awaitAgent(9, "alive");
+check("silent-alive fixture: the agent is positively alive before /send",
+  silentBefore?.agent === "alive", JSON.stringify(silentBefore));
+check("silent-alive fixture: the pane has still never printed before /send",
+  silentBefore?.lastOutput === 0, String(silentBefore?.lastOutput));
+const silentMarker = "alive-silent-must-not-settle";
+const silentStarted = Date.now();
+const silentSend = await post("/send", { slot: 9, text: silentMarker });
+const silentElapsed = Date.now() - silentStarted;
+check("an already-alive pane that never printed takes the no-settle send path",
+  silentSend.ok && silentElapsed < 1000, `${silentSend.status} ${silentElapsed}ms`);
+const silentCap = await tmuxOut("capture-pane", "-t", "s9", "-p");
+check("the no-settle send reaches the already-alive silent pane",
+  silentCap.out.includes(silentMarker), silentCap.out.slice(-160));
+
 const marker2 = "gate-must-type-this";
 const a2res = await post("/api/slots/2/autos", { text: marker2, inSec: 1, idleSec: 0 });
 const a2 = (await a2res.json()) as { auto: AutoInfo };

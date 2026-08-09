@@ -14,9 +14,10 @@
 //      an unresolvable model leaves behind: the harness prints its error, exits, and slotCmd's
 //      `; exec $SHELL` catches the pane — pane_dead=0, keystrokes accepted, nothing behind them.
 //
-// The stand-in is a compiled binary named `harn` (a shebang script would not do: ps reports the
-// interpreter's comm, not the script's filename — same reason phase 1 compiles its `claude`), and
-// the server is told about it ONLY through env: FLEET_CMD=harn, FLEET_HARNESS_COMMS=harn,
+// The steady-state stand-in is a compiled binary named `harn` (a shebang script would not do: ps
+// reports the interpreter's comm). The boot fixtures use that distinction deliberately: an
+// unrecognised script wrapper exists first and only later execs a compiled `harn-*` agent. The
+// server is told about the agent ONLY through env: FLEET_CMD=harn, FLEET_HARNESS_COMMS=harn,
 // FLEET_HARNESS_MODEL_FLAG=--model. Nothing about any specific harness is compiled into server.ts,
 // and this suite is the proof of that: it names a harness that does not exist outside this file.
 //
@@ -83,12 +84,31 @@ const slotLastOutput = async (slot: number): Promise<number | undefined> =>
 
 async function awaitObserved(slot: number): Promise<number | undefined> {
   let seen: number | undefined;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 80; i++) {
     seen = await slotLastOutput(slot);
     if (seen !== undefined && seen > 0) return seen;
     await Bun.sleep(100);
   }
   return seen;
+}
+
+// Match paneAgentAt's process-tree depth so a fixture can fail under its OWN name when its wrapper
+// accidentally presents a declared comm before the test begins. This is diagnostic only: the
+// production readiness decision still comes from server.ts's fresh probe.
+async function directPaneComms(target: string): Promise<string[]> {
+  const pane = Number((await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}")).out);
+  if (!pane) return [];
+  const pg = Bun.spawn(["pgrep", "-P", String(pane)], { stdout: "pipe" });
+  const children = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
+  await pg.exited;
+  const out: string[] = [];
+  for (const pid of [String(pane), ...children]) {
+    const ps = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
+    const comm = (await new Response(ps.stdout).text()).trim().split("/").pop() ?? "";
+    await ps.exited;
+    if (comm) out.push(comm);
+  }
+  return out;
 }
 
 // the pane's spawn command, once tmux has actually created the session
@@ -106,23 +126,25 @@ async function startCmdOf(target: string): Promise<string> {
 // a fresh inode per swap, never a mutation of the one a running pane still maps: overwriting an
 // executable in place invalidates the code signature of every process mapping it (AMFI, Apple
 // Silicon) and kills them at their next exec. Phase 1 learned this the expensive way.
-async function installHarn(variant: "boot" | "hang" | "exit"): Promise<void> {
+async function installHarn(variant: "boot" | "observed" | "never" | "hang" | "exit"): Promise<void> {
   await Bun.$`rm -f ${FAKEBIN}/harn`.quiet();
   await Bun.write(`${FAKEBIN}/harn`, await Bun.file(`${FAKEBIN}/harn-${variant}`).arrayBuffer());
   await Bun.$`chmod +x ${FAKEBIN}/harn`.quiet();
 }
 
-// --- branch 0: the boot race itself. harn-boot first execs a process whose comm is NOT declared;
-// for two seconds it suppresses echo and then FLUSHES every queued input byte. Only afterwards does
-// it exec harnready, which the probe may call alive. The old immediate paste is therefore genuinely
-// lost; the readiness wait plus adapter settle moves delivery past the flush, and the stand-in
-// prints only the line its "model" actually read.
+// --- branch 0: the boot race itself. A script/interpreter with no declared comm waits two seconds;
+// only then does it exec harn-agent. harn-agent flushes once before reading, so the old immediate
+// paste is genuinely lost; the readiness wait plus adapter settle moves delivery past that flush.
 await installHarn("boot");
 const bootOpen = await post("/api/slots/9/open", { cwd: "~" });
 check("boot-race fixture: the delayed foreign TUI opened", bootOpen.ok, String(bootOpen.status));
 const bootBefore = await slotLastOutput(9);
 check("boot-race fixture: the pane is still unobserved before immediate /send",
   bootBefore === 0, String(bootBefore));
+const bootWrapperComms = await directPaneComms("s9");
+check("boot-race fixture probe: no declared harn process exists before /send",
+  bootWrapperComms.length > 0 && bootWrapperComms.every((c) => !c.startsWith("harn")),
+  bootWrapperComms.join(",") || "process probe did not run");
 const bootMarker = "boot-send-model-marker";
 const bootStarted = Date.now();
 const bootSend = await post("/send", { slot: 9, text: bootMarker });
@@ -139,21 +161,26 @@ const bootCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
 check("the delayed TUI's model received the immediate send byte-for-byte",
   bootCap.out.includes(`harn-received=[${bootMarker}]`), bootCap.out.slice(-220));
 
-// The same pane has now printed. Establish that precondition positively from Fleet's own signal,
-// then prove the next send takes today's direct paste path: no readiness settle and exact bytes.
-const observedAt = await awaitObserved(9);
+// A separate fixture prints AFTER ensureSlot's repaint quiet-window, then hangs as a real harn
+// process. Waiting positively for lastOutput makes the fast-path precondition the thing measured,
+// not an assumption inferred from a capture.
+await installHarn("observed");
+const observedOpen = await post("/api/slots/11/open", { cwd: "~" });
+check("observed-pane fixture: the delayed-print foreign TUI opened",
+  observedOpen.ok, String(observedOpen.status));
+const observedAt = await awaitObserved(11);
 check("observed-pane fixture: Fleet recorded the pane's first output",
   observedAt !== undefined && observedAt > 0, String(observedAt));
+const observedComms = await directPaneComms("s11");
+check("observed-pane fixture probe: the printing harn process is really alive",
+  observedComms.some((c) => c.startsWith("harn")), observedComms.join(",") || "process probe did not run");
 const observedMarker = "observed-send-arrived";
 const observedStarted = Date.now();
-const observedSend = await post("/send", { slot: 9, text: `printf '${observedMarker}\\n'` });
+const observedSend = await post("/send", { slot: 11, text: observedMarker });
 const observedElapsed = Date.now() - observedStarted;
 check("a pane that already printed takes the unchanged no-delay send path",
   observedSend.ok && observedElapsed < 1000, `${observedSend.status} ${observedElapsed}ms`);
-const observedProbe = await paneEnv("s9", "FLEET_SELF_SLOT");
-check("observed-pane fixture probe: paneEnv itself ran after the direct send",
-  observedProbe === "9", observedProbe ?? "probe did not run");
-const observedCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
+const observedCap = await tmuxOut("capture-pane", "-t", "s11", "-p", "-J");
 check("the observed-pane direct send preserves its bytes",
   observedCap.out.includes(observedMarker), observedCap.out.slice(-220));
 
@@ -264,9 +291,10 @@ await dispatchProbe("dispatch-effort-absent", { harness: "pi", model: DISPATCH_M
 // exited on an unresolvable model — must read as not-alive, and the delivery gate must refuse.
 // Before this, claudeAlive() returned `true` here without looking, so the marker below would have
 // been typed into a bare shell and executed. ---
-await installHarn("exit");
+await installHarn("never");
 
-// The bounded failure side: a declared comm never appears and the pane remains unobserved. /send
+// The bounded failure side: this wrapper outlives the 3000 ms budget but NEVER execs a declared
+// agent. It later exits to the shell only so paneEnv can independently prove delivery happened.
 // must still preserve the owner's ability to type into the surviving shell, but it must wait only
 // the short route budget and leave a durable, text-free audit row instead of returning a silent OK.
 const timeoutOpen = await post("/api/slots/10/open", { cwd: "~" });
@@ -275,6 +303,10 @@ check("boot-timeout fixture: the dead foreign harness opened onto its shell",
 const timeoutBefore = await slotLastOutput(10);
 check("boot-timeout fixture: the pane is still unobserved before /send",
   timeoutBefore === 0, String(timeoutBefore));
+const timeoutWrapperComms = await directPaneComms("s10");
+check("boot-timeout fixture probe: no declared harn process exists before /send",
+  timeoutWrapperComms.length > 0 && timeoutWrapperComms.every((c) => !c.startsWith("harn")),
+  timeoutWrapperComms.join(",") || "process probe did not run");
 const timeoutMarker = "boot-timeout-send-arrived";
 const timeoutStarted = Date.now();
 const timeoutSend = await post("/send", { slot: 10, text: `printf '${timeoutMarker}\\n'` });
@@ -299,6 +331,7 @@ check("the readiness timeout is visible on the audit trail",
   !!timeoutAudit && timeoutAudit.detail === "harness=default budget=3000ms",
   JSON.stringify(timeoutAudit ?? null));
 
+await installHarn("exit");
 const o6 = await post("/api/slots/6/open", { cwd: "~" });
 check("open slot 6 (dead foreign agent branch)", o6.ok, String(o6.status));
 await Bun.sleep(1500); // let the stand-in exit and `exec $SHELL` take the pane

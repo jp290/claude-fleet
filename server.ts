@@ -3102,17 +3102,25 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
       const comms = commsFor(s);
       if (comms.length > 0) {
         const started = Date.now();
-        let alive = false;
-        while (s.lastOutput === 0 && Date.now() - started < SEND_BOOT_WAIT_MS) {
-          const state = await paneAgentAt(sess(s.id), comms);
-          // Count probe time against the same budget: a slow ps/pgrep must not turn a nominally
-          // bounded route into the 30-second worker wait this cut explicitly rejects.
-          if (state === "alive" && Date.now() - started < SEND_BOOT_WAIT_MS) { alive = true; break; }
-          if (Date.now() - started < SEND_BOOT_WAIT_MS) await Bun.sleep(100);
+        let state = await paneAgentAt(sess(s.id), comms);
+        // `lastOutput === 0` says only that Fleet has never seen a byte; a quiet TUI can remain in
+        // that state forever. The FIRST probe is therefore the boot discriminator: already alive
+        // means established and takes the old send path with no settle. Settle belongs only to the
+        // transition this race is about — not alive at first, then alive within the bounded wait.
+        const waitedForAlive = state !== "alive";
+        while (waitedForAlive && state !== "alive" && s.lastOutput === 0
+          && Date.now() - started < SEND_BOOT_WAIT_MS) {
+          await Bun.sleep(100);
+          if (s.lastOutput !== 0 || Date.now() - started >= SEND_BOOT_WAIT_MS) break;
+          state = await paneAgentAt(sess(s.id), comms);
         }
-        if (alive) {
+        // Count probe time against the same budget: a slow ps/pgrep must not turn a nominally
+        // bounded route into the 30-second worker wait this cut explicitly rejects.
+        const becameAlive = waitedForAlive && state === "alive"
+          && Date.now() - started < SEND_BOOT_WAIT_MS;
+        if (becameAlive) {
           await Bun.sleep(harnessOf(s.harness).bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS);
-        } else if (s.lastOutput === 0) {
+        } else if (waitedForAlive && !becameAlive && s.lastOutput === 0) {
           // No prompt text in the trail. This row says exactly what could have happened: delivery
           // proceeds (owner capability preserved), but the pane never became observably ready.
           audit("send_boot_timeout", s.id,

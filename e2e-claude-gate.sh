@@ -74,53 +74,20 @@ cat > "$FAKEBIN/claude-hang.c" <<'EOF'
 #include <unistd.h>
 int main(void) { for (;;) pause(); }
 EOF
-# A TUI-shaped boot stand-in with two process names. `harn` immediately execs `fleetwarm` (NOT a
-# declared comm), which disables echo and after 2 s discards everything typed so far. It then
-# execs `harnready` (a declared comm) and reads one submitted line. The pre-fix /send therefore
-# disappears for real; the new readiness wait sees only the post-flush process, then applies the
-# unknown-adapter's low settle. Finally it exits to the wrapper shell so paneEnv() can prove itself.
-cat > "$FAKEBIN/harn-boot.c" <<'EOF'
-#include <libgen.h>
-#include <limits.h>
+# The boot-race fixtures must delay the AGENT PROCESS, not merely delay an already-visible harn.
+# A script has the interpreter's comm, so these wrappers are intentionally NOT recognised by
+# FLEET_HARNESS_COMMS=harn. Only their later `exec harn-*` transition can satisfy paneAgentAt.
+# harn-agent flushes input once on startup: an old immediate send queued during the wrapper sleep
+# is genuinely lost, while the fixed path waits for this process and sends after adapter settle.
+cat > "$FAKEBIN/harn-agent.c" <<'EOF'
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
-int main(int argc, char **argv) {
-  (void)argc;
-  char path[PATH_MAX];
-  if (!realpath(argv[0], path)) return 2;
-  char dirbuf[PATH_MAX], basebuf[PATH_MAX];
-  snprintf(dirbuf, sizeof(dirbuf), "%s", path);
-  snprintf(basebuf, sizeof(basebuf), "%s", path);
-  char *dir = dirname(dirbuf), *base = basename(basebuf);
-  char next[PATH_MAX];
-  if (strcmp(base, "harn") == 0) {
-    snprintf(next, sizeof(next), "%s/fleetwarm", dir);
-    execl(next, next, (char *)0);
-    return 3;
-  }
-  if (strcmp(base, "fleetwarm") == 0) {
-    struct termios boot;
-    if (tcgetattr(STDIN_FILENO, &boot) == 0) {
-      boot.c_lflag &= ~ECHO;
-      tcsetattr(STDIN_FILENO, TCSANOW, &boot);
-    }
-    usleep(2000000);
-    tcflush(STDIN_FILENO, TCIFLUSH);
-    snprintf(next, sizeof(next), "%s/harnready", dir);
-    execl(next, next, (char *)0);
-    return 4;
-  }
+int main(void) {
+  tcflush(STDIN_FILENO, TCIFLUSH);
   char line[4096] = {0};
-  char *got = fgets(line, sizeof(line), stdin);
-  struct termios ready;
-  if (tcgetattr(STDIN_FILENO, &ready) == 0) {
-    ready.c_lflag |= ECHO;
-    tcsetattr(STDIN_FILENO, TCSANOW, &ready);
-  }
-  if (got) {
+  if (fgets(line, sizeof(line), stdin)) {
     line[strcspn(line, "\r\n")] = 0;
     printf("harn-received=[%s]\n", line);
     fflush(stdout);
@@ -128,12 +95,34 @@ int main(int argc, char **argv) {
   return 0;
 }
 EOF
+cat > "$FAKEBIN/harn-print.c" <<'EOF'
+#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+  puts("harn-observed-ready");
+  fflush(stdout);
+  for (;;) pause();
+}
+EOF
+cat > "$FAKEBIN/harn-boot" <<'EOF'
+#!/bin/sh
+sleep 2
+exec "$(dirname "$0")/harn-agent"
+EOF
+cat > "$FAKEBIN/harn-observed" <<'EOF'
+#!/bin/sh
+sleep 3
+exec "$(dirname "$0")/harn-print"
+EOF
+cat > "$FAKEBIN/harn-never" <<'EOF'
+#!/bin/sh
+sleep 6
+EOF
 "$CC" -O0 -o "$FAKEBIN/claude-exit" "$FAKEBIN/claude-exit.c" || exit 1
 "$CC" -O0 -o "$FAKEBIN/claude-hang" "$FAKEBIN/claude-hang.c" || exit 1
-"$CC" -O0 -o "$FAKEBIN/harn-boot" "$FAKEBIN/harn-boot.c" || exit 1
-cp "$FAKEBIN/harn-boot" "$FAKEBIN/fleetwarm"
-cp "$FAKEBIN/harn-boot" "$FAKEBIN/harnready"
-chmod +x "$FAKEBIN/fleetwarm" "$FAKEBIN/harnready"
+"$CC" -O0 -o "$FAKEBIN/harn-agent" "$FAKEBIN/harn-agent.c" || exit 1
+"$CC" -O0 -o "$FAKEBIN/harn-print" "$FAKEBIN/harn-print.c" || exit 1
+chmod +x "$FAKEBIN/harn-agent" "$FAKEBIN/harn-print" "$FAKEBIN/harn-boot" "$FAKEBIN/harn-observed" "$FAKEBIN/harn-never"
 cp "$FAKEBIN/claude-exit" "$FAKEBIN/claude"
 chmod +x "$FAKEBIN/claude" "$FAKEBIN/claude-hang"
 

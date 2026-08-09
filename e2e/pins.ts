@@ -519,6 +519,8 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     live.map((c) => `${c.where}: "${c.sym}" IS in ${c.target}`).join("; "));
 }
 
+pin("the backlog nudge is opt-in: unset means zero and exactly one positive-only timer can call it", /const BACKLOG_NUDGE_MS = [^;\n]*process\.env\.FLEET_BACKLOG_NUDGE_MS \?\? 0[^;\n]*;/.test(server) && server.split("\n").filter((l) => l.includes("setInterval") && l.includes("tickBacklogNudge")).length === 1 && /if \(BACKLOG_NUDGE_MS > 0\) setInterval\([^\n]*tickBacklogNudge/.test(server));
+
 {
   // The DISPATCHER'S BOLT, pinned at the source because that is where it lives. Pi ships no
   // permission layer at all (PI_HARNESS.note), and whether an UNATTENDED lane may run without one

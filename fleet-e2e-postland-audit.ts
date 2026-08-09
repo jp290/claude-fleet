@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 // and this wrapper does not strip the lane pane's FLEET_SELF_* credentials the way e2e-isolated.sh
 // does, so a whitelist is the safe direction. e2e/restart.ts builds its own line for its own
 // reasons too.
-import { BASE, check, failures, get, IP, PORT, post, results, SOCK } from "./e2e/harness";
+import { BASE, check, failures, get, IP, paneEnv, plogRead, PORT, post, results, SOCK } from "./e2e/harness";
 import { driveMerge, openLane, seedRepo, settleForMerge, type Lane, type MergeVerdict } from "./e2e/lane-helpers";
 
 // the stand-in suite's control + evidence files (both live next to this script, = the server's dir)
@@ -37,7 +37,9 @@ type AuditRow = {
   // deliberately `string`, not the server's union: a server WITHOUT tier 2 must make every
   // assertion below fail individually, and the no-row sentinel needs a value no check can match
   result: string; reason?: string; cmd: string; exitCode: number | null;
-  out: string; covers: { branch: string; mainAfter: string; at: number }[];
+  out: string; checks?: { ran: number; failed: number } | null;
+  ping?: { at: number; status: string; updatedAt: number; lastResult: string; deliveredAt?: number; slot?: number };
+  covers: { branch: string; mainAfter: string; at: number }[];
 };
 const NO_ROW: AuditRow = { at: 0, startedAt: 0, ms: -1, repo: "", main: "", mainSha: "",
   result: "(no row)", cmd: "", exitCode: null, out: "", covers: [] };
@@ -132,13 +134,16 @@ const killSrv = async (): Promise<void> => {
   await Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]).exited;
   await Bun.sleep(500);
 };
-const startSrv = async (opts: { audit: boolean }): Promise<boolean> => {
+const startSrv = async (opts: { audit: boolean; auditPing?: boolean }): Promise<boolean> => {
   const env = ["FLEET_CMD", "FLEET_AUTO_REVIEW_MS", "FLEET_VERIFY_CMD", "FLEET_MERGE_CMD",
     "FLEET_CLEAN_REVIEW", "FLEET_CLEAN_REVIEW_CMD", "FLEET_POSTLAND_AUDIT_TIMEOUT_MS",
     ...(opts.audit ? ["FLEET_POSTLAND_AUDIT_CMD"] : [])]
     .map((k) => envArg(k, process.env[k])).join("");
+  const pingEnv = opts.auditPing
+    ? "FLEET_AUDIT_PING_MS=250 FLEET_BACKLOG_NUDGE_IDLE_MS=100 "
+    : "FLEET_AUDIT_PING_MS=0 ";
   await Bun.spawn(["tmux", "-L", SOCK, "new-session", "-d", "-s", "srv",
-    `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${env}exec bun server.ts >> server.log 2>&1`]).exited;
+    `cd '${import.meta.dir}' && FLEET_HOST=${IP} FLEET_PORT=${PORT} FLEET_SOCK=${SOCK} ${env}${pingEnv}exec bun server.ts >> server.log 2>&1`]).exited;
   for (let i = 0; i < 120; i++) {
     try { if ((await get("/api/sessions")).ok) return true; } catch { /* not bound yet */ }
     await Bun.sleep(250);
@@ -221,6 +226,8 @@ const dRun = (await runLog()).filter((l) => l.includes("mode=green")).pop() ?? "
 const dPwd = /pwd=(\S+)/.exec(dRun)?.[1] ?? "";
 check("the audit ran against the landed tree — the lane's committed file is in the audited snapshot",
   dRun.includes("delta.txt") && dRun.includes("seed.txt"), dRun.slice(0, 300));
+check("a passing audit records its measured check count (zero is not an absence sentinel)",
+  d.checks?.ran === 1 && d.checks.failed === 0, JSON.stringify(d.checks));
 check("the audit ran OUTSIDE the repo and outside every worktree of it (own scratch dir)",
   dPwd !== "" && !dPwd.startsWith(REPO) && !dPwd.startsWith(`${REPO}.worktrees`), `pwd=${dPwd}`);
 check("the scratch dir is cleaned up after the run", dPwd !== "" && !existsSync(dPwd), dPwd);
@@ -248,6 +255,8 @@ const eRows = await waitRows(4);
 const e = newest(eRows);
 check("a failing audit is recorded RED (never rounded to green), with the suite's tail",
   eLanded.gone && e.result === "red" && e.exitCode === 1 && e.out.includes("3 FAILURES"), JSON.stringify(e).slice(0, 300));
+check("the audit row counts every PASS/FAIL line and every failed check from complete output",
+  e.checks?.ran === 3 && e.checks.failed === 3, JSON.stringify(e.checks));
 check("the red row NAMES the land it followed", e.covers.length === 1 && e.covers[0].branch === echoLane.branch,
   JSON.stringify(e.covers));
 const sess = (await (await get("/api/sessions")).json()) as { postLandAudit: { result?: string; covers?: string[]; mainSha?: string } | null };
@@ -638,6 +647,204 @@ await Bun.sleep(500);
 check("(H2) the backfill is IDEMPOTENT — a second boot adds no second judgement",
   railRows().length === railAfter && (await rowAt(OLD_AT))?.adjudication?.by === "backfill",
   `rail=${railRows().length} was=${railAfter}`);
+check("(H2) old ledger rows tolerate an absent checks field without manufacturing zero",
+  (await rowAt(OLD_AT))?.checks === undefined && (await rowAt(NEW_AT))?.checks === undefined,
+  `old=${JSON.stringify((await rowAt(OLD_AT))?.checks)} new=${JSON.stringify((await rowAt(NEW_AT))?.checks)}`);
+
+// ===== (J) CHECK COUNTS + THE ONE-SHOT RED-AUDIT EVENT =========================================
+// Runs last: it deliberately enables the new scheduler, opens negative receiver fixtures, and
+// restarts over both pending and delivered markers. Every earlier section therefore continues to
+// prove the old default-off audit path without a background prompt racing its exact row counts.
+
+// Close every historical red first. The ping below must have exactly ONE event in its population;
+// otherwise a successful prompt could name an older row and make all receiver checks vacuous.
+for (const r of await adjRows()) {
+  if (r.result === "red" && r.adjudication === undefined)
+    await post("/api/post-land-audits/adjudicate",
+      { at: r.at, verdict: "unknowable", note: "e2e setup: historical red is not the ping subject" });
+}
+for (let i = 0; i < 40; i++) {
+  const openReds = (await adjRows()).filter((r) => r.result === "red" && r.adjudication === undefined);
+  if (!openReds.length) break;
+  await Bun.sleep(100);
+}
+check("(J) ping fixture starts with no historical unadjudicated red",
+  (await adjRows()).every((r) => r.result !== "red" || r.adjudication !== undefined),
+  JSON.stringify((await adjRows()).filter((r) => r.result === "red" && !r.adjudication).map((r) => r.at)));
+
+// Contradictory output is not a licence to turn uncertainty into zero. The process did run and
+// printed one FAIL line, but its terminal count says two; null is the only honest derived value.
+await setAuditMode("garbled");
+const rowsBeforeGarbled = (await auditRows()).length;
+const garbledLane = await makeLane("november-garbled");
+await landLane(garbledLane);
+const garbled = newest(await waitRows(rowsBeforeGarbled + 1));
+check("(J) an internally inconsistent suite output records checks:null — never {0,0}",
+  garbled.result === "red" && garbled.checks === null && garbled.covers[0]?.branch === garbledLane.branch,
+  JSON.stringify(garbled).slice(0, 320));
+const garbledAdj = await post("/api/post-land-audits/adjudicate",
+  { at: garbled.at, verdict: "unknowable", note: "contradictory check summary" });
+check("(J) the unparseable red is adjudicated before the ping is enabled", garbledAdj.ok, String(garbledAdj.status));
+
+// Exact incident shape from the brief: the command starts and exits 1 on a stack-shaped ENOENT,
+// before the first check() result line. Complete output with zero PASS/FAIL lines means measured
+// ran:0; it is categorically different from the contradictory output above.
+await setAuditMode("precheck");
+const rowsBeforePrecheck = (await auditRows()).length;
+const precheckLane = await makeLane("oscar-precheck");
+await landLane(precheckLane);
+const precheck = newest(await waitRows(rowsBeforePrecheck + 1));
+check("(J) a suite that dies before its first check records ran:0/failed:0",
+  precheck.result === "red" && precheck.exitCode === 1
+    && precheck.checks?.ran === 0 && precheck.checks.failed === 0
+    && precheck.out.includes("ENOENT"), JSON.stringify(precheck).slice(0, 360));
+
+const PING_PREFIX = "[fleet post-land audit]";
+const pingPrompts = async () => {
+  try { return (await plogRead()).filter((p) => p.source === "auto" && p.text.startsWith(PING_PREFIX)); }
+  catch { return []; } // no composed prompt yet = the expected default-off state
+};
+await Bun.sleep(750);
+check("(J) FLEET_AUDIT_PING_MS=0 leaves the red event entirely uncalled",
+  (await pingPrompts()).length === 0 && (await rowAt(precheck.at))?.ping === undefined,
+  JSON.stringify((await pingPrompts()).map((p) => p.slot)));
+
+// No inherited receiver may accidentally satisfy the first pending-state check.
+type PingSlot = { id: number; cwd: string | null; label: string | null; awaiting: "owner" | null;
+  worktree: unknown | null; lastOutput: number };
+const pingSlots = async (): Promise<PingSlot[]> =>
+  ((await (await get("/api/sessions")).json()) as { slots: PingSlot[] }).slots;
+for (const s of await pingSlots()) if (s.cwd) await post(`/api/slots/${s.id}/kill`, {});
+await Bun.sleep(300);
+await killSrv();
+check("(J) the server comes up with the audit ping explicitly enabled", await startSrv({ audit: true, auditPing: true }));
+
+const waitPing = async (at: number, want: (p: NonNullable<AuditRow["ping"]>) => boolean,
+  timeoutMs = 10_000): Promise<AuditRow | undefined> => {
+  const deadline = Date.now() + timeoutMs;
+  let seen: AuditRow | undefined;
+  while (Date.now() < deadline) {
+    seen = await rowAt(at);
+    if (seen?.ping && want(seen.ping)) return seen;
+    await Bun.sleep(100);
+  }
+  return seen;
+};
+const noReceiver = await waitPing(precheck.at, (p) => p.status === "pending" && p.lastResult.includes("no eligible"));
+check("(J) with no session the EVENT stays pending and says why on its audit row",
+  noReceiver?.ping?.status === "pending" && noReceiver.ping.lastResult.includes("no eligible main session"),
+  JSON.stringify(noReceiver?.ping));
+const persistedPending = JSON.parse(readFileSync(`${import.meta.dir}/fleet.json`, "utf8")) as
+  { auditPings?: Record<string, { status?: string; lastResult?: string }> };
+check("(J) the no-receiver state is durable, not a process-only excuse",
+  persistedPending.auditPings?.[String(precheck.at)]?.status === "pending"
+    && (persistedPending.auditPings[String(precheck.at)]?.lastResult ?? "").includes("no eligible"),
+  JSON.stringify(persistedPending.auditPings?.[String(precheck.at)]));
+
+// Arm quiet hours before opening the filter fixtures: the awaiting fixture is a plain session for
+// one short setup window, and must not receive the event before its persisted flag is installed.
+const hour = new Date().getHours();
+await post("/api/autos/quiet", { start: hour, end: (hour + 1) % 24 });
+const negativeLane = await makeLane("papa-ping-negative-lane");
+let free = (await pingSlots()).filter((s) => !s.cwd).map((s) => s.id);
+check("(J) filter fixture has room for steward, awaiting-owner and receiver", free.length >= 3, `free=[${free}]`);
+const stewardId = free[0] ?? 0;
+const awaitingId = free[1] ?? 0;
+const negativeOpens = stewardId && awaitingId ? await Promise.all([
+  post(`/api/slots/${stewardId}/open`, { cwd: REPO, label: "⚙ steward" }),
+  post(`/api/slots/${awaitingId}/open`, { cwd: REPO }),
+]) : [];
+check("(J) steward and plain-awaiting fixtures open", negativeOpens.length === 2 && negativeOpens.every((r) => r.ok),
+  negativeOpens.map((r) => r.status).join(","));
+await Bun.sleep(300);
+await killSrv();
+const stateWithAwaiting = JSON.parse(readFileSync(`${import.meta.dir}/fleet.json`, "utf8")) as
+  { slots?: Record<string, { awaiting?: "owner" }> };
+if (stateWithAwaiting.slots?.[String(awaitingId)]) stateWithAwaiting.slots[String(awaitingId)]!.awaiting = "owner";
+await Bun.write(`${import.meta.dir}/fleet.json`, `${JSON.stringify(stateWithAwaiting)}\n`);
+check("(J) restart with a pending marker and filtered sessions succeeds",
+  await startSrv({ audit: true, auditPing: true }));
+const afterPendingRestart = await waitPing(precheck.at, (p) => p.status === "pending");
+const loadedNegatives = await pingSlots();
+check("(J) pending survives restart; lane, ⚙ steward and awaiting-owner remain ineligible",
+  afterPendingRestart?.ping?.status === "pending"
+    && loadedNegatives.find((s) => s.id === negativeLane.slot)?.worktree !== null
+    && loadedNegatives.find((s) => s.id === stewardId)?.label === "⚙ steward"
+    && loadedNegatives.find((s) => s.id === awaitingId)?.awaiting === "owner",
+  JSON.stringify({ ping: afterPendingRestart?.ping,
+    slots: loadedNegatives.filter((s) => [negativeLane.slot, stewardId, awaitingId].includes(s.id)) }));
+
+free = loadedNegatives.filter((s) => !s.cwd).map((s) => s.id);
+const receiver = free[0] ?? 0;
+const receiverOpen = receiver ? await post(`/api/slots/${receiver}/open`, { cwd: REPO }) : null;
+const freshReceiver = (await pingSlots()).find((s) => s.id === receiver);
+check("(J) the only eligible main opens UNOBSERVED (lastOutput=0)",
+  receiverOpen?.ok === true && freshReceiver?.worktree === null && freshReceiver.lastOutput === 0,
+  JSON.stringify(freshReceiver));
+const unobserved = await waitPing(precheck.at,
+  (p) => p.status === "pending" && p.lastResult.includes("unobserved"), 5000);
+check("(J) an unobserved pane is UNKNOWN, never idle permission, and no negative recipient fires",
+  unobserved?.ping?.status === "pending" && unobserved.ping.lastResult.includes("unobserved")
+    && (await pingPrompts()).length === 0, JSON.stringify(unobserved?.ping));
+
+// Let openSlot's repaint quiet window pass, then make observation deterministic through paneEnv.
+// Quiet hours still hold, so a now-observed and idle receiver must remain pending for THAT reason.
+await Bun.sleep(1700);
+const receiverProbe = await paneEnv(`s${receiver}`, "FLEET_SELF_SLOT");
+await Bun.sleep(400);
+const quietHeld = await waitPing(precheck.at,
+  (p) => p.status === "pending" && p.lastResult.includes("quiet-hours"), 5000);
+check("(J) quiet hours are honored even after a receiver is observed and idle",
+  receiverProbe === String(receiver) && quietHeld?.ping?.status === "pending"
+    && quietHeld.ping.lastResult.includes("quiet-hours") && (await pingPrompts()).length === 0,
+  `probe=${receiverProbe} ping=${JSON.stringify(quietHeld?.ping)}`);
+
+await post("/api/autos/quiet", { start: null });
+const delivered = await waitPing(precheck.at, (p) => p.status === "delivered", 10_000);
+const deliveredPrompts = await pingPrompts();
+check("(J) clearing quiet hours delivers the red event to exactly ONE eligible main session",
+  delivered?.ping?.status === "delivered" && delivered.ping.slot === receiver
+    && deliveredPrompts.length === 1 && deliveredPrompts[0]?.slot === receiver
+    && ![negativeLane.slot, stewardId, awaitingId].includes(deliveredPrompts[0]?.slot ?? 0),
+  JSON.stringify({ ping: delivered?.ping, prompts: deliveredPrompts.map((p) => p.slot) }));
+const pingText = deliveredPrompts[0]?.text ?? "";
+check("(J) the ping carries the facts needed to judge the zero-check red",
+  pingText.includes(`at=${precheck.at}`) && pingText.includes(precheck.mainSha)
+    && pingText.includes(precheckLane.branch) && pingText.includes("result: red · exitCode: 1")
+    && pingText.includes("checks.ran: 0 · checks.failed: 0")
+    && pingText.includes("NICHTS wurde gemessen; dieses Rot ist keine Aussage über den Baum")
+    && pingText.includes("ENOENT") && pingText.includes("Letzte bis zu 15 Zeilen"),
+  pingText.slice(0, 700));
+check("(J) the ping names the adjudication API/vocabulary and says adjudication cannot green the red",
+  pingText.includes("POST /api/post-land-audits/adjudicate {at, verdict, note}")
+    && ["real", "flake", "stale-test", "unknowable"].every((v) => pingText.includes(v))
+    && pingText.includes("bleibt dabei rot"), pingText.slice(-500));
+
+await Bun.sleep(1000);
+check("(J) repeated ticks do not repeat a delivered EVENT",
+  (await pingPrompts()).length === 1, JSON.stringify((await pingPrompts()).map((p) => p.slot)));
+// A new session is not a new event identity. Observe it so every delivery gate is genuinely open;
+// the persisted at-marker, not an incidental busy/unobserved hold, must be what prevents a repeat.
+const laterFree = (await pingSlots()).find((s) => !s.cwd)?.id ?? 0;
+const laterOpen = laterFree ? await post(`/api/slots/${laterFree}/open`, { cwd: REPO }) : null;
+await Bun.sleep(1700);
+const laterProbe = laterFree ? await paneEnv(`s${laterFree}`, "FLEET_SELF_SLOT") : null;
+await Bun.sleep(500);
+check("(J) a new eligible session never receives an event already delivered by audit-at identity",
+  laterOpen?.ok === true && laterProbe === String(laterFree) && (await pingPrompts()).length === 1,
+  `later=${laterFree} probe=${laterProbe} prompts=${JSON.stringify((await pingPrompts()).map((p) => p.slot))}`);
+
+await killSrv();
+check("(J) the server restarts over the delivered marker", await startSrv({ audit: true, auditPing: true }));
+await Bun.sleep(750);
+const afterDeliveredRestart = await rowAt(precheck.at);
+check("(J) delivered stays delivered across restart and is still exactly once",
+  afterDeliveredRestart?.ping?.status === "delivered" && afterDeliveredRestart.ping.slot === receiver
+    && (await pingPrompts()).length === 1,
+  JSON.stringify({ ping: afterDeliveredRestart?.ping, prompts: (await pingPrompts()).map((p) => p.slot) }));
+check("(J) an already-adjudicated red is never pinged",
+  !(await pingPrompts()).some((p) => p.text.includes(`at=${garbled.at}`) || p.text.includes(garbledLane.branch)),
+  JSON.stringify((await pingPrompts()).map((p) => p.text.slice(0, 100))));
 
 console.log(results.join("\n"));
 console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");

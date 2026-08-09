@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
-import { check, get, post, restartSrv, afterTick, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
+import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
@@ -22,6 +22,230 @@ export async function run(ctx: Ctx): Promise<void> {
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
   check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
+
+  // --- the INBOUND channel for a quiet main session: an opt-in, bounded POINTER to open lane
+  // rows, never a dispatch or a mutation. This section restarts with a short test cadence only
+  // after proving the wrapper's explicit OFF state; it restores that OFF state before leaving. ---
+  {
+    const PREFIX = "[fleet backlog]";
+    const NUDGE_TICK_MS = 500;
+    const COOLDOWN_MS = 1500;
+    type SRow = { id: number; cwd: string | null; label: string | null; awaiting: "owner" | null;
+      worktree: unknown | null };
+    const sessions = async (): Promise<SRow[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: SRow[] }).slots;
+
+    // No inherited plain receiver may make "longest idle" pass by accident. The one cross-module
+    // fixture that survives this far is a lane (ctx.restartSelfSlot), and is deliberately retained
+    // as one of the negative subjects below.
+    for (const s of await sessions()) if (s.cwd && !s.worktree) await post(`/api/slots/${s.id}/kill`, {});
+    const free = (await sessions()).filter((s) => !s.cwd).map((s) => s.id);
+    check("backlog nudge setup: four free slots exist for two mains, steward and awaiting-owner",
+      free.length >= 4, `free=[${free.join(",")}]`);
+    if (free.length >= 4) {
+      const [mainA, mainB, stewardMain, awaitingMain] = free as [number, number, number, number];
+      const opens = await Promise.all([
+        post(`/api/slots/${mainA}/open`, { cwd: REPO }),
+        post(`/api/slots/${mainB}/open`, { cwd: REPO }),
+        post(`/api/slots/${stewardMain}/open`, { cwd: REPO, label: "⚙ steward" }),
+        post(`/api/slots/${awaitingMain}/open`, { cwd: REPO }),
+      ]);
+      check("backlog nudge setup: the four plain sessions opened", opens.every((r) => r.ok),
+        opens.map((r) => r.status).join(","));
+      await post("/api/dispatch", { on: false });
+      await post("/api/autos/switch", { on: true });
+      await post("/api/autos/quiet", { start: null });
+
+      const stewardToken = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+      const noteRes = await fetch(`${BASE}/api/steward/tasks`, {
+        method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${stewardToken}` },
+        body: JSON.stringify({ text: "backlog-note-only-probe — observation, never work", kind: "note" }),
+      });
+      const note = (await noteRes.json()) as { task?: { id: string; kind: string; status: string } };
+      const noteId = note.task?.id ?? "";
+      const openAtNote = ((await (await get("/api/tasks")).json()) as
+        { tasks: { id: string; kind: string; status: string }[] }).tasks
+        .filter((t) => t.status === "pending" || t.status === "queued");
+      check("backlog nudge setup: the only open row is a pending kind:note observation",
+        noteRes.ok && note.task?.kind === "note" && note.task.status === "pending"
+        && openAtNote.length === 1 && openAtNote[0].id === noteId,
+        JSON.stringify(openAtNote));
+
+      const promptBase = (await plogRead()).length;
+      const nudges = async () => (await plogRead()).slice(promptBase)
+        .filter((p) => p.source === "auto" && p.text.startsWith(PREFIX));
+      await Bun.sleep(650);
+      check("backlog nudge default OFF: a note-only register produces no prompt", (await nudges()).length === 0);
+
+      // Positive backlog while still on the wrapper's FLEET_BACKLOG_NUDGE_MS=0. The source pin
+      // proves there is no timer at this value; this running half proves an open lane row alone
+      // does not create some second call path.
+      const offTask = ((await (await post("/api/tasks", {
+        text: "backlog-default-off-probe", queue: false,
+      })).json()) as { task: { id: string } }).task.id;
+      await Bun.sleep(650);
+      check("backlog nudge default OFF: even an open kind:lane row produces no prompt",
+        (await nudges()).length === 0);
+      await post(`/api/tasks/${offTask}/delete`, {});
+
+      // `awaiting` has no owner test route (correctly: only a clarify lane may set it). Persist the
+      // already-open plain fixture while srv is stopped, then reload through the production parser.
+      // This isolates the awaiting clause from the lane clause instead of testing both on one lane.
+      await Bun.sleep(200);
+      await tmuxOut("kill-session", "-t", "srv");
+      const persisted = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { awaiting?: "owner" }> };
+      const awaitingRow = persisted.slots?.[String(awaitingMain)];
+      check("backlog nudge setup: awaiting-owner fixture has a persisted active slot row", !!awaitingRow);
+      if (awaitingRow) awaitingRow.awaiting = "owner";
+      await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(persisted)}\n`);
+      await restartSrv({
+        FLEET_BACKLOG_NUDGE_MS: String(NUDGE_TICK_MS),
+        FLEET_BACKLOG_NUDGE_IDLE_MS: "100",
+        FLEET_BACKLOG_COOLDOWN_MS: String(COOLDOWN_MS),
+        FLEET_BACKLOG_NUDGE_MAX: "2",
+      });
+
+      const loaded = await sessions();
+      check("backlog nudge setup: reload preserves a PLAIN session awaiting the owner",
+        loaded.find((s) => s.id === awaitingMain)?.awaiting === "owner"
+        && loaded.find((s) => s.id === awaitingMain)?.worktree === null,
+        JSON.stringify(loaded.find((s) => s.id === awaitingMain)));
+      // Pane activity is measured through the shared deterministic probe, never a hand-rolled
+      // send/capture race. A is touched first and therefore is the longest-idle eligible main.
+      const aEnv = await paneEnv(`s${mainA}`, "HOME");
+      await Bun.sleep(200);
+      const bEnv = await paneEnv(`s${mainB}`, "HOME");
+      check("backlog nudge setup: both eligible main panes answer the paneEnv activity probe",
+        aEnv !== null && bEnv !== null, `A=${aEnv} B=${bEnv}`);
+
+      const laneRes = await post("/api/lanes", { repo: REPO });
+      const lane = (await laneRes.json()) as { slot?: number };
+      check("backlog nudge setup: a live lane exists as an explicit negative subject",
+        laneRes.ok && typeof lane.slot === "number", `${laneRes.status} ${JSON.stringify(lane)}`);
+
+      // Enabled, several rounds, but NOTE is still the only open row: the early return must keep
+      // the prompt log empty (and, in production, avoids canDeliver's tmux/ps work entirely).
+      await Bun.sleep(afterTick(0, NUDGE_TICK_MS));
+      check("backlog nudge: kind:note NEVER counts as backlog", (await nudges()).length === 0);
+
+      type FullTask = { id: string; text: string; kind: string; status: string; [k: string]: unknown };
+      const fullTasks = async (): Promise<FullTask[]> =>
+        ((await (await get("/api/tasks")).json()) as { tasks: FullTask[] }).tasks;
+      const expected = new Map<string, string>();
+      const remember = async (id: string): Promise<void> => {
+        const row = (await fullTasks()).find((t) => t.id === id);
+        if (row) expected.set(id, JSON.stringify(row));
+      };
+      if (noteId) await remember(noteId);
+      // Close the policy gate BEFORE the first lane row exists; otherwise a 500 ms tick could land
+      // between two creates and turn this negative check into a race with setup.
+      const hour = new Date().getHours();
+      await post("/api/autos/quiet", { start: hour, end: (hour + 1) % 24 });
+      const specs = [
+        { text: `backlog-oldest-pending ${"A".repeat(130)}`, queue: false },
+        { text: "backlog-second-queued — owner released", queue: true },
+        { text: "backlog-third-pending — needs a hard criterion", queue: false },
+        { text: "backlog-fourth-queued — too new for the three-line preview", queue: true },
+      ];
+      const ids: string[] = [];
+      for (const spec of specs) {
+        const made = ((await (await post("/api/tasks", spec)).json()) as { task: { id: string } }).task.id;
+        ids.push(made);
+        await remember(made);
+        await Bun.sleep(15); // make "oldest" independent of the random id tie-breaker
+      }
+
+      // Quiet hours are a policy gate for this advisory channel. They were set BEFORE the first
+      // lane row, so a prompt observed below cannot have slipped through during fixture creation.
+      await Bun.sleep(afterTick(0, NUDGE_TICK_MS));
+      check("backlog nudge honors quiet hours", (await nudges()).length === 0);
+      await post("/api/autos/quiet", { start: null });
+
+      let first: Awaited<ReturnType<typeof nudges>> = [];
+      for (let i = 0; i < 40; i++) {
+        first = await nudges();
+        if (first.length) break;
+        await Bun.sleep(100);
+      }
+      // Remove B before another round: this lets the next full tick prove A's same-set marker
+      // without legitimately delivering the same backlog to a different session in a later round.
+      if (first.length) await post(`/api/slots/${mainB}/kill`, {});
+      check("backlog nudge sends exactly one slot in the round, choosing the longest-idle main",
+        first.length === 1 && first[0].slot === mainA
+        && !first.some((p) => p.slot === mainB || p.slot === stewardMain || p.slot === awaitingMain
+          || p.slot === lane.slot), JSON.stringify(first.map((p) => ({ slot: p.slot, text: p.text.slice(0, 60) }))));
+      const firstText = first[0]?.text ?? "";
+      check("backlog nudge text counts lane rows and previews exactly the three oldest ids",
+        firstText.includes("4 offene Lane-Zeilen") && ids.slice(0, 3).every((id) => firstText.includes(id))
+        && !firstText.includes(ids[3] ?? "missing"), firstText.slice(0, 300));
+      check("backlog nudge text keeps pending drafts distinct from owner-released queued rows",
+        firstText.includes("status: pending (Entwurf)")
+        && firstText.includes("status: queued (vom Owner freigegeben)"), firstText.slice(0, 300));
+      check("backlog nudge text is a capped hint to verify ./register.sh, never a release or assignment",
+        firstText.includes(specs[0].text.slice(0, 100)) && !firstText.includes(specs[0].text)
+        && firstText.includes("Hinweis und keine Freigabe") && firstText.includes("hartes Done-Kriterium")
+        && firstText.includes("▸ clarify first") && firstText.includes("Brief-Schärfung")
+        && firstText.includes("./register.sh") && firstText.includes("Register ist die Wahrheit"),
+        firstText.slice(-400));
+
+      await Bun.sleep(600); // > one tick, < cooldown
+      check("backlog nudge sends the same session the unchanged open set exactly once",
+        (await nudges()).length === 1, JSON.stringify((await nudges()).map((p) => p.slot)));
+
+      const fifth = ((await (await post("/api/tasks", {
+        text: "backlog-fifth-new-row — re-arms after cooldown", queue: false,
+      })).json()) as { task: { id: string } }).task.id;
+      ids.push(fifth);
+      await remember(fifth);
+      await Bun.sleep(600); // the set changed, but the hard per-session floor has not elapsed
+      check("backlog nudge: a new row re-arms the marker but cannot bypass the cooldown",
+        (await nudges()).length === 1, JSON.stringify((await nudges()).map((p) => p.ts)));
+
+      let second: Awaited<ReturnType<typeof nudges>> = [];
+      for (let i = 0; i < 30; i++) {
+        second = await nudges();
+        if (second.length >= 2) break;
+        await Bun.sleep(100);
+      }
+      check("backlog nudge: after cooldown the new open-set key yields one new prompt",
+        second.length === 2 && second[1].slot === mainA && second[1].text.includes("5 offene Lane-Zeilen"),
+        JSON.stringify(second.map((p) => ({ slot: p.slot, ts: p.ts }))));
+
+      const sixth = ((await (await post("/api/tasks", {
+        text: "backlog-sixth-new-row — session cap probe", queue: false,
+      })).json()) as { task: { id: string } }).task.id;
+      ids.push(sixth);
+      await remember(sixth);
+      await Bun.sleep(afterTick(COOLDOWN_MS, NUDGE_TICK_MS));
+      check("backlog nudge obeys FLEET_BACKLOG_NUDGE_MAX per session identity",
+        (await nudges()).length === 2, JSON.stringify((await nudges()).map((p) => p.ts)));
+
+      // Remove every eligible main. Fresh open-set work remains, but only a lane, the steward and
+      // the deliberately plain awaiting-owner slot can be considered; several rounds must send none.
+      await post(`/api/slots/${mainA}/kill`, {});
+      await Bun.sleep(afterTick(0, NUDGE_TICK_MS));
+      check("backlog nudge never targets a lane, ⚙ steward, or a plain session awaiting the owner",
+        (await nudges()).length === 2, JSON.stringify((await nudges()).map((p) => p.slot)));
+
+      const actual = new Map((await fullTasks())
+        .filter((t) => expected.has(t.id)).map((t) => [t.id, JSON.stringify(t)]));
+      const changed = [...expected].filter(([id, bytes]) => actual.get(id) !== bytes)
+        .map(([id]) => id);
+      check("backlog nudge never mutates any task field (status, note, text or metadata)",
+        changed.length === 0 && actual.size === expected.size,
+        `expected=${expected.size} actual=${actual.size} changed=[${changed}]`);
+
+      for (const id of [noteId, ...ids].filter(Boolean)) await post(`/api/tasks/${id}/delete`, {});
+      for (const id of [mainA, mainB, stewardMain, awaitingMain, lane.slot].filter((x): x is number => typeof x === "number")) {
+        const live = (await sessions()).find((s) => s.id === id)?.cwd;
+        if (live) await post(`/api/slots/${id}/kill`, {});
+      }
+      // The wrapper exports 0 into the harness process; restartSrv() therefore removes every short
+      // test knob above and returns subsequent queue checks to the production-default OFF shape.
+      await restartSrv();
+    }
+  }
 
   // --- payload budget (docs/data-saver.md §1, lane A). /api/sessions is polled every 2 s by every
   // open tab, so a queue of long prompts must not ride along: measured on the live fleet 2026-07-26,

@@ -1,4 +1,110 @@
-# HANDOFF — Session 44 (2026-08-09 nachts: vier GPT-Lands, ein `checkout --`, das fremde Arbeit fraß, und die falsche Suite gefahren) · 43/42/41/40/39/38 darunter
+# HANDOFF — Session 45 (2026-08-09 morgens: der Aus- und der Eingang einer Main-Session, ein Kritiker, der zweimal recht hatte, und ein rotes Audit, das ich zuerst falsch einordnete) · 44/43/42/41/40/39/38 darunter
+
+---
+
+## Session 45: Fleet lernt, eine Session zu beenden und eine neue zu füttern — gebaut von vier GPT-Lanes in drei Rollen
+
+**ctx beim Übergeben: ~40 %.** Produziert: siehe `git log c604390~1..HEAD` mit Bodies. Die Bodies
+tragen die Begründungen; hier steht nur, was git nicht tragen kann.
+
+### Was der Tag wirklich ergeben hat (wichtiger als die Features)
+
+**Eine Kette aus drei getrennten Kontexten hat zum ersten Mal end-to-end funktioniert:**
+Autor → Kritiker → *Host urteilt* → Reparateur. Alle drei pi/`openai-codex/gpt-5.6-sol`.
+
+- Der **Kritiker** bekam NUR den Diff (nicht den Bericht der Autorin), eine geschlossene Frageliste und
+  Pflicht zu `datei:zeile`. Er fand **zwei echte „bricht"-Defekte**, die weder die Autorin noch der
+  Land-Gate noch ich beim ersten Lesen hatten: eine fehlende `laneSpawn`-Reservierung mit einem `await`
+  im Fenster, und einen Rückzugs-Timer, der nur im Speicher lebte (srv-Neustart → Vorgängerin bleibt
+  ungeräumt stehen, also genau der Defekt, gegen den das Feature gebaut wurde).
+- **Seine Kalibrierung ist aber schlecht, und das ist eine Messung:** 12 von 12 Fragen mit BEFUND
+  beantwortet, kein einziges „nichts gefunden", obwohl der Brief das ausdrücklich anbot. In seiner
+  eigenen Top-3 stand auf Platz 3 ein Fund, den ich verworfen habe (manipulierbare Committer-Zeit im
+  HANDOFF-Gate — das Gate ist auf jedem Fehlerpfad fail-closed). **Der Kritiker liefert Kandidaten, nie
+  Urteile.** Die Adjudikation ist kein Formalismus, sie ist das, was ihn benutzbar macht.
+- **Für den nächsten Kritiker-Brief:** Abstinenz erzwingen statt erhoffen — Deckel auf die Zahl der
+  Funde, Konfidenz je Fund.
+- Der **Reparateur** saß auf dem Worktree der erschöpften Autorin (Slot killen, `POST /api/lanes
+  {attach}`) — gleicher Branch, frisches Fenster, 91 % Kontextlast weg. Der Mechanismus war schon da; es
+  fehlte nur, ihn zu benutzen. **Das ist der Lane-Handoff, und er kostet nichts.**
+
+### Der Zustand, in dem ich den Baum übergebe
+
+1. **`c604390` — der EINGANG.** `tickBacklogNudge`: eine idle Nicht-Lane-Session erfährt einmal, dass
+   offene Queue-Zeilen liegen. Default AUS. Gelandet.
+2. **`613faa3`/HEAD — der AUSGANG.** `tickMigrate` + `POST /api/self/succeed` + `/retire` +
+   `SlotEnding "handoff"`. Default AUS.
+3. **`965cf58` — Rot-Ping + Check-Zähler.** Committet, **NICHT gelandet**: der Host muss
+   `./e2e-postland-audit.sh` fahren (die Lane kann es hinter ihrem Zaun nicht), dann landen.
+4. **Queue-Zeile `4455adca` — Lane D, gebrieft, nicht gestartet.** Sie trägt DREI Teile und ist die
+   nächste Arbeit: Port-Warteschleifen brechen ab statt weiterzulaufen · Vorbedingungen in `e2e/` sind
+   benannte Checks · **und der Live-Regress unten.**
+
+### Der rote Audit — Ursache bewiesen, Fix offen, und ich lag zuerst falsch
+
+Das Tier-2-Audit zu `c604390` ist ROT und als `stale-test` adjudiziert. **Kein Produktfehler.**
+`e2e/tasks.ts` killt in ihrem neuen Setup jeden Nicht-Lane-Slot
+(`for (const s of await sessions()) if (s.cwd && !s.worktree) await post(.../kill)`) und stellt die
+fremde Kulisse nicht wieder her; `e2e/restart.ts:12` statet zwei Sektionen später `streams/s1.raw`
+**außerhalb jedes `check()`** und reißt den ganzen Runner mit. Kontrollierter Vergleich, gleiche
+Maschine, gleiche Last: `5f9df3d` frischer Worktree **grün** · `c604390` frischer Worktree **rot** ·
+`c604390` Haupt-Checkout **2× rot**, identische Signatur.
+
+**Bis Lane D das repariert, wird JEDES Land ein rotes Tier-2-Audit erzeugen — aus diesem bekannten
+Grund.** Nicht erschrecken, nicht neu untersuchen: die Signatur ist `ENOENT … streams/s1.raw` in
+`e2e/restart.ts:12` und NULL gelaufene Checks. Alles andere ist neu und gehört untersucht.
+
+### Meine drei Fehler, damit sie nicht wiederkommen
+
+1. **„Flake" gesagt, bevor ich reproduziert hatte.** Das erste Audit-Rot habe ich als Flake eingeordnet;
+   es reproduziert deterministisch. Die Einordnung ging in die bequeme Richtung.
+2. **Zweimal einen Exit-Code für etwas gehalten, das er nicht war** — einmal die `nohup … &`-Hülle (die
+   sofort mit 0 zurückkommt), einmal eine `.exit`-Datei aus einem früheren, kaputten Lauf. Regel:
+   **das Artefakt lesen, nicht die Hülle.** Dasselbe gilt für eine leere Ausgabe: sie heißt „meine Sonde
+   hat nicht geantwortet", nie „es gibt keine Nachricht" — so habe ich das erste rote Audit ganze
+   20 Minuten übersehen.
+3. **Konflikte mechanisch mit „beide Seiten behalten" aufgelöst.** Für vier von fünf Blöcken richtig,
+   für den fünften falsch: dort endete eine Seite **mitten in einer Funktion**, zwei Klammern fehlten.
+   `tsc` fing es 2500 Zeilen später. **„Keep both" ist keine Konfliktlösung, wenn ein Block nicht an
+   einer Anweisungsgrenze endet.**
+
+### Die Reihenfolge für dich, und ihr Warum
+
+1. **`./e2e-isolated.sh` NICHT als erstes fahren** — sie ist aus dem bekannten Grund oben rot. Erst
+   Lane D.
+2. **Lane D starten** (`4455adca`, pi/`openai-codex/gpt-5.6-sol`, effort high). Sie macht main wieder
+   grün und schließt die Familie, die heute dreimal zugeschlagen hat.
+3. **`965cf58` landen**, nachdem der Host `./e2e-postland-audit.sh` gefahren hat.
+4. Danach die zweite Runde auf dem Ausgang: die Vereinfachungsfunde des Kritikers (das `label`-Body-Feld
+   ist außerhalb der Spezifikation, drei überflüssige Env-Knöpfe, eine Map statt eines Slot-Felds) und
+   seine Testlücken — die wichtigste: **die Prompt-Checks lesen `prompts.jsonl` statt der Pane, prüfen
+   also Buchführung statt Zustellung.** Der volle Kritiker-Bericht liegt als Rohmaterial im Scratchpad
+   dieser Session (`kritiker-bericht.txt`, 797 Zeilen) — wenn er weg ist, ist er weg; die bestätigte
+   Teilmenge steht im Body von HEAD.
+
+### Zum Scharfschalten der Autonomie — Owner-Entscheid, Stand jetzt
+
+**Ausgang AN, Eingang AUS.** Begründung, und sie korrigiert etwas, das ich vorher falsch gesagt hatte:
+das HANDOFF-Gate IST bereits eine Bremse — `succeed` verweigert ohne frischen, sauberen
+`HANDOFF.md`-Commit, also kann eine Session, die nichts zustande bringt, gar nicht migrieren. Die Kette
+läuft nur weiter, solange wirklich Arbeit passiert. Der **Backlog-Nudge** ist das, was eine leere
+Nachfolge trotzdem wieder füttern würde — erst zusammen ergibt das einen sich selbst tragenden Kreis.
+Getrennt eingeschaltet endet die Kette von selbst, und genau das will man beim ersten Lauf.
+
+**Was dafür noch fehlt und NICHT gebaut ist:** die Kettenlänge ist nirgends sichtbar. „Läuft seit
+40 Sessions im Kreis" ist von „arbeitet" nicht unterscheidbar. Und `succeed` antwortet **409, wenn kein
+Slot frei ist** — richtig so, aber niemand erfährt es; unter Autonomie ist das ein stiller Stillstand.
+
+### Codex als MAIN-Session — vier Lücken, gemessen, nicht geraten
+
+Der Owner hat danach gefragt. **`CODEX_HARNESS.context` ist `null`** → `contextFill` liefert `null` →
+der Migrations-Tick feuert für eine Codex-Main-Session **nie**. Dazu: Codex kann nicht committen
+(`<workdir>/.git` wird im permission_profile beim NAMEN auf `read` herabgestuft, form-unabhängig), kann
+keine Suite fahren (kein tmux in der Sandbox), und `pinsSession: false` heißt, ein Pane-Respawn startet
+ein NEUES Gespräch. Der Job-Channel zu verschieben löst die **Vertrauens**-Hälfte, nicht die
+mechanische. Nur (1) ist echte Neubau-Arbeit und klein — der Rohstoff liegt in
+`~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl`.
+
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 3863b29..HEAD`
 mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*

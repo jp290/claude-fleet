@@ -1,4 +1,133 @@
-# HANDOFF — Session 45 (2026-08-09 morgens: der Aus- und der Eingang einer Main-Session, ein Kritiker, der zweimal recht hatte, und ein rotes Audit, das ich zuerst falsch einordnete) · 44/43/42/41/40/39/38 darunter
+# HANDOFF — Session 46 (2026-08-09 mittags: sechs Signale, die alle „nichts gemessen" hießen und keines so aussah) · 45/44/43/42/41/40/39/38 darunter
+
+---
+
+## Session 46: der Tier-2-Audit war blind, und die Maschine hat es als Grün gemeldet
+
+**ctx beim Übergeben: ~39 %.** Produziert: **6 Lands** (`54ea616` `8e2b3e5` `7d3a309` `3f3772b`
+`94b1362` `d695e7e`), 3 Deploys, 2 gelandete Lanes, 2 neue Queue-Zeilen, 2 beurteilte Audits.
+Begründungen stehen in den Commit-Bodies: `git log c90cddb..HEAD` mit Bodies. Hier nur das Residuum.
+
+### Der eine Befund, aus dem alles andere folgt
+
+**Sechs Signale dieses Tages bedeuteten dasselbe — „es wurde nichts gemessen" — und keines sah so aus.**
+Vier davon lasen sich wie ein Regress, zwei wie Erfolg. Die zwei sind die gefährlicheren.
+
+| Signal | Las sich als | War |
+|---|---|---|
+| Audit `613faa3c`, `8e2b3e55` | **grün** | `e2e-isolated.sh` abgeschnitten, exit 0, 0 Checks |
+| Audit `c604390c`, `94b1362a` | rot | Runner-Absturz, 0 Checks, Beweis gelöscht |
+| Gate an `74c9` / `cf78` | roter Check-Fail | Server nie gestartet, keine `server.log` |
+| `awaiting`-Sonden (2×, 2 Dateien) | „der Filter ist kaputt" | Cast auf ein Feld, das die Payload nie führt |
+
+**Die Ursache des ersten Falls war `613faa3` — Session 45s eigener letzter Land.** Er schrieb die
+letzte Zeile von `e2e-isolated.sh` um und nahm die 22 Zeilen dahinter mit (srv-Spawn, Port-Warteschleife,
+`bun fleet-e2e.ts`, Teardown, `exit $code`). Das abgeschnittene Skript ist **gültiges sh**: es weist eine
+Variable zu und fällt mit Status 0 ans Ende — und Status 0 ist grün. Zwei Lands bekamen so ein Grün, das
+nichts gemessen hat; `./state.sh` meldete mir das erste beim Einstieg als Tatsache.
+
+**Kein Gate konnte es sehen, und das war kein Zufall:** `tsc` liest keine Shell, und der Pin, den
+`613faa3` selbst mitbrachte, liest die `SRV_ENV`-Zeile — die überlebt hat. Er war grün, während das
+Skript enthauptet war.
+
+Die allgemeine Form, die über Shell hinausgeht und in `CLAUDE.md` steht: **eine Datei, deren Ende
+abgeschnitten wird, ist oft noch syntaktisch gültig — dann verschwindet nicht das Ergebnis, sondern die
+ARBEIT, und übrig bleibt ein Erfolg.**
+
+### Was jetzt anders ist
+
+- **`7d3a309`** — Tail wiederhergestellt; ein Pin hält die Klasse zu: jeder der fünf gestagten
+  `e2e-*.sh` muss einen Runner ausführen **und** mit `exit $code` enden. Mutationstest gefahren: auf dem
+  echten abgeschnittenen Stand fällt er. `bun e2e/pins.ts` ist Stufe 1 des Land-Gates — `613faa3` wäre
+  daran gescheitert.
+- **`d695e7e`** (Lane D, `4455adca`) — die vier übrigen Ausprägungen an der Wurzel: Vorbedingungen sind
+  benannte Checks · Portschleifen brechen mit **exit 3** ab und tailen `server.log`, bzw. sagen
+  ausdrücklich, dass keine existiert · der Runner druckt seine Ergebnisse auch beim Absturz
+  (`try/finally`) · die Backlog-Sektion killt keine fremden Slots mehr, sondern leiht sich EIN Feld
+  reversibel aus (`awaiting`, mit Schnappschuss inkl. „gab es den Schlüssel überhaupt").
+- **`3f3772b`** — `./state.sh` zeigt Dauer und Check-Zahl neben dem Wort. Die Zeile, über die mich das
+  Phantom-Grün erreicht hat, warnt jetzt bei allem unter einer Minute.
+- **`94b1362`** — der ungesendete Gründungsbrief (der Defekt, den Session 45 beim Rückzug meldete).
+  Bereitschaft ist eine **Prozess**-Tatsache: `SEND_BOOT_FRESH_MS` (15 s ab `openedAt`) beantwortet
+  „könnte diese Pane noch booten", `SEND_BOOT_WAIT_MS` (3 s) „wie lange darf ich warten". Zwei
+  Konstanten, weil es zwei Fragen sind.
+
+### Der Zustand, in dem ich den Baum übergebe
+
+**main ist beweisbar grün.** Post-Land-Audit zu `d695e7e`: `green · 719 s · checks 1981/0`. Das ist der
+erste vollständige Lauf seit `c604390` — und das erste Mal, dass der Check-Zähler aus `54ea616` sagt,
+dass gemessen wurde. Deploy live auf `d695e7e`, `bundleStale:false`, `deployGap` null.
+
+**Nichts ist in Flug.** Beide Lanes gelandet, beide Worktrees weg. Slot 2 (`fleet/260808114656-6e86`,
+`e1a9a20`) ist weiterhin die **bewusst zurückgestellte** ToS-Lane — nicht tot, nicht meine.
+
+**Eine zweite Main-Session läuft** (vom Owner gestartet, Thema Auftragsweg + Rückkanal; ihre ersten zwei
+Lands: `bbb5dbd`, `ee15044`). Stimm dich mit ihr ab, bevor du eine Suite startest — **es gibt EINEN
+Suite-Mutex**, und ich habe ihn heute mehrfach für 11 min gehalten.
+
+### Neu im Register, beide als Entwurf (pending), beide mit Done-Kriterium
+
+- **`c845a392`** — `ensureSession` erneuert beim Pane-Respawn weder `openedAt` noch `lastOutput`: eine
+  frisch respawnte Pane gilt als etabliert und bekommt keinen Boot-Settle. Kein Regress von `94b1362`
+  (mit `lastOutput === 0` war es genauso). **Der naheliegende Fix ist eine Falle**, deshalb Entwurf:
+  `handoffCommittedAfterOpen` (`server.ts:3436`) misst das `succeed`-Gate gegen dasselbe `openedAt` —
+  wer es beim Respawn neu setzt, verschiebt still das Gate. Vermutlich braucht es ein eigenes Feld.
+- **`ca630f68`** — zwei Gate-Fixtures (`silent-alive`, `unprobed`) **behaupten** `lastOutput === 0` als
+  Vorbedingung, die sie nicht kontrollieren können. Beide fielen heute je einmal und waren beim Rerun auf
+  unverändertem Baum grün; beide haben ein Land über `confirm-land` gezwungen. `94b1362` hat am selben Tag
+  belegt, warum das nicht geht. Dritte Fundstelle derselben Klasse.
+
+### Zwei Regelbuch-Korrekturen, die dich sonst Zeit kosten (`CLAUDE.md`, gitignored — im Haupt-Checkout)
+
+1. **`POST /api/self/watch` deckt AUCH eine fremde Lane ab.** Der Watch feuert auf `laneWatchSignal`
+   (`lane-signals.ts:92`) = `done-looking` **oder** `host-commit-looking` (`hostCommits` + idle +
+   `dirty>0` + `ahead===0`) — genau die Form, die eine pi-/codex-Lane erreichen kann, und die Nachricht
+   nennt `POST /api/slots/:id/commit` als nächsten Schritt. **Ich habe den halben Tag `capture-pane`-
+   Schleifen von Hand gebaut, weil der Absatz noch „nimm tmux direkt" sagte.** Bei Widerspruch gilt der
+   Code, nicht das Dokument.
+2. **Verb 2 (`POST /api/deploy`) ist gezogen und funktioniert** — dreimal heute, jedes Mal `ok:true`.
+   `tmux kill-session -t srv` von Hand ist überflüssig. Watchdog-Änderungen brauchen weiterhin
+   `launchctl kickstart`.
+3. Neu: **`GET /api/sessions` trägt kein `awaiting`** (elf Schlüssel; es lebt auf `laneSignalView`,
+   `server.ts:10326`). Ein `as`-Cast auf eine Netz-Antwort ist eine **Behauptung über eine fremde
+   Fläche, kein Typ** — er macht den Feldzugriff übersetzbar und die Antwort für immer `undefined`.
+   Heute zweimal aufgetreten, in zwei Dateien, von zwei Autoren. **Der Pin, der die Klasse schließt,
+   fehlt noch** und ist die kleinste offene Arbeit im Baum (Fläche: kein e2e-Cast auf `/api/sessions`
+   darf ein Feld nennen, das die Payload nicht emittiert).
+
+### Meine Fehler, damit sie nicht wiederkommen
+
+1. **Ich habe für den Post-Land-Audit einen Vorsatz statt eines Mechanismus notiert.** Für Suiten, Lanes
+   und Merges hatte ich echte Watcher; für den Audit schrieb ich „ich sehe nach, sobald er da ist" — und
+   der Owner sah das Rot vor mir. Die eine Stelle mit einem Versprechen statt eines Watchers ist die eine,
+   die aufgeflogen ist.
+2. **Und ich habe es 20 Minuten später wiederholt:** nach dem Feuern des Lane-Watchers habe ich ihn nicht
+   neu armiert und darum nicht bemerkt, dass Lane D fertig war.
+3. **Die Benachrichtigung existierte und war aus.** `tickAuditPing` ist heute früh als Teil von `54ea616`
+   gelandet und tut genau das, was gefehlt hat. `FLEET_AUDIT_PING_MS` kommt in `watchdog.sh` **null mal**
+   vor → Default 0 → der Tick startet nie. **Ich habe die Benachrichtigungsschicht gelandet und nicht
+   eingeschaltet.** Vor jedem Neubau eines Kanals: erst nachsehen, was nur einen Env-Knopf entfernt ist.
+
+### Die Reihenfolge für dich, und ihr Warum
+
+1. **Nichts ist dringend.** main ist grün, alles ist deployt, keine Lane läuft. Das ist selten — nutz es
+   für etwas, das einen sauberen Baum braucht.
+2. **Sprich mit der zweiten Main-Session, bevor du planst.** Ihr Thema (Auftragsweg + Rückkanal) ist die
+   direkte Fortsetzung meines Fehlers Nr. 3, und ihre Empfehlung zu `FLEET_AUDIT_PING_MS` steht aus. Ein
+   Einschalten ist eine `watchdog.sh`-Änderung: **`launchctl kickstart` ZUERST, dann srv killen.**
+3. **Der fehlende Pin aus Korrektur 3** — klein, geschlossen, und er schließt eine Klasse, die heute
+   zweimal zugeschlagen hat.
+4. `ca630f68` vor `c845a392`: die Flake-Fixtures kosten JEDES Land eine Extrarunde, der Respawn-Fall
+   wartet auf eine Entscheidung, die dem Owner gehört.
+
+### Autonomie — Stand unverändert
+
+**Ausgang AN, Eingang AUS** (Owner-Entscheid Session 45, Begründung dort). `FLEET_AUDIT_PING_MS` ist der
+dritte Schalter und steht ebenfalls auf aus; die Empfehlung dazu kommt aus der zweiten Main-Session.
+Weiterhin ungebaut und weiterhin die eigentliche Bremse: **die Kettenlänge ist nirgends sichtbar** —
+„läuft seit 40 Sessions im Kreis" ist von „arbeitet" nicht unterscheidbar.
+
+*Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Diese Datei trägt nur das Residuum.*
 
 ---
 

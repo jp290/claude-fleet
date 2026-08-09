@@ -403,9 +403,15 @@ export async function run(sc: StewardCtx): Promise<void> {
     // would hide why), whether it is offered in its own header or as if it were the owner token.
     // The token is read from the persisted state rather than captured from a pane: deterministic,
     // no ~600ms capture race (the known flake in the SELF_TOKEN pane checks).
-    const stSlots = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-      { slots: Record<string, { selfToken?: string }> }).slots;
-    const someSelfTok = Object.values(stSlots).map((v) => v.selfToken).find((t): t is string => !!t) ?? "";
+    let stSlots: Record<string, { selfToken?: string }> | null = null;
+    let stError = "";
+    try {
+      stSlots = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots: Record<string, { selfToken?: string }> }).slots;
+    } catch (e) { stError = e instanceof Error ? e.message : String(e); }
+    check("disposition setup precondition: fleet state is readable for the selfToken fixture",
+      stSlots !== null, stError);
+    const someSelfTok = Object.values(stSlots ?? {}).map((v) => v.selfToken).find((t): t is string => !!t) ?? "";
     check("disposition setup: an active slot's selfToken is readable from state", someSelfTok.length === 32, `len=${someSelfTok.length}`);
     const selfHdr = await fetch(BASE + "/api/dispositions", {
       method: "POST",
@@ -436,9 +442,15 @@ export async function run(sc: StewardCtx): Promise<void> {
 
     // the rail is a secret-adjacent append-only log like its neighbours: mode 600, never 644
     await Bun.sleep(250); // same flush settle as readDispos above
-    const dispoMode = statSync(`${ROOT}/dispositions.jsonl`).mode & 0o777;
-    check("disposition: dispositions.jsonl is mode 600 (same discipline as audit.jsonl)",
-      dispoMode === 0o600, dispoMode.toString(8));
+    let dispoMode: number | null = null;
+    try { dispoMode = statSync(`${ROOT}/dispositions.jsonl`).mode & 0o777; }
+    catch { /* the precondition check below owns absence */ }
+    check("disposition precondition: dispositions.jsonl exists for the mode check",
+      dispoMode !== null, `${ROOT}/dispositions.jsonl`);
+    if (dispoMode !== null) {
+      check("disposition: dispositions.jsonl is mode 600 (same discipline as audit.jsonl)",
+        dispoMode === 0o600, dispoMode.toString(8));
+    }
   }
 
   // --- Tier-1 signal surface (synergy-findings.md): the steward's READ routes expose the

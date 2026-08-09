@@ -384,18 +384,23 @@ export async function run(): Promise<void> {
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const statePath = `${ROOT}/fleet.json`;
-    const state = JSON.parse(readFileSync(statePath, "utf8")) as
-      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> };
+    let state: { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> } | null = null;
+    let stateError = "";
+    try { state = JSON.parse(readFileSync(statePath, "utf8")) as
+      { slots?: Record<string, { cwd?: string; sessionId?: string; model?: string }> }; }
+    catch (e) { stateError = e instanceof Error ? e.message : String(e); }
+    check("migration tick setup precondition: fleet state is readable before context mutation",
+      state !== null, stateError);
     const ids = new Map<number, string>([
       [mainId, "e2e0feed-0000-4000-8000-000000000101"],
       [lane.slot, "e2e0feed-0000-4000-8000-000000000102"],
       [stewardId, "e2e0feed-0000-4000-8000-000000000103"],
     ]);
-    for (const [id, sid] of ids) if (state.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
-    writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+    for (const [id, sid] of ids) if (state?.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
+    if (state) writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
 
     const usageFiles: string[] = [];
-    for (const [id, sid] of ids) {
+    if (state) for (const [id, sid] of ids) {
       const cwd = state.slots?.[String(id)]?.cwd ?? "";
       const dir = `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
       mkdirSync(dir, { recursive: true });

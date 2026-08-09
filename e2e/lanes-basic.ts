@@ -19,7 +19,7 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("untracked .env copied into the worktree", exists(wtEnv) && statSync(wtEnv).isFile());
   // SEC-12: the copy is the one path that deliberately carries .env into every lane, so it must
   // land 0600 regardless of the source's mode (the live source was 0644 when this was written)
-  const wtEnvMode = exists(wtEnv) ? statSync(wtEnv).mode & 0o777 : -1;
+  const wtEnvMode = ((): number => { try { return statSync(wtEnv).mode & 0o777; } catch { return -1; } })();
   check("copied .env is owner-only (0600)", wtEnvMode === 0o600, wtEnvMode === -1 ? "missing" : wtEnvMode.toString(8));
   const wtRefused = await post("/api/slots/5/open-worktree", { repo: REPO, branch: "e2e-lane" });
   check("open-worktree on an active slot is refused", wtRefused.status === 400);
@@ -344,15 +344,20 @@ export async function run(lc: LaneCtx): Promise<void> {
     // where it marks itself as the gate's own proof, which is the line a few lines above this one.
     const GATE_PROOF_MARK = "gate-proof: unconfirmed on purpose";
     const offenders: string[] = [];
-    for (const f of readdirSync(`${ROOT}/e2e`).filter((x) => x.endsWith(".ts"))) {
-      readFileSync(`${ROOT}/e2e/${f}`, "utf8").split("\n").forEach((line, i) => {
-        if (!/post\([^)]*\/commit["`]/.test(line)) return;
-        if (/confirm/.test(line) || line.includes(GATE_PROOF_MARK)) return;
-        offenders.push(`${f}:${i + 1}`);
-      });
-    }
+    let sourceError = "";
+    try {
+      for (const f of readdirSync(`${ROOT}/e2e`).filter((x) => x.endsWith(".ts"))) {
+        readFileSync(`${ROOT}/e2e/${f}`, "utf8").split("\n").forEach((line, i) => {
+          if (!/post\([^)]*\/commit["`]/.test(line)) return;
+          if (/confirm/.test(line) || line.includes(GATE_PROOF_MARK)) return;
+          offenders.push(`${f}:${i + 1}`);
+        });
+      }
+    } catch (e) { sourceError = e instanceof Error ? e.message : String(e); }
+    check("precondition: e2e sources are readable for the commit-probe rot guard",
+      sourceError === "", sourceError);
     check("every other commit probe in the suite sends confirm (an unconfirmed one is a load-dependent flake)",
-      offenders.length === 0, offenders.join(", "));
+      sourceError === "" && offenders.length === 0, offenders.join(", "));
   }
 
   // --- ✎ message: the agent half of the SAVE may fail, and the fallback to a wip message is

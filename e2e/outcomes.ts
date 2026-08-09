@@ -500,8 +500,14 @@ export async function run(): Promise<void> {
     // link back to the checkout is the node_modules symlink e2e-isolated.sh makes, so the real
     // source is its realpath's parent. Read the SOURCE rather than public/app.js on purpose: the
     // bundle is minified, so a regex over it would assert about the minifier as much as the code.
-    const cliSrc = readFileSync(
-      `${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    let cliSrc: string | null = null;
+    let cliSrcError = "";
+    try {
+      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
+    check("precondition: node_modules exposes src/client.ts for outcome client checks",
+      cliSrc !== null, cliSrcError);
+    if (cliSrc === null) return;
     check("client: the outcome renderer classifies an absent review as 'unmeasured', a case distinct from 'none'",
       /function reviewRel[\s\S]{0,400}?return[\s\S]{0,200}?"unmeasured"/.test(cliSrc)
       && /unmeasured:\s*"review not measured/.test(cliSrc) && /none:\s*"no ③ review on record/.test(cliSrc),

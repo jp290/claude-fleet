@@ -184,11 +184,16 @@ tmux -L "$SOCK" new-session -d -s srv \
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
+code=000
 for _ in $(seq 1 60); do
   code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
   [ "$code" != "000" ] && break
   sleep 0.5
 done
+if [ "$code" = "000" ]; then
+  stage_server_start_failed "e2e-claude-gate.sh" "phase 1 claude (FLEET_CMD=claude)" "$DIR"
+  exit 3
+fi
 sleep 0.5
 
 cd "$DIR" || exit 1
@@ -215,11 +220,16 @@ if [ "$code" = 0 ]; then
   else
     echo "e2e-claude-gate.sh: no zsh — the glob-model pane check runs, but cannot fail as designed" >&2
   fi
+  _hc=000
   for _ in $(seq 1 60); do
     _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
     [ "$_hc" != "000" ] && break
     sleep 0.5
   done
+  if [ "$_hc" = "000" ]; then
+    stage_server_start_failed "e2e-claude-gate.sh" "phase 2 harness (FLEET_CMD=harn)" "$DIR2"
+    exit 3
+  fi
   sleep 0.5
   cd "$DIR2" || exit 1
   echo "--- phase: harness (FLEET_CMD=harn, a harness server.ts has never heard of) ---"
@@ -234,11 +244,16 @@ if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-server 2>/dev/null
   tmux -L "$SOCK" new-session -d -s srv \
     "cd '$DIR3' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true FLEET_HARNESS_COMMS= exec bun server.ts >> server.log 2>&1"
+  _hc=000
   for _ in $(seq 1 60); do
     _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
     [ "$_hc" != "000" ] && break
     sleep 0.5
   done
+  if [ "$_hc" = "000" ]; then
+    stage_server_start_failed "e2e-claude-gate.sh" "phase 3 harness waiver (FLEET_CMD=true, empty comms)" "$DIR3"
+    exit 3
+  fi
   sleep 0.5
   cd "$DIR3" || exit 1
   echo "--- phase: harness waiver (FLEET_CMD=true, empty comms) ---"

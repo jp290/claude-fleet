@@ -357,7 +357,14 @@ export async function run(): Promise<void> {
   // against a throwaway server (see the commit); what these checks defend is the contract.
   // The scratch copy carries server.ts + public/ but not src/ — the link back to the checkout
   // is the node_modules symlink, so the real source is its realpath's parent (as in outcomes).
-  const cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+  let cliSrc: string | null = null;
+  let cliSrcError = "";
+  try {
+    cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+  } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
+  check("precondition: node_modules exposes src/client.ts for slot client checks",
+    cliSrc !== null, cliSrcError);
+  if (cliSrc === null) return;
   const planSrc = cliSrc.slice(cliSrc.indexOf("const SAVER = {"), cliSrc.indexOf("let dataSaver"));
   check("client: the data-saver plan is extractable as a pure function (no DOM in pollPlan)",
     planSrc.includes("function pollPlan") && !/document|localStorage|el\(/.test(planSrc.replace(/^\s*\/\/.*$/gm, "")),

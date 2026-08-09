@@ -542,13 +542,20 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
   {
     const lnGate = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
     let selfTok = "";
+    let selfTokStateReadable = false;
+    let selfTokStateError = "";
     for (let i = 0; i < 60 && !/^[0-9a-f]{32}$/.test(selfTok); i++) {
       // same race as security.ts's selfTokenOf: openSlot mints the credential and queues
       // saveState BEFORE it awaits the pane spawn, so the file can lag the route by a hair
-      selfTok = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
-        { slots?: Record<string, { selfToken?: string }> }).slots?.[String(lnGate.slot)]?.selfToken ?? "";
+      try {
+        selfTok = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { selfToken?: string }> }).slots?.[String(lnGate.slot)]?.selfToken ?? "";
+        selfTokStateReadable = true;
+      } catch (e) { selfTokStateError = e instanceof Error ? e.message : String(e); }
       if (!/^[0-9a-f]{32}$/.test(selfTok)) await Bun.sleep(50);
     }
+    check("(gate setup precondition) fleet state is readable for the lane selfToken fixture",
+      selfTokStateReadable, selfTokStateError);
     const intent = await fetch(`${BASE}/api/self/verify-intent`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": selfTok },

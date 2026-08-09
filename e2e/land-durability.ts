@@ -238,21 +238,37 @@ export async function run(): Promise<void> {
     await tmuxOut("kill-session", "-t", "srv");
     await Bun.sleep(500);
     const path = `${ROOT}/fleet.json`;
-    const st = JSON.parse(readFileSync(path, "utf8")) as { undoLands?: Record<string, unknown> };
+    let st: { undoLands?: Record<string, unknown> } | null = null;
+    let stateError = "";
+    try { st = JSON.parse(readFileSync(path, "utf8")) as
+      { undoLands?: Record<string, unknown> }; }
+    catch (e) { stateError = e instanceof Error ? e.message : String(e); }
+    check("(setup D) precondition: fleet state is readable before the old-shape rewrite",
+      st !== null, stateError);
     // the state file keys by the CANONICAL repo path (createWorktree realpaths it), which on this
     // machine is /private/var/... where the test holds /var/... — look the key up instead of
     // assuming it, or the rewrite below silently edits nothing and the whole section passes
     // vacuously on an untouched file (measured: it did, on the first run of this check)
-    const key = Object.keys(st.undoLands ?? {}).find((k) => k === repo || k === realpathSync(repo));
+    const key = Object.keys(st?.undoLands ?? {}).find((k) => k === repo || k === realpathSync(repo));
     check("(setup D) the planted land is findable in the state file (probe fails as itself, not as the server)",
-      !!key, `looked for ${repo} / ${realpathSync(repo)} in ${Object.keys(st.undoLands ?? {}).join(", ")}`);
-    const stacked = key ? st.undoLands?.[key] : undefined;
+      !!key, `looked for ${repo} / ${realpathSync(repo)} in ${Object.keys(st?.undoLands ?? {}).join(", ")}`);
+    const stacked = key ? st?.undoLands?.[key] : undefined;
     check("(setup D) the current server persists the land as a STACK (an array of records)",
       Array.isArray(stacked) && stacked.length === 1, JSON.stringify(stacked));
-    if (st.undoLands && key && Array.isArray(stacked)) st.undoLands[key] = stacked[stacked.length - 1] as unknown;
-    writeFileSync(path, JSON.stringify(st, null, 2), { mode: 0o600 });
-    chmodSync(path, 0o600);
-    const replanted = key ? (JSON.parse(readFileSync(path, "utf8")) as { undoLands?: Record<string, unknown> }).undoLands?.[key] : undefined;
+    if (st?.undoLands && key && Array.isArray(stacked)) st.undoLands[key] = stacked[stacked.length - 1] as unknown;
+    if (st) {
+      writeFileSync(path, JSON.stringify(st, null, 2), { mode: 0o600 });
+      chmodSync(path, 0o600);
+    }
+    let replanted: unknown;
+    let replantedError = "";
+    try {
+      replanted = key
+        ? (JSON.parse(readFileSync(path, "utf8")) as { undoLands?: Record<string, unknown> }).undoLands?.[key]
+        : undefined;
+    } catch (e) { replantedError = e instanceof Error ? e.message : String(e); }
+    check("(setup D) precondition: rewritten fleet state is readable for the fixture proof",
+      replantedError === "", replantedError);
     check("(setup D) the planted file really carries the OLD one-object shape",
       !!replanted && !Array.isArray(replanted) && typeof (replanted as { mainAfter?: unknown }).mainAfter === "string",
       JSON.stringify(replanted));
@@ -286,9 +302,16 @@ async function plantMarker(m: { main: string; branch: string; mainBefore: string
   await tmuxOut("kill-session", "-t", "srv");
   await Bun.sleep(500);
   const path = `${ROOT}/fleet.json`;
-  const st = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  st.landPending = { [REPO]: { repo: REPO, ...m, at: Date.now(), prov: { confirmedByHuman: false } } };
-  writeFileSync(path, JSON.stringify(st, null, 2), { mode: 0o600 });
-  chmodSync(path, 0o600);
+  let st: Record<string, unknown> | null = null;
+  let stateError = "";
+  try { st = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>; }
+  catch (e) { stateError = e instanceof Error ? e.message : String(e); }
+  check("land marker setup precondition: fleet state is readable before mutation",
+    st !== null, stateError);
+  if (st) {
+    st.landPending = { [REPO]: { repo: REPO, ...m, at: Date.now(), prov: { confirmedByHuman: false } } };
+    writeFileSync(path, JSON.stringify(st, null, 2), { mode: 0o600 });
+    chmodSync(path, 0o600);
+  }
   await restartSrv();
 }

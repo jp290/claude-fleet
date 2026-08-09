@@ -110,9 +110,21 @@ export async function run(): Promise<void> {
   // would have appended to it during this window is the write being deliberately broken.
   const before = await pollErrors();
   const plogPath = `${ROOT}/streams/prompts.jsonl`;
-  // never let the borrow itself throw: an unreadable journal must fail the check below, not kill
+  // never let the borrow itself throw: an unreadable journal must fail this precondition, not kill
   // the run and take every module after this one with it
-  const plogSaved = existsSync(plogPath) ? readFileSync(plogPath) : Buffer.alloc(0);
+  let plogSaved = Buffer.alloc(0);
+  let plogReadable = true;
+  let plogReadError = "";
+  try { if (existsSync(plogPath)) plogSaved = readFileSync(plogPath); }
+  catch (e) { plogReadable = false; plogReadError = e instanceof Error ? e.message : String(e); }
+  check("precondition: prompt journal is readable before the error-path fixture borrows it",
+    plogReadable, plogReadError);
+  if (!plogReadable) {
+    rmSync(histPath, { force: true, recursive: true });
+    await post(`/api/slots/${free.id}/kill`, {});
+    await restartSrv();
+    return;
+  }
   rmSync(plogPath, { force: true, recursive: true });
   mkdirSync(plogPath); // now logPrompt fails too — same errno, different site
   await post("/send", { slot: free.id, text: "second site\n" });
@@ -170,9 +182,14 @@ export async function run(): Promise<void> {
     reopened.ok && sent && quiet === null, JSON.stringify(quiet));
   // the prompt journal this module borrowed is handed back whole — later modules read it, and a
   // suite that silently truncated it would fail somewhere else entirely
-  const plogNow = statSync(plogPath);
-  check("the borrowed prompt journal was restored, contents and mode",
-    plogNow.size >= plogSaved.length && (plogNow.mode & 0o777) === 0o600,
-    `${plogNow.size} >= ${plogSaved.length}, mode ${(plogNow.mode & 0o777).toString(8)}`);
+  let plogNow: ReturnType<typeof statSync> | null = null;
+  try { plogNow = statSync(plogPath); } catch { /* the precondition check below owns absence */ }
+  check("precondition: the repaired prompt journal exists for the restoration check",
+    plogNow !== null, plogPath);
+  if (plogNow) {
+    check("the borrowed prompt journal was restored, contents and mode",
+      plogNow.size >= plogSaved.length && (plogNow.mode & 0o777) === 0o600,
+      `${plogNow.size} >= ${plogSaved.length}, mode ${(plogNow.mode & 0o777).toString(8)}`);
+  }
   await post(`/api/slots/${free.id}/kill`, {});
 }

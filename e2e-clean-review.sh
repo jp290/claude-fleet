@@ -91,11 +91,17 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # loop: this harness boots srv TWICE (gate phase, then the shadow-phase restart) and the two waits
 # must not be able to drift. `_hc`, not `code` — `code` carries the harness's exit status.
 wait_bound() {
+  _phase="$1"
+  _hc=000
   for _ in $(seq 1 60); do
     _hc=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)
     [ "$_hc" != "000" ] && break
     sleep 0.5
   done
+  if [ "$_hc" = "000" ]; then
+    stage_server_start_failed "e2e-clean-review.sh" "$_phase" "$DIR"
+    return 3
+  fi
   sleep 0.5
 }
 
@@ -104,7 +110,7 @@ wait_bound() {
 # claude session. Auto-③ is proven in the main suite, which has the stand-in.
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=1 FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
-wait_bound
+wait_bound "phase 1 gate (FLEET_CLEAN_REVIEW=1)" || exit $?
 
 cd "$DIR" || exit 1
 echo "--- phase: gate (FLEET_CLEAN_REVIEW=1) ---"
@@ -121,9 +127,13 @@ code=$?
 # still see carries no shadow verdict.
 if [ "$code" = 0 ]; then
   tmux -L "$SOCK" kill-session -t srv 2>/dev/null
+  # This wrapper owns the instance and just synchronously killed its only server. Remove that dead
+  # process's lock so the phase restart never depends on a process-table probe the lane sandbox may
+  # deny; the isolated suite owns the stale-lock behaviour itself.
+  rm -f "$DIR/fleet.pid"
   tmux -L "$SOCK" new-session -d -s srv \
     "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
-  wait_bound
+  wait_bound "phase 2 shadow (FLEET_CLEAN_REVIEW=shadow)" || exit $?
   echo "--- phase: shadow (FLEET_CLEAN_REVIEW=shadow) ---"
   FLEET_E2E_SUITE=clean-review FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CR_PHASE=shadow bun fleet-e2e-clean-review.ts
   code=$?

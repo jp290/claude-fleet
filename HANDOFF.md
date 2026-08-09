@@ -1,22 +1,25 @@
-# HANDOFF — Session 44 (2026-08-09 nachts: drei GPT-Lands, und ein `checkout --`, das fremde Arbeit fraß) · 43/42/41/40/39/38 darunter
+# HANDOFF — Session 44 (2026-08-09 nachts: vier GPT-Lands, ein `checkout --`, das fremde Arbeit fraß, und die falsche Suite gefahren) · 43/42/41/40/39/38 darunter
 
 *Zustand ist ein KOMMANDO: `./state.sh` **und `./register.sh`**. Historie: `git log 3863b29..HEAD`
 mit Bodies. Diese Datei trägt nur das Residuum: Absicht, was in Flug ist, Korrekturen.*
 
 ---
 
-## Session 44: drei pi/GPT-Lanes, drei Lands, und der erste Live-Beweis des Rückkanals
+## Session 44: vier pi/GPT-Lanes, der erste Live-Beweis des Rückkanals, und zwei Fehler von mir
 
-**ctx beim Übergeben: ~28 %.** Produziert: **3 Lands** (alle aus pi/gpt-5.6-sol-Lanes über den
-Dispatch-Knopf, alle drei Queue-Zeilen haben sich beim Land SELBST geschlossen), **3 grüne
-Tier-2-Audits**, **2 Deploys**, **1 neue Queue-Zeile mit Messung**, **3 Regelbuch-Einträge**, und ein
-`graphify update`.
+**ctx beim Übergeben: ~40 %.** Produziert: **5 Lands** — vier aus pi/gpt-5.6-sol-Lanes über den
+Dispatch-Knopf (fuenf Commits, alle vier Queue-Zeilen haben sich beim Land SELBST geschlossen), plus
+zwei Direkt-Commits fuer diesen Handoff — der erste absichtlich, weil er main bewegt und damit den
+⏸-Merge-Guard loest (siehe Nachtrag). Dazu
+**4 Tier-2-Audits** (drei grün, der vierte lief beim Übergeben), **2 Deploys**, **2 neue Queue-Zeilen
+mit Messungen + 1 Korrektur-Kommentar**, **3 Regelbuch-Einträge**, und ein `graphify update`.
 
 | Commit | was |
 |---|---|
 | `5358a2a` | die Zaun-Pin: Schreibwurzeln von `piSandboxProfile` ↔ `PI_HARNESS.note`, beide Richtungen, unmapped = FAIL |
 | `4354048` | der Rückkanal: `laneHostCommitLooking` als ZWEITES Prädikat + `Harness.hostCommits` als Pflichtfeld |
 | `76e948c` | `POST /api/tasks/:id/dispatch` reicht `effort` durch (bis dahin still ignoriert → Adapter-Default) |
+| `8bbb362`+`d8e96a0` | ein Send an eine frisch gespawnte fremde TUI wartet auf sie — drei Runden, siehe Nachtrag |
 
 Audits: `5358a2a` green · `4354048` green · `76e948c` **lief beim Übergeben noch** — nachsehen, nicht
 annehmen (`tail -1 post-land-audits.jsonl`). Deploy-Stand beim Übergeben: `4354048` ist deployt,
@@ -109,20 +112,65 @@ Dreimal derselbe Takt, und er funktioniert: **briefen → Lane produziert → HO
 
 ### REIHENFOLGE, die ich empfehle
 
-1. **`76e948c` deployen**, sobald sein Audit durch ist (`tmux -L claudefleet kill-session -t srv`,
+1. **`d8e96a0` deployen**, sobald sein Audit durch ist (`tmux -L claudefleet kill-session -t srv`,
    dann `deployGap.codeBehind` + `bundleStale` + `errors` auf `/api/sessions` prüfen). Kein
-   `bun run build` nötig — kein Client-Quellcode in diesen drei Lands.
-2. **`fc47f1e1`** — der Rückkanal-Befund oben. Erst entscheiden, welcher der beiden Schnitte
-   (Entwaffnungs-Route vs. `lastOutput`-Semantik); der zweite ist weitreichend.
-3. Aus dem Register mit hartem Kriterium und in-Domain: **`2975afe9`** (ein `/send` an eine noch
-   bootende fremde TUI geht ins Leere) — `ready`, Fläche `e2e-claude-gate.sh` + `server.ts`.
+   `bun run build` nötig — in keinem dieser fünf Lands steckt Client-Quellcode. **Prüf zuerst, ob es
+   noch nötig ist**, statt dem Satz zu glauben: `codeBehind` sagt es.
+2. **Die Live-Probe auf `8bbb362`** (zwei Minuten, siehe Nachtrag): fremde TUI öffnen, sofort
+   `POST /send`, Pane lesen. Das ist die einzige offene Frage an der heutigen Arbeit, und sie ist
+   billig zu beantworten.
+3. **`94ab77dd`** — der Boot-Reconcile löscht die entwaffnete Watch-Zeile (ein-Zeilen-Schnitt, Done-
+   Kriterium und Verify-Weg stehen an der Zeile). Danach **`fc47f1e1`**, aber lies dort erst den
+   Korrektur-Kommentar: die Zustellung funktioniert mit `idleSec:0`, der Kern ist die fehlende
+   Entwaffnungs-Route — und die `lastOutput`-Semantik ist ein eigenes, weitreichendes Thema.
 4. **Nicht neu untersuchen:** die needs-you-Zeilen (Sols Durchgang von 2026-08-08 gilt weiter, seine
    ZEILENANGABEN sind gedriftet, seine Urteile nicht) und das Attic-Backlog (beerdigt 2026-08-07).
 
+### NACHTRAG: eine VIERTE Lane, und sie ist die lehrreichste des Abends
+
+`8bbb362` + `d8e96a0` — der stille Send-Verlust an eine bootende fremde TUI (`2975afe9`).
+`verify.ok true` (104 s), Zeile schloss sich selbst. **Drei Runden, und der Land-Gate hat den einen
+Regress gefangen, den beide Vorstufen strukturell nicht sehen konnten.** Der Ablauf ist die
+eigentliche Lehre:
+
+1. Erster Wurf: Boot-Fenster erkannt an `lastOutput === 0`. **Der Gate wurde rot** — zwei bestehende
+   `alive-claude`-Checks liefen in ihr Timeout, weil der Stand-in `claude-hang` NIE druckt (das ist
+   sein Zweck) und darum für immer als „bootend" galt, also jeden Send um 2500 ms verzögerte. Der
+   Defekt war auch ausserhalb der Suite echt: eine stille echte TUI wäre dauerhaft betroffen.
+2. Reparatur: **die ERSTE Probe ist der Diskriminator** — war der Agent schon `alive`, bootet nichts,
+   kein Settle, alter Pfad. Enger, nicht weiter.
+3. Dann wurden **die eigenen neuen Sonden** rot, sechs davon, aus demselben Fehler eine Ebene höher:
+   `harn` existiert SOFORT beim Spawn, ist also bei der ersten Probe alive — mit diesem Stand-in kann
+   keine Fixture das Rennen erzeugen. Fixtures brauchen einen Stand-in, der SPÄTER erscheint (Wrapper
+   schläft, dann `exec` — **der Prozessname nach dem exec muss die deklarierte comm sein**) und für
+   den Timeout-Fall einen, der NIE erscheint.
+
+**MEIN ZWEITER FEHLER, und er ist billiger zu vermeiden als der erste:** ich habe host-seitig
+`./e2e-isolated.sh` gefahren (11 min) — aber die Fläche dieser Lane liegt in `e2e-claude-gate.sh`, und
+die kostet **4 min**. Ich habe die teure, unzuständige Suite gefahren und die billige, zuständige
+weggelassen. **Regel für den Nächsten: frag die Lane im Brief, WELCHE Suite ihre Änderung berührt, und
+fahr die.** Ab der zweiten Runde hat sie es von selbst gesagt.
+
+**Und der Merge-Guard, den man kennen muss:** ein Verify-Rot hinterlässt `status:"resolved"` in
+`mergeLast`, und der ⏸-Guard weist danach JEDEN Re-Run ab („conflict resolution awaits your review"),
+obwohl es nie einen Konflikt gab. Er weicht erst, wenn main nicht mehr Vorfahr des Lane-Branches ist.
+Ausweg ohne Trickserei: **etwas auf main committen** (ich habe den Handoff `7cce740` benutzt) — dann
+rebased die Lane neu und der VOLLE Gate läuft. Die Alternative wäre `POST /api/slots/:id/land` mit
+`verified:null` an ihm vorbei gewesen, und `landLane` merged NICHT, es räumt nur auf — auf einem
+un-gemergten Branch wäre das Arbeitsverlust. Nicht anfassen.
+
+**OFFEN, und in `8bbb362`s Body ausgeschrieben:** ob der Schutz den GEMESSENEN Bug wirklich deckt,
+ist noch nicht live geprüft. Nach Runde 2 ist die Frage kleiner geworden — der Settle greift jetzt
+genau dann, wenn der Agent-Prozess SPÄT erscheint, und das ist der echte Fall (`zsh` → PATH →
+Binary). Entscheidbar mit einem Live-Spawn: fremde TUI öffnen, sofort `POST /send`, Pane lesen. Kostet
+zwei Minuten und ist das Erste, was ich als Nächstes täte.
+
 ### IN FLUG BEIM ÜBERGEBEN
 
-Der Post-Land-Audit zu `76e948c`. Slot 2 (`fleet/260808114656-6e86`) ist weiterhin die
-ZURÜCKGESTELLTE ToS-Lane: nicht landen, nicht killen. Sonst nichts.
+Der Post-Land-Audit zu `d8e96a0` (der vierte des Abends; die drei davor grün). **Deploy-Stand: `srv`
+läuft auf `76e948c`, main steht auf `d8e96a0`** — also `codeBehind: true`, der Restart wartet auf das
+Ende des Audits. Slot 2 (`fleet/260808114656-6e86`) ist weiterhin die ZURÜCKGESTELLTE ToS-Lane: nicht
+landen, nicht killen. Sonst nichts.
 
 ---
 

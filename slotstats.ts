@@ -33,8 +33,8 @@ export const SLOTSTATS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const SLOTSTATS_MAX_SLOTS = 20; // payload cap; the omitted count is reported, never silently dropped
 
 /** why a session ended — the detail slot_kill carries. `unknown`: pre-reason row, or an unrecognized value. */
-export type SlotEnding = "landed" | "reopen" | "shelved" | "owner" | "unknown";
-export const SLOT_ENDINGS: readonly SlotEnding[] = ["landed", "reopen", "shelved", "owner", "unknown"];
+export type SlotEnding = "landed" | "reopen" | "shelved" | "handoff" | "owner" | "unknown";
+export const SLOT_ENDINGS: readonly SlotEnding[] = ["landed", "reopen", "shelved", "handoff", "owner", "unknown"];
 
 /** why self-heal could not resume — the detail self_heal_recreate carries after "created:". */
 export type HealOutcome = "resumed" | "no-session" | "no-transcript" | "unknown";

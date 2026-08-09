@@ -1,9 +1,9 @@
 // The scoped self-scheduling credential: FLEET_SELF_TOKEN / FLEET_SELF_SLOT in EVERY session's
-// spawn env (lane or not, since 2026-08-07), and what the six /api/self routes will and will not
-// accept it for — including the four that answer a non-lane 409, which is half the contract.
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+// spawn env (lane or not, since 2026-08-07), and what the /api/self routes will and will not
+// accept it for — including both opposite scope rules (lane-only questions vs main-only exit).
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, post } from "./harness";
+import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -130,6 +130,37 @@ export async function run(ctx: Ctx): Promise<void> {
   }));
   check("the four lane-only self routes answer a PLAIN session 409 not-a-lane — never 401, never 200",
     refusals.every((r) => r.endsWith(":409")), refusals.join(" "));
+
+  // --- THE OPPOSITE SCOPE: succeed/retire belong only to a plain main session. A lane already has
+  // a lifecycle verb — land — and the steward is a standing role, so both refusals are 409 with
+  // their own reason. 401 would falsely tell either caller to hunt for another credential. ---
+  const successionPost = (path: "succeed" | "retire", token: string, body: unknown = {}) =>
+    fetch(`${BASE}/api/self/${path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify(body),
+    });
+  const laneSuccession = await Promise.all([
+    successionPost("succeed", selfTok), successionPost("retire", selfTok),
+  ]);
+  const laneSuccessionText = await Promise.all(laneSuccession.map((r) => r.text()));
+  check("a LANE is refused 409 by both /api/self/succeed and /retire — it lands, it does not migrate",
+    laneSuccession.every((r) => r.status === 409)
+      && laneSuccessionText.every((t) => t.includes("a lane lands")),
+    laneSuccession.map((r, i) => `${r.status}:${laneSuccessionText[i]}`).join(" | "));
+
+  const oldPlainLabel = pSelf.label ?? "";
+  check("succession scope setup: the plain slot can be labelled as the ⚙ steward",
+    (await post("/api/slots/2/rename", { label: "⚙ steward" })).ok);
+  const stewardSuccession = await Promise.all([
+    successionPost("succeed", plainTok ?? ""), successionPost("retire", plainTok ?? ""),
+  ]);
+  const stewardSuccessionText = await Promise.all(stewardSuccession.map((r) => r.text()));
+  check("the ⚙ steward is refused 409 by both /api/self/succeed and /retire — the standing role never migrates",
+    stewardSuccession.every((r) => r.status === 409)
+      && stewardSuccessionText.every((t) => t.includes("standing role")),
+    stewardSuccession.map((r, i) => `${r.status}:${stewardSuccessionText[i]}`).join(" | "));
+  check("succession scope cleanup: the plain slot's prior label is restored",
+    (await post("/api/slots/2/rename", { label: oldPlainLabel })).ok);
 
   // --- GET /api/self/drift: the lane-facing read of "how far has the integration branch moved
   // past me". Committed state only — the probe (`git merge-tree`) simulates a merge, and `dirty`
@@ -313,6 +344,91 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ rb: g2.rulebookDrifted }));
   rmSync(`${REPO}/CLAUDE.md`);
   rmSync(`${lnTok.cwd}/CLAUDE.md`);
+
+  // --- THE SUCCESS PATH: the handoff is committed after THIS slot opened, one successor receives
+  // the server-built founding ritual, and the caller disappears even if it never remembers to call
+  // /retire. A private repo keeps this commit from moving the shared REPO under the drift fixture. ---
+  {
+    const sr = `${ROOT}/succession-repo`;
+    rmSync(sr, { recursive: true, force: true });
+    mkdirSync(sr, { recursive: true });
+    spawnSync("git", ["-C", sr, "init", "-q", "-b", "main"]);
+    spawnSync("git", ["-C", sr, "config", "user.email", "t@t"]);
+    spawnSync("git", ["-C", sr, "config", "user.name", "t"]);
+    writeFileSync(`${sr}/HANDOFF.md`, "## old handoff\nnot for this session\n");
+    spawnSync("git", ["-C", sr, "add", "HANDOFF.md"]);
+    spawnSync("git", ["-C", sr, "commit", "-qm", "old handoff"]);
+
+    const free = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null }[] }).slots.find((x) => x.cwd === null)?.id ?? 0;
+    const opened = free ? await post(`/api/slots/${free}/open`,
+      { cwd: sr, label: "main-before", model: "claude-sonnet-5" }) : null;
+    check("self-succeed setup: a private plain main session is open", !!opened?.ok, `${free}:${opened?.status}`);
+    const oldTok = free ? await paneEnv(`s${free}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    check("self-succeed setup: the caller's pane carries its own token", /^[0-9a-f]{32}$/.test(oldTok), oldTok);
+
+    const staleHandoff = await successionPost("succeed", oldTok);
+    const staleHandoffText = await staleHandoff.text();
+    check("POST /api/self/succeed refuses a handoff committed before this session opened",
+      staleHandoff.status === 409 && staleHandoffText.includes("successor would have nothing to read"),
+      `${staleHandoff.status} ${staleHandoffText}`);
+
+    // git timestamps are whole seconds while openedAt is milliseconds. Cross a second boundary so
+    // this fixture proves the intended ordering rather than depending on timestamp truncation.
+    await Bun.sleep(1100);
+    writeFileSync(`${sr}/HANDOFF.md`, "## current handoff\nthis is the successor's ground truth\n\n## older material\nignore first\n");
+    spawnSync("git", ["-C", sr, "add", "HANDOFF.md"]);
+    const hc = spawnSync("git", ["-C", sr, "commit", "-qm", "fresh session handoff"]);
+    check("self-succeed setup: HANDOFF.md is freshly committed and clean",
+      hc.status === 0 && spawnSync("git", ["-C", sr, "status", "--porcelain", "--", "HANDOFF.md"])
+        .stdout.toString().trim() === "", hc.stderr.toString());
+
+    const longLabel = `next-${"x".repeat(60)}`;
+    const carry = "C".repeat(600);
+    const succeeded = await successionPost("succeed", oldTok, { label: longLabel, carry });
+    const sj = (await succeeded.json()) as { ok?: boolean; slot?: number; label?: string | null };
+    check("POST /api/self/succeed opens exactly one labelled successor and caps the label at MAX_LABEL",
+      succeeded.ok && sj.ok === true && !!sj.slot && sj.slot !== free
+        && sj.label === longLabel.slice(0, 40), `${succeeded.status} ${JSON.stringify(sj)}`);
+    const rows = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; label: string | null; model: string | null; harness?: string }[] }).slots;
+    const successor = rows.find((x) => x.id === sj.slot);
+    check("the successor inherits cwd, model and default harness from the caller",
+      successor?.cwd === sr && successor.model === "claude-sonnet-5" && successor.harness === undefined,
+      JSON.stringify(successor));
+
+    let founding = "";
+    for (let i = 0; i < 40 && !founding; i++) {
+      founding = (await plogRead()).find((e) => e.slot === sj.slot && e.text.startsWith("[fleet succession]"))?.text ?? "";
+      if (!founding) await Bun.sleep(100);
+    }
+    const ritual = ["./state.sh", "./register.sh", "obersten Abschnitt von HANDOFF.md", "Live-Queue"]
+      .map((x) => founding.indexOf(x));
+    check("the server-built founding brief orders state · register · HANDOFF top · Live-Queue and says the predecessor is retiring",
+      ritual.every((x) => x >= 0) && ritual.every((x, i) => i === 0 || ritual[i - 1]! < x)
+        && founding.includes("Die Vorgängerin zieht sich gerade zurück"), founding.slice(0, 500));
+    check("the optional inter-session carry is capped at 500 characters",
+      founding.includes("C".repeat(500)) && !founding.includes("C".repeat(501)), `brief=${founding.length} chars`);
+
+    let oldGone = false;
+    for (let i = 0; i < 50 && !oldGone; i++) {
+      const ss = ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] }).slots;
+      oldGone = ss.find((x) => x.id === free)?.cwd === null;
+      if (!oldGone) await Bun.sleep(100);
+    }
+    check("the grace deadline retires the predecessor and clears its label even without /retire",
+      oldGone, JSON.stringify(((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((x) => x.id === free)));
+
+    const successorTok = sj.slot ? await paneEnv(`s${sj.slot}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    const retired = await successionPost("retire", successorTok);
+    const retiredRow = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null; label: string | null }[] }).slots.find((x) => x.id === sj.slot);
+    check("POST /api/self/retire immediately removes the reporting successor and clears its label",
+      retired.ok && retiredRow?.cwd === null && retiredRow.label === null,
+      `${retired.status} ${JSON.stringify(retiredRow)}`);
+    rmSync(sr, { recursive: true, force: true });
+  }
 
   // KEEP this lane alive across the server restart (below) to prove its selfToken persists —
   // the restart section (guards fix A) uses this token, then tears the lane down.

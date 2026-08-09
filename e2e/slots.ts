@@ -577,6 +577,12 @@ export async function run(): Promise<void> {
       JSON.stringify(s1.healReasons));
     check("slotstats: a kill carries how the session ended",
       s1.endings["owner"] === 1, JSON.stringify(s1.endings));
+    const handed = slotStats([
+      ev(T - 2 * h, "slot_open", 3, "/main"), ev(T - h, "slot_kill", 3, "handoff"),
+    ], { now: T });
+    check("slotstats: a main-session succession is counted as handoff, never collapsed into owner",
+      handed.overall.endings["handoff"] === 1 && handed.overall.endings["owner"] === undefined,
+      JSON.stringify(handed.overall.endings));
     check("slotstats: a still-running session is EXCLUDED, never counted as a short life",
       s.excluded.openAtEnd === 1 && s.overall.lifetimes.n === 1, JSON.stringify(s.excluded));
     // the ordering bug this catches: validating ts/slot BEFORE checking the event books every

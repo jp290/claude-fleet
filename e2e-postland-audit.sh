@@ -55,7 +55,8 @@ chmod +x "$DIR/fakemerge"
 # A lock file makes concurrency a FACT rather than an inference: a run that starts while another is
 # in flight writes OVERLAP, which no correct server can ever produce.
 # Modes, steered by $DIR/auditmode:
-#   green (default) — exit 0 · red — a failure tail + exit 1 · slow — 6s, for the coalescing test
+#   green (default) — exit 0 · red — three failed checks + exit 1 · slow — 6s, for coalescing
+#   precheck — a stack-shaped crash before check() · garbled — contradictory lines/summary
 #   decline — the reserved skip exit (42) · notrunnable — exec a missing binary (exit 127)
 #   hang — 30s, longer than FLEET_POSTLAND_AUDIT_TIMEOUT_MS, so the server's kill path is exercised
 #   long — 12s, for the IN-FLIGHT VIEW section. `slow`'s 6s is sized for the coalescing burst (three
@@ -78,7 +79,9 @@ mode="$(cat "$d/auditmode" 2>/dev/null || echo green)"
 : > "$d/auditbusy"
 echo "run pwd=$PWD files=$(ls | tr '\n' ',') recur=[${FLEET_POSTLAND_AUDIT_CMD:-}] token=[${FLEET_TOKEN:-}] cr=[${FLEET_CLEAN_REVIEW:-}] path=[${PATH:+set}] mode=$mode" >> "$d/auditruns"
 case "$mode" in
-  red)         rm -f "$d/auditbusy"; echo "FAIL  post-land audit sabotage check"; echo "3 FAILURES"; exit 1 ;;
+  red)         rm -f "$d/auditbusy"; echo "FAIL  post-land audit sabotage one"; echo "FAIL  post-land audit sabotage two"; echo "FAIL  post-land audit sabotage three"; echo "3 FAILURES"; exit 1 ;;
+  precheck)    rm -f "$d/auditbusy"; echo "error: ENOENT: no such file or directory, stat 'streams/s1.raw'" >&2; echo "    at statSync (e2e/restart.ts:12:3)" >&2; exit 1 ;;
+  garbled)     rm -f "$d/auditbusy"; echo "FAIL  only one check line exists"; echo "2 FAILURES"; exit 1 ;;
   decline)     rm -f "$d/auditbusy"; echo "audit skipped: this stand-in declines to verify that tree"; exit 42 ;;
   notrunnable) rm -f "$d/auditbusy"; exec "$d/no-such-audit-binary" ;;
   exit143)     rm -f "$d/auditbusy"; echo "terminated"; exit 143 ;;
@@ -88,6 +91,7 @@ case "$mode" in
   crash)       rm -f "$d/auditbusy"; sleep 25 ;;
 esac
 rm -f "$d/auditbusy"
+echo "PASS  post-land audit stand-in check"
 echo "ALL PASS"
 exit 0
 EOF
@@ -125,7 +129,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 is the server's own floor (Math.max(10_000, …)) — the `hang`
 # mode sleeps well past it.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind instead of a fixed sleep
 for _ in $(seq 1 60); do
   code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/" 2>/dev/null)

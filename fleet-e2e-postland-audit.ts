@@ -710,7 +710,10 @@ check("(J) FLEET_AUDIT_PING_MS=0 leaves the red event entirely uncalled",
   JSON.stringify((await pingPrompts()).map((p) => p.slot)));
 
 // No inherited receiver may accidentally satisfy the first pending-state check.
-type PingSlot = { id: number; cwd: string | null; label: string | null; awaiting: "owner" | null;
+// `awaiting` is deliberately NOT on this type: the owner poll does not carry it (it lives on the
+// steward's laneSignalView). A cast that claimed it would make `s.awaiting === "owner"` compile and
+// then be false forever — a probe that cannot measure, failing as if the filter were broken.
+type PingSlot = { id: number; cwd: string | null; label: string | null;
   worktree: unknown | null; lastOutput: number };
 const pingSlots = async (): Promise<PingSlot[]> =>
   ((await (await get("/api/sessions")).json()) as { slots: PingSlot[] }).slots;
@@ -766,12 +769,19 @@ check("(J) restart with a pending marker and filtered sessions succeeds",
   await startSrv({ audit: true, auditPing: true }));
 const afterPendingRestart = await waitPing(precheck.at, (p) => p.status === "pending");
 const loadedNegatives = await pingSlots();
+// The awaiting-owner half is read from the state file the server just loaded, not from the poll —
+// see PingSlot above. Own check, so "the flag did not survive the restart" can never arrive dressed
+// as "the filter is broken".
+const reloadedAwaiting = (JSON.parse(readFileSync(`${import.meta.dir}/fleet.json`, "utf8")) as
+  { slots?: Record<string, { awaiting?: string }> }).slots?.[String(awaitingId)]?.awaiting ?? null;
+check("(J) the awaiting-owner flag survived the restart (the fixture the filter is about)",
+  reloadedAwaiting === "owner", `awaiting=${reloadedAwaiting}`);
 check("(J) pending survives restart; lane, ⚙ steward and awaiting-owner remain ineligible",
   afterPendingRestart?.ping?.status === "pending"
     && loadedNegatives.find((s) => s.id === negativeLane.slot)?.worktree !== null
     && loadedNegatives.find((s) => s.id === stewardId)?.label === "⚙ steward"
-    && loadedNegatives.find((s) => s.id === awaitingId)?.awaiting === "owner",
-  JSON.stringify({ ping: afterPendingRestart?.ping,
+    && reloadedAwaiting === "owner",
+  JSON.stringify({ ping: afterPendingRestart?.ping, awaiting: reloadedAwaiting,
     slots: loadedNegatives.filter((s) => [negativeLane.slot, stewardId, awaitingId].includes(s.id)) }));
 
 free = loadedNegatives.filter((s) => !s.cwd).map((s) => s.id);

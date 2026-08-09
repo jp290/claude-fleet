@@ -1,3 +1,143 @@
+# HANDOFF — Session 47 (2026-08-09 nachmittags: die Queue liegt auf Eis, und Codex-Worker beurteilen sie — Welle 1 von 3 geerntet) · 46/45/44/43/42/41/40/39/38 darunter
+
+**ctx beim Übergeben: ~60 %.** Ich war eine ZWEITE Main-Session, parallel zu einer landenden — deshalb
+habe ich keine Suite gefahren und nichts gelandet. Produziert: `git log 94b1362..HEAD` mit Bodies
+(vier Doc-Commits). Die Bodies tragen die Begründungen; hier steht nur, was git nicht tragen kann.
+
+---
+
+## Der Owner-Auftrag, wörtlich, und wo die Kette steht
+
+> „das wichtigste gerade für die tasks ist … das wir erstmal alles auf Eis legen und dann gucken wie
+> was muss und wie wir was angehen. Also alles auf eis und dann lassen wir codex worker für die
+> aufgaben laufen (müssen vernünftigen Kontext haben) um herauszufinden welche sinn machen bzw. uns
+> insgesamt noch nennenswerte verbesserungen bringen. Und dann müssen wir das ganze vernünftig in
+> klar strukturierten pools aufsetzen"
+
+**Drei Schritte. Schritt 1 ist fertig, Schritt 2 zu einem Drittel geerntet und zu zwei Dritteln in
+Flug, Schritt 3 ist bewusst nicht angefangen.**
+
+### Schritt 1 — EIS, gezogen und persistiert
+`POST /api/dispatch {on:false}` → `fleet.json.dispatch = false`, überlebt einen srv-Neustart.
+Wirkung am Tag null Zeilen (es waren 0 `queued`), aber der nächste `▸ queue`-Klick startet nichts
+mehr von selbst. **Rückweg: derselbe Aufruf mit `{"on":true}` — und das ist der ganze Freeze.**
+Bewusst NICHT archiviert: `archived` ist terminal, das hätte 70 Zeilen in den Räumungs-Pool von
+`capTasks` geschoben.
+
+### Schritt 2 — TRIAGE, 8 Batches, 3 Wellen
+Alles unter `docs/triage/`. `README.md` ist der verbindliche Auftrag für jeden Worker — **lies ihn,
+bevor du Welle 3 briefst**, er trägt die asymmetrische Beweislast und die Kalibrierungsregeln.
+
+| Welle | Slots | Batches | Stand |
+|---|---|---|---|
+| 1 | (gekillt) | C-queue 11 · B-rueckkanal 10 · G-notizen 13 | **geerntet, committet `d92a1aa`** |
+| 2 | 5, 7, 9 | A-verben 7 · D1-sicht 8 · E-harness 5 | **IN FLUG** |
+| 3 | — | D2-bedienung 10 · F-wissen 6 | **noch zu starten** |
+
+### Schritt 3 — POOLS, absichtlich nicht angefangen
+Eine Taxonomie vor den Verdikten wäre geraten statt hergeleitet. Was schon feststeht und in den
+Entwurf gehört: `source` und `kind` fallen heute **exakt zusammen** (jede Owner-Zeile `lane`, jede
+Steward-Zeile `note`), und Batch G hat **drei bestätigte Datenfehler** gefunden (`10ac2528`,
+`63626cdb`, `efc98cfa` tragen `kind:lane`, obwohl ihr eigener Text sagt „kein Arbeitsauftrag").
+
+---
+
+## Das Rezept, das funktioniert hat — kopier es für Welle 3
+
+1. **Slot spawnen:** `POST /api/lanes {repo, harness:"pi", model:"openai-codex/gpt-5.6-sol",
+   effort:"high"}`.
+2. **Warten, bis `agent === "alive"`** auf `GET /api/sessions` — NIE vorher senden, eine Pane ohne
+   Agent ist eine Shell und der Brief liefe dort als Kommando.
+3. **Brief per `POST /send {slot, text}`.** Das Muster liegt in `/tmp/w2-*.json` (überlebt einen
+   Reboot nicht — die Struktur steht unten).
+4. **Watch armieren** (`POST /api/self/watch {target, idleSec:60}`) **UND** einen
+   Hintergrund-Watcher auf die Verdikt-DATEI. Beides, nicht eins: der Watch feuert auf
+   `host-commit-looking`, erreicht laut Messung `fc47f1e1` aber nur eine parkende Session — der
+   Datei-Watcher ist der, der bei einer arbeitenden Session wirklich zündet.
+5. **Ernten per HOST-KOPIE, nicht über den Land-Pfad:** `cp <worktree>/docs/triage/verdict-*.md
+   docs/triage/` + Commit im Haupt-Checkout. Eine pi-Lane kann nicht committen (`.git` ist im
+   Sandbox-Profil auf `read`), und ein Land nähme den Suite-Mutex.
+6. **Aufräumen:** `POST /api/slots/:id/kill`, dann `git worktree remove --force`, dann
+   `git worktree prune`. Kill allein lässt den Worktree als Waise stehen.
+
+**Der Brief-Aufbau, der die Qualität erzeugt hat** (nicht die Länge, die Struktur): Leseauftrag in
+fester Reihenfolge (README → AGENTS.md → §7 der Beerdigt-Liste → der eigene Batch) · **vier
+batch-spezifische Sätze „das macht DIESEN Batch besonders — prüf es, glaub es nicht"**, die
+konkrete, nachprüfbare Prämissen nennen · die Disziplin-Liste · Budget-Arithmetik · der Schlusssatz,
+dass sein Urteil ein Vorschlag ist und nichts es automatisch ausführt.
+
+**Für Welle 3 ergänzen:** die sechs vorhandenen Verdikte als Maßstab nennen (habe ich in Welle 2
+getan) und auf **Zusammenlegungen über Batch-Grenzen** hinweisen — das ist der Befund, den ein
+einzelner Batch strukturell nicht sehen kann.
+
+---
+
+## Was die Worker taugen — gemessen, nicht gehofft
+
+**Sie sind gut, und sie widersprechen mir belegt.** Vier Belege habe ich selbst nachgeprüft, **zwei
+korrigieren Zeilen, die ich am selben Tag angelegt habe** (Details im Body von `d92a1aa`). Der
+wichtigste: `29829dac` — mein Verify-Weg war falsch geschnitten, `server.ts:11143` behandelt
+`exitCode === 0` des Restart-Kommandos als erwarteten Erfolg.
+
+**Rohbilanz Welle 1 (34 Zeilen):** bauen 9 · streichen 15 · unklar 8 · zusammenlegen 1.
+`ast-grep 0.45.1` lief in allen drei Lanes — die offene Frage aus dem Auftrag ist beantwortet.
+
+**Kontextverbrauch, für deine Planung:** der C-Batch-Worker (11 Zeilen, 42 KB Batch-Datei) stand am
+Ende bei **83 % von 272k**. B lag bei 39 %, G bei 59 %. **Über 11 Zeilen je Batch wird es eng** —
+schneide Welle 3 nicht größer.
+
+**Ein Verdikt, das ich für strittig halte und NICHT verifiziert habe:** `dabd1880` bekam
+`streichen`, weil der Analyse-Sweep, dessen Nichtkonvergenz die Zeile misst, abgeschaltet ist. Das
+Argument trägt nur, solange er aus bleibt — schaltet der Owner ihn ein, ist der Defekt sofort
+zurück. Das gehört in die Adjudikation, nicht ungeprüft übernommen.
+
+---
+
+## Die zwei Analysen darunter, und was aus ihnen folgt
+
+`docs/rueckkanal-2026-08-09.md` (Commit `bbb5dbd`) und `docs/auftragsweg-2026-08-09.md` (`ee15044`).
+Beide tragen in ihrem letzten Abschnitt eine ausdrückliche Trennung „gemessen vs. nur gelesen".
+
+**Die zwei Sätze, die am meisten kosten, wenn du sie nicht kennst:**
+
+1. **Es fehlt kein Kanal — es fehlt eine Zustellung.** Fünf Nachrichten-Ticks laufen durch EINE
+   Klausel (`canDeliver`, `server.ts:3596`), und eine arbeitende Claude-Pane ist per Byte-Sensor nie
+   idle. Jeder Kanal, den man einschaltet, erreicht die parkende Session. **Das ist Latenz, kein
+   Verlust** — die Ereignisse verfallen nicht.
+2. **Der Analyst ist AUS (`FLEET_ANALYSIS_MS=0`), der Dispatcher war AN.** Der gesamte
+   „unattended invariant" im Dispatcher steht in einem `if (ANALYSIS_TICK_MS)`
+   (`server.ts:4269-4308`). Seit dem Freeze ist das entschärft — **wer den Dispatcher wieder
+   einschaltet, holt es zurück.**
+
+**Acht offene Entscheidungen liegen als Queue-Entwürfe** (`pending`, nie freigegeben):
+`0ae22c2d` `58d03512` `d45898cb` `29829dac` `08230c93` — aus der Rückkanal-Analyse;
+`391a6cab` `684a9d99` `6d07877f` — aus der Auftragsweg-Analyse.
+**`0ae22c2d` hat sich bewegt:** seine Vorbedingung `4455adca` ist gelandet (`d695e7e`). Es bleibt
+nur noch „ein Audit mit `checks.ran > 0` abwarten", dann ist die Empfehlung fällig.
+
+---
+
+## Die Reihenfolge für dich, und ihr Warum
+
+1. **Welle 2 ernten** (der Hintergrund-Watcher meldet sich, sonst: liegen die drei
+   `verdict-*.md` in den Worktrees `fleet-260809105257-8b94`, `-260809105258-e7b6`,
+   `-260809105258-9194`?). Ernten wie oben, dann Lanes killen und Worktrees entfernen.
+2. **Welle 3 starten** (D2-bedienung, F-wissen — zwei Lanes reichen).
+3. **Adjudizieren, nicht übernehmen.** Die Verdikte sind Vorschläge. Prüfe je Batch **mindestens
+   die `streichen` mit Konfidenz `mittel`** und jede Zeile, bei der der Worker seiner eigenen
+   Angabe nach am unsichersten war (steht in jedem Verdikt unter „Kalibrierung"). Erst danach
+   irgendetwas an `fleet.json` ändern.
+4. **Dann Schritt 3, die Pools** — aus dem vollständigen Bild, mit den drei bestätigten
+   `kind`-Datenfehlern als erstem Beleg dafür, dass die heutige Achse nicht trägt.
+5. **Der Dispatcher bleibt AUS**, bis der Owner die neue Struktur gesehen hat. Ihn vorher wieder
+   einzuschalten macht Schritt 1 rückgängig, ohne dass jemand es merkt.
+
+**Nicht anfassen, solange die andere Main-Session arbeitet:** Merge/Land und jede Suite — es gibt
+EINEN Suite-Mutex. Ich habe deshalb den ganzen Tag keine Suite gefahren; alle vier Commits sind
+reine Dokumentation und berühren keine getrackte Code-Datei.
+
+---
+
 # HANDOFF — Session 46 (2026-08-09 mittags: sechs Signale, die alle „nichts gemessen" hießen und keines so aussah) · 45/44/43/42/41/40/39/38 darunter
 
 ---

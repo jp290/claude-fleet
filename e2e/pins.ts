@@ -971,6 +971,63 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
     "agentInfo unconditional + aliveInfo gated");
 }
 
+{
+  // A CAST ON A NETWORK RESPONSE IS A CLAIM ABOUT A FOREIGN SURFACE, NOT A TYPE — and this one bit
+  // twice on 2026-08-09, in two files, by two different authors, on the same field. Both wrote
+  // `as { slots: Row[] }` with `awaiting` on Row. The poll does not carry `awaiting` (it lives on
+  // laneSignalView, the STEWARD view), so `row.awaiting === "owner"` compiled and was `undefined`
+  // forever: a probe that could never be green, failing as if the product's filter were broken.
+  // tsc cannot see it — the cast is what makes it legal. Both fixtures were writing the flag into
+  // fleet.json correctly; only the read asked the wrong surface. (8e2b3e5, then e2e/tasks.ts.)
+  //
+  // The rule is derived, not a list: whatever key names the poll's slot row emits TODAY are the
+  // permitted ones. Deliberately over-permissive in one direction — the nested `share` object's own
+  // keys land in the allowed set too — because the failure this guards is a name the payload cannot
+  // produce AT ALL, and a pin that under-permits would fail on honest edits.
+  // Several keys share one line (`id: s.id, cwd: s.cwd, ...`), so this must not anchor to line
+  // start — that mistake was this pin's own first red, and it made honest files look guilty.
+  const rowLiteral = /slots: slots\.map\(\(s\) => \{[\s\S]*?\n(\s*)\}\),/.exec(server)?.[0] ?? "";
+  const emitted = new Set([...rowLiteral.matchAll(/([A-Za-z_]\w*):/g)].map((m) => m[1]!));
+  const tsFiles = [
+    ...readdirSync(ROOT).filter((f) => /^fleet-e2e[a-z-]*\.ts$/.test(f)),
+    ...readdirSync(`${ROOT}/e2e`).filter((f) => f.endsWith(".ts")).map((f) => `e2e/${f}`),
+  ];
+  const offenders: string[] = [];
+  let castsSeen = 0;
+  for (const f of tsFiles) {
+    const src = read(f);
+    // ONLY the owner poll. The steward view (/api/steward/sessions) is cast the same way and DOES
+    // carry doneLooking/stalled/hostCommits — matching on the cast shape alone accuses it wrongly,
+    // which is what this pin did on its first run.
+    for (const cast of src.matchAll(/get\("\/api\/sessions"\)[\s\S]{0,120}?\{\s*slots:\s*([A-Za-z_]\w*)\[\]\s*\}/g)) {
+      const name = cast[1]!;
+      const decl = new RegExp(`type ${name} = \\{([\\s\\S]*?)\\};`).exec(src);
+      if (!decl) continue; // an imported/shared type is not this trap — it has a real declaration
+      castsSeen++;
+      // TOP-LEVEL fields only. A nested shape (`ctx: { pct, windowTokens }`) is built by a function,
+      // never by the row literal, so descending into it accuses honest code — this pin's second red.
+      let depth = 0, flat = "";
+      for (const ch of decl[1]!) {
+        if (ch === "{") { depth++; continue; }
+        if (ch === "}") { depth--; continue; }
+        if (depth === 0) flat += ch;
+      }
+      for (const field of flat.matchAll(/(?:^|[;\n,])\s*([A-Za-z_]\w*)\s*[?]?:/g)) {
+        const k = field[1]!;
+        if (!emitted.has(k)) offenders.push(`${f}: ${name}.${k}`);
+      }
+    }
+  }
+  if (!emitted.size || !castsSeen) {
+    skip("no e2e cast over the /api/sessions poll names a field the payload cannot emit",
+      `emitted=${emitted.size} casts=${castsSeen} — the derivation found nothing, which is not a pass`);
+  } else {
+    pin("no e2e cast over the /api/sessions poll names a field the payload cannot emit",
+      offenders.length === 0,
+      `${castsSeen} cast(s) over ${emitted.size} emitted keys; offenders=[${offenders}]`);
+  }
+}
+
 // ================================================================================================
 // 6. CLAUDE.md — the one steering document with no drift pin at all
 // ================================================================================================

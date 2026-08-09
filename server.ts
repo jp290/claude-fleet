@@ -3113,11 +3113,14 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.clients.clear();
 }
 
-// A route send is interactive, and 30 seconds (the worker readiness budget) would make the board
-// itself look wedged. Three seconds is reserved for the one state that can actually be booting —
-// an unobserved, positively probed pane — and bounds a failed probe to one noticeable interaction,
-// not a route-scale hang. Timeout deliberately falls through to delivery: the owner may be typing
-// into a pane whose agent died, and that capability must not be turned into an alive gate.
+// These answer different questions. Fifteen seconds says how long after openSlot a pane may still
+// plausibly be booting on a loaded machine; three seconds says how long an interactive send may
+// WAIT once that fresh pane fails its first probe. The price is explicit and bounded: during the
+// freshness window a send to a dead agent may still wait up to SEND_BOOT_WAIT_MS and write one
+// send_boot_timeout row. That exposure ends after each slot opening instead of taxing every later
+// owner send forever. Timeout deliberately falls through to delivery: the owner may be typing into
+// a pane whose agent died, and that capability must not be turned into an alive gate.
+const SEND_BOOT_FRESH_MS = 15_000;
 const SEND_BOOT_WAIT_MS = 3000;
 // Unknown adapters get one short terminal/redraw beat, not Claude's estimate by accident. 250 ms
 // is deliberately low because no readiness measurement exists for them; Claude declares the only
@@ -3129,25 +3132,24 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
   // concurrent WS keystrokes (mobile key row, live typing, direct terminal typing) can
   // interleave paste-buffer/send-keys with a concurrent send-keys, reordering pty input
   const task = s.inputChain.then(async () => {
-    // Only a pane Fleet has NEVER observed may still be booting. Once it has printed, no probe and
-    // no sleep is inserted: its agent may be alive or dead, and delivery is the sender's decision.
-    // Empty comms is the intentional "unprobed" waiver used by FLEET_CMD=true stand-ins, so it is
-    // the other byte-for-byte fast path. Readiness uses the exact per-slot resolution used by the
-    // alive gate; no fleet-wide or literal comm list is a truthful substitute here.
-    if (s.lastOutput === 0) {
+    // Readiness is a process fact, not an output fact: tmux may repaint before the agent emits a
+    // byte, and an agent's startup banner may arrive before its TUI accepts input. `openedAt`
+    // answers the separate question "could this pane still be booting?" without misclassifying an
+    // established dead agent as a boot. Empty comms remains the intentional fast-path waiver.
+    const mayStillBeBooting = s.openedAt > 0 && Date.now() - s.openedAt < SEND_BOOT_FRESH_MS;
+    if (mayStillBeBooting) {
       const comms = commsFor(s);
       if (comms.length > 0) {
         const started = Date.now();
         let state = await paneAgentAt(sess(s.id), comms);
-        // `lastOutput === 0` says only that Fleet has never seen a byte; a quiet TUI can remain in
-        // that state forever. The FIRST probe is therefore the boot discriminator: already alive
-        // means established and takes the old send path with no settle. Settle belongs only to the
-        // transition this race is about — not alive at first, then alive within the bounded wait.
+        // The FIRST probe is the boot discriminator: already alive means established and takes the
+        // old send path with no settle. Settle belongs only to the transition this race is about —
+        // not alive at first, then alive within the bounded wait.
         const waitedForAlive = state !== "alive";
-        while (waitedForAlive && state !== "alive" && s.lastOutput === 0
+        while (waitedForAlive && state !== "alive"
           && Date.now() - started < SEND_BOOT_WAIT_MS) {
           await Bun.sleep(100);
-          if (s.lastOutput !== 0 || Date.now() - started >= SEND_BOOT_WAIT_MS) break;
+          if (Date.now() - started >= SEND_BOOT_WAIT_MS) break;
           state = await paneAgentAt(sess(s.id), comms);
         }
         // Count probe time against the same budget: a slow ps/pgrep must not turn a nominally
@@ -3156,7 +3158,7 @@ async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
           && Date.now() - started < SEND_BOOT_WAIT_MS;
         if (becameAlive) {
           await Bun.sleep(harnessOf(s.harness).bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS);
-        } else if (waitedForAlive && !becameAlive && s.lastOutput === 0) {
+        } else if (waitedForAlive && !becameAlive) {
           // No prompt text in the trail. This row says exactly what could have happened: delivery
           // proceeds (owner capability preserved), but the pane never became observably ready.
           audit("send_boot_timeout", s.id,

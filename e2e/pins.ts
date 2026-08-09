@@ -938,6 +938,31 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
       && slotProbeArgs.filter((a) => a === "comms").length === sendLocalProbes
       && slotProbeArgs.every((a) => a === "commsFor(s)" || a === "AUTHOR_COMMS" || a === "comms"),
     `${sendProbeResolved ? "send-resolved" : "send-unresolved"}: ${slotProbeArgs.join(" | ")}`);
+  // Pane output is not readiness: tmux can repaint before the agent prints, and the agent can print
+  // before its composer is ready. A separate openedAt guard first answers whether this pane could
+  // still be booting; only then may the bounded probe loop run. It retains BOTH outcomes: settle
+  // after the transition, or audited fall-through so an owner can still type into a newly opened
+  // pane whose agent died. An established dead pane never enters this block and stays immediate.
+  const sendCode = sendBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const sendFreshnessGuard = /const mayStillBeBooting = s\.openedAt > 0\s*&& Date\.now\(\) - s\.openedAt < SEND_BOOT_FRESH_MS;\s*if \(mayStillBeBooting\) \{\s*const comms = commsFor\(s\);/.test(sendCode);
+  const freshLiteral = /const SEND_BOOT_FRESH_MS = ([\d_]+);/.exec(server)?.[1];
+  const waitLiteral = /const SEND_BOOT_WAIT_MS = ([\d_]+);/.exec(server)?.[1];
+  const freshMs = Number(freshLiteral?.replaceAll("_", ""));
+  const waitMs = Number(waitLiteral?.replaceAll("_", ""));
+  const independentlySizedFreshness = freshMs >= 10_000 && waitMs > 0 && freshMs > waitMs;
+  const sendTimeoutAt = sendCode.indexOf('audit("send_boot_timeout"');
+  const sendDeliveryAt = sendCode.indexOf("const buf =", sendTimeoutAt);
+  const timeoutStillDelivers = sendTimeoutAt >= 0 && sendDeliveryAt > sendTimeoutAt
+    && !/\b(?:return|throw)\b/.test(sendCode.slice(sendTimeoutAt, sendDeliveryAt));
+  pin("sendText boot readiness is freshness-guarded, probe-driven and bounded; timeout still delivers",
+    sendFreshnessGuard
+      && independentlySizedFreshness
+      && !/\bs\.lastOutput\b/.test(sendCode)
+      && sendLocalProbes >= 2
+      && (sendCode.match(/\bSEND_BOOT_WAIT_MS\b/g) ?? []).length >= 2
+      && sendCode.includes("bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS")
+      && timeoutStillDelivers,
+    `fresh=${sendFreshnessGuard} windows=${freshMs}/${waitMs} output=${/\bs\.lastOutput\b/.test(sendCode)} probes=${sendLocalProbes} fallthrough=${timeoutStillDelivers}`);
   // ...and the POLICY is not the probe: aliveInfo (a gate) carries harnessAutomatable, agentInfo
   // (a fact) must not. Reversing them would either lie on the board or open the gates by accident.
   pin("the fact layer stays unconditional while the gate carries the harness policy",

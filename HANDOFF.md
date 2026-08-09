@@ -88,12 +88,14 @@ Suite-Mutex**, und ich habe ihn heute mehrfach für 11 min gehalten.
 2. **Verb 2 (`POST /api/deploy`) ist gezogen und funktioniert** — dreimal heute, jedes Mal `ok:true`.
    `tmux kill-session -t srv` von Hand ist überflüssig. Watchdog-Änderungen brauchen weiterhin
    `launchctl kickstart`.
-3. Neu: **`GET /api/sessions` trägt kein `awaiting`** (elf Schlüssel; es lebt auf `laneSignalView`,
+3. **`GET /api/sessions` trägt kein `awaiting`** (elf Schlüssel; es lebt auf `laneSignalView`,
    `server.ts:10326`). Ein `as`-Cast auf eine Netz-Antwort ist eine **Behauptung über eine fremde
    Fläche, kein Typ** — er macht den Feldzugriff übersetzbar und die Antwort für immer `undefined`.
    Heute zweimal aufgetreten, in zwei Dateien, von zwei Autoren. **Der Pin, der die Klasse schließt,
-   fehlt noch** und ist die kleinste offene Arbeit im Baum (Fläche: kein e2e-Cast auf `/api/sessions`
-   darf ein Feld nennen, das die Payload nicht emittiert).
+   ist `991e30b`** — die erlaubten Schlüssel werden aus dem Zeilen-Literal des Polls ABGELEITET, der
+   Cast muss am selben Ausdruck wie `get("/api/sessions")` hängen (sonst trifft die Regel die
+   Steward-Sicht, die `doneLooking`/`stalled` sehr wohl führt), und geprüft werden nur Top-Level-
+   Felder. Mutationstest gefahren. Er hatte selbst drei rote Läufe, alle drei die SONDE.
 
 ### Meine Fehler, damit sie nicht wiederkommen
 
@@ -115,9 +117,7 @@ Suite-Mutex**, und ich habe ihn heute mehrfach für 11 min gehalten.
 2. **Sprich mit der zweiten Main-Session, bevor du planst.** Ihr Thema (Auftragsweg + Rückkanal) ist die
    direkte Fortsetzung meines Fehlers Nr. 3, und ihre Empfehlung zu `FLEET_AUDIT_PING_MS` steht aus. Ein
    Einschalten ist eine `watchdog.sh`-Änderung: **`launchctl kickstart` ZUERST, dann srv killen.**
-3. **Der fehlende Pin aus Korrektur 3** — klein, geschlossen, und er schließt eine Klasse, die heute
-   zweimal zugeschlagen hat.
-4. `ca630f68` vor `c845a392`: die Flake-Fixtures kosten JEDES Land eine Extrarunde, der Respawn-Fall
+3. `ca630f68` vor `c845a392`: die Flake-Fixtures kosten JEDES Land eine Extrarunde, der Respawn-Fall
    wartet auf eine Entscheidung, die dem Owner gehört.
 
 ### Autonomie — Stand unverändert

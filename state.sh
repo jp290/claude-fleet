@@ -77,8 +77,24 @@ else:
     print(f"  post-land audits {len(a)} | {dict(Counter(r.get('result') for r in a))}")
     if a:
         last = a[-1]
-        print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}"
+        # The word alone is not the verdict. 613faa3 truncated e2e-isolated.sh so it exited 0
+        # without ever starting the runner, and this line reported "green" to the next session
+        # twice. What separates a measurement from a phantom is the duration and the check count:
+        # a real run is ~680-700s with PASS lines; `checks` exists only since 54ea616, so absent
+        # is "old row", never zero. Printed next to the word so nobody has to know that story.
+        ms = last.get('ms')
+        ck = last.get('checks')
+        shape = f" {round(ms/1000)}s" if isinstance(ms, (int, float)) else " ?s"
+        if isinstance(ck, dict):
+            shape += f" · checks {ck.get('ran')}/{ck.get('failed')} failed"
+        elif ck is None:
+            shape += " · checks not recorded (row predates 54ea616)"
+        suspect = isinstance(ms, (int, float)) and ms < 60_000
+        print(f"  newest audit: {last.get('result')} on {str(last.get('mainSha'))[:8]}{shape}"
               f" covering {[c.get('branch','')[-9:] for c in last.get('covers',[])]}")
+        if suspect:
+            print("    ^ under a minute: a full isolated run is ~11 min. This may be a suite that"
+                  " never ran — read the row's out, do not trust the colour")
 td = os.path.join(MAIN, 'e2e-trail')
 tail = "  — audits write to $TMPDIR/fleet-e2e-trail instead; see docs/e2e-trail.md"
 if not os.path.isdir(td):

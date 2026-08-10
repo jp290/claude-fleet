@@ -31,8 +31,8 @@ const withCookie = (path: string, cookie: string): Promise<Response> =>
   fetch(BASE + path, { headers: { cookie } });
 
 interface ShareRes { id: string; password: string }
-async function makeShare(slot: number, mode: string, password: string): Promise<ShareRes> {
-  const r = await post(`/api/slots/${slot}/share`, { mode, password });
+async function makeShare(slot: number, password: string): Promise<ShareRes> {
+  const r = await post(`/api/slots/${slot}/share`, { password });
   return (await r.json()) as ShareRes;
 }
 const authCookie = async (id: string, password: string): Promise<string> => {
@@ -53,7 +53,7 @@ await post("/api/slots/2/open", { cwd: REPO || "~" });
 // locked share can never be reused by a later check.
 // ---------------------------------------------------------------------------
 {
-  const sh = await makeShare(1, "interact", "correct-horse-1");
+  const sh = await makeShare(1, "correct-horse-1");
   check("§1 share created for the brute-force case", !!sh.id, JSON.stringify(sh).slice(0, 60));
   const good = await authCookie(sh.id, "correct-horse-1");
   check("§1 correct password issues a share cookie", good.startsWith(`share_${sh.id}=`), good.slice(0, 24));
@@ -94,7 +94,7 @@ await post("/api/slots/2/open", { cwd: REPO || "~" });
 {
   // The deliberate asymmetry: an ABSENT cookie is not a guess. Without this, any stranger
   // could lock a share out of existence by loading its URL 51 times.
-  const sh = await makeShare(2, "view", "correct-horse-2");
+  const sh = await makeShare(2, "correct-horse-2");
   const noCookie = await Promise.all(Array.from({ length: 60 }, () =>
     fetch(BASE + `/s/${sh.id}/info`).then((r) => r.status)));
   check("§1 unauthenticated reads (no cookie) are 401, never 429", noCookie.every((s) => s === 401),
@@ -262,7 +262,7 @@ if (INTAKE && DISPATCH_REPO) {
 // the pty is shared, so a guest-forced resize would reflow the OWNER's screen.
 // ---------------------------------------------------------------------------
 {
-  const sh = await makeShare(2, "view", "resize-pass-123");
+  const sh = await makeShare(2, "resize-pass-123");
   const cookie = await authCookie(sh.id, "resize-pass-123");
   const before = (await (await withCookie(`/s/${sh.id}/info`, cookie)).json()) as { cols: number; rows: number };
   await new Promise<void>((resolve) => {

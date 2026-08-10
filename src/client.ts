@@ -138,7 +138,7 @@ const post = (path: string, body: unknown) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 // --- fleet state ---
-interface ShareInfo { id: string; mode: "view" | "interact"; password: string; created: number; guests: number; comments: number }
+interface ShareInfo { id: string; password: string; created: number; guests: number; comments: number }
 interface AutoInfo {
   id: string; slot: number; text: string; everySec: number | null; nextAt: number;
   runsLeft: number; idleSec: number; enabled: boolean; lastRun: number; lastResult: string | null;
@@ -1804,7 +1804,7 @@ async function renderBoard() {
     {
       const arow = el("div", "bbtnrow");
       const shrb = el("button", "bbtn" + (s.share ? " on" : ""),
-        s.share ? `⤴ shared — ${s.share.mode}` : "⤴ share") as HTMLButtonElement;
+        s.share ? "⤴ shared — view only" : "⤴ share") as HTMLButtonElement;
       shrb.onclick = () => openShareDlg(slot);
       const expb = el("button", "bbtn", "⇩ export") as HTMLButtonElement;
       expb.title = "export session — print / save as PDF";
@@ -4610,7 +4610,7 @@ async function refresh() {
     // skip the DOM rebuild when nothing visible changed — a full re-render kills hover state
     const key = JSON.stringify([focused, panes.map((p) => p.slot),
       autosList.filter((a) => a.enabled).map((a) => a.slot),
-      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.mode, s.share?.comments, s.mergePending, serverNow - s.lastOutput < RECENT_MS,
+      data.slots.map((s) => [s.cwd, s.label, s.share?.id, s.share?.comments, s.mergePending, serverNow - s.lastOutput < RECENT_MS,
         // every git field renderSlots actually paints, or the skip-the-rebuild shortcut below
         // silently freezes it: `behind` was missing here while the lane dot's tooltip has shown
         // it since the dot existed, so a lane falling behind main kept the old count until some
@@ -4648,7 +4648,7 @@ async function refresh() {
     // rebuilding it on every poll — rebuilds kill hover state and button focus
     if (dlgSlot && sharedlg.style.display === "flex") {
       const sh = fleet[dlgSlot - 1]?.share;
-      const dk = sh ? `${sh.id}|${sh.mode}|${sh.guests}|${sh.comments}` : "none";
+      const dk = sh ? `${sh.id}|${sh.guests}|${sh.comments}` : "none";
       if (dk !== dlgKey) {
         dlgKey = dk;
         renderShareDlg();
@@ -4702,7 +4702,6 @@ applySaver(); // also the initial arm of the pump
 // --- share dialog: create/inspect/revoke the one share a slot can have ---
 const sharedlg = $("sharedlg"), sharepanel = $("sharepanel");
 let dlgSlot = 0;
-let dlgMode: "view" | "interact" = "view";
 let dlgKey = ""; // last-rendered share state — refresh() only re-renders the open dialog on change
 let dlgQr = false; // QR block open? module-level so refresh()'s re-render keeps it visible
 
@@ -5838,7 +5837,7 @@ const AUDIT_CAT: Record<string, string> = {
   steward_send: "steward", steward_task: "steward", steward_journal: "steward",
   steward_propose_outcome: "steward", steward_send_capped: "steward", steward_journal_capped: "steward",
   owner_auth_fail: "security", share_auth_ok: "security", share_create: "security", share_revoke: "security",
-  share_mode_change: "security", guest_ws_connect: "security", guest_ws_disconnect: "security",
+  guest_ws_connect: "security", guest_ws_disconnect: "security",
   land_note_fail: "repo", repo_undo_land: "repo",
 };
 const LIFECYCLE_KINDS = new Set(["slot_open", "slot_kill", "slot_shelve", "self_heal_recreate", "slot_restart"]);
@@ -7185,7 +7184,7 @@ function fmtSince(ts: number): string {
 function renderShareDlg() {
   const s = fleet[dlgSlot - 1];
   if (!s?.cwd) { closeShareDlg(); return; }
-  dlgKey = s.share ? `${s.share.id}|${s.share.mode}|${s.share.guests}|${s.share.comments}` : "none";
+  dlgKey = s.share ? `${s.share.id}|${s.share.guests}|${s.share.comments}` : "none";
   sharepanel.replaceChildren();
   sharepanel.appendChild(el("h2", "", `Share session — ${s.label ?? baseName(s.cwd)}`));
   const sh = s.share;
@@ -7217,27 +7216,14 @@ function renderShareDlg() {
       sharepanel.appendChild(box);
     }
     sharepanel.appendChild(copyLine("password", sh.password));
-    // live mode switch: keeps link+password, kicks connected guests into a reload so
-    // their UI matches; interact→view also cuts typing off server-side immediately
-    const modeRow = el("div", "shrline");
-    modeRow.appendChild(el("span", "k", "access"));
-    const bView = el("button", `shrbtn${sh.mode === "view" ? " active" : ""}`, "view only") as HTMLButtonElement;
-    const bInt = el("button", `shrbtn${sh.mode === "interact" ? " active" : ""}`, "interactive") as HTMLButtonElement;
-    const setMode = async (m: "view" | "interact") => {
-      if (m === sh.mode) return;
-      if (m === "interact" && !confirm("Switch to interactive? Guests can then type straight into YOUR shell.")) return;
-      const r = await post(`/api/slots/${s.id}/share-mode`, { mode: m });
-      if (!r.ok) toast("couldn't change the share access mode");
-      await refresh();
-      renderShareDlg();
-    };
-    bView.onclick = () => void setMode("view");
-    bInt.onclick = () => void setMode("interact");
-    modeRow.append(bView, bInt);
-    sharepanel.appendChild(modeRow);
-    sharepanel.appendChild(el("div", "shrhint", sh.mode === "interact"
-      ? "Interactive — guests type into your real shell. Give link and password to your guest separately."
-      : "View only — guests watch, nothing they type reaches the terminal. Give link and password separately."));
+    // A share is view-only, always — there is no switch here because there is no mode to
+    // switch. The guest's channel back is the comment thread below, which you read and act on.
+    const accessRow = el("div", "shrline");
+    accessRow.appendChild(el("span", "k", "access"));
+    accessRow.appendChild(el("span", "v", "view only"));
+    sharepanel.appendChild(accessRow);
+    sharepanel.appendChild(el("div", "shrhint",
+      "Guests watch — nothing they type reaches the terminal. Give link and password separately."));
     const cmts = el("div", "shrcmts");
     cmts.appendChild(el("div", "shrcmthead",
       sh.comments > 0 ? `💬 guest chat · ${sh.comments}` : "💬 guest chat"));
@@ -7275,7 +7261,7 @@ function renderShareDlg() {
     const rotate = el("button", "shrbtn", "new link + password") as HTMLButtonElement;
     rotate.onclick = async () => {
       if (!confirm("Replace this share? The old link and password stop working and connected guests are kicked.")) return;
-      const r = await post(`/api/slots/${s.id}/share`, { mode: sh.mode });
+      const r = await post(`/api/slots/${s.id}/share`, {});
       if (!r.ok) toast("couldn't rotate the share link");
       await refresh();
       renderShareDlg();
@@ -7293,21 +7279,16 @@ function renderShareDlg() {
     btns.append(rotate, revoke, close);
     sharepanel.appendChild(btns);
   } else {
-    const modeRow = el("div", "shrline");
-    modeRow.appendChild(el("span", "k", "access"));
-    const bView = el("button", `shrbtn${dlgMode === "view" ? " active" : ""}`, "view only") as HTMLButtonElement;
-    const bInt = el("button", `shrbtn${dlgMode === "interact" ? " active" : ""}`, "interactive") as HTMLButtonElement;
-    bView.onclick = () => { dlgMode = "view"; renderShareDlg(); };
-    bInt.onclick = () => { dlgMode = "interact"; renderShareDlg(); };
-    modeRow.append(bView, bInt);
-    sharepanel.appendChild(modeRow);
-    sharepanel.appendChild(el("div", "shrhint", dlgMode === "interact"
-      ? "Interactive guests type straight into this terminal — it is YOUR shell. Only share with someone you're actively working with."
-      : "View-only guests see the live terminal but can't type or send anything."));
+    const accessRow = el("div", "shrline");
+    accessRow.appendChild(el("span", "k", "access"));
+    accessRow.appendChild(el("span", "v", "view only"));
+    sharepanel.appendChild(accessRow);
+    sharepanel.appendChild(el("div", "shrhint",
+      "Guests see the live terminal but can't type or send anything."));
     const btns = el("div", "shrbtns");
     const create = el("button", "shrbtn primary", "create share link") as HTMLButtonElement;
     create.onclick = async () => {
-      const res = await post(`/api/slots/${s.id}/share`, { mode: dlgMode });
+      const res = await post(`/api/slots/${s.id}/share`, {});
       if (!res.ok) return;
       await refresh();
       renderShareDlg(); // now renders the link + generated password
@@ -7348,7 +7329,6 @@ async function loadShareComments(slotId: number, target: HTMLElement) {
 function openShareDlg(slotId: number) {
   setDrawer(false);
   dlgSlot = slotId;
-  dlgMode = fleet[slotId - 1]?.share?.mode ?? "view";
   renderShareDlg();
   sharedlg.style.display = "flex";
 }

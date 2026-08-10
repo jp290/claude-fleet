@@ -15,7 +15,8 @@ export async function run(ctx: Ctx): Promise<void> {
   check("share auth sets share cookie", shAuth.ok && shCookie.startsWith(`share_${shView.id}=`), shCookie.slice(0, 20));
   const shInfo = await fetch(BASE + `/s/${shView.id}/info`, { headers: { cookie: shCookie } });
   const shInfoJ = (await shInfo.json()) as { mode: string; cols: number };
-  check("share info with cookie", shInfo.ok && shInfoJ.mode === "view", JSON.stringify(shInfoJ));
+  check("share info with cookie", shInfo.ok && typeof shInfoJ.cols === "number", JSON.stringify(shInfoJ));
+  check("share info carries no access mode — there is only one", !("mode" in shInfoJ), JSON.stringify(shInfoJ));
   check("share info without cookie 401", (await fetch(BASE + `/s/${shView.id}/info`)).status === 401);
   // guest reader: transcript is share-gated like every other share resource
   check("share transcript without cookie 401", (await fetch(BASE + `/s/${shView.id}/transcript`)).status === 401);
@@ -26,10 +27,12 @@ export async function run(ctx: Ctx): Promise<void> {
       tr.ok && Array.isArray(trJ.entries) && typeof trJ.total === "number", JSON.stringify(trJ).slice(0, 80));
   }
   check("share cookie is not an owner credential", (await fetch(BASE + "/api/sessions", { headers: { cookie: shCookie } })).status === 401);
-  check("share send blocked in view mode", (await fetch(BASE + `/s/${shView.id}/send`, {
+  // the send route was REMOVED with the interactive mode, not gated: an authed guest asking for
+  // it gets the share API's generic refusal, because no branch matches "send" any more
+  check("a share has no send route at all", (await fetch(BASE + `/s/${shView.id}/send`, {
     method: "POST", headers: { cookie: shCookie, "content-type": "application/json" },
     body: JSON.stringify({ text: "nope" }),
-  })).status === 403);
+  })).status === 400);
   const viewWsBytes = await new Promise<number>((resolve) => {
     let n = 0;
     const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${shView.id}`, { cookie: shCookie });
@@ -52,21 +55,22 @@ export async function run(ctx: Ctx): Promise<void> {
     w.onerror = () => resolve(!opened);
     w.onclose = () => resolve(!opened);
   }));
+  // ASKING for interactive is the negative control: the field is not rejected, it is meaningless
+  // — a share minted from it is the same view-only window as any other
   const shICreate = await post("/api/slots/1/share", { mode: "interact", password: "interpass123" });
-  const shInt = (await shICreate.json()) as { id: string };
-  check("create interact share", shICreate.ok && !!shInt.id);
+  const shInt = (await shICreate.json()) as { id: string; mode?: string };
+  check("create share (a mode in the body is ignored)", shICreate.ok && !!shInt.id);
+  check("…and the created share reports no mode back", shInt.mode === undefined, JSON.stringify(shInt));
   const shIAuth = await post(`/s/${shInt.id}/auth`, { password: "interpass123" });
   const shICookie = (shIAuth.headers.get("set-cookie") ?? "").split(";")[0];
   const sndI = await fetch(BASE + `/s/${shInt.id}/send`, {
     method: "POST", headers: { cookie: shICookie, "content-type": "application/json" },
     body: JSON.stringify({ text: "share-interact-hello", submit: false }),
   });
-  check("interact share can send", sndI.ok);
+  check("a share asked for as interactive still cannot send", sndI.status === 400, String(sndI.status));
   await Bun.sleep(700);
   const capI = await tmuxOut("capture-pane", "-t", "s1", "-p");
-  check("interact share text reaches its pane", capI.out.includes("share-interact-hello"));
-  check("share send in prompt log with source 'share'",
-    (await plogRead()).some((e) => e.slot === 1 && e.source === "share" && e.text === "share-interact-hello"));
+  check("…and nothing it sent reached the pane", !capI.out.includes("share-interact-hello"));
   // guest "± changes" view: read-only working diff behind the share cookie (slot 1 is a git repo)
   const shDiff = await fetch(BASE + `/s/${shInt.id}/diff`, { headers: { cookie: shICookie } });
   const shDiffJ = (await shDiff.json()) as { branch?: string | null; status?: string[]; diff?: string; commits?: unknown };
@@ -136,37 +140,30 @@ export async function run(ctx: Ctx): Promise<void> {
   const gsumGet = (await (await fetch(BASE + `/s/${shInt.id}/summary`, { headers: { cookie: shICookie } })).json()) as
     { summary?: string; cached?: boolean };
   check("guest summary GET serves the cache", gsumGet.summary === "fake summary of the session" && gsumGet.cached === true);
-  // --- share-mode: flip view/interact in place, same link + password ---
-  // regression: this must reach an ACTUALLY-CONNECTED guest socket, not just the HTTP
-  // send route checked below — the WS message handler looks up the share's mode live on
-  // every message specifically so an already-open interact socket goes silent on a flip
-  const guestCloseCode = await new Promise<number>((resolve) => {
-    let done = false;
-    const finish = (v: number) => { if (!done) { done = true; resolve(v); } };
+  // --- the interactive mode is GONE, and these are the two ways that has to be true ---
+  // (1) the owner-side switch does not exist. Not "refuses a bad mode" — the route itself is
+  // not in the slot-action regex any more, so there is nothing left to hand a mode to.
+  check("the share-mode route no longer exists", (await post("/api/slots/1/share-mode", { mode: "interact" })).status === 404);
+  // (2) the guest-side one, and it is the load-bearing half: an ACTUALLY-CONNECTED socket may
+  // not type. This used to be conditional on a live mode lookup; it is now unconditional, so
+  // the check is that bytes sent on an open, authenticated guest socket never reach the pty.
+  const intWsTyped = await new Promise<boolean>((resolve) => {
     const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${shInt.id}`, { cookie: shICookie });
-    w.onopen = () => void post("/api/slots/1/share-mode", { mode: "view" });
-    w.onclose = (e) => finish(e.code);
-    w.onerror = () => finish(-1);
-    setTimeout(() => finish(-2), 3000);
+    w.onopen = () => {
+      w.send("connected-guest-must-not-type");
+      setTimeout(() => { w.close(); resolve(true); }, 1200);
+    };
+    w.onerror = () => resolve(false);
   });
-  check("share-mode flip closes an already-connected guest socket with 4002", guestCloseCode === 4002, String(guestCloseCode));
-  const infoFlipped = (await (await fetch(BASE + `/s/${shInt.id}/info`, { headers: { cookie: shICookie } })).json()) as { mode: string };
-  check("flipped share keeps cookie, reports view", infoFlipped.mode === "view");
-  check("flipped share blocks send", (await fetch(BASE + `/s/${shInt.id}/send`, {
-    method: "POST", headers: { cookie: shICookie, "content-type": "application/json" },
-    body: JSON.stringify({ text: "flipped-must-not-send" }),
-  })).status === 403);
-  check("share-mode rejects bad mode", (await post("/api/slots/1/share-mode", { mode: "admin" })).status === 400);
-  check("share-mode 404 on unshared slot", (await post("/api/slots/3/share-mode", { mode: "view" })).status === 404);
-  check("share-mode needs owner token", (await post("/api/slots/1/share-mode", { mode: "view" },
-    { "content-type": "application/json", cookie: shICookie })).status === 401);
-  const modeBack = await post("/api/slots/1/share-mode", { mode: "interact" });
-  check("share-mode flips back to interact", modeBack.ok);
+  check("an authenticated guest socket opens and accepts bytes from the client", intWsTyped);
+  await Bun.sleep(400);
+  const capT = await tmuxOut("capture-pane", "-t", "s1", "-p");
+  check("…and none of those bytes reached the pane", !capT.out.includes("connected-guest-must-not-type"));
   const sessAfterFlip = (await (await get("/api/sessions")).json()) as
-    { slots: { id: number; share: { mode: string; guests: number; created: number } | null }[] };
+    { slots: { id: number; share: { mode?: string; guests: number; created: number } | null }[] };
   const flipSlot = sessAfterFlip.slots.find((x) => x.id === 1);
-  check("sessions reports share guests + created", flipSlot?.share?.mode === "interact"
-    && typeof flipSlot.share.guests === "number" && typeof flipSlot.share.created === "number",
+  check("sessions reports share guests + created, and no mode", flipSlot?.share?.mode === undefined
+    && typeof flipSlot?.share?.guests === "number" && typeof flipSlot.share.created === "number",
     JSON.stringify(flipSlot?.share));
   await tmuxOut("send-keys", "-t", "s1", "C-u");
 

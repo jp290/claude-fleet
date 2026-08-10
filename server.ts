@@ -988,12 +988,15 @@ type WSData = {
   seedUntil: number;
   seed?: number; // client's scrollback budget for the connect seed; 0/absent = SEED_LINES
   share?: string; // set on guest connections: the share id this socket belongs to
-  mode?: "view" | "interact";
 };
 
 // a share exposes exactly ONE slot to a guest behind its own password — the owner
-// token never leaves this machine. view = stream only; interact = typing + compose too.
-interface Share { id: string; slot: number; secret: string; mode: "view" | "interact"; created: number }
+// token never leaves this machine. A share is a WINDOW and never a hand: it streams the pane
+// out, and nothing a guest sends can reach the pty (dropped in the WS message handler, and
+// there is no send route to drop it in). That is not a setting — removing the mode is what
+// makes it a property. An interactive share would put a third party's keystrokes into the
+// owner's session, i.e. their prompts billed as the owner's Inputs on the owner's account.
+interface Share { id: string; slot: number; secret: string; created: number }
 
 // a guest comment on a share — allowed in BOTH modes (it types nothing into the pty).
 // Freeform name is display-only, never trusted; keyed by share id so revoking the share
@@ -1766,7 +1769,7 @@ function errorsView(): ErrorsInfo | null {
 // Fire-and-forget like its neighbors: a wedged disk must never block the request path.
 type AuditEvent =
   | "slot_open" | "slot_kill"
-  | "share_create" | "share_revoke" | "share_mode_change"
+  | "share_create" | "share_revoke"
   | "share_auth_ok" | "share_auth_fail" | "share_auth_lock"
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
@@ -9266,7 +9269,7 @@ function failStrike(id: string): boolean {
 // A wrong share COOKIE is a password guess like any other. /s/<id>/auth throttles every guess
 // (400ms flat) and locks the share after 50, but the cookie path used to answer an unlimited
 // number of guesses at full request rate — the same secret, a cheaper oracle, no lockout. Since
-// an interact share is keystrokes into a live session, that made a weak owner-chosen password
+// a share is a live window onto the owner's terminal, that made a weak owner-chosen password
 // (the route floor is 8 chars) brute-forceable in the open. Every non-/auth share surface routes
 // its credential check through here so both paths feed ONE counter.
 // Two deliberate asymmetries:
@@ -9723,7 +9726,7 @@ if (existsSync(STATE_FILE)) {
         typeof x === "object" && x !== null
         && typeof (x as Share).id === "string" && typeof (x as Share).secret === "string"
         && typeof (x as Share).slot === "number"
-        && ((x as Share).mode === "view" || (x as Share).mode === "interact"));
+        );
     const pc = (persisted as { comments?: unknown }).comments;
     if (typeof pc === "object" && pc !== null && !Array.isArray(pc))
       for (const [k, v] of Object.entries(pc as Record<string, unknown>))
@@ -12274,7 +12277,6 @@ Bun.serve<WSData>({
         }
         return json({
           slotLabel: s.cwd ? (s.label ?? s.cwd.split("/").pop()) : null,
-          mode: sh.mode,
           cols,
           rows,
           active: !!s.cwd,
@@ -12343,18 +12345,10 @@ Bun.serve<WSData>({
           return json({ ok: true, comment: c });
         }
       }
-      if (shareApi[2] === "send" && req.method === "POST") {
-        if (sh.mode !== "interact") return json({ error: "view-only share" }, 403);
-        if (!s.cwd) return json({ error: "session gone" }, 404);
-        const body = await readJson(req);
-        if (!body || typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
-        await sendText(s, body.text, body.submit !== false);
-        const ts = Date.now();
-        s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
-        saveHistory(s);
-        logPrompt(s, body.text, "share", ts);
-        return json({ ok: true });
-      }
+      // NO send route, deliberately: a guest has no way to put text into the pane. It was
+      // removed with the interactive mode rather than gated, so there is no branch left that a
+      // later change could flip back open. logPrompt's "share" source stays — it labels prompts
+      // already written to the log by the mode that used to exist.
       return json({ error: "bad request" }, 400);
     }
     const wsShare = /^\/ws-share\/([a-z0-9]+)$/.exec(url.pathname);
@@ -12369,7 +12363,7 @@ Bun.serve<WSData>({
       if (!s.cwd) return json({ error: "session gone" }, 404);
       // guests never pass cols/rows: they must not resize the owner's pty, so they
       // take the plain replay-tail path and render at the session's current size
-      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols: 0, rows: 0, force: false, share: sh.id, mode: sh.mode } }))
+      if (server.upgrade(req, { data: { slot: s.id, queue: [], ready: false, seedUntil: 0, cols: 0, rows: 0, force: false, share: sh.id } }))
         return;
       return new Response("upgrade failed", { status: 400 });
     }
@@ -12476,7 +12470,7 @@ Bun.serve<WSData>({
             // separately armed tickMigrate reads the SAME function; null remains "cannot tell".
             ctx: contextFill(s),
             share: sh ? {
-              id: sh.id, mode: sh.mode, password: sh.secret, created: sh.created,
+              id: sh.id, password: sh.secret, created: sh.created,
               guests: [...s.clients].filter((c) => c.data.share === sh.id).length,
               comments: (shareComments[sh.id] ?? []).length,
             } : null,
@@ -14036,7 +14030,7 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|share|unshare|share-mode|land|shelve|restart)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|share|unshare|land|shelve|restart)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -14044,37 +14038,18 @@ Bun.serve<WSData>({
         if (!s.cwd) return json({ error: "slot not active" }, 400);
         const body = await readJson(req);
         if (!body) return json({ error: "expected application/json" }, 400);
-        const mode = body.mode === "interact" ? "interact" : "view";
         const secret = typeof body.password === "string" && body.password !== ""
           ? body.password
           : randomBytes(9).toString("base64url");
         if (secret.length < 8 || secret.length > 64)
           return json({ error: "password must be 8–64 chars" }, 400);
         const old = shares.find((x) => x.slot === s.id);
-        if (old) closeShareClients(s, old.id); // replaced share = new secret/mode, old guests out
-        const sh: Share = { id: randomBytes(4).toString("hex"), slot: s.id, secret, mode, created: Date.now() };
+        if (old) closeShareClients(s, old.id); // replaced share = new secret, old guests out
+        const sh: Share = { id: randomBytes(4).toString("hex"), slot: s.id, secret, created: Date.now() };
         shares = [...shares.filter((x) => x.slot !== s.id), sh];
-        audit("share_create", s.id, mode);
+        audit("share_create", s.id);
         saveState();
-        return json({ ok: true, id: sh.id, path: `/s/${sh.id}`, password: secret, mode });
-      }
-      if (slotMatch[2] === "share-mode") {
-        // flip an existing share between view/interact WITHOUT rotating link+password.
-        // The WS message handler reads the share's CURRENT mode, so interact→view cuts
-        // off guest typing instantly; sockets are closed with 4002 so the guest page
-        // reloads into the right UI (compose bar shown/hidden per mode at page load).
-        const sh = shares.find((x) => x.slot === s.id);
-        if (!sh) return json({ error: "slot not shared" }, 404);
-        const body = await readJson(req);
-        const mode = body?.mode;
-        if (mode !== "view" && mode !== "interact") return json({ error: "mode must be view or interact" }, 400);
-        if (mode !== sh.mode) {
-          sh.mode = mode;
-          audit("share_mode_change", s.id, mode);
-          closeShareClients(s, sh.id, 4002, "share mode changed");
-          saveState();
-        }
-        return json({ ok: true, mode: sh.mode });
+        return json({ ok: true, id: sh.id, path: `/s/${sh.id}`, password: secret });
       }
       if (slotMatch[2] === "unshare") {
         const sh = shares.find((x) => x.slot === s.id);
@@ -14373,11 +14348,10 @@ Bun.serve<WSData>({
     // live input: client sends raw keystroke bytes, forwarded verbatim to the pane.
     // serialized per slot through a promise chain — concurrent send-keys spawns reorder keystrokes
     message(ws, msg) {
-      // view-mode guests are strictly read-only — their input is dropped server-side,
-      // and a revoked share's socket must go silent even before close() lands.
-      // Mode is looked up LIVE (not from ws.data): an owner flipping interact→view
-      // must silence already-connected guests, not just future ones
-      if (ws.data.share && shareBy(ws.data.share)?.mode !== "interact") return;
+      // guests are strictly read-only — their input is dropped server-side, never merely
+      // hidden in their UI. Unconditional on purpose: there is no mode to look up any more,
+      // so this cannot be weakened by a share record, a body field or a stale ws.data.
+      if (ws.data.share) return;
       const s = slots[ws.data.slot - 1];
       const bytes = typeof msg === "string" ? new TextEncoder().encode(msg) : new Uint8Array(msg);
       if (bytes.length === 0 || bytes.length > WS_INPUT_MAX_BYTES) return;

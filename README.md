@@ -2,7 +2,7 @@
 
 **Run and steer many Claude Code sessions at once — from your desk or from your phone.**
 
-Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback (WebGL-rendered), direct typing into the focused session, a directory picker with recents for starting sessions per project. Plus: per-slot prompt history (🕘 / ArrowUp recall), print/PDF export (⇩), a conversation view that renders the claude transcript as structured messages (💬), password-gated session sharing for guests ([SHARING.md](SHARING.md)), scheduled prompts (⏱ — one-shot or recurring with idle/claude-alive guard rails), and crash-resilient sessions — a died pane self-heals with `claude --resume`, keeping the conversation. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
+Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback (WebGL-rendered), direct typing into the focused session, a directory picker with recents for starting sessions per project. Plus: per-slot prompt history (🕘 / ArrowUp recall), print/PDF export (⇩), a conversation view that renders the claude transcript as structured messages (💬), password-gated, view-only session sharing for guests ([SHARING.md](SHARING.md)), scheduled prompts (⏱ — one-shot or recurring with idle/claude-alive guard rails), and crash-resilient sessions — a died pane self-heals with `claude --resume`, keeping the conversation. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
 
 ![claude-fleet — four Claude Code sessions in a 2×2 grid](docs/screenshot.png)
 
@@ -75,7 +75,7 @@ Install them user-wide so every fleet session can invoke them, then surface them
 cp commands/*.md ~/.claude/commands/
 FLEET_CHIPS='/sharpen,/gosharp' bun server.ts
 ```
-- Slot-row actions (hover): **⤴ share** (password-gated guest link, view or interact mode — see [SHARING.md](SHARING.md)), **⇩ export** (full scrollback as a printable light page; `?format=txt` for raw), **✎ rename**, **✕ kill**.
+- Slot-row actions (hover): **⤴ share** (password-gated, view-only guest link — see [SHARING.md](SHARING.md)), **⇩ export** (full scrollback as a printable light page; `?format=txt` for raw), **✎ rename**, **✕ kill**.
 - **🕘 prompt history** next to the compose box: composed sends are recorded per slot server-side (last 100, dies with the session); the popover copies or re-inserts old prompts, ArrowUp in an empty compose box cycles them.
 - **global prompt log** — independent of the per-slot history, every composed send (owner, share guest, scheduled auto) is appended to `streams/prompts.jsonl` (`{ts, slot, cwd, label, source, text}`, mode 600). Never capped, never rotated, survives slot close and server restarts — raw material for prompt analysis/distillation.
 - **directory picker** — opens at the last-browsed directory; a filter box narrows the folder list as you type (first match pre-selected), ↑/↓ move the selection, Enter descends into it, ⌘/Ctrl+Enter starts the session there.

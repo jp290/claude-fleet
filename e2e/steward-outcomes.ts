@@ -585,7 +585,7 @@ export async function run(sc: StewardCtx): Promise<void> {
     await post("/api/dispatch", { on: true });
     // an older steward NOTE sits FIRST in FIFO order. Since 2026-08-05 it cannot even be released
     // (the release route refuses an observation), so the defence is now TWO-LAYERED: the route
-    // says no, and the dispatcher's `kind === "lane"` filter still shields rows that reached
+    // says no, and the dispatcher's `kind === "auftrag"` filter still shields rows that reached
     // `queued` before that refusal existed — a state only an old fleet.json can hold. Both are
     // asserted below; the second one has to be, because no API call can construct it any more.
     const skipNote = (await (await sc.stewPost("/api/steward/tasks", { text: "note: lane 3 looks done — go look" })).json()) as { task: { id: string } };
@@ -608,7 +608,7 @@ export async function run(sc: StewardCtx): Promise<void> {
     const skipRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; kind?: string }[] })
       .tasks.find((t) => t.id === skipNote.task.id);
     check("the dispatcher takes the lane task and leaves the older observation exactly where it was",
-      sigLaneSlot > 0 && skipRow?.kind === "note" && skipRow?.status === "pending",
+      sigLaneSlot > 0 && skipRow?.kind === "notiz" && skipRow?.status === "pending",
       JSON.stringify(skipRow));
     check("the manual start button refuses a note too (409) — NO path dispatches an observation",
       (await post(`/api/tasks/${skipNote.task.id}/dispatch`, {})).status === 409);

@@ -102,8 +102,14 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${oldLane.id}/delete`, {});
     await post(`/api/tasks/${oldNote.id}/delete`, {});
 
-    // Every advisory kind may be promoted (the standing row note explains the inert queue row),
-    // but neither the attended route nor a full dispatcher tick may start it.
+    // AN ADVISORY ROW IS NOT WORK (owner ask 2026-08-05, re-confirmed 2026-08-10 and widened from
+    // `note` to all three non-auftrag kinds). Releasing one produced a `queued` row that no tick
+    // would ever run, carrying a note explaining its own inertness — a contradiction parked in the
+    // release lane. So the release lane refuses it outright, and it stays `pending` until the owner
+    // CONVERTS it (adopt / the kind route). Both doors answer the same way: the release button and
+    // create-and-release, the latter because a row arriving already `queued` would walk past the
+    // first one. This replaced the opposite assertion written the same day the kinds were renamed,
+    // which followed a CLAUDE.md line that predated the owner ask by a day.
     const advisoryKinds = ["notiz", "richtung", "betrieb"] as const;
     const advisory: KRow[] = [];
     for (const kind of advisoryKinds) {
@@ -111,9 +117,15 @@ export async function run(ctx: Ctx): Promise<void> {
         text: `advisory dispatch probe ${kind}`, kind, queue: false,
       })).json()) as { task: KRow }).task;
       const promoted = await post(`/api/tasks/${made.id}/queue`, {});
-      check(`promote remains allowed for ${kind}, with its standing dispatcher note`, promoted.ok
-        && (await kRows()).some((t) => t.id === made.id && t.status === "queued"
-          && t.note === `${kind} — the dispatcher never runs this`));
+      check(`release SHOULD-REJECT advisory kind ${kind} (409) — it is not a work brief`,
+        promoted.status === 409
+        && (await kRows()).some((t) => t.id === made.id && t.status === "pending"),
+        String(promoted.status));
+      const bornQueued = await post("/api/tasks", {
+        text: `advisory create-and-release probe ${kind}`, kind, queue: true,
+      });
+      check(`create-and-release SHOULD-REJECT advisory kind ${kind} (409) — the same door, earlier`,
+        bornQueued.status === 409, String(bornQueued.status));
       check(`manual dispatch SHOULD-REJECT advisory kind ${kind} (409)`,
         (await post(`/api/tasks/${made.id}/dispatch`, {})).status === 409);
       advisory.push(made);
@@ -122,9 +134,10 @@ export async function run(ctx: Ctx): Promise<void> {
     await post("/api/dispatch", { on: true });
     await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
     const afterAdvisoryTick = await kRows();
+    // the tick only ever reads `queued`, so an advisory row that cannot BE queued is unreachable
+    // for it twice over. Asserted on `pending` because that is now the only state it can hold.
     check("dispatcher tick never starts notiz, richtung, or betrieb",
-      advisory.every((a) => afterAdvisoryTick.some((t) => t.id === a.id && t.status === "queued"
-        && t.note === `${a.kind} — the dispatcher never runs this`)),
+      advisory.every((a) => afterAdvisoryTick.some((t) => t.id === a.id && t.status === "pending")),
       JSON.stringify(afterAdvisoryTick.filter((t) => advisory.some((a) => a.id === t.id))));
     await post("/api/dispatch", { on: dispatchBefore });
     for (const a of advisory) await post(`/api/tasks/${a.id}/delete`, {});

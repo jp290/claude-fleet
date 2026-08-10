@@ -161,7 +161,17 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
 interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
-  effort: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null; default: boolean }
+  effort: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null; default: boolean;
+  // "agent" = a harness you pick; "place" = an execution hull (the container entry). Two axes that
+  // shared one field until 2026-08-10, which is why `container` stood in the harness dropdown as if
+  // it were a peer of claude. OPTIONAL because it is a claim about a foreign surface: an older
+  // server does not send it, and `agentHarnesses()` treats a missing role as "agent" so the picker
+  // degrades to the previous behaviour instead of rendering an empty dropdown.
+  role?: "agent" | "place" }
+// the harnesses a human PICKS. `container` is deliberately not among them: it answers "where does
+// this run", not "what am I working with", and offering it as an agent also silently chose one
+// (whatever FLEET_CMD is inside the image). The adapter still exists and the API still accepts it.
+const agentHarnesses = (): HarnessInfo[] => harnesses.filter((h) => (h.role ?? "agent") === "agent");
 // what the 2 s poll carries per task — mirrors server.ts's TaskDigest. No `text`: the prompt
 // bodies are fetched once from /api/tasks when the queue overlay opens (see loadTaskTexts).
 // The optional fields are absent, not null, when unset.
@@ -205,12 +215,19 @@ let harnessesLoaded = false;
 // the owner sees what leaving them empty gets. Never hardcoded here: they are server constants
 // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and a second copy would drift silently.
 let containerDefaults: { container: string; containerContext: string } | null = null;
+// what a null model launches on the DEFAULT adapter, from the same fetch. Shown as the model
+// field's placeholder so "leave it empty" is a visible choice rather than a guess. Claude-only by
+// construction (the server says so): a foreign adapter keeps its own implicit default, and the
+// placeholder says "default" there rather than claiming this value applies to it.
+let defaultModel: string | null = null;
 async function loadHarnesses(): Promise<void> {
   if (harnessesLoaded) return;
   try {
     const res = await api("/api/harnesses");
     if (!res.ok) return;
-    const cat = (await res.json()) as { harnesses: HarnessInfo[]; containerDefaults?: { container: string; containerContext: string } };
+    const cat = (await res.json()) as { harnesses: HarnessInfo[]; defaultModel?: string;
+      containerDefaults?: { container: string; containerContext: string } };
+    defaultModel = typeof cat.defaultModel === "string" ? cat.defaultModel : null;
     harnesses = cat.harnesses;
     containerDefaults = cat.containerDefaults ?? null; // absent against an older server: the fields
     // then carry no placeholder, which is a missing hint and not a broken control
@@ -3250,23 +3267,27 @@ let spawnContainerContext = "";
 function appendSpawnOptions(host: HTMLElement): void {
   // empty catalogue (not fetched yet, or the fetch failed) → render nothing at all. The pane is
   // then exactly the pre-harness pane, and both buttons still work on defaults.
-  if (harnesses.length < 2) return;
+  const agents = agentHarnesses();
+  if (agents.length < 2) return;
   const row = el("div", "pkdopts");
 
   const hSel = el("select", "pkdsel") as HTMLSelectElement;
-  for (const h of harnesses) {
+  for (const h of agents) {
     const o = el("option", "", h.default ? `${h.id} (default)` : h.id) as HTMLOptionElement;
     o.value = h.id;
-    if ((spawnHarness ?? harnesses.find((x) => x.default)?.id) === h.id) o.selected = true;
+    if ((spawnHarness ?? agents.find((x) => x.default)?.id) === h.id) o.selected = true;
     hSel.appendChild(o);
   }
   row.appendChild(labelled("harness", hSel));
 
-  const chosen = harnesses.find((h) => h.id === hSel.value) ?? harnesses.find((h) => h.default);
+  const chosen = agents.find((h) => h.id === hSel.value) ?? agents.find((h) => h.default);
 
   const mIn = el("input", "pkdin") as HTMLInputElement;
   mIn.type = "text";
-  mIn.placeholder = "model (optional)";
+  // the DEFAULT is only knowable for the default adapter — the server publishes exactly one
+  // value and says it is Claude-only. For a foreign harness the honest placeholder is the word
+  // "default", never this id: claiming it there would be a fact the server never asserted.
+  mIn.placeholder = chosen?.default && defaultModel ? defaultModel : "default";
   mIn.value = spawnModel;
   mIn.oninput = () => { spawnModel = mIn.value.trim(); };
   if (chosen?.supports.model) row.appendChild(labelled("model", mIn));

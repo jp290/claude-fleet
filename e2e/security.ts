@@ -411,7 +411,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const HARNESS_SLOT = 10;
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
   const cat = (await (await get("/api/harnesses")).json()) as
-    { harnesses: { id: string; default: boolean; automatable: boolean; supports: { transcript: boolean; effort: boolean; resume: boolean }; effortLevels: string[]; note: string | null }[] };
+    { harnesses: { id: string; default: boolean; automatable: boolean; role?: string; supports: { transcript: boolean; effort: boolean; resume: boolean; container: boolean }; effortLevels: string[]; note: string | null }[];
+      defaultModel?: string };
   const pi = cat.harnesses.find((h) => h.id === "pi");
   const def = cat.harnesses.find((h) => h.default);
   check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
@@ -425,6 +426,32 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     /write fence/.test(piNote) && /shared temp/.test(piNote) && /~\/\.pi/.test(piNote)
     && /Bun cache/.test(piNote) && /\/dev/.test(piNote) && /lane \.git closed/.test(piNote)
     && /host commits/.test(piNote) && /reads and network stay open/.test(piNote), piNote);
+
+  // TWO AXES, NOT ONE. `container` answers "where does this run"; claude/pi/codex answer "what am
+  // I working with". They shared one field until 2026-08-10, so the picker listed the hull in the
+  // harness dropdown as a peer of claude — and `codex in a box` could not be expressed at all. The
+  // catalogue now PUBLISHES which is which instead of leaving the client to infer it from the id,
+  // and that is the whole point of asserting it here: the client filters on this field, so a
+  // harness added later without a role would silently become an agent choice.
+  const places = cat.harnesses.filter((h) => h.role === "place").map((h) => h.id);
+  const agents = cat.harnesses.filter((h) => h.role === "agent").map((h) => h.id);
+  check("§6 every catalogue entry declares an axis — agent (what) or place (where), none unlabelled",
+    places.length + agents.length === cat.harnesses.length,
+    cat.harnesses.map((h) => `${h.id}:${h.role ?? "MISSING"}`).join(","));
+  check("§6 the container hull is the only PLACE, and the three real agents are agents",
+    places.join(",") === "container"
+    && ["claude", "pi", "codex"].every((id) => agents.includes(id)),
+    `places=${places.join(",")} agents=${agents.join(",")}`);
+  // the inverse, which is what makes the pair meaningful: a `place` is exactly the entry that runs
+  // something somewhere else, so it is also the only one carrying supports.container. If these two
+  // ever disagree the axis label is decoration rather than the fact the client filters on.
+  check("§6 place and supports.container name the SAME entry — the label is not decoration",
+    cat.harnesses.every((h) => (h.role === "place") === h.supports.container),
+    cat.harnesses.map((h) => `${h.id}:${h.role}/${h.supports.container}`).join(","));
+  // the picker shows this as the model field's placeholder, so "leave it empty" is a visible
+  // choice. A missing value would silently degrade to the word "default" and hide the real id.
+  check("§6 the catalogue publishes what an empty model launches on the default adapter",
+    typeof cat.defaultModel === "string" && cat.defaultModel.length > 0, String(cat.defaultModel));
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
   for (const h of ["pi", "claude", "codex"]) {

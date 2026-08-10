@@ -304,6 +304,23 @@ interface Harness {
   // one short caveat the picker shows BEFORE the slot is spawned, or null. Not decoration: it is
   // where a harness states the thing an owner must know at the moment of choosing it.
   note: string | null;
+  // WHAT KIND OF THING THIS ENTRY IS — and it exists because two different questions had been
+  // sharing one field. "which agent do I work with" (claude · pi · codex) and "where does it run"
+  // (in a box, or on this host) are ORTHOGONAL axes, but `container` was modelled as a fourth
+  // harness, so the picker offered it in the harness dropdown as if it were a peer of claude. The
+  // owner named it exactly that way (2026-08-10): "aktuell ist container sogar ein 'harness' im
+  // drop down". Two visible consequences of the conflation: you could not express `codex in a box`
+  // at all (the real adapters carry `supports.container: false`), and choosing "container" silently
+  // also chose an agent — whatever FLEET_CMD happens to be inside the image.
+  //   "agent" — a harness you pick. It is the thing that reasons.
+  //   "place"  — an execution hull. NOT offered as an agent choice; it says where something runs.
+  // Kept as an adapter rather than deleted: it works, no slot uses it (measured 2026-08-10), and
+  // the API still accepts it. What changed is only that the picker no longer presents a place as
+  // an agent. The eventual shape is a container OPTION on any agent harness — deferred by owner
+  // decision the same day, with the reason recorded on queue row `516d4d46`; the hard part there
+  // is not the UI but that `supports` stops being a property of the harness and becomes a function
+  // of (harness × containerised), because a containerised claude loses transcript, worker and ctx.
+  role: "agent" | "place";
 }
 
 // Adapter #1 — the default. `spawnCmd` CALLS slotCmd rather than reimplementing it, so the
@@ -353,6 +370,7 @@ const CLAUDE_HARNESS: Harness = {
   effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
   supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true, container: false },
   note: null,
+  role: "agent",
 };
 
 // --- Pi's write fence. `/usr/bin/sandbox-exec` is macOS's seatbelt front end, and it is what Codex
@@ -564,6 +582,7 @@ const PI_HARNESS: Harness = {
   // open — so what this agent can read, it can send. `git` is named separately because it is the
   // one consequence an owner would otherwise discover at the end of a lane instead of the start.
   note: "write fence: worktree plus shared temp, ~/.pi, Bun cache and /dev; lane .git closed (host commits); reads and network stay open",
+  role: "agent",
 };
 
 // The container this adapter execs into. A docker name/id charset MINUS the quote, because the
@@ -725,6 +744,7 @@ const CONTAINER_HARNESS: Harness = {
   // where a question about one session belongs.
   note: `defaults: container '${CONTAINER_NAME}' on docker --context '${CONTAINER_CONTEXT}' — both settable per slot at spawn.`
     + " You start the container and bind-mount the worktree at the SAME path — Fleet never does",
+  role: "place",
 };
 
 // Adapter #4 — Codex (`@openai/codex`, the OpenAI CLI). Every flag below is MEASURED against the
@@ -853,6 +873,7 @@ const CODEX_HARNESS: Harness = {
   // the caveat an owner must have BEFORE picking this, and it is the one above stated for the
   // picker: an unauthenticated pane LOOKS alive, because it is.
   note: "you run `codex login` yourself — an un-authenticated pane waits on its sign-in screen and still probes alive",
+  role: "agent",
 };
 
 // The probe is now PER SLOT (commsFor, one region below), which fixes a FACT that used to be a lie:
@@ -13371,7 +13392,15 @@ Bun.serve<WSData>({
           // the DEFAULT is a fact about this fleet, not about the adapter: it is the harness a
           // slot gets when it names none, and the client must not assume which id that is.
           default: h === CLAUDE_HARNESS,
+          // agent vs place — see Harness.role. Published rather than inferred from the id, because
+          // "is `container` an agent?" is exactly the question the client got wrong by guessing.
+          role: h.role,
         })),
+        // A null model on the default adapter still launches this concrete model, and the picker
+        // must be able to say WHICH without copying an env-derived server constant into JS. It is
+        // Claude-only on purpose: a foreign adapter keeps its own implicit default, and the client
+        // labels that honestly as "default" instead of applying this value to it.
+        defaultModel: DEFAULT_MODEL,
         // the fleet's box defaults, published for the same reason `default` above is: they are a
         // fact about THIS fleet (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is
         // the client hardcoding "fleet"/"default" — a second copy of a server constant, which is

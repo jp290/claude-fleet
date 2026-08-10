@@ -95,19 +95,23 @@ UND Pane-Stille.
 
 ---
 
-## Offene Griffe — klein, konkret, in dieser Reihenfolge
+## Die vier Griffe sind ERLEDIGT — hier steht, was sie bewiesen haben
 
-1. **`POST /api/deploy`** — `bundleStale:true` UND `codeBehind:true` (3 Commits). Der `mode`-/Gast-
-   Schnitt ist sonst im Client unsichtbar. **Erst wenn der Post-Land-Audit durch ist** (die Route
-   lehnt waehrenddessen korrekt mit 409 ab).
-2. **`FLEET_AUDIT_PING_MS` in die srv-Spawn-Zeile** (`watchdog.sh:153`), dann `launchctl kickstart
-   -k gui/$(id -u)/com.claude-fleet.watchdog`, dann srv neu. Vorbedingung erfuellt (`4455adca`
-   gelandet, Audit mit `checks.ran>0` gesehen). Ruhezeit steht schon.
-3. **Den Post-Land-Audit zu `41cf01d` adjudizieren.** Er WIRD rot — er erbt `main`s drei FAILs.
-   Verdikt: nicht `flake`, nicht `real` im Sinne von „das Land war schuld". Am ehesten `real` mit
-   einer Notiz, die auf diesen Handoff-Abschnitt zeigt.
-4. **Maschinen-Hygiene:** ~42 MB tote e2e-Instanzen im `TMPDIR`, ein geleakter Socket
-   (`fleettest95609`). NUR wenn keine Suite laeuft, und NUR ueber notierte PIDs/Socket-Namen.
+1. **Deploy ✅** `POST /api/deploy` (`3cb702d2`), `ok:true`, `target == bootHead == da40ab3`,
+   `bundleStale:false`, `codeBehind:false`, 9 Slots ueberlebten. **Falle beim Nachlesen:
+   `GET /api/deploys` liefert NEUESTE ZUERST** — `rows[-1]` ist die aelteste Zeile und liest sich
+   wie „mein Deploy wurde nicht aufgezeichnet".
+2. **Audit-Ping ✅** `FLEET_AUDIT_PING_MS=60000` in `watchdog.sh` (`68b9108`), `launchctl kickstart`
+   + srv-Neustart, **am laufenden Prozess verifiziert** (`ps eww`). Ruhezeit 23–7 stand vorher.
+   Beim selben Neustart ist `FLEET_GUEST_CMD` aus dem Env verschwunden — das Land hatte es aus
+   `watchdog.sh` entfernt, aber der laufende `sh` haelt seinen Spawn-String im Speicher.
+3. **Audit adjudiziert ✅** `at 1786361999082`, Verdikt **`real`** mit Notiz: echt, aber nicht vom
+   Land verursacht. Der Audit: rot, 693 s, `checks {ran:1919, failed:3}` auf `41cf01d`.
+   **Die aufbewahrte `out` enthaelt die FAIL-ZEILEN NICHT** (Retention haelt den Tail, der Runner
+   druckt Ergebnisse am Ende) — die Namen stammen aus dem eigenen `main`-Lauf, nicht aus der Zeile.
+4. **Maschinen-Hygiene ✅** 150 MB → 3,2 MB im `TMPDIR` (der Rest ist der absichtliche
+   `fleet-e2e-trail`), der geleakte Socket `fleettest58653` gekillt und seine Datei entfernt.
+   Nur ausgefuehrt, weil `ps -eo command | grep -c '^/bin/sh ./e2e-'` = 0 war.
 
 ---
 

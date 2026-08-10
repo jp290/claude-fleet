@@ -1,3 +1,99 @@
+# HANDOFF — Session 49 (2026-08-10: die erste codex/pi-Welle — 4 fremde Lanes, 3 Ernten, und zwei Umgebungs-Raetsel sind enger gezogen) · 48/47/46/45/44 darunter
+
+**ctx beim Schreiben: ~35 %.** Produziert: die erste volle Arbeitsteilungs-Welle (fremde Lanes
+produzieren, Host committet/verifiziert/landet), sieben neue Queue-Zeilen, zwei
+Umgebungs-Befunde. Owner-Modus des Tages: alles ueber pi/codex-Worker (`gpt-5.6-sol` — DAS
+sind die "sol-Agenten").
+
+## Was gelandet ist / in Flug war
+- **`3546db8` Doc-Index** (codex, Slot 6): 7 Schnappschuesse ins Attic, queue-analyst +
+  autonomy-bausteine indexiert. GELANDET — aber erst per `confirm:true` ueber ein
+  Flake-Rot des Gates (s. send-boot-Familie unten).
+- **`e4603af` kind-Umbau** (codex, Slot 2): Task.kind = auftrag·richtung·notiz·betrieb,
+  Load-Normalisierung lane→auftrag/note→notiz, Rueckroute POST /api/tasks/:id/kind
+  (schliesst 65af341f). steward-outcomes-Nachzug kam vom Host (5 Ersetzungen, selber Commit).
+  Land beim Schreiben in Flug (b324iip88).
+- **`f3d0a9b` Slot-Leiste** (codex, Slot 1): Kriterium der Clarify-Lane + Owner-Nachtrag
+  "Lanes belegen keine Nummer" (= ed4a318c Teil A, dort kommentiert): Main-Zeile 6 Kinder MIT n,
+  Lane-Zeile Branch-Tail-Referenz OHNE n, Chevron-Detail (main/lane→Container→Harness→Model→/Repo,
+  Anker fuehrt seine Lanes), slotRowFields() e2e-geprueft, defaultModel an GET /api/harnesses.
+  Land in Flug hinter Slot 2.
+- **Forensik `2d06340b`** (pi, Slot 4, FILES: keine — geerntet, geschlossen): s. unten.
+
+## Zwei Umgebungs-Raetsel, jetzt scharf umrissen
+1. **Das 3-FAIL-Rot auf main (S48) ist KEIN CLI-Problem**: die Checks lesen keine Transkripte
+   (FLEET_CMD=true, kein claude im Spiel), CLI 2.1.226 vor gruen und bei rot. Instanz 75042
+   aufbewahrt: prompts.jsonl TRAEGT den /send-Text, streams/s2.raw enthaelt ihn NULL mal —
+   die tmux-Paste erreicht die s2-pty nicht, waehrend /send auf s3 IM SELBEN LAUF geht.
+   s2-Zustands-Problem im Suite-Ablauf; tmux/zsh/brew-mtimes alle alt. → Zeile `dda45856`
+   (naechster Schritt: pane_in_mode-Instrumentierung + Sektions-Halbierung). Rot vom 10.08.
+   als `unknowable` adjudiziert.
+2. **Send-boot-Sondenfamilie (aus 8bbb362/d8e96a0, gelandet 10.08. mittags) wuerfelt**:
+   same tree, Lauf 1 = 1 FAIL boot-race, Lauf 2 = 2 ANDERE FAILs derselben Familie.
+   Trifft JEDES Land-Gate. → Zeile `911bdb73` (Fixture-Haertung + verify-tiering §11-Nachtrag).
+
+## Was der Land-Fehlpfad an Rauheit gezeigt hat (Owner: "quite rough")
+Slot-6-Fall: sauberer Rebase + Gate rot = Badge "⏸ conflict resolutions" + Status "resolved" +
+Befund als 700-Zeilen-Blob + zweiter POST /merge baut NICHT neu (gecachter resolved-Zustand),
+Ausgang nur {confirm:true}. → Zeile `bed46685`: ehrliches Status-Vokabular ·
+verify.failedChecks obenauf · ↻ retry-Griff (Same-Tree-Regel als Mechanik, KEIN Auto-Rollback) ·
+Flake-Gedaechtnis am Rot.
+
+## Neue Faehigkeiten/Zeilen dieser Session
+- **Prime Agent v0.7.1 installiert + vermessen** (/opt/homebrew/bin/prime-agent):
+  --provider/--model, --thinking 7 Stufen, --resume/--session-dir → pinsSession machbar;
+  keine eigene Sandbox → Aussen-Zaun nach pi-Muster; IPython-Kernel-Schreibpfade VOR dem
+  Adapter messen. → `a694edad` (nach kind-Land, server.ts frei).
+- **Picker-Neuentwurf** `516d4d46` (clarify first): Harness/Modell/Effort aus GET /api/harnesses
+  gerendert, fremde Harness fuer MAIN-Sessions, Container-Checkbox (Server-Seite existiert,
+  69c94da). Kernfrage: Container-Huelle je Harness vs. container-Harness mit innerem Agent.
+- **Queue-UI-Bau** `c8e2ddd7`: Kriterium BESTAETIGT (an der Zeile), wartet nur auf kind-Land.
+  Owner-Antworten: 4 Fakten = Verdikt·Alter·Slot·Quelle/Tag; Gruppen bleiben, Pool folgt.
+- **codex app-server** `54af57d6` bleibt der Weg zu "Desktop-App/Computer steuern" —
+  Reihenfolge: nach Prime-Adapter (Owner hat Reihenfolge an mich delegiert).
+
+## Betriebs-Lektionen (CLAUDE.md hat die erste schon)
+- **CODEX-DISPATCH-BOOT-RACE**: 3/3 codex-Lanes verloren ihren Brief (TUI bootet langsamer als
+  der Paste); pi nicht. Nach jedem codex-Dispatch Pane pruefen, Brief ggf. per POST /send
+  nachschicken. Echter Fix (Dispatch wartet auf TUI) ungebaut — Zeile fehlt noch.
+- criterion-confirm ERSETZT den Vorschlagstext (selbsttragend confirmen!); bestaetigt =
+  unueberschreibbar (409) — die erweiterte Fassung traegt dann der Task.brief.
+- Land laeuft ueber POST /api/slots/:id/merge (async; /land ist nur der ff-Sonderfall);
+  {confirm:true} ist der Ausgang aus resolved.
+- Owner-Token: fleet.json `token`, Header `authorization: Bearer` (x-fleet-token gibt es nicht).
+
+## OWNER-AUFTRAG AN DIE NAECHSTE SESSION (2026-08-10, woertlich: "die naechste session sollte
+auch all diese angehen" + "mir dann auch die moeglichkeit geben den private-repo-a abzusichern
+und herunterzuladen")
+
+Also: die Liste unten IST der Auftrag, nicht ein Vorschlag. Plus ein eigener, neuer Posten:
+
+**`~/owner/private-repo-a` absichern und dem Owner zum Herunterladen geben.**
+- ABSICHERN heisst zuerst MESSEN, nicht annehmen: hat das Repo ein Remote (`git -C
+  ~/private-repo-a remote -v`)? Uncommittete Arbeit? Die Lane auf Slot 8
+  (`private-repo-a.worktrees/fleet-260804144705-6c1e`) haelt moeglicherweise ungesicherte
+  Arbeit — VOR jedem Aufraeumen pruefen (die `checkout --`-Lektion in CLAUDE.md gilt hier).
+- HERUNTERLADEN laeuft ueber SELF-HOSTING auf Tailscale, niemals ueber einen externen
+  Filehoster (Owner-Regel, `feedback_self_host_file_handoff`): Bundle/Archiv bauen
+  (`git bundle create` ist die verlustfreie Form fuer ein Repo mit Historie), dann
+  `python3 -m http.server <port> --bind 100.64.0.1` und dem Owner die Tailscale-URL geben.
+  Laeuft schon ein Server auf einem Port, den wiederverwenden statt einen zweiten zu starten.
+- SICHERHEITS-VORBEHALT, der zuerst geklaert werden muss: das Repo kann Secrets/Kundendaten
+  tragen — vor dem Ausliefern pruefen, was im Archiv landet (`.env`, Tokens, Datenpfade), und
+  dem Owner sagen, WAS drin ist. Kein Push nach irgendwo, keine Veroeffentlichung.
+
+## Naechste Schritte, in Reihenfolge
+1. Lands 2 + 1 zu Ende (b324iip88 wachte; bei Gate-Rot: Signatur gegen 911bdb73 halten,
+   Flake → confirm mit Beleg). Dann POST /api/deploy + bundleStale-Check + Browser-Handabnahme
+   der 4 Slot-Leisten-Faelle (Kriterium T4).
+2. Naechste Welle: Prime-Adapter (`a694edad`, server-Strang) + Queue-UI-Bau (`c8e2ddd7`,
+   client-Strang) als codex-Lanes — Boot-Race-Regel beachten.
+3. `911bdb73` (Fixture-Haertung) frueh einplanen — bis dahin wuerfelt jedes Land-Gate.
+4. Danach: Picker-Clarify `516d4d46` · app-server `54af57d6` · ed4a318c Teil B ·
+   Pool/Workspace-Schnitt (Owner-Nachtrag steht als Kommentar an c8e2ddd7).
+
+---
+
 # HANDOFF — Session 48 (2026-08-10: Schritt 3 begonnen, 16 Verdikte nachgeprueft, ein Land — und `main` ist rot, ohne dass es am Code liegt) · 47/46/45/44/43/42/41/40/39/38 darunter
 
 **ctx beim Uebergeben: ~40 %.** Produziert: `git log 7c4e78e..HEAD` mit Bodies. Zwei Lands

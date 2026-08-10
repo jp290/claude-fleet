@@ -13372,6 +13372,11 @@ Bun.serve<WSData>({
           // slot gets when it names none, and the client must not assume which id that is.
           default: h === CLAUDE_HARNESS,
         })),
+        // A null model on the default adapter still launches this concrete model. The slot detail
+        // must be able to say which one without copying an env-derived server constant into JS.
+        // Foreign adapters keep their own implicit default; the client labels that honestly as
+        // "default" instead of applying this Claude-only value to them.
+        defaultModel: DEFAULT_MODEL,
         // the fleet's box defaults, published for the same reason `default` above is: they are a
         // fact about THIS fleet (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and the alternative is
         // the client hardcoding "fleet"/"default" — a second copy of a server constant, which is

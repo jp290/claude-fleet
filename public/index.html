@@ -82,31 +82,36 @@
     display: flex; align-items: center; justify-content: center; line-height: 1; }
   #collapse:hover { color: var(--text); }
   #slots { flex: 1; overflow-y: auto; padding: 4px 7px; display: flex; flex-direction: column; gap: 3px; }
-  .slot { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 9px;
+  .slot { position: relative; display: flex; align-items: center; gap: 5px; padding: 6px 8px;
     border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-size: 12px;
-    user-select: none; -webkit-user-select: none; --rb: #242424; }
+    user-select: none; -webkit-user-select: none; }
   .slot:hover { background: #242424; }
-  .slot.shown { background: #1e2333; border-color: #2a3350; --rb: #1e2333; }
-  .slot.current { background: #26314f; border-color: var(--focus); --rb: #26314f; }
-  .slot .n { flex: none; width: 16px; color: var(--accent); font-weight: 700; }
+  .slot.shown { background: #1e2333; border-color: #2a3350; }
+  .slot.current { background: #26314f; border-color: var(--focus); }
+  .slot .n { flex: none; width: 14px; color: var(--accent); font-weight: 700; }
   .slot.empty .n { color: #555; }
   .slot .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot .lbl.dim { color: #555; }
-  .slot .act { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; }
-  .slot .act.hot { background: #3fb950; }
-  /* rename/kill overlay the row's right edge on hover only, so the label keeps the full width */
-  .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
-    gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rb) 18px); }
-  .slot:hover .slotact { display: flex; }
-  .slot .kill { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
-  .slot .kill:hover { color: var(--danger); background: #2a1a1a; }
-  /* mobile-only per-row action strip (share/export/rename/land); hidden on desktop where
-     the board carries these actions — the mobile media query flips it to a flex row */
-  .rowacts { display: none; }
-  /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
+  .slot .branch-ref, .slot .branchbtn { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; border: 0; background: none; color: #9fb8ee; font: inherit; cursor: copy;
+    padding: 0; text-align: left; }
+  .slot .branch-ref { flex: 1; font-weight: 700; }
+  .slot.lane .lbl { flex: 0 1 34%; color: var(--dim); }
+  .slot .branchbtn { flex: 0 1 56px; color: var(--faint); }
+  .slot .branch-ref:hover, .slot .branchbtn:hover { color: var(--accent); }
+  .slot .statuslight { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; }
+  .slot .commit-light.hot { background: var(--add); }
+  .slot .work-light.hot { background: #3fb950; }
+  .slot .work-light.dirty { background: var(--amber); }
+  .slot .detailfold { flex: none; width: 16px; height: 20px; border: 0; border-radius: 4px;
+    background: none; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; padding: 0; }
+  .slot .detailfold:hover { color: var(--text); background: var(--raised); }
+  /* collapsed rail: main numbers plus status lights; lanes remain unnumbered even here */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
-  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
+  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .branch-ref,
+  #side.collapsed .branchbtn, #side.collapsed .ctxfill, #side.collapsed .slotdetail,
+  #side.collapsed .detailfold { display: none; }
   #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
   #side.collapsed .slot { justify-content: center; gap: 5px; padding: 8px 2px; }
@@ -217,23 +222,37 @@
     background: var(--raised); color: var(--dim); font-size: 15px; font-family: inherit; cursor: pointer; }
   #histbtn:hover, #autobtn:hover, #enhbtn:hover, #dropbtn:hover { color: var(--text); }
   .slot .autobadge { flex: none; font-size: 10px; color: var(--amber); }
-  /* lanes are first-class: a left accent + a ⎇ chip set them apart from plain repo sessions */
+  /* lanes are first-class: the project stripe plus their visible branch reference identifies them */
   .slot.lane { border-left: 2px solid var(--focus); }
   .slot.lane.current { border-left-color: var(--accent); }
-  .slot .lanechip { flex: none; font-size: 11px; color: var(--accent); font-weight: 700; }
-  /* ONE lifecycle dot replaces the old branch-name badge — the branch is already the
-     source of the row's label (baseName(cwd)), and the •N/↑N counts move into its
-     tooltip instead of squeezing .lbl down to a sliver */
-  .slot .lcdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6a7080; }
-  .slot .lcdot.editing { background: var(--amber); }  /* uncommitted work in progress */
-  .slot .lcdot.ready { background: var(--add); }    /* clean, commits waiting to push/land */
   /* context fill — a reading, not a warning: one muted tone at every level, deliberately with no
      threshold colour, so the row never implies an action nobody built. `?` (unknown) is dimmer
      still, and is never an empty bar — a blank meter would read as a fresh session. */
   .slot .ctxfill { flex: none; font-size: 10px; color: #8b93a7; font-variant-numeric: tabular-nums; }
   .slot .ctxfill.unknown { color: #5a6072; }
-  .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
-  .slot .lanediff:hover { color: #bfe6ff; }
+  .slot.detail-open { flex-wrap: wrap; }
+  .slotdetail { flex: 1 0 100%; min-width: 0; display: grid; gap: 5px; padding: 8px 0 2px;
+    border-top: 1px solid var(--line-soft); color: var(--dim); font-size: 10.5px; cursor: default; }
+  .slotdetail-line { min-width: 0; overflow-wrap: anywhere; }
+  .detail-repo { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .repo-copy { flex: none; border: 0; background: none; color: var(--accent); font: inherit;
+    font-weight: 700; cursor: copy; padding: 0; }
+  .detail-cwd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #626878; }
+  .slotdetail-lanes { display: grid; gap: 3px; padding-top: 2px; }
+  .slotdetail-caption { color: #a4abc0; font-weight: 700; }
+  .detail-lane { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 4px 6px;
+    border: 1px solid var(--line-soft); border-radius: 5px; background: #191919; color: inherit;
+    font: inherit; cursor: pointer; text-align: left; }
+  .detail-lane:hover { border-color: var(--focus); background: #1e2333; }
+  .detail-lane .branch-ref { flex: 1; }
+  .lane-state, .lane-ctx { flex: none; }
+  .lane-state.editing { color: var(--amber); }
+  .lane-state.ready { color: var(--add); }
+  .lane-state.clean { color: var(--faint); }
+  .slotdetail-actions, .detail-actionline { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+  .detailact { min-height: 26px; padding: 3px 7px; border-radius: 5px; border: 1px solid var(--line);
+    background: var(--raised); color: #aaa; font: inherit; cursor: pointer; }
+  .detailact:hover { color: var(--text); border-color: var(--focus); }
   /* the palette. Names are share.html's (the guest page) wherever the role is the same — the VALUES
      here are the board's own and unchanged by the naming, so the two pages share a vocabulary, not
      a look. Only the twelve most-used tones are named; one-off shades stay literal on purpose, so a
@@ -243,8 +262,8 @@
      --proj-h; the pastel pair is its only tuning knob. This block is what the older comment here
      called "the only place a second palette would ever be declared" — the app has exactly one
      (dark) today. The project colour wins over .slot.lane's blue accent on purpose: after F3 the
-     colour IS the stack identity, and laneness still reads from the ⎇ chip and the lifecycle dot
-     next to it. */
+     colour IS the stack identity, and laneness reads from the visible branch reference plus the
+     separate commit/work lights. */
   :root {
     --text: #ccc; --dim: #888; --faint: #666;
     --raised: #262626; --line: #333; --line-soft: #2a2a2a;
@@ -1145,7 +1164,6 @@
 
   /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow */
   @media (hover: none) {
-    .slotact { display: flex; position: static; padding-left: 0; background: none; }
     .pkrow .pkuse, .pkrow .pkpin { visibility: visible; }
   }
 
@@ -1177,16 +1195,12 @@
     body.board #board { display: none; } /* must outrank the desktop body.board rule */
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
     .slot { padding: 12px 10px; font-size: 13px; }
-    /* finger-sized kill target; share/export/rename/land come back as .rowacts on mobile
-       (the desktop-only board is display:none under 700px) */
-    .slot .kill { padding: 8px 10px; font-size: 16px; }
-    /* the row wraps so the action strip drops onto its own full-width line under the label */
+    /* details and their touch-sized actions occupy a full-width line under the compact row */
     .slot { flex-wrap: wrap; }
-    .rowacts { display: flex; flex-basis: 100%; gap: 8px; margin-top: 6px; }
-    .rowacts .rowact { display: flex; align-items: center; justify-content: center;
-      min-width: 40px; min-height: 40px; border-radius: 8px; border: 1px solid var(--line);
-      background: var(--raised); color: var(--text); font-size: 16px; cursor: pointer; }
-    .rowacts .rowact:active { background: var(--sel); color: var(--accent); border-color: var(--sel); }
+    .slotdetail { font-size: 12px; gap: 8px; padding-top: 10px; }
+    .detailact { min-width: 40px; min-height: 40px; font-size: 13px; }
+    .detail-lane { min-height: 40px; font-size: 12px; }
+    .slot .detailfold { width: 32px; height: 36px; font-size: 14px; }
     .bbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }
 

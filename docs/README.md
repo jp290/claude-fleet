@@ -26,7 +26,7 @@ Every feature that survives is a principle wearing a UI:
 
 Three places, and only the first is this folder:
 
-- **`docs/*.md`** — the twelve operative docs below. Everything that earns ongoing
+- **`docs/*.md`** — the fourteen operative docs below. Everything that earns ongoing
   maintenance.
 - **Commit bodies** — *this repo's finding register.* A defect, its mechanism, its
   measurement and its rejected alternatives are written where the change is:
@@ -42,7 +42,7 @@ Three places, and only the first is this folder:
 Deliberately **not** a fourth place: a summary doc that restates any of the three. That is
 how the shelf grew to 52 docs whose claims nobody re-derived.
 
-## The twelve operative docs
+## The fourteen operative docs
 
 One line per doc — its *purpose*, not its contents, so this index points without rotting.
 
@@ -87,6 +87,13 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`steward.md`** — the convention (optional, recognizable as `⚙ steward`, plans but never
   lands) and its **two pulses**: the Rundgang watches the operation, the Inspektion watches
   the substance.
+
+**Queue and autonomy**
+- **`queue-analyst.md`** — the live contract for how the dispatcher reads queue rows, keeps
+  `unknown` distinct from a verdict, and holds collisions without turning analysis into a gate.
+- **`autonomy-bausteine-2026-08-06.md`** — the still-live decision basis for machine release:
+  why `queued` has machine writers, which evidence must precede auto-promotion, and why the
+  ordering of the autonomy verbs changed. Read before extending unattended dispatch.
 
 **Running it somewhere else**
 - **`container.md`** — the `Dockerfile` and what `./docker-verify.sh` attests (the harness,

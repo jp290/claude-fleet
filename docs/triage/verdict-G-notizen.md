@@ -38,7 +38,7 @@
 
 ### `b759e8d9` — streichen, Konfidenz hoch
 - **Warum:** Typ (a), Wissenssicherung: Fehlalarm, Ursache und Kosten sind im heutigen Sensor-Dokument ausdrücklich als offen festgehalten. Die Notiz ist nicht mehr die einzige Stelle, die den Befund bewahrt.
-- **Beleg:** `3b22aa8`, `docs/autonomy-map-2026-08-06.md:277-286`; der weiterhin branch-only geschnittene Code steht in `server.ts:11297-11331`.
+- **Beleg:** `3b22aa8`, `docs/attic/autonomy-map-2026-08-06.md:277-286`; der weiterhin branch-only geschnittene Code steht in `server.ts:11297-11331`.
 - **Größe:** S (<1 h) — Zeile archivieren.
 - **Was noch fehlt, bevor man es starten kann:** Ein eigener Lane-Auftrag müsste Migration/Toleranz alter Journal-Keys und ein repo+branch-Done-Kriterium festlegen.
 - **Nicht geprüft:** Der historische Zwei-Repo-Fehlalarm wurde nicht live reproduziert.
@@ -101,7 +101,7 @@
 
 ### `d2a0d45e` — bauen, Konfidenz hoch
 - **Warum:** Verfallsbefund (1) ist direkt bestätigt: `d375c581` zitiert weiterhin `BACKLOG.md:773`, obwohl nur noch die Attic-Datei getrackt ist und B-16 dort auf Zeile 818 steht. Befund (2) ist bereits durch Weitertragen von `94565a55` nach `bbf2eea1` dokumentiert und `bbf2eea1` selbst gebaut; der heute wertvolle Schnitt ist daher nur die eine Quellenkorrektur an `d375c581`, nicht ein allgemeiner Reaper-Umbau.
-- **Beleg:** `docs/triage/batch-F-wissen.md:147-149`; `c366c66` benennt/realisiert den Move, heutiger Anker `docs/attic/backlog-2026-07.md:818-823`. Für (2): `briefs/work-waves-2026-08-07.md:33-37` und `docs/autonomy-map-2026-08-06.md:258-275`.
+- **Beleg:** `docs/triage/batch-F-wissen.md:147-149`; `c366c66` benennt/realisiert den Move, heutiger Anker `docs/attic/backlog-2026-07.md:818-823`. Für (2): `briefs/work-waves-2026-08-07.md:33-37` und `docs/attic/autonomy-map-2026-08-06.md:258-275`.
 - **Kosten, wenn nicht gebaut:** Die Abgrenzung von `d375c581` gegen den Lane-Kill-Orphan-Reap bleibt für einen Prüfer an genau der Stelle unauflösbar, an der sie Scope-Dopplung ausschließen soll.
 - **Größe:** S (<1 h) — Owner korrigiert genau die QUELLE in der offenen Queue-Zeile.
 - **Was noch fehlt, bevor man es starten kann:** Hartes Done: `d375c581` nennt `docs/attic/backlog-2026-07.md:818 @c366c66`; der alte Pfad kommt in seinem GEPRÜFT-Block nicht mehr vor. Kein Code- oder Suite-Lauf nötig.

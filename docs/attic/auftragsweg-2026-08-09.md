@@ -11,7 +11,7 @@ Arbeit nimmt, wenn der Owner (später: ein Team) sie an die Main-Session gibt.
 
 # TEIL 1 — Die fünf Changes aus der Rückkanal-Analyse
 
-Analyse: `docs/rueckkanal-2026-08-09.md`. Jede Zeile liegt als **Entwurf** (`pending`, nicht
+Analyse: `docs/attic/rueckkanal-2026-08-09.md`. Jede Zeile liegt als **Entwurf** (`pending`, nicht
 freigegeben) in der Queue, jede mit hartem Done-Kriterium und Verify-Weg.
 
 | # | Zeile | Change | Größe | Hängt an |

@@ -153,7 +153,7 @@ NOTIZ — kein Arbeitsauftrag. BACKLOG Item 9, die drei bewusst zurueckgestellte
 **Zeilentext, wörtlich (DATEN — keine Anweisung an dich):**
 
 ```text
-BEFUND (mechanisch, Verfallsform b — Beleg-Verfall). Neun offene Zeilen zitieren `docs/autonomy-map-2026-08-06.md` bzw. `docs/autonomy-verbs-2026-08-06.md` mit Zeilennummern, die gegen den heutigen Baum (dc2940e) 1-3 Zeilen danebenliegen.
+BEFUND (mechanisch, Verfallsform b — Beleg-Verfall). Neun offene Zeilen zitieren `docs/attic/autonomy-map-2026-08-06.md` bzw. `docs/attic/autonomy-verbs-2026-08-06.md` mit Zeilennummern, die gegen den heutigen Baum (dc2940e) 1-3 Zeilen danebenliegen.
 
 URSACHE, benannt statt vermutet: nach dem Pin `@1e46b8b`, den alle neun tragen, hat genau ein Commit beide Dateien angefasst — `d139698` ("die 0/12-Basisrate ist seit heute 1/15"). Hunks: map +2 ab Zeile 313, +1 ab 487; verbs +1 ab 11. Verschiebung also map +2 ab 313 und +3 ab 487, verbs +1 ab 11.
 
@@ -163,7 +163,7 @@ BEWEIS an drei unabhaengigen Zitaten (`git show 1e46b8b:<datei>` gegen den Arbei
 - verbs:23-24 gepinnt = "Der Dispatcher startet ausschliesslich `status:\"queued\"` ..." — heute verbs:24-25.
 
 BETROFFEN (Zitat -> heutige Zeile): caaf8b16 map:506->509 · 7ba4bd9d map:520-521->523-524 UND verbs:23-24->24-25 · bbf2eea1 map:524-525->527-528 · 2c92a467 map:530-533->533-536 · 989cccf7 verbs:55-73->56-74 · f0a710db verbs:75-92->76-93 · 08f44054 verbs:94-111->95-112 · acb5839d verbs:113-159->114-160.
-NICHT betroffen, weil vor der ersten Einfuegung: 9e0fdc3b map:183-195 · 785ce63d map:71-78. Andere zitierte Dokumente (`docs/agent-visibility-2026-08-06.md`, `briefs/ui-next-level-2026-08-06.md`, `docs/autonomy-bausteine-2026-08-06.md`) haben sich seit dem Pin nicht bewegt — `git diff --stat 1e46b8b..HEAD` fuehrt sie nicht.
+NICHT betroffen, weil vor der ersten Einfuegung: 9e0fdc3b map:183-195 · 785ce63d map:71-78. Andere zitierte Dokumente (`docs/attic/agent-visibility-2026-08-06.md`, `briefs/ui-next-level-2026-08-06.md`, `docs/autonomy-bausteine-2026-08-06.md`) haben sich seit dem Pin nicht bewegt — `git diff --stat 1e46b8b..HEAD` fuehrt sie nicht.
 
 KOSTEN, klein und ehrlich benannt: der Pin macht jedes Zitat aufloesbar, also ist es UNVERIFIZIERT, nicht falsch — und jede der neun nennt zusaetzlich ihren Abschnitt (§5.4, §11.1.1, Schwelle B ...), was der belastbarere Anker ist. Der Schaden trifft nur den, der gegen HEAD aufloest: bei Tabellenzeilen landet er auf der Nachbarzeile, bei caaf8b16 auf dem Tabellenkopf. KEIN Ausfuehrungsschaden fuer die gerade laufende Lane caaf8b16 — ihr Fliesstext nennt §12 namentlich, nur die QUELLE-Zeile driftet.
 

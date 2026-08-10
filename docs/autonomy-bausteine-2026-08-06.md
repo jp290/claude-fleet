@@ -7,11 +7,11 @@ durchläuft, **(b)** welcher fehlt, damit ein Durchlauf SICHER ist — also die 
 falsch liegt, bevor es teuer wird. Die Rangliste endet, wo diese Vorgabe erfüllt ist
 (`docs/scope-inflation.md` §7).*
 
-*Dritte Datei der Serie, nach `docs/autonomy-verbs-2026-08-06.md` (die fünf Verben) und
-`docs/autonomy-map-2026-08-06.md` (die Landkarte). Sie ersetzt keine der beiden — sie korrigiert
+*Dritte Datei der Serie, nach `docs/attic/autonomy-verbs-2026-08-06.md` (die fünf Verben) und
+`docs/attic/autonomy-map-2026-08-06.md` (die Landkarte). Sie ersetzt keine der beiden — sie korrigiert
 drei ihrer Prämissen und hängt vier Bausteine an, die in keiner von beiden stehen. Schwester-Datei
 desselben Tages mit anderem Gegenstand und **ohne Überschneidung**:
-`docs/agent-visibility-2026-08-06.md` (was Agenten sehen und wissen).*
+`docs/attic/agent-visibility-2026-08-06.md` (was Agenten sehen und wissen).*
 
 **Was diese Untersuchung getan hat:** Register gerechnet (`lane-outcomes.jsonl`,
 `post-land-audits.jsonl`, `audit-adjudications.jsonl`, `audit.jsonl`, `fleet.json`), Code an den

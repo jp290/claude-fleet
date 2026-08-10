@@ -251,7 +251,7 @@ ist live.
 > ausgelöst" genauso gut erklärt. Der Defekt ist mechanisch belegt und LATENT, nicht in der Praxis
 > beobachtet.**
 
-Diese Unterscheidung ist der Punkt: `docs/autonomy-map-2026-08-06.md` §11.1 macht aus derselben
+Diese Unterscheidung ist der Punkt: `docs/attic/autonomy-map-2026-08-06.md` §11.1 macht aus derselben
 Null die erste Sperre gegen Auto-Land (*„Beide Pfade … sind im Feld ungetestet. Ein Sicherheitsnetz
 mit null Belastungsproben ist Dekoration."*). Diese Lesart bleibt richtig — sie wird durch den
 Mechanismus hier **verschärft**, nicht bewiesen: der erste echte Repair-Fall würde nicht nur
@@ -360,7 +360,7 @@ Scope" ist nicht benannt).
 
 **Schwelle:** Anteil der Lanes, die mindestens einmal `verify-intent` posten, **über 20 gelandete
 Lanes**. Unter 20 % ist `CLAUDE.md` als Träger widerlegt — dieselbe Zahl und dieselbe Logik wie
-Schwelle A/B in `docs/autonomy-map-2026-08-06.md` §11.2 — dann gehört es in den Gründungsbrief,
+Schwelle A/B in `docs/attic/autonomy-map-2026-08-06.md` §11.2 — dann gehört es in den Gründungsbrief,
 nicht in eine schärfere Regelzeile.
 
 ### 4. Das Owner-Modell erreicht keinen einzigen Agenten
@@ -495,7 +495,7 @@ Fähigkeitsschnitt, an den sich nichts anlagern kann. (GELESEN)
 - **Der Bash-Permission-Matcher gegen `A && B`** (Rang 1) — nicht verifizierbar ohne Lauf.
 - **Die drei `Stop`-Hook-Skripte** — nur als vorhanden bestätigt, nicht gelesen.
 - **`src/client.ts`** — nicht geprüft, welche dieser Felder das Owner-Board zeichnet.
-  `docs/autonomy-map-2026-08-06.md` §6.4 hält für `stalled`/`stalledSince` bereits fest, dass sie
+  `docs/attic/autonomy-map-2026-08-06.md` §6.4 hält für `stalled`/`stalledSince` bereits fest, dass sie
   dort **nicht** vorkommen.
 - **Die Steward-Routen wurden nie authentifiziert gerufen** — alle Feldnamen und Ablehnungstexte
   sind aus dem Handler gelesen. Verhielte sich eine Route anders, als ihr Code liest, bliebe es

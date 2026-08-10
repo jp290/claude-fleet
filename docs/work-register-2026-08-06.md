@@ -18,7 +18,7 @@ Sie sind nicht gleichartig, und sie gleich zu behandeln ist der Fehler, der zu h
 
 | Klasse | Was drin ist | Wie man sie liest |
 |---|---|---|
-| **A · Lebendes Register** | Live-Queue · `docs/autonomy-map-2026-08-06.md` §11.3 · `docs/autonomy-verbs-2026-08-06.md` · `briefs/ui-next-level-2026-08-06.md` | Trägt offene Arbeit. Vor dem Planen lesen. |
+| **A · Lebendes Register** | Live-Queue · `docs/attic/autonomy-map-2026-08-06.md` §11.3 · `docs/attic/autonomy-verbs-2026-08-06.md` · `briefs/ui-next-level-2026-08-06.md` | Trägt offene Arbeit. Vor dem Planen lesen. |
 | **B · Historischer Beleg** | die meisten `briefs/*` (ausgeführt, Ergebnis gelandet) · `docs/agent-visibility` · `briefs/stalled-clock-hooks-refuted.md` | Nicht Arbeit, sondern **Beweis**. Verhindert Wiederholung. Nie als offene Liste lesen. |
 | **C · Überholt, aber nicht markiert** | `BACKLOG.md` Track A + Teile von Track B | Der gefährliche Fall: liest sich wie A, ist aber Juli-Stand. Siehe §4. **Seit 2026-08-07 leer** — der einzige Bewohner ist abgeglichen und nach D verschoben (§4 Nachtrag). Die Klasse bleibt stehen, weil sie wieder zulaufen wird. |
 | **D · Attic** | `docs/attic/*` (55) | Ausdrücklich stillgelegt. Nur als Quelle für „warum haben wir das verworfen". |

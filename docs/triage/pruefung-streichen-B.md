@@ -127,7 +127,7 @@ Der Body von `c366c66` führt Phase 1+2 als gelandet und `97f529b1` ausdrücklic
 
 ## `b759e8d9` — WIDERLEGT
 
-**Gelesen.** Der Sachbeleg selbst ist stark. `docs/autonomy-map-2026-08-06.md:277-286` sagt:
+**Gelesen.** Der Sachbeleg selbst ist stark. `docs/attic/autonomy-map-2026-08-06.md:277-286` sagt:
 
 > „`sinceLastLook` schlüsselt nach Branchname — offen“
 
@@ -141,7 +141,7 @@ Der aktuelle Code bestätigt das in `server.ts:11275`:
 
 sowie in `:11279-11281` mit dem Skip `out[br.out]`; `sinceLastLookView` greift in `:11303-11307` ebenfalls ausschließlich per Branch-Key zu.
 
-Der zusätzlich als Beleg genannte Commit `3b22aa8d51042c857196adddaf066e405c08742c` trägt diesen Befund jedoch nicht. Sein Body und sein Diff an `docs/autonomy-map-2026-08-06.md` behandeln §11.3 „Schritt A“ (Drift-Audit). `git blame -L 277,286` weist alle entscheidenden `sinceLastLook`-Zeilen stattdessen `5d707bca` zu.
+Der zusätzlich als Beleg genannte Commit `3b22aa8d51042c857196adddaf066e405c08742c` trägt diesen Befund jedoch nicht. Sein damaliger Diff an `docs/autonomy-map-2026-08-06.md` (heute `docs/attic/autonomy-map-2026-08-06.md`) behandelt §11.3 „Schritt A“ (Drift-Audit). `git blame -L 277,286` weist alle entscheidenden `sinceLastLook`-Zeilen stattdessen `5d707bca` zu.
 
 **Gemessen.** `ast-grep --pattern '$OUT[$KEY] = $VALUE' --lang ts server.ts` findet die beiden strukturellen Zuweisungen `out[wt.branch]` und `out[br.out]` bei 11275/11281. Die Queue-Zeile bleibt `pending/note`; der branch-only Defekt ist im aktuellen Code also nicht zwischenzeitlich erledigt.
 

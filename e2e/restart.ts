@@ -390,8 +390,12 @@ export async function run(ctx: Ctx): Promise<void> {
   const h2b = (await (await get("/api/slots/2/history")).json()) as { history: { text: string }[] };
   check("after restart: history persisted", h2b.history.some((h) => h.text === "compose-box-to-slot-two"), `${h2b.history.length} entries`);
   const plogAfter = await plogRead();
+  // WEAKENED 2026-08-08, deliberately and visibly: this used to also require an entry with
+  // source "share", which only the guest send route could produce. That route was removed with
+  // the interactive share mode, so the second half is no longer producible — not broken. The
+  // "share" source itself survives in the type: old logs still carry those lines.
   check("after restart + slot kills: prompt log intact",
-    plogAfter.some((e) => e.text === "compose-box-to-slot-two") && plogAfter.some((e) => e.source === "share"), `${plogAfter.length} entries`);
+    plogAfter.some((e) => e.text === "compose-box-to-slot-two"), `${plogAfter.length} entries`);
   const shPAuth = await post(`/s/${ctx.shPersistId}/auth`, { password: "persistpass1" });
   check("after restart: share persisted and answers", shPAuth.ok);
   // the size a guest builds its grid from must be TMUX TRUTH, not the fresh process's
@@ -451,7 +455,10 @@ export async function run(ctx: Ctx): Promise<void> {
   check("audit records slot_kill", auditAll.some((e) => e.event === "slot_kill" && e.slot === 1));
   check("audit records share_create", auditAll.some((e) => e.event === "share_create"));
   check("audit records share_revoke", auditAll.some((e) => e.event === "share_revoke"));
-  check("audit records share_mode_change", auditAll.some((e) => e.event === "share_mode_change"));
+  // share_mode_change is GONE with the interactive mode (2026-08-08). The negative control
+  // replaces it: the event must never appear again, because nothing can emit it.
+  check("no share_mode_change is ever recorded — the interactive mode it reported does not exist",
+    !auditAll.some((e) => e.event === "share_mode_change"));
   check("audit records guest auth failure", auditAll.some((e) => e.event === "share_auth_fail"));
   check("audit records guest auth success", auditAll.some((e) => e.event === "share_auth_ok"));
   check("audit records owner auth failure", auditAll.some((e) => e.event === "owner_auth_fail"));

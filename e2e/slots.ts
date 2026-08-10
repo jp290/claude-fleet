@@ -412,9 +412,13 @@ export async function run(): Promise<void> {
   const boardSrc = cliSrc.slice(cliSrc.indexOf("async function renderBoard()"), cliSrc.indexOf("$(\"boardclose\")"));
   const pushOrder = [...boardSrc.matchAll(/nodes\.push\((\w+)\)/g)].map((m) => m[1]);
   const at = (name: string) => pushOrder.indexOf(name);
-  check("client: the board renders in the owner's order — identity → to-land → commits → files → lanes → guest → agents → outline",
+  // `gsec` (the guest-console panel) left this chain with the console itself, 2026-08-08 —
+  // the order it belonged to is otherwise unchanged, and its absence is asserted rather than
+  // merely dropped, so a re-added machine-level section has to state where it goes.
+  check("client: the board renders in the owner's order — identity → to-land → commits → files → lanes → agents → outline",
     at("idsec") >= 0 && at("idsec") < at("work") && at("work") < at("csec") && at("csec") < at("fsec")
-    && at("fsec") < at("sec") && at("sec") < at("gsec") && at("gsec") < at("asec") && at("asec") < at("psec"),
+    && at("fsec") < at("sec") && at("sec") < at("asec") && at("asec") < at("psec")
+    && at("gsec") === -1,
     JSON.stringify(pushOrder));
   check("client: the advisory agents group is folded on every load, and the fold is not persisted",
     /^let agentsOpen = false;$/m.test(cliSrc) && /agentsOpen = !agentsOpen/.test(cliSrc)

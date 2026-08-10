@@ -14,10 +14,9 @@ const shareId = location.pathname.split("/")[2];
 const $ = (id: string) => document.getElementById(id)!;
 const gate = $("gate"), pw = $("pw") as HTMLInputElement, gatemsg = $("gatemsg"),
   title = $("title"), modeEl = $("mode"), livechip = $("livechip"), livetxt = $("livetxt"),
-  notice = $("notice"), bar = $("bar"), input = $("input") as HTMLTextAreaElement,
-  send = $("send") as HTMLButtonElement;
+  notice = $("notice");
 
-interface Info { slotLabel: string | null; mode: "view" | "interact"; cols: number; rows: number; active: boolean;
+interface Info { slotLabel: string | null; cols: number; rows: number; active: boolean;
   viewers?: number; comments?: number }
 interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string }
 interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
@@ -25,7 +24,6 @@ interface ShareComment { id: string; ts: number; name: string; text: string; fro
 interface Brief { branch: string | null; sessionStart: number | null; uncommitted: number;
   files: string[]; shortstat: string; commits: { hash: string; ts: number; subject: string }[] }
 
-const MAX_CHUNK = 1000; // server drops WS messages over 1024 bytes
 const FONT_KEY = "fleetShareFont";
 const NAME_KEY = "fleetShareName";
 const SIDE_KEY = "fleetShareSide";
@@ -53,7 +51,6 @@ function showNotice(text: string) {
   $("wrap").style.display = "none";
   $("reader").style.display = "none"; // reader is the phone default — a stale transcript must not read as live
   document.body.classList.remove("reader");
-  bar.style.display = "none";
   $("jump").style.display = "none";
 }
 
@@ -252,7 +249,7 @@ async function loadBrief() {
   body.replaceChildren();
   if (lastInfo) {
     kv(body, "session", lastInfo.slotLabel ?? "shared session");
-    kv(body, "access", lastInfo.mode === "interact" ? "interactive" : "view only");
+    kv(body, "access", "view only");
   }
   if (b.branch) kv(body, "branch", b.branch);
   if (b.sessionStart) kv(body, "started", fmtAgo(b.sessionStart));
@@ -609,11 +606,6 @@ function connect(info: Info) {
       showNotice("The shared session was ended by the owner.");
       return;
     }
-    if (e.code === 4002) {
-      // owner flipped view/interact — reload so the UI (compose bar, stdin) matches
-      location.reload();
-      return;
-    }
     setTimeout(() => { if (g === gen) connect(info); }, 2000);
   };
 }
@@ -634,8 +626,8 @@ function start(info: Info) {
   // the terminal front and center
   setView(NARROW());
   setInterval(() => void pollReader(), 3000);
-  modeEl.textContent = info.mode === "interact" ? "interactive" : "view only";
-  modeEl.className = info.mode;
+  modeEl.textContent = "view only";
+  modeEl.className = "view";
   modeEl.style.display = "inline-block";
   applyInfo(info);
   // sidebar: remembered preference on wide screens; phones ALWAYS start on the stream —
@@ -651,7 +643,9 @@ function start(info: Info) {
     fontSize,
     fontFamily: "ui-monospace, Menlo, Consolas, monospace",
     theme: { background: "#131316", foreground: "#d8d8d8" },
-    disableStdin: info.mode !== "interact",
+    // a guest never types into the owner's session: the terminal takes no stdin at all, and
+    // the server drops guest WS input regardless — the UI is the second lock, not the only one
+    disableStdin: true,
   });
   term.open($("term"));
   term.loadAddon(new CanvasAddon());
@@ -688,15 +682,6 @@ function start(info: Info) {
       e.stopPropagation();
     }
   }, { passive: false, capture: true });
-  if (info.mode === "interact") {
-    bar.style.display = "flex";
-    $("stage").classList.add("composing");
-    term.onData((d) => {
-      if (ws?.readyState !== WebSocket.OPEN) return;
-      const bytes = new TextEncoder().encode(d);
-      for (let i = 0; i < bytes.length; i += MAX_CHUNK) ws.send(bytes.slice(i, i + MAX_CHUNK));
-    });
-  }
   connect(info);
 }
 
@@ -737,48 +722,8 @@ pw.addEventListener("keydown", (e) => {
   if (e.key === "Enter") void join();
 });
 
-async function doSend() {
-  const text = input.value.trim();
-  if (!text || send.disabled) return;
-  send.disabled = true;
-  try {
-    const res = await fetch(`/s/${shareId}/send`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, submit: true }),
-    });
-    if (!res.ok) throw new Error(`send failed: ${res.status}`);
-    // optimistic echo: the prompt only reaches the transcript once claude ingests it
-    // (≤3s poll, or minutes if claude is mid-turn) — without a local bubble the reader
-    // looks like it swallowed the send, and guests re-send
-    if (readerOn) {
-      const box = document.createElement("div");
-      box.className = "rmsg user pending";
-      const head = document.createElement("div");
-      head.className = "rhead";
-      head.textContent = "you · sending…";
-      const body = document.createElement("div");
-      body.textContent = text;
-      box.append(head, body);
-      reader.appendChild(box);
-      reader.scrollTop = reader.scrollHeight;
-    }
-    input.value = "";
-    term?.scrollToBottom();
-  } catch {
-    send.style.background = "#f85149"; // text stays in the box, nothing typed is lost
-    setTimeout(() => { send.style.background = ""; }, 1200);
-  } finally {
-    send.disabled = false;
-  }
-}
-send.onclick = () => void doSend();
-input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    void doSend();
-  }
-});
+// No compose path here on purpose. A guest's channel to the owner is the COMMENT thread
+// (cmtinput below): it is text the owner reads and decides on, never text that reaches the pty.
 
 void (async () => {
   let info: Info | null = null;

@@ -79,18 +79,7 @@
   #jump { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: none;
     padding: 7px 12px; border-radius: 18px; border: 1px solid var(--line);
     background: #1d1d22ee; color: var(--accent); font-size: 11px; }
-  #stage.composing #jump { bottom: 76px; }
   #notice { display: none; padding: 40px 20px; text-align: center; color: var(--dim); font-size: 13px; }
-
-  #bar { flex: none; display: none; gap: 7px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-    background: var(--panel); border-top: 1px solid var(--line); }
-  #input { flex: 1; min-height: 40px; max-height: 120px; resize: none; padding: 10px 12px;
-    border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: #eee;
-    font-size: 16px; font-family: inherit; line-height: 1.4; }
-  #input:focus { outline: none; border-color: #3a4a7a; }
-  #send { flex: none; width: 56px; border-radius: 10px; border: none;
-    background: var(--accent); color: #10131c; font-size: 16px; font-weight: 700; }
-  #send:disabled { opacity: 0.5; }
 
   /* --- sidebar: broadcast telemetry beside the feed --- */
   #side { flex: none; width: 320px; display: none; flex-direction: column; min-height: 0;
@@ -199,7 +188,6 @@
     .hbtn { display: none !important; }
     #tabs .tab.tools { display: inline-flex; } /* outweighs the base display:none below */
     #wrap { touch-action: pan-x pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-    #bar { padding-bottom: 8px; } /* mobilebar below it carries the safe-area inset */
     #mobilebar { flex: none; display: flex; background: var(--panel); z-index: 31;
       border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
     #mobilebar .mtab { flex: 1; padding: 13px 4px; background: none; border: none;
@@ -275,10 +263,6 @@
     <div id="reader"></div>
     <div id="notice"></div>
     <button id="jump">⤓ latest</button>
-    <div id="bar">
-      <textarea id="input" rows="1" placeholder="Prompt… (Enter sends, Shift+Enter = newline)"></textarea>
-      <button id="send">➤</button>
-    </div>
   </div>
 
   <aside id="side">

@@ -168,7 +168,12 @@ interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boo
 // The optional fields are absent, not null, when unset.
 type AnalysisVerdict = "ready" | "needs-you" | "unknown";
 interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: string;
-  kind?: "lane" | "note"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
+  // MIRRORS server.ts's TASK_KINDS — and it is a claim about a foreign surface, not a type the
+  // server hands us. It said `"lane" | "note"` for the whole life of the four-kind rename
+  // (dd0c9a8): every `kind === "note"` below still compiled and was simply false forever, so the
+  // observation grouping, its chip and its guards went dead without one compiler word. Widen this
+  // FIRST when the server's set changes — tsc then names every site that has to follow.
+  kind?: "auftrag" | "richtung" | "notiz" | "betrieb"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
   // the queue analyst's reading. ADVISORY — it groups and labels a row, it never disables an
   // action. `reason` here is the poll's 140-char slice; the full one rides /api/tasks.
   analysis?: { verdict: AnalysisVerdict; blockers: string[]; reason: string;
@@ -5392,13 +5397,18 @@ const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
   { k: "notes", head: "Observations", hint: "the steward's findings. Not work: adopt one to turn it into a brief" },
   { k: "closed", head: "Closed", hint: "done and archived" },
 ];
+// ADVISORY = every kind the dispatcher refuses, i.e. everything that is not an `auftrag`. Phrased
+// as the negative on purpose: a kind added to the server later is advisory here until someone
+// decides otherwise, which is the safe direction — the alternative would silently offer ▸ release
+// on a row the server answers with 409.
+const qAdvisory = (t: TaskInfo): boolean => t.kind !== undefined && t.kind !== "auftrag";
 function qGroupOf(t: TaskInfo): QGroup {
   if (t.status === "sent") return "running";
   if (t.status === "done" || t.status === "archived") return "closed";
   // an observation is an observation whatever its status says. The check sits ABOVE `queued` on
   // purpose: releasing a note is refused today, but rows promoted before that refusal existed are
   // still in the state file, and showing one under "runs next" would be a promise nothing keeps.
-  if (t.kind === "note") return "notes";
+  if (qAdvisory(t)) return "notes";
   if (t.status === "queued") return "released";
   // an unconfirmed criterion is a lane parked on YOUR answer, which outranks any verdict
   if (t.criterion && t.criterion.confirmedAt === null) return "needs";
@@ -5413,7 +5423,7 @@ const Q_BLOCKER_LABEL: Record<string, string> = {
 };
 function qVerdictLine(t: TaskInfo): string {
   const a = t.analysis;
-  if (!a) return t.kind === "note" ? "" : "not analysed yet";
+  if (!a) return qAdvisory(t) ? "" : "not analysed yet";
   const mark = a.verdict === "ready" ? "✓" : a.verdict === "unknown" ? "?" : "⚠";
   const tags = a.blockers.map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
   // "stale, re-reading" is a promise the row cannot keep while the re-reading FAILS, and saying it
@@ -5546,7 +5556,7 @@ function renderQueueDetail() {
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
     : t.source === "steward" ? "⚙ steward" : "owner"));
-  if (t.kind === "note") meta.appendChild(chip("observation — not work", "dim",
+  if (qAdvisory(t)) meta.appendChild(chip(`${t.kind} — not work`, "dim",
     "the steward reports, it does not assign. Adopt it to turn it into a brief you own"));
   // the analyst's reading as a one-word chip; the sentence behind it is spelled out below
   if (t.analysis) meta.appendChild(chip(
@@ -5632,7 +5642,7 @@ function renderQueueDetail() {
   // into the pane: unreadable before the fact, and a different string from the one that had been
   // approved. Editing pins it (the sweep never recompiles over an edit) and re-opens the analysis.
   const brief = taskBriefFull.get(t.id);
-  if (t.kind !== "note" && (t.status === "pending" || t.status === "queued")) {
+  if (!qAdvisory(t) && (t.status === "pending" || t.status === "queued")) {
     shell.detail.appendChild(el("div", "rvhead",
       brief ? `the brief this lane will receive${brief.edited ? " · yours" : ` · compiled ${fmtTs(brief.at)}`}`
         : "no compiled brief yet — the lane would receive your raw text"));
@@ -5727,12 +5737,18 @@ function renderQueueDetail() {
     b.onclick = () => void qAct(t.id, action, body ?? {});
     return b;
   };
-  // A NOTE gets its own, short set: it is an observation, and the only two honest things to do
-  // with one are agree (adopt it into a brief, where it becomes normal work) or close it. It has
-  // no lane, no brief, no refine and no release — the server refuses all four.
-  if (t.kind === "note") {
-    if (t.status === "pending") acts.appendChild(mk("→ adopt as a task", "adopt", "shrbtn primary",
-      {}, "turns this observation into a work brief — it gets analysed, and you still release it"));
+  // AN ADVISORY ROW gets its own, short set: it is not a brief, and the only two honest things to
+  // do with one are agree (turn it into an auftrag, where it becomes normal work) or close it. It
+  // has no lane, no brief, no refine and no release — the server refuses all five.
+  // `adopt` is narrower than the class it sits in: the server takes it for a `notiz` ONLY (it is
+  // the compatibility verb for the old note→lane conversion). A `richtung`/`betrieb` therefore has
+  // no conversion button yet and would need the general /api/tasks/:id/kind route — filed, not
+  // built here, and reachable for nobody today because neither kind can exist before the rename
+  // is deployed. Showing adopt on one anyway would just be a button that answers 409.
+  if (qAdvisory(t)) {
+    if (t.status === "pending" && t.kind === "notiz")
+      acts.appendChild(mk("→ adopt as a task", "adopt", "shrbtn primary",
+        {}, "turns this observation into a work brief — it gets analysed, and you still release it"));
   } else {
     // "▸ start lane" spawns the lane NOW — independent of the auto dispatcher, which may be off
     const startable = t.status === "pending" || t.status === "queued";
@@ -5885,7 +5901,7 @@ function renderQueue() {
     for (const t of sorted)
       add({
         name: qFirstLine(t.id), id: t.id,
-        cls: [`q-${t.status}`, t.kind === "note" ? "q-obs" : "",
+        cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "",
           t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
         // the verdict is the SECOND line now, not a hover: it is the reason the row is in this
         // group, and hiding the reason behind a mouse made the group unexplainable

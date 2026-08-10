@@ -13664,6 +13664,13 @@ Bun.serve<WSData>({
       if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
       if (body.kind !== undefined && !isTaskKind(body.kind))
         return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
+      // create-and-release is a RELEASE (see the field comments below), so it answers to the same
+      // rule as the ▸ queue button: only an auftrag enters the release lane. Before kind became
+      // settable here this route hard-set "lane", so the combination could not be expressed at all
+      // — making the kind editable is what opened the bypass, and this closes it at the door
+      // rather than letting a row arrive already `queued` in a state no tick will ever run.
+      if (body.queue === true && isTaskKind(body.kind) && body.kind !== "auftrag")
+        return json({ error: `a ${body.kind} is advisory, not a work brief — create it pending, then change its kind` }, 409);
       // per-task target repo (owner-only — the intake and steward routes hard-set null).
       // Validated as an existing directory HERE, at the boundary; git-ness is proven at spawn
       // time by createWorktree, which fails loudly onto the task's note.
@@ -13970,9 +13977,14 @@ Bun.serve<WSData>({
         t.note = "adopted from an observation — analysed like any brief, still yours to release";
       } else if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       else if (taskAct[2] === "queue") {
+        // AN ADVISORY ROW IS NOT WORK (owner ask 2026-08-05, restored here after the kind rename
+        // dropped it). Releasing one produced a `queued` row that no tick would ever run, carrying
+        // a note explaining its own inertness — a contradiction parked in the release lane. The
+        // conversion is the owner's act: `adopt` (or the /kind route) turns it into an auftrag,
+        // back at pending, where it is analysed and still has to be released. Same rule, same
+        // wording as the dispatch button above, because it is the same question.
         if (t.kind !== "auftrag") {
-          releaseTask(t, "owner");
-          t.note = taskKindNote(t.kind);
+          return json({ error: `a ${t.kind} is advisory, not a work brief — change its kind first` }, 409);
         } else {
           // RELEASING IS THE DECISION, and when it contradicts the analyst it is an override that
           // must leave a trace. Before this, promoting a flagged task was indistinguishable from

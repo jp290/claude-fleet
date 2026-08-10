@@ -148,8 +148,7 @@ interface SlotInfo { id: number; cwd: string | null; label: string | null; lastO
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean;
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
-  harness?: string; effort?: string; model?: string | null;
-  agent?: "alive" | "no-agent" | "no-pane" | "unprobed" | null;
+  harness?: string; effort?: string;
   // WHICH BOX and WHICH DAEMON this session's agent runs in. Present — RESOLVED, never null —
   // exactly when the slot's harness has a container concept, absent otherwise; that is the one
   // question the fleet-wide env could not answer per session.
@@ -202,7 +201,6 @@ let fleet: SlotInfo[] = [];
 // pending fetch degrades to exactly the pre-harness UI rather than to a broken one.
 let harnesses: HarnessInfo[] = [];
 let harnessesLoaded = false;
-let defaultModel: string | null = null;
 // this fleet's box defaults, from the same fetch — shown as the container fields' placeholders so
 // the owner sees what leaving them empty gets. Never hardcoded here: they are server constants
 // (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and a second copy would drift silently.
@@ -212,10 +210,8 @@ async function loadHarnesses(): Promise<void> {
   try {
     const res = await api("/api/harnesses");
     if (!res.ok) return;
-    const cat = (await res.json()) as { harnesses: HarnessInfo[]; defaultModel?: string;
-      containerDefaults?: { container: string; containerContext: string } };
+    const cat = (await res.json()) as { harnesses: HarnessInfo[]; containerDefaults?: { container: string; containerContext: string } };
     harnesses = cat.harnesses;
-    defaultModel = cat.defaultModel ?? null;
     containerDefaults = cat.containerDefaults ?? null; // absent against an older server: the fields
     // then carry no placeholder, which is a missing hint and not a broken control
     harnessesLoaded = true;
@@ -230,9 +226,6 @@ function supportsOf(h: string | undefined): HarnessInfo["supports"] {
   // default means "do not hide a working feature", but an optimistic container would offer a box
   // control on a harness that has none — inventing a capability instead of degrading to today's UI.
   return found?.supports ?? { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false };
-}
-function harnessInfoOf(h: string | undefined): HarnessInfo | undefined {
-  return harnesses.find((x) => x.id === h) ?? harnesses.find((x) => x.default);
 }
 let autosList: AutoInfo[] = [];
 let tasksList: TaskInfo[] = [];
@@ -4038,20 +4031,6 @@ const stackOpen = new Set<string>(((): string[] => {
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch { return []; }
 })());
-const SLOT_DETAIL_LS = "fleet.slot-details";
-const slotDetailOpen = new Set<number>(((): number[] => {
-  try {
-    const v: unknown = JSON.parse(localStorage.getItem(SLOT_DETAIL_LS) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is number => Number.isInteger(x) && x > 0) : [];
-  } catch { return []; }
-})());
-function setSlotDetailOpen(id: number, on: boolean) {
-  if (on) slotDetailOpen.add(id);
-  else slotDetailOpen.delete(id);
-  localStorage.setItem(SLOT_DETAIL_LS, JSON.stringify([...slotDetailOpen]));
-  renderSlots();
-  if (on && !harnessesLoaded) void loadHarnesses().then(() => renderSlots());
-}
 function setStackOpen(key: string, on: boolean) {
   if (on) stackOpen.add(key);
   else {
@@ -4127,7 +4106,7 @@ function startRename(row: HTMLElement, s: SlotInfo) {
     if (!(live instanceof HTMLElement)) return;
     row = live;
   }
-  const lbl = row.querySelector(".lbl, .branch-ref");
+  const lbl = row.querySelector(".lbl");
   if (!lbl || row.querySelector(".renamein")) return;
   const input = document.createElement("input");
   input.className = "renamein";
@@ -4155,63 +4134,6 @@ function startRename(row: HTMLElement, s: SlotInfo) {
     if (e.key === "Escape") void finish(false);
   };
   input.onblur = () => void finish(true);
-}
-
-// The compact row is a contract, not an accumulation of whatever a caller happens to append.
-// Keep the placement decision DOM-free so e2e/slots.ts can lift and execute it against fixtures.
-// The strings are also the audit vocabulary: every signal the old row painted is either assigned
-// to row/detail here or named once in SLOT_ROW_DROPPED with the reason it no longer exists.
-const SLOT_ROW_DROPPED: Readonly<Record<string, string>> = {
-  lanechip: "branch-ref is now the lane's visible identity, so a second generic lane glyph is redundant",
-  lcdot: "commit-light and work-light split the old overloaded lifecycle dot into its two facts",
-  act: "work-light also carries recent/live activity, so a third anonymous dot would duplicate it",
-};
-type SlotRowField =
-  | "stackfold" | "n" | "branch-ref" | "lbl" | "ctxfill" | "branchbtn"
-  | "commit-light" | "work-light" | "autobadge" | "stackn" | "revb-agg"
-  | "cmtb-agg" | "cmtb" | "revb" | "detailfold";
-type SlotDetailField =
-  | "kind-branch-git" | "container" | "harness" | "model" | "repo" | "slot-debug"
-  | "n" | "lane-list" | "quicklane" | "lanediff" | "actions";
-interface SlotRowFacts extends ActiveSlot { autoActive?: boolean }
-interface StackRowFacts extends Stack { open?: boolean }
-function branchTail(branch: string): string {
-  const short = branch.replace(/^fleet\//, "");
-  return short.length > 20 ? `…${short.slice(-19)}` : short;
-}
-function slotContextText(slot: { ctx?: { pct: number } | null }): string {
-  return slot.ctx ? `ctx ${Math.round(slot.ctx.pct)}%` : "ctx ?";
-}
-function slotRowFields(slot: SlotRowFacts, stack: StackRowFacts | undefined, now: number):
-    { row: SlotRowField[]; detail: SlotDetailField[] } {
-  void now; // values/classes use the same poll timestamp; placement itself is intentionally stable
-  const row: SlotRowField[] = [];
-  if (stack) row.push("stackfold");
-  if (slot.worktree) {
-    row.push("branch-ref");
-    if (slot.label) row.push("lbl");
-    row.push("ctxfill", "commit-light", "work-light");
-  } else {
-    row.push("n", "lbl", "ctxfill", "branchbtn", "commit-light", "work-light");
-  }
-  if (slot.autoActive) row.push("autobadge");
-  if (stack) {
-    row.push("stackn");
-    if (!stack.open && stack.lanes.some((lane) => lane.mergePending)) row.push("revb-agg");
-    if (!stack.open && stack.lanes.some((lane) => (lane.share?.comments ?? 0) > 0)) row.push("cmtb-agg");
-  }
-  if (slot.share && slot.share.comments > 0) row.push("cmtb");
-  if (slot.mergePending) row.push("revb");
-  row.push("detailfold");
-
-  const detail: SlotDetailField[] = ["kind-branch-git"];
-  if (typeof slot.container === "string" && typeof slot.containerContext === "string") detail.push("container");
-  detail.push("harness", "model", "repo", slot.worktree ? "n" : "slot-debug");
-  if (stack) detail.push("lane-list");
-  if (slot.git && !slot.worktree) detail.push("quicklane");
-  if (slot.git) detail.push("lanediff");
-  detail.push("actions");
-  return { row, detail };
 }
 
 function updateTitle() {
@@ -4383,228 +4305,157 @@ function ghostRow(g: Stack, w: WtRow): HTMLElement {
   return row;
 }
 
-// One occupied slot. Compact row placement comes only from slotRowFields(); this renderer
-// supplies text, classes and actions for the ids it receives, never a second placement policy.
-function contextField(s: SlotInfo): HTMLElement {
-  const c = s.ctx ?? null;
-  const cx = el("span", "ctxfill" + (c ? "" : " unknown"), slotContextText(s));
-  cx.title = c
-    ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
-    : "context fill unknown — this slot has no measurable usage record. Not an empty context.";
-  return cx;
-}
-
-function copyBranchField(s: ActiveSlot, className: string): HTMLElement {
-  const branch = s.git?.branch ?? s.worktree?.branch ?? "";
-  const b = el("button", className, branch ? branchTail(branch) : "—") as HTMLButtonElement;
-  b.title = branch ? `${branch} — click to copy` : "branch unavailable";
-  b.onclick = (e) => { e.stopPropagation(); if (branch) copyText(branch); };
-  return b;
-}
-
-function killSlotFromRow(row: HTMLElement, s: ActiveSlot): void {
-  void (async () => {
-    if (s.worktree) {
-      const risk = await fetchSlotRisk(s.id);
-      const ok = await showRiskPreview(
-        `Kill session ${s.id} (${baseName(s.cwd)})? The worktree is left on disk (open the board to land or remove it).`,
-        risk, "kill");
-      if (!ok) return;
-    } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd)})? The session and its history are gone.`)) {
-      return;
-    }
-    await post(`/api/slots/${s.id}/kill`, {});
-    slotDetailOpen.delete(s.id);
-    for (const p of panes) if (p.slot === s.id) p.assign(0);
-    await refresh();
-  })();
-}
-
-function slotRowField(field: SlotRowField, s: ActiveSlot, row: HTMLElement, stack: Stack | undefined,
-    open: boolean, visible: boolean): HTMLElement {
-  switch (field) {
-    case "stackfold": return foldArrow(stack!, open);
-    case "n": return el("span", "n", String(s.id));
-    case "branch-ref": return copyBranchField(s, "branch-ref");
-    case "lbl": {
-      const lbl = el("span", "lbl", s.worktree ? (s.label ?? "") : (s.label ?? baseName(s.cwd)));
-      lbl.title = s.cwd;
-      lbl.ondblclick = (e) => { e.stopPropagation(); startRename(row, s); };
-      return lbl;
-    }
-    case "ctxfill": return contextField(s);
-    case "branchbtn": return copyBranchField(s, "branchbtn");
-    case "commit-light": {
-      const ahead = s.git?.ahead ?? 0;
-      const light = el("span", "statuslight commit-light" + (ahead > 0 ? " hot" : ""));
-      light.title = s.git ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead` : "commit state unavailable";
-      return light;
-    }
-    case "work-light": {
-      const dirty = s.git?.dirty ?? 0;
-      const recent = serverNow - s.lastOutput < RECENT_MS;
-      const hiddenHot = !!stack && !open && stack.lanes.some(
-        (lane) => serverNow - lane.lastOutput < RECENT_MS || panes.some((p) => p.slot === lane.id));
-      const light = el("span", "statuslight work-light"
-        + (dirty > 0 ? " dirty" : visible || recent || hiddenHot ? " hot" : ""));
-      light.title = hiddenHot && !visible && !recent
-        ? "a folded lane is active"
-        : s.git ? `${dirty} uncommitted file${dirty === 1 ? "" : "s"}`
-          + (visible || recent ? " · session active" : "") : (visible || recent ? "session active" : "work state unavailable");
-      return light;
-    }
-    case "autobadge": {
-      const b = el("span", "autobadge", "⏱");
-      b.title = "has scheduled prompts";
-      return b;
-    }
-    case "stackn": {
-      const n = el("span", "stackn", `⎇${stack!.lanes.length}`);
-      n.title = `${stack!.lanes.length} lane${stack!.lanes.length === 1 ? "" : "s"} in ${baseName(stack!.key)}`;
-      return n;
-    }
-    case "revb-agg": {
-      const pending = stack!.lanes.filter((lane) => lane.mergePending);
-      const rb = el("span", "revb revb-agg", pending.length > 1 ? `⏸${pending.length}` : "⏸");
-      rb.title = `${pending.length} folded lane(s) with conflict resolutions awaiting review`;
-      rb.onclick = (e) => { e.stopPropagation(); setStackOpen(stack!.key, true); showSlot(pending[0].id); setBoard(true); };
-      return rb;
-    }
-    case "cmtb-agg": {
-      const comments = stack!.lanes.reduce((sum, lane) => sum + (lane.share?.comments ?? 0), 0);
-      const cb = el("span", "cmtb cmtb-agg", `💬${comments}`);
-      cb.title = `${comments} guest message(s) in folded lanes`;
-      return cb;
-    }
-    case "cmtb": {
-      const cb = el("span", "cmtb", `💬${s.share!.comments}`);
-      cb.title = `guest chat — ${s.share!.comments} message${s.share!.comments === 1 ? "" : "s"}`;
-      return cb;
-    }
-    case "revb": {
-      const rb = el("span", "revb", "⏸");
-      rb.title = "agent conflict resolutions await review";
-      rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
-      return rb;
-    }
-    case "detailfold": {
-      const detailOpen = slotDetailOpen.has(s.id);
-      const d = el("button", "detailfold", detailOpen ? "▾" : "▸") as HTMLButtonElement;
-      d.title = detailOpen ? "hide session details" : "show session details";
-      d.onclick = (e) => { e.stopPropagation(); setSlotDetailOpen(s.id, !detailOpen); };
-      return d;
-    }
-  }
-}
-
-function detailLine(className: string, text: string): HTMLElement {
-  return el("div", `slotdetail-line ${className}`, text);
-}
-
-function slotDetailField(field: SlotDetailField, s: ActiveSlot, row: HTMLElement,
-    stack: Stack | undefined): HTMLElement {
-  const git = s.git;
-  switch (field) {
-    case "kind-branch-git":
-      return detailLine("detail-git", `${s.worktree ? "lane" : "main"} · branch ${git?.branch ?? s.worktree?.branch ?? "—"}`
-        + (git ? ` · dirty ${git.dirty} · ahead ${git.ahead} · behind ${git.behind}` : " · git unavailable"));
-    case "container":
-      return detailLine("detail-container", `container ${s.container} · context ${s.containerContext}`);
-    case "harness": {
-      const h = harnessInfoOf(s.harness);
-      const name = h?.id ?? s.harness ?? "default";
-      const effort = h?.supports.effort || s.effort ? ` · effort ${s.effort ?? "default"}` : "";
-      return detailLine("detail-harness", `harness ${name}${effort} · agent ${s.agent ?? "?"}`);
-    }
-    case "model": {
-      const h = harnessInfoOf(s.harness);
-      const model = s.model ?? (h?.default ? defaultModel : null) ?? "default";
-      return detailLine("detail-model", `model ${model}`);
-    }
-    case "repo": {
-      const line = el("div", "slotdetail-line detail-repo");
-      const repo = s.worktree?.repo ?? s.cwd;
-      const b = el("button", "repo-copy", `/${baseName(repo)}`) as HTMLButtonElement;
-      b.title = `${s.cwd} — click to copy cwd`;
-      b.onclick = (e) => { e.stopPropagation(); copyText(s.cwd); };
-      line.append(b, el("span", "detail-cwd", s.cwd));
-      return line;
-    }
-    case "slot-debug":
-    case "n":
-      return detailLine("detail-slot", `slot ${s.id} · debug identity`);
-    case "lane-list": {
-      const box = el("div", "slotdetail-lanes");
-      box.appendChild(el("div", "slotdetail-caption", `lanes · ${stack!.lanes.length}`));
-      for (const lane of stack!.lanes) {
-        const state = (lane.git?.dirty ?? 0) > 0 ? "editing" : (lane.git?.ahead ?? 0) > 0 ? "ready" : "clean";
-        const item = el("div", "detail-lane");
-        item.tabIndex = 0;
-        item.setAttribute("role", "button");
-        item.title = `assign ${lane.git?.branch ?? lane.worktree?.branch ?? "lane"}`;
-        const ref = copyBranchField(lane, "branch-ref");
-        const ctx = lane.ctx ? `ctx ${Math.round(lane.ctx.pct)}%` : "ctx ?";
-        item.append(ref, el("span", `lane-state ${state}`, state), el("span", "lane-ctx", ctx));
-        item.onclick = (e) => { e.stopPropagation(); showSlot(lane.id); };
-        item.onkeydown = (e) => { if (e.key === "Enter") { e.stopPropagation(); showSlot(lane.id); } };
-        box.appendChild(item);
-      }
-      return box;
-    }
-    case "quicklane": {
-      const line = el("div", "slotdetail-line detail-actionline");
-      line.append("lanes ", quickLaneChip(s.cwd));
-      return line;
-    }
-    case "lanediff": {
-      const line = el("div", "slotdetail-line detail-actionline");
-      const b = el("button", "detailact", "± review diff") as HTMLButtonElement;
-      b.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
-      line.appendChild(b);
-      return line;
-    }
-    case "actions": {
-      const acts = el("div", "slotdetail-actions");
-      const add = (text: string, fn: () => void) => {
-        const b = el("button", "detailact", text) as HTMLButtonElement;
-        b.onclick = (e) => { e.stopPropagation(); fn(); };
-        acts.appendChild(b);
-      };
-      add("⤴ share", () => openShareDlg(s.id));
-      add("⇩ export", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
-      add("✎ rename", () => startRename(row, s));
-      if (s.worktree) add("✔ save", () => { void doCommit(s.id, "quick"); });
-      if (s.worktree) add("⏏ land", () => { void doLand(s.id); });
-      if (s.worktree) add("⇲ shelve", () => { void doShelve(s.id); });
-      add("✕ kill", () => killSlotFromRow(row, s));
-      return acts;
-    }
-  }
-}
-
+// One occupied slot. `stack` is set only when this row is the anchor of a fold — it carries the
+// arrow, the ⎇N chip, the quick-lane chip and, while folded, the badges of the lanes it hides.
 function slotRow(s: ActiveSlot, stack?: Stack): HTMLElement {
   const open = stack ? stackOpen.has(stack.key) : false;
   const visible = panes.some((p) => p.slot === s.id);
   const isFocused = panes[focused]?.slot === s.id;
-  const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "")
-    + (s.worktree ? " lane" : "") + (slotDetailOpen.has(s.id) ? " detail-open" : ""));
+  const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
   row.dataset.slot = String(s.id);
   tintProject(row, projectOf(s));
-
-  const facts: SlotRowFacts = { ...s, autoActive: autosList.some((a) => a.slot === s.id && a.enabled) };
-  const stackFacts: StackRowFacts | undefined = stack ? { ...stack, open } : undefined;
-  const fields = slotRowFields(facts, stackFacts, serverNow);
-  for (const field of fields.row) row.appendChild(slotRowField(field, s, row, stack, open, visible));
-  if (slotDetailOpen.has(s.id)) {
-    const detail = el("div", "slotdetail");
-    detail.onclick = (e) => e.stopPropagation();
-    for (const field of fields.detail) detail.appendChild(slotDetailField(field, s, row, stack));
-    row.appendChild(detail);
+  if (stack) row.appendChild(foldArrow(stack, open));
+  row.appendChild(el("span", "n", String(s.id)));
+  {
+      const lbl = el("span", "lbl", s.label ?? baseName(s.cwd));
+      lbl.title = s.cwd;
+      lbl.ondblclick = (e) => {
+        e.stopPropagation();
+        startRename(row, s);
+      };
+      row.appendChild(lbl);
+      if (autosList.some((a) => a.slot === s.id && a.enabled)) {
+        const b = el("span", "autobadge", "⏱");
+        b.title = "has scheduled prompts";
+        row.appendChild(b);
+      }
+      if (stack) for (const c of stackChips(stack, open)) row.appendChild(c);
+      // ⎇+ used to sit on all twelve empty rows at once, saying nothing about which repo it meant.
+      // Here it names its own repo by sitting on it. Not on lanes: a lane off a lane would nest
+      // .worktrees inside a worktree, which is the same rule the old `quickRepo` followed.
+      if (s.git && !s.worktree) row.appendChild(quickLaneChip(s.cwd));
+      // row = identity + state: a lane's lifecycle color IS its land-readiness, shown as
+      // ONE dot. The branch name and counts that used to fill a 96px badge move into the
+      // tooltip — the name up top is already derived from this same branch (baseName(cwd))
+      if (s.worktree && s.git?.branch) {
+        // lifecycle: editing (uncommitted) → ready (clean but commits to push/land) → clean
+        const state = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean";
+        row.appendChild(el("span", "lanechip", "⎇")); // lanes read as first-class
+        const dot = el("span", `lcdot ${state}`);
+        dot.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`
+          + `\nFleet lane (${state}). ± review · open the board to land`;
+        row.appendChild(dot);
+      }
+      // a lane's whole point is review-then-land, so its ± sits inline (not hover-hidden) —
+      // the one action that belongs on the row; everything else (share/export/rename/land)
+      // lives in the board now
+      if (s.worktree) {
+        const dff = el("span", "lanediff", "±");
+        dff.title = "review this lane's diff";
+        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
+        row.appendChild(dff);
+      }
+      if (s.share && s.share.comments > 0) {
+        // passive signal — hidden while the hover-action row is up; the 💬 in that row
+        // (below) is the clickable path, so aiming at the badge still lands right
+        const cb = el("span", "cmtb", `💬${s.share.comments}`);
+        cb.title = `guest chat — ${s.share.comments} message${s.share.comments === 1 ? "" : "s"}`;
+        row.appendChild(cb);
+      }
+      if (s.mergePending) {
+        // a resolved conflict waiting for review — discoverable without opening the board
+        const rb = el("span", "revb", "⏸");
+        rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
+        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
+        row.appendChild(rb);
+      }
+      // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
+      // unknown case is drawn as "ctx ?", never as 0% and never as an empty bar: a blank meter reads
+      // as "fresh session", which is the one wrong answer this fact must not be able to give.
+      // Rounded to whole percent because the render key below is keyed on what is painted — a live
+      // decimal would rebuild the sidebar every poll and kill hover state.
+      {
+        const c = s.ctx ?? null;
+        // "ctx" spelled out: a bare "?" next to the row's other glyphs would be unreadable, and "ctx NN%"
+        // is the vocabulary the owner's own terminal status line already uses for this number.
+        const cx = el("span", "ctxfill" + (c ? "" : " unknown"), c ? `ctx ${Math.round(c.pct)}%` : "ctx ?");
+        cx.title = c
+          ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
+          : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
+            + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
+        row.appendChild(cx);
+      }
+      // green = live in a pane, or a background session that just produced output. A FOLDED anchor
+      // also lights up for its hidden lanes: a lane that just produced output is exactly the kind of
+      // thing you must not have to unfold to notice (§F3 edge 2).
+      const hidHot = !!stack && !open && stack.lanes.some(
+        (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
+      const live = el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS || hidHot ? " hot" : ""));
+      if (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS) live.title = "a folded lane is active";
+      row.appendChild(live);
+      const act = el("div", "slotact");
+      if (s.git && !s.worktree) {
+        // plain repo session: diff is available but secondary, so it stays in the hover row
+        const dff = el("span", "diff", "±");
+        dff.title = "review working diff";
+        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
+        act.appendChild(dff);
+      }
+      // rename/merge/land used to live here as hover-only glyphs — moved to the board's
+      // labeled "actions" section (renb/lb) so they're touch-reachable and self-explanatory;
+      // the row keeps only ± (added above) and ✕ kill (below) plus this chat badge.
+      if (s.share) {
+        const ca = el("span", "cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬");
+        ca.title = "guest chat";
+        ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
+        act.appendChild(ca);
+      }
+      const kill = el("span", "kill", "✕");
+      kill.title = "kill session";
+      kill.onclick = async (e) => {
+        e.stopPropagation();
+        if (s.worktree) {
+          // a lane-holding slot never had real git-state context on kill before — fetch it,
+          // same risk preview the board's land action uses (kill leaves the worktree on disk;
+          // land/remove it from the board)
+          const risk = await fetchSlotRisk(s.id);
+          const ok = await showRiskPreview(
+            `Kill session ${s.id} (${baseName(s.cwd!)})? The worktree is left on disk (open the board to land or remove it).`, risk, "kill");
+          if (!ok) return;
+        } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.`)) {
+          return;
+        }
+        await post(`/api/slots/${s.id}/kill`, {});
+        for (const p of panes) if (p.slot === s.id) p.assign(0);
+        await refresh();
+      };
+      act.appendChild(kill);
+      row.appendChild(act);
+      // mobile-only action strip: share/export/rename/land moved off the row into the
+      // desktop-only board, leaving phones with no reachable share/export/rename/land.
+      // These are CSS-hidden on desktop (.rowacts { display:none }) so the row stays clean.
+      const rowacts = el("div", "rowacts");
+      const mkact = (glyph: string, title: string, fn: () => void) => {
+        const b = el("span", "rowact", glyph);
+        b.title = title;
+        b.onclick = (e) => { e.stopPropagation(); fn(); };
+        rowacts.appendChild(b);
+      };
+      mkact("⤴", "share", () => openShareDlg(s.id));
+      mkact("⇩", "export", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
+      mkact("✎", "rename", () => startRename(row, s));
+      // ✔ save = quick-commit this lane's uncommitted work — lets a phone user save outside
+      // the conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
+      if (s.worktree) mkact("✔", "save (commit work)", () => { void doCommit(s.id, "quick"); });
+      if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
+      if (s.worktree) mkact("⇲", "shelve (set aside + note)", () => { void doShelve(s.id); });
+      row.appendChild(rowacts);
+      // §F3 click semantics, in the owner's words ("erst aufklappt und klickbar wenn man auf ihn
+      // drückt, bleibt dann auf"): clicking a FOLDED stack only unfolds it — it does not steal the
+      // pane. Once open the anchor is an ordinary row again and focuses its session. Folding back is
+      // the arrow's job alone, or focusing the main session would always cost you the open fold.
+      row.onclick = stack && !open ? () => setStackOpen(stack.key, true) : () => showSlot(s.id);
   }
-
-  // Preserve stack folding semantics: a closed anchor click opens its lanes; every other row click
-  // assigns the session. The detail chevron and every detail control stop propagation themselves.
-  row.onclick = stack && !open ? () => setStackOpen(stack.key, true) : () => showSlot(s.id);
   return row;
 }
 
@@ -4771,12 +4622,7 @@ async function refresh() {
         // OTHER field moved. Adding a rendered field here is not optional.
         // worktree.repo, not just !!worktree: it is the stack's grouping key AND its colour key, so
         // a row painted from it belongs in this list by the same rule that put `behind` here
-        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind,
-        s.worktree?.repo ?? !!s.worktree, s.worktree?.branch,
-        // detail fields are no exception to this key. They can change while the detail is open,
-        // and a stale harness/model/container readout is worse than a closed one because it looks
-        // authoritative. agent is included because it is painted next to the harness.
-        s.harness, s.effort, s.model, s.container, s.containerContext, s.agent,
+        s.git?.branch, s.git?.dirty, s.git?.ahead, s.git?.behind, s.worktree?.repo ?? !!s.worktree,
         // the context chip, at the SAME resolution the row paints it (whole percent). The raw pct
         // moves on nearly every poll; keying on it would rebuild the sidebar continuously, and
         // leaving it out entirely would freeze the chip until some other field moved — the exact

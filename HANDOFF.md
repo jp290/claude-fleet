@@ -1,3 +1,180 @@
+# HANDOFF — Session 48 (2026-08-10: Schritt 3 begonnen, 16 Verdikte nachgeprueft, ein Land — und `main` ist rot, ohne dass es am Code liegt) · 47/46/45/44/43/42/41/40/39/38 darunter
+
+**ctx beim Uebergeben: ~40 %.** Produziert: `git log 7c4e78e..HEAD` mit Bodies. Zwei Lands
+(`a859b5f` Direkt-Commit, `41cf01d` ueber den Land-Pfad), 16 Queue-Zeilen archiviert,
+sieben Owner-Entscheidungen aufgenommen, 100 verwaiste Branches geloescht.
+
+---
+
+## DER WICHTIGSTE BEFUND: `main` ist ROT, und die Ursache liegt NICHT im Baum
+
+`./e2e-isolated.sh` gegen `main` (Stand `a859b5f`, ruhige Maschine, seriell): **1978 PASS, 3 FAIL.**
+
+```
+FAIL  composed text visible in s2 pane
+FAIL  export contains session content
+FAIL  txt export contains session content
+```
+
+**Die Bilanz, die es zu einer Tatsache statt zu einem Verdacht macht:** der letzte ECHTE
+Post-Land-Audit (`d695e7e8`) hatte **1981 Checks, 0 Fehler**. Heute: **1978 + 3 = 1981**.
+Dieselbe Pruefmenge, drei Checks von PASS auf FAIL gekippt.
+
+**Dazwischen liegt praktisch kein Code.** `git log d695e7e8..main` = sieben Doc-Commits plus
+`991e30b`, und das fuegt **57 Zeilen in `e2e/pins.ts`** hinzu — eine Datei, die nach ihrem
+eigenen Commit-Body „nicht Teil von `fleet-e2e.ts`" ist und **in keine Suite-Instanz gestaget
+wird**. Sie kann diese Checks nicht bewegen.
+
+**Ein unveraenderter Baum liefert ein anderes Ergebnis ⇒ es ist die UMGEBUNG.** Der naheliegende
+Verdaechtige steht in jeder Pane: `✘ Auto-update failed · Run claude doctor`. Die betroffenen
+Checks lesen Transkripte unter `~/.claude/projects/…`; ein Wechsel am claude-CLI oder seinem
+Zustandsverzeichnis passt zur Signatur. **Das ist gerechnet und plausibel, NICHT gemessen** —
+niemand hat die CLI-Version gegen den letzten gruenen Audit gehalten. Das ist der erste Schritt.
+
+**Warum das eine NEUE Klasse ist:** die sechs Flake-Familien in `docs/verify-tiering.md` sind alle
+Rennstellen IM BAUM. Ein Suite-Ergebnis, das sich aendert, weil sich ein EXTERNES WERKZEUG unter
+der Suite bewegt hat, ist etwas anderes — und keine bestehende Sonde faengt es. `./state.sh`s
+„newest audit: green" haette es nie gemeldet.
+
+**Beweiskette, vollstaendig gefahren (4 Laeufe, seriell, ruhige Maschine):**
+| Baum | Ergebnis |
+|---|---|
+| Lane-Tip (2 Commits) | 3 FAIL, identische Signatur — zweimal, davon einmal ruhig |
+| `07f865f` (nur Commit 1) | 3 FAIL + 1 erwarteter (den Commit 2 repariert) |
+| `main` (`a859b5f`) | 3 FAIL, identische Signatur |
+
+Also: **nicht Maschinenlast, nicht die Lane, nicht der Diff.**
+
+---
+
+## Was der Owner heute entschieden hat — sieben, alle offen aus `docs/pools-2026-08-09.md` §6
+
+1. **Analyse-Sweep bleibt AUS** (`FLEET_ANALYSIS_MS=0`). Damit traegt `dabd1880`s `streichen`.
+2. **`Task.kind` bekommt VIER Werte** — `auftrag` · `richtung` · `notiz` · `betrieb` — plus die
+   fehlende Rueckroute `65af341f`. **Noch nicht gebaut.**
+3. **Auto-Land: noch nicht.** `acb5839d` bleibt als Feuerprobe stehen, nicht als Bauauftrag. Die
+   Begruendung, die den Owner ueberzeugt hat, gehoert erhalten: der Konflikt-Resolver lief 6/219
+   Lanes, `repairRounds` max 0 — die Reparaturschleife hat NIE gefeuert, und `undo-land` deckt
+   genau ein Land. Der Einschaltmoment ist nicht „reife Codebase", sondern „das Auffangnetz ist
+   einmal unter Beobachtung gefallen".
+4. **Zustellung: zweiter Sensor** (Prozess-Tatsache), nicht Turn-Grenze — `58d03512`. Die
+   Busy-Klausel ist unveraendert der Byte-Sensor (`server.ts:3594`); `94b1362` hat die
+   ABSENDBARKEIT geloest, nicht die Busyness. **Noch nicht gebaut.**
+5. **Team-Eingang bleibt unbesetzt** (`FLEET_INTAKE_SECRET`).
+6. **Audit-Ping AN**, Ruhezeit **23–7** ✅ gesetzt und persistiert (`fleet.json.quietHours`).
+   **Die `watchdog.sh`-Zeile fehlt noch** — siehe offene Griffe.
+7. **Gast-Konsole raus** — war gar keine offene Frage mehr, der Entscheid stand im Commit-Body von
+   `e1a9a20`. Gelandet als `41cf01d`, zusammen mit dem `interact`-Schnitt.
+
+**Owner-Vorgabe zur Arbeitsform:** „wir sollten diese aufgaben als pi-codex agenten umsetzen".
+
+---
+
+## Die 16 `streichen` sind nachgeprueft — 15 halten, EINE ist gerettet
+
+Zwei Codex-Worker (`gpt-5.6-sol high`), je 8 Zeilen, Auftrag: NICHT neu urteilen, sondern „traegt
+der zitierte Beleg". Berichte: `docs/triage/pruefung-streichen-{A,B}.md` (`a859b5f`).
+
+- **12 BESTAETIGT · 4 WIDERLEGT**, aber die vier zerfallen: **eine echte Rettung** (`190e5705` —
+  die Quelle filet R3 ausdruecklich als Queue-Zeile) und **drei Zitierfehler ohne Folge**
+  (`b759e8d9` echte Provenienz `5d707bca` · `efc98cfa` echter Owner-Create-Pfad `server.ts:13805`,
+  nicht 9605 · `cd85c924` Beleg spart `:858-866` aus).
+- **Schluesse 15/16 richtig, BELEGE 13/16.** 19 % Zitierfehler — genau der Grund, warum vor einer
+  terminalen Aktion eine Gegenprobe steht.
+- **15 archiviert, `190e5705` steht.** Queue: **70 → 54 offen**, 46 archiviert.
+- **Nebenwirkung, die Arbeit gespart hat:** alle drei `kind`-Datenfehler (`10ac2528`, `63626cdb`,
+  `efc98cfa`) standen selbst auf der `streichen`-Liste. §5A.1 ist damit erledigt, OHNE die
+  Rueckroute `65af341f` — die bleibt richtig, ist aber nicht mehr dringend.
+
+**Die FORM taugt und ist wiederverwendbar:** beide Slots liefen als NICHT-Lane (`worktree === null`)
+mit cwd in einem eigenen Scratch-Repo. Codex' Zaun ist ein SCHREIB-Zaun, kein Lese-Zaun — der Worker
+las `fleet.json`, die Ledger und den ganzen Baum und konnte die lebende Queue strukturell nicht
+anfassen. **Das ist die Antwort auf „eine Lane kann die unsichtbare Quelle nicht beurteilen".**
+Preis: keine Lane-only-Route, also kein `/api/self/watch` — Warten ueber einen Watcher auf Datei
+UND Pane-Stille.
+
+---
+
+## Offene Griffe — klein, konkret, in dieser Reihenfolge
+
+1. **`POST /api/deploy`** — `bundleStale:true` UND `codeBehind:true` (3 Commits). Der `mode`-/Gast-
+   Schnitt ist sonst im Client unsichtbar. **Erst wenn der Post-Land-Audit durch ist** (die Route
+   lehnt waehrenddessen korrekt mit 409 ab).
+2. **`FLEET_AUDIT_PING_MS` in die srv-Spawn-Zeile** (`watchdog.sh:153`), dann `launchctl kickstart
+   -k gui/$(id -u)/com.claude-fleet.watchdog`, dann srv neu. Vorbedingung erfuellt (`4455adca`
+   gelandet, Audit mit `checks.ran>0` gesehen). Ruhezeit steht schon.
+3. **Den Post-Land-Audit zu `41cf01d` adjudizieren.** Er WIRD rot — er erbt `main`s drei FAILs.
+   Verdikt: nicht `flake`, nicht `real` im Sinne von „das Land war schuld". Am ehesten `real` mit
+   einer Notiz, die auf diesen Handoff-Abschnitt zeigt.
+4. **Maschinen-Hygiene:** ~42 MB tote e2e-Instanzen im `TMPDIR`, ein geleakter Socket
+   (`fleettest95609`). NUR wenn keine Suite laeuft, und NUR ueber notierte PIDs/Socket-Namen.
+
+---
+
+## Die drei naechsten Lanes — Briefe stehen, Reihenfolge begruendet
+
+**Alle drei sind pi-Lanes mit Codex-Modell, nicht Codex-Lanes.** Gemessener Grund: eine pi-Lane
+kann `bunx tsc` und `./e2e-security.sh` fahren (Netz offen, tmux erreichbar), eine Codex-Lane
+kann beides nicht. Eine Lane, die sich nicht selbst pruefen kann, schickt ungeprueften Code.
+Beide committen nicht — `POST /api/slots/:id/commit` ist der Host-Weg.
+
+- **(1) `d375c581` — Der Reaper.** Server-seitig, kollidiert mit nichts. Die dauerhafte Fassung
+  dessen, was diese Session von Hand geraeumt hat. **Vorher den Beleg frisch machen:** `d2a0d45e`
+  hat belegt, dass die Zeile einen toten `BACKLOG.md:773`-Verweis zitiert.
+- **(2) `3a622ea1` — `awaiting:"owner"` auf die Slot-Row.** Client-seitig. Eine Lane, die auf den
+  Owner wartet, ist heute auf dem Board unsichtbar.
+- **(3) `c8e2ddd7` — Queue-UI-Neuentwurf, als `▸ clarify first`, NICHT als Bau-Lane.** Die Zeile
+  sagt selbst: „was ‚besser' heisst, ist Geschmack des Owners und darf nicht vom Produzenten
+  geschrieben werden." Vorbedingung `21c6eb4b` ist `done`. Owner hat clarify-first ausdruecklich
+  gewaehlt.
+- **NICHT parallel dazu:** `b3a81fd0` und `f551f930` fassen ebenfalls `src/client.ts` an. Seriell
+  nach (2).
+
+**Und die Zeitregel, an der ich mich heute fast vergriffen haette:** keine frische Lane, keine
+Suite, kein Drill NEBEN einem laufenden Post-Land-Audit. Nach einem Land also erst ~11 min warten.
+
+---
+
+## Was ich falsch gemacht habe — vier, und drei haben dieselbe Wurzel
+
+1. **Audit-Join auf dem falschen Schluessel.** Ich las „24 rote Audits, 0 adjudiziert" und meldete
+   es als Befund. Der Link ist `auditAt`, nicht `at` (`at` ist der Zeitstempel des URTEILS).
+   Wahrheit: 24/24 adjudiziert, das Ledger ist sauber.
+2. **„Maschinenlast" aus zwei Laeufen unter gleicher Last geschlossen.** Zwei Rote unter derselben
+   Bedingung beweisen keine Determiniertheit — und keine Nicht-Determiniertheit.
+3. **Eine volle SHA aus dem Gedaechtnis in einen Watcher-Vergleich geschrieben.** Sie war falsch,
+   also meldete der Watcher sofort „main hat sich bewegt". **Eine Sonde mit falschem
+   Vergleichswert meldet keinen Fehler, sondern ein plausibles Ergebnis.**
+4. **Einen zweiten `e2e-isolated`-Lauf gestartet, waehrend die Lane ihn schon fuhr.** Ich hatte
+   „habe ich nicht gefahren" aus ihrem BERICHT gelesen und gehandelt, ohne die Pane zu pruefen.
+   Ihr Lauf starb an `Terminated: 15` mit null Checks; zeitlich deckungsgleich mit meinem
+   PID-Kill, Mechanismus nicht belegt. Kosten: ~10 min. **Der Bericht einer Lane ist ein
+   Schnappschuss, kein Endzustand** — dieselbe Regel, die dieses Repo fuer HANDOFFs schon fuehrt.
+
+**Die Verallgemeinerung, die ins Regelbuch gehoert:** CLAUDE.md sagt heute „bei einem roten Check
+ist der erste Verdaechtige die SONDE". Diese Session zeigt die vollstaendige Ordnung:
+**erst die Sonde, dann die UMGEBUNG, erst dann der Diff.** Die mittlere Stufe fehlt, und genau
+sie hat heute den Nachmittag gekostet.
+
+---
+
+## Was NICHT geprueft wurde
+
+Die 30 `bauen`, die 23 `unklar` und die eine Zusammenlegung (`fc47f1e1` → `58d03512`) — nur
+`streichen` ist unumkehrbar, und nur darauf zielte der Pruefauftrag. Die CLI-Version als Ursache
+der drei FAILs ist GERECHNET, nicht gemessen. Ob `fedab7ae` („old dead lanes … detached") wirklich
+erledigt ist, kann nur der Owner am Board bestaetigen — die eine Lesart ist behoben (die zwei
+detached bisect-Worktrees sind weg, `GET /api/slots/5/worktrees` zeigt jetzt eine Zeile), die
+andere („der detach-Knopf tut nichts") ist ungeprueft.
+
+**Eine Entscheidung, die auf dem Tisch liegt und niemandem gehoert:** §3 der Consumer Terms
+verbietet Zugriff „through automated or non-human means, whether through a bot, script, or
+otherwise". Das trifft im Prinzip den unbeaufsichtigten Dispatcher und die Autos — dieselbe Logik,
+mit der heute die Gast-Konsole und `interact` gefallen sind, nur zeigt sie diesmal auf die
+Automatik selbst. Von der Lane gefunden, bewusst nicht ins Regelbuch geschrieben, weil es eine
+Owner-Entscheidung ist.
+
+---
 # HANDOFF — Session 47 (2026-08-09 nachmittags: die Queue liegt auf Eis, und acht Codex-Worker haben sie vollstaendig beurteilt) · 46/45/44/43/42/41/40/39/38 darunter
 
 **ctx beim Übergeben: ~68 %.** Ich war eine ZWEITE Main-Session, parallel zu einer landenden — deshalb

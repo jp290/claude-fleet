@@ -21,7 +21,7 @@ are, respectively, the file that governs every lane and the data that will decid
   mechanism is well-built and well-commented; the consequences below are unintended.
   *Correction 2026-08-07: this line read `server.ts:868–877`, a range that pointed at unrelated
   code. The reason it now carries a name and not just a number is measured, not stylistic:
-  `docs/agent-visibility-2026-08-06.md` corrected the same reference to `1251`, which was exact
+  `docs/attic/agent-visibility-2026-08-06.md` corrected the same reference to `1251`, which was exact
   at `04646d3` and was five lines off two commits later (`ed5c352`, `d49c6e8`) — a bare line
   number into `server.ts` has a half-life of days.*
 - `OWNER.md` (15 KB, the safety-critical owner-model) is untracked *and* not in the copy list —

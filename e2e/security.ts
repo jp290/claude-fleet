@@ -411,11 +411,13 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const HARNESS_SLOT = 10;
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
   const cat = (await (await get("/api/harnesses")).json()) as
-    { harnesses: { id: string; default: boolean; automatable: boolean; supports: { transcript: boolean; effort: boolean; resume: boolean }; effortLevels: string[]; note: string | null }[] };
+    { defaultModel?: string; harnesses: { id: string; default: boolean; automatable: boolean; supports: { transcript: boolean; effort: boolean; resume: boolean }; effortLevels: string[]; note: string | null }[] };
   const pi = cat.harnesses.find((h) => h.id === "pi");
   const def = cat.harnesses.find((h) => h.default);
   check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
     cat.harnesses.map((h) => h.id).join(","));
+  check("§6 the catalogue names the fleet's concrete default model for an unpinned default slot",
+    typeof cat.defaultModel === "string" && cat.defaultModel.length > 0, String(cat.defaultModel));
   // the caveat is part of the contract, not a UI string: an owner picks this harness from it. What
   // it must state BOTH halves of the fence Fleet now spawns Pi behind: writes include shared roots
   // besides the worktree (and commits are the host's job), while reads and the network deliberately

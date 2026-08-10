@@ -13,8 +13,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
   const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; status: string; source: string; kind: string } };
   check("create owner task as pending", tCreate.ok && tJson.task.status === "pending" && tJson.task.source === "owner");
-  check("an owner task is kind \"lane\" — a runnable brief, dispatchable once queued",
-    tJson.task.kind === "lane", JSON.stringify(tJson.task));
+  check("an owner task defaults to kind auftrag — the one dispatchable category",
+    tJson.task.kind === "auftrag", JSON.stringify(tJson.task));
   check("queue a task", (await post(`/api/tasks/${tJson.task.id}/queue`, {})).ok);
   const sessT = (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string }[]; dispatch: { available: boolean; on: boolean } };
   check("queued task reflected in sessions", sessT.tasks.some((t) => t.id === tJson.task.id && t.status === "queued"));
@@ -22,6 +22,113 @@ export async function run(ctx: Ctx): Promise<void> {
   check("unqueue a task", (await post(`/api/tasks/${tJson.task.id}/unqueue`, {})).ok);
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
   check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
+
+  // --- Task.kind: four values, reversible owner route, legacy load migration, and dispatch bolt. ---
+  {
+    type KRow = { id: string; kind: string; status: string; note: string | null; [key: string]: unknown };
+    const kRows = async (): Promise<KRow[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: KRow[] }).tasks;
+    const kCreateBad = await post("/api/tasks", { text: "kind foreign-value probe", kind: "fuenftes" });
+    check("Task.kind SHOULD-REJECT a fifth value at the owner create boundary (400)", kCreateBad.status === 400);
+
+    const reversible = ((await (await post("/api/tasks", {
+      text: "kind route reversibility probe", kind: "notiz", queue: false,
+    })).json()) as { task: KRow }).task;
+    const unauth = await fetch(`${BASE}/api/tasks/${reversible.id}/kind`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "auftrag" }),
+    });
+    check("Task.kind route is owner-token-only (an unauthenticated write is rejected)", unauth.status === 401);
+    const toAuftrag = await post(`/api/tasks/${reversible.id}/kind`, { kind: "auftrag" });
+    const backToNotiz = await post(`/api/tasks/${reversible.id}/kind`, { kind: "notiz" });
+    const beforeBad = JSON.stringify((await kRows()).find((t) => t.id === reversible.id));
+    const badRoute = await post(`/api/tasks/${reversible.id}/kind`, { kind: "fuenftes" });
+    const afterBad = JSON.stringify((await kRows()).find((t) => t.id === reversible.id));
+    check("Task.kind route changes notiz→auftrag and auftrag→notiz",
+      toAuftrag.ok && backToNotiz.ok
+      && ((await backToNotiz.clone().json()) as { task: KRow }).task.kind === "notiz");
+    check("Task.kind route SHOULD-REJECT a fifth value with 400 and no mutation",
+      badRoute.status === 400 && beforeBad === afterBad, `${badRoute.status} before=${beforeBad} after=${afterBad}`);
+    let kindAudit: { event: string; detail?: string }[] = [];
+    for (let i = 0; i < 20; i++) {
+      kindAudit = ((await (await get("/api/audit")).json()) as
+        { events?: { event: string; detail?: string }[] }).events ?? [];
+      if (kindAudit.some((e) => e.event === "task_kind" && e.detail === `${reversible.id}:notiz->auftrag`)
+        && kindAudit.some((e) => e.event === "task_kind" && e.detail === `${reversible.id}:auftrag->notiz`)) break;
+      await Bun.sleep(50);
+    }
+    check("Task.kind changes are auditable with id and both directions",
+      kindAudit.some((e) => e.event === "task_kind" && e.detail === `${reversible.id}:notiz->auftrag`)
+      && kindAudit.some((e) => e.event === "task_kind" && e.detail === `${reversible.id}:auftrag->notiz`));
+    await post(`/api/tasks/${reversible.id}/delete`, {});
+
+    // Plant the exact pre-2026-08-10 values while the state file is quiescent, then ask the real
+    // load parser twice. Comparing the whole JSON row (with only the expected kind substituted)
+    // makes every unrelated field part of the assertion instead of sampling a few favourites.
+    const oldLane = ((await (await post("/api/tasks", {
+      text: "legacy lane migration probe", kind: "auftrag", queue: false,
+    })).json()) as { task: KRow }).task;
+    const oldNote = ((await (await post("/api/tasks", {
+      text: "legacy note migration probe", kind: "notiz", queue: false,
+    })).json()) as { task: KRow }).task;
+    await Bun.sleep(200); // saveState is fire-and-forget; make the file quiescent before srv dies
+    await tmuxOut("kill-session", "-t", "srv");
+    let migrationState: { tasks?: KRow[] } | null = null;
+    let migrationError = "";
+    try { migrationState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { tasks?: KRow[] }; }
+    catch (e) { migrationError = e instanceof Error ? e.message : String(e); }
+    const legacyLane = migrationState?.tasks?.find((t) => t.id === oldLane.id);
+    const legacyNote = migrationState?.tasks?.find((t) => t.id === oldNote.id);
+    check("Task.kind migration setup: both persisted rows are readable while srv is stopped",
+      !!legacyLane && !!legacyNote, migrationError);
+    if (legacyLane) legacyLane.kind = "lane";
+    if (legacyNote) legacyNote.kind = "note";
+    const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag" } : null;
+    const expectNote = legacyNote ? { ...legacyNote, kind: "notiz" } : null;
+    if (migrationState) await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(migrationState)}\n`);
+    await restartSrv();
+    const migratedOnce = await kRows();
+    const gotLaneOnce = migratedOnce.find((t) => t.id === oldLane.id) ?? null;
+    const gotNoteOnce = migratedOnce.find((t) => t.id === oldNote.id) ?? null;
+    check("Task.kind load migration maps lane→auftrag and note→notiz without changing any other field",
+      JSON.stringify(gotLaneOnce) === JSON.stringify(expectLane)
+      && JSON.stringify(gotNoteOnce) === JSON.stringify(expectNote),
+      JSON.stringify({ gotLaneOnce, gotNoteOnce, expectLane, expectNote }));
+    await restartSrv();
+    const migratedTwice = await kRows();
+    check("Task.kind load migration is idempotent across a second restart",
+      JSON.stringify(migratedTwice.find((t) => t.id === oldLane.id) ?? null) === JSON.stringify(expectLane)
+      && JSON.stringify(migratedTwice.find((t) => t.id === oldNote.id) ?? null) === JSON.stringify(expectNote));
+    await post(`/api/tasks/${oldLane.id}/delete`, {});
+    await post(`/api/tasks/${oldNote.id}/delete`, {});
+
+    // Every advisory kind may be promoted (the standing row note explains the inert queue row),
+    // but neither the attended route nor a full dispatcher tick may start it.
+    const advisoryKinds = ["notiz", "richtung", "betrieb"] as const;
+    const advisory: KRow[] = [];
+    for (const kind of advisoryKinds) {
+      const made = ((await (await post("/api/tasks", {
+        text: `advisory dispatch probe ${kind}`, kind, queue: false,
+      })).json()) as { task: KRow }).task;
+      const promoted = await post(`/api/tasks/${made.id}/queue`, {});
+      check(`promote remains allowed for ${kind}, with its standing dispatcher note`, promoted.ok
+        && (await kRows()).some((t) => t.id === made.id && t.status === "queued"
+          && t.note === `${kind} — the dispatcher never runs this`));
+      check(`manual dispatch SHOULD-REJECT advisory kind ${kind} (409)`,
+        (await post(`/api/tasks/${made.id}/dispatch`, {})).status === 409);
+      advisory.push(made);
+    }
+    const dispatchBefore = ((await (await get("/api/sessions")).json()) as { dispatch: { on: boolean } }).dispatch.on;
+    await post("/api/dispatch", { on: true });
+    await Bun.sleep(afterTick(0, DISPATCH_TICK_MS));
+    const afterAdvisoryTick = await kRows();
+    check("dispatcher tick never starts notiz, richtung, or betrieb",
+      advisory.every((a) => afterAdvisoryTick.some((t) => t.id === a.id && t.status === "queued"
+        && t.note === `${a.kind} — the dispatcher never runs this`)),
+      JSON.stringify(afterAdvisoryTick.filter((t) => advisory.some((a) => a.id === t.id))));
+    await post("/api/dispatch", { on: dispatchBefore });
+    for (const a of advisory) await post(`/api/tasks/${a.id}/delete`, {});
+  }
 
   // --- the INBOUND channel for a quiet main session: an opt-in, bounded POINTER to open lane
   // rows, never a dispatch or a mutation. This section restarts with a short test cadence only
@@ -90,15 +197,15 @@ export async function run(ctx: Ctx): Promise<void> {
       const stewardToken = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
       const noteRes = await fetch(`${BASE}/api/steward/tasks`, {
         method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${stewardToken}` },
-        body: JSON.stringify({ text: "backlog-note-only-probe — observation, never work", kind: "note" }),
+        body: JSON.stringify({ text: "backlog-note-only-probe — observation, never work", kind: "notiz" }),
       });
       const note = (await noteRes.json()) as { task?: { id: string; kind: string; status: string } };
       const noteId = note.task?.id ?? "";
       const openAtNote = ((await (await get("/api/tasks")).json()) as
         { tasks: { id: string; kind: string; status: string }[] }).tasks
         .filter((t) => t.status === "pending" || t.status === "queued");
-      check("backlog nudge setup: the only open row is a pending kind:note observation",
-        noteRes.ok && note.task?.kind === "note" && note.task.status === "pending"
+      check("backlog nudge setup: the only open row is a pending kind:notiz observation",
+        noteRes.ok && note.task?.kind === "notiz" && note.task.status === "pending"
         && openAtNote.length === 1 && openAtNote[0].id === noteId,
         JSON.stringify(openAtNote));
 
@@ -115,7 +222,7 @@ export async function run(ctx: Ctx): Promise<void> {
         text: "backlog-default-off-probe", queue: false,
       })).json()) as { task: { id: string } }).task.id;
       await Bun.sleep(650);
-      check("backlog nudge default OFF: even an open kind:lane row produces no prompt",
+      check("backlog nudge default OFF: even an open kind:auftrag row produces no prompt",
         (await nudges()).length === 0);
       await post(`/api/tasks/${offTask}/delete`, {});
 
@@ -166,7 +273,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // Enabled, several rounds, but NOTE is still the only open row: the early return must keep
       // the prompt log empty (and, in production, avoids canDeliver's tmux/ps work entirely).
       await Bun.sleep(afterTick(0, NUDGE_TICK_MS));
-      check("backlog nudge: kind:note NEVER counts as backlog", (await nudges()).length === 0);
+      check("backlog nudge: kind:notiz NEVER counts as backlog", (await nudges()).length === 0);
 
       type FullTask = { id: string; text: string; kind: string; status: string; [k: string]: unknown };
       const fullTasks = async (): Promise<FullTask[]> =>
@@ -946,10 +1053,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && auditHas, JSON.stringify({ note: over?.note, auditHas }));
     await post(`/api/tasks/${hFlag}/unqueue`, {});
 
-    // (h8) an owner brief can never be "adopted" — the conversion only exists for observations,
-    // and the note→brief direction itself is proven where the steward token lives (steward-outcomes)
+    // (h8) an owner auftrag can never be "adopted" — the compatibility conversion only exists
+    // for notiz; the complete reversible surface is the /kind family above.
     const reAdopt = await post(`/api/tasks/${hFlag}/adopt`, {});
-    check("(h8) adopt is refused on something that is already a brief (409)",
+    check("(h8) adopt is refused on something that is already an auftrag (409)",
       reAdopt.status === 409, `${reAdopt.status} ${await reAdopt.text()}`);
 
     // (h9) prompt invariants against the pure builder (the worker's EFFECT is untestable by design)
@@ -1389,7 +1496,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const jMinted = jcJ.tasks ?? [];
     check("(j) confirm mints one PENDING lane row per child, owner-sourced, with the repo inherited",
       jc.ok && jMinted.length === 2
-      && jMinted.every((k) => k.kind === "lane" && k.source === "owner" && k.status === "pending" && k.repo === jT.task.repo),
+      && jMinted.every((k) => k.kind === "auftrag" && k.source === "owner" && k.status === "pending" && k.repo === jT.task.repo),
       `${jc.status} ${JSON.stringify(jMinted)}`);
     check("(j) the children carry NO analysis verdict — a promoted split meets the analyst fresh",
       jMinted.every((k) => k.analysis === undefined), JSON.stringify(jMinted.map((k) => k.analysis ?? null)));
@@ -1468,8 +1575,8 @@ export async function run(ctx: Ctx): Promise<void> {
       jCNote.includes("the cap is 4") && (await jFull(jC.task.id))?.refine === undefined, JSON.stringify(jCNote));
     for (const id of [jF.task.id, jC.task.id]) await post(`/api/tasks/${id}/delete`, {});
 
-    // a steward NOTE is an observation addressed to the owner, and confirming a refinement mints
-    // `kind:"lane"` rows — so the compiler refuses it, the same way the dispatch button does
+    // a steward notiz is an observation addressed to the owner, and confirming a refinement mints
+    // kind:auftrag rows — so the compiler refuses it, the same way the dispatch button does
     let jState: { stewardToken?: string } = {};
     for (let i = 0; i < 40 && !jState.stewardToken; i++) {
       try { jState = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as typeof jState; } catch { /* mid-write */ }
@@ -1478,9 +1585,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const jNote = (await (await fetch(`${BASE}/api/steward/tasks`, { method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jState.stewardToken ?? ""}` },
       body: JSON.stringify({ text: "refine note-probe: an observation, not a brief" }) })).json()) as { task?: { id: string; kind?: string } };
-    check("(j) fixture: the steward filed a NOTE (so the refusal below is about kind, not status)",
-      jNote.task?.kind === "note", JSON.stringify(jNote.task ?? null));
-    check("(j) refine refuses a note (409 — refining it would mint lane rows out of an observation)",
+    check("(j) fixture: the steward filed a notiz (so the refusal below is about kind, not status)",
+      jNote.task?.kind === "notiz", JSON.stringify(jNote.task ?? null));
+    check("(j) refine refuses a notiz (409 — refining it would mint auftrag rows out of an observation)",
       !!jNote.task && (await post(`/api/tasks/${jNote.task.id}/refine`, {})).status === 409);
     if (jNote.task) await post(`/api/tasks/${jNote.task.id}/delete`, {});
 

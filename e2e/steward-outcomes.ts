@@ -15,12 +15,12 @@ export async function run(sc: StewardCtx): Promise<void> {
   check("steward files a task and queue:true is DISCARDED — status hard-forced to pending",
     stTask.ok && stTaskJ.task?.status === "pending" && stTaskJ.task?.source === "steward",
     JSON.stringify(stTaskJ));
-  check("a steward task defaults to kind \"note\" — an observation, never a runnable brief",
-    stTaskJ.task?.kind === "note", JSON.stringify(stTaskJ.task));
+  check("a steward task defaults to kind \"notiz\" — an observation, never a runnable brief",
+    stTaskJ.task?.kind === "notiz", JSON.stringify(stTaskJ.task));
   // the unsafe direction is a deliberate, auditable opt-in — and junk is refused, never coerced
-  const stLane = (await (await sc.stewPost("/api/steward/tasks", { text: "steward brief: run the drill", kind: "lane" })).json()) as { task?: { id: string; kind?: string } };
-  check("the steward may explicitly claim kind \"lane\" (opt-in for a real work brief)",
-    stLane.task?.kind === "lane", JSON.stringify(stLane.task));
+  const stLane = (await (await sc.stewPost("/api/steward/tasks", { text: "steward brief: run the drill", kind: "auftrag" })).json()) as { task?: { id: string; kind?: string } };
+  check("the steward may explicitly claim kind \"auftrag\" (opt-in for a real work brief)",
+    stLane.task?.kind === "auftrag", JSON.stringify(stLane.task));
   check("an unknown kind is rejected (400), never coerced",
     (await sc.stewPost("/api/steward/tasks", { text: "x", kind: "evil" })).status === 400);
   // the repo field is owner-only: a steward text must never choose where a lane spawns
@@ -40,12 +40,12 @@ export async function run(sc: StewardCtx): Promise<void> {
   const stQ = await post(`/api/tasks/${stTaskJ.task?.id}/queue`, {});
   check("an observation cannot be released — it is not a brief (409)",
     stQ.status === 409, `${stQ.status} ${await stQ.text()}`);
-  check("owner adopts the steward-filed observation (note → lane, still pending)",
+  check("owner adopts the steward-filed observation (notiz → auftrag, still pending)",
     (await post(`/api/tasks/${stTaskJ.task?.id}/adopt`, {})).ok);
   const promRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; kind?: string; status: string; note?: string }[] })
     .tasks.find((t) => t.id === stTaskJ.task?.id);
   check("the adopted row is a pending BRIEF that says where it came from",
-    promRow?.kind === "lane" && promRow.status === "pending" && (promRow.note ?? "").includes("adopted from an observation"),
+    promRow?.kind === "auftrag" && promRow.status === "pending" && (promRow.note ?? "").includes("adopted from an observation"),
     JSON.stringify(promRow));
   check("steward task rejects empty text (400)", (await sc.stewPost("/api/steward/tasks", { text: "  " })).status === 400);
 

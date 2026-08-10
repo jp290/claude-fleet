@@ -1070,15 +1070,28 @@ interface Watch {
 // (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
 // the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
 // free lanes. External text is data, never a command until the owner opts it in.
+const TASK_KINDS = ["auftrag", "richtung", "notiz", "betrieb"] as const;
+type TaskKind = typeof TASK_KINDS[number];
+const isTaskKind = (value: unknown): value is TaskKind =>
+  typeof value === "string" && (TASK_KINDS as readonly string[]).includes(value);
+const loadTaskKind = (value: unknown, source: Task["source"]): TaskKind => {
+  if (value === "lane") return "auftrag";
+  if (value === "note") return "notiz";
+  if (isTaskKind(value)) return value;
+  return source === "steward" ? "notiz" : "auftrag";
+};
+const taskKindNote = (kind: TaskKind): string | null =>
+  kind === "auftrag" ? null : `${kind} — the dispatcher never runs this`;
+
 interface Task {
   id: string;
   text: string;
   source: "owner" | "intake" | "steward";
   from: string | null; // intake sender label (freeform, for display only — never trusted)
-  kind: "lane" | "note"; // lane = a work brief the dispatcher may run once queued; note = an
-  // observation addressed to the OWNER (the steward's default). Promote stays allowed for a
-  // note — it is the propose-outcome signal — but the dispatcher skips it: an observation
-  // ("lane X looks done") must never be injected into a fresh lane as its founding brief.
+  kind: TaskKind; // auftrag is the one executable category. richtung, notiz and betrieb are
+  // advisory categories without their own motor (owner decision 2026-08-10); promoting one is
+  // still a valid propose-outcome signal, but every dispatch path skips it and leaves that fact
+  // standing on the row.
   repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
@@ -1774,6 +1787,7 @@ type AuditEvent =
   | "guest_ws_connect" | "guest_ws_disconnect"
   | "auto_fire" | "auto_skip"
   | "task_dispatch" // the manual start button — an owner act, distinct from the tick's spawns
+  | "task_kind" // owner changed a task's category; detail records id and both values
   // the owner released a task the queue analyst had flagged. Recorded because the analyst is
   // advisory: without a trace, an override is indistinguishable from an ordinary promote, and
   // nothing could ever be calibrated against how often its objections were right
@@ -3708,6 +3722,11 @@ const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null 
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
   spawn: DispatchSpawn = DEFAULT_SPAWN):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
+  // Last lock, shared by the tick and the attended route: only an auftrag may ever cross from a
+  // queue row into a lane. Callers filter too so they can return the right status/reason, but a
+  // future caller cannot accidentally turn an advisory category into work by skipping that check.
+  if (next.kind !== "auftrag")
+    return { ok: false, error: `${next.kind} is advisory — the dispatcher never runs this` };
   // THE BOLT, restated where the choice now arrives. It used to be openSlot's parameter default
   // alone: the tick called the short form, so it COULD not name a harness. That absence still
   // holds (tickDispatch passes no `spawn`, pinned in e2e/pins.ts) — this is the second lock, for
@@ -3960,7 +3979,7 @@ function analysisFailed(t: Task, reason: string, head: string | null): TaskAnaly
 // ONE rule for "this row needs the analyst", so there is one place to read and one place to test:
 // never analysed · answered but the ground moved · or a failed reading whose backoff has elapsed.
 function analysisDue(t: Task, now: number): boolean {
-  if (t.kind !== "lane" || dispatchingTasks.has(t.id)) return false;
+  if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
   if (t.status !== "pending" && t.status !== "queued") return false;
   const a = t.analysis;
   if (!a) return true;
@@ -3980,7 +3999,7 @@ async function tickAnalysisSweep(): Promise<void> {
   if (analysisBusy || !ANALYSIS_TICK_MS) return;
   analysisBusy = true;
   try {
-    const live = tasks.filter((t) => t.kind === "lane" && (t.status === "pending" || t.status === "queued"));
+    const live = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
     if (!live.length) return;
     // refresh the tips FIRST, before anything asks what is stale. Staleness that only a sweep can
     // notice, computed from a cache only that same sweep updates, is staleness nobody ever notices.
@@ -4230,9 +4249,9 @@ async function tickDispatch(): Promise<void> {
   if (dispatchBusy || !dispatchOn || !DISPATCH_REPO) return;
   dispatchBusy = true;
   try {
-    // notes are never dispatchable (Task.kind) — skipping them here also shields legacy
-    // fleet.json rows queued before the field existed.
-    const candidates = tasks.filter((t) => t.kind === "lane" && t.status === "queued" && !dispatchingTasks.has(t.id));
+    // Advisory categories are never dispatchable. Filtering here prevents an inert queued row
+    // from blocking an executable one behind it; dispatchTask repeats the lock for every caller.
+    const candidates = tasks.filter((t) => t.kind === "auftrag" && t.status === "queued" && !dispatchingTasks.has(t.id));
     if (!candidates.length) return;
     // WHAT IS RUNNING RIGHT NOW, in the two shapes `collides` speaks (analysis-prompt.ts: "the ids
     // of other tasks in this batch, and the branch names of the open lanes"). Both are needed and
@@ -5887,8 +5906,8 @@ async function tickAuditPing(): Promise<void> {
 let backlogNudgeBusy = false;
 async function tickBacklogNudge(): Promise<void> {
   // The normal case is deliberately process-only: no open executable row means no liveness probe,
-  // no tmux and no ps. Notes are observations and never enter this set, whatever their status.
-  const open = tasks.filter((t) => t.kind === "lane" && (t.status === "pending" || t.status === "queued"));
+  // no tmux and no ps. Advisory categories never enter this set, whatever their status.
+  const open = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
   if (!open.length) return;
   if (backlogNudgeBusy) return;
   backlogNudgeBusy = true;
@@ -9604,7 +9623,7 @@ async function handleIntake(req: Request): Promise<Response> {
   const from = typeof body.from === "string" ? body.from.slice(0, 120) : null;
   const t: Task = {
     id: randomBytes(4).toString("hex"), text, source: "intake", from,
-    kind: "lane", repo: null, status: "pending", created: now, slot: null, note: null,
+    kind: "auftrag", repo: null, status: "pending", created: now, slot: null, note: null,
   };
   tasks = capTasks([...tasks, t]);
   saveState();
@@ -9744,11 +9763,12 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
         && ["owner", "intake", "steward"].includes((x as Task).source)
         && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
-        // rows persisted before `kind`/`repo` existed (2026-08-04): steward rows were
-        // observations, everything else was work, and every lane targeted the dispatcher
-        // default — normalize here so every row downstream carries both fields
+        // The 2026-08-10 kind migration is deliberately a load normalisation: legacy lane/note
+        // rows become auftrag/notiz, already-migrated rows remain byte-stable on every reload,
+        // and malformed/pre-field rows retain the old source-based safe default. The spread keeps
+        // every unrelated field intact.
         .map((t) => ({ ...t,
-          kind: t.kind === "lane" || t.kind === "note" ? t.kind : (t.source === "steward" ? "note" as const : "lane" as const),
+          kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
           repo: typeof t.repo === "string" ? t.repo : null,
           // rows released before this field existed stay ABSENT, and a malformed value degrades to
           // absent too — never to "owner". The whole point of the field is that a released row can
@@ -11791,14 +11811,13 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // mandatory — same stance as sends/autos). Review capacity is the binding constraint.
     const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
     if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
-    // kind defaults to "note": a steward text is an observation unless the steward explicitly
-    // claims it is a runnable work brief. The claim is cheap to make and auditable — the unsafe
-    // direction (an observation dispatched into a lane) needs a deliberate opt-in, not a typo.
-    if (body.kind !== undefined && body.kind !== "lane" && body.kind !== "note")
-      return json({ error: "kind must be \"lane\" or \"note\"" }, 400);
+    // A steward filing defaults to notiz. An explicit category is accepted only through the same
+    // four-value validator as the owner create and kind-change routes.
+    if (body.kind !== undefined && !isTaskKind(body.kind))
+      return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
     const t: Task = {
       id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-      source: "steward", from: null, kind: body.kind === "lane" ? "lane" : "note",
+      source: "steward", from: null, kind: isTaskKind(body.kind) ? body.kind : "notiz",
       repo: null, // never body.repo — a steward text must not choose where a lane spawns
       status: "pending", created: Date.now(), slot: null, note: null,
       ...(ref ? { ref } : {}),
@@ -13638,6 +13657,8 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/tasks" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
+      if (body.kind !== undefined && !isTaskKind(body.kind))
+        return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
       // per-task target repo (owner-only — the intake and steward routes hard-set null).
       // Validated as an existing directory HERE, at the boundary; git-ness is proven at spawn
       // time by createWorktree, which fails loudly onto the task's note.
@@ -13650,8 +13671,9 @@ Bun.serve<WSData>({
       }
       const t: Task = {
         id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
-        source: "owner", from: null, kind: "lane", repo: taskRepo,
-        status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null, note: null,
+        source: "owner", from: null, kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
+        status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
+        note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,
         // create-and-release in one call is still a release (see releaseTask, which the separate
         // ▸ queue button routes through) — a row that arrives already queued was released by the
         // owner who posted it. A row that arrives `pending` was not released at all: no field.
@@ -13664,6 +13686,29 @@ Bun.serve<WSData>({
     // the full prompt texts, kept off the 2 s poll (see TaskDigest). The queue overlay fetches
     // this when it opens; a task's text never changes after creation, so the client caches by id.
     if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks });
+    // The reversible category route. `adopt` predates the four-value model and remains below as a
+    // compatibility alias for notiz→auftrag; this route is the complete owner surface, including
+    // the route back. It sits past tokenGate, like every other owner task mutation.
+    const taskKind = /^\/api\/tasks\/([a-z0-9]+)\/kind$/.exec(url.pathname);
+    if (req.method === "POST" && taskKind) {
+      const t = tasks.find((x) => x.id === taskKind[1]);
+      if (!t) return json({ error: "unknown task" }, 404);
+      const body = await readJson(req);
+      if (!isTaskKind(body?.kind))
+        return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
+      const before = t.kind;
+      if (before === body.kind) return json({ ok: true, task: t, unchanged: true });
+      const oldStandingNote = taskKindNote(before);
+      t.kind = body.kind;
+      // A queued advisory row must always explain why it stays put. If a prior promote left that
+      // marker standing after unqueue, carry/clear the marker with the category instead of leaving
+      // a sentence that now names the wrong kind. Other notes belong to other mechanisms.
+      if (t.status === "queued" || (oldStandingNote !== null && t.note === oldStandingNote))
+        t.note = taskKindNote(t.kind);
+      saveState();
+      audit("task_kind", undefined, `${t.id}:${before}->${t.kind}`);
+      return json({ ok: true, task: t });
+    }
     // the manual "start now" button: dispatch THIS task into a fresh lane immediately.
     // Independent of `dispatchOn` (the owner may run the queue entirely by hand with the auto
     // tick off) and NOT bound by DISPATCH_MAX_LANES — the cap bounds UNATTENDED fan-out, and
@@ -13675,7 +13720,7 @@ Bun.serve<WSData>({
       if (!t) return json({ error: "unknown task" }, 404);
       // a task with its own target repo starts fine without the env default
       if (!DISPATCH_REPO && !t.repo) return json({ error: "no target repo — set FLEET_DISPATCH_REPO or give the task a repo" }, 400);
-      if (t.kind === "note") return json({ error: "a note is not dispatchable — it is an observation, not a brief" }, 409);
+      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — the dispatcher never runs this` }, 409);
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task can be started` }, 409);
       if (dispatchingTasks.has(t.id)) return json({ error: "task is already being dispatched" }, 409);
@@ -13729,7 +13774,7 @@ Bun.serve<WSData>({
       if (!t) return json({ error: "unknown task" }, 404);
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
-      if (t.kind === "note") return json({ error: "a note is an observation, not a work brief — nothing to analyse" }, 409);
+      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory, not a work brief — nothing to analyse` }, 409);
       t.analysis = undefined;
       // an un-edited brief goes too: "analyse this again" means the whole reading, and a brief the
       // owner never touched is the analyst's own output, not an input worth preserving.
@@ -13744,10 +13789,9 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskRefine) {
       const t = tasks.find((x) => x.id === taskRefine[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      // a note is an observation addressed to the owner (Task.kind); confirming a refinement mints
-      // `kind:"lane"` rows, so refining one would be a kind change wearing a rewrite — the same
-      // reason the dispatch button refuses notes
-      if (t.kind === "note") return json({ error: "a note is not a brief — refining it would mint lane rows out of an observation" }, 409);
+      // Confirming a refinement mints auftrag rows, so refining an advisory category would be a
+      // kind change wearing a rewrite — the same reason the dispatch button refuses it.
+      if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory — refining it would mint auftrag rows` }, 409);
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task can be refined` }, 409);
       if (refineInflight.has(t.id)) return json({ error: "a refine is already running for this task" }, 409);
@@ -13793,7 +13837,7 @@ Bun.serve<WSData>({
         // `repo` rides along, or the split would silently retarget the dispatcher default. Note the
         // children land as `pending`, never `queued`: refining proposes work, releasing it stays a
         // separate owner act, and confirming a split must not smuggle four rows past that boundary.
-        source: "owner", from: null, kind: "lane", repo: t.repo,
+        source: "owner", from: null, kind: "auftrag", repo: t.repo,
         // the ONE thing a child inherits from the proposal besides its text: the paths the refiner
         // verified against the tree, which the owner is confirming along with everything else. It
         // is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
@@ -13820,7 +13864,7 @@ Bun.serve<WSData>({
     if (req.method === "POST" && taskBrief) {
       const t = tasks.find((x) => x.id === taskBrief[1]);
       if (!t) return json({ error: "unknown task" }, 404);
-      if (t.kind === "note") return json({ error: "a note is never sent to a lane — it has no brief" }, 409);
+      if (t.kind !== "auftrag") return json({ error: `${t.kind} is never sent to a lane — it has no brief` }, 409);
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — its brief has already been sent` }, 409);
       const body = await readJson(req);
@@ -13901,45 +13945,43 @@ Bun.serve<WSData>({
       // promoted-then-deleted task can never double-count. Read the class BEFORE mutating status.
       // archive mirrors delete for the measurement channel: shelving a PENDING proposal IS a
       // dismissal — without this, archive would be a silent second path around the channel
-      // `adopt` joins the channel on the "helped" side: it is now the act a steward NOTE receives
-      // when the owner agrees with it, exactly where `queue` used to sit for notes.
+      // `adopt` remains the compatibility verb on the "helped" side for a steward notiz; the
+      // general reversible kind route above is the complete category editor.
       const proposeOutcome: "helped" | "dismissed" | null =
         t.source === "steward" && t.status === "pending"
           ? (taskAct[2] === "queue" || taskAct[2] === "adopt" ? "helped"
             : taskAct[2] === "delete" || taskAct[2] === "archive" ? "dismissed" : null)
           : null;
       // ...and the KIND with it, for the same reason the comment above gives for the class:
-      // `adopt` rewrites note→lane, so reading it at journal-write time would record every adopted
-      // observation as having been a brief all along — erasing exactly the distinction the channel
-      // exists to measure.
+      // `adopt` rewrites notiz→auftrag, so reading it at journal-write time would record every
+      // adopted observation as having been an executable task all along.
       const outcomeKind = t.kind;
-      // A NOTE IS NOT WORK (owner ask 2026-08-05): an observation must not be releasable as if it
-      // were a brief. Promoting one used to be legal and produced a `queued` row that no tick would
-      // ever run, carrying a note explaining its own inertness — a contradiction sitting in the
-      // release lane. Adopting is the honest move: it converts the observation into a work brief,
-      // back at `pending`, where the analyst reads it and the owner still has to release it. The
-      // conversion is the owner's, which keeps the steward from ever authoring runnable work.
+      // Compatibility alias for the old one-way conversion. The new /kind route handles every
+      // direction; adopt deliberately keeps its narrow historic contract.
       if (taskAct[2] === "adopt") {
-        if (t.kind !== "note") return json({ error: "already a work brief — nothing to adopt" }, 409);
-        if (t.status !== "pending") return json({ error: `task is ${t.status} — only a pending note can be adopted` }, 409);
-        t.kind = "lane";
+        if (t.kind !== "notiz") return json({ error: "only a notiz can be adopted as an auftrag" }, 409);
+        if (t.status !== "pending") return json({ error: `task is ${t.status} — only a pending notiz can be adopted` }, 409);
+        t.kind = "auftrag";
         t.note = "adopted from an observation — analysed like any brief, still yours to release";
-      } else if (taskAct[2] === "queue" && t.kind === "note") {
-        return json({ error: "a note is an observation, not a work brief — adopt it first" }, 409);
       } else if (taskAct[2] === "delete") tasks = tasks.filter((x) => x.id !== t.id);
       else if (taskAct[2] === "queue") {
-        // RELEASING IS THE DECISION, and when it contradicts the analyst it is an override that
-        // must leave a trace. Before this, promoting a flagged task was indistinguishable from
-        // promoting a clean one — so the analyst could never be calibrated against what the owner
-        // actually did with it. The note is not a warning, it is a record.
-        // "needs-you" ONLY, never "unknown": an unread task carries no objection to overrule, and
-        // booking one as an override would both mis-record the owner's act and — because the note
-        // is written here — overwrite the dispatcher's "waiting: not analysed yet" with a sentence
-        // claiming a verdict that was never reached. (Caught by e2e (h6), which asserted the wait.)
-        const over = t.analysis?.verdict === "needs-you";
-        releaseTask(t, "owner");
-        t.note = over ? `released over the analyst's "${t.analysis!.verdict}" — ${t.analysis!.reason}`.slice(0, 200) : null;
-        if (over) audit("task_override", undefined, `${t.id}:${t.analysis!.verdict}`);
+        if (t.kind !== "auftrag") {
+          releaseTask(t, "owner");
+          t.note = taskKindNote(t.kind);
+        } else {
+          // RELEASING IS THE DECISION, and when it contradicts the analyst it is an override that
+          // must leave a trace. Before this, promoting a flagged task was indistinguishable from
+          // promoting a clean one — so the analyst could never be calibrated against what the owner
+          // actually did with it. The note is not a warning, it is a record.
+          // "needs-you" ONLY, never "unknown": an unread task carries no objection to overrule, and
+          // booking one as an override would both mis-record the owner's act and — because the note
+          // is written here — overwrite the dispatcher's "waiting: not analysed yet" with a sentence
+          // claiming a verdict that was never reached. (Caught by e2e (h6), which asserted the wait.)
+          const over = t.analysis?.verdict === "needs-you";
+          releaseTask(t, "owner");
+          t.note = over ? `released over the analyst's "${t.analysis!.verdict}" — ${t.analysis!.reason}`.slice(0, 200) : null;
+          if (over) audit("task_override", undefined, `${t.id}:${t.analysis!.verdict}`);
+        }
       }
       else if (taskAct[2] === "unqueue") t.status = "pending";
       else if (taskAct[2] === "archive") t.status = "archived";

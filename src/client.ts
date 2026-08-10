@@ -3264,7 +3264,13 @@ let spawnContainerContext = "";
 //
 // The quick paths (⎇+ quicklane, ⌘Enter) deliberately do NOT read any of this: they stay
 // one-click on defaults. Only the two buttons in THIS pane carry the options.
-function appendSpawnOptions(host: HTMLElement): void {
+// `before`: the node to insert AHEAD of, or null for "append at the end". It exists because the
+// first call and the re-render after a harness change happen at different moments in the pane's
+// life. On the first call `host` ends at the buttons, so appending puts the row directly under
+// them; by the time a harness change re-renders, the whole rest of the pane is already there, so
+// appending would drop the row below the facts and the directory listing — far out of view. The
+// owner read that as the controls disappearing (2026-08-10), which is exactly what it looks like.
+function appendSpawnOptions(host: HTMLElement, before: Node | null = null): void {
   // empty catalogue (not fetched yet, or the fetch failed) → render nothing at all. The pane is
   // then exactly the pre-harness pane, and both buttons still work on defaults.
   const agents = agentHarnesses();
@@ -3329,7 +3335,9 @@ function appendSpawnOptions(host: HTMLElement): void {
   }
 
   hSel.onchange = () => {
-    const next = harnesses.find((h) => h.id === hSel.value);
+    // read from the SAME list the dropdown was built from — a place is not selectable, so looking
+    // it up in the unfiltered catalogue could only ever find something this control cannot show
+    const next = agents.find((h) => h.id === hSel.value);
     spawnHarness = next && !next.default ? next.id : null;
     // a level from the harness being left behind must not ride along to the next one
     if (!next?.supports.effort || !next.effortLevels.includes(spawnEffort)) spawnEffort = "";
@@ -3340,19 +3348,23 @@ function appendSpawnOptions(host: HTMLElement): void {
     renderSpawnOptions(host, row);
   };
 
-  host.appendChild(row);
+  host.insertBefore(row, before);
   // the caveat a harness states about ITSELF, shown before it is ever spawned rather than
   // discovered afterwards — for Pi that is the shape of its write fence, and what the fence does
   // NOT cover (reads, network), which is the half an owner has to weigh before picking it.
-  if (chosen?.note) host.appendChild(el("div", "pkdwarn", `${chosen.id}: ${chosen.note}`));
+  if (chosen?.note) host.insertBefore(el("div", "pkdwarn", `${chosen.id}: ${chosen.note}`), before);
 }
 
 // re-render the row in place after a harness change (the fields on offer depend on it)
 function renderSpawnOptions(host: HTMLElement, old: HTMLElement): void {
   const note = old.nextElementSibling;
-  if (note?.classList.contains("pkdwarn")) note.remove();
+  const warn = note?.classList.contains("pkdwarn") ? note : null;
+  // the anchor is read BEFORE either removal, so the rebuilt row goes back exactly where this one
+  // stood instead of at the end of a pane that has since been filled in
+  const anchor = (warn ?? old).nextSibling;
+  warn?.remove();
   old.remove();
-  appendSpawnOptions(host);
+  appendSpawnOptions(host, anchor);
 }
 
 function labelled(text: string, control: HTMLElement): HTMLElement {

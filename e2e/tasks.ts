@@ -7,6 +7,7 @@ import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
+import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -1555,6 +1556,155 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ fullUnknown, digestUnknown }));
     await post(`/api/tasks/${derivedTask.id}/delete`, {});
     await post(`/api/tasks/${unknownTask.id}/delete`, {});
+  }
+
+  // --- Queue Waves: pure, advisory first-fit over known facts. Kept beside Task.files/cluster
+  // because that three-valued surface is the projector's mechanical collision evidence. ---
+  {
+    const oldFull = { at: 10, collides: ["old-edge"] };
+    const newDigest = { at: 11, stale: false, trust: "trusted" as const };
+    const mismatched = matchTaskWaveAnalysis(newDigest, oldFull);
+    const matched = matchTaskWaveAnalysis(newDigest, { at: 11, collides: ["new-edge"] });
+    check("task waves: full collision edges are admitted only from the digest's analysis generation",
+      mismatched === undefined && matched?.collides.join(" ") === "new-edge"
+      && matched.stale === false && matched.trust === "trusted",
+      JSON.stringify({ mismatched, matched }));
+
+    const row = (id: string, created: number, files: string[] | undefined,
+      extra: Partial<TaskWaveInput> = {}): TaskWaveInput => ({
+      id, created, files, filesOrigin: files ? "derived" : undefined,
+      repo: "/repo/a", kind: "auftrag", status: "queued", ...extra,
+    });
+    const project = (tasks: TaskWaveInput[], extra: Partial<ProjectTaskWavesInput> = {}) =>
+      projectTaskWaves({
+        tasks, dispatchRepo: "/repo/default", maxLanes: 2,
+        runningTaskIds: [], runningBranches: [], ...extra,
+      });
+    const ids = (p: ReturnType<typeof project>, repo = "/repo/a") =>
+      p.repos.find((r) => r.repo === repo)?.waves.map((wave) => wave.tasks.map((task) => task.id)) ?? [];
+
+    // Deliberately scrambled input and a created-time tie: order is created then id, and no wave
+    // may exceed dispatch.maxLanes even when every file surface is independent.
+    const capped = project([
+      row("c", 2, ["src/c.ts"]), row("b", 1, ["src/b.ts"]),
+      row("a", 1, ["src/a.ts"]), row("d", 3, ["src/d.ts"]),
+    ]);
+    check("task waves: cap=2 and created+id order produce deterministic first-fit waves",
+      JSON.stringify(ids(capped)) === JSON.stringify([["a", "b"], ["c", "d"]])
+      && capped.repos.every((repo) => repo.waves.every((wave) => wave.tasks.length <= 2)),
+      JSON.stringify(capped));
+
+    const fileEdge = project([
+      row("fa", 1, ["src/shared.ts"]), row("fb", 2, ["src/shared.ts"]),
+    ]);
+    check("task waves: a nonempty known-file intersection is a pair edge even with capacity left",
+      JSON.stringify(ids(fileEdge)) === JSON.stringify([["fa"], ["fb"]]), JSON.stringify(fileEdge));
+
+    const model = project([
+      row("ma", 1, ["src/a.ts"], { analysis: {
+        collides: ["mb"], stale: false, trust: "trusted",
+      } }),
+      row("mb", 2, ["src/b.ts"]),
+    ], { analysisOn: true });
+    check("task waves: one-sided fresh trusted model reference is an undirected pair edge",
+      JSON.stringify(ids(model)) === JSON.stringify([["ma"], ["mb"]]), JSON.stringify(model));
+
+    const stale = project([
+      row("sa", 1, ["src/a.ts"], { analysis: {
+        collides: ["sb"], stale: true, trust: "trusted",
+      } }),
+      row("sb", 2, ["src/b.ts"]),
+    ], { analysisOn: true });
+    const off = project([
+      row("oa", 1, ["src/a.ts"], { analysis: {
+        collides: ["ob"], stale: false, trust: "trusted",
+      } }),
+      row("ob", 2, ["src/b.ts"]),
+    ]); // missing mode is deliberately OFF, never inferred from the presence of a verdict
+    const unknownAnalysis = project([
+      row("ua", 1, ["src/a.ts"], { analysis: {
+        collides: ["ub"], stale: false, trust: "unknown",
+      } }),
+      row("ub", 2, ["src/b.ts"]),
+    ], { analysisOn: true });
+    check("task waves: stale, unknown and off/unreported model edges are ignored with honest evidence classes",
+      JSON.stringify(ids(stale)) === JSON.stringify([["sa", "sb"]])
+      && stale.repos[0]?.waves[0]?.tasks[0]?.modelEdges === "stale"
+      && JSON.stringify(ids(off)) === JSON.stringify([["oa", "ob"]])
+      && off.analysisMode === "off" && off.repos[0]?.waves[0]?.tasks[0]?.modelEdges === "off"
+      && JSON.stringify(ids(unknownAnalysis)) === JSON.stringify([["ua", "ub"]])
+      && unknownAnalysis.repos[0]?.waves[0]?.tasks[0]?.modelEdges === "unknown",
+      JSON.stringify({ stale, off, unknownAnalysis }));
+
+    const nonTransitive = project([
+      row("ta", 1, ["src/a.ts"]),
+      row("tb", 2, ["src/b.ts"], { analysis: {
+        collides: ["ta", "tc"], stale: false, trust: "trusted",
+      } }),
+      row("tc", 3, ["src/c.ts"]),
+    ], { analysisOn: true });
+    check("task waves: pair edges are not transitively invented",
+      JSON.stringify(ids(nonTransitive)) === JSON.stringify([["ta", "tc"], ["tb"]]),
+      JSON.stringify(nonTransitive));
+
+    const split = project([
+      row("ra", 1, ["same.ts"], { repo: "/repo/a" }),
+      row("rb", 2, ["same.ts"], { repo: "/repo/b" }),
+      row("rd", 3, ["same.ts"], { repo: undefined }),
+    ]);
+    check("task waves: repos partition identical file names and missing task repo resolves through dispatch repo",
+      JSON.stringify(split.repos.map((repo) => [repo.repo, repo.waves[0]?.tasks.map((task) => task.id)]))
+        === JSON.stringify([["/repo/a", ["ra"]], ["/repo/b", ["rb"]], ["/repo/default", ["rd"]]]),
+      JSON.stringify(split));
+
+    const candidates = project([
+      row("queued-work", 1, ["q.ts"]),
+      row("pending-work", 2, ["p.ts"], { status: "pending" }),
+      row("queued-note", 3, ["n.ts"], { kind: "notiz" }),
+      row("missing-kind", 4, ["m.ts"], { kind: undefined }),
+      row("sent-work", 5, ["s.ts"], { status: "sent" }),
+    ]);
+    check("task waves: candidates are exactly queued rows whose kind is explicitly auftrag",
+      JSON.stringify(ids(candidates)) === JSON.stringify([["queued-work"]]), JSON.stringify(candidates));
+
+    const outside = project([
+      row("unknown", 1, undefined),
+      row("running-id-block", 2, ["id.ts"], { analysis: {
+        collides: ["running-task"], stale: false, trust: "trusted",
+      } }),
+      row("running-branch-block", 3, ["branch.ts"], { analysis: {
+        collides: ["fleet/running"], stale: false, trust: "trusted",
+      } }),
+    ], { analysisOn: true, runningTaskIds: ["running-task"], runningBranches: ["fleet/running"] });
+    const unknownRepo = project([
+      row("unknown-repo", 1, ["known.ts"], { repo: undefined }),
+    ], { dispatchRepo: undefined });
+    check("task waves: unknown surfaces/repos and trusted running-id/branch blocks stay explicitly outside",
+      outside.repos.length === 0
+      && outside.unresolved.length === 1 && outside.unresolved[0]?.id === "unknown"
+      && outside.unresolved[0]?.reason === "unknown-files"
+      && outside.blockedByRunning.map((task) => task.id).join(" ") === "running-id-block running-branch-block"
+      && outside.blockedByRunning[0]?.running.join(" ") === "running-task"
+      && outside.blockedByRunning[1]?.running.join(" ") === "fleet/running"
+      && unknownRepo.unresolved[0]?.reason === "unknown-repo",
+      JSON.stringify({ outside, unknownRepo }));
+
+    const purityInput: ProjectTaskWavesInput = {
+      tasks: [
+        row("pure-b", 2, ["b.ts"]),
+        row("pure-a", 1, ["a.ts"], { analysis: {
+          collides: ["pure-b"], stale: false, trust: "trusted",
+        } }),
+      ],
+      dispatchRepo: "/repo/default", maxLanes: 2, analysisOn: true,
+      runningTaskIds: ["other"], runningBranches: ["fleet/other"],
+    };
+    const before = JSON.stringify(purityInput);
+    const once = projectTaskWaves(purityInput);
+    const twice = projectTaskWaves(purityInput);
+    check("task waves: repeated pure projection is deep-equal and does not mutate input facts",
+      JSON.stringify(once) === JSON.stringify(twice) && JSON.stringify(purityInput) === before,
+      JSON.stringify({ once, twice, input: purityInput }));
   }
 
   // --- (j) ↻ refine: the brief compiler on the queue (briefs/task-refine.md). Three properties

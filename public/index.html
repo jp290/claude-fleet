@@ -283,6 +283,15 @@
   .slot .diff:hover { color: #7dcfff; }
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */
   .qdisp { flex-basis: 100%; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  .qview { flex: none; display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
+    background: #181818; }
+  .qview button { min-height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--dim); font: inherit; font-size: 11.5px; cursor: pointer; }
+  .qview button:hover { color: var(--text); }
+  .qview button.on { color: #dbe6ff; background: var(--sel); box-shadow: inset 0 0 0 1px #3b4b70; }
+  /* Visible rather than title-only: touch screens have no hover, and the evidence caveat is the
+     difference between “no known collision” and a promise of safety. It is not a row fact. */
+  .qwavehint { padding: 0 7px 6px; color: var(--faint); font-size: 10.5px; line-height: 1.4; }
   .qdtext { font-size: 13px; color: #ddd; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
     background: #161616; border: 1px solid var(--raised); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
   /* the proposed done-criterion, editable before you confirm it — same box as .qdtext so a
@@ -469,6 +478,9 @@
     .shellrow .qfact:not(:first-child)::before { content: none; }
     .qkind { align-items: stretch; flex-direction: column; gap: 5px; }
     .qkind-select { min-height: 44px; font-size: 16px; }
+    .qview { flex: 1 1 auto; }
+    .qview button { flex: 1; min-height: 40px; }
+    .qwavehint { font-size: 11px; padding-bottom: 8px; }
   }
 
   /* picker controls, built by openPicker into the window's .shelltools. They sit on ONE line and

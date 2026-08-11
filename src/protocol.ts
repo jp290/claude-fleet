@@ -26,6 +26,21 @@ export const WS_INPUT_MAX_BYTES = 1024;
 // redeclaring it, so a field added for the client cannot be forgotten on the server and vice versa.
 export interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
 
+// --- stable lane ownership ----------------------------------------------------------------------
+// A lane belongs to one main-session OCCUPANT, not merely to a numbered slot: slots recycle, so
+// the opening timestamp is the generation half of the identity. Optional on every carrier because
+// old fleet state and an older server have no anchor to report. The normalizer is shared by state
+// load and the client join; malformed disk/wire data degrades to absence and never invents history.
+export interface LaneAnchor { slot: number; openedAt: number }
+export function normalizeLaneAnchor(value: unknown): LaneAnchor | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const v = value as { slot?: unknown; openedAt?: unknown };
+  return Number.isInteger(v.slot) && (v.slot as number) > 0
+    && typeof v.openedAt === "number" && Number.isFinite(v.openedAt) && v.openedAt > 0
+    ? { slot: v.slot as number, openedAt: v.openedAt }
+    : null;
+}
+
 // --- disposition rail ---------------------------------------------------------------------------
 // Which advisory worker an owner verdict is about, and the verdict vocabulary. The server validates
 // POST /api/dispositions against these lists; the client renders the same four words and sends the

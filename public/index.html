@@ -82,55 +82,34 @@
     display: flex; align-items: center; justify-content: center; line-height: 1; }
   #collapse:hover { color: var(--text); }
   #slots { flex: 1; overflow-y: auto; padding: 4px 7px; display: flex; flex-direction: column; gap: 3px; }
-  .slot { position: relative; flex: none; display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 9px;
-    border-radius: 8px; border: 1px solid transparent; background: transparent; color: #ccc;
-    cursor: pointer; font: 12px ui-monospace, Menlo, Consolas, monospace; text-align: left;
+  .slot { position: relative; flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 9px;
+    border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-size: 12px;
     user-select: none; -webkit-user-select: none; --rb: #242424; }
-  /* Native controls with only the scoped sidebar chrome removed. Their semantics remain native;
-     each named action gets its visual shape from the more-specific rule below. */
-  .slotctrl, button.slot { appearance: none; margin: 0; background: transparent; color: inherit;
-    font: inherit; line-height: inherit; cursor: pointer; }
-  .slotctrl { border: 0; padding: 0; }
-  .slotctrl:disabled { opacity: 0.5; cursor: default; }
-  .slotprimary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left; }
-  .slot:hover { background: #242424; }
+  .slot:hover, .slot:focus-within { background: #242424; }
   .slot.shown { background: #1e2333; border-color: #2a3350; --rb: #1e2333; }
   .slot.current { background: #26314f; border-color: var(--focus); --rb: #26314f; }
-  .slot .n { flex: none; width: 16px; color: #7aa2f7; font-weight: 700; }
-  .slot.empty .n { color: #b5bac7; }
-  .slot .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ccc; }
-  .slot .lbl.dim { color: #b5bac7; }
-  /* Activity is shape + colour: inactive is a hollow circle; recent/visible is a filled diamond. */
-  .slot .act { flex: none; width: 8px; height: 8px; border: 1.5px solid #b5bac7;
-    border-radius: 50%; background: transparent; }
-  .slot .act.recent { border-radius: 1px; border-color: #9ece6a; background: #9ece6a;
-    transform: rotate(45deg); }
-  /* rename/kill overlay the row's right edge on hover only, so the label keeps the full width */
-  .slotact { position: absolute; z-index: 1; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
-    gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rb) 18px); }
+  .slot .n { flex: none; width: 16px; color: var(--accent); font-weight: 700; }
+  .slot.empty .n { color: #555; }
+  .slot .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slot .lbl.dim { color: #555; }
+  .slot .act { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #3a3a3a; }
+  .slot .act.hot { background: #3fb950; }
+  /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
+  .slotact { position: absolute; right: 6px; top: 0; bottom: 0; display: none; align-items: center;
+    gap: 2px; padding-left: 6px; background: var(--rb); }
   .slot:hover .slotact, .slot:focus-within .slotact { display: flex; }
-  .slot .kill { color: #b9c8ea; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
-  .slot .kill:hover { color: #ff8b85; background: #2a1a1a; }
+  .slot .kill { color: #555; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+  .slot .kill:hover { color: var(--danger); background: #2a1a1a; }
   /* mobile-only per-row action strip (share/export/rename/land); hidden on desktop where
      the board carries these actions — the mobile media query flips it to a flex row */
   .rowacts { display: none; }
-  /* collapsed rail: fixed slot numbers / lane suffixes plus compact controls and status shapes */
+  /* collapsed rail: numbers + activity dots only, hand the freed width to the terminals */
   #side.collapsed { width: 50px; }
   #side.collapsed #sidetitle, #side.collapsed #dot, #side.collapsed #sidetools,
-  #side.collapsed #sidefoot, #side.collapsed .lbl { display: none; }
+  #side.collapsed #sidefoot, #side.collapsed .lbl, #side.collapsed .slotact { display: none; }
   #side.collapsed #sidehead { padding: 10px 0 6px; justify-content: center; }
   #side.collapsed #slots { padding: 4px 4px; }
-  #side.collapsed .slot { justify-content: center; gap: 3px; row-gap: 4px; padding: 8px 2px;
-    flex-wrap: wrap; }
-  #side.collapsed .slotprimary { flex: 0 1 auto; gap: 0; }
-  #side.collapsed .ctxfill, #side.collapsed .lanechip, #side.collapsed .autobadge,
-  #side.collapsed .stackn {
-    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
-    white-space: nowrap; }
-  #side.collapsed .slotact { right: 1px; gap: 1px; padding-left: 6px; }
-  /* One high-contrast focus treatment remains distinct on normal/current/shown rows and the rail. */
-  #slots :is(button, input):focus-visible { outline: 2px solid #fff; outline-offset: 2px;
-    box-shadow: 0 0 0 4px #111; z-index: 2; }
+  #side.collapsed .slot { justify-content: center; gap: 5px; padding: 8px 2px; }
   .renamein { flex: 1; min-width: 0; height: 20px; padding: 0 5px; border-radius: 5px;
     border: 1px solid var(--focus); background: #141414; color: #eee; font-size: 12px; font-family: inherit; }
   .renamein:focus { outline: none; }
@@ -238,10 +217,9 @@
     background: var(--raised); color: var(--dim); font-size: 15px; font-family: inherit; cursor: pointer; }
   #histbtn:hover, #autobtn:hover, #enhbtn:hover, #dropbtn:hover { color: var(--text); }
   .slot .autobadge { flex: none; font-size: 10px; color: var(--amber); }
-  /* lanes are first-class: a left accent + a ⎇ chip set them apart from plain repo sessions */
+  /* Lane suffix + left accent identify lanes without a redundant permanent glyph. */
   .slot.lane { border-left: 2px solid var(--focus); overflow: hidden; }
   .slot.lane.current { border-left-color: var(--accent); }
-  .slot .lanechip { flex: none; font-size: 11px; color: var(--accent); font-weight: 700; }
   /* The branch suffix is the non-collapsing spoken identity; the mutable label gets every
      remaining pixel and ellipsizes. Kept as one flex child so `ref · label` stays compact in
      the 228px sidebar while the row's existing state/actions keep their structure. */
@@ -250,21 +228,18 @@
     font-variant-numeric: tabular-nums; }
   .slot .lanesep { flex: none; color: var(--faint); }
   .slot .laneidentity .lbl { min-width: 0; }
-  /* ONE lifecycle mark replaces the old branch-name badge. Shape makes the same three facts
-     readable without colour: clean = hollow circle, editing = diamond, ready = triangle. */
-  .slot .lcdot { flex: none; width: 8px; height: 8px; border: 1.5px solid #b8c0d4;
-    border-radius: 50%; background: transparent; }
-  .slot .lcdot.editing { border: 0; border-radius: 1px; background: var(--amber);
-    transform: rotate(45deg); }  /* uncommitted work in progress */
-  .slot .lcdot.ready { border: 0; border-radius: 0; background: var(--add);
-    clip-path: polygon(50% 0, 100% 100%, 0 100%); } /* clean, commits waiting to push/land */
-  /* Context is a reading, not a warning. Unknown remains literal `ctx ?`, at equal rather than
-     lower contrast so unknown can never fade into an apparent absence. */
-  .slot .ctxfill { flex: none; font-size: 10px; color: #b8c0d4; font-variant-numeric: tabular-nums; }
-  .slot .ctxfill.unknown { color: #d0d4de; }
-  .slot .lanediff { position: relative; z-index: 2; flex: none; font-size: 13px; color: #8ed8ff;
-    cursor: pointer; padding: 0 2px; }
-  .slot .lanediff:hover { color: #c9edff; }
+  /* ONE lifecycle dot replaces the old branch-name badge. The full branch and the •N/↑N
+     counts stay in tooltips instead of squeezing the mutable label down to a sliver. */
+  .slot .lcdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6a7080; }
+  .slot .lcdot.editing { background: var(--amber); }  /* uncommitted work in progress */
+  .slot .lcdot.ready { background: var(--add); }    /* clean, commits waiting to push/land */
+  /* context fill — a reading, not a warning: one muted tone at every level, deliberately with no
+     threshold colour, so the row never implies an action nobody built. `?` (unknown) is dimmer
+     still, and is never an empty bar — a blank meter would read as a fresh session. */
+  .slot .ctxfill { flex: none; font-size: 10px; color: #8b93a7; font-variant-numeric: tabular-nums; }
+  .slot .ctxfill.unknown { color: #5a6072; }
+  .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
+  .slot .lanediff:hover { color: #bfe6ff; }
   /* the palette. Names are share.html's (the guest page) wherever the role is the same — the VALUES
      here are the board's own and unchanged by the naming, so the two pages share a vocabulary, not
      a look. Only the twelve most-used tones are named; one-off shades stay literal on purpose, so a
@@ -274,8 +249,7 @@
      --proj-h; the pastel pair is its only tuning knob. This block is what the older comment here
      called "the only place a second palette would ever be declared" — the app has exactly one
      (dark) today. The project colour wins over .slot.lane's blue accent on purpose: after F3 the
-     colour IS the stack identity, and laneness still reads from the ⎇ chip and the lifecycle dot
-     next to it. */
+     colour IS the stack identity, and laneness still reads from the unique suffix and lifecycle dot. */
   :root {
     --text: #ccc; --dim: #888; --faint: #666;
     --raised: #262626; --line: #333; --line-soft: #2a2a2a;
@@ -289,7 +263,7 @@
   .pane.proj::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
     background: hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.4); pointer-events: none; z-index: 1; }
   /* slot stacks (F3): the anchor carries the arrow, its lanes are indented under it */
-  .slot .stackfold { flex: none; width: 12px; margin-left: -3px; color: #b9c8ea; font-size: 10px;
+  .slot .stackfold { flex: none; width: 12px; margin-left: -3px; color: var(--faint); font-size: 10px;
     text-align: center; cursor: pointer; }
   .slot .stackfold:hover { color: var(--text); }
   .slot .stackn { flex: none; font-size: 10.5px; font-weight: 700; padding: 0 4px; border-radius: 4px;
@@ -303,9 +277,9 @@
   /* the 50px rail centres its rows and has no width to spend on hierarchy — drop the indent and
      the text chips there; the fold arrow stays, so a stack is still openable from the rail */
   #side.collapsed .slot.stacked { margin-left: 0; }
-  #side.collapsed .lanesep { display: none; }
-  .slot .diff { flex: none; font-size: 12px; color: #8ed8ff; cursor: pointer; }
-  .slot .diff:hover { color: #c9edff; }
+  #side.collapsed .stackn, #side.collapsed .lanesep { display: none; }
+  .slot .diff { flex: none; font-size: 12px; color: var(--faint); cursor: pointer; }
+  .slot .diff:hover { color: #7dcfff; }
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */
   .qdisp { flex-basis: 100%; font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
   .qview { flex: none; display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
@@ -963,13 +937,11 @@
   .shrreplyin:focus { outline: none; border-color: var(--focus); }
   .cmtb { flex: none; font-size: 10px; color: var(--accent); background: #1a2030; border: 1px solid #33415e;
     border-radius: 8px; padding: 1px 6px; }
-  .slot:hover .cmtb { display: none; }
-  /* Actionable even while the hover cluster is open: its higher stacking level keeps the review
-     button pointer-visible above .slotact on 228px desktop and in the collapsed rail. */
-  .revb { position: relative; z-index: 2; flex: none; font-size: 10px; color: var(--amber);
-    background: #2a2118; border: 1px solid #5a4a30; border-radius: 8px; padding: 1px 5px;
-    cursor: pointer; }
-  .slot .cmtact { color: #b9c8ea; font-size: 12px; padding: 2px 5px; border-radius: 4px; }
+  .slot:hover .cmtb, .slot:focus-within .cmtb { display: none; }
+  .revb { flex: none; font-size: 10px; color: var(--amber); background: #2a2118; border: 1px solid #5a4a30;
+    border-radius: 8px; padding: 1px 5px; cursor: pointer; }
+  .slot:hover .revb, .slot:focus-within .revb { display: none; }
+  .slot .cmtact { color: #555; font-size: 12px; padding: 2px 5px; border-radius: 4px; }
   .slot .cmtact.hot { color: var(--accent); }
   .slot .cmtact:hover { color: var(--accent); background: #1c2437; }
   .shrlive { color: var(--dim); }
@@ -1198,7 +1170,7 @@
     color: #aaa; font-size: 11px; font-family: inherit; cursor: pointer; }
   .bactbtn:hover { color: #ddd; border-color: var(--focus); }
   .bactbtn.on { color: var(--amber); border-color: #5a4a2a; }
-  .slot .quicklane { flex: none; font-size: 11px; color: #b9c8ea; cursor: pointer; padding: 0 3px;
+  .slot .quicklane { flex: none; font-size: 11px; color: #556; cursor: pointer; padding: 0 3px;
     border: 1px solid var(--sel); border-radius: 5px; }
   .slot .quicklane:hover { color: var(--accent); background: #1c2437; }
 
@@ -1209,8 +1181,7 @@
   #gatein:focus { outline: none; border-color: var(--focus); }
   #gatein.bad { border-color: var(--danger); }
 
-  /* Larger touch layouts still need the compact controls. Phone/coarse-short layouts override
-     this with their one in-flow .rowacts surface below. */
+  /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow */
   @media (hover: none) {
     .slotact { display: flex; position: static; padding-left: 0; background: none; }
     .pkrow .pkuse, .pkrow .pkpin { visibility: visible; }
@@ -1243,20 +1214,17 @@
     .boardtoggle { display: none !important; } /* must beat the JS inline display:block */
     body.board #board { display: none; } /* must outrank the desktop body.board rule */
     #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
-    .slot { padding: 12px 10px; font-size: 13px; flex-wrap: wrap; }
-    .slot.empty, .slotprimary { min-height: 40px; }
-    .slot .stackfold, .slot .quicklane { min-width: 40px; min-height: 40px; margin-left: 0;
-      display: flex; align-items: center; justify-content: center; }
-    /* Exactly one touch action surface: hide the desktop hover cluster and the inline controls
-       represented below. Passive fact indicators remain; no kill or diff is duplicated in the
-       mobile accessibility tree. */
-    #side .slotact { display: none !important; }
-    .slot > .lanediff, .slot > .revb, .slot > .cmtb { display: none; }
-    .rowacts { display: flex; flex: 1 0 100%; width: 100%; max-width: 100%; gap: 6px;
-      margin-top: 6px; flex-wrap: wrap; overflow-x: hidden; }
+    .slot { padding: 12px 10px; font-size: 13px; }
+    /* finger-sized kill target; share/export/rename/land come back as .rowacts on mobile
+       (the desktop-only board is display:none under 700px) */
+    .slot .kill { padding: 8px 10px; font-size: 16px; }
+    /* the row and its existing touch actions wrap instead of clipping in narrow drawers */
+    .slot { flex-wrap: wrap; }
+    .rowacts { display: flex; flex: 1 0 100%; width: 100%; max-width: 100%; gap: 8px;
+      margin-top: 6px; flex-wrap: wrap; }
     .rowacts .rowact { display: flex; flex: 1 1 40px; align-items: center; justify-content: center;
-      min-width: 40px; min-height: 40px; padding: 0; border-radius: 8px; border: 1px solid var(--line);
-      background: var(--raised); color: #ccc; font-size: 16px; cursor: pointer; }
+      min-width: 40px; min-height: 40px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--raised); color: var(--text); font-size: 16px; cursor: pointer; }
     .rowacts .rowact:active { background: var(--sel); color: var(--accent); border-color: var(--sel); }
     .bbtn { padding: 8px 12px; font-size: 13px; }
     .renamein { height: 26px; font-size: 16px; }

@@ -30,23 +30,28 @@ export GIT_OPTIONAL_LOCKS=0
 # The queue lives in fleet.json, which is untracked and belongs to the DIRECTORY the server runs in
 # (server.ts: STATE_FILE = import.meta.dir/fleet.json). A lane worktree therefore has none of its
 # own; the main worktree is the first line of `git worktree list` and is derived, never spelled out.
+MAIN=$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
 STATE=""
 if [ -f fleet.json ]; then
   STATE=fleet.json
 else
-  MAIN=$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
   [ -n "$MAIN" ] && [ -f "$MAIN/fleet.json" ] && STATE="$MAIN/fleet.json"
 fi
 
 # Cleaned up on EVERY exit, not just the happy one: nothing on this machine reaps /tmp, so a
 # script that only tidies up when it succeeds is a script that litters exactly when it fails.
-TMPF=/tmp/fleet-register-tracked.$$
 TMPL=/tmp/fleet-register-lanes.$$
-trap 'rm -f "$TMPF" "$TMPL"' EXIT HUP INT TERM
+TMPM=/tmp/fleet-register-task-metadata.$$
+trap 'rm -f "$TMPL" "$TMPM"' EXIT HUP INT TERM
 
-# The tracked file set is the existence filter that makes "which files does this row name" a fact
-# rather than a guess: a path-shaped token that no tracked file matches is prose.
-git ls-files > "$TMPF" 2>/dev/null || : > "$TMPF"
+# One projector for server and shell: exact tracked paths, provenance and clusters are derived in
+# task-metadata.ts. Its CLI is deliberately read-only; a failed probe leaves every surface UNKNOWN
+# rather than falling back to a second, subtly different parser here.
+printf '{"version":1,"tasks":{}}\n' > "$TMPM"
+if [ -n "$STATE" ] && command -v bun >/dev/null 2>&1; then
+  bun task-metadata.ts --state "$STATE" --default-repo "${MAIN:-$PWD}" > "$TMPM" 2>/dev/null \
+    || printf '{"version":1,"tasks":{}}\n' > "$TMPM"
+fi
 
 # The surface the running lanes already occupy. Committed work is diffed against the fork point;
 # uncommitted work is read per worktree. Both read-only, both lock-free.
@@ -68,13 +73,16 @@ done
 
 MAINSHA=$(git rev-parse main 2>/dev/null || echo "")
 
-STATE="$STATE" TRACKED="$TMPF" LANES="$TMPL" \
+STATE="$STATE" METADATA="$TMPM" LANES="$TMPL" \
 MAINSHA="$MAINSHA" python3 - <<'PY'
 import json, os, re, subprocess, sys, time
 from pathlib import Path
 
 STATE   = os.environ["STATE"]
-TRACKED = set(Path(os.environ["TRACKED"]).read_text().split())
+try:
+    METADATA = json.loads(Path(os.environ["METADATA"]).read_text()).get("tasks", {})
+except Exception:
+    METADATA = {}
 LANES   = [l.split("\t", 1) for l in Path(os.environ["LANES"]).read_text().splitlines() if l.strip()]
 MAINSHA = os.environ.get("MAINSHA", "")
 
@@ -89,20 +97,6 @@ def sh(cmd):
         return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20).stdout
     except Exception:
         return ""
-
-# A path-shaped token. The extension list is the one this repo actually writes; the existence check
-# against `git ls-files` is what turns a match into a fact.
-PATHRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:ts|sh|md|json|html|css|js|jsonl)\b")
-def surface_of(*texts):
-    out = set()
-    for t in texts:
-        if not t:
-            continue
-        for m in PATHRE.finditer(t):
-            f = m.group(0)
-            if f in TRACKED:
-                out.add(f)
-    return out
 
 def clip(s, n):
     s = " ".join((s or "").split())
@@ -127,14 +121,12 @@ if tasks is not None:
     for t in tasks:
         if t.get("status") not in OPEN:
             continue
-        refine = ((t.get("refine") or {}).get("proposal") or {})
-        rfiles = set()
-        for c in (refine.get("tasks") or []):
-            for f in (c.get("files") or []):
-                if f in TRACKED:
-                    rfiles.add(f)
         a = t.get("analysis") or {}
         brief = t.get("brief") or {}
+        meta = METADATA.get(t.get("id"), {})
+        surface = meta.get("files") if isinstance(meta.get("files"), list) else []
+        origin = meta.get("filesOrigin") if meta.get("filesOrigin") in ("confirmed", "derived") else None
+        cluster = meta.get("cluster") if isinstance(meta.get("cluster"), dict) else None
         # Question 5 of briefs/work-register.md §1: does the claim still hold? A verdict is stale
         # when the tree it judged has moved or the brief it judged has been rewritten — both are
         # recorded on the analysis for exactly this, and both are mechanical.
@@ -145,7 +137,7 @@ if tasks is not None:
             stale.append("brief")
         rows.append({
             "id": t.get("id", "?"),
-            "kind": t.get("kind", "lane"),
+            "kind": t.get("kind", "auftrag"),
             "src": (t.get("source") or "?")[:6],
             "status": t.get("status"),
             "verdict": a.get("verdict"),
@@ -159,15 +151,15 @@ if tasks is not None:
             "brief": bool(brief),
             "crit": bool((t.get("criterion") or {}).get("confirmedAt")),
             "text": t.get("text", ""),
-            "declared": sorted(rfiles),                                   # a FIELD someone filled in
-            "prose": sorted(surface_of(t.get("text"), brief.get("text"))),  # names read out of prose
-            "surface": sorted(surface_of(t.get("text"), brief.get("text")) | rfiles),
+            "surface": sorted(set(surface)),
+            "origin": origin,
+            "cluster": cluster,
         })
     byk = {}
     for r in rows:
         byk[r["kind"]] = byk.get(r["kind"], 0) + 1
     print(f"  {len(rows)} open of {len(tasks)} rows   " + " ".join(f"{k}={v}" for k, v in sorted(byk.items())))
-    print("  note = an observation for the OWNER; the dispatcher never runs one (server.ts, Task.kind)")
+    print("  notiz = an observation for the OWNER; the dispatcher never runs one (server.ts, Task.kind)")
     print()
     for r in sorted(rows, key=lambda r: (r["kind"], r["id"])):
         flags = "".join([
@@ -180,11 +172,17 @@ if tasks is not None:
         if r["retries"]:
             v += f"?x{r['retries']}"
         # Question 4: whose decision is it? Mechanical, from the row itself — never a guess.
-        waits = "owner" if (r["kind"] == "note" or r["verdict"] == "needs-you") else \
+        waits = "owner" if (r["kind"] == "notiz" or r["verdict"] == "needs-you") else \
                 "slot" if r["status"] == "sent" else "—"
         print(f"  {r['id']}  {r['kind']:<4} {r['status']:<7} {r['src']:<6} {flags} {v:<22} {waits:<5} {clip(r['text'], 66)}")
         if r["surface"]:
-            print(f"        surface: {' '.join(r['surface'])}")
+            tag = "[bestätigt/mechanisch]" if r["origin"] == "confirmed" else "[abgeleitet]"
+            print(f"        surface {tag}: {' '.join(r['surface'])}")
+            if r["cluster"]:
+                sub = f"/{r['cluster']['unterprozess']}" if r["cluster"].get("unterprozess") else ""
+                print(f"        cluster: {r['cluster'].get('projekt', '?')} / {r['cluster'].get('prozess', '?')}{sub}")
+        else:
+            print("        surface: UNBEKANNT — no exact tracked path in task/brief and no confirmed field")
         if r["collides"]:
             print(f"        analyst says collides: {' '.join(r['collides'])}")
     if not rows:
@@ -202,12 +200,12 @@ if tasks is not None:
 # ── 2. collision surface ────────────────────────────────────────────────────────────────────────
 print()
 print("=== 2. collision surface — what may NOT run beside what ===")
-print("  Three truth values, never folded into two (briefs/work-register.md §3):")
-print("    [mechanisch] a running lane's git diff, or a `files` field somebody filled in")
-print("    [grob]       filenames read out of a row's prose — file level; same FILE is not same code")
-print("    [modell]     the analyst's `collides`, which judged the work and may be wrong")
-print("    UNBEKANNT    no resolvable surface. Not 'no collision' — the absence of an answer.")
-print("  Only kind=lane rows appear: a note is never dispatched, so it cannot collide with anything.")
+print("  Truth values stay separate (briefs/work-register.md §3):")
+print("    [bestätigt/mechanisch] owner-confirmed refine `files`, or a running lane's git diff")
+print("    [abgeleitet]           exact tracked paths read from task/brief; deterministic but weaker")
+print("    [modell]               the analyst's `collides`, which judged the work and may be wrong")
+print("    UNBEKANNT              no resolvable surface. Not 'no collision' — absence of an answer.")
+print("  Only kind=auftrag rows appear: advisory rows are never dispatched and cannot collide as work.")
 print()
 occupied = {}
 for br, files in LANES:
@@ -224,7 +222,7 @@ if not LANES:
     print("  (no lane worktrees on disk)")
 print()
 
-lanerows = [r for r in rows if r["kind"] == "lane"]
+lanerows = [r for r in rows if r["kind"] == "auftrag"]
 if lanerows:
     # By FILE, not by group: grouping transitively on a file every row touches collapses the whole
     # queue into one component and answers nothing. server.ts is the measured case — it is named by
@@ -233,17 +231,17 @@ if lanerows:
     for r in lanerows:
         for f in r["surface"]:
             byfile.setdefault(f, []).append(r["id"])
-    declared = {r["id"]: set(r["declared"]) for r in lanerows}
+    origins = {r["id"]: r["origin"] for r in lanerows}
     contended = sorted(((f, ids) for f, ids in byfile.items() if len(ids) > 1),
                        key=lambda x: (-len(x[1]), x[0]))
     if contended:
         n = len(lanerows)
         for f, ids in contended:
-            tag = "[mechanisch]" if all(f in declared[i] for i in ids) else "[grob]"
+            tag = "[bestätigt/mechanisch]" if all(origins[i] == "confirmed" for i in ids) else "[abgeleitet]"
             broad = " ← named by most rows, weak evidence" if len(ids) * 2 > n else ""
             print(f"  {len(ids)}× {f:<42} {tag} {' '.join(sorted(ids))}{broad}")
     else:
-        print("  no file is named by two open lane rows")
+        print("  no file is named by two open auftrag rows")
     blind = sorted(r["id"] for r in lanerows if not r["surface"])
     if blind:
         print(f"  UNBEKANNT vs everything: {' '.join(blind)} — named no resolvable file.")

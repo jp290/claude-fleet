@@ -14,6 +14,10 @@ import { buildRefinePrompt } from "./refine-prompt";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
+import {
+  deriveTaskMetadata, readTrackedSnapshot, trackedIndexStamp,
+  type TaskCluster, type TaskFilesOrigin, type TrackedSnapshot,
+} from "./task-metadata";
 // the shapes and literals this file shares with src/client.ts and the harnesses — see src/protocol.ts
 // for what belongs there. tsc gates every land, so a drift in any of them is a compile error.
 import {
@@ -1116,15 +1120,17 @@ interface Task {
   repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
-  files?: string[]; // the paths this row declares it will touch. Written ONLY when a ↻ refine
-  // proposal is confirmed (refine-confirm, from RefineChild.files) — the refiner verified them
-  // against the tree and the owner then promoted them, which is what makes this the one file
-  // statement on a row that came from neither a guess nor a model run on the row's own text. It is
-  // also the only machine-readable surface a NOT-YET-STARTED task can have: a running lane has a
-  // git diff, a queued row has nothing else. It used to be folded into the row text as a `Files: …`
-  // prose line and nowhere else — readable by a person and by nothing else. That prose line stays
-  // (it is what the lane reads); this is the same fact in a form the collision check can consume.
-  // Absent means NOT DECLARED, which is an absence and never a claim that the row touches nothing.
+  files?: string[]; // the task's file surface. In persisted state this is written ONLY when a ↻
+  // refine proposal is confirmed (from RefineChild.files): the refiner verified it against the
+  // tree and the owner promoted it. API views may instead PROJECT exact tracked paths named in the
+  // task/brief, but that weaker derivation is never written back over the owner-confirmed field.
+  // Absent means UNKNOWN, never "touches nothing"; loadState and the projector both preserve that.
+  filesOrigin?: TaskFilesOrigin; // confirmed = persisted refine-confirm fact; derived = read-only
+  // server projection from exact path tokens. A legacy persisted `files` field is confirmed by the
+  // old field's contract. The two values must never collapse: dispatch/model consumers prefer the
+  // confirmed surface, and derived metadata is recomputed from the current tracked tree.
+  cluster?: TaskCluster; // read-only projection from the known file surface. Not persisted: its
+  // process map and the repository index can move while the task text remains unchanged.
   status: "pending" | "queued" | "sent" | "done" | "archived";
   releasedBy?: "owner" | "machine"; // WHO handed this draft to the machine — written at the
   // RELEASE (see releaseTask) and by nothing else. NOT a synonym for the outcome row's
@@ -1457,7 +1463,7 @@ interface AnalysisDigest {
   retry?: { at: number; attempts: number };
 }
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
-  & Partial<Pick<Task, "from" | "slot" | "note" | "repo">>
+  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "files" | "filesOrigin" | "cluster">>
   // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
   & { criterion?: { proposedAt: number; confirmedAt: number | null }; analysis?: AnalysisDigest }
   // same two-tier rule for the refine proposal: the poll says THAT one exists, how it turned out
@@ -1469,12 +1475,16 @@ type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   // everything the overlay needs to notice a new one; the texts ride GET /api/tasks.
   & { comments?: { n: number; at: number } };
 function taskDigest(t: Task): TaskDigest {
+  const view = taskView(t);
   return {
     id: t.id, source: t.source, kind: t.kind, status: t.status, created: t.created,
     ...(t.from ? { from: t.from } : {}),
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
+    ...(view.files ? { files: view.files } : {}),
+    ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
+    ...(view.cluster ? { cluster: view.cluster } : {}),
     ...(t.analysis ? {
       analysis: {
         verdict: t.analysis.verdict, blockers: t.analysis.blockers,
@@ -1534,6 +1544,42 @@ function repoCanon(repo: string): string {
 }
 const inRepo = (s: Slot, repo: string): boolean =>
   s.worktree != null && (s.worktree.repo === repoCanon(repo) || s.worktree.repo === repo);
+
+// Tracked paths are repository facts, shared by every task in that repo. Cache the `git ls-files`
+// result behind the index stamp: the 2 s sessions poll pays one cheap stat, not one git process per
+// row, while an add/remove invalidates the snapshot before the next projection. Repositories whose
+// index cannot be read are retried after a short pause; failure degrades to UNKNOWN, never `[]`.
+type TaskSurfaceCache = { snapshot: TrackedSnapshot | null; checkedAt: number };
+const taskSurfaceCache = new Map<string, TaskSurfaceCache>();
+function trackedSnapshotFor(repoRaw: string): TrackedSnapshot | null {
+  const repo = repoCanon(repoRaw);
+  const now = Date.now();
+  const hit = taskSurfaceCache.get(repo);
+  if (hit?.snapshot && trackedIndexStamp(hit.snapshot.indexPath) === hit.snapshot.indexStamp)
+    return hit.snapshot;
+  if (hit && !hit.snapshot && now - hit.checkedAt < 5000) return null;
+  try {
+    const snapshot = readTrackedSnapshot(repo);
+    taskSurfaceCache.set(repo, { snapshot, checkedAt: now });
+    return snapshot;
+  } catch {
+    taskSurfaceCache.set(repo, { snapshot: null, checkedAt: now });
+    return null;
+  }
+}
+function taskView(t: Task): Task {
+  const repoRaw = t.repo ?? (DISPATCH_REPO || null);
+  const snapshot = repoRaw ? trackedSnapshotFor(repoRaw) : null;
+  const confirmedFiles = t.filesOrigin === "derived" ? undefined : t.files;
+  const metadata = deriveTaskMetadata({
+    text: t.text, brief: t.brief?.text ?? null, confirmedFiles,
+  }, {
+    trackedPaths: snapshot?.paths ?? new Set<string>(),
+    project: snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null),
+    repoRoot: snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null),
+  });
+  return { ...t, files: undefined, filesOrigin: undefined, cluster: undefined, ...metadata };
+}
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
 let autosOn = true; // global kill-switch for scheduled autos (the heartbeat surface); owner-toggled, default on
 let quietHours: { start: number; end: number } | null = null; // owner-set local-hour window muting the recurring/heartbeat surface (no 3am nudges)
@@ -4092,6 +4138,9 @@ async function tickAnalysisSweep(): Promise<void> {
         { worker: "analysis", cmd: ANALYSIS_CMD, tools: REVIEW_TOOLS, model: ANALYSIS_MODEL, timeoutMs: ANALYSIS_TIMEOUT_MS },
         buildAnalysisPrompt(repo, batch.map((t) => ({
           id: t.id, source: t.source, text: t.text, brief: t.brief?.text ?? null,
+          // The analyst prompt's existing wording calls these DECLARED paths and has no provenance
+          // field. Feed it only the stronger persisted refine-confirm surface; projecting weaker
+          // text-derived paths into that shape would silently relabel them as confirmed.
           files: t.files ?? null,
         })), lanes), repo);
       const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
@@ -9798,8 +9847,12 @@ if (existsSync(STATE_FILE)) {
           releasedBy: t.releasedBy === "owner" || t.releasedBy === "machine" ? t.releasedBy : undefined,
           // the declared file surface degrades to ABSENT, never to an empty list: this feeds a
           // collision check, and "[]" there would read as "touches nothing" — a claim a malformed
-          // state file must not be able to make on a row's behalf.
-          files: normFileList(t.files),
+          // state file must not be able to make on a row's behalf. Pre-origin rows keep the field's
+          // old refine-confirm meaning. A persisted `derived` value is dropped and recomputed from
+          // prose instead of being promoted to the stronger source on reload.
+          files: t.filesOrigin === "derived" ? undefined : normFileList(t.files),
+          filesOrigin: t.filesOrigin === "derived" || !normFileList(t.files) ? undefined : "confirmed",
+          cluster: undefined, // always projected from the current repo index; never trusted off disk
           // a hand-edited state file must not smuggle a "ready" verdict the sweep never wrote —
           // anything malformed degrades to "not yet analysed", never to a pass. The predecessor
           // field (`eval`, verdicts "auto"/"review") is deliberately NOT migrated: its criteria
@@ -13721,7 +13774,9 @@ Bun.serve<WSData>({
     }
     // the full prompt texts, kept off the 2 s poll (see TaskDigest). The queue overlay fetches
     // this when it opens; a task's text never changes after creation, so the client caches by id.
-    if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks });
+    // Surface/cluster fields are read-only views over the current tracked tree; never persist the
+    // weaker derivation merely because a dashboard was opened.
+    if (url.pathname === "/api/tasks" && req.method === "GET") return json({ tasks: tasks.map(taskView) });
     // The reversible category route. `adopt` predates the four-value model and remains below as a
     // compatibility alias for notiz→auftrag; this route is the complete owner surface, including
     // the route back. It sits past tokenGate, like every other owner task mutation.
@@ -13878,7 +13933,9 @@ Bun.serve<WSData>({
         // verified against the tree, which the owner is confirming along with everything else. It
         // is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
         // are deliberately left off above so the child meets the sweep as the fresh draft it is.
-        ...(c.files.length ? { files: c.files.slice(0, MAX_REFINE_FILES) } : {}),
+        ...(c.files.length ? {
+          files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
+        } : {}),
         status: "pending", created: now, slot: null, note: null,
       }));
       // append BEFORE archiving the original: capTasks may only evict TERMINAL rows, and the

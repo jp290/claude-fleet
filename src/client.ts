@@ -5210,6 +5210,12 @@ let qRepoIn: HTMLInputElement | null = null; // target-repo input, same once-per
 // Keyed by task id, because carrying one task's draft over to another row would be worse.
 let qCmBox: HTMLTextAreaElement | null = null;
 let qCmFor: string | null = null;
+// Brief and criterion edits need the same poll-safe lifetime as comments. The server may deliver a
+// newly compiled value while the untouched box is open, so each draft remembers both its seed and
+// whether the owner has typed: fresh server text replaces an untouched seed, never local work.
+interface QTextDraft { for: string; box: HTMLTextAreaElement; seed: string; dirty: boolean }
+let qBriefDraft: QTextDraft | null = null;
+let qCriterionDraft: QTextDraft | null = null;
 // the task whose RAW start the owner has ticked off (see the guard in renderQueueDetail). Kept
 // across repaints — the 2 s poll rebuilds this pane — and keyed by ID, so an acknowledgment can
 // never carry over to the row you look at next. Dropped when the window closes: it is a decision
@@ -5273,7 +5279,7 @@ const Q_GROUPS: { k: QGroup; head: string; hint: string }[] = [
   { k: "released", head: "Released — runs next", hint: "you promoted these; the dispatcher takes them in this order" },
   { k: "running", head: "Running", hint: "live in a lane" },
   { k: "backlog", head: "Backlog — about to start", hint: "read and unobjected, or not yet read — yours to release" },
-  { k: "notes", head: "Observations", hint: "the steward's findings. Not work: adopt one to turn it into a brief" },
+  { k: "notes", head: "Observations", hint: "advisory rows, not dispatchable work. Change Kind to auftrag to refine or run one" },
   { k: "closed", head: "Closed", hint: "done and archived" },
 ];
 // ADVISORY = every kind the dispatcher refuses, i.e. everything that is not an `auftrag`. Phrased
@@ -5294,8 +5300,8 @@ function qGroupOf(t: TaskInfo): QGroup {
   if (t.analysis && t.analysis.verdict !== "ready") return "needs";
   return "backlog";
 }
-// the one-line verdict as it appears UNDER a row's title — the thing the old UI hid in a hover.
-// Blockers first because they are the scannable part; the sentence follows for whoever reads on.
+// The compact verdict fact under a row's title. Reasons and blockers belong to Overview, where
+// they can be read without turning the four-fact row into another nine-part middot chain.
 const Q_BLOCKER_LABEL: Record<string, string> = {
   attribution: "premise doesn't hold", reach: "reaches outside the worktree",
   criterion: "no done-criterion", "brief-drift": "brief drifted from your draft",
@@ -5303,14 +5309,12 @@ const Q_BLOCKER_LABEL: Record<string, string> = {
 function qVerdictLine(t: TaskInfo): string {
   const a = t.analysis;
   if (!a) return qAdvisory(t) ? "" : "not analysed yet";
-  const mark = a.verdict === "ready" ? "✓" : a.verdict === "unknown" ? "?" : "⚠";
-  const tags = a.blockers.map((b) => Q_BLOCKER_LABEL[b] ?? b).join(" · ");
   // "stale, re-reading" is a promise the row cannot keep while the re-reading FAILS, and saying it
   // anyway is how a blind window looked like a busy one. When there is a failure record, it
   // replaces that phrase — the verdict shown is the last one that came back, and it is not moving.
   const n = a.retry?.attempts ?? 0;
-  return [`${mark} ${tags || a.reason}`,
-    n ? `· re-analysis failing (${n}×)` : a.stale ? "· stale, re-reading" : ""].filter(Boolean).join(" ");
+  const verdict = a.verdict === "ready" ? "✓ ready" : a.verdict === "unknown" ? "? unknown" : "⚠ needs you";
+  return `${verdict}${n ? ` (re-analysis failing ${n}×)` : a.stale ? " (stale, re-reading)" : ""}`;
 }
 const qTaskText = (id: string) => taskText.get(id) ?? "";
 // THE ROW NAME. Two rules, both from watching the owner read his own queue and not recognise it.
@@ -5325,8 +5329,8 @@ const qTaskText = (id: string) => taskText.get(id) ?? "";
 // second line already carries — at the front of the name it ate 25 of the visible characters
 // before the text even started, on every steward row.
 const QT_TAG = /^\[([^\]\n]{1,40})\]\s*/;
-const qFirstLine = (id: string) => {
-  const raw = (qTaskText(id).split("\n")[0] || "…").replace(QT_TAG, "");
+const qFirstLine = (text: string) => {
+  const raw = (text.split("\n")[0] || "…").replace(QT_TAG, "");
   const end = /(?<=[^.\s]{2})[.!?](?=\s|$)/g;
   for (let m = end.exec(raw); m; m = end.exec(raw)) {
     if (m.index + 1 < 40) continue;   // too short to be the summary — keep reading
@@ -5339,7 +5343,43 @@ const qFirstLine = (id: string) => {
   }
   return raw.slice(0, 160);
 };
-const qTag = (id: string) => QT_TAG.exec(qTaskText(id).split("\n")[0] ?? "")?.[1] ?? "";
+const qTag = (text: string) => QT_TAG.exec(text.split("\n")[0] ?? "")?.[1] ?? "";
+
+// The row contract is deliberately a tuple, not another free-form middot chain: title plus four
+// facts, in the owner-confirmed order. Keeping placement DOM-free makes both completeness and
+// order directly testable without opening the dashboard.
+type QRowFacts = readonly [verdict: string, age: string, slot: string, sourceTag: string];
+function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; facts: QRowFacts } {
+  const source = t.source === "intake" ? `✉ ${t.from ?? "intake"}`
+    : t.source === "steward" ? "⚙ steward" : "owner";
+  const tag = qTag(text);
+  return {
+    title: qFirstLine(text),
+    facts: [
+      qVerdictLine(t) || "— advisory",
+      `${fmtDur(Math.max(0, now - t.created))} ago`,
+      t.slot ? `slot ${t.slot}` : "no slot",
+      tag ? `${source} / ${tag}` : source,
+    ],
+  };
+}
+
+function qTextDraft(current: QTextDraft | null, id: string, seed: string, rows: number): QTextDraft {
+  if (!current || current.for !== id) {
+    const box = el("textarea", "qdcrit") as HTMLTextAreaElement;
+    const draft: QTextDraft = { for: id, box, seed, dirty: false };
+    box.value = seed;
+    box.rows = rows;
+    box.addEventListener("input", () => { draft.dirty = true; });
+    return draft;
+  }
+  if (!current.dirty && current.seed !== seed) {
+    current.box.value = seed;
+    current.seed = seed;
+  }
+  current.box.rows = rows;
+  return current;
+}
 
 // returns whether the action actually took: the comment box clears its draft on the strength of
 // this, and clearing on a failed post is how a typed remark gets lost with nothing to show for it
@@ -5364,9 +5404,34 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
   return true;
 }
 
+function qDetailSection(parent: HTMLElement, title: string, disclosure = false, open = true): HTMLElement {
+  const section = document.createElement(disclosure ? "details" : "section");
+  section.className = "qdsection";
+  if (section instanceof HTMLDetailsElement) section.open = open;
+  section.appendChild(el(disclosure ? "summary" : "div", "qdsection-title", title));
+  const body = el("div", "qdsection-body");
+  section.appendChild(body);
+  parent.appendChild(section);
+  return body;
+}
+
 function renderQueueDetail() {
   const shell = qShell;
   if (!shell) return;
+  // A meaningful poll can repaint this pane while the owner is typing. The draft nodes themselves
+  // survive below; restore focus and selection after moving them back into the new section tree.
+  const focused = document.activeElement;
+  const selection = focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement
+    ? { start: focused.selectionStart, end: focused.selectionEnd, direction: focused.selectionDirection }
+    : null;
+  const restoreFocus = () => {
+    if (!(focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement) || !focused.isConnected) return;
+    focused.focus();
+    if (selection && selection.start !== null && selection.end !== null) {
+      try { focused.setSelectionRange(selection.start, selection.end, selection.direction ?? undefined); }
+      catch { /* input types without a text selection */ }
+    }
+  };
   shell.detail.replaceChildren();
   if (qPick === null) {
     shell.detail.appendChild(el("div", "rvhead", "New task"));
@@ -5424,19 +5489,32 @@ function renderQueueDetail() {
     acts.style.marginTop = "10px";
     acts.appendChild(add);
     shell.detail.appendChild(acts);
+    restoreFocus();
     return;
   }
   const t = tasksList.find((x) => x.id === qPick);
   if (!t) {
     shell.detail.appendChild(el("div", "shellhint", "that task is gone — it was completed or deleted"));
+    restoreFocus();
     return;
   }
+  const brief = taskBriefFull.get(t.id);
+  const crit = taskCriterionFull.get(t.id) ?? t.criterion;
+  const ref = taskRefineFull.get(t.id);
   shell.detail.appendChild(el("div", "rvhead", `${t.status}${t.slot ? ` · slot ${t.slot}` : ""}`));
+  const overview = qDetailSection(shell.detail, "Overview & discussion");
+  const hasRefinement = (!qAdvisory(t) && (t.status === "pending" || t.status === "queued"))
+    || brief !== undefined || crit !== undefined || ref !== undefined;
+  const refinement = hasRefinement ? qDetailSection(shell.detail, "Refinement") : null;
+  // Once a compiled brief exists, the original request is supporting evidence rather than the
+  // primary working text. Keep it one click away; raw tasks stay open because it is all they have.
+  const request = qDetailSection(shell.detail, "Request", true, brief === undefined);
+  const actionSection = qDetailSection(shell.detail, "Actions");
   const meta = el("div", "ocfacts");
   meta.appendChild(chip(t.source === "intake" ? `✉ ${t.from ?? "intake"}`
     : t.source === "steward" ? "⚙ steward" : "owner"));
   if (qAdvisory(t)) meta.appendChild(chip(`${t.kind} — not work`, "dim",
-    "the steward reports, it does not assign. Adopt it to turn it into a brief you own"));
+    "an advisory row does not assign work. Change its Kind to auftrag to enter the normal workflow"));
   // the analyst's reading as a one-word chip; the sentence behind it is spelled out below
   if (t.analysis) meta.appendChild(chip(
     t.analysis.verdict === "ready" ? "✓ analysed" : t.analysis.verdict === "unknown" ? "? unread" : "⚠ flagged",
@@ -5448,22 +5526,22 @@ function renderQueueDetail() {
     `target repo: ${t.repo} — this task's lane spawns there`));
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
-  shell.detail.appendChild(meta);
+  overview.appendChild(meta);
   // COMMENTS — sits directly under the chips, above the analyst, because it is the only text on
   // this row a HUMAN wrote and the one most likely to overrule everything below it. Always
   // present, even empty: "there was nowhere to leave a remark" is the defect this closes, and a
   // box that appears only once a thread exists has the same problem one click deeper.
   const cms = taskCommentsFull.get(t.id) ?? [];
-  shell.detail.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
+  overview.appendChild(el("div", "rvhead", cms.length ? `comments · ${cms.length}` : "comments"));
   for (const c of cms) {
-    shell.detail.appendChild(el("div", "qdtext", c.text));
+    overview.appendChild(el("div", "qdtext", c.text));
     const cline = el("div", "pkdacts");
     cline.appendChild(el("div", "shellhint", fmtTs(c.ts)));
     const cx = el("button", "shrbtn", "✕") as HTMLButtonElement;
     cx.title = "delete this comment";
     cx.onclick = () => void qAct(t.id, "comment-delete", { comment: c.id });
     cline.appendChild(cx);
-    shell.detail.appendChild(cline);
+    overview.appendChild(cline);
   }
   // the box itself is kept across rebuilds (see qCmBox): the 2 s poll repaints this pane whenever
   // a verdict or a comment lands, and a locally-created textarea would lose a half-typed remark
@@ -5474,7 +5552,7 @@ function renderQueueDetail() {
     qCmFor = t.id;
   }
   const cbox = qCmBox;
-  shell.detail.appendChild(cbox);
+  overview.appendChild(cbox);
   const cmacts = el("div", "pkdacts");
   const cmb = el("button", "shrbtn", "💬 comment") as HTMLButtonElement;
   cmb.title = "a remark for whoever picks this up — read, never executed:"
@@ -5485,7 +5563,7 @@ function renderQueueDetail() {
     void qAct(t.id, "comment", { text: cbox.value }).then((ok) => { if (ok) cbox.value = ""; });
   };
   cmacts.appendChild(cmb);
-  shell.detail.appendChild(cmacts);
+  overview.appendChild(cmacts);
   // the verdict spelled out in full where it can be READ — the FULL reason from the /api/tasks
   // fetch, never the digest's bounded slice (the truncated slice once made a verdict read as its
   // own opposite). The digest is the fallback while that fetch is still in flight.
@@ -5499,93 +5577,98 @@ function renderQueueDetail() {
     // failure overwrote the verdict, so the row said "could not read this" and the reasoning that
     // HAD been produced was gone. Now it says both, in that order: the verdict, then its age.
     const rn = t.analysis?.retry?.attempts ?? 0;
-    shell.detail.appendChild(el("div", "rvhead",
+    overview.appendChild(el("div", "rvhead",
       `${head}${rn ? ` · re-reading it has failed ${rn}×` : t.analysis?.stale ? " · stale — the tree moved, it is being re-read" : ""}`));
     if (an.blockers.length) {
       const tags = el("div", "ocfacts");
       for (const b of an.blockers) tags.appendChild(chip(Q_BLOCKER_LABEL[b] ?? b, "warn"));
-      shell.detail.appendChild(tags);
+      overview.appendChild(tags);
     }
-    shell.detail.appendChild(el("div", "qdtext", an.reason));
-    if (anFull?.collides.length) shell.detail.appendChild(el("div", "shellhint",
+    overview.appendChild(el("div", "qdtext", an.reason));
+    if (anFull?.collides.length) overview.appendChild(el("div", "shellhint",
       `touches the same files as: ${anFull.collides.join(", ")}`));
-    shell.detail.appendChild(el("div", "shellhint",
+    overview.appendChild(el("div", "shellhint",
       `${anFull ? `${anFull.model}, ` : ""}${fmtTs(an.at)} — advisory: it never blocks an action here`));
     // WHY it keeps failing, in the analyst's own words — the one thing a "re-analysis failing"
     // label cannot carry and the only thing that says whether ↻ re-analyse would help.
-    if (anFull?.retry) shell.detail.appendChild(el("div", "shellhint",
+    if (anFull?.retry) overview.appendChild(el("div", "shellhint",
       `the last re-reading failed at ${fmtTs(anFull.retry.at)}: ${anFull.retry.reason}`));
   }
   // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
   // It exists in the UI at all because it used to be compiled at spawn time and fired straight
   // into the pane: unreadable before the fact, and a different string from the one that had been
   // approved. Editing pins it (the sweep never recompiles over an edit) and re-opens the analysis.
-  const brief = taskBriefFull.get(t.id);
   if (!qAdvisory(t) && (t.status === "pending" || t.status === "queued")) {
-    shell.detail.appendChild(el("div", "rvhead",
+    refinement!.appendChild(el("div", "rvhead",
       brief ? `the brief this lane will receive${brief.edited ? " · yours" : ` · compiled ${fmtTs(brief.at)}`}`
         : "no compiled brief yet — the lane would receive your raw text"));
-    const bbox = el("textarea", "qdcrit") as HTMLTextAreaElement;
-    bbox.value = brief?.text ?? qTaskText(t.id);
-    bbox.rows = 10;
-    shell.detail.appendChild(bbox);
+    qBriefDraft = qTextDraft(qBriefDraft, t.id, brief?.text ?? qTaskText(t.id), 10);
+    const bbox = qBriefDraft.box;
+    refinement!.appendChild(bbox);
     const bacts = el("div", "pkdacts");
     const bb = el("button", "shrbtn", "save brief") as HTMLButtonElement;
     bb.title = "pins this text as the brief — the analyst re-reads it, and nothing recompiles over it";
-    bb.onclick = () => void qAct(t.id, "brief", { text: bbox.value });
+    bb.onclick = () => void qAct(t.id, "brief", { text: bbox.value }).then((ok) => {
+      if (ok && qBriefDraft?.for === t.id) {
+        qBriefDraft.seed = bbox.value;
+        qBriefDraft.dirty = false;
+      }
+    });
     bacts.appendChild(bb);
-    shell.detail.appendChild(bacts);
+    refinement!.appendChild(bacts);
   } else if (brief) {
-    shell.detail.appendChild(el("div", "rvhead", "the brief this lane received"));
-    shell.detail.appendChild(el("div", "qdtext", brief.text));
+    refinement!.appendChild(el("div", "rvhead", "the brief this lane received"));
+    refinement!.appendChild(el("div", "qdtext", brief.text));
   }
   // the done-criterion: a clarify lane's proposal until you confirm it. Editable in place —
   // confirming stores what YOU agreed to, which is what makes it your anchor and not its own
-  const crit = taskCriterionFull.get(t.id) ?? t.criterion;
   if (crit) {
     // narrowed through a local, not a boolean-plus-`!`: the assertion form would hand fmtTs a
     // null as "Jan 1 1970" the day a third criterion state decouples the two lines
     const confirmedAt = crit.confirmedAt;
     const confirmed = confirmedAt !== null;
-    shell.detail.appendChild(el("div", "rvhead",
+    refinement!.appendChild(el("div", "rvhead",
       confirmedAt !== null ? `done-criterion · confirmed ${fmtTs(confirmedAt)}` : "done-criterion · PROPOSED — yours to confirm"));
     if (confirmed) {
-      shell.detail.appendChild(el("div", "qdtext", crit.text ?? ""));
+      refinement!.appendChild(el("div", "qdtext", crit.text ?? ""));
     } else {
-      const box = el("textarea", "qdcrit") as HTMLTextAreaElement;
-      box.value = crit.text ?? "";
-      box.rows = 6;
-      shell.detail.appendChild(box);
+      qCriterionDraft = qTextDraft(qCriterionDraft, t.id, crit.text ?? "", 6);
+      const box = qCriterionDraft.box;
+      refinement!.appendChild(box);
       const cacts = el("div", "pkdacts");
       const cb = el("button", "shrbtn primary", "✓ confirm criterion") as HTMLButtonElement;
       cb.title = "makes this criterion yours and releases the lane to build against it";
-      cb.onclick = () => void qAct(t.id, "criterion-confirm", { text: box.value });
+      cb.onclick = () => void qAct(t.id, "criterion-confirm", { text: box.value }).then((ok) => {
+        if (ok && qCriterionDraft?.for === t.id) {
+          qCriterionDraft.seed = box.value;
+          qCriterionDraft.dirty = false;
+        }
+      });
       cacts.appendChild(cb);
-      shell.detail.appendChild(cacts);
+      refinement!.appendChild(cacts);
     }
   }
   // the draft, wrapped and selectable — the row only ever shows its first line. Labelled once a
   // brief exists, because then these are two different texts and confusing them is the whole
   // defect this panel was built to end.
   const body = qTaskText(t.id);
-  if (brief) shell.detail.appendChild(el("div", "rvhead", "your draft, as filed"));
-  shell.detail.appendChild(el("div", body ? "qdtext" : "shellhint",
+  if (brief) request.appendChild(el("div", "rvhead", "your draft, as filed"));
+  request.appendChild(el("div", body ? "qdtext" : "shellhint",
     body || "loading the prompt text…"));
   // ↻ the refine proposal. Rendered BELOW the original text on purpose: the two are meant to be
   // read against each other, and what the owner promotes is the compiled version — so the thing
   // being replaced stays visible right above it until they decide.
-  const ref = taskRefineFull.get(t.id);
   if (ref) {
     const kids = ref.proposal.tasks ?? [];
-    shell.detail.appendChild(el("div", "rvhead",
+    refinement!.appendChild(el("div", "rvhead",
       ref.proposal.unchanged ? `refine · already brief-shaped (${fmtTs(ref.at)})`
         : `refine · PROPOSED ${kids.length === 1 ? "rewrite" : `split into ${kids.length}`} — yours to apply (${fmtTs(ref.at)})`));
     if (ref.proposal.unchanged) {
-      shell.detail.appendChild(el("div", "qdtext",
+      refinement!.appendChild(el("div", "qdtext",
         `${ref.proposal.reason || "already brief-shaped"} (${ref.model})`));
     } else {
       kids.forEach((c, i) => {
-        shell.detail.appendChild(el("div", "qdtext", [
+        refinement!.appendChild(el("div", "qdtext", [
           `${kids.length > 1 ? `${i + 1}. ` : ""}${c.text}`,
           ...(c.files?.length ? [`Files: ${c.files.join(", ")}`] : []),
           ...(c.doneCriterion ? [`Done: ${c.doneCriterion}`] : []),
@@ -5607,7 +5690,7 @@ function renderQueueDetail() {
     db.title = "drops the proposal — the task itself is untouched either way";
     db.onclick = () => void qAct(t.id, "refine-confirm", { accept: false });
     racts.appendChild(db);
-    shell.detail.appendChild(racts);
+    refinement!.appendChild(racts);
   }
   const acts = el("div", "pkdacts");
   const mk = (label: string, action: string, cls = "shrbtn", body?: Record<string, unknown>, title?: string) => {
@@ -5616,14 +5699,36 @@ function renderQueueDetail() {
     b.onclick = () => void qAct(t.id, action, body ?? {});
     return b;
   };
-  // AN ADVISORY ROW gets its own, short set: it is not a brief, and the only two honest things to
-  // do with one are agree (turn it into an auftrag, where it becomes normal work) or close it. It
-  // has no lane, no brief, no refine and no release — the server refuses all five.
-  // `adopt` is narrower than the class it sits in: the server takes it for a `notiz` ONLY (it is
-  // the compatibility verb for the old note→lane conversion). A `richtung`/`betrieb` therefore has
-  // no conversion button yet and would need the general /api/tasks/:id/kind route — filed, not
-  // built here, and reachable for nobody today because neither kind can exist before the rename
-  // is deployed. Showing adopt on one anyway would just be a button that answers 409.
+  const kindRow = el("label", "qkind");
+  kindRow.appendChild(el("span", "qkind-label", "Kind"));
+  const kindSelect = el("select", "qkind-select") as HTMLSelectElement;
+  const currentKind = t.kind ?? "auftrag";
+  for (const kind of ["auftrag", "richtung", "notiz", "betrieb"] as const) {
+    const option = document.createElement("option");
+    option.value = kind;
+    option.textContent = kind;
+    option.selected = kind === currentKind;
+    kindSelect.appendChild(option);
+  }
+  kindSelect.title = "changes only the task category — switching to auftrag does not release it";
+  kindSelect.onchange = () => {
+    const kind = kindSelect.value as NonNullable<TaskInfo["kind"]>;
+    if (kind === currentKind) return;
+    kindSelect.disabled = true;
+    void qAct(t.id, "kind", { kind }).then((ok) => {
+      if (!ok) {
+        kindSelect.value = currentKind;
+        kindSelect.disabled = false;
+      }
+    });
+  };
+  kindRow.appendChild(kindSelect);
+  actionSection.appendChild(kindRow);
+
+  // AN ADVISORY ROW stays non-dispatchable, but it is no longer a cul-de-sac: the four-kind
+  // selector above can turn richtung, notiz or betrieb into an auftrag. The successful refresh
+  // then reaches the normal branch below; changing category never releases the row.
+  // `adopt` remains the deliberately narrow compatibility alias for pending notiz→auftrag.
   if (qAdvisory(t)) {
     if (t.status === "pending" && t.kind === "notiz")
       acts.appendChild(mk("→ adopt as a task", "adopt", "shrbtn primary",
@@ -5710,7 +5815,8 @@ function renderQueueDetail() {
   if (t.status !== "done" && t.status !== "archived") acts.appendChild(mk("done", "done"));
   if (t.status !== "sent" && t.status !== "archived") acts.appendChild(mk("🗄 archive", "archive"));
   acts.appendChild(mk("✕ delete", "delete", "shrbtn danger"));
-  shell.detail.appendChild(acts);
+  actionSection.appendChild(acts);
+  restoreFocus();
 }
 
 function qSelect(id: string | null) {
@@ -5730,7 +5836,9 @@ function renderQueue() {
     || t.status.includes(qQuery) || (t.note ?? "").toLowerCase().includes(qQuery));
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
+  const now = Date.now();
   const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
+    Math.floor(now / 60000),
     shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.analysis?.verdict,
       t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
@@ -5748,12 +5856,17 @@ function renderQueue() {
   const rows: ShellRow[] = [];
   let selIdx = -1;
   qRowId = new Map();
-  const add = (o: { name: string; sub?: string; cls?: string; id: string | null }) => {
+  const add = (o: { name: string; facts?: QRowFacts; cls?: string; id: string | null }) => {
     const r = el("div", `shellrow${o.cls ? ` ${o.cls}` : ""}`);
     qRowId.set(r, o.id);
     const m = el("div", "shrmain");
     m.appendChild(el("div", "shrname", o.name));
-    if (o.sub) m.appendChild(el("div", "shrsub", o.sub));
+    if (o.facts) {
+      const facts = el("div", "qfacts");
+      const classes = ["verdict", "age", "slot", "source"] as const;
+      o.facts.forEach((fact, i) => facts.appendChild(el("span", `qfact qfact-${classes[i]}`, fact)));
+      m.appendChild(facts);
+    }
     r.appendChild(m);
     const act = () => qSelect(o.id);
     r.onclick = act;
@@ -5777,26 +5890,14 @@ function renderQueue() {
     const sorted = g.k === "released"
       ? [...group].sort((a, b) => a.created - b.created)
       : [...group].sort((a, b) => b.created - a.created);
-    for (const t of sorted)
+    for (const t of sorted) {
+      const summary = qTaskSummary(t, qTaskText(t.id), now);
       add({
-        name: qFirstLine(t.id), id: t.id,
+        name: summary.title, facts: summary.facts, id: t.id,
         cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "",
           t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
-        // the verdict is the SECOND line now, not a hover: it is the reason the row is in this
-        // group, and hiding the reason behind a mouse made the group unexplainable
-        sub: [qVerdictLine(t),
-          // the filing tag, moved off the name and in among the other provenance facts where it
-          // belongs: the name says WHAT this is, the second line says who filed it and when
-          qTag(t.id),
-          t.source === "intake" ? `✉ ${t.from ?? "intake"}` : t.source === "steward" ? "⚙ steward" : "owner",
-          // a criterion awaiting the owner's confirm is the row-level half of the queuebtn's
-          // hot flag — the lane behind it is parked until this is acted on
-          t.criterion ? (t.criterion.confirmedAt === null ? "⏳ criterion" : "✓ criterion") : "",
-          t.comments ? `💬 ${t.comments.n}` : "",
-          t.repo ? `⌂ ${t.repo.split("/").pop()}` : "",
-          `${fmtDur(Math.max(0, Date.now() - t.created))} ago`,
-          t.slot ? `slot ${t.slot}` : "", t.note ?? ""].filter(Boolean).join(" · "),
       });
+    }
   }
   if (!shown.length) shell.list.appendChild(el("div", "pknone",
     tasksList.length ? "no tasks match this search" : "no tasks yet"));
@@ -5816,13 +5917,18 @@ function openQueue() {
   qRepoIn = null;
   qCmBox = null;
   qCmFor = null;
+  qBriefDraft = null;
+  qCriterionDraft = null;
   qRawAck = null;
   const shell = openShell({
     id: "queue",
     title: "Task queue",
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
-    onClose: () => { qShell = null; qCompose = null; qRepoIn = null; qCmBox = null; qCmFor = null; qRawAck = null; qRowId = new Map(); },
+    onClose: () => {
+      qShell = null; qCompose = null; qRepoIn = null; qCmBox = null; qCmFor = null;
+      qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qRowId = new Map();
+    },
   });
   qShell = shell;
 

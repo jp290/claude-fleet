@@ -290,6 +290,18 @@
   .qdcrit { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: #ddd;
     line-height: 1.55; background: #161616; border: 1px solid #3a3a3a; border-radius: 8px;
     padding: 10px 12px; margin: 10px 0; resize: vertical; }
+  .qdsection { display: block; border-top: 1px solid var(--line-soft); padding: 13px 0 2px; }
+  .qdsection-title { color: var(--dim); font-size: 10.5px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; margin-bottom: 8px; }
+  details.qdsection > summary.qdsection-title { cursor: pointer; user-select: none; }
+  details.qdsection:not([open]) { padding-bottom: 10px; }
+  details.qdsection:not([open]) > summary.qdsection-title { margin-bottom: 0; }
+  .qdsection-body > .rvhead:not(:first-child) { margin-top: 14px; }
+  .qkind { display: flex; align-items: center; gap: 9px; margin: 1px 0 12px; }
+  .qkind-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .qkind-select { color: var(--text); background: var(--raised); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 28px 6px 8px; font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  .qkind-select:focus { outline: none; border-color: var(--focus); }
   .shellrow.qnew .shrname { color: var(--accent); font-weight: 600; }
   /* the status a row is in, as a left accent — same vocabulary the old .qrow strip used */
   .shellrow.q-pending { border-left: 3px solid var(--faint); }
@@ -302,8 +314,14 @@
   .shellrow.q-flag { border-left: 3px solid var(--amber); }
   .shellrow.q-obs { border-left: 3px dotted #9d7cd8; }
   .shellrow.q-obs .shrname { color: #c0caf5; }
-  /* the verdict line under a row title: present on nearly every row, so it must stay quiet */
-  .shellrow .shrsub .qv { color: var(--amber); }
+  /* The queue row's complete second line: exactly verdict, age, slot, source/tag. Each fact is a
+     child so the contract cannot drift back into an untestable nine-piece prose chain. */
+  .shellrow .qfacts { display: grid; grid-template-columns: minmax(0, 1.35fr) max-content max-content minmax(0, 1fr);
+    gap: 0 6px; margin-top: 2px; font-size: 10.5px; color: var(--faint); }
+  .shellrow .qfact { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shellrow .qfact:not(:first-child)::before { content: "·"; color: var(--faint); margin-right: 6px; }
+  .shellrow .qfact-verdict { color: var(--amber); }
+  .shellrow.sel .qfacts { color: #9aa7c7; }
   .shrbtn.danger { border-color: #5e2c3a; color: var(--del); }
   /* shared risk-preview panel (showRiskPreview) — real file names/commit subjects before
      a destructive click, not only after a refusal. Built dynamically, styled off .overlay/.panel */
@@ -447,6 +465,10 @@
     .shell.detailmode .shellback { display: block; flex: none; width: 34px; height: 30px;
       border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text);
       font-size: 16px; font-family: inherit; cursor: pointer; }
+    .shellrow .qfacts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px 12px; }
+    .shellrow .qfact:not(:first-child)::before { content: none; }
+    .qkind { align-items: stretch; flex-direction: column; gap: 5px; }
+    .qkind-select { min-height: 44px; font-size: 16px; }
   }
 
   /* picker controls, built by openPicker into the window's .shelltools. They sit on ONE line and

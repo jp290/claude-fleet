@@ -171,6 +171,9 @@ interface SlotInfo {
 // registry says the harness cannot do it, not because someone wrote the same list twice.
 interface HarnessInfo { id: string; supports: { resume: boolean; transcript: boolean; model: boolean;
   effort: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null; default: boolean;
+  // Optional for an older server. False is a hard server policy too; this copy only prevents a
+  // picker gesture whose answer is already known. Singleton is shown through the adapter note.
+  allowsLanes?: boolean; singleton?: boolean;
   // "agent" = a harness you pick; "place" = an execution hull (the container entry). Two axes that
   // shared one field until 2026-08-10, which is why `container` stood in the harness dropdown as if
   // it were a peer of claude. OPTIONAL because it is a claim about a foreign surface: an older
@@ -3887,6 +3890,12 @@ async function startSession(path: string) {
 async function startWorktree(repo: string) {
   if (!pickerSlot) return;
   const slot = pickerSlot;
+  const chosen = harnesses.find((h) => h.id === spawnHarness)
+    ?? harnesses.find((h) => h.default);
+  if (chosen?.allowsLanes === false) {
+    alert(`${chosen.id} is main-session only — choose “Start session here”, not a lane.`);
+    return;
+  }
   // branch names are plumbing, not something to type: the server auto-names the lane
   // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
   const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...spawnBody() });

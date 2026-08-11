@@ -411,12 +411,17 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const HARNESS_SLOT = 10;
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
   const cat = (await (await get("/api/harnesses")).json()) as
-    { harnesses: { id: string; default: boolean; automatable: boolean; role?: string; supports: { transcript: boolean; effort: boolean; resume: boolean; container: boolean }; effortLevels: string[]; note: string | null }[];
+    { harnesses: { id: string; default: boolean; automatable: boolean; allowsLanes: boolean; singleton: boolean; role?: string; supports: { transcript: boolean; effort: boolean; resume: boolean; container: boolean }; effortLevels: string[]; note: string | null }[];
       defaultModel?: string };
   const pi = cat.harnesses.find((h) => h.id === "pi");
+  const piHost = cat.harnesses.find((h) => h.id === "pi-unfenced");
   const def = cat.harnesses.find((h) => h.default);
-  check("§6 the catalogue names a default adapter and the pi adapter", !!pi && !!def && def.id === "claude",
-    cat.harnesses.map((h) => h.id).join(","));
+  check("§6 the catalogue names the default, fenced Pi and exceptional unfenced Pi adapters",
+    !!pi && !!piHost && !!def && def.id === "claude", cat.harnesses.map((h) => h.id).join(","));
+  check("§6 pi-unfenced is attended, main-only and singleton — the exception cannot become a pool",
+    piHost?.automatable === false && piHost.allowsLanes === false && piHost.singleton === true
+    && /UNFENCED/.test(piHost.note ?? "") && /unrestricted filesystem writes, git and network/.test(piHost.note ?? ""),
+    JSON.stringify(piHost));
   // the caveat is part of the contract, not a UI string: an owner picks this harness from it. What
   // it must state BOTH halves of the fence Fleet now spawns Pi behind: writes include shared roots
   // besides the worktree (and commits are the host's job), while reads and the network deliberately
@@ -438,9 +443,9 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6 every catalogue entry declares an axis — agent (what) or place (where), none unlabelled",
     places.length + agents.length === cat.harnesses.length,
     cat.harnesses.map((h) => `${h.id}:${h.role ?? "MISSING"}`).join(","));
-  check("§6 the container hull is the only PLACE, and the three real agents are agents",
+  check("§6 the container hull is the only PLACE, and all four selectable agent modes are agents",
     places.join(",") === "container"
-    && ["claude", "pi", "codex"].every((id) => agents.includes(id)),
+    && ["claude", "pi", "pi-unfenced", "codex"].every((id) => agents.includes(id)),
     `places=${places.join(",")} agents=${agents.join(",")}`);
   // the inverse, which is what makes the pair meaningful: a `place` is exactly the entry that runs
   // something somewhere else, so it is also the only one carrying supports.container. If these two
@@ -454,7 +459,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     typeof cat.defaultModel === "string" && cat.defaultModel.length > 0, String(cat.defaultModel));
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
-  for (const h of ["pi", "claude", "codex"]) {
+  for (const h of ["pi", "pi-unfenced", "claude", "codex"]) {
     const q = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: h, model: "a/b'c" });
     check(`§6 harness ${h} rejects a model carrying a single quote (400)`, q.status === 400, String(q.status));
   }
@@ -526,6 +531,31 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     rmSync(deniedProbe, { force: true });
   }
 
+  // The exceptional mode is deliberately NOT a second subtly different sandbox profile. It runs
+  // Pi bare, and the policy around that sharp capability is what limits it: main-only, singleton,
+  // attended. Assert both halves — the command has the intended power, and the server refuses the
+  // two ways it could silently become broader.
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const uf = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi-unfenced", effort: "low" });
+  check("§6 pi-unfenced opens as an attended main session", uf.ok, String(uf.status));
+  const ucmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out.replaceAll("\\", "");
+  check("§6 pi-unfenced starts Pi without sandbox-exec (the warning describes real host power)",
+    /(^|;)\s*(?:export [^;]+;\s*)*pi --session-id/.test(ucmd) && !ucmd.includes("sandbox-exec"), ucmd.slice(-220));
+  const UF_OTHER = 12;
+  await post(`/api/slots/${UF_OTHER}/kill`, {});
+  const secondUf = await post(`/api/slots/${UF_OTHER}/open`, { cwd: REPO, harness: "pi-unfenced" });
+  const secondUfJ = (await secondUf.json()) as { error?: string };
+  check("§6 pi-unfenced is singleton at the server boundary",
+    secondUf.status === 400 && secondUfJ.error === "harness pi-unfenced permits only one active slot",
+    `${secondUf.status} ${secondUfJ.error ?? ""}`);
+  const laneUf = await post(`/api/slots/${UF_OTHER}/open-worktree`, { repo: REPO, harness: "pi-unfenced" });
+  const laneUfJ = (await laneUf.json()) as { error?: string };
+  check("§6 pi-unfenced refuses lanes before creating a working copy",
+    laneUf.status === 400 && laneUfJ.error === "harness pi-unfenced is main-session only — it cannot open a lane",
+    `${laneUf.status} ${laneUfJ.error ?? ""}`);
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  await post(`/api/slots/${UF_OTHER}/kill`, {});
+
   // --- effort is a CLOSED SET, not a charset: nothing outside it can reach the line at all, and a
   // harness without the concept refuses one rather than accepting a flag it will silently drop.
   const be = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi", effort: "low; rm -rf /" });
@@ -566,7 +596,12 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // this suite has had claude-less sessions in; what matters is that transcriptFile's newest-by-
   // mtime FALLBACK is not consulted for a harness that writes no claude transcript. Its `source`
   // is the observable: null means "no transcript", and for a pi slot it must be null ALWAYS,
-  // never "whatever .jsonl happened to be newest in this directory".
+  // never "whatever .jsonl happened to be newest in this directory". The unfenced-policy probes
+  // above deliberately killed their slot, so establish this probe's own Pi precondition explicitly
+  // instead of letting an inactive-slot error masquerade as a transcript regression.
+  const tpOpen = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi" });
+  check("§6 transcript fixture: a fenced Pi slot is active before its degradation is measured",
+    tpOpen.ok, String(tpOpen.status));
   const tp = (await (await get(`/api/slots/${HARNESS_SLOT}/transcript?after=0`)).json()) as { source: string | null; entries: unknown[] };
   check("§6 a pi slot reports NO transcript source (the mtime fallback must not hand it a stranger's conversation)",
     tp.source === null && tp.entries.length === 0, `${String(tp.source)} / ${tp.entries.length}`);

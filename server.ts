@@ -271,6 +271,12 @@ interface Harness {
   // repair above exists to undo; it is not less wrong one field to the right. Required, so a new
   // adapter answers this at compile time instead of inheriting an answer.
   automatable: boolean;
+  // May this adapter be used for a Fleet lane? `false` is stronger than a lane-form preference:
+  // open-worktree, /api/lanes and dispatch must reject it BEFORE creating a working copy.
+  allowsLanes: boolean;
+  // At most one active slot may use this adapter. This is a server policy, not a picker hint, so
+  // concurrent clients cannot turn an explicitly exceptional host-capability into a pool.
+  singleton: boolean;
   // Which working-copy FORM a lane on this harness wants when the caller names none (LaneForm).
   // null = no opinion, which is every adapter whose agent runs on the host with the owner's own
   // reach — the lane stays a worktree and the persisted slot record stays byte-identical.
@@ -368,6 +374,8 @@ const CLAUDE_HARNESS: Harness = {
   // the default adapter is automatable unconditionally — it is what every automation on this fleet
   // has always driven, and the clause below never even consults the flag for it.
   automatable: true,
+  allowsLanes: true,
+  singleton: false,
   // null: the default adapter's agent runs on the host with the owner's own reach, so a linked
   // worktree is fine — and this is the lane form every caller, script and suite already produces.
   laneForm: null,
@@ -537,6 +545,8 @@ const PI_HARNESS: Harness = {
   // scheduled autos, dispatch, steward sends, done-looking → /api/self/watch and auto-③ — every one
   // of them a PROMPT into a pane, none of them a write to main.
   automatable: true,
+  allowsLanes: true,
+  singleton: false,
   // STILL null, and the fence above is exactly the reason a reader will expect "clone" here — so
   // the reason it stays is worth stating rather than leaving as an oversight. A fenced Pi lane
   // cannot commit: `.git` is denied on purpose (piSandboxProfile's last clause). But the clone form
@@ -590,6 +600,34 @@ const PI_HARNESS: Harness = {
   role: "agent",
 };
 
+// Adapter #3 — one deliberately exceptional Pi on the host. This is NOT the default Pi with a
+// weakened profile: it is a separately named, owner-attended capability whose warning is visible
+// before spawn. Pi has no permission layer of its own, so this line grants the process the owner's
+// full filesystem and network reach. The blast radius is bounded in the policy fields beside it:
+// no lanes, no unattended delivery, and at most one active slot. Its purpose is a MAIN session
+// that must operate git itself while the narrower host-commit surface is still incomplete.
+const PI_UNFENCED_HARNESS: Harness = {
+  ...PI_HARNESS,
+  id: "pi-unfenced",
+  spawnCmd: (o) => {
+    let cmd = "pi";
+    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+    if (o.model) cmd += ` --model '${o.model}'`;
+    if (o.effort) cmd += ` --thinking ${o.effort}`;
+    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+  },
+  // Explicit despite the spread: the source-level worker/transcript invariant intentionally reads
+  // every adapter as a self-contained declaration rather than executing object inheritance.
+  worker: () => null,
+  // This Pi owns git itself; POST /commit is not an ownership transfer for it.
+  hostCommits: false,
+  automatable: false,
+  allowsLanes: false,
+  singleton: true,
+  laneForm: null,
+  note: "UNFENCED host access: unrestricted filesystem writes, git and network; MAIN session only, one active slot, attended use only",
+};
+
 // The container this adapter execs into. A docker name/id charset MINUS the quote, because the
 // value is interpolated into the tmux shell line: `'` is the one character that could terminate
 // the single-quoted word, and docker never admits it in a name anyway. An operator value that
@@ -630,7 +668,7 @@ const CONTAINER_CONTEXT = (() => {
   return c && CONTAINER_CONTEXT_RE.test(c) ? c : "default";
 })();
 
-// Adapter #3 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
+// Adapter #4 — a slot whose agent runs inside a container. THE CUT IS DELIBERATELY NARROW, and
 // docs/container.md's "Why the whole app, never the slots" is the argument it has to survive: that
 // section rejects a boundary THROUGH the bundle (server, tmux, claude, git), because it blinds
 // every transcript-derived feature at once AND leaves Fleet's own unattended workers outside. This
@@ -704,6 +742,8 @@ const CONTAINER_HARNESS: Harness = {
   // slot by hand — only unattended paths (autos, dispatch, steward sends, done-looking, auto-③)
   // are shut, and they stay shut even with FLEET_HARNESS_AUTOMATION on.
   automatable: false,
+  allowsLanes: true,
+  singleton: false,
   // null, and NOT because this adapter has been shown to need nothing: it is the same "no
   // judgement has been made" this adapter's `automatable` records. A container slot's fence is a
   // MOUNT, not a write filter, and whether a linked worktree's metadata is reachable across it has
@@ -752,7 +792,7 @@ const CONTAINER_HARNESS: Harness = {
   role: "place",
 };
 
-// Adapter #4 — Codex (`@openai/codex`, the OpenAI CLI). Every flag below is MEASURED against the
+// Adapter #5 — Codex (`@openai/codex`, the OpenAI CLI). Every flag below is MEASURED against the
 // real installation on 2026-08-08 (`codex --version` → codex-cli 0.147.0), not read off a README;
 // the run and its output are briefs/codex-adapter-2026-08-08.md, cited per line.
 //
@@ -836,6 +876,8 @@ const CODEX_HARNESS: Harness = {
   // end, exactly the standard the container adapter's comment sets. What that costs is unchanged
   // from there: an owner may still open, drive and land such a slot by hand.
   automatable: false,
+  allowsLanes: true,
+  singleton: false,
   // "clone", and it is the one field here that changes what a lane IS rather than how it is
   // described. A linked worktree's metadata lives in the primary repo, outside Codex's writable
   // roots; clone form keeps Fleet's lane repository and mirror self-contained. It does NOT make
@@ -905,7 +947,7 @@ const CODEX_HARNESS: Harness = {
 // prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
@@ -2939,12 +2981,19 @@ async function resetIntegration(repo: string, main: string, mainAfter: string, m
 // must reserve its slot SYNCHRONOUSLY before the first await or two concurrent requests
 // pick the same slot and one worktree ends up orphaned with a lying { ok } response
 const laneSpawn = new Set<number>();
+// A singleton adapter is reserved synchronously before openSlot's first await. Active-slot state
+// alone has a gap: two owner tabs can both pass it while the first is still tearing down its slot.
+const singletonSpawn = new Set<string>();
 // worktree paths mid-attach — see the attach race note in /api/lanes
 const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
   box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined): Promise<{ cwd: string; branch: string }> {
+  const h = harnessOf(harness);
+  // Refuse before createWorktree: a main-only adapter must not leave an orphan working copy as the
+  // side effect of discovering its policy too late.
+  if (!h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
   const root = await repoRootOf(repo);
   const anchor = await decideLaneAnchor(root, parent);
   const wt = await createWorktree(root, branch, form);
@@ -3137,6 +3186,15 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   box: BoxPin = NO_BOX): Promise<void> {
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  const h = harnessOf(harness);
+  // Defence in depth for every caller, including future ones that bypass openLaneInSlot.
+  if (worktree && !h.allowsLanes) throw new Error(`harness ${h.id} is main-session only — it cannot open a lane`);
+  if (h.singleton) {
+    if (singletonSpawn.has(h.id) || slots.some((other) => other.id !== s.id && other.cwd
+      && harnessOf(other.harness).id === h.id))
+      throw new Error(`harness ${h.id} permits only one active slot`);
+    singletonSpawn.add(h.id); // synchronous: closes the two-owner-tabs race before the first await
+  }
   // Detach before the teardown below, so a recycled slot's tasks carry THIS reason —
   // killSlot's own detach would otherwise get there first and file the abort under
   // "lane closed before landing".
@@ -3158,8 +3216,16 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // against its stale FLEET_SELF_TOKEN. The pane is the ground truth, so PROBE THE PANE rather
   // than s.cwd — state and tmux can disagree (an adopted pane, a kill that failed). Deliberately
   // placed after the cwd validation: a bad path must never destroy a running session.
-  if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
+  try {
+    if ((await tmux("has-session", "-t", sess(s.id))).code === 0) await killSlot(s, "reopen");
+  } catch (e) {
+    if (h.singleton) singletonSpawn.delete(h.id);
+    throw e;
+  }
   s.cwd = cwd;
+  // From here the persisted active-slot check carries singleton ownership; the short reservation
+  // only bridged the await before this assignment.
+  if (h.singleton) singletonSpawn.delete(h.id);
   // a stale wait must not outlive the session it was about. killSlot clears it, but the branch
   // above only runs when a pane still EXISTS — a slot whose pane already died would otherwise
   // hand its "waiting on the owner" to the next occupant, silently muting the steward there.
@@ -13555,6 +13621,9 @@ Bun.serve<WSData>({
           // fleet's answer: the operator's FLEET_HARNESS_AUTOMATION is the second condition and is
           // deliberately not published here — a `false` on this field means "never, flag or not".
           automatable: h.automatable,
+          // Spawn-policy facts the picker can explain before a request reaches the hard server
+          // checks. These remain server-enforced; publishing them is not the boundary.
+          allowsLanes: h.allowsLanes, singleton: h.singleton,
           // the DEFAULT is a fact about this fleet, not about the adapter: it is the harness a
           // slot gets when it names none, and the client must not assume which id that is.
           default: h === CLAUDE_HARNESS,

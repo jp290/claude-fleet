@@ -733,6 +733,28 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
     pCode.match(/return `[^`]*`/g)?.join(" | ").slice(0, 200) ?? "no return");
   pin("a pi fence that cannot be built starts no pi — the refusal is loud, not a fall-through",
     /if \(!profile\) return[^\n]*PI_FENCE_FAILED/.test(pCode), pCode.match(/if \(!profile\)[^\n]*/)?.[0] ?? "no fail-closed branch");
+
+  // The one unfenced Pi is an explicit adapter, never a conditional hole in normal Pi's fence.
+  // Pin both the power and all three blast-radius limits: changing only one side would make either
+  // the picker warning false or an unrestricted agent reachable unattended/as a lane/as a pool.
+  const puStart = server.indexOf("const PI_UNFENCED_HARNESS: Harness = {");
+  const puBody = puStart < 0 ? "" : server.slice(puStart, server.indexOf("\n};\n", puStart));
+  const puCode = puBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("pi-unfenced is a bounded explicit adapter rather than a branch in normal Pi's fence",
+    puStart > 0 && puBody.length > 400 && puBody.length < 5_000, `${puBody.length} bytes`);
+  pin("pi-unfenced really starts bare Pi and says UNFENCED before the owner picks it",
+    /return `\$\{PATH_EXPORT\}\$\{cmd\}; exec \$\{SHELL\}`/.test(puCode)
+    && !puCode.includes("sandbox-exec") && /note: "UNFENCED host access:/.test(puCode),
+    puCode.match(/return `[^`]+`/)?.[0] ?? "no raw spawn line");
+  pin("pi-unfenced stays attended, main-only and singleton",
+    /automatable: false/.test(puCode) && /allowsLanes: false/.test(puCode)
+    && /singleton: true/.test(puCode) && /hostCommits: false/.test(puCode),
+    puCode.match(/(?:automatable|allowsLanes|singleton|hostCommits): [^,]+/g)?.join(" | ") ?? "policy fields absent");
+  pin("the lane constructor refuses a main-only harness before createWorktree",
+    /if \(!h\.allowsLanes\) throw new Error\(`harness \$\{h\.id\} is main-session only/.test(server)
+    && server.indexOf("if (!h.allowsLanes) throw", server.indexOf("async function openLaneInSlot"))
+      < server.indexOf("createWorktree(root", server.indexOf("async function openLaneInSlot")),
+    "openLaneInSlot policy ordering");
   // ...and the doctrine clause, which is the one a well-meaning edit would remove first: a lane that
   // cannot commit looks broken, and re-granting `.git` is the obvious "fix". It is not one — the
   // host commits (POST /api/slots/:id/commit), owner decision 2026-08-08.

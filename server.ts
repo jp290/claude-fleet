@@ -13866,6 +13866,8 @@ Bun.serve<WSData>({
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
       if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory, not a work brief — nothing to analyse` }, 409);
+      if (!ANALYSIS_TICK_MS)
+        return json({ error: "no analyst sweep is configured — reanalysis would otherwise only delete the existing analysis and machine-generated brief" }, 409);
       t.analysis = undefined;
       // an un-edited brief goes too: "analyse this again" means the whole reading, and a brief the
       // owner never touched is the analyst's own output, not an input worth preserving.

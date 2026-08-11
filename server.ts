@@ -1464,8 +1464,11 @@ interface AnalysisDigest {
 }
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
   & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "files" | "filesOrigin" | "cluster">>
+  // A brief's timestamp is its bounded top-level generation even when no analysis exists. The
+  // text stays exclusively on GET /api/tasks; every polling client can still invalidate stale full
+  // data before claiming which bytes release will send.
   // deliberately NOT Pick<Task, "criterion">: the poll carries the two timestamps, never the text
-  & { criterion?: { proposedAt: number; confirmedAt: number | null }; analysis?: AnalysisDigest }
+  & { briefAt?: number; criterion?: { proposedAt: number; confirmedAt: number | null }; analysis?: AnalysisDigest }
   // same two-tier rule for the refine proposal: the poll says THAT one exists, how it turned out
   // and how many children it holds — the texts ride GET /api/tasks with everything else.
   // `refining` is derived from the in-flight map, never persisted: it is a fact about this
@@ -1485,6 +1488,7 @@ function taskDigest(t: Task): TaskDigest {
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
+    ...(t.brief ? { briefAt: t.brief.at } : {}),
     ...(t.analysis ? {
       analysis: {
         verdict: t.analysis.verdict, blockers: t.analysis.blockers,
@@ -3987,6 +3991,9 @@ const ANALYSIS_CMD = process.env.FLEET_ANALYSIS_CMD ?? null; // tests: subproces
 const ANALYSIS_MODEL = process.env.FLEET_ANALYSIS_MODEL && MODEL_RE.test(process.env.FLEET_ANALYSIS_MODEL)
   ? process.env.FLEET_ANALYSIS_MODEL : "claude-opus-5";
 const ANALYSIS_TICK_MS = Math.max(0, Number(process.env.FLEET_ANALYSIS_MS ?? 60_000) | 0); // 0 = off
+// One runtime fact for every analyst consumer. Stored verdicts are history, not evidence that the
+// reader is configured now; cadence alone decides whether the mode is on.
+const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;
 // its OWN timeout, not the summarizer's 180 s. This worker reads files to verify attribution for a
 // whole batch, and under that borrowed cap the honest outcome was a timeout — which the gate then
 // recorded as a permanent verdict for every task in it.
@@ -4063,7 +4070,7 @@ function analysisDue(t: Task, now: number): boolean {
 }
 let analysisBusy = false;
 async function tickAnalysisSweep(): Promise<void> {
-  if (analysisBusy || !ANALYSIS_TICK_MS) return;
+  if (analysisBusy || !ANALYSIS_ON) return;
   analysisBusy = true;
   try {
     const live = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
@@ -4358,7 +4365,7 @@ async function tickDispatch(): Promise<void> {
       // gate, and a released queue that silently never drains is worse than an unread one: the guard
       // would have become a deadlock dressed as a safety property. No reader configured, no read
       // required — the same stance as an absent FLEET_VERIFY_CMD, which does not gate either.
-      if (ANALYSIS_TICK_MS) {
+      if (ANALYSIS_ON) {
         const a = next.analysis;
         if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
         // A row may now show a real verdict while its re-reading keeps failing (analysisFailed), so
@@ -10274,7 +10281,7 @@ void tickGit().catch((e: unknown) => logError("tickGit", e)); // warm the badge 
 setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispatch", e)), DISPATCH_TICK_MS);
 // FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
 // harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
-if (ANALYSIS_TICK_MS) setInterval(() => void tickAnalysisSweep().catch((e: unknown) => logError("tickAnalysisSweep", e)), ANALYSIS_TICK_MS);
+if (ANALYSIS_ON) setInterval(() => void tickAnalysisSweep().catch((e: unknown) => logError("tickAnalysisSweep", e)), ANALYSIS_TICK_MS);
 setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
@@ -12509,6 +12516,8 @@ Bun.serve<WSData>({
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
+        // Global runtime fact, beside dispatch rather than inferred per row from stored verdicts.
+        analysis: { on: ANALYSIS_ON },
         autosOn,
         quietHours,
         intake: !!INTAKE_SECRET,
@@ -13866,7 +13875,7 @@ Bun.serve<WSData>({
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
       if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory, not a work brief — nothing to analyse` }, 409);
-      if (!ANALYSIS_TICK_MS)
+      if (!ANALYSIS_ON)
         return json({ error: "no analyst sweep is configured — reanalysis would otherwise only delete the existing analysis and machine-generated brief" }, 409);
       t.analysis = undefined;
       // an un-edited brief goes too: "analyse this again" means the whole reading, and a brief the

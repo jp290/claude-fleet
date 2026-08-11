@@ -8,6 +8,7 @@ import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
+import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -447,9 +448,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const MARK = "payload-budget-probe";
     const big = `${MARK} ${"x".repeat(15_000 - MARK.length - 1)}`;
     const bigT = (await (await post("/api/tasks", { text: big, queue: false })).json()) as { task: { id: string } };
+    type BudgetDigest = { id: string; text?: string; briefAt?: number; brief?: unknown; analysis?: unknown };
     const raw = await (await get("/api/sessions")).text();
     const bytes = Buffer.byteLength(raw);
-    const dig = (JSON.parse(raw) as { tasks: { id: string; text?: string }[] }).tasks.find((t) => t.id === bigT.task.id);
+    const pollBefore = JSON.parse(raw) as { analysis?: { on?: boolean }; tasks: BudgetDigest[] };
+    const dig = pollBefore.tasks.find((t) => t.id === bigT.task.id);
     check("control: the 15 KB task IS in the polled payload (so the size check below can fail)", !!dig, `${bytes} B`);
     check("the sessions poll carries a task digest, never the prompt text",
       !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
@@ -458,6 +461,52 @@ export async function run(ctx: Ctx): Promise<void> {
       .tasks.find((t) => t.id === bigT.task.id);
     check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",
       fullT?.text === big, `${fullT?.text.length ?? -1} of ${big.length} chars`);
+
+    // A brief may be written from another device before any analysis exists. Its bounded timestamp
+    // must move the poll generation without moving the text onto this hot endpoint, so every open
+    // client goes neutral and refetches the matching full row before naming delivery bytes.
+    const BRIEF_MARK = "brief-generation-probe — full endpoint only";
+    const briefWrite = await post(`/api/tasks/${bigT.task.id}/brief`, { text: BRIEF_MARK });
+    const briefWriteJ = (await briefWrite.json()) as { ok?: boolean; brief?: { text: string; at: number } };
+    const rawAfterBrief = await (await get("/api/sessions")).text();
+    const pollAfterBrief = JSON.parse(rawAfterBrief) as { analysis?: { on?: boolean }; tasks: BudgetDigest[] };
+    const digAfterBrief = pollAfterBrief.tasks.find((t) => t.id === bigT.task.id);
+    const fullAfterBrief = ((await (await get("/api/tasks")).json()) as
+      { tasks: { id: string; analysis?: unknown; brief?: { text: string; at: number } }[] })
+      .tasks.find((t) => t.id === bigT.task.id);
+    check("brief digest setup: analyst is explicitly off and the saved brief has no analysis",
+      briefWrite.ok && briefWriteJ.ok === true && pollAfterBrief.analysis?.on === false
+      && digAfterBrief?.analysis === undefined && fullAfterBrief?.analysis === undefined,
+      JSON.stringify({ write: briefWriteJ, mode: pollAfterBrief.analysis, digest: digAfterBrief }));
+    check("a no-analysis brief changes the top-level digest generation while its text stays off the poll",
+      dig?.briefAt === undefined && !!digAfterBrief && (digAfterBrief.briefAt ?? 0) > 0
+      && digAfterBrief.briefAt === briefWriteJ.brief?.at
+      && digAfterBrief.text === undefined && !("brief" in digAfterBrief)
+      && !rawAfterBrief.includes(BRIEF_MARK),
+      JSON.stringify({ before: dig, after: digAfterBrief }));
+    check("the full brief matches the digest generation and remains reachable only on GET /api/tasks",
+      fullAfterBrief?.brief?.text === BRIEF_MARK
+      && fullAfterBrief.brief.at === digAfterBrief?.briefAt,
+      JSON.stringify({ digestAt: digAfterBrief?.briefAt, full: fullAfterBrief?.brief }));
+
+    const staleGenerationWarning = classifyAnalystOffWarning({
+      analysisOn: pollAfterBrief.analysis?.on,
+      fullDataLoaded: dig?.briefAt === digAfterBrief?.briefAt,
+      hasStoredAnalysis: false,
+      hasStoredBrief: false,
+    });
+    const matchingGenerationWarning = classifyAnalystOffWarning({
+      analysisOn: pollAfterBrief.analysis?.on,
+      fullDataLoaded: fullAfterBrief?.brief?.at === digAfterBrief?.briefAt,
+      hasStoredAnalysis: false,
+      hasStoredBrief: fullAfterBrief?.brief !== undefined,
+    });
+    check("a changed brief generation stays neutral until the matching full fetch, then names stored-brief delivery",
+      staleGenerationWarning?.evidence === "loading" && staleGenerationWarning.delivery === "unknown"
+      && !/will be sent|no stored/i.test(staleGenerationWarning.text)
+      && matchingGenerationWarning?.evidence === "stored"
+      && matchingGenerationWarning.delivery === "stored-brief",
+      JSON.stringify({ staleGenerationWarning, matchingGenerationWarning }));
     await post(`/api/tasks/${bigT.task.id}/delete`, {});
   }
   // --- comments: the owner's own text ON a row. Same two-tier rule as the prompt above (the poll
@@ -876,8 +925,10 @@ export async function run(ctx: Ctx): Promise<void> {
     interface HAn { verdict: string; blockers: string[]; reason: string; collides?: string[]; stale?: boolean; at?: number; attempts?: number;
       head?: string | null; briefAt?: number | null; retry?: { at: number; reason?: string; attempts?: number } }
     interface HRow { id: string; status: string; kind?: string; note?: string; slot?: number; analysis?: HAn }
-    const hSess = async (): Promise<{ tasks: HRow[]; dispatch: { repo: string } }> =>
-      (await (await get("/api/sessions")).json()) as { tasks: HRow[]; dispatch: { repo: string } };
+    const hSess = async (): Promise<{ tasks: HRow[]; slots: { id: number; cwd: string | null }[];
+      dispatch: { repo: string; on: boolean }; analysis?: { on?: boolean } }> =>
+      (await (await get("/api/sessions")).json()) as { tasks: HRow[]; slots: { id: number; cwd: string | null }[];
+        dispatch: { repo: string; on: boolean }; analysis?: { on?: boolean } };
     const hFull = async (id: string): Promise<{ analysis?: HAn; brief?: { text: string; edited: boolean } } | undefined> =>
       ((await (await get("/api/tasks")).json()) as { tasks: { id: string; analysis?: HAn; brief?: { text: string; edited: boolean } }[] })
         .tasks.find((t) => t.id === id);
@@ -891,6 +942,49 @@ export async function run(ctx: Ctx): Promise<void> {
     };
     const mkTask = async (text: string): Promise<string> =>
       ((await (await post("/api/tasks", { text, queue: false })).json()) as { task: { id: string } }).task.id;
+
+    // The release warning is a pure classifier so all truth combinations are executable without a
+    // browser DOM. Assert semantic facts and decisive wording, not the full sentence (cosmetic
+    // phrasing is not a contract).
+    const offRaw = classifyAnalystOffWarning({ analysisOn: false, fullDataLoaded: true,
+      hasStoredAnalysis: false, hasStoredBrief: false });
+    check("(h0) analyst-off warning: a fully loaded row with no analysis/brief names unread unattended release and raw delivery",
+      offRaw?.evidence === "unread-raw" && offRaw.delivery === "raw-request" && offRaw.stored.length === 0
+      && /unattended queue/i.test(offRaw.text) && /unread/i.test(offRaw.text)
+      && /raw request will be sent/i.test(offRaw.text), JSON.stringify(offRaw));
+
+    const offStoredAnalysis = classifyAnalystOffWarning({ analysisOn: false, fullDataLoaded: true,
+      hasStoredAnalysis: true, hasStoredBrief: false });
+    const offStoredBrief = classifyAnalystOffWarning({ analysisOn: false, fullDataLoaded: true,
+      hasStoredAnalysis: false, hasStoredBrief: true });
+    const offStoredBoth = classifyAnalystOffWarning({ analysisOn: false, fullDataLoaded: true,
+      hasStoredAnalysis: true, hasStoredBrief: true });
+    check("(h0) analyst-off warning: stored analysis/brief are named, not called absent, with refresh/enforcement and delivery truth",
+      offStoredAnalysis?.evidence === "stored" && offStoredAnalysis.stored.join() === "analysis"
+      && offStoredAnalysis.delivery === "raw-request" && /refresh or enforcement/i.test(offStoredAnalysis.text)
+      && /raw request will be sent/i.test(offStoredAnalysis.text)
+      && offStoredBrief?.evidence === "stored" && offStoredBrief.stored.join() === "brief"
+      && offStoredBrief.delivery === "stored-brief" && /refresh or enforcement/i.test(offStoredBrief.text)
+      && /stored brief.*will be sent/i.test(offStoredBrief.text)
+      && offStoredBoth?.stored.join() === "analysis,brief" && /stored analysis and brief remain/i.test(offStoredBoth.text)
+      && offStoredBoth.delivery === "stored-brief"
+      && !offStoredAnalysis.text.includes("no stored analysis or brief")
+      && !offStoredBrief.text.includes("no stored analysis or brief"),
+      JSON.stringify({ offStoredAnalysis, offStoredBrief, offStoredBoth }));
+
+    const offLoading = classifyAnalystOffWarning({ analysisOn: false, fullDataLoaded: false,
+      hasStoredAnalysis: true, hasStoredBrief: true });
+    check("(h0) analyst-off warning: unknown full data stays neutral about absence and delivery",
+      offLoading?.evidence === "loading" && offLoading.delivery === "unknown"
+      && /still loading/i.test(offLoading.text) && !/unread/i.test(offLoading.text)
+      && !/will be sent/i.test(offLoading.text) && !/no stored/i.test(offLoading.text),
+      JSON.stringify(offLoading));
+    check("(h0) analyst-off warning: ON emits no disabled-mode warning",
+      classifyAnalystOffWarning({ analysisOn: true, fullDataLoaded: true,
+        hasStoredAnalysis: false, hasStoredBrief: false }) === null);
+    check("(h0) analyst-off warning: missing mode emits no disabled-mode warning",
+      classifyAnalystOffWarning({ fullDataLoaded: true,
+        hasStoredAnalysis: false, hasStoredBrief: false }) === null);
 
     // Two stand-ins, both following the FLEET_*_CMD convention (prompt on stdin, answer on stdout).
     // The ANALYST's verdicts are keyed off a marker in the task's own DRAFT text, so the routing
@@ -928,6 +1022,10 @@ export async function run(ctx: Ctx): Promise<void> {
       FLEET_ENHANCE_CMD: FAKEENH, FLEET_ANALYSIS_MS: "1000" };
     await restartSrv(hEnv);
     await post("/api/dispatch", { on: true });
+    const enabledPoll = await hSess();
+    check("(h0) explicitly enabled analyst fixture reports analysis.on true beside dispatch",
+      enabledPoll.analysis?.on === true && typeof enabledPoll.dispatch.on === "boolean",
+      JSON.stringify({ analysis: enabledPoll.analysis, dispatch: enabledPoll.dispatch }));
 
     // (h1) POPULATION — the finding that started the rewrite. The gate only ever looked at PENDING
     // rows, which meant its whole subject was drafts the owner had not released, while everything
@@ -985,6 +1083,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const hReanalyse = await mkTask("analyst reanalyse guard probe: ANALYST-READY");
     await till(() => hFull(hReanalyse), (r) => !!r?.analysis && r.brief?.edited === false);
     await restartSrv({ ...hEnv, FLEET_ANALYSIS_MS: "0" });
+    const disabledPoll = await hSess();
+    check("(h4r) explicitly disabled analyst fixture reports analysis.on false beside dispatch",
+      disabledPoll.analysis?.on === false && typeof disabledPoll.dispatch.on === "boolean",
+      JSON.stringify({ analysis: disabledPoll.analysis, dispatch: disabledPoll.dispatch }));
     const disabledBefore = await hFull(hReanalyse);
     const disabledAnalysisBytes = JSON.stringify(disabledBefore?.analysis);
     const disabledBriefBytes = JSON.stringify(disabledBefore?.brief);
@@ -1003,6 +1105,37 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(disabledAfter?.analysis) === disabledAnalysisBytes
       && JSON.stringify(disabledAfter?.brief) === disabledBriefBytes,
       JSON.stringify({ before: disabledBefore, after: disabledAfter }));
+
+    // OFF IS VISIBILITY, NOT A GATE. Pause dispatch long enough to observe the release route's
+    // exact queued state, then resume it: the same unread row must start with its raw request.
+    const dispatchPaused = await post("/api/dispatch", { on: false });
+    const OFF_RAW = "analyst-off release probe: send this exact raw request";
+    const hOffRelease = await mkTask(OFF_RAW);
+    const offBefore = await hRow(hOffRelease);
+    const offBeforeFull = await hFull(hOffRelease);
+    const offSetupPoll = await hSess();
+    check("(h4r) analyst-off release setup: dispatch is paused, a slot is free, and the row is pending with no stored reading/brief",
+      dispatchPaused.ok && offSetupPoll.dispatch.on === false && offSetupPoll.slots.some((s) => s.cwd === null)
+      && offBefore?.status === "pending" && !!offBeforeFull && offBeforeFull.analysis === undefined
+      && offBeforeFull.brief === undefined,
+      JSON.stringify({ pause: dispatchPaused.status, dispatch: offSetupPoll.dispatch,
+        free: offSetupPoll.slots.filter((s) => s.cwd === null).map((s) => s.id), offBefore, offBeforeFull }));
+    const offRelease = await post(`/api/tasks/${hOffRelease}/queue`, {});
+    const offQueued = await hRow(hOffRelease);
+    check("(h4r) analyst OFF leaves release allowed and preserves the normal pending→queued status",
+      offRelease.ok && offQueued?.status === "queued",
+      `${offRelease.status} ${JSON.stringify(offQueued)}`);
+    const dispatchResumed = await post("/api/dispatch", { on: true });
+    const offStarted = await till(() => hRow(hOffRelease), (r) => r?.status === "sent" || !!r?.note);
+    const offPrompts = await till(
+      async () => ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts
+        .filter((p) => p.source === "auto").map((p) => p.text ?? ""),
+      (ps) => ps.includes(OFF_RAW));
+    check("(h4r) analyst OFF changes no dispatch semantics: the released unread row starts with its raw request",
+      dispatchResumed.ok && offStarted?.status === "sent" && offPrompts.includes(OFF_RAW),
+      JSON.stringify({ resume: dispatchResumed.status, row: offStarted, rawPromptSeen: offPrompts.includes(OFF_RAW) }));
+    if (typeof offStarted?.slot === "number") await post(`/api/slots/${offStarted.slot}/kill`, {});
+    await post(`/api/tasks/${hOffRelease}/delete`, {});
 
     // A long but non-zero cadence keeps the counter-proof observable: no tick can race the GET,
     // while ANALYSIS_TICK_MS still says a reader is configured. The machine brief is cleared, an

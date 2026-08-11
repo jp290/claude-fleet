@@ -977,6 +977,59 @@ export async function run(ctx: Ctx): Promise<void> {
       && (await hFull(hP))?.brief?.text === "hand-written brief, mine",
       JSON.stringify({ edit: eb.status, brief: edited?.brief, verdictStale: restale?.analysis?.stale }));
 
+    // (h4r) REANALYSE MUST HAVE A READER. The route is intentionally destructive when a sweep is
+    // running: it drops the old reading and its machine brief so the next tick can replace them.
+    // With the sweep off, those same writes are only deletion. Seed under the working analyst,
+    // restart with the otherwise-identical env except for the tick, and compare the exact values.
+    const hReanalyse = await mkTask("analyst reanalyse guard probe: ANALYST-READY");
+    await till(() => hFull(hReanalyse), (r) => !!r?.analysis && r.brief?.edited === false);
+    await restartSrv({ ...hEnv, FLEET_ANALYSIS_MS: "0" });
+    const disabledBefore = await hFull(hReanalyse);
+    const disabledAnalysisBytes = JSON.stringify(disabledBefore?.analysis);
+    const disabledBriefBytes = JSON.stringify(disabledBefore?.brief);
+    check("(h4r) disabled fixture carries an analysis and an unedited machine brief",
+      !!disabledBefore?.analysis && disabledBefore.brief?.edited === false,
+      JSON.stringify(disabledBefore));
+    const disabledReanalyse = await post(`/api/tasks/${hReanalyse}/reanalyse`, {});
+    const disabledReanalyseJ = (await disabledReanalyse.json()) as { ok?: boolean; error?: string };
+    const disabledAfter = await hFull(hReanalyse);
+    check("(h4r) with no analyst sweep, reanalyse refuses 409 and names deletion instead of claiming ok",
+      disabledReanalyse.status === 409 && disabledReanalyseJ.ok !== true
+      && (disabledReanalyseJ.error ?? "").includes("no analyst sweep is configured")
+      && (disabledReanalyseJ.error ?? "").includes("reanalysis would otherwise only delete"),
+      `${disabledReanalyse.status} ${JSON.stringify(disabledReanalyseJ)}`);
+    check("(h4r) the refusal leaves analysis and the unedited brief byte-identical",
+      JSON.stringify(disabledAfter?.analysis) === disabledAnalysisBytes
+      && JSON.stringify(disabledAfter?.brief) === disabledBriefBytes,
+      JSON.stringify({ before: disabledBefore, after: disabledAfter }));
+
+    // A long but non-zero cadence keeps the counter-proof observable: no tick can race the GET,
+    // while ANALYSIS_TICK_MS still says a reader is configured. The machine brief is cleared, an
+    // owner-edited one is not, and both successful calls retain the existing ok:true response.
+    await restartSrv({ ...hEnv, FLEET_ANALYSIS_MS: "600000" });
+    const enabledReanalyse = await post(`/api/tasks/${hReanalyse}/reanalyse`, {});
+    const enabledReanalyseJ = (await enabledReanalyse.json()) as { ok?: boolean; error?: string };
+    const enabledAfter = await hFull(hReanalyse);
+    check("(h4r) with an enabled sweep, reanalyse stays ok:true and clears analysis plus the machine brief",
+      enabledReanalyse.ok && enabledReanalyseJ.ok === true && !!enabledAfter
+      && enabledAfter.analysis === undefined && enabledAfter.brief === undefined,
+      `${enabledReanalyse.status} ${JSON.stringify({ body: enabledReanalyseJ, task: enabledAfter })}`);
+
+    const editedBeforeReanalyse = await hFull(hP);
+    const editedBriefBytes = JSON.stringify(editedBeforeReanalyse?.brief);
+    check("(h4r) enabled edited-brief fixture has both a reading and an owner-pinned brief",
+      !!editedBeforeReanalyse?.analysis && editedBeforeReanalyse.brief?.edited === true,
+      JSON.stringify(editedBeforeReanalyse));
+    const editedReanalyse = await post(`/api/tasks/${hP}/reanalyse`, {});
+    const editedReanalyseJ = (await editedReanalyse.json()) as { ok?: boolean };
+    const editedAfterReanalyse = await hFull(hP);
+    check("(h4r) enabled reanalyse clears analysis but preserves an edited brief byte-identically",
+      editedReanalyse.ok && editedReanalyseJ.ok === true && editedAfterReanalyse?.analysis === undefined
+      && JSON.stringify(editedAfterReanalyse?.brief) === editedBriefBytes,
+      `${editedReanalyse.status} ${JSON.stringify({ before: editedBeforeReanalyse, after: editedAfterReanalyse })}`);
+    await post(`/api/tasks/${hReanalyse}/delete`, {});
+    await restartSrv(hEnv);
+
     // (h5) A FAILURE IS AN ABSENCE, NOT A VERDICT. The gate collapsed a broken worker into a
     // permanent "review" for its whole batch — a finding-shaped record about work nobody read, with
     // no way back except a per-task reset. It must now be "unknown", counted, and retried.

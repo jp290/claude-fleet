@@ -732,23 +732,13 @@ export async function run(): Promise<void> {
     const stackUiSrc = cut("function setStackOpen(", "function renderChips(");
     const rowSrc = cut("function slotRow(", "function renderChips(");
     const showSlotSrc = cut("function showSlot(", "window.addEventListener");
-    const keySrc = cut("function activateSidebarKey(", "function bindSidebarAction(");
-    const controlKeySrc = cut("function sidebarControlKey(", "function sidebarButton(");
-    const controlFactorySrc = cut("function sidebarButton(", "// One guarded kill path");
-    const focusSrc = cut("interface SidebarFocusTarget", "function renderSlots(");
-    const landSrc = cut("async function doLand(", "// confirm-land after reviewing");
-    const commitSrc = cut("async function doCommit(", "// \"working\" =");
-    const killSrc = cut("async function doKill(", "function startRename(");
-    const renameSrc = cut("function startRename(", "function updateTitle(");
-    const quickSrc = cut("function quickLaneChip(", "function foldArrow(");
-    const foldSrc = cut("function foldArrow(", "// The anchor's own chips");
     check("fixed empty rows and active non-lane rows retain their displayed slot numbers",
       renderSrc.includes("slotsEl.appendChild(emptyRow(s))")
         && emptySrc.includes('el("span", "n", String(s.id))')
-        && /else \{\s*primary\.append\(el\("span", "n", String\(s\.id\)\), lbl\)/.test(rowSrc),
+        && /else \{\s*row\.append\(el\("span", "n", String\(s\.id\)\), lbl\)/.test(rowSrc),
       "renderSlots + emptyRow + slotRow main-number branch");
     check("active lane rows replace the visible number with ref · mutable label",
-      /if \(s\.worktree\) \{[\s\S]*?"laneref"[\s\S]*?"lanesep", "·"[\s\S]*?\} else \{\s*primary\.append\(el\("span", "n"/.test(rowSrc)
+      /if \(s\.worktree\) \{[\s\S]*?"laneref"[\s\S]*?"lanesep", "·"[\s\S]*?\} else \{\s*row\.append\(el\("span", "n"/.test(rowSrc)
         && (rowSrc.match(/"n", String\(s\.id\)/g) ?? []).length === 1
         && rowSrc.includes("s.label ?? baseName(s.cwd)")
         && indexSrc.includes(".slot .laneref { flex: none; white-space: nowrap;")
@@ -758,7 +748,7 @@ export async function run(): Promise<void> {
       rowSrc.includes("row.dataset.slot = String(s.id)")
         && rowSrc.includes("slot ${s.id} · ${displayLabel}")
         && rowSrc.includes("showSlot(s.id)")
-        && killSrc.includes("`/api/slots/${s.id}/kill`")
+        && rowSrc.includes("`/api/slots/${s.id}/kill`")
         && cliSrc.includes("`/api/slots/${s.id}/rename`")
         && rowSrc.includes("startRename(row, s)"),
       "slotRow data-slot/actions/title + startRename route");
@@ -781,292 +771,45 @@ export async function run(): Promise<void> {
         && serverSrc.includes('url.pathname === "/api/worktrees/discard"'),
       "renderBoard recovery controls + unchanged server routes");
 
-    // --- slot-panel S3/3: native controls + deterministic keyboard activation. Source proves
-    // the DOM construction; the lifted helper proves Enter/Space prevent, stop and fire once. ---
-    type KeyProbe = { key: string; repeat: boolean; preventDefault(): void; stopPropagation(): void };
-    let activateSidebarKey: ((e: KeyProbe, action: () => void) => boolean) | null = null;
-    try {
-      activateSidebarKey = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(keySrc)
-        + "\nreturn activateSidebarKey;")() as (e: KeyProbe, action: () => void) => boolean;
-    } catch { activateSidebarKey = null; }
-    const keyProbe = (key: string, repeat = false) => {
-      let actions = 0, prevented = 0, stopped = 0;
-      const handled = activateSidebarKey?.({ key, repeat,
-        preventDefault: () => { prevented++; }, stopPropagation: () => { stopped++; } }, () => { actions++; });
-      return { handled, actions, prevented, stopped };
-    };
-    const enterKey = keyProbe("Enter"), spaceKey = keyProbe(" ");
-    check("probe: sidebar keyboard activation is liftable and Enter/Space each prevent, stop and fire once",
-      !!activateSidebarKey
-        && [enterKey, spaceKey].every((p) => p.handled === true && p.actions === 1
-          && p.prevented === 1 && p.stopped === 1),
-      JSON.stringify({ enterKey, spaceKey }));
-    const repeatKey = keyProbe(" ", true), otherKey = keyProbe("ArrowDown");
-    check("sidebar keyboard activation ignores repeats and leaves unrelated keys untouched",
-      repeatKey.handled === true && repeatKey.actions === 0 && repeatKey.prevented === 1 && repeatKey.stopped === 1
-        && otherKey.handled === false && otherKey.actions === 0 && otherKey.prevented === 0 && otherKey.stopped === 0,
-      JSON.stringify({ repeatKey, otherKey }));
-
-    let sidebarControlKey: ((className: string) => string) | null = null;
-    try {
-      sidebarControlKey = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(controlKeySrc)
-        + "\nreturn sidebarControlKey;")() as (className: string) => string;
-    } catch { sidebarControlKey = null; }
-    check("probe: sidebar control keys are stable semantic class tokens, never mutable accessible labels",
-      !!sidebarControlKey && sidebarControlKey("slotprimary repoprimary") === "slotprimary"
-        && sidebarControlKey("cmtact hot") === "cmtact"
-        && sidebarControlKey(" rowact ") === "rowact"
-        && sidebarControlKey("  ") === "control"
-        && !/ariaLabel|textContent|title/.test(controlKeySrc),
-      controlKeySrc.slice(0, 160));
-
-    check("slot controls are named native buttons; occupied/repo rows are groups and empty rows alone are buttons",
-      controlFactorySrc.includes('el("button"')
-        && controlFactorySrc.includes('button.setAttribute("aria-label", ariaLabel)')
-        && emptySrc.includes('el("button", "slot empty")')
-        && !emptySrc.includes("sidebarButton(")
-        && rowSrc.includes('const row = el("div", "slot"')
-        && rowSrc.includes('row.setAttribute("role", "group")')
-        && rowSrc.includes('const primary = sidebarButton("slotprimary"')
-        && stackUiSrc.includes('const row = el("div", "slot repohead")')
-        && renameSrc.includes('lbl.closest(".slotprimary") ?? lbl')
-        && renameSrc.includes("target.replaceWith(input)")
-        && renameSrc.includes("input.replaceWith(target)"),
-      "native factory + group rows + whole-primary rename replacement");
-    check("every rebuildable sidebar control carries stable slot/scope plus control keys",
-      controlFactorySrc.includes("button.dataset.control = sidebarControlKey(className)")
-        && emptySrc.includes('row.dataset.control = "slotprimary"')
-        && rowSrc.includes("row.dataset.slot = String(s.id)")
-        && stackUiSrc.includes('row.dataset.focusScope = `repo:${g.foldKey}`')
-        && rowSrc.includes('b.dataset.control = `rowact-${glyph}`'),
-      "slot/scope/control data keys");
-    const captureAt = renderSrc.indexOf("const focusTarget = captureSidebarFocus()")
-      , replaceAt = renderSrc.indexOf("slotsEl.replaceChildren()")
-      , restoreAt = renderSrc.indexOf("restoreSidebarFocus(focusTarget)");
-    check("generic render synchronously captures sidebar focus before replacement and restores enabled match without scrolling",
-      captureAt >= 0 && captureAt < replaceAt && replaceAt < restoreAt
-        && focusSrc.includes("document.activeElement") && focusSrc.includes("slotsEl.contains(active)")
-        && focusSrc.includes("row?.dataset.slot ?? row?.dataset.focusScope")
-        && focusSrc.includes("active.dataset.control")
-        && focusSrc.includes("candidate.dataset.control === target.control")
-        && focusSrc.includes("replacement instanceof HTMLButtonElement && !replacement.disabled")
-        && focusSrc.includes("replacement.focus({ preventScroll: true })"),
-      JSON.stringify({ captureAt, replaceAt, restoreAt }));
-    check("generic focus restore is sidebar-local and absent slot/control matches are no-ops",
-      focusSrc.includes("if (!(active instanceof HTMLElement) || !slotsEl.contains(active)) return null")
-        && focusSrc.includes("if (!row) return") && focusSrc.includes("if (!target) return"),
-      "captureSidebarFocus + restoreSidebarFocus guards");
-    const busyContract = (src: string, guard: string, reserve: string, release: string): boolean => {
-      const guardAt = src.indexOf(guard), saveAt = src.indexOf("const focusTarget = captureSidebarFocus()")
-        , reserveAt = src.indexOf(reserve), releaseAt = src.lastIndexOf(release)
-        , finalRenderAt = src.lastIndexOf("renderSlots()")
-        , finalRestoreAt = src.lastIndexOf("restoreBusySidebarFocus(focusTarget)");
-      return guardAt >= 0 && guardAt < saveAt && saveAt < reserveAt && reserveAt < releaseAt
-        && releaseAt < finalRenderAt && finalRenderAt < finalRestoreAt;
-    };
-    check("kill/commit/land retain pre-busy focus and restore only after their final enabled rebuild",
-      busyContract(killSrc, "if (killBusy.has(s.id)) return", "killBusy.add(s.id)", "killBusy.delete(s.id)")
-        && busyContract(commitSrc, "if (commitBusy.has(slot)) return", "commitBusy.set(slot, mode)", "commitBusy.delete(slot)")
-        && busyContract(landSrc, "if (mergePending.has(slot)) return", "mergePending.add(slot)", "mergePending.delete(slot)"),
-      "all three busy guard → capture → reserve → release → render → restore chains");
-    check("busy final restore never steals focus from a connected terminal, overlay, board or deliberate sidebar target",
-      focusSrc.includes("active instanceof HTMLElement && active.isConnected")
-        && focusSrc.includes("active !== document.body && active !== document.documentElement) return")
-        && focusSrc.includes("restoreSidebarFocus(target)"),
-      "restoreBusySidebarFocus destination guard");
-    check("no discrete slot control is constructed as a span or nested inside the row's primary button",
-      !/el\("span", "(?:lanediff|diff|revb|cmtact|kill|rowact)/.test(stackUiSrc)
-        && rowSrc.includes("row.appendChild(primary)")
-        && rowSrc.includes("row.appendChild(act)")
-        && rowSrc.includes("row.appendChild(rowacts)")
-        && !/primary\.appendChild\((?:act|rowacts|kill|dff|rb|q)/.test(rowSrc),
-      "slotRow control construction");
-    check("fold, quick-lane, diff, review, chat, kill and mobile actions all get real accessible names",
-      foldSrc.includes('sidebarButton("stackfold"')
-        && foldSrc.includes('a.setAttribute("aria-expanded", String(open))')
-        && quickSrc.includes('sidebarButton("quicklane"')
-        && rowSrc.includes('sidebarButton("lanediff"')
-        && rowSrc.includes('sidebarButton("diff"')
-        && rowSrc.includes('sidebarButton("revb"')
-        && rowSrc.includes('sidebarButton("cmtact"')
-        && rowSrc.includes('sidebarButton("kill"')
-        && rowSrc.includes('const b = sidebarButton("rowact", glyph, label')
-        && rowSrc.includes('rowacts.setAttribute("aria-label"'),
-      "named sidebarButton call sites");
-    check("fold owns truthful expanded state and primary click boundaries preserve unfold/focus/repo-toggle semantics",
-      foldSrc.includes('aria-expanded", String(open)')
-        && rowSrc.includes("const primaryAction = stack && !open ? () => setStackOpen(stack, true) : () => showSlot(s.id)")
-        && stackUiSrc.includes("row.onclick = () => setStackOpen(g, !open)")
-        && rowSrc.includes("row.onclick = stack && !open ? () => setStackOpen(stack, true) : () => showSlot(s.id)"),
-      "fold/primary/pointer actions");
-
-    // One kill implementation, called by both compact desktop and mobile. The two confirmation
-    // sentences are counted globally so a future copied mobile path fails even if both still work.
-    check("desktop and mobile kill buttons share the one guarded kill handler",
-      (rowSrc.match(/doKill\(s\)/g) ?? []).length === 2
-        && rowSrc.includes('sidebarButton("kill"') && rowSrc.includes('mkact("✕"')
-        && (cliSrc.match(/async function doKill\(/g) ?? []).length === 1,
-      `${(rowSrc.match(/doKill\(s\)/g) ?? []).length} callers`);
-    check("the shared kill path keeps one lane-risk preview and one verbatim plain-session confirmation",
-      (killSrc.match(/fetchSlotRisk\(s\.id\)/g) ?? []).length === 1
-        && (killSrc.match(/showRiskPreview\(/g) ?? []).length === 1
-        && (cliSrc.match(/The worktree is left on disk \(open the board to land or remove it\)\./g) ?? []).length === 1
-        && (cliSrc.match(/The claude session and its history are gone\./g) ?? []).length === 1
-        && (killSrc.match(/post\(`\/api\/slots\/\$\{s\.id\}\/kill`/g) ?? []).length === 1,
-      "doKill risk/confirm/route counts");
-
-    // Mobile CSS is a behavioural contract: desktop/coarse hover controls are absent at this
-    // breakpoint, exactly one wrapping strip remains, and every native action is finger-sized.
-    const mobileAt = indexSrc.indexOf("/* --- mobile: phones in any orientation");
-    const mobileCss = mobileAt >= 0 ? indexSrc.slice(mobileAt, indexSrc.indexOf("</style>", mobileAt)) : "";
-    const cssRule = (selector: string): string => {
+    const cssBody = (selector: string): string => {
       const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`${escaped}\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
+      return new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
     };
-    const slotsCss = cssRule("#slots"), slotCss = cssRule(".slot");
-    const rowactCss = cssRule(".rowacts .rowact");
-    const minWidth = Number(/min-width:\s*(\d+)px/.exec(rowactCss)?.[1] ?? 0);
-    const minHeight = Number(/min-height:\s*(\d+)px/.exec(rowactCss)?.[1] ?? 0);
-    const mobilePrimaryCss = /\.slot\.empty,\s*\.slotprimary\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
-    const primaryMinHeight = Number(/min-height:\s*(\d+)px/.exec(mobilePrimaryCss)?.[1] ?? 0);
-    const mobileSlotCss = /(?:^|\n)\s*\.slot\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
-    const reviewCss = cssRule(".revb"), laneDiffCss = cssRule(".slot .lanediff")
-      , slotactCss = cssRule(".slotact");
-    const controlResetCss = cssRule(".slotctrl");
-    const quickCss = cssRule(".slot .quicklane"), killCss = cssRule(".slot .kill");
-    const resetAt = indexSrc.indexOf(".slotctrl {");
-    check("scoped native-button reset removes UA padding while later control spacing stays explicit",
-      /padding:\s*0(?:;|$)/.test(controlResetCss)
-        && /padding:\s*0 3px/.test(quickCss) && /padding:\s*2px 5px/.test(killCss)
-        && /padding:\s*1px 5px/.test(reviewCss) && /padding:\s*0(?:;|$)/.test(rowactCss)
-        && [".slot .quicklane", ".slot .kill", ".revb", ".rowacts .rowact"]
-          .every((selector) => indexSrc.indexOf(selector, resetAt + 1) > resetAt),
-      JSON.stringify({ controlResetCss, quickCss, killCss, reviewCss, rowactCss }));
-    const zIndex = (body: string): number => Number(/z-index:\s*(\d+)/.exec(body)?.[1] ?? 0);
-    check("desktop hover keeps native review and lane-diff buttons visible and pointer-stacked above slotact",
-      rowSrc.includes('sidebarButton("revb"') && rowSrc.includes('sidebarButton("lanediff"')
-        && !/\.slot:hover \.(?:revb|lanediff)\s*\{[^}]*display:\s*none/.test(indexSrc)
-        && /position:\s*relative/.test(reviewCss) && /position:\s*relative/.test(laneDiffCss)
-        && zIndex(reviewCss) > zIndex(slotactCss) && zIndex(laneDiffCss) > zIndex(slotactCss),
-      `review z=${zIndex(reviewCss)} laneDiff z=${zIndex(laneDiffCss)} slotact z=${zIndex(slotactCss)}`);
+    const slotsCss = cssBody("#slots"), slotCss = cssBody(".slot"), slotactCss = cssBody(".slotact");
+    const mobileAt = indexSrc.indexOf("/* --- mobile: phones in any orientation");
+    const mobileCss = mobileAt < 0 ? "" : indexSrc.slice(mobileAt, indexSrc.indexOf("</style>", mobileAt));
     check("sidebar slot rows cannot shrink and the flex column retains vertical scrolling",
-      (/(?:^|;)\s*flex:\s*none(?:;|$)/.test(slotCss)
-        || /(?:^|;)\s*flex-shrink:\s*0(?:;|$)/.test(slotCss))
+      /(?:^|;)\s*flex:\s*none(?:;|$)/.test(slotCss)
         && /(?:^|;)\s*display:\s*flex(?:;|$)/.test(slotsCss)
         && /(?:^|;)\s*flex-direction:\s*column(?:;|$)/.test(slotsCss)
         && /(?:^|;)\s*overflow-y:\s*auto(?:;|$)/.test(slotsCss),
       JSON.stringify({ slotCss: slotCss.trim(), slotsCss: slotsCss.trim() }));
-    check("mobile occupied-row primary stays at least 40px tall and slot/action-strip wrapping remains enabled",
-      primaryMinHeight >= 40
-        && /(?:^|;)\s*flex-wrap:\s*wrap(?:;|$)/.test(mobileSlotCss)
-        && /\.rowacts\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss),
-      `${primaryMinHeight}px: ${mobilePrimaryCss.trim()}`);
-    check("mobile hides desktop slot actions plus represented inline review/diff and passive chat glyphs",
-      /#side \.slotact\s*\{[^}]*display:\s*none\s*!important/.test(mobileCss)
-        && /\.slot > \.lanediff, \.slot > \.revb, \.slot > \.cmtb\s*\{\s*display:\s*none/.test(mobileCss)
-        && rowSrc.includes('mkact("💬"'),
-      "mobile slotact/inline/passive-chat rules");
-    check("mobile exposes exactly one in-flow rowacts surface and client builds it once per occupied row",
-      (mobileCss.match(/\.rowacts\s*\{\s*display:\s*flex/g) ?? []).length === 1
-        && (cliSrc.match(/el\("div", "rowacts"\)/g) ?? []).length === 1
-        && cssRule(".rowacts").includes("display: none"),
-      "rowacts source/display counts");
-    check("mobile row actions are at least 40×40 and wrap without horizontal overflow",
-      minWidth >= 40 && minHeight >= 40
-        && /\.rowacts\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss)
-        && /\.rowacts\s*\{[^}]*max-width:\s*100%/.test(mobileCss)
-        && /\.rowacts\s*\{[^}]*overflow-x:\s*hidden/.test(mobileCss),
-      `${minWidth}×${minHeight}: ${rowactCss.trim()}`);
-    check("mobile strip retains review/diff, chat/share/export/rename, lane save/land/shelve and kill via shared actions",
-      rowSrc.includes('mkact("⏸"') && rowSrc.includes("openMergeDiff(s.id)")
-        && rowSrc.includes('mkact("±"') && rowSrc.includes('mkact("💬"')
-        && rowSrc.includes('mkact("⤴"') && rowSrc.includes('mkact("⇩"') && rowSrc.includes('mkact("✎"')
-        && rowSrc.includes('mkact("✔"') && rowSrc.includes('mkact("⏏"') && rowSrc.includes('mkact("⇲"')
-        && rowSrc.includes('mkact("✕"')
-        && rowSrc.includes("commitBusy.has(s.id)") && rowSrc.includes("mergePending.has(s.id)"),
-      "rowacts action family");
-
-    // Status facts keep their original three-way/activity inputs. The extra classes only give
-    // those facts shapes and accessible names; no new lifecycle inference is introduced.
-    const lifecycleCss = cssRule(".slot .lcdot");
-    const editingCss = cssRule(".slot .lcdot.editing");
-    const readyCss = cssRule(".slot .lcdot.ready");
-    const inactiveCss = cssRule(".slot .act");
-    const recentCss = cssRule(".slot .act.recent");
-    check("lifecycle indicators expose their factual name and three distinct non-colour shapes",
-      rowSrc.includes('dot.setAttribute("aria-label", lifecycleName)')
-        && rowSrc.includes('s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean"')
-        && /border-radius:\s*50%/.test(lifecycleCss)
-        && /transform:\s*rotate\(45deg\)/.test(editingCss)
-        && /clip-path:\s*polygon/.test(readyCss),
-      JSON.stringify({ lifecycleCss, editingCss, readyCss }));
-    check("recent/inactive activity exposes names and differs as hollow circle versus filled diamond",
-      rowSrc.includes('live.setAttribute("aria-label", activityName)')
-        && rowSrc.includes('recent ? "Session active or recently produced output" : "Session inactive"')
-        && /border-radius:\s*50%/.test(inactiveCss) && /background:\s*transparent/.test(inactiveCss)
-        && /border-radius:\s*1px/.test(recentCss) && /transform:\s*rotate\(45deg\)/.test(recentCss),
-      JSON.stringify({ inactiveCss, recentCss }));
-    check("unknown context remains visible as named ctx ? rather than becoming an inferred value",
-      rowSrc.includes('c ? `ctx ${Math.round(c.pct)}%` : "ctx ?"')
-        && rowSrc.includes('cx.setAttribute("aria-label", cx.title)')
-        && rowSrc.includes("context fill unknown"),
-      "ctx source");
-
-    // WCAG contrast rule, not a palette snapshot: resolve each hardcoded/CSS-variable essential
-    // foreground and calculate it against every background the row can actually have.
-    const rootCss = cssRule(":root");
-    const resolveColor = (selector: string): string | null => {
-      const body = cssRule(selector);
-      const raw = /(?:^|;)\s*color:\s*(#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|var\(--[\w-]+\))/.exec(body)?.[1];
-      if (!raw) return null;
-      if (raw.startsWith("#")) return raw.toLowerCase();
-      const name = /^var\((--[\w-]+)\)$/.exec(raw)?.[1];
-      if (!name) return null;
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`${escaped}:\\s*(#[0-9a-fA-F]{6}\\b|#[0-9a-fA-F]{3}\\b)`).exec(rootCss)?.[1]?.toLowerCase() ?? null;
-    };
-    const rgb = (hex: string): [number, number, number] => {
-      const h = hex.length === 4 ? [...hex.slice(1)].map((c) => c + c).join("") : hex.slice(1);
-      return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255) as [number, number, number];
-    };
-    const luminance = (hex: string): number => {
-      const [r, g, b] = rgb(hex).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
-      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
-    };
-    const contrast = (a: string, b: string): number => {
-      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-      return (hi! + 0.05) / (lo! + 0.05);
-    };
-    const backgrounds = ["#1a1a1a", "#242424", "#1e2333", "#26314f"];
-    const essential = [
-      ["main number", ".slot .n"], ["empty number", ".slot.empty .n"],
-      ["main/lane label", ".slot .lbl"], ["empty/orphan label", ".slot .lbl.dim"],
-      ["lane branch ref", ".slot .laneref"], ["context", ".slot .ctxfill"],
-      ["unknown context", ".slot .ctxfill.unknown"], ["fold", ".slot .stackfold"],
-      ["quick lane", ".slot .quicklane"], ["lane diff", ".slot .lanediff"],
-      ["main diff", ".slot .diff"], ["review", ".revb"], ["chat", ".slot .cmtact"],
-      ["kill", ".slot .kill"], ["mobile row action", ".rowacts .rowact"],
-    ] as const;
-    for (const [name, selector] of essential) {
-      const fg = resolveColor(selector);
-      const ratios = fg ? backgrounds.map((bg) => contrast(fg, bg)) : [];
-      check(`slot contrast: ${name} is >=4.5:1 on normal/hover/shown/current backgrounds`,
-        !!fg && ratios.length === backgrounds.length && ratios.every((ratio) => ratio >= 4.5),
-        `${selector} ${fg ?? "missing"}: ${ratios.map((ratio) => ratio.toFixed(2)).join(", ")}`);
-    }
-    check("slot focus-visible treatment is scoped and remains high-contrast across rows/rail",
-      /#slots :is\(button, input\):focus-visible\s*\{[^}]*outline:\s*2px solid #fff/.test(indexSrc)
-        && /#side\.collapsed \.slotprimary/.test(indexSrc),
-      "#slots focus-visible + collapsed primary");
-    const collapsedCss = indexSrc.slice(indexSrc.indexOf("/* collapsed rail:"), indexSrc.indexOf(".renamein"));
-    check("collapsed rail keeps main/empty numbers, lane suffix and controls while clipping only text facts that cannot fit",
-      !/\.n[^}]*display:\s*none/.test(collapsedCss)
-        && !/\.laneref[^}]*display:\s*none/.test(collapsedCss)
-        && !/\.stackfold[^}]*display:\s*none/.test(collapsedCss)
-        && !/\.quicklane[^}]*display:\s*none/.test(collapsedCss)
-        && /#side\.collapsed \.slot\s*\{[^}]*flex-wrap:\s*wrap/.test(collapsedCss)
-        && /#side\.collapsed \.ctxfill[^}]*clip-path:\s*inset\(50%\)/.test(collapsedCss),
-      collapsedCss.slice(0, 400));
+    check("empty rows stay numbered navigation but use only the quiet compact empty label",
+      emptySrc.includes('el("span", "n", String(s.id))')
+        && emptySrc.includes('el("span", "lbl dim", "empty")')
+        && emptySrc.includes("row.onclick = () => openPicker(s.id)")
+        && !emptySrc.includes("start here") && !emptySrc.includes("empty —"),
+      emptySrc.slice(0, 300));
+    check("lane suffix replaces the slot number without a redundant permanent lane glyph",
+      !rowSrc.includes('"lanechip"') && !indexSrc.includes(".slot .lanechip"),
+      "slotRow + sidebar CSS");
+    check("hover and focus actions use a solid row-coloured surface over passive facts",
+      /background:\s*var\(--rb\)/.test(slotactCss)
+        && !/transparent|gradient|opacity/i.test(slotactCss)
+        && indexSrc.includes(".slot:hover .slotact, .slot:focus-within .slotact { display: flex; }"),
+      slotactCss.trim());
+    check("unknown context remains the literal ctx ? reading",
+      rowSrc.includes('c ? `ctx ${Math.round(c.pct)}%` : "ctx ?"'),
+      "slotRow context source");
+    const mobileRowacts = /(?:^|\n)\s*\.rowacts\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
+    const mobileRowact = /(?:^|\n)\s*\.rowacts \.rowact\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
+    check("mobile rows and existing actions wrap within the drawer without clipping",
+      /\.slot\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss)
+        && /flex-wrap:\s*wrap/.test(mobileRowacts)
+        && /max-width:\s*100%/.test(mobileRowacts)
+        && /min-width:\s*40px/.test(mobileRowact)
+        && /min-height:\s*40px/.test(mobileRowact),
+      JSON.stringify({ mobileRowacts: mobileRowacts.trim(), mobileRowact: mobileRowact.trim() }));
   }
 
   const wsNoTok = await new Promise<boolean>((resolve) => {

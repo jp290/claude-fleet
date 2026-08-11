@@ -359,13 +359,20 @@ export async function run(): Promise<void> {
   // The scratch copy carries server.ts + public/ but not src/ — the link back to the checkout
   // is the node_modules symlink, so the real source is its realpath's parent (as in outcomes).
   let cliSrc: string | null = null;
-  let cliSrcError = "";
+  let indexSrc: string | null = null;
+  let cliSrcError = "", indexSrcError = "";
+  const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
   try {
-    cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    cliSrc = readFileSync(`${sourceRoot}/src/client.ts`, "utf8");
   } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
+  try {
+    indexSrc = readFileSync(`${sourceRoot}/public/index.html`, "utf8");
+  } catch (e) { indexSrcError = e instanceof Error ? e.message : String(e); }
   check("precondition: node_modules exposes src/client.ts for slot client checks",
     cliSrc !== null, cliSrcError);
-  if (cliSrc === null) return;
+  check("precondition: node_modules exposes public/index.html for slot presentation checks",
+    indexSrc !== null, indexSrcError);
+  if (cliSrc === null || indexSrc === null) return;
   const planSrc = cliSrc.slice(cliSrc.indexOf("const SAVER = {"), cliSrc.indexOf("let dataSaver"));
   check("client: the data-saver plan is extractable as a pure function (no DOM in pollPlan)",
     planSrc.includes("function pollPlan") && !/document|localStorage|el\(/.test(planSrc.replace(/^\s*\/\/.*$/gm, "")),
@@ -561,7 +568,64 @@ export async function run(): Promise<void> {
       const a = cliSrc.indexOf(from), b = cliSrc.indexOf(to);
       return a >= 0 && b > a ? cliSrc.slice(a, b) : "";
     };
-    const deps = cut("const isActive = ", "// --- project colour")
+    const refSrc = cut("function laneBranchRefs(", "// --- project colour");
+    type RefInput = { id: number; branch: string };
+    let laneBranchRefs: ((lanes: readonly RefInput[]) => Map<number, string>) | null = null;
+    try {
+      laneBranchRefs = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(refSrc)
+        + "\nreturn laneBranchRefs;")() as (lanes: readonly RefInput[]) => Map<number, string>;
+    } catch { laneBranchRefs = null; }
+    check("probe: lane branch references are a liftable DOM-free pure helper",
+      !!laneBranchRefs && !/document|HTMLElement|localStorage|Math\.random/.test(refSrc),
+      refSrc.slice(0, 90) || "no laneBranchRefs block");
+
+    const four = laneBranchRefs?.([
+      { id: 1, branch: "fleet/task-aa01" }, { id: 2, branch: "fleet/task-bb02" },
+    ]);
+    check("lane refs use exactly four trailing branch characters when those are already unique",
+      four?.get(1) === "aa01" && four.get(2) === "bb02", JSON.stringify([...four?.entries() ?? []]));
+
+    const pairFx: RefInput[] = [
+      { id: 11, branch: "fleet/alphaX1234" }, { id: 12, branch: "fleet/betaY1234" },
+    ];
+    const pair = laneBranchRefs?.(pairFx);
+    check("a shared last four lengthens only to the shortest unique suffix",
+      pair?.get(11) === "X1234" && pair.get(12) === "Y1234", JSON.stringify([...pair?.entries() ?? []]));
+
+    const three = laneBranchRefs?.([
+      { id: 21, branch: "fleet/oneQ7777" }, { id: 22, branch: "fleet/twoR7777" },
+      { id: 23, branch: "fleet/threeS7777" },
+    ]);
+    check("three or more colliding lane refs separate together without over-lengthening",
+      three?.get(21) === "Q7777" && three.get(22) === "R7777" && three.get(23) === "S7777",
+      JSON.stringify([...three?.entries() ?? []]));
+
+    const short = laneBranchRefs?.([
+      { id: 31, branch: "abc" }, { id: 32, branch: "wxyz" },
+      { id: 33, branch: "branch" }, { id: 34, branch: "xbranch" },
+    ]);
+    check("short branches stay honest full strings and distinct nested full branches still separate",
+      short?.get(31) === "abc" && short.get(32) === "wxyz"
+        && short.get(33) === "branch" && short.get(34) === "xbranch",
+      JSON.stringify([...short?.entries() ?? []]));
+
+    const pairReverse = laneBranchRefs?.([...pairFx].reverse());
+    check("lane refs are stable when active-lane input order reverses",
+      pairFx.every((lane) => pair?.get(lane.id) === pairReverse?.get(lane.id)),
+      JSON.stringify({ forward: [...pair?.entries() ?? []], reverse: [...pairReverse?.entries() ?? []] }));
+
+    const acrossRepos = [
+      { repo: "/repo/one", stack: 1, id: 41, branch: "fleet/repo-one-A9000" },
+      { repo: "/repo/two", stack: 2, id: 42, branch: "fleet/repo-two-B9000" },
+      { repo: "/repo/one", stack: 3, id: 43, branch: "fleet/repo-one-C8000" },
+    ];
+    const globalRefs = laneBranchRefs?.(acrossRepos.map(({ id, branch }) => ({ id, branch })));
+    check("lane refs are globally unique across repositories and stacks, not computed per group",
+      !!globalRefs && new Set(globalRefs.values()).size === acrossRepos.length
+        && globalRefs.get(41) === "A9000" && globalRefs.get(42) === "B9000",
+      JSON.stringify([...globalRefs?.entries() ?? []]));
+
+    const deps = cut("const isActive = ", "// A lane's spoken identity")
       + cut("function projectOf(", "// Eight hues");
     const stackSrc = cut("function stacksOf()", "function startRename(");
     type FxSlot = {
@@ -569,7 +633,7 @@ export async function run(): Promise<void> {
       worktree?: { repo: string; branch: string; anchor?: LaneAnchor } | null;
     };
     type FxStack = {
-      key: string; foldKey: string; anchor: FxSlot | null; lanes: FxSlot[]; at: number; ghostHost: boolean;
+      key: string; foldKey: string; anchor: FxSlot | null; lanes: FxSlot[]; at: number;
     };
     let stacksOf: ((f: FxSlot[]) => FxStack[]) | null = null;
     try {
@@ -625,7 +689,7 @@ export async function run(): Promise<void> {
       orphan?.lanes.some((s) => s.id === 2) === true, JSON.stringify(orphan?.lanes.map((s) => s.id)));
     check("dead, parentless and wrong-repo anchors share the truthful repo-header/orphan stack",
       [2, 4, 5, 6].every((id) => orphan?.lanes.some((s) => s.id === id))
-        && orphan?.at === 2 && orphan.ghostHost,
+        && orphan?.at === 2,
       JSON.stringify({ at: orphan?.at, lanes: orphan?.lanes.map((s) => s.id) }));
 
     const subFx: FxSlot[] = [
@@ -664,11 +728,48 @@ export async function run(): Promise<void> {
         && cliSrc.includes("quickLaneChip(s.repo ?? s.cwd, parent ?? undefined)"),
       "quickLaneChip → newLane parent");
     const renderSrc = cut("function renderSlots()", "function emptyRow(");
+    const emptySrc = cut("function emptyRow(", "// The whole stack");
+    const stackUiSrc = cut("function setStackOpen(", "function renderChips(");
     const rowSrc = cut("function slotRow(", "function renderChips(");
-    check("fixed empty numbering and displayed lane row numbering remain intact",
+    const showSlotSrc = cut("function showSlot(", "window.addEventListener");
+    check("fixed empty rows and active non-lane rows retain their displayed slot numbers",
       renderSrc.includes("slotsEl.appendChild(emptyRow(s))")
-        && rowSrc.includes('el("span", "n", String(s.id))'),
-      "renderSlots + slotRow number");
+        && emptySrc.includes('el("span", "n", String(s.id))')
+        && /else \{\s*row\.append\(el\("span", "n", String\(s\.id\)\), lbl\)/.test(rowSrc),
+      "renderSlots + emptyRow + slotRow main-number branch");
+    check("active lane rows replace the visible number with ref · mutable label",
+      /if \(s\.worktree\) \{[\s\S]*?"laneref"[\s\S]*?"lanesep", "·"[\s\S]*?\} else \{\s*row\.append\(el\("span", "n"/.test(rowSrc)
+        && (rowSrc.match(/"n", String\(s\.id\)/g) ?? []).length === 1
+        && rowSrc.includes("s.label ?? baseName(s.cwd)")
+        && indexSrc.includes(".slot .laneref { flex: none; white-space: nowrap;")
+        && indexSrc.includes(".slot .laneidentity .lbl { min-width: 0; }"),
+      "lane identity branch + compact CSS");
+    check("lane row internals keep slot ids, routes, tooltips and rename persistence",
+      rowSrc.includes("row.dataset.slot = String(s.id)")
+        && rowSrc.includes("slot ${s.id} · ${displayLabel}")
+        && rowSrc.includes("showSlot(s.id)")
+        && rowSrc.includes("`/api/slots/${s.id}/kill`")
+        && cliSrc.includes("`/api/slots/${s.id}/rename`")
+        && rowSrc.includes("startRename(row, s)"),
+      "slotRow data-slot/actions/title + startRename route");
+    check("sidebar stack fold, unfold, rendering and showSlot contain no worktree-list request or ghost plumbing",
+      !stackUiSrc.includes("/worktrees") && !showSlotSrc.includes("/worktrees")
+        && !/ghostCache|loadGhosts|ghostRow|ghostHost/.test(stackUiSrc)
+        && /function renderStack[\s\S]*for \(const l of g\.lanes\)/.test(stackUiSrc),
+      "sidebar stack source");
+    check("sidebar ghost presentation CSS is removed",
+      !indexSrc.includes(".slot.ghost") && !indexSrc.includes(".ghosttag"),
+      "public/index.html ghost selectors");
+    check("board lane recovery and destructive safeguards retain their worktree routes",
+      boardSrc.includes('api(`/api/slots/${slot}/worktrees`)')
+        && boardSrc.includes('post("/api/lanes", { repo: wts.repo, attach: w.path })')
+        && boardSrc.includes('post("/api/worktrees/remove", { repo: wts.repo, path: w.path })')
+        && boardSrc.includes('post("/api/worktrees/discard", { repo: wts.repo, path: w.path, branch: w.branch })')
+        && boardSrc.includes("DISCARD_READ_MS")
+        && serverSrc.includes('/^\\/api\\/slots\\/(\\d+)\\/worktrees$/')
+        && serverSrc.includes('url.pathname === "/api/worktrees/remove"')
+        && serverSrc.includes('url.pathname === "/api/worktrees/discard"'),
+      "renderBoard recovery controls + unchanged server routes");
   }
 
   const wsNoTok = await new Promise<boolean>((resolve) => {

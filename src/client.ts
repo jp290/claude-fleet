@@ -820,6 +820,7 @@ interface WtInfo { repo: string; main: string; worktrees: WtRow[] }
 // 💾 lane commit in flight, per slot — carries the MODE so the button can label itself
 // ("… saving" vs "… writing message") while the request runs.
 const commitBusy = new Map<number, "quick" | "agent">();
+const killBusy = new Set<number>();
 // the server's deterministic verify verdict against the rebased tree (mirrors server.ts
 // `interface MergeLast`'s `verify`). Absent = "unverified" (no FLEET_VERIFY_CMD result on
 // record); `ok: null` = nothing was measured — the command DECLINED (skipped), or `timedOut`
@@ -932,7 +933,10 @@ async function doLand(slot: number) {
   if (mergePending.has(slot)) return;
   const s = fleet[slot - 1];
   if (!s?.worktree) return;
+  const focusTarget = captureSidebarFocus();
   mergePending.add(slot); // reserve BEFORE the preview await, else a double-click opens two overlays
+  renderSlots();
+  void renderBoard();
   try {
     // one-gesture land: a dirty tree is committed FIRST (reusing the 💾 commit machinery — the
     // same local, never-pushed, reversible commit), then landed. The owner no longer pre-commits.
@@ -984,6 +988,8 @@ async function doLand(slot: number) {
     alert("Land failed — network error");
   } finally {
     mergePending.delete(slot);
+    renderSlots();
+    restoreBusySidebarFocus(focusTarget);
     void renderBoard();
   }
 }
@@ -1050,9 +1056,11 @@ async function doUndoLand(repo: string, branch: string): Promise<void> {
 // message (falls back to wip). Commit-only, reversible; the server never pushes or lands.
 async function doCommit(slot: number, mode: "quick" | "agent", activeConfirmed = false): Promise<void> {
   if (commitBusy.has(slot)) return;
+  const focusTarget = captureSidebarFocus();
   // reserve synchronously BEFORE the confirmMidRun await (mirrors doLand's mergePending
   // fix) — else two near-simultaneous triggers both pass the has() check and double-commit.
   commitBusy.set(slot, mode);
+  renderSlots();
   void renderBoard(); // reflect the disabled/"… writing message" state immediately
   try {
     // the session is still producing output → confirm before snapshotting a half-finished tree.
@@ -1076,6 +1084,8 @@ async function doCommit(slot: number, mode: "quick" | "agent", activeConfirmed =
   } finally {
     commitBusy.delete(slot);
     await refresh();
+    renderSlots();
+    restoreBusySidebarFocus(focusTarget);
     void renderBoard();
   }
 }
@@ -1318,6 +1328,7 @@ async function doCommitMain(slot: number, mode: "quick" | "agent", files: string
 async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
   if (laneReqBusy) return;
   laneReqBusy = true;
+  renderSlots();
   try {
     // The server still picks the first free slot. A main-row click additionally names the exact
     // SESSION OCCUPANT it came from; generic board/repo-header creation omits `parent` and lets the
@@ -1329,6 +1340,7 @@ async function newLane(repo: string, parent?: LaneAnchor): Promise<void> {
     if (j.slot) showSlot(j.slot);
   } finally {
     laneReqBusy = false;
+    renderSlots();
   }
 }
 
@@ -4184,6 +4196,72 @@ function stacksOf(): Stack[] {
   return out.sort((a, b) => a.at - b.at);
 }
 
+// Sidebar controls are native buttons, but their key events still reach the window-level terminal
+// shortcuts unless stopped here. Preventing the native key default and invoking once ourselves
+// makes Enter/Space deterministic (including key repeat) and keeps Space from scrolling the drawer.
+// Kept DOM-free so the key contract can be exercised directly in e2e/slots.ts.
+function activateSidebarKey(
+  e: Pick<KeyboardEvent, "key" | "repeat" | "preventDefault" | "stopPropagation">,
+  action: () => void,
+): boolean {
+  if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return false;
+  e.preventDefault();
+  e.stopPropagation();
+  if (!e.repeat) action();
+  return true;
+}
+
+function bindSidebarAction(button: HTMLButtonElement, action: () => void): HTMLButtonElement {
+  button.type = "button";
+  button.onclick = (e) => { e.stopPropagation(); action(); };
+  button.onkeydown = (e) => { activateSidebarKey(e, action); };
+  return button;
+}
+
+// Class order is already the semantic control family throughout this scoped builder. Cutting the
+// first token here gives every rebuild a deterministic key without leaking its accessible label
+// (which may contain mutable lane text) into identity.
+function sidebarControlKey(className: string): string {
+  return className.trim().split(/\s+/, 1)[0] || "control";
+}
+
+function sidebarButton(
+  className: string, glyph: string, ariaLabel: string, action: () => void, disabled = false,
+): HTMLButtonElement {
+  const button = el("button", `${className} slotctrl`, glyph) as HTMLButtonElement;
+  button.setAttribute("aria-label", ariaLabel);
+  button.dataset.control = sidebarControlKey(className);
+  button.disabled = disabled;
+  return bindSidebarAction(button, action);
+}
+
+// One guarded kill path for every surface. A lane always gets the same risk preview; a plain
+// session always gets the same history-loss confirmation. Desktop and mobile controls only call
+// this function — destructive logic must not fork when a new surface is added.
+async function doKill(s: ActiveSlot): Promise<void> {
+  if (killBusy.has(s.id)) return;
+  const focusTarget = captureSidebarFocus();
+  killBusy.add(s.id);
+  renderSlots();
+  try {
+    if (s.worktree) {
+      const risk = await fetchSlotRisk(s.id);
+      const ok = await showRiskPreview(
+        `Kill session ${s.id} (${baseName(s.cwd)})? The worktree is left on disk (open the board to land or remove it).`, risk, "kill");
+      if (!ok) return;
+    } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd)})? The claude session and its history are gone.`)) {
+      return;
+    }
+    await post(`/api/slots/${s.id}/kill`, {});
+    for (const p of panes) if (p.slot === s.id) p.assign(0);
+    await refresh();
+  } finally {
+    killBusy.delete(s.id);
+    renderSlots();
+    restoreBusySidebarFocus(focusTarget);
+  }
+}
+
 function startRename(row: HTMLElement, s: SlotInfo) {
   // dblclick on a not-yet-focused slot: the first click's assign() rebuilds the sidebar,
   // so the dblclick lands on the detached old row — a rename input there would be invisible.
@@ -4196,12 +4274,15 @@ function startRename(row: HTMLElement, s: SlotInfo) {
   }
   const lbl = row.querySelector(".lbl");
   if (!lbl || row.querySelector(".renamein")) return;
+  // The identity is a native button. Replace that WHOLE button while editing; putting an input
+  // inside it would create nested interactive content and an invalid accessibility tree.
+  const target = lbl.closest(".slotprimary") ?? lbl;
   const input = document.createElement("input");
   input.className = "renamein";
   input.value = s.label ?? "";
   input.placeholder = baseName(s.cwd!);
   input.maxLength = 40;
-  lbl.replaceWith(input);
+  target.replaceWith(input);
   input.focus();
   input.select();
   let done = false;
@@ -4210,7 +4291,7 @@ function startRename(row: HTMLElement, s: SlotInfo) {
     done = true;
     // restore the label BEFORE refreshing — renderSlots skips any rebuild while a
     // .renamein exists, so a leftover input would wedge the sidebar forever
-    input.replaceWith(lbl);
+    input.replaceWith(target);
     if (save && input.value.trim() !== (s.label ?? "")) await post(`/api/slots/${s.id}/rename`, { label: input.value });
     lastRender = ""; // force the sidebar rebuild even if nothing else changed
     await refresh();
@@ -4243,6 +4324,39 @@ function paintPaneProjects() {
   }
 }
 
+interface SidebarFocusTarget { slot: string; control: string }
+
+function captureSidebarFocus(): SidebarFocusTarget | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !slotsEl.contains(active)) return null;
+  const row = active.closest<HTMLElement>(".slot");
+  const slot = row?.dataset.slot ?? row?.dataset.focusScope;
+  const control = active.dataset.control;
+  return slot && control ? { slot, control } : null;
+}
+
+function restoreSidebarFocus(target: SidebarFocusTarget | null): void {
+  if (!target) return;
+  const row = [...slotsEl.querySelectorAll<HTMLElement>(".slot")]
+    .find((candidate) => (candidate.dataset.slot ?? candidate.dataset.focusScope) === target.slot);
+  if (!row) return;
+  const replacement = [row, ...row.querySelectorAll<HTMLElement>("[data-control]")]
+    .find((candidate) => candidate.dataset.control === target.control);
+  if (replacement instanceof HTMLButtonElement && !replacement.disabled)
+    replacement.focus({ preventScroll: true });
+}
+
+// Busy rendering intentionally disables the triggering control, so the generic restore above
+// cannot focus it on the first rebuild. Restore its saved anchor only if focus is still nowhere —
+// never pull focus back from a terminal, board, overlay, or another sidebar control the owner chose.
+function restoreBusySidebarFocus(target: SidebarFocusTarget | null): void {
+  if (!target) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.isConnected
+    && active !== document.body && active !== document.documentElement) return;
+  restoreSidebarFocus(target);
+}
+
 function renderSlots() {
   updateTitle();
   paintPaneProjects();
@@ -4251,6 +4365,7 @@ function renderSlots() {
   // only re-decides on click would keep offering a conversation view that has nothing behind it.
   for (const p of panes) p.syncHarnessAffordances();
   if (slotsEl.querySelector(".renamein")) return; // never destroy an in-progress rename
+  const focusTarget = captureSidebarFocus();
   slotsEl.replaceChildren();
   // Every slot still gets a row and empty slots still hold their place — but a lane whose project
   // has a home in this list now renders under it instead of at its own number. The "slots are fixed
@@ -4269,14 +4384,19 @@ function renderSlots() {
     if (stackedLanes.has(s.id)) continue; // folded (or drawn) under its persisted anchor/header
     slotsEl.appendChild(slotRow(s, undefined, refs)); // plain session, including another main with no lanes
   }
+  restoreSidebarFocus(focusTarget);
 }
 
 function emptyRow(s: SlotInfo): HTMLElement {
-  const row = el("div", "slot empty");
+  // Empty rows have no child controls, so the row itself may be the native button. Occupied rows
+  // stay groups with one separate primary button (see slotRow), never buttons containing buttons.
+  const row = el("button", "slot empty") as HTMLButtonElement;
   row.dataset.slot = String(s.id);
+  row.dataset.control = "slotprimary";
+  row.setAttribute("aria-label", `Open empty slot ${s.id}`);
   row.appendChild(el("span", "n", String(s.id)));
   row.appendChild(el("span", "lbl dim", "empty — start here"));
-  row.onclick = () => openPicker(s.id);
+  bindSidebarAction(row, () => openPicker(s.id));
   // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
   // moment a repo session had focus, none of them saying which repo they meant. It lives on the
   // stack anchor now (see slotRow), where the repo is named right next to it.
@@ -4299,29 +4419,43 @@ function renderStack(g: Stack, refs: ReadonlyMap<number, string>) {
 // They would otherwise have nothing truthful to fold under, so the project itself becomes the
 // header. Never invisible, never silently migrated to whichever main happens to be open now.
 function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
+  const repoName = baseName(g.key);
   const row = el("div", "slot repohead");
+  row.dataset.focusScope = `repo:${g.foldKey}`;
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", `${repoName} orphan lane stack`);
   tintProject(row, g.key);
   row.appendChild(foldArrow(g, open));
-  const lbl = el("span", "lbl dim", baseName(g.key));
+  const primary = sidebarButton("slotprimary repoprimary", "",
+    `${open ? "Fold" : "Unfold"} ${g.lanes.length} lane${g.lanes.length === 1 ? "" : "s"} in ${repoName}`,
+    () => setStackOpen(g, !open));
+  const lbl = el("span", "lbl dim", repoName);
   lbl.title = `${g.key}\nno matching anchored main session — orphan/parentless lanes`;
-  row.appendChild(lbl);
+  primary.appendChild(lbl);
+  row.appendChild(primary);
   for (const c of stackChips(g, open)) row.appendChild(c);
   row.appendChild(quickLaneChip(g.key));
+  // Pointer clicks on the row's free space retain the existing toggle. Keyboard users get the
+  // named primary/fold buttons above; the group itself is deliberately not a competing ARIA button.
   row.onclick = () => setStackOpen(g, !open);
   return row;
 }
 
 function quickLaneChip(repo: string, parent?: LaneAnchor): HTMLElement {
-  const q = el("span", "quicklane", "⎇+");
-  q.title = `new lane in ${baseName(repo)} — one click, no picker`;
-  q.onclick = (e) => { e.stopPropagation(); void newLane(repo, parent); };
+  const repoName = baseName(repo);
+  const q = sidebarButton("quicklane", "⎇+", `Start a new lane in ${repoName}`,
+    () => { void newLane(repo, parent); }, laneReqBusy);
+  q.title = `new lane in ${repoName} — one click, no picker`;
   return q;
 }
 
 function foldArrow(g: Stack, open: boolean): HTMLElement {
-  const a = el("span", "stackfold", open ? "▾" : "▸");
-  a.title = open ? `fold ${baseName(g.key)}'s lanes away` : `unfold ${g.lanes.length} lane(s)`;
-  a.onclick = (e) => { e.stopPropagation(); setStackOpen(g, !open); };
+  const repoName = baseName(g.key);
+  const a = sidebarButton("stackfold", open ? "▾" : "▸",
+    `${open ? "Fold" : "Unfold"} ${g.lanes.length} lane${g.lanes.length === 1 ? "" : "s"} in ${repoName}`,
+    () => setStackOpen(g, !open));
+  a.setAttribute("aria-expanded", String(open));
+  a.title = open ? `fold ${repoName}'s lanes away` : `unfold ${g.lanes.length} lane(s)`;
   return a;
 }
 
@@ -4330,6 +4464,8 @@ function stackChips(g: Stack, open: boolean): HTMLElement[] {
   const out: HTMLElement[] = [];
   const n = el("span", "stackn", `⎇${g.lanes.length}`);
   n.title = `${g.lanes.length} lane${g.lanes.length === 1 ? "" : "s"} in ${baseName(g.key)}`;
+  n.setAttribute("role", "img");
+  n.setAttribute("aria-label", n.title);
   out.push(n);
   if (!open) {
     // Aggregation, not decoration: these two are the "somebody has to look at this" signals, and
@@ -4337,19 +4473,22 @@ function stackChips(g: Stack, open: boolean): HTMLElement[] {
     // which means unfolding first, so what you land on is visible in the list you came from.
     const pending = g.lanes.filter((l) => l.mergePending);
     if (pending.length) {
-      const rb = el("span", "revb", pending.length > 1 ? `⏸${pending.length}` : "⏸");
+      const first = pending[0]!;
+      const laneName = first.label ?? baseName(first.cwd);
+      const rb = sidebarButton("revb", pending.length > 1 ? `⏸${pending.length}` : "⏸",
+        `Review ${laneName}'s conflict resolution on the board`, () => {
+          setStackOpen(g, true);
+          showSlot(first.id);
+          setBoard(true);
+        });
       rb.title = `${pending.length} folded lane(s) with agent conflict resolutions nobody has reviewed`;
-      rb.onclick = (e) => {
-        e.stopPropagation();
-        setStackOpen(g, true);
-        showSlot(pending[0].id);
-        setBoard(true);
-      };
       out.push(rb);
     }
     const comments = g.lanes.reduce((a, l) => a + (l.share?.comments ?? 0), 0);
     if (comments > 0) {
       const cb = el("span", "cmtb", `💬${comments}`);
+      cb.setAttribute("role", "img");
+      cb.setAttribute("aria-label", `${comments} guest message${comments === 1 ? "" : "s"} in folded lanes`);
       cb.title = `${comments} guest message(s) in folded lanes`;
       out.push(cb);
     }
@@ -4365,30 +4504,44 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
   const isFocused = panes[focused]?.slot === s.id;
   const row = el("div", "slot" + (isFocused ? " current" : visible ? " shown" : "") + (s.worktree ? " lane" : ""));
   row.dataset.slot = String(s.id);
+  row.setAttribute("role", "group");
   tintProject(row, projectOf(s));
   if (stack) row.appendChild(foldArrow(stack, open));
   {
       const displayLabel = s.label ?? baseName(s.cwd);
+      const laneRef = s.worktree ? (refs.get(s.id) ?? s.worktree.branch) : null;
+      const primaryAction = stack && !open ? () => setStackOpen(stack, true) : () => showSlot(s.id);
+      const primaryLabel = stack && !open
+        ? `Unfold ${stack.lanes.length} lane${stack.lanes.length === 1 ? "" : "s"} under slot ${s.id}, ${displayLabel}`
+        : s.worktree
+          ? `Open lane ${laneRef}, ${displayLabel}, branch ${s.worktree.branch}, slot ${s.id}`
+          : `Open slot ${s.id}, ${displayLabel}`;
+      row.setAttribute("aria-label", s.worktree
+        ? `Lane ${laneRef}, ${displayLabel}, slot ${s.id}` : `Slot ${s.id}, ${displayLabel}`);
+      const primary = sidebarButton("slotprimary", "", primaryLabel, primaryAction);
       const lbl = el("span", "lbl", displayLabel);
       if (s.worktree) {
         const title = `${s.worktree.branch}\nslot ${s.id} · ${displayLabel}\n${s.cwd}`;
         const identity = el("span", "laneidentity");
-        const ref = el("span", "laneref", refs.get(s.id) ?? s.worktree.branch);
+        const ref = el("span", "laneref", laneRef ?? s.worktree.branch);
         ref.title = title;
         identity.title = title;
         identity.append(ref, el("span", "lanesep", "·"), lbl);
-        row.appendChild(identity);
+        primary.appendChild(identity);
         lbl.title = title;
       } else {
-        row.append(el("span", "n", String(s.id)), lbl);
+        primary.append(el("span", "n", String(s.id)), lbl);
         lbl.title = s.cwd;
       }
+      row.appendChild(primary);
       lbl.ondblclick = (e) => {
         e.stopPropagation();
         startRename(row, s);
       };
       if (autosList.some((a) => a.slot === s.id && a.enabled)) {
         const b = el("span", "autobadge", "⏱");
+        b.setAttribute("role", "img");
+        b.setAttribute("aria-label", "Has scheduled prompts");
         b.title = "has scheduled prompts";
         row.appendChild(b);
       }
@@ -4408,6 +4561,9 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         const state = s.git.dirty > 0 ? "editing" : s.git.ahead > 0 ? "ready" : "clean";
         row.appendChild(el("span", "lanechip", "⎇")); // lanes read as first-class
         const dot = el("span", `lcdot ${state}`);
+        const lifecycleName = `Lane lifecycle ${state}: ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`;
+        dot.setAttribute("role", "img");
+        dot.setAttribute("aria-label", lifecycleName);
         dot.title = `${s.git.branch} — ${s.git.dirty} uncommitted, ${s.git.ahead} to land, ${s.git.behind} behind`
           + `\nFleet lane (${state}). ± review · open the board to land`;
         row.appendChild(dot);
@@ -4416,23 +4572,26 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // the one action that belongs on the row; everything else (share/export/rename/land)
       // lives in the board now
       if (s.worktree) {
-        const dff = el("span", "lanediff", "±");
+        const dff = sidebarButton("lanediff", "±", `Review diff for lane ${laneRef}, ${displayLabel}`,
+          () => { void openDiff(s.id); });
         dff.title = "review this lane's diff";
-        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
         row.appendChild(dff);
       }
       if (s.share && s.share.comments > 0) {
-        // passive signal — hidden while the hover-action row is up; the 💬 in that row
-        // (below) is the clickable path, so aiming at the badge still lands right
+        // Passive count; the separately named 💬 button in .slotact is the desktop action.
         const cb = el("span", "cmtb", `💬${s.share.comments}`);
+        cb.setAttribute("role", "img");
+        cb.setAttribute("aria-label", `${s.share.comments} guest chat message${s.share.comments === 1 ? "" : "s"}`);
         cb.title = `guest chat — ${s.share.comments} message${s.share.comments === 1 ? "" : "s"}`;
         row.appendChild(cb);
       }
       if (s.mergePending) {
-        // a resolved conflict waiting for review — discoverable without opening the board
-        const rb = el("span", "revb", "⏸");
+        // A resolved conflict waiting for review — the control opens the board, never lands.
+        const rb = sidebarButton("revb", "⏸", `Review ${displayLabel}'s conflict resolution on the board`, () => {
+          showSlot(s.id);
+          setBoard(true);
+        });
         rb.title = "agent conflict resolutions nobody has reviewed — review & land (open the board)";
-        rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
         row.appendChild(rb);
       }
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
@@ -4449,6 +4608,8 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
           ? `context fill — ${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} input tokens (${c.pct}%)`
           : "context fill unknown — this slot has no pinned claude transcript with a usage record yet"
             + " (or runs a harness/model Fleet cannot measure). Not an empty context.";
+        cx.setAttribute("role", "img");
+        cx.setAttribute("aria-label", cx.title);
         row.appendChild(cx);
       }
       // green = live in a pane, or a background session that just produced output. A FOLDED anchor
@@ -4456,65 +4617,83 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // thing you must not have to unfold to notice (§F3 edge 2).
       const hidHot = !!stack && !open && stack.lanes.some(
         (l) => serverNow - l.lastOutput < RECENT_MS || panes.some((p) => p.slot === l.id));
-      const live = el("span", "act" + (visible || serverNow - s.lastOutput < RECENT_MS || hidHot ? " hot" : ""));
-      if (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS) live.title = "a folded lane is active";
+      const recent = visible || serverNow - s.lastOutput < RECENT_MS || hidHot;
+      const live = el("span", `act ${recent ? "recent hot" : "inactive"}`);
+      const activityName = hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS
+        ? "A folded lane is active or recently produced output"
+        : recent ? "Session active or recently produced output" : "Session inactive";
+      live.setAttribute("role", "img");
+      live.setAttribute("aria-label", activityName);
+      live.title = activityName;
       row.appendChild(live);
       const act = el("div", "slotact");
+      act.setAttribute("role", "group");
+      act.setAttribute("aria-label", `Desktop actions for slot ${s.id}, ${displayLabel}`);
       if (s.git && !s.worktree) {
-        // plain repo session: diff is available but secondary, so it stays in the hover row
-        const dff = el("span", "diff", "±");
+        // Plain repo session: diff is available but secondary, so it stays in the hover row.
+        const dff = sidebarButton("diff", "±", `Review working diff for slot ${s.id}, ${displayLabel}`,
+          () => { void openDiff(s.id); });
         dff.title = "review working diff";
-        dff.onclick = (e) => { e.stopPropagation(); void openDiff(s.id); };
         act.appendChild(dff);
       }
-      // rename/merge/land used to live here as hover-only glyphs — moved to the board's
-      // labeled "actions" section (renb/lb) so they're touch-reachable and self-explanatory;
-      // the row keeps only ± (added above) and ✕ kill (below) plus this chat badge.
+      // Rename/merge/land live in the board. The compact desktop surface keeps chat and kill;
+      // every discrete action is a named native button rather than a hover-only span.
       if (s.share) {
-        const ca = el("span", "cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬");
+        const ca = sidebarButton("cmtact" + (s.share.comments > 0 ? " hot" : ""), "💬",
+          `Open guest chat for slot ${s.id}, ${displayLabel}`, () => openShareDlg(s.id));
         ca.title = "guest chat";
-        ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
         act.appendChild(ca);
       }
-      const kill = el("span", "kill", "✕");
+      const kill = sidebarButton("kill", "✕", `Kill session in slot ${s.id}, ${displayLabel}`,
+        () => { void doKill(s); }, killBusy.has(s.id));
       kill.title = "kill session";
-      kill.onclick = async (e) => {
-        e.stopPropagation();
-        if (s.worktree) {
-          // a lane-holding slot never had real git-state context on kill before — fetch it,
-          // same risk preview the board's land action uses (kill leaves the worktree on disk;
-          // land/remove it from the board)
-          const risk = await fetchSlotRisk(s.id);
-          const ok = await showRiskPreview(
-            `Kill session ${s.id} (${baseName(s.cwd!)})? The worktree is left on disk (open the board to land or remove it).`, risk, "kill");
-          if (!ok) return;
-        } else if (!confirm(`Kill session ${s.id} (${baseName(s.cwd!)})? The claude session and its history are gone.`)) {
-          return;
-        }
-        await post(`/api/slots/${s.id}/kill`, {});
-        for (const p of panes) if (p.slot === s.id) p.assign(0);
-        await refresh();
-      };
       act.appendChild(kill);
       row.appendChild(act);
-      // mobile-only action strip: share/export/rename/land moved off the row into the
-      // desktop-only board, leaving phones with no reachable share/export/rename/land.
-      // These are CSS-hidden on desktop (.rowacts { display:none }) so the row stays clean.
+
+      // Mobile gets exactly one in-flow action surface. It calls the same guarded functions as
+      // desktop/the board; no destructive or lifecycle logic is copied into the strip.
       const rowacts = el("div", "rowacts");
-      const mkact = (glyph: string, title: string, fn: () => void) => {
-        const b = el("span", "rowact", glyph);
-        b.title = title;
-        b.onclick = (e) => { e.stopPropagation(); fn(); };
+      rowacts.setAttribute("role", "group");
+      rowacts.setAttribute("aria-label", `Actions for slot ${s.id}, ${displayLabel}`);
+      const mkact = (glyph: string, label: string, fn: () => void, disabled = false) => {
+        const b = sidebarButton("rowact", glyph, label, fn, disabled);
+        b.dataset.control = `rowact-${glyph}`;
+        b.title = label;
         rowacts.appendChild(b);
       };
-      mkact("⤴", "share", () => openShareDlg(s.id));
-      mkact("⇩", "export", () => window.open(`/api/slots/${s.id}/export`, "_blank"));
-      mkact("✎", "rename", () => startRename(row, s));
+      const foldedStack = stack && !open ? stack : undefined;
+      const foldedPending = foldedStack?.lanes.find((lane) => lane.mergePending);
+      if (foldedPending && foldedStack) {
+        const pendingName = foldedPending.label ?? baseName(foldedPending.cwd);
+        mkact("⏸", `Review resolved merge diff for folded lane ${pendingName}`, () => {
+          setStackOpen(foldedStack, true);
+          showSlot(foldedPending.id);
+          setBoard(true);
+          void openMergeDiff(foldedPending.id);
+        });
+      } else if (s.mergePending) mkact("⏸", `Review resolved merge diff for ${displayLabel}`, () => {
+        showSlot(s.id);
+        setBoard(true);
+        void openMergeDiff(s.id);
+      });
+      if (s.git) mkact("±", `Review working diff for slot ${s.id}, ${displayLabel}`,
+        () => { void openDiff(s.id); });
+      if (s.share) mkact("💬", `Open guest chat for slot ${s.id}, ${displayLabel}`,
+        () => openShareDlg(s.id));
+      mkact("⤴", `Share slot ${s.id}, ${displayLabel}`, () => openShareDlg(s.id));
+      mkact("⇩", `Export slot ${s.id}, ${displayLabel}`,
+        () => window.open(`/api/slots/${s.id}/export`, "_blank"));
+      mkact("✎", `Rename slot ${s.id}, ${displayLabel}`, () => startRename(row, s));
       // ✔ save = quick-commit this lane's uncommitted work — lets a phone user save outside
-      // the conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
-      if (s.worktree) mkact("✔", "save (commit work)", () => { void doCommit(s.id, "quick"); });
-      if (s.worktree) mkact("⏏", "land", () => { void doLand(s.id); });
-      if (s.worktree) mkact("⇲", "shelve (set aside + note)", () => { void doShelve(s.id); });
+      // the conversation. Land and save expose their in-flight guards as real disabled states.
+      if (s.worktree) mkact("✔", `Save work in lane ${laneRef}, ${displayLabel}`,
+        () => { void doCommit(s.id, "quick"); }, commitBusy.has(s.id));
+      if (s.worktree) mkact("⏏", `Land lane ${laneRef}, ${displayLabel}`,
+        () => { void doLand(s.id); }, mergePending.has(s.id));
+      if (s.worktree) mkact("⇲", `Shelve lane ${laneRef}, ${displayLabel}`,
+        () => { void doShelve(s.id); });
+      mkact("✕", `Kill session in slot ${s.id}, ${displayLabel}`,
+        () => { void doKill(s); }, killBusy.has(s.id));
       row.appendChild(rowacts);
       // §F3 click semantics, in the owner's words ("erst aufklappt und klickbar wenn man auf ihn
       // drückt, bleibt dann auf"): clicking a FOLDED stack only unfolds it — it does not steal the

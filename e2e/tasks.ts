@@ -6,6 +6,7 @@ import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BA
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildRefinePrompt } from "../refine-prompt";
+import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -1425,6 +1426,84 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${iT.task.id}/delete`, {});
   }
 
+  // --- Task.files + Task.cluster: one deterministic projector, three surface states. This sits
+  // beside refine because refine-confirm is the stronger origin whose precedence it must preserve.
+  {
+    const tracked = new Set([
+      "server.ts", "src/client.ts", "src/protocol.ts", "e2e/tasks.ts", "docs/guide.md",
+      "watchdog.sh", "worker-deepseek.py", ".gitignore",
+    ]);
+    const derive = (text: string, confirmedFiles?: string[], brief?: string) =>
+      deriveTaskMetadata({ text, brief, confirmedFiles }, { trackedPaths: tracked, project: "fleet" });
+
+    const exact = derive("server.ts:1095-1215 and invented/path.ts", undefined, "then src/client.ts.");
+    check("task metadata: exact tracked paths from task + brief win; an invented path is ignored",
+      exact.filesOrigin === "derived" && exact.files?.join(" ") === "server.ts src/client.ts"
+      && !exact.files.includes("invented/path.ts"), JSON.stringify(exact));
+
+    const confirmed = derive("src/client.ts and e2e/tasks.ts", ["server.ts"]);
+    check("task metadata: refine-confirm files win without being replaced by weaker prose derivation",
+      confirmed.filesOrigin === "confirmed" && confirmed.files?.join(" ") === "server.ts"
+      && confirmed.cluster?.prozess === "server", JSON.stringify(confirmed));
+
+    const unknown = derive("invented/path.ts and no measurable surface");
+    check("task metadata: UNKNOWN is field absence, never an empty files claim",
+      !("files" in unknown) && !("filesOrigin" in unknown) && !("cluster" in unknown), JSON.stringify(unknown));
+
+    const processCases: [string, string, string?][] = [
+      ["server.ts", "server"], ["src/client.ts", "client-ui"], ["e2e/tasks.ts", "e2e-gates"],
+      ["docs/guide.md", "docs"], ["worker-deepseek.py", "harness-adapter"], ["watchdog.sh", "betrieb"],
+      ["server.ts src/client.ts", "cross-cutting", "client-ui+server"],
+    ];
+    const processResults = processCases.map(([text]) => derive(text).cluster);
+    check("task metadata: server/client/e2e/docs/harness/betrieb and true multi-surface clusters are stable",
+      processResults.every((cluster, i) => cluster?.prozess === processCases[i][1]
+        && (processCases[i][2] === undefined || cluster.unterprozess === processCases[i][2])),
+      JSON.stringify(processResults));
+
+    // Same population shape as the measured live register (60 open auftrag rows, 55 naming at
+    // least one exact tracked path). This does not copy fleet.json; it proves the coverage probe
+    // itself would report 55/60 rather than collapsing UNKNOWN into an empty success.
+    const realisticPaths = [
+      "server.ts", "src/client.ts", "e2e/tasks.ts", "docs/guide.md", "watchdog.sh",
+      "worker-deepseek.py", "src/protocol.ts", ".gitignore",
+    ];
+    const coverageFixture = Array.from({ length: 60 }, (_, i) => i < 55
+      ? `auftrag ${i}: change ${realisticPaths[i % realisticPaths.length]} and verify the named surface`
+      : `auftrag ${i}: investigate the owner-visible behaviour without inventing a path`);
+    const covered = coverageFixture.filter((text) => {
+      const metadata = derive(text);
+      return !!metadata.files?.length && !!metadata.cluster;
+    }).length;
+    check("task metadata: realistic 60-row fixture projects files+cluster for more than 80%",
+      covered === 55 && covered / coverageFixture.length > 0.8,
+      `${covered}/${coverageFixture.length} = ${(100 * covered / coverageFixture.length).toFixed(1)}%`);
+
+    interface MRow { id: string; files?: string[]; filesOrigin?: string; cluster?: TaskCluster }
+    const derivedTask = ((await (await post("/api/tasks", {
+      text: "mechanically update .gitignore; invented/path.ts is not tracked", queue: false, repo: REPO,
+    })).json()) as { task: { id: string } }).task;
+    const unknownTask = ((await (await post("/api/tasks", {
+      text: "invented/path.ts is the only path-shaped token", queue: false, repo: REPO,
+    })).json()) as { task: { id: string } }).task;
+    const fullRows = ((await (await get("/api/tasks")).json()) as { tasks: MRow[] }).tasks;
+    const digestRows = ((await (await get("/api/sessions")).json()) as { tasks: MRow[] }).tasks;
+    const fullDerived = fullRows.find((row) => row.id === derivedTask.id);
+    const digestDerived = digestRows.find((row) => row.id === derivedTask.id);
+    check("task metadata: derived files, provenance and cluster reach both Full and Digest projections",
+      [fullDerived, digestDerived].every((row) => row?.files?.join(" ") === ".gitignore"
+        && row.filesOrigin === "derived" && row.cluster?.prozess === "betrieb"),
+      JSON.stringify({ fullDerived, digestDerived }));
+    const fullUnknown = fullRows.find((row) => row.id === unknownTask.id);
+    const digestUnknown = digestRows.find((row) => row.id === unknownTask.id);
+    check("task metadata: Full and Digest both transport UNKNOWN as absence, not files:[]",
+      [fullUnknown, digestUnknown].every((row) => !!row && !("files" in row)
+        && !("filesOrigin" in row) && !("cluster" in row)),
+      JSON.stringify({ fullUnknown, digestUnknown }));
+    await post(`/api/tasks/${derivedTask.id}/delete`, {});
+    await post(`/api/tasks/${unknownTask.id}/delete`, {});
+  }
+
   // --- (j) ↻ refine: the brief compiler on the queue (briefs/task-refine.md). Three properties
   // carry the feature and each is pinned below: the compile PROPOSES and never rewrites the row it
   // read, only the owner's confirm mints anything, and every worker failure leaves the row exactly
@@ -1433,9 +1512,10 @@ export async function run(ctx: Ctx): Promise<void> {
   // rides along for the same reason as (h). ---
   {
     interface JRow { id: string; status: string; note?: string; kind?: string; source?: string; repo?: string;
+      files?: string[]; filesOrigin?: string; cluster?: TaskCluster;
       analysis?: { verdict: string }; refine?: { at: number; unchanged: boolean; count: number } }
     interface JChild { text: string; doneCriterion?: string; verify?: string; files?: string[] }
-    interface JFull extends JRow { text: string; files?: string[];
+    interface JFull extends JRow { text: string;
       refine?: JRow["refine"] & { model: string; proposal: { unchanged: boolean; reason?: string; tasks?: JChild[] } } }
     const jRows = async (): Promise<JRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: JRow[] }).tasks;
     const jRow = async (id: string): Promise<JRow | undefined> => (await jRows()).find((t) => t.id === id);
@@ -1529,6 +1609,13 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(j) a child carries its verified paths as a FIELD, not only as prose in the row text",
       Array.isArray(jKidFull?.files) && jKidFull?.files?.length === 1 && jKidFull?.files?.[0] === "server.ts",
       JSON.stringify(jKidFull?.files ?? null));
+    const persistedKids = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { id?: string; filesOrigin?: string }[] }).tasks ?? [];
+    check("(j) refine-confirm persists confirmed provenance and transports it through Full + Digest",
+      jKidFull?.filesOrigin === "confirmed" && jKidFull.cluster?.prozess === "server"
+      && jMinted[0]?.filesOrigin === "confirmed" && jMinted[0]?.cluster?.prozess === "server"
+      && persistedKids.find((row) => row.id === jKidFull.id)?.filesOrigin === "confirmed",
+      JSON.stringify({ full: jKidFull, digest: jMinted[0], persisted: persistedKids.find((row) => row.id === jKidFull?.id) }));
     const jArch = await jRow(jT.task.id);
     check("(j) the original is archived with a note naming the rows that replaced it",
       jArch?.status === "archived" && jArch.note === `refined → ${jMinted.map((k) => k.id).join(", ")}`,

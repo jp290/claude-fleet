@@ -445,6 +445,19 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     `${markers} markers in ${docs.length} docs; ${bad.join("; ")}`);
 }
 
+{
+  // register.sh and the server must not grow separate path parsers again. The shell may format
+  // the projection, but task-metadata.ts alone decides whether a path is tracked and which source
+  // strength it carries. These are rules over the boundary, not snapshots of an output fixture.
+  const register = read("register.sh");
+  pin("register delegates task surfaces to the shared read-only metadata projector",
+    register.includes("bun task-metadata.ts --state")
+      && !register.includes("PATHRE") && !register.includes("surface_of("));
+  pin("register names confirmed, derived and UNKNOWN provenance as three distinct display states",
+    register.includes("[bestätigt/mechanisch]") && register.includes("[abgeleitet]")
+      && register.includes("UNBEKANNT") && register.includes("Only kind=auftrag rows appear"));
+}
+
 // ================================================================================================
 // 5. The L1 rot detector — prose that has gone out of date with the code it describes
 // ================================================================================================

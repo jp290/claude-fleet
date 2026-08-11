@@ -23,7 +23,8 @@ import {
 import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  type GitInfo, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
+  normalizeLaneAnchor,
+  type GitInfo, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
   type DispositionWorker, type DispositionVerdict,
 } from "./src/protocol";
 
@@ -938,6 +939,18 @@ function laneFormOf(body: Record<string, unknown> | null, h: Harness = CLAUDE_HA
   return f === "worktree" || f === "clone" ? { ok: true, form: f } : { ok: false };
 }
 
+// An attended main-row request names the occupant it came from. ABSENCE is meaningful: generic
+// creation asks the server to choose once. A PRESENT malformed value is not absence and must fail
+// rather than quietly taking the fallback, or a stale client click could attach to another main.
+function laneParentOf(body: Record<string, unknown> | null):
+  { ok: true; parent: LaneAnchor | undefined } | { ok: false; error: string } {
+  if (!body || body.parent === undefined) return { ok: true, parent: undefined };
+  const parent = normalizeLaneAnchor(body.parent);
+  return parent
+    ? { ok: true, parent }
+    : { ok: false, error: "parent must be { slot: positive integer, openedAt: positive number }" };
+}
+
 function harnessIdOf(body: Record<string, unknown> | null): { ok: true; harness: string | null } | { ok: false } {
   const h = body?.harness;
   if (h === undefined || h === null || h === "") return { ok: true, harness: null };
@@ -1233,7 +1246,12 @@ const MAX_REFINE_FILES = 20;
 // `.git/hooks`, whose contents run on the HOST under the owner's uid on his next commit.
 // `.git/config` (aliases, core.pager, fsmonitor) is the same vector. A clone has neither.
 type LaneForm = "worktree" | "clone";
-interface LaneRef { repo: string; branch: string; base?: string; baseSha?: string; form?: LaneForm }
+interface LaneRef {
+  repo: string; branch: string; base?: string; baseSha?: string; form?: LaneForm;
+  // The one main-session occupant this lane was born under. Optional only for old/adopted lanes
+  // and fresh lanes spawned while this repo had no eligible main session.
+  anchor?: LaneAnchor;
+}
 interface SuccessionRetirement { at: number; cwd: string; token: string }
 
 interface Slot {
@@ -2460,6 +2478,10 @@ async function briefPayload(s: Slot): Promise<BriefPayload | null> {
 // branch/dirty/ahead-behind per active slot, refreshed on a slow tick — the sessions
 // poll must never block on 16 git spawns, so it reads this cache instead
 const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git repo
+// Canonical toplevel per active slot. A main may run in a subdirectory, so cwd is insufficient
+// for the client's same-repo ownership check; cached on this tick so the 2 s owner poll never
+// spawns git. null is a measured non-repo/unknown answer, not the cwd in disguise.
+const repoInfo = new Map<number, string | null>();
 // per-slot claude-liveness, refreshed on the same slow tick as gitInfo. This cache exists
 // ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
 // spawns inline on the 100ms sessions poll. The delivery/dispatch GATES (claudeAlive at the
@@ -2483,7 +2505,7 @@ async function tickGit(): Promise<void> {
   gitTickBusy = true;
   try {
     for (const s of slots) {
-      if (!s.cwd) { gitInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
+      if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
       // `alive` is this state reduced to canDeliver's question, and computing them separately would
@@ -2500,6 +2522,11 @@ async function tickGit(): Promise<void> {
       // dispatch and steward sends. Same policy, two consumers; the fact above tells the truth in
       // both cases, so the owner poll shows a live Pi slot as alive while nothing unattended moves.
       aliveInfo.set(s.id, (agentState === "alive" || agentState === "unprobed") && harnessAutomatable(s));
+      if (s.worktree) repoInfo.set(s.id, repoCanon(s.worktree.repo));
+      else {
+        const top = await gitRead(s.cwd, "rev-parse", "--show-toplevel");
+        repoInfo.set(s.id, top.code === 0 && top.out ? repoCanon(top.out) : null);
+      }
       // A merge/land job OWNS this worktree's git for its whole lifetime — rebase, abort, ff-merge.
       // Every value below is a DISPLAY cache (the badges); every gate that acts on git state calls
       // gitOpInProgress fresh at its own site. So hold the last reading for the job's duration
@@ -2556,15 +2583,70 @@ async function tickGit(): Promise<void> {
 const worktreePathFor = (root: string, branch: string): string =>
   `${root}.worktrees/${branch.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
 
+// Resolve a request path (including a checkout subdirectory) to the canonical repository key that
+// createWorktree persists. Parent validation uses this BEFORE creating anything, so an invalid
+// explicit parent cannot leave an ownerless worktree behind as the side effect of its own 400.
+async function repoRootOf(repoRaw: string): Promise<string> {
+  const repoDir = resolve(expandCwd(repoRaw));
+  if (!existsSync(repoDir) || !statSync(repoDir).isDirectory()) throw new Error(`not a directory: ${repoDir}`);
+  const top = await git(repoDir, "rev-parse", "--show-toplevel");
+  if (top.code !== 0 || !top.out) throw new Error("not a git repository");
+  return repoCanon(top.out);
+}
+
+interface MainAnchorCandidate extends LaneAnchor { lastOutput: number }
+// The fallback choice is pure and independent of slot iteration order. Activity wins; a tie goes
+// to the lower fixed slot, preserving the old deterministic tie contract while moving the choice
+// to SPAWN time. The returned object deliberately drops lastOutput: output is evidence for this
+// one decision, never part of the persisted identity and never consulted again by the client.
+function mostRecentMainAnchor(candidates: MainAnchorCandidate[]): LaneAnchor | null {
+  let best: MainAnchorCandidate | null = null;
+  for (const candidate of candidates) {
+    if (!best || candidate.lastOutput > best.lastOutput
+      || (candidate.lastOutput === best.lastOutput && candidate.slot < best.slot)) best = candidate;
+  }
+  return best ? { slot: best.slot, openedAt: best.openedAt } : null;
+}
+
+// Decide a lane's parent ONCE, before its worktree exists. An explicit identity is a strict claim:
+// dead, recycled, lane-valued and cross-repo parents each fail as themselves and never fall through
+// to another main. Without one, snapshot every eligible same-repo main and make one deterministic
+// activity choice. If the repo has no main, absence is the truthful persisted answer.
+async function decideLaneAnchor(repo: string, explicit: LaneAnchor | undefined): Promise<LaneAnchor | null> {
+  if (explicit) {
+    const main = slotFrom(explicit.slot);
+    if (!main?.cwd) throw new Error(`parent slot ${explicit.slot} is not an active main session`);
+    if (main.openedAt !== explicit.openedAt)
+      throw new Error(`parent slot ${explicit.slot} was recycled (openedAt no longer matches)`);
+    if (main.worktree) throw new Error(`parent slot ${explicit.slot} is a lane, not a main session`);
+    const mainRepo = await repoKeyOf(main);
+    // Re-check the identity after the git await. A concurrent recycle is not permission to bind the
+    // new occupant merely because it happens to live in the same checkout.
+    if (!main.cwd || main.openedAt !== explicit.openedAt || main.worktree)
+      throw new Error(`parent slot ${explicit.slot} ended or was recycled while the lane was opening`);
+    if (!mainRepo || repoCanon(mainRepo) !== repoCanon(repo))
+      throw new Error(`parent slot ${explicit.slot} is not an active main session in this repository`);
+    return { slot: explicit.slot, openedAt: explicit.openedAt };
+  }
+
+  const snapshots = slots
+    .filter((s) => s.cwd && !s.worktree && Number.isFinite(s.openedAt) && s.openedAt > 0)
+    .map((s) => ({ slot: s.id, openedAt: s.openedAt, lastOutput: s.lastOutput }));
+  const eligible: MainAnchorCandidate[] = [];
+  for (const snapshot of snapshots) {
+    const main = slots[snapshot.slot - 1]!;
+    const mainRepo = await repoKeyOf(main);
+    if (main.cwd && !main.worktree && main.openedAt === snapshot.openedAt
+      && mainRepo && repoCanon(mainRepo) === repoCanon(repo)) eligible.push(snapshot);
+  }
+  return mostRecentMainAnchor(eligible);
+}
+
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
 async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree"): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
-  const repoDir = resolve(expandCwd(repoRaw));
-  if (!existsSync(repoDir) || !statSync(repoDir).isDirectory()) throw new Error(`not a directory: ${repoDir}`);
-  const top = await git(repoDir, "rev-parse", "--show-toplevel");
-  if (top.code !== 0) throw new Error("not a git repository");
-  const root = top.out;
+  const root = await repoRootOf(repoRaw);
   // auto name carries seconds + a random suffix so two lanes spawned in the same minute
   // (e.g. back-to-back dispatcher ticks) can't slug to the same worktree path and collide
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
@@ -2862,11 +2944,14 @@ const attachBusy = new Set<string>();
 
 async function openLaneInSlot(s: Slot, repo: string, branch: string, model: string | null = null,
   harness: string | null = null, effort: string | null = null, form: LaneForm = "worktree",
-  box: BoxPin = NO_BOX): Promise<{ cwd: string; branch: string }> {
-  const wt = await createWorktree(repo, branch, form);
+  box: BoxPin = NO_BOX, parent: LaneAnchor | undefined = undefined): Promise<{ cwd: string; branch: string }> {
+  const root = await repoRootOf(repo);
+  const anchor = await decideLaneAnchor(root, parent);
+  const wt = await createWorktree(root, branch, form);
   const base = await integrationBranch(wt.repo);
   const baseSha = await laneForkSha(wt.path, base);
   const ref: LaneRef = { repo: wt.repo, branch: wt.branch, base: base ?? undefined, baseSha,
+    ...(anchor ? { anchor } : {}),
     ...(form === "clone" ? { form } : {}) }; // absent for a worktree lane — the persisted shape of
   // every lane that predates this field must stay byte-identical, so the default is written nowhere
   // A fresh clone's branch exists only in the clone. Mirror it up NOW rather than on the first
@@ -3129,6 +3214,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // the entry makes the fact UNKNOWN until the tick computes it for this cwd, and an unknown is
   // never permission to act (lane-signals.ts: null git → not done-looking).
   gitInfo.delete(s.id);
+  repoInfo.delete(s.id); // canonical repo belongs to this occupant/cwd just as much as gitInfo does
   backlogNudgeTried.delete(s.id); // a dead pane reopened in place is still a new main session
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
@@ -3824,14 +3910,19 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // agent runs, and two derivations of one choice are how they come apart.
     const dForm = laneFormOf(null, spawnH);
     if (!dForm.ok) return { ok: false, error: "form must be 'worktree' or 'clone'" }; // unreachable: no body, no user input
-    // the task's own target repo wins; the env default covers every unbound row
-    const wt = await createWorktree(next.repo ?? DISPATCH_REPO, "", dForm.form);
+    // the task's own target repo wins; the env default covers every unbound row. Resolve and
+    // choose the parent before materialising the tree, exactly like openLaneInSlot: dispatch is a
+    // fresh-lane creator too, and must persist the same one-time same-repo decision.
+    const dispatchRepo = await repoRootOf(next.repo ?? DISPATCH_REPO);
+    const anchor = await decideLaneAnchor(dispatchRepo, undefined);
+    const wt = await createWorktree(dispatchRepo, "", dForm.form);
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
     // model/harness/effort ride in from the attended request only (DEFAULT_SPAWN is the tick's
     // all-null shape and is the claude adapter); `label` stays null here because the line below names the slot.
     const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
       baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
+      ...(anchor ? { anchor } : {}),
       // written only for a clone, exactly as openLaneInSlot writes it: a dispatched worktree lane's
       // persisted record must stay byte-identical to the one every dispatch before this produced.
       ...(dForm.form === "clone" ? { form: dForm.form } : {}) };
@@ -9961,10 +10052,13 @@ if (existsSync(STATE_FILE)) {
         if (prl === "owner" || prl === "machine") s.releasedBy = prl;
         const wt = (v as { worktree?: unknown }).worktree;
         if (typeof wt === "object" && wt !== null
-          && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string")
+          && typeof (wt as { repo?: unknown }).repo === "string" && typeof (wt as { branch?: unknown }).branch === "string") {
+          const anchor = normalizeLaneAnchor((wt as { anchor?: unknown }).anchor);
           s.worktree = { repo: (wt as { repo: string }).repo, branch: (wt as { branch: string }).branch,
             ...(typeof (wt as { base?: unknown }).base === "string" ? { base: (wt as { base: string }).base } : {}),
-            ...(typeof (wt as { baseSha?: unknown }).baseSha === "string" ? { baseSha: (wt as { baseSha: string }).baseSha } : {}) };
+            ...(typeof (wt as { baseSha?: unknown }).baseSha === "string" ? { baseSha: (wt as { baseSha: string }).baseSha } : {}),
+            ...(anchor ? { anchor } : {}) };
+        }
       }
     }
     // dispatcher toggle survives deploys — queued tasks persist, so the thing that
@@ -12543,7 +12637,11 @@ Bun.serve<WSData>({
         slots: slots.map((s) => {
           const sh = shares.find((x) => x.slot === s.id);
           return {
-            id: s.id, cwd: s.cwd, label: s.label, lastOutput: s.lastOutput,
+            id: s.id, cwd: s.cwd, label: s.label, openedAt: s.openedAt,
+            // Canonical checkout identity, separate from cwd: a main session may live in a
+            // subdirectory. Older clients ignore it; a null before the slow git tick is UNKNOWN.
+            repo: s.cwd ? (s.worktree?.repo ?? repoInfo.get(s.id) ?? null) : null,
+            lastOutput: s.lastOutput,
             git: gitInfo.get(s.id) ?? null, worktree: s.worktree, model: s.model,
             // OMITTED when null, which is the overwhelmingly common case — this is the 2s poll,
             // already the app's most expensive path (data-saver), and a null per slot per poll is
@@ -12926,6 +13024,8 @@ Bun.serve<WSData>({
     if (url.pathname === "/api/lanes" && req.method === "POST") {
       const body = await readJson(req);
       if (!body || typeof body.repo !== "string" || !body.repo.trim()) return json({ error: "expected { repo }" }, 400);
+      const laneParent = laneParentOf(body);
+      if (!laneParent.ok) return json({ error: laneParent.error }, 400);
       const laneH = harnessIdOf(body);
       if (!laneH.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
       const laneHarness = harnessOf(laneH.harness);
@@ -12945,6 +13045,10 @@ Bun.serve<WSData>({
       // The attachBusy 409 must come BEFORE laneSpawn.add — a return before the try/finally
       // would otherwise leak the laneSpawn reservation and wedge the slot forever.
       const attachPath = typeof body.attach === "string" && body.attach ? body.attach : null;
+      // Adoption preserves what is known about the old worktree. It has no trustworthy birth
+      // session, so even an attended request may not invent one at reattach time.
+      if (attachPath && laneParent.parent)
+        return json({ error: "parent cannot be set when attaching an existing worktree" }, 400);
       if (attachPath && attachBusy.has(attachPath)) return json({ error: "worktree is being attached" }, 409);
       laneSpawn.add(free.id); // reserve before the first await — see laneSpawn
       if (attachPath) attachBusy.add(attachPath);
@@ -12964,7 +13068,7 @@ Bun.serve<WSData>({
           void tickGit().catch(() => {});
           return json({ ok: true, slot: free.id, cwd: free.cwd, branch: wt.branch });
         }
-        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box);
+        const r = await openLaneInSlot(free, body.repo, typeof body.branch === "string" ? body.branch : "", laneModel.model, laneH.harness, laneEffort.effort, laneForm.form, laneBox.box, laneParent.parent);
         return json({ ok: true, slot: free.id, cwd: r.cwd, branch: r.branch, form: laneForm.form });
       } catch (e) {
         return json({ error: e instanceof Error ? e.message : "lane failed" }, 400);
@@ -14265,6 +14369,8 @@ Bun.serve<WSData>({
         const body = await readJson(req);
         if (!body || typeof body.repo !== "string") return json({ error: "expected { repo }" }, 400);
         if (s.cwd || laneSpawn.has(s.id)) return json({ error: "slot already active — use a free slot" }, 400);
+        const parent = laneParentOf(body);
+        if (!parent.ok) return json({ error: parent.error }, 400);
         const ho = harnessIdOf(body);
         if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
         const hh = harnessOf(ho.harness);
@@ -14278,7 +14384,7 @@ Bun.serve<WSData>({
         if (!fo.ok) return json({ error: "form must be 'worktree' or 'clone'" }, 400);
         laneSpawn.add(s.id); // reserve before the first await — see laneSpawn
         try {
-          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box);
+          const r = await openLaneInSlot(s, body.repo, typeof body.branch === "string" ? body.branch : "", mo.model, ho.harness, eo.effort, fo.form, bo.box, parent.parent);
           return json({ ok: true, cwd: r.cwd, branch: r.branch, form: fo.form });
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "worktree failed" }, 400);

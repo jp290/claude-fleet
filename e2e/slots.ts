@@ -1,12 +1,13 @@
 // Slots: open/reject/rename, WS streaming + input, the width-aware reseed, the data-saver
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
-import { readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { BASE, IP, PORT, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { slotStats } from "../slotstats";
+import { normalizeLaneAnchor, type LaneAnchor } from "../src/protocol";
 
 export async function run(): Promise<void> {
   // --- slots ---
@@ -428,12 +429,133 @@ export async function run(): Promise<void> {
     /"🔍 review"/.test(boardSrc) && /"📋 summarize"/.test(boardSrc)
     && /post\(`\/api\/slots\/\$\{slot\}\/review`/.test(boardSrc), "the agents group in renderBoard");
 
-  // --- (§F3) WHICH main session a worktree stack hangs under. Same cut-out-and-run method as the
-  // data-saver plan above: the ANCHOR CHOICE is the decision, so it is executed against a fixture
-  // rather than described by a regex. The rule is "most recently active non-lane session"
-  // (lastOutput, already on the 2 s poll) — not the lowest id, which parked the stack under
-  // whichever main session happened to be started first. A green run here must FAIL on the old
-  // `else if (!g.anchor)` body; a check that cannot build its fixture fails as ITSELF below.
+  // --- stable lane anchor creation. Slots 3/4 are deliberately real same-repo mains: the first
+  // request names slot 3 exactly; the generic route chooses the last-active eligible main once.
+  // Slot 4 runs from a subdirectory, proving the join is through git's canonical toplevel and not
+  // a cwd string. Every temporary lane is landed before this family returns. ---
+  check("lane-anchor fixture has the throwaway git repository", !!REPO, REPO || "FLEET_E2E_REPO absent");
+  if (REPO) {
+    type AnchorWireSlot = {
+      id: number; cwd: string | null; openedAt?: number; repo?: string | null; lastOutput: number;
+      worktree?: { repo: string; branch: string; anchor?: LaneAnchor } | null;
+    };
+    const ownerSlots = async (): Promise<AnchorWireSlot[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: AnchorWireSlot[] }).slots;
+    const sub = `${REPO}/anchor-subdir`;
+    mkdirSync(sub, { recursive: true });
+    const a3 = await post("/api/slots/3/open", { cwd: REPO });
+    const a4 = await post("/api/slots/4/open", { cwd: sub });
+    check("lane-anchor fixture opens two same-repo main sessions", a3.ok && a4.ok,
+      `${a3.status}/${a4.status}`);
+    let mains = await ownerSlots();
+    const m3 = mains.find((s) => s.id === 3);
+    const p3 = normalizeLaneAnchor({ slot: 3, openedAt: m3?.openedAt });
+    const canonicalRepo = realpathSync(REPO);
+    for (let i = 0; i < 160 && mains.find((s) => s.id === 4)?.repo !== canonicalRepo; i++) {
+      await Bun.sleep(100);
+      mains = await ownerSlots();
+    }
+    check("owner poll carries each main's openedAt and canonical repo identity (subdirectory included)",
+      !!p3 && mains.find((s) => s.id === 3)?.repo === canonicalRepo
+        && mains.find((s) => s.id === 4)?.repo === canonicalRepo,
+      JSON.stringify(mains.filter((s) => s.id === 3 || s.id === 4)
+        .map((s) => ({ id: s.id, openedAt: s.openedAt, repo: s.repo }))));
+
+    const malformedParent = await post("/api/lanes", { repo: REPO, parent: { slot: 3 } });
+    check("an explicit malformed parent fails as itself instead of taking the fallback",
+      malformedParent.status === 400 && (await malformedParent.text()).includes("parent must be"));
+    const recycledParent = await post("/api/lanes", {
+      repo: REPO, parent: { slot: 3, openedAt: (p3?.openedAt ?? 1) - 1 },
+    });
+    check("an explicit recycled parent fails clearly instead of choosing the other main",
+      recycledParent.status === 400 && (await recycledParent.text()).includes("recycled"));
+    const m1 = mains.find((s) => s.id === 1);
+    const crossParent = await post("/api/lanes", {
+      repo: REPO, parent: { slot: 1, openedAt: m1?.openedAt ?? 1 },
+    });
+    check("an explicit cross-repo/non-repo parent fails clearly instead of choosing a same-repo main",
+      crossParent.status === 400 && /repository|active main/.test(await crossParent.text()));
+
+    const explicitRes = await post("/api/lanes", {
+      repo: REPO, parent: p3 ?? { slot: 3, openedAt: 0 },
+    });
+    const explicit = (await explicitRes.json()) as { slot?: number; cwd?: string; branch?: string; error?: string };
+    check("explicit same-main quick-lane identity creates a lane", explicitRes.ok && !!explicit.slot,
+      JSON.stringify(explicit));
+    const explicitPoll = (await ownerSlots()).find((s) => s.id === explicit.slot);
+    check("explicit lane anchor is returned by the owner poll with the exact slot+openedAt pair",
+      explicitPoll?.worktree?.anchor?.slot === 3
+        && explicitPoll.worktree.anchor.openedAt === p3?.openedAt,
+      JSON.stringify(explicitPoll?.worktree));
+    let explicitPersisted: LaneAnchor | null = null;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as
+          { slots?: Record<string, { worktree?: { anchor?: unknown } }> };
+        explicitPersisted = normalizeLaneAnchor(state.slots?.[String(explicit.slot)]?.worktree?.anchor);
+      } catch { explicitPersisted = null; } // saveState rename may be between generations
+      if (explicitPersisted) break;
+      await Bun.sleep(50);
+    }
+    check("explicit lane anchor is persisted in fleet.json, not reconstructed at render time",
+      explicitPersisted?.slot === 3 && explicitPersisted.openedAt === p3?.openedAt,
+      JSON.stringify(explicitPersisted));
+    const cleanLane = async (lane: { slot?: number; cwd?: string }): Promise<boolean> => {
+      if (!lane.slot) return false;
+      const landed = await post(`/api/slots/${lane.slot}/land`, {});
+      if (landed.ok) return true;
+      await post(`/api/slots/${lane.slot}/kill`, {});
+      if (lane.cwd) await post("/api/worktrees/remove", { repo: REPO, path: lane.cwd });
+      return false;
+    };
+    check("explicit lane fixture cleans up through the normal land path", await cleanLane(explicit));
+
+    // Make slot 4 observably newest only AFTER both mains have settled; the fallback snapshot must
+    // choose it even though slot 3 is lower. Poll the server's own activity fact — no fixed sleep.
+    let newest4 = false;
+    for (let i = 0; i < 30 && !newest4; i++) {
+      await tmuxOut("send-keys", "-t", "s4", `printf 'ANCHOR-ACT-${i}\\n'`, "Enter");
+      await Bun.sleep(120);
+      const rows = await ownerSlots();
+      newest4 = (rows.find((s) => s.id === 4)?.lastOutput ?? 0)
+        > (rows.find((s) => s.id === 3)?.lastOutput ?? 0);
+    }
+    check("implicit anchor fixture makes the subdirectory main the most recently active one", newest4);
+    const implicitRes = await post("/api/slots/5/open-worktree", {
+      repo: REPO, branch: "e2e-anchor-implicit",
+    });
+    const implicit = (await implicitRes.json()) as { cwd?: string; branch?: string; error?: string };
+    check("generic fresh-lane creation succeeds without an explicit parent", implicitRes.ok,
+      JSON.stringify(implicit));
+    const implicitPoll = (await ownerSlots()).find((s) => s.id === 5);
+    check("implicit two-main choice is persisted once and associates a subdirectory main canonically",
+      implicitPoll?.worktree?.anchor?.slot === 4
+        && implicitPoll.worktree.anchor.openedAt === mains.find((s) => s.id === 4)?.openedAt,
+      JSON.stringify(implicitPoll?.worktree));
+    let implicitPersisted: LaneAnchor | null = null;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as
+          { slots?: Record<string, { worktree?: { anchor?: unknown } }> };
+        implicitPersisted = normalizeLaneAnchor(state.slots?.["5"]?.worktree?.anchor);
+      } catch { implicitPersisted = null; }
+      if (implicitPersisted) break;
+      await Bun.sleep(50);
+    }
+    check("implicit anchor is a durable identity, not a live activity lookup",
+      implicitPersisted?.slot === 4
+        && implicitPersisted.openedAt === mains.find((s) => s.id === 4)?.openedAt,
+      JSON.stringify(implicitPersisted));
+    check("implicit lane fixture cleans up through the normal land path",
+      await cleanLane({ slot: 5, cwd: implicit.cwd }));
+    await post("/api/slots/3/kill", {});
+    await post("/api/slots/4/kill", {});
+    rmSync(sub, { recursive: true, force: true });
+  }
+
+  // --- (§F3) Lane membership is a pure identity join. lastOutput still chooses the server's
+  // fallback ONCE, but stacksOf never reads it to assign ownership. The cut-out runs the actual
+  // client function without a DOM; an unliftable helper fails as its own probe. ---
   {
     const cut = (from: string, to: string): string => {
       const a = cliSrc.indexOf(from), b = cliSrc.indexOf(to);
@@ -442,54 +564,111 @@ export async function run(): Promise<void> {
     const deps = cut("const isActive = ", "// --- project colour")
       + cut("function projectOf(", "// Eight hues");
     const stackSrc = cut("function stacksOf()", "function startRename(");
-    type FxSlot = { id: number; cwd: string | null; lastOutput: number;
-      worktree?: { repo: string; branch: string } | null };
-    type FxStack = { key: string; anchor: FxSlot | null; lanes: FxSlot[]; at: number };
-    let stacksOf: ((f: FxSlot[]) => Map<string, FxStack>) | null = null;
+    type FxSlot = {
+      id: number; cwd: string | null; lastOutput: number; openedAt?: number; repo?: string | null;
+      worktree?: { repo: string; branch: string; anchor?: LaneAnchor } | null;
+    };
+    type FxStack = {
+      key: string; foldKey: string; anchor: FxSlot | null; lanes: FxSlot[]; at: number; ghostHost: boolean;
+    };
+    let stacksOf: ((f: FxSlot[]) => FxStack[]) | null = null;
     try {
-      stacksOf = new Function("fleet",
+      const lifted = new Function("fleet", "normalizeLaneAnchor",
         new Bun.Transpiler({ loader: "ts" }).transformSync(deps + stackSrc) + "\nreturn stacksOf();") as
-        (f: FxSlot[]) => Map<string, FxStack>;
-    } catch { stacksOf = null; } // unextractable → the probe check right below fails, loudly
-    // THE PROBE'S OWN PRECONDITION. Two non-lane sessions under one projectOf key, plus a lane —
-    // if this fixture cannot be built (or stacksOf cannot be lifted out of the client at all),
-    // the checks after it would be vacuously green, so it fails as itself instead.
-    const REPO = "/repo/one";
-    const fx: FxSlot[] = [
-      { id: 1, cwd: REPO, lastOutput: 1000 },                                   // older main
-      { id: 2, cwd: `${REPO}/wt/a`, lastOutput: 500, worktree: { repo: REPO, branch: "fleet/a" } },
-      { id: 3, cwd: REPO, lastOutput: 9000 },                                   // newer main, HIGHER id
+        (f: FxSlot[], n: typeof normalizeLaneAnchor) => FxStack[];
+      stacksOf = (f) => lifted(f, normalizeLaneAnchor);
+    } catch { stacksOf = null; }
+
+    const FX_REPO = "/repo/one", OTHER = "/repo/two";
+    const original: FxSlot[] = [
+      { id: 1, cwd: FX_REPO, repo: FX_REPO, openedAt: 100, lastOutput: 10 },
+      { id: 2, cwd: `${FX_REPO}/wt/a`, repo: FX_REPO, openedAt: 200, lastOutput: 500,
+        worktree: { repo: FX_REPO, branch: "fleet/a", anchor: { slot: 1, openedAt: 100 } } },
+      { id: 3, cwd: FX_REPO, repo: FX_REPO, openedAt: 300, lastOutput: 9000 },
     ];
-    let got: FxStack | undefined;
-    try { got = stacksOf?.(fx).get(REPO); } catch { got = undefined; }
-    check("probe: stacksOf is liftable out of src/client.ts and the two-main fixture builds",
-      !!stacksOf && !!got && got.lanes.length === 1
-      && fx.filter((s) => !s.worktree && s.cwd === REPO).length === 2,
-      stackSrc.slice(0, 70) || "no stacksOf()…startRename block in src/client.ts");
-    check("stack anchor: the stack hangs under the LAST ACTIVE main session, not the lowest id",
-      got?.anchor?.id === 3, `anchor=${JSON.stringify(got?.anchor?.id ?? null)} (want 3)`);
-    check("stack anchor: g.at follows the anchor — it is derived from it, never picked separately",
-      got?.at === 3, `at=${JSON.stringify(got?.at ?? null)} (want 3)`);
-    // ties are decided in the code, not by iteration order: an anchor that flips between renders
-    // is worse than one that stands still. Equal lastOutput → the lower id, deliberately.
-    const tie: FxSlot[] = [
-      { id: 4, cwd: REPO, lastOutput: 0 },
-      { id: 5, cwd: REPO, lastOutput: 0 },
-      { id: 6, cwd: `${REPO}/wt/b`, lastOutput: 0, worktree: { repo: REPO, branch: "fleet/b" } },
+    let first: FxStack | undefined, reversed: FxStack | undefined;
+    try {
+      first = stacksOf?.(original).find((g) => g.anchor?.id === 1);
+      reversed = stacksOf?.([...original].reverse().map((s) => s.id === 3
+        ? { ...s, lastOutput: 999_999 } : s)).find((g) => g.anchor?.id === 1);
+    } catch { first = reversed = undefined; }
+    check("probe: stacksOf is liftable and the persisted-anchor fixture builds",
+      !!stacksOf && first?.lanes[0]?.id === 2, stackSrc.slice(0, 70) || "no stacksOf block");
+    check("lane stays with its original main when another main emits newer output and input order reverses",
+      first?.anchor?.id === 1 && first.at === 1
+        && reversed?.anchor?.id === 1 && reversed.lanes[0]?.id === 2,
+      JSON.stringify({ first: first?.anchor?.id, reversed: reversed?.anchor?.id }));
+    const split = stacksOf?.([...original, {
+      id: 7, cwd: `${FX_REPO}/wt/b`, openedAt: 700, lastOutput: 1,
+      worktree: { repo: FX_REPO, branch: "fleet/b", anchor: { slot: 3, openedAt: 300 } },
+    }]);
+    check("two mains in one repo get separate identity-grounded stacks, never one activity bucket",
+      split?.filter((g) => g.anchor).length === 2
+        && split.some((g) => g.anchor?.id === 1 && g.lanes.some((s) => s.id === 2))
+        && split.some((g) => g.anchor?.id === 3 && g.lanes.some((s) => s.id === 7)),
+      JSON.stringify(split?.map((g) => ({ anchor: g.anchor?.id, lanes: g.lanes.map((s) => s.id) }))));
+
+    const orphanFx: FxSlot[] = [
+      { id: 1, cwd: FX_REPO, repo: FX_REPO, openedAt: 101, lastOutput: 0 }, // slot recycled
+      { id: 8, cwd: OTHER, repo: OTHER, openedAt: 800, lastOutput: 0 },
+      { id: 2, cwd: `${FX_REPO}/wt/recycled`, lastOutput: 9,
+        worktree: { repo: FX_REPO, branch: "fleet/recycled", anchor: { slot: 1, openedAt: 100 } } },
+      { id: 4, cwd: `${FX_REPO}/wt/dead`, lastOutput: 8,
+        worktree: { repo: FX_REPO, branch: "fleet/dead", anchor: { slot: 9, openedAt: 900 } } },
+      { id: 5, cwd: `${FX_REPO}/wt/legacy`, lastOutput: 7,
+        worktree: { repo: FX_REPO, branch: "fleet/legacy" } },
+      { id: 6, cwd: `${FX_REPO}/wt/wrong`, lastOutput: 6,
+        worktree: { repo: FX_REPO, branch: "fleet/wrong", anchor: { slot: 8, openedAt: 800 } } },
     ];
-    let tied: FxStack | undefined;
-    try { tied = stacksOf?.(tie).get(REPO); } catch { tied = undefined; }
-    check("stack anchor: equal lastOutput is broken deterministically by the lower id",
-      tied?.anchor?.id === 4 && stacksOf?.([...tie].reverse()).get(REPO)?.anchor?.id === 4,
-      `${JSON.stringify(tied?.anchor?.id ?? null)} / reversed ${JSON.stringify(stacksOf?.([...tie].reverse()).get(REPO)?.anchor?.id ?? null)}`);
-    // the §F3 edge case the change must NOT touch: no main session at all → the stack still
-    // renders, at its first lane, instead of vanishing from the sidebar.
-    const orph = stacksOf?.([
-      { id: 7, cwd: `${REPO}/wt/c`, lastOutput: 3, worktree: { repo: REPO, branch: "fleet/c" } },
-      { id: 8, cwd: `${REPO}/wt/d`, lastOutput: 9, worktree: { repo: REPO, branch: "fleet/d" } },
-    ]).get(REPO);
-    check("stack anchor: an orphaned stack (no main session) still renders at its first lane",
-      orph?.anchor === null && orph?.at === 7, JSON.stringify({ a: orph?.anchor, at: orph?.at }));
+    const orphan = stacksOf?.([...orphanFx].reverse()).find((g) => g.key === FX_REPO && g.anchor === null);
+    check("same slot with different openedAt is recycled and cannot match",
+      orphan?.lanes.some((s) => s.id === 2) === true, JSON.stringify(orphan?.lanes.map((s) => s.id)));
+    check("dead, parentless and wrong-repo anchors share the truthful repo-header/orphan stack",
+      [2, 4, 5, 6].every((id) => orphan?.lanes.some((s) => s.id === id))
+        && orphan?.at === 2 && orphan.ghostHost,
+      JSON.stringify({ at: orphan?.at, lanes: orphan?.lanes.map((s) => s.id) }));
+
+    const subFx: FxSlot[] = [
+      { id: 10, cwd: `${FX_REPO}/sub/dir`, repo: FX_REPO, openedAt: 1000, lastOutput: 0 },
+      { id: 11, cwd: `${FX_REPO}/wt/sub`, repo: FX_REPO, openedAt: 1100, lastOutput: 0,
+        worktree: { repo: FX_REPO, branch: "fleet/sub", anchor: { slot: 10, openedAt: 1000 } } },
+    ];
+    const subStack = stacksOf?.(subFx)[0];
+    check("subdirectory main associates through the poll's canonical repo identity",
+      subStack?.anchor?.id === 10 && subStack.lanes[0]?.id === 11, JSON.stringify(subStack));
+
+    type AnchorSelector = (c: { slot: number; openedAt: number; lastOutput: number }[]) => LaneAnchor | null;
+    let serverSrc = "", selector: AnchorSelector | null = null;
+    try {
+      serverSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/server.ts`, "utf8");
+      const a = serverSrc.indexOf("function mostRecentMainAnchor("), b = serverSrc.indexOf("// Decide a lane's parent ONCE", a);
+      const selectSrc = a >= 0 && b > a ? serverSrc.slice(a, b) : "";
+      selector = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(selectSrc)
+        + "\nreturn mostRecentMainAnchor;")() as AnchorSelector;
+    } catch { selector = null; }
+    const tied = selector?.([
+      { slot: 5, openedAt: 50, lastOutput: 0 }, { slot: 4, openedAt: 40, lastOutput: 0 },
+    ]);
+    const tiedReverse = selector?.([
+      { slot: 4, openedAt: 40, lastOutput: 0 }, { slot: 5, openedAt: 50, lastOutput: 0 },
+    ]);
+    check("implicit main selector is liftable and equal activity ties to the lower slot regardless of input order",
+      tied?.slot === 4 && tiedReverse?.slot === 4, JSON.stringify({ tied, tiedReverse }));
+    check("malformed legacy anchor normalizes to absent and state load uses that normalizer",
+      normalizeLaneAnchor({ slot: "1", openedAt: 100 }) === null
+        && normalizeLaneAnchor({ slot: 1, openedAt: Number.NaN }) === null
+        && serverSrc.includes("const anchor = normalizeLaneAnchor((wt as { anchor?: unknown }).anchor);"),
+      "normalizeLaneAnchor + fleet.json load wiring");
+    check("client quick-lane wiring sends slot+openedAt only from a main row; generic calls may omit it",
+      cliSrc.includes("newLane(repo, parent)")
+        && cliSrc.includes("quickLaneChip(s.repo ?? s.cwd, parent ?? undefined)"),
+      "quickLaneChip → newLane parent");
+    const renderSrc = cut("function renderSlots()", "function emptyRow(");
+    const rowSrc = cut("function slotRow(", "function renderChips(");
+    check("fixed empty numbering and displayed lane row numbering remain intact",
+      renderSrc.includes("slotsEl.appendChild(emptyRow(s))")
+        && rowSrc.includes('el("span", "n", String(s.id))'),
+      "renderSlots + slotRow number");
   }
 
   const wsNoTok = await new Promise<boolean>((resolve) => {

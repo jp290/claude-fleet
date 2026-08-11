@@ -5,6 +5,10 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import qrcode from "qrcode-generator";
 import { mdInto } from "./md";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
+import {
+  matchTaskWaveAnalysis, projectTaskWaves,
+  type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveRunningBlock, type TaskWaveUnresolved,
+} from "../task-waves";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
@@ -191,6 +195,9 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
     // back — older than the tree, but a reading; before it was kept, a failed re-read replaced it
     // with an absence and the row read as "never analysed".
     retry?: { at: number; attempts: number } };
+  // deterministic file/cluster facts from taskDigest. Absence is UNKNOWN, never an empty surface.
+  files?: string[]; filesOrigin?: "confirmed" | "derived";
+  cluster?: { projekt: string; prozess: string; unterprozess?: string };
   // the poll carries only the timestamps; the text rides the queue overlay's /api/tasks fetch
   criterion?: { text?: string; proposedAt: number; confirmedAt: number | null };
   // ↻ refine: the poll says a proposal exists, how it came out and how many children it holds —
@@ -247,6 +254,9 @@ function supportsOf(h: string | undefined): HarnessInfo["supports"] {
 let autosList: AutoInfo[] = [];
 let tasksList: TaskInfo[] = [];
 let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
+// Task 684a9d99 will supply this runtime fact. Missing must stay OFF: a verdict's presence does not
+// prove the analyst is configured now, and Waves may not trust model edges on that guess.
+let analysisOn: boolean | undefined;
 let intakeOn = false;
 let serverNow = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
@@ -4602,6 +4612,7 @@ async function refresh() {
     if (!res.ok) return;
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
+      analysis?: { on?: boolean };
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
       gate?: GateInfo | null; errors?: ErrorsInfo | null;
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
@@ -4620,6 +4631,7 @@ async function refresh() {
     autosList = data.autos ?? [];
     tasksList = data.tasks ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
+    analysisOn = data.analysis?.on;
     intakeOn = data.intake ?? false;
     // tier 2's only reader. Rendered on every poll rather than behind the render-key diff below:
     // that key is about the slot tiles, and an alarm must not wait on an unrelated change to appear.
@@ -4675,11 +4687,14 @@ async function refresh() {
       // `analysis.at` alone stopped being enough when a failed re-reading started leaving the old
       // verdict (and its timestamp) in place: the attempt counter is then the ONLY thing that
       // moves, so without it here the pane would keep showing "failed 1×" through every retry.
-      const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.analysis?.at,
+      const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.repo,
+        t.files?.join("\n"), t.filesOrigin, t.cluster, t.analysis?.at,
         t.analysis?.stale, t.analysis?.retry?.at, t.criterion?.proposedAt, t.criterion?.confirmedAt,
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
-        // spends minutes in `refining` before it — both have to move the key or the pane lies
-        t.refine?.at, t.refining, t.comments?.n, t.comments?.at]) : "gone";
+        // spends minutes in `refining` before it — both have to move the key or the pane lies.
+        // In Waves, another row or active branch can move this row's advisory placement too.
+        t.refine?.at, t.refining, t.comments?.n, t.comments?.at,
+        qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     }
     // keep an open share dialog honest (guest count, mode changed elsewhere) without
@@ -5201,6 +5216,8 @@ let taskTextBusy = false;
 let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
+type QView = "status" | "waves";
+let qView: QView = "status";      // owner-confirmed primary/default view; polls never reset it
 let qKey = "";                    // the data key the list was last built from
 let qDetailKey = "";              // the data key the DETAIL pane was last built from (see refresh)
 let qCompose: HTMLTextAreaElement | null = null; // created ONCE per open — never re-created by a poll
@@ -5362,6 +5379,69 @@ function qTaskSummary(t: TaskInfo, text: string, now: number): { title: string; 
       tag ? `${source} / ${tag}` : source,
     ],
   };
+}
+
+function qWaveAnalysis(t: TaskInfo) {
+  const digest = t.analysis;
+  return matchTaskWaveAnalysis(digest ? {
+    at: digest.at,
+    stale: digest.stale,
+    trust: digest.verdict === "unknown" ? "unknown" : "trusted",
+  } : undefined, taskAnalysisFull.get(t.id));
+}
+
+function qWaveProjection(): TaskWaveProjection {
+  return projectTaskWaves({
+    tasks: tasksList.map((t) => {
+      const analysis = qWaveAnalysis(t);
+      return {
+        id: t.id, repo: t.repo, kind: t.kind, status: t.status, created: t.created,
+        files: t.files, filesOrigin: t.filesOrigin,
+        ...(analysis ? { analysis } : {}),
+      };
+    }),
+    dispatchRepo: dispatch.repo,
+    maxLanes: dispatch.maxLanes,
+    runningTaskIds: tasksList.filter((t) => t.status === "sent").map((t) => t.id),
+    runningBranches: fleet.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch),
+    analysisOn,
+  });
+}
+
+// Every fact that can change the pure projection. Status does not pay this key's cost; Waves does,
+// so a normal poll that changed only an unrelated slot does not rebuild the queue list.
+function qWaveProjectionKey(): string {
+  return JSON.stringify([
+    dispatch.repo, dispatch.maxLanes, analysisOn,
+    fleet.filter((s) => s.cwd && s.worktree).map((s) => s.worktree!.branch).sort(),
+    tasksList.map((t) => {
+      const analysis = qWaveAnalysis(t);
+      return [t.id, t.repo, t.kind, t.status, t.created, t.files, t.filesOrigin,
+        t.analysis?.verdict, t.analysis?.at, t.analysis?.stale, analysis?.collides];
+    }),
+  ]);
+}
+
+function qWaveModelHint(model: ProjectedWaveTask["modelEdges"]): string {
+  if (model === "trusted") return "fresh trusted model edges used";
+  if (model === "stale") return "stale model edges ignored";
+  if (model === "unknown") return "unknown model reading ignored";
+  return "model edges not used — analyst mode is off or not reported";
+}
+
+type QWaveLocation =
+  | { kind: "wave"; item: ProjectedWaveTask; repo: string; wave: number }
+  | { kind: "blocked"; item: TaskWaveRunningBlock }
+  | { kind: "unresolved"; item: TaskWaveUnresolved };
+function qWaveLocation(id: string, projection: TaskWaveProjection): QWaveLocation | null {
+  for (const repo of projection.repos) for (const wave of repo.waves) {
+    const item = wave.tasks.find((task) => task.id === id);
+    if (item) return { kind: "wave", item, repo: repo.repo, wave: wave.index };
+  }
+  const blocked = projection.blockedByRunning.find((task) => task.id === id);
+  if (blocked) return { kind: "blocked", item: blocked };
+  const unresolved = projection.unresolved.find((task) => task.id === id);
+  return unresolved ? { kind: "unresolved", item: unresolved } : null;
 }
 
 function qTextDraft(current: QTextDraft | null, id: string, seed: string, rows: number): QTextDraft {
@@ -5527,6 +5607,30 @@ function renderQueueDetail() {
   meta.appendChild(chip(fmtTs(t.created), "dim", "when this task was created"));
   if (t.note) meta.appendChild(chip(t.note, "warn"));
   overview.appendChild(meta);
+  // File and cluster provenance belongs in the selected detail, never as a fifth row fact. Missing
+  // files is said as UNKNOWN because an absent surface is exactly what Waves must keep outside.
+  overview.appendChild(el("div", "rvhead", "file surface & cluster"));
+  const origin = t.filesOrigin === "confirmed" ? "confirmed by refinement"
+    : t.filesOrigin === "derived" ? "mechanically derived" : "origin unavailable";
+  overview.appendChild(el("div", "shellhint", t.files?.length
+    ? `known files · ${origin}: ${t.files.join(", ")}`
+    : "file surface unknown — absence is not an empty surface"));
+  if (t.cluster) overview.appendChild(el("div", "shellhint",
+    `cluster projection: ${[t.cluster.projekt, t.cluster.prozess, t.cluster.unterprozess].filter(Boolean).join(" / ")}`));
+  else overview.appendChild(el("div", "shellhint", "cluster projection unavailable"));
+  if (qView === "waves") {
+    const location = qWaveLocation(t.id, qWaveProjection());
+    if (location?.kind === "wave") overview.appendChild(el("div", "shellhint",
+      `Waves: Wave ${location.wave} in ${baseName(location.repo)} — no known collision; ${qWaveModelHint(location.item.modelEdges)}.`));
+    else if (location?.kind === "blocked") overview.appendChild(el("div", "shellhint",
+      `Waves: outside — a fresh trusted model edge names running work (${location.item.running.join(", ")}).`));
+    else if (location?.kind === "unresolved") {
+      const why = location.item.reason === "unknown-files" ? "file surface unknown"
+        : location.item.reason === "unknown-repo" ? "target repo unknown" : "lane capacity is zero";
+      overview.appendChild(el("div", "shellhint",
+        `Waves: outside — ${why}; ${qWaveModelHint(location.item.modelEdges)}.`));
+    }
+  }
   // COMMENTS — sits directly under the chips, above the analyst, because it is the only text on
   // this row a HUMAN wrote and the one most likely to overrule everything below it. Always
   // present, even empty: "there was nowhere to leave a remark" is the defect this closes, and a
@@ -5837,8 +5941,8 @@ function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const now = Date.now();
-  const key = JSON.stringify([qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
-    Math.floor(now / 60000),
+  const key = JSON.stringify([qView, qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
+    Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
     shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.analysis?.verdict,
       t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
@@ -5846,11 +5950,19 @@ function renderQueue() {
   if (key === qKey) return;
   qKey = key;
 
-  // the subtitle answers the same question the groups do, in one line: what is on YOU, and what is
-  // moving without you. The old one recited five internal statuses.
-  const n = (g: QGroup) => tasksList.filter((t) => qGroupOf(t) === g).length;
-  shell.setSubtitle([`${n("needs")} need you`, `${n("released")} released`, `${n("running")} running`,
-    `${n("backlog")} backlog`, intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
+  // The status subtitle keeps its established owner-centric summary. Waves names its weaker,
+  // advisory claim and counts everything deliberately kept outside.
+  const projection = qView === "waves" ? qWaveProjection() : null;
+  if (!projection) {
+    const n = (g: QGroup) => tasksList.filter((t) => qGroupOf(t) === g).length;
+    shell.setSubtitle([`${n("needs")} need you`, `${n("released")} released`, `${n("running")} running`,
+      `${n("backlog")} backlog`, intakeOn ? "✉ intake on" : ""].filter(Boolean).join(" · "));
+  } else {
+    const placed = projection.repos.reduce((n, repo) =>
+      n + repo.waves.reduce((m, wave) => m + wave.tasks.length, 0), 0);
+    shell.setSubtitle(`${placed} with no known collision · ${projection.unresolved.length} unresolved outside`
+      + ` · ${projection.blockedByRunning.length} blocked by running work`);
+  }
 
   shell.list.replaceChildren();
   const rows: ShellRow[] = [];
@@ -5875,32 +5987,85 @@ function renderQueue() {
     rows.push({ el: r, open: act });
   };
 
-  add({ name: "＋ New task", cls: "qnew", id: null });
-  for (const g of Q_GROUPS) {
-    const group = shown.filter((t) => qGroupOf(t) === g.k);
-    if (!group.length) continue;
+  const addTask = (t: TaskInfo) => {
+    const summary = qTaskSummary(t, qTaskText(t.id), now);
+    add({
+      name: summary.title, facts: summary.facts, id: t.id,
+      cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "",
+        t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
+    });
+  };
+  const addSection = (name: string, count: number, hint: string, visibleHint = false) => {
     const head = el("div", "shellsec");
-    head.appendChild(el("span", "shellsect", g.head));
-    head.appendChild(el("span", "shellsecn", String(group.length)));
-    head.title = g.hint;
+    head.appendChild(el("span", "shellsect", name));
+    head.appendChild(el("span", "shellsecn", String(count)));
+    head.title = hint;
     shell.list.appendChild(head);
-    // "Released" is the ONE group with a real order — it is the dispatcher's own pick order
-    // (tasks.find over creation order), so showing it newest-first would be a lie about what runs
-    // next. Everywhere else newest-first is what you want.
-    const sorted = g.k === "released"
-      ? [...group].sort((a, b) => a.created - b.created)
-      : [...group].sort((a, b) => b.created - a.created);
-    for (const t of sorted) {
-      const summary = qTaskSummary(t, qTaskText(t.id), now);
-      add({
-        name: summary.title, facts: summary.facts, id: t.id,
-        cls: [`q-${t.status}`, qAdvisory(t) ? "q-obs" : "",
-          t.analysis && t.analysis.verdict !== "ready" ? "q-flag" : ""].filter(Boolean).join(" "),
-      });
+    if (visibleHint) shell.list.appendChild(el("div", "qwavehint", hint));
+  };
+
+  let visibleRows = 0;
+  if (!projection) {
+    add({ name: "＋ New task", cls: "qnew", id: null });
+    for (const g of Q_GROUPS) {
+      const group = shown.filter((t) => qGroupOf(t) === g.k);
+      if (!group.length) continue;
+      addSection(g.head, group.length, g.hint);
+      // "Released" is the ONE group with a real order — it is the dispatcher's own pick order
+      // (tasks.find over creation order), so showing it newest-first would be a lie about what runs
+      // next. Everywhere else newest-first is what you want.
+      const sorted = g.k === "released"
+        ? [...group].sort((a, b) => a.created - b.created)
+        : [...group].sort((a, b) => b.created - a.created);
+      for (const t of sorted) { addTask(t); visibleRows++; }
     }
+    if (!shown.length) shell.list.appendChild(el("div", "pknone",
+      tasksList.length ? "no tasks match this search" : "no tasks yet"));
+  } else {
+    const visibleIds = new Set(shown.map((t) => t.id));
+    const taskById = new Map(tasksList.map((t) => [t.id, t]));
+    for (const repo of projection.repos) for (const wave of repo.waves) {
+      const items = wave.tasks.filter((item) => visibleIds.has(item.id));
+      if (!items.length) continue;
+      const evidence = [...new Set(items.map((item) => qWaveModelHint(item.modelEdges)))].join("; ");
+      const hint = `Target repo: ${repo.repo}. First-fit, at most ${projection.capacity} lanes.`
+        + ` Known file intersections excluded; ${evidence}.`;
+      addSection(`${baseName(repo.repo)} · Wave ${wave.index} · no known collision`, items.length, hint, true);
+      for (const item of items) {
+        const task = taskById.get(item.id);
+        if (task) { addTask(task); visibleRows++; }
+      }
+    }
+    const blocked = projection.blockedByRunning.filter((item) => visibleIds.has(item.id));
+    if (blocked.length) {
+      addSection("Outside waves · blocked by running work", blocked.length,
+        "A fresh, trusted model edge names a currently running task id or branch.", true);
+      for (const item of blocked) {
+        const task = taskById.get(item.id);
+        if (task) { addTask(task); visibleRows++; }
+      }
+    }
+    const unresolvedGroups: { reason: TaskWaveUnresolved["reason"]; head: string; hint: string }[] = [
+      { reason: "unknown-files", head: "Outside waves · unknown surface",
+        hint: "No known file surface. Unknown is not empty, so no collision claim is made." },
+      { reason: "unknown-repo", head: "Outside waves · unknown target repo",
+        hint: "Neither the task nor dispatcher resolves a target repo, so it cannot enter a repo wave." },
+      { reason: "no-capacity", head: "Outside waves · no lane capacity",
+        hint: "dispatch.maxLanes is zero; no wave can honestly contain a lane." },
+    ];
+    for (const group of unresolvedGroups) {
+      const items = projection.unresolved.filter((item) =>
+        item.reason === group.reason && visibleIds.has(item.id));
+      if (!items.length) continue;
+      addSection(group.head, items.length, group.hint, true);
+      for (const item of items) {
+        const task = taskById.get(item.id);
+        if (task) { addTask(task); visibleRows++; }
+      }
+    }
+    if (!visibleRows) shell.list.appendChild(el("div", "pknone",
+      qQuery ? "no wave candidates match this search" : "no queued auftrag rows to project"));
   }
-  if (!shown.length) shell.list.appendChild(el("div", "pknone",
-    tasksList.length ? "no tasks match this search" : "no tasks yet"));
   shell.setRows(rows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
 }
@@ -5912,6 +6077,7 @@ function openQueue() {
   qShell?.close();
   qPick = null;
   qQuery = "";
+  qView = "status";
   qKey = "";
   qCompose = null;
   qRepoIn = null;
@@ -5931,6 +6097,30 @@ function openQueue() {
     },
   });
   qShell = shell;
+
+  const view = el("div", "qview");
+  const statusView = el("button", "", "Status") as HTMLButtonElement;
+  const wavesView = el("button", "", "Waves") as HTMLButtonElement;
+  const paintView = () => {
+    statusView.classList.toggle("on", qView === "status");
+    wavesView.classList.toggle("on", qView === "waves");
+    statusView.setAttribute("aria-pressed", String(qView === "status"));
+    wavesView.setAttribute("aria-pressed", String(qView === "waves"));
+  };
+  const chooseView = (next: QView) => {
+    if (qView === next) return;
+    qView = next;
+    qKey = "";
+    qDetailKey = "";
+    paintView();
+    renderQueue();
+    renderQueueDetail();
+  };
+  statusView.onclick = () => chooseView("status");
+  wavesView.onclick = () => chooseView("waves");
+  view.append(statusView, wavesView);
+  paintView();
+  shell.tools.appendChild(view);
 
   const search = el("input", "pkfilterin") as HTMLInputElement;
   search.type = "text";

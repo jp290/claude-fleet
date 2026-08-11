@@ -9,6 +9,7 @@ import {
   matchTaskWaveAnalysis, projectTaskWaves,
   type ProjectedWaveTask, type TaskWaveProjection, type TaskWaveRunningBlock, type TaskWaveUnresolved,
 } from "../task-waves";
+import { classifyAnalystOffWarning } from "../task-analysis-warning";
 // everything this file and server.ts must say identically — see src/protocol.ts. Importing rather
 // than re-declaring is what makes tsc, which gates every land, the thing that notices a drift.
 import {
@@ -187,6 +188,8 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   // observation grouping, its chip and its guards went dead without one compiler word. Widen this
   // FIRST when the server's set changes — tsc then names every site that has to follow.
   kind?: "auftrag" | "richtung" | "notiz" | "betrieb"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
+  // Bounded generation/presence only; the brief text remains on GET /api/tasks.
+  briefAt?: number;
   // the queue analyst's reading. ADVISORY — it groups and labels a row, it never disables an
   // action. `reason` here is the poll's 140-char slice; the full one rides /api/tasks.
   analysis?: { verdict: AnalysisVerdict; blockers: string[]; reason: string;
@@ -4688,12 +4691,12 @@ async function refresh() {
       // verdict (and its timestamp) in place: the attempt counter is then the ONLY thing that
       // moves, so without it here the pane would keep showing "failed 1×" through every retry.
       const dk = t ? JSON.stringify([t.id, t.status, t.kind, t.note, t.repo,
-        t.files?.join("\n"), t.filesOrigin, t.cluster, t.analysis?.at,
+        t.files?.join("\n"), t.filesOrigin, t.cluster, t.briefAt, t.analysis?.at,
         t.analysis?.stale, t.analysis?.retry?.at, t.criterion?.proposedAt, t.criterion?.confirmedAt,
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
-        t.refine?.at, t.refining, t.comments?.n, t.comments?.at,
+        t.refine?.at, t.refining, t.comments?.n, t.comments?.at, analysisOn,
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     }
@@ -5210,9 +5213,11 @@ const taskRefineFull = new Map<string, TaskRefineFull>();
 // length, and the 2 s poll is the one place in this client where bytes are a standing cost.
 interface TaskCommentView { id: string; ts: number; text: string }
 const taskCommentsFull = new Map<string, TaskCommentView[]>();
-let taskTextKey = ""; // the id+verdict-set the cache was last filled for — a task's TEXT never
-// changes, but its analysis arrives later (and changes on ↻ re-analyse), so analysis.at is in the key
+let taskTextKey = ""; // the id+full-data-generation set this cache was last filled for
 let taskTextBusy = false;
+// The poll's briefAt invalidates every browser. This local epoch still prevents a brief save in
+// THIS browser from being overtaken by an older GET /api/tasks before the next poll arrives.
+let taskTextEpoch = 0;
 let qShell: Shell | null = null;
 let qPick: string | null = null;  // selected task id; null = the compose row
 let qQuery = "";
@@ -5241,15 +5246,24 @@ let qRawAck: string | null = null;
 // the task each row stands for, so keyboard nav selects directly instead of via a synthetic click
 let qRowId = new Map<HTMLElement, string | null>();
 
+// The generation GET /api/tasks must match before the detail may make absence claims. The poll can
+// announce a new analysis or top-level briefAt while the old full cache is still present; treating
+// that cache as current would briefly call a stored analysis or brief absent.
+const qTaskFullKey = () => tasksList.map((t) =>
+  `${t.id}:${t.briefAt ?? 0}:${t.analysis?.at ?? 0}:${t.analysis?.hasBrief ? 1 : 0}:${t.analysis?.retry?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}`
+).join(",");
+const qTaskFullLoaded = (id: string) => taskText.has(id) && taskTextKey === qTaskFullKey();
+
 // Prompt texts, cached by task id. They are not on the 2 s poll (server.ts TaskDigest) — this
 // pulls them once per id-set, only while the window is actually open, and a task's text never
 // changes after creation, so a cached entry stays valid until the id disappears.
 async function loadTaskTexts() {
   // `retry.at` rides along for the same reason it is in the detail key: a failed re-reading now
   // leaves `analysis.at` untouched, and the failure's own text lives only in this fetch.
-  const key = tasksList.map((t) => `${t.id}:${t.analysis?.at ?? 0}:${t.analysis?.retry?.at ?? 0}:${t.criterion?.proposedAt ?? 0}:${t.criterion?.confirmedAt ?? 0}:${t.refine?.at ?? 0}:${t.comments?.n ?? 0}:${t.comments?.at ?? 0}`).join(",");
+  const key = qTaskFullKey();
   if (taskTextBusy || key === taskTextKey) return;
   taskTextBusy = true;
+  const epoch = taskTextEpoch;
   let filled = false;
   try {
     const res = await api("/api/tasks");
@@ -5257,27 +5271,32 @@ async function loadTaskTexts() {
       const data = (await res.json()) as { tasks: { id: string; text: string; analysis?: FullAnalysis;
         brief?: FullBrief; criterion?: NonNullable<TaskInfo["criterion"]>;
         refine?: TaskRefineFull; comments?: TaskCommentView[] }[] };
-      taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
-      taskAnalysisFull.clear();
-      taskBriefFull.clear();
-      taskCriterionFull.clear();
-      taskRefineFull.clear();
-      taskCommentsFull.clear();
-      for (const t of data.tasks) {
-        taskText.set(t.id, t.text);
-        if (t.analysis) taskAnalysisFull.set(t.id, t.analysis);
-        if (t.brief) taskBriefFull.set(t.id, t.brief);
-        if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
-        if (t.refine) taskRefineFull.set(t.id, t.refine);
-        if (t.comments?.length) taskCommentsFull.set(t.id, t.comments);
+      // A brief save can complete while this GET (started before it) is in flight. Never publish
+      // that older response under the post-save generation; the retry below fetches the new truth.
+      if (epoch === taskTextEpoch) {
+        taskText.clear(); // the route returns every task, so this is the whole truth — no stale ids
+        taskAnalysisFull.clear();
+        taskBriefFull.clear();
+        taskCriterionFull.clear();
+        taskRefineFull.clear();
+        taskCommentsFull.clear();
+        for (const t of data.tasks) {
+          taskText.set(t.id, t.text);
+          if (t.analysis) taskAnalysisFull.set(t.id, t.analysis);
+          if (t.brief) taskBriefFull.set(t.id, t.brief);
+          if (t.criterion) taskCriterionFull.set(t.id, t.criterion);
+          if (t.refine) taskRefineFull.set(t.id, t.refine);
+          if (t.comments?.length) taskCommentsFull.set(t.id, t.comments);
+        }
+        taskTextKey = key;
+        filled = true;
       }
-      taskTextKey = key;
-      filled = true;
     }
   } catch {
     // server briefly unreachable — rows keep the placeholder, the next poll retries
   }
   taskTextBusy = false;
+  if (epoch !== taskTextEpoch) { void loadTaskTexts(); return; }
   // texts arrived: rows AND the open detail carry them now — the detail's criterion textarea
   // renders from taskCriterionFull, which was empty until this very fetch
   if (filled) { qKey = ""; qDetailKey = ""; renderQueue(); renderQueueDetail(); }
@@ -5477,6 +5496,10 @@ async function qAct(id: string, action: string, body: Record<string, unknown> = 
   // beat, or the detail paints one stale frame of a proposal that no longer exists (the /api/tasks
   // refetch that would correct it is a poll behind)
   if (action === "refine-confirm") taskRefineFull.delete(id);
+  // briefAt will invalidate every polling browser. The local epoch additionally rejects a full GET
+  // that started before THIS save and returns before that next poll; the warning stays neutral until
+  // the post-save full row arrives.
+  if (action === "brief") { taskTextEpoch++; taskTextKey = ""; }
   await refresh();
   qKey = ""; // this changed the data — force the list to rebuild even inside the poll's guard
   renderQueue();
@@ -5908,7 +5931,22 @@ function renderQueueDetail() {
         if (over && !confirm(`The analyst flagged this:\n\n${an?.reason ?? ""}\n\nRelease it anyway?`)) return;
         void qAct(t.id, "queue");
       };
-      acts.appendChild(b);
+      const release = el("div", "qrelease");
+      const warning = classifyAnalystOffWarning({
+        analysisOn,
+        fullDataLoaded: qTaskFullLoaded(t.id),
+        hasStoredAnalysis: taskAnalysisFull.has(t.id),
+        hasStoredBrief: taskBriefFull.has(t.id),
+      });
+      if (warning) {
+        release.appendChild(el("div", "qanalysiswarn", warning.text));
+        release.appendChild(b);
+        acts.appendChild(release);
+      } else {
+        // ON/unknown keeps the established action row byte-for-byte: only the disabled warning's
+        // presence introduces its release-adjacent wrapper.
+        acts.appendChild(b);
+      }
     }
     if ((t.status === "pending" || t.status === "queued") && t.analysis)
       acts.appendChild(mk("↻ re-analyse", "reanalyse", "shrbtn", {},
@@ -5943,7 +5981,7 @@ function renderQueue() {
   const now = Date.now();
   const key = JSON.stringify([qView, qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
-    shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.analysis?.verdict,
+    shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt, t.analysis?.verdict,
       t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
       t.refine?.at, t.refining, t.comments?.n])]);

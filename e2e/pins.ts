@@ -458,6 +458,62 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
       && register.includes("UNBEKANNT") && register.includes("Only kind=auftrag rows appear"));
 }
 
+{
+  // ANALYST MODE IS ONE RUNTIME FACT. A stored verdict cannot say whether the reader exists now,
+  // so every server consumer must read ANALYSIS_ON, the poll must transport that exact fact, and
+  // the client warning must consume the transported value. This is a wiring rule, not a pin of
+  // warning prose or cadence: ANALYSIS_TICK_MS remains free to carry the interval itself.
+  const client = read("src/client.ts");
+  const warning = read("task-analysis-warning.ts");
+  const executableServer = server.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const factDefs = [...executableServer.matchAll(/const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;/g)];
+  pin("one plainly named server fact derives analyst mode from the configured cadence",
+    factDefs.length === 1, `${factDefs.length} ANALYSIS_ON definition(s)`);
+
+  const sweepStart = server.indexOf("async function tickAnalysisSweep");
+  const sweepBody = sweepStart < 0 ? "" : server.slice(sweepStart, server.indexOf("function refineChildText", sweepStart));
+  const dispatchStart = server.indexOf("async function tickDispatch");
+  const dispatchBody = dispatchStart < 0 ? "" : server.slice(dispatchStart, server.indexOf("// A freshly seeded socket", dispatchStart));
+  const reanalyseStart = server.indexOf("const taskReanalyse =");
+  const reanalyseBody = reanalyseStart < 0 ? "" : server.slice(reanalyseStart, server.indexOf("const taskRefine =", reanalyseStart));
+  pin("ANALYSIS_ON feeds the sweep guard and its only scheduler registration",
+    /analysisBusy \|\| !ANALYSIS_ON/.test(sweepBody)
+      && /if \(ANALYSIS_ON\) setInterval\([^\n]*tickAnalysisSweep[^\n]*, ANALYSIS_TICK_MS\);/.test(executableServer));
+  pin("ANALYSIS_ON feeds the dispatch analysis invariant and reanalyse refusal",
+    /if \(ANALYSIS_ON\) \{/.test(dispatchBody) && /if \(!ANALYSIS_ON\)/.test(reanalyseBody));
+  pin("the owner poll exposes the same ANALYSIS_ON fact as a global sibling of dispatch",
+    /dispatch: \{[^\n]*\},\s*analysis: \{ on: ANALYSIS_ON \},/.test(executableServer));
+
+  // Outside its numeric declaration, shared fact, and setInterval delay, the cadence must not be
+  // read directly. Any fourth use is a new derivation/consumer bypassing the named runtime fact.
+  const directCadenceUses = executableServer.split("\n").filter((l) => l.includes("ANALYSIS_TICK_MS"));
+  const cadenceBypasses = directCadenceUses.filter((l) =>
+    !l.includes("const ANALYSIS_TICK_MS =")
+    && !l.includes("const ANALYSIS_ON = ANALYSIS_TICK_MS > 0;")
+    && !/setInterval\([^\n]*tickAnalysisSweep[^\n]*, ANALYSIS_TICK_MS\);/.test(l));
+  pin("no server analyst consumer derives on/off directly from ANALYSIS_TICK_MS",
+    directCadenceUses.length >= 3 && cadenceBypasses.length === 0,
+    `${directCadenceUses.length} cadence use(s); bypasses=[${cadenceBypasses.map((l) => l.trim()).join(" | ")}]`);
+  pin("the queue warning consumes the owner poll fact and only classifies explicit false as off",
+    client.includes("analysisOn = data.analysis?.on;")
+      && /classifyAnalystOffWarning\(\{\s*analysisOn,/.test(client)
+      && warning.includes("if (input.analysisOn !== false) return null;"));
+  pin("every brief exposes one text-free top-level generation that invalidates client full/list/detail caches",
+    /& \{ briefAt\?: number; criterion\?:/.test(server)
+      && /\.\.\.\(t\.brief \? \{ briefAt: t\.brief\.at \} : \{\}\)/.test(server)
+      && client.includes("briefAt?: number;")
+      && /const qTaskFullKey =[\s\S]{0,300}?t\.briefAt \?\? 0/.test(client)
+      && /t\.filesOrigin, t\.cluster, t\.briefAt, t\.analysis\?\.at/.test(client)
+      && /t\.note, t\.kind, t\.briefAt, t\.analysis\?\.verdict/.test(client));
+
+  // register is the offline view of the queue. Visibility in the browser must not turn that shell
+  // path into an API client; comments are excluded so a warning about curl would not trip the rule.
+  const registerCode = read("register.sh").split("\n")
+    .filter((l) => !l.trim().startsWith("#")).join("\n");
+  pin("register remains offline and API-independent",
+    !/\b(curl|wget|fetch)\b|https?:\/\/|\/api\//.test(registerCode));
+}
+
 // ================================================================================================
 // 5. The L1 rot detector — prose that has gone out of date with the code it describes
 // ================================================================================================

@@ -218,12 +218,19 @@
   #histbtn:hover, #autobtn:hover, #enhbtn:hover, #dropbtn:hover { color: var(--text); }
   .slot .autobadge { flex: none; font-size: 10px; color: var(--amber); }
   /* lanes are first-class: a left accent + a ⎇ chip set them apart from plain repo sessions */
-  .slot.lane { border-left: 2px solid var(--focus); }
+  .slot.lane { border-left: 2px solid var(--focus); overflow: hidden; }
   .slot.lane.current { border-left-color: var(--accent); }
   .slot .lanechip { flex: none; font-size: 11px; color: var(--accent); font-weight: 700; }
-  /* ONE lifecycle dot replaces the old branch-name badge — the branch is already the
-     source of the row's label (baseName(cwd)), and the •N/↑N counts move into its
-     tooltip instead of squeezing .lbl down to a sliver */
+  /* The branch suffix is the non-collapsing spoken identity; the mutable label gets every
+     remaining pixel and ellipsizes. Kept as one flex child so `ref · label` stays compact in
+     the 228px sidebar while the row's existing state/actions keep their structure. */
+  .slot .laneidentity { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
+  .slot .laneref { flex: none; white-space: nowrap; color: #a9c1f5; font-weight: 700;
+    font-variant-numeric: tabular-nums; }
+  .slot .lanesep { flex: none; color: var(--faint); }
+  .slot .laneidentity .lbl { min-width: 0; }
+  /* ONE lifecycle dot replaces the old branch-name badge. The full branch and the •N/↑N
+     counts stay in tooltips instead of squeezing the mutable label down to a sliver. */
   .slot .lcdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #6a7080; }
   .slot .lcdot.editing { background: var(--amber); }  /* uncommitted work in progress */
   .slot .lcdot.ready { background: var(--add); }    /* clean, commits waiting to push/land */
@@ -269,16 +276,10 @@
   .slot.stacked { margin-left: 10px; }
   .slot.repohead { cursor: pointer; padding-top: 4px; padding-bottom: 4px; }
   .slot.repohead .lbl { font-size: 11px; letter-spacing: 0.02em; }
-  /* a worktree on disk with no session: present but plainly not running */
-  .slot.ghost { opacity: 0.6; }
-  .slot.ghost:hover { opacity: 1; }
-  .slot.ghost .n { color: #444; }
-  .slot .ghosttag { flex: none; font-size: 9.5px; color: var(--faint); border: 1px solid var(--line);
-    border-radius: 4px; padding: 0 4px; }
   /* the 50px rail centres its rows and has no width to spend on hierarchy — drop the indent and
      the text chips there; the fold arrow stays, so a stack is still openable from the rail */
   #side.collapsed .slot.stacked { margin-left: 0; }
-  #side.collapsed .stackn, #side.collapsed .ghosttag { display: none; }
+  #side.collapsed .stackn, #side.collapsed .lanesep { display: none; }
   .slot .diff { flex: none; font-size: 12px; color: var(--faint); cursor: pointer; }
   .slot .diff:hover { color: #7dcfff; }
   /* queue window: the dispatcher strip, the compose box, and the full task text in the detail */

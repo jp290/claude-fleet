@@ -923,9 +923,13 @@ export async function run(): Promise<void> {
       const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`${escaped}\\s*\\{([^}]*)\\}`).exec(indexSrc)?.[1] ?? "";
     };
+    const slotsCss = cssRule("#slots"), slotCss = cssRule(".slot");
     const rowactCss = cssRule(".rowacts .rowact");
     const minWidth = Number(/min-width:\s*(\d+)px/.exec(rowactCss)?.[1] ?? 0);
     const minHeight = Number(/min-height:\s*(\d+)px/.exec(rowactCss)?.[1] ?? 0);
+    const mobilePrimaryCss = /\.slot\.empty,\s*\.slotprimary\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
+    const primaryMinHeight = Number(/min-height:\s*(\d+)px/.exec(mobilePrimaryCss)?.[1] ?? 0);
+    const mobileSlotCss = /(?:^|\n)\s*\.slot\s*\{([^}]*)\}/.exec(mobileCss)?.[1] ?? "";
     const reviewCss = cssRule(".revb"), laneDiffCss = cssRule(".slot .lanediff")
       , slotactCss = cssRule(".slotact");
     const controlResetCss = cssRule(".slotctrl");
@@ -945,6 +949,18 @@ export async function run(): Promise<void> {
         && /position:\s*relative/.test(reviewCss) && /position:\s*relative/.test(laneDiffCss)
         && zIndex(reviewCss) > zIndex(slotactCss) && zIndex(laneDiffCss) > zIndex(slotactCss),
       `review z=${zIndex(reviewCss)} laneDiff z=${zIndex(laneDiffCss)} slotact z=${zIndex(slotactCss)}`);
+    check("sidebar slot rows cannot shrink and the flex column retains vertical scrolling",
+      (/(?:^|;)\s*flex:\s*none(?:;|$)/.test(slotCss)
+        || /(?:^|;)\s*flex-shrink:\s*0(?:;|$)/.test(slotCss))
+        && /(?:^|;)\s*display:\s*flex(?:;|$)/.test(slotsCss)
+        && /(?:^|;)\s*flex-direction:\s*column(?:;|$)/.test(slotsCss)
+        && /(?:^|;)\s*overflow-y:\s*auto(?:;|$)/.test(slotsCss),
+      JSON.stringify({ slotCss: slotCss.trim(), slotsCss: slotsCss.trim() }));
+    check("mobile occupied-row primary stays at least 40px tall and slot/action-strip wrapping remains enabled",
+      primaryMinHeight >= 40
+        && /(?:^|;)\s*flex-wrap:\s*wrap(?:;|$)/.test(mobileSlotCss)
+        && /\.rowacts\s*\{[^}]*flex-wrap:\s*wrap/.test(mobileCss),
+      `${primaryMinHeight}px: ${mobilePrimaryCss.trim()}`);
     check("mobile hides desktop slot actions plus represented inline review/diff and passive chat glyphs",
       /#side \.slotact\s*\{[^}]*display:\s*none\s*!important/.test(mobileCss)
         && /\.slot > \.lanediff, \.slot > \.revb, \.slot > \.cmtb\s*\{\s*display:\s*none/.test(mobileCss)

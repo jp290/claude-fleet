@@ -52,6 +52,15 @@ jeder Schnitt war klein, einseitig und voll verifizierbar.
 - **CLAUDE.md wurde von Hand nachgezogen** (gitignoriert): neuer Korrektur-Absatz ganz oben über
   den Zaun-Absätzen, die jetzt Historie sind.
 
+## Befund beim Übergeben selbst (neu, kostet sonst die nächste Session Zeit)
+
+`POST /api/self/succeed` spawnt den Nachfolger und **pastet** den Gründungsbrief — aber er blieb im
+Composer stehen, unabgeschickt (gemessen 2026-08-12 an Slot 1, Claude/Opus-Pane). Erst ein
+`tmux -L claudefleet send-keys -t s<N> Enter` startete die Sitzung. Das ist dieselbe Klasse wie der
+bekannte Codex-Dispatch-Boot-Race, nur auf dem Succession-Pfad und mit einer claude-Pane. **Also:
+nach jedem `succeed` die Pane prüfen und bei stehendem Composer Enter nachschicken** — sonst sitzt
+die Nachfolge mit vollständigem Brief da und tut nichts.
+
 ## Nächster Akt
 
 Core-Programm-Workstream 1: der Codex-Ready-Handshake (Done/Beweis stehen in

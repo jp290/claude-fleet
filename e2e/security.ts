@@ -892,12 +892,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // suite — a gate must never depend on a third-party CLI being present.
   const cx = cat.harnesses.find((h) => h.id === "codex");
   check("§6e the catalogue carries the codex adapter", !!cx, cat.harnesses.map((h) => h.id).join(","));
-  // automatable=false is published for exactly this, and the reason is measured rather than
-  // procedural: an un-authenticated codex pane sits on its sign-in screen with the node wrapper
-  // RUNNING, so the probe says alive and an unattended brief would be typed into a login form and
-  // lost. The pi row is the counter-case — without it this passes if the field were hardcoded.
-  check("§6e the codex adapter is NOT automatable (an un-authenticated pane probes alive), while pi is",
-    cx?.automatable === false && pi?.automatable === true, `${String(cx?.automatable)} / ${String(pi?.automatable)}`);
+  // automatable flipped TRUE on 2026-08-12, alongside the readiness seam that makes it sound: the
+  // measured hazard (an un-authenticated pane sits on its sign-in screen with the node wrapper
+  // RUNNING, probes alive, and eats an unattended paste) is now refused at the SCREEN level —
+  // canDeliver's blocked-screen gate plus the dispatch tail's bounded accept-marker wait
+  // (counterprobes: e2e/tasks.ts f3; source coupling: e2e/pins.ts). The pi row keeps the
+  // contrast honest — two adapters, both true, for two different reasons.
+  check("§6e the codex adapter is automatable ALONGSIDE its readiness seam, like pi (both true, published)",
+    cx?.automatable === true && pi?.automatable === true, `${String(cx?.automatable)} / ${String(pi?.automatable)}`);
   // `resume` stays false after measurement: `resume --last` skips the picker and genuinely resumes,
   // but recency cannot identify this unpinned pane when a cwd has multiple conversations.
   // Transcript remains false; effort is the fixed config-key capability asserted below.

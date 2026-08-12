@@ -7,12 +7,15 @@ jeder Schnitt war klein, einseitig und voll verifizierbar.
 
 ## Zustand bei der Übergabe
 
-- **HEAD:** siehe `./state.sh` (diese Session landete `8c71ed6` → `fc8f4ad` → Doc-Commit).
-- **Baum:** sauber. **Live-Server:** deployt und auf HEAD gebracht (Verb 2, Deploy `dcc271ed` für
-  `90d711c`; der Full-Access-Deploy folgt in dieser Session — `deployGap.codeBehind` prüfen!).
-- **Audit:** `90d711cd` grün (2050 Checks/757 s). Für `fc8f4ad` schreibt der Post-Land-Audit
-  KEINE Zeile — es war ein Direkt-Commit am Host, kein Lane-Land. Die Verifikation lief dafür
-  vollständig von Hand (Gate-Kette + `./e2e-isolated.sh`), Tails im Commit-Body.
+- **HEAD:** `7dd9920` (diese Session landete `8c71ed6` → `fc8f4ad` → `7dd9920`). Baum sauber,
+  keine Fremd-Worktrees aus dieser Session übrig.
+- **Live-Server:** auf HEAD. Zwei Deploys über Verb 2: `dcc271ed` (brachte den Watch-Fix live) und
+  `2db01202` (Full Access), beide `ok:true`/`hitTarget:true`; `deployGap.codeBehind:false`,
+  `bundleStale:false` — mechanisch nachgeprüft, nicht behauptet.
+- **Audit:** letzte Ledger-Zeile ist `90d711cd` grün (2050 Checks/757 s). Für `fc8f4ad` und
+  `7dd9920` gibt es **keine** Audit-Zeile — Direkt-Commits am Host erzeugen keine (bekannte Regel).
+  Die Verifikation lief dafür vollständig von Hand: Gate-Kette (`ALL PASS`) und `./e2e-isolated.sh`
+  (`ALL PASS`, 0 Failures, Tree `fc8f4ad`) plus `bun e2e/pins.ts` auf dem Doc-Tree.
 
 ## Was diese Session gemacht hat
 
@@ -29,6 +32,13 @@ jeder Schnitt war klein, einseitig und voll verifizierbar.
    `--dangerously-bypass-approvals-and-sandbox` + idempotentem Trust-Eintrag, `hostCommits`
    überall false, codex-Lanes wieder Worktrees, alle Zaun-Sonden auf die neue Wahrheit gedreht.
 5. **Doku:** `docs/core-program-2026-08-12.md` ist ab jetzt DAS aktive Programm-Dokument.
+6. **Deploy + Live-Canaries nach dem Schnitt** (Deploy `2db01202`, `ok:true`, `hitTarget:true`,
+   `bootHead == 7dd9920`, `bundleStale:false`): je eine frische pi- und codex-Lane auf dem
+   Live-Server, **beide als WORKTREE** (codex hat keine Clone-Präferenz mehr). Beide bestanden die
+   Probe, die vor dem Schnitt mechanisch scheiterte: **eigener `git commit`** (pi `f682ae0`,
+   codex `c944100`), Netz 200, tmux-Socket erreichbar, `~/.claude` beschreibbar, danach sauber
+   zurückgesetzt. Die codex-Pane bootete **ohne Trust-Prompt** direkt in den Composer
+   („YOLO mode") — der Trust-Prelude wirkt live. Lanes gekillt, Worktrees und Branches entfernt.
 
 ## Offene Grenzen (ehrlich)
 

@@ -1,20 +1,81 @@
 # AGENTS.md — the short rulebook that travels
 
-Claude Fleet is a local dashboard that runs and supervises coding-agent sessions in tmux panes.
-A "lane" is a throwaway working copy of this repo; you are probably one. Work only your slice.
+Claude Fleet is a local control plane for running and supervising coding-agent sessions in tmux
+panes. A "lane" is a throwaway working copy of this repo; you are probably one. Work only your
+slice. The README explains the product to humans; this file is the portable operating contract for
+agents.
 
-**This file is deliberately thin.** The full rulebook is `CLAUDE.md`, in this same directory.
-It is git-ignored, so it cannot be tracked and cannot be quoted here — but it IS copied into every
-lane, so read it. This file carries only what you must not get wrong before you get there.
+**Private overlay — hard loader requirement.** The full private operating rulebook is `CLAUDE.md`,
+in this same directory. It is git-ignored, cannot be tracked or quoted here, and is copied into each
+lane. Read it completely. Until P1-D proves a narrower loader path live, that full read remains
+required. `AGENTS.md` owns the portable contract; `CLAUDE.md` owns private operating reality. Stop
+and report any contradiction instead of selecting the more convenient rule.
 
-**Why two files.** `AGENTS.md` is the Codex convention: Codex reads it, and does not read
-`CLAUDE.md`. Claude reads `CLAUDE.md` and ignores this one; the container harness runs Claude
-inside a box, so it is on that side too. **pi reads THIS file, not `CLAUDE.md`** — measured at a
-live pane on 2026-08-08, hours after this file first landed: pi's startup `[Context]` listed
-`AGENTS.md` alone, with both files present in the worktree. Before this file existed pi loaded
-`CLAUDE.md`, so its arrival silently moved pi from the full rulebook to this pointer. That is why
-the sentence above — read it — is load-bearing for pi and not merely polite. Nothing here restates `CLAUDE.md`; when the two
-disagree, `CLAUDE.md` is the rulebook and this file is the bug.
+## Portable operating contract
+
+### Project identity and non-negotiable properties
+
+Fleet coordinates agent work; it does not replace human judgment. It never trades away owner
+promotion, isolated production, observations before claims, explicit `unknown`, deterministic done,
+honest surfaces, or review effort proportional to the decision.
+
+### Shared vocabulary
+
+The **owner** is the human who decides scope and promotion; a **maintainer** coordinates and
+synthesizes; a **user** makes a request; an **agent** performs bounded work. A **session** runs in a
+reusable **slot**; a **lane** is its isolated working copy. A **harness** is how an agent runs and
+what it can actually do; **provider** and **model** identify its executor. A **worker** is a bounded
+agent run. A **task** is the existing queue item and its **brief** is the exact work order. **Verify**
+proves a tree; **commit** records it; **land** promotes it server-side; **deploy** updates a running
+instance; **audit** measures a landed tree. These are distinct acts.
+
+### Hard invariants
+
+- Request verbs select the mode and no broader authority:
+
+  | Request verbs (examples) | Mode | Granted authority |
+  |---|---|---|
+  | ask, explain, review, diagnose | read-only | inspect and report |
+  | change, fix, build | mutating | edit only the named scope |
+  | monitor, watch, follow | monitoring | observe until the named terminal condition |
+
+- Mutation does not imply commit. Commit does not imply land. Land does not imply deploy. Host,
+  network, credential, machine, or other external writes each require explicit authority and a
+  named stop point; monitoring grants none of them.
+- Observations precede labels. Missing or failed evidence is `unknown`, never zero, false, or pass.
+  Workers may **propose** findings, briefs, rules, skills, or retirement; only the owner may
+  **promote** a binding version. Current code, ledgers, and live sensors outrank stale plan prose.
+- Load the smallest relevant context after the required core. Use focused ranges and searches; put
+  long output in files outside the repo and report tails. Before parallel mutation, assign exclusive
+  file ownership; workers must not share a writable surface.
+- Provider-, lifecycle-, or client-shaped work must decide every relevant adapter and surface as
+  `apply`, `unsupported`, or `not-applicable`. Relevant surfaces can include protocol/wire,
+  server, client, reverse-state, docs, and probes; silence is not a decision.
+- Communicate in this order: **problem and importance -> solution and effect -> evidence -> open
+  boundary**. Never lead with an implementation inventory.
+
+### Overridable defaults
+
+Unless the request says otherwise: take one narrow landable slice, reuse an existing mechanism,
+avoid new files and parallel mutation, stop after the requested act, and keep context and output
+small. An explicit override must name its scope and reason; it cannot override a hard invariant.
+
+### Collaboration preferences
+
+Prefer simple mechanisms, ambitious but grounded proposals, ceremony proportional to risk, and
+problem-oriented language. Complexity is a cost, not evidence of seriousness.
+
+### Examples
+
+A review request may suggest a patch but does not apply it. A build request may edit its owned files
+but does not authorize commit or deploy. A monitor request ends at its stated terminal state and
+reports `unknown` when that state cannot be observed.
+
+### History
+
+History explains why a rule exists but grants no present authority. Keep examples and retired
+inventories out of the normative core; when history conflicts with current code, ledger, or sensor
+facts, correct or archive the history.
 
 ## Before you start
 

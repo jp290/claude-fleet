@@ -1,15 +1,15 @@
 # Agent OS — G0-Synthese und Owner-Entscheidung
 
-**Stand:** HEAD `b29d2c7`, 2026-08-11 · **Status:** Phase 0/0.5 fertig, Product-Code unveraendert
+**Stand:** 2026-08-11 · **Status:** G0 `pass`; P1-A ist dieser Landschnitt; Product-Code unveraendert
 
 Diese Datei ist nach G0 die operative Phase-1-Bruecke. Bei Widerspruch gilt heutiger Code-/Ledger-
 oder Sensorbefund vor dieser Synthese; der Widerspruch wird hier korrigiert, nicht uebergangen.
 
 ## Entscheidung in einem Blick
 
-**Empfehlung: G0 `pass` fuer einen engen Backbone-v1-Schnitt, nicht fuer das Gesamtzielbild.**
+**Owner-Entscheidung vom 2026-08-11: G0 `pass` fuer einen engen Backbone-v1-Schnitt, nicht fuer das Gesamtzielbild.**
 
-Freigegeben waeren nach Owner-Bestaetigung:
+Durch die Owner-Bestaetigung freigegeben:
 
 1. kompakter getrackter Governance-Kern;
 2. read-only Context-Pack-Manifest mit Validator;
@@ -133,7 +133,7 @@ Queue-Plan; Artifact Store wartet auf G5/G6.
 Population-Gates enden nach 10 vergleichbaren Lanes oder 14 Tagen in `pass`, `fail` oder
 `insufficient-evidence`. Letzteres verlangt eine Owner-Entscheidung; es ist kein stiller Waiver.
 
-## Offene Owner-Entscheide fuer G0
+## Durch G0 bestaetigte Owner-Entscheide
 
 | # | Entscheid | Empfohlener Default | Auswirkung |
 |---|---|---|---|
@@ -147,12 +147,12 @@ Population-Gates enden nach 10 vergleichbaren Lanes oder 14 Tagen in `pass`, `fa
 | 8 | Queue-Prioritaet | Queue-Plan gewinnt bei Konflikt | Agent OS baut keine parallele UI |
 | 9 | Artifact v1 | privat; vorhandener Drop als kurzlebiger Ingress | kein Public Sharing, kein zweiter Upload |
 
-Ein pauschales „ja“ zu dieser Tabelle ist ausreichend fuer G0. Abweichungen koennen pro Nummer
-genannt werden.
+Die Owner-Anweisung vom 2026-08-11 bestaetigt diese Tabelle als G0 `pass`. Spaetere Abweichungen
+bleiben explizite Owner-Entscheide.
 
-## Erster konkreter Landschnitt nach G0
+## Aktueller Landschnitt nach G0
 
-**P1-A — Governance-Kern, nur getrackte Docs/Types, kein privater Split.**
+**P1-A — Governance-Kern, nur getrackte Docs/Types, kein privater Split — ist dieser implementierte Landschnitt.**
 
 - **Done:** Glossar, Invarianten, Arbeitsmodi und Stopppunkte stehen kompakt in einem getrackten
   Kern; `AGENTS.md` verweist eindeutig darauf; bestehende Verify-/Land-Regeln bleiben must-agree;
@@ -163,17 +163,18 @@ genannt werden.
   gleichzeitige Rulebook-Lane.
 - **Stop:** commitbarer Diff und Report; kein `CLAUDE.md`, kein Land, kein Deploy.
 
-Danach P1-B separat; P1-D misst live; P1-C ist ein eigener bedingter Host-/Rulebook-Schnitt.
+P1-B beginnt erst nach dem P1-A-Land. P1-D misst danach live; P1-C bleibt bis zum P1-D-Beleg
+plus einer expliziten Owner-Entscheidung gesperrt.
 
 ## Phase-0-Artefakte und Attic-Regel
 
-Bis zum ersten P1-Land bleiben die vier Inventare und die Baseline neben dieser Synthese. Beim
-ersten P1-Land werden `agent-os-rules.md`, `agent-os-skills.md`, `agent-os-data.md` und
-`agent-os-surfaces.md` nach `docs/attic/agent-os-2026-08-11/` verschoben. Die Baseline bleibt als
-datierter Vergleichsanker; diese Synthese und der Masterplan tragen den operativen Status.
+Mit diesem P1-A-Landschnitt werden `agent-os-rules.md`, `agent-os-skills.md`, `agent-os-data.md`
+und `agent-os-surfaces.md` mechanisch nach `docs/attic/agent-os-2026-08-11/` verschoben. Die
+Baseline bleibt als datierter Vergleichsanker; diese Synthese und der Masterplan tragen den
+operativen Status.
 
 ## Nicht gebaut
 
 Kein Product-Code, Context-Compiler, Ledgerfeld, Skill-Sync, Upload, Store, UI, Rulebook-Split,
-Task oder automatische Aktion wurde erzeugt. G0 ist offen, bis der Owner die Tabelle bestaetigt
-oder korrigiert.
+Task oder automatische Aktion wurde erzeugt. G0 ist `pass`; P1-B, P1-D und P1-C wurden nicht
+begonnen.

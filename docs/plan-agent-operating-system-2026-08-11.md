@@ -780,20 +780,24 @@ Logs schreiben und keine Erfolgsbehauptung aus Bytes allein.
 
 ## 14. Statusblock — von jeder uebernehmenden Session zuerst aktualisieren
 
-Stand 2026-08-11 nach Phase 0/0.5 im Codex-Main-Checkout:
+Stand 2026-08-11 im P1-A-Landschnitt:
 
-- **Phase 0:** INVENTARE ERSTELLT (`docs/triage/agent-os-{rules,skills,data,surfaces}.md`).
+- **Phase 0:** ABGESCHLOSSEN; die vier abgelaufenen Inventare liegen ab diesem Schnitt unter
+  `docs/attic/agent-os-2026-08-11/`.
 - **Phase 0.5:** BASELINE ERSTELLT (`docs/triage/agent-os-baseline.md`).
 - **G0-Synthese:** ERSTELLT (`docs/triage/agent-os-synthesis.md`).
-- **G0 Owner-Entscheid:** OFFEN.
-- **Phase 1–8:** NUR ZIELBILD, kein Bauauftrag.
+- **G0 Owner-Entscheid:** `pass` durch Owner-Anweisung vom 2026-08-11.
+- **P1-A:** mit diesem Landschnitt IMPLEMENTIERT; kein privater Split.
+- **P1-B:** beginnt erst nach dem P1-A-Land.
+- **P1-D:** danach offen fuer die Live-Boot-Matrix.
+- **P1-C:** gesperrt bis zum P1-D-Beleg plus expliziter Owner-Entscheidung.
+- **Phase 2–8:** NUR ZIELBILD, kein Bauauftrag.
 - **Aktive Abhaengigkeit:** `docs/plan-queue-refinement-2026-08-11.md`; dessen Task-Dashboard-
   Reihenfolge nicht umgehen.
-- **Neue Queue-Zeilen fuer dieses Programm:** keine in dieser Session erzeugt.
+- **Neue Queue-Zeilen fuer dieses Programm:** keine in diesem Schnitt erzeugt.
 - **Product-Code:** unveraendert.
 - **Private Rulebooks/Skills/Maschinen:** unveraendert.
-- **Landing:** Alle Agent-OS-Dokumente sind in diesem Checkout noch untracked und muessen vor
-  serverseitigem Land gemeinsam committed werden.
+- **Landing:** Host-Commit und serverseitiges Land dieses P1-A-Schnitts stehen noch aus.
 
 Wenn eine Phase landet, hier nur den neuen Phasenstatus, Commit/Task-IDs, Gate-Verdikt und den
 naechsten noch offenen Entscheid notieren. Messwerte und Arbeitszustand gehoeren in ihre Ledgers

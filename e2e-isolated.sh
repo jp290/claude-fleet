@@ -104,6 +104,37 @@ export FLEET_E2E_REPO="$REPO"
 export FLEET_E2E_REPO2="$REPO2"
 export FLEET_E2E_REPO3="$REPO3"
 
+# Stand-in Pi for the early Watch counterprobe. It is a real executable named `pi`, so the
+# adapter's fresh ps/comm liveness probe must observe `agent=alive`; it makes no provider call.
+# The tiny stdin loop also answers paneEnv's marked token query, proving the subscription uses the
+# credential actually exported into this pane rather than one read from fleet.json. It otherwise
+# consumes delivered text like a TUI. PATH is prepended only on the INITIAL srv spawn below;
+# restartSrv() later reconstructs the normal test PATH from the harness process.
+cat > "$DIR/fake-pi.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(void) {
+  char line[4096];
+  while (fgets(line, sizeof line, stdin)) {
+    char *start = strstr(line, "printf 'envprobe-");
+    if (!start) continue;
+    start += strlen("printf '");
+    char *end = strstr(start, "=[%s]");
+    if (!end) continue;
+    *end = '\0';
+    printf("%s=[%s]\n", start, getenv("FLEET_SELF_TOKEN") ? getenv("FLEET_SELF_TOKEN") : "");
+    fflush(stdout);
+  }
+  return 0;
+}
+EOF
+if ! "${CC:-cc}" -o "$DIR/pi" "$DIR/fake-pi.c"; then
+  echo "FAIL: watch fake-pi fixture could not compile"
+  exit 1
+fi
+rm -f "$DIR/fake-pi.c"
+
 # stand-in summarizer: swallows the prompt on stdin, answers in claude -p's
 # --output-format json envelope — exercises the real gather→spawn→parse→cache path
 # without a model call
@@ -440,7 +471,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # live fleet turns it on (watchdog.sh); this line keeps the suite's answer independent of that.
 SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).
 code=000

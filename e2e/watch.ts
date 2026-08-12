@@ -28,13 +28,18 @@ const watchRow = async (id: string): Promise<WatchRow | undefined> =>
 const freeSlot = async (): Promise<number> =>
   ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
     .slots.find((x) => x.cwd === null)?.id ?? 0;
+const selfWatch = (tok: string | null, body: unknown): Promise<Response> =>
+  fetch(`${BASE}/api/self/watch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
+    body: JSON.stringify(body),
+  });
 
 export async function run(): Promise<void> {
   // --- THE HOST-COMMIT SIBLING. The isolated server deliberately runs with foreign-harness
-  // automation OFF (a policy family later proves that refusal), so manufacturing a live Pi target
-  // here would be a broken probe: its policy-reduced `alive` fact is correctly false. Exercise the
-  // pure selector+text that tickWatches calls instead; the runtime block below proves that the same
-  // tick delivers, spends and logs the selected message exactly once.
+  // automation OFF (a policy family later proves that refusal). The pure selector below isolates
+  // the TARGET's fenced-host-commit completion shape; the runtime blocks below separately prove
+  // delivery, including tickWatches' narrow receiver-policy waiver for a live pi-unfenced slot.
   {
     const h: LaneSignalView = { alive: true, idleMs: 5000, git: { dirty: 1, ahead: 0 }, gitOp: false,
       merge: null, observed: true, awaiting: null, hostCommits: true };
@@ -57,6 +62,104 @@ export async function run(): Promise<void> {
   spawnSync("git", ["-C", tgt.cwd, "add", "watch-target.txt"]);
   spawnSync("git", ["-C", tgt.cwd, "commit", "-qm", "watch target lane work"]);
 
+  // --- THE MEASURED RETURN-CHANNEL DEFECT. The wrapper's initial server alone has a scratch
+  // executable named `pi` on PATH, while FLEET_HARNESS_AUTOMATION=0 stays closed. That makes a
+  // pi-unfenced main slot mechanically alive without a provider call. This must be a runtime
+  // counterprobe, not a selector unit check: tickWatches is the sole caller allowed to waive the
+  // harness WORK-prompt policy for an explicit subscription's fixed completion notification.
+  // It must run before this module's restartSrv() below, which deliberately restores normal PATH.
+  {
+    // Own target identity: the later owner-route check deliberately reuses `tgt` and may recycle
+    // this receiver slot. Sharing both would make its exact-once log count include this fixture's
+    // earlier delivery. A separate lane gives this probe a disjoint message prefix and is killed
+    // with it, so neither family's evidence can satisfy or poison the other.
+    const uTgt = (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    await Bun.write(`${uTgt.cwd}/watch-pi-unfenced-target.txt`, "isolated watch target\n");
+    spawnSync("git", ["-C", uTgt.cwd, "add", "watch-pi-unfenced-target.txt"]);
+    spawnSync("git", ["-C", uTgt.cwd, "commit", "-qm", "pi-unfenced watch target"]);
+    check("watch pi-unfenced fixture: its controlled target is a distinct committed lane",
+      uTgt.slot > 0 && uTgt.slot !== tgt.slot, JSON.stringify(uTgt));
+
+    const uId = await freeSlot();
+    const openU = uId ? await post(`/api/slots/${uId}/open`, { cwd: REPO, harness: "pi-unfenced" }) : null;
+    check("watch pi-unfenced fixture: a plain main-only receiver opens on the scratch Pi stand-in",
+      !!openU?.ok, `${uId} ${openU?.status}`);
+
+    let uAgent: string | null | undefined;
+    for (let i = 0; i < 80 && uAgent !== "alive"; i++) {
+      const rows = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; agent: string | null }[] }).slots;
+      uAgent = rows.find((x) => x.id === uId)?.agent;
+      if (uAgent !== "alive") await Bun.sleep(250);
+    }
+    check("watch pi-unfenced fixture: the stand-in is genuinely live (agent=alive), not merely a pane",
+      uAgent === "alive", String(uAgent));
+
+    const uTok = await paneEnv(`s${uId}`, "FLEET_SELF_TOKEN") ?? "";
+    check("watch pi-unfenced fixture: the live receiver answers with its pane-exported Self token",
+      /^[0-9a-f]{32}$/.test(uTok), `[${uTok}]`);
+    const catalog = (await (await get("/api/harnesses")).json()) as
+      { harnesses: { id: string; automatable: boolean; allowsLanes: boolean; singleton: boolean }[] };
+    const uHarness = catalog.harnesses.find((h) => h.id === "pi-unfenced");
+    check("pi-unfenced's static adapter policy stays false/main-only/singleton; the Watch exception belongs to the subscribed act",
+      uHarness?.automatable === false && uHarness.allowsLanes === false && uHarness.singleton === true,
+      JSON.stringify(uHarness));
+
+    check("watch pi-unfenced kill-switch fixture: owner pauses automation before subscribing",
+      (await post("/api/autos/switch", { on: false })).ok);
+    const subscribed = await selfWatch(uTok, { target: uTgt.slot, idleSec: 0 });
+    const subscribedJ = (await subscribed.json()) as { watch?: WatchRow; error?: string };
+    check("live pi-unfenced Self route explicitly subscribes to its controlled committed lane",
+      subscribed.ok && subscribedJ.watch?.armed === true && subscribedJ.watch.target === uTgt.slot,
+      `${subscribed.status} ${JSON.stringify(subscribedJ)}`);
+
+    // Only structural prerequisites exposed by this poll: committed+clean target facts and the
+    // armed subscription. `lastOutput>0` is not required by idleSec:0 and was a false fixture gate.
+    let targetReady = false;
+    for (let i = 0; i < 60 && !targetReady; i++) {
+      const rows = ((await (await get("/api/sessions")).json()) as
+        { slots: { id: number; git: { ahead?: number; dirty?: number } | null }[] }).slots;
+      const row = rows.find((x) => x.id === uTgt.slot);
+      targetReady = row?.git?.ahead === 1 && row.git.dirty === 0;
+      if (!targetReady) await Bun.sleep(500);
+    }
+    check("watch pi-unfenced kill-switch fixture: target is measurably committed+clean",
+      targetReady, String(targetReady));
+    await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
+    const paused = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
+    check("kill-switch keeps the eligible pi-unfenced Watch armed and delivers no notification",
+      paused?.armed === true && paused.lastResult === null
+      && !(await plogRead()).some((e) => e.slot === uId
+        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)), JSON.stringify(paused));
+    check("watch pi-unfenced kill-switch fixture: owner releases automation",
+      (await post("/api/autos/switch", { on: true })).ok);
+
+    let delivered: WatchRow | undefined;
+    for (let i = 0; i < 45 && delivered?.lastResult !== "sent"; i++) {
+      await Bun.sleep(1000);
+      delivered = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
+    }
+    const oldPolicySkip = "skipped — harness pi-unfenced is not automatable";
+    check("after kill-switch release the explicit Watch reaches live pi-unfenced once: sent, spent, never the old policy skip",
+      delivered?.lastResult === "sent" && delivered.armed === false
+      && !(delivered.lastResult ?? "").includes(oldPolicySkip), JSON.stringify(delivered));
+    const uMessages = (await plogRead()).filter((e) => e.slot === uId
+      && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`));
+    check("the fixed completion notification has exactly one matching prompt-log row on pi-unfenced",
+      uMessages.length === 1, `${uMessages.length}: ${uMessages.map((m) => m.text.slice(0, 80)).join(" | ")}`);
+    await Bun.sleep(AUTOS_TICK_MS * 4 + 1500);
+    const uAfter = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
+    check("the pi-unfenced Watch remains one-shot across later ticks and never records the old skip",
+      uAfter?.armed === false && uAfter.lastResult === "sent"
+      && (await plogRead()).filter((e) => e.slot === uId
+        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)).length === 1
+      && !(await watchRows()).some((w) => w.slot === uId && (w.lastResult ?? "").includes(oldPolicySkip)),
+      JSON.stringify(uAfter));
+    await post(`/api/slots/${uTgt.slot}/kill`, {});
+    await post(`/api/slots/${uId}/kill`, {});
+  }
+
   // --- the receivers, both PLAIN slots: the session this feature exists for is a driving main
   // checkout, and that is also the shape the SELF route below is scoped to. Everything down to the
   // teardown drives the OWNER route; the self twin gets its own block, on its own slot, so neither
@@ -68,6 +171,11 @@ export async function run(): Promise<void> {
   const bId = await freeSlot();
   const openB = bId ? await post(`/api/slots/${bId}/open`, { cwd: REPO }) : null;
   check("watch setup: a second plain receiver slot is open", !!openB?.ok, `${bId} ${openB?.status}`);
+  // Slots are recyclable, while the prompt ledger is append-only. Count only rows written after
+  // these two receiver identities were opened; an earlier occupant's Watch is not this fixture's.
+  const ownerWatchLogStart = (await plogRead()).length;
+  const ownerWatchMessages = async (slot: number) => (await plogRead()).slice(ownerWatchLogStart)
+    .filter((e) => e.slot === slot && e.text.startsWith("[fleet] slot "));
 
   // --- REJECTIONS. Every one answers the same question — can this watch ever fire? A watch that
   // cannot is worse than none, because it is a silent forever-wait, which is the failure the whole
@@ -115,13 +223,6 @@ export async function run(): Promise<void> {
     const laneTok = await paneEnv(`s${tgt.slot}`, "FLEET_SELF_TOKEN") ?? "";
     check("self-watch setup: the target lane's pane carries its own, different FLEET_SELF_TOKEN",
       /^[0-9a-f]{32}$/.test(laneTok) && laneTok !== cTok, `[${laneTok}]`);
-    const selfWatch = (tok: string | null, body: unknown): Promise<Response> =>
-      fetch(`${BASE}/api/self/watch`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
-        body: JSON.stringify(body),
-      });
-
     // peer lanes: peers[0] is a VALID target, so the LANE refusal below can only be about the
     // SUBSCRIBER — aimed at a non-lane it would 409 for the other reason and prove nothing. All
     // five together are what fills WATCH_MAX_PER_SLOT at the end of this block.
@@ -306,7 +407,7 @@ export async function run(): Promise<void> {
   // --- WHAT IT SAID. Asserted against the prompt log, which stores the text verbatim, not against
   // capture-pane (a ~450-char line wraps at the pane width and would make the assertion a test of
   // tmux's reflow). The pane itself is checked separately, on a substring that starts a line. ---
-  const msgs = (await plogRead()).filter((e) => e.slot === aId && e.text.startsWith("[fleet] slot "));
+  const msgs = await ownerWatchMessages(aId);
   check("the notification reached the pane exactly once", msgs.length === 1,
     `${msgs.length}: ${msgs.map((m) => m.text.slice(0, 40)).join(" | ")}`);
   const msg = msgs[0]?.text ?? "";
@@ -328,7 +429,7 @@ export async function run(): Promise<void> {
   const after = await watchRow(wAJ.watch.id);
   check("a spent watch stays spent — later ticks deliver nothing more",
     after?.armed === false
-    && (await plogRead()).filter((e) => e.slot === aId && e.text.startsWith("[fleet] slot ")).length === 1,
+    && (await ownerWatchMessages(aId)).length === 1,
     JSON.stringify(after));
 
   // --- the busy receiver, over the same window: the news does not EXPIRE. A notification dropped
@@ -337,7 +438,7 @@ export async function run(): Promise<void> {
   const busy = await watchRow(wB.watch.id);
   check("a busy receiver's watch is held, not spent — it still owes the message",
     busy?.armed === true && busy.lastResult === null
-    && !(await plogRead()).some((e) => e.slot === bId && e.text.startsWith("[fleet] slot ")),
+    && (await ownerWatchMessages(bId)).length === 0,
     JSON.stringify(busy));
 
   // --- the target goes away while a watch is still armed. Deleting the row silently would leave
@@ -348,8 +449,7 @@ export async function run(): Promise<void> {
   check("killing the target disarms the watch with its reason, rather than deleting it silently",
     orphan?.armed === false && (orphan.lastResult ?? "").includes("target session ended"),
     JSON.stringify(orphan));
-  check("a disarmed watch never delivers",
-    !(await plogRead()).some((e) => e.slot === bId && e.text.startsWith("[fleet] slot ")));
+  check("a disarmed watch never delivers", (await ownerWatchMessages(bId)).length === 0);
 
   // --- teardown: a watch must not outlive its receiver either ---
   check("delete a watch", (await post(`/api/watches/${wAJ.watch.id}/delete`, {})).ok);

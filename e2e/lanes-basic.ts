@@ -35,76 +35,15 @@ export async function run(lc: LaneCtx): Promise<void> {
   const hwCmd = (await tmuxOut("display-message", "-p", "-t", "s7", "#{pane_start_command}")).out;
   check("a lane spawned with harness=pi actually runs pi, with its session pinned and effort passed",
     /(^|\s|;)pi --session-id [0-9a-f-]{36}\b/.test(hwCmd) && hwCmd.includes("--thinking high"), hwCmd.slice(-160));
-  // ...and it runs it INSIDE a write fence. Two claims, kept apart because they fail apart: that
-  // the line is shaped like a fence, and that the fence the line actually carries FENCES. Only the
-  // second is worth anything, and it is the reason this section runs the profile rather than
-  // reading it — a profile that grants everything would pass any assertion about its text.
-  //
-  // The profile is lifted out of the pane's own command line, not rebuilt here: a copy would be a
-  // second implementation, and the failure mode that matters is precisely a server that stops
-  // emitting the fence. Backslashes stripped for the same reason the container line above strips
-  // them (tmux escapes `"` and `$` for display) — safe because SANDBOX_PATH_RE admits no backslash,
-  // so the profile can never legitimately contain one.
-  // De-escaped ONCE and used for every clause below. Splitting that was this check's own first red:
-  // the profile came out of the stripped copy while the assertion next to it read the RAW one,
-  // where tmux renders the same words as `-p \"\$FLEET_PI_SB\"` — so the check failed while the
-  // four canary checks under it all passed, which is the signature of a broken probe rather than a
-  // broken fence.
+  // ...and it runs it BARE. Full local access is the owner decision of 2026-08-12: the fence that
+  // used to wrap this line (sandbox-exec; ~/.claude, off-lane and lane .git denied) is retired,
+  // so the assertion FLIPS — the spawn line must carry no sandbox machinery at all. There is no
+  // profile left to execute: the agent process runs with the owner's own reach by construction,
+  // which is exactly what the old canaries proved the fence prevented.
   const hwFlat = hwCmd.replaceAll("\\", "");
-  const piSb = /FLEET_PI_SB='([^']*)'/.exec(hwFlat)?.[1] ?? "";
-  check("the pi lane's spawn line carries a sandbox-exec write fence and starts no bare pi",
-    piSb.startsWith("(version 1)") && /if sandbox-exec -p "\$FLEET_PI_SB" \/usr\/bin\/true/.test(hwFlat)
-      && !/(^|\s|;)pi --session-id/.test(hwFlat.slice(0, hwFlat.indexOf("sandbox-exec"))), piSb.slice(0, 120));
-  // The canary, and its first duty is to be able to fail AS ITSELF. Two ways it could silently not
-  // run — no lane on disk, or no profile extracted — and neither may look like a pass: an empty
-  // `-p` argument would make sandbox-exec run the command UNFENCED, i.e. the writes below would all
-  // succeed and read as "the fence is gone" rather than "nothing was measured". So both collapse to
-  // a marker string that no assertion here accepts.
-  //
-  // The lane path is resolved through exists() for the reason stated at the top of this file: a
-  // bare realpathSync on a lane that failed to spawn throws while evaluating a check()'s ARGUMENTS
-  // and takes every later result in the suite with it. One missing lane must cost these four
-  // checks, not the run.
-  const piWtRaw = `${REPO}.worktrees/e2e-lane-pi`;
-  const piWt = exists(piWtRaw) ? realpathSync(piWtRaw) : "";
-  const sb = (sh: string, fenced = true): string => {
-    if (!piWt || (fenced && !piSb)) return "PROBE-DID-NOT-RUN";
-    const r = fenced
-      ? spawnSync("sandbox-exec", ["-p", piSb, "/bin/sh", "-c", sh], { encoding: "utf8" })
-      : spawnSync("/bin/sh", ["-c", sh], { encoding: "utf8" });
-    return `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `spawn:${r.error.message}` : ""}`;
-  };
-  // OUTSIDE must be outside every writable root, which rules out the obvious choices: ROOT and the
-  // lane both sit under $TMPDIR on this machine, and $TMPDIR is granted. /private/var/tmp is not
-  // /tmp and not $TMPDIR, so it is genuinely beyond the fence while still being scratch space.
-  const outside = `/private/var/tmp/fleet-e2e-pi-canary-${process.pid}`;
-  const inside = sb(`echo x > '${piWt}/canary' && echo WROTE`);
-  check("canary: the fenced agent MAY write inside its own lane", inside.includes("WROTE"), inside.trim().slice(0, 160));
-  const denied = sb(`echo x > '${outside}'`);
-  check("canary: a write outside the lane is refused MECHANICALLY, not politely",
-    denied.includes("Operation not permitted"), denied.trim().slice(0, 160) || "(no output — nothing was refused)");
-  // The control, without which the two above measure nothing: the SAME probe at the SAME path has
-  // to succeed unfenced. A probe that could never write there would look identical to a fence.
-  const control = sb(`echo x > '${outside}' && echo WROTE`, false);
-  check("canary control: the identical probe DOES write there without the fence", control.includes("WROTE"), control.trim().slice(0, 160));
-  rmSync(outside, { force: true });
-  // ...and `.git` back off, which is the owner doctrine the fence encodes: the lane produces, the
-  // host commits. Asserted separately from the outside-write because it is a different clause of
-  // the profile and a widening of the writable set would leave the one above green.
-  //
-  // The TARGET is `.git` itself, not a path under it, and that is a measured correction rather than
-  // a style choice: in a linked worktree `.git` is a FILE, so `.git/canary` comes back "Not a
-  // directory" — the probe would fail for a reason that has nothing to do with the fence and read
-  // as a pass for the wrong one. `subpath` covers the path itself, so this clause holds for both
-  // the file and the directory form. Non-destructive when the fence works (measured: the deny
-  // precedes truncation, the file's content is intact afterwards); when it does not, this check is
-  // red and the lane is torn down on the next line anyway.
-  //
-  // Its control is the in-lane write two checks up: writes under this same root DO succeed, so a
-  // refusal at this one path is attributable to the deny clause and to nothing else.
-  const gitDenied = sb(`echo x > '${piWt}/.git'`);
-  check("canary: .git is denied INSIDE the writable root — the lane produces, the host commits",
-    gitDenied.includes("Operation not permitted"), gitDenied.trim().slice(0, 160) || "(no output — nothing was refused)");
+  check("the pi lane's spawn line is bare — no sandbox-exec, no fence variable, full local access",
+    !hwFlat.includes("sandbox-exec") && !hwFlat.includes("FLEET_PI_SB")
+      && /(^|\s|;)pi --session-id/.test(hwFlat), hwFlat.slice(-160));
   await post("/api/slots/7/kill", {});
   spawnSync("git", ["worktree", "remove", "--force", `${REPO}.worktrees/e2e-lane-pi`], { cwd: REPO });
   // ...and the same road for the container harness, which is the one where the lane path MATTERS:
@@ -130,49 +69,48 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("POST /api/lanes accepts a harness and a model for the codex adapter", lnRes.ok && !!lnJson.slot, JSON.stringify(lnJson));
   if (lnJson.slot) {
     const lnCmd = (await tmuxOut("display-message", "-p", "-t", `s${lnJson.slot}`, "#{pane_start_command}")).out;
-    check("a lane spawned with harness=codex runs codex, sandboxed, with --model in the measured form",
-      /(^|\s|;)codex --sandbox workspace-write --ask-for-approval never --model 'gpt-5-codex'/.test(lnCmd), lnCmd.slice(-160));
-    // --- THE ADAPTER PICKS THE WORKING-COPY FORM. This request named NO form, and it must come
-    // back a clone: Codex's `--sandbox workspace-write` fences writes to the workdir, and a linked
-    // worktree keeps its metadata in the PRIMARY repo — so `git commit` there dies on index.lock
-    // and the lane can never land. The assertion is the `.git` ENTRY on disk, not the route's
-    // `form` field: a response that says "clone" over a gitdir-file tree would be the exact lie
-    // this is for. (The form's own boundary properties are proven in e2e/lanes-lifecycle.ts; this
-    // is only about WHO chose it.)
+    const lnFlat = lnCmd.replaceAll("\\", "");
+    check("a lane spawned with harness=codex runs codex full-access, with --model in the measured form",
+      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox --model 'gpt-5-codex'/.test(lnFlat), lnFlat.slice(-160));
+    // the trust prelude rides the same line: without the persisted per-path entry codex blocks on
+    // its own "Do you trust this directory?" prompt (measured 2026-08-12 — the bypass flag does
+    // NOT cover it) and an unattended brief lands in a dead prompt instead of an agent
+    check("the codex spawn line writes the lane's trust entry before starting codex",
+      lnFlat.includes('trust_level = "trusted"') && lnFlat.indexOf("trust_level") < lnFlat.indexOf("codex --dangerously"),
+      lnFlat.slice(0, 200));
+    // --- THE ADAPTER NO LONGER PREFERS A FORM. Clone existed to keep a codex lane's repository
+    // inside a write sandbox; the 2026-08-12 full-access spawn erects none, so a request that
+    // names no form falls through to the default worktree — same shape as every other lane, and
+    // its slot record carries no form key (the non-regression row below pins that shape for the
+    // default adapter; this asserts codex now shares it). The `.git` ENTRY on disk is the
+    // assertion, not the route's `form` field.
     const lnCwd = lnJson.cwd ?? "";
-    check("a codex lane that names no form comes back a CLONE — the adapter's preference, not the caller's",
-      lnJson.form === "clone" && exists(`${lnCwd}/.git`) && lstatSync(`${lnCwd}/.git`).isDirectory(),
+    check("a codex lane that names no form is a WORKTREE again — no adapter clone preference is left",
+      lnJson.form === "worktree" && exists(`${lnCwd}/.git`) && lstatSync(`${lnCwd}/.git`).isFile(),
       `${lnJson.form} @ ${lnCwd}`);
-    // ...and it is PERSISTED, because the form outlives the request: removeWorktreeSafe, the land
-    // path and every restart read it off the slot record, and a lane whose form is forgotten at
-    // the first save is a lane that gets torn down as the wrong thing.
     const lnState = ((await Bun.file(`${ROOT}/fleet.json`).json()) as
       { slots: Record<string, { worktree?: { form?: string } } | undefined> }).slots[String(lnJson.slot)];
-    check("the clone form is persisted on the slot record (it outlives the request that chose it)",
-      lnState?.worktree?.form === "clone", JSON.stringify(lnState?.worktree));
+    check("the default worktree form stores NO form key on the slot record (byte-identical shape)",
+      !!lnState?.worktree && !("form" in lnState.worktree), JSON.stringify(lnState?.worktree));
     const lnSess = (await (await get("/api/sessions")).json()) as { slots: { id: number; worktree: { branch: string } | null }[] };
     const lnBranch = lnSess.slots.find((x) => x.id === lnJson.slot)?.worktree?.branch ?? "";
     await post(`/api/slots/${lnJson.slot}/kill`, {});
-    // a clone is an ordinary directory, NOT a worktree of REPO — `git worktree remove` has nothing
-    // to remove, and the branch it mirrored back into REPO at spawn has to go with it. The path is
-    // the route's own `cwd`, never a rebuilt `${REPO}.worktrees/${branch}`: worktreePathFor SLUGS
-    // the branch (`fleet/ab12` → `fleet-ab12`), so a rebuilt path for an auto-named lane points at
-    // nothing and the teardown quietly does not happen.
-    if (lnCwd) rmSync(lnCwd, { recursive: true, force: true });
+    if (lnCwd) spawnSync("git", ["worktree", "remove", "--force", lnCwd], { cwd: REPO });
     if (lnBranch) spawnSync("git", ["branch", "-qD", lnBranch], { cwd: REPO });
   }
-  // ...and the preference is a PREFERENCE: an explicit form wins over it. A Codex lane in worktree
-  // form is legal — the owner may knowingly want one, it simply cannot commit itself — which is why
-  // this is not modelled like the container fields, where a harness that cannot serve them answers
-  // 400. If this ever flips to "the adapter overrules the caller", the field has quietly become a
-  // capability and the 400 is the honest shape instead.
-  const lnW = (await (await post("/api/lanes", { repo: REPO, harness: "codex", form: "worktree" })).json()) as
+  // ...and the form stays a CALLER OPTION: an explicit `form: "clone"` must still produce a clone
+  // even though no adapter prefers one anymore. If this ever flips to "the adapter overrules the
+  // caller", the field has quietly become a capability and the 400 is the honest shape instead.
+  const lnW = (await (await post("/api/lanes", { repo: REPO, harness: "codex", form: "clone" })).json()) as
     { slot?: number; cwd?: string; branch?: string; form?: string };
-  check("an explicit form:worktree still wins over the adapter's preference (a preference, not a capability)",
-    lnW.form === "worktree" && exists(`${lnW.cwd ?? ""}/.git`) && lstatSync(`${lnW.cwd}/.git`).isFile(),
+  check("an explicit form:clone still wins over the default (a preference, not a capability)",
+    lnW.form === "clone" && exists(`${lnW.cwd ?? ""}/.git`) && lstatSync(`${lnW.cwd}/.git`).isDirectory(),
     `${lnW.form} @ ${lnW.cwd}`);
   if (lnW.slot) await post(`/api/slots/${lnW.slot}/kill`, {});
-  if (lnW.cwd) spawnSync("git", ["worktree", "remove", "--force", lnW.cwd], { cwd: REPO });
+  // a clone is an ordinary directory, NOT a worktree of REPO — remove it directly and delete the
+  // branch it mirrored back into REPO at spawn
+  if (lnW.cwd) rmSync(lnW.cwd, { recursive: true, force: true });
+  if (lnW.branch) spawnSync("git", ["branch", "-qD", lnW.branch], { cwd: REPO });
   // THE NON-REGRESSION ROW, and the most important one here: a lane with no harness is still a
   // worktree AND its persisted record carries no `form` key at all. The absence is the assertion —
   // every lane that predates this field must serialize byte-identically, or a state file written by

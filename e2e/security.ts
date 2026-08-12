@@ -482,59 +482,19 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6 the pi spawn line carries the effort level as --thinking", gcmd.includes("--thinking low"), gcmd.slice(-160));
   check("§6 ...and it spawns pi, not the fleet's FLEET_CMD", /(^|\s|;)pi --session-id/.test(gcmd), gcmd.slice(-160));
 
-  // Execute the profile rather than trusting its text. This root is what makes `bunx tsc` usable
-  // in a Pi lane: Bun writes packages under ~/.bun/install/cache even though its denial says
-  // "tempdir". The extraction is its OWN fixture check so a missing profile cannot make all three
-  // filesystem rows read like fence failures. The lane write is the positive control for the
-  // outside-home denial; a profile that simply allowed every write would fail that denial row.
-  // De-escaped FIRST, for the reason e2e/lanes-basic.ts already carries in full: tmux renders `"`
-  // and `$` escaped in pane_start_command, so the raw string yields `(subpath \"/path\")` and SBPL
-  // reads the backslash-quote as an unbound variable. Stripping backslashes is safe here because
-  // SANDBOX_PATH_RE admits none, so a legitimate profile can never contain one. This exact trap was
-  // that check's first red and then this one's — hence the executable fixture below rather than a
-  // second textual assertion.
+  // The fence this section used to EXECUTE here (extract the SBPL profile off the spawn line, run
+  // it over /usr/bin/true, prove the three write rows) is retired by the 2026-08-12 owner
+  // decision: full local access is the normal operating mode, so the security property FLIPS from
+  // "the profile fences" to "no fence machinery reappears on the spawn line". A re-grown fence
+  // would silently re-route lane commits through host rescue — that is the regression this now
+  // guards against.
   const gcmdFlat = gcmd.replaceAll("\\", "");
-  const fenceMatch = gcmdFlat.match(/FLEET_PI_SB='([^']+)'/);
-  const fenceProfile = fenceMatch?.[1] ?? "";
-  // The fixture's whole job is to fail AS ITSELF, and text cannot do that: `(version 1)` and
-  // `(deny file-write*)` contain no quote, so both survive the mangling above and three fence
-  // claims fail instead of the one probe that broke. So the fixture EXECUTES the profile on
-  // /usr/bin/true — the same self-test the server runs before it starts pi at all (server.ts, the
-  // `sandbox-exec -p "$FLEET_PI_SB" /usr/bin/true` clause). A profile SBPL will not accept fails
-  // here, once, by name.
-  const fenceUsable = fenceProfile
-    ? spawnSync("sandbox-exec", ["-p", fenceProfile, "/usr/bin/true"], { encoding: "utf8" })
-    : null;
-  check("§6 fence fixture: the Pi spawn line exposes one SBPL profile that sandbox-exec accepts",
-    fenceProfile.startsWith("(version 1)") && fenceProfile.includes("(deny file-write*)")
-    && fenceUsable?.status === 0, `${fenceProfile.slice(0, 90)} | ${String(fenceUsable?.status)} ${fenceUsable?.stderr.trim() ?? ""}`);
-  // gated on USABLE, not merely present: a profile sandbox-exec rejects makes every probe below
-  // exit non-zero, which reads as "the fence denies everything" when nothing was measured at all.
-  if (fenceUsable?.status === 0) {
-    const nonce = `${process.pid}-${Date.now()}`;
-    const cacheProbe = `${process.env.HOME ?? ""}/.bun/install/cache/fleet-e2e-pi-${nonce}`;
-    const laneProbe = `${REPO}/fleet-e2e-pi-${nonce}`;
-    const deniedProbe = `${process.env.HOME ?? ""}/fleet-e2e-pi-${nonce}`;
-    const touch = (path: string) => spawnSync("sandbox-exec", ["-p", fenceProfile, "/usr/bin/touch", path], { encoding: "utf8" });
-    const cacheWrite = touch(cacheProbe);
-    check("§6 the Pi fence actually permits a Bun-cache write needed by bunx tsc",
-      cacheWrite.status === 0 && existsSync(cacheProbe), `${String(cacheWrite.status)} ${cacheWrite.stderr.trim()}`);
-    const laneWrite = touch(laneProbe);
-    check("§6 fence control: the same write probe succeeds inside its lane",
-      laneWrite.status === 0 && existsSync(laneProbe), `${String(laneWrite.status)} ${laneWrite.stderr.trim()}`);
-    const deniedWrite = touch(deniedProbe);
-    check("§6 the Pi fence still denies a write elsewhere in HOME (the new root is narrow, not allow-all)",
-      deniedWrite.status !== 0 && /Operation not permitted/.test(deniedWrite.stderr),
-      `${String(deniedWrite.status)} ${deniedWrite.stderr.trim()}`);
-    rmSync(cacheProbe, { force: true });
-    rmSync(laneProbe, { force: true });
-    rmSync(deniedProbe, { force: true });
-  }
+  check("§6 the pi spawn line carries no sandbox machinery — full access is the deliberate contract",
+    !gcmdFlat.includes("sandbox-exec") && !gcmdFlat.includes("FLEET_PI_SB"), gcmdFlat.slice(-200));
 
-  // The exceptional mode is deliberately NOT a second subtly different sandbox profile. It runs
-  // Pi bare, and the policy around that sharp capability is what limits it: main-only, singleton,
-  // attended. Assert both halves — the command has the intended power, and the server refuses the
-  // two ways it could silently become broader.
+  // pi-unfenced now shares normal pi's access; what it still pins is POLICY: main-only,
+  // singleton, attended. Assert both halves — the command runs bare, and the server refuses the
+  // two ways the stricter shape could silently become broader.
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
   const uf = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi-unfenced", effort: "low" });
   check("§6 pi-unfenced opens as an attended main session", uf.ok, String(uf.status));
@@ -957,16 +917,17 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const ox = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "codex", effort: "ultra" });
   check("§6e a slot opens on the codex harness with a declared effort (200)", ox.ok, String(ox.status));
   const xcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
-  // THE ROW THAT MATTERS MOST HERE. codex's own --help calls
-  // --dangerously-bypass-approvals-and-sandbox "EXTREMELY DANGEROUS" and scopes it to externally
-  // sandboxed environments; a lane worktree on the owner's dev box is not one. The conservative
-  // pair keeps the sandbox ON while never stopping to ask, and widening it is an OWNER decision —
-  // so the bypass flag must not be reachable from this line by any edit that still passes.
-  check("§6e the codex spawn line keeps the sandbox and never asks — and never carries the bypass flag",
-    xcmd.includes("codex --sandbox workspace-write --ask-for-approval never")
-    && !xcmd.includes("dangerously-bypass"), xcmd.slice(-160));
+  // THE ROW THAT MATTERS MOST HERE flipped on 2026-08-12: full local access is the owner's
+  // decision for normal harnesses, so the spawn line must carry the bypass flag AND the persisted
+  // trust entry — without the latter, codex blocks on its own per-path trust prompt (measured:
+  // the flag does not cover it) and an unattended brief lands in a dead prompt.
+  const xcmdFlat = xcmd.replaceAll("\\", "");
+  check("§6e the codex spawn line runs full access and writes the slot's trust entry first",
+    xcmdFlat.includes("codex --dangerously-bypass-approvals-and-sandbox")
+    && !xcmdFlat.includes("--sandbox workspace-write")
+    && xcmdFlat.includes('trust_level = "trusted"'), xcmdFlat.slice(-200));
   // ...and it spawns codex, not the fleet's FLEET_CMD (`true` in this suite)
-  check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --sandbox/.test(xcmd), xcmd.slice(-160));
+  check("§6e ...and it spawns codex, not the fleet's FLEET_CMD", /(^|\s|;)codex --dangerously/.test(xcmdFlat), xcmdFlat.slice(-160));
   check("§6e the codex spawn line passes only the fixed effort key, with its value single-quoted",
     xcmd.includes(" -c model_reasoning_effort='ultra'")
     && (xcmd.match(/(?:^|\s)-c(?:\s|$)/g) ?? []).length === 1, xcmd.slice(-180));

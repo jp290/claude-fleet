@@ -213,11 +213,12 @@ interface Harness {
   // disagree about which box and which daemon this session is in. Adapters with no container
   // concept ignore both, the same way every adapter but Pi ignores `effort`.
   //
-  // `cwd` is the slot's OWN working directory, and it is here for one adapter only: a write fence
-  // is anchored at a path, so a harness that carries one cannot be built from fleet-wide constants
-  // (PI_HARNESS.spawnCmd). It is the pane's real cwd — tmux is given the same value with `-c`, so
-  // the fence and the shell can never disagree about which directory this is. Adapters without a
-  // fence ignore it, the same way every adapter but the container one ignores `container`.
+  // `cwd` is the slot's OWN working directory, and it is here for one adapter only: codex
+  // persists per-path TRUST, so its spawn line writes the trust entry for exactly this path
+  // (CODEX_HARNESS.spawnCmd). It is the pane's real cwd — tmux is given the same value with `-c`,
+  // so the trust entry and the shell can never disagree about which directory this is. Adapters
+  // without that need ignore it, the same way every adapter but the container one ignores
+  // `container`.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
@@ -281,20 +282,19 @@ interface Harness {
   // null = no opinion, which is every adapter whose agent runs on the host with the owner's own
   // reach — the lane stays a worktree and the persisted slot record stays byte-identical.
   // "clone" is the answer for a harness whose agent runs behind a WRITE FENCE that ends at the
-  // working directory. MEASURED, on the first real Codex lane (2026-08-08, slot 9): a linked
-  // worktree keeps its metadata in the PRIMARY repo (<main>/.git/worktrees/<lane>/), i.e. outside
-  // `--sandbox workspace-write`'s roots. The current permission profile additionally demotes
-  // `<workdir>/.git` itself, so clone form does NOT transfer commit ownership back to Codex; the
-  // host records either form. Clone remains a working-copy preference, not an ownership signal.
+  // working directory (a linked worktree keeps its metadata in the PRIMARY repo, outside such a
+  // fence — measured on the first real Codex lane, 2026-08-08, slot 9). Since the 2026-08-12
+  // full-access decision no shipped adapter erects such a fence, so no adapter prefers clone —
+  // but the form stays requestable, and clone remains a working-copy preference, never an
+  // ownership signal.
   //
   // WHY THE ADAPTER AND NOT THE CALLER, which is the same argument `comms` and `modelRe` make: a
   // property every sender must remember to attach is a property that gets forgotten, and the first
   // forgetting produces exactly that mute un-committable lane. An adapter states it once.
   //
-  // It is a PREFERENCE, not a capability: an explicit `form` in the request WINS (laneFormOf). A
-  // Codex lane in worktree form is legal — the owner may want one knowingly, it just cannot commit
-  // itself — which is why this is not modelled like the container fields, where a harness that
-  // cannot enter a box rejects the request with 400 rather than carrying an option it will drop.
+  // It is a PREFERENCE, not a capability: an explicit `form` in the request WINS (laneFormOf) —
+  // which is why this is not modelled like the container fields, where a harness that cannot
+  // enter a box rejects the request with 400 rather than carrying an option it will drop.
   laneForm: LaneForm | null;
   // The charset THIS harness's model names are judged by. null = "whatever the env rule says"
   // (SLOT_MODEL_RE), which is how the default adapter keeps MODEL_RE for an undeclared FLEET_CMD
@@ -386,93 +386,19 @@ const CLAUDE_HARNESS: Harness = {
   role: "agent",
 };
 
-// --- Pi's write fence. `/usr/bin/sandbox-exec` is macOS's seatbelt front end, and it is what Codex
-// uses for its own `--sandbox workspace-write` (its binary carries `sandbox-exec`, `seatbelt`,
-// `(version 1)`, `deny default`). Apple marks the tool DEPRECATED in its own man page; that is a
-// fact to know, not a reason to skip it — there is no supported replacement for fencing a
-// third-party CLI you did not write, and the vendor of the other agent on this machine made the
-// same call.
+// --- The write fence that used to live here (sandbox-exec around pi; ~/.claude, off-worktree and
+// lane .git denied) is RETIRED by owner decision 2026-08-12: normal local agent harnesses run with
+// the owner's full local access — they edit, use git and commit, reach Fleet/tmux and the network
+// themselves. The host-commit route (POST /api/slots/:id/commit) stays as a recovery path, not as
+// the normal lifecycle; the explicitly isolated place is `container`, never a default. What the
+// fence granted and why is preserved in this file's 2026-08-08..11 revisions, not re-argued here.
 //
-// WHY PI AND NOT THE HARNESS'S OWN FLAG: it has none. `pi --help` on the real installation knows
-// neither sandbox nor approval nor permission nor restrict (measured 2026-08-08, grep empty), and
-// its own docs/security.md says the built-in tools read, write and run shell with the permissions
-// of the pi process. So the fence cannot be a flag Fleet passes — it has to WRAP the spawn line.
-//
-// AND THAT WRAPPING IS THE WHOLE DIFFICULTY, because it makes this profile a different shape from
-// the one Codex's rollouts show (`turn_context.permission_profile`: root=read, workdir=write,
-// /tmp + $TMPDIR=write, workdir/.git + .agents + .codex back to read). That profile fences the
-// commands Codex RUNS; Codex itself is outside it, which is how it keeps writing ~/.codex. Here the
-// fence is around the AGENT, so the agent's own state directory has to be inside it. Measured, not
-// reasoned: with ~/.pi denied, pi does not degrade, it dies at startup —
-// `Error: EPERM ... mkdir '~/.pi/agent/sessions/<cwd-slug>'`, an uncaught throw out
-// of getDefaultSessionDir, before any prompt. It is on the startup path precisely because this
-// adapter pins `--session-id`.
-//
-// THE NETWORK IS DELIBERATELY OPEN — no `(deny network*)`, and Codex's `network:restricted` is NOT
-// copied. Owner decision 2026-08-08 ("netz anbindung waere schon sehr gut, auch fuer research"),
-// and it is a real difference rather than an oversight: Codex's restriction is its own default,
-// while a Pi slot reaches its provider natively, so a network fence there would not be strict, it
-// would be broken. What it costs is named rather than hidden: with reads open (there is no read
-// fence) and the network open, read reach is exfiltration reach. That is the same trust question
-// CLAUDE.md already puts to Codex's read reach — and it is not a regression, because a claude lane
-// today has full reads, full network AND no write fence at all.
-const SANDBOX_PATH_RE = /^\/[A-Za-z0-9_.@+\-/ ]*$/;
-// The temp roots, resolved ONCE and through realpath because SBPL compares against the path the
-// kernel resolved: on macOS `/tmp` is a symlink to `/private/tmp` and $TMPDIR lives under
-// `/private/var/folders/...`, so the literal strings are not what a subpath rule would match.
-const SANDBOX_TMP_ROOTS: readonly string[] = (() => {
-  const out = new Set<string>();
-  for (const p of ["/tmp", tmpdir()]) {
-    // an absent temp root is simply not granted — there is nothing to allow and nothing to report
-    try { out.add(realpathSync(p)); } catch { continue; }
-  }
-  return [...out];
-})();
-// null = NO FENCE COULD BE BUILT, and the caller must then refuse to start pi rather than start it
-// bare. Two ways to get there, both about the same hazard: the path could not be resolved, or it
-// carries a character outside the charset. That charset is not defensive decoration — this string
-// is interpolated into a single-quoted shell word inside a tmux command string AND into SBPL's own
-// double-quoted strings, so `'`, `"` and `\` are each an escape out of one of the two. Nothing here
-// is operator-supplied (it is a realpath of the slot's cwd), which is exactly why a violation means
-// something is wrong rather than something needs escaping.
-function piSandboxProfile(cwd: string): string | null {
-  let root: string;
-  try { root = realpathSync(cwd); } catch { return null; }
-  // `/dev` is in the writable set because it is MEASURED to be required, not on principle: an
-  // INHERITED fd survives the fence (a pane's stdout still paints — verified in a scratch tmux),
-  // but an explicit open does not, and `echo x > /dev/null` and `> /dev/tty` both come back
-  // `Operation not permitted` without it. A TUI that puts the terminal in raw mode opens /dev/tty,
-  // and node's own plumbing writes /dev/null. Granting the whole tree rather than a literal list is
-  // the honest trade: the raw block devices it nominally adds need root, and the fence's subject is
-  // the owner's files.
-  // Bun's package cache is the one extra verify root: in a fenced Pi pane, `bunx tsc`
-  // failed with `bun is unable to write files to tempdir: PermissionDenied`, a direct write to
-  // ~/.bun/install/cache failed with `Operation not permitted`, and redirecting that exact cache
-  // to an already-granted temp root made bunx run. Do not widen this to all of ~/.bun.
-  const write = [root, ...SANDBOX_TMP_ROOTS, `${HOME}/.pi`, `${HOME}/.bun/install/cache`];
-  if (!write.every((p) => SANDBOX_PATH_RE.test(p))) return null;
-  const sub = (p: string) => `(subpath "${p}")`;
-  // allow-default + a single deny of file-write*, re-granted narrowly. NOT Codex's `deny default`:
-  // that shape has to re-allow process-exec, sysctls and mach lookups by hand, and every one it
-  // misses is a crash rather than a denied write. This fence claims to be one thing only — a write
-  // fence — and a profile that claims exactly what it does is one that can be read.
-  return `(version 1)(allow default)(deny file-write*)`
-    + `(allow file-write* ${write.map(sub).join(" ")} (subpath "/dev"))`
-    // ...and `.git` back OFF, which is the OWNER DOCTRINE of 2026-08-08 in one line: "comitten
-    // sollte einfach wieder die main session selbst". A foreign agent never needs write on the
-    // repository metadata, because the HOST commits for it (POST /api/slots/:id/commit). Codex's
-    // profile demotes the same three paths, and this is where it stops looking like a defect to
-    // route around and starts being the intended default: the lane produces, the host records.
-    + `(deny file-write* ${sub(`${root}/.git`)})`;
-}
-// The one thing that must NEVER be quiet. If the fence cannot be established, pi is not started at
-// all — a pane that fell through to `exec $SHELL` with pi running unfenced would be the exact
-// failure this whole adapter exists to prevent. The pane survives and says why (a dead pane hides
-// the reason), and it is mechanically detectable rather than only readable: no `pi` process means
-// `comms: ["pi"]` finds nothing and the fact layer reports `no-agent` on the owner's poll. Contains
-// no apostrophe by construction — it lives inside the same single-quoted shell word.
-const PI_FENCE_FAILED = "fleet: pi was NOT started — its write fence (sandbox-exec) could not be established. "
-  + "This pane is a plain shell, not an agent.";
+// One charset survives the fence, because the hazard it guarded is spawn-time interpolation, not
+// sandboxing: a path that lands inside a single-quoted shell word AND (for codex) inside a TOML
+// double-quoted key must carry neither quote nor backslash. Nothing here is operator-supplied (it
+// is the slot's resolved cwd), which is exactly why a violation means something is wrong rather
+// than something needs escaping.
+const SPAWN_PATH_RE = /^\/[A-Za-z0-9_.@+\-/ ]*$/;
 
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
@@ -491,31 +417,13 @@ const PI_HARNESS: Harness = {
     // aborts the whole line on when it matches nothing, killing the pane at spawn.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
-    // ...and the whole of it goes INSIDE the fence (piSandboxProfile above for what it grants and
-    // why each grant is there).
-    const profile = piSandboxProfile(o.cwd);
-    if (!profile) return `${PATH_EXPORT}echo '${PI_FENCE_FAILED}' >&2; exec ${SHELL}`;
-    // The profile is bound to a shell VARIABLE and expanded twice rather than pasted twice. Not
-    // brevity: `"$FLEET_PI_SB"` is a variable expansion, so its content is never re-parsed as
-    // shell, which is what makes the SBPL double-quotes and parentheses inert on the second use.
-    // The assignment itself is the single-quoted word the charset above guards.
-    //
-    // The `if` is a SELF-TEST, and it exists because of how this fails otherwise. A missing
-    // sandbox-exec or an invalid profile makes the line die and the pane fall through to
-    // `exec $SHELL` — a shell that takes keystrokes and looks like an agent. Running the fence over
-    // `/usr/bin/true` first separates "the fence is broken" (sandbox-exec absent → not found;
-    // bad profile → exit 65, measured) from "pi exited", which an exit code alone cannot do. So the
-    // probe fails AS ITSELF, and pi is never started outside its fence.
-    //
-    // The trailing `exec ${SHELL}` stays OUTSIDE the fence, and that is deliberate rather than an
-    // omission: the fence's subject is the AGENT, and whoever reaches that shell is the owner at
-    // their own pane. What must not happen is an UNATTENDED path typing into it once pi has exited
-    // — and that is already shut by the same mechanism the failure branch relies on rather than by
-    // a second fence: with no pi process, `comms: ["pi"]` finds nothing, so the slot reads
-    // `no-agent` and canDeliver's alive gate refuses autos, dispatch and steward sends.
-    return `${PATH_EXPORT}FLEET_PI_SB='${profile}'; `
-      + `if sandbox-exec -p "$FLEET_PI_SB" /usr/bin/true 2>/dev/null; then sandbox-exec -p "$FLEET_PI_SB" ${cmd}; `
-      + `else echo '${PI_FENCE_FAILED}' >&2; fi; exec ${SHELL}`;
+    // Bare, by owner decision 2026-08-12: full local access is the normal operating mode, so pi
+    // runs with the owner's own reach — edits, git, Fleet/tmux and network. The trailing
+    // `exec ${SHELL}` hands a dead agent's pane back to the owner; what must not happen is an
+    // UNATTENDED path typing into that shell, and that is shut by the alive gate rather than a
+    // fence: with no pi process, `comms: ["pi"]` finds nothing, the slot reads `no-agent`, and
+    // canDeliver refuses autos, dispatch and steward sends.
+    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   // NULL — Pi cannot host a worker session, and for the same measured reason `supports.transcript`
   // is false: it keeps no ~/.claude/projects/<slug>/<uuid>.jsonl, and that file IS the worker's
@@ -534,30 +442,18 @@ const PI_HARNESS: Harness = {
   // here for exactly that reason: it is absent between requests, and a comm that comes and goes
   // would make the answer flicker.
   comms: ["pi"],
-  // piSandboxProfile denies this lane's .git explicitly: the lane produces, the host records.
-  hostCommits: true,
-  // TRUE by owner decision (2026-08-07). The caveat that used to ride here — "what the flag admits
-  // is unattended prompting of a SANDBOX-LESS agent" — is retired by the fence above, and the
-  // decision it qualified only gets stronger: what an unattended path now prompts is an agent that
-  // cannot write outside its own working copy. What it does NOT admit, and this is why the decision
-  // was answerable before the fence existed at all: no tick can land. The
-  // ONE mergeJob call site is a route (server.ts, grep `mergeJob(`), so the reachable set is
-  // scheduled autos, dispatch, steward sends, done-looking → /api/self/watch and auto-③ — every one
-  // of them a PROMPT into a pane, none of them a write to main.
+  // FALSE since 2026-08-12: an unfenced pi owns its own `.git` and records its own work. The
+  // /commit route stays available as a recovery act, not as this adapter's lifecycle.
+  hostCommits: false,
+  // TRUE by owner decision (2026-08-07, reaffirmed 2026-08-12 for the full-access mode). What it
+  // does NOT admit: no tick can land. The ONE mergeJob call site is a route (server.ts, grep
+  // `mergeJob(`), so the reachable set is scheduled autos, dispatch, steward sends, done-looking →
+  // /api/self/watch and auto-③ — every one of them a PROMPT into a pane, none a write to main.
   automatable: true,
   allowsLanes: true,
   singleton: false,
-  // STILL null, and the fence above is exactly the reason a reader will expect "clone" here — so
-  // the reason it stays is worth stating rather than leaving as an oversight. A fenced Pi lane
-  // cannot commit: `.git` is denied on purpose (piSandboxProfile's last clause). But the clone form
-  // does not fix that, MEASURED on a Codex clone lane 2026-08-08 — `git commit` died on the lane's
-  // OWN path (`<lane>/.git/index.lock: Operation not permitted`), because Codex's permission
-  // profile demotes `<workdir>/.git` by NAME, independent of the working copy's form. Here the deny
-  // is ours and equally form-independent, so a clone would buy nothing and would still change what
-  // every existing Pi lane, script and suite produces.
-  //
-  // The answer is the owner doctrine of 2026-08-08 instead: the HOST commits
-  // (POST /api/slots/:id/commit). A Pi lane produces and is landable; it simply does not record.
+  // null = linked worktree, same as the default adapter: an unfenced pi owns the worktree metadata
+  // in the primary repo exactly like claude does, so there is nothing a clone would buy.
   laneForm: null,
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
@@ -587,27 +483,19 @@ const PI_HARNESS: Harness = {
     selfSchedule: false,
     container: false,
   },
-  // Pi still ships no permission layer of its own — its docs/security.md: built-in tools read,
-  // write and run shell commands with the permissions of the pi process, and there is no
-  // `--dangerously-skip-permissions` because there is nothing to skip. What changed is that Fleet
-  // now supplies one from outside (piSandboxProfile), so the old "no sandbox" would be false.
-  //
-  // The note states the two halves that are STILL open, because those are what an owner must know
-  // at the moment of picking: the fence stops writes, not reads, and the network is deliberately
-  // open — so what this agent can read, it can send. `git` is named separately because it is the
-  // one consequence an owner would otherwise discover at the end of a lane instead of the start.
-  note: "write fence: worktree plus shared temp, ~/.pi, Bun cache and /dev; lane .git closed (host commits); reads and network stay open",
+  // Pi ships no permission layer of its own (its docs/security.md: built-in tools read, write and
+  // run shell with the permissions of the pi process), and since 2026-08-12 Fleet deliberately
+  // adds none: full local access is the normal operating mode. The note says so at pick time.
+  note: "full local access: edits, git/commit, Fleet, tmux and network run with the owner's own reach (owner decision 2026-08-12)",
   role: "agent",
 };
 
-// Adapter #3 — one deliberately exceptional Pi on the host. This is NOT the default Pi with a
-// weakened profile: it is a separately named, owner-attended capability whose warning is visible
-// before spawn. Pi has no permission layer of its own, so this line grants the process the owner's
-// full filesystem and network reach. The blast radius is bounded in the policy fields beside it:
-// no lanes, no unattended WORK prompts, and at most one active slot. The one notification-shaped
-// exception is an explicitly subscribed Watch: fixed server prose about another lane's completion
-// facts, never caller-chosen work. Its purpose is a MAIN session that must operate git itself while
-// the narrower host-commit surface is still incomplete.
+// Adapter #3 — the formerly exceptional unfenced Pi. Since the 2026-08-12 full-access decision its
+// ACCESS is identical to normal `pi`; what the separate id still pins down is POLICY, not power:
+// MAIN-only (no lanes), no unattended work prompts, at most one active slot. The one
+// notification-shaped exception is an explicitly subscribed Watch: fixed server prose about
+// another lane's completion facts, never caller-chosen work. Kept as its own id so saved slots
+// keep resolving and the stricter policy shape stays choosable.
 const PI_UNFENCED_HARNESS: Harness = {
   ...PI_HARNESS,
   id: "pi-unfenced",
@@ -809,30 +697,40 @@ const CODEX_HARNESS: Harness = {
   // No subcommand: `codex` alone is the interactive TUI, which is the form a slot wants
   // (`codex exec` is the headless one and is NOT what a pane should run).
   //
-  // The approval/sandbox pair is the CONSERVATIVE equivalent of this fleet's own
-  // `--dangerously-skip-permissions`, and deliberately not the matching one: Codex ships
-  // `--dangerously-bypass-approvals-and-sandbox`, whose own help calls it EXTREMELY DANGEROUS and
-  // scopes it to externally-sandboxed environments — a lane worktree on the owner's dev box is not
-  // that. `--sandbox workspace-write --ask-for-approval never` keeps the agent unattended-usable
-  // (it never stops to ask, so a pane cannot silently wedge on a prompt) while leaving the sandbox
-  // ON. Widening that to the bypass flag is an owner question, and it belongs in a report rather
-  // than in this literal. Both values are from `codex --help`'s own possible-value lists, and both
-  // are fixed literals — nothing operator-supplied reaches this line except the model.
+  // `--dangerously-bypass-approvals-and-sandbox` is the owner decision of 2026-08-12 made literal:
+  // full local access is the normal operating mode for local agent harnesses, the same reach this
+  // fleet's own `--dangerously-skip-permissions` grants claude. Its help-text warning is answered
+  // by POLICY next to it, not by a sandbox: what an unattended path may do to this pane is still
+  // gated by `automatable` below and canDeliver's alive gate.
+  //
+  // The grep/printf prelude is the TRUST handshake, and it exists because the flag does NOT cover
+  // it (measured 2026-08-12): codex persists per-path trust in ~/.codex/config.toml, its TUI
+  // blocks on "Do you trust the contents of this directory?" for any cwd not listed there, and
+  // neither the bypass flag nor a `-c projects...` override suppresses that prompt — only the
+  // persisted entry does. The prelude appends exactly the entry codex itself writes when the owner
+  // answers yes, idempotently (`grep -qxF` guards the respawn), and only for a cwd that passes
+  // SPAWN_PATH_RE — the path lands inside a single-quoted shell word and a TOML double-quoted key,
+  // and the charset admits neither quote nor backslash. A cwd that fails the charset gets no
+  // prelude and codex asks its own question in the pane: attended fallback, never a mangled
+  // config line.
   spawnCmd: (o) => {
-    let cmd = "codex --sandbox workspace-write --ask-for-approval never";
+    let cmd = "codex --dangerously-bypass-approvals-and-sandbox";
     // single-quoted under the same rule as slotCmd and PI_HARNESS: HARNESS_MODEL_RE admits `*` and
     // the `[1m]` suffix, and tmux's default-shell here is zsh, which ABORTS the whole line on an
     // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
     // that constant is a claude model id and Codex has never heard of it.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` -c model_reasoning_effort='${o.effort}'`;
-    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+    const trust = SPAWN_PATH_RE.test(o.cwd)
+      ? `grep -qxF '[projects."${o.cwd}"]' "$HOME/.codex/config.toml" 2>/dev/null || printf '\n[projects."%s"]\ntrust_level = "trusted"\n' '${o.cwd}' >> "$HOME/.codex/config.toml"; `
+      : "";
+    return `${PATH_EXPORT}${trust}${cmd}; exec ${SHELL}`;
   },
   // NULL, and here it is over-determined — worth stating in full, because a reader who fixes only
   // the first reason would still have nothing. (1) `pinsSession: false`: Codex has no --session-id
   // flag at all, so there is no id to name a transcript by, and the worker path finds its answer by
   // that id. (2) It writes no ~/.claude transcript in the shape projDir()/viewEntry parse. (3) Its
-  // sandbox is a WRITE fence with no ToolProfile equivalent — `--tools ""` has no counterpart.
+  // permission surface has no ToolProfile equivalent — `--tools ""` has no counterpart.
   worker: () => null,
   context: null, // Codex is deliberately left for its rollout-format integration, not guessed here
   // Codex has no spawn-time `--session-id`. MEASURED: `codex resume --last <prompt>` bypasses the
@@ -865,9 +763,9 @@ const CODEX_HARNESS: Harness = {
   // binary is the supported entry point; going around it to make a probe prettier is the wrong
   // trade.
   comms: ["codex", "node"],
-  // Codex's workspace-write profile demotes <workdir>/.git; by owner doctrine the host records the
-  // files even when the adapter prefers clone form. Form is not ownership and must not be guessed.
-  hostCommits: true,
+  // FALSE since 2026-08-12: the bypass profile leaves `.git` writable, so a codex lane records its
+  // own work. The /commit route stays available as a recovery act, not as this adapter's lifecycle.
+  hostCommits: false,
   // FALSE, and unlike the container adapter's this is not merely "the owner has not decided yet" —
   // there is a measured reason to keep it shut. `codex login status` on this machine says
   // "Not logged in", and an unauthenticated Codex pane sits on its sign-in screen with the node
@@ -880,14 +778,10 @@ const CODEX_HARNESS: Harness = {
   automatable: false,
   allowsLanes: true,
   singleton: false,
-  // "clone", and it is the one field here that changes what a lane IS rather than how it is
-  // described. A linked worktree's metadata lives in the primary repo, outside Codex's writable
-  // roots; clone form keeps Fleet's lane repository and mirror self-contained. It does NOT make
-  // Codex the committer: the current permission profile demotes `<workdir>/.git` by name too, so
-  // `hostCommits:true` remains true for both forms and POST /api/slots/:id/commit is the recording
-  // path. See the field's own comment for why the preference sits here and not on the caller — and
-  // note that it stays a preference: `form: "worktree"` in the request still wins.
-  laneForm: "clone",
+  // null = linked worktree, the default form again since 2026-08-12: clone existed to keep the
+  // lane's repository inside a write sandbox that the bypass profile no longer erects. An explicit
+  // `form: "clone"` in a request still wins — the form stays a preference, not a capability.
+  laneForm: null,
   // the foreign charset, for the same reason Pi takes it: Codex model names carry `:` (the local
   // provider tags under `--oss`, e.g. an ollama `qwen2.5-coder:7b`) and `/` (provider-qualified
   // ids), neither of which MODEL_RE admits. It is a strict SUPERSET of MODEL_RE, so nothing a
@@ -939,8 +833,8 @@ const CODEX_HARNESS: Harness = {
 // that call site without changing the adapter. At the time the broader policy was decided Pi
 // shipped NO permission layer and Fleet supplied none, so the question was not "does the probe
 // work" but "may an unattended path drive a sandbox-less agent" — and it is worth recording that
-// the answer (yes, by owner decision) predates the write fence PI_HARNESS now spawns behind, rather
-// than resting on it. Hence HARNESS_AUTOMATION below: the fact layer tells the truth immediately,
+// the answer (yes, by owner decision) predates any fence and survives its 2026-08-12 retirement,
+// resting on the no-tick-lands boundary rather than on sandboxing. Hence HARNESS_AUTOMATION below: the fact layer tells the truth immediately,
 // while the work-prompt gates stay exactly as closed as they were until the owner flips one
 // variable. Deciding those in code would have been deciding it for him.
 //
@@ -971,9 +865,8 @@ const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? nu
 // predates this field sends and must keep meaning.
 // Which working-copy form a lane request asks for — THE one resolution, asked by every path that
 // makes a lane (/api/lanes, open-worktree, dispatchTask). Two rules, in this order:
-//   1. an explicit `form` WINS, over any adapter preference. A Codex lane in worktree form is a
-//      thing an owner may knowingly want (it simply cannot commit itself, Harness.laneForm), and
-//      a preference that could not be overridden would be a capability wearing the wrong name.
+//   1. an explicit `form` WINS, over any adapter preference — a preference that could not be
+//      overridden would be a capability wearing the wrong name.
 //   2. only on ABSENCE does the harness answer (Harness.laneForm), and only then does the last
 //      fallback apply: "worktree", the shape every caller, script and test already sends. A
 //      default written out at the call sites is how the second one drifts from the first.

@@ -604,8 +604,10 @@ const PI_HARNESS: Harness = {
 // weakened profile: it is a separately named, owner-attended capability whose warning is visible
 // before spawn. Pi has no permission layer of its own, so this line grants the process the owner's
 // full filesystem and network reach. The blast radius is bounded in the policy fields beside it:
-// no lanes, no unattended delivery, and at most one active slot. Its purpose is a MAIN session
-// that must operate git itself while the narrower host-commit surface is still incomplete.
+// no lanes, no unattended WORK prompts, and at most one active slot. The one notification-shaped
+// exception is an explicitly subscribed Watch: fixed server prose about another lane's completion
+// facts, never caller-chosen work. Its purpose is a MAIN session that must operate git itself while
+// the narrower host-commit surface is still incomplete.
 const PI_UNFENCED_HARNESS: Harness = {
   ...PI_HARNESS,
   id: "pi-unfenced",
@@ -625,7 +627,7 @@ const PI_UNFENCED_HARNESS: Harness = {
   allowsLanes: false,
   singleton: true,
   laneForm: null,
-  note: "UNFENCED host access: unrestricted filesystem writes, git and network; MAIN session only, one active slot, attended use only",
+  note: "UNFENCED host access: unrestricted filesystem writes, git and network; MAIN session only, one active slot; no unattended work prompts (explicit subscribed Watch notifications allowed)",
 };
 
 // The container this adapter execs into. A docker name/id charset MINUS the quote, because the
@@ -929,16 +931,18 @@ const CODEX_HARNESS: Harness = {
 // in briefs/pi-messungen-2026-08-07.md (d), "set FLEET_HARNESS_COMMS=pi", could never fire on this
 // fleet: that variable is only read on the `!IS_CLAUDE` branch above. There was no env-level fix.
 //
-// What is DELIBERATELY NOT changed by that repair is which automations may then touch the slot.
-// Those are two different questions and the queue row (b28ce533) reserved the second one for the
-// owner: making a foreign-harness slot automation-eligible pulls it into scheduled autos, dispatch,
-// steward sends, done-looking → /api/self/watch and auto-③. At the time that was decided Pi shipped
-// NO permission layer and Fleet supplied none, so the question was not "does the probe work" but
-// "may an unattended path drive a sandbox-less agent" — and it is worth recording that the answer
-// (yes, by owner decision) predates the write fence PI_HARNESS now spawns behind, rather than
-// resting on it. Hence HARNESS_AUTOMATION below: the fact layer tells the truth
-// immediately, the gates stay exactly as closed as they were until the owner flips one variable.
-// Deciding it in code would have been deciding it for him.
+// What is DELIBERATELY NOT changed by that repair is which WORK automations may then touch the
+// slot. Those are two different questions and the queue row (b28ce533) reserved the second one for
+// the owner: making a foreign-harness slot automation-eligible pulls it into scheduled autos,
+// dispatch, steward sends and auto-③. An explicit Watch subscription is narrower: tickWatches may
+// deliver only its fixed server-generated completion facts and waives this work-prompt policy at
+// that call site without changing the adapter. At the time the broader policy was decided Pi
+// shipped NO permission layer and Fleet supplied none, so the question was not "does the probe
+// work" but "may an unattended path drive a sandbox-less agent" — and it is worth recording that
+// the answer (yes, by owner decision) predates the write fence PI_HARNESS now spawns behind, rather
+// than resting on it. Hence HARNESS_AUTOMATION below: the fact layer tells the truth immediately,
+// while the work-prompt gates stay exactly as closed as they were until the owner flips one
+// variable. Deciding those in code would have been deciding it for him.
 //
 // The remaining honest gap, unchanged and worth naming: an ELIGIBLE-but-foreign slot is proven by
 // its own comm only. The WORKER probe still asks about claude by name (the summarizer spawns claude
@@ -2558,11 +2562,12 @@ async function tickGit(): Promise<void> {
       // healthy Pi pane was reported `no-agent` — the board stating something untrue about reality.
       agentInfo.set(s.id, agentState);
       // THE GATE, which is a different question and must not inherit the fact's answer: aliveInfo
-      // feeds laneSignalView, so `alive` is what makes a lane done-looking — and that reaches
-      // /api/self/watch and auto-③. A foreign-harness slot therefore stays ineligible until the
-      // owner opts in (HARNESS_AUTOMATION), exactly as canDeliver's `harness` gate does for autos,
-      // dispatch and steward sends. Same policy, two consumers; the fact above tells the truth in
-      // both cases, so the owner poll shows a live Pi slot as alive while nothing unattended moves.
+      // feeds laneSignalView, so `alive` is what makes a LANE eligible as the TARGET of completion
+      // consumers such as a Watch and auto-③. A foreign-harness lane therefore stays ineligible
+      // until the owner opts in (HARNESS_AUTOMATION), exactly as canDeliver's `harness` gate does
+      // for unattended work prompts. This does not govern the Watch RECEIVER: tickWatches keeps
+      // fresh receiver liveness but waives only its work-prompt policy for the explicit fixed
+      // notification. The fact above remains honest in both roles.
       aliveInfo.set(s.id, (agentState === "alive" || agentState === "unprobed") && harnessAutomatable(s));
       if (s.worktree) repoInfo.set(s.id, repoCanon(s.worktree.repo));
       else {
@@ -3792,10 +3797,11 @@ function inQuietHours(ts: number): boolean {
   return start < end ? h >= start && h < end : h >= start || h < end;
 }
 
-// The single pre-delivery choke-point. EVERY path that types an unattended prompt into a pane —
-// scheduled autos, the steward's direct send, the lane dispatcher, the merge/land idle guard —
-// funnels through here, so the master stop (`autosOn`), quiet hours, a FRESH claude-alive check,
-// and the idle gate can never again reach one path but silently skip another (the drift that was
+// The single pre-delivery choke-point. EVERY path that types machine-generated text into a pane —
+// scheduled autos, the steward's direct send, the lane dispatcher, the merge/land idle guard and
+// an explicitly subscribed Watch — funnels through here, so the master stop (`autosOn`), quiet
+// hours, a FRESH claude-alive check, and the idle gate can never again reach one path but silently
+// skip another (the drift that was
 // synergy-findings.md Tier-0 #1: gates added to tickAutos never reached the paths written later).
 // Mirrors the createAutoForSlot choke-point pattern — a caller structurally can't misfire a gate.
 // Each caller passes `opts` to keep its LEGITIMATE differences: a one-shot waives quiet hours
@@ -3807,16 +3813,17 @@ function inQuietHours(ts: number): boolean {
 // bespoke reaction (record+advance vs 409 vs requeue vs "blocked").
 // "harness" is not a failure — it is a POLICY refusal, and it is a distinct value precisely so a
 // caller can tell "nothing is running there" from "something is running there and no unattended
-// path may drive it". Collapsing the two would recreate the silent skip this row was filed about.
+// work-prompt path may drive it". Collapsing the two would recreate the silent skip this row was
+// filed about.
 type DeliveryGate = "kill-switch" | "harness" | "not-alive" | "quiet-hours" | "busy";
 async function canDeliver(s: Slot, opts: {
   now: number;
   killSwitch?: boolean; // honor autosOn (default true)
-  // honor the foreign-harness POLICY (default true). Pass false for an act the OWNER initiated:
-  // landing, ⏫ author, 💾 commit. The policy answers "may something unattended drive this slot",
-  // and an owner clicking a button is not that — refusing his land on a pi lane would be answering
-  // a different question than the one asked. It is a separate opt-out from `alive` on purpose:
-  // those callers waive the PROBE (a git ff must not wait on ps) and that is not the same waiver.
+  // honor the foreign-harness WORK-PROMPT policy (default true). Pass false for an act the OWNER
+  // initiated (landing, ⏫ author, 💾 commit), or for tickWatches' explicitly subscribed fixed
+  // completion notification. Neither is an unattended work prompt. It is a separate opt-out from
+  // `alive` on purpose: those callers waive the PROBE (a git ff must not wait on ps) and that is
+  // not the same waiver; tickWatches keeps the fresh probe.
   harness?: boolean;
   alive?: boolean;      // honor a FRESH claudeAlive (default true) — never a cache
   quietHours?: boolean; // honor quiet hours (default true; pass false for one-shots / owner acts)
@@ -3825,8 +3832,8 @@ async function canDeliver(s: Slot, opts: {
   if ((opts.killSwitch ?? true) && !autosOn) return { ok: false, gate: "kill-switch" };
   // BEFORE the liveness probe, and deliberately not behind the `alive` opt-out: the callers that
   // pass `alive: false` waive a PROBE they cannot afford (an owner-initiated git ff must not wait on
-  // ps), not the policy question of who may be driven unattended. It is also the cheap check —
-  // no tmux, no ps — so putting it first costs nothing and names the reason precisely.
+  // ps), not the work-prompt policy question. It is also the cheap check — no tmux, no ps — so
+  // putting it first costs nothing and names the reason precisely.
   if ((opts.harness ?? true) && !harnessAutomatable(s)) return { ok: false, gate: "harness" };
   if ((opts.alive ?? true) && !(await claudeAlive(s))) return { ok: false, gate: "not-alive" };
   if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
@@ -6298,27 +6305,20 @@ async function tickWatches(): Promise<void> {
       // resolves itself the moment the pane prints anything, and idleSec:0 remains the explicit
       // opt-out for a caller that wants the message regardless.
       if (w.idleSec > 0 && s.lastOutput === 0) continue;
-      // gates, and the ONE that is waived: quiet hours. A watch is a specific, one-shot intent
-      // exactly like a one-shot auto, and tickAutos waives the quiet window for those for the same
-      // reason — the owner asked for this message, not for a nightly cadence. The kill-switch and
-      // the claude-alive gate are NOT waived: a paused fleet types nothing, and an unattended
-      // prompt into a dead pane's bare shell would execute as shell commands.
-      const verdict = await canDeliver(s, { now, quietHours: false, idleMs: w.idleSec * 1000 });
+      // Two policy gates are waived for this one-shot: quiet hours, as for a one-shot Auto, and the
+      // foreign-harness WORK-PROMPT policy. A Watch exists only after an explicit Owner/Self
+      // subscription and its text is fixed server-generated completion facts, never caller-chosen
+      // work. This waiver belongs HERE, to that act — not to pi-unfenced or any adapter. The
+      // kill-switch, fresh agent-liveness and busy/observed gates remain: a paused fleet types
+      // nothing, and text into a dead pane's bare shell would execute as shell commands.
+      const verdict = await canDeliver(s, {
+        now, harness: false, quietHours: false, idleMs: w.idleSec * 1000,
+      });
       if (!verdict.ok) {
         // "busy" and "kill-switch" keep the watch ARMED and retry — the news does not expire, and a
         // notification dropped because its receiver happened to be working is precisely the hole
         // the background-watcher crutch had. Only a dead pane spends it: nothing can be typed
         // there, and the pane will not come back as the same session.
-        // a policy refusal spends the watch for the same reason it spends an auto: it cannot
-        // resolve on its own, and an armed watch that can never fire is the "waiting" that is
-        // indistinguishable from "never coming" — the exact state /api/self documents against.
-        if (verdict.gate === "harness") {
-          w.armed = false;
-          w.lastResult = `skipped — harness ${harnessOf(s.harness).id} is not automatable (FLEET_HARNESS_AUTOMATION off)`;
-          audit("watch_skip", w.slot, w.lastResult);
-          dirty = true;
-          continue;
-        }
         if (verdict.gate !== "not-alive") continue;
         w.armed = false;
         w.lastResult = "skipped — no agent running in pane";

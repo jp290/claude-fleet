@@ -422,15 +422,13 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     piHost?.automatable === false && piHost.allowsLanes === false && piHost.singleton === true
     && /UNFENCED/.test(piHost.note ?? "") && /unrestricted filesystem writes, git and network/.test(piHost.note ?? ""),
     JSON.stringify(piHost));
-  // the caveat is part of the contract, not a UI string: an owner picks this harness from it. What
-  // it must state BOTH halves of the fence Fleet now spawns Pi behind: writes include shared roots
-  // besides the worktree (and commits are the host's job), while reads and the network deliberately
-  // remain open. Calling this "only its own worktree" would conceal cross-slot writable state.
+  // the caveat is part of the contract, not a UI string: an owner picks this harness from it, and
+  // since 2026-08-12 what it must state is the REACH, not a fence — full local access is the
+  // normal mode, so a note still promising a write fence would be the concealment now.
   const piNote = pi?.note ?? "";
-  check("§6 the pi adapter names its shared write roots AND what the fence does not cover, at pick time",
-    /write fence/.test(piNote) && /shared temp/.test(piNote) && /~\/\.pi/.test(piNote)
-    && /Bun cache/.test(piNote) && /\/dev/.test(piNote) && /lane \.git closed/.test(piNote)
-    && /host commits/.test(piNote) && /reads and network stay open/.test(piNote), piNote);
+  check("§6 the pi adapter names its full local reach at pick time, and claims no fence",
+    /full local access/.test(piNote) && /git\/commit/.test(piNote) && /network/.test(piNote)
+    && !/fence/.test(piNote), piNote);
 
   // TWO AXES, NOT ONE. `container` answers "where does this run"; claude/pi/codex answer "what am
   // I working with". They shared one field until 2026-08-10, so the picker listed the hull in the

@@ -1,3 +1,55 @@
+# HANDOFF — Session 50 (2026-08-12: Full Access wird der Normalzustand — P1-D+H0 gemessen, dann der Zaun entfernt) · 49/48/47/46/45 darunter
+
+**ctx beim Schreiben: 46 % (GEMESSEN am Owner-Poll, keine Schätzung).** Produziert: zwei Lands
+(`8c71ed6` Messmatrix, `fc8f4ad` Full-Access-Schnitt) plus dieser Doc-Schnitt, ein Deploy, die
+erste kombinierte P1-D+H0-Messkampagne. Owner-Modus: Fable-MAIN direkt am Host, keine Lane —
+jeder Schnitt war klein, einseitig und voll verifizierbar.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** siehe `./state.sh` (diese Session landete `8c71ed6` → `fc8f4ad` → Doc-Commit).
+- **Baum:** sauber. **Live-Server:** deployt und auf HEAD gebracht (Verb 2, Deploy `dcc271ed` für
+  `90d711c`; der Full-Access-Deploy folgt in dieser Session — `deployGap.codeBehind` prüfen!).
+- **Audit:** `90d711cd` grün (2050 Checks/757 s). Für `fc8f4ad` schreibt der Post-Land-Audit
+  KEINE Zeile — es war ein Direkt-Commit am Host, kein Lane-Land. Die Verifikation lief dafür
+  vollständig von Hand (Gate-Kette + `./e2e-isolated.sh`), Tails im Commit-Body.
+
+## Was diese Session gemacht hat
+
+1. **Core-Rekonstruktion** aus dem Kickoff-Korpus (Doktrin, Architektur-Übergabe, Masterplan,
+   Feedback, Synthese, Baseline, Theo-Vergleich, Queue-Plan, P1-B-Code) → Bericht an den Owner.
+2. **Deploy** `dcc271ed`: der Watch-Fix `be7b827` war gelandet, aber nie live (Server lief auf
+   `d5f5954`). Jetzt `bootHead == head`.
+3. **P1-D+H0-Messkampagne** (`8c71ed6`, `docs/triage/p1d-boot-matrix.md`): zwei Wegwerf-Lanes,
+   Loader-/Capability-/Canary-Matrix. Kernbefunde: pi/codex laden NUR `AGENTS.md`; die gezäunte
+   pi-Lane erreichte Fleet-API und tmux (der Zaun sperrte `~/.claude`, nicht `/tmp`); BEIDE fremden
+   Harnesses beantworteten „wer committet?" falsch; codex-Clone-Lane blockiert auf einem
+   Trust-Prompt.
+4. **Full-Access-Schnitt** (`fc8f4ad`) auf Owner-Entscheid: pi-Zaun entfernt, codex mit
+   `--dangerously-bypass-approvals-and-sandbox` + idempotentem Trust-Eintrag, `hostCommits`
+   überall false, codex-Lanes wieder Worktrees, alle Zaun-Sonden auf die neue Wahrheit gedreht.
+5. **Doku:** `docs/core-program-2026-08-12.md` ist ab jetzt DAS aktive Programm-Dokument.
+
+## Offene Grenzen (ehrlich)
+
+- **`codex.automatable` bleibt `false`** — Login-Screen-Readiness und der Dispatch-Paste-Race sind
+  ungelöst. Das ist der empfohlene nächste Schnitt (Core-Programm, Workstream 1).
+- **Der Trust-Prelude ist an EINER Live-Lane gemessen**, nicht über mehrere Repos/Pfade.
+- **`~/.codex/config.toml` ist Host-State außerhalb des Repos** — der Spawn schreibt dort an.
+  Bewusst, idempotent, charset-geschützt; aber es ist geteilte Realität, kein Worktree-Zustand.
+- **Direkt-Commits dieser Session sind für die Land-Ledger unsichtbar** (bekannte Regel): keine
+  `lane-outcomes`-Zeile, kein Post-Land-Audit. Die Verifikation ist gleichwertig, der EINTRAG fehlt.
+- **CLAUDE.md wurde von Hand nachgezogen** (gitignoriert): neuer Korrektur-Absatz ganz oben über
+  den Zaun-Absätzen, die jetzt Historie sind.
+
+## Nächster Akt
+
+Core-Programm-Workstream 1: der Codex-Ready-Handshake (Done/Beweis stehen in
+`docs/core-program-2026-08-12.md`). Erdung wie immer: `./state.sh` · `./register.sh` ·
+`docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 49 (2026-08-10: die erste codex/pi-Welle — 4 fremde Lanes, 3 Ernten, und zwei Umgebungs-Raetsel sind enger gezogen) · 48/47/46/45/44 darunter
 
 **ctx beim Schreiben: ~35 %.** Produziert: die erste volle Arbeitsteilungs-Welle (fremde Lanes

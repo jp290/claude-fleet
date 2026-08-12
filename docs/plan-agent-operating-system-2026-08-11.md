@@ -792,6 +792,9 @@ Stand 2026-08-12 nach der P1-D+H0-Messkampagne:
 - **Phase 2–8:** NUR ZIELBILD, kein Bauauftrag. Harness H1–H6 nicht freigegeben.
 - **Owner-Stop 2026-08-12:** Task-Wellen, Cluster-Fan-out und Queue-/Dashboard-Ausbau pausiert;
   `docs/plan-queue-refinement-2026-08-11.md` ist geparkte Abhaengigkeit, kein aktiver Bauauftrag.
+- **Full-Access-Harness-Schnitt:** GELANDET als `fc8f4ad` (2026-08-12) — pi bare, codex bypass +
+  Trust-Prelude, `hostCommits` überall false, codex-Lanes wieder Worktrees. Das aktive
+  Programm-Dokument ist seither `docs/core-program-2026-08-12.md`.
 - **Leitdokumente seit 2026-08-12:** Owner-Doktrin
   `drops/agent-os-prep/owner-doctrine-adaptive-main-core-first-2026-08-12.md` und die
   Architektur-Uebergabe gelten bei Widerspruch vor aelteren Planannahmen dieses Dokuments.

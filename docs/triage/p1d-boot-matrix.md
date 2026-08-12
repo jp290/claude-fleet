@@ -78,6 +78,17 @@ gibt es gar keinen Abschnitt. Beide Harnesses erfinden daraus dieselbe falsche A
 - Verhaltens-Matrix aus dem alten P1-D-Brief (read-only-Disziplin, Scope-Stopp) — bewusst auf
   einen späteren Lauf verschoben, die Kampagne war auf Loader+Capabilities begrenzt.
 
+## 6b. Nachtrag vom selben Tag — die Capability-Zeilen sind ÜBERHOLT
+
+Der Owner hat auf diese Matrix hin Full Access zum Normalzustand erklärt; gelandet als `fc8f4ad`.
+Damit gelten die FAIL-Zellen der pi-/codex-Spalten (Git-Commit, `~/.claude`, tmux, Netz) als
+**historischer Beleg des Zaun-Zustands**, nicht als aktueller Betrieb: der pi-Zaun ist entfernt,
+codex spawnt mit Bypass-Flag + persistiertem Trust-Eintrag (der Trust-Prompt aus §4.1 ist damit
+mechanisch geschlossen), `hostCommits` ist überall false, codex-Lanes sind wieder Worktrees.
+Unverändert gültig: die Loader-Matrix (§1), Canary B als AGENTS.md-Befund (per `fc8f4ad` durch den
+neuen „Codex or Pi lane"-Abschnitt beantwortet), §4.2 (Füllstands-Selbstauskunft) und die
+Manifestfeld-Bewertung (§5). Aktueller Vertrag: `docs/core-program-2026-08-12.md`.
+
 ## 7. Konsequenz
 
 Der kleinste messbar begründete nächste Schnitt ist eine **Doc-Korrektur an `AGENTS.md`**

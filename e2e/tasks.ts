@@ -774,23 +774,22 @@ export async function run(ctx: Ctx): Promise<void> {
     // below asserts exactly that), and the teardown takes the pane with it
     const xCmd = typeof xdJ.slot === "number"
       ? (await tmuxOut("display-message", "-p", "-t", `s${xdJ.slot}`, "#{pane_start_command}")).out : "";
-    check("a DISPATCHED lane spawns the named harness — the pane runs codex, sandboxed, with the model it was given",
-      /(^|\s|;)codex --sandbox workspace-write --ask-for-approval never --model 'openai\/gpt-5-codex'/.test(xCmd),
+    check("a DISPATCHED lane spawns the named harness — the pane runs codex full-access with the model it was given",
+      /(^|\s|;)codex --dangerously-bypass-approvals-and-sandbox --model 'openai\/gpt-5-codex'/.test(xCmd.replaceAll("\\", "")),
       xCmd.slice(-160));
     // ...and the WORKING-COPY FORM travels this road too, which is the road the owner actually
     // uses. The dispatch path has no request body to carry a `form`, so it is the pure absence
-    // case: the adapter answers, and for Codex the answer is a clone — a linked worktree keeps its
-    // metadata in the primary repo, outside `--sandbox workspace-write`, so a Codex worktree lane
-    // cannot `git commit` at all. Asserted on the `.git` ENTRY, same as the lane routes: only the
-    // disk can contradict a response that claims a form it did not make. Captured immediately, for
-    // the same reason xCmd is — the kill below takes the tree with it.
+    // case — and since the 2026-08-12 full-access spawn no adapter prefers a clone, so the answer
+    // is the default worktree, same as a claude lane. Asserted on the `.git` ENTRY (a worktree's
+    // is a gitdir FILE), same as the lane routes: only the disk can contradict a response form.
+    // Captured immediately, for the same reason xCmd is — the kill below takes the tree with it.
     const xSess = (await (await get("/api/sessions")).json()) as
       { slots: { id: number; cwd: string | null; worktree: { form?: string } | null }[] };
     const xSlot = xSess.slots.find((s) => s.id === xdJ.slot);
-    check("a DISPATCHED codex lane gets the adapter's clone form — the owner's own road, not just /api/lanes",
-      xSlot?.worktree?.form === "clone"
-      && !!xSlot.cwd && existsSync(`${xSlot.cwd}/.git`) && lstatSync(`${xSlot.cwd}/.git`).isDirectory(),
-      `${xSlot?.worktree?.form} @ ${xSlot?.cwd}`);
+    check("a DISPATCHED codex lane is a plain worktree — no clone preference left on the owner's own road",
+      !!xSlot?.worktree && !("form" in xSlot.worktree)
+      && !!xSlot.cwd && existsSync(`${xSlot.cwd}/.git`) && lstatSync(`${xSlot.cwd}/.git`).isFile(),
+      `${JSON.stringify(xSlot?.worktree)} @ ${xSlot?.cwd}`);
     // THE POINT OF THE ROUTE, and the half /api/lanes cannot give: the row is bound to the lane
     const xRow = await f2Row(xT.task.id);
     check("the foreign-harness task is bound to its lane before the route answers (the link /api/lanes never makes)",

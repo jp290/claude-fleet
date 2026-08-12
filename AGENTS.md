@@ -145,16 +145,16 @@ because that is where the cursor is, and never back into the runner. Shared plum
 shell script, a doc, this file. It reads files and compares them, with no server and no network.
 Write a RULE there, never a snapshot.
 
-## If you are a Codex lane
+## If you are a Codex or Pi lane
 
-Measured, not assumed: inside a lane you currently cannot run the suites (they need tmux sockets
-outside your write root) and you have no network (so no `bunx`). `bun install`, `bun e2e/pins.ts`
-and `bun run build` do work.
+Since 2026-08-12 normal agent harnesses run with full local access: you edit, use git and commit,
+reach the Fleet API, tmux and the network yourself. Run the full Verify list above like any other
+lane and commit your own work. The land gate still runs server-side either way;
+`POST /api/slots/:id/commit` remains a recovery path, not your normal lifecycle.
 
-That is a real limit, not a waiver. The land gate runs server-side and will run the full check set
-against your work whether or not you could. So: run every step you CAN, and in your report name
-each step you could not run and quote the mechanical error that stopped it. Never report a step you
-skipped as if it passed, and never soften a claim you did not verify.
+If a command is mechanically refused anyway, that is a real signal, not a waiver: name the step and
+quote the error verbatim in your report. Never report a step you skipped as if it passed, and never
+soften a claim you did not verify.
 
 ## Reporting
 

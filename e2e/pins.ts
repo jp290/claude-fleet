@@ -695,11 +695,11 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
   //     defer to the fleet-wide HARNESS_COMMS, and on an undeclared FLEET_CMD that is the empty set,
   //     i.e. every codex slot would read `unprobed` and no gate would ever hold it. The runtime row
   //     (e2e/security.ts §6e) proves the probe HAPPENS; this proves it cannot stop happening.
-  //   - and the sandbox pair. codex ships --dangerously-bypass-approvals-and-sandbox, whose own help
-  //     calls it EXTREMELY DANGEROUS; whether a lane may run that way is an OWNER decision, and the
-  //     failure mode of getting it wrong is not a red check but an un-sandboxed agent nobody
-  //     re-read the literal to notice. Scoped to this adapter's own object literal, so the string
-  //     appearing in a comment elsewhere cannot satisfy or break it.
+  //   - and the spawn profile. Full access via --dangerously-bypass-approvals-and-sandbox is the
+  //     OWNER decision of 2026-08-12; the failure mode of silently narrowing it back (or of losing
+  //     the trust prelude) is not a red check but a lane that wedges on codex's own trust prompt
+  //     and eats its brief. Scoped to this adapter's own object literal, so the string appearing
+  //     in a comment elsewhere cannot satisfy or break it.
   const xStart = server.indexOf("const CODEX_HARNESS: Harness = {");
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
   pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
@@ -709,30 +709,31 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
     xBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
-  pin("the codex spawn line keeps the sandbox and never reaches for the bypass flag (an owner decision, not an edit)",
-    /codex --sandbox workspace-write --ask-for-approval never/.test(xBody) && !/dangerously-bypass/.test(
-      xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")),
+  const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",
+    /codex --dangerously-bypass-approvals-and-sandbox/.test(xCode) && !/--sandbox workspace-write/.test(xCode),
     xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");
-  // The PI adapter's fence, and it is a rule over the SOURCE for the reason the codex sandbox pin
-  // gives one line up: the failure mode of losing it is not a red check anywhere, it is an
-  // un-fenced agent that behaves exactly like the fenced one until the day it writes outside its
-  // lane. e2e/lanes-basic.ts runs the profile and proves it FENCES; this proves the spawn line
-  // cannot stop carrying one. Two clauses, because they are two different regressions:
-  //   - no bare `pi` — every path out of spawnCmd either goes through sandbox-exec or starts no
-  //     agent at all. An `if` added above the fence that returns the old line would compile.
-  //   - the FAIL-CLOSED branch. A profile that cannot be built must not degrade to "spawn it
-  //     anyway"; without PI_FENCE_FAILED on that path the degradation is silent and looks healthy.
+  // The trust prelude is what keeps that spawn UNATTENDED-bootable: codex blocks on its per-path
+  // trust prompt for any cwd absent from ~/.codex/config.toml, and the bypass flag does NOT skip
+  // it (measured 2026-08-12). Losing the prelude or the charset guard is invisible at runtime on a
+  // suite fleet, so both are rules over the source.
+  pin("the codex spawn writes its idempotent trust entry, guarded by the spawn-path charset",
+    /grep -qxF '\[projects\."\$\{o\.cwd\}"\]'/.test(xCode) && /trust_level = "trusted"/.test(xCode)
+    && /SPAWN_PATH_RE\.test\(o\.cwd\)/.test(xCode),
+    xCode.match(/const trust = [^\n]*/)?.[0] ?? "no trust prelude");
+  // The PI adapter runs BARE by owner decision 2026-08-12 — full local access is the normal
+  // operating mode, and the sandbox-exec fence of 2026-08-08..11 is retired, not conditional. A
+  // rule over the source, because the regression is invisible at runtime on a suite fleet: a
+  // re-grown fence would behave exactly like the bare spawn until a real lane's commit dies on it.
   const pStart = server.indexOf("const PI_HARNESS: Harness = {");
   const pBody = pStart < 0 ? "" : server.slice(pStart, server.indexOf("\n};\n", pStart));
   pin("the pi adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
     pStart > 0 && pBody.length > 500 && pBody.length < 12_000, `${pBody.length} bytes`);
   const pSpawn = pBody.slice(pBody.indexOf("spawnCmd: (o) => {"), pBody.indexOf("worker: () => null"));
   const pCode = pSpawn.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("every pi spawn line runs the agent inside sandbox-exec, or runs no agent at all",
-    /sandbox-exec -p "\$FLEET_PI_SB" \$\{cmd\}/.test(pCode) && !/\$\{PATH_EXPORT\}\$\{cmd\}/.test(pCode),
+  pin("the pi spawn line starts pi bare with the owner's full reach — no sandbox-exec anywhere in it",
+    /return `\$\{PATH_EXPORT\}\$\{cmd\}; exec \$\{SHELL\}`/.test(pCode) && !pCode.includes("sandbox-exec"),
     pCode.match(/return `[^`]*`/g)?.join(" | ").slice(0, 200) ?? "no return");
-  pin("a pi fence that cannot be built starts no pi — the refusal is loud, not a fall-through",
-    /if \(!profile\) return[^\n]*PI_FENCE_FAILED/.test(pCode), pCode.match(/if \(!profile\)[^\n]*/)?.[0] ?? "no fail-closed branch");
 
   // The one unfenced Pi is an explicit adapter, never a conditional hole in normal Pi's fence.
   // Pin both the power and all three blast-radius limits: changing only one side would make either
@@ -755,68 +756,7 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
     && server.indexOf("if (!h.allowsLanes) throw", server.indexOf("async function openLaneInSlot"))
       < server.indexOf("createWorktree(root", server.indexOf("async function openLaneInSlot")),
     "openLaneInSlot policy ordering");
-  // ...and the doctrine clause, which is the one a well-meaning edit would remove first: a lane that
-  // cannot commit looks broken, and re-granting `.git` is the obvious "fix". It is not one — the
-  // host commits (POST /api/slots/:id/commit), owner decision 2026-08-08.
-  const pProf = server.slice(server.indexOf("function piSandboxProfile("), server.indexOf("const PI_FENCE_FAILED"));
-  const piFenceDeniesGit = /deny file-write\* \$\{sub\(`\$\{root\}\/\.git`\)\}/.test(pProf);
-  pin("the pi fence denies .git back — the lane produces, the host commits",
-    piFenceDeniesGit, pProf.match(/deny file-write\*[^\n]*/g)?.join(" | ") ?? "no deny clause");
 
-  // The picker note is the owner's decision-time description of this profile. Derive the writable
-  // set from the profile's source rather than repeating it: every expression in `const write` plus
-  // every direct `(subpath "…")` grant on the allow line. The table translates source expressions
-  // into the words the note uses; crucially, an expression absent from the table is a FAILURE, so
-  // adding tomorrow's root cannot silently shrink this rule's coverage. The reverse comparison
-  // catches a note that still claims a known grant after its source expression is removed.
-  const ppStart = server.indexOf("function piSandboxProfile(");
-  const ppEnd = server.indexOf("\n}\n", ppStart);
-  const ppBody = ppStart >= 0 && ppEnd > ppStart ? server.slice(ppStart, ppEnd) : "";
-  const ppCode = ppBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  pin("piSandboxProfile's source is bounded and non-empty (an unfound profile would make its write-root rule vacuous)",
-    ppStart > 0 && ppEnd > ppStart && ppCode.length > 300 && ppCode.length < 8_000, `${ppCode.length} bytes of code`);
-
-  const writeDecls = [...ppCode.matchAll(/\bconst write = \[([^\]\n]*)\];/g)];
-  const allowLines = ppCode.split("\n").filter((l) => l.includes("+ `(allow file-write*"));
-  const arrayRoots = writeDecls.length === 1
-    ? writeDecls[0][1].split(",").map((s) => s.trim()).filter(Boolean)
-    : [];
-  const directRoots = allowLines.length === 1
-    ? [...allowLines[0].matchAll(/\(subpath "([^"]+)"\)/g)].map((m) => JSON.stringify(m[1]))
-    : [];
-  const writeRoots = [...new Set([...arrayRoots, ...directRoots])];
-  pin("piSandboxProfile yields one write declaration and its direct subpath grants",
-    writeDecls.length === 1 && allowLines.length === 1 && arrayRoots.length > 0 && directRoots.length > 0,
-    `${writeDecls.length} write declaration(s), ${arrayRoots.length} array root(s), ${directRoots.length} direct grant(s)`);
-
-  const pBodyCode = pBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  const noteMatches = [...pBodyCode.matchAll(/\n  note: "([^"\n]*)",/g)];
-  const piNote = noteMatches.length === 1 ? noteMatches[0][1] : "";
-  pin("PI_HARNESS yields exactly one non-empty note (an unfound picker claim would make its write-root rule vacuous)",
-    noteMatches.length === 1 && piNote.length > 0, `${noteMatches.length} note field(s), ${piNote.length} bytes`);
-
-  const writeRootTerms = new Map<string, string>([
-    ["root", "worktree"],
-    ["...SANDBOX_TMP_ROOTS", "temp"],
-    ["`${HOME}/.pi`", "~/.pi"],
-    ["`${HOME}/.bun/install/cache`", "Bun cache"],
-    ["\"/dev\"", "/dev"],
-  ]);
-  const unmapped = writeRoots.filter((root) => !writeRootTerms.has(root));
-  const unnamed = writeRoots.filter((root) => {
-    const term = writeRootTerms.get(root);
-    return term !== undefined && !piNote.includes(term);
-  });
-  pin("every pi write root is mapped and named in PI_HARNESS.note",
-    writeRoots.length > 0 && piNote.length > 0 && unmapped.length === 0 && unnamed.length === 0,
-    [...unmapped.map((root) => `unmapped write root: ${root}`),
-      ...unnamed.map((root) => `note missing ${writeRootTerms.get(root)} for ${root}`)].join("; "));
-
-  const ungrantedClaims = [...writeRootTerms.entries()]
-    .filter(([root, term]) => piNote.includes(term) && !writeRoots.includes(root))
-    .map(([root, term]) => `${term} claims absent write root: ${root}`);
-  pin("PI_HARNESS.note names no mapped write root that piSandboxProfile does not grant",
-    writeRoots.length > 0 && piNote.length > 0 && ungrantedClaims.length === 0, ungrantedClaims.join("; "));
 
   // --- the WORKER spawn, and why it is a rule over the source rather than a test -----------------
   // This file used to hold TWO spawn implementations: slotCmd/agentCmd (which the registry covers,
@@ -875,22 +815,18 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
     hostCommitFields.map((a) => `${a.name}:${a.values.join("|") || "missing"}`).join(" "));
   const hostCommitsOf = (name: string): string | undefined =>
     hostCommitFields.find((a) => a.name === name)?.values[0];
-  // Pi is mechanically derivable: its own profile either denies <root>/.git or it does not, and
-  // hostCommits must move with that clause rather than preserve today's value as a snapshot.
-  pin("PI_HARNESS.hostCommits follows piSandboxProfile's .git deny clause",
-    hostCommitsOf("PI") === String(piFenceDeniesGit),
-    `deny=${piFenceDeniesGit} declared=${hostCommitsOf("PI") ?? "missing"}`);
-  // These three are intentionally pinned OWNER DECISIONS, not derivations: Claude has no Fleet
-  // fence, Codex's fence lives inside its binary, and Container's reach depends on operator mounts.
+  // All five are pinned OWNER DECISIONS since 2026-08-12: full local access is the normal
+  // operating mode, every agent records its own work, and /commit is a recovery act. A `true`
+  // reappearing here would silently re-route a harness's lifecycle through host rescue.
   const ownerHostCommitExpected: Record<string, string> = {
-    CLAUDE: "false", CONTAINER: "false", CODEX: "true",
+    CLAUDE: "false", PI: "false", PI_UNFENCED: "false", CONTAINER: "false", CODEX: "false",
   };
   const wrongOwnerDecision = Object.entries(ownerHostCommitExpected)
     .filter(([name, expected]) => hostCommitsOf(name) !== expected);
-  pin("Claude, Container and Codex keep their explicit owner-decided commit ownership",
+  pin("every adapter keeps its owner-decided commit ownership — nobody is fenced out of .git",
     wrongOwnerDecision.length === 0,
     wrongOwnerDecision.map(([name, expected]) => `${name}:${hostCommitsOf(name) ?? "missing"} expected=${expected}`).join(" ")
-      || "all three agree");
+      || "all five agree");
   // `supports` is written inline on one adapter and one-field-per-line on the other three, so the
   // field is matched WITHOUT its leading newline — anchoring on the layout would have made this
   // rule true for three adapters and unaskable for the fourth.
@@ -978,10 +914,9 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
     advCalls.length > 0 && advUnsynced.length === 0,
     `${advCalls.length} call sites, ${advUnsynced.length} without a preceding syncLaneRefs`);
   // ...and WHO chooses the form. `createWorktree`'s third parameter defaults to "worktree", so a
-  // new lane-creating path that simply omits it compiles, runs, and is correct for every adapter
-  // but one — while a Codex lane made that way cannot `git commit` at all (its metadata would sit
-  // in the primary repo, outside `--sandbox workspace-write`). Nothing fails loudly: the lane just
-  // never lands, and the board says only "idle". So the rule is that every caller ASKS, and it is
+  // new lane-creating path that simply omits it compiles and runs — and silently drops whatever
+  // form the CALLER named (an explicit clone request would come back a worktree, torn down later
+  // as the wrong thing). So the rule is that every caller ASKS, and it is
   // a rule over the source because the mistake is an ABSENCE — the same shape as the bolt above.
   // Deliberately about the call sites and not about laneFormOf's body: the resolution is one
   // function precisely so that the interesting question is who fails to call it.

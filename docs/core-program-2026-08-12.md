@@ -44,9 +44,17 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
 
 **Offen (Core-Workstreams, Reihenfolge = Abhängigkeit):**
 
-1. **Harness-Readiness** — ready ≠ Prozesspräsenz: Codex-Login-Screen und Dispatch-Paste-Race sind
-   die zwei gemessenen Gründe, warum `codex.automatable` noch `false` ist. Kleinste Naht: ein
-   bounded Ready-Handshake vor Zustellung; erst danach den Flag drehen.
+1. **Harness-Readiness — GEBAUT 2026-08-12.** Mechanismus des Paste-Race zuerst GEMESSEN (Opus-
+   Session, gerenderte Frames, codex-cli 0.147.0): Trust-Prompt und Sign-in-Screen halten den
+   node-Wrapper am Leben (Probe sagt `alive`) und ein Paste+Enter BEANTWORTET den Prompt — der
+   Brief ist restlos weg, ohne Fehler. Schnitt: `Harness.readiness{accept,blocks}` (nur codex
+   deklariert; Marker aus den Frames, Composer-Platzhalter rotiert und ist bewusst KEIN Marker),
+   `paneReadiness()` als Screen-Schicht neben `paneAgentAt`, canDeliver-Gate `blocked-screen`
+   (nur „blocked" verweigert — „pending" bleibt zustellbar, sonst dunkelt jede etablierte Pane),
+   und im Dispatch-Tail ein bounded Accept-Marker-Wait (`FLEET_READY_WAIT_MS`, Default 20 s;
+   der 4-s-Sleep ist Gnadenfrist, nie Beweis) mit ehrlichem Requeue samt Screen-Name.
+   `codex.automatable:true` — gekoppelt an die Naht, Pin erzwingt „ein Entscheid, zwei Felder".
+   Gegenproben: e2e/tasks.ts f3 (Trust · Sign-in · Ready-Composer · Timeout, node-Fixtures).
 2. **Typed Rückkanal** — Watch → durable Event (ID, persistiert, idempotent, Ack); kein
    Event-Sourcing-Umbau. Quelle: Harness-Brief §5.3.
 3. **Provenienz P2** — `taskId`/`harness`/`effort`/Context auf Outcomes (heute 0 %, Baseline §3);

@@ -258,6 +258,15 @@ interface Harness {
   // input. Optional because this is an estimate, not a capability fact: unknown adapters take the
   // deliberately low default at sendText rather than being forced to claim false precision.
   bootSettleMs?: number;
+  // The pane SCREENS this harness can sit on where a pasted prompt is silently consumed instead of
+  // reaching the agent, plus the marker that proves the real composer is on screen. Measured for
+  // codex on 2026-08-12 (this session's probe, codex-cli 0.147.0): a paste+Enter into its trust
+  // prompt ANSWERS the prompt and the text is gone with no error anywhere; the sign-in screen eats
+  // it the same way. Optional because it is a measurement, not a guess: an adapter without rendered
+  // frames to cite declares nothing and keeps today's behaviour everywhere. `blocks` are checked
+  // before `accept`, and each carries the phrase a refusal reports — the silent eat is the defect,
+  // so the reason must never be generic.
+  readiness?: { accept: RegExp; blocks: readonly { re: RegExp; why: string }[] };
   // Who records a lane's produced files in git. true means the harness is intentionally fenced
   // out of its lane's .git and the HOST commits through POST /api/slots/:id/commit; false means no
   // such ownership transfer is declared. Required and explicit: a new adapter must answer this
@@ -763,19 +772,33 @@ const CODEX_HARNESS: Harness = {
   // binary is the supported entry point; going around it to make a probe prettier is the wrong
   // trade.
   comms: ["codex", "node"],
+  // MEASURED from rendered frames (2026-08-12 probe, codex-cli 0.147.0), not from `strings` on the
+  // binary — the composer's placeholder line rotates ("Use /skills…", "Summarize recent commits")
+  // and is useless as a marker, while the header box `>_ OpenAI Codex (v…)` is on every ready
+  // frame and on NEITHER blocking screen. The two blocks are the two screens that provably eat a
+  // paste: the per-path trust prompt (paste+Enter answers "Yes, continue" and boots an EMPTY
+  // composer — the 2026-08-10 dispatch race, mechanism now known) and the sign-in screen
+  // ("Welcome to Codex" / "Sign in with ChatGPT", rendered via a throwaway CODEX_HOME).
+  readiness: {
+    accept: />_ OpenAI Codex \(v/,
+    blocks: [
+      { re: /Do you trust the contents of this directory\?/, why: "codex trust prompt" },
+      { re: /Sign in with ChatGPT|Welcome to Codex/, why: "codex sign-in screen" },
+    ],
+  },
   // FALSE since 2026-08-12: the bypass profile leaves `.git` writable, so a codex lane records its
   // own work. The /commit route stays available as a recovery act, not as this adapter's lifecycle.
   hostCommits: false,
-  // FALSE, and unlike the container adapter's this is not merely "the owner has not decided yet" —
-  // there is a measured reason to keep it shut. `codex login status` on this machine says
-  // "Not logged in", and an unauthenticated Codex pane sits on its sign-in screen with the node
-  // wrapper RUNNING: the probe answers `alive` (correctly — a process is there), so an unattended
-  // path would type a brief into a sign-in screen and the brief would be gone with no error
-  // anywhere. Authentication is an owner act, and the pane state it produces is not one the fact
-  // layer can distinguish. So: attended only until a Codex lane has been watched running end to
-  // end, exactly the standard the container adapter's comment sets. What that costs is unchanged
-  // from there: an owner may still open, drive and land such a slot by hand.
-  automatable: false,
+  // TRUE since 2026-08-12, and only alongside `readiness` above — the two are one decision. The
+  // old FALSE had one measured reason: an unauthenticated pane sits on its sign-in screen with the
+  // node wrapper RUNNING, probes `alive`, and an unattended paste there is gone with no error.
+  // That state is now one the fact layer DOES distinguish: canDeliver refuses a pane whose screen
+  // matches a declared block (gate "blocked-screen", with the why), and the dispatch tail waits
+  // bounded on the accept marker instead of trusting a sleep. `codex login status` on this machine
+  // additionally reads "Logged in using ChatGPT" today (re-measured 2026-08-12) — but the flip
+  // rests on the seam, not on the login lasting: a token expiry re-renders exactly the screen the
+  // block markers name. Remove `readiness` and this field must go back to false with it.
+  automatable: true,
   allowsLanes: true,
   singleton: false,
   // null = linked worktree, the default form again since 2026-08-12: clone existed to keep the
@@ -3263,6 +3286,11 @@ const SEND_BOOT_WAIT_MS = 3000;
 // is deliberately low because no readiness measurement exists for them; Claude declares the only
 // measured anchor (2500 ms) on its adapter above.
 const DEFAULT_BOOT_SETTLE_MS = 250;
+// The dispatch tail's budget for a readiness-declaring harness to show its accept marker (codex
+// renders its header box in ~0.3–0.7 s, measured 2026-08-12 — 20 s is machine-load headroom, not
+// an estimate of the boot). Env-tunable for the suites only, same reason the scheduler ticks are:
+// a timeout counterprobe cannot poll for a non-event without owning the window's width.
+const READY_WAIT_MS = Math.max(1000, Number(process.env.FLEET_READY_WAIT_MS ?? 20_000) | 0);
 
 async function sendText(s: Slot, text: string, submit: boolean): Promise<void> {
   // route through inputChain like raw keystrokes do — otherwise a compose-box send racing
@@ -3397,6 +3425,24 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
   await pg.exited;
   for (const pid of kids) if (isAgent(await commOf(pid))) return "alive";
   return "no-agent";
+}
+
+// SCREEN readiness, the layer paneAgentAt cannot see: both measured codex block screens keep the
+// node wrapper alive, so the process probe answers `alive` while a paste would be silently eaten
+// (rendered-frame measurement, 2026-08-12 — see the adapter's `readiness` comment). null = this
+// harness declares no readiness and keeps today's behaviour: every adapter but codex, including
+// the default one, takes that branch and no gate below it may fire. "pending" is neither marker on
+// screen — a booting TUI, a redraw, a working agent whose header scrolled off — and is deliberately
+// NOT a refusal at the delivery gates (fail-open there; only the bounded boot wait in briefAndSend
+// treats it as not-yet-ready, per the owner's cut). A failed capture is "pending" too: the pane
+// gates next to this one own the no-pane answer.
+async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "pending"; why?: string } | null> {
+  const r = harnessOf(s.harness).readiness;
+  if (!r) return null;
+  const cap = await tmux("capture-pane", "-p", "-t", sess(s.id));
+  if (cap.code !== 0) return { state: "pending" };
+  for (const b of r.blocks) if (b.re.test(cap.out)) return { state: "blocked", why: b.why };
+  return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
 }
 
 // (The fourth probe set — the worker session's — used to be a `claudeAliveAt` wrapper here, pinning
@@ -3708,7 +3754,11 @@ function inQuietHours(ts: number): boolean {
 // caller can tell "nothing is running there" from "something is running there and no unattended
 // work-prompt path may drive it". Collapsing the two would recreate the silent skip this row was
 // filed about.
-type DeliveryGate = "kill-switch" | "harness" | "not-alive" | "quiet-hours" | "busy";
+// "blocked-screen" is the screen-level sibling of "not-alive": the agent process is there, but the
+// pane is on a harness-declared blocking screen (codex trust prompt / sign-in) where a paste is
+// silently consumed. `detail` carries the declared why, so every caller reports the concrete
+// screen instead of a generic refusal. Only ever returned for a harness that declares `readiness`.
+type DeliveryGate = "kill-switch" | "harness" | "not-alive" | "blocked-screen" | "quiet-hours" | "busy";
 async function canDeliver(s: Slot, opts: {
   now: number;
   killSwitch?: boolean; // honor autosOn (default true)
@@ -3721,14 +3771,22 @@ async function canDeliver(s: Slot, opts: {
   alive?: boolean;      // honor a FRESH claudeAlive (default true) — never a cache
   quietHours?: boolean; // honor quiet hours (default true; pass false for one-shots / owner acts)
   idleMs?: number;      // idle threshold in ms; 0/undefined disables the busy gate
-}): Promise<{ ok: true } | { ok: false; gate: DeliveryGate }> {
+}): Promise<{ ok: true } | { ok: false; gate: DeliveryGate; detail?: string }> {
   if ((opts.killSwitch ?? true) && !autosOn) return { ok: false, gate: "kill-switch" };
   // BEFORE the liveness probe, and deliberately not behind the `alive` opt-out: the callers that
   // pass `alive: false` waive a PROBE they cannot afford (an owner-initiated git ff must not wait on
   // ps), not the work-prompt policy question. It is also the cheap check — no tmux, no ps — so
   // putting it first costs nothing and names the reason precisely.
   if ((opts.harness ?? true) && !harnessAutomatable(s)) return { ok: false, gate: "harness" };
-  if ((opts.alive ?? true) && !(await claudeAlive(s))) return { ok: false, gate: "not-alive" };
+  if (opts.alive ?? true) {
+    if (!(await claudeAlive(s))) return { ok: false, gate: "not-alive" };
+    // behind the SAME opt-out as the process probe, deliberately: both are pane probes, and the
+    // callers that waive one waive it because they cannot afford a probe at all (an owner git ff),
+    // not because they trust the screen. Only "blocked" refuses — "pending" stays deliverable, or
+    // every established codex pane whose header scrolled off would go dark to automation.
+    const rd = await paneReadiness(s);
+    if (rd?.state === "blocked") return { ok: false, gate: "blocked-screen", detail: rd.why };
+  }
   if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
   if (opts.idleMs && opts.now - s.lastOutput < opts.idleMs) return { ok: false, gate: "busy" };
   return { ok: true };
@@ -3775,6 +3833,15 @@ async function tickAutos(): Promise<void> {
         if (verdict.gate === "not-alive") {
           // NEVER type into a bare shell; count the run and move on
           a.lastResult = "skipped — no agent running in pane";
+          audit("auto_skip", a.slot, a.lastResult);
+          advanceAuto(a, now);
+          dirty = true;
+          continue;
+        }
+        if (verdict.gate === "blocked-screen") {
+          // the screen-level twin of not-alive: a paste here is silently eaten (codex trust/sign-in,
+          // measured 2026-08-12). Count the run and say which screen — the silent eat is the defect.
+          a.lastResult = `skipped — pane is on a blocking screen (${verdict.detail ?? "declared block"})`;
           audit("auto_skip", a.slot, a.lastResult);
           advanceAuto(a, now);
           dirty = true;
@@ -4014,7 +4081,33 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   // to keep tight; the second round-trip the compile used to need went with it.
   if (identityLost()) { await requeue("slot changed during spawn — requeued"); return; }
   const boot = await canDeliver(free, { now: Date.now(), ...gateOpts });
-  if (!boot.ok) { await requeue(`dispatch held (${boot.gate}) — requeued`); return; }
+  // the gate's detail (today: which blocking screen) rides into the note — a requeue whose reason
+  // is generic is the silent skip in a milder costume
+  if (!boot.ok) { await requeue(`dispatch held (${boot.gate}${boot.detail ? `: ${boot.detail}` : ""}) — requeued`); return; }
+  // SCREEN readiness, bounded — only for a harness that declares it (codex today; every other
+  // adapter takes `null` and this loop never runs). The boot sleep above is a grace period, not a
+  // readiness proof: the proof is the accept marker on the rendered pane. Here — unlike at the
+  // delivery gates — "pending" is NOT deliverable: this pane is seconds old by construction, so
+  // "neither marker yet" means "still booting", never "header scrolled off". Measured 2026-08-12:
+  // a paste+Enter into the trust prompt ANSWERS it and boots an empty composer, the brief gone
+  // with no error — the 2026-08-10 dispatch race, now refused by name instead of raced by sleep.
+  if (harnessOf(free.harness).readiness) {
+    const started = Date.now();
+    for (;;) {
+      if (identityLost()) { await requeue("slot changed during spawn — requeued"); return; }
+      const rd = await paneReadiness(free);
+      if (!rd || rd.state === "ready") break;
+      if (rd.state === "blocked") {
+        await requeue(`pane blocked on ${rd.why} — brief withheld, requeued`);
+        return;
+      }
+      if (Date.now() - started >= READY_WAIT_MS) {
+        await requeue(`pane never showed its ready marker within ${Math.round(READY_WAIT_MS / 1000)}s — requeued`);
+        return;
+      }
+      await Bun.sleep(500);
+    }
+  }
   try {
     await sendText(free, brief, true);
     logPrompt(free, brief, "auto", Date.now());
@@ -10568,6 +10661,8 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
     release();
     if (verdict.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
     if (verdict.gate === "not-alive") return json({ error: "no agent running in target pane" }, 409);
+    if (verdict.gate === "blocked-screen")
+      return json({ error: `target pane is on a blocking screen (${verdict.detail ?? "declared block"}) — a paste there would be silently eaten` }, 409);
     if (verdict.gate === "quiet-hours") return json({ error: "quiet hours — steward sends are muted" }, 409);
     if (verdict.gate === "harness")
       return json({ error: `harness ${harnessOf(s.harness).id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` }, 409);

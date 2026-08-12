@@ -704,9 +704,30 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
   pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
     xStart > 0 && xBody.length > 500 && xBody.length < 12_000, `${xBody.length} bytes`);
-  pin("the codex adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
-    /\n  automatable: false,/.test(xBody) && /\n    transcript: false,/.test(xBody),
+  // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
+  // only sound alongside the declared readiness seam (both measured block screens keep the node
+  // wrapper alive, so no process probe can refuse them — only the rendered pane can). An
+  // automatable:true WITHOUT the readiness declaration would re-open the silent brief-eat this
+  // seam closed, and on a suite fleet (FLEET_HARNESS_AUTOMATION=0) that regression is invisible
+  // at runtime — hence a rule over the source, coupling the two fields as one decision.
+  pin("the codex adapter is automation-eligible ONLY alongside its declared readiness seam (one decision, two fields)",
+    /\n  automatable: true,/.test(xBody) && /\n  readiness: \{/.test(xBody)
+    && /Do you trust the contents of this directory/.test(xBody)
+    && /Sign in with ChatGPT\|Welcome to Codex/.test(xBody)
+    && />_ OpenAI Codex \\\(v/.test(xBody),
     xBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
+  pin("the codex adapter stays transcript-less until an owner decides otherwise",
+    /\n    transcript: false,/.test(xBody), "transcript field");
+  // ...and the seam's two consumers exist in the source, because only the dispatch tail is
+  // exercisable on this fleet (e2e/tasks.ts f3): canDeliver's screen gate protects the unattended
+  // paths (autos, steward send, watches) that HARNESS_AUTOMATION=0 keeps unreachable in-suite.
+  pin("canDeliver refuses a blocked screen behind the same probe opt-out as not-alive",
+    /gate: "blocked-screen", detail: rd\.why/.test(server) && /rd\?\.state === "blocked"/.test(server),
+    "blocked-screen gate in canDeliver");
+  pin("the dispatch tail waits BOUNDED on the accept marker — a blind sleep is a grace period, never the readiness proof",
+    /pane blocked on \$\{rd\.why\}/.test(server) && /never showed its ready marker within/.test(server)
+    && /READY_WAIT_MS/.test(server),
+    "readiness wait in briefAndSend");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");

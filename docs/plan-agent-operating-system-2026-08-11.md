@@ -780,24 +780,22 @@ Logs schreiben und keine Erfolgsbehauptung aus Bytes allein.
 
 ## 14. Statusblock — von jeder uebernehmenden Session zuerst aktualisieren
 
-Stand 2026-08-11 im P1-A-Landschnitt:
+Stand 2026-08-12 nach der P1-D+H0-Messkampagne:
 
-- **Phase 0:** ABGESCHLOSSEN; die vier abgelaufenen Inventare liegen ab diesem Schnitt unter
-  `docs/attic/agent-os-2026-08-11/`.
-- **Phase 0.5:** BASELINE ERSTELLT (`docs/triage/agent-os-baseline.md`).
-- **G0-Synthese:** ERSTELLT (`docs/triage/agent-os-synthesis.md`).
-- **G0 Owner-Entscheid:** `pass` durch Owner-Anweisung vom 2026-08-11.
-- **P1-A:** mit diesem Landschnitt IMPLEMENTIERT; kein privater Split.
-- **P1-B:** beginnt erst nach dem P1-A-Land.
-- **P1-D:** danach offen fuer die Live-Boot-Matrix.
-- **P1-C:** gesperrt bis zum P1-D-Beleg plus expliziter Owner-Entscheidung.
-- **Phase 2–8:** NUR ZIELBILD, kein Bauauftrag.
-- **Aktive Abhaengigkeit:** `docs/plan-queue-refinement-2026-08-11.md`; dessen Task-Dashboard-
-  Reihenfolge nicht umgehen.
-- **Neue Queue-Zeilen fuer dieses Programm:** keine in diesem Schnitt erzeugt.
-- **Product-Code:** unveraendert.
+- **Phase 0 / 0.5 / G0:** ABGESCHLOSSEN; Inventare im Attic, Baseline und Synthese stehen.
+- **P1-A:** GELANDET als `1d28a6c`.
+- **P1-B:** GELANDET als `90d711c` (Manifest, purer Validator, e2e-Familie; kein Loader/Compiler).
+- **Watch-Fix:** GELANDET als `be7b827`, deployt 2026-08-12 (Deploy `dcc271ed`, `bootHead == 90d711c`).
+- **P1-D:** MESSKAMPAGNE DURCHGEFUEHRT 2026-08-12, kombiniert mit dem H0-Minimum —
+  `docs/triage/p1d-boot-matrix.md`. Verhaltens-Matrix bewusst offen.
+- **P1-C:** weiterhin GESPERRT; die Matrix allein rechtfertigt keinen Split (G1 offen).
+- **Phase 2–8:** NUR ZIELBILD, kein Bauauftrag. Harness H1–H6 nicht freigegeben.
+- **Owner-Stop 2026-08-12:** Task-Wellen, Cluster-Fan-out und Queue-/Dashboard-Ausbau pausiert;
+  `docs/plan-queue-refinement-2026-08-11.md` ist geparkte Abhaengigkeit, kein aktiver Bauauftrag.
+- **Leitdokumente seit 2026-08-12:** Owner-Doktrin
+  `drops/agent-os-prep/owner-doctrine-adaptive-main-core-first-2026-08-12.md` und die
+  Architektur-Uebergabe gelten bei Widerspruch vor aelteren Planannahmen dieses Dokuments.
 - **Private Rulebooks/Skills/Maschinen:** unveraendert.
-- **Landing:** Host-Commit und serverseitiges Land dieses P1-A-Schnitts stehen noch aus.
 
 Wenn eine Phase landet, hier nur den neuen Phasenstatus, Commit/Task-IDs, Gate-Verdikt und den
 naechsten noch offenen Entscheid notieren. Messwerte und Arbeitszustand gehoeren in ihre Ledgers

@@ -1506,6 +1506,90 @@ interface MainDirectOutcome extends MainDirectPreflight {
   reason?: string;
 }
 let mainDirectPreflights: Record<string, MainDirectPreflight> = {};
+const PROGRAM_STATUSES = ["proposed", "confirmed", "active", "complete"] as const;
+type ProgramStatus = typeof PROGRAM_STATUSES[number];
+interface Program {
+  id: string;
+  title: string;
+  intent: string;
+  successCriterion: string;
+  nonGoals: string[];
+  decisions: string[];
+  evidence: string[];
+  openQuestions: string[];
+  status: ProgramStatus;
+  createdAt: number;
+  proposedBy: { kind: "session"; slot: number; openedAt: number; sessionId: string | null }
+    | { kind: "owner" };
+  confirmedAt?: number;
+  activatedAt?: number;
+  completedAt?: number;
+}
+type ProgramContent = Pick<Program, "title" | "intent" | "successCriterion" | "nonGoals"
+  | "decisions" | "evidence" | "openQuestions">;
+type ProgramValidation = { ok: true; content: ProgramContent } | { ok: false; error: string };
+
+// The one content boundary for both proposal and owner confirmation. Confirm first overlays its
+// corrections on the proposal and then comes through here, so an owner cannot accidentally store
+// a shape the proposing session could not have stored. Unknown keys never enter the returned
+// object. Trimming happens before the length check and before idempotency comparisons.
+function validateProgramContent(raw: unknown): ProgramValidation {
+  const body = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown> : {};
+  const scalar = (field: "title" | "intent" | "successCriterion", max: number): string | ProgramValidation => {
+    const value = body[field];
+    if (typeof value !== "string") return { ok: false, error: `${field} must be a string` };
+    const trimmed = value.trim();
+    if (!trimmed) return { ok: false, error: `${field} must be 1–${max} chars` };
+    if (trimmed.length > max) return { ok: false, error: `${field} must be at most ${max} chars` };
+    return trimmed;
+  };
+  const array = (field: "nonGoals" | "decisions" | "evidence" | "openQuestions", max: number): string[] | ProgramValidation => {
+    const value = body[field];
+    if (!Array.isArray(value)) return { ok: false, error: `${field} must be an array` };
+    if (value.length > 20) return { ok: false, error: `${field} must contain at most 20 items` };
+    const out: string[] = [];
+    for (let i = 0; i < value.length; i++) {
+      if (typeof value[i] !== "string") return { ok: false, error: `${field}[${i}] must be a string` };
+      const trimmed = value[i].trim();
+      if (!trimmed) return { ok: false, error: `${field}[${i}] must be 1–${max} chars` };
+      if (trimmed.length > max) return { ok: false, error: `${field}[${i}] must be at most ${max} chars` };
+      out.push(trimmed);
+    }
+    return out;
+  };
+  const title = scalar("title", 120); if (typeof title !== "string") return title;
+  const intent = scalar("intent", 4000); if (typeof intent !== "string") return intent;
+  const successCriterion = scalar("successCriterion", 4000);
+  if (typeof successCriterion !== "string") return successCriterion;
+  const nonGoals = array("nonGoals", 500); if (!Array.isArray(nonGoals)) return nonGoals;
+  const decisions = array("decisions", 500); if (!Array.isArray(decisions)) return decisions;
+  const evidence = array("evidence", 300); if (!Array.isArray(evidence)) return evidence;
+  const openQuestions = array("openQuestions", 500); if (!Array.isArray(openQuestions)) return openQuestions;
+  return { ok: true, content: { title, intent, successCriterion, nonGoals, decisions, evidence, openQuestions } };
+}
+
+const programContent = (p: Program): ProgramContent => ({ title: p.title, intent: p.intent,
+  successCriterion: p.successCriterion, nonGoals: p.nonGoals, decisions: p.decisions,
+  evidence: p.evidence, openQuestions: p.openQuestions });
+const sameProgramContent = (a: ProgramContent, b: ProgramContent): boolean =>
+  JSON.stringify(a) === JSON.stringify(b);
+const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind === "session"
+  && p.proposedBy.slot === s.id && p.proposedBy.openedAt === s.openedAt
+  && p.proposedBy.sessionId === s.sessionId;
+let programs: Program[] = [];
+const MAX_PROGRAMS = 100;
+function capPrograms(list: Program[]): Program[] {
+  if (list.length <= MAX_PROGRAMS) return list;
+  const live = new Set(list.filter((p) => p.status !== "complete"));
+  const keepComplete = Math.max(0, MAX_PROGRAMS - live.size);
+  const complete = list.filter((p) => p.status === "complete");
+  const keptComplete = new Set(keepComplete > 0 ? complete.slice(-keepComplete) : []);
+  return list.filter((p) => live.has(p) || keptComplete.has(p));
+}
+type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
+const programDigest = (p: Program): ProgramDigest => ({ id: p.id, status: p.status,
+  title: p.title, createdAt: p.createdAt });
 // repo root → worker name → the executable that worker runs as, for THAT repo.
 //
 // The FLEET_*_CMD stand-ins are module constants read from the server's env, which makes each of
@@ -2208,7 +2292,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
-    events: fleetEvents, tasks,
+    events: fleetEvents, tasks, programs,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -10533,6 +10617,68 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
+const PROGRAM_CONTENT_KEYS: (keyof ProgramContent)[] = ["title", "intent", "successCriterion",
+  "nonGoals", "decisions", "evidence", "openQuestions"];
+async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response> {
+  if (url.pathname === "/api/programs" && req.method === "GET") return json({ programs });
+  if (url.pathname === "/api/programs" && req.method === "POST") {
+    const valid = validateProgramContent(await readJson(req));
+    if (!valid.ok) return json({ error: valid.error }, 400);
+    const program: Program = { id: randomBytes(12).toString("hex"), ...valid.content,
+      status: "proposed", createdAt: Date.now(), proposedBy: { kind: "owner" } };
+    programs = capPrograms([...programs, program]);
+    await saveStateNow();
+    return json({ ok: true, program });
+  }
+  const action = /^\/api\/programs\/([^/]+)\/(confirm|activate|complete|discard)$/.exec(url.pathname);
+  if (!action || req.method !== "POST") return json({ error: "bad request" }, 400);
+  const program = programs.find((p) => p.id === action[1]);
+  if (!program) return json({ error: "unknown program" }, 404);
+  if (action[2] === "confirm") {
+    if (program.status === "active" || program.status === "complete")
+      return json({ error: `illegal transition: cannot confirm a ${program.status} program` }, 409);
+    const corrections = await readJson(req) ?? {};
+    const merged: Record<string, unknown> = { ...programContent(program) };
+    for (const key of PROGRAM_CONTENT_KEYS)
+      if (Object.prototype.hasOwnProperty.call(corrections, key)) merged[key] = corrections[key];
+    const valid = validateProgramContent(merged);
+    if (!valid.ok) return json({ error: valid.error }, 400);
+    if (program.status === "confirmed") {
+      if (!sameProgramContent(programContent(program), valid.content))
+        return json({ error: "conflicting confirm" }, 409);
+      return json({ ok: true, existing: true, program });
+    }
+    Object.assign(program, valid.content);
+    program.status = "confirmed";
+    program.confirmedAt = Date.now();
+    await saveStateNow();
+    return json({ ok: true, program });
+  }
+  if (action[2] === "activate") {
+    if (program.status === "active") return json({ ok: true, existing: true, program });
+    if (program.status !== "confirmed")
+      return json({ error: `illegal transition: cannot activate a ${program.status} program` }, 409);
+    program.status = "active";
+    program.activatedAt = Date.now();
+    await saveStateNow();
+    return json({ ok: true, program });
+  }
+  if (action[2] === "complete") {
+    if (program.status === "complete") return json({ ok: true, existing: true, program });
+    if (program.status !== "active")
+      return json({ error: `illegal transition: cannot complete a ${program.status} program` }, 409);
+    program.status = "complete";
+    program.completedAt = Date.now();
+    await saveStateNow();
+    return json({ ok: true, program });
+  }
+  if (program.status !== "proposed")
+    return json({ error: `illegal transition: cannot discard a ${program.status} program` }, 409);
+  programs = programs.filter((p) => p !== program);
+  await saveStateNow();
+  return json({ ok: true });
+}
+
 // public feature-request dropbox. Gated by its own secret; strict caps; hard hourly rate
 // limit. The result is always a `pending` task the owner must review before anything runs.
 async function handleIntake(req: Request): Promise<Response> {
@@ -10779,6 +10925,42 @@ if (existsSync(STATE_FILE)) {
               .slice(-MAX_COMMENTS_PER_TASK)
             : undefined }));
       tasks = capTasks(tasks);
+    // Programs are a durable owner bracket, but old state has no such member. Absence therefore
+    // stays the initialized [], with no provenance inferred from slots or tasks. Valid rows are
+    // reconstructed from their declared fields so extra hand-written keys are never persisted.
+    if (Array.isArray((persisted as { programs?: unknown }).programs)) {
+      const loaded: Program[] = [];
+      for (const raw of (persisted as { programs: unknown[] }).programs) {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+        const x = raw as Record<string, unknown>;
+        const valid = validateProgramContent(x);
+        if (!valid.ok || typeof x.id !== "string" || !/^[0-9a-f]{24}$/.test(x.id)
+          || !(PROGRAM_STATUSES as readonly unknown[]).includes(x.status)
+          || typeof x.createdAt !== "number" || !Number.isFinite(x.createdAt)) continue;
+        let proposedBy: Program["proposedBy"] | null = null;
+        if (x.proposedBy && typeof x.proposedBy === "object" && !Array.isArray(x.proposedBy)) {
+          const by = x.proposedBy as Record<string, unknown>;
+          if (by.kind === "owner") proposedBy = { kind: "owner" };
+          if (by.kind === "session" && Number.isInteger(by.slot) && typeof by.openedAt === "number"
+            && Number.isFinite(by.openedAt) && (by.sessionId === null || typeof by.sessionId === "string"))
+            proposedBy = { kind: "session", slot: by.slot as number, openedAt: by.openedAt,
+              sessionId: by.sessionId as string | null };
+        }
+        if (!proposedBy) continue;
+        const status = x.status as ProgramStatus;
+        const confirmedAt = typeof x.confirmedAt === "number" && Number.isFinite(x.confirmedAt) ? x.confirmedAt : undefined;
+        const activatedAt = typeof x.activatedAt === "number" && Number.isFinite(x.activatedAt) ? x.activatedAt : undefined;
+        const completedAt = typeof x.completedAt === "number" && Number.isFinite(x.completedAt) ? x.completedAt : undefined;
+        if (status !== "proposed" && confirmedAt === undefined) continue;
+        if ((status === "active" || status === "complete") && activatedAt === undefined) continue;
+        if (status === "complete" && completedAt === undefined) continue;
+        loaded.push({ id: x.id, ...valid.content, status, createdAt: x.createdAt, proposedBy,
+          ...(status !== "proposed" ? { confirmedAt: confirmedAt! } : {}),
+          ...(status === "active" || status === "complete" ? { activatedAt: activatedAt! } : {}),
+          ...(status === "complete" ? { completedAt: completedAt! } : {}) });
+      }
+      programs = capPrograms(loaded);
+    }
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
       if (s && typeof v?.cwd === "string") {
@@ -13036,6 +13218,29 @@ Bun.serve<WSData>({
       return createAutoForSlot(s, await readJson(req));
     }
 
+    // A Program is the durable planning bracket ABOVE future lanes, never a queue row. A scoped
+    // session credential may therefore propose/read only from a non-lane planning session. The
+    // authenticated session triple is copied from the slot, never accepted from the body.
+    if (url.pathname === "/api/self/programs" && (req.method === "GET" || req.method === "POST")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree)
+        return json({ error: "programs are brackets above lanes; a lane cannot propose or read them as its own" }, 409);
+      if (req.method === "GET") return json({ programs: programs.filter((p) => sameProgramSession(p, s)) });
+      const valid = validateProgramContent(await readJson(req));
+      if (!valid.ok) return json({ error: valid.error }, 400);
+      const existing = programs.find((p) => p.status === "proposed" && sameProgramSession(p, s)
+        && sameProgramContent(programContent(p), valid.content));
+      if (existing) return json({ ok: true, existing: true, program: existing });
+      const program: Program = { id: randomBytes(12).toString("hex"), ...valid.content,
+        status: "proposed", createdAt: Date.now(),
+        proposedBy: { kind: "session", slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId } };
+      programs = capPrograms([...programs, program]);
+      await saveStateNow();
+      return json({ ok: true, program });
+    }
+
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies
     // both heads; the body can only state the expected final head and the verification it ran.
     if (url.pathname === "/api/self/main-direct" && req.method === "GET") {
@@ -13259,6 +13464,14 @@ Bun.serve<WSData>({
         return json({ error: "self token: the disposition rail is owner-only — a lane cannot label its own work" }, 403);
     }
 
+    // Programs are owner truth after proposal. They deliberately take the same tokenGate as the
+    // task owner API, but are checked before the steward dispatcher so a steward credential is a
+    // plain owner-auth failure (401), never a second authority over confirm/activate/complete.
+    if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard))?$/.test(url.pathname)) {
+      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+      return handleOwnerProgramRoute(req, url);
+    }
+
     // steward principal: same placement rationale as self/autos above — sits AFTER the
     // SHARE_HOSTS gate, so a valid steward token is structurally unreachable from the public
     // tunnel. Any request carrying the steward token is intercepted HERE, before the owner
@@ -13472,6 +13685,10 @@ Bun.serve<WSData>({
         events: fleetEvents,
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
+        // Program bodies are owner-decision documents and never ride the 2 s poll. This digest is
+        // exactly the identity/status label needed to notice a change; full rows live only on the
+        // two explicit Program GET routes.
+        programs: programs.map(programDigest),
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
         // Global runtime fact, beside dispatch rather than inferred per row from stored verdicts.
         analysis: { on: ANALYSIS_ON },

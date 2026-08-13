@@ -14,8 +14,10 @@ import type { Ctx } from "./ctx";
 export async function run(ctx: Ctx): Promise<void> {
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---
   const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
-  const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; status: string; source: string; kind: string } };
+  const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; originId?: string; status: string; source: string; kind: string } };
   check("create owner task as pending", tCreate.ok && tJson.task.status === "pending" && tJson.task.source === "owner");
+  check("a newly minted owner task brackets its request with originId === id",
+    tJson.task.originId === tJson.task.id, JSON.stringify(tJson.task));
   check("an owner task defaults to kind auftrag — the one dispatchable category",
     tJson.task.kind === "auftrag", JSON.stringify(tJson.task));
   check("queue a task", (await post(`/api/tasks/${tJson.task.id}/queue`, {})).ok);
@@ -84,8 +86,8 @@ export async function run(ctx: Ctx): Promise<void> {
     const legacyNote = migrationState?.tasks?.find((t) => t.id === oldNote.id);
     check("Task.kind migration setup: both persisted rows are readable while srv is stopped",
       !!legacyLane && !!legacyNote, migrationError);
-    if (legacyLane) legacyLane.kind = "lane";
-    if (legacyNote) legacyNote.kind = "note";
+    if (legacyLane) { legacyLane.kind = "lane"; delete legacyLane.originId; }
+    if (legacyNote) { legacyNote.kind = "note"; delete legacyNote.originId; }
     const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag" } : null;
     const expectNote = legacyNote ? { ...legacyNote, kind: "notiz" } : null;
     if (migrationState) await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(migrationState)}\n`);
@@ -97,6 +99,9 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(gotLaneOnce) === JSON.stringify(expectLane)
       && JSON.stringify(gotNoteOnce) === JSON.stringify(expectNote),
       JSON.stringify({ gotLaneOnce, gotNoteOnce, expectLane, expectNote }));
+    check("legacy tasks without originId reload without a provenance backfill",
+      !!gotLaneOnce && !!gotNoteOnce && !("originId" in gotLaneOnce) && !("originId" in gotNoteOnce),
+      JSON.stringify({ gotLaneOnce, gotNoteOnce }));
     await restartSrv();
     const migratedTwice = await kRows();
     check("Task.kind load migration is idempotent across a second restart",
@@ -1919,7 +1924,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // carry a verdict the children must NOT inherit), so this section restarts srv — FLEET_DISPATCH_REPO
   // rides along for the same reason as (h). ---
   {
-    interface JRow { id: string; status: string; note?: string; kind?: string; source?: string; repo?: string;
+    interface JRow { id: string; originId?: string; status: string; note?: string; kind?: string; source?: string; repo?: string;
       files?: string[]; filesOrigin?: string; cluster?: TaskCluster;
       analysis?: { verdict: string }; refine?: { at: number; unchanged: boolean; count: number } }
     interface JChild { text: string; doneCriterion?: string; verify?: string; files?: string[] }
@@ -1964,7 +1969,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // afterwards (repo inherited, verdict NOT), which is what makes those two checks non-vacuous.
     // No dispatch toggle any more: tickAnalysisSweep runs off FLEET_ANALYSIS_MS alone, and a pending
     // row is unreachable for tickDispatch by construction now (it selects `queued` only).
-    const jT = (await (await post("/api/tasks", { text: "refine parent: two bundled parts and no done-criterion", queue: false, repo: REPO })).json()) as { task: { id: string; repo?: string } };
+    const jT = (await (await post("/api/tasks", { text: "refine parent: two bundled parts and no done-criterion", queue: false, repo: REPO })).json()) as { task: { id: string; originId?: string; repo?: string } };
     let jAn: JRow["analysis"];
     for (let i = 0; i < 40 && !jAn; i++) { jAn = (await jRow(jT.task.id))?.analysis; if (!jAn) await Bun.sleep(500); }
     check("(j) fixture: the parent carries an analysis verdict, so \"children inherit none\" can fail",
@@ -1999,6 +2004,13 @@ export async function run(ctx: Ctx): Promise<void> {
       jc.ok && jMinted.length === 2
       && jMinted.every((k) => k.kind === "auftrag" && k.source === "owner" && k.status === "pending" && k.repo === jT.task.repo),
       `${jc.status} ${JSON.stringify(jMinted)}`);
+    const jMintedFull = await Promise.all(jMinted.map((k) => jFull(k.id)));
+    check("(j) refine-confirm children inherit one parent origin while keeping pairwise-distinct task ids",
+      jT.task.originId === jT.task.id
+      && jMintedFull.length === 2
+      && jMintedFull.every((k) => k?.originId === jT.task.originId)
+      && new Set(jMintedFull.map((k) => k?.id)).size === jMintedFull.length,
+      JSON.stringify({ parent: jT.task, kids: jMintedFull.map((k) => ({ id: k?.id, originId: k?.originId })) }));
     check("(j) the children carry NO analysis verdict — a promoted split meets the analyst fresh",
       jMinted.every((k) => k.analysis === undefined), JSON.stringify(jMinted.map((k) => k.analysis ?? null)));
     const jKidFull = jMinted[0] ? await jFull(jMinted[0].id) : undefined;

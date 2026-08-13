@@ -145,6 +145,48 @@ printf '{"result": "{\\"summary\\": \\"fake summary of the session\\", \\"openTh
 EOF
 chmod +x "$DIR/fakesum"
 
+# stand-in for the NEW per-worker Codex exec route. The ordinary suite server still carries
+# FLEET_SUMMARY_CMD, so none of its existing summary checks can reach this binary. e2e/summary.ts
+# restarts that same isolated instance with FLEET_SUMMARY_CMD explicitly empty for one bounded
+# section, then restores the wrapper env. This keeps the old stand-in path byte-for-byte while
+# exercising the production argv/stdin/-o protocol with no Codex login or model usage.
+cat > "$DIR/fakecodex" <<'EOF'
+#!/bin/sh
+base="$(dirname "$0")"
+printf '%s\n' "$@" > "$base/codex-argv"
+cat > "$base/codex-prompt"
+printf 'run\n' >> "$base/codex-runs"
+out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ] && [ "$#" -ge 2 ]; then out="$2"; shift 2; else shift; fi
+done
+printf '%s\n' "$out" > "$base/codex-tmpout"
+mode="$(cat "$base/codex-mode" 2>/dev/null || echo success)"
+case "$mode" in
+  success)
+    printf '{"summary":"codex summary of the session","openThreads":["codex-thread"],"verification":"codex saw tests"}' > "$out"
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":17,"output_tokens":5}}'
+    ;;
+  unknown)
+    printf '{"summary":"codex summary without usage","openThreads":[],"verification":"none"}' > "$out"
+    printf '%s\n' '{"type":"turn.completed"}'
+    ;;
+  nonzero)
+    printf 'controlled codex failure on stderr' >&2
+    printf 'controlled codex event on stdout\n'
+    exit 23
+    ;;
+  missing)
+    printf '%s\n' '{"type":"turn.completed"}'
+    ;;
+  timeout)
+    trap 'printf killed > "$base/codex-killed"; exit 0' TERM
+    while :; do sleep 0.05; done
+    ;;
+esac
+EOF
+chmod +x "$DIR/fakecodex"
+
 # stand-in 🔍 reviewer: same envelope, answers two findings DELIBERATELY worst-last plus one
 # uncited claim — so the test proves the server ranks by impact and drops a finding without a
 # cited line. Each run appends its cwd (= the reviewed lane's worktree) to $DIR/reviewruns, which

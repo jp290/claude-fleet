@@ -1,8 +1,9 @@
 // The ✨ summary agent behind its FLEET_SUMMARY_CMD stand-in: gather → spawn → parse → cache.
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
+import { buildEnhancePrompt } from "../enhance-prompt";
 import { WORKER_CONTRACTS } from "../src/protocol";
-import { ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { REPO, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
 
 export async function run(): Promise<void> {
   // --- ✨ summary agent (FLEET_SUMMARY_CMD points at a stand-in that answers in
@@ -35,7 +36,11 @@ export async function run(): Promise<void> {
   const runsFile = `${ROOT}/codex-runs`;
   const codexEnv = {
     FLEET_SUMMARY_CMD: "",
+    FLEET_COMMIT_CMD: "",
+    FLEET_ENHANCE_CMD: "",
+    FLEET_DIGEST_CMD: "",
     FLEET_CODEX_EXEC_BIN: fakeCodex,
+    FLEET_CODEX_EXEC_TIMEOUT_MS: "1500",
   };
   const runs = (): number => {
     try { return readFileSync(runsFile, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
@@ -112,11 +117,14 @@ export async function run(): Promise<void> {
 
     await setMode("timeout");
     await restartSrv(codexEnv);
+    const timeoutStarted = Date.now();
     const toRes = await post("/api/slots/1/summary", {});
+    const timeoutMs = Date.now() - timeoutStarted;
     const to = (await toRes.json()) as { error?: string };
-    check("codex timeout is named with the caller budget and kills the stand-in process",
-      toRes.status === 500 && to.error === "worker via codex exec timed out after 180000ms"
-      && existsSync(`${ROOT}/codex-killed`), `${toRes.status} ${to.error ?? ""}`);
+    check("codex timeout is named with the effective test budget and kills the stand-in process promptly",
+      toRes.status === 500 && to.error === "worker via codex exec timed out after 1500ms"
+      && timeoutMs >= 1200 && timeoutMs < 5000 && existsSync(`${ROOT}/codex-killed`),
+      `${toRes.status} ${to.error ?? ""} elapsed=${timeoutMs}ms`);
     check("codex worker removes its fresh tmp directory after timeout", tmpGone());
 
     await setMode("missing");
@@ -128,23 +136,151 @@ export async function run(): Promise<void> {
       `${noOutRes.status} ${noOut.error ?? ""}`);
     check("codex worker removes its fresh tmp directory after a missing-output error", tmpGone());
 
-    await setMode("success");
-    await restartSrv(codexEnv);
-    const beforeEnhance = runs();
-    const enhRes = await post("/api/enhance", { slot: 1, text: "prove worker isolation" });
-    const enh = (await enhRes.json()) as { prompt?: string };
-    check("a non-summary worker stays on its existing subprocess route while summary defaults to Codex",
-      enhRes.ok && enh.prompt === "enhanced prompt. own your work! /sharpen3" && runs() === beforeEnhance,
-      `${enhRes.status} ${JSON.stringify(enh)} codexRuns=${runs()}/${beforeEnhance}`);
+    const latestArgv = (): string[] => readFileSync(`${ROOT}/codex-argv`, "utf8").split("\n").filter(Boolean);
+    const noSumSession = async (): Promise<boolean> =>
+      !(await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").some((name) => name.startsWith("sum-"));
 
-    // This combines the explicit rollback value with the existing FLEET_SUMMARY_CMD stand-in:
-    // it proves the reversible setting still reaches the old response shape without Codex usage.
+    // Enhance: use the no-slot form so the expected prompt is exactly reconstructible. Equality,
+    // not a substring, proves stdin received the complete buildEnhancePrompt result.
+    const enhanceDraft = "prove migrated enhancer";
+    await setMode("enhance");
+    await restartSrv(codexEnv);
+    const enhRes = await post("/api/enhance", { text: enhanceDraft });
+    const enh = (await enhRes.json()) as { prompt?: string; draftId?: string };
+    const enhanceArgv = latestArgv();
+    const enhancePrompt = readFileSync(`${ROOT}/codex-prompt`, "utf8");
+    check("Codex enhance preserves its wrapped-JSON fallback and exact response contract",
+      enhRes.ok && enh.prompt === "codex enhanced prompt. own your work! /sharpen3"
+      && typeof enh.draftId === "string" && enh.draftId.length === 16, `${enhRes.status} ${JSON.stringify(enh)}`);
+    check("Codex enhance pins Spark/read-only/ephemeral and receives the complete marked prompt only on stdin",
+      enhanceArgv[enhanceArgv.indexOf("-m") + 1] === "gpt-5.3-codex-spark"
+      && enhanceArgv[enhanceArgv.indexOf("-s") + 1] === "read-only" && enhanceArgv.includes("--ephemeral")
+      && enhancePrompt === buildEnhancePrompt(enhanceDraft, null)
+      && enhancePrompt.includes(WORKER_CONTRACTS.enhance.mark)
+      && !enhanceArgv.some((a) => a.includes(WORKER_CONTRACTS.enhance.mark)) && await noSumSession(),
+      `argv=${enhanceArgv.join(" ")} bytes=${Buffer.byteLength(enhancePrompt)}`);
+    check("codex worker removes its fresh tmp directory after enhance success", tmpGone());
+
+    await setMode("malformed");
+    const badEnhRes = await post("/api/enhance", { text: "malformed enhance probe" });
+    const badEnh = (await badEnhRes.json()) as { error?: string };
+    check("a malformed Codex enhance answer remains the caller's named 502",
+      badEnhRes.status === 502 && badEnh.error === "enhancer returned no JSON",
+      `${badEnhRes.status} ${badEnh.error ?? ""}`);
+    check("codex worker removes its fresh tmp directory after malformed enhance output", tmpGone());
+
+    const beforeEnhanceStandin = runs();
+    await restartSrv({ ...codexEnv, FLEET_ENHANCE_CMD: `${ROOT}/fakeenh` });
+    const standinEnhRes = await post("/api/enhance", { slot: 1, text: "prove stand-in precedence" });
+    const standinEnh = (await standinEnhRes.json()) as { prompt?: string };
+    check("FLEET_ENHANCE_CMD stays ahead of the Codex route",
+      standinEnhRes.ok && standinEnh.prompt === "enhanced prompt. own your work! /sharpen3"
+      && runs() === beforeEnhanceStandin,
+      `${standinEnhRes.status} ${JSON.stringify(standinEnh)} codexRuns=${runs()}/${beforeEnhanceStandin}`);
+
+    const beforeEnhanceRollback = runs();
+    await restartSrv({ ...codexEnv, FLEET_WORKER_ROUTE_ENHANCE: "claude", FLEET_WORKER_HARNESS: "codex" });
+    const rollbackEnhRes = await post("/api/enhance", { text: "prove explicit enhance rollback" });
+    const rollbackEnh = (await rollbackEnhRes.json()) as { error?: string };
+    check("FLEET_WORKER_ROUTE_ENHANCE=claude selects the old session lane without a Codex fallback",
+      rollbackEnhRes.status === 502 && (rollbackEnh.error ?? "").includes('harness "codex" cannot host a worker session')
+      && runs() === beforeEnhanceRollback,
+      `${rollbackEnhRes.status} ${rollbackEnh.error ?? ""} codexRuns=${runs()}/${beforeEnhanceRollback}`);
+
+    // Commit-message: a private throwaway lane is needed because the real caller's response
+    // contract is the commit result itself. It is removed before the later lane families start.
+    if (!REPO) {
+      check("Codex commit-message probe has the isolated fixture repo it requires", false, "FLEET_E2E_REPO absent");
+    } else {
+      const commitBranch = "e2e-codex-commit-message";
+      let commitSlot = 0;
+      let commitCwd = "";
+      try {
+        await setMode("commit");
+        await restartSrv(codexEnv);
+        const openRes = await post("/api/slots/5/open-worktree", { repo: REPO, branch: commitBranch });
+        const opened = (await openRes.json()) as { slot?: number; cwd?: string };
+        commitSlot = opened.slot ?? 5;
+        commitCwd = opened.cwd ?? "";
+        check("throwaway lane for the Codex commit-message caller opens",
+          openRes.ok && commitSlot === 5 && !!commitCwd, `${openRes.status} ${JSON.stringify(opened)}`);
+
+        if (commitCwd) {
+          await Bun.write(`${commitCwd}/codex-worker-probe.txt`, "codex commit probe one\n");
+          const commitRes = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+          const committed = (await commitRes.json()) as { committed?: boolean; subject?: string; messageFallback?: boolean };
+          const commitArgv = latestArgv();
+          const commitPrompt = readFileSync(`${ROOT}/codex-prompt`, "utf8");
+          check("Codex commitMsg preserves sanitizeCommitMsg and the caller's commit response contract",
+            commitRes.ok && committed.committed === true && committed.subject === "feat(worker): codex spark commit message"
+            && committed.messageFallback === undefined, `${commitRes.status} ${JSON.stringify(committed)}`);
+          check("Codex commitMsg pins Spark/read-only/ephemeral and receives its complete marked diff prompt only on stdin",
+            commitArgv[commitArgv.indexOf("-m") + 1] === "gpt-5.3-codex-spark"
+            && commitArgv[commitArgv.indexOf("-s") + 1] === "read-only" && commitArgv.includes("--ephemeral")
+            && commitPrompt.includes(WORKER_CONTRACTS.commitMsg.mark)
+            && commitPrompt.includes("## shortstat") && commitPrompt.includes("## per-file stat")
+            && commitPrompt.includes("codex commit probe one")
+            && !commitArgv.some((a) => a.includes(WORKER_CONTRACTS.commitMsg.mark)) && await noSumSession(),
+            `argv=${commitArgv.join(" ")} bytes=${Buffer.byteLength(commitPrompt)}`);
+          check("codex worker removes its fresh tmp directory after commitMsg success", tmpGone());
+
+          await setMode("malformed");
+          await Bun.write(`${commitCwd}/codex-worker-probe.txt`, "codex commit probe one\nmalformed answer\n");
+          const badCommitRes = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+          const badCommit = (await badCommitRes.json()) as { committed?: boolean; subject?: string; messageFallback?: boolean };
+          check("a malformed Codex commitMsg answer keeps the existing explicit wip fallback contract",
+            badCommitRes.ok && badCommit.committed === true && badCommit.messageFallback === true
+            && (badCommit.subject ?? "").startsWith("wip:"), `${badCommitRes.status} ${JSON.stringify(badCommit)}`);
+          check("codex worker removes its fresh tmp directory after malformed commitMsg output", tmpGone());
+
+          await setMode("commit");
+          const beforeCommitStandin = runs();
+          await restartSrv({ ...codexEnv, FLEET_COMMIT_CMD: `${ROOT}/fakecommit` });
+          await Bun.write(`${commitCwd}/codex-worker-probe.txt`, "codex commit probe one\nmalformed answer\nstand-in\n");
+          const standinCommitRes = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+          const standinCommit = (await standinCommitRes.json()) as { committed?: boolean; subject?: string };
+          check("FLEET_COMMIT_CMD stays ahead of the Codex route",
+            standinCommitRes.ok && standinCommit.committed === true && standinCommit.subject === "feat: stand-in commit message"
+            && runs() === beforeCommitStandin,
+            `${standinCommitRes.status} ${JSON.stringify(standinCommit)} codexRuns=${runs()}/${beforeCommitStandin}`);
+
+          const beforeCommitRollback = runs();
+          await restartSrv({ ...codexEnv, FLEET_WORKER_ROUTE_COMMITMSG: "claude", FLEET_WORKER_HARNESS: "codex" });
+          await Bun.write(`${commitCwd}/codex-worker-probe.txt`, "codex commit probe one\nmalformed answer\nstand-in\nrollback\n");
+          const rollbackCommitRes = await post("/api/slots/5/commit", { mode: "agent", confirm: true });
+          const rollbackCommit = (await rollbackCommitRes.json()) as { committed?: boolean; subject?: string; messageFallback?: boolean };
+          check("FLEET_WORKER_ROUTE_COMMITMSG=claude selects the old lane and preserves its caller fallback",
+            rollbackCommitRes.ok && rollbackCommit.committed === true && rollbackCommit.messageFallback === true
+            && (rollbackCommit.subject ?? "").startsWith("wip:") && runs() === beforeCommitRollback,
+            `${rollbackCommitRes.status} ${JSON.stringify(rollbackCommit)} codexRuns=${runs()}/${beforeCommitRollback}`);
+        }
+      } finally {
+        if (commitSlot) await post(`/api/slots/${commitSlot}/kill`, {});
+        if (commitCwd) Bun.spawnSync(["git", "-C", REPO, "worktree", "remove", "--force", commitCwd]);
+        Bun.spawnSync(["git", "-C", REPO, "branch", "-qD", commitBranch]);
+      }
+    }
+
+    // Route rollback is probed against an adapter that cannot host session workers. That makes
+    // selection of the old lane observable immediately, without starting Claude or needing login.
+    const beforeSummaryRollback = runs();
+    await restartSrv({ ...codexEnv, FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_WORKER_HARNESS: "codex" });
+    const routeBackRes = await post("/api/slots/1/summary", {});
+    const routeBack = (await routeBackRes.json()) as { error?: string };
+    check("FLEET_WORKER_ROUTE_SUMMARY=claude selects the old session lane without a Codex fallback",
+      routeBackRes.status === 500 && (routeBack.error ?? "").includes('harness "codex" cannot host a worker session')
+      && runs() === beforeSummaryRollback,
+      `${routeBackRes.status} ${routeBack.error ?? ""} codexRuns=${runs()}/${beforeSummaryRollback}`);
+
+    // Stand-in remains precedence 1 even when the explicit rollback is present, and preserves
+    // the pre-migration SummaryResult defaults without starting either production transport.
     await restartSrv({ ...codexEnv, FLEET_WORKER_ROUTE_SUMMARY: "claude", FLEET_SUMMARY_CMD: `${ROOT}/fakesum` });
     const backRes = await post("/api/slots/1/summary", {});
     const back = (await backRes.json()) as { summary?: string; model?: string; backend?: string; usage?: unknown };
-    check("FLEET_WORKER_ROUTE_SUMMARY=claude preserves the old summary path and response defaults",
+    check("FLEET_SUMMARY_CMD remains first and preserves the old summary response defaults",
       backRes.ok && back.summary === "fake summary of the session" && back.backend === undefined
-      && back.usage === undefined && back.model !== "gpt-5.3-codex-spark", JSON.stringify(back));
+      && back.usage === undefined && back.model !== "gpt-5.3-codex-spark" && runs() === beforeSummaryRollback,
+      `${JSON.stringify(back)} codexRuns=${runs()}/${beforeSummaryRollback}`);
   } finally {
     // The wrapper's initial srv command prepends ROOT solely so the later Watch family's fake
     // `pi` is observable. Our new early restarts would otherwise be the first ones to drop that

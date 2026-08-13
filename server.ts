@@ -6,6 +6,7 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
+  laneWatchEventKind, laneWatchPayload, type LaneWatchEventKind, type LaneWatchEventPayload,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
@@ -1066,6 +1067,70 @@ interface Watch {
   lastResult: string | null;
 }
 
+type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
+interface FleetEvent {
+  id: string;
+  watchId: string;
+  receiverSlot: number;
+  // Slot ids are reusable. This is the same occupant binding used by MAIN-direct provenance:
+  // the slot number identifies the row, openedAt + sessionId identify the session in that row.
+  receiverOpenedAt: number;
+  receiverSessionId: string | null;
+  receiverIdleSec: number;
+  subjectSlot: number;
+  subjectBranch: string;
+  kind: LaneWatchEventKind;
+  payload: LaneWatchEventPayload;
+  createdAt: number;
+  status: FleetEventStatus;
+  attempts: number;
+  deliveredAt: number | null;
+  acknowledgedAt: number | null;
+}
+
+function fleetEventFrom(raw: unknown): FleetEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const e = raw as Partial<FleetEvent>;
+  if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
+    || typeof e.watchId !== "string" || !/^[a-z0-9]+$/.test(e.watchId)
+    || !Number.isInteger(e.receiverSlot) || (e.receiverSlot ?? 0) <= 0
+    || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
+    || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
+    || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
+    || !Number.isInteger(e.subjectSlot) || (e.subjectSlot ?? 0) <= 0
+    || typeof e.subjectBranch !== "string"
+    || (e.kind !== "lane-ready" && e.kind !== "host-commit-ready")
+    || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone"].includes(String(e.status))
+    || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
+    || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
+    || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
+    || !(typeof e.acknowledgedAt === "number" || e.acknowledgedAt === null)) return null;
+  const p = e.payload as Partial<LaneWatchEventPayload> | undefined;
+  if (!p || typeof p.ahead !== "number" || !Number.isFinite(p.ahead)
+    || typeof p.dirty !== "number" || !Number.isFinite(p.dirty)
+    || typeof p.idleMs !== "number" || !Number.isFinite(p.idleMs) || p.idleMs < 0
+    || typeof p.observed !== "boolean"
+    || !(typeof p.gitOp === "boolean" || p.gitOp === null)
+    || !(p.awaiting === "owner" || p.awaiting === null)
+    || typeof p.hostCommits !== "boolean") return null;
+  // Rebuild the payload field-by-field. Extra persisted keys (especially text/command) never
+  // cross the load boundary and therefore can never become pane input after a restart.
+  const valid = e as FleetEvent;
+  const payload = p as LaneWatchEventPayload;
+  return {
+    id: valid.id, watchId: valid.watchId,
+    receiverSlot: valid.receiverSlot, receiverOpenedAt: valid.receiverOpenedAt,
+    receiverSessionId: valid.receiverSessionId, receiverIdleSec: valid.receiverIdleSec,
+    subjectSlot: valid.subjectSlot, subjectBranch: valid.subjectBranch,
+    kind: valid.kind, payload: {
+      ahead: payload.ahead, dirty: payload.dirty, idleMs: payload.idleMs, observed: payload.observed,
+      gitOp: payload.gitOp, awaiting: payload.awaiting, hostCommits: payload.hostCommits,
+    },
+    createdAt: valid.createdAt, status: valid.status, attempts: valid.attempts,
+    deliveredAt: valid.deliveredAt, acknowledgedAt: valid.acknowledgedAt,
+  };
+}
+
 // a queued feature request. Owner-created or submitted via the public /intake address
 // (e.g. a CEO emailing features in). NEVER auto-sent: a task only leaves `pending` when
 // the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
@@ -1394,6 +1459,7 @@ let shares: Share[] = [];
 let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
 let watches: Watch[] = [];
+let fleetEvents: FleetEvent[] = [];
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
 // fleet.json rather than rewriting the append-only audit ledger: that makes "nobody was available"
@@ -1612,6 +1678,11 @@ const AUTO_GRACE_MS = 600_000; // how long past due the idle gate may defer befo
 // its ability to schedule a check-in, and vice versa.
 const WATCH_MAX_PER_SLOT = 5;
 const WATCH_KEEP_SPENT = 5; // fired/disarmed watches kept per slot before the oldest are pruned
+// At most five delivery debts may exist for one receiver. Together with five acknowledged/gone
+// tail rows this makes the event array bounded without ever pruning pending, uncertain or
+// delivered-but-unacknowledged facts. A full debt budget refuses the next subscription loudly.
+const FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT;
+const FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT;
 // THE TWO SCHEDULER TICKS, deployment parameters like ANALYSIS_TICK_MS / AUTO_REVIEW_MS rather
 // than laws. They were literals at the setInterval calls, and that made them the floor under every
 // suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
@@ -1912,10 +1983,11 @@ type AuditEvent =
   // the verb kills the process that would otherwise report its own result.
   | "deploy"
   | "autos_switch"
-  // the doneLooking outbound channel (Watch): one row when a subscription is delivered, one when
-  // it is disarmed without delivering. The pair is what makes "the machine noticed and said so"
-  // countable at all — the same reason `stalled` was given a name before anything acted on it.
+  // the doneLooking outbound channel (Watch): Watch rows record signal capture/skip; the typed
+  // FleetEvent rows below record transport, acknowledgement and terminal receiver loss separately.
   | "watch_fire" | "watch_skip"
+  | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_ack"
+  | "fleet_event_receiver_gone" | "fleet_event_prune"
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
@@ -2032,7 +2104,8 @@ function saveState(): void {
   for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
-  const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches, tasks,
+  const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
+    events: fleetEvents, tasks,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -3561,7 +3634,12 @@ function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Resp
   // self-scheduling ("at most one check-in per idle point") should not depend on the caller here.
   const dup = watches.find((w) => w.armed && w.slot === s.id && w.target === t.id);
   if (dup) return json({ ok: true, watch: dup, existing: true });
-  if (watches.filter((w) => w.armed && w.slot === s.id).length >= WATCH_MAX_PER_SLOT)
+  // An armed Watch reserves one future event slot. Delivered-but-unacknowledged and uncertain
+  // events reserve theirs until the receiver closes them; otherwise repeated subscribe/fire
+  // cycles could grow fleet.json without bound while the facts we may not prune accumulate.
+  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === s.id
+    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+  if (watches.filter((w) => w.armed && w.slot === s.id).length + deliveryDebts >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
     return json({ error: `max ${WATCH_MAX_PER_SLOT} active watches per slot` }, 400);
   const w: Watch = {
     id: randomBytes(4).toString("hex"),
@@ -3722,6 +3800,52 @@ function pruneSpentWatches(slotId: number): void {
   watches = watches.filter((w) => !drop.has(w.id));
 }
 
+function pruneFleetEvents(slotId: number): void {
+  const terminal = fleetEvents.filter((e) => e.receiverSlot === slotId
+    && (e.status === "acknowledged" || e.status === "receiver-gone"))
+    .sort((a, b) => (a.acknowledgedAt ?? a.createdAt) - (b.acknowledgedAt ?? b.createdAt));
+  if (terminal.length <= FLEET_EVENT_KEEP_TERMINAL) return;
+  const drop = new Set(terminal.slice(0, terminal.length - FLEET_EVENT_KEEP_TERMINAL).map((e) => e.id));
+  for (const id of drop) audit("fleet_event_prune", slotId, id);
+  fleetEvents = fleetEvents.filter((e) => !drop.has(e.id));
+}
+
+function fleetEventReceiver(e: FleetEvent): Slot | null {
+  const s = slotFrom(e.receiverSlot);
+  return s?.cwd && s.openedAt === e.receiverOpenedAt && s.sessionId === e.receiverSessionId ? s : null;
+}
+
+function markFleetEventReceiverGone(slotId: number): boolean {
+  let dirty = false;
+  for (const e of fleetEvents) {
+    if (e.receiverSlot !== slotId || e.status === "acknowledged" || e.status === "receiver-gone") continue;
+    e.status = "receiver-gone";
+    audit("fleet_event_receiver_gone", slotId, e.id);
+    dirty = true;
+  }
+  if (dirty) pruneFleetEvents(slotId);
+  return dirty;
+}
+
+async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
+  const event = fleetEvents.find((e) => e.id === id);
+  if (!event) return json({ error: "unknown event" }, 404);
+  if (event.receiverSlot !== s.id) return json({ error: "event belongs to another slot" }, 409);
+  if (event.receiverOpenedAt !== s.openedAt || event.receiverSessionId !== s.sessionId)
+    return json({ error: "event belongs to a replaced session" }, 409);
+  if (event.status === "acknowledged") return json({ ok: true, existing: true, event });
+  // send-uncertain is intentionally acknowledgeable: the only principal that could have seen the
+  // possibly-sent pane text can resolve the crash boundary. Pending was definitely never offered.
+  if (event.status !== "delivered" && event.status !== "send-uncertain")
+    return json({ error: "event is not acknowledgeable", status: event.status }, 409);
+  event.status = "acknowledged";
+  event.acknowledgedAt = Date.now();
+  audit("fleet_event_ack", s.id, event.id);
+  pruneFleetEvents(s.id);
+  await saveStateNow();
+  return json({ ok: true, existing: false, event });
+}
+
 // slot teardown (open OR kill), from both sides, and they are NOT symmetric:
 //   · the WATCHER is gone → nobody left to tell. Drop the row.
 //   · the TARGET is gone → the news can never come. Disarm with the reason ATTACHED rather than
@@ -3729,6 +3853,9 @@ function pruneSpentWatches(slotId: number): void {
 //     waiting, and "still waiting" is the state this feature exists to make impossible to believe
 //     falsely. The owner sees "target session ended" on /api/sessions instead of an empty list.
 function dropWatchesFor(slotId: number): void {
+  // Events are durable independently of their transport Watch. A dead/replaced receiver turns
+  // every still-open delivery into an explicit terminal fact; it is never deleted with the Watch.
+  markFleetEventReceiverGone(slotId);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
     if (w.target !== slotId || !w.armed) continue;
@@ -6274,15 +6401,19 @@ async function tickMigrate(): Promise<void> {
 //
 // Runs on the AUTOS cadence, not the review cadence, because what it does is DELIVER: same tick
 // speed, same choke-point (canDeliver), same master stop. FLEET_AUTO_REVIEW_MS=0 does not disable
-// it — it spawns no agent and costs nothing while no watch is armed.
+// it — it spawns no agent and costs nothing while no Watch is armed and no event is pending.
 let watchTickBusy = false;
 async function tickWatches(): Promise<void> {
-  if (!watches.some((w) => w.armed)) return; // the common case: no armed watch, no tmux calls at all
+  if (!watches.some((w) => w.armed) && !fleetEvents.some((e) => e.status === "pending")) return;
   if (watchTickBusy) return; // canDeliver shells out (ps/pgrep); a slow round must not overlap
   watchTickBusy = true;
   try {
     const now = Date.now();
     let dirty = false;
+
+    // FACT 1: a standing lane signal spends exactly one Watch by minting exactly one durable,
+    // typed event. Persist the pair before considering transport; after a crash the Watch is
+    // already spent and the event remains pending, so the level trigger cannot mint a twin.
     for (const w of watches) {
       if (!w.armed) continue;
       const s = slotFrom(w.slot);
@@ -6300,18 +6431,45 @@ async function tickWatches(): Promise<void> {
       const sig = laneSignalView(t, now);
       const watchSignal = laneWatchSignal(sig, AUTO_REVIEW_IDLE_MS);
       if (!watchSignal) continue; // neither completion predicate yet — stay armed, ask again
-      // THE UNOBSERVED-PANE HOLE, and it is this trigger's alone to close. canDeliver's busy gate
-      // is `now - s.lastOutput < idleMs`, and `lastOutput` is 0 until poll() sees a first byte —
-      // which that subtraction turns into ~1.79e12 ms, i.e. "idle forever", i.e. permission. It is
-      // the same arithmetic lane-signals.ts calls out for `stalled`, and every other caller of
-      // canDeliver is shielded from it by TIME: an auto is created with a future nextAt, a dispatch
-      // lane waives the gate outright. A watch is the one path that can become deliverable in the
-      // same second its receiver's pane was opened — measured here, a receiver that had produced
-      // nothing yet was handed the message despite idleSec:3600.
-      // So an UNOBSERVED pane is unknown, never idle: hold, exactly as a busy one is held. It
-      // resolves itself the moment the pane prints anything, and idleSec:0 remains the explicit
-      // opt-out for a caller that wants the message regardless.
-      if (w.idleSec > 0 && s.lastOutput === 0) continue;
+      let event = fleetEvents.find((e) => e.watchId === w.id);
+      if (!event) {
+        event = {
+          id: randomBytes(12).toString("hex"), watchId: w.id,
+          receiverSlot: s.id, receiverOpenedAt: s.openedAt, receiverSessionId: s.sessionId,
+          receiverIdleSec: w.idleSec,
+          subjectSlot: t.id, subjectBranch: t.worktree?.branch ?? w.targetBranch,
+          kind: laneWatchEventKind(watchSignal), payload: laneWatchPayload(sig),
+          createdAt: now, status: "pending", attempts: 0,
+          deliveredAt: null, acknowledgedAt: null,
+        };
+        fleetEvents = [...fleetEvents, event];
+      }
+      w.armed = false;
+      w.firedAt = event.createdAt;
+      w.lastResult = `event ${event.id} created`;
+      audit("watch_fire", w.slot, `${w.id} event=${event.id} target=${w.target}`);
+      pruneSpentWatches(w.slot);
+      dirty = true;
+      await saveStateNow();
+      console.log(`watch ${w.id}: created event ${event.id} for slot ${w.slot}`);
+    }
+
+    // FACT 2: pane delivery is only a transport attempt for a pre-existing event. Pending is the
+    // sole retryable state. `send-uncertain` is persisted BEFORE tmux is touched; a process death
+    // anywhere after that point is visible after restart and is never blindly replayed.
+    for (const event of fleetEvents) {
+      if (event.status !== "pending") continue;
+      const s = fleetEventReceiver(event);
+      if (!s) {
+        event.status = "receiver-gone";
+        audit("fleet_event_receiver_gone", event.receiverSlot, event.id);
+        pruneFleetEvents(event.receiverSlot);
+        dirty = true;
+        continue;
+      }
+      // THE UNOBSERVED-PANE HOLE belongs to transport now, not signal capture. lastOutput=0 is
+      // unknown rather than epoch-idle; idleSec:0 remains the explicit opt-out.
+      if (event.receiverIdleSec > 0 && s.lastOutput === 0) continue;
       // Two policy gates are waived for this one-shot: quiet hours, as for a one-shot Auto, and the
       // foreign-harness WORK-PROMPT policy. A Watch exists only after an explicit Owner/Self
       // subscription and its text is fixed server-generated completion facts, never caller-chosen
@@ -6319,46 +6477,45 @@ async function tickWatches(): Promise<void> {
       // kill-switch, fresh agent-liveness and busy/observed gates remain: a paused fleet types
       // nothing, and text into a dead pane's bare shell would execute as shell commands.
       const verdict = await canDeliver(s, {
-        now, harness: false, quietHours: false, idleMs: w.idleSec * 1000,
+        now: Date.now(), harness: false, quietHours: false, idleMs: event.receiverIdleSec * 1000,
       });
       if (!verdict.ok) {
-        // "busy" and "kill-switch" keep the watch ARMED and retry — the news does not expire, and a
-        // notification dropped because its receiver happened to be working is precisely the hole
-        // the background-watcher crutch had. Only a dead pane spends it: nothing can be typed
-        // there, and the pane will not come back as the same session.
+        // busy/kill-switch keep the event pending. Only a dead endpoint is terminal.
         if (verdict.gate !== "not-alive") continue;
-        w.armed = false;
-        w.lastResult = "skipped — no agent running in pane";
-        audit("watch_skip", w.slot, w.lastResult);
+        event.status = "receiver-gone";
+        audit("fleet_event_receiver_gone", event.receiverSlot, `${event.id} no agent running in pane`);
+        pruneFleetEvents(event.receiverSlot);
         dirty = true;
         continue;
       }
-      const text = laneWatchMessage(t.id, t.worktree?.branch ?? "?", sig, watchSignal);
+      event.status = "send-uncertain";
+      event.attempts++;
+      await saveStateNow();
+      const text = laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
       try {
         await sendText(s, text, true);
       } catch (e) {
-        // sendText throws on a tmux failure; record the truth and spend the watch rather than
-        // retry-storming a pane that just died between the alive check and the send
-        w.armed = false;
-        w.lastResult = `failed: ${e instanceof Error ? e.message : e}`.slice(0, 120);
-        audit("watch_skip", w.slot, w.lastResult);
-        dirty = true;
+        // tmux may have accepted some or all of the operation before reporting failure. Preserve
+        // the pre-send marker exactly; neither "failed" nor "delivered" is an observed fact.
+        audit("fleet_event_send_uncertain", event.receiverSlot,
+          `${event.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
         continue;
       }
-      s.history = [...s.history, { text, ts: now }].slice(-MAX_HISTORY);
+      const deliveredAt = Date.now();
+      s.history = [...s.history, { text, ts: deliveredAt }].slice(-MAX_HISTORY);
       saveHistory(s);
       // source "auto", not a sixth vocabulary word: the prompt log's "auto" already means "the
       // machine typed this, unattended" and three distinct machine paths share it (scheduled autos,
       // the dispatcher's founding brief, the merge idle guard). The audit trail below is where a
       // watch is told apart from those.
-      logPrompt(s, text, "auto", now);
-      w.armed = false;
-      w.firedAt = now;
-      w.lastResult = "sent";
-      audit("watch_fire", w.slot, `${w.id} target=${w.target}`);
-      pruneSpentWatches(w.slot);
-      dirty = true;
-      console.log(`watch ${w.id}: told slot ${w.slot} that slot ${w.target} looks done`);
+      logPrompt(s, text, "auto", deliveredAt);
+      event.status = "delivered";
+      event.deliveredAt = deliveredAt;
+      const watch = watches.find((w) => w.id === event.watchId);
+      if (watch) watch.lastResult = "sent"; // legacy Watch surface; the event remains the authority
+      audit("fleet_event_delivered", event.receiverSlot, event.id);
+      await saveStateNow();
+      console.log(`event ${event.id}: told slot ${event.receiverSlot} that slot ${event.subjectSlot} looks done`);
     }
     if (dirty) saveState();
   } finally {
@@ -10051,6 +10208,12 @@ if (existsSync(STATE_FILE)) {
         && typeof (x as Watch).target === "number" && typeof (x as Watch).targetCwd === "string"
         && typeof (x as Watch).targetBranch === "string" && typeof (x as Watch).idleSec === "number"
         && typeof (x as Watch).armed === "boolean");
+    // Legacy state has no `events` member and therefore loads as an empty event trail. In
+    // particular, an old spent Watch whose lastResult says "sent" is not upgraded into a
+    // delivery claim: Fleet did not observe the typed event, delivery or acknowledgement.
+    if (Array.isArray((persisted as { events?: unknown }).events))
+      fleetEvents = ((persisted as { events: unknown[] }).events)
+        .map(fleetEventFrom).filter((e): e is FleetEvent => e !== null);
     const pap = (persisted as { auditPings?: unknown }).auditPings;
     if (pap && typeof pap === "object" && !Array.isArray(pap))
       for (const [key, raw] of Object.entries(pap as Record<string, unknown>)) {
@@ -10404,6 +10567,13 @@ watches = watches.filter((w) => {
   const t = slotFrom(w.target);
   return !!s?.cwd && !!t?.cwd && t.cwd === w.targetCwd && t.worktree?.branch === w.targetBranch;
 });
+// An event does not disappear merely because its transport endpoint did. Bind it to the exact
+// restored occupant; an absent/recycled receiver is a durable terminal fact visible to the owner.
+for (const e of fleetEvents) {
+  if (e.status === "acknowledged" || e.status === "receiver-gone" || fleetEventReceiver(e)) continue;
+  e.status = "receiver-gone";
+}
+for (const id of new Set(fleetEvents.map((e) => e.receiverSlot))) pruneFleetEvents(id);
 // a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
 // slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
 // instead of leaving it "sent" forever with nothing running
@@ -12344,6 +12514,8 @@ Bun.serve<WSData>({
         observed: s.lastOutput > 0,
         autos: autos.filter((a) => a.slot === s.id),
         watches: watches.filter((w) => w.slot === s.id),
+        events: fleetEvents.filter((e) => e.receiverSlot === s.id
+          && e.receiverOpenedAt === s.openedAt && e.receiverSessionId === s.sessionId),
       });
     }
 
@@ -12452,6 +12624,14 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible" }, 409);
       return createWatchForSlot(s, await readJson(req));
+    }
+
+    const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
+    if (selfEventAck && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return acknowledgeFleetEvent(s, selfEventAck[1]);
     }
 
     // Main-session succession is the other non-lane-only self capability. The token identifies
@@ -12812,6 +12992,10 @@ Bun.serve<WSData>({
         // the route — but an armed subscription nobody can SEE is the same silent state this
         // feature exists to remove, so it rides the owner poll from the first commit.
         watches,
+        // Typed Watch completions are durable objects; pane text is only their transport. The
+        // owner sees every receiver binding and terminal/uncertain state here, including events
+        // whose receiver has gone and that therefore cannot appear in any current /api/self row.
+        events: fleetEvents,
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },

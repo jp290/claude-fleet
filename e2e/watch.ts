@@ -14,17 +14,31 @@
 // fixed sleep.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { laneWatchMessage, laneWatchSignal, type LaneSignalView } from "../lane-signals";
+import { laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+  type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
 import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
   armed: boolean; firedAt: number | null; lastResult: string | null;
 }
+type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
+interface FleetEventRow {
+  id: string; watchId: string;
+  receiverSlot: number; receiverOpenedAt: number; receiverSessionId: string | null; receiverIdleSec: number;
+  subjectSlot: number; subjectBranch: string;
+  kind: "lane-ready" | "host-commit-ready"; payload: LaneWatchEventPayload;
+  createdAt: number; status: FleetEventStatus; attempts: number;
+  deliveredAt: number | null; acknowledgedAt: number | null;
+}
 const watchRows = async (): Promise<WatchRow[]> =>
   ((await (await get("/api/sessions")).json()) as { watches: WatchRow[] }).watches;
 const watchRow = async (id: string): Promise<WatchRow | undefined> =>
   (await watchRows()).find((w) => w.id === id);
+const eventRows = async (): Promise<FleetEventRow[]> =>
+  ((await (await get("/api/sessions")).json()) as { events: FleetEventRow[] }).events;
+const eventForWatch = async (watchId: string): Promise<FleetEventRow | undefined> =>
+  (await eventRows()).find((e) => e.watchId === watchId);
 const freeSlot = async (): Promise<number> =>
   ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
     .slots.find((x) => x.cwd === null)?.id ?? 0;
@@ -34,8 +48,31 @@ const selfWatch = (tok: string | null, body: unknown): Promise<Response> =>
     headers: { "content-type": "application/json", ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
     body: JSON.stringify(body),
   });
+const selfGet = (tok: string): Promise<Response> =>
+  fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": tok } });
+const ackEvent = (tok: string | null, id: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/events/${id}/ack`, {
+    method: "POST",
+    headers: tok === null ? {} : { "x-fleet-self-token": tok },
+  });
 
 export async function run(): Promise<void> {
+  // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
+  // call and its return. Pin the ordering that creates that observable crash state, then exercise
+  // its persisted image below: marker -> awaited state write -> send, and pending is the sole
+  // transport input. Moving any one of those four facts makes this check red.
+  const serverSource = readFileSync(`${ROOT}/server.ts`, "utf8");
+  const tickStart = serverSource.indexOf("async function tickWatches()");
+  const tickSource = tickStart < 0 ? "" : serverSource.slice(tickStart,
+    serverSource.indexOf("// The one-line receiver text", tickStart));
+  const uncertainAt = tickSource.indexOf('event.status = "send-uncertain";');
+  const persistedAt = tickSource.indexOf("await saveStateNow();", uncertainAt);
+  const sendAt = tickSource.indexOf("await sendText(s, text, true);", persistedAt);
+  check("watch transport persists send-uncertain before sendText and retries pending only",
+    tickSource.includes('if (event.status !== "pending") continue;')
+    && uncertainAt >= 0 && persistedAt > uncertainAt && sendAt > persistedAt,
+    `${uncertainAt}:${persistedAt}:${sendAt}`);
+
   // --- THE HOST-COMMIT SIBLING. The isolated server deliberately runs with foreign-harness
   // automation OFF (a policy family later proves that refusal). The pure selector below isolates
   // the TARGET's fenced-host-commit completion shape; the runtime blocks below separately prove
@@ -47,11 +84,15 @@ export async function run(): Promise<void> {
     check("watch selector accepts the host-committed dirty+zero-ahead completion shape",
       signal === "host-commit-looking", String(signal));
     if (signal) {
-      const text = laneWatchMessage(7, "host-branch", h, signal);
+      const text = laneWatchMessage(7, "host-branch", {
+        id: "typedfixture", kind: laneWatchEventKind(signal), payload: laneWatchPayload(h),
+      });
       check("host-commit watch text names the weaker fact and exact host action",
         text.includes("LOOKS ready for a host commit")
         && text.includes("The work is UNCOMMITTED, 0 ahead is expected for this harness, and the next step is a host commit via POST /api/slots/7/commit.")
-        && text.includes("server's weaker predicate") && text.includes("NOT a report from that lane"), text);
+        && text.includes("server's weaker predicate") && text.includes("NOT a report from that lane")
+        && text.includes("[event typedfixture]")
+        && text.includes("POST /api/self/events/typedfixture/ack"), text);
     }
   }
 
@@ -128,34 +169,38 @@ export async function run(): Promise<void> {
       targetReady, String(targetReady));
     await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
     const paused = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
-    check("kill-switch keeps the eligible pi-unfenced Watch armed and delivers no notification",
-      paused?.armed === true && paused.lastResult === null
+    const pausedEvent = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
+    check("signal capture spends the pi-unfenced Watch and persists exactly one event even while transport is paused",
+      paused?.armed === false && pausedEvent?.status === "pending"
+      && (await eventRows()).filter((e) => e.watchId === subscribedJ.watch?.id).length === 1
       && !(await plogRead()).some((e) => e.slot === uId
-        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)), JSON.stringify(paused));
+        && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)),
+      JSON.stringify({ watch: paused, event: pausedEvent }));
     check("watch pi-unfenced kill-switch fixture: owner releases automation",
       (await post("/api/autos/switch", { on: true })).ok);
 
-    let delivered: WatchRow | undefined;
-    for (let i = 0; i < 45 && delivered?.lastResult !== "sent"; i++) {
+    let delivered: FleetEventRow | undefined;
+    for (let i = 0; i < 45 && delivered?.status !== "delivered"; i++) {
       await Bun.sleep(1000);
-      delivered = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
+      delivered = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
     }
     const oldPolicySkip = "skipped — harness pi-unfenced is not automatable";
-    check("after kill-switch release the explicit Watch reaches live pi-unfenced once: sent, spent, never the old policy skip",
-      delivered?.lastResult === "sent" && delivered.armed === false
-      && !(delivered.lastResult ?? "").includes(oldPolicySkip), JSON.stringify(delivered));
+    check("after kill-switch release the pending event reaches live pi-unfenced once as delivered, never acked by tmux",
+      delivered?.status === "delivered" && delivered.attempts === 1
+      && delivered.acknowledgedAt === null, JSON.stringify(delivered));
     const uMessages = (await plogRead()).filter((e) => e.slot === uId
       && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`));
     check("the fixed completion notification has exactly one matching prompt-log row on pi-unfenced",
       uMessages.length === 1, `${uMessages.length}: ${uMessages.map((m) => m.text.slice(0, 80)).join(" | ")}`);
     await Bun.sleep(AUTOS_TICK_MS * 4 + 1500);
     const uAfter = subscribedJ.watch?.id ? await watchRow(subscribedJ.watch.id) : undefined;
-    check("the pi-unfenced Watch remains one-shot across later ticks and never records the old skip",
-      uAfter?.armed === false && uAfter.lastResult === "sent"
+    const uEventAfter = subscribedJ.watch?.id ? await eventForWatch(subscribedJ.watch.id) : undefined;
+    check("the pi-unfenced event remains one-shot across later ticks and never records the old skip",
+      uAfter?.armed === false && uAfter.lastResult === "sent" && uEventAfter?.status === "delivered"
       && (await plogRead()).filter((e) => e.slot === uId
         && e.text.startsWith(`[fleet] slot ${uTgt.slot} (${uTgt.branch})`)).length === 1
       && !(await watchRows()).some((w) => w.slot === uId && (w.lastResult ?? "").includes(oldPolicySkip)),
-      JSON.stringify(uAfter));
+      JSON.stringify({ watch: uAfter, event: uEventAfter }));
     await post(`/api/slots/${uTgt.slot}/kill`, {});
     await post(`/api/slots/${uId}/kill`, {});
   }
@@ -171,6 +216,13 @@ export async function run(): Promise<void> {
   const bId = await freeSlot();
   const openB = bId ? await post(`/api/slots/${bId}/open`, { cwd: REPO }) : null;
   check("watch setup: a second plain receiver slot is open", !!openB?.ok, `${bId} ${openB?.status}`);
+  // Read both credentials before any Watch can inject into either pane. paneEnv is itself a
+  // pane exchange; racing it with the transport under test can consume its unique marker.
+  const aTok = await paneEnv(`s${aId}`, "FLEET_SELF_TOKEN") ?? "";
+  const bTok = await paneEnv(`s${bId}`, "FLEET_SELF_TOKEN") ?? "";
+  check("event ack setup: both receiver panes carry distinct scoped tokens before subscription",
+    /^[0-9a-f]{32}$/.test(aTok) && /^[0-9a-f]{32}$/.test(bTok) && aTok !== bTok,
+    `${aTok}:${bTok}`);
   // Slots are recyclable, while the prompt ledger is append-only. Count only rows written after
   // these two receiver identities were opened; an earlier occupant's Watch is not this fixture's.
   const ownerWatchLogStart = (await plogRead()).length;
@@ -311,11 +363,12 @@ export async function run(): Promise<void> {
     // come" indistinguishable from inside the session, the one belief this surface exists to make
     // impossible. Proven at the end of this block, after the peers are killed. ---
     const selfRow = await (await fetch(`${BASE}/api/self`, { headers: { "x-fleet-self-token": cTok } })).json() as
-      { slot: number; watches?: WatchRow[]; autos?: unknown[] };
-    check("GET /api/self serves the session its OWN watches, beside its autos",
-      Array.isArray(selfRow.watches) && Array.isArray(selfRow.autos)
+      { slot: number; watches?: WatchRow[]; autos?: unknown[]; events?: FleetEventRow[] };
+    check("GET /api/self serves the session its OWN watches and typed events beside its autos",
+      Array.isArray(selfRow.watches) && Array.isArray(selfRow.autos) && Array.isArray(selfRow.events)
       && selfRow.watches.some((w) => w.id === swJ.watch?.id)
-      && selfRow.watches.every((w) => w.slot === cId),
+      && selfRow.watches.every((w) => w.slot === cId)
+      && selfRow.events.every((e) => e.receiverSlot === cId),
       JSON.stringify(selfRow.watches?.map((w) => `${w.slot}:${w.id}`)));
 
     // --- the cap. WATCH_MAX_PER_SLOT is shared, not re-implemented per principal, and this is what
@@ -367,7 +420,7 @@ export async function run(): Promise<void> {
     && (await watchRows()).filter((w) => w.slot === aId && w.armed).length === 1,
     `${wDup.watch?.id} vs ${wAJ.watch.id}`);
 
-  // the busy receiver: same target, but its pane is loud and the gate is an hour. The wait for
+  // the busy receiver: same target, but its pane is loud and the gate is two seconds. The wait for
   // lastOutput>0 is what makes this a test of the BUSY gate rather than a race with it: until
   // poll() has seen a first byte the field is 0, and `now - 0` is ~1.79e12 ms — the arithmetic
   // that made this very check fail on the first run by handing the message to a pane that had
@@ -389,20 +442,33 @@ export async function run(): Promise<void> {
   }
   check("watch setup: the busy receiver's pane has actually been observed (lastOutput>0)",
     observed > 0, String(observed));
-  const wB = (await (await post(`/api/slots/${bId}/watch`, { target: tgt.slot, idleSec: 3600 })).json()) as
+  const wB = (await (await post(`/api/slots/${bId}/watch`, { target: tgt.slot, idleSec: 2 })).json()) as
     { watch: WatchRow };
   check("subscribe: a busy receiver may also watch the same lane", !!wB.watch?.id, JSON.stringify(wB).slice(0, 120));
 
-  // --- the fire. Poll the watch row, bounded and loud: the git facts refresh on the 10s tickGit,
-  // so this is the one genuinely slow wait in the section. ---
-  let fired: WatchRow | undefined;
-  for (let i = 0; i < 45 && !(fired?.lastResult === "sent"); i++) {
-    await Bun.sleep(1000);
-    fired = await watchRow(wAJ.watch.id);
+  // --- signal -> event. Keep B loud until BOTH events exist. Event creation is independent of
+  // receiver availability, so A may be delivered while B must remain pending. ---
+  let eventA: FleetEventRow | undefined;
+  let eventB: FleetEventRow | undefined;
+  for (let i = 0; i < 180 && !(eventA?.status === "delivered" && eventB?.status === "pending"); i++) {
+    await tmuxOut("send-keys", "-t", `s${bId}`, "echo watch-still-busy", "Enter");
+    await Bun.sleep(250);
+    eventA = await eventForWatch(wAJ.watch.id);
+    eventB = await eventForWatch(wB.watch.id);
   }
-  check("the watch fired by itself when the lane went done-looking — no owner click anywhere",
-    fired?.lastResult === "sent" && fired.armed === false && typeof fired.firedAt === "number",
-    JSON.stringify(fired));
+  check("one signal creates exactly one durable event even for a busy receiver",
+    eventB?.status === "pending" && eventB.attempts === 0
+    && (await eventRows()).filter((e) => e.watchId === wB.watch.id).length === 1,
+    JSON.stringify(eventB));
+  const fired = await watchRow(wAJ.watch.id);
+  const busySpent = await watchRow(wB.watch.id);
+  check("signal capture spends both Watches before transport; the free receiver's event is delivered, not acked",
+    fired?.armed === false && busySpent?.armed === false
+    && eventA?.status === "delivered" && eventA.attempts === 1 && eventA.acknowledgedAt === null,
+    JSON.stringify({ fired, busySpent, eventA }));
+  check("owner visibility exposes the typed event array independently of the Watch rows",
+    (await eventRows()).some((e) => e.id === eventA?.id)
+    && (await eventRows()).some((e) => e.id === eventB?.id));
 
   // --- WHAT IT SAID. Asserted against the prompt log, which stores the text verbatim, not against
   // capture-pane (a ~450-char line wraps at the pane width and would make the assertion a test of
@@ -417,46 +483,154 @@ export async function run(): Promise<void> {
     msg.includes("1 ahead / 0 dirty"), msg.slice(0, 200));
   check("the message says LOOKS done, and says why that is not 'is done'",
     msg.includes("LOOKS done") && !/\bis done\b/.test(msg)
-    && msg.includes("NOT a report from that lane") && msg.includes("never land on this message alone"),
+    && msg.includes("NOT a report from that lane") && msg.includes("never land on this message alone")
+    && msg.includes(`[event ${eventA?.id}]`)
+    && msg.includes(`POST /api/self/events/${eventA?.id}/ack`),
     msg.slice(0, 260));
   const capA = await tmuxOut("capture-pane", "-t", `s${aId}`, "-p");
   check("the notification is really in the receiving pane, not just the log",
     capA.out.includes("[fleet] slot "), capA.out.slice(-200));
 
-  // --- EXACTLY ONCE. The predicate is LEVEL-triggered — the lane stays idle+clean+ahead forever —
-  // so an armed-forever watch would be a nudge every tick. Several ticks later: still one message. ---
-  await Bun.sleep(AUTOS_TICK_MS * 4 + 1500);
-  const after = await watchRow(wAJ.watch.id);
-  check("a spent watch stays spent — later ticks deliver nothing more",
-    after?.armed === false
-    && (await ownerWatchMessages(aId)).length === 1,
-    JSON.stringify(after));
+  check("busy transport owes the already-created event without typing or minting another",
+    eventB?.status === "pending" && (await ownerWatchMessages(bId)).length === 0
+    && (await eventRows()).filter((e) => e.watchId === wB.watch.id).length === 1,
+    JSON.stringify(eventB));
 
-  // --- the busy receiver, over the same window: the news does not EXPIRE. A notification dropped
-  // because its receiver happened to be working is the exact hole the background-watcher crutch
-  // had, so the idle gate holds the watch ARMED instead of spending it. ---
-  const busy = await watchRow(wB.watch.id);
-  check("a busy receiver's watch is held, not spent — it still owes the message",
-    busy?.armed === true && busy.lastResult === null
-    && (await ownerWatchMessages(bId)).length === 0,
-    JSON.stringify(busy));
+  // --- Ack is a session-bound act. Foreign slot and unknown id fail before the right principal
+  // acknowledges; the identical second Ack returns the same terminal fact. ---
+  const foreignAck = eventA ? await ackEvent(bTok, eventA.id) : new Response(null, { status: 599 });
+  check("a foreign Self principal cannot acknowledge another slot's event",
+    foreignAck.status === 409 && (await eventForWatch(wAJ.watch.id))?.status === "delivered",
+    `${foreignAck.status} ${await foreignAck.text()}`);
+  const falseAck = await ackEvent(aTok, "doesnotexist");
+  check("an unknown event id is 4xx and changes no real event", falseAck.status === 404
+    && (await eventForWatch(wAJ.watch.id))?.status === "delivered", String(falseAck.status));
+  const ackA = eventA ? await ackEvent(aTok, eventA.id) : new Response(null, { status: 599 });
+  const ackAJ = await ackA.json() as { ok?: boolean; existing?: boolean; event?: FleetEventRow };
+  const ackA2 = eventA ? await ackEvent(aTok, eventA.id) : new Response(null, { status: 599 });
+  const ackA2J = await ackA2.json() as { ok?: boolean; existing?: boolean; event?: FleetEventRow };
+  check("the bound Self principal acknowledges delivered -> acknowledged, idempotently",
+    ackA.ok && ackAJ.existing === false && ackAJ.event?.status === "acknowledged"
+    && ackA2.ok && ackA2J.existing === true && ackA2J.event?.acknowledgedAt === ackAJ.event.acknowledgedAt,
+    JSON.stringify({ ackAJ, ackA2J }));
 
-  // --- the target goes away while a watch is still armed. Deleting the row silently would leave
-  // "still waiting" indistinguishable from "will never come" — the belief this feature exists to
-  // make impossible. It disarms WITH the reason attached. ---
-  await post(`/api/slots/${tgt.slot}/kill`, {});
-  const orphan = await watchRow(wB.watch.id);
-  check("killing the target disarms the watch with its reason, rather than deleting it silently",
-    orphan?.armed === false && (orphan.lastResult ?? "").includes("target session ended"),
-    JSON.stringify(orphan));
-  check("a disarmed watch never delivers", (await ownerWatchMessages(bId)).length === 0);
+  // --- Restart boundary. Stop before editing state: a live save chain may replace fleet.json.
+  // Plant the exact durable image a crash after the pre-send marker leaves, plus a legacy spent
+  // Watch and malicious extra payload keys. Load must preserve uncertainty, invent no legacy event,
+  // and rebuild the payload whitelist rather than retaining free text. ---
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const statePath = `${ROOT}/fleet.json`;
+  type EventState = { events?: unknown[]; watches?: unknown[] };
+  let eventState: EventState | null = null;
+  let eventStateError = "";
+  try { eventState = JSON.parse(readFileSync(statePath, "utf8")) as EventState; }
+  catch (e) { eventStateError = e instanceof Error ? e.message : String(e); }
+  check("event restart fixture: fleet state is readable only after srv stopped", eventState !== null, eventStateError);
+  const crashId = "crashboundaryfixture";
+  const crashWatchId = "crashboundarywatch";
+  const legacyWatchId = "legacywatchfixture";
+  const crashRaw = eventA ? {
+    ...eventA, id: crashId, watchId: crashWatchId, status: "send-uncertain", attempts: 1,
+    deliveredAt: null, acknowledgedAt: null,
+    payload: { ...eventA.payload, text: "$(touch /tmp/must-not-run)", command: "echo unsafe" },
+  } : null;
+  eventState?.events?.push(crashRaw);
+  eventState?.watches?.push({
+    id: legacyWatchId, slot: aId, target: tgt.slot, targetCwd: tgt.cwd,
+    targetBranch: tgt.branch, idleSec: 0, armed: false, created: Date.now(),
+    firedAt: Date.now(), lastResult: "sent",
+  });
+  if (eventState) writeFileSync(statePath, JSON.stringify(eventState, null, 2), { mode: 0o600 });
+  await restartSrv();
 
-  // --- teardown: a watch must not outlive its receiver either ---
-  check("delete a watch", (await post(`/api/watches/${wAJ.watch.id}/delete`, {})).ok);
-  check("deleted watch gone", !(await watchRow(wAJ.watch.id)));
+  const afterRestartEvents = await eventRows();
+  const restartedA = afterRestartEvents.find((e) => e.id === eventA?.id);
+  const restartedB = afterRestartEvents.find((e) => e.id === eventB?.id);
+  const uncertain = afterRestartEvents.find((e) => e.id === crashId);
+  check("restart keeps an acknowledged event terminal and never re-injects it",
+    restartedA?.status === "acknowledged" && (await ownerWatchMessages(aId)).length === 1,
+    JSON.stringify(restartedA));
+  check("restart keeps the busy pending event with the same id and no invented attempt",
+    restartedB?.status === "pending" && restartedB.id === eventB?.id && restartedB.attempts === 0
+    && (await ownerWatchMessages(bId)).length === 0, JSON.stringify(restartedB));
+  await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
+  const uncertainAfterTicks = (await eventRows()).find((e) => e.id === crashId);
+  check("the send/crash boundary stays visibly uncertain across restart and is never replayed or called acked",
+    uncertainAfterTicks?.status === "send-uncertain" && uncertainAfterTicks.attempts === 1
+    && uncertainAfterTicks.deliveredAt === null && uncertainAfterTicks.acknowledgedAt === null
+    && (await ownerWatchMessages(aId)).length === 1, JSON.stringify(uncertainAfterTicks));
+  check("legacy spent Watch loads unchanged without an invented FleetEvent",
+    (await watchRows()).some((w) => w.id === legacyWatchId && w.lastResult === "sent")
+    && !(await eventRows()).some((e) => e.watchId === legacyWatchId));
+  const payloadKeys = Object.keys(uncertainAfterTicks?.payload ?? {}).sort();
+  check("persisted FleetEvent payload is a closed typed fact set and cannot carry free shell/text content",
+    JSON.stringify(payloadKeys) === JSON.stringify([
+      "ahead", "awaiting", "dirty", "gitOp", "hostCommits", "idleMs", "observed",
+    ]) && !JSON.stringify(uncertainAfterTicks?.payload).includes("must-not-run")
+      && !JSON.stringify(uncertainAfterTicks?.payload).includes("command"), JSON.stringify(uncertainAfterTicks?.payload));
+  const selfA = await (await selfGet(aTok)).json() as { events?: FleetEventRow[] };
+  check("GET /api/self exposes only this exact receiver session's events, including uncertainty",
+    selfA.events?.some((e) => e.id === crashId) === true
+    && selfA.events.every((e) => e.receiverSlot === aId && e.receiverOpenedAt === uncertain?.receiverOpenedAt),
+    JSON.stringify(selfA.events?.map((e) => `${e.id}:${e.status}`)));
+  const resolveUncertain = await ackEvent(aTok, crashId);
+  check("the bound session may explicitly resolve a possibly-seen send-uncertain event",
+    resolveUncertain.ok && (await eventRows()).find((e) => e.id === crashId)?.status === "acknowledged",
+    `${resolveUncertain.status} ${await resolveUncertain.text()}`);
+
+  // --- The pending event survived. Re-observe B after restart, then let its two-second idle gate
+  // elapse. The same event is delivered once; repeated ticks neither mint nor inject a twin. ---
+  observed = 0;
+  for (let i = 0; i < 60 && !observed; i++) {
+    await tmuxOut("send-keys", "-t", `s${bId}`, "echo watch-after-restart", "Enter");
+    await Bun.sleep(250);
+    observed = ((await (await get("/api/sessions")).json()) as { slots: { id: number; lastOutput: number }[] })
+      .slots.find((x) => x.id === bId)?.lastOutput ?? 0;
+  }
+  check("pending restart fixture: receiver output is observed before its idle gate is tested", observed > 0, String(observed));
+  let deliveredB: FleetEventRow | undefined;
+  for (let i = 0; i < 40 && deliveredB?.status !== "delivered"; i++) {
+    await Bun.sleep(250);
+    deliveredB = await eventForWatch(wB.watch.id);
+  }
+  check("busy -> later idle delivers the SAME pending event exactly once",
+    deliveredB?.status === "delivered" && deliveredB.id === eventB?.id && deliveredB.attempts === 1
+    && (await ownerWatchMessages(bId)).length === 1
+    && (await eventRows()).filter((e) => e.watchId === wB.watch.id).length === 1,
+    JSON.stringify(deliveredB));
+  await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
+  check("repeated ticks produce no duplicate event and no second pane injection",
+    (await eventRows()).filter((e) => e.watchId === wB.watch.id).length === 1
+    && (await ownerWatchMessages(bId)).length === 1);
+
+  // A dead/replaced receiver makes the unacked event terminal for the owner. Neither the old
+  // credential nor the replacement occupant can acknowledge it, and the replacement's /self
+  // view cannot inherit it merely because the numeric slot was reused.
   await post(`/api/slots/${bId}/kill`, {});
-  check("killing the RECEIVER drops its watches entirely — nobody left to tell",
-    !(await watchRows()).some((w) => w.slot === bId), JSON.stringify(await watchRows()));
+  const gone = await eventForWatch(wB.watch.id);
+  check("a dead receiver leaves its event inspectable as receiver-gone in the owner view",
+    gone?.status === "receiver-gone" && gone.deliveredAt !== null && gone.acknowledgedAt === null,
+    JSON.stringify(gone));
+  check("the replaced session's old token is rejected and cannot Ack the gone event",
+    (await ackEvent(bTok, gone?.id ?? "missing")).status === 401);
+  const reopenB = await post(`/api/slots/${bId}/open`, { cwd: REPO });
+  const newBTok = await paneEnv(`s${bId}`, "FLEET_SELF_TOKEN") ?? "";
+  const replacementAck = await ackEvent(newBTok, gone?.id ?? "missing");
+  const replacementSelf = await (await selfGet(newBTok)).json() as { events?: FleetEventRow[] };
+  check("a replacement occupant is session-bound away from the old event",
+    reopenB.ok && newBTok !== bTok && replacementAck.status === 409
+    && !replacementSelf.events?.some((e) => e.id === gone?.id),
+    `${replacementAck.status} ${await replacementAck.text()}`);
+
+  // Watch deletion and subject teardown do not erase the durable completion object.
+  check("delete the spent transport Watch", (await post(`/api/watches/${wAJ.watch.id}/delete`, {})).ok);
+  check("deleting a Watch does not delete its acknowledged event",
+    !(await watchRow(wAJ.watch.id)) && (await eventRows()).some((e) => e.id === eventA?.id));
+  await post(`/api/slots/${tgt.slot}/kill`, {});
+  check("subject teardown after event creation leaves the event trail intact",
+    (await eventRows()).some((e) => e.id === eventA?.id && e.status === "acknowledged"));
+  await post(`/api/slots/${bId}/kill`, {});
   await post(`/api/slots/${aId}/kill`, {});
 
   // === MAIN-SESSION EXIT: tickMigrate ==========================================================

@@ -95,21 +95,57 @@ export function laneWatchSignal(v: LaneSignalView, idleThresholdMs: number): Lan
   return null;
 }
 
-export function laneWatchMessage(slot: number, branch: string, v: LaneSignalView,
-  signal: LaneWatchSignal): string {
-  const g = v.git;
-  if (signal === "host-commit-looking") {
-    return `[fleet] slot ${slot} (${branch}) now LOOKS ready for a host commit — pane idle, `
-      + `${g?.ahead ?? "?"} ahead / ${g?.dirty ?? "?"} dirty. The work is UNCOMMITTED, 0 ahead is expected `
+export type LaneWatchEventKind = "lane-ready" | "host-commit-ready";
+// This is the complete event payload: closed, typed Fleet facts only. In particular it has no
+// text/command/detail escape hatch that could turn persisted state into pane input after reload.
+export interface LaneWatchEventPayload {
+  ahead: number;
+  dirty: number;
+  idleMs: number;
+  observed: boolean;
+  gitOp: boolean | null;
+  awaiting: "owner" | null;
+  hostCommits: boolean;
+}
+export interface LaneWatchEventView {
+  id: string;
+  kind: LaneWatchEventKind;
+  payload: LaneWatchEventPayload;
+}
+
+export function laneWatchEventKind(signal: LaneWatchSignal): LaneWatchEventKind {
+  return signal === "host-commit-looking" ? "host-commit-ready" : "lane-ready";
+}
+
+export function laneWatchPayload(v: LaneSignalView): LaneWatchEventPayload {
+  if (!v.git || v.idleMs === null) throw new Error("a watch event requires known git and idle facts");
+  return {
+    ahead: v.git.ahead,
+    dirty: v.git.dirty,
+    idleMs: v.idleMs,
+    observed: v.observed,
+    gitOp: v.gitOp,
+    awaiting: v.awaiting,
+    hostCommits: v.hostCommits,
+  };
+}
+
+export function laneWatchMessage(slot: number, branch: string, event: LaneWatchEventView): string {
+  const { id, kind, payload: p } = event;
+  const ack = `After reading, acknowledge event ${id}: POST /api/self/events/${id}/ack with `
+    + `x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+  if (kind === "host-commit-ready") {
+    return `[fleet] slot ${slot} (${branch}) [event ${id}] now LOOKS ready for a host commit — pane idle, `
+      + `${p.ahead} ahead / ${p.dirty} dirty. The work is UNCOMMITTED, 0 ahead is expected `
       + `for this harness, and the next step is a host commit via POST /api/slots/${slot}/commit. This is the `
       + `server's weaker predicate over facts (host commits + idle + dirty>0 + ahead===0 + awaiting:null), `
-      + `NOT a report from that lane. Read the pane before you commit, review, or land.`;
+      + `NOT a report from that lane. Read the pane before you commit, review, or land. ${ack}`;
   }
-  return `[fleet] slot ${slot} (${branch}) now LOOKS done — pane idle, tree clean, `
-    + `${g?.ahead ?? "?"} ahead / ${g?.dirty ?? "?"} dirty. That is the server's predicate over facts `
+  return `[fleet] slot ${slot} (${branch}) [event ${id}] now LOOKS done — pane idle, tree clean, `
+    + `${p.ahead} ahead / ${p.dirty} dirty. That is the server's predicate over facts `
     + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
     + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
-    + `Read the pane before you act, and never land on this message alone.`;
+    + `Read the pane before you act, and never land on this message alone. ${ack}`;
 }
 
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already

@@ -94,12 +94,26 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    `lane-outcomes.jsonl` (`origin:"main-direct"`); Lane-Reader filtern, `state.sh` weist
    MAIN-direct separat aus, Lane-Zahlen byte-gleich. Post-Land-Audit grün (2062 Checks),
    Deploy `0c5d4f26` live. Nutzungspflicht der MAIN-Sessions ist Doktrin, kein Zwang im Code.
-5. **Proportionale Verifikation** — kleinster Beweis am Arbeitsort, autoritativer Gate einmal pro
-   Tree; eigener Schnitt, bis dahin gilt der AGENTS.md-Vertrag wörtlich.
+5. **Proportionale Verifikation — GEBAUT 2026-08-13** (`b09f6c4`, genau eine Codex-Lane,
+   gpt-5.6-sol high). Schnitt: pures Modul `verify-proportion.ts` (geschlossener Step-Katalog
+   install/pins/tsc/build/clean-review/security/claude-gate; konservative Grobzuordnung, Zweifel ⇒
+   volle Kette; `isolatedPreview` true/false/"self-assess"), `GET /api/self/gate` trägt
+   `localProof` (Lane-Diff `baseSha...HEAD`; Git unbeantwortbar ⇒ `null` = „fahre die volle
+   Kette", nie ein leeres Array), `AGENTS.md` §Verify ist der proportionale Vertrag. Der
+   serverseitige Land-Gate (`VERIFY_CMD`), Post-Land-Audit, Red-Check-/Same-Tree-Regel und
+   isolated-Regel sind byte-gleich unverändert — der lokale Beweis ist der schnelle, der Gate der
+   autoritative, kein zweiter Verify-Service, keine Memoisierung. Gegenproben: Mapper-Funktionsfälle
+   + Route-Fixtures in e2e/self-token.ts, Pins ergänzt. Post-Land-Audit grün (2102 Checks/0,
+   773 s), Deploy `ebc2dcfe` live. ③-Review `covered`, 3 Findings, alle eingeordnet unschädlich
+   (Eskalations-Lattice heute korrekt · uniformes null ist der bewusste konservative Vertrag ·
+   Rename-Drift fällt auf den identisch-strengen Default). **P2-A-Live-Canary bestanden an genau
+   dieser Lane:** ihre Outcome-Row trägt erstmals `taskId`/`originId` (`edf08ee5`),
+   `harness:"codex"`, `effort:"high"`.
 
-**Empfohlener nächster Schnitt: P2-B (Context-/Skill-/Capability-Refs) oder Workstream 5.**
-Workstream 1, 2, 4 und P2-A sind gebaut (oben); die Reihenfolge bleibt Abhängigkeit: erst die
-restliche Provenienz (P2-B–D), dann proportionale Verifikation (5).
+**Empfohlener nächster Schnitt: restliche Provenienz (P2-B–D), sobald reale Produzenten
+existieren** — P2-B wartet ausdrücklich darauf, dass ContextPlan-/SkillRef-/CapabilitySnapshot-
+Quellen real werden (Owner-Einordnung 2026-08-13). Workstream 1, 2, 4, P2-A und 5 sind gebaut
+(oben). Dahinter: Self-Land als Shadow-Klassifikation (unten).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

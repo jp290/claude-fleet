@@ -1,3 +1,37 @@
+# HANDOFF — Session 53b (2026-08-13: Workstream 5, proportionale Verifikation — gebaut, gelandet, deployt; P2-A-Live-Canary bestanden) · 53/52/51/50/49 darunter
+
+**ctx beim Schreiben: 21,9 % (GEMESSEN am Owner-Poll).** Zweiter Schnitt derselben Session wie
+S53 (P2-A). Produziert: ein Land (`b09f6c4`, via genau EINE Codex-Lane, gpt-5.6-sol high, Task
+`edf08ee5`), ein Deploy, Core-Doc + CLAUDE.md-Regel. Arbeitsmodus unverändert: dichter Brief,
+Watch/Event/Ack als Rückweg, nur Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `b09f6c4` + dieser Doc-Commit (MAIN-direct, Preflight `98eade75`). Baum sauber.
+- **Live-Server:** Deploy `ebc2dcfe` `ok:true`/`hitTarget:true`, `bootHead == b09f6c4`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2102 Checks / 0 failed, 773 s**, covers `b09f6c4`.
+- **③-Review:** `covered`, 3 Findings, alle eingeordnet unschädlich (Detail im Core-Doc-Absatz).
+
+## Der Schnitt (Details im Core-Doc, Workstream-5-Absatz)
+
+`verify-proportion.ts` (pur, geschlossener Step-Katalog, konservativ: Zweifel/leer/unbekannt ⇒
+volle Kette) · `GET /api/self/gate` + `localProof` (Git unbeantwortbar ⇒ null = volle Kette) ·
+`AGENTS.md` §Verify als proportionaler Vertrag. Land-Gate, Audit, Red-Check-/Same-Tree-Regel,
+isolated-Regel byte-gleich. CLAUDE.md-Regel im Lane-Discipline-Abschnitt nachgezogen.
+
+**P2-A-Live-Canary BESTANDEN an dieser Lane:** ihre Outcome-Row ist die erste mit
+`taskId:"edf08ee5"`, `originId:"edf08ee5"`, `harness:"codex"`, `effort:"high"` (plus model,
+releasedBy, verified:true) — die Provenienzkette Task→Dispatch→Slot→Outcome schließt live.
+
+## Nächster Zielkorridor
+
+**P2-B–D erst, wenn reale Produzenten existieren** (ContextPlan/SkillRef/CapabilitySnapshot —
+Owner-Einordnung 2026-08-13); dahinter Self-Land als Shadow-Klassifikation. Nichts davon begonnen.
+Erdung: `./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 53 (2026-08-13: Workstream 3 P2-A — Ausführungsprovenienz gebaut, gelandet, deployt) · 52/51/50/49/48 darunter
 
 **ctx beim Schreiben: 18,3 % (GEMESSEN am Owner-Poll).** Produziert: ein Land (`2fbdf09`, via

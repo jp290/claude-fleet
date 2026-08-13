@@ -132,6 +132,19 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    digest — Migration je Worker einzeln über `WORKER_ROUTES`, mutierende Resolver zuletzt.
    Zweite Welle bewusst NICHT begonnen.
 
+7. **Worker-Migrationskorridor Codex — SCHNITT 2 GEBAUT 2026-08-13:** Die Test-Timeout-Naht
+   `FLEET_CODEX_EXEC_TIMEOUT_MS` wird ausschließlich hinter einem nichtleeren
+   `FLEET_CODEX_EXEC_BIN` gelesen; positive endliche Werte verkürzen nur den kontrollierten
+   Binary-Test, sonst bleibt das Aufruferbudget (Produktion unverändert 180 s). Der echte
+   Timeout-Prozess stirbt im Test nach 1,5 s mit TERM-Beweis und tmp-Cleanup. `commitMsg`, `enhance`
+   und `digest` routen nun zusätzlich zu `summary` auf dieselbe eine Spark-Konstante
+   `gpt-5.3-codex-spark`, mit je eigenem expliziten Claude-Rückweg; Stand-ins bleiben Präzedenz 1,
+   Fehler fallen nie still auf Claude zurück. Kontrollierte Gegenproben liegen für Summary,
+   Commit-Message und Enhance in `e2e/summary.ts`, für den steward-geschützten Digest in
+   `e2e/steward-core.ts`; der Tabellen-Pin hält die sechs übrigen Worker auf Claude. Isolated:
+   2131 Checks/0, 783 s statt zuvor 974 s. **Weiter auf Claude:** review, cleanReview, refine,
+   analysis, merge, repair. Keine dritte Welle in diesem Schnitt.
+
 **Empfohlener nächster Schnitt: restliche Provenienz (P2-B–D), sobald reale Produzenten
 existieren** — P2-B wartet ausdrücklich darauf, dass ContextPlan-/SkillRef-/CapabilitySnapshot-
 Quellen real werden (Owner-Einordnung 2026-08-13). Workstream 1, 2, 4, P2-A und 5 sind gebaut

@@ -5552,7 +5552,12 @@ async function workerViaCodexExec(prompt: string, cwd: string,
   opts: { model: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
   const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
   const tmpOut = resolve(dir, "last-message.txt");
-  const bin = process.env.FLEET_CODEX_EXEC_BIN || "codex";
+  const binOverride = process.env.FLEET_CODEX_EXEC_BIN;
+  const bin = binOverride || "codex";
+  // Test-only budget seam: the env read itself is gated by the controlled binary, so a
+  // production server cannot shorten a real Codex worker by setting only the timeout value.
+  const testTimeoutMs = binOverride ? Number(process.env.FLEET_CODEX_EXEC_TIMEOUT_MS) : NaN;
+  const timeoutMs = Number.isFinite(testTimeoutMs) && testTimeoutMs > 0 ? testTimeoutMs : opts.timeoutMs;
   let p: Bun.PipedSubprocess | null = null;
   let exited = false;
   let killer: ReturnType<typeof setTimeout> | null = null;
@@ -5567,7 +5572,7 @@ async function workerViaCodexExec(prompt: string, cwd: string,
     killer = setTimeout(() => {
       timedOut = true;
       p?.kill();
-    }, opts.timeoutMs);
+    }, timeoutMs);
     let stdinError: unknown = null;
     try {
       p.stdin.write(prompt);
@@ -5580,7 +5585,7 @@ async function workerViaCodexExec(prompt: string, cwd: string,
       killer = null;
     }
     const [out, err] = await Promise.all([outP, errP]);
-    if (timedOut) throw new Error(`worker via codex exec timed out after ${opts.timeoutMs}ms`);
+    if (timedOut) throw new Error(`worker via codex exec timed out after ${timeoutMs}ms`);
     if (code !== 0) {
       const excerpt = [err, out].filter(Boolean).join("\n").slice(0, 300);
       throw new Error(`worker via codex exec exited ${code}: ${excerpt}`);
@@ -5727,19 +5732,21 @@ interface WorkerRunObservation {
   backend?: "codex-exec";
   usage?: CodexExecUsage;
 }
-const CODEX_SUMMARY_MODEL = "gpt-5.3-codex-spark";
-const summaryWorkerRoute: WorkerRouteConfig = process.env.FLEET_WORKER_ROUTE_SUMMARY === "claude"
+const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
+// Each migrated worker owns one explicit rollback key. Absence, codex-exec, and invalid values
+// all fail toward the cheaper default; only the literal `claude` can authorize Claude spend.
+const codexSparkRoute = (configured: string | undefined): WorkerRouteConfig => configured === "claude"
   ? { route: "claude" }
-  : { route: "codex-exec", model: CODEX_SUMMARY_MODEL }; // absent, codex-exec, or invalid → default
+  : { route: "codex-exec", model: CODEX_SPARK_MODEL };
 const WORKER_ROUTES = {
-  summary: summaryWorkerRoute,
+  summary: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_SUMMARY),
   review: { route: "claude" },
-  commitMsg: { route: "claude" },
-  enhance: { route: "claude" },
+  commitMsg: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_COMMITMSG),
+  enhance: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_ENHANCE),
   merge: { route: "claude" },
   repair: { route: "claude" },
   cleanReview: { route: "claude" },
-  digest: { route: "claude" },
+  digest: codexSparkRoute(process.env.FLEET_WORKER_ROUTE_DIGEST),
   refine: { route: "claude" },
   analysis: { route: "claude" },
 } satisfies Record<WorkerName, WorkerRouteConfig>;

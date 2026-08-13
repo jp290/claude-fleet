@@ -171,6 +171,22 @@ case "$mode" in
     printf '{"summary":"codex summary without usage","openThreads":[],"verification":"none"}' > "$out"
     printf '%s\n' '{"type":"turn.completed"}'
     ;;
+  commit)
+    printf '{"message":"feat(worker): codex spark commit message"}' > "$out"
+    printf '%s\n' '{"type":"turn.completed"}'
+    ;;
+  enhance)
+    printf 'controlled preamble\n{"prompt":"codex enhanced prompt. own your work! /sharpen3"}\ncontrolled trailer\n' > "$out"
+    printf '%s\n' '{"type":"turn.completed"}'
+    ;;
+  digest)
+    printf '{"digest":{"conditions":{"1":"healthy-running"},"changed":["codex digest change"],"attention":[]}}' > "$out"
+    printf '%s\n' '{"type":"turn.completed"}'
+    ;;
+  malformed)
+    printf 'controlled malformed worker answer' > "$out"
+    printf '%s\n' '{"type":"turn.completed"}'
+    ;;
   nonzero)
     printf 'controlled codex failure on stderr' >&2
     printf 'controlled codex event on stdout\n'

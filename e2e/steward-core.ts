@@ -2,10 +2,12 @@
 // deploy-gap / transcript-size / bundle-staleness facts, transcript redaction, the owner-only
 // 403s, typed+capped sends across an audit rotation, the journal and the P3 digest.
 import { DONE_LOOKING_PROSE, STALLED_PROSE } from "../lane-signals";
+import { WORKER_CONTRACTS } from "../src/protocol";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { CONTINUITY_REGIME_START, CONTINUITY_SOURCES, CONTINUITY_WINDOW_MS, type ContinuitySummary } from "../continuity";
-import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, tmuxOut } from "./harness";
+import { BASE, REPO, ROOT, check, get, paneEnv, plogRead, post, readText, restartSrv, tmuxOut } from "./harness";
 import type { Ctx, StewardCtx } from "./ctx";
 import { settleForMerge } from "./lane-helpers";
 
@@ -845,6 +847,81 @@ export async function run(ctx: Ctx): Promise<StewardCtx> {
     (await stewGet("/api/post-land-audits")).status === 403);
   check("steward token on the lane-outcome trail is still out of scope (403)",
     (await stewGet("/api/lane-outcomes")).status === 403);
+
+  // Digest is steward-scoped, so its bounded Codex migration probe lives here rather than in
+  // summary.ts. The controlled binary is the same fixture and every restart is restored before
+  // steward-outcomes consumes this section's token/slot carry-over.
+  const fakeCodex = `${ROOT}/fakecodex`;
+  const digestCodexEnv = {
+    FLEET_DIGEST_CMD: "",
+    FLEET_CODEX_EXEC_BIN: fakeCodex,
+    FLEET_CODEX_EXEC_TIMEOUT_MS: "1500",
+  };
+  const codexRuns = (): number => {
+    try { return readFileSync(`${ROOT}/codex-runs`, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
+  };
+  const digestTmpGone = (): boolean => {
+    try {
+      const out = readFileSync(`${ROOT}/codex-tmpout`, "utf8").trim();
+      return !!out && !existsSync(dirname(out));
+    } catch { return false; }
+  };
+  const setCodexMode = (mode: string) => Bun.write(`${ROOT}/codex-mode`, `${mode}\n`);
+  try {
+    await setCodexMode("digest");
+    await restartSrv(digestCodexEnv);
+    const codexDigestRes = await stewGet("/api/steward/digest?wait=30");
+    const codexDigest = (await codexDigestRes.json()) as DigJ & { model?: string; backend?: unknown; usage?: unknown };
+    const digestArgv = readFileSync(`${ROOT}/codex-argv`, "utf8").split("\n").filter(Boolean);
+    const digestPrompt = readFileSync(`${ROOT}/codex-prompt`, "utf8");
+    const digestSessions = (await tmuxOut("list-sessions", "-F", "#{session_name}")).out.split("\n").filter(Boolean);
+    check("Codex digest preserves the steward response contract without adding backend or usage fields",
+      codexDigestRes.ok && codexDigest.digestStatus === "fresh"
+      && codexDigest.digest?.conditions?.["1"] === "healthy-running"
+      && codexDigest.digest?.changed?.[0] === "codex digest change"
+      && Array.isArray(codexDigest.digest?.attention) && codexDigest.backend === undefined && codexDigest.usage === undefined,
+      `${codexDigestRes.status} ${JSON.stringify(codexDigest).slice(0, 300)}`);
+    check("Codex digest pins Spark/read-only/ephemeral and receives its complete marked payload only on stdin",
+      digestArgv[digestArgv.indexOf("-m") + 1] === "gpt-5.3-codex-spark"
+      && digestArgv[digestArgv.indexOf("-s") + 1] === "read-only" && digestArgv.includes("--ephemeral")
+      && digestPrompt.includes(WORKER_CONTRACTS.digest.mark)
+      && digestPrompt.includes("## prior journal record") && digestPrompt.includes("## current slots")
+      && digestPrompt.includes('"conditions": {"<slotId>": "<condition>"}')
+      && !digestArgv.some((a) => a.includes(WORKER_CONTRACTS.digest.mark))
+      && !digestSessions.some((name) => name.startsWith("sum-")),
+      `argv=${digestArgv.join(" ")} bytes=${Buffer.byteLength(digestPrompt)} sessions=${digestSessions.join(",")}`);
+    check("codex worker removes its fresh tmp directory after digest success", digestTmpGone());
+
+    await setCodexMode("malformed");
+    await restartSrv(digestCodexEnv); // clears the prior success cache so the worker runs again
+    const badDigestRes = await stewGet("/api/steward/digest?wait=30");
+    const badDigest = (await badDigestRes.json()) as DigJ;
+    check("a malformed Codex digest answer remains the caller's named failed state",
+      badDigestRes.ok && badDigest.digestStatus === "failed" && badDigest.digest === null
+      && badDigest.error === "worker returned no digest object",
+      `${badDigestRes.status} ${JSON.stringify(badDigest).slice(0, 240)}`);
+    check("codex worker removes its fresh tmp directory after malformed digest output", digestTmpGone());
+
+    await setCodexMode("digest");
+    const beforeDigestStandin = codexRuns();
+    await restartSrv({ ...digestCodexEnv, FLEET_DIGEST_CMD: `${ROOT}/fakedigest` });
+    const standinDigest = (await (await stewGet("/api/steward/digest?wait=30")).json()) as DigJ;
+    check("FLEET_DIGEST_CMD stays ahead of the Codex route",
+      standinDigest.digestStatus === "fresh" && standinDigest.digest?.changed?.[0] === "slot 1 committed"
+      && codexRuns() === beforeDigestStandin,
+      `${JSON.stringify(standinDigest).slice(0, 220)} codexRuns=${codexRuns()}/${beforeDigestStandin}`);
+
+    const beforeDigestRollback = codexRuns();
+    await restartSrv({ ...digestCodexEnv, FLEET_WORKER_ROUTE_DIGEST: "claude", FLEET_WORKER_HARNESS: "codex" });
+    const rollbackDigest = (await (await stewGet("/api/steward/digest?wait=30")).json()) as DigJ;
+    check("FLEET_WORKER_ROUTE_DIGEST=claude selects the old session lane without a Codex fallback",
+      rollbackDigest.digestStatus === "failed"
+      && (rollbackDigest.error ?? "").includes('harness "codex" cannot host a worker session')
+      && codexRuns() === beforeDigestRollback,
+      `${JSON.stringify(rollbackDigest).slice(0, 260)} codexRuns=${codexRuns()}/${beforeDigestRollback}`);
+  } finally {
+    await restartSrv({ PATH: `${ROOT}:${process.env.PATH ?? ""}` });
+  }
 
   return { token: STEW, stewGet, stewPost, slot: lnStew.slot, cwd: lnStew.cwd, settleForSteward };
 }

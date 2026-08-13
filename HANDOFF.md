@@ -1,3 +1,42 @@
+# HANDOFF — Session 54 (2026-08-13: Worker-Migration Schnitt 1 — summary auf Codex-Spark; gebaut, gelandet, deployt, Canary bestanden) · 53b/53/52/51/50 darunter
+
+**ctx beim Schreiben: 17,9 % (GEMESSEN am Owner-Poll).** Produziert: ein Land (`3e60648`, via
+genau EINE Codex-Lane, gpt-5.6-sol high, Task `7159c484` über den Dispatch-Knopf), ein Deploy,
+ein echter Spark-Summary-Live-Canary, Core-Doc-Absatz (Workstream 6). Arbeitsmodus wie S51–53:
+dichter Brief mit Zeilenankern, Watch → Event → Ack als Rückweg, nur Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `3e60648` + dieser Doc-Commit (MAIN-direct Preflight/Finalize). Baum sauber.
+- **Live-Server:** Deploy `4d416e63` `ok:true`/`hitTarget:true`, `bootHead == 3e60648`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2117 Checks / 0 failed, 974 s**, covers `3e60648`.
+  (Der neue Codex-Timeout-Check kostet real 180 s je isolated-Lauf — eingepreist, benannt.)
+
+## Der Schnitt (Details im Core-Doc, Workstream-6-Absatz)
+
+`workerViaCodexExec` (headless `codex exec`, Arrayform, stdin-Prompt, read-only+ephemeral,
+`FLEET_CODEX_EXEC_BIN` als Test-Naht, kein Claude-Fallback) · `WORKER_ROUTES` als explizite
+per-Worker-Naht · NUR summary → `gpt-5.3-codex-spark` (Rückweg
+`FLEET_WORKER_ROUTE_SUMMARY=claude`) · `SummaryResult` mit echtem model/backend/beobachteter
+usage. Präzedenz Stand-in → Route → Session hält alle Alt-Suiten byte-gleich.
+
+**Live-Canary BESTANDEN:** ein Summary-Lauf, 7,7 s, `backend:"codex-exec"`,
+`model:"gpt-5.3-codex-spark"`, `raw:false`, `usage {input:16907, output:2022}`, während des
+Laufs NULL `sum-*`-tmux-Sessions; Folge-GET `cached:true`. Zweite Provenienz-Row live bestätigt
+(`taskId 7159c484`, harness codex, effort high in lane-outcomes).
+
+## Nächster Zielkorridor
+
+**Zweite Migrationswelle NICHT begonnen** (Owner-Vorgabe). Kandidatenreihenfolge, wenn der Owner
+sie öffnet: weitere Text-Worker (commitMsg, enhance, digest) → Review/Analysis/Refine auf
+stärkere Codex-Modelle → mutierende Resolver (merge/repair) zuletzt. Noch auf Claude: review,
+cleanReview, refine, analysis, merge, repair, commitMsg, enhance, digest. Daneben unverändert:
+P2-B–D erst bei realen Produzenten, dahinter Self-Land-Shadow. Erdung: `./state.sh` ·
+`./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 53b (2026-08-13: Workstream 5, proportionale Verifikation — gebaut, gelandet, deployt; P2-A-Live-Canary bestanden) · 53/52/51/50/49 darunter
 
 **ctx beim Schreiben: 21,9 % (GEMESSEN am Owner-Poll).** Zweiter Schnitt derselben Session wie

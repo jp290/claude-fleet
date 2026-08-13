@@ -110,6 +110,28 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    dieser Lane:** ihre Outcome-Row trägt erstmals `taskId`/`originId` (`edf08ee5`),
    `harness:"codex"`, `effort:"high"`.
 
+6. **Worker-Migrationskorridor Codex — SCHNITT 1 GEBAUT 2026-08-13** (`3e60648`, genau eine
+   Codex-Lane, gpt-5.6-sol high, Task `7159c484`; Owner-Entscheid: interne Wegwerf-Worker
+   schrittweise von Claude auf Codex, Spark für Micro-Text-Worker, Qualität vor Usage). Schnitt:
+   headless Transport `workerViaCodexExec` (`codex exec` in Arrayform via Bun.spawn, Prompt über
+   stdin, `--ephemeral -s read-only --skip-git-repo-check --color never --json -o <tmp> -m`,
+   Binary-Test-Naht `FLEET_CODEX_EXEC_BIN`, Cleanup im finally, kein Claude-Fallback — Fehler
+   bleibt benannter Workerfehler) · geschlossene per-Worker-Routing-Tabelle `WORKER_ROUTES`
+   (kein globaler Schalter; `FLEET_WORKER_HARNESS`-Semantik unberührt) · NUR `summary` →
+   `codex-exec` mit Konstante `gpt-5.3-codex-spark`; Rückweg explizit
+   `FLEET_WORKER_ROUTE_SUMMARY=claude`, ungültiger Wert fällt auf den Default ·
+   `SummaryResult` trägt wirkliches `model`, `backend:"codex-exec"` und NUR beobachtete `usage`
+   (sonst absent, nie geschätzt). Präzedenz in runWorker: Test-Stand-in (`spec.cmd`) → Route →
+   Claude-Session; damit sind alle Alt-Suiten byte-gleich. Gegenproben in e2e/summary.ts
+   (argv/stdin/-o, Cache, Nonzero/Timeout/Missing-Output, tmp-Cleanup, Rollback, Worker-
+   Isolation; der Timeout-Check kostet real 180 s pro isolated-Lauf). Post-Land-Audit grün
+   (2117 Checks/0, 974 s), Deploy `4d416e63` live. **Live-Canary bestanden:** ein echter
+   Summary-Lauf in 7,7 s mit `backend:"codex-exec"`, `model:"gpt-5.3-codex-spark"`, `raw:false`,
+   `usage {input:16907, output:2022}`, null `sum-*`-tmux-Sessions; Cache-GET danach `cached:true`.
+   **Noch auf Claude:** review, cleanReview, refine, analysis, merge, repair, commitMsg, enhance,
+   digest — Migration je Worker einzeln über `WORKER_ROUTES`, mutierende Resolver zuletzt.
+   Zweite Welle bewusst NICHT begonnen.
+
 **Empfohlener nächster Schnitt: restliche Provenienz (P2-B–D), sobald reale Produzenten
 existieren** — P2-B wartet ausdrücklich darauf, dass ContextPlan-/SkillRef-/CapabilitySnapshot-
 Quellen real werden (Owner-Einordnung 2026-08-13). Workstream 1, 2, 4, P2-A und 5 sind gebaut

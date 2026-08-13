@@ -355,6 +355,12 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     pin(RULE_SECRET, ips === 0 && urls === 0, `${ips} ip-shaped, ${urls} url(s)`);
   }
 
+  const RULE_LOCAL_PROOF = "AGENTS.md asks a lane's self/gate localProof before choosing local verification";
+  if (agents === null) skip(RULE_LOCAL_PROOF, "no AGENTS.md in this tree");
+  else pin(RULE_LOCAL_PROOF,
+    agents.includes("`GET /api/self/gate`") && agents.includes("`localProof.steps`"),
+    `self-gate=${agents.includes("`GET /api/self/gate`")} steps=${agents.includes("`localProof.steps`")}`);
+
   // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
   // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
   // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2

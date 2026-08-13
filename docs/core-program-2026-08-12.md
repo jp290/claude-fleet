@@ -59,8 +59,17 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    Event-Sourcing-Umbau. Quelle: Harness-Brief §5.3.
 3. **Provenienz P2** — `taskId`/`harness`/`effort`/Context auf Outcomes (heute 0 %, Baseline §3);
    nach den Readiness-Typen schneiden, damit `capabilitySnapshot` von Anfang an passt.
-4. **MAIN-direct-Naht** — Direkt-Commits sind für alle Land-Ledger unsichtbar; Outcome-Eintrag +
-   Preflight (Doktrin §4.3), damit Direktarbeit im Learning Loop nicht fehlt.
+4. **MAIN-direct-Naht — GEBAUT 2026-08-13** (`1bbedc7`, eine Codex-Lane; Phase-1-Befund davor:
+   keine nachträgliche Ableitung möglich, `writeLandNote` ist best-effort und `finishLandsInFlight`
+   verweigert erfundene Provenienz — also explizites Protokoll statt Git-Heuristik). Schnitt:
+   `/api/self/main-direct` (GET Sicht + `preflight`/`finalize`/`abandon`, Self-Token, nur
+   Nicht-Lane), Server liest beide Integration-HEADs selbst, Session-Bindung
+   `slot+openedAt+sessionId`, Finalize idempotent per Vorgangs-ID+`mainAfter` (Widerspruch 409;
+   `landed` verlangt bewegten HEAD gleich Claim), abandon/expire mit Pflicht-Grund, Preflights
+   persistiert/boot-validiert/`stale` sichtbar ohne Reconciler. Ledger bleibt
+   `lane-outcomes.jsonl` (`origin:"main-direct"`); Lane-Reader filtern, `state.sh` weist
+   MAIN-direct separat aus, Lane-Zahlen byte-gleich. Post-Land-Audit grün (2062 Checks),
+   Deploy `0c5d4f26` live. Nutzungspflicht der MAIN-Sessions ist Doktrin, kein Zwang im Code.
 5. **Proportionale Verifikation** — kleinster Beweis am Arbeitsort, autoritativer Gate einmal pro
    Tree; eigener Schnitt, bis dahin gilt der AGENTS.md-Vertrag wörtlich.
 

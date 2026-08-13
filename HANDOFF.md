@@ -1,3 +1,57 @@
+# HANDOFF — Session 51 (2026-08-12/13: Fable übernimmt mid-session — Codex-Readiness gelandet, dann MAIN-direct-Provenienz über eine Codex-Lane) · 50/49/48/47/46 darunter
+
+**ctx beim Schreiben: GEMESSEN am Owner-Poll (Kommando im Rulebook), Slot 1.** Besonderheit der
+Session: Opus 5 maß den Codex-Paste-Race, dann Modellwechsel auf Fable im SELBEN Slot; ab da
+Fable als MAIN. Produziert: zwei Lands (`ce7a7a6` Readiness, `1bbedc7` MAIN-direct), zwei
+Deploys, ein Phase-1-Untersuchungsbericht (geerntet, keine Commits), ein Live-Canary.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `1bbedc7` + dieser Doc-Commit. Baum sauber, keine offenen Lanes dieser Session.
+- **Live-Server:** Deploy `0c5d4f26` `ok:true`/`hitTarget:true`, `bootHead == 1bbedc7`,
+  `bundleStale:false`. Davor `93e20715` (Readiness) ebenso sauber.
+- **Audits:** beide Lands voll vermessen — `ce7a7a6` war MAIN-direct (Verifikation von Hand,
+  volle Kette + isolated ALL PASS 2053 Checks, KEIN Audit-Eintrag, bekannte Regel); `1bbedc7`
+  lief den normalen Land-Pfad: Gate `verify.ok:true` (99 s), **Post-Land-Audit grün, 2062
+  Checks / 0 failed, 767 s**.
+
+## Die zwei Schnitte
+
+1. **Codex-Readiness (`ce7a7a6`, Workstream 1 — GEBAUT):** Der 2026-08-10-Race war kein Timing,
+   sondern blockierende Screens: Paste+Enter in den Trust-Prompt BEANTWORTET ihn, Brief restlos
+   weg, ohne Fehler; Sign-in frisst identisch (gerenderte Frames, codex-cli 0.147.0).
+   `Harness.readiness{accept,blocks}` (nur codex; accept `>_ OpenAI Codex (v`),
+   `paneReadiness()`, canDeliver-Gate `blocked-screen` (nur „blocked" verweigert), bounded
+   Marker-Wait in `briefAndSend` (`FLEET_READY_WAIT_MS`, 20 s) mit ehrlichem Requeue samt
+   Screen-Name. `codex.automatable:true`, per Pin an die Naht gekoppelt. Gegenproben:
+   e2e/tasks.ts f3. Live-Canary: Brief zugestellt, codex antwortete.
+2. **MAIN-direct-Provenienz (`1bbedc7`, Workstream 4 — GEBAUT, via genau EINE Codex-Lane):**
+   Details/Beweise in `docs/core-program-2026-08-12.md` Workstream-4-Absatz. Kern: explizites
+   Preflight/Finalize-Protokoll auf der Self-Identität, Server liest beide HEADs, idempotent,
+   Widerspruch 409, Preflights sichtbar/beendbar, Ledger-Erweiterung `origin:"main-direct"`,
+   state.sh-Trennung. Vorgelagert lief eine Untersuchungs-Lane, die regelkonform OHNE Commit
+   stoppte und drei Optionen meldete; Owner gab Option 1 frei.
+
+## Arbeitsmodus, der sich bewährt hat (Owner-Vorgabe: Fable-Usage sparen)
+
+MAIN briefed genau EINEN Codex-Worker (dichter Brief: Zeilenanker, ausgeschriebene
+Verify-Kette in Log-Dateien, Verbotsliste, ctx-Selbstmeldung), Rückweg über
+`POST /api/self/watch`, danach nur Diff-/Beweis-Review am Pane + Stichproben, Land über
+`POST /api/slots/:id/merge` (der `/land`-Knopf ist NUR Teardown und verlangt schon gemergte
+Commits — einmal falsch gegriffen). Beide Codex-Läufe hielten sich exakt an ihre Briefs.
+
+## Nächster Zielkorridor
+
+Core-Programm, Reihenfolge = Abhängigkeit: **Workstream 2 (Typed Rückkanal — Watch → durable
+Event mit ID/persistiert/idempotent/Ack, KEIN Event-Sourcing; Quelle Harness-Brief §5.3)**,
+danach Workstream 3 (Provenienz P2 auf Outcomes) und 5 (proportionale Verifikation). Die neue
+MAIN-direct-Naht ab sofort SELBST BENUTZEN: vor eigener Direktarbeit
+`POST /api/self/main-direct/preflight`, nach dem Land `finalize` — die Naht existiert jetzt,
+ungenutzt bleibt sie eine Karteileiche. Erdung wie immer: `./state.sh` · `./register.sh` ·
+`docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 50 (2026-08-12: Full Access wird der Normalzustand — P1-D+H0 gemessen, dann der Zaun entfernt) · 49/48/47/46/45 darunter
 
 **ctx beim Schreiben: 46 % (GEMESSEN am Owner-Poll, keine Schätzung).** Produziert: zwei Lands

@@ -55,8 +55,19 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    der 4-s-Sleep ist Gnadenfrist, nie Beweis) mit ehrlichem Requeue samt Screen-Name.
    `codex.automatable:true` — gekoppelt an die Naht, Pin erzwingt „ein Entscheid, zwei Felder".
    Gegenproben: e2e/tasks.ts f3 (Trust · Sign-in · Ready-Composer · Timeout, node-Fixtures).
-2. **Typed Rückkanal** — Watch → durable Event (ID, persistiert, idempotent, Ack); kein
-   Event-Sourcing-Umbau. Quelle: Harness-Brief §5.3.
+2. **Typed Rückkanal — GEBAUT 2026-08-13** (`638114f`, genau eine Codex-Lane, gpt-5.6-sol high).
+   Eine Watch-Vollendung wird ZUERST ein persistiertes `FleetEvent` (ID, `kind`
+   lane-ready/host-commit-ready, geschlossene typisierte Payload aus `laneWatchSignal`-Fakten —
+   kein Text-Escape), die Pane-Zustellung ist nur noch Transport. Zustände
+   pending → send-uncertain → delivered → acknowledged | receiver-gone; `send-uncertain` wird VOR
+   dem `sendText` persistiert (Crash-Grenze bleibt sichtbar, nie blinder Replay, nie erfundenes
+   Ack). Ack: `POST /api/self/events/:id/ack`, hart an `slot+openedAt+sessionId` gebunden,
+   idempotent; ersetzte Session/fremder Slot 409. Sichtbar in `GET /api/self` (eigene) und am
+   Owner-Poll (`events`, komplett). Legacy-Watches laden ohne erfundene Zustellung; Retention
+   prunt nur Terminal-Zustände. Elf Gegenproben in `e2e/watch.ts`. Gate-Rot war 1 Fixture-Flake
+   (`silent-alive`, Same-Tree-Rerun ALL PASS), Post-Land-Audit grün (2080 Checks/0, 897 s),
+   Deploy `d38097fc` live, End-to-End-Canary (Watch → Event → Zustellung mit Event-ID →
+   Ack + Idempotenz) real durchgeführt. Quelle: Harness-Brief §5.3.
 3. **Provenienz P2** — `taskId`/`harness`/`effort`/Context auf Outcomes (heute 0 %, Baseline §3);
    nach den Readiness-Typen schneiden, damit `capabilitySnapshot` von Anfang an passt.
 4. **MAIN-direct-Naht — GEBAUT 2026-08-13** (`1bbedc7`, eine Codex-Lane; Phase-1-Befund davor:
@@ -73,12 +84,9 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
 5. **Proportionale Verifikation** — kleinster Beweis am Arbeitsort, autoritativer Gate einmal pro
    Tree; eigener Schnitt, bis dahin gilt der AGENTS.md-Vertrag wörtlich.
 
-**Empfohlener nächster Schnitt: Workstream 1, der Codex-Ready-Handshake.** Done: eine unattended
-Zustellung an einen codex-Slot wird verweigert, solange die Pane auf Login/Trust steht, und
-zugestellt, sobald der Composer real annimmt; Beweis: Fixture mit Fake-Login-Pane + Live-Canary;
-danach `automatable:true` als Ein-Zeilen-Folge-Entscheid. Warum zuerst: es ist die letzte Lücke
-zwischen „Full Access" und „unbeaufsichtigt nutzbar", und Rückkanal wie Provenienz messen erst
-dann echte unbeaufsichtigte Läufe.
+**Empfohlener nächster Schnitt: Workstream 3, Provenienz P2 auf Outcomes.** Workstream 1 und 2
+sind gebaut (oben); die Reihenfolge bleibt Abhängigkeit: erst Provenienz, dann proportionale
+Verifikation (5).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

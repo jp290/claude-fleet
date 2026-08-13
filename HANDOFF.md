@@ -1,3 +1,43 @@
+# HANDOFF — Session 52 (2026-08-13: Workstream 2, Typed Rückkanal — gebaut, gelandet, deployt, Canary grün) · 51/50/49/48/47 darunter
+
+**ctx beim Schreiben: 16,4 % (GEMESSEN am Owner-Poll).** Produziert: ein Land (`638114f`, via
+genau EINE Codex-Lane, gpt-5.6-sol high), ein Deploy, ein echter End-to-End-Watch/Ack-Canary,
+Core-Doc-Update. Arbeitsmodus wie Session 51: dichter Brief, `POST /api/self/watch` als Rückweg,
+nur Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `638114f` + dieser Doc-Commit. Baum sauber, Canary-Lane abgeräumt.
+- **Live-Server:** Deploy `d38097fc` `ok:true`/`hitTarget:true`, `bootHead == 638114f`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2080 Checks / 0 failed, 897 s**, covers `638114f`.
+- **Gate-Adjudikation, die man kennen muss:** der Land-Gate war rot mit genau 1 FAIL
+  (`silent-alive fixture: the pane has still never printed before /send` — Fixture-Timing-Rennen
+  in `fleet-e2e-claude-gate.ts:85`, ein Timestamp im Detail = die Pane hatte schon gedruckt).
+  Beweis nach Regel: Same-Tree-Rerun `./e2e-claude-gate.sh` auf `638114f` → ALL PASS
+  (`/tmp/ws2-cg-rerun.log`), dann `confirm:true` auf den bereits resolved Merge (clean rebase,
+  Resolver hat NICHTS verändert — main stand noch auf der Lane-Basis). Land-Note trägt
+  `confirmedByHuman:true` samt dem roten Verify als Kontext.
+
+## Der Schnitt (Details im Core-Doc, Workstream-2-Absatz)
+
+Watch-Vollendung → persistiertes typisiertes `FleetEvent` zuerst, Pane-Text nur Transport.
+Zustände pending/send-uncertain/delivered/acknowledged/receiver-gone; `send-uncertain` VOR dem
+sendText persistiert. Ack `POST /api/self/events/:id/ack`, session-gebunden
+(`slot+openedAt+sessionId`), idempotent. Sichtbar: `GET /api/self` + Owner-Poll `events`.
+Elf Gegenproben in `e2e/watch.ts`. Canary real: Wegwerf-Lane → Event `b15de61a…` pending →
+delivered (Pane-Text nannte Event-ID + Ack-Weg) → Ack `existing:false` → zweiter Ack
+`existing:true`. Lane danach entfernt.
+
+## Nächster Zielkorridor
+
+**Workstream 3: Provenienz P2 auf Outcomes** (`taskId`/`harness`/`effort`/Context; Baseline §3
+des Harness-Briefs), danach Workstream 5 (proportionale Verifikation). Ausdrücklich NICHT in
+dieser Session begonnen (Owner-Vorgabe). Core-Doc-Empfehlung ist aktualisiert. Erdung wie immer:
+`./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 51 (2026-08-12/13: Fable übernimmt mid-session — Codex-Readiness gelandet, dann MAIN-direct-Provenienz über eine Codex-Lane) · 50/49/48/47/46 darunter
 
 **ctx beim Schreiben: GEMESSEN am Owner-Poll (Kommando im Rulebook), Slot 1.** Besonderheit der

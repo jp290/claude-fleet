@@ -3,7 +3,7 @@
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, readFileSync, realpathSync } from "node:fs";
-import { BASE, REPO, ROOT, check, get, post } from "./harness";
+import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
 export async function run(): Promise<void> {
@@ -13,6 +13,9 @@ export async function run(): Promise<void> {
   {
     type Outcome = { ts: number; branch: string | null; base: string | null; headSha: string | null;
       disposition: string; model: string | null; briefHash: string | null; shortstat: string;
+      // optional at the reader because legacy ledger rows predate all four fields. Fresh lane rows
+      // always carry harness/effort (null means default adapter/level); only task lanes carry ids.
+      harness?: string | null; effort?: string | null; taskId?: string; originId?: string;
       commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
       sessionMs: number | null; ownerPrompts: number;
       resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
@@ -207,6 +210,9 @@ export async function run(): Promise<void> {
     check("outcome: reverted land → reverted disposition, commitCount 1, correct file",
       rec5?.disposition === "reverted" && rec5?.commitCount === 1 && (rec5?.filesTouched ?? []).includes("reverted.txt"),
       JSON.stringify(rec5));
+    check("outcome: reverted row has no live-slot provenance to invent and records adapter pins as null",
+      !!rec5 && !("taskId" in rec5) && !("originId" in rec5)
+      && rec5.harness === null && rec5.effort === null, JSON.stringify(rec5));
 
     // (6) LANDED after a REPAIRED conflict resolution, confirm-landed by the owner — the full
     // autonomy-calibration record: resolvedConflict:true, repairRounds>=1 (verify went red→green via
@@ -277,6 +283,63 @@ export async function run(): Promise<void> {
       rec7?.verified === true && rec7?.confirmedByHuman === false,
       JSON.stringify({ verified: rec7?.verified, confirmed: rec7?.confirmedByHuman }));
 
+    // (7a) TASK→DISPATCH→SLOT→OUTCOME provenance, including the process boundary. The first lane
+    // names every attended spawn pin, then the real server is restarted before teardown: the
+    // killed-empty row can only retain task/origin if saveState + loadState carried the slot stamp.
+    const pinTask = (await (await post("/api/tasks", {
+      text: "execution-provenance explicit-pin probe", repo: oRepo,
+    })).json()) as { task: { id: string; originId?: string } };
+    const pinModel = "openai/gpt-5-codex";
+    const pinDispatch = await post(`/api/tasks/${pinTask.task.id}/dispatch`, {
+      harness: "codex", model: pinModel, effort: "high",
+    });
+    const pinLane = (await pinDispatch.json()) as { ok?: boolean; slot?: number; branch?: string };
+    check("provenance setup: explicit harness/model/effort dispatch creates a task-bound lane",
+      pinDispatch.ok && pinLane.ok === true && typeof pinLane.slot === "number" && typeof pinLane.branch === "string",
+      `${pinDispatch.status} ${JSON.stringify(pinLane)}`);
+    type PinSlot = { taskId?: string | null; originId?: string | null; harness?: string | null;
+      model?: string | null; effort?: string | null };
+    let pinSlot: PinSlot | undefined;
+    for (let i = 0; i < 20; i++) {
+      try {
+        pinSlot = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, PinSlot> }).slots?.[String(pinLane.slot)];
+      } catch { /* atomic state rename can race this read; retry */ }
+      if (pinSlot?.taskId === pinTask.task.id && pinSlot.originId === pinTask.task.originId) break;
+      await Bun.sleep(50);
+    }
+    check("dispatch stamps taskId/originId and exact requested pins onto the persisted slot",
+      pinSlot?.taskId === pinTask.task.id && pinSlot.originId === pinTask.task.originId
+      && pinSlot.harness === "codex" && pinSlot.model === pinModel && pinSlot.effort === "high",
+      JSON.stringify(pinSlot));
+    await restartSrv();
+    if (typeof pinLane.slot === "number") await post(`/api/slots/${pinLane.slot}/kill`, {});
+    const pinOutcome = forBranch(await readOutcomes(), pinLane.branch ?? "");
+    check("outcome: after save/load + killed-empty teardown, task/origin and explicit spawn pins remain exact",
+      pinOutcome?.disposition === "killed-empty"
+      && pinOutcome.taskId === pinTask.task.id && pinOutcome.originId === pinTask.task.originId
+      && pinOutcome.harness === "codex" && pinOutcome.model === pinModel && pinOutcome.effort === "high",
+      JSON.stringify(pinOutcome));
+    await post(`/api/tasks/${pinTask.task.id}/delete`, {});
+
+    const defaultTask = (await (await post("/api/tasks", {
+      text: "execution-provenance default-adapter probe", repo: oRepo,
+    })).json()) as { task: { id: string; originId?: string } };
+    const defaultDispatch = await post(`/api/tasks/${defaultTask.task.id}/dispatch`, {});
+    const defaultLane = (await defaultDispatch.json()) as { ok?: boolean; slot?: number; branch?: string };
+    check("provenance setup: body-less dispatch creates a task-bound default-adapter lane",
+      defaultDispatch.ok && defaultLane.ok === true && typeof defaultLane.slot === "number"
+      && typeof defaultLane.branch === "string", `${defaultDispatch.status} ${JSON.stringify(defaultLane)}`);
+    if (typeof defaultLane.slot === "number")
+      await post(`/api/slots/${defaultLane.slot}/shelve`, { note: "default adapter provenance probe" });
+    const defaultOutcome = forBranch(await readOutcomes(), defaultLane.branch ?? "");
+    check("outcome: a body-less dispatch records task/origin but harness:null and effort:null honestly",
+      defaultOutcome?.disposition === "shelved"
+      && defaultOutcome.taskId === defaultTask.task.id && defaultOutcome.originId === defaultTask.task.originId
+      && defaultOutcome.harness === null && defaultOutcome.effort === null,
+      JSON.stringify(defaultOutcome));
+    await post(`/api/tasks/${defaultTask.task.id}/delete`, {});
+
     // (7b) WHO RELEASED IT, which is NOT who landed it. `confirmedByHuman` answers the land art —
     // did the owner press ⏫, or did it auto-land clean+green — and on the live trail 77 of the 89
     // landed rows carry `false` on it although a human released every single one. So an unattended
@@ -286,7 +349,8 @@ export async function run(): Promise<void> {
     // through the same unattended clean path as (7), must record releasedBy:"owner" AND keep
     // confirmedByHuman:false. Drop either half and the new field has silently become a rename.
     const relMark = "released-by pin — an owner-released lane";
-    const relTask = (await (await post("/api/tasks", { text: relMark, repo: oRepo })).json()) as { task: { id: string } };
+    const relTask = (await (await post("/api/tasks", { text: relMark, repo: oRepo })).json()) as
+      { task: { id: string; originId?: string } };
     check("release pin setup: the owner promotes the draft (▸ queue — the release act itself)",
       (await post(`/api/tasks/${relTask.task.id}/queue`, {})).ok);
     const relD = await post(`/api/tasks/${relTask.task.id}/dispatch`, {});
@@ -320,14 +384,19 @@ export async function run(): Promise<void> {
       vRel.gone, JSON.stringify(vRel));
     const recRel = forBranch(await readOutcomes(), relBranch);
     check("outcome: an owner-released lane records releasedBy:\"owner\" — while the LAND art stays what it was (unattended clean land ⇒ confirmedByHuman:false)",
-      recRel?.disposition === "landed" && recRel?.releasedBy === "owner" && recRel?.confirmedByHuman === false,
-      JSON.stringify({ releasedBy: recRel?.releasedBy, confirmed: recRel?.confirmedByHuman, d: recRel?.disposition }));
+      recRel?.disposition === "landed" && recRel?.releasedBy === "owner" && recRel?.confirmedByHuman === false
+      && recRel.taskId === relTask.task.id && recRel.originId === relTask.task.originId,
+      JSON.stringify({ releasedBy: recRel?.releasedBy, taskId: recRel?.taskId,
+        originId: recRel?.originId, confirmed: recRel?.confirmedByHuman, d: recRel?.disposition }));
     // …and the complementary half: a lane that came from NO queue row (rec1 was opened by hand via
     // POST /api/lanes) carries no key at all. Absence has to stay readable as "this row cannot
     // say" — the moment it defaults to "owner", every pre-field row on disk starts claiming a
     // release nobody recorded, which is the exact failure this field was added to prevent.
     check("outcome: a hand-opened lane carries no releasedBy key at all (absence ≠ owner)",
       !("releasedBy" in (rec1 ?? {})), JSON.stringify({ releasedBy: rec1?.releasedBy }));
+    check("outcome: a hand-opened lane carries no taskId/originId, while default adapter pins stay explicit null",
+      !!rec1 && !("taskId" in rec1) && !("originId" in rec1)
+      && rec1.harness === null && rec1.effort === null, JSON.stringify(rec1));
 
     // (7c) THE DOSSIER — the same lanes read as ONE story instead of six ledgers. Every lane above
     // is already a fixture for it: oc1 landed WITHOUT moving main (so it has no note, and that is a
@@ -566,8 +635,9 @@ export async function run(): Promise<void> {
         filesTouched: [], e2eTouched: false, verified: null, sessionMs: null, ownerPrompts: 0,
         resolvedConflict: false, repairRounds: 0, confirmedByHuman: false }) + "\n");
     const recLegacy = forBranch(await readOutcomes(), "legacy/pre-review-field");
-    check("outcome: a pre-review-field row survives /api/lane-outcomes with NO review key at all (never defaulted to none)",
-      !!recLegacy && !("review" in recLegacy), JSON.stringify(recLegacy ?? null).slice(0, 200));
+    check("outcome: a legacy row survives /api/lane-outcomes with old absent fields untouched (reader never throws or defaults)",
+      !!recLegacy && !("review" in recLegacy) && !("taskId" in recLegacy) && !("originId" in recLegacy)
+      && !("harness" in recLegacy) && !("effort" in recLegacy), JSON.stringify(recLegacy ?? null).slice(0, 240));
 
     // (9d) …and the renderer keeps the two shapes apart. Asserted over the CLIENT SOURCE, not a
     // rendered DOM: this suite has no DOM harness, so what is proved here is that the classifier

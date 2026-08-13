@@ -1150,6 +1150,9 @@ const taskKindNote = (kind: TaskKind): string | null =>
 
 interface Task {
   id: string;
+  originId?: string; // stable bracket around tasks minted from one request. Root tasks use their
+  // own id; refine children inherit it. Absent is the honest shape for a pre-field row, never an
+  // empty bracket and never backfilled while loading old state.
   text: string;
   source: "owner" | "intake" | "steward";
   from: string | null; // intake sender label (freeform, for display only — never trusted)
@@ -1324,6 +1327,11 @@ interface Slot {
   // silently falling back to the default one.
   effort: string | null; // per-slot reasoning level for harnesses that have one (Pi's --thinking);
   // null = pass no flag. Validated against the HARNESS's own closed set, never a charset.
+  taskId: string | null; // the queue row that spawned this lane. Carried because the outcome
+  // recorder runs at TEARDOWN — by then the slot is the only object that still names the run.
+  // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.
+  originId: string | null; // the stable request bracket of that task, with the same teardown
+  // lifetime. null is honest for manual lanes and dispatched legacy tasks whose row cannot say.
   releasedBy: "owner" | "machine" | null; // how the TASK that spawned this lane was released
   // (Task.releasedBy), carried here because the outcome recorder runs at TEARDOWN — by then the
   // task row has moved to `done`/`pending` and the slot is the only thing that still remembers.
@@ -1364,6 +1372,8 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   container: null,
   containerContext: null,
   effort: null,
+  taskId: null,
+  originId: null,
   releasedBy: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -2097,11 +2107,12 @@ function saveState(): void {
     worktree: LaneRef | null; model: string | null;
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
+    taskId: string | null; originId: string | null;
     releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, releasedBy: s.releasedBy, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
@@ -3266,6 +3277,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
 
+  s.taskId = null; // ...and no new occupant inherits the queue row or request bracket of the old
+  s.originId = null; // one. Dispatch stamps both back immediately after this call; manual opens do not
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
@@ -3345,6 +3358,8 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.model = null; // the per-slot model dies with the session it was chosen for
   s.harness = null; // ...as does the harness that ran it: the next occupant of this slot is a new
   s.effort = null;  // session and must be spawned by whatever IT chose, never by what was here
+  s.taskId = null; // ...as do the queue row and stable request bracket that spawned this occupant
+  s.originId = null;
   s.releasedBy = null; // ...as does the release that started it — same lifetime, same reason
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
@@ -4124,6 +4139,8 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     // ...and carry it onto the SLOT, which outlives the row: openSlot above has just cleared this
     // (a recycled slot inherits nothing), so the write has to come after it.
     free.releasedBy = next.releasedBy ?? null;
+    free.taskId = next.id;
+    free.originId = next.originId ?? null;
     next.status = "sent";
     next.slot = free.id;
     next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you` : `lane ${wt.branch}`;
@@ -8096,6 +8113,14 @@ interface LaneOutcome {
   headSha: string | null;
   disposition: LaneDisposition;
   model: string | null;  // s.model, or null when unpinned — recorded honestly, NEVER guessed
+  harness: string | null; // s.harness, or null for the default adapter (FLEET_CMD), exactly the
+  // same requested-pin semantics as model. Never resolved through harnessOf() after the fact.
+  effort: string | null; // s.effort, or null when the default adapter/level was requested, with
+  // the same honest null semantics as model and harness.
+  taskId?: string; // optional because only a queue-bound lane can name the task that spawned it;
+  // manual lanes and outcome rows written before this field omit it rather than manufacturing a join.
+  originId?: string; // optional for the same reason: only a task row can state its stable request
+  // bracket, and absence means this outcome cannot say.
   briefHash: string | null; // stable short hash of the lane's FIRST owner/auto prompt (the
   // founding brief — dispatched lanes are briefed with source "auto", see laneOwnerPrompts)
   // WHO released the task this lane ran (Task.releasedBy, carried via Slot.releasedBy). Written on
@@ -8287,6 +8312,10 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     headSha,
     disposition,
     model: s.model ?? null,
+    harness: s.harness ?? null,
+    effort: s.effort ?? null,
+    ...(s.taskId ? { taskId: s.taskId } : {}),
+    ...(s.originId ? { originId: s.originId } : {}),
     briefHash: briefHashOf(firstText),
     // read off the SLOT, not off `facts`: this is a lane-provenance fact like model/briefHash, and
     // LandFacts only reaches a "landed" row — routing it there would leave every killed/shelved
@@ -8330,7 +8359,8 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
 // and the undo record. The landed work is exactly mainBefore..mainAfter on the integration branch.
-// model/briefHash/session proxies are unknowable server-side here → recorded honestly as null/0.
+// model/harness/effort/briefHash/session proxies are unknowable server-side here → recorded
+// honestly as null/0. taskId/originId are omitted: the branch join is the only surviving route.
 // `releasedBy` is omitted for the same reason AND a second one: this lane already produced a
 // `landed` row carrying it, so stamping it again would double-count the release in any population
 // counted off this trail. Recover it the way the land-shape facts are recovered — join by branch.
@@ -8346,6 +8376,8 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
     headSha: rec.mainAfter,
     disposition: "reverted",
     model: null,
+    harness: null,
+    effort: null,
     briefHash: null,
     shortstat: sh.code === 0 ? sh.out : "",
     commitCount: cc.code === 0 ? Number(cc.out) || 0 : 0,
@@ -10103,8 +10135,9 @@ async function handleIntake(req: Request): Promise<Response> {
   if (!text) return json({ error: "empty text" }, 400);
   intakeStrikes.push(now);
   const from = typeof body.from === "string" ? body.from.slice(0, 120) : null;
+  const id = randomBytes(4).toString("hex");
   const t: Task = {
-    id: randomBytes(4).toString("hex"), text, source: "intake", from,
+    id, originId: id, text, source: "intake", from,
     kind: "auftrag", repo: null, status: "pending", created: now, slot: null, note: null,
   };
   tasks = capTasks([...tasks, t]);
@@ -10258,6 +10291,9 @@ if (existsSync(STATE_FILE)) {
         .map((t) => ({ ...t,
           kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
           repo: typeof t.repo === "string" ? t.repo : null,
+          // Stable request provenance is captured only while a task is alive. A pre-field row
+          // stays absent on load — assigning its own id here would be a backfill, not observation.
+          originId: typeof t.originId === "string" && t.originId ? t.originId : undefined,
           // rows released before this field existed stay ABSENT, and a malformed value degrades to
           // absent too — never to "owner". The whole point of the field is that a released row can
           // be told apart from one nobody recorded; a default would erase exactly that distinction
@@ -10356,6 +10392,12 @@ if (existsSync(STATE_FILE)) {
         if (typeof pm === "string" && (hOf.modelRe ?? SLOT_MODEL_RE).test(pm)) s.model = pm;
         const pe = (v as { effort?: unknown }).effort;
         if (typeof pe === "string" && hOf.supports.effort && hOf.effortLevels.includes(pe)) s.effort = pe;
+        // Queue provenance survives a server restart with the lane. Old slot rows omit both and
+        // therefore retain the initialized nulls; no branch-name or git inference fills them in.
+        const pti = (v as { taskId?: unknown }).taskId;
+        if (typeof pti === "string" && pti) s.taskId = pti;
+        const poi = (v as { originId?: unknown }).originId;
+        if (typeof poi === "string" && poi) s.originId = poi;
         // ...and the box, judged by the harness AND the charset on the way back in, for the reason
         // the model above is: the state file is on disk, and a hand-edit must not be able to put a
         // value into a tmux line that a request could never have put there. A rejected value stays
@@ -12330,8 +12372,9 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
     // four-value validator as the owner create and kind-change routes.
     if (body.kind !== undefined && !isTaskKind(body.kind))
       return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
+    const id = randomBytes(4).toString("hex");
     const t: Task = {
-      id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+      id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
       source: "steward", from: null, kind: isTaskKind(body.kind) ? body.kind : "notiz",
       repo: null, // never body.repo — a steward text must not choose where a lane spawns
       status: "pending", created: Date.now(), slot: null, note: null,
@@ -14267,8 +14310,9 @@ Bun.serve<WSData>({
         if (!existsSync(dir) || !statSync(dir).isDirectory()) return json({ error: `repo is not a directory: ${dir}` }, 400);
         taskRepo = dir;
       }
+      const id = randomBytes(4).toString("hex");
       const t: Task = {
-        id: randomBytes(4).toString("hex"), text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+        id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
         source: "owner", from: null, kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
         note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,
@@ -14431,24 +14475,28 @@ Bun.serve<WSData>({
       // archived original afterwards
       if (refineInflight.has(t.id)) return json({ error: "a refine is still running for this task" }, 409);
       const now = Date.now();
-      const kids: Task[] = proposal.tasks.map((c) => ({
-        id: randomBytes(4).toString("hex"), text: refineChildText(c),
-        // source "owner": the owner is confirming this text, whatever the original row came in as.
-        // NO `brief` and NO `analysis` — a child is a NEW draft, so it must reach the sweep as one:
-        // inheriting either would carry a compile and a judgment about a text that no longer exists.
-        // `repo` rides along, or the split would silently retarget the dispatcher default. Note the
-        // children land as `pending`, never `queued`: refining proposes work, releasing it stays a
-        // separate owner act, and confirming a split must not smuggle four rows past that boundary.
-        source: "owner", from: null, kind: "auftrag", repo: t.repo,
-        // the ONE thing a child inherits from the proposal besides its text: the paths the refiner
-        // verified against the tree, which the owner is confirming along with everything else. It
-        // is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
-        // are deliberately left off above so the child meets the sweep as the fresh draft it is.
-        ...(c.files.length ? {
-          files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
-        } : {}),
-        status: "pending", created: now, slot: null, note: null,
-      }));
+      const originId = t.originId ?? t.id;
+      const kids: Task[] = proposal.tasks.map((c) => {
+        const id = randomBytes(4).toString("hex");
+        return {
+          id, originId, text: refineChildText(c),
+          // source "owner": the owner is confirming this text, whatever the original row came in as.
+          // NO `brief` and NO `analysis` — a child is a NEW draft, so it must reach the sweep as one:
+          // inheriting either would carry a compile and a judgment about a text that no longer exists.
+          // `repo` rides along, or the split would silently retarget the dispatcher default. Note the
+          // children land as `pending`, never `queued`: refining proposes work, releasing it stays a
+          // separate owner act, and confirming a split must not smuggle four rows past that boundary.
+          source: "owner", from: null, kind: "auftrag", repo: t.repo,
+          // the ONE thing a child inherits from the proposal besides its text: the paths the refiner
+          // verified against the tree, which the owner is confirming along with everything else. It
+          // is not a model judgement ABOUT this row the way `brief` and `analysis` are — those two
+          // are deliberately left off above so the child meets the sweep as the fresh draft it is.
+          ...(c.files.length ? {
+            files: c.files.slice(0, MAX_REFINE_FILES), filesOrigin: "confirmed" as const,
+          } : {}),
+          status: "pending", created: now, slot: null, note: null,
+        };
+      });
       // append BEFORE archiving the original: capTasks may only evict TERMINAL rows, and the
       // original is still live at this point — archiving first could make the very row we are
       // about to annotate the one the cap drops

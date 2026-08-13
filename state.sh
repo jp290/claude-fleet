@@ -67,9 +67,12 @@ o = rows('lane-outcomes.jsonl')
 if o is None:
     print("  outcomes UNKNOWN — lane-outcomes.jsonl absent (not the same as none)")
 else:
-    s = [r for r in o if r.get('cleanReviewShadow')]
+    md = [r for r in o if r.get('origin') == 'main-direct']
+    lanes = [r for r in o if r.get('origin') != 'main-direct']
+    s = [r for r in lanes if r.get('cleanReviewShadow')]
     ws = sum(1 for r in s if (r.get('cleanReviewShadow') or {}).get('verdict') == 'would_stop')
-    print(f"  outcomes {len(o)} | shadow {len(s)} | would_stop EVER {ws}")
+    print(f"  outcomes {len(lanes)} | shadow {len(s)} | would_stop EVER {ws}")
+    print(f"  main-direct {len(md)} | {dict(Counter(r.get('result') for r in md))}")
 a = rows('post-land-audits.jsonl')
 if a is None:
     print("  post-land audits UNKNOWN — post-land-audits.jsonl absent (not the same as none)")
@@ -118,17 +121,23 @@ if o is None:
 elif not o:
     print("  outcomes 0 — the file exists and is empty")
 else:
+    o = [r for r in o if r.get('origin') != 'main-direct']
+    if not o:
+        print("  lanes 0 — main-direct rows are reported separately above")
     disp = Counter(r.get('disposition') for r in o)
     landed = disp.get('landed', 0)
     never = len(o) - landed
-    print(f"  lanes {len(o)}: " + " · ".join(f"{k} {v}" for k, v in disp.most_common()))
+    if o:
+        print(f"  lanes {len(o)}: " + " · ".join(f"{k} {v}" for k, v in disp.most_common()))
     # the denominator is the point: a land-success rate over lands only is a rate over survivors
-    print(f"    landed {landed}/{len(o)} = {landed*100//len(o)}% of ALL lanes — {never} never reached a merge")
+    if o:
+        print(f"    landed {landed}/{len(o)} = {landed*100//len(o)}% of ALL lanes — {never} never reached a merge")
     res = sum(1 for r in o if r.get('resolvedConflict'))
     rr = Counter(r.get('repairRounds') for r in o)
     worst = max((k for k in rr if isinstance(k, int)), default=None)
-    print(f"    conflict resolver ran {res}/{len(o)} · repair rounds: max {worst}"
-          f" — the loop arms only on !clean AND verify red (server.ts, MERGE_REPAIR_ROUNDS)")
+    if o:
+        print(f"    conflict resolver ran {res}/{len(o)} · repair rounds: max {worst}"
+              f" — the loop arms only on !clean AND verify red (server.ts, MERGE_REPAIR_ROUNDS)")
 
 # the gate's two budgets live on the land notes, not in the outcome rows. One cat-file --batch
 # reads every note in one process; GIT_OPTIONAL_LOCKS=0 keeps these read-only calls off .git/index.lock

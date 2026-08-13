@@ -2,7 +2,7 @@
 // relation on it, the client-source assertions about how it renders, and the criteria counter.
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, copyFileSync, readFileSync, realpathSync } from "node:fs";
 import { BASE, REPO, ROOT, check, get, post } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -41,6 +41,84 @@ export async function run(): Promise<void> {
     spawnSync("git", ["-C", oRepo, "commit", "-qm", "seed"]);
     const oBare = `${oRepo}.remote.git`;
     spawnSync("git", ["init", "--bare", "-q", oBare]);
+
+    // MAIN-direct provenance is deliberately not inferred from git history. A plain session
+    // declares before work, then the server reads both integration tips around a real commit.
+    const sess = (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd?: string | null }[] };
+    const mdSlot = sess.slots.find((s) => !s.cwd)?.id ?? 10;
+    check("main-direct fixture: a plain MAIN session opens on the test repo",
+      (await post(`/api/slots/${mdSlot}/open`, { cwd: oRepo })).ok, String(mdSlot));
+    let mdToken = "";
+    for (let i = 0; i < 50 && !mdToken; i++) {
+      try {
+        mdToken = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+          { slots?: Record<string, { selfToken?: string }> }).slots?.[String(mdSlot)]?.selfToken ?? "";
+      } catch { /* atomic state rename can race this read; retry */ }
+      if (!mdToken) await Bun.sleep(50);
+    }
+    const mdFetch = (path: string, body?: unknown, method = "POST") => fetch(BASE + path, {
+      method, headers: { "content-type": "application/json", "x-fleet-self-token": mdToken },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const pfRes = await mdFetch("/api/self/main-direct/preflight", { repo: oRepo });
+    const pf = (await pfRes.json()) as { preflight?: { id: string; mainBefore: string; repo: string; integrationBranch: string; slot: number } };
+    check("main-direct: preflight persists server-read repo, integration branch, prior HEAD and session identity",
+      pfRes.ok && !!pf.preflight && pf.preflight.repo === realpathSync(oRepo)
+      && pf.preflight.integrationBranch === "main" && pf.preflight.slot === mdSlot
+      && /^[0-9a-f]{40,64}$/.test(pf.preflight.mainBefore), JSON.stringify(pf));
+    await Bun.write(`${oRepo}/main-direct.txt`, "main direct\n");
+    spawnSync("git", ["-C", oRepo, "add", "main-direct.txt"]);
+    spawnSync("git", ["-C", oRepo, "commit", "-qm", "main direct fixture"]);
+    const mdAfter = spawnSync("git", ["-C", oRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    const verifyReport = { command: "bun test focused", result: "pass" };
+    const finBody = { id: pf.preflight?.id, result: "landed", mainAfter: mdAfter, verify: verifyReport };
+    const finRes = await mdFetch("/api/self/main-direct/finalize", finBody);
+    const fin = (await finRes.json()) as { outcome?: Record<string, unknown>; existing?: boolean };
+    check("main-direct: finalize records one main-direct row with both server-read heads and reported verify",
+      finRes.ok && fin.outcome?.origin === "main-direct" && fin.outcome?.mainBefore === pf.preflight?.mainBefore
+      && fin.outcome?.mainAfter === mdAfter && JSON.stringify(fin.outcome?.verify) === JSON.stringify(verifyReport), JSON.stringify(fin));
+    const idem = await mdFetch("/api/self/main-direct/finalize", finBody);
+    const idemJ = (await idem.json()) as { existing?: boolean };
+    const mdRows = readFileSync(`${ROOT}/lane-outcomes.jsonl`, "utf8").split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l) as { origin?: string; id?: string }).filter((r) => r.origin === "main-direct" && r.id === pf.preflight?.id);
+    check("main-direct: identical finalize is idempotent and leaves exactly one ledger row",
+      idem.ok && idemJ.existing === true && mdRows.length === 1, JSON.stringify({ status: idem.status, rows: mdRows.length }));
+    const conflict = await mdFetch("/api/self/main-direct/finalize", { ...finBody, result: "abandoned", reason: "contradiction" });
+    check("main-direct: contradictory finalize is 409 and cannot overwrite the row", conflict.status === 409
+      && readFileSync(`${ROOT}/lane-outcomes.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((l) => JSON.parse(l) as { id?: string }).filter((r) => r.id === pf.preflight?.id).length === 1, String(conflict.status));
+
+    const stillPf = (await (await mdFetch("/api/self/main-direct/preflight", { repo: oRepo })).json()) as { preflight?: { id: string } };
+    const unmoved = await mdFetch("/api/self/main-direct/finalize",
+      { id: stillPf.preflight?.id, result: "landed", mainAfter: mdAfter, verify: "not run" });
+    check("main-direct: landed with an unmoved HEAD is rejected honestly and records nothing",
+      unmoved.status === 409 && !readFileSync(`${ROOT}/lane-outcomes.jsonl`, "utf8").includes(stillPf.preflight?.id ?? "never"), String(unmoved.status));
+    const view = await mdFetch("/api/self/main-direct", undefined, "GET");
+    const viewJ = (await view.json()) as { open?: { id: string; stale: boolean }[] };
+    check("main-direct: an open preflight is visible with explicit stale state",
+      view.ok && viewJ.open?.some((p) => p.id === stillPf.preflight?.id && typeof p.stale === "boolean") === true, JSON.stringify(viewJ));
+    const abandoned = await mdFetch("/api/self/main-direct/abandon", { id: stillPf.preflight?.id, reason: "fixture stops here" });
+    const afterAbandon = await mdFetch("/api/self/main-direct/finalize",
+      { id: stillPf.preflight?.id, result: "landed", mainAfter: mdAfter, verify: "unknown" });
+    check("main-direct: abandon closes the visible preflight with a reason; later finalize is 409",
+      abandoned.ok && afterAbandon.status === 409, JSON.stringify({ abandon: abandoned.status, finalize: afterAbandon.status }));
+
+    const stateRepo = `${oRepo}.state-fixture`;
+    spawnSync("git", ["init", "-q", "-b", "main", stateRepo]);
+    // Staged suites intentionally carry no path-read shell assets. Their node_modules symlink is
+    // the one documented pointer back to the source tree (same mechanism as the client checks).
+    const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+    copyFileSync(`${sourceRoot}/state.sh`, `${stateRepo}/state.sh`);
+    await Bun.write(`${stateRepo}/server.ts`, "// fixture\n");
+    await Bun.write(`${stateRepo}/lane-outcomes.jsonl`,
+      `${JSON.stringify({ ts: 1, disposition: "landed", resolvedConflict: false, repairRounds: 0 })}\n`
+      + `${JSON.stringify({ ts: 2, origin: "main-direct", result: "landed" })}\n`);
+    spawnSync("git", ["-C", stateRepo, "add", "state.sh", "server.ts"]);
+    spawnSync("git", ["-C", stateRepo, "-c", "user.email=e2e@test", "-c", "user.name=e2e", "commit", "-qm", "fixture"]);
+    const stateOut = spawnSync("sh", ["state.sh"], { cwd: stateRepo, encoding: "utf8" }).stdout;
+    check("state.sh: main-direct is separate and cannot change lane counts",
+      stateOut.includes("outcomes 1") && stateOut.includes("main-direct 1") && stateOut.includes("lanes 1: landed 1"), stateOut.split("\n").filter((l) => /outcomes|main-direct|lanes /.test(l)).join(" | "));
+    await post(`/api/slots/${mdSlot}/kill`, {});
 
     // (1) LANDED with commits — a lane that touches an e2e/test file, gets an owner prompt,
     // is committed + pushed, then landed via the simple ⏏ route (teardown of merged/pushed work).

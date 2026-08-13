@@ -1319,6 +1319,27 @@ let pins: string[] = []; // owner-pinned project roots, surfaced first in the pi
 // sits on the integration branch. Setting it lets the owner park the primary on a working
 // branch (e.g. `desk`) while lanes still land onto `main` without touching that dirty tree.
 let repoBases: Record<string, string> = {};
+type MainDirectResult = "landed" | "abandoned" | "expired";
+interface MainDirectPreflight {
+  id: string;
+  createdAt: number;
+  slot: number;
+  sessionId: string | null;
+  openedAt: number;
+  taskId: string | null;
+  repo: string;
+  integrationBranch: string;
+  mainBefore: string;
+}
+interface MainDirectOutcome extends MainDirectPreflight {
+  origin: "main-direct";
+  ts: number;
+  result: MainDirectResult;
+  mainAfter: string;
+  verify: string | Record<string, unknown> | "unknown";
+  reason?: string;
+}
+let mainDirectPreflights: Record<string, MainDirectPreflight> = {};
 // repo root → worker name → the executable that worker runs as, for THAT repo.
 //
 // The FLEET_*_CMD stand-ins are module constants read from the server's env, which makes each of
@@ -2015,7 +2036,7 @@ function saveState(): void {
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
-    landPending: Object.fromEntries(landPending),
+    landPending: Object.fromEntries(landPending), mainDirectPreflights,
   }, null, 2);
   // tmp + rename, never truncate-in-place: a crash mid-write must leave the OLD state
   // intact, not a torn file that boot reads as "empty" and then re-persists as the
@@ -8192,6 +8213,90 @@ function emitLaneOutcome(o: LaneOutcome | null): void {
   if (o) appendEvent(LANE_OUTCOME_FILE, o as unknown as Record<string, unknown>);
 }
 
+function emitMainDirectOutcome(o: MainDirectOutcome): void {
+  appendEvent(LANE_OUTCOME_FILE, o as unknown as Record<string, unknown>);
+}
+
+const MAIN_DIRECT_STALE_MS = 24 * 60 * 60 * 1000;
+function mainDirectTaskId(s: Slot): string | null {
+  return tasks.find((t) => t.slot === s.id && t.status === "sent")?.id ?? null;
+}
+async function readMainDirectOutcomes(): Promise<MainDirectOutcome[]> {
+  const { rows } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+  return rows.filter((r) => r.origin === "main-direct") as unknown as MainDirectOutcome[];
+}
+async function mainDirectPreflight(s: Slot, body: unknown): Promise<Response> {
+  if (s.worktree) return json({ error: "a lane uses lane provenance, not main-direct provenance" }, 409);
+  const repoRaw = typeof (body as { repo?: unknown } | null)?.repo === "string"
+    ? (body as { repo: string }).repo.trim() : s.cwd ?? "";
+  let repo: string;
+  try { repo = realpathSync(resolve(expandCwd(repoRaw))); } catch { return json({ error: "repo not found" }, 400); }
+  const top = await git(repo, "rev-parse", "--show-toplevel");
+  if (top.code !== 0 || repoCanon(top.out) !== repoCanon(repo)) return json({ error: "repo is not a git toplevel" }, 400);
+  if (repoCanon(repo) !== repoCanon(s.cwd ?? "")) return json({ error: "preflight repo must be this session's checkout" }, 409);
+  const main = await integrationBranch(repo);
+  if (!main) return json({ error: "integration branch is unknown" }, 409);
+  const before = await git(repo, "rev-parse", main);
+  if (before.code !== 0 || !before.out) return json({ error: "integration branch head is unreadable" }, 409);
+  const row: MainDirectPreflight = {
+    id: randomBytes(12).toString("hex"), createdAt: Date.now(), slot: s.id,
+    sessionId: s.sessionId, openedAt: s.openedAt, taskId: mainDirectTaskId(s),
+    repo, integrationBranch: main, mainBefore: before.out,
+  };
+  mainDirectPreflights[row.id] = row;
+  await saveStateNow();
+  return json({ ok: true, preflight: { ...row, stale: false } });
+}
+async function mainDirectFinalize(s: Slot, body: unknown): Promise<Response> {
+  const b = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+  const id = typeof b.id === "string" ? b.id : "";
+  const result = b.result;
+  if (!id || (result !== "landed" && result !== "abandoned" && result !== "expired"))
+    return json({ error: "id and result (landed|abandoned|expired) required" }, 400);
+  const done = (await readMainDirectOutcomes()).find((r) => r.id === id);
+  if (done) {
+    if (done.slot !== s.id || done.openedAt !== s.openedAt || done.sessionId !== s.sessionId)
+      return json({ error: "operation belongs to another session" }, 409);
+    const claimedAfter = typeof b.mainAfter === "string" ? b.mainAfter : done.mainAfter;
+    const verify = b.verify === undefined ? "unknown" : b.verify;
+    const reason = typeof b.reason === "string" ? b.reason.trim() : undefined;
+    if (done.result === result && done.mainAfter === claimedAfter
+      && JSON.stringify(done.verify) === JSON.stringify(verify) && done.reason === reason)
+      return json({ ok: true, existing: true, outcome: done });
+    return json({ error: "conflicting finalize for this operation" }, 409);
+  }
+  const pre = mainDirectPreflights[id];
+  if (!pre) return json({ error: "preflight is not open" }, 409);
+  if (pre.slot !== s.id || pre.openedAt !== s.openedAt || pre.sessionId !== s.sessionId)
+    return json({ error: "preflight belongs to another session" }, 409);
+  const after = await git(pre.repo, "rev-parse", pre.integrationBranch);
+  if (after.code !== 0 || !after.out) return json({ error: "integration branch head is unreadable" }, 409);
+  const claimedAfter = typeof b.mainAfter === "string" ? b.mainAfter.trim() : "";
+  const reason = typeof b.reason === "string" ? b.reason.trim() : "";
+  // Contract: `landed` is evidence only when the reporter's expected SHA equals the server-read
+  // integration tip AND that tip moved from preflight. A mismatch is 409 and records nothing;
+  // Fleet never converts it to an inferred land or an `unknown` success. Abandon/expire are
+  // explicit terminal statements, require a reason, and record the actual current tip without
+  // claiming that the operation moved it.
+  if (result === "landed" && (!claimedAfter || claimedAfter !== after.out || after.out === pre.mainBefore))
+    return json({ error: "landed requires a moved integration HEAD matching mainAfter", actualMainAfter: after.out }, 409);
+  if (result !== "landed" && !reason) return json({ error: "abandon/expire requires a reason" }, 400);
+  const verify = b.verify === undefined ? "unknown" : b.verify;
+  if (!(verify === "unknown" || typeof verify === "string" || (verify && typeof verify === "object" && !Array.isArray(verify))))
+    return json({ error: "verify must be text, an object, or omitted" }, 400);
+  const outcome: MainDirectOutcome = {
+    ...pre, origin: "main-direct", ts: Date.now(), result,
+    mainAfter: after.out, verify: verify as MainDirectOutcome["verify"],
+    ...(reason ? { reason } : {}),
+  };
+  // Emit before closing the durable preflight: after a crash, a repeated finalize finds this row
+  // and returns it idempotently; it never emits a duplicate. The stale open mirror is then removed.
+  emitMainDirectOutcome(outcome);
+  delete mainDirectPreflights[id];
+  await saveStateNow();
+  return json({ ok: true, existing: false, outcome });
+}
+
 
 // --- THE DOSSIER: one lane read as one story ----------------------------------------------------
 // Everything a lane leaves behind is already durable, and every piece of it sits in a DIFFERENT
@@ -10119,6 +10224,17 @@ if (existsSync(STATE_FILE)) {
     if (typeof prb === "object" && prb !== null && !Array.isArray(prb))
       for (const [k, v] of Object.entries(prb as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "string" && v) repoBases[k] = v;
+    const pmd = (persisted as { mainDirectPreflights?: unknown }).mainDirectPreflights;
+    if (typeof pmd === "object" && pmd !== null && !Array.isArray(pmd)) {
+      for (const [id, v] of Object.entries(pmd as Record<string, unknown>)) {
+        if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+        const x = v as Record<string, unknown>;
+        if (x.id !== id || typeof x.createdAt !== "number" || typeof x.slot !== "number"
+          || typeof x.openedAt !== "number" || typeof x.repo !== "string"
+          || typeof x.integrationBranch !== "string" || typeof x.mainBefore !== "string") continue;
+        mainDirectPreflights[id] = v as MainDirectPreflight;
+      }
+    }
     // Per-repo worker overrides, RE-VALIDATED on the way in rather than trusted. The route
     // already checks, but this file is hand-editable and the value gets SPAWNED, so the same
     // stance as `awaiting`/`harness` above applies with more at stake: a state file must not be
@@ -11855,7 +11971,7 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
         };
       });
     })(),
-    outcomes: sinceWindow((await readEventLog(LANE_OUTCOME_FILE)).rows, "ts").map((r) => {
+    outcomes: sinceWindow((await readEventLog(LANE_OUTCOME_FILE)).rows.filter((r) => r.origin !== "main-direct"), "ts").map((r) => {
       const sh = r.cleanReviewShadow;
       const shadow = typeof sh === "object" && sh !== null ? sh as { verdict?: unknown; at?: unknown; raw?: unknown } : null;
       return {
@@ -12273,6 +12389,41 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       return createAutoForSlot(s, await readJson(req));
+    }
+
+    // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies
+    // both heads; the body can only state the expected final head and the verification it ran.
+    if (url.pathname === "/api/self/main-direct" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree) return json({ error: "a lane uses lane provenance, not main-direct provenance" }, 409);
+      const now = Date.now();
+      const outcomes = (await readMainDirectOutcomes()).filter((o) => o.slot === s.id
+        && o.openedAt === s.openedAt && o.sessionId === s.sessionId);
+      const terminalIds = new Set(outcomes.map((o) => o.id));
+      const open = Object.values(mainDirectPreflights).filter((p) => p.slot === s.id
+        && p.openedAt === s.openedAt && p.sessionId === s.sessionId && !terminalIds.has(p.id))
+        .map((p) => ({ ...p, stale: now - p.createdAt >= MAIN_DIRECT_STALE_MS }));
+      return json({ open, outcomes });
+    }
+    if (url.pathname === "/api/self/main-direct/preflight" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return mainDirectPreflight(s, await readJson(req));
+    }
+    if ((url.pathname === "/api/self/main-direct/finalize" || url.pathname === "/api/self/main-direct/abandon")
+      && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const body = await readJson(req);
+      if (url.pathname === "/api/self/main-direct/abandon") {
+        const b = body && typeof body === "object" ? body as Record<string, unknown> : {};
+        return mainDirectFinalize(s, { ...b, result: b.expire === true ? "expired" : "abandoned" });
+      }
+      return mainDirectFinalize(s, body);
     }
 
     // the OUTBOUND twin of /autos, and the second capability a plain session gets: instead of
@@ -12846,9 +12997,12 @@ Bun.serve<WSData>({
       const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get("limit") ?? 300) | 0));
       // both generations: the K1 anchor and the K2 shadow series live in this file and must not
       // vanish the day it rotates (data-audit-2026-07-27 item 8) — see readLedger
-      const { rows: outcomes, total, malformed } = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+      const ledger = await readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE);
+      // This route remains lane-shaped for byte-compatible consumers. MAIN-direct rows share the
+      // physical ledger but have their own self view and must never masquerade as lanes.
+      const outcomes = ledger.rows.filter((r) => r.origin !== "main-direct");
       outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
-      return json({ outcomes: outcomes.slice(0, limit), total, malformed });
+      return json({ outcomes: outcomes.slice(0, limit), total: outcomes.length, malformed: ledger.malformed });
     }
     // owner-only, read-only post-land audit trail (verification tier 2) — EXACT same access model
     // as /api/lane-outcomes above. Newest first, so "which land was the last green audit, and which
@@ -12898,6 +13052,7 @@ Bun.serve<WSData>({
       const byBranch = new Map<string, { branch: string; repo: string | null; ts: number;
         disposition: string | null; live: number | null }>();
       for (const o of rows) {
+        if (o.origin === "main-direct") continue;
         if (typeof o.branch !== "string" || !o.branch) continue;
         const ts = typeof o.ts === "number" ? o.ts : 0;
         const prev = byBranch.get(o.branch);

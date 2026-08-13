@@ -6,7 +6,9 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
-  laneWatchEventKind, laneWatchPayload, type LaneWatchEventKind, type LaneWatchEventPayload,
+  mergeWatchMessage, auditWatchMessage, laneWatchEventKind, laneWatchPayload,
+  type LaneWatchEventKind, type LaneWatchEventPayload, type MergeWatchEventPayload,
+  type AuditWatchEventPayload,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
@@ -1049,18 +1051,10 @@ interface Auto {
 // goes back to work and finishes again is a NEW question and needs a new watch. That is the narrow
 // reading on purpose: an armed-forever watch is a repeating nudge, and nothing here should be able
 // to type into a pane on a cadence nobody chose.
-interface Watch {
+interface WatchBase {
   id: string;
   slot: number;    // who gets typed into. Same meaning `slot` has on an Auto, so the delivery
   // path, the per-slot cap and the teardown rules all read the same field.
-  target: number;  // the slot being watched. Never the same as `slot` (a session watching itself
-  // learns nothing) and never a slot the predicate cannot classify — see createWatchForSlot.
-  // the target's IDENTITY at subscribe time, because `target` alone is not one: slot ids are
-  // recycled, so an id-only watch would survive its subject and then fire about whatever lane
-  // moved in next. Teardown drops watches already (dropWatchesFor); these two are the second
-  // lock, and the tick refuses to fire on a target whose cwd or branch changed underneath it.
-  targetCwd: string;
-  targetBranch: string;
   idleSec: number; // the WATCHER's idle gate, same field and same default as an Auto. Not a
   // limitation but the point: the message should arrive when the receiving session comes to rest,
   // which is the exact moment it would otherwise turn away without knowing.
@@ -1069,9 +1063,47 @@ interface Watch {
   firedAt: number | null;
   lastResult: string | null;
 }
+interface LaneWatch extends WatchBase {
+  // Absent on legacy persisted rows. Keeping it absent after load is intentional: those rows pass
+  // through byte-for-byte and `watchKind` supplies their discriminator only while evaluating them.
+  kind?: "lane";
+  target: number;  // the slot being watched. Never the same as `slot` (a session watching itself
+  // learns nothing) and never a slot the predicate cannot classify — see createWatchForSlot.
+  // the target's IDENTITY at subscribe time, because `target` alone is not one: slot ids are
+  // recycled, so an id-only watch would survive its subject and then fire about whatever lane
+  // moved in next. Teardown drops watches already (dropWatchesFor); these two are the second
+  // lock, and the tick refuses to fire on a target whose cwd or branch changed underneath it.
+  targetCwd: string;
+  targetBranch: string;
+}
+interface MergeWatch extends WatchBase {
+  kind: "merge";
+  target: number;
+  targetCwd: string;
+  targetBranch: string;
+}
+interface AuditWatch extends WatchBase {
+  kind: "audit";
+  repo: string;
+  mainAfter: string;
+}
+type Watch = LaneWatch | MergeWatch | AuditWatch;
+const watchKind = (w: Watch): "lane" | "merge" | "audit" => w.kind ?? "lane";
+function watchFrom(raw: unknown): Watch | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const w = raw as Partial<Watch> & Record<string, unknown>;
+  if (typeof w.id !== "string" || typeof w.slot !== "number" || typeof w.idleSec !== "number"
+    || typeof w.armed !== "boolean") return null;
+  if (w.kind === "audit") {
+    return typeof w.repo === "string" && typeof w.mainAfter === "string" ? raw as AuditWatch : null;
+  }
+  if (w.kind !== undefined && w.kind !== "lane" && w.kind !== "merge") return null;
+  return typeof w.target === "number" && typeof w.targetCwd === "string" && typeof w.targetBranch === "string"
+    ? raw as LaneWatch | MergeWatch : null;
+}
 
 type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
-interface FleetEvent {
+interface FleetEventBase {
   id: string;
   watchId: string;
   receiverSlot: number;
@@ -1080,58 +1112,114 @@ interface FleetEvent {
   receiverOpenedAt: number;
   receiverSessionId: string | null;
   receiverIdleSec: number;
-  subjectSlot: number;
-  subjectBranch: string;
-  kind: LaneWatchEventKind;
-  payload: LaneWatchEventPayload;
   createdAt: number;
   status: FleetEventStatus;
   attempts: number;
   deliveredAt: number | null;
   acknowledgedAt: number | null;
 }
+interface LaneFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  subjectBranch: string;
+  kind: LaneWatchEventKind;
+  payload: LaneWatchEventPayload;
+}
+interface MergeFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  subjectCwd: string;
+  subjectBranch: string;
+  kind: "merge-terminal";
+  payload: MergeWatchEventPayload;
+}
+interface AuditFleetEvent extends FleetEventBase {
+  subjectRepo: string;
+  subjectMainAfter: string;
+  kind: "post-land-audit";
+  payload: AuditWatchEventPayload;
+}
+type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent;
 
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
-  const e = raw as Partial<FleetEvent>;
+  const e = raw as Partial<FleetEvent> & Record<string, unknown>;
   if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || typeof e.watchId !== "string" || !/^[a-z0-9]+$/.test(e.watchId)
     || !Number.isInteger(e.receiverSlot) || (e.receiverSlot ?? 0) <= 0
     || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
     || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
     || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
-    || !Number.isInteger(e.subjectSlot) || (e.subjectSlot ?? 0) <= 0
-    || typeof e.subjectBranch !== "string"
-    || (e.kind !== "lane-ready" && e.kind !== "host-commit-ready")
     || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone"].includes(String(e.status))
     || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
     || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
     || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
     || !(typeof e.acknowledgedAt === "number" || e.acknowledgedAt === null)) return null;
-  const p = e.payload as Partial<LaneWatchEventPayload> | undefined;
-  if (!p || typeof p.ahead !== "number" || !Number.isFinite(p.ahead)
-    || typeof p.dirty !== "number" || !Number.isFinite(p.dirty)
-    || typeof p.idleMs !== "number" || !Number.isFinite(p.idleMs) || p.idleMs < 0
-    || typeof p.observed !== "boolean"
-    || !(typeof p.gitOp === "boolean" || p.gitOp === null)
-    || !(p.awaiting === "owner" || p.awaiting === null)
-    || typeof p.hostCommits !== "boolean") return null;
-  // Rebuild the payload field-by-field. Extra persisted keys (especially text/command) never
-  // cross the load boundary and therefore can never become pane input after a restart.
-  const valid = e as FleetEvent;
-  const payload = p as LaneWatchEventPayload;
-  return {
-    id: valid.id, watchId: valid.watchId,
-    receiverSlot: valid.receiverSlot, receiverOpenedAt: valid.receiverOpenedAt,
-    receiverSessionId: valid.receiverSessionId, receiverIdleSec: valid.receiverIdleSec,
-    subjectSlot: valid.subjectSlot, subjectBranch: valid.subjectBranch,
-    kind: valid.kind, payload: {
-      ahead: payload.ahead, dirty: payload.dirty, idleMs: payload.idleMs, observed: payload.observed,
-      gitOp: payload.gitOp, awaiting: payload.awaiting, hostCommits: payload.hostCommits,
-    },
-    createdAt: valid.createdAt, status: valid.status, attempts: valid.attempts,
-    deliveredAt: valid.deliveredAt, acknowledgedAt: valid.acknowledgedAt,
+  const base: FleetEventBase = {
+    id: e.id, watchId: e.watchId, receiverSlot: e.receiverSlot!, receiverOpenedAt: e.receiverOpenedAt,
+    receiverSessionId: e.receiverSessionId, receiverIdleSec: e.receiverIdleSec!,
+    createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
+    deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
   };
+  if (e.kind === "lane-ready" || e.kind === "host-commit-ready") {
+    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
+    const p = e.payload as Partial<LaneWatchEventPayload> | undefined;
+    if (!p || typeof p.ahead !== "number" || !Number.isFinite(p.ahead)
+      || typeof p.dirty !== "number" || !Number.isFinite(p.dirty)
+      || typeof p.idleMs !== "number" || !Number.isFinite(p.idleMs) || p.idleMs < 0
+      || typeof p.observed !== "boolean" || !(typeof p.gitOp === "boolean" || p.gitOp === null)
+      || !(p.awaiting === "owner" || p.awaiting === null) || typeof p.hostCommits !== "boolean") return null;
+    // Preserve the legacy row's historical field order as well as its values. State is serialized
+    // as JSON, so spreading the new common base here would move created/status ahead of the
+    // subject and payload and violate the byte-stable legacy-load contract.
+    return {
+      id: base.id, watchId: base.watchId,
+      receiverSlot: base.receiverSlot, receiverOpenedAt: base.receiverOpenedAt,
+      receiverSessionId: base.receiverSessionId, receiverIdleSec: base.receiverIdleSec,
+      subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
+      kind: e.kind, payload: { ahead: p.ahead, dirty: p.dirty, idleMs: p.idleMs, observed: p.observed,
+        gitOp: p.gitOp, awaiting: p.awaiting, hostCommits: p.hostCommits },
+      createdAt: base.createdAt, status: base.status, attempts: base.attempts,
+      deliveredAt: base.deliveredAt, acknowledgedAt: base.acknowledgedAt,
+    };
+  }
+  if (e.kind === "merge-terminal") {
+    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
+      || typeof e.subjectCwd !== "string" || typeof e.subjectBranch !== "string") return null;
+    const p = e.payload as Partial<MergeWatchEventPayload> | undefined;
+    const statuses = ["merged", "blocked", "error", "resolved", "interrupted", "awaiting-author"];
+    const v = p?.verify;
+    if (!p || !statuses.includes(String(p.status)) || typeof p.landed !== "boolean"
+      || typeof p.branch !== "string" || typeof p.at !== "number" || !Number.isFinite(p.at)
+      || (v !== undefined && (!v || typeof v !== "object" || Array.isArray(v)
+        || !(v.ok === true || v.ok === false || v.ok === null)
+        || !(v.timedOut === undefined || v.timedOut === true)
+        || !(v.waitedOut === undefined || v.waitedOut === true)
+        || !(v.stale === undefined || v.stale === true)))
+      || (p.conflicted !== undefined && (!Array.isArray(p.conflicted) || p.conflicted.length > 50
+        || p.conflicted.some((x) => typeof x !== "string" || x.length > 200)))
+      || !(p.resolvedBy === undefined || p.resolvedBy === "agent" || p.resolvedBy === "author")) return null;
+    const payload: MergeWatchEventPayload = { status: p.status!, landed: p.landed, branch: p.branch, at: p.at,
+      ...(v ? { verify: { ok: v.ok, ...(v.timedOut ? { timedOut: true as const } : {}),
+        ...(v.waitedOut ? { waitedOut: true as const } : {}), ...(v.stale ? { stale: true as const } : {}) } } : {}),
+      ...(p.conflicted ? { conflicted: [...p.conflicted] } : {}), ...(p.resolvedBy ? { resolvedBy: p.resolvedBy } : {}) };
+    return { ...base, subjectSlot: Number(e.subjectSlot), subjectCwd: e.subjectCwd,
+      subjectBranch: e.subjectBranch, kind: e.kind, payload };
+  }
+  if (e.kind === "post-land-audit") {
+    if (typeof e.subjectRepo !== "string" || typeof e.subjectMainAfter !== "string") return null;
+    const p = e.payload as Partial<AuditWatchEventPayload> | undefined;
+    if (!p || !["green", "red", "unknown"].includes(String(p.result)) || typeof p.mainSha !== "string"
+      || !Array.isArray(p.covers) || p.covers.length > 50
+      || p.covers.some((c) => !c || typeof c.branch !== "string" || typeof c.mainAfter !== "string")
+      || !(p.checks === null || (typeof p.checks === "object" && p.checks !== null
+        && Number.isInteger(p.checks.ran) && p.checks.ran >= 0
+        && Number.isInteger(p.checks.failed) && p.checks.failed >= 0))
+      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
+    return { ...base, subjectRepo: e.subjectRepo, subjectMainAfter: e.subjectMainAfter,
+      kind: e.kind, payload: { result: p.result as AuditWatchEventPayload["result"], mainSha: p.mainSha,
+        covers: p.covers.map((c) => ({ branch: c.branch, mainAfter: c.mainAfter })), checks: p.checks,
+        ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
+  }
+  return null;
 }
 
 // a queued feature request. Owner-created or submitted via the public /intake address
@@ -2025,7 +2113,7 @@ type AuditEvent =
 // costs nothing yet — split per-file if a second consumer's volume ever makes that a problem.
 let auditChain: Promise<unknown> = Promise.resolve();
 let auditWriteFailed = false; // report a wedged event log once, not on every subsequent event
-function appendEvent(file: string, obj: Record<string, unknown>): void {
+function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> {
   const line = `${JSON.stringify(obj)}\n`;
   auditChain = auditChain
     .then(async () => {
@@ -2042,6 +2130,7 @@ function appendEvent(file: string, obj: Record<string, unknown>): void {
       auditWriteFailed = true;
       logError("eventLog", e);
     });
+  return auditChain.then(() => undefined);
 }
 // The READ counterpart of appendEvent, rotation-aware (a single-file reader is invisible to
 // rotation: at AUDIT_ROTATE_BYTES the whole history becomes `x.jsonl.1` and `x.jsonl` restarts
@@ -2941,7 +3030,8 @@ async function removeWorktreeSafe(repo: string, path: string, branch: string, fo
 // deterministic lane teardown: safety-checked worktree removal FIRST, while the slot is
 // still intact — a failed remove leaves the lane fully recoverable instead of a torn-down
 // slot pointing at an orphaned tree. Shared by the ⏏ land endpoint and the merge agent.
-async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
+async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS,
+  beforeTeardown?: () => Promise<void>): Promise<{ error: string; code: number } | { removed: string; branch: string }> {
   if (!s.cwd || !s.worktree) return { error: "not a fleet-created worktree lane", code: 400 };
   const { repo, branch } = s.worktree;
   const path = s.cwd;
@@ -2969,6 +3059,10 @@ async function landLane(s: Slot, facts: LandFacts = NO_LAND_FACTS): Promise<{ er
       t.note = `landed (${branch})`;
     }
   }
+  // A merge terminal event binds to the lane identity that is about to disappear. Its caller
+  // persists that event here, after removal succeeded (so landed:true is known) but before
+  // killSlot/dropWatchesFor can disarm the subscription as target-gone.
+  if (beforeTeardown) await beforeTeardown();
   await killSlot(s, "landed");
   void tickGit().catch(() => {});
   return { removed: path, branch };
@@ -3647,22 +3741,58 @@ function createAutoForSlot(s: Slot, body: Record<string, unknown> | null, opts: 
 // worse than no watch, because it is a silent forever-wait — the precise failure this whole surface
 // removes. So a target the predicate does not classify is refused at CREATE time, loudly, instead
 // of being accepted and then never firing.
-function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Response {
+async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   if (!s.cwd) return json({ error: "slot not active" }, 400);
-  const targetId = Number((body ?? {}).target ?? NaN) | 0;
-  const t = slotFrom(targetId);
-  if (!t) return json({ error: "bad target" }, 400);
-  if (t.id === s.id) return json({ error: "a session cannot watch itself" }, 400);
-  // the three shapes done-looking refuses by construction (lane-signals.ts + stewardSlotsView):
-  // no live session, no worktree, or the planning pane. Each gets its own reason — "never fires"
-  // is the same outcome but three different mistakes.
-  if (!t.cwd) return json({ error: "target slot not active" }, 400);
-  if (!t.worktree) return json({ error: "target is not a lane — done-looking only classifies lanes" }, 409);
-  if (t.label === STEWARD_LABEL) return json({ error: "the ⚙ steward is never classified done-looking" }, 409);
-  // idempotent: a second subscribe on the same target returns the SAME watch. Two armed watches
-  // would deliver the same news twice into one pane, and the discipline a lane is given for
-  // self-scheduling ("at most one check-in per idle point") should not depend on the caller here.
-  const dup = watches.find((w) => w.armed && w.slot === s.id && w.target === t.id);
+  const b = body ?? {};
+  const kind = b.kind === undefined ? "lane" : b.kind;
+  if (kind !== "lane" && kind !== "merge" && kind !== "audit")
+    return json({ error: "kind must be 'lane', 'merge', or 'audit'" }, 400);
+
+  let identity: { t: Slot; cwd: string; branch: string; terminal: MergeLast | null } | null = null;
+  let auditIdentity: { repo: string; mainAfter: string; row: PostLandAuditRow | null } | null = null;
+  if (kind === "lane" || kind === "merge") {
+    const targetId = Number(b.target ?? NaN) | 0;
+    const t = slotFrom(targetId);
+    if (!t) return json({ error: "bad target" }, 400);
+    if (t.id === s.id) return json({ error: "a session cannot watch itself" }, 400);
+    if (!t.cwd) return json({ error: "target slot not active" }, 400);
+    if (!t.worktree) return json({ error: kind === "lane"
+      ? "target is not a lane — done-looking only classifies lanes"
+      : "target is not a lane — no merge operation can exist" }, 409);
+    if (t.label === STEWARD_LABEL) return json({ error: kind === "lane"
+      ? "the ⚙ steward is never classified done-looking"
+      : "the ⚙ steward has no merge operation to subscribe to" }, 409);
+    const terminal = kind === "merge" ? mergeTerminalFor(t.id, t.cwd, t.worktree.branch) : null;
+    if (kind === "merge" && !terminal && !mergeInflight.has(t.id) && !mergeStart.has(t.id))
+      return json({ error: "no running or persisted terminal merge exists for this lane identity" }, 409);
+    identity = { t, cwd: t.cwd, branch: t.worktree.branch, terminal };
+  } else {
+    const repoInput = typeof b.repo === "string" ? b.repo.trim() : "";
+    const mainAfter = typeof b.mainAfter === "string" ? b.mainAfter.trim() : "";
+    if (!repoInput) return json({ error: "repo must be a git toplevel path" }, 400);
+    if (!/^[0-9a-f]{40,64}$/.test(mainAfter)) return json({ error: "mainAfter must be a full git object id" }, 400);
+    const top = await git(repoInput, "rev-parse", "--show-toplevel");
+    if (top.code !== 0 || !top.out) return json({ error: "repo must be a readable git toplevel" }, 400);
+    const repo = repoCanon(top.out);
+    if (repo !== repoCanon(repoInput)) return json({ error: "repo must name the git toplevel" }, 400);
+    const row = await newestAuditFor(repo, mainAfter);
+    const queued = [...auditQueue.entries()].some(([r, q]) => repoCanon(r) === repo
+      && q.covers.some((c) => c.mainAfter === mainAfter));
+    const running = runningPostLandAudit !== null && repoCanon(runningPostLandAudit.repo) === repo
+      && runningPostLandAudit.covers.some((c) => c.mainAfter === mainAfter);
+    if (!row && !queued && !running)
+      return json({ error: "no persisted, queued, or running audit exists for that concrete land" }, 409);
+    auditIdentity = { repo, mainAfter, row };
+  }
+
+  const dup = watches.find((w) => {
+    if (w.slot !== s.id || watchKind(w) !== kind) return false;
+    if (kind === "audit") return watchKind(w) === "audit" && "repo" in w
+      && w.repo === auditIdentity!.repo && w.mainAfter === auditIdentity!.mainAfter;
+    return watchKind(w) === kind && "target" in w && w.target === identity!.t.id
+      && w.targetCwd === identity!.cwd && w.targetBranch === identity!.branch
+      && (kind === "lane" ? w.armed : true);
+  });
   if (dup) return json({ ok: true, watch: dup, existing: true });
   // An armed Watch reserves one future event slot. Delivered-but-unacknowledged and uncertain
   // events reserve theirs until the receiver closes them; otherwise repeated subscribe/fire
@@ -3671,22 +3801,129 @@ function createWatchForSlot(s: Slot, body: Record<string, unknown> | null): Resp
     && !["acknowledged", "receiver-gone"].includes(e.status)).length;
   if (watches.filter((w) => w.armed && w.slot === s.id).length + deliveryDebts >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
     return json({ error: `max ${WATCH_MAX_PER_SLOT} active watches per slot` }, 400);
-  const w: Watch = {
-    id: randomBytes(4).toString("hex"),
-    slot: s.id,
-    target: t.id,
-    targetCwd: t.cwd,
-    targetBranch: t.worktree.branch,
+  const common: WatchBase = {
+    id: randomBytes(4).toString("hex"), slot: s.id,
     idleSec: Math.min(86_400, Math.max(0, Number((body ?? {}).idleSec ?? 60) | 0)),
     armed: true,
     created: Date.now(),
     firedAt: null,
     lastResult: null,
   };
+  const w: Watch = kind === "audit"
+    ? { ...common, kind: "audit", repo: auditIdentity!.repo, mainAfter: auditIdentity!.mainAfter }
+    : { ...common, kind, target: identity!.t.id, targetCwd: identity!.cwd, targetBranch: identity!.branch };
   watches = [...watches, w];
   pruneSpentWatches(s.id);
-  saveState();
+  if (kind === "merge" && identity!.terminal)
+    await mintMergeEvents(identity!.t.id, identity!.cwd, identity!.branch, identity!.terminal);
+  else if (kind === "audit" && auditIdentity!.row)
+    await mintAuditEvents(auditIdentity!.row);
+  else await saveStateNow();
   return json({ ok: true, watch: w });
+}
+
+function mergeTerminalFor(target: number, cwd: string, branch: string): MergeLast | null {
+  if (mergeInflight.has(target) || mergeStart.has(target)) return null;
+  const s = slotFrom(target);
+  if (!s?.cwd || s.cwd !== cwd || s.worktree?.branch !== branch) return null;
+  const direct = mergeLast.get(target);
+  if (direct?.branch === branch) return direct;
+  const parked = mergeParked.get(branch);
+  return parked?.branch === branch ? parked : null;
+}
+
+function mergeEventPayload(outcome: MergeLast): MergeWatchEventPayload {
+  const v = outcome.verify;
+  return {
+    status: outcome.status, landed: outcome.landed, branch: outcome.branch, at: outcome.at,
+    ...(v ? { verify: { ok: v.ok, ...(v.timedOut ? { timedOut: true as const } : {}),
+      ...(v.waitedOut ? { waitedOut: true as const } : {}), ...(v.stale ? { stale: true as const } : {}) } } : {}),
+    ...(outcome.conflicted?.length ? { conflicted: outcome.conflicted.slice(0, 50).map((f) => f.slice(0, 200)) } : {}),
+    ...(outcome.resolvedBy ? { resolvedBy: outcome.resolvedBy } : {}),
+  };
+}
+
+function spendWatch(w: Watch, event: FleetEvent): boolean {
+  if (fleetEvents.some((e) => e.watchId === w.id)) return false;
+  fleetEvents = [...fleetEvents, event];
+  w.armed = false;
+  w.firedAt = event.createdAt;
+  w.lastResult = `event ${event.id} created`;
+  audit("watch_fire", w.slot, `${w.id} event=${event.id} kind=${watchKind(w)}`);
+  pruneSpentWatches(w.slot);
+  return true;
+}
+
+async function mintMergeEvents(target: number, cwd: string, branch: string, outcome: MergeLast): Promise<void> {
+  let dirty = false;
+  const now = Date.now();
+  for (const w of watches) {
+    if (!w.armed || watchKind(w) !== "merge" || !("target" in w)
+      || w.target !== target || w.targetCwd !== cwd || w.targetBranch !== branch) continue;
+    const receiver = slotFrom(w.slot);
+    if (!receiver?.cwd) continue;
+    const event: MergeFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: w.id,
+      receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverIdleSec: w.idleSec, subjectSlot: target, subjectCwd: cwd, subjectBranch: branch,
+      kind: "merge-terminal", payload: mergeEventPayload(outcome), createdAt: now,
+      status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    };
+    dirty = spendWatch(w, event) || dirty;
+  }
+  if (dirty) await saveStateNow();
+}
+
+function auditRowMatches(row: PostLandAuditRow, repo: string, mainAfter: string): boolean {
+  return repoCanon(row.repo) === repo
+    && (row.mainSha === mainAfter || row.covers.some((c) => c.mainAfter === mainAfter));
+}
+
+function validAuditRow(raw: unknown): PostLandAuditRow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Partial<PostLandAuditRow>;
+  if (typeof row.repo !== "string" || typeof row.mainSha !== "string"
+    || !["green", "red", "unknown"].includes(String(row.result)) || !Array.isArray(row.covers)
+    || row.covers.some((c) => !c || typeof c.branch !== "string" || typeof c.mainAfter !== "string")) return null;
+  return row as PostLandAuditRow;
+}
+
+async function newestAuditFor(repo: string, mainAfter: string): Promise<PostLandAuditRow | null> {
+  const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = validAuditRow(rows[i]);
+    if (row && auditRowMatches(row, repo, mainAfter)) return row;
+  }
+  return null;
+}
+
+function auditEventPayload(row: PostLandAuditRow, mainAfter: string): AuditWatchEventPayload {
+  const all = row.covers.map((c) => ({ branch: c.branch.slice(0, 200), mainAfter: c.mainAfter }));
+  let covers = all.slice(-50);
+  const match = all.find((c) => c.mainAfter === mainAfter);
+  if (match && !covers.some((c) => c.mainAfter === mainAfter)) covers = [match, ...covers.slice(-49)];
+  return { result: row.result, mainSha: row.mainSha, covers, checks: row.checks,
+    ...(row.reason ? { reason: row.reason.slice(0, 200) } : {}) };
+}
+
+async function mintAuditEvents(row: PostLandAuditRow): Promise<void> {
+  let dirty = false;
+  const now = Date.now();
+  for (const w of watches) {
+    if (!w.armed || watchKind(w) !== "audit" || !("repo" in w)
+      || !auditRowMatches(row, w.repo, w.mainAfter)) continue;
+    const receiver = slotFrom(w.slot);
+    if (!receiver?.cwd) continue;
+    const event: AuditFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: w.id,
+      receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverIdleSec: w.idleSec, subjectRepo: w.repo, subjectMainAfter: w.mainAfter,
+      kind: "post-land-audit", payload: auditEventPayload(row, w.mainAfter), createdAt: now,
+      status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    };
+    dirty = spendWatch(w, event) || dirty;
+  }
+  if (dirty) await saveStateNow();
 }
 
 // The main-session succession rail. Unlike /api/self/watch it changes session topology, but it is
@@ -3888,9 +4125,11 @@ function dropWatchesFor(slotId: number): void {
   markFleetEventReceiverGone(slotId);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
-    if (w.target !== slotId || !w.armed) continue;
+    if (!("target" in w) || w.target !== slotId || !w.armed) continue;
     w.armed = false;
-    w.lastResult = "target session ended — no notification will come";
+    w.lastResult = watchKind(w) === "merge"
+      ? "target session ended before a terminal merge event was recorded — no notification will come"
+      : "target session ended — no notification will come";
     audit("watch_skip", w.slot, w.lastResult);
   }
 }
@@ -6597,6 +6836,18 @@ async function tickWatches(): Promise<void> {
     for (const w of watches) {
       if (!w.armed) continue;
       const s = slotFrom(w.slot);
+      if (!s?.cwd) {
+        w.armed = false;
+        w.lastResult = "receiver session gone or replaced — no notification will come";
+        dirty = true;
+        continue;
+      }
+      if (watchKind(w) === "audit" && "repo" in w) {
+        const row = await newestAuditFor(w.repo, w.mainAfter);
+        if (row) await mintAuditEvents(row);
+        continue;
+      }
+      if (!("target" in w)) continue;
       const t = slotFrom(w.target);
       // teardown already drops/disarms these (dropWatchesFor); this is the second lock, and it
       // also covers the paths that move a slot without going through either — a recycled target
@@ -6608,12 +6859,18 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
+      if (watchKind(w) === "merge") {
+        const terminal = mergeTerminalFor(t.id, w.targetCwd, w.targetBranch);
+        if (terminal) await mintMergeEvents(t.id, w.targetCwd, w.targetBranch, terminal);
+        continue;
+      }
       const sig = laneSignalView(t, now);
       const watchSignal = laneWatchSignal(sig, AUTO_REVIEW_IDLE_MS);
       if (!watchSignal) continue; // neither completion predicate yet — stay armed, ask again
-      let event = fleetEvents.find((e) => e.watchId === w.id);
+      let event = fleetEvents.find((e): e is LaneFleetEvent => e.watchId === w.id
+        && (e.kind === "lane-ready" || e.kind === "host-commit-ready"));
       if (!event) {
-        event = {
+        const minted: LaneFleetEvent = {
           id: randomBytes(12).toString("hex"), watchId: w.id,
           receiverSlot: s.id, receiverOpenedAt: s.openedAt, receiverSessionId: s.sessionId,
           receiverIdleSec: w.idleSec,
@@ -6622,7 +6879,8 @@ async function tickWatches(): Promise<void> {
           createdAt: now, status: "pending", attempts: 0,
           deliveredAt: null, acknowledgedAt: null,
         };
-        fleetEvents = [...fleetEvents, event];
+        fleetEvents = [...fleetEvents, minted];
+        event = minted;
       }
       w.armed = false;
       w.firedAt = event.createdAt;
@@ -6671,7 +6929,11 @@ async function tickWatches(): Promise<void> {
       event.status = "send-uncertain";
       event.attempts++;
       await saveStateNow();
-      const text = laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
+      const text = event.kind === "merge-terminal"
+        ? mergeWatchMessage(event.subjectSlot, event.subjectCwd, event)
+        : event.kind === "post-land-audit"
+        ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event)
+        : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
       try {
         await sendText(s, text, true);
       } catch (e) {
@@ -6695,7 +6957,7 @@ async function tickWatches(): Promise<void> {
       if (watch) watch.lastResult = "sent"; // legacy Watch surface; the event remains the authority
       audit("fleet_event_delivered", event.receiverSlot, event.id);
       await saveStateNow();
-      console.log(`event ${event.id}: told slot ${event.receiverSlot} that slot ${event.subjectSlot} looks done`);
+      console.log(`event ${event.id}: delivered ${event.kind} to slot ${event.receiverSlot}`);
     }
     if (dirty) saveState();
   } finally {
@@ -8051,7 +8313,8 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   // open a window in which a land that was just audited reads as WAITING FOR AN AUDIT — precisely
   // the confusion the view exists to remove. The drain clears it in the same synchronous block that
   // consumes the entry; see its `finally`.
-  appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  await mintAuditEvents(row);
   const named = covers.map((c) => c.branch).join(", ").slice(0, 120);
   audit("postland_audit", undefined,
     `${result} ${basename(repo)} ${main}@${mainSha.slice(0, 8)} after ${named}${reason ? ` — ${reason}` : ""}`.slice(0, 240));
@@ -9563,10 +9826,11 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
   // the verdict write, extracted so the ② author path can leave early without duplicating it: a
   // slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared by openSlot,
   // and this lane's verdict must not be written over whatever lives there now.
-  const record = (r: MergeLast): void => {
+  const record = async (r: MergeLast): Promise<void> => {
     if (!s.cwd || s.cwd === cwd) {
       mergeLast.set(s.id, r);
-      saveState(); // verdicts are part of persisted state now — the ⏸ gate must survive deploys
+      await mintMergeEvents(s.id, cwd, branch, r);
+      await saveStateNow(); // verdict + any event are on disk before this job becomes non-running
     }
   };
   // the code maps' scratch, outside the tree by design (buildCodeGraph). Declared out here so the
@@ -9635,7 +9899,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
       // That is M3 ("the conflict path never lands unattended") holding for the author exactly as
       // it holds for the worker — the invariant is about unseen semantic choices, not about who
       // made them. Note this is NOT needsMergeReview: nothing is in the tree yet to review.
-      record({ status: "awaiting-author", landed: false, branch, at: Date.now(),
+      await record({ status: "awaiting-author", landed: false, branch, at: Date.now(),
         conflicted: pre.conflicted, resolvedBy: "author",
         // the cap wraps the WHOLE string, not just its last piece — the file list is unbounded input
         detail: (`${main} moved and the rebase conflicts in ${pre.conflicted.length} file${pre.conflicted.length === 1 ? "" : "s"} `
@@ -9866,21 +10130,22 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
               // main HAS moved — record the land (undo record + provenance note) NOW, before the teardown
               // (coupling it to landLane used to leave a moved main with neither note nor undo on failure).
               await recordLand(root, main, branch, mainBefore, mainAfter, prov);
+              const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(), verify,
+                detail: r.detail,
+                ...(CLEAN_REVIEW_MODE === "gate" && cleanReview
+                  ? { cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason } } : {}) };
               // the owner may have recycled the slot mid-run — landLane re-checks it is still this lane
               const land = s.cwd === cwd && s.worktree?.branch === branch
                 // clean auto-land — n/a land-shape facts (the ONLY unattended land), but the verify
                 // verdict this job just produced is the local truth the record needs
                 ? await landLane(s, { ...NO_LAND_FACTS, verified: verify ? verify.ok : null, baseSha: mainBefore,
-                    mainAfter, ...(shadow ? { cleanReviewShadow: shadow } : {}) })
+                    mainAfter, ...(shadow ? { cleanReviewShadow: shadow } : {}) },
+                    () => mintMergeEvents(s.id, cwd, branch, landedOutcome))
                 : { error: "slot changed during the merge — lane merged but not landed", code: 409 };
               res = "error" in land
                 ? { status: "merged", landed: false, branch, at: Date.now(), verify, landError: land.error,
                     detail: `${r.detail} — landed on ${main} (recorded), but lane teardown failed: ${land.error}`.slice(0, 600) }
-                : { status: "merged", landed: true, branch, at: Date.now(), verify, detail: r.detail,
-                    // gate mode only: `cleanReview` on a landed verdict means "the gate let this
-                    // through". A shadow verdict gated nothing and lives on the outcome row instead.
-                    ...(CLEAN_REVIEW_MODE === "gate" && cleanReview
-                      ? { cleanReview: { verdict: cleanReview.verdict, reason: cleanReview.reason } } : {}) };
+                : landedOutcome;
             }
           }
         }
@@ -9901,7 +10166,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     // whatever the two sides look like then, and a stale map is worse than no map for a conflict.
     for (const d of graphDirs) try { rmSync(d, { recursive: true, force: true }); } catch { /* inert in TMPDIR */ }
   }
-  record(res);
+  await record(res);
 }
 
 // --- auth: single access token, sent once via ?token= then held in a SameSite=Strict cookie.
@@ -10398,12 +10663,8 @@ if (existsSync(STATE_FILE)) {
     // (see STALLED_IDLE_MS's note), and a subscription that died with the process would be a
     // promise broken by the most routine thing this machine does.
     if (Array.isArray((persisted as { watches?: unknown }).watches))
-      watches = ((persisted as { watches: unknown[] }).watches).filter((x): x is Watch =>
-        typeof x === "object" && x !== null
-        && typeof (x as Watch).id === "string" && typeof (x as Watch).slot === "number"
-        && typeof (x as Watch).target === "number" && typeof (x as Watch).targetCwd === "string"
-        && typeof (x as Watch).targetBranch === "string" && typeof (x as Watch).idleSec === "number"
-        && typeof (x as Watch).armed === "boolean");
+      watches = ((persisted as { watches: unknown[] }).watches)
+        .map(watchFrom).filter((w): w is Watch => w !== null);
     // Legacy state has no `events` member and therefore loads as an empty event trail. In
     // particular, an old spent Watch whose lastResult says "sent" is not upgraded into a
     // delivery claim: Fleet did not observe the typed event, delivery or acknowledgement.
@@ -10769,8 +11030,14 @@ autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
 // not inherit the subscription.
 watches = watches.filter((w) => {
   const s = slotFrom(w.slot);
+  if (!s?.cwd) return false;
+  if (watchKind(w) === "audit") return true;
+  if (!("target" in w)) return false;
   const t = slotFrom(w.target);
-  return !!s?.cwd && !!t?.cwd && t.cwd === w.targetCwd && t.worktree?.branch === w.targetBranch;
+  // Preserve the legacy lane-watch boot rule exactly. Merge subscriptions stay visible when the
+  // target vanished: the land site should already have minted their durable event, and if it did
+  // not, the first watch tick disarms the row loudly instead of deleting the evidence.
+  return watchKind(w) === "merge" || (!!t?.cwd && t.cwd === w.targetCwd && t.worktree?.branch === w.targetBranch);
 });
 // An event does not disappear merely because its transport endpoint did. Bind it to the exact
 // restored occupant; an absent/recycled receiver is a durable terminal fact visible to the owner.
@@ -12829,7 +13096,7 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible" }, 409);
-      return createWatchForSlot(s, await readJson(req));
+      return await createWatchForSlot(s, await readJson(req));
     }
 
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
@@ -13968,6 +14235,8 @@ Bun.serve<WSData>({
           // main HAS moved — record the land BEFORE the teardown, so a landLane failure
           // can never leave a moved main without its note + undo record
           await recordLand(repo, main, branch, mainBefore, mainAfter, prov);
+          const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(),
+            verify: verifyProv, detail: "reviewed resolution — landed" };
           // the owner reviewed an agent-resolved conflict and confirm-landed it — record that shape:
           // resolvedConflict from the verdict's conflicted files, repairRounds it carried, human-confirmed.
           const land = await landLane(s, {
@@ -13981,9 +14250,14 @@ Bun.serve<WSData>({
             confirmedByHuman: true,
             verified: verifyProv ? verifyProv.ok : null,
             baseSha: mainBefore, // the lane is rebased onto exactly this commit — its true fork point
-            mainAfter });        // …and this is where it ended up, so the row can open its own files
+            mainAfter },         // …and this is where it ended up, so the row can open its own files
+            () => mintMergeEvents(s.id, cwd, branch, landedOutcome));
           if ("error" in land) {
-            saveState(); // the undo record must survive the failed teardown
+            const failed: MergeLast = { status: "merged", landed: false, branch, at: Date.now(),
+              verify: verifyProv, landError: land.error,
+              detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` };
+            await mintMergeEvents(s.id, cwd, branch, failed);
+            await saveStateNow(); // the undo record and terminal event survive the failed teardown
             return json({ status: "merged", landed: false, branch, landError: land.error,
               detail: `landed on ${main} (recorded), but lane teardown failed: ${land.error}` }, land.code);
           }
@@ -13995,8 +14269,15 @@ Bun.serve<WSData>({
         // Against the integration branch, not the primary's HEAD (which may be parked off it).
         const done = await git(repo, "branch", "--merged", main, "--list", branch);
         if (done.out.trim()) {
-          const land = await landLane(s, OWNER_LAND_FACTS);
-          if ("error" in land) return json({ error: land.error }, land.code);
+          const landedOutcome: MergeLast = { status: "merged", landed: true, branch, at: Date.now(),
+            detail: "already merged — landed without the agent" };
+          const land = await landLane(s, OWNER_LAND_FACTS,
+            () => mintMergeEvents(s.id, cwd, branch, landedOutcome));
+          if ("error" in land) {
+            await mintMergeEvents(s.id, cwd, branch, { status: "error", landed: false, branch,
+              at: Date.now(), detail: `already merged, but lane teardown failed: ${land.error}` });
+            return json({ error: land.error }, land.code);
+          }
           return json({ status: "merged", landed: true, branch, detail: "already merged — landed without the agent" });
         }
         // ⏸ guard: a pending "resolved" verdict means agent-chosen conflict resolutions
@@ -14870,7 +15151,7 @@ Bun.serve<WSData>({
     if (req.method === "POST" && watchCreate) {
       const s = slotFrom(watchCreate[1]);
       if (!s) return json({ error: "bad slot" }, 400);
-      return createWatchForSlot(s, await readJson(req));
+      return await createWatchForSlot(s, await readJson(req));
     }
     const watchAct = /^\/api\/watches\/([a-z0-9]+)\/delete$/.exec(url.pathname);
     if (req.method === "POST" && watchAct) {

@@ -461,7 +461,11 @@ export async function run(ctx: Ctx): Promise<void> {
     check("control: the 15 KB task IS in the polled payload (so the size check below can fail)", !!dig, `${bytes} B`);
     check("the sessions poll carries a task digest, never the prompt text",
       !!dig && dig.text === undefined && !raw.includes(MARK), JSON.stringify(dig));
-    check("the sessions payload stays under 10 KB with a 15 KB task in the queue", bytes < 10 * 1024, `${bytes} B`);
+    // Typed operation events intentionally ride this poll so an owner can see waiting/spent
+    // subscriptions. They are independently capped; the prompt-text regression this probe guards
+    // is still separated by orders of magnitude, while 12 KiB leaves room for that bounded trail.
+    check("the sessions payload stays under 12 KB with a 15 KB task in the queue and bounded event facts",
+      bytes < 12 * 1024, `${bytes} B`);
     const fullT = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
       .tasks.find((t) => t.id === bigT.task.id);
     check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",

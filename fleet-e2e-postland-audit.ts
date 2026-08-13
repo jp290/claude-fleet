@@ -67,6 +67,24 @@ const waitRows = async (n: number, timeoutMs = 60_000): Promise<AuditRow[]> => {
   }
 };
 const newest = (rows: AuditRow[], i = 0): AuditRow => rows[i] ?? NO_ROW;
+type AuditFleetEvent = {
+  id: string; watchId: string; receiverSlot: number; subjectRepo: string; subjectMainAfter: string;
+  kind: "post-land-audit"; status: "pending" | "delivered" | "acknowledged" | "receiver-gone";
+  payload: { result: "green" | "red" | "unknown"; mainSha: string;
+    covers: { branch: string; mainAfter: string }[]; checks: { ran: number; failed: number } | null; reason?: string };
+};
+const auditEvents = async (): Promise<AuditFleetEvent[]> =>
+  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as AuditFleetEvent[])
+    .filter((e) => e.kind === "post-land-audit");
+const waitAuditEvent = async (watchId: string): Promise<AuditFleetEvent | undefined> => {
+  let event: AuditFleetEvent | undefined;
+  for (let i = 0; i < 200; i++) {
+    event = (await auditEvents()).find((e) => e.watchId === watchId);
+    if (event?.status === "delivered" || event?.status === "acknowledged") return event;
+    await Bun.sleep(100);
+  }
+  return event;
+};
 // the trail read straight off disk — the durability section asserts things about moments when
 // there is no server to ask
 const trailRows = (): AuditRow[] => {
@@ -156,6 +174,17 @@ const REPO = `${import.meta.dir}/testrepo`;
 await seedRepo(REPO);
 const headOf = (ref = "main"): string => spawnSync("git", ["-C", REPO, "rev-parse", ref]).stdout.toString().trim();
 const noteAt = (sha: string): boolean => spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", sha]).status === 0;
+const opReceiver = ((await (await get("/api/sessions")).json()) as
+  { slots: { id: number; cwd: string | null }[] }).slots.find((s) => s.cwd === null)?.id ?? 0;
+const opReceiverOpen = opReceiver ? await post(`/api/slots/${opReceiver}/open`, { cwd: REPO }) : null;
+check("audit-event setup: a non-lane receiver is open",
+  !!opReceiverOpen?.ok, `${opReceiver} ${opReceiverOpen?.status}`);
+const subscribeAudit = async (mainAfter: string): Promise<{ response: Response;
+  body: { watch?: { id: string; armed: boolean }; existing?: boolean; error?: string } }> => {
+  const response = await post(`/api/slots/${opReceiver}/watch`, { kind: "audit", repo: REPO, mainAfter, idleSec: 0 });
+  return { response, body: await response.json() as
+    { watch?: { id: string; armed: boolean }; existing?: boolean; error?: string } };
+};
 
 // a lane whose rebase is CLEAN (its own file → no conflict, the merge agent is never consulted) with
 // its work committed: exactly the clean+green auto-land path tier 2 hangs off. Both are one-line
@@ -213,9 +242,22 @@ await setAuditMode("green");
 const dirtyBefore = spawnSync("git", ["-C", REPO, "status", "--porcelain"]).stdout.toString();
 const delta = await makeLane("delta");
 const dLanded = await landLane(delta);
+const deltaMainAfter = headOf();
+const dSub = await subscribeAudit(deltaMainAfter);
 const dRows = await waitRows(3);
 const d = newest(dRows);
+const dEvent = dSub.body.watch ? await waitAuditEvent(dSub.body.watch.id) : undefined;
 check("a land triggers an audit whose row records a green result", dLanded.gone && d.result === "green", JSON.stringify(d));
+check("audit event: GREEN terminal row is delivered with the exact land join and measured tip",
+  dSub.response.ok && dEvent?.payload.result === "green" && dEvent.subjectMainAfter === deltaMainAfter
+    && dEvent.payload.mainSha === d.mainSha
+    && dEvent.payload.covers.some((c) => c.branch === delta.branch && c.mainAfter === deltaMainAfter),
+  JSON.stringify({ subscription: dSub.body, event: dEvent }));
+const dDup = await subscribeAudit(deltaMainAfter);
+check("audit event: duplicate concrete-land subscription reuses the same row and event",
+  dDup.response.ok && dDup.body.existing === true && dDup.body.watch?.id === dSub.body.watch?.id
+    && (await auditEvents()).filter((e) => e.watchId === dSub.body.watch?.id).length === 1,
+  JSON.stringify(dDup.body));
 check("the row JOINS to the land it followed — branch + the exact main it advanced to",
   d.covers.length === 1 && d.covers[0].branch === delta.branch && d.covers[0].mainAfter === headOf()
     && d.mainSha === headOf(), `${JSON.stringify(d.covers)} head=${headOf()}`);
@@ -251,10 +293,24 @@ check("non-FLEET environment is kept (an audit with no PATH could not run bun at
 await setAuditMode("red");
 const echoLane = await makeLane("echo");
 const eLanded = await landLane(echoLane);
+const echoMainAfter = headOf();
+const eSub = await subscribeAudit(echoMainAfter);
 const eRows = await waitRows(4);
 const e = newest(eRows);
+const eEvent = eSub.body.watch ? await waitAuditEvent(eSub.body.watch.id) : undefined;
 check("a failing audit is recorded RED (never rounded to green), with the suite's tail",
   eLanded.gone && e.result === "red" && e.exitCode === 1 && e.out.includes("3 FAILURES"), JSON.stringify(e).slice(0, 300));
+check("audit event: RED is delivered verbatim and binds only to its matching cover/mainSha",
+  eSub.response.ok && eEvent?.payload.result === "red" && eEvent.subjectMainAfter === echoMainAfter
+    && eEvent.payload.mainSha === e.mainSha
+    && eEvent.payload.covers.some((c) => c.branch === echoLane.branch && c.mainAfter === echoMainAfter)
+    && !eEvent.payload.covers.some((c) => c.mainAfter === deltaMainAfter),
+  JSON.stringify(eEvent));
+const eEventText = (await plogRead()).find((p) => p.slot === opReceiver
+  && p.text.includes(`[event ${eEvent?.id}]`))?.text ?? "";
+check("audit event: rendered text names RED, the audited tip, and its event-specific Ack",
+  eEventText.includes("result=red") && eEventText.includes(e.mainSha)
+    && eEventText.includes(`POST /api/self/events/${eEvent?.id}/ack`), eEventText);
 check("the audit row counts every PASS/FAIL line and every failed check from complete output",
   e.checks?.ran === 3 && e.checks.failed === 3, JSON.stringify(e.checks));
 check("the red row NAMES the land it followed", e.covers.length === 1 && e.covers[0].branch === echoLane.branch,
@@ -278,9 +334,17 @@ check("a red audit does NOT undo the land — rollback stays the owner's ↩ und
 await setAuditMode("decline");
 const fox = await makeLane("foxtrot");
 await landLane(fox);
+const foxMainAfter = headOf();
+const fSub = await subscribeAudit(foxMainAfter);
 const f = newest(await waitRows(5));
+const fEvent = fSub.body.watch ? await waitAuditEvent(fSub.body.watch.id) : undefined;
 check("an audit command that DECLINES to run records unknown, never green",
   f.result === "unknown" && f.exitCode === 42 && (f.reason ?? "").includes("declined"), JSON.stringify(f).slice(0, 300));
+check("audit event: UNKNOWN is delivered verbatim with capped reason and no invented check count",
+  fSub.response.ok && fEvent?.payload.result === "unknown" && fEvent.payload.checks === null
+    && (fEvent.payload.reason ?? "").includes("declined") && fEvent.subjectMainAfter === foxMainAfter,
+  JSON.stringify(fEvent));
+if (opReceiver) await post(`/api/slots/${opReceiver}/kill`, {});
 
 await setAuditMode("notrunnable");
 const golf = await makeLane("golf");

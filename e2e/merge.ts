@@ -3,11 +3,55 @@
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { REPO, REPO2, REPO3, ROOT, check, get, plogRead, post, tmuxOut } from "./harness";
+import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
+type MergeEventRow = {
+  id: string; watchId: string; receiverSlot: number; kind: "merge-terminal";
+  payload: { status: string; landed: boolean; branch: string; at: number;
+    verify?: { ok: boolean | null; timedOut?: true; waitedOut?: true; stale?: true } };
+  status: "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
+  attempts: number;
+};
+type MergeWatchRow = { id: string; kind: "merge"; slot: number; target: number; targetCwd: string;
+  targetBranch: string; armed: boolean; firedAt: number | null; lastResult: string | null };
+const mergeEvents = async (): Promise<MergeEventRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as MergeEventRow[])
+    .filter((e) => e.kind === "merge-terminal");
+const waitMergeEvent = async (watchId: string, terminal = true): Promise<MergeEventRow | undefined> => {
+  let found: MergeEventRow | undefined;
+  for (let i = 0; i < 160; i++) {
+    found = (await mergeEvents()).find((e) => e.watchId === watchId);
+    if (found && (!terminal || found.status === "delivered" || found.status === "acknowledged")) return found;
+    await Bun.sleep(100);
+  }
+  return found;
+};
+const selfMergeWatch = (token: string, target: number, idleSec = 0): Promise<Response> =>
+  fetch(`${BASE}/api/self/watch`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+    body: JSON.stringify({ kind: "merge", target, idleSec }),
+  });
+const ackMergeEvent = (token: string, id: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/events/${id}/ack`, {
+    method: "POST", headers: { "x-fleet-self-token": token },
+  });
+const freeSlot = async (): Promise<number> =>
+  ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+    .slots.find((s) => s.cwd === null)?.id ?? 0;
+
 export async function run(lc: LaneCtx): Promise<void> {
+  const receiverA = await freeSlot();
+  const openReceiverA = receiverA ? await post(`/api/slots/${receiverA}/open`, { cwd: REPO }) : null;
+  const receiverAToken = receiverA ? await paneEnv(`s${receiverA}`, "FLEET_SELF_TOKEN") ?? "" : "";
+  const receiverB = await freeSlot();
+  const openReceiverB = receiverB ? await post(`/api/slots/${receiverB}/open`, { cwd: REPO }) : null;
+  let receiverBToken = receiverB ? await paneEnv(`s${receiverB}`, "FLEET_SELF_TOKEN") ?? "" : "";
+  check("merge-event setup: two non-lane receivers are open with scoped self tokens",
+    !!openReceiverA?.ok && !!openReceiverB?.ok && /^[0-9a-f]{32}$/.test(receiverAToken)
+      && /^[0-9a-f]{32}$/.test(receiverBToken),
+    JSON.stringify({ receiverA, receiverB, a: receiverAToken.length, b: receiverBToken.length }));
   // ⏫ merge: dirty lane → deterministic block, no agent run
   await Bun.write(`${lc.lnPath}/code.txt`, "root\nmerge-work\n");
   const mgDirty = (await (await post(`/api/slots/${lc.lnSlot}/merge`, {})).json()) as { status?: string; detail?: string };
@@ -22,18 +66,71 @@ export async function run(lc: LaneCtx): Promise<void> {
   await Bun.write(`${REPO}/code.txt`, "root\nmainline-work\n");
   spawnSync("git", ["-C", REPO, "commit", "-aqm", "mainline work"]);
 
-  await setMergeMode("blocked");
+  // A concrete merge subscription is accepted only while this exact lane operation is running
+  // or while its terminal fact is still persisted. The hang makes the before-completion half
+  // deterministic; it later settles as a normal blocked MergeLast.
+  await setMergeMode("hang");
   await settleForMerge(lc.lnSlot);
   const mgB = await post(`/api/slots/${lc.lnSlot}/merge`, {});
   check("merge POST starts an async job", ((await mgB.json()) as { running?: boolean }).running === true);
+  const subBeforeR = await selfMergeWatch(receiverAToken, lc.lnSlot);
+  const subBefore = (await subBeforeR.json()) as { watch?: MergeWatchRow; existing?: boolean; error?: string };
+  check("merge event: subscription BEFORE completion binds the target slot plus cwd+branch",
+    subBeforeR.ok && subBefore.watch?.kind === "merge" && subBefore.watch.target === lc.lnSlot
+      && subBefore.watch.targetCwd === lc.lnPath && subBefore.watch.armed === true,
+    `${subBeforeR.status} ${JSON.stringify(subBefore)}`);
   const vB = await waitMerge(lc.lnSlot);
+  const eventBefore = subBefore.watch ? await waitMergeEvent(subBefore.watch.id) : undefined;
+  check("merge event: the running subscription produces exactly one terminal event after settle",
+    vB.last?.status === "blocked" && eventBefore?.payload.status === "blocked"
+      && eventBefore.payload.landed === false
+      && (await mergeEvents()).filter((e) => e.watchId === subBefore.watch?.id).length === 1,
+    JSON.stringify({ verdict: vB.last, event: eventBefore }));
+  const beforeText = (await plogRead()).filter((p) => p.slot === receiverA
+    && p.text.includes(`[event ${eventBefore?.id}]`));
+  check("merge event: a negative terminal result is delivered successfully and says landed=NO",
+    beforeText.length === 1 && beforeText[0].text.includes("landed=NO")
+      && beforeText[0].text.includes("successful notification of the terminal result"),
+    beforeText.map((p) => p.text).join(" | "));
+
+  const subAfterR = await selfMergeWatch(receiverBToken, lc.lnSlot);
+  const subAfter = (await subAfterR.json()) as { watch?: MergeWatchRow; existing?: boolean; error?: string };
+  const eventAfter = subAfter.watch ? await waitMergeEvent(subAfter.watch.id) : undefined;
+  check("merge event: subscription AFTER a terminal merge fires immediately from persisted MergeLast",
+    subAfterR.ok && subAfter.watch?.armed === false && eventAfter?.payload.status === "blocked"
+      && eventAfter.payload.landed === false,
+    `${subAfterR.status} ${JSON.stringify({ subAfter, eventAfter })}`);
+  const duplicateR = await selfMergeWatch(receiverBToken, lc.lnSlot);
+  const duplicate = (await duplicateR.json()) as { watch?: MergeWatchRow; existing?: boolean };
+  check("merge event: duplicate subscription returns the same subscription and never mints a twin",
+    duplicateR.ok && duplicate.existing === true && duplicate.watch?.id === subAfter.watch?.id
+      && (await mergeEvents()).filter((e) => e.watchId === subAfter.watch?.id).length === 1,
+    JSON.stringify(duplicate));
+  const ack1 = eventAfter ? await ackMergeEvent(receiverBToken, eventAfter.id) : null;
+  const ack2 = eventAfter ? await ackMergeEvent(receiverBToken, eventAfter.id) : null;
+  check("merge event: acknowledgement is idempotent",
+    ack1?.ok === true && ack2?.ok === true
+      && ((await ack2.json()) as { existing?: boolean }).existing === true,
+    `${ack1?.status}/${ack2?.status}`);
+  await post(`/api/slots/${receiverB}/kill`, {});
+  const reopenReceiverB = await post(`/api/slots/${receiverB}/open`, { cwd: REPO });
+  receiverBToken = await paneEnv(`s${receiverB}`, "FLEET_SELF_TOKEN") ?? "";
+  const replacedAck = eventAfter ? await ackMergeEvent(receiverBToken, eventAfter.id) : null;
+  check("merge event: a replacement occupant cannot acknowledge the old session's event",
+    reopenReceiverB.ok && replacedAck?.status === 409,
+    `${replacedAck?.status} ${replacedAck ? await replacedAck.text() : "no event"}`);
+
+  await setMergeMode("blocked");
+  await settleForMerge(lc.lnSlot);
+  await post(`/api/slots/${lc.lnSlot}/merge`, {});
+  const vBlocked = await waitMerge(lc.lnSlot);
   check("conflict → agent 'blocked' verdict passes through with detail",
-    !vB.gone && vB.last?.status === "blocked" && vB.last.detail === "fake conflict", JSON.stringify(vB));
+    !vBlocked.gone && vBlocked.last?.status === "blocked" && vBlocked.last.detail === "fake conflict", JSON.stringify(vBlocked));
   // V1 gate: verify runs ONLY against a git-verified rebased tree (design note §6 rule 4).
   // A blocked verdict never rebased anything → no verify field, even though a cmd IS
   // configured. Guards against a mutation that runs verify on a pre-rebase / non-rebased tree.
   check("V1: a blocked verdict (no rebased tree) carries no verify field",
-    vB.last !== null && vB.last.verify === undefined, JSON.stringify(vB.last?.verify));
+    vBlocked.last !== null && vBlocked.last.verify === undefined, JSON.stringify(vBlocked.last?.verify));
 
   await setMergeMode("lie");
   await settleForMerge(lc.lnSlot);
@@ -66,6 +163,16 @@ export async function run(lc: LaneCtx): Promise<void> {
     vD.last?.verify?.ok === true && vD.last.verify.cmd.endsWith("fakeverify")
       && typeof vD.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vD.last.verify.mainSha),
     JSON.stringify(vD.last?.verify));
+  const resolvedSubR = await selfMergeWatch(receiverBToken, lc.lnSlot);
+  const resolvedSub = (await resolvedSubR.json()) as { watch?: MergeWatchRow; error?: string };
+  const resolvedEvent = resolvedSub.watch ? await waitMergeEvent(resolvedSub.watch.id) : undefined;
+  const resolvedText = (await plogRead()).find((p) => p.slot === receiverB
+    && p.text.includes(`[event ${resolvedEvent?.id}]`))?.text ?? "";
+  check("merge event: resolved/review state is never reported as landed in payload or rendered text",
+    resolvedSubR.ok && resolvedEvent?.payload.status === "resolved" && resolvedEvent.payload.landed === false
+      && resolvedText.includes("landed=NO") && resolvedText.includes("Awaiting your review")
+      && resolvedText.includes("NOT landed"),
+    JSON.stringify({ event: resolvedEvent, text: resolvedText }));
   const preLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
   check("resolved conflict has NOT reached main before the owner confirms",
     !preLand.includes("merge work"), preLand.trim());
@@ -357,8 +464,8 @@ export async function run(lc: LaneCtx): Promise<void> {
   // case: the fail case's owner-confirm-land (below) commits the VERIFYBAD marker onto main,
   // which every later clean lane would then inherit — so the passing case must land first,
   // against a still-clean main.
-  const lnVp = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  await Bun.write(`${lnVp.cwd}/verify-pass.txt`, "clean lane work, no marker\n");
+  const lnVp = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnVp.cwd}/verify-pass.txt`, "clean lane work, VERIFYSLOWPASS for event subscription\n");
   spawnSync("git", ["-C", lnVp.cwd, "add", "verify-pass.txt"]);
   spawnSync("git", ["-C", lnVp.cwd, "commit", "-qm", "verify-pass lane work"]);
   await Bun.write(`${REPO}/vp-main.txt`, "main side\n"); // different file → clean rebase, no agent
@@ -366,10 +473,22 @@ export async function run(lc: LaneCtx): Promise<void> {
   spawnSync("git", ["-C", REPO, "commit", "-qm", "vp main work"]);
   await settleForMerge(lnVp.slot);
   await post(`/api/slots/${lnVp.slot}/merge`, {});
+  const landedSubR = await selfMergeWatch(receiverBToken, lnVp.slot);
+  const landedSub = (await landedSubR.json()) as { watch?: MergeWatchRow; error?: string };
   const vVp = await waitMerge(lnVp.slot);
+  const landedEvent = landedSub.watch ? await waitMergeEvent(landedSub.watch.id) : undefined;
+  const landedText = (await plogRead()).find((p) => p.slot === receiverB
+    && p.text.includes(`[event ${landedEvent?.id}]`))?.text ?? "";
   check("V1: clean rebase that passes verify lands (verify green never blocks a clean land)", vVp.gone, JSON.stringify(vVp));
+  check("merge event: landed result survives target teardown and is distinct from verify-red/review",
+    landedSubR.ok && landedEvent?.payload.status === "merged" && landedEvent.payload.landed === true
+      && landedEvent.payload.verify?.ok === true && landedText.includes("landed=YES")
+      && !landedText.includes("Awaiting your review"),
+    JSON.stringify({ event: landedEvent, text: landedText }));
   check("V1: passing verify lane's commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("verify-pass lane work"));
+  spawnSync("git", ["-C", REPO, "rm", "-q", "verify-pass.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop delayed verify fixture from main"]);
 
   // (A) clean rebase whose tree FAILS verify → the auto-land is downgraded to a stop-and-
   // review "resolved" verdict (verify.ok:false), NOT landed — broken code never auto-lands.
@@ -389,6 +508,30 @@ export async function run(lc: LaneCtx): Promise<void> {
     vVf.last?.verify?.ok === false && vVf.last.verify.cmd.endsWith("fakeverify")
       && vVf.last.verify.out.includes("VERIFYBAD") && typeof vVf.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vVf.last.verify.mainSha),
     JSON.stringify(vVf.last?.verify));
+  check("merge event restart fixture: pause transport before minting the persisted red outcome",
+    (await post("/api/autos/switch", { on: false })).ok);
+  const redSubR = await selfMergeWatch(receiverAToken, lnVf.slot);
+  const redSub = (await redSubR.json()) as { watch?: MergeWatchRow; error?: string };
+  const redPending = redSub.watch ? await waitMergeEvent(redSub.watch.id, false) : undefined;
+  check("merge event: verify-red mints a pending resolved/landed:false event while transport is paused",
+    redSubR.ok && redPending?.status === "pending" && redPending.payload.status === "resolved"
+      && redPending.payload.landed === false && redPending.payload.verify?.ok === false,
+    JSON.stringify(redPending));
+  await restartSrv();
+  const redAfterRestart = redSub.watch
+    ? (await mergeEvents()).filter((e) => e.watchId === redSub.watch?.id) : [];
+  check("merge event: restart AFTER mint but before delivery loses and duplicates nothing",
+    redAfterRestart.length === 1 && redAfterRestart[0].status === "pending",
+    JSON.stringify(redAfterRestart));
+  check("merge event restart fixture: release transport after boot", (await post("/api/autos/switch", { on: true })).ok);
+  const redDelivered = redSub.watch ? await waitMergeEvent(redSub.watch.id) : undefined;
+  const redText = (await plogRead()).filter((p) => p.slot === receiverA
+    && p.text.includes(`[event ${redDelivered?.id}]`));
+  check("merge event: verify-red delivers once after restart and is explicit review/NOT landed text",
+    redDelivered?.status === "delivered" && redDelivered.payload.verify?.ok === false
+      && redText.length === 1 && redText[0].text.includes("verify RED")
+      && redText[0].text.includes("Awaiting your review") && redText[0].text.includes("landed=NO"),
+    JSON.stringify({ event: redDelivered, texts: redText.map((p) => p.text) }));
   const vfPreLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString();
   check("V1: verify-failed lane's commit has NOT reached main",
     !vfPreLand.includes("verify-fail lane work"), vfPreLand.trim());
@@ -818,6 +961,16 @@ export async function run(lc: LaneCtx): Promise<void> {
     check("② the hand-off records WHO was asked (resolvedBy:'author') and WHICH files",
       (vA1.last as { resolvedBy?: string } | null)?.resolvedBy === "author"
       && (vA1.last?.conflicted ?? []).includes("code.txt"), JSON.stringify(vA1.last));
+    const authorSubR = await selfMergeWatch(receiverBToken, lnA.slot);
+    const authorSub = (await authorSubR.json()) as { watch?: MergeWatchRow; error?: string };
+    const authorEvent = authorSub.watch ? await waitMergeEvent(authorSub.watch.id) : undefined;
+    const authorText = (await plogRead()).find((p) => p.slot === receiverB
+      && p.text.includes(`[event ${authorEvent?.id}]`))?.text ?? "";
+    check("merge event: awaiting-author is delivered as waiting/unlanded, never as success",
+      authorSubR.ok && authorEvent?.payload.status === "awaiting-author"
+        && authorEvent.payload.landed === false && authorText.includes("landed=NO")
+        && authorText.includes("waiting on the author/review path") && authorText.includes("NOT landed"),
+      JSON.stringify({ event: authorEvent, text: authorText }));
     // the fallback did not silently also run: mergemode is "blocked", so ANY consultation of the
     // fake resolver puts its verdict ("blocked") and its answer text ("fake conflict") on the
     // record — neither appears, so the worker never ran.
@@ -974,4 +1127,6 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("discard on an unknown path is refused",
     (await post("/api/worktrees/discard", { repo: REPO, path: ln4.cwd, branch: ln4.branch })).status === 400);
   await post(`/api/slots/${probe.slot}/land`, {}); // clean up the probe lane too
+  await post(`/api/slots/${receiverA}/kill`, {});
+  await post(`/api/slots/${receiverB}/kill`, {});
 }

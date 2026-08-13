@@ -530,12 +530,19 @@ export async function run(): Promise<void> {
   const crashId = "crashboundaryfixture";
   const crashWatchId = "crashboundarywatch";
   const legacyWatchId = "legacywatchfixture";
+  const malformedMergeId = "malformedmergefixture";
   const crashRaw = eventA ? {
     ...eventA, id: crashId, watchId: crashWatchId, status: "send-uncertain", attempts: 1,
     deliveredAt: null, acknowledgedAt: null,
     payload: { ...eventA.payload, text: "$(touch /tmp/must-not-run)", command: "echo unsafe" },
   } : null;
   eventState?.events?.push(crashRaw);
+  if (eventA) eventState?.events?.push({
+    ...eventA, id: malformedMergeId, watchId: "malformedmergewatch", kind: "merge-terminal",
+    subjectCwd: tgt.cwd, payload: {
+      status: "resolved", landed: false, branch: tgt.branch, at: Date.now(), verify: null,
+    },
+  });
   eventState?.watches?.push({
     id: legacyWatchId, slot: aId, target: tgt.slot, targetCwd: tgt.cwd,
     targetBranch: tgt.branch, idleSec: 0, armed: false, created: Date.now(),
@@ -563,6 +570,9 @@ export async function run(): Promise<void> {
   check("legacy spent Watch loads unchanged without an invented FleetEvent",
     (await watchRows()).some((w) => w.id === legacyWatchId && w.lastResult === "sent")
     && !(await eventRows()).some((e) => e.watchId === legacyWatchId));
+  check("per-kind event loading rejects a malformed merge payload without breaking legacy event restore",
+    !afterRestartEvents.some((e) => e.id === malformedMergeId) && restartedA?.id === eventA?.id,
+    JSON.stringify(afterRestartEvents.filter((e) => e.id === malformedMergeId || e.id === eventA?.id)));
   const payloadKeys = Object.keys(uncertainAfterTicks?.payload ?? {}).sort();
   check("persisted FleetEvent payload is a closed typed fact set and cannot carry free shell/text content",
     JSON.stringify(payloadKeys) === JSON.stringify([

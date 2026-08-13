@@ -51,6 +51,11 @@ const auditEvents = async (): Promise<AuditEvent[]> =>
 
 export async function run(): Promise<void> {
   const MAIN = g(REPO, "symbolic-ref", "--short", "HEAD").out || "main";
+  const receiver = ((await (await get("/api/sessions")).json()) as
+    { slots: { id: number; cwd: string | null }[] }).slots.find((s) => s.cwd === null)?.id ?? 0;
+  const openedReceiver = receiver ? await post(`/api/slots/${receiver}/open`, { cwd: REPO }) : null;
+  check("merge-event restart setup: a non-lane receiver is open",
+    !!openedReceiver?.ok, `${receiver} ${openedReceiver?.status}`);
 
   // === A — a merge run interrupted mid-flight (audit item 2) ============================
   // The dangerous shape: the agent has ALREADY rewritten the lane (conflicts resolved, rebased
@@ -71,6 +76,10 @@ export async function run(): Promise<void> {
     await settleForMerge(la.slot);
     const started = (await (await post(`/api/slots/${la.slot}/merge`, {})).json()) as { running?: boolean };
     check("(setup A) the merge job started", started.running === true, JSON.stringify(started));
+    const subscribedR = await post(`/api/slots/${receiver}/watch`, { kind: "merge", target: la.slot, idleSec: 0 });
+    const subscribed = (await subscribedR.json()) as { watch?: { id: string; armed: boolean }; error?: string };
+    check("merge-event restart setup: subscription is armed before the terminal fact",
+      subscribedR.ok && subscribed.watch?.armed === true, `${subscribedR.status} ${JSON.stringify(subscribed)}`);
     // deterministic signal, not a sleep: the agent's rebase is done exactly when main becomes an
     // ancestor of the lane branch. Everything after this point is "the resolutions are committed".
     let rebased = false;
@@ -88,6 +97,21 @@ export async function run(): Promise<void> {
       afterA.last?.status === "interrupted", JSON.stringify(afterA.last));
     check("the interrupted verdict names the conflicts the agent was resolving",
       (afterA.last?.conflicted ?? []).includes("code.txt"), JSON.stringify(afterA.last?.conflicted));
+    let interruptedEvents: { watchId: string; kind: string; status: string;
+      payload?: { status?: string; landed?: boolean } }[] = [];
+    for (let i = 0; i < 160; i++) {
+      interruptedEvents = ((await (await get("/api/sessions")).json()) as
+        { events: { watchId: string; kind: string; status: string;
+          payload?: { status?: string; landed?: boolean } }[] }).events
+        .filter((e) => e.watchId === subscribed.watch?.id);
+      if (interruptedEvents[0]?.status === "delivered") break;
+      await Bun.sleep(100);
+    }
+    check("merge event: restart BEFORE the terminal fact re-runs the level check and delivers once",
+      interruptedEvents.length === 1 && interruptedEvents[0].kind === "merge-terminal"
+        && interruptedEvents[0].payload?.status === "interrupted"
+        && interruptedEvents[0].payload?.landed === false,
+      JSON.stringify(interruptedEvents));
     const sessA = (await (await get("/api/sessions")).json()) as { slots: { id: number; mergePending?: boolean }[] };
     check("the board flags the interrupted lane as needing review (⏸)",
       sessA.slots.find((s) => s.id === la.slot)?.mergePending === true);
@@ -284,6 +308,7 @@ export async function run(): Promise<void> {
   }
 
   await setMergeMode("blocked"); // leave the shared mode file as the other modules expect it
+  if (receiver) await post(`/api/slots/${receiver}/kill`, {});
 }
 
 // the marker map as it stands on disk. `saveState` writes through a promise chain, so a read

@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
 import type { Ctx } from "./ctx";
+import { LOCAL_PROOF_STEPS, localProofFor } from "../verify-proportion";
 
 export async function run(ctx: Ctx): Promise<void> {
   // --- Part C: scoped self-scheduling token (FLEET_SELF_TOKEN / FLEET_SELF_SLOT) ---
@@ -284,15 +285,47 @@ export async function run(ctx: Ctx): Promise<void> {
   // --- GET /api/self/gate: the live land-gate facts, served from the server's own process env.
   // The env pass-throughs (verify/cleanReview/…) are pinned by their own suites; what is tested
   // HARD here is this route's own logic — auth, the one-scope rule, and the rulebook compare. ---
+  check("local proof: docs-only asks for exactly install,pins and no isolated preview",
+    JSON.stringify(localProofFor(["docs/guide.md"]))
+      === JSON.stringify({ steps: ["install", "pins"], isolatedPreview: false,
+        classifiedAs: { "docs/guide.md": "docs-or-prose" } }));
+  check("local proof: src-only asks for install,pins,tsc,build",
+    JSON.stringify(localProofFor(["src/client.ts"]).steps) === JSON.stringify(["install", "pins", "tsc", "build"]));
+  check("local proof: e2e work asks for the full chain and isolated preview",
+    JSON.stringify(localProofFor(["e2e/self-token.ts"]).steps) === JSON.stringify(LOCAL_PROOF_STEPS)
+      && localProofFor(["e2e/self-token.ts"]).isolatedPreview === true);
+  check("local proof: server.ts asks for the full chain and merge/land self-assessment",
+    JSON.stringify(localProofFor(["server.ts"]).steps) === JSON.stringify(LOCAL_PROOF_STEPS)
+      && localProofFor(["server.ts"]).isolatedPreview === "self-assess");
+  check("local proof: an empty diff fails closed to the full chain",
+    JSON.stringify(localProofFor([])) === JSON.stringify({
+      steps: LOCAL_PROOF_STEPS, isolatedPreview: "self-assess", classifiedAs: {},
+    }));
+  const conservativeProof = localProofFor(["docs/guide.md", "new-top-level.unknown"]);
+  check("local proof: one unknown file flips an otherwise docs-only diff to the conservative full default",
+    JSON.stringify(conservativeProof.steps) === JSON.stringify(LOCAL_PROOF_STEPS)
+      && conservativeProof.isolatedPreview === "self-assess"
+      && conservativeProof.classifiedAs["new-top-level.unknown"] === "conservative-default",
+    JSON.stringify(conservativeProof));
+
   const selfGate = (token?: string) => fetch(BASE + "/api/self/gate", {
     headers: token !== undefined ? { "x-fleet-self-token": token } : {},
   });
   type Gate = { verify: { cmd: string; timeoutMs: number; waitMs: number; skipExit: number } | null; cleanReview: string;
     autoReview: { tickMs: number; idleMs: number } | null; postlandAudit: boolean;
     mergeRepairRounds: number; rulebookDrifted: boolean | null;
-    suiteLock: { pid: number | null; alive: boolean | null; heldMs: number; state: string } | null };
+    suiteLock: { pid: number | null; alive: boolean | null; heldMs: number; state: string } | null;
+    localProof: ReturnType<typeof localProofFor> | null };
   const g0Res = await selfGate(selfTok);
   const g0 = (await g0Res.json()) as Gate;
+  const proofBase = spawnSync("git", ["-C", lnTok.cwd, "merge-base", intBr, "HEAD"]).stdout.toString().trim();
+  const proofFiles = spawnSync("git", ["-C", lnTok.cwd, "diff", "--name-only", `${proofBase}...HEAD`])
+    .stdout.toString().trim().split("\n").filter(Boolean).sort();
+  check("GET /api/self/gate: a real lane receives localProof classifying every file in its committed footprint",
+    g0Res.ok && g0.localProof !== null
+      && JSON.stringify(Object.keys(g0.localProof.classifiedAs).sort()) === JSON.stringify(proofFiles)
+      && proofFiles.every((file) => typeof g0.localProof?.classifiedAs[file] === "string"),
+    JSON.stringify({ files: proofFiles, localProof: g0.localProof }));
   // --- suiteLock, the machine-busy fact (autonomy verbs, Verb 1): the one wait a lane's verify
   // actually hangs on, now named by the route that names the judge. Pinned against DISK truth
   // rather than an assumed harness shape: under a wrapper run the stage mutex is held by our own
@@ -330,6 +363,47 @@ export async function run(ctx: Ctx): Promise<void> {
   check("gate: a missing selfToken header is rejected", (await selfGate(undefined)).status === 401);
   check("gate: a plain (non-lane) slot's selfToken answers 409 not-a-lane, never a generic 401",
     (await selfGate(plainSelf)).status === 409, "reuses the drift fixture's plain-slot token");
+
+  // A pre-baseSha lane with an unresolvable recorded base is an honest null, not `steps: []`.
+  // Build that old-state shape without patching fleet.json: an orphan worktree has no merge-base,
+  // so attach records no baseSha; renaming the primary branch then breaks its recorded base ref.
+  const brokenRepo = `${ROOT}/local-proof-broken-repo`;
+  const brokenTree = `${ROOT}/local-proof-broken-tree`;
+  rmSync(brokenRepo, { recursive: true, force: true });
+  rmSync(brokenTree, { recursive: true, force: true });
+  mkdirSync(brokenRepo, { recursive: true });
+  spawnSync("git", ["-C", brokenRepo, "init", "-q", "-b", "main"]);
+  spawnSync("git", ["-C", brokenRepo, "config", "user.email", "e2e@example.invalid"]);
+  spawnSync("git", ["-C", brokenRepo, "config", "user.name", "Fleet E2E"]);
+  writeFileSync(`${brokenRepo}/seed.txt`, "seed\n");
+  spawnSync("git", ["-C", brokenRepo, "add", "seed.txt"]);
+  spawnSync("git", ["-C", brokenRepo, "commit", "-qm", "seed"]);
+  const orphan = spawnSync("git", ["-C", brokenRepo, "worktree", "add", "--orphan", "-b", "proof-orphan", brokenTree]);
+  check("localProof null fixture: an orphan worktree with no merge-base is created",
+    orphan.status === 0, orphan.stderr.toString().slice(0, 300));
+  writeFileSync(`${brokenTree}/orphan.txt`, "orphan\n");
+  spawnSync("git", ["-C", brokenTree, "add", "orphan.txt"]);
+  spawnSync("git", ["-C", brokenTree, "commit", "-qm", "orphan"]);
+  const brokenLane = (await (await post("/api/lanes", { repo: brokenRepo, attach: brokenTree })).json()) as
+    { ok?: boolean; slot?: number; error?: string };
+  check("localProof null fixture: the no-baseSha orphan lane attaches",
+    brokenLane.ok === true && typeof brokenLane.slot === "number", JSON.stringify(brokenLane));
+  const brokenToken = typeof brokenLane.slot === "number" ? await paneEnv(`s${brokenLane.slot}`, "FLEET_SELF_TOKEN") : null;
+  const renamed = spawnSync("git", ["-C", brokenRepo, "branch", "-m", "main", "moved-main"]);
+  check("localProof null fixture: its recorded base ref is made unresolvable",
+    renamed.status === 0, renamed.stderr.toString().slice(0, 300));
+  const brokenGateRes = await selfGate(brokenToken ?? "");
+  const brokenGate = (await brokenGateRes.json()) as Gate;
+  check("GET /api/self/gate: an unanswerable git diff returns 200 with localProof:null and the other gate fields",
+    brokenGateRes.ok && brokenGate.localProof === null && "verify" in brokenGate
+      && typeof brokenGate.postlandAudit === "boolean" && "suiteLock" in brokenGate,
+    `${brokenGateRes.status} ${JSON.stringify(brokenGate)}`);
+  if (typeof brokenLane.slot === "number")
+    check("localProof null fixture: the lane slot is torn down", (await post(`/api/slots/${brokenLane.slot}/kill`, {})).ok);
+  spawnSync("git", ["-C", brokenRepo, "worktree", "remove", "--force", brokenTree]);
+  rmSync(brokenTree, { recursive: true, force: true });
+  rmSync(brokenRepo, { recursive: true, force: true });
+
   // rulebook compare: identical copy reads false, a moved source reads true. Fixtures are
   // UNTRACKED files in REPO and the lane — removed right after, an untracked file in either
   // tree would poison later modules' clean-tree assumptions (and a lane's landability).

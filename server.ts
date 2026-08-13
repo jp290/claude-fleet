@@ -12,6 +12,7 @@ import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
+import { localProofFor, type LocalProof } from "./verify-proportion";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
@@ -2329,6 +2330,18 @@ async function laneBaseRef(s: Slot): Promise<string | null> {
   if (ib) return ib;
   const sha = await git(s.worktree.repo, "rev-parse", "HEAD");
   return sha.code === 0 && sha.out ? sha.out : null;
+}
+
+// The smallest LOCAL proof for this lane's committed footprint. Failure is null rather than an
+// empty list: no base or no diff means Fleet cannot classify the work, so the caller must use the
+// full chain. The authoritative land gate does not call this helper.
+async function laneLocalProof(s: Slot): Promise<LocalProof | null> {
+  if (!s.cwd || !s.worktree) return null;
+  const base = s.worktree.baseSha ?? await laneBaseRef(s);
+  if (!base) return null;
+  const changed = await gitRead(s.cwd, "diff", "--name-only", `${base}...HEAD`);
+  if (changed.code !== 0) return null;
+  return localProofFor(changed.out.split("\n").filter(Boolean));
 }
 // --- the slot's commits, for the review window's left column ---
 // ONE list, used twice: the client renders it, and the per-commit diff route checks a requested
@@ -12773,6 +12786,7 @@ Bun.serve<WSData>({
         // Until now this route named the judge but not the queue in front of the courtroom.
         // null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
         suiteLock: suiteLockView(),
+        localProof: await laneLocalProof(s),
       });
     }
 

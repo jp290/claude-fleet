@@ -84,7 +84,17 @@ claim done. If you cannot name the command, you do not yet have a task — say s
 
 ## Verify
 
-Copyable, in order. Every step must pass; stop at the first failure.
+Ask `GET /api/self/gate` first with the lane's self token. Run the commands corresponding to
+`localProof.steps`, in the returned order; the step names map one-to-one to the full-chain lines
+below (`install`, `pins`, `tsc`, `build`, `clean-review`, `security`, `claude-gate`). The response's
+`classifiedAs` explains which rule each changed file selected. If `localProof` is `null` or the
+route is unreachable, run the full chain below. Every selected step must pass; stop at the first
+failure.
+
+The server-side land gate still always runs its full configured chain. Local proof is the fast
+lane recommendation; the server gate remains authoritative and is never weakened by it.
+
+The full chain, copyable and in order:
 
 ```sh
 bun install --frozen-lockfile
@@ -102,6 +112,9 @@ bun run build
 **Judge a suite by its TAIL, never by a remembered check count.** A clean run ends in `ALL PASS`.
 Anything else is a failure, including a run that ended early. Quote the tail in your report; do not
 paraphrase it.
+
+For the recommendation flag, `isolatedPreview: true` means run the preview; `"self-assess"` means
+apply the existing merge-/land-path self-assessment in the rule below.
 
 `./e2e-isolated.sh` is the slow tier and is NOT part of the above. Run it only if you touched the
 `e2e/` lifecycle, a suite wrapper, or the merge/land path. Suites take a shared mutex, so a run may

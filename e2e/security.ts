@@ -73,6 +73,7 @@ const PRE_AUTH_ROUTES = [
   // many can be armed. Its subscriber rule runs the OTHER way to the four lane-only routes below:
   // a lane is refused 409 here. The opposite-scope 409s are pinned in self-token.ts/watch.ts.
   '= /api/self/watch',    // same credential: subscribe your OWN pane to a lane's done-looking
+  '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
   '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
   // added 2026-08-07. The widest READ on the every-session tier —

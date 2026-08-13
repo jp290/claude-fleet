@@ -4,7 +4,8 @@
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt } from "../merge-prompt";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildEnhancePrompt } from "../enhance-prompt";
-import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, laneQuietSince,
+import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage, laneWatchEventKind,
+  laneWatchPayload, laneQuietSince,
   DONE_LOOKING_RULES, DONE_LOOKING_PROSE, HOST_COMMIT_LOOKING_RULES,
   laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
@@ -720,7 +721,9 @@ export async function run(): Promise<void> {
       laneWatchSignal(HC, T) === "host-commit-looking"
       && laneWatchSignal({ ...HC, hostCommits: false }, T) === null
       && laneWatchSignal({ ...HC, awaiting: "owner" }, T) === null);
-    const hostText = laneWatchMessage(7, "lane-branch", HC, "host-commit-looking");
+    const hostText = laneWatchMessage(7, "lane-branch", {
+      id: "promptfixture", kind: laneWatchEventKind("host-commit-looking"), payload: laneWatchPayload(HC),
+    });
     check("watch text: the weaker arm says UNCOMMITTED, expected zero-ahead, and the exact host commit action",
       hostText.includes("LOOKS ready for a host commit")
       && hostText.includes("The work is UNCOMMITTED, 0 ahead is expected for this harness, and the next step is a host commit via POST /api/slots/7/commit.")

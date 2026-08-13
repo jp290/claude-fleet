@@ -358,10 +358,10 @@ const a6after = sess6.autos.find((a) => a.id === a6.auto.id);
 check("dead foreign agent: lastResult reports the skip",
   a6after?.lastResult === "skipped — no agent running in pane", a6after?.lastResult ?? "missing");
 
-// --- branch 7: the WORKER tier under a harness that cannot host one. A different spawn from every
-// branch above — summaryViaSession, not a slot — and it used to be the one this file's premise did
-// not reach: it built `claude --session-id …` for itself, so "nothing about any specific harness is
-// compiled into server.ts" was true of the slot path and false one function over.
+// --- branch 7: a CLAUDE-ROUTED WORKER under a harness that cannot host one. A different spawn from
+// every branch above — summaryViaSession, not a slot. Review is deliberate: summary now has its
+// own headless codex-exec route, while this counterprobe proves that migration did not leak into
+// another worker and the existing session path still asks the configured worker harness.
 //
 // The wrapper points FLEET_WORKER_HARNESS at `container`, whose `worker` answers null. What has to
 // be proven is not that it fails — a wrong implementation fails too — but HOW: the worker's answer
@@ -372,11 +372,12 @@ check("dead foreign agent: lastResult reports the skip",
 const WORKER_REPO = process.env.WORKER_REPO!;
 const o7 = await post("/api/slots/8/open", { cwd: WORKER_REPO });
 check("open a slot on a real repo for the worker branch", o7.ok, String(o7.status));
+await Bun.write(`${WORKER_REPO}/code.txt`, "root\nworker review fixture\n");
 const t7 = Date.now();
-const r7 = await post("/api/slots/8/summary", {});
+const r7 = await post("/api/slots/8/review", {});
 const b7 = (await r7.json()) as { error?: string };
 const took = Date.now() - t7;
-check("a worker on a transcript-less harness is REFUSED (500 with an error)",
+check("a non-summary worker on a transcript-less harness is REFUSED (500 with an error)",
   r7.status === 500 && !!b7.error, `${r7.status} ${b7.error ?? "(no error field)"}`);
 check("...and the refusal names the harness and the reason, so the fix is not a guess",
   (b7.error ?? "").includes('harness "container"') && (b7.error ?? "").includes("transcript"),

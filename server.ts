@@ -1,4 +1,4 @@
-import { stat, rm, readdir, appendFile } from "node:fs/promises";
+import { stat, rm, readdir, appendFile, mkdtemp } from "node:fs/promises";
 import { existsSync, statSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, rmSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
@@ -181,8 +181,9 @@ const AUTHOR_COMMS = [...new Set([...HARNESS_COMMS, "claude"])];
 // mistake this whole change exists to undo, and it is not less wrong for models than it was for
 // liveness. (Measured: with the widening keyed on "not claude", fleet-e2e-security.ts §2 accepted a
 // 65-character model under FLEET_CMD=true, because the foreign charset's cap is 96. The suite
-// caught it.) Worker-tier models (SUMMARY/ANALYSIS/REFINE) keep MODEL_RE unconditionally — those
-// spawn claude directly through runWorker/summaryViaSession no matter what FLEET_CMD is.
+// caught it.) Worker-tier Claude models (SUMMARY fallback/ANALYSIS/REFINE) keep MODEL_RE
+// unconditionally — those spawn through runWorker/summaryViaSession no matter what FLEET_CMD is.
+// The summary's codex-exec route names its closed model constant at that transport boundary.
 const SLOT_MODEL_RE = DECLARED_HARNESS ? HARNESS_MODEL_RE : MODEL_RE;
 // (the rejection message that used to live here is now modelErrFor(), one region below: it has to
 // name the charset of the SLOT'S harness, not the server's, for the same reason it was derived
@@ -879,11 +880,12 @@ const harnessOf = (id: string | null | undefined): Harness =>
 // Which harness the WORKER tier runs. A separate question from any slot's, and separately answered:
 // a worker is not attached to a slot at all (it runs in a cwd — a lane worktree for the merge
 // resolver, the checkout for a summary), so deriving it from the slot's harness would be a policy
-// invention, not a lookup. Default `claude`, which is what every worker on this fleet has always
-// spawned by name; FLEET_WORKER_HARNESS is the seam a container-hosted worker will arrive through
-// (stage 2), and the ONLY thing it can do today is point the tier at an adapter that answers `null`
-// — i.e. turn every worker into a named refusal, loudly and immediately, rather than silently.
-// Unknown id → the default, same fail-toward-safe rule as harnessOf.
+// invention, not a lookup. Default `claude`, which remains every session-routed worker's answer;
+// summary's separate headless codex-exec route never consults this registry. FLEET_WORKER_HARNESS
+// is the seam a container-hosted SESSION worker will arrive through (stage 2), and the ONLY thing
+// it can do today is point those workers at an adapter that answers `null` — i.e. turn them into a
+// named refusal, loudly and immediately, rather than silently. Unknown id → the default, same
+// fail-toward-safe rule as harnessOf.
 const WORKER_HARNESS: Harness = harnessOf(process.env.FLEET_WORKER_HARNESS ?? null);
 
 // which harness a request asked for. Absent → null (the default), which is what every caller that
@@ -5439,19 +5441,18 @@ async function tickHarvest(): Promise<void> {
   }
 }
 
-// --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. Runs an INTERACTIVE
-// claude in a throwaway tmux session (cwd = the slot's checkout, so CLAUDE.md and
-// repo context ride along) — NOT `claude -p`: print mode bills the Anthropic API
-// per token (its envelope reports total_cost_usd), while an interactive session
-// stays inside the subscription. Never one of the 16 slots; click-only (POST),
+// --- BACKLOG #14 Phase 2: the ephemeral summarizer agent. The default route runs headless
+// `codex exec` read-only; the explicit rollback route runs an INTERACTIVE claude in a throwaway
+// tmux session (cwd = the slot's checkout, so repo context rides along) — NOT `claude -p`.
+// Never one of the 16 slots; click-only (POST),
 // cached on the exact git state; GET returns the cache without ever spawning.
-// Evidence only by prompt contract — no land/merge verdicts. The answer is read
-// from the transcript JSONL, never scraped from the TUI.
+// Evidence only by prompt contract — no land/merge verdicts. The answer comes from the selected
+// transport's explicit channel (-o for Codex, transcript JSONL for Claude), never TUI scraping.
 // FLEET_SUMMARY_CMD (tests only) switches to a plain subprocess stand-in.
 const SUMMARY_CMD = process.env.FLEET_SUMMARY_CMD ?? null;
-// worker tier for the throwaway agents (summarize, commit message, enhance, merge resolver,
-// ② clean review, digest). Bracket = the 1M context variant; it reaches a tmux shell line in
-// summaryViaSession, so it is single-quoted there — see the MODEL_RE note.
+// Claude worker tier for the throwaway agents (summary rollback, commit message, enhance, merge
+// resolver, ② clean review, digest). Bracket = the 1M context variant; it reaches a tmux shell
+// line in summaryViaSession, so it is single-quoted there — see the MODEL_RE note.
 const SUMMARY_MODEL =
   process.env.FLEET_SUMMARY_MODEL && MODEL_RE.test(process.env.FLEET_SUMMARY_MODEL)
     ? process.env.FLEET_SUMMARY_MODEL : "claude-sonnet-5[1m]";
@@ -5459,6 +5460,8 @@ const SUMMARY_TIMEOUT_MS = 180_000;
 interface SummaryResult {
   summary: string; openThreads: string[]; verification: string;
   model: string; at: number; head: string | null; dirty: number; raw: boolean;
+  backend?: "codex-exec";
+  usage?: { input?: number; output?: number };
 }
 const summaryCache = new Map<number, { key: string; result: SummaryResult }>();
 const summaryInflight = new Map<number, Promise<SummaryResult>>();
@@ -5507,8 +5510,98 @@ async function summaryViaSubprocess(cmd: string, prompt: string, cwd: string, ti
   return out.trim();
 }
 
-// Tool floor for the five throwaway TEXT-ONLY agents (summary, review, commit message, enhance,
-// steward digest). Each of their prompts already says "do NOT use any tools" — that is prose
+type CodexExecUsage = { input?: number; output?: number };
+
+// `codex exec --json` is an observation rail, not the answer channel (that is -o below). Codex
+// has emitted both `usage` and `token_count` shapes across CLI revisions, so walk only those
+// named token containers and accept their input/output counters. Repeated events are cumulative
+// snapshots; the newest observed value wins. Absence stays the literal unknown — never a text-
+// length estimate.
+function codexExecUsage(stdout: string): CodexExecUsage | "unknown" {
+  let input: number | undefined;
+  let output: number | undefined;
+  const inputKeys = new Set(["input_tokens", "input_token_count", "prompt_tokens"]);
+  const outputKeys = new Set(["output_tokens", "output_token_count", "completion_tokens"]);
+  const containers = new Set(["usage", "token_count", "token_usage", "total_token_usage"]);
+  const walk = (value: unknown, inTokenContainer = false): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, inTokenContainer);
+      return;
+    }
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const k = key.toLowerCase();
+      if (typeof child === "number" && Number.isFinite(child) && child >= 0) {
+        if (inputKeys.has(k) || (inTokenContainer && k === "input")) input = child;
+        if (outputKeys.has(k) || (inTokenContainer && k === "output")) output = child;
+      }
+      walk(child, inTokenContainer || containers.has(k));
+    }
+  };
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    try { walk(JSON.parse(line)); } catch { /* an unreadable event says nothing about usage */ }
+  }
+  return input === undefined && output === undefined ? "unknown" : { input, output };
+}
+
+// The headless Codex transport is deliberately NOT a Harness adapter: it owns no tmux session,
+// no resumable identity and no host transcript. Its only authority is the fixed read-only sandbox
+// below, and its answer is the CLI's last-message file.
+async function workerViaCodexExec(prompt: string, cwd: string,
+  opts: { model: string; timeoutMs: number }): Promise<{ text: string; usage: CodexExecUsage | "unknown" }> {
+  const dir = await mkdtemp(`${tmpdir()}/fleet-codex-worker-`);
+  const tmpOut = resolve(dir, "last-message.txt");
+  const bin = process.env.FLEET_CODEX_EXEC_BIN || "codex";
+  let p: Bun.PipedSubprocess | null = null;
+  let exited = false;
+  let killer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  try {
+    p = Bun.spawn([bin, "exec", "--ephemeral", "-s", "read-only", "--skip-git-repo-check",
+      "--color", "never", "--json", "-o", tmpOut, "-m", opts.model, "-"], {
+      cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    const outP = new Response(p.stdout).text();
+    const errP = new Response(p.stderr).text();
+    killer = setTimeout(() => {
+      timedOut = true;
+      p?.kill();
+    }, opts.timeoutMs);
+    let stdinError: unknown = null;
+    try {
+      p.stdin.write(prompt);
+      await p.stdin.end();
+    } catch (e) { stdinError = e; }
+    const code = await p.exited;
+    exited = true;
+    if (killer) {
+      clearTimeout(killer);
+      killer = null;
+    }
+    const [out, err] = await Promise.all([outP, errP]);
+    if (timedOut) throw new Error(`worker via codex exec timed out after ${opts.timeoutMs}ms`);
+    if (code !== 0) {
+      const excerpt = [err, out].filter(Boolean).join("\n").slice(0, 300);
+      throw new Error(`worker via codex exec exited ${code}: ${excerpt}`);
+    }
+    if (stdinError) throw new Error(`worker via codex exec failed to write prompt: ${String(stdinError).slice(0, 300)}`);
+    let text = "";
+    try { text = (await Bun.file(tmpOut).text()).trim(); } catch { /* named below */ }
+    if (!text) throw new Error("codex exec exited 0 but wrote no last message");
+    return { text, usage: codexExecUsage(out) };
+  } finally {
+    if (killer) clearTimeout(killer);
+    if (p && !exited) {
+      p.kill();
+      try { await p.exited; } catch { /* cleanup is still required */ }
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// Tool floor for the five throwaway TEXT-ONLY agents (the summary's Claude rollback, review,
+// commit message, enhance, steward digest). Each prompt already says "do NOT use any tools" — prose
 // addressed to a model that, without this, holds the owner's whole interactive allow list.
 // `--tools ""` cuts the built-in tools out of the session entirely; being a capability cut rather
 // than a permission rule, it is the one form ~/.claude/settings.json cannot widen (an --allowedTools
@@ -5621,10 +5714,37 @@ interface WorkerSpec {
                            // its done-mark. Required, and keyed on the contract table — a new call
                            // site that names nothing does not compile, which is what closed the
                            // six-of-eight unmarked-transcript hole.
-  cmd: string | null;      // FLEET_*_CMD subprocess stand-in; null in production → the session path
-  tools: ToolProfile;      // capability floor for the session path (see ToolProfile)
-  timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on BOTH paths, same as before
+  cmd: string | null;      // FLEET_*_CMD stand-in; null → the worker's closed production route
+  tools: ToolProfile;      // capability floor for the Claude session path (see ToolProfile)
+  timeoutMs?: number;      // omitted → SUMMARY_TIMEOUT_MS on every transport, same as before
   model?: string;          // omitted → SUMMARY_MODEL; MODEL_RE-validated at the const it comes from
+  observe?: (run: WorkerRunObservation) => void; // additive response facts; only summary exposes them
+}
+type WorkerRoute = "claude" | "codex-exec";
+type WorkerRouteConfig = { route: "claude" } | { route: "codex-exec"; model: string };
+interface WorkerRunObservation {
+  model: string;
+  backend?: "codex-exec";
+  usage?: CodexExecUsage;
+}
+const CODEX_SUMMARY_MODEL = "gpt-5.3-codex-spark";
+const summaryWorkerRoute: WorkerRouteConfig = process.env.FLEET_WORKER_ROUTE_SUMMARY === "claude"
+  ? { route: "claude" }
+  : { route: "codex-exec", model: CODEX_SUMMARY_MODEL }; // absent, codex-exec, or invalid → default
+const WORKER_ROUTES = {
+  summary: summaryWorkerRoute,
+  review: { route: "claude" },
+  commitMsg: { route: "claude" },
+  enhance: { route: "claude" },
+  merge: { route: "claude" },
+  repair: { route: "claude" },
+  cleanReview: { route: "claude" },
+  digest: { route: "claude" },
+  refine: { route: "claude" },
+  analysis: { route: "claude" },
+} satisfies Record<WorkerName, WorkerRouteConfig>;
+function workerRouteFor(worker: WorkerName): WorkerRouteConfig {
+  return WORKER_ROUTES[worker];
 }
 async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise<string> {
   const contract = WORKER_CONTRACTS[spec.worker];
@@ -5634,9 +5754,28 @@ async function runWorker(spec: WorkerSpec, prompt: string, cwd: string): Promise
   // fails closed) instead of a stray transcript quietly served as a slot's own conversation.
   if (!prompt.includes(contract.mark))
     throw new Error(`worker "${spec.worker}": prompt does not carry its background mark`);
-  const text = spec.cmd
-    ? await summaryViaSubprocess(spec.cmd, prompt, cwd, spec.timeoutMs)
-    : await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: spec.model });
+  let text: string;
+  let observed: WorkerRunObservation;
+  if (spec.cmd) {
+    text = await summaryViaSubprocess(spec.cmd, prompt, cwd, spec.timeoutMs);
+    observed = { model: SUMMARY_MODEL };
+  } else {
+    const route = workerRouteFor(spec.worker);
+    if (route.route === "codex-exec") {
+      // ToolProfile is intentionally unused here: `-s read-only` plus `--ephemeral` is this
+      // transport's act-authority, and no Claude tool profile can widen or describe it.
+      const result = await workerViaCodexExec(prompt, cwd, {
+        model: route.model, timeoutMs: spec.timeoutMs ?? SUMMARY_TIMEOUT_MS,
+      });
+      text = result.text;
+      observed = { model: route.model, backend: "codex-exec",
+        ...(result.usage === "unknown" ? {} : { usage: result.usage }) };
+    } else {
+      text = await summaryViaSession(prompt, cwd, doneMark(contract), { tools: spec.tools, timeoutMs: spec.timeoutMs, model: spec.model });
+      observed = { model: spec.model ?? SUMMARY_MODEL };
+    }
+  }
+  spec.observe?.(observed);
   // the test stand-in answers in a {"result": "..."} envelope — unwrap it; no contract JSON in
   // this file has a string `result`, so this is a no-op for real runs
   try {
@@ -5715,8 +5854,10 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
     "- openThreads: things started or mentioned but not finished (empty array if none).",
     '- verification: which checks/tests/builds ran and their results, or "none seen".',
   ].join("\n");
+  let workerRun: WorkerRunObservation = { model: SUMMARY_MODEL };
   const text = await runWorker(
-    { worker: "summary", cmd: SUMMARY_CMD, tools: TEXT_ONLY_TOOLS }, prompt, cwd);
+    { worker: "summary", cmd: SUMMARY_CMD, tools: TEXT_ONLY_TOOLS,
+      observe: (run) => { workerRun = run; } }, prompt, cwd);
   const body = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   let summary = body, openThreads: string[] = [], verification = "", raw = true;
   try {
@@ -5727,7 +5868,9 @@ async function runSummary(s: Slot, head: string | null, dirty: number): Promise<
   } catch { /* keep raw text as the summary */ }
   return {
     summary: summary.slice(0, 4000), openThreads: openThreads.slice(0, 12),
-    verification: verification.slice(0, 1000), model: SUMMARY_MODEL, at: Date.now(), head, dirty, raw,
+    verification: verification.slice(0, 1000), model: workerRun.model, at: Date.now(), head, dirty, raw,
+    ...(workerRun.backend ? { backend: workerRun.backend } : {}),
+    ...(workerRun.usage ? { usage: workerRun.usage } : {}),
   };
 }
 

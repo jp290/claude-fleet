@@ -62,6 +62,10 @@ const PRE_AUTH_ROUTES = [
   // surface against a plain session's token.
   '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
   '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
+  '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
+  '= /api/self/main-direct/preflight',
+  '= /api/self/main-direct/finalize',
+  '= /api/self/main-direct/abandon',
   // added 2026-08-07, and it is the only entry on this list that WRITES INTO A PANE on a trigger
   // the caller does not control. What bounds it: the receiver is the token's slot and nothing in
   // the body can move it (createWatchForSlot takes `s`, never a body field), the message is one
@@ -980,6 +984,8 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const rcmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}")).out;
   check("§6 a recycled slot is spawned by the DEFAULT harness, never the previous occupant's",
     !rcmd.includes("pi --session-id") && !rcmd.includes("--thinking") && !rcmd.includes("docker exec")
-    && !rcmd.includes("codex"), rcmd.slice(-160));
+    // PATH may legitimately contain an installed package directory named `codex`; only an
+    // executable command token says the recycled pane actually inherited that harness.
+    && !/(^|[; ])codex(?: |$)/.test(rcmd.replaceAll("\\", "")), rcmd.slice(-160));
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
 }

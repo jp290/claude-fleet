@@ -62,6 +62,10 @@ const PRE_AUTH_ROUTES = [
   // surface against a plain session's token.
   '= /api/self',          // same credential, read-only: the session's own row (slot-bound, no lane needed)
   '= /api/self/autos',    // the scoped per-slot credential — no lane check, and never had one
+  // A Program is a planning bracket above lanes, so this self route runs in the opposite scope:
+  // a non-lane session may propose and read only rows carrying its exact session triple. It never
+  // confirms, activates, completes, dispatches, or writes a task; those remain owner acts.
+  '= /api/self/programs',
   '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
   '= /api/self/main-direct/preflight',
   '= /api/self/main-direct/finalize',
@@ -88,6 +92,10 @@ const PRE_AUTH_ROUTES = [
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)
   '= /api/self/criterion', // same credential: the lane's PROPOSED done-criterion (slot-bound, owner confirms)
   '= /api/self/verify-intent', // same credential: the lane's advisory gate-phase report (slot-bound)
+  // The handler sits before the steward interceptor only so a steward credential meets the same
+  // tokenGate 401 as any other non-owner credential. Every matching route calls tokenGate inline
+  // before the owner handler; the regex is pinned here as an explicitly reviewed pre-auth shape.
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard))?$/`,
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,
@@ -170,6 +178,10 @@ const dangerous = (slot: number): Probe[] => [
   // GET /api/tasks serves the full prompt texts (intake mail included) that the 2 s poll no
   // longer carries — a read route, but the most content-bearing one the queue has
   { path: "/api/tasks", method: "GET", ownerSafe: true },
+  // Full Program bodies are owner-only. Empty POST is a side-effect-free named 400; GET proves
+  // the content-bearing read exists while the principal matrix proves scoped credentials do not.
+  { path: "/api/programs", method: "POST", body: {}, ownerSafe: true },
+  { path: "/api/programs", method: "GET", ownerSafe: true },
   { path: "/api/dispatch", method: "POST", body: {} },
   // the board editor's pair (§F5). The WRITE route is the only one on this server that puts bytes
   // into a file the caller named, so an auth regression here is not a leak — it is arbitrary code

@@ -1,3 +1,64 @@
+# HANDOFF — Session 55 (2026-08-13: Worker-Migration Schnitt 2 — Timeout-Test-Naht + commitMsg/enhance/digest auf Codex-Spark; gebaut, gelandet, deployt, zwei Live-Canaries) · 54/53b/53/52/51 darunter
+
+**ctx beim Schreiben: 21,1 % (GEMESSEN am Owner-Poll, 210 779 / 1 000 000).** Produziert: ein Land (`c09e85c`, via
+genau EINE Codex-Lane, gpt-5.6-sol high, Task `bb6fdbf7` über den Dispatch-Knopf), ein Deploy,
+zwei echte Spark-Canaries mit Prozessbeweis, Core-Doc-Absatz (Workstream 7). Arbeitsmodus wie
+S51–54: dichter Brief mit Zeilenankern, Watch → Event → Ack als Rückweg, nur Review/Land/Beweise
+selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `c09e85c` + dieser Doc-Commit (MAIN-direct, Preflight `9694a86a`). Baum sauber.
+- **Live-Server:** Deploy `4d86c614` `ok:true`/`hitTarget:true`, `bootHead == c09e85c`,
+  `bundleStale:false`.
+- **Audit:** Post-Land-Audit **grün, 2139 Checks / 0 failed, 901,9 s**, covers `c09e85c`.
+- Canary-Lane, Task, Watch abgeräumt; kein Canary-Commit im Produkt.
+
+## Der Schnitt (Details im Core-Doc, Workstream-7-Absatz)
+
+Test-Timeout-Naht `FLEET_CODEX_EXEC_TIMEOUT_MS`, **strukturell test-only**: der Env-Wert wird nur
+gelesen, wenn `FLEET_CODEX_EXEC_BIN` gesetzt ist (`binOverride ? Number(env) : NaN`) — ohne
+kontrollierte Testbinary gibt es keinen Weg, ein Produktionsbudget zu senken; `SUMMARY_TIMEOUT_MS`
+bleibt 180 000. `WORKER_ROUTES`: `summary`/`commitMsg`/`enhance`/`digest` → `codexSparkRoute(…)`
+auf die eine Konstante `CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"`, je eigener Rückweg
+(`FLEET_WORKER_ROUTE_{SUMMARY,COMMITMSG,ENHANCE,DIGEST}=claude`), nur das Literal `claude` wählt
+Claude — ungültige Werte fallen auf Codex, lösen also nie versehentlich Claude-Spend aus.
+Stand-in-Präzedenz und `observe` (summary-exklusiv) unverändert; keine Usage-Plattform.
+
+**Zwei Dinge, die die nächste Session wissen muss:**
+
+- **Ein Waiter auf MAIN-BEWEGUNG verpasst ein terminal verify-rotes Gate — realer Incident an
+  diesem Land.** Der Merge endete `resolved`/`landed:false` (clean rebase, Verify rot mit genau
+  EINEM FAIL, `silent-alive fixture … lastOutput === 0`, `fleet-e2e-claude-gate.ts:85`); main blieb
+  korrekt stehen, und mein `until HEAD != …`-Waiter hätte ewig gewartet. Der Land-AUSGANG hat
+  keinen typisierten Rückkanal — `POST /api/self/watch` deckt Lane-Fertigstellung ab, nicht das
+  Ergebnis einer Operation. **Bis es ihn gibt: `GET /api/slots/:id/merge` pollen, nie HEAD.** Das
+  ist der Beleg für den nächsten Typed-Operation-Event-Schnitt.
+- **Flake-Beweis nach Doktrin, selbst erhoben:** `c09e85c^ == main == f4e08db`, also war der Rebase
+  inhaltlich ein No-Op und der Gate verifizierte exakt Tree `cb91f5c`. Same-Tree-Rerun von
+  `./e2e-claude-gate.sh` seriell: **ALL PASS, EXIT=0**, der rote Check steht darin auf `PASS (0)`.
+  Danach ausschließlich `{"confirm":true}` auf den BESTEHENDEN `resolved`-Merge — kein neuer Merge,
+  kein Rebase, kein Resolver.
+
+**Live-Canaries:** enhance (6 s, Response-Vertrag intakt) und commitMsg (5 s, echtes
+Conventional-Commit-Subject, kein `messageFallback`) liefen je als eigene
+`codex exec --ephemeral -s read-only … -m gpt-5.3-codex-spark`-Ausführung (per `ps` mitgeschnitten,
+zwei getrennte `fleet-codex-worker-*`-tmp-Verzeichnisse), null `sum-*`-tmux-Sessions; die
+commitMsg-Wegwerf-Lane wurde mit ihrem Commit verworfen. **Digest-Canary NICHT gefahren:**
+`/api/steward/digest` verlangt einen aktiven `⚙ steward`-Slot (`server.ts:12383`), es gibt keinen —
+digest ist damit nur durch die isolierte Suite belegt, nicht live. Die Lane-Doc-Zeile schrieb
+783 s; gemessen sind **790 s** (`ISOLATED_SECONDS=790`) — im Core-Doc korrigiert.
+
+## Nächster Zielkorridor
+
+**Keine dritte Migrationswelle begonnen.** Noch auf Claude: review, cleanReview, refine, analysis,
+merge, repair — mutierende Resolver (merge/repair) zuletzt. Daneben unverändert: P2-B–D erst bei
+realen Produzenten, dahinter Self-Land-Shadow; der Typed-Operation-Event-Schnitt hat mit diesem
+Land seinen ersten harten Beleg. Erdung: `./state.sh` · `./register.sh` ·
+`docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 54 (2026-08-13: Worker-Migration Schnitt 1 — summary auf Codex-Spark; gebaut, gelandet, deployt, Canary bestanden) · 53b/53/52/51/50 darunter
 
 **ctx beim Schreiben: 17,9 % (GEMESSEN am Owner-Poll).** Produziert: ein Land (`3e60648`, via

@@ -141,9 +141,28 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    `gpt-5.3-codex-spark`, mit je eigenem expliziten Claude-Rückweg; Stand-ins bleiben Präzedenz 1,
    Fehler fallen nie still auf Claude zurück. Kontrollierte Gegenproben liegen für Summary,
    Commit-Message und Enhance in `e2e/summary.ts`, für den steward-geschützten Digest in
-   `e2e/steward-core.ts`; der Tabellen-Pin hält die sechs übrigen Worker auf Claude. Isolated:
-   2131 Checks/0, 783 s statt zuvor 974 s. **Weiter auf Claude:** review, cleanReview, refine,
-   analysis, merge, repair. Keine dritte Welle in diesem Schnitt.
+   `e2e/steward-core.ts`; der Tabellen-Pin hält die sechs übrigen Worker auf Claude.
+   **Zahlenkorrektur der Lane-Zeile (sie schrieb 783 s):** ihr eigener isolierter Lauf maß
+   `ISOLATED_SECONDS=790`; der Post-Land-Audit dieses Lands ist grün mit **2139 Checks/0 in
+   901,9 s** gegen 2117/0 in 974 s davor. Die Naht spart deterministisch ~178,5 s Schlafzeit je
+   Lauf; die Audit-Differenz ist mit −72 s kleiner, weil Audit-Wallclock Maschinenlast enthält —
+   die Ersparnis ist am Check gemessen, nicht an der Audit-Differenz behauptet. Deploy `4d86c614`
+   live (`bootHead == c09e85c`, `bundleStale:false`). **Live-Canaries mit Prozessbeweis:** enhance
+   (6 s) und commitMsg (5 s, echtes Conventional-Commit-Subject, kein `messageFallback`) liefen je
+   als eigene `codex exec --ephemeral -s read-only … -m gpt-5.3-codex-spark`-Ausführung, null
+   `sum-*`-tmux-Sessions; der commitMsg-Canary lief auf einer Wegwerf-Lane, die mit ihrem Commit
+   verworfen wurde. **Digest-Canary NICHT gefahren:** `/api/steward/digest` verlangt einen aktiven
+   `⚙ steward`-Slot (`server.ts:12383`), es gibt keinen — für digest ist der Beweis darum
+   ausschließlich die isolierte Suite, kein Live-Lauf. **Weiter auf Claude:** review, cleanReview,
+   refine, analysis, merge, repair. Keine dritte Welle in diesem Schnitt.
+
+   **Incident-Beleg für den nächsten Typed-Operation-Event-Schnitt (an diesem Land angefallen):**
+   Ein Waiter auf Main-Bewegung verpasst ein terminal verify-rotes Gate strukturell. Der Merge
+   endete `resolved`/`landed:false` (clean rebase, Verify rot mit genau einem FAIL), main blieb
+   deshalb korrekt stehen — und der Waiter, der auf eine HEAD-Bewegung wartete, hätte ewig
+   gewartet. Der Land-Ausgang hat keinen typisierten Rückkanal: `POST /api/self/watch` deckt
+   Lane-Fertigstellung ab, nicht den Ausgang einer Operation. Bis es ihn gibt, ist der Merge-Status
+   (`GET /api/slots/:id/merge`) zu pollen, nie eine HEAD-Bewegung.
 
 **Empfohlener nächster Schnitt: restliche Provenienz (P2-B–D), sobald reale Produzenten
 existieren** — P2-B wartet ausdrücklich darauf, dass ContextPlan-/SkillRef-/CapabilitySnapshot-

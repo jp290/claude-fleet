@@ -80,7 +80,10 @@ landed:false` nie Erfolg, Refusals laut, Ack idempotent/sessiongebunden.
 `{kind:"merge", target:<lane-slot>}` abonnieren — das ersetzt das `GET /api/slots/:id/merge`-
 Polling aus S55 vollständig. **Der Merge-Live-Canary steht noch aus:** mein eigenes Land riss
 Slot 2 vor dem Deploy ab (`target slot not active`, ehrliche Refusal) — beim NÄCHSTEN realen
-Land bitte einmal live beweisen: vor dem Merge-POST abonnieren, Terminal-Event empfangen, acken.
+Land bitte einmal live beweisen: erst der Merge-POST, danach sofort abonnieren, Terminal-Event
+empfangen, acken. [Korrektur 2026-08-14: hier stand „vor dem Merge-POST abonnieren" — das würde
+mechanisch 409en (`no running or persisted terminal merge exists`, server.ts, createWatchForSlot);
+das Level-Triggering deckt die Lücke zwischen POST und Subscribe. In S57 erledigt.]
 Der Audit-Weg ist live bewiesen (Event `9701c7dd…`, level-triggered aus der persistierten Row,
 zugestellt, idempotent geackt).
 

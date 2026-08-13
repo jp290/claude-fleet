@@ -231,7 +231,9 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    Security-Perimeter (`e2e/security.ts`) um die neuen Pre-Auth-Formen ergänzt. Land-Gate grün
    (102 s, 0 s Wartezeit), Post-Land-Audit **grün, 2181 Checks/0 in 811 s**, Deploy `212e6394`
    live (`bootHead == aa6a86b`, `bundleStale:false`). **Merge-Live-Canary bestanden — der aus
-   Workstream 8 offene Beweis:** Subscription `{kind:"merge"}` VOR dem Terminalfakt, typisiertes
+   Workstream 8 offene Beweis:** Subscription `{kind:"merge"}` NACH dem Merge-POST und VOR dem
+   Terminalfakt (die kanonische Reihenfolge — ein Subscribe vor dem POST 409t mechanisch,
+   `createWatchForSlot`; das Level-Triggering deckt die Lücke bis zum Terminalfakt), typisiertes
    `merge-terminal`-Event (`merged`/`landed:true`/`verify.ok:true`) empfangen, gegen Land-Note
    und HEAD geprüft, idempotent geackt; Audit-Ausgang ebenso über `{kind:"audit"}` empfangen und
    geackt. **Program-Live-Canary bestanden:** Wegwerfprobe („WEGWERFPROBE Live-Canary

@@ -1,3 +1,38 @@
+# HANDOFF — Session 53 (2026-08-13: Workstream 3 P2-A — Ausführungsprovenienz gebaut, gelandet, deployt) · 52/51/50/49/48 darunter
+
+**ctx beim Schreiben: 18,3 % (GEMESSEN am Owner-Poll).** Produziert: ein Land (`2fbdf09`, via
+genau EINE Codex-Lane, gpt-5.6-sol high, Task `1906d052` über den Dispatch-Knopf — die Lane war
+selbst taskgebunden), ein Deploy, Core-Doc-Update. Arbeitsmodus wie S51/52: dichter Brief mit
+Zeilenankern, `POST /api/self/watch` + Event/Ack als Rückweg, nur Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `2fbdf09` + dieser Doc-Commit (MAIN-direct, Preflight `caa821ef`). Baum sauber.
+- **Live-Server:** Deploy `9f3fa372` `ok:true`/`hitTarget:true`, `bootHead == 2fbdf09`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2090 Checks / 0 failed, 771 s**, covers `2fbdf09`.
+
+## Der Schnitt (Details im Core-Doc, Workstream-3-Absatz)
+
+originId an allen drei Task-Minting-Nähten (= eigene id), Refine-Kinder erben die Klammer mit
+frischen taskIds; dispatchTask stempelt taskId/originId auf den Slot (releasedBy-Muster,
+persistiert, restart-fest); buildLaneOutcome emittiert beides optional auf JEDER Disposition plus
+`harness`/`effort` mit model-Semantik (Pin, null = Default). Manuell/Alt/Reverted bleiben ehrlich
+feldlos; kein Backfill, kein programId. Gegenproben in e2e/tasks.ts + e2e/outcomes.ts.
+
+**Canary, ehrlich:** die P2-A-Lane lief auf dem Vor-Deploy-Server — ihre eigene Outcome-Row trägt
+die Felder korrekt NICHT (No-Backfill-Vertrag, an der Row nachgeprüft). Die erste Row mit voller
+Provenienz schreibt die nächste taskgebundene Lane nach dem Deploy; beim nächsten Land kurz
+nachsehen.
+
+## Nächster Zielkorridor
+
+**P2-B (Context-/Skill-/Capability-Refs auf Task/Outcome) oder Workstream 5 (proportionale
+Verifikation)** — Owner entscheidet; P2-C/P2-D bleiben ebenfalls offen. Erdung wie immer:
+`./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 52 (2026-08-13: Workstream 2, Typed Rückkanal — gebaut, gelandet, deployt, Canary grün) · 51/50/49/48/47 darunter
 
 **ctx beim Schreiben: 16,4 % (GEMESSEN am Owner-Poll).** Produziert: ein Land (`638114f`, via

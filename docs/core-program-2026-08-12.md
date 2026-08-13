@@ -68,8 +68,21 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    (`silent-alive`, Same-Tree-Rerun ALL PASS), Post-Land-Audit grün (2080 Checks/0, 897 s),
    Deploy `d38097fc` live, End-to-End-Canary (Watch → Event → Zustellung mit Event-ID →
    Ack + Idempotenz) real durchgeführt. Quelle: Harness-Brief §5.3.
-3. **Provenienz P2** — `taskId`/`harness`/`effort`/Context auf Outcomes (heute 0 %, Baseline §3);
-   nach den Readiness-Typen schneiden, damit `capabilitySnapshot` von Anfang an passt.
+3. **Provenienz P2 — P2-A GEBAUT 2026-08-13** (`2fbdf09`, genau eine Codex-Lane, gpt-5.6-sol
+   high; P2-B Context/Skills/Capabilities, P2-C Join-Report und P2-D Taskklassen bleiben OFFEN).
+   Schnitt: Root-Tasks minten `originId = id` an allen drei Intake-Nähten (Owner/Intake/Steward),
+   Refine-Kinder erben die Klammer (`t.originId ?? t.id`) mit je eigener frischer `taskId`;
+   `dispatchTask` stempelt `taskId`/`originId` auf den Slot (das `releasedBy`-Muster: gesetzt nach
+   openSlot, auf open/kill geleert, persistiert, überlebt Restart); `buildLaneOutcome` emittiert
+   `...(s.taskId ? {taskId} : {})` + originId auf JEDER Disposition und dazu `harness`/`effort`
+   mit exakt der `model`-Semantik (angeforderter Pin, null = Default-Adapter, nie über
+   `harnessOf()` nachaufgelöst). Manuelle Lanes und Alt-Rows bleiben feldlos (Absenz = „kann
+   nichts sagen"), Reverted-Rows erfinden nichts, kein Backfill, kein `programId`. Gegenproben:
+   e2e/tasks.ts (Mint/Refine/Legacy-Load) + e2e/outcomes.ts (Dispatch-Stempel, Restart-Persistenz,
+   explizit/Default-Pins, manuelle Lane, Reverted, Legacy-Ledger). Post-Land-Audit grün
+   (2090 Checks/0, 771 s), Deploy `9f3fa372` live. Ehrlicher Canary-Befund: die P2-A-Lane selbst
+   lief noch auf dem Vor-Deploy-Server — ihre eigene Row trägt die Felder korrekt NICHT; die erste
+   Row mit voller Provenienz schreibt die nächste taskgebundene Lane nach diesem Deploy.
 4. **MAIN-direct-Naht — GEBAUT 2026-08-13** (`1bbedc7`, eine Codex-Lane; Phase-1-Befund davor:
    keine nachträgliche Ableitung möglich, `writeLandNote` ist best-effort und `finishLandsInFlight`
    verweigert erfundene Provenienz — also explizites Protokoll statt Git-Heuristik). Schnitt:
@@ -84,9 +97,9 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
 5. **Proportionale Verifikation** — kleinster Beweis am Arbeitsort, autoritativer Gate einmal pro
    Tree; eigener Schnitt, bis dahin gilt der AGENTS.md-Vertrag wörtlich.
 
-**Empfohlener nächster Schnitt: Workstream 3, Provenienz P2 auf Outcomes.** Workstream 1 und 2
-sind gebaut (oben); die Reihenfolge bleibt Abhängigkeit: erst Provenienz, dann proportionale
-Verifikation (5).
+**Empfohlener nächster Schnitt: P2-B (Context-/Skill-/Capability-Refs) oder Workstream 5.**
+Workstream 1, 2, 4 und P2-A sind gebaut (oben); die Reihenfolge bleibt Abhängigkeit: erst die
+restliche Provenienz (P2-B–D), dann proportionale Verifikation (5).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

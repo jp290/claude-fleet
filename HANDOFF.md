@@ -1,3 +1,50 @@
+# HANDOFF — Session 56 (2026-08-14: Typed Operation Events — Merge- und Audit-Terminalzustände auf dem FleetEvent/Ack-Rückkanal; gebaut, gelandet, deployt, Audit-Live-Canary level-triggered) · 55/54/53b/53/52/51 darunter
+
+**ctx beim Schreiben: ~24 % (GEMESSEN am Owner-Poll, 233 682 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: ein Land (`5da9c4d`, via genau EINE Codex-Lane, gpt-5.6-sol high, Task `cc5807e5`
+über den Dispatch-Knopf, 1h26m Lane-Laufzeit), ein Deploy, ein Audit-Live-Canary, Core-Doc
+Workstream 8 + Korridor-Abschnitt. Arbeitsmodus wie S51–55: dichter Brief (13 KB, Zeilenanker,
+12 Gegenproben, Nicht-Ziele), Watch → Event → Ack als Rückweg, nur Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `5da9c4d` + dieser Doc-Commit (MAIN-direct, Preflight `a65a24f2…`). Baum sauber.
+- **Live-Server:** Deploy `2e8a4f1c` `ok:true`/`hitTarget:true`, `bootHead == 5da9c4d`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2159 Checks / 0 failed, 819 s**, covers `5da9c4d`.
+- Lane/Task selbst geschlossen (`done`/`landed`), Watches verbraucht, Events geackt.
+
+## Der Schnitt (Details: Core-Doc Workstream 8)
+
+Der bestehende Watch → FleetEvent → Zustellung → Ack-Rückkanal trägt zwei neue Subscription-
+Arten: **`POST /api/self/watch {kind:"merge", target:<slot>}`** (bindet Slot + cwd + Branch,
+terminal = settled `MergeLast` ohne laufenden Job; Events gemintet an ALLEN Verdikt-/Land-
+Stellen inkl. Confirm-Land via `beforeTeardown`-Hook in `landLane`, weil der Confirm-Pfad
+`mergeLast` löscht) und **`{kind:"audit", repo, mainAfter}`** (Join gegen
+`mainSha`/`covers[].mainAfter`; Mint an der Row-Schreibstelle + level-triggered beim
+Subscribe/Tick). Geschlossene typisierte Payloads, Legacy byte-stabil, `resolved &&
+landed:false` nie Erfolg, Refusals laut, Ack idempotent/sessiongebunden.
+
+**Für die nächste Session konkret:** Nach einem eigenen Merge-POST sofort
+`{kind:"merge", target:<lane-slot>}` abonnieren — das ersetzt das `GET /api/slots/:id/merge`-
+Polling aus S55 vollständig. **Der Merge-Live-Canary steht noch aus:** mein eigenes Land riss
+Slot 2 vor dem Deploy ab (`target slot not active`, ehrliche Refusal) — beim NÄCHSTEN realen
+Land bitte einmal live beweisen: vor dem Merge-POST abonnieren, Terminal-Event empfangen, acken.
+Der Audit-Weg ist live bewiesen (Event `9701c7dd…`, level-triggered aus der persistierten Row,
+zugestellt, idempotent geackt).
+
+## Nächster Zielkorridor
+
+**Owner-Auftrag 2026-08-13, dokumentiert in Core-Doc „Nächster eigener Korridor", NICHT
+begonnen:** die halbautonome Kette mechanisieren (Owner-Gespräch → Program-/Origin-Artefakt →
+Owner-Confirm → Context-Plan-Producer → MAIN-Gründungsprompt → Direktarbeit/Worker →
+programId/originId-Provenienz → Work-Trail-Vorschläge). Ausdrücklich nicht bauen: Registry,
+Context Compiler, Task-Wellen, Worker-Welle 3, Self-Land, Learning Loop, UI. Daneben
+unverändert: P2-B–D erst bei realen Produzenten. Erdung: `./state.sh` · `./register.sh` ·
+`docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 55 (2026-08-13: Worker-Migration Schnitt 2 — Timeout-Test-Naht + commitMsg/enhance/digest auf Codex-Spark; gebaut, gelandet, deployt, zwei Live-Canaries) · 54/53b/53/52/51 darunter
 
 **ctx beim Schreiben: 21,1 % (GEMESSEN am Owner-Poll, 210 779 / 1 000 000).** Produziert: ein Land (`c09e85c`, via

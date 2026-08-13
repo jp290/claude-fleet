@@ -173,6 +173,51 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    Lane-Fertigstellung ab, nicht den Ausgang einer Operation. Bis es ihn gibt, ist der Merge-Status
    (`GET /api/slots/:id/merge`) zu pollen, nie eine HEAD-Bewegung.
 
+8. **Typed Operation Events — GEBAUT 2026-08-13/14** (`5da9c4d`, genau eine Codex-Lane,
+   gpt-5.6-sol high, Task `cc5807e5` über den Dispatch-Knopf; Incident-Beleg: der Workstream-7-
+   Absatz unten). Schnitt: der bestehende Watch → FleetEvent → Zustellung → Ack-Rückkanal trägt
+   jetzt zwei weitere Subscription-Arten — **`kind:"merge"`** (konkrete Merge-Operation über
+   Slot + `targetCwd`+`targetBranch`, nie eine nackte Slotnummer) und **`kind:"audit"`**
+   (konkretes Land über Repo + `mainAfter`, Join gegen `mainSha`/`covers[].mainAfter`).
+   `Watch` und `FleetEvent` sind diskriminierte Unions (`merge-terminal`, `post-land-audit`)
+   mit geschlossenen typisierten Payloads; Legacy-Zeilen laden byte-stabil (Feldreihenfolge
+   bewusst erhalten), `fleetEventFrom` validiert per Kind. **Merge-Events werden an den
+   Verdikt-/Land-Stellen gemintet** — `record()` in `mergeJob`, Confirm-Land, already-merged,
+   beide Teardown-Failed-Formen — über einen `beforeTeardown`-Hook in `landLane`, VOR
+   `killSlot`/`dropWatchesFor`, weil der Confirm-Pfad `mergeLast` löscht und ein rein
+   level-getriggerter Leser den Landed-Fall strukturell verpasste. Audit-Events mintet die
+   Row-Schreibstelle (`await appendEvent` + `mintAuditEvents`). Beides zusätzlich
+   level-getriggert beim Subscribe (persistierter Fakt ⇒ Event sofort) und im Tick;
+   Dedup über `spendWatch` (ein Event je Watch), Refusals laut („könnte nie feuern":
+   kein laufender/persistierter Merge bzw. kein Row/Queue/Running-Audit ⇒ 409).
+   `resolved && landed:false` rendert nie als Erfolg; ein terminal-negatives Ergebnis ist eine
+   ERFOLGREICHE Benachrichtigung. Persistenz vor Transport unverändert (`send-uncertain` vor
+   `sendText`), Ack idempotent und sessiongebunden, Lane-Subscriber-409 bleibt. Gegenproben:
+   e2e/merge.ts (Merge-Lifecycle inkl. Restart vor/nach Terminalfakt, `VERIFYSLOWPASS`-Naht in
+   e2e-isolated.sh), fleet-e2e-postland-audit.ts (green/red/unknown, Cover-Bindung),
+   e2e/watch.ts (Malformed-Rejection, Legacy-Load), e2e/land-durability.ts. Land-Gate grün
+   (105,8 s, 0 s Mutex-Wartezeit), Post-Land-Audit **grün, 2159 Checks/0 in 819 s**, Deploy
+   `2e8a4f1c` live (`bootHead == 5da9c4d`, `bundleStale:false`). **Live-Canary bestanden
+   (Audit, level-triggered):** Subscription nach Deploy gegen die soeben persistierte Row
+   feuerte im Subscribe-Aufruf selbst (`armed:false`, Event `9701c7dd…`), wurde servergerendert
+   zugestellt und idempotent geackt. **Merge-Live-Canary ehrlich verschoben:** das eigene Land
+   riss Slot 2 ab, `kind:"merge"` auf den toten Slot antwortet korrekt `target slot not active`
+   — der Beweis gehört an den nächsten realen Land, keine künstliche Canary-Lane. Die
+   Übergangsregel „Merge-Status pollen, nie HEAD" ist damit durch die Subscription ersetzt.
+
+## Nächster eigener Korridor (dokumentiert, NICHT begonnen — Owner-Auftrag 2026-08-13)
+
+Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:
+Owner-/Ideengespräch → vorgeschlagenes **Program-/Origin-Artefakt** → Owner bestätigt/promotet →
+**Context-Plan-Producer** wählt Context Packs und Anker → Fleet erzeugt den MAIN-Gründungsprompt →
+MAIN wählt Direktarbeit oder Worker → Tasks/Outcomes tragen `programId`, `originId` und
+Context-Plan-Referenzen → Work Trails schlagen Verbesserungen vor. Das Program-/Origin-Artefakt
+trägt später mindestens: Owner-Intention · Erfolgskriterium · Nicht-Ziele · bestätigte
+Entscheidungen · Evidenz-/Quelldokumente · offene Owner-Entscheide · Status
+proposed/confirmed/active/complete. **Ausdrücklich noch nicht bauen:** Program Registry ·
+Context Compiler/Context-Plan-Producer · neue Context Packs ohne realen Trigger · Task-Wellen ·
+Worker-Migrationswelle 3 · Self-Land · Learning Loop · allgemeine UI.
+
 **Empfohlener nächster Schnitt: restliche Provenienz (P2-B–D), sobald reale Produzenten
 existieren** — P2-B wartet ausdrücklich darauf, dass ContextPlan-/SkillRef-/CapabilitySnapshot-
 Quellen real werden (Owner-Einordnung 2026-08-13). Workstream 1, 2, 4, P2-A und 5 sind gebaut

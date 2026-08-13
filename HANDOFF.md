@@ -43,8 +43,19 @@ Stand-in-Präzedenz und `observe` (summary-exklusiv) unverändert; keine Usage-P
 **Live-Canaries:** enhance (6 s, Response-Vertrag intakt) und commitMsg (5 s, echtes
 Conventional-Commit-Subject, kein `messageFallback`) liefen je als eigene
 `codex exec --ephemeral -s read-only … -m gpt-5.3-codex-spark`-Ausführung (per `ps` mitgeschnitten,
-zwei getrennte `fleet-codex-worker-*`-tmp-Verzeichnisse), null `sum-*`-tmux-Sessions; die
-commitMsg-Wegwerf-Lane wurde mit ihrem Commit verworfen. **Digest-Canary NICHT gefahren:**
+zwei getrennte `fleet-codex-worker-*`-tmp-Verzeichnisse), und es entstand keine `sum-*`-tmux-Session
+— der Claude-Hintergrundworker-Pfad wurde für keinen der beiden benutzt.
+
+**Rand des commitMsg-Canarys, präzise:** seine Wegwerf-Lane wurde über
+`/api/slots/2/open-worktree` OHNE `harness`-Feld geöffnet, war also eine **Default-Claude-Trägerlane**.
+Bewiesen: der Spark-Workerpfad lief, und für commitMsg gab es keinen Claude-Hintergrundworker.
+NICHT bewiesen: dass null Claude-Usage anfiel — die Trägerlane blieb unbenutzt, ihr Verbrauch ist
+**unbekannt, nicht null**. Sie wurde mit ihrem Commit verworfen. **Für künftige Commit-Canaries
+ausdrücklich `harness:"codex"` oder eine agentenlose Worktree-Fixture verwenden** — sonst zieht die
+Testumgebung einen zweiten Harness hoch, den der Test nicht braucht; genau solche versteckten
+Nebenkosten soll die spätere Session-/Work-Trail-Analyse finden.
+
+**Digest-Canary NICHT gefahren:**
 `/api/steward/digest` verlangt einen aktiven `⚙ steward`-Slot (`server.ts:12383`), es gibt keinen —
 digest ist damit nur durch die isolierte Suite belegt, nicht live. Die Lane-Doc-Zeile schrieb
 783 s; gemessen sind **790 s** (`ISOLATED_SECONDS=790`) — im Core-Doc korrigiert.

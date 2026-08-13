@@ -149,9 +149,18 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    die Ersparnis ist am Check gemessen, nicht an der Audit-Differenz behauptet. Deploy `4d86c614`
    live (`bootHead == c09e85c`, `bundleStale:false`). **Live-Canaries mit Prozessbeweis:** enhance
    (6 s) und commitMsg (5 s, echtes Conventional-Commit-Subject, kein `messageFallback`) liefen je
-   als eigene `codex exec --ephemeral -s read-only … -m gpt-5.3-codex-spark`-Ausführung, null
-   `sum-*`-tmux-Sessions; der commitMsg-Canary lief auf einer Wegwerf-Lane, die mit ihrem Commit
-   verworfen wurde. **Digest-Canary NICHT gefahren:** `/api/steward/digest` verlangt einen aktiven
+   als eigene `codex exec --ephemeral -s read-only … -m gpt-5.3-codex-spark`-Ausführung, und es
+   entstand keine einzige `sum-*`-tmux-Session — der Claude-Hintergrundworker-Pfad wurde für keinen
+   der beiden benutzt. **Rand des commitMsg-Canarys, ehrlich:** seine Wegwerf-Lane wurde über
+   `/api/slots/2/open-worktree` OHNE `harness`-Feld geöffnet, war also eine
+   **Default-Claude-Trägerlane**. Bewiesen ist damit der Spark-Workerpfad und die Abwesenheit eines
+   Claude-Hintergrundworkers für commitMsg; **nicht** bewiesen ist, dass dabei null Claude-Usage
+   anfiel — die Trägerlane wurde nicht benutzt, ihr Verbrauch ist aber schlicht UNBEKANNT, nicht
+   null. Die Lane wurde mit ihrem Commit verworfen. **Regel für künftige Commit-Canaries:
+   ausdrücklich eine Codex-Lane (`harness:"codex"`) oder eine agentenlose Worktree-Fixture
+   verwenden** — sonst zieht die Testumgebung einen zweiten Harness hoch, den der Test gar nicht
+   braucht. Genau diese versteckten Nebenkosten soll die spätere Session-/Work-Trail-Analyse finden.
+   **Digest-Canary NICHT gefahren:** `/api/steward/digest` verlangt einen aktiven
    `⚙ steward`-Slot (`server.ts:12383`), es gibt keinen — für digest ist der Beweis darum
    ausschließlich die isolierte Suite, kein Live-Lauf. **Weiter auf Claude:** review, cleanReview,
    refine, analysis, merge, repair. Keine dritte Welle in diesem Schnitt.

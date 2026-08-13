@@ -113,6 +113,46 @@ export interface LaneWatchEventView {
   payload: LaneWatchEventPayload;
 }
 
+export type MergeWatchEventStatus =
+  "merged" | "blocked" | "error" | "resolved" | "interrupted" | "awaiting-author";
+export interface MergeWatchVerifyPayload {
+  ok: boolean | null;
+  timedOut?: true;
+  waitedOut?: true;
+  stale?: true;
+}
+export interface MergeWatchEventPayload {
+  status: MergeWatchEventStatus;
+  landed: boolean;
+  branch: string;
+  at: number;
+  verify?: MergeWatchVerifyPayload;
+  conflicted?: string[];
+  resolvedBy?: "agent" | "author";
+}
+export interface MergeWatchEventView {
+  id: string;
+  kind: "merge-terminal";
+  payload: MergeWatchEventPayload;
+}
+
+export interface AuditWatchCoverPayload {
+  branch: string;
+  mainAfter: string;
+}
+export interface AuditWatchEventPayload {
+  result: "green" | "red" | "unknown";
+  mainSha: string;
+  covers: AuditWatchCoverPayload[];
+  checks: { ran: number; failed: number } | null;
+  reason?: string;
+}
+export interface AuditWatchEventView {
+  id: string;
+  kind: "post-land-audit";
+  payload: AuditWatchEventPayload;
+}
+
 export function laneWatchEventKind(signal: LaneWatchSignal): LaneWatchEventKind {
   return signal === "host-commit-looking" ? "host-commit-ready" : "lane-ready";
 }
@@ -146,6 +186,39 @@ export function laneWatchMessage(slot: number, branch: string, event: LaneWatchE
     + `(idle + clean + ahead>0), NOT a report from that lane: it reads identically for a lane running a `
     + `suite, a lane parked waiting on the owner, and a lane that compiled a brief instead of building. `
     + `Read the pane before you act, and never land on this message alone. ${ack}`;
+}
+
+const eventAck = (id: string): string =>
+  `After reading, acknowledge event ${id}: POST /api/self/events/${id}/ack with `
+  + `x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+
+export function mergeWatchMessage(slot: number, cwd: string, event: MergeWatchEventView): string {
+  const p = event.payload;
+  const verify = p.verify === undefined ? "unverified (no verify result)"
+    : p.verify.waitedOut ? "verify never started"
+    : p.verify.timedOut ? "verify timed out"
+    : p.verify.ok === true ? "verify green"
+    : p.verify.ok === false ? "verify RED"
+    : "verify skipped";
+  const next = p.status === "resolved"
+    ? " Awaiting your review; it is NOT landed."
+    : p.status === "awaiting-author"
+    ? " It is waiting on the author/review path and is NOT landed."
+    : p.status === "interrupted"
+    ? " The run was interrupted and is unmeasured; it is NOT landed."
+    : p.landed ? "" : " It is NOT landed.";
+  return `[fleet] merge [event ${event.id}] for slot ${slot} (${p.branch}, ${cwd}) reached terminal `
+    + `status=${p.status}; landed=${p.landed ? "YES" : "NO"}; ${verify}.${next} This is a successful `
+    + `notification of the terminal result, not a claim that the merge succeeded. ${eventAck(event.id)}`;
+}
+
+export function auditWatchMessage(repo: string, mainAfter: string, event: AuditWatchEventView): string {
+  const p = event.payload;
+  const checks = p.checks ? `${p.checks.ran} checks, ${p.checks.failed} failed` : "check count unknown";
+  const why = p.reason ? ` Reason: ${p.reason}.` : "";
+  return `[fleet] post-land audit [event ${event.id}] for ${repo} land ${mainAfter} reached terminal `
+    + `result=${p.result}; audited tip=${p.mainSha || "unknown"}; ${checks}.${why} This notification `
+    + `does not adjudicate, undo, or deploy anything. ${eventAck(event.id)}`;
 }
 
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already

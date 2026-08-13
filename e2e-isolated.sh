@@ -315,6 +315,13 @@ if git grep -qI VERIFYBAD -- . 2>/dev/null; then
   echo "verify FAIL: VERIFYBAD marker present in the rebased tree"
   exit 1
 fi
+# A bounded green run gives the merge-event fixture enough time to subscribe to the concrete
+# in-flight operation before the clean path lands and tears its target slot down.
+if git grep -qI VERIFYSLOWPASS -- . 2>/dev/null; then
+  sleep 3
+  echo "verify OK: delayed green stand-in"
+  exit 0
+fi
 # A gate that WORKS and never answers, so FLEET_VERIFY_TIMEOUT_MS — the WORK budget — has to kill
 # it. The sleep's fds are redirected AWAY from the inherited pipe on purpose: otherwise the
 # grandchild keeps stdout open after the server SIGTERMs its parent and the collecting read blocks

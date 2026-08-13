@@ -205,16 +205,51 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    — der Beweis gehört an den nächsten realen Land, keine künstliche Canary-Lane. Die
    Übergangsregel „Merge-Status pollen, nie HEAD" ist damit durch die Subscription ersetzt.
 
-## Nächster eigener Korridor (dokumentiert, NICHT begonnen — Owner-Auftrag 2026-08-13)
+9. **Program/Origin Artifact v1 — GEBAUT 2026-08-14** (`aa6a86b`, genau eine Codex-Lane,
+   gpt-5.6-sol high, Task `d97519ca` über den Dispatch-Knopf; 44 min Lane-Laufzeit). Der erste
+   Baustein des halbautonomen Korridors: ein persistiertes `Program`-Artefakt als Klammer ÜBER
+   späteren Tasks — nie selbst ein Task, von keinem Tick gelesen, in keiner Queue-Projektion
+   gezählt. Schnitt: `Program` mit stabiler ID, `title`/`intent`/`successCriterion` (begrenzt),
+   `nonGoals`/`decisions`/`evidence`/`openQuestions` (je ≤20×begrenzte Strings; Evidenz sind
+   REFERENZEN, nie kopierter Inhalt), Status `proposed|confirmed|active|complete`, `createdAt`
+   und ehrlicher Provenienz `proposedBy` (`{kind:"session", slot, openedAt, sessionId}` vom
+   authentifizierten Slot oder `{kind:"owner"}` — nie vom Client akzeptiert). Persistenz als
+   `programs`-Feld im fleet.json-State; Altzustand ohne das Feld lädt als `[]`, kein Backfill;
+   Retention nach dem capTasks-Muster (`MAX_PROGRAMS=100`, nur `complete` evictable).
+   **Propose/Promote streng getrennt:** `POST/GET /api/self/programs` ist Non-Lane-Self-Fläche
+   (Lane → 409 „brackets above lanes"; Steward als Planungssession erlaubt); Owner-only sind
+   `GET/POST /api/programs` und `confirm|activate|complete|discard` — der Handler sitzt VOR dem
+   Steward-Interceptor, ein Steward-/Self-Token fällt als gewöhnliches tokenGate-401. Confirm
+   nimmt Owner-Korrekturen (Merge über den Vorschlag, revalidiert; gespeichert wird die bestätigte
+   Fassung, Provenienz unverändert); identische Wiederholungen sind `existing:true`, widersprüchliche
+   409 (`conflicting confirm`), illegale Übergänge 409. `discard` nur auf `proposed` — der
+   sanktionierte Wegwerfpfad. Der 2-s-Poll trägt exakt `{id,status,title,createdAt}` als Digest;
+   Volltexte nur auf den beiden GET-Routen. Eine geteilte Validierung mit benannten 400ern für
+   beide Türen. Gegenproben: `e2e/programs.ts` (14 Checks: Provenienz, Lane-409, Idempotenz beider
+   Türen, Auth-Matrix, illegale Übergänge, benannte 400er, Restart-Byte-Ehrlichkeit,
+   Digest-Grenze, Task-/Dispatch-Isolation inkl. „kein Task trägt programId", Discard);
+   Security-Perimeter (`e2e/security.ts`) um die neuen Pre-Auth-Formen ergänzt. Land-Gate grün
+   (102 s, 0 s Wartezeit), Post-Land-Audit **grün, 2181 Checks/0 in 811 s**, Deploy `212e6394`
+   live (`bootHead == aa6a86b`, `bundleStale:false`). **Merge-Live-Canary bestanden — der aus
+   Workstream 8 offene Beweis:** Subscription `{kind:"merge"}` VOR dem Terminalfakt, typisiertes
+   `merge-terminal`-Event (`merged`/`landed:true`/`verify.ok:true`) empfangen, gegen Land-Note
+   und HEAD geprüft, idempotent geackt; Audit-Ausgang ebenso über `{kind:"audit"}` empfangen und
+   geackt. **Program-Live-Canary bestanden:** Wegwerfprobe („WEGWERFPROBE Live-Canary
+   Session 57") gegen den deployten Server — propose mit korrekter Session-Provenienz,
+   idempotente Wiederholung `existing:true`, Row in Self- und Owner-Sicht, Poll-Digest exakt
+   vierschlüsselig, per `discard` geräumt. Kein Owner-Promote behauptet: confirm/activate/complete
+   liefen live NICHT (nur isoliert bewiesen). **Bewusst nicht gebaut:** `programId` auf
+   Tasks/Slots/Outcomes (P2-B, wartet auf reale Produzenten — dieser ist jetzt der erste),
+   Context-Plan-Producer, MAIN-Bootstrap, UI.
+
+## Nächster eigener Korridor (Owner-Auftrag 2026-08-13; erster Baustein GEBAUT, Rest offen)
 
 Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:
-Owner-/Ideengespräch → vorgeschlagenes **Program-/Origin-Artefakt** → Owner bestätigt/promotet →
-**Context-Plan-Producer** wählt Context Packs und Anker → Fleet erzeugt den MAIN-Gründungsprompt →
-MAIN wählt Direktarbeit oder Worker → Tasks/Outcomes tragen `programId`, `originId` und
-Context-Plan-Referenzen → Work Trails schlagen Verbesserungen vor. Das Program-/Origin-Artefakt
-trägt später mindestens: Owner-Intention · Erfolgskriterium · Nicht-Ziele · bestätigte
-Entscheidungen · Evidenz-/Quelldokumente · offene Owner-Entscheide · Status
-proposed/confirmed/active/complete. **Ausdrücklich noch nicht bauen:** Program Registry ·
+Owner-/Ideengespräch → vorgeschlagenes **Program-/Origin-Artefakt** (✓ Workstream 9) →
+Owner bestätigt/promotet (✓ API, noch kein UI-Knopf) → **Context-Plan-Producer** wählt Context
+Packs und Anker → Fleet erzeugt den MAIN-Gründungsprompt → MAIN wählt Direktarbeit oder Worker →
+Tasks/Outcomes tragen `programId`, `originId` und Context-Plan-Referenzen → Work Trails schlagen
+Verbesserungen vor. **Ausdrücklich noch nicht bauen:** Program Registry ·
 Context Compiler/Context-Plan-Producer · neue Context Packs ohne realen Trigger · Task-Wellen ·
 Worker-Migrationswelle 3 · Self-Land · Learning Loop · allgemeine UI.
 

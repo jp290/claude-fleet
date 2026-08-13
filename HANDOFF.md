@@ -1,3 +1,54 @@
+# HANDOFF — Session 57 (2026-08-14: Program/Origin Artifact v1 — der erste Baustein des halbautonomen Korridors; gebaut, gelandet, deployt, Merge- UND Program-Live-Canary bestanden) · 56/55/54/53b darunter
+
+**ctx beim Schreiben: 20,6 % (GEMESSEN am Owner-Poll, 206 224 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: zwei Lands — der Docs-only-Vorschnitt `f2fd630` (Product-Studio-Hypothese gesichert,
+MAIN-direct Preflight `c68f05ac…`, Pins ALL PASS) und der Hauptschnitt `aa6a86b` (via genau EINE
+Codex-Lane, gpt-5.6-sol high, Task `d97519ca` über den Dispatch-Knopf, 44 min Lane-Laufzeit) —
+ein Deploy, zwei Live-Canaries, Core-Doc Workstream 9. Arbeitsmodus wie S51–56: dichter Brief
+(Zeilenanker, 12 Gegenproben, Nicht-Ziele), Watch → Event → Ack als Rückweg, nur
+Architektur/Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `aa6a86b` + dieser Doc-Commit (MAIN-direct). Baum sauber.
+- **Live-Server:** Deploy `212e6394` `ok:true`/`hitTarget:true`, `bootHead == aa6a86b`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2181 Checks / 0 failed, 811 s**, covers `aa6a86b` —
+  +22 Checks gegenüber dem Vorland, die neuen Programs-Proben liefen also mit.
+- Lane/Task selbst geschlossen (`done`), Worktree weg, Watches verbraucht, Events geackt,
+  Fallback-Auto gelöscht, Canary-Programm per `discard` geräumt.
+
+## Der Schnitt (Details: Core-Doc Workstream 9)
+
+`Program` ist die persistierte Klammer ÜBER späteren Tasks: stabile ID, begrenzte/validierte
+Inhalte, Status `proposed|confirmed|active|complete`, ehrliche Provenienz (Session-Triple oder
+owner, nie vom Client). Non-Lane-Self schlägt vor (`POST/GET /api/self/programs`, Lane → 409);
+NUR der Owner bestätigt/aktiviert/schließt ab (`/api/programs/:id/…`, vor dem
+Steward-Interceptor — Steward-/Self-Token = 401). Confirm nimmt Korrekturen, gespeichert wird
+die bestätigte Fassung; Idempotenz nach dem finalize-Muster; `discard` nur auf `proposed`.
+Poll-Digest exakt `{id,status,title,createdAt}`; Altzustand lädt als `[]`; Retention nach
+capTasks-Muster; kein Task/Dispatch/Tick liest Programs; kein `programId` irgendwo.
+
+**Beide offenen Live-Beweise aus S56 sind erledigt:** der Merge-Live-Canary lief an diesem Land
+(Subscribe vor Terminalfakt → typisiertes `merge-terminal`-Event `merged/landed:true/verify green`
+→ gegen Land-Note+HEAD geprüft → geackt) und der Program-Canary bewies propose/read/digest/discard
+gegen den deployten Server — ohne einen Owner-Promote zu behaupten (confirm/activate/complete
+nur isoliert bewiesen). Flake-Randnotiz: das Claude-Gate fiel in der Lane zweimal in der
+bekannten Beobachtungs-Präzedenz-Familie (boot-timeout-, dann silent-alive-Fixture), dritter
+Same-Tree-Lauf ALL PASS — Doktrin eingehalten, kein neuer Befund.
+
+## Nächster Zielkorridor
+
+**Der Korridor hat jetzt seinen ersten realen Produzenten.** Offen, in Abhängigkeitsreihenfolge:
+P2-B (`programId`/Context-Plan-Referenzen auf Tasks/Outcomes — jetzt erst sinnvoll, da Programs
+existieren) → Context-Plan-Producer → MAIN-Gründungsprompt. Product Studio bleibt pausierte
+Hypothese (`docs/attic/proposals/product-studio-working-circle-2026-08.md`, gesichert als
+`f2fd630`) — kein erster Geldversuch ohne ausdrücklichen Owner-Start. Kein UI-Knopf für
+Programs — bewusst, API-Inspectability reicht für v1. Erdung: `./state.sh` · `./register.sh` ·
+`docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 56 (2026-08-14: Typed Operation Events — Merge- und Audit-Terminalzustände auf dem FleetEvent/Ack-Rückkanal; gebaut, gelandet, deployt, Audit-Live-Canary level-triggered) · 55/54/53b/53/52/51 darunter
 
 **ctx beim Schreiben: ~24 % (GEMESSEN am Owner-Poll, 233 682 / 1 000 000 vor der Doc-Arbeit).**

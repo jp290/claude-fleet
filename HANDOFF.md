@@ -1,3 +1,59 @@
+# HANDOFF — Session 59 (2026-08-14: P2-B1 — `programId` von Task bis Outcome; die scheinbare Korridor-Zirkularität aufgelöst, gebaut, gelandet, deployt, alle vier typisierten Rückwege gelaufen) · 58/57/56/55/54 darunter
+
+**ctx beim Schreiben: 17,9 % (GEMESSEN am Owner-Poll, 178 801 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: ein Land (`c20988f`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `9d28dd48` über
+den Dispatch-Knopf, 50 min), ein Deploy (`914537f2`), ein Live-Canary gegen den deployten Server,
+Core-Doc Workstream 11. Arbeitsmodus wie S51–58: dichter Brief mit Zeilenankern, Watch → Event →
+Ack als einziger Rückweg, nur Architektur/Review/Land/Beweise selbst.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `c20988f` + dieser Doc-Commit (MAIN-direct, Preflight `fb5c6bac…`). Baum sauber.
+- **Live-Server:** Deploy `914537f2` `ok:true`/`hitTarget:true` (Boot-Verdikt über das typisierte
+  `deploy-terminal`-Event), `bootHead == c20988f`, `bundleStale:false`.
+- **Audit:** Post-Land-Audit **grün, 2207 Checks / 0 failed**, covers `c20988f` — +10 Checks.
+- Lane/Task selbst geschlossen (`done`), Worktree weg, alle drei Watches verbraucht, alle vier
+  Events geackt, Fallback-Auto abgelaufen, Canary-Program über activate/complete geschlossen.
+
+## Der Befund, der diesen Schnitt möglich machte (Details: Core-Doc Workstream 11)
+
+**Die im Auftrag vermutete Zirkularität ist keine — P2-B zerfällt in zwei Hälften mit
+verschiedenen Voraussetzungen.** Die Program-Hälfte (`programId`) hat ihren realen Produzenten
+seit Workstream 9; die Context-Hälfte (ContextPlan/SkillRef/CapabilitySnapshot) hat ihn nicht.
+Gebaut wurde nur die erste. Und die Zuordnungsnaht brauchte **keine** materielle Entscheidung:
+Tür (owner-only, Spiegel der `Task.repo`-Doktrin), Status-Menge (`confirmed`/`active`) und
+Unveränderlichkeit in v1 sind aus bestehender Doktrin konservativ ableitbar.
+
+Schnitt: `Task.programId?` nur an der Owner-Tür mit lauten 400/409-Refusals, Steward-Tür lehnt ab,
+Intake byte-identisch; Refine-Kinder erben auch über ein `complete` gewordenes Program hinweg;
+`Slot.programId` mit exakter taskId/originId-Lebensdauer inkl. Restart-Persistenz;
+`LaneOutcome.programId?` additiv, Reverted lässt weg; Load-Normalisierung erfindet nie und
+streicht nie; `TaskDigest` + `src/client.ts`-Deklaration mitgezogen; **kein Konsument**.
+
+## Nächster Zielkorridor — und die eine Entscheidung, die ich brauche
+
+**Der Context-Plan-Producer ist jetzt der einzige echte Engpass**, und vor seinem Bau steht eine
+materielle Owner-Entscheidung, die ich ausdrücklich NICHT auf Verdacht getroffen habe:
+
+> **Ist ein ContextPlan ein vorgeschlagenes, owner-bestätigtes ARTEFAKT (wie `Program`:
+> propose/promote, persistiert, inspizierbar, teuer) — oder eine abgeleitete PROJEKTION (wie
+> `Task.cluster`/`files`: pro Dispatch neu gerechnet, nie persistiert, advisory)?**
+
+Meine Empfehlung: **Projektion zuerst.** Begründung: die Fleet-Doktrin hat bei
+`cluster`/`files`/`analysis` bereits dreimal gezeigt, dass eine abgeleitete Sicht billiger
+richtig zu halten ist als ein persistiertes Urteil, das gegen einen bewegten Baum altert — und
+ein Context-Plan altert schneller als alles andere, weil er auf Dateien zeigt. Ein Artefakt
+lohnt erst, wenn der Owner ihn KORRIGIEREN können soll; das ist eine Fähigkeit, für die es
+heute keinen Auslöser gibt. Die Projektion lässt sich später zum Artefakt promoten (das
+`files`/`filesOrigin`-Paar ist genau dieser Weg, schon gebaut); umgekehrt ist teuer.
+Was von P2-B übrig ist, referenziert danach den gewählten Produzenten.
+
+Ausdrücklich weiter NICHT bauen: Program Registry, allgemeiner Context Compiler, Task-Wellen,
+Worker-Migrationswelle 3, Self-Land, Learning Loop, UI-Ausbau.
+Erdung: `./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 58 (2026-08-14: Wahrheitsschnitt + Typed Deploy Outcome — die letzte Operation bekam ihren typisierten Rückkanal; gebaut, gelandet, deployt, Deploy-Live-Canary level-triggered bestanden) · 57/56/55/54/53b darunter
 
 **ctx beim Schreiben: 21,6 % (GEMESSEN am Owner-Poll, 215 749 / 1 000 000 vor der Doc-Arbeit).**

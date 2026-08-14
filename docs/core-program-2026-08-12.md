@@ -286,6 +286,53 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    owner-seitig adressiert — nicht durch einen stillen Gegenbefehl. Kein Deploy-Schnitt-Scope
    daraus gemacht (Owner-Vorgabe).
 
+11. **P2-B1 — `programId` von Task bis Outcome — GEBAUT 2026-08-14** (`c20988f`, genau eine
+   Codex-Lane, gpt-5.6-sol high, Task `9d28dd48` über den Dispatch-Knopf; 50 min Lane-Laufzeit).
+   **Der Korridor-Schritt, der die scheinbare Zirkularität auflöst:** P2-B stand als EIN Block im
+   Handoff und wartete laut Owner-Einordnung auf reale ContextPlan-/SkillRef-/CapabilitySnapshot-
+   Produzenten — aber es zerfällt ehrlich in zwei Hälften mit verschiedenen Voraussetzungen. Die
+   Program-Hälfte hat ihren Produzenten seit Workstream 9 (`Program` ist real, propose/confirm/
+   activate/complete laufen), die Context-Hälfte hat ihn nicht. Nur die erste ist gebaut; die
+   zweite bleibt ausdrücklich unangefasst und wartet weiter.
+   **Keine materielle Architekturentscheidung nötig gewesen** — die drei offenen Fragen der
+   Zuordnungsnaht sind aus bestehender Doktrin konservativ ableitbar: die TÜR (owner-only, exakter
+   Spiegel der `Task.repo`-Regel „intake und steward können nie wählen, wo Arbeit materialisiert",
+   `server.ts:1283`), die STATUS-MENGE (nur `confirmed`/`active` — `proposed` ist noch keine
+   Owner-Wahrheit, `complete` ist geschlossen) und die MUTABILITÄT (unveränderlich in v1;
+   Aufweiten ist billig, Zurücknehmen nicht — dieselbe Regel wie beim Lane-Watch-Ausschluss).
+   Schnitt: `Task.programId?` nur an der Owner-Tür (`server.ts:15086` ff.) mit lauten Refusals
+   (nicht-String/leer → 400 `bad programId`, unbekannte ID → 409 mit Nennung, falscher Status →
+   409 mit Nennung des Status); die Steward-Tür lehnt ein `programId` im Body mit 400 ab
+   („only the owner may attach work to a program"); die Intake-Tür bleibt byte-identisch, weil sie
+   nur text/from liest. Refine-Kinder erben die Klammer wie `originId` — **auch wenn das Program
+   inzwischen `complete` ist**: der Owner hat beim Mint validiert, ein später geschlossenes Program
+   darf eine bestehende Klammer nicht rückwirkend zerreißen (eigene Sonde). `Slot.programId` mit
+   exakt der taskId/originId-Lebensdauer (Stempel in `dispatchTask`, geleert in `openSlot`/
+   `killSlot`, im Active-Slot-Snapshot persistiert, beim Laden String-validiert restauriert);
+   `LaneOutcome.programId?` wird per `...(s.programId ? … : {})` emittiert, Reverted-Rows lassen es
+   weg. Load-Normalisierung ohne Registry-Abgleich in BEIDE Richtungen: ein Pre-Field-Wert wird nie
+   erfunden, ein persistierter nie gestrichen, weil die Registry sich bewegt hat. `TaskDigest` trägt
+   die ID (kleine ID, kein Body), `src/client.ts` zieht seine eigene `TaskInfo`-Deklaration mit
+   (die kind-Migrations-Lehre: ein Cast über eine fremde Fläche compiliert ewig und lügt ewig).
+   **Kein Konsument** — kein Tick, Dispatcher, Sweep oder Gate liest das Feld; reine Provenienz.
+   Die bestehende Isolations-Sonde in `e2e/programs.ts:187` wurde ehrlich umformuliert statt
+   gelöscht („no task gains programId **without the owner naming one**"). Land-Gate grün,
+   Post-Land-Audit **grün, 2207 Checks/0** (+10 — die neuen Proben liefen mit), Deploy
+   **`914537f2`** live (`bootHead == c20988f`, `hitTarget:true`, `bundleStale:false`), Verdikt über
+   das typisierte `deploy-terminal`-Event empfangen. Alle vier Operations-Rückwege dieses Lands
+   liefen über die typisierten Events (lane-ready → merge-terminal → post-land-audit →
+   deploy-terminal, je empfangen, gegen Land-Note/HEAD/Audit-Row/Boot-Fakt geprüft, geackt).
+   **Live-Canary bestanden:** Wegwerf-Program („WEGWERFPROBE Live-Canary Session 59") gegen den
+   deployten Server — Task gegen `proposed` 409 mit Status-Nennung, nach `confirm` gemintet,
+   `programId` exakt im 2-s-Digest, unbekannte ID 409, malformte 400, Steward-Tür 400; Program
+   danach über activate/complete geschlossen, Task gelöscht. **Ehrlicher Canary-Rand, gleiche Form
+   wie bei P2-A:** die P2-B1-Lane selbst lief auf dem Vor-Deploy-Server und ihr Task trug kein
+   Program — ihre Outcome-Row zeigt `taskId`/`originId`/`harness:"codex"`/`effort:"high"` und
+   korrekt KEIN `programId`. Der Slot→Outcome-Pfad ist damit isoliert bewiesen, live noch nicht;
+   die erste Row mit voller Program-Provenienz schreibt die nächste programgebundene Lane.
+   **Bewusst nicht gebaut:** Re-Link-/Unlink-Route, Backfill der 56 offenen Zeilen, `programId` auf
+   Event-/Watch-Payloads, UI-Rendering, jeder Konsument.
+
 ## Nächster eigener Korridor (Owner-Auftrag 2026-08-13; erster Baustein GEBAUT, Rest offen)
 
 Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:
@@ -297,10 +344,17 @@ Verbesserungen vor. **Ausdrücklich noch nicht bauen:** Program Registry ·
 Context Compiler/Context-Plan-Producer · neue Context Packs ohne realen Trigger · Task-Wellen ·
 Worker-Migrationswelle 3 · Self-Land · Learning Loop · allgemeine UI.
 
-**Empfohlener nächster Schnitt: restliche Provenienz (P2-B–D), sobald reale Produzenten
-existieren** — P2-B wartet ausdrücklich darauf, dass ContextPlan-/SkillRef-/CapabilitySnapshot-
-Quellen real werden (Owner-Einordnung 2026-08-13). Workstream 1, 2, 4, P2-A und 5 sind gebaut
-(oben). Dahinter: Self-Land als Shadow-Klassifikation (unten).
+**Empfohlener nächster Schnitt: der Context-Plan-Producer — er ist jetzt der einzige echte
+Engpass.** P2-B ist geteilt und die Program-Hälfte ist gebaut (Workstream 11); was von P2-B
+übrig ist (ContextPlan-/SkillRef-/CapabilitySnapshot-Referenzen auf Tasks/Outcomes) wartet
+unverändert auf reale Produzenten (Owner-Einordnung 2026-08-13), und der einzige fehlende
+Produzent ist der Context-Plan-Producer selbst. **Vor seinem Bau steht eine materielle
+Owner-Entscheidung**, die nicht ableitbar ist: ob ein ContextPlan ein VORGESCHLAGENES,
+owner-bestätigtes Artefakt ist wie ein Program (Propose/Promote, teuer, inspizierbar) oder eine
+ABGELEITETE Projektion wie `Task.cluster`/`files`, die der Server pro Dispatch neu rechnet und
+nie persistiert. Die beiden Formen haben verschiedene Provenienz-Verträge und verschiedene
+Rückwege, und die Wahl bestimmt, was P2-B überhaupt referenzieren KANN. Workstream 1, 2, 4,
+P2-A, 5 und P2-B1 sind gebaut (oben). Dahinter: Self-Land als Shadow-Klassifikation (unten).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

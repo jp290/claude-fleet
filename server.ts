@@ -15,6 +15,13 @@ import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { localProofFor, type LocalProof } from "./verify-proportion";
+import { planContext, type ContextPlan, type ContextPlanSelection } from "./context-plan";
+import {
+  CONTEXT_PACKS,
+  type ContextPackCapability,
+  type ContextPackMode,
+  type ContextPackTrigger,
+} from "./context-packs";
 import { continuitySummary, type ContinuityRecord, type ContinuitySummary } from "./continuity";
 import { slotStats, type SlotEnding, type SlotEventRecord, type SlotStatsSummary } from "./slotstats";
 import { trailStats, type TrailRecord, type TrailSummary } from "./trailstats";
@@ -59,6 +66,9 @@ const STEWARD_JOURNAL_FILE = `${import.meta.dir}/steward-journal.jsonl`;
 // per-lane attributed-outcome trail — one server-stamped fact per lane terminal event (see
 // buildLaneOutcome). Rotated by appendEvent at AUDIT_ROTATE_BYTES, same as AUDIT_FILE.
 const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
+// Immutable evidence of the exact ContextPlan pointers delivered with a founding brief. Selection
+// is always freshly derived; only this delivery receipt is historical and append-only.
+const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
 const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
@@ -4582,13 +4592,25 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
 // brief itself — runEnhance on the raw text, in parallel with claude's boot — while the eval gate
 // had already approved the RAW TEXT. So the string that was judged and the string that ran were
 // different, produced by a cheaper model, and nothing compared them. The brief is now compiled and
-// judged together in the analysis sweep and stored on the task; here it is simply sent. What the
-// owner released is byte-for-byte what the lane receives.
+// judged together in the analysis sweep and stored on the task; here it is sent with a freshly
+// derived ContextPlan anchor block. The stored brief itself is never rewritten with that projection.
 // Fallback stays the raw text: a lane with an unpolished brief beats a task that never runs.
 // `ownerAct` relaxes the AUTOMATION stops (master stop, quiet hours) on the delivery gates: an
 // explicit owner click is attended, not automation — the same "owner acts" carve-out canDeliver
 // documents. The claude-alive gate ALWAYS holds: a claude that failed to boot leaves a bare
 // shell that would EXECUTE the brief as commands. Never rejects — every failure requeues.
+const DISPATCH_CONTEXT_MODE: ContextPackMode = "mutating";
+const DISPATCH_CONTEXT_TRIGGERS: readonly ContextPackTrigger[] = ["always", "verification"];
+// Every normal worktree lane has the tracked checkout, Bun, git, the e2e harnesses, server.ts,
+// and the copied private overlay, so these six capabilities are real for every adapter. The two
+// deliberately absent capabilities are `task-queue-read` (a lane's scoped token cannot read the
+// owner queue) and `deploy-observe` (deploy facts are owner/steward-only); full host access is not
+// used to route around those API boundaries, and no capability probe is invented.
+const DISPATCH_CONTEXT_CAPABILITIES: readonly ContextPackCapability[] = [
+  "tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
+  "harness-adapter-read", "private-overlay-read",
+];
+
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
@@ -4684,12 +4706,73 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     }
   }
   try {
-    await sendText(free, brief, true);
-    logPrompt(free, brief, "auto", Date.now());
+    const planFacts = { harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
+      triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
+    const plan = planContext(planFacts);
+    const anchorBlock = renderContextAnchorBlock(plan);
+    const deliveredBrief = `${brief}${anchorBlock}`;
+    const selected = contextReceiptSelections(plan.selected);
+    const omitted = plan.omitted.map((entry) => ({ ...entry }));
+    // Read the integration tip on the server at the delivery seam. If it cannot be named, do not
+    // deliver a brief whose receipt would have to invent HEAD; the existing requeue path owns it.
+    const head = await integrationHead(wt.repo);
+    if (!head) throw new Error("could not read integration HEAD for context receipt");
+    await sendText(free, deliveredBrief, true);
+    const at = Date.now();
+    // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
+    // facts {harness, mode, triggers, selected, omitted}. A later reader can reconstruct every
+    // byte from the row and the v1 renderer; neither the mutable task nor a later tree is needed.
+    const hash = createHash("sha256").update(JSON.stringify({
+      anchorBlock,
+      planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
+    })).digest("hex");
+    await appendEvent(CONTEXT_RECEIPT_FILE, {
+      id: randomBytes(16).toString("hex"), hash, at, repo: wt.repo, head,
+      taskId: free.taskId ?? null, originId: free.originId ?? null,
+      programId: free.programId ?? null, slot: free.id, branch: wt.branch,
+      harness: free.harness, model: free.model, effort: free.effort,
+      mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
+      deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
+      truncated: false,
+    });
+    logPrompt(free, deliveredBrief, "auto", at);
     console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
   } catch (e) {
     await requeue(`dispatch failed: ${e instanceof Error ? e.message : e}`.slice(0, 120));
   }
+}
+
+type ContextReceiptSelection = {
+  id: string;
+  anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
+  sourceHash?: string;
+};
+
+function renderContextAnchorBlock(plan: ContextPlan): string {
+  if (plan.selected.length === 0) return "";
+  const lines = ["ContextPlan v1 anchors (fresh advisory pointers; no source content is copied):"];
+  for (const pack of plan.selected) {
+    if ("privateSourceId" in pack.sources) {
+      lines.push(`- ${pack.id} | ${pack.sources.privateSourceId}`);
+    } else {
+      for (const source of pack.sources) lines.push(`- ${pack.id} | ${source.path} | ${source.anchor}`);
+    }
+  }
+  return `\n\n${lines.join("\n")}`;
+}
+
+function contextReceiptSelections(selected: readonly ContextPlanSelection[]): ContextReceiptSelection[] {
+  return selected.map((selection) => {
+    const manifest = CONTEXT_PACKS.find((pack) => pack.id === selection.id);
+    const sourceHash = manifest && "sourceHash" in manifest ? { sourceHash: manifest.sourceHash } : {};
+    if (!("privateSourceId" in selection.sources))
+      return { id: selection.id, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash };
+    return {
+      id: selection.id,
+      anchors: { privateSourceId: selection.sources.privateSourceId },
+      ...sourceHash,
+    };
+  });
 }
 
 // --- the queue analyst (owner decision 2026-08-05, round 2 — it REPLACES the eval gate).
@@ -9147,12 +9230,11 @@ async function readLandNote(repo: string, sha: string): Promise<LandNoteRead> {
 }
 
 // how a queue row was tied to this lane, returned alongside the row so a reader can weigh it. The
-// three joins are not equally strong and pretending otherwise would be the same collapse the
+// four joins are not equally strong and pretending otherwise would be the same collapse the
 // Measured wrapper exists to prevent: "slot" is the live binding the rest of the server already
-// uses; the two hash joins compare the lane's FIRST prompt (what briefHashOf recorded on the
-// outcome) against what the dispatcher would have sent — exact when it matches, silent when the
-// text was edited in the pane before it ever became a prompt.
-type TaskMatch = "slot" | "brief-hash" | "text-hash";
+// uses; "outcome-task-id" is immutable provenance captured while that binding still existed; the
+// two hash joins cover older rows that predate it.
+type TaskMatch = "slot" | "outcome-task-id" | "brief-hash" | "text-hash";
 interface DossierTask { id: string; text: string; kind: Task["kind"]; source: Task["source"];
   status: Task["status"]; releasedBy?: Task["releasedBy"]; note: string | null; repo: string | null;
   files?: string[]; brief?: TaskBrief; criterion?: TaskCriterion; analysis?: TaskAnalysis;
@@ -9177,13 +9259,15 @@ interface LaneDossier {
 
 // Which queue row ordered this lane. Live lanes answer this the way the rest of the server does
 // (Task.slot); a torn-down lane cannot, because the slot has since been someone else's — so the
-// fallback compares the outcome row's briefHash (a hash of the lane's first owner/auto prompt)
-// against what a dispatch would have sent, which is `brief.text` when one was compiled and the raw
-// row text when none was (briefAndSend's `next.brief?.text ?? next.text`).
+// strongest fallback is the outcome row's taskId, captured from the slot at the terminal event.
+// Older rows predate that field, so their last fallback compares briefHash against the historical
+// pre-ContextPlan shapes (`brief.text` when compiled, raw task text otherwise). Current prompt
+// hashes include a freshly derived anchor suffix and must never be re-derived from a later tree.
 // null is a MEASUREMENT ("no row in the live list matches"), not a failure — but it is not proof
 // that none existed: capTasks evicts terminal rows past MAX_TASKS, so an old lane's row may simply
 // be gone. That caveat belongs to the reader, which is why it is stated here and rendered there.
-function dossierTaskFor(branch: string, liveSlot: number | null, briefHash: string | null): DossierTask | null {
+function dossierTaskFor(branch: string, liveSlot: number | null, outcomeTaskId: string | null,
+  briefHash: string | null): DossierTask | null {
   const facet = (t: Task, match: TaskMatch): DossierTask => ({
     id: t.id, text: t.text, kind: t.kind, source: t.source, status: t.status,
     ...(t.releasedBy ? { releasedBy: t.releasedBy } : {}),
@@ -9197,6 +9281,10 @@ function dossierTaskFor(branch: string, liveSlot: number | null, briefHash: stri
   if (liveSlot !== null) {
     const bound = tasks.find((t) => t.slot === liveSlot && t.status === "sent");
     if (bound) return facet(bound, "slot");
+  }
+  if (outcomeTaskId !== null) {
+    const byId = tasks.find((t) => t.id === outcomeTaskId);
+    if (byId) return facet(byId, "outcome-task-id");
   }
   if (!briefHash) return null;
   const byBrief = tasks.find((t) => t.brief && briefHashOf(t.brief.text) === briefHash);
@@ -9250,6 +9338,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
   const slot = live?.id ?? (windows.length ? windows[windows.length - 1].slot : null);
 
   const briefHash = typeof newest?.briefHash === "string" ? newest.briefHash : null;
+  const outcomeTaskId = typeof newest?.taskId === "string" ? newest.taskId : null;
 
   // prompts: keyed by the worktree path, which is only derivable once the repo is known
   const { rows: promptRows } = await readLedger<Record<string, unknown>>(PROMPT_LOG);
@@ -9319,7 +9408,7 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
   return {
     branch, repo, worktree,
     slot, liveSlot: live?.id ?? null,
-    task: measured(dossierTaskFor(branch, live?.id ?? null, briefHash)),
+    task: measured(dossierTaskFor(branch, live?.id ?? null, outcomeTaskId, briefHash)),
     prompts, events, commits,
     outcomes: measured(capped(mine, DOSSIER_MAX_ROWS)),
     landNotes,
@@ -13999,6 +14088,13 @@ Bun.serve<WSData>({
       const outcomes = ledger.rows.filter((r) => r.origin !== "main-direct");
       outcomes.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0) - (typeof a.ts === "number" ? a.ts : 0));
       return json({ outcomes: outcomes.slice(0, limit), total: outcomes.length, malformed: ledger.malformed });
+    }
+    // Owner-only evidence of what actually crossed the founding-brief delivery seam. Rows are
+    // returned as written and are never read back into dispatch or any other decision.
+    if (url.pathname === "/api/context-receipts" && req.method === "GET") {
+      const { rows: receipts, total, malformed } =
+        await readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE);
+      return json({ receipts, total, malformed });
     }
     // owner-only, read-only post-land audit trail (verification tier 2) — EXACT same access model
     // as /api/lane-outcomes above. Newest first, so "which land was the last green audit, and which

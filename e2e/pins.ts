@@ -624,6 +624,22 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 pin("the backlog nudge is opt-in: unset means zero and exactly one positive-only timer can call it", /const BACKLOG_NUDGE_MS = [^;\n]*process\.env\.FLEET_BACKLOG_NUDGE_MS \?\? 0[^;\n]*;/.test(server) && server.split("\n").filter((l) => l.includes("setInterval") && l.includes("tickBacklogNudge")).length === 1 && /if \(BACKLOG_NUDGE_MS > 0\) setInterval\([^\n]*tickBacklogNudge/.test(server));
 pin("the audit ping is opt-in: unset means zero and exactly one positive-only timer can call it", /const AUDIT_PING_MS = [^;\n]*process\.env\.FLEET_AUDIT_PING_MS \?\? 0[^;\n]*;/.test(server) && server.split("\n").filter((l) => l.includes("setInterval") && l.includes("tickAuditPing")).length === 1 && /if \(AUDIT_PING_MS > 0\) setInterval\([^\n]*tickAuditPing/.test(server));
 
+// ContextPlan's first production consumer is the founding-brief seam. The import is the cheap
+// cross-file fact a compiler cannot protect against: deleting the consumer would leave both pure
+// modules and their unit tests green while restoring the dead island this cut exists to end.
+pin("server.ts imports and calls the pure ContextPlan producer at the dispatch delivery seam",
+  /from "\.\/context-plan";/.test(server) && /const plan = planContext\(planFacts\);/.test(server));
+
+{
+  const routeStart = server.indexOf('if (url.pathname === "/api/context-receipts"');
+  const routeBody = routeStart < 0 ? "" : server.slice(routeStart, server.indexOf("\n    }", routeStart));
+  pin("context-receipts.jsonl is one ledger constant shared by its append-only writer and owner reader route",
+    /const CONTEXT_RECEIPT_FILE = `\$\{import\.meta\.dir\}\/context-receipts\.jsonl`;/.test(server)
+    && /appendEvent\(CONTEXT_RECEIPT_FILE, \{/.test(server)
+    && /readLedger<Record<string, unknown>>\(CONTEXT_RECEIPT_FILE\)/.test(routeBody),
+    routeBody ? `${routeBody.length} route bytes` : "reader route missing");
+}
+
 {
   // The DISPATCHER'S BOLT, pinned at the source because that is where it lives. Pi ships no
   // permission layer at all (PI_HARNESS.note), and whether an UNATTENDED lane may run without one

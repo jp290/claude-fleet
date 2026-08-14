@@ -10,6 +10,7 @@
 import { REPO, SOCK, check, failures, results } from "./e2e/harness";
 import { newCtx, type LaneCtx } from "./e2e/ctx";
 import * as contextPacks from "./e2e/context-packs";
+import * as contextPlan from "./e2e/context-plan";
 import * as prompts from "./e2e/prompts";
 import * as auth from "./e2e/auth";
 import * as dirsPins from "./e2e/dirs-pins";
@@ -56,6 +57,7 @@ try {
 
 // --- PURE-function unit tests (no server needed) ---
 await contextPacks.run(check);
+await contextPlan.run(check);
 await prompts.run();
 
 // --- auth, request guards, the ✨ enhance surface, and the directory/pin API ---

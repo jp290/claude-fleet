@@ -1,6 +1,7 @@
 // The task queue (owner CRUD + dispatch availability) and the Tier-0 gates: the master stop and
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
@@ -12,6 +13,18 @@ import { classifyAnalystOffWarning } from "../task-analysis-warning";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
+  interface ContextReceipt {
+    id: string; hash: string; at: number; repo: string; head: string;
+    taskId: string | null; originId: string | null; programId: string | null;
+    slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
+    mode: string; triggers: string[];
+    selected: { id: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
+    omitted: { id: string; why: string }[];
+    deliveredBytes: number; truncated: boolean;
+  }
+  const contextReceipts = async (): Promise<{ receipts: ContextReceipt[]; total: number; malformed: number }> =>
+    (await (await get("/api/context-receipts")).json()) as { receipts: ContextReceipt[]; total: number; malformed: number };
+
   // --- task queue (Phase D). Owner CRUD + dispatch availability ---
   const tCreate = await post("/api/tasks", { text: "e2e owner task", queue: false });
   const tJson = (await tCreate.json()) as { ok: boolean; task: { id: string; originId?: string; status: string; source: string; kind: string } };
@@ -703,7 +716,10 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (a) master stop: pause BEFORE queuing (no consumption window), then a full tick must not consume
     await post("/api/autos/switch", { on: false });
-    const dTask = (await (await post("/api/tasks", { text: "dispatch-gate-probe", queue: false })).json()) as { task: { id: string } };
+    const receiptsBeforeDispatch = await contextReceipts();
+    const dTask = (await (await post("/api/tasks", {
+      text: "dispatch-gate-probe", queue: false, programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
     const tid = dTask.task.id;
     // the brief is set BY HAND here (the analyst is off in this env, FLEET_ANALYSIS_MS=0) so that
     // (d) below can assert the delivery contract without depending on a worker: whatever is stored
@@ -715,6 +731,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.sleep(DISP_TICK_MS);
     check("master stop (autosOn=false) keeps a dispatch task QUEUED — dispatcher never spawns a lane",
       (await taskStatus(tid)) === "queued" && (await laneIds()).length === lanes0.size, `status=${await taskStatus(tid)} lanes=${(await laneIds()).length} (was ${lanes0.size})`);
+    check("a dispatch held before delivery writes no context receipt",
+      (await contextReceipts()).total === receiptsBeforeDispatch.total);
 
     // (b) quiet hours: quiet fleet must NOT consume the still-queued task either
     const dQh = new Date().getHours();
@@ -723,6 +741,8 @@ export async function run(ctx: Ctx): Promise<void> {
     await Bun.sleep(DISP_TICK_MS);
     check("quiet hours keep a dispatch task QUEUED — dispatcher suppressed like the autos surface",
       (await taskStatus(tid)) === "queued" && (await laneIds()).length === lanes0.size, `status=${await taskStatus(tid)} lanes=${(await laneIds()).length} (was ${lanes0.size})`);
+    check("a quiet-hours hold also writes no context receipt",
+      (await contextReceipts()).total === receiptsBeforeDispatch.total);
 
     // (c) positive control: both gates open → the SAME task is dispatched (proves the gate is causal)
     await post("/api/autos/quiet", { start: null });
@@ -737,22 +757,51 @@ export async function run(ctx: Ctx): Promise<void> {
     check("with both gates open the dispatcher DOES consume the same task (proves the gate, not a dead queue)",
       consumed, `task=${JSON.stringify(tEnd)} dispatchOn=${sessEnd.dispatch.on} autosOn=${sessEnd.autosOn} quiet=${JSON.stringify(sessEnd.quietHours)}`);
 
-    // (d) the lane's founding prompt is the STORED BRIEF, byte for byte — never the raw draft, and
-    // never a fresh compile. This is the delivery half of "what was judged is what runs" (BACKLOG
-    // P-9, sharpened 2026-08-05): briefAndSend contains no model call at all any more, so the only
-    // thing that can reach the pane is the text the owner saw. Proven off the prompt ledger: the
-    // dispatcher's logPrompt records source:"auto" with exactly what sendText injected.
+    // (d) the lane's founding prompt starts with the STORED BRIEF byte-for-byte, followed only by
+    // the fresh ContextPlan pointer block — never the raw draft and never a fresh model compile.
+    // Proven off the prompt ledger: logPrompt records the exact value sendText received.
     let autoRows: { source?: string; text?: string }[] = [];
+    let deliveredReceipt: ContextReceipt | undefined;
     for (let i = 0; i < 24; i++) { // sendText lands ~4-5s after consumption (the boot sleep)
       autoRows = (((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts)
         .filter((p) => p.source === "auto");
-      if (autoRows.some((p) => p.text === DBRIEF)) break;
+      deliveredReceipt = (await contextReceipts()).receipts.find((receipt) => receipt.taskId === tid);
+      if (autoRows.some((p) => p.text?.startsWith(DBRIEF)) && deliveredReceipt) break;
       await Bun.sleep(500);
     }
-    check("the dispatched lane's founding prompt is the STORED brief byte-for-byte, never the raw draft",
-      autoRows.some((p) => p.text === DBRIEF)
-      && !autoRows.some((p) => (p.text ?? "").includes("dispatch-gate-probe")),
+    const deliveredPrompt = autoRows.find((p) => p.text?.startsWith(DBRIEF))?.text ?? "";
+    check("the dispatched lane's founding prompt preserves the STORED brief and appends the anchor block",
+      deliveredPrompt.startsWith(`${DBRIEF}\n\nContextPlan v1 anchors`)
+      && !deliveredPrompt.includes("dispatch-gate-probe"),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
+    const expectedHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    const namedAnchorsDelivered = !!deliveredReceipt && deliveredReceipt.selected.every((pack) =>
+      Array.isArray(pack.anchors)
+        ? pack.anchors.every((anchor) => deliveredPrompt.includes(anchor.path) && deliveredPrompt.includes(anchor.anchor))
+        : deliveredPrompt.includes(pack.anchors.privateSourceId));
+    check("a delivered lane produces exactly one receipt carrying task/origin/program provenance and integration HEAD",
+      !!deliveredReceipt && (await contextReceipts()).total === receiptsBeforeDispatch.total + 1
+      && (await contextReceipts()).receipts.filter((receipt) => receipt.taskId === tid).length === 1
+      && deliveredReceipt.taskId === tid && deliveredReceipt.originId === tid
+      && deliveredReceipt.programId === provenanceProgramId && deliveredReceipt.head === expectedHead,
+      JSON.stringify(deliveredReceipt ?? null));
+    check("the receipt is non-fictional: every named anchor occurs in the exact prompt log row sent to the pane",
+      namedAnchorsDelivered && deliveredReceipt?.selected.length === 2
+      && (deliveredReceipt.selected.length + deliveredReceipt.omitted.length) === 6,
+      JSON.stringify(deliveredReceipt ?? null));
+    const anchorBlock = deliveredPrompt.slice(DBRIEF.length);
+    const recomputedHash = deliveredReceipt ? createHash("sha256").update(JSON.stringify({
+      anchorBlock,
+      planFacts: {
+        harness: deliveredReceipt.harness, mode: deliveredReceipt.mode, triggers: deliveredReceipt.triggers,
+        selected: deliveredReceipt.selected, omitted: deliveredReceipt.omitted,
+      },
+    })).digest("hex") : "";
+    check("the receipt id/hash are stable shapes and the documented v1 hash is recomputable from delivered facts",
+      !!deliveredReceipt && /^[a-f0-9]{32}$/.test(deliveredReceipt.id)
+      && deliveredReceipt.hash === recomputedHash && deliveredReceipt.truncated === false
+      && deliveredReceipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength,
+      `${recomputedHash} ${JSON.stringify(deliveredReceipt ?? null)}`);
 
     // (d2) THE TICK INHERITS NOTHING. The row above was consumed by the DISPATCHER, not by a
     // button, so the lane it spawned is the one unattended spawn on this fleet — and it must be the
@@ -811,6 +860,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const fSess = async (): Promise<{ tasks: { id: string; status: string; slot?: number }[] }> =>
       (await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; slot?: number }[] };
     const mT = (await (await post("/api/tasks", { text: "manual-start-probe", queue: false })).json()) as { task: { id: string } };
+    const manualReceiptsBefore = await contextReceipts();
     const md = await post(`/api/tasks/${mT.task.id}/dispatch`, {});
     const mdJ = (await md.json()) as { ok?: boolean; slot?: number; branch?: string };
     check("manual start dispatches a PENDING task with the auto dispatcher OFF (the button is tick-independent)",
@@ -825,8 +875,27 @@ export async function run(ctx: Ctx): Promise<void> {
       .events.find((e) => e.event === "task_dispatch" && e.detail === mT.task.id);
     check("manual start is audited (task_dispatch — an owner act, distinct from the tick)",
       !!mdAudit, JSON.stringify(mdAudit ?? null));
+    let manualReceipt: ContextReceipt | undefined;
+    for (let i = 0; i < 24 && !manualReceipt; i++) {
+      manualReceipt = (await contextReceipts()).receipts.find((receipt) => receipt.taskId === mT.task.id);
+      if (!manualReceipt) await Bun.sleep(500);
+    }
+    check("a task without a Program gets one receipt with honest null adapter/program facts",
+      !!manualReceipt && (await contextReceipts()).total === manualReceiptsBefore.total + 1
+      && manualReceipt.taskId === mT.task.id && manualReceipt.originId === mT.task.id
+      && manualReceipt.programId === null && manualReceipt.harness === null
+      && manualReceipt.model === null && manualReceipt.effort === null,
+      JSON.stringify(manualReceipt ?? null));
     if (typeof mdJ.slot === "number") await post(`/api/slots/${mdJ.slot}/kill`, {});
     await post(`/api/tasks/${mT.task.id}/delete`, {});
+
+    const receiptSnapshot = await contextReceipts();
+    await restartSrv();
+    const receiptsAfterRestart = await contextReceipts();
+    check("the context receipt ledger survives restart append-only and byte-identical",
+      receiptsAfterRestart.total === receiptSnapshot.total
+      && JSON.stringify(receiptsAfterRestart.receipts) === JSON.stringify(receiptSnapshot.receipts),
+      `${receiptSnapshot.total} -> ${receiptsAfterRestart.total}`);
 
     // archive: a shelf, not a delete — the row survives with its history, is terminal for the
     // dispatcher and the start button alike, and restore goes back to owner review
@@ -861,6 +930,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // a provider-qualified id: the `/` is admitted by HARNESS_MODEL_RE and by nothing the default
     // adapter accepts, so the SAME string serves both halves of the split below
     const FOREIGN_MODEL = "openai/gpt-5-codex";
+    const failedReceiptCount = (await contextReceipts()).total;
     const xT = (await (await post("/api/tasks", { text: "harness-dispatch-probe", queue: false })).json()) as { task: { id: string } };
     const xd = await post(`/api/tasks/${xT.task.id}/dispatch`, { harness: "codex", model: FOREIGN_MODEL });
     const xdJ = (await xd.json()) as { ok?: boolean; slot?: number; error?: string };
@@ -912,6 +982,8 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     check("a lost lane requeues the foreign-harness row and lets go of the slot (unchanged from today)",
       xReq?.status === "queued" && !xReq.slot && /requeued/.test(xReq.note ?? ""), JSON.stringify(xReq));
+    check("a post-spawn dispatch that never sends writes no context receipt",
+      (await contextReceipts()).total === failedReceiptCount);
     await post(`/api/tasks/${xT.task.id}/delete`, {});
 
     // --- (f3) SCREEN READINESS on the dispatch tail — the counterprobes to the measured
@@ -1221,16 +1293,18 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(h2) a READY pending task is NOT started — the analyst advises, it never releases",
       (await hRow(hP))?.status === "pending", JSON.stringify(await hRow(hP)));
 
-    // (h3) WHAT WAS JUDGED IS WHAT RUNS. The released row does start, and the prompt that reached
-    // its pane is byte-identical to the stored brief — not the draft, and not a fresh compile.
+    // (h3) WHAT WAS JUDGED IS WHAT RUNS. The released row does start, and the prompt begins
+    // byte-identically with the stored brief — not the draft and not a fresh compile — before the
+    // delivery seam appends its ContextPlan pointers. The suffix is expected to change briefHash.
     const qRow = await till(() => hRow(hQ), (r) => r?.status === "sent" || r?.status === "queued" && !!r.note);
     const qBrief = (await hFull(hQ))?.brief;
     const sent = await till(
       async () => ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts
         .filter((p) => p.source === "auto").map((p) => p.text ?? ""),
       (ps) => ps.some((p) => p.startsWith(BRIEFMARK)));
-    check("(h3) a released task starts, and the lane receives the STORED brief byte-for-byte",
-      qRow?.status === "sent" && !!qBrief?.text.startsWith(BRIEFMARK) && sent.includes(qBrief!.text),
+    check("(h3) a released task starts, receives the STORED brief intact, then the derived anchor block",
+      qRow?.status === "sent" && !!qBrief?.text.startsWith(BRIEFMARK)
+      && sent.some((prompt) => prompt.startsWith(`${qBrief!.text}\n\nContextPlan v1 anchors`)),
       JSON.stringify({ status: qRow?.status, brief: qBrief?.text.slice(0, 60), sentCount: sent.length }));
     if (typeof qRow?.slot === "number") await post(`/api/slots/${qRow.slot}/kill`, {});
 
@@ -1298,10 +1372,12 @@ export async function run(ctx: Ctx): Promise<void> {
     const offPrompts = await till(
       async () => ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts
         .filter((p) => p.source === "auto").map((p) => p.text ?? ""),
-      (ps) => ps.includes(OFF_RAW));
+      (ps) => ps.some((prompt) => prompt.startsWith(`${OFF_RAW}\n\nContextPlan v1 anchors`)));
     check("(h4r) analyst OFF changes no dispatch semantics: the released unread row starts with its raw request",
-      dispatchResumed.ok && offStarted?.status === "sent" && offPrompts.includes(OFF_RAW),
-      JSON.stringify({ resume: dispatchResumed.status, row: offStarted, rawPromptSeen: offPrompts.includes(OFF_RAW) }));
+      dispatchResumed.ok && offStarted?.status === "sent"
+      && offPrompts.some((prompt) => prompt.startsWith(`${OFF_RAW}\n\nContextPlan v1 anchors`)),
+      JSON.stringify({ resume: dispatchResumed.status, row: offStarted,
+        rawPromptSeen: offPrompts.some((prompt) => prompt.startsWith(OFF_RAW)) }));
     if (typeof offStarted?.slot === "number") await post(`/api/slots/${offStarted.slot}/kill`, {});
     await post(`/api/tasks/${hOffRelease}/delete`, {});
 

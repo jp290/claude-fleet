@@ -499,12 +499,12 @@ export async function run(): Promise<void> {
         && !("mainAfter" in (rec1 ?? {})), JSON.stringify(d1.landNotes));
 
       // the queue row behind a dispatched lane. Its slot has been recycled since, so the live
-      // binding is gone and only the brief hash can recover it — and the row says WHICH join fired,
-      // because the three are not equally strong.
+      // binding is gone; the immutable outcome taskId recovers it without re-deriving the fresh
+      // ContextPlan suffix from a later tree, and the row says WHICH join fired.
       const dRel = await dossier(relBranch);
-      check("dossier: a dispatched lane recovers its queue row by brief hash after teardown, and names the join",
+      check("dossier: a dispatched lane recovers its queue row by outcome taskId after teardown, and names the join",
         dRel.task.state === "read" && dRel.task.value?.id === relTask.task.id
-        && dRel.task.value?.text === relMark && dRel.task.value?.match === "text-hash",
+        && dRel.task.value?.text === relMark && dRel.task.value?.match === "outcome-task-id",
         JSON.stringify(dRel.task));
       // the complementary half: a hand-opened lane has no queue row, and `read` + null says exactly
       // that — we consulted the list and nothing matched.

@@ -445,6 +445,66 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    **Bewusst nicht gebaut:** program-aware Succession, CompletionView/complete-abort-Umbau,
    Self-Land, Auto-Task-Erzeugung, Event-Bus, SkillRef/CapabilitySnapshot, Context Registry, UI.
 
+14. **Program-aware Succession v1 — GEBAUT 2026-08-14** (`46e0653`, genau eine Codex-Lane,
+   gpt-5.6-sol high, Task `b020a086` über den Dispatch-Knopf; 72 min Lane-Laufzeit). **Der
+   Schnitt, der die in WS13 benannte stale Bindung schließt:** ein `succeed` des gebundenen
+   Program-MAIN übertrug die Authority bis dahin nicht — der Nachfolger erbte sie nicht, die
+   Bindung zeigte auf einen sterbenden Slot.
+   Schnitt: `handleSelfSucceed` bestimmt NACH dem HANDOFF-Gate die Menge
+   `programs.filter(status === "active" && main.slot === s.id && main.openedAt === s.openedAt)` —
+   Bindungsidentität ist slot+openedAt (dieselbe wie die Occupancy-Prüfung in
+   `bootstrapProgramMain`), `sessionId` ist aufgezeichnete Evidenz und nie das Gate. **0 Treffer ⇒
+   der bestehende ungebundene Pfad läuft unverändert** (kein zusätzlicher Git-Read, kein
+   Readiness-Wait, gleiche Fehlertexte); **>1 ⇒ lautes numeriertes 409**
+   („ambiguous succession: … N active programs") ohne Slot- oder Receipt-Nebenwirkung; **genau 1 ⇒
+   `succeedProgramMain`**. Dieser Pfad spiegelt die Bootstrap-Rail exakt: synchrone
+   `programBootstrapInflight`-Reservierung vor dem ersten await (zusammen mit
+   `successionInflight`/`successionStarted` der Riegel gegen zwei Nachfolger) → freier Slot +
+   `laneSpawn` → `openSlot` mit dem bestehenden Succession-Erbe (cwd, model, label verbatim inkl.
+   null, harness, effort, container/containerContext) → Boot-Gnadenfrist → `canDeliver` mit
+   Owner-Waiver → geteilter `waitForFoundingReadiness` → frischer `planContext` (nie ein alter
+   Receipt gelesen oder kopiert) → `buildProgramMainSuccessionBrief` (Rolle als FORTGESETZTER
+   Program-MAIN + HANDOFF-Verweis + Erdungsschritte + optionaler carry + owner-bestätigter
+   Program-Inhalt verbatim als JSON + Anker-Block) → HEAD+Branch serverseitig VOR dem Send →
+   `sendText` → **erst danach** Bindung auf den Nachfolger, Receipt
+   (`programId`, `taskId:null`, `originId:null`, `deliveredBytes` aus dem tatsächlich gesendeten
+   Text), Retirement-Persistenz, `saveStateNow`, dann `scheduleSuccessionRetirement`. Jeder
+   Fehlpfad (open, Gate, blocked screen, Readiness-Timeout, Git unlesbar, Send-Throw) räumt den
+   Nachfolger-Slot und lässt den Vorgänger **gebunden, unretired und receiptlos**.
+   **Crash-Grenzen sind einseitig und stehen als Kommentar im Code:** Verlust VOR dem Send ⇒
+   Reboot lädt die alte Bindung, der Vorgänger lebt und bleibt autoritativ (sein Retirement wurde
+   nie persistiert). Verlust NACH dem Send vor `saveStateNow` ⇒ dieselbe alte Bindung, und der
+   zugestellte Nachfolger ist eine gewöhnliche, sichtbare, UNGEBUNDENE MAIN-Session — der Owner
+   entscheidet. **Kein heuristisches Rebind, an keiner Grenze.** Die Self-Sicht wechselt ohne
+   neuen Code: die `main`-Klausel in `GET /api/self/programs` existiert seit WS13, also sieht nach
+   dem Transfer nur noch der Nachfolger das Program; `proposedBy` bleibt unangetastet (Herkunft,
+   nicht Authority). Watches, FleetEvents und Autos werden ausdrücklich NICHT übertragen — ihre
+   Rekonstruktion gehört in die ProgramExecutionView.
+   Pin erweitert: alle DREI Gründungs-Rails (Dispatch-Tail, Bootstrap, Succession) müssen dieselbe
+   bounded `waitForFoundingReadiness`-Schleife nehmen — Regel über Funktionskörper-Slices, kein
+   Snapshot. 17 neue Gegenproben in `e2e/programs.ts`.
+   **Land-Weg, und er weicht von der Routine ab:** Lane-Verify voll grün (Gate-Kette +
+   isolated-Vorschau, alle Tails `ALL PASS`; zwei frühere rote isolierte Läufe waren ECHT und
+   deckten einen fehlenden `return await`-Guard auf). Der Land-Gate wurde dennoch **rot mit genau
+   einem Fail**: `the delayed TUI's model received the immediate send byte-for-byte`
+   (`fleet-e2e-harness.ts:161`, Boot-Race-Fixture in Phase 2 des claude-gate, von der Lane nicht
+   angefasst; die Sonden-Vorbedingungen daneben waren grün). Beweis nach der Ordnung: **serieller
+   Same-Tree-Rerun von `./e2e-claude-gate.sh` auf `46e0653` = ALL PASS, 0 FAILs** — Nichtdeterminismus
+   direkt bewiesen, nicht per Flake-Namen behauptet. Ein Re-Run des Merges lief korrekt in den
+   ⏸-Riegel (ein `resolved`-Verdikt bei unbewegtem main blockt, damit niemand eine ungeprüfte
+   Auflösung überfährt); gelandet wurde daher über den **Confirm-Land**
+   (`POST /api/slots/:id/merge {confirm:true}`, verifiziert per Konstruktion nicht neu, Garantie
+   ist rein git). Die Land-Note trägt `confirmedByHuman:true` samt vollständigem rotem
+   Gate-Verdikt — im Ledger bleibt dauerhaft sichtbar, dass hier ein Mensch über ein Rot
+   entschieden hat. Post-Land-Audit **grün und substanziell geprüft: 2261 Checks/0 (+15),
+   `ms` 806 200 (13,4 min), `exitCode` 0, 17 aufbewahrte PASS-Zeilen, `covers` genau ein Land** —
+   die drei Zahlen, die ein „nichts gemessen"-Grün von einem echten trennen. Deploy **`6d1682b1`**
+   live (`bootHead == target == 46e0653`, `hitTarget:true`, `bundleStale:false`), Verdikt über das
+   typisierte `deploy-terminal`-Event.
+   **Bewusst nicht gebaut:** ProgramExecutionView, Übertragung alter Events/Watches,
+   complete-/abort-Umbau, Task-Erzeugung, adaptive Execution-Policy, Self-Land, Event-Bus,
+   SkillRef/CapabilitySnapshot, Context Registry, UI. Kein Client-Code (kein neuer Poll-Payload).
+
 ## Nächster eigener Korridor (Owner-Auftrag 2026-08-13; erster Baustein GEBAUT, Rest offen)
 
 Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:
@@ -459,13 +519,16 @@ Worker-Migrationswelle 3 · Self-Land · Learning Loop · allgemeine UI.
 **Der Program-MAIN-Gründungsprompt ist GEBAUT (Workstream 13, 2026-08-14).** Die Korridor-Kette
 Owner-Gespräch → Program (WS9) → Owner-Confirm → planContext (WS12) → **servergebauter
 MAIN-Gründungsprompt mit atomarer Bindung (WS13)** steht damit durchgehend mechanisiert bis zur
-gegründeten MAIN-Session; der Receipt macht jede Auslieferung rückwirkungssicher. **Empfohlene
-nächste Schnitte:** ProgramExecutionView/program-aware Succession (der gebundene MAIN kann sein
-Program lesen, aber seine Nachfolge erbt die Bindung noch nicht — ein `succeed` eines gebundenen
-MAIN hinterlässt heute eine stale Bindung) oder Self-Land als Shadow-Klassifikation (unten). Was
+gegründeten MAIN-Session; der Receipt macht jede Auslieferung rückwirkungssicher. **Program-aware Succession ist seit
+2026-08-14 GEBAUT (Workstream 14)** — die Kette trägt damit über den Sessionwechsel hinweg, eine
+gebundene MAIN-Session kann ihre Authority atomar weitergeben. **Empfohlene nächste Schnitte:**
+ProgramExecutionView (was ein Program-MAIN an laufender Arbeit, Watches und Callback-Schulden
+sieht — die Rekonstruktion, die WS14 ausdrücklich NICHT überträgt) oder Self-Land als
+Shadow-Klassifikation (unten). Was
 von P2-B übrig ist (SkillRef-/CapabilitySnapshot-Referenzen) wartet weiter auf seine Produzenten;
 ContextPlan-Referenzen braucht es NICHT als Task-Feld (Receipt = die Zuordnung, WS12).
-Workstream 1, 2, 4, P2-A, 5, P2-B1, ContextPlan und Program-MAIN-Bootstrap sind gebaut (oben).
+Workstream 1, 2, 4, P2-A, 5, P2-B1, ContextPlan, Program-MAIN-Bootstrap und program-aware
+Succession sind gebaut (oben).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

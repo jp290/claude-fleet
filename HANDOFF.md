@@ -1,3 +1,85 @@
+# HANDOFF — Session 61 (2026-08-14: Loader-Vertrag in CLAUDE.md + Program-aware Succession v1 — die MAIN-Authority überlebt den Sessionwechsel; gebaut, gelandet, deployt) · 60/59/58/57/56 darunter
+
+**ctx beim Schreiben: 22,0 % (GEMESSEN am Owner-Poll, 220 206 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: eine private Loader-Korrektur (CLAUDE.md, gitignored — muss von Hand mitreisen), ein
+Land (`46e0653`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `b020a086` über den
+Dispatch-Knopf, 72 min), ein Deploy (`6d1682b1`), Core-Doc Workstream 14. Arbeitsmodus wie S51–60.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `46e0653` + dieser Doc-Commit (MAIN-direct, Preflight `1818514b…`). Baum sauber.
+- **Live-Server:** Deploy `6d1682b1` `ok:true`/`hitTarget:true`, `bootHead == 46e0653`,
+  `bundleStale:false`; Verdikt über das typisierte `deploy-terminal`-Event.
+- **Audit:** GRÜN und substanziell geprüft — 2261 Checks/0 (+15), `ms` 806 200 (13,4 min),
+  `exitCode` 0, 17 aufbewahrte PASS-Zeilen, `covers` genau ein Land. Die drei Zahlen zusammen
+  trennen ein echtes Grün von einem „nichts gemessen"-Grün (S46-Lehre).
+
+## PHASE 0 — Loader-Vertrag in CLAUDE.md (NICHT GETRACKT — von Hand mitnehmen!)
+
+`CLAUDE.md` trägt jetzt ganz oben einen kurzen Abschnitt „Loader-Vertrag (zuerst, vor allem
+anderen)": AGENTS.md vollständig lesen (dort der portable Vertrag; CLAUDE.md ist das private
+Overlay) · neue dauerhafte Regeln werden nur über propose/promote normativ, keine harte Lektion
+hängt sich automatisch an · ein verbleibender echter Widerspruch stoppt die Arbeit und wird
+gemeldet, bei Doc-vs-Code gilt der Code. **Keine Regeln kopiert, kein Rulebook-Refactor.**
+**Beweis live gefahren und aufgeräumt:** eine frische Claude-MAIN (Slot 2) und eine frische
+Claude-Lane (Slot 4). Loader-Beobachtung: beide hatten CLAUDE.md injiziert und haben AGENTS.md
+daraufhin AKTIV nachgeladen (die Lane nennt „vollständig, 177 Zeilen"). Beide beantworteten alle
+drei Fragen richtig, mit Zeilenzitaten: (1) nein, ask/explain/review = read-only „inspect and
+report" (AGENTS.md:34-40, :70) · (2) nur durch Owner-Promotion, Worker dürfen vorschlagen
+(:46-47) · (3) jeder relevante Adapter/Surface explizit `apply`/`unsupported`/`not-applicable`,
+Schweigen ist keine Entscheidung (:51-53). Canaries vollständig entfernt (Slots gekillt,
+Worktree + Branch weg).
+
+## PHASE 1 — Der Schnitt (Details: Core-Doc Workstream 14)
+
+Ein `succeed` des gebundenen Program-MAIN überträgt jetzt die Authority. `handleSelfSucceed`
+bestimmt nach dem HANDOFF-Gate die aktiven Programs, deren `main` diesen Occupant (slot+openedAt)
+nennt: 0 ⇒ unveränderter Normalpfad · >1 ⇒ lautes numeriertes 409 ohne Nebenwirkung · 1 ⇒
+`succeedProgramMain`, das die Bootstrap-Rail spiegelt (Inflight-Reservierung, Erbe von
+cwd/model/label/harness/effort/container, geteilter `waitForFoundingReadiness`, frischer
+ContextPlan, HEAD+Branch serverseitig vor dem Send) und Bindung + Receipt + Retirement **erst nach
+erfolgreichem Send** schreibt. Jeder Fehlpfad räumt den Nachfolger und lässt den Vorgänger
+gebunden, unretired und receiptlos. Crash-Grenzen einseitig und im Code kommentiert; **kein
+heuristisches Rebind**. Self-Sicht wechselt ohne neuen Code (die `main`-Klausel gab es seit WS13).
+Watches/Events/Autos werden ausdrücklich NICHT übertragen.
+
+## Zwei Vorgehens-Befunde, die nicht in den Code gehören
+
+- **`/api/slots/:id/land` ist die TEARDOWN-Stufe, nicht der Land-Weg** — sie verweigerte korrekt
+  mit „unpushed commits". Der Land-Pfad ist `POST /api/slots/:id/merge`.
+- **Der Land-Gate war rot mit genau einem Fail** (`the delayed TUI's model received the immediate
+  send byte-for-byte`, `fleet-e2e-harness.ts:161`, Boot-Race-Fixture in Phase 2 des claude-gate,
+  von der Lane nicht angefasst). Beweis nach der Ordnung: serieller Same-Tree-Rerun auf `46e0653`
+  = **ALL PASS, 0 FAILs**. Ein Merge-Re-Run lief danach korrekt in den ⏸-Riegel (ein `resolved`
+  bei unbewegtem main blockt, damit keine ungeprüfte Auflösung durchrutscht); gelandet wurde über
+  den **Confirm-Land** (`{confirm:true}`, verifiziert per Konstruktion nicht neu). Die Land-Note
+  trägt `confirmedByHuman:true` samt vollständigem rotem Verdikt — im Ledger bleibt sichtbar, dass
+  ein Mensch über ein Rot entschieden hat.
+
+## Effizienzbefunde für später (NICHT in diesem Schnitt repariert)
+
+- **Ein Watch sieht eine wartende Lane nicht.** Die Codex-Lane stoppte korrekt an einem echten
+  Loader-Widerspruch (mein Brief nannte zwei CLAUDE.md-Abschnitte, AGENTS.md verlangt die ganze
+  Datei) und fragte zurück. Für `laneWatchSignal` ist das ununterscheidbar von „arbeitet" — es
+  gibt kein Prädikat für „idle mit offener Frage". Der Owner musste es sehen. Dieselbe Klasse wie
+  Zustand (c) im Regelbuch. **Lehre für den Brief:** Fokusanker nie so formulieren, dass sie wie
+  eine Einschränkung der Loader-Pflicht klingen.
+- **Audit-Ping-Doppelzustellung an Slot 3** — bleibt als Befund notiert, ausdrücklich nicht
+  repariert (Owner-Vorgabe).
+
+## Nächster Zielkorridor
+
+Die Korridor-Kette trägt jetzt über den Sessionwechsel hinweg. Zwei ehrliche Kandidaten:
+**ProgramExecutionView** (was ein Program-MAIN an laufender Arbeit, Watches und Callback-Schulden
+sieht — genau die Rekonstruktion, die WS14 bewusst nicht überträgt) oder **Self-Land als
+Shadow-Klassifikation** (Kickoff §7 / Doktrin §12).
+
+Ausdrücklich weiter NICHT bauen: Context Registry, allgemeiner Compiler, Task-Wellen,
+Worker-Welle 3, Learning Loop, Work-Trail-Analyst, UI, Event-Bus, SkillRef/CapabilitySnapshot.
+Erdung: `./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 60 (2026-08-14: Program-MAIN Bootstrap v1 — atomare MAIN-Bindung mit Gründungsauslieferung; gebaut, gelandet, deployt, Live-Canary voller Kreis) · 59/58/57/56/55 darunter
 
 **ctx beim Schreiben: 22,9 % (GEMESSEN am Owner-Poll, 228 740 / 1 000 000 vor der Doc-Arbeit).**

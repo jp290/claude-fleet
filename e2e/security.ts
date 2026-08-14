@@ -95,7 +95,7 @@ const PRE_AUTH_ROUTES = [
   // The handler sits before the steward interceptor only so a steward credential meets the same
   // tokenGate 401 as any other non-owner credential. Every matching route calls tokenGate inline
   // before the owner handler; the regex is pinned here as an explicitly reviewed pre-auth shape.
-  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard))?$/`,
+  String.raw`~ /^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main))?$/`,
   '= /favicon.ico',
   '= /intake',            // its own secret (FLEET_INTAKE_SECRET), never the owner token
   String.raw`~ /^\/(s\/[a-z0-9]+(\/(auth|info|send|diff|comments|brief|summary|transcript))?|ws-share\/[a-z0-9]+)$/`,

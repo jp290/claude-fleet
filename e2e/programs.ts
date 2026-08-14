@@ -1,7 +1,9 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
 import { readFileSync, writeFileSync } from "node:fs";
-import { BASE, H, ROOT, TOKEN, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { BASE, H, REPO, ROOT, TOKEN, check, get, post, restartSrv, tmuxOut } from "./harness";
 import type { Ctx } from "./ctx";
 
 type ProgramStatus = "proposed" | "confirmed" | "active" | "complete";
@@ -20,6 +22,7 @@ interface Program extends ProgramContent {
   createdAt: number;
   proposedBy: { kind: "session"; slot: number; openedAt: number; sessionId: string | null }
     | { kind: "owner" };
+  main?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number };
   confirmedAt?: number;
   activatedAt?: number;
   completedAt?: number;
@@ -27,7 +30,18 @@ interface Program extends ProgramContent {
 interface FleetState {
   programs?: Program[];
   stewardToken?: string;
-  slots?: Record<string, { selfToken?: string; openedAt?: number; sessionId?: string | null }>;
+  slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; sessionId?: string | null;
+    harness?: string | null; model?: string | null; effort?: string | null }>;
+}
+
+interface ContextReceipt {
+  id: string; hash: string; at: number; repo: string; head: string;
+  taskId: string | null; originId: string | null; programId: string | null;
+  slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
+  mode: string; triggers: string[];
+  selected: { id: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
+  omitted: { id: string; why: string }[];
+  deliveredBytes: number; truncated: boolean;
 }
 
 const content: ProgramContent = {
@@ -40,6 +54,12 @@ const content: ProgramContent = {
   openQuestions: ["Which future tasks belong inside the bracket?"],
 };
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
+const canonical = (value: unknown): unknown => Array.isArray(value)
+  ? value.map(canonical)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, canonical(entry)]))
+    : value;
 const ownerPrograms = async (): Promise<Program[]> =>
   ((await (await get("/api/programs")).json()) as { programs: Program[] }).programs;
 const selfPrograms = async (token: string): Promise<{ response: Response; programs: Program[] }> => {
@@ -51,11 +71,32 @@ const selfPropose = (token: string, body: unknown): Promise<Response> => fetch(`
   method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
   body: JSON.stringify(body),
 });
-const programPost = (id: string, action: "confirm" | "activate" | "complete" | "discard",
+const programPost = (id: string, action: "confirm" | "activate" | "complete" | "discard" | "bootstrap-main",
   body: unknown = {}, headers: Record<string, string> = H): Promise<Response> =>
   fetch(`${BASE}/api/programs/${id}/${action}`, {
     method: "POST", headers, body: JSON.stringify(body),
   });
+const contextReceipts = async (): Promise<{ receipts: ContextReceipt[]; total: number; malformed: number }> =>
+  (await (await get("/api/context-receipts")).json()) as { receipts: ContextReceipt[]; total: number; malformed: number };
+const sessions = async (): Promise<{ slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] }> =>
+  (await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; label: string | null; openedAt?: number }[] };
+const activateNewProgram = async (title: string): Promise<Program> => {
+  const made = await post("/api/programs", { ...content, title });
+  const program = ((await made.json()) as { program: Program }).program;
+  await programPost(program.id, "confirm");
+  const active = await programPost(program.id, "activate");
+  return ((await active.json()) as { program: Program }).program;
+};
+const beginBootstrap = (id: string, body: Record<string, unknown>): Promise<Response> =>
+  programPost(id, "bootstrap-main", body);
+const waitForLabel = async (label: string): Promise<number | null> => {
+  for (let i = 0; i < 60; i++) {
+    const slot = (await sessions()).slots.find((s) => s.cwd && s.label === label)?.id;
+    if (slot) return slot;
+    await Bun.sleep(50);
+  }
+  return null;
+};
 
 export async function run(ctx: Ctx): Promise<void> {
   // Legacy state has no programs member. Stop the scratch server before editing its state, then
@@ -137,16 +178,16 @@ export async function run(ctx: Ctx): Promise<void> {
   // The owner mutation rail recognizes exactly the owner token. A self token uses its scoped
   // header; the steward uses its ordinary bearer credential. Neither may cross this boundary.
   const stewardToken = state.stewardToken ?? "";
-  const actions = ["confirm", "activate", "complete", "discard"] as const;
+  const actions = ["confirm", "activate", "complete", "discard", "bootstrap-main"] as const;
   const [selfAuth, stewardAuth] = await Promise.all([
     Promise.all(actions.map((action) => programPost(proposed.id, action, {},
       { "content-type": "application/json", "x-fleet-self-token": plainToken }))),
     Promise.all(actions.map((action) => programPost(proposed.id, action, {},
       { "content-type": "application/json", authorization: `Bearer ${stewardToken}` }))),
   ]);
-  check("programs owner boundary: self tokens cannot confirm, activate, complete, or discard (401)",
+  check("programs owner boundary: self tokens cannot mutate lifecycle or bootstrap Program-MAIN (401)",
     selfAuth.every((r) => r.status === 401), selfAuth.map((r) => r.status).join(","));
-  check("programs owner boundary: steward token cannot confirm, activate, complete, or discard (401)",
+  check("programs owner boundary: steward token cannot mutate lifecycle or bootstrap Program-MAIN (401)",
     !!stewardToken && stewardAuth.every((r) => r.status === 401), stewardAuth.map((r) => r.status).join(","));
 
   const invalidCases: { name: string; body: Record<string, unknown>; message: string }[] = [
@@ -166,7 +207,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const beforeRestart = (await ownerPrograms()).find((p) => p.id === proposed.id)!;
   await restartSrv();
   const afterRestart = (await ownerPrograms()).find((p) => p.id === proposed.id);
-  check("programs restart: confirmed row, corrections, timestamps, and proposedBy survive byte-honest",
+  check("programs legacy row: a persisted Program without main survives restart byte-honest",
     JSON.stringify(afterRestart) === JSON.stringify(beforeRestart),
     `before=${JSON.stringify(beforeRestart)} after=${JSON.stringify(afterRestart)}`);
 
@@ -201,6 +242,211 @@ export async function run(ctx: Ctx): Promise<void> {
   check("programs illegal transitions: activate proposed and complete confirmed are 409",
     activateProposed.status === 409 && completeConfirmed.status === 409,
     `activate=${activateProposed.status} complete=${completeConfirmed.status}`);
+
+  // --- Program-MAIN bootstrap: one delivered founding brief and one durable binding. ---
+  const proposedBootstrap = await beginBootstrap(ownerCreated.program!.id, { cwd: REPO });
+  const confirmedBootstrap = await beginBootstrap(proposed.id, { cwd: REPO });
+  check("Program-MAIN wrong status: proposed and confirmed are loud 409s naming their status",
+    proposedBootstrap.status === 409 && (await proposedBootstrap.text()).includes("proposed")
+      && confirmedBootstrap.status === 409 && (await confirmedBootstrap.text()).includes("confirmed"),
+    `proposed=${proposedBootstrap.status} confirmed=${confirmedBootstrap.status}`);
+
+  const bootstrapBaselineIds = new Set((await ownerPrograms()).map((p) => p.id));
+  const completedStatus = await activateNewProgram("Completed bootstrap refusal");
+  await programPost(completedStatus.id, "complete");
+  const completedBootstrap = await beginBootstrap(completedStatus.id, { cwd: REPO });
+  check("Program-MAIN wrong status: complete is a loud 409 naming complete",
+    completedBootstrap.status === 409 && (await completedBootstrap.text()).includes("complete"),
+    String(completedBootstrap.status));
+
+  const capacityProgram = await activateNewProgram("No-free-slot bootstrap probe");
+  const malformedBefore = JSON.stringify(await ownerPrograms());
+  const occupiedBeforeMalformed = (await sessions()).slots.filter((s) => s.cwd).length;
+  const [missingCwd, unknownHarness, badModel, badEffort] = await Promise.all([
+    beginBootstrap(capacityProgram.id, {}),
+    beginBootstrap(capacityProgram.id, { cwd: REPO, harness: "not-a-harness" }),
+    beginBootstrap(capacityProgram.id, { cwd: REPO, harness: "codex", model: "bad model!" }),
+    beginBootstrap(capacityProgram.id, { cwd: REPO, harness: "codex", effort: "maximum" }),
+  ]);
+  const malformedTexts = await Promise.all([missingCwd, unknownHarness, badModel, badEffort].map((r) => r.text()));
+  check("Program-MAIN validation: cwd is explicit and harness/model/effort use attended-spawn 400s",
+    [missingCwd, unknownHarness, badModel, badEffort].every((r) => r.status === 400)
+      && malformedTexts[0].includes("cwd is required") && malformedTexts[1].includes("unknown harness")
+      && malformedTexts[2].includes("bad model") && malformedTexts[3].includes("bad effort"),
+    malformedTexts.join(" | "));
+  check("Program-MAIN malformed bodies have no slot or Program side effect",
+    (await sessions()).slots.filter((s) => s.cwd).length === occupiedBeforeMalformed
+      && JSON.stringify(await ownerPrograms()) === malformedBefore,
+    `occupied=${occupiedBeforeMalformed}->${(await sessions()).slots.filter((s) => s.cwd).length}`);
+
+  const beforeFill = await sessions();
+  const filled: number[] = [];
+  for (const slot of beforeFill.slots.filter((s) => !s.cwd)) {
+    const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "program-capacity-fixture" });
+    if (opened.ok) filled.push(slot.id);
+  }
+  const fullSetup = (await sessions()).slots.every((s) => !!s.cwd);
+  check("Program-MAIN no-free precondition: every slot is occupied by an observed session",
+    fullSetup, `filled=${filled.join(",")}`);
+  if (fullSetup) {
+    const programsBeforeNoFree = JSON.stringify(await ownerPrograms());
+    const noFree = await beginBootstrap(capacityProgram.id, { cwd: REPO });
+    check("Program-MAIN no free slot: loud 409 opens nothing and changes no Program",
+      noFree.status === 409 && (await noFree.text()).includes("no free slot")
+        && JSON.stringify(await ownerPrograms()) === programsBeforeNoFree
+        && (await sessions()).slots.every((s) => !!s.cwd), String(noFree.status));
+  }
+  for (const slot of filled) await post(`/api/slots/${slot}/kill`, {});
+  await programPost(capacityProgram.id, "complete");
+
+  const NODE = Bun.which("node") ?? "node";
+  const respawnScreen = (slot: number, screen: string): Promise<{ out: string; code: number }> =>
+    tmuxOut("respawn-pane", "-k", "-t", `s${slot}`,
+      `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${JSON.stringify(screen)}`);
+
+  const failureProgram = await activateNewProgram("Program-MAIN delivery cleanup");
+  const failureLabel = "program-main-failure";
+  const receiptsBeforeFailure = await contextReceipts();
+  const failurePending = beginBootstrap(failureProgram.id, {
+    cwd: REPO, label: failureLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const failureSlot = await waitForLabel(failureLabel);
+  check("Program-MAIN delivery-failure precondition: the reserved codex occupant became observable",
+    failureSlot !== null, String(failureSlot));
+  if (failureSlot !== null) await respawnScreen(failureSlot, "Do you trust the contents of this directory?");
+  const concurrent = await beginBootstrap(failureProgram.id, { cwd: ROOT });
+  const failureResponse = await failurePending;
+  const failureText = await failureResponse.text();
+  const failureAfter = (await ownerPrograms()).find((p) => p.id === failureProgram.id);
+  const failureReceipts = await contextReceipts();
+  check("Program-MAIN concurrency: a second bootstrap while delivery is in flight is a loud 409",
+    concurrent.status === 409 && (await concurrent.text()).includes("already in flight"), String(concurrent.status));
+  check("Program-MAIN delivery failure: the blocking screen is named and no binding or receipt exists",
+    failureResponse.status === 500 && failureText.includes("codex trust prompt") && !failureAfter?.main
+      && failureReceipts.total === receiptsBeforeFailure.total
+      && !failureReceipts.receipts.some((r) => r.programId === failureProgram.id),
+    `${failureResponse.status} ${failureText}`);
+  check("Program-MAIN delivery failure cleanup: no occupied fixture slot is left behind",
+    failureSlot !== null && !(await sessions()).slots.some((s) => s.id === failureSlot && s.cwd),
+    JSON.stringify((await sessions()).slots.find((s) => s.id === failureSlot)));
+  await programPost(failureProgram.id, "complete");
+
+  const mainProgram = await activateNewProgram("Authoritative Program-MAIN delivery");
+  const mainLabel = "program-main-success";
+  const occupiedBeforeMain = (await sessions()).slots.filter((s) => s.cwd).length;
+  const receiptsBeforeMain = await contextReceipts();
+  const mainPending = beginBootstrap(mainProgram.id, {
+    cwd: REPO, label: mainLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const mainSlot = await waitForLabel(mainLabel);
+  check("Program-MAIN success precondition: the founding occupant became observable",
+    mainSlot !== null, String(mainSlot));
+  if (mainSlot !== null) await respawnScreen(mainSlot, ">_ OpenAI Codex (v0.147.0)");
+  const mainResponse = await mainPending;
+  const mainBody = await mainResponse.json() as { ok?: boolean; slot?: number; program?: Program };
+  const bound = mainBody.program?.main;
+  const boundState = readState().slots?.[String(mainBody.slot)];
+  const mainHistory = typeof mainBody.slot === "number"
+    ? (await (await get(`/api/slots/${mainBody.slot}/history`)).json()) as { history: { text: string }[] }
+    : { history: [] };
+  const deliveredPrompt = mainHistory.history.at(-1)?.text ?? "";
+  const mainReceipts = await contextReceipts();
+  const receipt = mainReceipts.receipts.find((r) => r.programId === mainProgram.id);
+  const expectedHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const expectedBranch = spawnSync("git", ["-C", REPO, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  check("Program-MAIN success: response binding names the real server-read occupant",
+    mainResponse.ok && mainBody.ok === true && mainBody.slot === mainSlot && !!bound
+      && bound.slot === mainSlot && bound.openedAt === boundState?.openedAt
+      && bound.sessionId === (boundState?.sessionId ?? null) && typeof bound.boundAt === "number",
+    JSON.stringify(mainBody));
+  check("Program-MAIN success: the actually delivered history carries Program title and ContextPlan header",
+    deliveredPrompt.includes(mainProgram.title) && deliveredPrompt.includes("ContextPlan v1 anchors"),
+    deliveredPrompt.slice(0, 240));
+  check("Program-MAIN success: exactly one receipt carries null task provenance and server-read git/harness facts",
+    !!receipt && mainReceipts.total === receiptsBeforeMain.total + 1
+      && mainReceipts.receipts.filter((r) => r.programId === mainProgram.id).length === 1
+      && receipt.taskId === null && receipt.originId === null && receipt.head === expectedHead
+      && receipt.branch === expectedBranch && receipt.harness === "codex"
+      && receipt.model === "gpt-5.5" && receipt.effort === "high",
+    JSON.stringify(receipt ?? null));
+  const anchorAt = deliveredPrompt.indexOf("\n\nContextPlan v1 anchors");
+  const anchorBlock = anchorAt >= 0 ? deliveredPrompt.slice(anchorAt) : "";
+  const recomputedHash = receipt ? createHash("sha256").update(JSON.stringify({
+    anchorBlock,
+    planFacts: { harness: receipt.harness, mode: receipt.mode, triggers: receipt.triggers,
+      selected: receipt.selected, omitted: receipt.omitted },
+  })).digest("hex") : "";
+  check("Program-MAIN receipt equivalence: selected+omitted total six and v1 hash recomputes",
+    !!receipt && receipt.selected.length + receipt.omitted.length === 6
+      && receipt.selected.length === 2 && receipt.hash === recomputedHash
+      && receipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength
+      && receipt.truncated === false,
+    `${recomputedHash} ${JSON.stringify(receipt ?? null)}`);
+
+  const repeatSame = await beginBootstrap(mainProgram.id, {
+    cwd: REPO, label: mainLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const repeatSameBody = await repeatSame.json() as { ok?: boolean; existing?: boolean; program?: Program };
+  const repeatDifferent = await beginBootstrap(mainProgram.id, { cwd: ROOT });
+  const repeatDifferentBody = await repeatDifferent.json() as { ok?: boolean; existing?: boolean; program?: Program };
+  check("Program-MAIN idempotency: identical and different-cwd repeats both return the live binding",
+    repeatSame.ok && repeatSameBody.existing === true && repeatDifferent.ok && repeatDifferentBody.existing === true
+      && JSON.stringify(repeatSameBody.program?.main) === JSON.stringify(bound)
+      && JSON.stringify(repeatDifferentBody.program?.main) === JSON.stringify(bound),
+    `same=${JSON.stringify(repeatSameBody)} different=${JSON.stringify(repeatDifferentBody)}`);
+  check("Program-MAIN idempotency: repeats create no session and no receipt",
+    (await sessions()).slots.filter((s) => s.cwd).length === occupiedBeforeMain + 1
+      && (await contextReceipts()).total === mainReceipts.total,
+    `occupied=${(await sessions()).slots.filter((s) => s.cwd).length} receipts=${(await contextReceipts()).total}`);
+
+  const mainSelfToken = readState().slots?.[String(mainSlot)]?.selfToken ?? "";
+  const [boundSelfView, otherSelfView, laneSelfView] = await Promise.all([
+    selfPrograms(mainSelfToken), selfPrograms(plainToken), selfPrograms(ctx.restartSelfTok ?? ""),
+  ]);
+  check("Program-MAIN self view: only the bound occupant sees the Program by slot+openedAt",
+    boundSelfView.response.ok && boundSelfView.programs.some((p) => p.id === mainProgram.id)
+      && otherSelfView.response.ok && !otherSelfView.programs.some((p) => p.id === mainProgram.id),
+    `bound=${boundSelfView.programs.length} other=${otherSelfView.programs.length}`);
+  check("Program-MAIN self view: a lane token still receives the existing 409",
+    laneSelfView.response.status === 409, String(laneSelfView.response.status));
+
+  const beforeMainRestart = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  await restartSrv();
+  const afterMainRestart = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  check("Program-MAIN restart: a bound Program survives save/load with main intact",
+    JSON.stringify(canonical(afterMainRestart)) === JSON.stringify(canonical(beforeMainRestart))
+      && JSON.stringify(afterMainRestart?.main) === JSON.stringify(bound),
+    `before=${JSON.stringify(beforeMainRestart)} after=${JSON.stringify(afterMainRestart)}`);
+
+  if (mainSlot !== null) await post(`/api/slots/${mainSlot}/kill`, {});
+  const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;
+  const bindingBeforeStale = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
+  const stale = await beginBootstrap(mainProgram.id, { cwd: REPO });
+  const staleText = await stale.text();
+  check("Program-MAIN stale binding: repeat is a loud 409 naming slot+openedAt, with no rebind",
+    stale.status === 409 && staleText.includes("stale Program-MAIN binding")
+      && staleText.includes(`slot ${bound?.slot}`) && staleText.includes(`openedAt ${bound?.openedAt}`)
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === bindingBeforeStale
+      && (await sessions()).slots.filter((s) => s.cwd).length === occupiedAfterKill,
+    `${stale.status} ${staleText}`);
+
+  const unknownBootstrap = await beginBootstrap("0".repeat(24), { cwd: REPO });
+  check("Program-MAIN routes: an unknown bootstrap id is 404", unknownBootstrap.status === 404,
+    String(unknownBootstrap.status));
+  await programPost(mainProgram.id, "complete");
+
+  // These four Programs exist only to exercise mutually exclusive bootstrap states. Remove those
+  // fixtures from the persisted registry after their own restart proof so the later sessions-poll
+  // byte-budget check measures the product surface, not accumulated test-only digests.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const cleaned = readState();
+  cleaned.programs = (cleaned.programs ?? []).filter((p) => bootstrapBaselineIds.has(p.id));
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("Program-MAIN fixture cleanup: only the pre-bootstrap registry rows remain",
+    (await ownerPrograms()).every((p) => bootstrapBaselineIds.has(p.id)),
+    JSON.stringify((await ownerPrograms()).map((p) => p.id)));
 
   const discardConfirmed = await programPost(proposed.id, "discard");
   check("programs discard: a confirmed program is durable history and cannot be discarded",

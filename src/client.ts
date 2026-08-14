@@ -194,7 +194,7 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
   // (dd0c9a8): every `kind === "note"` below still compiled and was simply false forever, so the
   // observation grouping, its chip and its guards went dead without one compiler word. Widen this
   // FIRST when the server's set changes — tsc then names every site that has to follow.
-  kind?: "auftrag" | "richtung" | "notiz" | "betrieb"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string;
+  kind?: "auftrag" | "richtung" | "notiz" | "betrieb"; status: "pending" | "queued" | "sent" | "done" | "archived"; created: number; slot?: number; note?: string; repo?: string; programId?: string;
   // Bounded generation/presence only; the brief text remains on GET /api/tasks.
   briefAt?: number;
   // the queue analyst's reading. ADVISORY — it groups and labels a row, it never disables an

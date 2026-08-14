@@ -12,7 +12,7 @@
 // (FLEET_AUTOS_TICK_MS), but the git facts the predicate reads refresh on the 10s tickGit, so the
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
@@ -31,6 +31,17 @@ interface FleetEventRow {
   createdAt: number; status: FleetEventStatus; attempts: number;
   deliveredAt: number | null; acknowledgedAt: number | null;
 }
+interface DeployWatchRow {
+  id: string; kind: "deploy"; slot: number; deployId: string;
+  armed: boolean; firedAt: number | null; lastResult: string | null;
+}
+interface DeployEventRow {
+  id: string; watchId: string; receiverSlot: number; receiverOpenedAt: number;
+  receiverSessionId: string | null; kind: "deploy-terminal"; subjectDeployId: string;
+  payload: { ok: boolean | null; stage: "build" | "restart" | "boot"; target: string | null;
+    bootHead: string | null; hitTarget: boolean | null; bundleStale: boolean | null; at: number; reason?: string };
+  status: FleetEventStatus; attempts: number; acknowledgedAt: number | null;
+}
 const watchRows = async (): Promise<WatchRow[]> =>
   ((await (await get("/api/sessions")).json()) as { watches: WatchRow[] }).watches;
 const watchRow = async (id: string): Promise<WatchRow | undefined> =>
@@ -39,6 +50,21 @@ const eventRows = async (): Promise<FleetEventRow[]> =>
   ((await (await get("/api/sessions")).json()) as { events: FleetEventRow[] }).events;
 const eventForWatch = async (watchId: string): Promise<FleetEventRow | undefined> =>
   (await eventRows()).find((e) => e.watchId === watchId);
+const deployWatchRows = async (): Promise<DeployWatchRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { watches: unknown[] }).watches as DeployWatchRow[])
+    .filter((w) => w.kind === "deploy");
+const deployEventRows = async (): Promise<DeployEventRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as DeployEventRow[])
+    .filter((e) => e.kind === "deploy-terminal");
+const waitDeployEvent = async (watchId: string): Promise<DeployEventRow | undefined> => {
+  let found: DeployEventRow | undefined;
+  for (let i = 0; i < 120; i++) {
+    found = (await deployEventRows()).find((e) => e.watchId === watchId);
+    if (found?.status === "delivered" || found?.status === "acknowledged") return found;
+    await Bun.sleep(100);
+  }
+  return found;
+};
 const freeSlot = async (): Promise<number> =>
   ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
     .slots.find((x) => x.cwd === null)?.id ?? 0;
@@ -514,6 +540,106 @@ export async function run(): Promise<void> {
     && ackA2.ok && ackA2J.existing === true && ackA2J.event?.acknowledgedAt === ackAJ.event.acknowledgedAt,
     JSON.stringify({ ackAJ, ackA2J }));
 
+  // --- DEPLOY OUTCOME: same subscription/event/transport/ack rail, joined only by deploy id. ---
+  const deployLedger = `${ROOT}/deploys.jsonl`;
+  const appendDeploy = (row: Record<string, unknown>): void =>
+    appendFileSync(deployLedger, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+  const deployRow = (id: string, ok: boolean | null, stage: "build" | "restart" | "boot",
+    extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    at: Date.now(), id, by: "owner", stage, ok,
+    target: "1".repeat(40), bootHead: ok === null ? null : "1".repeat(40), head: "1".repeat(40),
+    hitTarget: ok === null ? null : ok, bundleStale: ok === null ? null : !ok, ...extra,
+  });
+  const malformedDeployId = await selfWatch(aTok, { kind: "deploy", deployId: "NOT-HEX" });
+  check("deploy watch: malformed deployId is refused 400 with a named field error",
+    malformedDeployId.status === 400 && (await malformedDeployId.text()).includes("deployId must be exactly 8"));
+  const unknownDeployId = await selfWatch(aTok, { kind: "deploy", deployId: "deadbeef" });
+  const unknownDeployText = await unknownDeployId.text();
+  check("deploy watch: an unknown id is refused loudly because it could never fire",
+    unknownDeployId.status === 409
+      && unknownDeployText.includes("no in-flight or persisted deploy exists with that id — this watch could never fire"),
+    `${unknownDeployId.status} ${unknownDeployText}`);
+
+  const successId = "d0000001";
+  appendDeploy(deployRow(successId, true, "boot", { hitTarget: true, bundleStale: false }));
+  const successSubR = await selfWatch(aTok, { kind: "deploy", deployId: successId, idleSec: 0 });
+  const successSub = await successSubR.json() as { watch?: DeployWatchRow };
+  const successEvent = successSub.watch ? await waitDeployEvent(successSub.watch.id) : undefined;
+  check("deploy watch: subscribing after a green row fires in the subscribe call with typed hitTarget",
+    successSubR.ok && successSub.watch?.armed === false && successEvent?.payload.ok === true
+      && successEvent.payload.hitTarget === true && successEvent.subjectDeployId === successId,
+    JSON.stringify({ successSub, successEvent }));
+  const successText = (await plogRead()).find((p) => p.slot === aId
+    && p.text.includes(`[event ${successEvent?.id}]`))?.text ?? "";
+  check("deploy watch: success rendering says ok=YES and names notification versus verdict",
+    successText.includes("ok=YES") && successText.includes("not a claim that the deploy succeeded"), successText);
+  const deployForeignAck = successEvent ? await ackEvent(bTok, successEvent.id) : new Response(null, { status: 599 });
+  check("deploy event: a foreign receiver slot cannot acknowledge it",
+    deployForeignAck.status === 409, `${deployForeignAck.status} ${await deployForeignAck.text()}`);
+  const deployAck1 = successEvent ? await ackEvent(aTok, successEvent.id) : new Response(null, { status: 599 });
+  const deployAck2 = successEvent ? await ackEvent(aTok, successEvent.id) : new Response(null, { status: 599 });
+  const deployAck2J = await deployAck2.json() as { existing?: boolean };
+  check("deploy event: acknowledgement is idempotent in the bound receiver session",
+    deployAck1.ok && deployAck2.ok && deployAck2J.existing === true,
+    `${deployAck1.status}/${deployAck2.status} ${JSON.stringify(deployAck2J)}`);
+
+  const failureId = "d0000002";
+  appendDeploy(deployRow(failureId, false, "build", {
+    bootHead: "0".repeat(40), hitTarget: false, bundleStale: true, reason: "build failed deterministically",
+  }));
+  const failureSub = await (await selfWatch(bTok,
+    { kind: "deploy", deployId: failureId, idleSec: 0 })).json() as { watch?: DeployWatchRow };
+  const failureEvent = failureSub.watch ? await waitDeployEvent(failureSub.watch.id) : undefined;
+  const failureText = (await plogRead()).find((p) => p.slot === bId
+    && p.text.includes(`[event ${failureEvent?.id}]`))?.text ?? "";
+  check("deploy watch: failed row stays ok=false with bounded reason and never renders as success",
+    failureEvent?.payload.ok === false && failureEvent.payload.reason === "build failed deterministically"
+      && failureText.includes("ok=NO") && failureText.includes("Reason: build failed deterministically")
+      && !failureText.includes("ok=YES"), JSON.stringify({ event: failureEvent, text: failureText }));
+  if (failureEvent) await ackEvent(bTok, failureEvent.id);
+
+  const unknownId = "d0000003";
+  appendDeploy(deployRow(unknownId, null, "boot", { reason: "the boot head could not be measured" }));
+  const unknownSub = await (await selfWatch(bTok,
+    { kind: "deploy", deployId: unknownId, idleSec: 0 })).json() as { watch?: DeployWatchRow };
+  const unknownEvent = unknownSub.watch ? await waitDeployEvent(unknownSub.watch.id) : undefined;
+  const unknownText = (await plogRead()).find((p) => p.slot === bId
+    && p.text.includes(`[event ${unknownEvent?.id}]`))?.text ?? "";
+  check("deploy watch: unmeasured row stays ok=null and renders UNVERIFIED, never pass",
+    unknownEvent?.payload.ok === null && unknownText.includes("ok=UNVERIFIED")
+      && !unknownText.includes("ok=YES"), JSON.stringify({ event: unknownEvent, text: unknownText }));
+  if (unknownEvent) await ackEvent(bTok, unknownEvent.id);
+
+  const inflightId = "d0000004";
+  writeFileSync(`${ROOT}/deploy-inflight.json`, JSON.stringify({
+    id: inflightId, at: Date.now(), by: "owner", target: "2".repeat(40), bootHeadBefore: "1".repeat(40),
+    buildMs: 1, buildCmd: "true", restartCmd: "true",
+  }), { mode: 0o600 });
+  const inflightSubR = await selfWatch(aTok, { kind: "deploy", deployId: inflightId, idleSec: 0 });
+  const inflightSub = await inflightSubR.json() as { watch?: DeployWatchRow };
+  const inflightDup = await (await selfWatch(aTok,
+    { kind: "deploy", deployId: inflightId, idleSec: 0 })).json() as { watch?: DeployWatchRow; existing?: boolean };
+  check("deploy watch: an in-flight marker admits one armed subscription and duplicate returns existing",
+    inflightSubR.ok && inflightSub.watch?.armed === true && inflightDup.existing === true
+      && inflightDup.watch?.id === inflightSub.watch?.id
+      && (await deployWatchRows()).filter((w) => w.slot === aId && w.deployId === inflightId).length === 1,
+    JSON.stringify({ inflightSub, inflightDup }));
+  appendDeploy(deployRow(inflightId, false, "restart", {
+    bootHead: "1".repeat(40), hitTarget: false, bundleStale: false, reason: "restart failed",
+  }));
+  rmSync(`${ROOT}/deploy-inflight.json`, { force: true });
+  const inflightEvent = inflightSub.watch ? await waitDeployEvent(inflightSub.watch.id) : undefined;
+  check("deploy watch: a row appearing after subscribe is level-minted exactly once by the tick",
+    inflightEvent?.payload.ok === false && inflightEvent.payload.stage === "restart"
+      && (await deployEventRows()).filter((e) => e.watchId === inflightSub.watch?.id).length === 1,
+    JSON.stringify(inflightEvent));
+  if (inflightEvent) await ackEvent(aTok, inflightEvent.id);
+
+  const laneDeployToken = await paneEnv(`s${tgt.slot}`, "FLEET_SELF_TOKEN") ?? "";
+  const laneDeployWatch = await selfWatch(laneDeployToken, { kind: "deploy", deployId: successId });
+  check("deploy watch: a lane remains refused 409 on the existing self-watch route",
+    laneDeployWatch.status === 409 && (await laneDeployWatch.text()).includes("a lane may not subscribe"));
+
   // --- Restart boundary. Stop before editing state: a live save chain may replace fleet.json.
   // Plant the exact durable image a crash after the pre-send marker leaves, plus a legacy spent
   // Watch and malicious extra payload keys. Load must preserve uncertainty, invent no legacy event,
@@ -531,6 +657,7 @@ export async function run(): Promise<void> {
   const crashWatchId = "crashboundarywatch";
   const legacyWatchId = "legacywatchfixture";
   const malformedMergeId = "malformedmergefixture";
+  const malformedDeployEventId = "malformeddeployfixture";
   const crashRaw = eventA ? {
     ...eventA, id: crashId, watchId: crashWatchId, status: "send-uncertain", attempts: 1,
     deliveredAt: null, acknowledgedAt: null,
@@ -541,6 +668,13 @@ export async function run(): Promise<void> {
     ...eventA, id: malformedMergeId, watchId: "malformedmergewatch", kind: "merge-terminal",
     subjectCwd: tgt.cwd, payload: {
       status: "resolved", landed: false, branch: tgt.branch, at: Date.now(), verify: null,
+    },
+  });
+  if (eventA) eventState?.events?.push({
+    ...eventA, id: malformedDeployEventId, watchId: "malformeddeploywatch", kind: "deploy-terminal",
+    subjectDeployId: successId, payload: {
+      ok: null, stage: "boot", target: null, bootHead: null, hitTarget: null, bundleStale: null,
+      at: Date.now(), reason: "x".repeat(201),
     },
   });
   eventState?.watches?.push({
@@ -573,6 +707,8 @@ export async function run(): Promise<void> {
   check("per-kind event loading rejects a malformed merge payload without breaking legacy event restore",
     !afterRestartEvents.some((e) => e.id === malformedMergeId) && restartedA?.id === eventA?.id,
     JSON.stringify(afterRestartEvents.filter((e) => e.id === malformedMergeId || e.id === eventA?.id)));
+  check("per-kind event loading rejects a malformed deploy-terminal payload",
+    !(await deployEventRows()).some((e) => e.id === malformedDeployEventId));
   const payloadKeys = Object.keys(uncertainAfterTicks?.payload ?? {}).sort();
   check("persisted FleetEvent payload is a closed typed fact set and cannot carry free shell/text content",
     JSON.stringify(payloadKeys) === JSON.stringify([
@@ -641,6 +777,14 @@ export async function run(): Promise<void> {
   check("subject teardown after event creation leaves the event trail intact",
     (await eventRows()).some((e) => e.id === eventA?.id && e.status === "acknowledged"));
   await post(`/api/slots/${bId}/kill`, {});
+  await post(`/api/slots/${aId}/kill`, {});
+  const reopenA = await post(`/api/slots/${aId}/open`, { cwd: REPO });
+  const replacementATok = await paneEnv(`s${aId}`, "FLEET_SELF_TOKEN") ?? "";
+  const replacedDeployAck = successEvent ? await ackEvent(replacementATok, successEvent.id)
+    : new Response(null, { status: 599 });
+  check("deploy event: a replacement receiver session cannot acknowledge the prior session's event",
+    reopenA.ok && replacementATok !== aTok && replacedDeployAck.status === 409,
+    `${replacedDeployAck.status} ${await replacedDeployAck.text()}`);
   await post(`/api/slots/${aId}/kill`, {});
 
   // === MAIN-SESSION EXIT: tickMigrate ==========================================================

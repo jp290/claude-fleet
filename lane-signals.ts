@@ -153,6 +153,22 @@ export interface AuditWatchEventView {
   payload: AuditWatchEventPayload;
 }
 
+export interface DeployWatchEventPayload {
+  ok: boolean | null;
+  stage: "build" | "restart" | "boot";
+  target: string | null;
+  bootHead: string | null;
+  hitTarget: boolean | null;
+  bundleStale: boolean | null;
+  at: number;
+  reason?: string;
+}
+export interface DeployWatchEventView {
+  id: string;
+  kind: "deploy-terminal";
+  payload: DeployWatchEventPayload;
+}
+
 export function laneWatchEventKind(signal: LaneWatchSignal): LaneWatchEventKind {
   return signal === "host-commit-looking" ? "host-commit-ready" : "lane-ready";
 }
@@ -219,6 +235,17 @@ export function auditWatchMessage(repo: string, mainAfter: string, event: AuditW
   return `[fleet] post-land audit [event ${event.id}] for ${repo} land ${mainAfter} reached terminal `
     + `result=${p.result}; audited tip=${p.mainSha || "unknown"}; ${checks}.${why} This notification `
     + `does not adjudicate, undo, or deploy anything. ${eventAck(event.id)}`;
+}
+
+export function deployWatchMessage(deployId: string, event: DeployWatchEventView): string {
+  const p = event.payload;
+  const verdict = p.ok === true ? "YES" : p.ok === false ? "NO" : "UNVERIFIED";
+  const why = p.reason ? ` Reason: ${p.reason}.` : "";
+  return `[fleet] deploy [event ${event.id}] for ${deployId} reached terminal stage=${p.stage}; `
+    + `ok=${verdict}; target=${p.target ?? "unknown"}; bootHead=${p.bootHead ?? "unknown"}; `
+    + `hitTarget=${p.hitTarget === null ? "unknown" : p.hitTarget}; `
+    + `bundleStale=${p.bundleStale === null ? "unknown" : p.bundleStale}.${why} This is a successful `
+    + `notification of the terminal result, not a claim that the deploy succeeded. ${eventAck(event.id)}`;
 }
 
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already

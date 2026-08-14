@@ -746,10 +746,18 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   pin("canDeliver refuses a blocked screen behind the same probe opt-out as not-alive",
     /gate: "blocked-screen", detail: rd\.why/.test(server) && /rd\?\.state === "blocked"/.test(server),
     "blocked-screen gate in canDeliver");
-  pin("the dispatch tail waits BOUNDED on the accept marker — a blind sleep is a grace period, never the readiness proof",
+  const successionStart = server.indexOf("async function succeedProgramMain");
+  const successionBody = successionStart < 0 ? ""
+    : server.slice(successionStart, server.indexOf("async function bootstrapProgramMain", successionStart));
+  const bootstrapStart = server.indexOf("async function bootstrapProgramMain");
+  const bootstrapBody = bootstrapStart < 0 ? ""
+    : server.slice(bootstrapStart, server.indexOf("async function handleOwnerProgramRoute", bootstrapStart));
+  pin("every program-aware founding rail and the dispatch tail share the BOUNDED readiness wait — a blind sleep is never the proof",
     /pane blocked on \$\{rd\.why\}/.test(server) && /never showed its ready marker within/.test(server)
-    && /READY_WAIT_MS/.test(server) && /waitForFoundingReadiness\(free, \(\) => !identityLost\(\)\)/.test(server),
-    "shared founding readiness wait used by briefAndSend");
+    && /READY_WAIT_MS/.test(server) && /waitForFoundingReadiness\(free, \(\) => !identityLost\(\)\)/.test(server)
+    && /waitForFoundingReadiness\(free, stillCurrent\)/.test(successionBody)
+    && /waitForFoundingReadiness\(free, stillCurrent\)/.test(bootstrapBody),
+    "shared founding readiness wait used by briefAndSend, Program-MAIN bootstrap, and succession");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");

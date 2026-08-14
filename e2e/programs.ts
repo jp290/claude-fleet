@@ -31,7 +31,7 @@ interface FleetState {
   programs?: Program[];
   stewardToken?: string;
   slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; sessionId?: string | null;
-    harness?: string | null; model?: string | null; effort?: string | null }>;
+    harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown }>;
 }
 
 interface ContextReceipt {
@@ -68,6 +68,10 @@ const selfPrograms = async (token: string): Promise<{ response: Response; progra
   return { response, programs: body.programs ?? [] };
 };
 const selfPropose = (token: string, body: unknown): Promise<Response> => fetch(`${BASE}/api/self/programs`, {
+  method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+  body: JSON.stringify(body),
+});
+const selfSucceed = (token: string, body: unknown = {}): Promise<Response> => fetch(`${BASE}/api/self/succeed`, {
   method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
   body: JSON.stringify(body),
 });
@@ -410,25 +414,216 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN self view: a lane token still receives the existing 409",
     laneSelfView.response.status === 409, String(laneSelfView.response.status));
 
-  const beforeMainRestart = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  // --- Program-aware succession: HANDOFF gate first, then one active slot+openedAt authority. ---
+  const ambiguousProgram = await activateNewProgram("Ambiguous Program-MAIN succession refusal");
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const ambiguousState = readState();
+  const ambiguousRow = ambiguousState.programs?.find((p) => p.id === ambiguousProgram.id);
+  if (ambiguousRow && bound) ambiguousRow.main = { ...bound };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(ambiguousState, null, 2), { mode: 0o600 });
   await restartSrv();
   const afterMainRestart = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
-  check("Program-MAIN restart: a bound Program survives save/load with main intact",
-    JSON.stringify(canonical(afterMainRestart)) === JSON.stringify(canonical(beforeMainRestart))
-      && JSON.stringify(afterMainRestart?.main) === JSON.stringify(bound),
-    `before=${JSON.stringify(beforeMainRestart)} after=${JSON.stringify(afterMainRestart)}`);
+  check("Program-MAIN restart: a bound Program and an injected second valid binding survive field validation",
+    JSON.stringify(afterMainRestart?.main) === JSON.stringify(bound)
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === ambiguousProgram.id)?.main) === JSON.stringify(bound),
+    `main=${JSON.stringify(afterMainRestart?.main)} ambiguous=${JSON.stringify((await ownerPrograms()).find((p) => p.id === ambiguousProgram.id)?.main)}`);
 
-  if (mainSlot !== null) await post(`/api/slots/${mainSlot}/kill`, {});
+  const handoffDelay = Math.max(0, (Math.floor((bound?.openedAt ?? Date.now()) / 1000) + 2) * 1000 - Date.now());
+  await Bun.sleep(handoffDelay);
+  writeFileSync(`${REPO}/HANDOFF.md`, `## Program succession\ncontinue ${mainProgram.title}\n`);
+  spawnSync("git", ["-C", REPO, "add", "HANDOFF.md"]);
+  const handoffCommit = spawnSync("git", ["-C", REPO, "commit", "-qm", "fresh Program succession handoff"]);
+  check("Program-MAIN succession setup: HANDOFF.md is clean and committed after the predecessor opened",
+    handoffCommit.status === 0
+      && spawnSync("git", ["-C", REPO, "status", "--porcelain", "--", "HANDOFF.md"], { encoding: "utf8" }).stdout.trim() === "",
+    handoffCommit.stderr.toString());
+
+  const mainSelfTokenAfterRestart = readState().slots?.[String(mainSlot)]?.selfToken ?? "";
+  const ambiguousReceiptsBefore = await contextReceipts();
+  const occupiedBeforeAmbiguous = (await sessions()).slots.filter((s) => s.cwd).length;
+  const ambiguousSuccession = await selfSucceed(mainSelfTokenAfterRestart);
+  const ambiguousSuccessionText = await ambiguousSuccession.text();
+  check("Program-MAIN succession ambiguity: two active bindings are a loud numbered 409 with no slot or receipt side effect",
+    ambiguousSuccession.status === 409
+      && ambiguousSuccessionText.includes("ambiguous succession: this session is Program-MAIN of 2 active programs")
+      && (await sessions()).slots.filter((s) => s.cwd).length === occupiedBeforeAmbiguous
+      && (await contextReceipts()).total === ambiguousReceiptsBefore.total
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === JSON.stringify(bound),
+    `${ambiguousSuccession.status} ${ambiguousSuccessionText}`);
+  await programPost(ambiguousProgram.id, "complete");
+
+  const capacityFilled: number[] = [];
+  for (const slot of (await sessions()).slots.filter((s) => !s.cwd)) {
+    const opened = await post(`/api/slots/${slot.id}/open`, { cwd: REPO, label: "succession-capacity-fixture" });
+    if (opened.ok) capacityFilled.push(slot.id);
+  }
+  const bindingBeforeNoFree = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
+  const noFreeReceiptsBefore = await contextReceipts();
+  const noFreeSuccession = await selfSucceed(mainSelfTokenAfterRestart);
+  check("Program-MAIN succession no-free: the existing 409 leaves authority and receipts unchanged",
+    noFreeSuccession.status === 409 && (await noFreeSuccession.text()).includes("no free slot")
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === bindingBeforeNoFree
+      && (await contextReceipts()).total === noFreeReceiptsBefore.total,
+    String(noFreeSuccession.status));
+  for (const slot of capacityFilled) await post(`/api/slots/${slot}/kill`, {});
+
+  const failedLabel = "program-succession-blocked";
+  const failureReceiptsBeforeSuccession = await contextReceipts();
+  const failureBindingBefore = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
+  const failureSuccessionPending = selfSucceed(mainSelfTokenAfterRestart, { label: failedLabel, carry: "blocked carry" });
+  const failureSuccessorSlot = await waitForLabel(failedLabel);
+  check("Program-MAIN succession failure setup: the reserved inherited-codex successor became observable",
+    failureSuccessorSlot !== null, String(failureSuccessorSlot));
+  const repeatedDuringTransfer = await selfSucceed(mainSelfTokenAfterRestart);
+  const bootstrapDuringTransfer = await beginBootstrap(mainProgram.id, { cwd: ROOT });
+  const repeatedDuringTransferText = await repeatedDuringTransfer.text();
+  const bootstrapDuringTransferBody = await bootstrapDuringTransfer.json() as { existing?: boolean };
+  if (failureSuccessorSlot !== null) {
+    await Bun.sleep(250); // waitForLabel observes state before openSlot's pane spawn necessarily settles
+    await respawnScreen(failureSuccessorSlot, "Do you trust the contents of this directory?");
+  }
+  const failureSuccession = await failureSuccessionPending;
+  const failureSuccessionText = await failureSuccession.text();
+  check("Program-MAIN succession concurrency: a second succeed is already-started and bootstrap sees the one existing authority",
+    repeatedDuringTransfer.status === 409 && repeatedDuringTransferText.includes("already started")
+      && bootstrapDuringTransfer.ok && bootstrapDuringTransferBody.existing === true,
+    `succeed=${repeatedDuringTransfer.status}:${repeatedDuringTransferText} bootstrap=${bootstrapDuringTransfer.status}:${JSON.stringify(bootstrapDuringTransferBody)}`);
+  check("Program-MAIN succession readiness failure: blocked screen cleans the successor without rebinding, retirement, or receipt",
+    failureSuccession.status === 500 && failureSuccessionText.includes("codex trust prompt")
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === failureBindingBefore
+      && (await contextReceipts()).total === failureReceiptsBeforeSuccession.total
+      && !readState().slots?.[String(mainSlot)]?.successionRetirement
+      && failureSuccessorSlot !== null
+      && !(await sessions()).slots.some((s) => s.id === failureSuccessorSlot && s.cwd),
+    `${failureSuccession.status} ${failureSuccessionText}`);
+
+  const carry = "Continue with the first bounded Program move.";
+  const successorLabel = "program-succession-success";
+  const receiptsBeforeSuccession = await contextReceipts();
+  const successionPending = selfSucceed(mainSelfTokenAfterRestart, { label: successorLabel, carry });
+  const successorSlot = await waitForLabel(successorLabel);
+  check("Program-MAIN succession success setup: exactly one successor reservation became observable",
+    successorSlot !== null, String(successorSlot));
+  if (successorSlot !== null) {
+    await Bun.sleep(250); // keep ensureSlot from replacing the fixture pane after the ready marker is planted
+    await respawnScreen(successorSlot, ">_ OpenAI Codex (v0.147.0)");
+  }
+  const successionResponse = await successionPending;
+  const successionBody = await successionResponse.json() as
+    { ok?: boolean; slot?: number; label?: string | null; program?: { id?: string; status?: string; title?: string } };
+  const transferredProgram = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  const transferredBinding = transferredProgram?.main;
+  const successorState = readState().slots?.[String(successorSlot)];
+  const successorHistory = successorSlot === null
+    ? { history: [] as { text: string }[] }
+    : await (await get(`/api/slots/${successorSlot}/history`)).json() as { history: { text: string }[] };
+  const successionPrompt = successorHistory.history.at(-1)?.text ?? "";
+  const successionReceipts = await contextReceipts();
+  const successionReceipt = successionReceipts.receipts.filter((r) => r.programId === mainProgram.id).at(-1);
+  const successionHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const successionBranch = spawnSync("git", ["-C", REPO, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  check("Program-MAIN succession success: response digest and persisted binding name exactly the delivered successor",
+    successionResponse.ok && successionBody.ok === true && successionBody.slot === successorSlot
+      && successionBody.label === successorLabel && successionBody.program?.id === mainProgram.id
+      && transferredBinding?.slot === successorSlot && transferredBinding.openedAt === successorState?.openedAt
+      && transferredBinding.sessionId === null && successorState?.sessionId === null
+      && typeof transferredBinding.boundAt === "number" && transferredBinding.boundAt > (bound?.boundAt ?? 0),
+    `response=${JSON.stringify(successionBody)} binding=${JSON.stringify(transferredBinding)}`);
+  check("Program-MAIN succession prompt: delivered history carries title, HANDOFF, carry, owner JSON, and a fresh ContextPlan anchor",
+    successionPrompt.startsWith("[fleet Program-MAIN succession]")
+      && successionPrompt.includes(mainProgram.title) && successionPrompt.includes("HANDOFF.md")
+      && successionPrompt.includes(carry) && successionPrompt.includes("Owner-confirmed Program content (verbatim JSON)")
+      && successionPrompt.includes("ContextPlan v1 anchors"),
+    successionPrompt.slice(0, 500));
+  const successionAnchorAt = successionPrompt.indexOf("\n\nContextPlan v1 anchors");
+  const successionAnchor = successionAnchorAt >= 0 ? successionPrompt.slice(successionAnchorAt) : "";
+  const successionHash = successionReceipt ? createHash("sha256").update(JSON.stringify({
+    anchorBlock: successionAnchor,
+    planFacts: { harness: successionReceipt.harness, mode: successionReceipt.mode,
+      triggers: successionReceipt.triggers, selected: successionReceipt.selected, omitted: successionReceipt.omitted },
+  })).digest("hex") : "";
+  check("Program-MAIN succession receipt: one fresh row has null task provenance, server git facts, exact bytes, and recomputable fresh-plan hash",
+    !!successionReceipt && successionReceipts.total === receiptsBeforeSuccession.total + 1
+      && successionReceipt.taskId === null && successionReceipt.originId === null
+      && successionReceipt.head === successionHead && successionReceipt.branch === successionBranch
+      && successionReceipt.slot === successorSlot && successionReceipt.hash === successionHash
+      && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength
+      && successionReceipt.truncated === false,
+    JSON.stringify(successionReceipt ?? null));
+
+  const successorToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
+  const [successorView, predecessorView] = await Promise.all([
+    selfPrograms(successorToken), selfPrograms(mainSelfTokenAfterRestart),
+  ]);
+  check("Program-MAIN succession self view: authority moves to the successor and leaves the non-proposer predecessor",
+    successorView.response.ok && successorView.programs.some((p) => p.id === mainProgram.id)
+      && !predecessorView.programs.some((p) => p.id === mainProgram.id),
+    `successor=${successorView.response.status}:${successorView.programs.length} predecessor=${predecessorView.response.status}:${predecessorView.programs.length}`);
+
+  await restartSrv();
+  const afterSuccessionRestart = (await ownerPrograms()).find((p) => p.id === mainProgram.id);
+  check("Program-MAIN succession restart: the successor binding is field-validated and reconstructed byte-identically",
+    JSON.stringify(afterSuccessionRestart?.main) === JSON.stringify(transferredBinding),
+    `before=${JSON.stringify(transferredBinding)} after=${JSON.stringify(afterSuccessionRestart?.main)}`);
+  const bootstrapAfterSuccession = await beginBootstrap(mainProgram.id, { cwd: ROOT });
+  check("Program-MAIN bootstrap after succession returns existing:true and opens no competing MAIN",
+    bootstrapAfterSuccession.ok
+      && ((await bootstrapAfterSuccession.json()) as { existing?: boolean }).existing === true,
+    String(bootstrapAfterSuccession.status));
+
+  if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;
   const bindingBeforeStale = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
   const stale = await beginBootstrap(mainProgram.id, { cwd: REPO });
   const staleText = await stale.text();
-  check("Program-MAIN stale binding: repeat is a loud 409 naming slot+openedAt, with no rebind",
+  check("Program-MAIN stale binding after successor kill: repeat is a loud 409 with no heuristic rebind",
     stale.status === 409 && staleText.includes("stale Program-MAIN binding")
-      && staleText.includes(`slot ${bound?.slot}`) && staleText.includes(`openedAt ${bound?.openedAt}`)
+      && staleText.includes(`slot ${transferredBinding?.slot}`) && staleText.includes(`openedAt ${transferredBinding?.openedAt}`)
       && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === bindingBeforeStale
       && (await sessions()).slots.filter((s) => s.cwd).length === occupiedAfterKill,
     `${stale.status} ${staleText}`);
+
+  // Recycle the same slot and bind only a COMPLETE Program to its new occupant. The active Program
+  // still names the old openedAt, so this caller must take the byte-stable ordinary succession path.
+  const recycledOpen = successorSlot === null ? null
+    : await post(`/api/slots/${successorSlot}/open`, { cwd: REPO, label: "ordinary-stale-succession" });
+  const recycledState = readState().slots?.[String(successorSlot)];
+  const completeBoundProgram = await activateNewProgram("Complete Program does not capture succession");
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const completeBoundState = readState();
+  const completeBoundRow = completeBoundState.programs?.find((p) => p.id === completeBoundProgram.id);
+  if (completeBoundRow && successorSlot !== null && recycledState?.openedAt)
+    completeBoundRow.main = { slot: successorSlot, openedAt: recycledState.openedAt,
+      sessionId: recycledState.sessionId ?? null, boundAt: Date.now() };
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(completeBoundState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  await programPost(completeBoundProgram.id, "complete");
+  const recycledToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
+  const recycledOpenedAt = readState().slots?.[String(successorSlot)]?.openedAt ?? Date.now();
+  await Bun.sleep(Math.max(0, (Math.floor(recycledOpenedAt / 1000) + 2) * 1000 - Date.now()));
+  writeFileSync(`${REPO}/HANDOFF.md`, "## Ordinary succession\nstale and complete bindings do not capture this caller\n");
+  spawnSync("git", ["-C", REPO, "add", "HANDOFF.md"]);
+  const ordinaryHandoffCommit = spawnSync("git", ["-C", REPO, "commit", "-qm", "fresh ordinary succession handoff"]);
+  check("ordinary succession setup: recycled occupant and its fresh HANDOFF commit are observable",
+    !!recycledOpen?.ok && ordinaryHandoffCommit.status === 0 && /^[0-9a-f]{32}$/.test(recycledToken),
+    `open=${recycledOpen?.status} commit=${ordinaryHandoffCommit.status} token=${recycledToken.length}`);
+  const mainsBeforeOrdinary = JSON.stringify((await ownerPrograms()).map((p) => [p.id, p.main ?? null]));
+  const ordinaryReceiptsBefore = await contextReceipts();
+  const ordinarySuccession = await selfSucceed(recycledToken, { label: "ordinary-successor" });
+  const ordinaryBody = await ordinarySuccession.json() as { ok?: boolean; slot?: number };
+  const ordinaryHistory = ordinaryBody.slot
+    ? await (await get(`/api/slots/${ordinaryBody.slot}/history`)).json() as { history: { text: string }[] }
+    : { history: [] };
+  check("unbound/stale/complete succession stays ordinary: no receipt and no Program.main changes",
+    ordinarySuccession.ok && ordinaryBody.ok === true
+      && ordinaryHistory.history.at(-1)?.text.startsWith("[fleet succession]") === true
+      && (await contextReceipts()).total === ordinaryReceiptsBefore.total
+      && JSON.stringify((await ownerPrograms()).map((p) => [p.id, p.main ?? null])) === mainsBeforeOrdinary,
+    `${ordinarySuccession.status} ${JSON.stringify(ordinaryBody)}`);
+  if (ordinaryBody.slot) await post(`/api/slots/${ordinaryBody.slot}/kill`, {});
+  await programPost(mainProgram.id, "complete");
 
   const unknownBootstrap = await beginBootstrap("0".repeat(24), { cwd: REPO });
   check("Program-MAIN routes: an unknown bootstrap id is 404", unknownBootstrap.status === 404,

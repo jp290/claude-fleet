@@ -6,9 +6,9 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
-  mergeWatchMessage, auditWatchMessage, laneWatchEventKind, laneWatchPayload,
+  mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
   type LaneWatchEventKind, type LaneWatchEventPayload, type MergeWatchEventPayload,
-  type AuditWatchEventPayload,
+  type AuditWatchEventPayload, type DeployWatchEventPayload,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
@@ -1087,8 +1087,12 @@ interface AuditWatch extends WatchBase {
   repo: string;
   mainAfter: string;
 }
-type Watch = LaneWatch | MergeWatch | AuditWatch;
-const watchKind = (w: Watch): "lane" | "merge" | "audit" => w.kind ?? "lane";
+interface DeployWatch extends WatchBase {
+  kind: "deploy";
+  deployId: string;
+}
+type Watch = LaneWatch | MergeWatch | AuditWatch | DeployWatch;
+const watchKind = (w: Watch): "lane" | "merge" | "audit" | "deploy" => w.kind ?? "lane";
 function watchFrom(raw: unknown): Watch | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const w = raw as Partial<Watch> & Record<string, unknown>;
@@ -1096,6 +1100,9 @@ function watchFrom(raw: unknown): Watch | null {
     || typeof w.armed !== "boolean") return null;
   if (w.kind === "audit") {
     return typeof w.repo === "string" && typeof w.mainAfter === "string" ? raw as AuditWatch : null;
+  }
+  if (w.kind === "deploy") {
+    return typeof w.deployId === "string" && /^[0-9a-f]{8}$/.test(w.deployId) ? raw as DeployWatch : null;
   }
   if (w.kind !== undefined && w.kind !== "lane" && w.kind !== "merge") return null;
   return typeof w.target === "number" && typeof w.targetCwd === "string" && typeof w.targetBranch === "string"
@@ -1137,7 +1144,12 @@ interface AuditFleetEvent extends FleetEventBase {
   kind: "post-land-audit";
   payload: AuditWatchEventPayload;
 }
-type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent;
+interface DeployFleetEvent extends FleetEventBase {
+  subjectDeployId: string;
+  kind: "deploy-terminal";
+  payload: DeployWatchEventPayload;
+}
+type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent;
 
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
@@ -1217,6 +1229,22 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectRepo: e.subjectRepo, subjectMainAfter: e.subjectMainAfter,
       kind: e.kind, payload: { result: p.result as AuditWatchEventPayload["result"], mainSha: p.mainSha,
         covers: p.covers.map((c) => ({ branch: c.branch, mainAfter: c.mainAfter })), checks: p.checks,
+      ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
+  }
+  if (e.kind === "deploy-terminal") {
+    if (typeof e.subjectDeployId !== "string" || !/^[0-9a-f]{8}$/.test(e.subjectDeployId)) return null;
+    const p = e.payload as Partial<DeployWatchEventPayload> | undefined;
+    if (!p || !(p.ok === true || p.ok === false || p.ok === null)
+      || !["build", "restart", "boot"].includes(String(p.stage))
+      || !(typeof p.target === "string" || p.target === null)
+      || !(typeof p.bootHead === "string" || p.bootHead === null)
+      || !(p.hitTarget === true || p.hitTarget === false || p.hitTarget === null)
+      || !(p.bundleStale === true || p.bundleStale === false || p.bundleStale === null)
+      || typeof p.at !== "number" || !Number.isFinite(p.at) || p.at <= 0
+      || !(p.reason === undefined || (typeof p.reason === "string" && p.reason.length <= 200))) return null;
+    return { ...base, subjectDeployId: e.subjectDeployId, kind: e.kind,
+      payload: { ok: p.ok, stage: p.stage as DeployWatchEventPayload["stage"], target: p.target,
+        bootHead: p.bootHead, hitTarget: p.hitTarget, bundleStale: p.bundleStale, at: p.at,
         ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
   }
   return null;
@@ -3829,11 +3857,12 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   if (!s.cwd) return json({ error: "slot not active" }, 400);
   const b = body ?? {};
   const kind = b.kind === undefined ? "lane" : b.kind;
-  if (kind !== "lane" && kind !== "merge" && kind !== "audit")
-    return json({ error: "kind must be 'lane', 'merge', or 'audit'" }, 400);
+  if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy")
+    return json({ error: "kind must be 'lane', 'merge', 'audit', or 'deploy'" }, 400);
 
   let identity: { t: Slot; cwd: string; branch: string; terminal: MergeLast | null } | null = null;
   let auditIdentity: { repo: string; mainAfter: string; row: PostLandAuditRow | null } | null = null;
+  let deployIdentity: { deployId: string; row: DeployRow | null } | null = null;
   if (kind === "lane" || kind === "merge") {
     const targetId = Number(b.target ?? NaN) | 0;
     const t = slotFrom(targetId);
@@ -3850,7 +3879,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (kind === "merge" && !terminal && !mergeInflight.has(t.id) && !mergeStart.has(t.id))
       return json({ error: "no running or persisted terminal merge exists for this lane identity" }, 409);
     identity = { t, cwd: t.cwd, branch: t.worktree.branch, terminal };
-  } else {
+  } else if (kind === "audit") {
     const repoInput = typeof b.repo === "string" ? b.repo.trim() : "";
     const mainAfter = typeof b.mainAfter === "string" ? b.mainAfter.trim() : "";
     if (!repoInput) return json({ error: "repo must be a git toplevel path" }, 400);
@@ -3867,12 +3896,23 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     if (!row && !queued && !running)
       return json({ error: "no persisted, queued, or running audit exists for that concrete land" }, 409);
     auditIdentity = { repo, mainAfter, row };
+  } else {
+    const deployId = typeof b.deployId === "string" ? b.deployId.trim() : "";
+    if (!/^[0-9a-f]{8}$/.test(deployId))
+      return json({ error: "deployId must be exactly 8 lowercase hexadecimal characters" }, 400);
+    const marker = readDeployMarker();
+    const row = await newestDeployFor(deployId);
+    if (marker?.id !== deployId && !row)
+      return json({ error: "no in-flight or persisted deploy exists with that id — this watch could never fire" }, 409);
+    deployIdentity = { deployId, row };
   }
 
   const dup = watches.find((w) => {
     if (w.slot !== s.id || watchKind(w) !== kind) return false;
     if (kind === "audit") return watchKind(w) === "audit" && "repo" in w
       && w.repo === auditIdentity!.repo && w.mainAfter === auditIdentity!.mainAfter;
+    if (kind === "deploy") return watchKind(w) === "deploy" && "deployId" in w
+      && w.deployId === deployIdentity!.deployId;
     return watchKind(w) === kind && "target" in w && w.target === identity!.t.id
       && w.targetCwd === identity!.cwd && w.targetBranch === identity!.branch
       && (kind === "lane" ? w.armed : true);
@@ -3895,6 +3935,8 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   };
   const w: Watch = kind === "audit"
     ? { ...common, kind: "audit", repo: auditIdentity!.repo, mainAfter: auditIdentity!.mainAfter }
+    : kind === "deploy"
+    ? { ...common, kind: "deploy", deployId: deployIdentity!.deployId }
     : { ...common, kind, target: identity!.t.id, targetCwd: identity!.cwd, targetBranch: identity!.branch };
   watches = [...watches, w];
   pruneSpentWatches(s.id);
@@ -3902,6 +3944,8 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     await mintMergeEvents(identity!.t.id, identity!.cwd, identity!.branch, identity!.terminal);
   else if (kind === "audit" && auditIdentity!.row)
     await mintAuditEvents(auditIdentity!.row);
+  else if (kind === "deploy" && deployIdentity!.row)
+    await mintDeployEvents(deployIdentity!.row);
   else await saveStateNow();
   return json({ ok: true, watch: w });
 }
@@ -4003,6 +4047,25 @@ async function mintAuditEvents(row: PostLandAuditRow): Promise<void> {
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
       receiverIdleSec: w.idleSec, subjectRepo: w.repo, subjectMainAfter: w.mainAfter,
       kind: "post-land-audit", payload: auditEventPayload(row, w.mainAfter), createdAt: now,
+      status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+    };
+    dirty = spendWatch(w, event) || dirty;
+  }
+  if (dirty) await saveStateNow();
+}
+
+async function mintDeployEvents(row: DeployRow): Promise<void> {
+  let dirty = false;
+  const now = Date.now();
+  for (const w of watches) {
+    if (!w.armed || watchKind(w) !== "deploy" || !("deployId" in w) || w.deployId !== row.id) continue;
+    const receiver = slotFrom(w.slot);
+    if (!receiver?.cwd) continue;
+    const event: DeployFleetEvent = {
+      id: randomBytes(12).toString("hex"), watchId: w.id,
+      receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
+      receiverIdleSec: w.idleSec, subjectDeployId: w.deployId,
+      kind: "deploy-terminal", payload: deployEventPayload(row), createdAt: now,
       status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
     };
     dirty = spendWatch(w, event) || dirty;
@@ -6926,6 +6989,11 @@ async function tickWatches(): Promise<void> {
         dirty = true;
         continue;
       }
+      if (watchKind(w) === "deploy" && "deployId" in w) {
+        const row = await newestDeployFor(w.deployId);
+        if (row) await mintDeployEvents(row);
+        continue;
+      }
       if (watchKind(w) === "audit" && "repo" in w) {
         const row = await newestAuditFor(w.repo, w.mainAfter);
         if (row) await mintAuditEvents(row);
@@ -7017,6 +7085,8 @@ async function tickWatches(): Promise<void> {
         ? mergeWatchMessage(event.subjectSlot, event.subjectCwd, event)
         : event.kind === "post-land-audit"
         ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event)
+        : event.kind === "deploy-terminal"
+        ? deployWatchMessage(event.subjectDeployId, event)
         : laneWatchMessage(event.subjectSlot, event.subjectBranch, event);
       try {
         await sendText(s, text, true);
@@ -11213,7 +11283,7 @@ autos = autos.filter((a) => slotFrom(a.slot)?.cwd);
 watches = watches.filter((w) => {
   const s = slotFrom(w.slot);
   if (!s?.cwd) return false;
-  if (watchKind(w) === "audit") return true;
+  if (watchKind(w) === "audit" || watchKind(w) === "deploy") return true;
   if (!("target" in w)) return false;
   const t = slotFrom(w.target);
   // Preserve the legacy lane-watch boot rule exactly. Merge subscriptions stay visible when the
@@ -12215,8 +12285,40 @@ interface DeployRow {
   ms?: number;
 }
 
-function appendDeployRow(row: DeployRow): void {
-  appendEvent(DEPLOY_FILE, row as unknown as Record<string, unknown>);
+function appendDeployRow(row: DeployRow): Promise<void> {
+  return appendEvent(DEPLOY_FILE, row as unknown as Record<string, unknown>);
+}
+
+function deployEventPayload(row: DeployRow): DeployWatchEventPayload {
+  return {
+    ok: row.ok, stage: row.stage, target: row.target, bootHead: row.bootHead,
+    hitTarget: row.hitTarget, bundleStale: row.bundleStale, at: row.at,
+    ...(row.reason ? { reason: row.reason.slice(0, 200) } : {}),
+  };
+}
+
+function validDeployRow(raw: unknown): DeployRow | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Partial<DeployRow>;
+  if (typeof row.id !== "string" || !/^[0-9a-f]{8}$/.test(row.id)
+    || !(row.ok === true || row.ok === false || row.ok === null)
+    || !["build", "restart", "boot"].includes(String(row.stage))
+    || !(typeof row.target === "string" || row.target === null)
+    || !(typeof row.bootHead === "string" || row.bootHead === null)
+    || !(row.hitTarget === true || row.hitTarget === false || row.hitTarget === null)
+    || !(row.bundleStale === true || row.bundleStale === false || row.bundleStale === null)
+    || typeof row.at !== "number" || !Number.isFinite(row.at) || row.at <= 0
+    || !(row.reason === undefined || typeof row.reason === "string")) return null;
+  return row as DeployRow;
+}
+
+async function newestDeployFor(deployId: string): Promise<DeployRow | null> {
+  const { rows } = await readLedger<unknown>(DEPLOY_FILE);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = validDeployRow(rows[i]);
+    if (row?.id === deployId) return row;
+  }
+  return null;
 }
 
 function readDeployMarker(): DeployMarker | null {
@@ -12281,7 +12383,7 @@ async function resolveDeployMarker(): Promise<void> {
   if (!m) return;
   clearDeployMarker();
   const row = await judgeDeploy(m, "boot");
-  appendDeployRow(row);
+  await appendDeployRow(row);
   audit("deploy", undefined, `${m.id} ${row.ok === true ? "verified" : row.ok === false ? "FAILED" : "unverified"}`
     + (row.reason ? `: ${row.reason.slice(0, 160)}` : ""));
   if (row.ok !== true) console.log(`deploy ${m.id}: ${row.ok === false ? "FAILED" : "unverified"} — ${row.reason ?? ""}`);
@@ -12336,7 +12438,7 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
   clearDeployMarker();
   // judged with the SAME function the next boot uses, so the row names the residual gap rather than
   // just the exit code: this is the `bootHead != HEAD` case, measured by the process that caused it.
-  appendDeployRow({
+  await appendDeployRow({
     ...await judgeDeploy(m, "restart",
       `the restart command failed (exit ${exitCode}) — the server is still running the old code`),
     exitCode, out,
@@ -12375,7 +12477,7 @@ async function deployRun(by: DeployBy): Promise<Response> {
     // Old, and WE are still alive to read it: the restart never took. Close it as failed rather
     // than blocking the verb forever on a deploy that will never be resolved by anyone else.
     clearDeployMarker();
-    appendDeployRow(await judgeDeploy(pending, "restart",
+    await appendDeployRow(await judgeDeploy(pending, "restart",
       "no boot ever claimed this deploy — the process that wrote the marker is still running, so the restart did not take"));
     audit("deploy", undefined, `${pending.id} FAILED: restart never took`);
   }
@@ -12390,7 +12492,7 @@ async function deployRun(by: DeployBy): Promise<Response> {
   // server is never touched: rule 3.
   const build = await runDeployBuild();
   if (build.exitCode !== 0) {
-    appendDeployRow({
+    await appendDeployRow({
       at: Date.now(), id, by, stage: "build", ok: false, target,
       bootHead: BOOT_HEAD, head: target, hitTarget: BOOT_HEAD === null ? null : BOOT_HEAD === target,
       bundleStale: bundleStale().stale,

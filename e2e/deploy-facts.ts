@@ -11,7 +11,7 @@
 // the value it expects rather than reading once and hoping the tick already fired.
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { check, get, post, restartSrv, ROOT } from "./harness";
+import { BASE, check, get, paneEnv, post, restartSrv, ROOT } from "./harness";
 
 const TMP = process.env.TMPDIR ?? "/tmp";
 const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
@@ -19,8 +19,22 @@ const FIX = `${TMP}/fleet-e2e-deploy-${process.pid}`;
 interface Gap { bootHead: string | null; head: string | null; behindCount: number | null; codeBehind: boolean | null }
 interface Bundle { appJsMtime: number | null; shareJsMtime: number | null; srcNewestMtime: number | null; stale: boolean | null }
 interface Facts { deployGap?: Gap | null; bundleStale?: Bundle | null }
+interface DeployWatchRow { id: string; kind: "deploy"; deployId: string; armed: boolean }
+interface DeployEventRow {
+  id: string; watchId: string; kind: "deploy-terminal"; subjectDeployId: string;
+  payload: { ok: boolean | null; stage: string; hitTarget: boolean | null; bundleStale: boolean | null };
+  status: string;
+}
 
 const facts = async (): Promise<Facts> => (await (await get("/api/sessions")).json()) as Facts;
+const selfDeployWatch = (token: string, deployId: string): Promise<Response> =>
+  fetch(`${BASE}/api/self/watch`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
+    body: JSON.stringify({ kind: "deploy", deployId, idleSec: 0 }),
+  });
+const deployEvents = async (): Promise<DeployEventRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as DeployEventRow[])
+    .filter((e) => e.kind === "deploy-terminal");
 
 // the tick is 10 s wide, so "not yet" and "wrong" are different answers. Poll for the expected
 // shape and report the LAST reading on failure — a bare false would say nothing about which.
@@ -156,6 +170,13 @@ export async function run(): Promise<void> {
   // is asserted as ITS OWN check, because a deploy against a closed gap would be vacuum-green.
   {
     const marker = `${ROOT}/deploy-inflight.json`;
+    const receiverId = ((await (await get("/api/sessions")).json()) as
+      { slots: { id: number; cwd: string | null }[] }).slots.find((s) => s.cwd === null)?.id ?? 0;
+    const receiverOpen = receiverId ? await post(`/api/slots/${receiverId}/open`, { cwd: FIX }) : null;
+    const receiverToken = receiverId ? await paneEnv(`s${receiverId}`, "FLEET_SELF_TOKEN") ?? "" : "";
+    check("§5 deploy restart watch setup: a non-lane receiver has its scoped token before the kill",
+      receiverOpen?.ok === true && /^[0-9a-f]{32}$/.test(receiverToken),
+      JSON.stringify({ receiverId, open: receiverOpen?.status, tokenLength: receiverToken.length }));
     const buildRuns = (): number => {
       try { return readFileSync(`${FIX}/buildruns`, "utf8").split("\n").filter(Boolean).length; } catch { return 0; }
     };
@@ -259,11 +280,18 @@ export async function run(): Promise<void> {
       const before = buildRuns();
       const r = await post("/api/deploy", {});
       const b = (await r.json()) as { ok: unknown; id?: string; target?: string };
+      // The deploy's own timer kills srv 250 ms after this response. Subscribe before doing even
+      // local check bookkeeping so this measures the marker-admission window rather than timing luck.
+      const restartSubR = b.id ? await selfDeployWatch(receiverToken, b.id) : new Response(null, { status: 599 });
+      const restartSub = await restartSubR.json().catch(() => ({})) as { watch?: DeployWatchRow; error?: string };
       check("§5c the verb accepts and names its target, still without claiming success",
         r.status === 202 && b.ok === null && /^[0-9a-f]{40}$/.test(b.target ?? ""),
         `${r.status} ${JSON.stringify(b).slice(0, 200)}`);
       check("§5c the build ran BEFORE the kill — one more run, in the deployed repo",
         buildRuns() === before + 1, `${before} → ${buildRuns()}`);
+      check("§5c deploy watch subscribes while the durable marker is in flight, before srv dies",
+        restartSubR.ok && restartSub.watch?.armed === true && restartSub.watch.deployId === b.id,
+        `${restartSubR.status} ${JSON.stringify(restartSub)}`);
       // THE PRECONDITION OF EVERYTHING BELOW: the process really died. If it did not, the boot-side
       // verdict was never exercised and every check after this would be measuring nothing.
       let dead = false;
@@ -285,6 +313,16 @@ export async function run(): Promise<void> {
           && row.bundleStale === false, JSON.stringify(row).slice(0, 300));
       check("§5c ...and the marker is consumed, so the next boot does not judge it a second time",
         !existsSync(marker) && d.inFlight === null, JSON.stringify(d.inFlight));
+      let restartEvent: DeployEventRow | undefined;
+      for (let i = 0; i < 120 && restartEvent?.status !== "delivered"; i++) {
+        restartEvent = (await deployEvents()).find((e) => e.watchId === restartSub.watch?.id);
+        if (restartEvent?.status !== "delivered") await Bun.sleep(100);
+      }
+      check("§5c deploy watch survives srv restart, then boot row level-mints and delivers exactly one event",
+        restartEvent !== undefined && restartEvent.subjectDeployId === b.id && restartEvent.payload.ok === true
+          && restartEvent.payload.stage === "boot" && restartEvent.payload.hitTarget === true
+          && (await deployEvents()).filter((e) => e.watchId === restartSub.watch?.id).length === 1,
+        JSON.stringify(restartEvent));
       const f = await settle((x) => x.deployGap?.behindCount === 0);
       check("§5c the fact the verb exists for now reads clear on the owner's own poll",
         f.deployGap?.behindCount === 0 && f.bundleStale?.stale === false,
@@ -319,6 +357,7 @@ export async function run(): Promise<void> {
     else process.env.FLEET_REPO_DIR = priorRepoDir;
     if (priorBuildCmd === undefined) delete process.env.FLEET_DEPLOY_BUILD_CMD;
     else process.env.FLEET_DEPLOY_BUILD_CMD = priorBuildCmd;
+    if (receiverId) await post(`/api/slots/${receiverId}/kill`, {});
   }
 
   // back to the wrapper's own env for every module after this one

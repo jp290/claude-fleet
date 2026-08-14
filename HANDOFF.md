@@ -1,3 +1,49 @@
+# HANDOFF — Session 58 (2026-08-14: Wahrheitsschnitt + Typed Deploy Outcome — die letzte Operation bekam ihren typisierten Rückkanal; gebaut, gelandet, deployt, Deploy-Live-Canary level-triggered bestanden) · 57/56/55/54/53b darunter
+
+**ctx beim Schreiben: 21,6 % (GEMESSEN am Owner-Poll, 215 749 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: zwei Lands — der MAIN-direct-Wahrheitsschnitt `074067e` (Merge-Subscribe-Reihenfolge
+vereinheitlicht, stale `codex.automatable:false`-Claim in CLAUDE.md lokal als überholt markiert,
+AGENTS.md geprüft und ehrlich als bereits aktuell befunden; Preflight `b287d30e…`, Pins ALL PASS)
+und der Hauptschnitt `42ec025` (genau EINE Codex-Lane, gpt-5.6-sol high, Task `2808a559` über den
+Dispatch-Knopf, 54 min) — ein Deploy `821b4b0b`, drei typisierte Event-Rückwege (merge/audit/deploy)
+alle empfangen, geprüft, geackt. Core-Doc Workstream 10. Arbeitsmodus wie S51–57.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `42ec025` + dieser Doc-Commit (MAIN-direct). Baum sauber.
+- **Live-Server:** Deploy `821b4b0b` `ok:true`/`hitTarget:true` (Boot-Verdikt), `bootHead == 42ec025`,
+  `bundleStale:false`, `codeBehind:false`.
+- **Audit:** Post-Land-Audit **grün, 2197 Checks / 0 failed, 785,6 s**, covers `42ec025` — +16
+  Checks, die neuen Deploy-Watch-Proben liefen mit.
+- Lane/Task geschlossen (`done`), Worktree weg, alle drei Watches verbraucht, alle Events geackt,
+  Fallback-Auto gelöscht.
+
+## Der Schnitt (Details: Core-Doc Workstream 10)
+
+`POST /api/self/watch {kind:"deploy", deployId:<8-hex>}` abonniert den terminalen Ausgang genau
+einer Deploy-Operation; `deploy-terminal`-Event mit geschlossener dreiwertiger Payload
+(`ok:true|false|null` — `null` heißt UNVERIFIED, nie Pass). Level-Trigger als Garantiepfad
+(Subscribe + Tick gegen Marker/`deploys.jsonl`), restartfest über genau den Restart, den der
+Deploy verursacht; Refusals laut (unbekannte ID 409 „could never fire", malformte 400); Ack/
+Bindung/Retention = bestehende FleetEvent-Maschinerie. **Damit ist heuristisches Lesen der
+neuesten Deploy-Zeile Geschichte: nach `POST /api/deploy` die zurückgegebene `id` merken, nach
+dem Reboot `{kind:"deploy", deployId}` abonnieren — das Event feuert aus dem persistierten Fakt.**
+
+**Briefing-Befund (Prozess):** mein Brief verbot der Lane den vollständigen CLAUDE.md-Read
+(GPT-Kontextdisziplin), AGENTS.md verlangt ihn als harte Loader-Pflicht — die Lane stoppte
+korrekt und eskalierte, Owner-Klarstellung ersetzte den Satz. Regel bis P1-D: die AGENTS.md-
+Pflicht in fremden Briefs nie still gegenbefehlen. Details Core-Doc WS10.
+
+## Nächster Zielkorridor
+
+Unverändert gegenüber S57: P2-B (`programId`/Context-Plan-Referenzen) → Context-Plan-Producer →
+MAIN-Gründungsprompt; ausdrücklich nicht bauen: Registry, Context Compiler, Task-Wellen,
+Worker-Welle 3, Self-Land, Learning Loop, UI. Alle vier Operations-Rückwege (lane/merge/audit/
+deploy) sind jetzt typisiert — der Watch-Rückkanal ist damit für den Korridor komplett.
+Erdung: `./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 57 (2026-08-14: Program/Origin Artifact v1 — der erste Baustein des halbautonomen Korridors; gebaut, gelandet, deployt, Merge- UND Program-Live-Canary bestanden) · 56/55/54/53b darunter
 
 **ctx beim Schreiben: 20,6 % (GEMESSEN am Owner-Poll, 206 224 / 1 000 000 vor der Doc-Arbeit).**

@@ -244,6 +244,48 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    Tasks/Slots/Outcomes (P2-B, wartet auf reale Produzenten — dieser ist jetzt der erste),
    Context-Plan-Producer, MAIN-Bootstrap, UI.
 
+10. **Typed Deploy Outcome — GEBAUT 2026-08-14** (`42ec025`, genau eine Codex-Lane, gpt-5.6-sol
+   high, Task `2808a559` über den Dispatch-Knopf; 54 min Lane-Laufzeit). Die letzte Operation
+   ohne Rückkanal: das Deploy-Verdikt (geschrieben vom NÄCHSTEN Boot, `deploys.jsonl`) hatte
+   keinen Empfänger — wer wissen wollte, pollte die Liste und las heuristisch die neueste Zeile.
+   Schnitt: **`POST /api/self/watch {kind:"deploy", deployId:<8-hex>}`** abonniert den terminalen
+   Ausgang GENAU EINER Deploy-Operation; Event **`deploy-terminal`** mit geschlossener Payload aus
+   der `DeployRow` (`{ok: true|false|null, stage, target, bootHead, hitTarget, bundleStale, at,
+   reason?≤200}`), validiert in beide Richtungen (`validDeployRow` beim Ledger-Lesen,
+   `fleetEventFrom` beim State-Laden). **Level-Trigger ist der Garantiepfad** (Subscribe-Aufruf +
+   Watch-Tick joinen per deployId gegen Marker/Ledger; kein Edge-Mint nötig — die Boot-Row
+   entsteht vor `Bun.serve`, der Tick fängt sie); der Boot-Filter hält Deploy-Watches am Leben
+   (Subjekt ist kein Slot), damit ist der Mechanismus restartfest — genau der Restart, den der
+   Deploy selbst verursacht. `ok:null` wird als UNVERIFIED gerendert, nie als Pass; die Nachricht
+   sagt ausdrücklich „successful notification of the terminal result, not a claim that the deploy
+   succeeded". Refusals laut: unbekannte deployId 409 („could never fire"), malformte 400, Dup
+   `existing:true`, Lane 409 (bestehende Regel). Ack/Empfängerbindung/Retention: unverändert die
+   bestehende FleetEvent-Maschinerie. Keine neue Route, kein Bus, keine UI, `deploys.jsonl`
+   byte-unverändert. Gegenproben: 13 benannte Checks in `e2e/watch.ts` (alle 10 Pflicht-Beweise:
+   Erfolg/Fehlschlag/Unbekannt, Sub vor/nach Terminalfakt, geschlossene Payload, idempotentes +
+   sessiongebundenes Ack, ersetzte/fremde Session, Legacy, Refusals) + Boot-Restart-Zyklus in
+   `e2e/deploy-facts.ts`. Lane-Verify: volle Gate-Kette + isolated-Preview grün (zwei rote
+   Checks im ersten Lauf waren ein echter Probenfehler — die neue Probe überfüllte den
+   Retention-Deckel ihres Receivers — Same-Tree-reproduziert, von der Lane selbst diagnostiziert
+   und behoben). Land-Gate grün (102,6 s, 0 s Wartezeit), Post-Land-Audit **grün, 2197 Checks/0
+   in 785,6 s** (+16 — die neuen Proben liefen mit), Deploy **`821b4b0b`** live
+   (`bootHead == 42ec025`, `bundleStale:false`). **Live-Canary level-triggered mit der konkreten
+   Deploy-ID bestanden, kein heuristisches Zeilen-Lesen:** Subscribe `{kind:"deploy",
+   deployId:"821b4b0b"}` NACH dem Boot feuerte im Subscribe-Aufruf selbst aus dem persistierten
+   Verdikt (`armed:false`, Event `c6c5c138…`), typisiert zugestellt (`ok=YES`, `hitTarget:true`),
+   idempotent geackt (zweites Ack `existing:true`, `acknowledgedAt` unverändert); Refusal- und
+   Dup-Proben live wiederholt (409/400/`existing:true`). Merge- und Audit-Rückweg dieses Lands
+   liefen selbst über die typisierten Events aus WS8 (beide empfangen, gegen Land-Note/HEAD bzw.
+   Audit-Row geprüft, geackt). **Briefing-Befund (Prozess, nicht Code):** der Lane-Brief
+   verbot den vollständigen CLAUDE.md-Read (GPT-Kontextdisziplin), während AGENTS.md ihn als
+   harte Loader-Pflicht verlangt — die Lane stoppte korrekt vor Arbeitsbeginn und eskalierte den
+   Widerspruch wörtlich nach der AGENTS.md-Regel („stop and report any contradiction"); Owner-
+   Klarstellung ersetzte den Brief-Satz. Die beiden Regeln widersprechen sich für fremde
+   Harnesses STRUKTURELL; bis P1-D einen schmaleren Loader-Pfad beweist, gilt: ein Brief darf
+   den CLAUDE.md-Read dosieren wollen, aber nur, indem er die AGENTS.md-Pflicht ausdrücklich
+   owner-seitig adressiert — nicht durch einen stillen Gegenbefehl. Kein Deploy-Schnitt-Scope
+   daraus gemacht (Owner-Vorgabe).
+
 ## Nächster eigener Korridor (Owner-Auftrag 2026-08-13; erster Baustein GEBAUT, Rest offen)
 
 Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:

@@ -1,3 +1,48 @@
+# HANDOFF — Session 60 (2026-08-14: Program-MAIN Bootstrap v1 — atomare MAIN-Bindung mit Gründungsauslieferung; gebaut, gelandet, deployt, Live-Canary voller Kreis) · 59/58/57/56/55 darunter
+
+**ctx beim Schreiben: 22,9 % (GEMESSEN am Owner-Poll, 228 740 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: ein Land (`971c8da`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `2d9e8928` über den
+Dispatch-Knopf, 49 min), ein Deploy (`5f9a435e`), Live-Canary voller Kreis, Core-Doc Workstream 13.
+Arbeitsmodus wie S51–59.
+
+## Zustand bei der Übergabe
+
+- **HEAD:** `971c8da` + dieser Doc-Commit (MAIN-direct, Preflight `660b1b92…`). Baum sauber.
+- **Live-Server:** Deploy `5f9a435e` `ok:true`/`hitTarget:true`, `bootHead == 971c8da`,
+  `bundleStale:false`; Verdikt über das typisierte `deploy-terminal`-Event.
+- **Audit:** ROT mit genau einem Fail — **Flake-Familie 5 in Wortlaut-Signatur** („reseed + live
+  bytes … 41 marks, 1..40", verify-tiering §11.2b). Beweis nach der Ordnung gefahren: serieller
+  Same-Tree-`e2e-isolated`-Lauf auf `971c8da` = **ALL PASS** (run
+  `isolated-20260814T110009Z-56123`); adjudiziert als `flake` mit Beleg. 2246 Checks, +23 neue.
+- Lane/Task geschlossen, Worktree weg, alle vier Watches verbraucht (lane/merge/audit/deploy),
+  alle Events geackt, Fallback-Auto verbraucht, Canary-Program über complete geschlossen,
+  Canary-Slot gekillt. Der Canary-Receipt bleibt bewusst im append-only Ledger.
+
+## Der Schnitt (Details: Core-Doc Workstream 13)
+
+`POST /api/programs/:id/bootstrap-main` (owner-only): ein aktives Program gründet genau einen
+autoritativen Program-MAIN — Bindung `Program.main {slot, openedAt, sessionId, boundAt}` aus
+servergelesenen Fakten, geschrieben erst NACH erfolgreicher Zustellung des servergebauten
+Gründungsprompts (Program-Inhalt verbatim + planContext-Anker unter eigenen
+`BOOTSTRAP_CONTEXT_*`-Konstanten + Receipt mit `programId`/`taskId:null`). Readiness über den neu
+extrahierten geteilten Helfer `waitForFoundingReadiness` (Dispatch-Tail nimmt dieselbe Schleife,
+Pin erzwingt es). Jeder Fehlpfad räumt den Slot und hinterlässt weder Bindung noch Receipt.
+Idempotenz bei lebender Bindung (`existing:true`), stale Bindung 409 ohne Auto-Rebind, Self-Sicht
+nur für den gebundenen Occupant. `Slot.programId` bleibt reine Task-/Lane-Provenienz.
+
+## Nächster Zielkorridor
+
+Die Korridor-Kette ist bis zur gegründeten MAIN-Session durchgehend mechanisiert. Zwei ehrliche
+Kandidaten: **program-aware Succession** (ein `succeed` eines gebundenen MAIN hinterlässt heute
+eine stale Bindung — der Nachfolger erbt sie nicht) oder **Self-Land als Shadow-Klassifikation**
+(Kickoff §7 / Doktrin §12). Beides war ausdrücklich NICHT Teil dieses Schnitts.
+
+Ausdrücklich weiter NICHT bauen: Context Registry, allgemeiner Compiler, Task-Wellen,
+Worker-Welle 3, Learning Loop, Work-Trail-Analyst, UI, Event-Bus, SkillRef/CapabilitySnapshot.
+Erdung: `./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
+
+---
+
 # HANDOFF — Session 59 (2026-08-14: ZWEI Schnitte — P2-B1 `programId` von Task bis Outcome, und ContextPlan v1 als Projektion mit unveränderlichem Delivery-Receipt; beide gebaut, gelandet, deployt, live bewiesen) · 58/57/56/55/54 darunter
 
 **ctx beim Schreiben: 24,2 % (GEMESSEN am Owner-Poll, 242 151 / 1 000 000 vor der Doc-Arbeit).**

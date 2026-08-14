@@ -394,6 +394,57 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    nur vorhandene Zeiger ausgewählt), neue/geänderte Packs, UI, Rücklesen eines Receipts, eine
    Capability-PROBE (die Fähigkeitsliste ist eine benannte Konstante mit Begründung, keine Messung).
 
+13. **Program-MAIN Bootstrap v1 — GEBAUT 2026-08-14** (`971c8da`, genau eine Codex-Lane,
+   gpt-5.6-sol high, Task `2d9e8928` über den Dispatch-Knopf; 49 min Lane-Laufzeit). **Der
+   Korridor-Schritt, für den WS12 den Producer auf schlichte Fakten geschnitten hat:** ein aktives
+   Program kann owner-gesteuert genau einen autoritativen Program-MAIN gründen, und
+   Authority-Bindung und Gründungsauslieferung sind EIN atomarer Vertrag — `Program.main` existiert
+   genau dann, wenn der Gründungsbrief tatsächlich zugestellt wurde.
+   Schnitt: `POST /api/programs/:id/bootstrap-main` (owner-only, im bestehenden
+   `handleOwnerProgramRoute`; Gate- und Action-Regex erweitert, der Security-Regex-Pin in
+   `e2e/security.ts` zog mit). Body `{cwd (Pflicht), harness?, model?, effort?, label?}` —
+   validiert über dieselben `harnessIdOf`/`modelOf`/`effortOf` wie jeder attended Spawn.
+   `Program.main? {slot, openedAt, sessionId, boundAt}` aus servergelesenen Occupant-Fakten, nie
+   aus dem Body; `proposedBy` bleibt unveränderte Herkunft; `Slot.programId` bleibt reine
+   Task-/Lane-Provenienz und wird NICHT zur MAIN-Bindung umgedeutet. Ablauf nach der
+   Succession-Rail-Disziplin: freier Slot + `laneSpawn`-Reservierung → `openSlot` mit explizitem
+   cwd → Boot-Gnadenfrist + `canDeliver` mit Owner-Waiver (das Alive-Gate hält: eine leere Shell
+   würde den Brief AUSFÜHREN) → Readiness über den NEU EXTRAHIERTEN geteilten Helfer
+   `waitForFoundingReadiness` (beide Gründungs-Rails — Dispatch-Tail und Bootstrap — nehmen
+   dieselbe Schleife; der Pin verlangt es) → servergebauter Gründungsprompt
+   (`buildProgramMainBrief`: Rolle + owner-bestätigter Program-Inhalt verbatim als JSON +
+   Erdungsschritte im Succession-Ton + ContextPlan-Anker-Block aus `planContext` unter eigenen
+   `BOOTSTRAP_CONTEXT_*`-Konstanten mit begründeten Capabilities) → HEAD+Branch serverseitig VOR
+   dem Send (unlesbar ⇒ keine Auslieferung, kein erfundener Receipt) → `sendText` → erst DANACH
+   Bindung + Receipt (bestehende Mechanik, `context-receipts.jsonl`, `taskId:null`/`originId:null`,
+   `programId` gesetzt) + `saveStateNow`. Jeder Fehlpfad (openSlot-Throw, Gate, blocked screen,
+   Readiness-Timeout, Git unlesbar, Send-Throw) räumt den Slot ab und hinterlässt weder Bindung
+   noch Receipt. Identische Wiederholung bei lebender Bindung ⇒ `existing:true` (die Bindung ist
+   die Identität, der Body wird nicht re-verglichen); tote/verschobene Bindung ⇒ 409
+   „stale … slot N openedAt T", kein Auto-Rebind; falscher Status/unbekannte ID/kein Slot/
+   Concurrent-Bootstrap ⇒ laute 409/404. Self-Sicht: `GET /api/self/programs` zeigt zusätzlich
+   Programs, deren `main` DIESEN Occupant nennt (slot+openedAt); Lane-409 bleibt. Load
+   rekonstruiert `main` feldvalidiert, Legacy ohne `main` lädt unverändert. Kein Konsument der
+   Bindung in Tick/Gate/Dispatcher.
+   Lane-Verify: volle Gate-Kette + isolated-Vorschau ALL PASS (zwei rote claude-gate-Läufe von der
+   Lane korrekt per Same-Tree-Rerun als nichtdeterministisch adjudiziert, Transkripte extern).
+   Land-Gate grün (92,9 s, 0 s Wartezeit). Post-Land-Audit **rot mit genau einem Fail — Flake-
+   Familie 5 in Wortlaut-Signatur** („reseed + live bytes … 41 marks, 1..40", verify-tiering
+   §11.2b); Beweis nach der Ordnung: serieller Same-Tree-`e2e-isolated`-Lauf auf `971c8da` =
+   **ALL PASS** (run `isolated-20260814T110009Z-56123`), adjudiziert als `flake` mit Beleg. Deploy
+   **`5f9a435e`** live (`bootHead == 971c8da`, `hitTarget:true`, `bundleStale:false`), Verdikt über
+   das typisierte `deploy-terminal`-Event (level-getriggert aus dem persistierten Fakt).
+   **Live-Canary bestanden, voller Kreis:** Wegwerf-Program → Bootstrap auf `proposed` 409 mit
+   Status-Nennung, unbekannte ID 404, fehlendes cwd 400 → nach confirm/activate echter Bootstrap
+   (4,5 s, Bindung nennt den realen Occupant samt sessionId), Pane zeigt den Gründungsprompt mit
+   Program-Titel und Anker-Block, Receipt trägt `programId`/`taskId:null`/`originId:null`/
+   `head == Live-HEAD`/`branch main`/2+4=6 Packs → Wiederholung (auch mit anderem cwd)
+   `existing:true`, kein zweiter Receipt → Self-Sicht: nur der gebundene Occupant sieht das
+   Program, die unbeteiligte MAIN-Session nicht → Slot-Kill, erneuter Bootstrap 409 „stale …
+   slot 2 openedAt …" → Program über complete geschlossen.
+   **Bewusst nicht gebaut:** program-aware Succession, CompletionView/complete-abort-Umbau,
+   Self-Land, Auto-Task-Erzeugung, Event-Bus, SkillRef/CapabilitySnapshot, Context Registry, UI.
+
 ## Nächster eigener Korridor (Owner-Auftrag 2026-08-13; erster Baustein GEBAUT, Rest offen)
 
 Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:
@@ -405,17 +456,16 @@ Verbesserungen vor. **Ausdrücklich noch nicht bauen:** Program Registry ·
 Context Compiler/Context-Plan-Producer · neue Context Packs ohne realen Trigger · Task-Wellen ·
 Worker-Migrationswelle 3 · Self-Land · Learning Loop · allgemeine UI.
 
-**Der Context-Plan-Producer ist GEBAUT (Workstream 12), und die Owner-Entscheidung dahinter ist
-gefallen: Projektion, kein Artefakt** (2026-08-14). Damit existiert der letzte fehlende Produzent
-des Korridors. **Empfohlener nächster Schnitt: der Program-MAIN-Gründungsprompt** — er ist jetzt
-ein zweiter Aufrufer von `planContext` mit demselben Receipt an seiner eigenen Auslieferungsgrenze,
-und genau dafür wurde der Producer auf schlichte Fakten statt auf einen Slot geschnitten. Was von
-P2-B übrig ist (SkillRef-/CapabilitySnapshot-Referenzen auf Tasks/Outcomes) wartet weiter auf
-seine Produzenten; ContextPlan-Referenzen braucht es NICHT mehr als Task-Feld, denn der Receipt
-trägt die Zuordnung bereits unveränderlich und rückwirkungssicher — ein persistiertes
-Plan-Feld auf der Task wäre die zweite Wahrheit, die dieser Entscheid gerade vermieden hat.
-Workstream 1, 2, 4, P2-A, 5, P2-B1 und ContextPlan sind gebaut (oben). Dahinter: Self-Land als
-Shadow-Klassifikation (unten).
+**Der Program-MAIN-Gründungsprompt ist GEBAUT (Workstream 13, 2026-08-14).** Die Korridor-Kette
+Owner-Gespräch → Program (WS9) → Owner-Confirm → planContext (WS12) → **servergebauter
+MAIN-Gründungsprompt mit atomarer Bindung (WS13)** steht damit durchgehend mechanisiert bis zur
+gegründeten MAIN-Session; der Receipt macht jede Auslieferung rückwirkungssicher. **Empfohlene
+nächste Schnitte:** ProgramExecutionView/program-aware Succession (der gebundene MAIN kann sein
+Program lesen, aber seine Nachfolge erbt die Bindung noch nicht — ein `succeed` eines gebundenen
+MAIN hinterlässt heute eine stale Bindung) oder Self-Land als Shadow-Klassifikation (unten). Was
+von P2-B übrig ist (SkillRef-/CapabilitySnapshot-Referenzen) wartet weiter auf seine Produzenten;
+ContextPlan-Referenzen braucht es NICHT als Task-Feld (Receipt = die Zuordnung, WS12).
+Workstream 1, 2, 4, P2-A, 5, P2-B1, ContextPlan und Program-MAIN-Bootstrap sind gebaut (oben).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

@@ -748,8 +748,8 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     "blocked-screen gate in canDeliver");
   pin("the dispatch tail waits BOUNDED on the accept marker — a blind sleep is a grace period, never the readiness proof",
     /pane blocked on \$\{rd\.why\}/.test(server) && /never showed its ready marker within/.test(server)
-    && /READY_WAIT_MS/.test(server),
-    "readiness wait in briefAndSend");
+    && /READY_WAIT_MS/.test(server) && /waitForFoundingReadiness\(free, \(\) => !identityLost\(\)\)/.test(server),
+    "shared founding readiness wait used by briefAndSend");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");

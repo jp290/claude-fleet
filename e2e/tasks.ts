@@ -28,9 +28,94 @@ export async function run(ctx: Ctx): Promise<void> {
   check("delete a task", (await post(`/api/tasks/${tJson.task.id}/delete`, {})).ok);
   check("deleted task gone", !(await (await get("/api/sessions")).json() as { tasks: { id: string }[] }).tasks.some((t) => t.id === tJson.task.id));
 
+  // --- Task.programId: owner-only Program membership, loud status/id validation, honest absence. ---
+  const programContent = {
+    title: "Task proposed-status probe", intent: "Prove proposed Programs cannot own tasks.",
+    successCriterion: "The owner task door refuses this id until confirmation.",
+    nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+  };
+  const proposedProgramRes = await post("/api/programs", programContent);
+  const proposedProgram = (await proposedProgramRes.json()) as { program?: { id: string } };
+  const proposedProgramId = proposedProgram.program?.id ?? "";
+  const proposedAttach = await post("/api/tasks", {
+    text: "program proposed-status refusal", programId: proposedProgramId,
+  });
+  const proposedAttachText = await proposedAttach.text();
+  check("Task.programId refuses a proposed Program with 409 naming its id and status",
+    proposedProgramRes.ok && proposedAttach.status === 409
+      && proposedAttachText.includes(proposedProgramId) && proposedAttachText.includes("proposed"),
+    `${proposedAttach.status} ${proposedAttachText}`);
+  const discardProposed = await post(`/api/programs/${proposedProgramId}/discard`, {});
+
+  // outcomes.ts runs before this module and leaves the Program used by its restart probe in the
+  // confirmed state. Reuse it so this section adds no durable registry row to the independent
+  // /api/sessions byte-budget probe below; the proposed-only row above is discarded first.
+  const confirmedProgram = ((await (await get("/api/programs")).json()) as
+    { programs: { id: string; status: "proposed" | "confirmed" | "active" | "complete" }[] })
+    .programs.find((p) => p.status === "confirmed");
+  const provenanceProgramId = confirmedProgram?.id ?? "";
+
+  const confirmProgram = await post(`/api/programs/${provenanceProgramId}/confirm`, {});
+  const confirmedTaskRes = await post("/api/tasks", {
+    text: "program confirmed-status owner mint", programId: provenanceProgramId,
+  });
+  const confirmedTask = (await confirmedTaskRes.json()) as
+    { task?: { id: string; programId?: string } };
+  const confirmedFull = ((await (await get("/api/tasks")).json()) as
+    { tasks: { id: string; programId?: string }[] }).tasks.find((t) => t.id === confirmedTask.task?.id);
+  const confirmedDigest = ((await (await get("/api/sessions")).json()) as
+    { tasks: { id: string; programId?: string }[] }).tasks.find((t) => t.id === confirmedTask.task?.id);
+  check("Task.programId owner mint accepts a confirmed Program and exposes membership on full + digest views",
+    discardProposed.ok && !!confirmedProgram && confirmProgram.ok && confirmedTaskRes.ok
+      && confirmedTask.task?.programId === provenanceProgramId
+      && confirmedFull?.programId === provenanceProgramId && confirmedDigest?.programId === provenanceProgramId,
+    JSON.stringify({ task: confirmedTask.task, full: confirmedFull, digest: confirmedDigest }));
+
+  const activateProgram = await post(`/api/programs/${provenanceProgramId}/activate`, {});
+  const activeTaskRes = await post("/api/tasks", {
+    text: "program active-status owner mint", programId: provenanceProgramId,
+  });
+  const activeTask = (await activeTaskRes.json()) as { task?: { id: string; programId?: string } };
+  check("Task.programId owner mint also accepts an active Program",
+    activateProgram.ok && activeTaskRes.ok && activeTask.task?.programId === provenanceProgramId,
+    `${activeTaskRes.status} ${JSON.stringify(activeTask)}`);
+
+  const unknownProgramId = "0".repeat(24);
+  const unknownAttach = await post("/api/tasks", { text: "program unknown-id refusal", programId: unknownProgramId });
+  const unknownAttachText = await unknownAttach.text();
+  const malformedAttach = await Promise.all([
+    post("/api/tasks", { text: "program empty-id refusal", programId: "" }),
+    post("/api/tasks", { text: "program non-string-id refusal", programId: 7 }),
+  ]);
+  check("Task.programId refuses an unknown id with 409 naming it",
+    unknownAttach.status === 409 && unknownAttachText.includes(unknownProgramId),
+    `${unknownAttach.status} ${unknownAttachText}`);
+  check("Task.programId refuses empty and non-string values as bad programId (400)",
+    malformedAttach.every((r) => r.status === 400), malformedAttach.map((r) => r.status).join(","));
+
+  const stewardToken = ((await (await get("/api/steward/token")).json()) as { token: string }).token;
+  const stewardAttach = await fetch(`${BASE}/api/steward/tasks`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${stewardToken}` },
+    body: JSON.stringify({ text: "steward program attachment refusal", programId: provenanceProgramId }),
+  });
+  const stewardAttachText = await stewardAttach.text();
+  check("Task.programId steward door refuses attachment because only the owner may attach work to a program",
+    stewardAttach.status === 400 && stewardAttachText.includes("only the owner may attach work to a program"),
+    `${stewardAttach.status} ${stewardAttachText}`);
+
+  await restartSrv();
+  const persistedProgramTasks = ((await (await get("/api/tasks")).json()) as
+    { tasks: { id: string; programId?: string }[] }).tasks;
+  check("Task.programId owner membership survives task-state restart without registry revalidation",
+    [confirmedTask.task?.id, activeTask.task?.id].every((id) =>
+      persistedProgramTasks.find((t) => t.id === id)?.programId === provenanceProgramId),
+    JSON.stringify(persistedProgramTasks.filter((t) => t.programId === provenanceProgramId)));
+  for (const id of [confirmedTask.task?.id, activeTask.task?.id]) if (id) await post(`/api/tasks/${id}/delete`, {});
+
   // --- Task.kind: four values, reversible owner route, legacy load migration, and dispatch bolt. ---
   {
-    type KRow = { id: string; kind: string; status: string; note: string | null; [key: string]: unknown };
+    type KRow = { id: string; kind: string; status: string; note: string | null;
+      originId?: unknown; programId?: unknown; [key: string]: unknown };
     const kRows = async (): Promise<KRow[]> =>
       ((await (await get("/api/tasks")).json()) as { tasks: KRow[] }).tasks;
     const kCreateBad = await post("/api/tasks", { text: "kind foreign-value probe", kind: "fuenftes" });
@@ -86,10 +171,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const legacyNote = migrationState?.tasks?.find((t) => t.id === oldNote.id);
     check("Task.kind migration setup: both persisted rows are readable while srv is stopped",
       !!legacyLane && !!legacyNote, migrationError);
-    if (legacyLane) { legacyLane.kind = "lane"; delete legacyLane.originId; }
-    if (legacyNote) { legacyNote.kind = "note"; delete legacyNote.originId; }
+    if (legacyLane) { legacyLane.kind = "lane"; delete legacyLane.originId; delete legacyLane.programId; }
+    if (legacyNote) { legacyNote.kind = "note"; delete legacyNote.originId; legacyNote.programId = 7; }
     const expectLane = legacyLane ? { ...legacyLane, kind: "auftrag" } : null;
     const expectNote = legacyNote ? { ...legacyNote, kind: "notiz" } : null;
+    if (expectNote) delete expectNote.programId;
     if (migrationState) await Bun.write(`${ROOT}/fleet.json`, `${JSON.stringify(migrationState)}\n`);
     await restartSrv();
     const migratedOnce = await kRows();
@@ -99,8 +185,9 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(gotLaneOnce) === JSON.stringify(expectLane)
       && JSON.stringify(gotNoteOnce) === JSON.stringify(expectNote),
       JSON.stringify({ gotLaneOnce, gotNoteOnce, expectLane, expectNote }));
-    check("legacy tasks without originId reload without a provenance backfill",
-      !!gotLaneOnce && !!gotNoteOnce && !("originId" in gotLaneOnce) && !("originId" in gotNoteOnce),
+    check("legacy/malformed tasks reload without originId or programId provenance backfills",
+      !!gotLaneOnce && !!gotNoteOnce && !("originId" in gotLaneOnce) && !("originId" in gotNoteOnce)
+      && !("programId" in gotLaneOnce) && !("programId" in gotNoteOnce),
       JSON.stringify({ gotLaneOnce, gotNoteOnce }));
     await restartSrv();
     const migratedTwice = await kRows();
@@ -1928,7 +2015,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // carry a verdict the children must NOT inherit), so this section restarts srv — FLEET_DISPATCH_REPO
   // rides along for the same reason as (h). ---
   {
-    interface JRow { id: string; originId?: string; status: string; note?: string; kind?: string; source?: string; repo?: string;
+    interface JRow { id: string; originId?: string; programId?: string; status: string; note?: string; kind?: string; source?: string; repo?: string;
       files?: string[]; filesOrigin?: string; cluster?: TaskCluster;
       analysis?: { verdict: string }; refine?: { at: number; unchanged: boolean; count: number } }
     interface JChild { text: string; doneCriterion?: string; verify?: string; files?: string[] }
@@ -1973,7 +2060,23 @@ export async function run(ctx: Ctx): Promise<void> {
     // afterwards (repo inherited, verdict NOT), which is what makes those two checks non-vacuous.
     // No dispatch toggle any more: tickAnalysisSweep runs off FLEET_ANALYSIS_MS alone, and a pending
     // row is unreachable for tickDispatch by construction now (it selects `queued` only).
-    const jT = (await (await post("/api/tasks", { text: "refine parent: two bundled parts and no done-criterion", queue: false, repo: REPO })).json()) as { task: { id: string; originId?: string; repo?: string } };
+    const jTRes = await post("/api/tasks", { text: "refine parent: two bundled parts and no done-criterion",
+      queue: false, repo: REPO, programId: provenanceProgramId });
+    const jTBody = (await jTRes.json()) as
+      { task?: { id: string; originId?: string; programId?: string; repo?: string } };
+    const jT = { task: jTBody.task ?? { id: "", originId: undefined, programId: undefined, repo: undefined } };
+    check("(j) program refine fixture: the active Program mints its parent before closure",
+      jTRes.ok && !!jTBody.task && jT.task.programId === provenanceProgramId,
+      `${jTRes.status} ${JSON.stringify(jTBody)}`);
+    const closeProgram = await post(`/api/programs/${provenanceProgramId}/complete`, {});
+    const closedAttach = await post("/api/tasks", {
+      text: "program complete-status refusal", programId: provenanceProgramId,
+    });
+    const closedAttachText = await closedAttach.text();
+    check("Task.programId refuses a complete Program with 409 while preserving the already-minted parent",
+      closeProgram.ok && closedAttach.status === 409 && closedAttachText.includes(provenanceProgramId)
+      && closedAttachText.includes("complete") && jT.task.programId === provenanceProgramId,
+      `${closedAttach.status} ${closedAttachText} parent=${JSON.stringify(jT.task)}`);
     let jAn: JRow["analysis"];
     for (let i = 0; i < 40 && !jAn; i++) { jAn = (await jRow(jT.task.id))?.analysis; if (!jAn) await Bun.sleep(500); }
     check("(j) fixture: the parent carries an analysis verdict, so \"children inherit none\" can fail",
@@ -2009,12 +2112,14 @@ export async function run(ctx: Ctx): Promise<void> {
       && jMinted.every((k) => k.kind === "auftrag" && k.source === "owner" && k.status === "pending" && k.repo === jT.task.repo),
       `${jc.status} ${JSON.stringify(jMinted)}`);
     const jMintedFull = await Promise.all(jMinted.map((k) => jFull(k.id)));
-    check("(j) refine-confirm children inherit one parent origin while keeping pairwise-distinct task ids",
+    check("(j) refine-confirm children inherit parent origin + program after the Program completed, while task ids stay distinct",
       jT.task.originId === jT.task.id
       && jMintedFull.length === 2
       && jMintedFull.every((k) => k?.originId === jT.task.originId)
+      && jMintedFull.every((k) => k?.programId === jT.task.programId)
       && new Set(jMintedFull.map((k) => k?.id)).size === jMintedFull.length,
-      JSON.stringify({ parent: jT.task, kids: jMintedFull.map((k) => ({ id: k?.id, originId: k?.originId })) }));
+      JSON.stringify({ parent: jT.task, kids: jMintedFull.map((k) =>
+        ({ id: k?.id, originId: k?.originId, programId: k?.programId })) }));
     check("(j) the children carry NO analysis verdict — a promoted split meets the analyst fresh",
       jMinted.every((k) => k.analysis === undefined), JSON.stringify(jMinted.map((k) => k.analysis ?? null)));
     const jKidFull = jMinted[0] ? await jFull(jMinted[0].id) : undefined;

@@ -15,7 +15,7 @@ export async function run(): Promise<void> {
       disposition: string; model: string | null; briefHash: string | null; shortstat: string;
       // optional at the reader because legacy ledger rows predate all four fields. Fresh lane rows
       // always carry harness/effort (null means default adapter/level); only task lanes carry ids.
-      harness?: string | null; effort?: string | null; taskId?: string; originId?: string;
+      harness?: string | null; effort?: string | null; taskId?: string; originId?: string; programId?: string;
       commitCount: number; filesTouched: string[]; e2eTouched: boolean; verified: boolean | null;
       sessionMs: number | null; ownerPrompts: number;
       resolvedConflict: boolean; repairRounds: number; confirmedByHuman: boolean;
@@ -211,7 +211,7 @@ export async function run(): Promise<void> {
       rec5?.disposition === "reverted" && rec5?.commitCount === 1 && (rec5?.filesTouched ?? []).includes("reverted.txt"),
       JSON.stringify(rec5));
     check("outcome: reverted row has no live-slot provenance to invent and records adapter pins as null",
-      !!rec5 && !("taskId" in rec5) && !("originId" in rec5)
+      !!rec5 && !("taskId" in rec5) && !("originId" in rec5) && !("programId" in rec5)
       && rec5.harness === null && rec5.effort === null, JSON.stringify(rec5));
 
     // (6) LANDED after a REPAIRED conflict resolution, confirm-landed by the owner — the full
@@ -285,10 +285,21 @@ export async function run(): Promise<void> {
 
     // (7a) TASK→DISPATCH→SLOT→OUTCOME provenance, including the process boundary. The first lane
     // names every attended spawn pin, then the real server is restarted before teardown: the
-    // killed-empty row can only retain task/origin if saveState + loadState carried the slot stamp.
+    // killed-empty row can only retain task/origin/program if saveState + loadState carried the slot stamp.
+    const outcomeProgramRes = await post("/api/programs", {
+      title: "Outcome provenance program", intent: "Carry owner Program membership through a lane.",
+      successCriterion: "The terminal outcome names the Program attached to its task.",
+      nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+    });
+    const outcomeProgram = (await outcomeProgramRes.json()) as { program?: { id: string } };
+    const outcomeProgramId = outcomeProgram.program?.id ?? "";
+    const outcomeProgramConfirm = await post(`/api/programs/${outcomeProgramId}/confirm`, {});
+    check("provenance setup: an owner Program is confirmed for the task→slot→outcome chain",
+      outcomeProgramRes.ok && outcomeProgramConfirm.ok && /^[0-9a-f]{24}$/.test(outcomeProgramId),
+      `${outcomeProgramRes.status}/${outcomeProgramConfirm.status} ${JSON.stringify(outcomeProgram)}`);
     const pinTask = (await (await post("/api/tasks", {
-      text: "execution-provenance explicit-pin probe", repo: oRepo,
-    })).json()) as { task: { id: string; originId?: string } };
+      text: "execution-provenance explicit-pin probe", repo: oRepo, programId: outcomeProgramId,
+    })).json()) as { task: { id: string; originId?: string; programId?: string } };
     const pinModel = "openai/gpt-5-codex";
     const pinDispatch = await post(`/api/tasks/${pinTask.task.id}/dispatch`, {
       harness: "codex", model: pinModel, effort: "high",
@@ -297,7 +308,7 @@ export async function run(): Promise<void> {
     check("provenance setup: explicit harness/model/effort dispatch creates a task-bound lane",
       pinDispatch.ok && pinLane.ok === true && typeof pinLane.slot === "number" && typeof pinLane.branch === "string",
       `${pinDispatch.status} ${JSON.stringify(pinLane)}`);
-    type PinSlot = { taskId?: string | null; originId?: string | null; harness?: string | null;
+    type PinSlot = { taskId?: string | null; originId?: string | null; programId?: string | null; harness?: string | null;
       model?: string | null; effort?: string | null };
     let pinSlot: PinSlot | undefined;
     for (let i = 0; i < 20; i++) {
@@ -305,19 +316,22 @@ export async function run(): Promise<void> {
         pinSlot = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
           { slots?: Record<string, PinSlot> }).slots?.[String(pinLane.slot)];
       } catch { /* atomic state rename can race this read; retry */ }
-      if (pinSlot?.taskId === pinTask.task.id && pinSlot.originId === pinTask.task.originId) break;
+      if (pinSlot?.taskId === pinTask.task.id && pinSlot.originId === pinTask.task.originId
+        && pinSlot.programId === pinTask.task.programId) break;
       await Bun.sleep(50);
     }
-    check("dispatch stamps taskId/originId and exact requested pins onto the persisted slot",
+    check("dispatch stamps taskId/originId/programId and exact requested pins onto the persisted slot",
       pinSlot?.taskId === pinTask.task.id && pinSlot.originId === pinTask.task.originId
+      && pinSlot.programId === outcomeProgramId && pinTask.task.programId === outcomeProgramId
       && pinSlot.harness === "codex" && pinSlot.model === pinModel && pinSlot.effort === "high",
       JSON.stringify(pinSlot));
     await restartSrv();
     if (typeof pinLane.slot === "number") await post(`/api/slots/${pinLane.slot}/kill`, {});
     const pinOutcome = forBranch(await readOutcomes(), pinLane.branch ?? "");
-    check("outcome: after save/load + killed-empty teardown, task/origin and explicit spawn pins remain exact",
+    check("outcome: after save/load + killed-empty teardown, task/origin/program and explicit spawn pins remain exact",
       pinOutcome?.disposition === "killed-empty"
       && pinOutcome.taskId === pinTask.task.id && pinOutcome.originId === pinTask.task.originId
+      && pinOutcome.programId === outcomeProgramId
       && pinOutcome.harness === "codex" && pinOutcome.model === pinModel && pinOutcome.effort === "high",
       JSON.stringify(pinOutcome));
     await post(`/api/tasks/${pinTask.task.id}/delete`, {});
@@ -336,6 +350,7 @@ export async function run(): Promise<void> {
     check("outcome: a body-less dispatch records task/origin but harness:null and effort:null honestly",
       defaultOutcome?.disposition === "shelved"
       && defaultOutcome.taskId === defaultTask.task.id && defaultOutcome.originId === defaultTask.task.originId
+      && !("programId" in defaultOutcome)
       && defaultOutcome.harness === null && defaultOutcome.effort === null,
       JSON.stringify(defaultOutcome));
     await post(`/api/tasks/${defaultTask.task.id}/delete`, {});
@@ -394,8 +409,8 @@ export async function run(): Promise<void> {
     // release nobody recorded, which is the exact failure this field was added to prevent.
     check("outcome: a hand-opened lane carries no releasedBy key at all (absence ≠ owner)",
       !("releasedBy" in (rec1 ?? {})), JSON.stringify({ releasedBy: rec1?.releasedBy }));
-    check("outcome: a hand-opened lane carries no taskId/originId, while default adapter pins stay explicit null",
-      !!rec1 && !("taskId" in rec1) && !("originId" in rec1)
+    check("outcome: a hand-opened lane carries no taskId/originId/programId, while default adapter pins stay explicit null",
+      !!rec1 && !("taskId" in rec1) && !("originId" in rec1) && !("programId" in rec1)
       && rec1.harness === null && rec1.effort === null, JSON.stringify(rec1));
 
     // (7c) THE DOSSIER — the same lanes read as ONE story instead of six ledgers. Every lane above
@@ -637,6 +652,7 @@ export async function run(): Promise<void> {
     const recLegacy = forBranch(await readOutcomes(), "legacy/pre-review-field");
     check("outcome: a legacy row survives /api/lane-outcomes with old absent fields untouched (reader never throws or defaults)",
       !!recLegacy && !("review" in recLegacy) && !("taskId" in recLegacy) && !("originId" in recLegacy)
+      && !("programId" in recLegacy)
       && !("harness" in recLegacy) && !("effort" in recLegacy), JSON.stringify(recLegacy ?? null).slice(0, 240));
 
     // (9d) …and the renderer keeps the two shapes apart. Asserted over the CLIENT SOURCE, not a

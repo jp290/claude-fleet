@@ -1272,6 +1272,8 @@ interface Task {
   originId?: string; // stable bracket around tasks minted from one request. Root tasks use their
   // own id; refine children inherit it. Absent is the honest shape for a pre-field row, never an
   // empty bracket and never backfilled while loading old state.
+  programId?: string; // owner-attached Program bracket. Absent means this task belongs to no
+  // Program (or predates the field); refine children inherit it, but no load-time backfill occurs.
   text: string;
   source: "owner" | "intake" | "steward";
   from: string | null; // intake sender label (freeform, for display only — never trusted)
@@ -1451,6 +1453,8 @@ interface Slot {
   // null for a hand-opened lane and cleared with the occupant, exactly like releasedBy below.
   originId: string | null; // the stable request bracket of that task, with the same teardown
   // lifetime. null is honest for manual lanes and dispatched legacy tasks whose row cannot say.
+  programId: string | null; // the owner-confirmed Program bracket of that task, with exactly the
+  // same lifetime and honest-null semantics as taskId/originId.
   releasedBy: "owner" | "machine" | null; // how the TASK that spawned this lane was released
   // (Task.releasedBy), carried here because the outcome recorder runs at TEARDOWN — by then the
   // task row has moved to `done`/`pending` and the slot is the only thing that still remembers.
@@ -1493,6 +1497,7 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   effort: null,
   taskId: null,
   originId: null,
+  programId: null,
   releasedBy: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -1743,7 +1748,7 @@ interface AnalysisDigest {
   retry?: { at: number; attempts: number };
 }
 type TaskDigest = Pick<Task, "id" | "source" | "kind" | "status" | "created">
-  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "files" | "filesOrigin" | "cluster">>
+  & Partial<Pick<Task, "from" | "slot" | "note" | "repo" | "programId" | "files" | "filesOrigin" | "cluster">>
   // A brief's timestamp is its bounded top-level generation even when no analysis exists. The
   // text stays exclusively on GET /api/tasks; every polling client can still invalidate stale full
   // data before claiming which bytes release will send.
@@ -1765,6 +1770,7 @@ function taskDigest(t: Task): TaskDigest {
     ...(t.slot ? { slot: t.slot } : {}),
     ...(t.note ? { note: t.note } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
+    ...(t.programId ? { programId: t.programId } : {}),
     ...(view.files ? { files: view.files } : {}),
     ...(view.filesOrigin ? { filesOrigin: view.filesOrigin } : {}),
     ...(view.cluster ? { cluster: view.cluster } : {}),
@@ -2311,12 +2317,12 @@ function saveState(): void {
     worktree: LaneRef | null; model: string | null;
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
-    taskId: string | null; originId: string | null;
+    taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; selfToken: string }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, releasedBy: s.releasedBy, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
@@ -3498,8 +3504,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.container = box.container;               // ...and these two decide WHICH MACHINE it runs on,
   s.containerContext = box.containerContext; // which is the same rule one step further out
 
-  s.taskId = null; // ...and no new occupant inherits the queue row or request bracket of the old
-  s.originId = null; // one. Dispatch stamps both back immediately after this call; manual opens do not
+  s.taskId = null; // ...and no new occupant inherits the queue row or provenance brackets of the old
+  s.originId = null;
+  s.programId = null; // Dispatch stamps all three back immediately after this call; manual opens do not
   s.releasedBy = null; // ...and the previous occupant's release must never be attributed to this
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
@@ -3579,8 +3586,9 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.model = null; // the per-slot model dies with the session it was chosen for
   s.harness = null; // ...as does the harness that ran it: the next occupant of this slot is a new
   s.effort = null;  // session and must be spawned by whatever IT chose, never by what was here
-  s.taskId = null; // ...as do the queue row and stable request bracket that spawned this occupant
+  s.taskId = null; // ...as do the queue row and provenance brackets that spawned this occupant
   s.originId = null;
+  s.programId = null;
   s.releasedBy = null; // ...as does the release that started it — same lifetime, same reason
   detachSlotTasks(s.id, "lane closed before landing — review and requeue if still wanted");
   saveState();
@@ -4542,6 +4550,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     free.releasedBy = next.releasedBy ?? null;
     free.taskId = next.id;
     free.originId = next.originId ?? null;
+    free.programId = next.programId ?? null;
     next.status = "sent";
     next.slot = free.id;
     next.note = clarify ? `clarify lane ${wt.branch} — settling the done-criterion with you` : `lane ${wt.branch}`;
@@ -8701,6 +8710,8 @@ interface LaneOutcome {
   // manual lanes and outcome rows written before this field omit it rather than manufacturing a join.
   originId?: string; // optional for the same reason: only a task row can state its stable request
   // bracket, and absence means this outcome cannot say.
+  programId?: string; // optional because only an owner-linked task row can name its Program;
+  // manual lanes, unlinked tasks and pre-field outcome rows omit it rather than inventing one.
   briefHash: string | null; // stable short hash of the lane's FIRST owner/auto prompt (the
   // founding brief — dispatched lanes are briefed with source "auto", see laneOwnerPrompts)
   // WHO released the task this lane ran (Task.releasedBy, carried via Slot.releasedBy). Written on
@@ -8896,6 +8907,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     effort: s.effort ?? null,
     ...(s.taskId ? { taskId: s.taskId } : {}),
     ...(s.originId ? { originId: s.originId } : {}),
+    ...(s.programId ? { programId: s.programId } : {}),
     briefHash: briefHashOf(firstText),
     // read off the SLOT, not off `facts`: this is a lane-provenance fact like model/briefHash, and
     // LandFacts only reaches a "landed" row — routing it there would leave every killed/shelved
@@ -8940,7 +8952,7 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
 // and the undo record. The landed work is exactly mainBefore..mainAfter on the integration branch.
 // model/harness/effort/briefHash/session proxies are unknowable server-side here → recorded
-// honestly as null/0. taskId/originId are omitted: the branch join is the only surviving route.
+// honestly as null/0. taskId/originId/programId are omitted: the branch join is the only surviving route.
 // `releasedBy` is omitted for the same reason AND a second one: this lane already produced a
 // `landed` row carrying it, so stamping it again would double-count the release in any population
 // counted off this trail. Recover it the way the land-shape facts are recovered — join by branch.
@@ -10934,6 +10946,9 @@ if (existsSync(STATE_FILE)) {
           // Stable request provenance is captured only while a task is alive. A pre-field row
           // stays absent on load — assigning its own id here would be a backfill, not observation.
           originId: typeof t.originId === "string" && t.originId ? t.originId : undefined,
+          // Program membership is owner-authored provenance. Preserve a valid persisted string,
+          // but never infer one from the Program registry or strip one because that registry moved.
+          programId: typeof t.programId === "string" && t.programId ? t.programId : undefined,
           // rows released before this field existed stay ABSENT, and a malformed value degrades to
           // absent too — never to "owner". The whole point of the field is that a released row can
           // be told apart from one nobody recorded; a default would erase exactly that distinction
@@ -11074,6 +11089,8 @@ if (existsSync(STATE_FILE)) {
         if (typeof pti === "string" && pti) s.taskId = pti;
         const poi = (v as { originId?: unknown }).originId;
         if (typeof poi === "string" && poi) s.originId = poi;
+        const ppi = (v as { programId?: unknown }).programId;
+        if (typeof ppi === "string" && ppi) s.programId = ppi;
         // ...and the box, judged by the harness AND the charset on the way back in, for the reason
         // the model above is: the state file is on disk, and a hand-edit must not be able to put a
         // value into a tmux line that a request could never have put there. A rejected value stays
@@ -13058,6 +13075,8 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   if (url.pathname === "/api/steward/tasks" && req.method === "POST") {
     const body = await readJson(req);
     if (!body || typeof body.text !== "string" || !body.text.trim()) return json({ error: "bad text" }, 400);
+    if (body.programId !== undefined)
+      return json({ error: "only the owner may attach work to a program" }, 400);
     // optional `ref`: the pulse's stable condition slug. Refused when malformed rather than
     // silently dropped — a filing that THINKS it is dedup-protected but isn't would re-file
     // every pulse, which is exactly the failure the field exists against.
@@ -15064,6 +15083,16 @@ Bun.serve<WSData>({
       // rather than letting a row arrive already `queued` in a state no tick will ever run.
       if (body.queue === true && isTaskKind(body.kind) && body.kind !== "auftrag")
         return json({ error: `a ${body.kind} is advisory, not a work brief — create it pending, then change its kind` }, 409);
+      let taskProgramId: string | undefined;
+      if (body.programId !== undefined) {
+        if (typeof body.programId !== "string" || !body.programId)
+          return json({ error: "bad programId" }, 400);
+        const program = programs.find((p) => p.id === body.programId);
+        if (!program) return json({ error: `unknown programId: ${body.programId}` }, 409);
+        if (program.status !== "confirmed" && program.status !== "active")
+          return json({ error: `program ${program.id} is ${program.status}` }, 409);
+        taskProgramId = program.id;
+      }
       // per-task target repo (owner-only — the intake and steward routes hard-set null).
       // Validated as an existing directory HERE, at the boundary; git-ness is proven at spawn
       // time by createWorktree, which fails loudly onto the task's note.
@@ -15078,6 +15107,7 @@ Bun.serve<WSData>({
       const t: Task = {
         id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
         source: "owner", from: null, kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
+        ...(taskProgramId ? { programId: taskProgramId } : {}),
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
         note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,
         // create-and-release in one call is still a release (see releaseTask, which the separate
@@ -15243,7 +15273,7 @@ Bun.serve<WSData>({
       const kids: Task[] = proposal.tasks.map((c) => {
         const id = randomBytes(4).toString("hex");
         return {
-          id, originId, text: refineChildText(c),
+          id, originId, ...(t.programId ? { programId: t.programId } : {}), text: refineChildText(c),
           // source "owner": the owner is confirming this text, whatever the original row came in as.
           // NO `brief` and NO `analysis` — a child is a NEW draft, so it must reach the sweep as one:
           // inheriting either would carry a compile and a judgment about a text that no longer exists.

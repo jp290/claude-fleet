@@ -184,7 +184,7 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(tasksAfter) === JSON.stringify(tasksBefore)
       && JSON.stringify(poll.tasks) === JSON.stringify(pollBefore.tasks),
     `full:${tasksBefore.tasks.length}->${tasksAfter.tasks.length} poll:${pollBefore.tasks.length}->${poll.tasks.length}`);
-  check("programs isolation: dispatch configuration is unchanged and no task gains programId",
+  check("programs isolation: dispatch configuration is unchanged and no task gains programId without the owner naming one",
     JSON.stringify(poll.dispatch) === JSON.stringify(pollBefore.dispatch)
       && tasksAfter.tasks.every((t) => !("programId" in t)) && poll.tasks.every((t) => !("programId" in t)),
     `dispatch=${JSON.stringify(poll.dispatch)}`);

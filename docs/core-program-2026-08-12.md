@@ -333,6 +333,67 @@ serverseitiger Land-Pfad, Post-Land-Audit/Undo, Watches, Ledgers.
    **Bewusst nicht gebaut:** Re-Link-/Unlink-Route, Backfill der 56 offenen Zeilen, `programId` auf
    Event-/Watch-Payloads, UI-Rendering, jeder Konsument.
 
+12. **ContextPlan v1 — Projektion + unveränderlicher Delivery-Receipt — GEBAUT 2026-08-14**
+   (`c72b22b`, genau eine Codex-Lane, gpt-5.6-sol high, Task `8a0ec556` über den Dispatch-Knopf;
+   44 min Lane-Laufzeit). **Owner-Entscheid, den dieser Schnitt umsetzt:** ein ContextPlan ist eine
+   FRISCH ABGELEITETE PROJEKTION — advisory, nie persistiert, keine Owner-Bestätigung, wie
+   `Task.cluster`/`files` und ausdrücklich NICHT wie `Program`. **Aber** was tatsächlich an eine
+   Session ausgeliefert wurde, darf später nicht aus einem inzwischen bewegten Baum neu hergeleitet
+   werden — also braucht die Ausführungsgrenze einen unveränderlichen RECEIPT.
+   **Befund, der den Schnitt geformt hat:** `context-packs.ts` (187 Zeilen) und
+   `context-pack-validator.ts` waren seit P1-B eine TOTE INSEL — nur `e2e/context-packs.ts`
+   importierte sie, `server.ts` referenzierte beide null mal. Dieser Schnitt gibt ihnen ihren
+   ERSTEN realen Konsumenten, statt eine zweite Schicht daneben zu bauen (Owner-Vorgabe: „keine
+   tote Typ-/Registry-Schicht").
+   Schnitt, drei Teile: **(1)** reiner Producer `context-plan.ts` (kein I/O, kein Server-Import,
+   testbar wie `verify-proportion.ts`): `planContext({harness, mode, triggers, capabilities})`
+   wählt aus den sechs unveränderten Pack-Seeds und ist TOTAL — jedes Pack landet in `selected`
+   oder `omitted` mit einem Grund aus geschlossener Menge (`status-not-active` ·
+   `harness-unsupported` · `mode-unsupported` · `trigger-not-matched` · `capability-missing`); ein
+   Pack, das in keinem von beidem stünde, wäre genau die stille Kürzung, gegen die der Receipt
+   existiert. Null/unbekannter Harness löst zentral auf den Default-Adapter auf.
+   **(2)** Der reale Konsument sitzt an DER einen Auslieferungsgrenze — `briefAndSend`s einzigem
+   `sendText` — und liefert wirklich: die gewählten Packs gehen als kompakter ANKER-BLOCK an den
+   Brief (Pack-ID, Pfad, Anker; **nie Inhalt**, denn Packs sind per erster Zeile ihrer eigenen
+   Datei Zeiger und kopierter Inhalt wäre der zweite Wissensspeicher, den sie verbietet). Der
+   gespeicherte `Task.brief` wird dabei NIE mit der Projektion überschrieben. Der Integration-HEAD
+   wird serverseitig VOR dem Send gelesen; ist er unlesbar, wird nicht ausgeliefert, statt einen
+   Receipt mit erfundenem HEAD zu schreiben (der bestehende Requeue-Pfad übernimmt).
+   **(3)** Der Receipt: append-only `context-receipts.jsonl` über das bestehende
+   `appendEvent`-Muster, geschrieben aus dem TATSÄCHLICH gesendeten Text und erst NACH erfolgreichem
+   Send — ein fehlgeschlagener/gehaltener Dispatch schreibt nichts. Felder: stabile `id`, `hash`
+   (sha256 über Anker-Block + receipt-sichtbare Plan-Fakten, im Kommentar exakt benannt, damit ein
+   späterer Leser ihn nachrechnen kann), `at`, `repo`, `head`, `taskId`/`originId`/`programId`,
+   `slot`, `branch`, `harness`/`model`/`effort`, `mode`, `triggers`, `selected` mit Ankern,
+   `omitted` mit Gründen, `deliveredBytes`, `truncated`. Leser: `GET /api/context-receipts`
+   (owner-only) — gehört in DIESEN Schnitt, weil er es ist, der die spätere Sessionanalyse sehend
+   hält. **Kein Konsument des Receipts:** nichts liest ihn in eine Entscheidung zurück.
+   **Warum das auf den Program-MAIN-Gründungsprompt zuläuft:** der spätere Bootstrap ist ein
+   ANDERER Aufrufer desselben Producers, der denselben Receipt schreibt — deshalb nimmt der
+   Producer schlichte Fakten statt eines Slots, und deshalb trägt der Receipt `programId` von Tag
+   eins.
+   **Der Review-Punkt, der genau geprüft wurde, weil eine geschwächte Sonde wie eine Anpassung
+   aussieht:** die Lane stellte die Dossier-Assertion von `text-hash` auf `outcome-task-id` um.
+   Das ist KEINE Aufweichung — sie führte im Produktionscode einen VIERTEN Join ein, der vor beiden
+   Hash-Joins greift und auf der unveränderlichen `taskId` der Outcome-Row beruht, während beide
+   Hash-Joins für Alt-Rows erhalten bleiben. Der Grund ist derselbe wie der des ganzen Schnitts und
+   steht im Code: aktuelle Prompt-Hashes enthalten jetzt einen frisch abgeleiteten Anker-Suffix und
+   dürfen nie aus einem späteren Baum re-derived werden. Zwei Sonden fielen im ersten isolierten
+   Lauf genau daran (exakte Prompt-Erwartungen) — echte Kontraktdrift, korrekt nachgezogen.
+   Land-Gate grün, Post-Land-Audit **grün, 2223 Checks/0** (+16), Deploy **`d44277d5`** live
+   (`bootHead == c72b22b`, `hitTarget:true`, `bundleStale:false`), Verdikt über das typisierte
+   `deploy-terminal`-Event. **Live-Canary bestanden, und er beweist die Nicht-Fiktionalität:** ein
+   echter Dispatch mit programgebundenem Task erzeugte GENAU EINEN Receipt — 2 selected + 4 omitted
+   = 6 Packs (total), `head == c72b22b`, `taskId`/`originId`/`programId` alle drei gesetzt,
+   `harness:"codex"`, `effort:null` ehrlich (keiner angefordert) — und die PANE zeigte exakt die
+   drei Anker, die der Receipt nennt. Nach Löschen des Tasks und Abschluss des Programs trägt die
+   Zeile die `programId` unverändert weiter: die Unveränderlichkeit, die den Zweck erfüllt.
+   **Damit ist auch der P2-B1-Live-Beweis nachgeholt:** dies ist die erste reale Auslieferung, in
+   der eine `programId` vom Task über den Slot bis in ein Ledger durchläuft.
+   **Bewusst nicht gebaut:** Context Registry, Context Compiler (nichts erzeugt Prosa — es werden
+   nur vorhandene Zeiger ausgewählt), neue/geänderte Packs, UI, Rücklesen eines Receipts, eine
+   Capability-PROBE (die Fähigkeitsliste ist eine benannte Konstante mit Begründung, keine Messung).
+
 ## Nächster eigener Korridor (Owner-Auftrag 2026-08-13; erster Baustein GEBAUT, Rest offen)
 
 Die manuell bereits funktionierende halbautonome Kette soll mechanisiert werden:
@@ -344,17 +405,17 @@ Verbesserungen vor. **Ausdrücklich noch nicht bauen:** Program Registry ·
 Context Compiler/Context-Plan-Producer · neue Context Packs ohne realen Trigger · Task-Wellen ·
 Worker-Migrationswelle 3 · Self-Land · Learning Loop · allgemeine UI.
 
-**Empfohlener nächster Schnitt: der Context-Plan-Producer — er ist jetzt der einzige echte
-Engpass.** P2-B ist geteilt und die Program-Hälfte ist gebaut (Workstream 11); was von P2-B
-übrig ist (ContextPlan-/SkillRef-/CapabilitySnapshot-Referenzen auf Tasks/Outcomes) wartet
-unverändert auf reale Produzenten (Owner-Einordnung 2026-08-13), und der einzige fehlende
-Produzent ist der Context-Plan-Producer selbst. **Vor seinem Bau steht eine materielle
-Owner-Entscheidung**, die nicht ableitbar ist: ob ein ContextPlan ein VORGESCHLAGENES,
-owner-bestätigtes Artefakt ist wie ein Program (Propose/Promote, teuer, inspizierbar) oder eine
-ABGELEITETE Projektion wie `Task.cluster`/`files`, die der Server pro Dispatch neu rechnet und
-nie persistiert. Die beiden Formen haben verschiedene Provenienz-Verträge und verschiedene
-Rückwege, und die Wahl bestimmt, was P2-B überhaupt referenzieren KANN. Workstream 1, 2, 4,
-P2-A, 5 und P2-B1 sind gebaut (oben). Dahinter: Self-Land als Shadow-Klassifikation (unten).
+**Der Context-Plan-Producer ist GEBAUT (Workstream 12), und die Owner-Entscheidung dahinter ist
+gefallen: Projektion, kein Artefakt** (2026-08-14). Damit existiert der letzte fehlende Produzent
+des Korridors. **Empfohlener nächster Schnitt: der Program-MAIN-Gründungsprompt** — er ist jetzt
+ein zweiter Aufrufer von `planContext` mit demselben Receipt an seiner eigenen Auslieferungsgrenze,
+und genau dafür wurde der Producer auf schlichte Fakten statt auf einen Slot geschnitten. Was von
+P2-B übrig ist (SkillRef-/CapabilitySnapshot-Referenzen auf Tasks/Outcomes) wartet weiter auf
+seine Produzenten; ContextPlan-Referenzen braucht es NICHT mehr als Task-Feld, denn der Receipt
+trägt die Zuordnung bereits unveränderlich und rückwirkungssicher — ein persistiertes
+Plan-Feld auf der Task wäre die zweite Wahrheit, die dieser Entscheid gerade vermieden hat.
+Workstream 1, 2, 4, P2-A, 5, P2-B1 und ContextPlan sind gebaut (oben). Dahinter: Self-Land als
+Shadow-Klassifikation (unten).
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

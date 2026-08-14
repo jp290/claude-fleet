@@ -1,55 +1,51 @@
-# HANDOFF — Session 59 (2026-08-14: P2-B1 — `programId` von Task bis Outcome; die scheinbare Korridor-Zirkularität aufgelöst, gebaut, gelandet, deployt, alle vier typisierten Rückwege gelaufen) · 58/57/56/55/54 darunter
+# HANDOFF — Session 59 (2026-08-14: ZWEI Schnitte — P2-B1 `programId` von Task bis Outcome, und ContextPlan v1 als Projektion mit unveränderlichem Delivery-Receipt; beide gebaut, gelandet, deployt, live bewiesen) · 58/57/56/55/54 darunter
 
-**ctx beim Schreiben: 17,9 % (GEMESSEN am Owner-Poll, 178 801 / 1 000 000 vor der Doc-Arbeit).**
-Produziert: ein Land (`c20988f`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `9d28dd48` über
-den Dispatch-Knopf, 50 min), ein Deploy (`914537f2`), ein Live-Canary gegen den deployten Server,
-Core-Doc Workstream 11. Arbeitsmodus wie S51–58: dichter Brief mit Zeilenankern, Watch → Event →
-Ack als einziger Rückweg, nur Architektur/Review/Land/Beweise selbst.
+**ctx beim Schreiben: 24,2 % (GEMESSEN am Owner-Poll, 242 151 / 1 000 000 vor der Doc-Arbeit).**
+Produziert: zwei Lands (`c20988f` P2-B1, `c72b22b` ContextPlan — je genau EINE Codex-Lane,
+gpt-5.6-sol high, über den Dispatch-Knopf, 50 bzw. 44 min), zwei Deploys (`914537f2`, `d44277d5`),
+zwei Live-Canaries, Core-Doc Workstreams 11 und 12. Arbeitsmodus wie S51–58.
 
 ## Zustand bei der Übergabe
 
-- **HEAD:** `c20988f` + dieser Doc-Commit (MAIN-direct, Preflight `fb5c6bac…`). Baum sauber.
-- **Live-Server:** Deploy `914537f2` `ok:true`/`hitTarget:true` (Boot-Verdikt über das typisierte
-  `deploy-terminal`-Event), `bootHead == c20988f`, `bundleStale:false`.
-- **Audit:** Post-Land-Audit **grün, 2207 Checks / 0 failed**, covers `c20988f` — +10 Checks.
-- Lane/Task selbst geschlossen (`done`), Worktree weg, alle drei Watches verbraucht, alle vier
-  Events geackt, Fallback-Auto abgelaufen, Canary-Program über activate/complete geschlossen.
+- **HEAD:** `c72b22b` + dieser Doc-Commit (MAIN-direct, Preflight `48cc7c7e…`). Baum sauber.
+- **Live-Server:** Deploy `d44277d5` `ok:true`/`hitTarget:true`, `bootHead == c72b22b`,
+  `bundleStale:false`.
+- **Audits:** beide Lands grün — 2207 Checks/0 (`c20988f`), **2223 Checks/0** (`c72b22b`).
+- Beide Lanes/Tasks geschlossen, Worktrees weg, alle Watches verbraucht, alle Events geackt,
+  beide Canary-Programme über activate/complete geschlossen, Canary-Task gelöscht.
 
-## Der Befund, der diesen Schnitt möglich machte (Details: Core-Doc Workstream 11)
+## Was gebaut wurde (Details: Core-Doc Workstreams 11 + 12)
 
-**Die im Auftrag vermutete Zirkularität ist keine — P2-B zerfällt in zwei Hälften mit
-verschiedenen Voraussetzungen.** Die Program-Hälfte (`programId`) hat ihren realen Produzenten
-seit Workstream 9; die Context-Hälfte (ContextPlan/SkillRef/CapabilitySnapshot) hat ihn nicht.
-Gebaut wurde nur die erste. Und die Zuordnungsnaht brauchte **keine** materielle Entscheidung:
-Tür (owner-only, Spiegel der `Task.repo`-Doktrin), Status-Menge (`confirmed`/`active`) und
-Unveränderlichkeit in v1 sind aus bestehender Doktrin konservativ ableitbar.
+**(1) P2-B1 — `programId` Task → Slot → Outcome.** Die im Auftrag vermutete Zirkularität existiert
+nicht: P2-B zerfällt in eine Program-Hälfte (Produzent seit WS9 real) und eine Context-Hälfte
+(Produzent fehlte). Nur die erste gebaut. Owner-Tür mit lauten 400/409-Refusals, Steward-Tür
+lehnt ab, Intake byte-identisch, Refine-Kinder erben auch über ein `complete` gewordenes Program,
+Load erfindet nie und streicht nie, kein Konsument.
 
-Schnitt: `Task.programId?` nur an der Owner-Tür mit lauten 400/409-Refusals, Steward-Tür lehnt ab,
-Intake byte-identisch; Refine-Kinder erben auch über ein `complete` gewordenes Program hinweg;
-`Slot.programId` mit exakter taskId/originId-Lebensdauer inkl. Restart-Persistenz;
-`LaneOutcome.programId?` additiv, Reverted lässt weg; Load-Normalisierung erfindet nie und
-streicht nie; `TaskDigest` + `src/client.ts`-Deklaration mitgezogen; **kein Konsument**.
+**(2) ContextPlan v1 — Projektion + Receipt.** Owner-Entscheid umgesetzt: frisch abgeleitet,
+advisory, nie persistiert, keine Bestätigung — aber ein unveränderlicher Receipt an der
+Ausführungsgrenze, damit Ausgeliefertes nie aus einem bewegten Baum neu hergeleitet wird.
+**Schlüsselbefund:** `context-packs.ts` + `context-pack-validator.ts` waren seit P1-B eine tote
+Insel (server.ts referenzierte sie null mal); dieser Schnitt gibt ihnen den ersten realen
+Konsumenten. Reiner Producer `context-plan.ts` (total über alle sechs Packs, geschlossene
+Omissionsgründe) · Anker-Block an den Brief, nie Inhalt · HEAD serverseitig VOR dem Send, sonst
+keine Auslieferung · Receipt aus dem tatsächlich gesendeten Text, erst nach erfolgreichem Send ·
+`GET /api/context-receipts` owner-only · nichts liest ihn zurück.
 
-## Nächster Zielkorridor — und die eine Entscheidung, die ich brauche
+## Nächster Zielkorridor
 
-**Der Context-Plan-Producer ist jetzt der einzige echte Engpass**, und vor seinem Bau steht eine
-materielle Owner-Entscheidung, die ich ausdrücklich NICHT auf Verdacht getroffen habe:
+**Der Program-MAIN-Gründungsprompt** — er ist jetzt ein zweiter Aufrufer von `planContext` mit
+demselben Receipt an seiner eigenen Auslieferungsgrenze, und genau dafür ist der Producer auf
+schlichte Fakten statt auf einen Slot geschnitten. Der letzte fehlende Produzent des Korridors
+existiert damit.
 
-> **Ist ein ContextPlan ein vorgeschlagenes, owner-bestätigtes ARTEFAKT (wie `Program`:
-> propose/promote, persistiert, inspizierbar, teuer) — oder eine abgeleitete PROJEKTION (wie
-> `Task.cluster`/`files`: pro Dispatch neu gerechnet, nie persistiert, advisory)?**
+**Eine Einordnung, die eine spätere Session sich sonst neu erarbeitet:** ContextPlan-Referenzen
+braucht es NICHT als Task-Feld. Der Receipt trägt die Zuordnung bereits unveränderlich; ein
+persistiertes Plan-Feld auf der Task wäre die zweite Wahrheit, die dieser Entscheid gerade
+vermieden hat. Von P2-B bleiben nur SkillRef/CapabilitySnapshot offen, weiter ohne Produzenten.
 
-Meine Empfehlung: **Projektion zuerst.** Begründung: die Fleet-Doktrin hat bei
-`cluster`/`files`/`analysis` bereits dreimal gezeigt, dass eine abgeleitete Sicht billiger
-richtig zu halten ist als ein persistiertes Urteil, das gegen einen bewegten Baum altert — und
-ein Context-Plan altert schneller als alles andere, weil er auf Dateien zeigt. Ein Artefakt
-lohnt erst, wenn der Owner ihn KORRIGIEREN können soll; das ist eine Fähigkeit, für die es
-heute keinen Auslöser gibt. Die Projektion lässt sich später zum Artefakt promoten (das
-`files`/`filesOrigin`-Paar ist genau dieser Weg, schon gebaut); umgekehrt ist teuer.
-Was von P2-B übrig ist, referenziert danach den gewählten Produzenten.
-
-Ausdrücklich weiter NICHT bauen: Program Registry, allgemeiner Context Compiler, Task-Wellen,
-Worker-Migrationswelle 3, Self-Land, Learning Loop, UI-Ausbau.
+Ausdrücklich weiter NICHT bauen: Context Registry, allgemeiner Context Compiler, neue Pack-Welle,
+Task-Wellen, Worker-Welle 3, Self-Land, Learning Loop, Work-Trail-Analyst, UI.
 Erdung: `./state.sh` · `./register.sh` · `docs/core-program-2026-08-12.md` · dieser Abschnitt.
 
 ---

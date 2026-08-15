@@ -521,10 +521,9 @@ Owner-Gespräch → Program (WS9) → Owner-Confirm → planContext (WS12) → *
 MAIN-Gründungsprompt mit atomarer Bindung (WS13)** steht damit durchgehend mechanisiert bis zur
 gegründeten MAIN-Session; der Receipt macht jede Auslieferung rückwirkungssicher. **Program-aware Succession ist seit
 2026-08-14 GEBAUT (Workstream 14)** — die Kette trägt damit über den Sessionwechsel hinweg, eine
-gebundene MAIN-Session kann ihre Authority atomar weitergeben. **Empfohlene nächste Schnitte:**
-ProgramExecutionView (was ein Program-MAIN an laufender Arbeit, Watches und Callback-Schulden
-sieht — die Rekonstruktion, die WS14 ausdrücklich NICHT überträgt) oder Self-Land als
-Shadow-Klassifikation (unten). Was
+gebundene MAIN-Session kann ihre Authority atomar weitergeben. **ProgramExecutionView ist seit 2026-08-15 GEBAUT (Workstream 18, `4ef21e2`, unten)** — die
+Rekonstruktion, die WS14 ausdrücklich nicht überträgt, ist damit als read-only-Projektion da.
+**Empfohlener nächster Schnitt:** Self-Land als Shadow-Klassifikation (unten). Was
 von P2-B übrig ist (SkillRef-/CapabilitySnapshot-Referenzen) wartet weiter auf seine Produzenten;
 ContextPlan-Referenzen braucht es NICHT als Task-Feld (Receipt = die Zuordnung, WS12).
 Workstream 1, 2, 4, P2-A, 5, P2-B1, ContextPlan, Program-MAIN-Bootstrap und program-aware
@@ -581,6 +580,112 @@ Startkommando/Scrollback. Grenzen, gewollt: Effort-Monotonie und volles 1M-Fenst
 `pi -p` braucht nicht-interaktiv `< /dev/null` (H0-Stolperstein, TUI unbetroffen); Key liegt als
 Env im pi-Prozess (Design der Env-Injektion, nie auf Platte außerhalb der Secrets-Datei).
 Bewusst NICHT gebaut: Provider-Abstraktion, ProgramExecutionView, `automatable:true`.**
+
+**ProgramExecutionView v1 ist seit 2026-08-15 GEBAUT (Workstream 18, `4ef21e2`; genau eine
+Codex-Lane, gpt-5.6-sol high, Task `e5f02773` über den Dispatch-Knopf, ~54 min Worker-Laufzeit).**
+Der Schnitt schließt genau die Lücke, die WS14 ausdrücklich offenließ: ein gebundener Program-MAIN
+kannte seinen Program-INHALT, aber nicht seinen AUSFÜHRUNGSZUSTAND — Watches, Events und laufende
+Arbeit wurden bei der Succession bewusst nicht übertragen.
+
+**Was die View IST:** eine bei jedem Aufruf frisch abgeleitete Projektion über bestehende
+autoritative Fakten. Kein neues persistiertes Urteil, kein zweites Ledger, kein neues Feld an
+Program/Task/LaneOutcome/ContextReceipt, kein Cache. Eine neue Route,
+`GET /api/self/program-execution` (self-token, Nicht-Lane-only 409 mit dem
+Programs-Bracket-Begründungssatz), plus **ein** optionales Provenienzfeld.
+
+**Was sie WEISS, und über welchen Join — jeder ist eine exakte ID-Gleichheit oder das volle
+Occupant-Tripel, keiner ist eine Heuristik:**
+- **Programme**: `p.main.slot === s.id && p.main.openedAt === s.openedAt` — dieselbe
+  Bindungsidentität, die `handleSelfSucceed` und `bootstrapProgramMain` benutzen. NIE über
+  `proposedBy` (das ist Herkunft, nicht Authority). `sessionId` wird als `sessionIdMatch`
+  (`exact|divergent|unknown`) BERICHTET und ist nie das Gate.
+- **Tasks / aktive Lanes / Outcomes / Receipts**: strikte `programId`-Gleichheit
+  (`Task.programId`, `Slot.programId`, `LaneOutcome.programId`, die persistierte `programId` der
+  Context-Receipt-Zeile). Ledger-Zeilen kommen über `readLedger`, `malformed` wird durchgereicht.
+- **Events**: das volle Empfänger-Tripel (`receiverSlot`+`receiverOpenedAt`+`receiverSessionId`),
+  plus `openDebts` = noch nicht quittierte Zustellschulden.
+- **Watches**: nur bei exaktem `slotOpenedAt`.
+
+**Was `unknown` BLEIBT, und zwar benannt statt als 0/false:** die **MAIN-Lineage** (es gibt keinen
+persistierten Fakt über frühere gebundene Sessions eines Programs — die Zeile steht IMMER da, auch
+in der sonst vollständigen Sicht) · Legacy-Watches ohne `slotOpenedAt` · Watches eines fremden
+Occupants · Events mit passendem slot+openedAt aber abweichender `receiverSessionId` (gezählt als
+`sessionMismatch`, nie stillschweigend gedroppt) · malformte Ledger-Zeilen · ein Program-Status
+!= `active`. Jede `unknown`-Zeile trägt eine Zahl (eigene Gegenprobe).
+
+**Die eine ergänzte Provenienz, minimal und an der echten Erzeugungsnaht:** `WatchBase` bekommt
+`slotOpenedAt?: number`, gesetzt AUSSCHLIESSLICH im gemeinsamen `common`-Objekt in
+`createWatchForSlot` — beide Watch-Routen (self und owner) und alle vier Watch-Arten laufen dort
+durch, es gibt keine zweite Schreibstelle. `watchFrom` lässt eine fehlende Angabe als ehrliche
+Legacy-Zeile byte-identisch durch und verwirft einen VORHANDENEN malformten Wert fail-closed.
+**Kein Backfill**, an keiner Stelle: Slot-Ids werden recycelt, also darf der heutige Occupant nie
+auf eine alte Watch geschrieben werden.
+
+**Semantik-Riegel:** ein `complete`/`confirmed`/`proposed` Program rendert `executionState:
+"not-executing"` und nennt seinen Status in `unknown` — geschlossene Programme sehen nie wie
+laufende Ausführung aus. Ein Slot-Recycle (gleiche Nummer, neues `openedAt`) erbt nichts. Die View
+liest ihre eigene Ausgabe nirgends zurück; kein Tick, Dispatcher oder Consumer ändert sein
+Verhalten wegen ihr. Ein Pin hält das mechanisch: der Handler-Körper darf `saveState`,
+`saveStateNow`, `appendEvent`, `sendText`, `spawnCmd` nicht enthalten (Regel über einen
+Funktionskörper-Slice, kein Snapshot).
+
+**Flächen-Entscheid:** protocol/wire apply · server apply · reverse-state apply (nur `watchFrom`) ·
+probes apply (27 neue Gegenproben: 23 in `e2e/programs.ts`, 4 in `e2e/watch.ts`, 1 Pin) ·
+`e2e/security.ts` apply (EIN Eintrag in `PRE_AUTH_ROUTES`, owner-freigegeben — s. u.) ·
+**client not-applicable** (Konsument ist die MAIN-Session über self-token; kein Owner-Poll-Feld,
+kein UI) · docs apply (dieser Abschnitt, MAIN-direct).
+
+**Die Gegenproben sind adversarisch, nicht bestätigend:** der unattributierte Task trägt *denselben
+Branch und dieselbe Erzeugungszeit* wie der attributierte und erscheint trotzdem nicht — das ist
+die Probe gegen Nähe-Zuordnung, nicht bloß gegen ein fehlendes Feld. Ebenso: Receipt mit *fremder*
+und Receipt *ohne* `programId` werden beide ausgeschlossen; `fleet.json` bleibt über einen Aufruf
+byte- UND mtime-identisch, beide Ledger ebenso; der Restart-Vergleich ist feldweise; das
+Fixture-Cleanup stellt die Ledger-Baselines wieder her.
+
+**Land-Weg, und er weicht wie bei WS14 von der Routine ab:** Lane-Verify voll grün (Gate-Kette +
+isolated, alle Tails wörtlich `ALL PASS`). Der Land-Gate wurde dennoch **rot mit genau einem
+Fail**: `boot-race fixture: the pane is still unobserved before immediate /send`
+(`fleet-e2e-harness.ts`, Phase 2 des claude-gate) — eine FIXTURE-VORBEDINGUNG in einer Datei, die
+die Lane nicht angefasst hat, bei `clean rebase` und `waitMs 0`. Beweis nach der Ordnung:
+**serieller Same-Tree-Rerun von `./e2e-claude-gate.sh` auf `4ef21e2` = `ALL PASS`, 0 FAILs** —
+Nichtdeterminismus direkt bewiesen, nicht per Flake-Namen behauptet. Dieselbe Sondenfamilie hat
+schon `46e0653` rot gemacht; die Queue führt sie offen als `911bdb73`. Gelandet über den
+**Confirm-Land** (`{confirm:true}`, Garantie rein git, kein Re-Verify) — die Land-Note trägt
+`confirmedByHuman:true` samt vollständigem rotem Gate-Verdikt. Post-Land-Audit **grün und
+substanziell**: `ms 846716` (14,1 min), `exitCode 0`, **2355/0 Checks (+27 gegenüber 2328)**, 17
+aufbewahrte PASS-Zeilen, Tail `ALL PASS`, `covers` genau ein Land. Deploy **`93a5693a`**
+(`ok:true`, `bootHead == target == 4ef21e2`, `hitTarget:true`, `bundleStale:false`).
+
+**Live-Canary voller Kreis (nach dem Deploy, Wegwerf-Program `cfa94f4f`):** gebundener MAIN sieht
+GENAU sein Program mit `sessionIdMatch:"exact"` und `executionState:"active"`; der Task MIT
+`programId` ist gejoint, der zeitgleich angelegte OHNE bleibt unattributed; der Bootstrap-Receipt
+ist über seine persistierte `programId` gejoint; die Lineage-`unknown`-Zeile steht auch in der
+sonst vollständigen Sicht; die **unbeteiligte MAIN-Session im selben Repo zur selben Zeit sieht
+`programs: []`**; nach `complete` steht `executionState:"not-executing"` plus Status-Zeile. Der
+neue Deploy-Watch trug sofort `slotOpenedAt` — das Provenienzfeld ist live bewiesen.
+
+**Bewusst NICHT gebaut:** Client/UI, Owner-Route, persistierte MAIN-Lineage, Übertragung alter
+Events/Watches bei der Succession, allgemeines Operationsmodell, Self-Land, Event-Bus,
+Task-Erzeugung, adaptive Execution-Policy, jede Automatik auf Basis der View.
+
+**Zwei Befunde aus diesem Schnitt, als Befunde und NICHT als Workstream:**
+1. **`done-looking` ist kein Help-Kanal.** Der Worker wartete 34 min korrekt auf eine
+   Scope-/Authority-Entscheidung — Worktree dirty, uncommitted, `ahead=0` — und war damit für
+   JEDES Watch-Prädikat unsichtbar (`laneWatchSignal` kennt nur `done-looking` und
+   `host-commit-looking`, letzteres verlangt `hostCommits`, seit `fc8f4ad` überall `false`). Ohne
+   die Owner-Meldung hätte MAIN blind auf ein Signal gewartet, das nie kommt. Kleinste spätere
+   Form (Owner-Präzisierung 2026-08-15), NICHT jetzt bauen: REUSE des FleetEvent-Pfads für
+   Worker→MAIN als `clarification-request` mit serverseitiger Slot-/Session-/Task-/Program-
+   Provenienz, REUSE von `canDeliver`/`sendText` für MAIN→Worker, eine schmale Reply-Naht, die
+   Request-ID + Text koppelt und `answered` ERST nach erfolgreichem Send setzt. Kein zweiter Bus,
+   kein Pane-Parsing, kein Event-Sourcing, keine generische RPC-Abstraktion.
+2. **Graphify ist als Architekturbeleg NICHT tragfähig** (abgeschlossene owner-autorisierte
+   Kalibrierung auf exakt `cc0d339`: `reflect` = 0 useful, 3 dead_end, 2 corrected; 1 von 7
+   geprüften Zeilenankern korrekt, fehlende materielle Knoten, ein schädliches leeres
+   `affected`-Ergebnis). Dieser Schnitt wurde vollständig source-first erdet. Der `PreToolUse`-Hook
+   dieses Checkouts fordert weiterhin bei JEDEM Bash-Aufruf `graphify query` — das ist ein
+   dokumentierter DRIFTBEFUND gegen die Messung. **Daraus wird hier ausdrücklich noch kein Hook-
+   oder Tool-Umbau abgeleitet.**
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

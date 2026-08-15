@@ -1,3 +1,58 @@
+# HANDOFF — Session 65 (2026-08-15, Fable-MAIN: ProgramExecutionView v1 — gebaut, gelandet `4ef21e2`, auditiert grün, deployt, Live-Canary voller Kreis) · 64/63/62/61/60 darunter
+
+**ctx beim Schreiben: 24,9 % (GEMESSEN am Owner-Poll, 248 668 / 1 000 000).**
+Produziert: ein Land (`4ef21e2`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `e5f02773` über den
+Dispatch-Knopf, ~54 min Worker-Laufzeit), Audit grün und substanziell (846 716 ms, 2355/0 Checks,
++27, 17 PASS-Zeilen, covers genau dieses Land), Deploy `93a5693a` (`ok:true`,
+`bootHead == target == 4ef21e2`, `hitTarget:true`, `bundleStale:false`), Live-Canary voller Kreis,
+Core-Doc Workstream 18.
+
+## Der Schnitt (Details: Core-Doc WS18, Commit-Body `4ef21e2`)
+
+`GET /api/self/program-execution` (self-token, Nicht-Lane-only 409) — eine bei jedem Aufruf frisch
+abgeleitete Projektion, KEIN neues Ledger, KEIN persistiertes Urteil, kein Cache, kein Client.
+Joins ausschliesslich exakt: Programme über `main.slot + main.openedAt` (nie `proposedBy`;
+`sessionId` wird als `sessionIdMatch` berichtet, nie als Gate), Tasks/Lanes/Outcomes/Receipts über
+strikte `programId`-Gleichheit, Events über das volle Empfänger-Tripel (+`openDebts`), Watches nur
+bei exaktem `slotOpenedAt`. Dazu EIN minimales Provenienzfeld: `WatchBase.slotOpenedAt?`, gesetzt
+nur im gemeinsamen `common`-Objekt von `createWatchForSlot` (beide Routen, alle vier Arten, keine
+zweite Schreibstelle), `watchFrom` lässt Legacy-Absenz byte-identisch durch und verwirft einen
+vorhandenen malformten Wert fail-closed — **kein Backfill**.
+Benannt `unknown` statt 0/false: MAIN-Lineage (steht IMMER da — es gibt keinen persistierten
+Fakt), Legacy-/Fremd-Occupant-Watches, Event-`sessionMismatch`, malformte Ledger-Zeilen,
+Status != `active`. Pin: der Handler-Körper darf keine Mutations-Primitive enthalten.
+
+**Land-Weg wich ab (wie WS14):** Gate rot mit GENAU EINEM Fail — `boot-race fixture: the pane is
+still unobserved before immediate /send` (`fleet-e2e-harness.ts`, claude-gate Phase 2), eine
+Fixture-Vorbedingung in einer von der Lane nicht angefassten Datei, bei `clean rebase`/`waitMs 0`.
+Beweis: **serieller Same-Tree-Rerun = `ALL PASS`, 0 FAILs**. Gelandet über Confirm-Land, Land-Note
+trägt `confirmedByHuman:true` samt vollem rotem Verdikt. Queue-Zeile `911bdb73` führt diese
+Sondenfamilie weiter offen.
+
+## Offen / nächste Schritte
+
+- **Befund, KEIN Workstream — `done-looking` ist kein Help-Kanal:** der Worker wartete 34 min
+  korrekt auf eine Scope-Entscheidung (dirty, uncommitted, `ahead=0`) und war für jedes
+  Watch-Prädikat unsichtbar. Kleinste spätere Form (Owner-Präzisierung 2026-08-15, JETZT NICHT
+  BAUEN): FleetEvent-Pfad für Worker→MAIN als `clarification-request` mit serverseitiger
+  Provenienz, `canDeliver`/`sendText` für MAIN→Worker, schmale Reply-Naht (Request-ID + Text,
+  `answered` erst nach erfolgreichem Send). Kein zweiter Bus, kein Pane-Parsing, kein
+  Event-Sourcing, keine generische RPC-Abstraktion.
+- **Befund, KEIN Umbau — Graphify:** owner-autorisierte Kalibrierung auf `cc0d339` abgeschlossen
+  und negativ (0 useful / 3 dead_end / 2 corrected, 1 von 7 Zeilenankern korrekt). Dieser Schnitt
+  lief vollständig source-first. Der `PreToolUse`-Hook fordert weiterhin bei JEDEM Bash-Aufruf
+  `graphify query` — dokumentierter DRIFTBEFUND; **daraus ist ausdrücklich noch kein Hook-/
+  Tool-Umbau abgeleitet**.
+- **Restartefakt, benannt statt versteckt:** das Wegwerf-Program `cfa94f4f` des Live-Canary bleibt
+  als `complete` stehen — ein `complete` Program kennt keinen `discard`-Übergang („illegal
+  transition"). Tasks (`1ad20e48`, `8a2648b0`) gelöscht, Canary-Slot gekillt, Worktree weg, Baum
+  sauber. Vier ältere Canary-Programme liegen aus demselben Grund dort; der complete-/abort-Umbau
+  steht im Core-Doc als ungebaut.
+- Empfohlener nächster Korridor-Schnitt laut Core-Doc: **Self-Land als Shadow-Klassifikation**.
+- Aus S64 unverändert offen: pi-zai-Feuerprobe für `automatable:true`; Effort-Monotonie und
+  1M-Vollfenster ungemessen; die ~2,5-h-Worker-Laufzeit von `813149d` als Work-Trail-Fall.
+- Queue: `e5f02773` schloss sich beim Land selbst; sonst unverändert.
+
 # HANDOFF — Session 64 (2026-08-15, Fable-MAIN: GLM-H0-Test go + pi-zai-Adapter — gebaut, gelandet `9659901`, auditiert grün, deployt, Live-Canary voller Kreis) · 63/62/61/60/59 darunter
 
 **ctx beim Schreiben: 27,9 % (GEMESSEN am Owner-Poll, 278 761 / 1 000 000).**

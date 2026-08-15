@@ -1,6 +1,6 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -79,7 +79,7 @@ const content: ProgramContent = {
   successCriterion: "The confirmed bracket survives restart without entering the queue.",
   nonGoals: ["Dispatching work"],
   decisions: ["Programs remain separate from tasks"],
-  evidence: ["commit:abc123"],
+  evidence: ["docs/program-origin.md", "commit:abc123"],
   openQuestions: ["Which future tasks belong inside the bracket?"],
 };
 const readState = (): FleetState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as FleetState;
@@ -344,6 +344,22 @@ export async function run(ctx: Ctx): Promise<void> {
     `${preflightFailure.status} ${preflightText}`);
   await programPost(preflightProgram.id, "complete");
 
+  const nonGitProgram = await activateNewProgram("Non-git cwd preflight");
+  const nonGitCwd = `${ROOT}/program-main-non-git`;
+  mkdirSync(nonGitCwd, { recursive: true });
+  await Bun.write(`${nonGitCwd}/.git`, "gitdir: missing-fixture-gitdir\n");
+  const occupiedBeforeNonGit = (await sessions()).slots.filter((s) => s.cwd).length;
+  const receiptsBeforeNonGit = await contextReceipts();
+  const nonGitFailure = await beginBootstrap(nonGitProgram.id, { cwd: nonGitCwd });
+  const nonGitText = await nonGitFailure.text();
+  check("Program-MAIN cwd preflight: a real non-git directory is a loud 400 with no side effect",
+    nonGitFailure.status === 400 && nonGitText.includes("cwd is not a git repository")
+      && (await sessions()).slots.filter((s) => s.cwd).length === occupiedBeforeNonGit
+      && !(await ownerPrograms()).find((p) => p.id === nonGitProgram.id)?.main
+      && (await contextReceipts()).total === receiptsBeforeNonGit.total,
+    `${nonGitFailure.status} ${nonGitText}`);
+  await programPost(nonGitProgram.id, "complete");
+
   const beforeFill = await sessions();
   const filled: number[] = [];
   for (const slot of beforeFill.slots.filter((s) => !s.cwd)) {
@@ -386,9 +402,15 @@ export async function run(ctx: Ctx): Promise<void> {
     prompt.includes("repository root AGENTS.md") && prompt.includes("Ground on git")
     && prompt.includes("working-tree status") && prompt.includes("own run and proof commands")
     && prompt.includes("next smallest bounded Program act") && prompt.includes(title)
+    && prompt.includes("docs/program-origin.md")
     && prompt.includes("Owner-confirmed Program content (verbatim JSON)");
-  const targetContractClean = (prompt: string): boolean =>
-    targetForbidden.every((text) => !prompt.includes(text));
+  const targetContractClean = (prompt: string): boolean => {
+    const marker = "Owner-confirmed Program content (verbatim JSON)";
+    const markerAt = prompt.indexOf(marker);
+    if (markerAt < 0) return false;
+    const builderPrefix = prompt.slice(0, markerAt);
+    return targetForbidden.every((text) => !builderPrefix.includes(text));
+  };
   const promptHash = (prompt: string, receipt: ContextReceipt | undefined): string => {
     if (!receipt) return "";
     const anchorAt = prompt.indexOf("\n\nContextPlan v1 anchors");

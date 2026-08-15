@@ -1,3 +1,49 @@
+# HANDOFF — Session 63 (2026-08-15, Fable-MAIN: Codex Attended Recovery v1.1 — gebaut, gelandet `511c2c2`, auditiert grün, deployt, beide Live-Beweise bestanden, Slot-4-Grenze aus S62 geschlossen) · 62/61/60/59/58 darunter
+
+**ctx beim Schreiben: 21,2 % (GEMESSEN am Owner-Poll, 212 126 / 1 000 000).**
+Produziert: ein Land (`511c2c2`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `daa50418` über den
+Dispatch-Knopf, 28,5 min Worker-Laufzeit), Audit grün (832 s, 2296/0 Checks, +11), Deploy
+`451fa39d` (`ok:true`, `bootHead == 511c2c2`, `hitTarget:true`, `bundleStale:false`), zwei
+Live-Beweise, Core-Doc Workstream 16, CLAUDE.md-Korrektur (gitignored — reist von Hand: der Absatz
+„attended Recovery-Flaeche ist bewusst NICHT gebaut" im Pi/Codex-Adapter-Abschnitt ist durch die
+v1.1-Beschreibung ersetzt).
+
+## Der Schnitt (Details: `docs/codex-recovery.md` §Attended bind, Commit-Body `511c2c2`)
+
+Der Owner kann jetzt eine EXAKTE bestehende Codex-Conversation an ihren Slot binden. Zwei
+Owner-Routen: `GET /api/slots/:id/codex-candidates` (read-only, OHNE Pane-Zeitfenster — der
+v1.1-Unterschied; first-line-only, stabil sortiert, Cap 20 mit `total`/`truncated`,
+`sessionsRoot:false` = unknown ≠ 0, fremd Gebundenes separat als `boundElsewhere`) und
+`POST /api/slots/:id/codex-bind {sessionId}` (volle Re-Validierung am Write-Seam: UUID, exakter
+Rollout-Suffix, `thread_source:"user"`, exaktes cwd, Exklusivität; idempotent `existing:true`;
+409 ohne Mutation bei Konflikt/verschwundener/fremder ID; KEIN tmux/spawn in der Route — Pin in
+`e2e/pins.ts`). Lebender Slot: persist-only, Pane byte-identisch. Toter Slot: resumed über den
+bestehenden ensureSlot-Heal, einzige spawnCmd-Aufrufstelle. Keine neue Persistenz — bestehende
+Felder `sessionId`/`codexRecoveryState`, restartfest per vorhandener Load-Normalisierung. Client:
+`cx`-Chip öffnet One-Shot-Chooser, exakte UUID, Refusals wörtlich. Zustandsmaschine: v1 plus
+genau eine Owner-Transition (`pending|ambiguous|lost` → `bound`); `ambiguous` ist damit nicht
+mehr terminal-bis-Recycle, sondern durch expliziten Bind auflösbar.
+
+**Live-Beweise (beide bestanden, nach Deploy):**
+- **A (Wegwerf-Slot 5, mechanisch frei geprüft, cwd `claude-fleet/docs` — bewusst disjunkt von
+  Slot 4):** Conversation erzeugt (`HIMBEERSAFT-77`), Recycle macht sie historisch (v1-unsichtbar,
+  `pending`), attended Inventar listet genau sie, exakter Bind (idempotenter Zweitversuch
+  `existing:true`, Pane-PID unverändert), Pane-Kill, Heal fährt `codex resume '<exakte-id>'`,
+  Codewort-Recall in der resumten Conversation. Slot 5 danach gekillt.
+- **B (Slot 4, strikt nichtdestruktiv):** Triple geprüft (cwd exakt, Harness codex, `pending`/
+  sessionId null), die vom Owner benannte ID `019fefd0-c4d5-73f0-b42d-80a7cbd258f8` stand in den
+  4 Kandidaten, attended gebunden — Pane-PID 3627 vorher==nachher, kein Kill/Prompt. **Slot 4 ist
+  jetzt `bound`: die S62-Grenze (Pane-Tod hätte die manuell resumte MAIN-Conversation verloren)
+  ist geschlossen.**
+
+## Offen / nächste Schritte
+
+- Owner-Wunsch aus S62 (unverändert offen): die ~2,5-h-Worker-Laufzeit von `813149d` als
+  Work-Trail-Fall analysieren — bewusstes Nicht-Ziel dieses Schnitts.
+- ProgramExecutionView (Core-Doc „empfohlene nächste Schnitte") — bewusstes Nicht-Ziel dieses
+  Schnitts.
+- Queue: Task `daa50418` hat sich beim Land selbst geschlossen; sonst unverändert.
+
 # HANDOFF — Session 62 (2026-08-15, Fable-MAIN: Codex Conversation Recovery v1 — gebaut, gelandet `813149d`, auditiert grün, deployt, beide Live-Canaries bestanden) · 61/60/59/58/57 darunter
 
 **ctx beim Schreiben: 26,5 % (GEMESSEN am Owner-Poll, 265 327 / 1 000 000).**

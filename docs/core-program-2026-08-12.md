@@ -537,9 +537,21 @@ und 0/≥2 Kandidaten bzw. fehlender Rollout stehen typisiert als `pending`/`amb
 der Slot-Row (`codexRecovery`), samt advisory `stream disconnected`-Sichtung. Single Writer per
 Konstruktion: Resume nur nach mechanisch bewiesenem Pane-Tod, ensureSlot ist die einzige
 spawnCmd-Aufrufstelle (Pin). Live bewiesen an MAIN- und Lane-Fall (Codewort-Recall über den
-Pane-Tod, gleiche Session-ID, genau ein Rollout je cwd). Bewusst NICHT gebaut: attended
-Recovery-Fläche (Board-Knopf „gespeicherte Conversation fortsetzen"), Prompt-Replay,
-Claude-/Pi-Recovery — Zustandsmaschine und Grenzen: `docs/codex-recovery.md`.
+Pane-Tod, gleiche Session-ID, genau ein Rollout je cwd). **Codex Attended Recovery v1.1 ist seit
+2026-08-15 GEBAUT (Workstream 16, `511c2c2`):** die v1-Lücke — bestehende/manuell resumte
+Conversations blieben terminal `pending` — ist geschlossen. Der Owner öffnet am `cx`-Chip ein
+One-Shot-Inventar (`GET /api/slots/:id/codex-candidates`: ohne Pane-Zeitfenster, first-line-only,
+stabil sortiert und gecapt, `sessionsRoot:false` = unknown ≠ leer, fremd Gebundenes separat als
+`boundElsewhere`) und bindet mit `POST /api/slots/:id/codex-bind` genau eine ausdrücklich gewählte
+ID nach voller Re-Validierung am Write-Seam — idempotent, 409 ohne Mutation bei Konflikt/
+verschwundener/fremder ID, keine tmux-Berührung aus der Route (Pin); ein toter Slot resumed
+weiterhin ausschließlich über ensureSlots eine spawnCmd-Aufrufstelle. Keine neue Persistenz
+(bestehende Felder `sessionId`/`codexRecoveryState`), damit restartfest per Konstruktion. Live
+bewiesen: voller attended Kreis auf einem Wegwerf-Slot (Recycle → Kandidat → exakter Bind →
+Pane-Tod → `codex resume '<id>'` → Codewort-Recall) und die manuell resumte MAIN-Conversation
+`019fefd0-…` nichtdestruktiv gebunden (Pane-PID unverändert). Weiterhin bewusst NICHT gebaut:
+Prompt-Replay, Rezenz/`--last`, Claude-/Pi-Recovery, allgemeiner Session-/Transcript-Browser —
+Zustandsmaschine und Grenzen: `docs/codex-recovery.md`.
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

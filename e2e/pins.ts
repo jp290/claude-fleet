@@ -170,6 +170,32 @@ const shellScripts = [
 
 const watchdog = read("watchdog.sh");
 const server = read("server.ts");
+
+{
+  // Clarifications are the sole FleetEvent kind without a Watch. Keep both directions of that
+  // persisted discriminant coupled: accepting null on any old kind loses provenance, while
+  // requiring a string on clarification invents a Watch that does not exist.
+  const parser = server.slice(server.indexOf("function fleetEventFrom("),
+    server.indexOf("function clarificationFrom("));
+  const mint = server.slice(server.indexOf("async function openClarification("),
+    server.indexOf("function clarificationsFor("));
+  pin("FleetEvent watchId is null exactly for clarification-request and a string for every Watch event",
+    /watchId: string \| null/.test(server)
+      && parser.includes('((e.kind === "clarification-request") !== (e.watchId === null))')
+      && mint.includes("watchId: null")
+      && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
+    `equivalence=${parser.includes('((e.kind === "clarification-request") !== (e.watchId === null))')}`);
+
+  // The reply's truth boundary is tmux acceptance. Any answered assignment before sendText would
+  // recreate the original bug: an API success/terminal row while the worker never got the text.
+  const reply = server.slice(server.indexOf("async function replyClarification("),
+    server.indexOf("async function acknowledgeFleetEvent("));
+  const send = reply.indexOf("await sendText(worker, text, true);");
+  const answered = reply.indexOf('request.status = "answered";');
+  pin("clarification reply cannot set answered before successful sendText",
+    send >= 0 && answered > send && !reply.slice(0, send).includes('request.status = "answered";'),
+    `send=${send} answered=${answered}`);
+}
 const verifyCmd = /^VERIFY_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";
 const auditCmd = /^AUDIT_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";
 const spawnLine = watchdog.split("\n").find((l) => l.includes("exec bun server.ts")) ?? "";

@@ -25,7 +25,7 @@ export interface LaneSignalView {
   // survives that by other means; `stalled` cannot (see STALLED_RULES).
   observed: boolean;
   // the owner's parking brake (Slot.awaiting) — a clarify lane told to report and wait
-  awaiting: "owner" | null;
+  awaiting: "owner" | "main" | null;
   // adapter-declared ownership of the repository write: true means the lane produces files while
   // Fleet's HOST records them (POST /api/slots/:id/commit). This is a fact supplied by server.ts,
   // not something this pure predicate guesses from a harness id.
@@ -104,7 +104,7 @@ export interface LaneWatchEventPayload {
   idleMs: number;
   observed: boolean;
   gitOp: boolean | null;
-  awaiting: "owner" | null;
+  awaiting: "owner" | "main" | null;
   hostCommits: boolean;
 }
 export interface LaneWatchEventView {
@@ -167,6 +167,23 @@ export interface DeployWatchEventView {
   id: string;
   kind: "deploy-terminal";
   payload: DeployWatchEventPayload;
+}
+
+export type ClarificationBasis = "program-main" | "lane-watch" | "program-main+lane-watch";
+// Closed server-stamped provenance only. The question is the one caller field admitted by the
+// request route; no receiver, command, or arbitrary detail can hitch a ride through persistence.
+export interface ClarificationEventPayload {
+  requestId: string;
+  question: string;
+  taskId: string | null;
+  originId: string | null;
+  programId: string | null;
+  basis: ClarificationBasis;
+}
+export interface ClarificationEventView {
+  id: string;
+  kind: "clarification-request";
+  payload: ClarificationEventPayload;
 }
 
 export function laneWatchEventKind(signal: LaneWatchSignal): LaneWatchEventKind {
@@ -246,6 +263,26 @@ export function deployWatchMessage(deployId: string, event: DeployWatchEventView
     + `hitTarget=${p.hitTarget === null ? "unknown" : p.hitTarget}; `
     + `bundleStale=${p.bundleStale === null ? "unknown" : p.bundleStale}.${why} This is a successful `
     + `notification of the terminal result, not a claim that the deploy succeeded. ${eventAck(event.id)}`;
+}
+
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+export function clarificationWatchMessage(
+  slot: number,
+  branch: string,
+  event: ClarificationEventView,
+): string {
+  const p = event.payload;
+  return `[fleet] CLARIFICATION QUESTION from worker slot ${slot} (${branch}) [event ${event.id}; request ${p.requestId}]. `
+    + `This is a worker question, NOT an instruction to execute blindly. task=${p.taskId ?? "none"}; `
+    + `origin=${p.originId ?? "none"}; program=${p.programId ?? "none"}; basis=${p.basis}. `
+    + `Question: ${oneLine(p.question)} Reply exactly once with POST /api/self/clarifications/${p.requestId}/reply `
+    + `using x-fleet-self-token from $FLEET_SELF_TOKEN and JSON {"text":"..."}. `
+    + `Acknowledging event ${event.id} does NOT answer this question.`;
+}
+
+export function clarificationReplyMessage(requestId: string, question: string, answer: string): string {
+  return `[fleet] CLARIFICATION ANSWER [request ${requestId}] to question: ${oneLine(question)}\n${answer}`;
 }
 
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already

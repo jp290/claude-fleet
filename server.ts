@@ -7,8 +7,10 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
+  clarificationWatchMessage, clarificationReplyMessage,
   type LaneWatchEventKind, type LaneWatchEventPayload, type MergeWatchEventPayload,
-  type AuditWatchEventPayload, type DeployWatchEventPayload,
+  type AuditWatchEventPayload, type DeployWatchEventPayload, type ClarificationEventPayload,
+  type ClarificationBasis,
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
@@ -1204,7 +1206,7 @@ function watchFrom(raw: unknown): Watch | null {
 type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
 interface FleetEventBase {
   id: string;
-  watchId: string;
+  watchId: string | null;
   receiverSlot: number;
   // Slot ids are reusable. This is the same occupant binding used by MAIN-direct provenance:
   // the slot number identifies the row, openedAt + sessionId identify the session in that row.
@@ -1241,13 +1243,38 @@ interface DeployFleetEvent extends FleetEventBase {
   kind: "deploy-terminal";
   payload: DeployWatchEventPayload;
 }
-type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent;
+interface ClarificationFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  subjectBranch: string;
+  kind: "clarification-request";
+  payload: ClarificationEventPayload;
+}
+type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
+  | ClarificationFleetEvent;
+
+type ClarificationStatus = "open" | "answered" | "refused";
+interface ClarificationRequest {
+  id: string;
+  askedAt: number;
+  question: string;
+  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
+  provenance: { taskId: string | null; originId: string | null; programId: string | null };
+  receiver: { slot: number; openedAt: number; sessionId: string | null };
+  basis: ClarificationBasis;
+  eventId: string;
+  status: ClarificationStatus;
+  answer: { text: string; at: number;
+    by: { slot: number; openedAt: number; sessionId: string | null } } | null;
+  refusedReason: string | null;
+  closedAt: number | null;
+}
 
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
   if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
-    || typeof e.watchId !== "string" || !/^[a-z0-9]+$/.test(e.watchId)
+    || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
+    || ((e.kind === "clarification-request") !== (e.watchId === null))
     || !Number.isInteger(e.receiverSlot) || (e.receiverSlot ?? 0) <= 0
     || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
     || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
@@ -1263,6 +1290,20 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
     deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
   };
+  if (e.kind === "clarification-request") {
+    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
+    const p = e.payload as Partial<ClarificationEventPayload> | undefined;
+    if (!p || typeof p.requestId !== "string" || !/^[0-9a-f]{24}$/.test(p.requestId)
+      || typeof p.question !== "string" || !p.question.trim() || p.question.length > MAX_CLARIFICATION_QUESTION
+      || !(p.taskId === null || typeof p.taskId === "string")
+      || !(p.originId === null || typeof p.originId === "string")
+      || !(p.programId === null || typeof p.programId === "string")
+      || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(p.basis))) return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
+      kind: e.kind, payload: { requestId: p.requestId, question: p.question,
+        taskId: p.taskId, originId: p.originId, programId: p.programId,
+        basis: p.basis as ClarificationBasis } };
+  }
   if (e.kind === "lane-ready" || e.kind === "host-commit-ready") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
     const p = e.payload as Partial<LaneWatchEventPayload> | undefined;
@@ -1270,7 +1311,8 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
       || typeof p.dirty !== "number" || !Number.isFinite(p.dirty)
       || typeof p.idleMs !== "number" || !Number.isFinite(p.idleMs) || p.idleMs < 0
       || typeof p.observed !== "boolean" || !(typeof p.gitOp === "boolean" || p.gitOp === null)
-      || !(p.awaiting === "owner" || p.awaiting === null) || typeof p.hostCommits !== "boolean") return null;
+      || !(p.awaiting === "owner" || p.awaiting === "main" || p.awaiting === null)
+      || typeof p.hostCommits !== "boolean") return null;
     // Preserve the legacy row's historical field order as well as its values. State is serialized
     // as JSON, so spreading the new common base here would move created/status ahead of the
     // subject and payload and violate the byte-stable legacy-load contract.
@@ -1340,6 +1382,43 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         ...(p.reason !== undefined ? { reason: p.reason } : {}) } };
   }
   return null;
+}
+
+function clarificationFrom(raw: unknown): ClarificationRequest | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const c = raw as Partial<ClarificationRequest>;
+  const occupant = (v: unknown, withLane: boolean): boolean => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+    const x = v as Record<string, unknown>;
+    return Number.isInteger(x.slot) && Number(x.slot) > 0
+      && typeof x.openedAt === "number" && Number.isFinite(x.openedAt) && x.openedAt > 0
+      && (x.sessionId === null || typeof x.sessionId === "string")
+      && (!withLane || (typeof x.cwd === "string" && x.cwd.length > 0
+        && typeof x.branch === "string" && x.branch.length > 0));
+  };
+  const provenance = c.provenance as Record<string, unknown> | undefined;
+  const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
+  const answer = c.answer as ClarificationRequest["answer"] | undefined;
+  if (typeof c.id !== "string" || !/^[0-9a-f]{24}$/.test(c.id)
+    || typeof c.askedAt !== "number" || !Number.isFinite(c.askedAt) || c.askedAt <= 0
+    || typeof c.question !== "string" || !c.question.trim() || c.question.length > MAX_CLARIFICATION_QUESTION
+    || !occupant(c.worker, true) || !occupant(c.receiver, false)
+    || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
+    || !nullableString(provenance.programId)
+    || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(c.basis))
+    || typeof c.eventId !== "string" || !/^[0-9a-f]{24}$/.test(c.eventId)
+    || !["open", "answered", "refused"].includes(String(c.status))
+    || !(c.closedAt === null || (typeof c.closedAt === "number" && Number.isFinite(c.closedAt) && c.closedAt > 0))
+    || !(c.refusedReason === null || typeof c.refusedReason === "string")) return null;
+  if (c.status === "open" && (answer !== null || c.refusedReason !== null || c.closedAt !== null)) return null;
+  if (c.status === "answered") {
+    if (!answer || typeof answer.text !== "string" || !answer.text.trim()
+      || answer.text.length > MAX_CLARIFICATION_ANSWER || typeof answer.at !== "number"
+      || !Number.isFinite(answer.at) || answer.at <= 0 || !occupant(answer.by, false)
+      || c.refusedReason !== null || c.closedAt === null) return null;
+  } else if (answer !== null) return null;
+  if (c.status === "refused" && (!(c.refusedReason ?? "").trim() || c.closedAt === null)) return null;
+  return raw as ClarificationRequest;
 }
 
 // a queued feature request. Owner-created or submitted via the public /intake address
@@ -1513,12 +1592,12 @@ interface Slot {
   // scrollback and dies at /clear. Owner-written only (the steward gate never reaches the route:
   // a producer must not author the anchor it is later judged against), and per SESSION, not per
   // slot — openSlot/killSlot clear it with the label.
-  awaiting: "owner" | null; // a clarify lane that was told to report and WAIT for the owner's
-  // confirmation. Automation must not push past that wait — the steward's send gate refuses
-  // while this is set, which is its own playbook's `awaiting-human` rule (escalate, never answer
-  // in the owner's stead). Without it a waiting lane is simply an idle lane, i.e. a nudge target.
-  // Cleared by the owner's own send, by the criterion confirmation, and with the label on
-  // open/kill. Persisted: a restart must not re-open the hole.
+  awaiting: "owner" | "main" | null; // "owner" still means literally that a Clarify Lane waits
+  // for OWNER confirmation and handleStewardSend reads it that way. A worker awaiting the routed
+  // Program-MAIN answer would be dishonest under that label, so "main" is the smallest precise
+  // additive state. Both make the existing lane predicates decline to call the lane ready/stalled.
+  // Cleared only by the matching lifecycle: owner send/criterion for "owner"; successful reply,
+  // refusal, or occupant teardown for "main". Persisted: restart must not reopen either wait.
   worktree: LaneRef | null; // set when Fleet created this slot's
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
@@ -1912,6 +1991,7 @@ let shareComments: Record<string, ShareComment[]> = {};
 let autos: Auto[] = [];
 let watches: Watch[] = [];
 let fleetEvents: FleetEvent[] = [];
+let clarifications: ClarificationRequest[] = [];
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
 // fleet.json rather than rewriting the append-only audit ledger: that makes "nobody was available"
@@ -2136,6 +2216,9 @@ const WATCH_KEEP_SPENT = 5; // fired/disarmed watches kept per slot before the o
 // delivered-but-unacknowledged facts. A full debt budget refuses the next subscription loudly.
 const FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT;
 const FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT;
+const MAX_CLARIFICATION_QUESTION = 2000;
+const MAX_CLARIFICATION_ANSWER = 4000;
+const CLARIFICATION_KEEP_TERMINAL = 20;
 // THE TWO SCHEDULER TICKS, deployment parameters like ANALYSIS_TICK_MS / AUTO_REVIEW_MS rather
 // than laws. They were literals at the setInterval calls, and that made them the floor under every
 // suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
@@ -2442,6 +2525,7 @@ type AuditEvent =
   | "watch_fire" | "watch_skip"
   | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_ack"
   | "fleet_event_receiver_gone" | "fleet_event_prune"
+  | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
@@ -2547,7 +2631,8 @@ let saveChain: Promise<unknown> = Promise.resolve();
 let stateSeq = 0; // makes each temp file's name unique WITHIN this process; the pid makes it unique across
 function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; openedAt: number;
-    successionRetirement: SuccessionRetirement | null; mission: string | null; awaiting: "owner" | null;
+    successionRetirement: SuccessionRetirement | null; mission: string | null;
+    awaiting: "owner" | "main" | null;
     sessionId: string | null;
     codexPaneSpawnedAt: number | null; codexRecoveryState: CodexRecoveryState | null;
     codexDisconnectSeenAt: number | null;
@@ -2563,7 +2648,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
-    events: fleetEvents, tasks, programs,
+    events: fleetEvents, clarifications, tasks, programs,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -4730,6 +4815,94 @@ function pruneFleetEvents(slotId: number): void {
   fleetEvents = fleetEvents.filter((e) => !drop.has(e.id));
 }
 
+function pruneClarifications(): void {
+  const terminal = clarifications.filter((c) => c.status !== "open")
+    .sort((a, b) => (a.closedAt ?? a.askedAt) - (b.closedAt ?? b.askedAt));
+  if (terminal.length <= CLARIFICATION_KEEP_TERMINAL) return;
+  const drop = new Set(terminal.slice(0, terminal.length - CLARIFICATION_KEEP_TERMINAL).map((c) => c.id));
+  for (const id of drop) audit("clarification_prune", undefined, id);
+  clarifications = clarifications.filter((c) => !drop.has(c.id));
+}
+
+const sameOccupant = (a: { slot: number; openedAt: number }, b: { slot: number; openedAt: number }): boolean =>
+  a.slot === b.slot && a.openedAt === b.openedAt;
+
+type ClarificationReceiver = {
+  receiver: { slot: number; openedAt: number; sessionId: string | null };
+  basis: ClarificationBasis;
+};
+function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: string } {
+  let programReceiver: ClarificationReceiver["receiver"] | null = null;
+  if (lane.programId) {
+    const program = programs.find((p) => p.id === lane.programId);
+    const main = program?.status === "active" ? program.main : undefined;
+    const live = main ? slotFrom(main.slot) : null;
+    // sessionId is deliberately reported, never gated: a Codex bind may change it inside this
+    // exact slot+openedAt occupant, matching ProgramExecutionView's authority.sessionIdMatch rule.
+    if (main && live?.cwd && live.id === main.slot && live.openedAt === main.openedAt)
+      programReceiver = { slot: live.id, openedAt: live.openedAt, sessionId: live.sessionId };
+  }
+
+  const legacyMatches = watches.filter((w) => "target" in w && w.target === lane.id
+    && w.targetCwd === lane.cwd && w.targetBranch === lane.worktree?.branch
+    && w.slotOpenedAt === undefined);
+  const watchReceivers = watches.flatMap((w) => {
+    if (!("target" in w) || w.target !== lane.id || w.targetCwd !== lane.cwd
+      || w.targetBranch !== lane.worktree?.branch || w.slotOpenedAt === undefined) return [];
+    // `armed` is intentionally not a gate. A spent Watch names the same coordinating occupant;
+    // dropping that evidence exactly when MAIN was last informed would make the channel vanish.
+    const live = slotFrom(w.slot);
+    return live?.cwd && live.id === w.slot && live.openedAt === w.slotOpenedAt
+      ? [{ slot: live.id, openedAt: live.openedAt, sessionId: live.sessionId }] : [];
+  });
+  const distinctWatchReceivers = watchReceivers.filter((r, i, all) =>
+    all.findIndex((x) => sameOccupant(x, r)) === i);
+  if (distinctWatchReceivers.length > 1)
+    return { error: "lane-watch evidence names multiple receiver occupants" };
+  const watchReceiver = distinctWatchReceivers[0] ?? null;
+  if (programReceiver && watchReceiver && !sameOccupant(programReceiver, watchReceiver))
+    return { error: "program-main and lane-watch evidence disagree" };
+  if (programReceiver && watchReceiver)
+    return { receiver: programReceiver, basis: "program-main+lane-watch" };
+  if (programReceiver) return { receiver: programReceiver, basis: "program-main" };
+  if (watchReceiver) return { receiver: watchReceiver, basis: "lane-watch" };
+  if (legacyMatches.length > 0)
+    return { error: "only legacy lane-watch evidence exists without slotOpenedAt" };
+  return { error: "no exact clarification receiver evidence" };
+}
+
+function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
+  if (c.status !== "open") return;
+  c.status = "refused";
+  c.answer = null;
+  c.refusedReason = reason;
+  c.closedAt = at;
+  const worker = slotFrom(c.worker.slot);
+  if (worker?.cwd && worker.openedAt === c.worker.openedAt && worker.sessionId === c.worker.sessionId)
+    worker.awaiting = null;
+  audit("clarification_refused", c.worker.slot, `${c.id} ${reason}`);
+}
+
+function reconcileClarifications(teardownSlotId?: number): boolean {
+  let dirty = false;
+  for (const c of clarifications) {
+    if (c.status !== "open") continue;
+    const worker = slotFrom(c.worker.slot);
+    const receiver = slotFrom(c.receiver.slot);
+    const workerGone = teardownSlotId === c.worker.slot || !worker?.cwd
+      || worker.openedAt !== c.worker.openedAt || worker.sessionId !== c.worker.sessionId;
+    const receiverGone = teardownSlotId === c.receiver.slot || !receiver?.cwd
+      || receiver.openedAt !== c.receiver.openedAt || receiver.sessionId !== c.receiver.sessionId;
+    if (!workerGone && !receiverGone) continue;
+    refuseClarification(c, workerGone
+      ? "worker occupant ended or was replaced"
+      : "receiver occupant ended or was replaced");
+    dirty = true;
+  }
+  if (dirty) pruneClarifications();
+  return dirty;
+}
+
 function fleetEventReceiver(e: FleetEvent): Slot | null {
   const s = slotFrom(e.receiverSlot);
   return s?.cwd && s.openedAt === e.receiverOpenedAt && s.sessionId === e.receiverSessionId ? s : null;
@@ -4747,6 +4920,123 @@ function markFleetEventReceiverGone(slotId: number): boolean {
   return dirty;
 }
 
+async function openClarification(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!body || typeof body.question !== "string")
+    return json({ error: "question must be a string" }, 400);
+  const question = body.question.trim();
+  if (!question) return json({ error: "question must not be empty" }, 400);
+  if (question.length > MAX_CLARIFICATION_QUESTION)
+    return json({ error: `question must be at most ${MAX_CLARIFICATION_QUESTION} chars` }, 400);
+
+  const existing = clarifications.find((c) => c.status === "open" && c.worker.slot === s.id
+    && c.worker.openedAt === s.openedAt && c.worker.sessionId === s.sessionId);
+  if (existing) return json({ ok: true, existing: true, request: existing });
+
+  const resolved = clarificationReceiverFor(s);
+  if ("error" in resolved) return json({ error: resolved.error }, 409);
+  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === resolved.receiver.slot
+    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+  const armedReservations = watches.filter((w) => w.armed && w.slot === resolved.receiver.slot).length;
+  if (deliveryDebts + armedReservations >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
+    return json({ error: "clarification receiver has no FleetEvent delivery budget" }, 409);
+
+  const askedAt = Date.now();
+  const id = randomBytes(12).toString("hex");
+  const eventId = randomBytes(12).toString("hex");
+  const request: ClarificationRequest = {
+    id, askedAt, question,
+    worker: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId,
+      cwd: s.cwd!, branch: s.worktree!.branch },
+    provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId },
+    receiver: resolved.receiver, basis: resolved.basis, eventId,
+    status: "open", answer: null, refusedReason: null, closedAt: null,
+  };
+  const event: ClarificationFleetEvent = {
+    id: eventId, watchId: null,
+    receiverSlot: resolved.receiver.slot, receiverOpenedAt: resolved.receiver.openedAt,
+    receiverSessionId: resolved.receiver.sessionId, receiverIdleSec: 60,
+    subjectSlot: s.id, subjectBranch: s.worktree!.branch,
+    kind: "clarification-request",
+    payload: { requestId: id, question, taskId: s.taskId, originId: s.originId,
+      programId: s.programId, basis: resolved.basis },
+    createdAt: askedAt, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+  };
+  clarifications = [...clarifications, request];
+  fleetEvents = [...fleetEvents, event];
+  s.awaiting = "main";
+  audit("clarification_open", s.id, `${id} receiver=${resolved.receiver.slot} basis=${resolved.basis}`);
+  await saveStateNow();
+  return json({ ok: true, existing: false, request });
+}
+
+function clarificationsFor(s: Slot): ClarificationRequest[] {
+  return s.worktree
+    ? clarifications.filter((c) => c.worker.slot === s.id && c.worker.openedAt === s.openedAt
+      && c.worker.sessionId === s.sessionId)
+    : clarifications.filter((c) => c.receiver.slot === s.id && c.receiver.openedAt === s.openedAt
+      && c.receiver.sessionId === s.sessionId);
+}
+
+async function replyClarification(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const request = clarifications.find((c) => c.id === id);
+  if (!request) return json({ error: "unknown clarification request" }, 404);
+  const event = fleetEvents.find((e) => e.id === request.eventId);
+  if (!event || event.receiverSlot !== s.id || event.receiverOpenedAt !== s.openedAt
+    || event.receiverSessionId !== s.sessionId)
+    return json({ error: "clarification belongs to another or replaced MAIN session" }, 409);
+  if (!body || typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  const answer = body.text.trim();
+  if (!answer) return json({ error: "text must not be empty" }, 400);
+  if (answer.length > MAX_CLARIFICATION_ANSWER)
+    return json({ error: `text must be at most ${MAX_CLARIFICATION_ANSWER} chars` }, 400);
+  if (request.status === "answered") {
+    if (request.answer?.text === answer) return json({ ok: true, existing: true, request });
+    return json({ error: "clarification was already answered with different text" }, 409);
+  }
+  if (request.status === "refused")
+    return json({ error: `clarification was refused: ${request.refusedReason}` }, 409);
+
+  const worker = slotFrom(request.worker.slot);
+  if (!worker?.cwd || worker.openedAt !== request.worker.openedAt
+    || worker.sessionId !== request.worker.sessionId) {
+    refuseClarification(request, "worker occupant ended or was replaced");
+    pruneClarifications();
+    await saveStateNow();
+    return json({ error: "worker occupant ended or was replaced; clarification refused" }, 409);
+  }
+  // This worker explicitly requested this reply. That waives only the unattended harness policy;
+  // kill-switch, fresh liveness, blocked-screen and quiet-hours remain in the shared choke-point.
+  const deliverable = await canDeliver(worker, { now: Date.now(), harness: false, idleMs: 0 });
+  if (!deliverable.ok)
+    return json({ error: `worker reply delivery blocked by ${deliverable.gate}`,
+      ...(deliverable.detail ? { detail: deliverable.detail } : {}) }, 409);
+  const text = clarificationReplyMessage(request.id, request.question, answer);
+  try {
+    await sendText(worker, text, true);
+  } catch (e) {
+    return json({ error: `worker reply send failed: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` }, 409);
+  }
+  const at = Date.now();
+  worker.history = [...worker.history, { text, ts: at }].slice(-MAX_HISTORY);
+  saveHistory(worker);
+  logPrompt(worker, text, "auto", at);
+  request.status = "answered";
+  request.answer = { text: answer, at,
+    by: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId } };
+  request.refusedReason = null;
+  request.closedAt = at;
+  worker.awaiting = null;
+  if (event.status !== "acknowledged") {
+    event.status = "acknowledged";
+    event.acknowledgedAt = at;
+    pruneFleetEvents(event.receiverSlot);
+  }
+  audit("clarification_answered", worker.id, `${request.id} by=${s.id}`);
+  pruneClarifications();
+  await saveStateNow();
+  return json({ ok: true, existing: false, request });
+}
+
 async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   const event = fleetEvents.find((e) => e.id === id);
   if (!event) return json({ error: "unknown event" }, 404);
@@ -4754,6 +5044,8 @@ async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   if (event.receiverOpenedAt !== s.openedAt || event.receiverSessionId !== s.sessionId)
     return json({ error: "event belongs to a replaced session" }, 409);
   if (event.status === "acknowledged") return json({ ok: true, existing: true, event });
+  // Ack is transport receipt for every event kind. For clarification-request it expressly does
+  // NOT answer or close the ClarificationRequest; only a successful reply send does that.
   // send-uncertain is intentionally acknowledgeable: the only principal that could have seen the
   // possibly-sent pane text can resolve the crash boundary. Pending was definitely never offered.
   if (event.status !== "delivered" && event.status !== "send-uncertain")
@@ -4776,6 +5068,7 @@ function dropWatchesFor(slotId: number): void {
   // Events are durable independently of their transport Watch. A dead/replaced receiver turns
   // every still-open delivery into an explicit terminal fact; it is never deleted with the Watch.
   markFleetEventReceiverGone(slotId);
+  reconcileClarifications(slotId);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
     if (!("target" in w) || w.target !== slotId || !w.armed) continue;
@@ -7646,7 +7939,9 @@ async function tickWatches(): Promise<void> {
       event.status = "send-uncertain";
       event.attempts++;
       await saveStateNow();
-      const text = event.kind === "merge-terminal"
+      const text = event.kind === "clarification-request"
+        ? clarificationWatchMessage(event.subjectSlot, event.subjectBranch, event)
+        : event.kind === "merge-terminal"
         ? mergeWatchMessage(event.subjectSlot, event.subjectCwd, event)
         : event.kind === "post-land-audit"
         ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event)
@@ -11714,6 +12009,11 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { events?: unknown }).events))
       fleetEvents = ((persisted as { events: unknown[] }).events)
         .map(fleetEventFrom).filter((e): e is FleetEvent => e !== null);
+    // Legacy state has no clarifications member. Malformed rows are discarded rather than
+    // repaired: worker/receiver identity and provenance may only ever be server-observed facts.
+    if (Array.isArray((persisted as { clarifications?: unknown }).clarifications))
+      clarifications = ((persisted as { clarifications: unknown[] }).clarifications)
+        .map(clarificationFrom).filter((c): c is ClarificationRequest => c !== null);
     const pap = (persisted as { auditPings?: unknown }).auditPings;
     if (pap && typeof pap === "object" && !Array.isArray(pap))
       for (const [key, raw] of Object.entries(pap as Record<string, unknown>)) {
@@ -11884,9 +12184,10 @@ if (existsSync(STATE_FILE)) {
         // back IN as well: the state file is on disk and a hand-edit must not widen the field.
         const pmi = (v as { mission?: unknown }).mission;
         if (typeof pmi === "string") s.mission = pmi.slice(0, MAX_MISSION) || null;
-        // only the one recognised value survives a reload — a hand-edited state file must not
-        // be able to invent a wait the code never set
-        if ((v as { awaiting?: unknown }).awaiting === "owner") s.awaiting = "owner";
+        // only the two recognised values survive reload — a hand-edited state file must not
+        // invent a wait the code never set. Legacy "owner" rows remain valid byte-honest facts.
+        const awaiting = (v as { awaiting?: unknown }).awaiting;
+        if (awaiting === "owner" || awaiting === "main") s.awaiting = awaiting;
         if (typeof (v as { sessionId?: unknown }).sessionId === "string") s.sessionId = (v as { sessionId: string }).sessionId;
         if (typeof (v as { selfToken?: unknown }).selfToken === "string") s.selfToken = (v as { selfToken: string }).selfToken;
         const psr = (v as { successionRetirement?: unknown }).successionRetirement;
@@ -12160,6 +12461,10 @@ for (const e of fleetEvents) {
   e.status = "receiver-gone";
 }
 for (const id of new Set(fleetEvents.map((e) => e.receiverSlot))) pruneFleetEvents(id);
+// The request and its wait survive restart only while BOTH exact occupants do. Slot ids alone are
+// recyclable; boot therefore applies the same central refusal rule as open/kill teardown.
+reconcileClarifications();
+pruneClarifications();
 // a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
 // slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
 // instead of leaving it "sent" forever with nothing running
@@ -12497,6 +12802,8 @@ async function handleStewardSend(body: Record<string, unknown> | null): Promise<
   // waiting slot is still answered as invalid (400), not as the wait (409).
   if (s.awaiting === "owner")
     return json({ error: "slot is waiting on the owner (clarify lane) — escalate, never nudge past it" }, 409);
+  if (s.awaiting === "main")
+    return json({ error: "slot is waiting on Program-MAIN for a clarification answer — never nudge past it" }, 409);
   const policy = await canDeliver(s, { now: Date.now(), alive: false });
   if (!policy.ok) {
     if (policy.gate === "kill-switch") return json({ error: "automation is paused (autosOn is off)" }, 409);
@@ -14181,7 +14488,7 @@ Bun.serve<WSData>({
     // question for the one principal who was not asked it.
     //
     // WHICH TIER, and why not one of its neighbours. The self family has three, not two, and this
-    // route joins the widest: /api/self and /api/self/autos answer EVERY session, the four routes
+    // route joins the widest: /api/self and /api/self/autos answer EVERY session, the lane-only operations
     // below are lane-only, /api/self/watch is non-lane-only. The two narrow tiers are narrow
     // because their content is meaningless to the other principal — land-gate knowledge to a
     // session that will never land, a lane-waits-on-lane coupling nobody can see. Neither reason
@@ -14293,7 +14600,7 @@ Bun.serve<WSData>({
     // this safe to hand out at all: the route types into a pane, and it can only ever type into
     // the caller's own.
     //
-    // AND IT IS THE MIRROR OF THE FOUR ROUTES BELOW, not a copy of them. They are LANE-only and
+    // AND IT IS THE MIRROR OF THE ORIGINAL LANE-ONLY ROUTES BELOW, not a copy of them. They are LANE-only and
     // answer a plain session 409; this one is NON-LANE-only and answers a lane 409. Same reason
     // read in both directions — the question is meaningless for the other principal — but the
     // asymmetry is the design, so it is spelled out rather than left to be re-derived. A lane
@@ -14311,6 +14618,30 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible" }, 409);
       return await createWatchForSlot(s, await readJson(req));
+    }
+
+    // Worker→Program-MAIN clarification stays on the existing FleetEvent transport. POST is
+    // lane-only and accepts exactly one caller fact (question); GET is dual-scoped to the exact
+    // worker or receiver occupant. Receiver identity/provenance are derived inside
+    // openClarification and no body field can nominate or overwrite them.
+    if (url.pathname === "/api/self/clarifications" && (req.method === "GET" || req.method === "POST")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (req.method === "GET") return json({ requests: clarificationsFor(s) });
+      if (!s.worktree)
+        return json({ error: "not a lane — only a worker lane can open a clarification" }, 409);
+      return openClarification(s, await readJson(req));
+    }
+
+    const selfClarificationReply = /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/.exec(url.pathname);
+    if (selfClarificationReply && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not reply — lane-waits-on-lane is a coupling only MAIN may close" }, 409);
+      return replyClarification(s, selfClarificationReply[1], await readJson(req));
     }
 
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);

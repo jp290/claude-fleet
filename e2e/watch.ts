@@ -14,8 +14,8 @@
 // fixed sleep.
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
-  type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
+import { laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
+  type ClarificationEventPayload, type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
 import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface WatchRow {
@@ -43,6 +43,22 @@ interface DeployEventRow {
   payload: { ok: boolean | null; stage: "build" | "restart" | "boot"; target: string | null;
     bootHead: string | null; hitTarget: boolean | null; bundleStale: boolean | null; at: number; reason?: string };
   status: FleetEventStatus; attempts: number; acknowledgedAt: number | null;
+}
+interface ClarificationRow {
+  id: string; askedAt: number; question: string;
+  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
+  provenance: { taskId: string | null; originId: string | null; programId: string | null };
+  receiver: { slot: number; openedAt: number; sessionId: string | null };
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch"; eventId: string;
+  status: "open" | "answered" | "refused";
+  answer: { text: string; at: number; by: { slot: number; openedAt: number; sessionId: string | null } } | null;
+  refusedReason: string | null; closedAt: number | null;
+}
+interface ClarificationEventRow {
+  id: string; watchId: null; receiverSlot: number; receiverOpenedAt: number;
+  receiverSessionId: string | null; receiverIdleSec: number; subjectSlot: number; subjectBranch: string;
+  kind: "clarification-request"; payload: ClarificationEventPayload; createdAt: number;
+  status: FleetEventStatus; attempts: number; deliveredAt: number | null; acknowledgedAt: number | null;
 }
 const watchRows = async (): Promise<WatchRow[]> =>
   ((await (await get("/api/sessions")).json()) as { watches: WatchRow[] }).watches;
@@ -86,6 +102,27 @@ const ackEvent = (tok: string | null, id: string): Promise<Response> =>
     method: "POST",
     headers: tok === null ? {} : { "x-fleet-self-token": tok },
   });
+const selfClarify = (tok: string | null, body: unknown, raw?: string, contentType = "application/json"): Promise<Response> =>
+  fetch(`${BASE}/api/self/clarifications`, {
+    method: "POST",
+    headers: { "content-type": contentType, ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
+    body: raw ?? JSON.stringify(body),
+  });
+const selfClarifications = async (tok: string): Promise<{ response: Response; requests: ClarificationRow[] }> => {
+  const response = await fetch(`${BASE}/api/self/clarifications`, {
+    headers: { "x-fleet-self-token": tok },
+  });
+  const body = await response.json() as { requests?: ClarificationRow[] };
+  return { response, requests: body.requests ?? [] };
+};
+const replyClarification = (tok: string, id: string, text: unknown): Promise<Response> =>
+  fetch(`${BASE}/api/self/clarifications/${id}/reply`, {
+    method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": tok },
+    body: JSON.stringify({ text }),
+  });
+const clarificationEventRows = async (): Promise<ClarificationEventRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as ClarificationEventRow[])
+    .filter((e) => e.kind === "clarification-request");
 
 export async function run(): Promise<void> {
   // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
@@ -234,6 +271,376 @@ export async function run(): Promise<void> {
       JSON.stringify({ watch: uAfter, event: uEventAfter }));
     await post(`/api/slots/${uTgt.slot}/kill`, {});
     await post(`/api/slots/${uId}/kill`, {});
+  }
+
+  // === CLARIFICATION-CHANNEL-V1 ================================================================
+  // All receiver identities below are established as server facts first. The only direct state
+  // mutation is the persisted Program/task provenance fixture and one deliberately legacy Watch;
+  // the request route then has no caller-supplied identity it could accidentally trust.
+  {
+    const main1 = await freeSlot();
+    const main1Open = main1 ? await post(`/api/slots/${main1}/open`, { cwd: REPO, label: "clarification-main" }) : null;
+    const main2 = await freeSlot();
+    const main2Open = main2 ? await post(`/api/slots/${main2}/open`, { cwd: REPO, label: "clarification-other-main" }) : null;
+    const makeLane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const prog = await makeLane();
+    const watched = await makeLane();
+    const agreed = await makeLane();
+    const conflicted = await makeLane();
+    const multi = await makeLane();
+    const none = await makeLane();
+    const legacy = await makeLane();
+    const replacedMainWorker = await makeLane();
+    const legacyOwner = await makeLane();
+    check("clarification fixtures: two MAIN occupants and nine distinct worker lanes exist",
+      !!main1Open?.ok && !!main2Open?.ok
+        && new Set([prog, watched, agreed, conflicted, multi, none, legacy, replacedMainWorker, legacyOwner]
+          .map((x) => x.slot)).size === 9,
+      JSON.stringify({ main1, main2, lanes: [prog, watched, agreed, conflicted, multi, none, legacy, replacedMainWorker, legacyOwner].map((x) => x.slot) }));
+
+    const main1Tok = await paneEnv(`s${main1}`, "FLEET_SELF_TOKEN") ?? "";
+    const main2Tok = await paneEnv(`s${main2}`, "FLEET_SELF_TOKEN") ?? "";
+    const laneTokens = new Map<number, string>();
+    for (const lane of [prog, watched, agreed, conflicted, multi, none, legacy, replacedMainWorker])
+      laneTokens.set(lane.slot, await paneEnv(`s${lane.slot}`, "FLEET_SELF_TOKEN") ?? "");
+    check("clarification fixtures: every participant has an exact, distinct scoped credential",
+      [main1Tok, main2Tok, ...laneTokens.values()].every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([main1Tok, main2Tok, ...laneTokens.values()]).size === 10);
+
+    const subscribe = async (receiver: number, worker: { slot: number }) => {
+      const r = await post(`/api/slots/${receiver}/watch`, { target: worker.slot, idleSec: 3600 });
+      return { response: r, body: await r.json() as { watch?: WatchRow } };
+    };
+    const watchedSub = await subscribe(main1, watched);
+    const agreedSub = await subscribe(main1, agreed);
+    const conflictSub = await subscribe(main2, conflicted);
+    const multiSub1 = await subscribe(main1, multi);
+    const multiSub2 = await subscribe(main2, multi);
+    const replacedMainSub = await subscribe(main2, replacedMainWorker);
+    check("clarification lane-watch fixtures: fresh receiver-occupant Watches are persisted before derivation",
+      [watchedSub, agreedSub, conflictSub, multiSub1, multiSub2, replacedMainSub]
+        .every((x) => x.response.ok && (x.body.watch?.slotOpenedAt ?? 0) > 0));
+
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const clarificationStatePath = `${ROOT}/fleet.json`;
+    const planted = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+      watches?: Record<string, unknown>[]; clarifications?: unknown[];
+    };
+    const programId = "c".repeat(24);
+    const mainRow = planted.slots[String(main1)];
+    delete planted.clarifications; // legacy-state counterprobe: the field did not exist before v1
+    planted.slots[String(legacyOwner.slot)].awaiting = "owner";
+    planted.programs = [...(planted.programs ?? []), {
+      id: programId, title: "Clarification fixture", intent: "Route exact worker questions",
+      successCriterion: "The bound MAIN replies once", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot: main1, openedAt: mainRow.openedAt, sessionId: mainRow.sessionId, boundAt: Date.now() - 700 },
+    }];
+    for (const lane of [prog, agreed, conflicted]) planted.slots[String(lane.slot)].programId = programId;
+    planted.slots[String(prog.slot)].taskId = "task-server-stamp";
+    planted.slots[String(prog.slot)].originId = "origin-server-stamp";
+    for (const watch of planted.watches ?? []) {
+      if ([watched.slot, agreed.slot, conflicted.slot, multi.slot, replacedMainWorker.slot].includes(Number(watch.target))) {
+        watch.armed = false;
+        watch.firedAt = Date.now();
+        watch.lastResult = "spent fixture still names coordinating occupant";
+      }
+    }
+    planted.watches = [...(planted.watches ?? []), {
+      id: "legacyclarificationwatch", slot: main1, idleSec: 0, armed: false,
+      created: Date.now(), firedAt: Date.now(), lastResult: "sent", kind: "lane",
+      target: legacy.slot, targetCwd: legacy.cwd, targetBranch: legacy.branch,
+    }];
+    writeFileSync(clarificationStatePath, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const legacyLoaded = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
+      clarifications?: unknown[]; slots?: Record<string, { awaiting?: string }>;
+    };
+    check("clarification legacy state: absent clarifications loads as [] while awaiting:'owner' stays valid",
+      Array.isArray(legacyLoaded.clarifications) && legacyLoaded.clarifications.length === 0
+        && legacyLoaded.slots?.[String(legacyOwner.slot)]?.awaiting === "owner",
+      JSON.stringify({ clarifications: legacyLoaded.clarifications, awaiting: legacyLoaded.slots?.[String(legacyOwner.slot)]?.awaiting }));
+    await post(`/api/slots/${legacyOwner.slot}/kill`, {});
+
+    const progTok = laneTokens.get(prog.slot) ?? "";
+    const watchedTok = laneTokens.get(watched.slot) ?? "";
+    const agreedTok = laneTokens.get(agreed.slot) ?? "";
+    const beforeRejectEvents = (await clarificationEventRows()).length;
+    const noEvidence = await selfClarify(laneTokens.get(none.slot) ?? "", { question: "Who coordinates me?" });
+    const legacyOnly = await selfClarify(laneTokens.get(legacy.slot) ?? "", { question: "Who owns this legacy watch?" });
+    const conflict = await selfClarify(laneTokens.get(conflicted.slot) ?? "", { question: "Which MAIN?" });
+    const multiple = await selfClarify(laneTokens.get(multi.slot) ?? "", { question: "Which watcher?" });
+    const [noEvidenceText, legacyOnlyText, conflictText, multipleText] = await Promise.all([
+      noEvidence.text(), legacyOnly.text(), conflict.text(), multiple.text(),
+    ]);
+    const rejectedState = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
+      clarifications?: unknown[]; slots?: Record<string, { awaiting?: string | null }>;
+    };
+    check("clarification rejection: no exact evidence is a named 409 with no request/event/wait mutation",
+      noEvidence.status === 409 && noEvidenceText.includes("no exact clarification receiver evidence")
+        && (rejectedState.slots?.[String(none.slot)]?.awaiting ?? null) === null);
+    check("clarification rejection: legacy Watch without slotOpenedAt has its own named 409",
+      legacyOnly.status === 409 && legacyOnlyText.includes("only legacy lane-watch evidence exists without slotOpenedAt")
+        && (rejectedState.slots?.[String(legacy.slot)]?.awaiting ?? null) === null);
+    check("clarification rejection: disagreeing Program/Watch evidence is a distinct 409 without mutation",
+      conflict.status === 409 && conflictText.includes("program-main and lane-watch evidence disagree")
+        && (rejectedState.slots?.[String(conflicted.slot)]?.awaiting ?? null) === null);
+    check("clarification rejection: two Watch occupants are a distinct 409 without request or event",
+      multiple.status === 409 && multipleText.includes("lane-watch evidence names multiple receiver occupants")
+        && (await clarificationEventRows()).length === beforeRejectEvents
+        && (rejectedState.clarifications?.length ?? 0) === 0);
+
+    const ownerAsSelf = await fetch(`${BASE}/api/self/clarifications`, {
+      method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": TOKEN },
+      body: JSON.stringify({ question: "owner cannot substitute" }),
+    });
+    const plainRequest = await selfClarify(main1Tok, { question: "plain cannot ask" });
+    const missingRequest = await selfClarify(null, { question: "missing cannot ask" });
+    check("clarification request scope: plain non-lane is 409; owner/missing credentials are 401",
+      plainRequest.status === 409 && ownerAsSelf.status === 401 && missingRequest.status === 401,
+      `${plainRequest.status}/${ownerAsSelf.status}/${missingRequest.status}`);
+
+    const invalids = await Promise.all([
+      selfClarify(progTok, { question: "" }),
+      selfClarify(progTok, { question: "x".repeat(2001) }),
+      selfClarify(progTok, { question: 7 }),
+      selfClarify(progTok, {}, "{not-json"),
+      selfClarify(progTok, {}, JSON.stringify({ question: "wrong media" }), "text/plain"),
+    ]);
+    check("clarification validation: empty, oversized, non-string, malformed JSON and wrong media fail closed 400",
+      invalids.every((r) => r.status === 400), invalids.map((r) => r.status).join("/"));
+
+    const spoof = await selfClarify(progTok, {
+      question: "  Need the exact scope decision.  ", worker: { slot: 999 }, receiver: { slot: 999 },
+      taskId: "spoof-task", originId: "spoof-origin", programId: "spoof-program", basis: "lane-watch",
+      eventId: "f".repeat(24), askedAt: 1, status: "answered",
+    });
+    const spoofBody = await spoof.json() as { request?: ClarificationRow; existing?: boolean };
+    const progRequest = spoofBody.request;
+    const progEvent = (await clarificationEventRows()).find((e) => e.id === progRequest?.eventId);
+    check("clarification program-main: exactly the active bound MAIN gets one server-stamped event",
+      spoof.ok && progRequest?.basis === "program-main" && progRequest.receiver.slot === main1
+        && progEvent?.receiverSlot === main1 && progEvent.watchId === null
+        && (await clarificationEventRows()).filter((e) => e.payload.requestId === progRequest?.id).length === 1,
+      JSON.stringify({ request: progRequest, event: progEvent }));
+    check("clarification body spoofing cannot overwrite worker/receiver/task/origin/program provenance",
+      progRequest?.worker.slot === prog.slot && progRequest.worker.cwd === prog.cwd && progRequest.worker.branch === prog.branch
+        && progRequest.provenance.taskId === "task-server-stamp"
+        && progRequest.provenance.originId === "origin-server-stamp"
+        && progRequest.provenance.programId === programId && progRequest.question === "Need the exact scope decision."
+        && !JSON.stringify(progRequest).includes("spoof-"), JSON.stringify(progRequest));
+    const laneReplyAttempt = progRequest
+      ? await replyClarification(laneTokens.get(none.slot) ?? "", progRequest.id, "lane cannot answer")
+      : new Response(null, { status: 599 });
+    check("clarification reply scope: a lane credential is recognized but refused 409 before receiver binding",
+      laneReplyAttempt.status === 409 && (await laneReplyAttempt.text()).includes("a lane may not reply"));
+
+    const watchOpen = await selfClarify(watchedTok, { question: "Watch-routed question" });
+    const watchRequest = (await watchOpen.json() as { request?: ClarificationRow }).request;
+    const watchEvent = (await clarificationEventRows()).find((e) => e.id === watchRequest?.eventId);
+    check("clarification lane-watch: a non-program lane routes to its fresh exact Watch subscriber",
+      watchOpen.ok && watchRequest?.basis === "lane-watch" && watchRequest.receiver.slot === main1
+        && watchEvent?.receiverSlot === main1 && watchEvent.payload.basis === "lane-watch");
+
+    const agreeOpen = await selfClarify(agreedTok, { question: "Both facts agree" });
+    const agreeRequest = (await agreeOpen.json() as { request?: ClarificationRow }).request;
+    check("clarification matching Program+Watch evidence resolves once to one occupant and one event",
+      agreeOpen.ok && agreeRequest?.basis === "program-main+lane-watch" && agreeRequest.receiver.slot === main1
+        && (await clarificationEventRows()).filter((e) => e.payload.requestId === agreeRequest.id).length === 1);
+    const [workerScope, mainScope, foreignScope] = await Promise.all([
+      selfClarifications(progTok), selfClarifications(main1Tok), selfClarifications(main2Tok),
+    ]);
+    check("clarification GET scope: worker sees only its occupant rows; MAIN sees only exact receiver rows",
+      workerScope.requests.length === 1 && workerScope.requests[0]?.id === progRequest?.id
+        && mainScope.requests.length === 3
+        && mainScope.requests.every((c) => c.receiver.slot === main1)
+        && foreignScope.requests.length === 0,
+      JSON.stringify({ worker: workerScope.requests.map((c) => c.id), main: mainScope.requests.map((c) => c.id), foreign: foreignScope.requests }));
+
+    const idem = await selfClarify(progTok, { question: "A different retry body cannot mint a twin" });
+    const idemBody = await idem.json() as { existing?: boolean; request?: ClarificationRow };
+    check("clarification open request is occupant-idempotent with no second request/event/prompt",
+      idem.ok && idemBody.existing === true && idemBody.request?.id === progRequest?.id
+        && (await clarificationEventRows()).filter((e) => e.payload.requestId === progRequest?.id).length === 1
+        && (await plogRead()).filter((p) => p.text.includes(`request ${progRequest?.id}`)).length === 0);
+
+    const pendingSelf = await selfClarifications(progTok);
+    await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
+    const stillPending = (await clarificationEventRows()).find((e) => e.id === progRequest?.eventId);
+    check("clarification transport: busy MAIN keeps the durable event pending while worker visibly awaits main",
+      pendingSelf.requests[0]?.status === "open" && stillPending?.status === "pending" && stillPending.attempts === 0
+        && ((await (await selfGet(progTok)).json()) as { awaiting?: string }).awaiting === "main",
+      JSON.stringify(stillPending));
+
+    // Restart across the open debt, then lower only the persisted receiver idle gate so FACT 2 can
+    // deliver immediately without waiting a production minute in the suite.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const restartImage = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
+      events?: Record<string, unknown>[]; clarifications?: Record<string, unknown>[];
+    };
+    for (const event of restartImage.events ?? [])
+      if (event.kind === "clarification-request") event.receiverIdleSec = 0;
+    restartImage.clarifications?.push({ id: "malformed", status: "open" });
+    writeFileSync(clarificationStatePath, JSON.stringify(restartImage, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const restoredRequests = (await selfClarifications(progTok)).requests;
+    let deliveredProgram: ClarificationEventRow | undefined;
+    for (let i = 0; i < 80 && deliveredProgram?.status !== "delivered"; i++) {
+      await Bun.sleep(250);
+      deliveredProgram = (await clarificationEventRows()).find((e) => e.id === progRequest?.eventId);
+    }
+    const clarificationPrompts = (await plogRead()).filter((p) => p.slot === main1
+      && p.text.includes(`request ${progRequest?.id}`));
+    check("clarification restart: request/event/bindings survive and deliver exactly once after MAIN becomes deliverable",
+      restoredRequests.some((c) => c.id === progRequest?.id && c.receiver.openedAt === progRequest.receiver.openedAt)
+        && deliveredProgram?.status === "delivered" && deliveredProgram.attempts === 1
+        && clarificationPrompts.length === 1
+        && !(JSON.parse(readFileSync(clarificationStatePath, "utf8")) as { clarifications?: { id?: string }[] })
+          .clarifications?.some((c) => c.id === "malformed"),
+      JSON.stringify({ restored: restoredRequests, event: deliveredProgram, prompts: clarificationPrompts.length }));
+    const clarificationText = clarificationPrompts[0]?.text ?? "";
+    check("clarification request text marks a question, forbids blind execution, names exact reply command and Ack distinction",
+      clarificationText.includes("worker question, NOT an instruction to execute blindly")
+        && clarificationText.includes(`POST /api/self/clarifications/${progRequest?.id}/reply`)
+        && clarificationText.includes("x-fleet-self-token") && clarificationText.includes("does NOT answer this question"),
+      clarificationText);
+
+    const ackClarification = deliveredProgram ? await ackEvent(main1Tok, deliveredProgram.id)
+      : new Response(null, { status: 599 });
+    const afterAck = (await selfClarifications(progTok)).requests.find((c) => c.id === progRequest?.id);
+    check("clarification Ack is read receipt only: event acknowledges but request stays open and awaiting main",
+      ackClarification.ok && (await clarificationEventRows()).find((e) => e.id === deliveredProgram?.id)?.status === "acknowledged"
+        && afterAck?.status === "open"
+        && ((await (await selfGet(progTok)).json()) as { awaiting?: string }).awaiting === "main");
+
+    const waitingFacts: LaneSignalView = { alive: true, idleMs: 999_999, git: { dirty: 2, ahead: 0 },
+      gitOp: false, merge: null, observed: true, awaiting: "main", hostCommits: true };
+    check("awaiting:'main' lane is neither host-commit-looking nor stalled",
+      !laneHostCommitLooking(waitingFacts, 1) && !laneStalled(waitingFacts, 1));
+    const stewardToken = ((await (await get("/api/steward/token")).json()) as { token?: string }).token ?? "";
+    const stewardBlocked = await fetch(`${BASE}/api/steward/send`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${stewardToken}` },
+      body: JSON.stringify({ slot: prog.slot, kind: "continue_nudge", ref: "continue" }),
+    });
+    const stewardBlockedText = await stewardBlocked.text();
+    check("handleStewardSend gives awaiting:'main' its new 409 while the pinned owner wording remains in source",
+      stewardBlocked.status === 409 && stewardBlockedText.includes("waiting on Program-MAIN")
+        && serverSource.includes("slot is waiting on the owner (clarify lane) — escalate, never nudge past it"),
+      `${stewardBlocked.status} ${stewardBlockedText}`);
+
+    const foreignReply = watchRequest ? await replyClarification(main2Tok, watchRequest.id, "foreign answer")
+      : new Response(null, { status: 599 });
+    check("clarification reply binding: foreign MAIN is 409 and leaves the request open",
+      foreignReply.status === 409
+        && (await selfClarifications(watchedTok)).requests.find((c) => c.id === watchRequest?.id)?.status === "open");
+
+    const reply = progRequest ? await replyClarification(main1Tok, progRequest.id, "Keep the implementation inside the named files.")
+      : new Response(null, { status: 599 });
+    const replyBody = await reply.json() as { request?: ClarificationRow; existing?: boolean };
+    const workerPane = await tmuxOut("capture-pane", "-t", `s${prog.slot}`, "-p");
+    check("clarification successful reply sends once before answered and only then clears awaiting",
+      reply.ok && replyBody.request?.status === "answered" && replyBody.request.answer?.text.includes("named files") === true
+        && workerPane.out.includes(`CLARIFICATION ANSWER [request ${progRequest?.id}]`)
+        && ((await (await selfGet(progTok)).json()) as { awaiting?: string }).awaiting === null,
+      `${reply.status} ${JSON.stringify(replyBody)}`);
+    const sameReply = progRequest ? await replyClarification(main1Tok, progRequest.id, "Keep the implementation inside the named files.")
+      : new Response(null, { status: 599 });
+    const sameReplyBody = await sameReply.json() as { existing?: boolean };
+    const differentReply = progRequest ? await replyClarification(main1Tok, progRequest.id, "Different answer")
+      : new Response(null, { status: 599 });
+    check("clarification duplicate reply is idempotent only for identical text; different text is 409 unchanged",
+      sameReply.ok && sameReplyBody.existing === true && differentReply.status === 409
+        && (await selfClarifications(progTok)).requests.find((c) => c.id === progRequest?.id)?.answer?.text
+          === "Keep the implementation inside the named files.");
+
+    // A pane death without occupant replacement must not become success. On the isolated default
+    // adapter the process probe is intentionally waived; sendText itself therefore supplies the
+    // deterministic paste failure and the request must remain open.
+    await tmuxOut("kill-session", "-t", `s${watched.slot}`);
+    const deadReply = watchRequest ? await replyClarification(main1Tok, watchRequest.id, "answer to dead pane")
+      : new Response(null, { status: 599 });
+    const deadReplyText = await deadReply.text();
+    check("clarification dead worker pane/send failure is a named 409 and never sets answered",
+      deadReply.status === 409 && /worker reply (?:delivery blocked|send failed)/.test(deadReplyText)
+        && (await selfClarifications(watchedTok)).requests.find((c) => c.id === watchRequest?.id)?.status === "open",
+      `${deadReply.status} ${deadReplyText}`);
+    const replySource = serverSource.slice(serverSource.indexOf("async function replyClarification("),
+      serverSource.indexOf("async function acknowledgeFleetEvent("));
+    check("clarification send-error branch returns 409 while answered assignment remains after sendText",
+      replySource.includes("worker reply send failed")
+        && replySource.indexOf('request.status = "answered";') > replySource.indexOf("await sendText(worker, text, true);"));
+
+    // Worker replacement is terminal and must never address its numeric successor.
+    const agreeSlot = agreed.slot;
+    await post(`/api/slots/${agreeSlot}/kill`, {});
+    const refusedAgree = (await selfClarifications(main1Tok)).requests.find((c) => c.id === agreeRequest?.id);
+    const reopenAgree = await post(`/api/slots/${agreeSlot}/open`, { cwd: REPO, label: "clarification-successor" });
+    const successorPaneBefore = (await tmuxOut("capture-pane", "-t", `s${agreeSlot}`, "-p")).out;
+    const successorReply = agreeRequest ? await replyClarification(main1Tok, agreeRequest.id, "must not reach successor")
+      : new Response(null, { status: 599 });
+    const successorPaneAfter = (await tmuxOut("capture-pane", "-t", `s${agreeSlot}`, "-p")).out;
+    check("clarification replaced worker is visibly refused and no reply reaches successor occupant",
+      refusedAgree?.status === "refused" && refusedAgree.refusedReason?.includes("worker occupant") === true
+        && reopenAgree.ok && successorReply.status === 409 && successorPaneAfter === successorPaneBefore
+        && !successorPaneAfter.includes("must not reach successor"), JSON.stringify(refusedAgree));
+
+    const replacedOpen = await selfClarify(laneTokens.get(replacedMainWorker.slot) ?? "", { question: "Receiver replacement" });
+    const replacedRequest = (await replacedOpen.json() as { request?: ClarificationRow }).request;
+    await post(`/api/slots/${main2}/kill`, {});
+    const reopenMain2 = await post(`/api/slots/${main2}/open`, { cwd: REPO, label: "replacement-main" });
+    const replacementMainTok = await paneEnv(`s${main2}`, "FLEET_SELF_TOKEN") ?? "";
+    const replacedMainReply = replacedRequest
+      ? await replyClarification(replacementMainTok, replacedRequest.id, "replacement must not answer")
+      : new Response(null, { status: 599 });
+    const refusedReceiver = (await selfClarifications(laneTokens.get(replacedMainWorker.slot) ?? ""))
+      .requests.find((c) => c.id === replacedRequest?.id);
+    check("clarification replaced MAIN is refused, replacement is binding-rejected, and no mutation reopens it",
+      replacedOpen.ok && reopenMain2.ok && replacementMainTok !== main2Tok && replacedMainReply.status === 409
+        && refusedReceiver?.status === "refused" && refusedReceiver.refusedReason?.includes("receiver occupant") === true,
+      JSON.stringify(refusedReceiver));
+
+    const execution = await fetch(`${BASE}/api/self/program-execution`, {
+      headers: { "x-fleet-self-token": main1Tok },
+    });
+    const executionBody = await execution.json() as { programs?: { program: { id: string }; operations: {
+      events: { rows: { id: string; kind: string; watchId: string | null }[]; openDebts: number } } }[] };
+    const executionProgram = executionBody.programs?.find((p) => p.program.id === programId);
+    check("ProgramExecutionView exposes clarification through existing event rows/watchId:null and openDebts facts",
+      execution.ok && executionProgram?.operations.events.rows.some((e) => e.id === progRequest?.eventId
+        && e.kind === "clarification-request" && e.watchId === null) === true
+        && typeof executionProgram.operations.events.openDebts === "number",
+      JSON.stringify(executionProgram?.operations.events));
+
+    check("clarification regression: existing Watch kinds/Acks/retention stay present and clarification adds no Watch row",
+      ["lane-ready", "host-commit-ready", "merge-terminal", "post-land-audit", "deploy-terminal"]
+        .every((kind) => serverSource.includes(kind))
+        && !((JSON.parse(readFileSync(clarificationStatePath, "utf8")) as { watches?: { id?: string }[] }).watches ?? [])
+          .some((w) => w.id === progRequest?.id));
+
+    for (const lane of [prog, watched, conflicted, multi, none, legacy, replacedMainWorker])
+      await post(`/api/slots/${lane.slot}/kill`, {});
+    await post(`/api/slots/${agreeSlot}/kill`, {});
+    await post(`/api/slots/${main1}/kill`, {});
+    await post(`/api/slots/${main2}/kill`, {});
+    // These rows have already proved load, retention, delivery, Ack and terminal semantics. Remove
+    // only this section's synthetic population while the server is stopped, so the later global
+    // /api/sessions payload-budget check measures the product's bounded steady state rather than
+    // test pollution from nine throwaway occupants.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const cleaned = JSON.parse(readFileSync(clarificationStatePath, "utf8")) as {
+      events?: { kind?: string }[]; clarifications?: unknown[]; programs?: { id?: string }[];
+    };
+    cleaned.events = (cleaned.events ?? []).filter((e) => e.kind !== "clarification-request");
+    cleaned.clarifications = [];
+    cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
+    writeFileSync(clarificationStatePath, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
   }
 
   // --- the receivers, both PLAIN slots: the session this feature exists for is a driving main

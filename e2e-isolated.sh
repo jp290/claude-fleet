@@ -56,6 +56,19 @@ mkdir -p "$DIR"
 . "$SRC/e2e-stage.sh"
 stage_instance "$SRC" "$DIR" server.ts fleet-e2e.ts || exit 1
 
+# Program-MAIN's Fleet frame is defined by git identity, so the staged server tree itself must be
+# a real repository before any fixture repos are created. The two selected pack sources are copied
+# at their repository paths so the Fleet-frame anchor counter-probe can resolve them at receipt HEAD.
+mkdir -p "$DIR/docs"
+cp "$SRC/AGENTS.md" "$DIR/AGENTS.md"
+cp "$SRC/HANDOFF.md" "$DIR/HANDOFF.md"
+cp "$SRC/docs/verify-tiering.md" "$DIR/docs/verify-tiering.md"
+cp "$SRC/docs/land-mechanics.md" "$DIR/docs/land-mechanics.md"
+cp "$SRC/docs/plan-queue-refinement-2026-08-11.md" "$DIR/docs/plan-queue-refinement-2026-08-11.md"
+cp "$SRC/docs/container.md" "$DIR/docs/container.md"
+( cd "$DIR" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && git config commit.gpgsign false && git add -A && git commit -qm init )
+
 # a throwaway git repo the worktree/dispatch tests spawn lanes from
 REPO="$DIR/testrepo"
 mkdir -p "$REPO"
@@ -71,10 +84,11 @@ mkdir -p "$REPO"
 # accident into a stated fact.
 ( cd "$REPO" && git init -q -b main && git config user.email t@t && git config user.name t \
   && printf 'root\n' > code.txt && printf 'SECRET=1\n' > .env && printf '.env\nOWNER.md\n' > .gitignore \
+  && printf '# Throwaway repository contract\nUse this repository own commands and evidence.\n' > AGENTS.md \
   && awk 'BEGIN{for(i=0;i<24;i++)print "ctxmod-"i}' > ctx-mod.txt \
   && awk 'BEGIN{for(i=0;i<4000;i++)print "ctxbig-"i}' > ctx-big.txt \
   && printf 'link target original\n' > ctx-linked.txt \
-  && git add code.txt .gitignore ctx-mod.txt ctx-big.txt ctx-linked.txt && git commit -qm init )
+  && git add AGENTS.md code.txt .gitignore ctx-mod.txt ctx-big.txt ctx-linked.txt && git commit -qm init )
 
 # Two MORE throwaway repos, and they exist for exactly one question (P-7c): does a land in repo X
 # run the verify command configured for repo X? That is only answerable with more than one repo on
@@ -98,11 +112,24 @@ for r in "$REPO2" "$REPO3"; do
 done
 REPO2_P=$(cd "$REPO2" && pwd -P)
 
+# A filename decoy for Program-MAIN classification. These Fleet-shaped names are unrelated data;
+# only git toplevel identity may decide the frame.
+REPO4="$DIR/decoyrepo"
+mkdir -p "$REPO4"
+( cd "$REPO4" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && git config commit.gpgsign false \
+  && printf '# Decoy repository contract\nUse this repository own proof chain.\n' > AGENTS.md \
+  && printf 'unrelated state fixture\n' > state.sh \
+  && printf 'unrelated registration fixture\n' > register.sh \
+  && printf 'unrelated transfer fixture\n' > HANDOFF.md \
+  && git add AGENTS.md state.sh register.sh HANDOFF.md && git commit -qm init )
+
 SHAREHOST=sharetest
 INTAKE=e2e-intake-secret
 export FLEET_E2E_REPO="$REPO"
 export FLEET_E2E_REPO2="$REPO2"
 export FLEET_E2E_REPO3="$REPO3"
+export FLEET_E2E_REPO4="$REPO4"
 
 # Stand-in Pi for the early Watch counterprobe. It is a real executable named `pi`, so the
 # adapter's fresh ps/comm liveness probe must observe `agent=alive`; it makes no provider call.

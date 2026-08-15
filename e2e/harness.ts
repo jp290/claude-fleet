@@ -37,6 +37,9 @@ export const REPO = process.env.FLEET_E2E_REPO ?? "";
 // which is why the checks that use them assert their own precondition first.
 export const REPO2 = process.env.FLEET_E2E_REPO2 ?? "";
 export const REPO3 = process.env.FLEET_E2E_REPO3 ?? "";
+// A foreign git repo containing Fleet-shaped filename decoys. Git identity, never these names,
+// must keep Program-MAIN in its target-repo frame.
+export const REPO4 = process.env.FLEET_E2E_REPO4 ?? "";
 
 // The server's two scheduler ticks, READ FROM THE SAME ENV THE SERVER GOT (the wrappers put
 // FLEET_*_TICK_MS on both the srv spawn line and this process's line). Every check that has to

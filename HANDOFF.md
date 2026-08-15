@@ -1,3 +1,62 @@
+# HANDOFF — Session 66 (2026-08-15, Fable-MAIN: Clarification-Kanal v1 — gebaut, gelandet `ebb6f02`, auditiert grün, deployt, Live-Canary voller Kreis) · 65/64/63/62/61 darunter
+
+**ctx beim Schreiben: 31,4 % (GEMESSEN am Owner-Poll, 313 537 / 1 000 000).**
+Produziert: ein Land (`ebb6f02`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `ccfdb55a` über den
+Dispatch-Knopf, 52,7 min Worker-Laufzeit), Audit grün und substanziell (879 991 ms, 2387/0 Checks,
++32, 17 PASS-Zeilen, covers genau dieses Land), Deploy `dcd10b88` (`ok:true`,
+`bootHead == target == ebb6f02`, `hitTarget:true`, `bundleStale:false`), Live-Canary voller Kreis,
+Core-Doc Workstream 19 + ein Truth-Slice-Abschnitt.
+
+## Der Schnitt (Details: Core-Doc WS19, Commit-Body `ebb6f02`)
+
+Worker→MAIN-Rückfrage auf der BESTEHENDEN FleetEvent-Maschinerie. Drei self-Routen:
+`POST /api/self/clarifications` (lane-only), `GET` (dual-gescoped), `POST …/:id/reply`
+(nicht-lane-only). Empfänger wird NUR aus exakten Serverfakten abgeleitet — aktives `Program.main`
+(slot+openedAt; `sessionId` berichtet, nie gegatet) oder occupant-gebundene Lane-/Merge-Watch mit
+`slotOpenedAt`; vier unterscheidbare fail-closed 409 (kein Beleg · Legacy-only · Widerspruch ·
+mehrere Occupanten). `FleetEventBase.watchId` ist `string | null` mit gepinnter Äquivalenz
+`null ⟺ clarification-request`. `Slot.awaiting` ist `"owner" | "main" | null` — der gepinnte
+`"owner"`-Wortlaut in `handleStewardSend` blieb unangetastet, `"main"` bekam einen eigenen Zweig.
+**Ack bleibt für alle Arten reines Lesequittieren**; nur ein erfolgreicher `sendText` schließt
+Request und Wartezustand (Quell-Pin darauf). 32 neue Sonden in `e2e/watch.ts`, 2 Pins, Allowlist.
+
+**Land-Weg wich ab (wie WS14/WS18):** Gate rot mit GENAU EINEM Fail — `silent-alive fixture: the
+pane has still never printed before /send` (`fleet-e2e-claude-gate.ts:85`), eine Fixture-
+VORBEDINGUNG in einer von der Lane nicht angefassten Datei (Detail = Zeitstempel statt `0`), bei
+`clean rebase`/`waitMs 0`; der darauf aufbauende Verhaltens-Check war grün. Beweis: **serieller
+Same-Tree-Rerun = 116 PASS, 0 FAIL, alle drei Phasen `ALL PASS`**, die Sonde grün mit
+`lastOutput (0)`. Gelandet über Confirm-Land (`POST /api/slots/:id/merge {confirm:true}`), Land-Note
+trägt das volle rote Verdikt samt `confirmedByHuman:true`. Queue-Zeile `911bdb73` führt diese
+Sondenfamilie weiter offen — das ist jetzt die DRITTE Session in Folge mit einem Rot aus ihr.
+
+## Offen / nächste Schritte
+
+- **Nächster Truth-Slice, vom Owner promotet, NOCH NICHT gebaut — die Verify-Kette driftet
+  dreiwegig** (voller Beleg: Core-Doc-Abschnitt „Truth-Slice"). `AGENTS.md` §Verify fährt
+  `bun run build`, der live gespawnte `FLEET_VERIFY_CMD` (`watchdog.sh:91`) **nicht** — das ist der
+  einzige echte Coverage-Gap: ein nur vom Bundler sichtbarer Bruch kommt am Land-Gate vorbei.
+  `CLAUDE.md` nennt zusätzlich `merge-prompt.ts` (redundant, nicht falsch — `docs/verify-tiering.md`
+  §156-170 beweist per Mutationsprobe transitive tsc-Abdeckung). Grün blieb der Drift, weil
+  `RULE_VERIFY` (`e2e/pins.ts:370`) „exactly" heißt, aber nur Suiten- und tsc-Liste vergleicht.
+  Schnitt: Build aufwärts ins `VERIFY_CMD` (~90 ms), eine tsc-Liste über alle drei Quellen, den Pin
+  auf vollständige Schrittmenge+Reihenfolge schärfen.
+- **Drei benannte Grenzen des Clarification-Kanals** (Befunde, kein Workstream — Core-Doc WS19):
+  kein `send-uncertain` an der Reply-Naht (Doppel-Zustellung möglich, wenn tmux nach teilweisem
+  Send wirft) · Owner-`/send` löscht `awaiting` bedingungslos und lässt den Request offen ·
+  `clarificationsFor` filtert den `⚙ steward` als Worker statt als Empfänger.
+- **Graphify unverändert:** dieser Schnitt lief vollständig source-first (Owner-Vorgabe). Der
+  `PreToolUse`-Hook fordert weiterhin bei JEDEM Bash-Aufruf `graphify query` — dokumentierter
+  DRIFTBEFUND, daraus ist ausdrücklich noch kein Hook-/Tool-Umbau abgeleitet.
+- Aus S65/S64 unverändert offen: Self-Land als Shadow-Klassifikation (empfohlener nächster
+  Korridor-Schnitt) · das Wegwerf-Program `cfa94f4f` und vier ältere stehen als `complete`, weil
+  `complete` keinen `discard`-Übergang kennt · pi-zai-Feuerprobe für `automatable:true` ·
+  Effort-Monotonie und 1M-Vollfenster ungemessen · die ~2,5-h-Worker-Laufzeit von `813149d` als
+  Work-Trail-Fall.
+- Queue: `ccfdb55a` schloss sich beim Land selbst; sonst unverändert.
+- Aufgeräumt: Canary-Slot gekillt, Worktree weg, Branch `fleet/260815180640-ef0d` gelöscht, alle
+  vier Watches gespendet, keine nicht-terminalen Events, Baum sauber. Die beantwortete
+  Clarification-Zeile bleibt als ehrlicher Datensatz stehen (Retention hält 20 terminale).
+
 # HANDOFF — Session 65 (2026-08-15, Fable-MAIN: ProgramExecutionView v1 — gebaut, gelandet `4ef21e2`, auditiert grün, deployt, Live-Canary voller Kreis) · 64/63/62/61/60 darunter
 
 **ctx beim Schreiben: 24,9 % (GEMESSEN am Owner-Poll, 248 668 / 1 000 000).**

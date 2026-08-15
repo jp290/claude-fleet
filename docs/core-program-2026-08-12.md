@@ -695,3 +695,107 @@ Work-Trail-Learning-Loop (P4; Owner promotet).
 (`docs/plan-queue-refinement-2026-08-11.md` = geparkte Quelle) · vorzeitige Token-/Kosten-
 optimierung (Rulebook-Split P1-C bleibt hinter G1) · Capability-Großmatrix, Event-Sourcing,
 Maschinen-Sync (Anti-Ziele: Theo-Vergleich §8, Harness-Brief §14).
+
+## Workstream 19 — Clarification-Kanal v1 (gelandet `ebb6f02`, 2026-08-15)
+
+Der Befund aus WS18 („`done-looking` ist kein Help-Kanal") ist geschlossen. Eine taskgebundene
+Lane kann jetzt eine Frage stellen; der Server leitet den koordinierenden MAIN **ausschließlich
+aus exakten Serverfakten** ab, stellt die Frage über die BESTEHENDE FleetEvent-Maschinerie zu, und
+MAIN antwortet über `canDeliver`/`sendText` als normale Pane-Nachricht. Kein zweiter Bus, kein RPC.
+
+**Empfängerregel (der Kern).** Zwei Belege, sonst nichts: (A) ein `status:"active"` Program mit
+`main`, dessen `slot+openedAt` auf einen lebenden Slot zeigt — `sessionId` wird berichtet, nie
+gegatet (ein Codex-Bind ändert sie innerhalb desselben Occupant; dieselbe Regel wie
+`ProgramExecutionView.authority.sessionIdMatch`); (B) eine Lane-/Merge-Watch auf exakt diese
+Lane-Identität **mit** `slotOpenedAt` und lebendem, exakt passendem Empfänger-Occupant. `armed` ist
+bewusst kein Gate — eine gespendete Watch benennt denselben Koordinator, und eine armed-only-Regel
+ließe den Kanal genau dann verschwinden, wenn MAIN zuletzt informiert wurde. Vier unterscheidbare
+fail-closed 409: kein Beleg · nur Legacy-Watch ohne `slotOpenedAt` · Program/Watch widersprechen ·
+mehrere Watch-Occupanten. Keine Rezenz, Slotnähe, Label-, Text- oder Zeitheuristik.
+
+**Die drei Nebenentscheide, alle additiv.** `FleetEventBase.watchId: string | null` mit erzwungener
+Äquivalenz `null ⟺ kind==="clarification-request"` (Pin) — ein Clarification-Event entsteht ohne
+Watch, die vier alten Arten behalten String-Zwang und byte-stabile Feldreihenfolge. ·
+`Slot.awaiting: "owner" | "main" | null`: `"owner"` heißt weiter wörtlich „wartet auf den OWNER"
+und `handleStewardSend` liest es so (Wortlaut unverändert, weil gepinnt), `"main"` bekam einen
+eigenen 409-Zweig; die vorhandenen `awaiting:null`-Klauseln in `HOST_COMMIT_LOOKING_RULES` und
+`STALLED_RULES` machen eine wartende Lane damit automatisch weder host-commit-looking noch stalled.
+· **Ack bleibt für ALLE Arten reines Lesequittieren** und beantwortet ausdrücklich nichts; nur ein
+erfolgreicher `sendText` schließt Request und Wartezustand (Quell-Pin: die `answered`-Zuweisung
+muss hinter `await sendText` stehen).
+
+**Gemessen, nicht berichtet.** Land-Gate rot mit GENAU EINEM Fail — `silent-alive fixture: the pane
+has still never printed before /send` (`fleet-e2e-claude-gate.ts:85`, Detail ein Zeitstempel statt
+`0`), eine Fixture-VORBEDINGUNG in einer von der Lane nicht angefassten Datei; der darauf
+aufbauende Verhaltens-Check war grün. Serieller Same-Tree-Rerun auf `ebb6f02`: **116 PASS, 0 FAIL,
+alle drei Phasen `ALL PASS`**, die Sonde grün mit `lastOutput (0)`. Gelandet per Confirm-Land, die
+Land-Note trägt das volle rote Verdikt plus `confirmedByHuman:true`. Post-Land-Audit **grün und
+substanziell**: 879 991 ms, 2387/0 Checks, 17 PASS-Zeilen, `covers` genau dieses Land (+32 gegen
+2355 = exakt die neuen Sonden). Deploy `dcd10b88` `ok:true`, `bootHead == target == ebb6f02`,
+`hitTarget:true`, `bundleStale:false`.
+
+**Live-Canary, voller Kreis** (echte Wegwerf-Lane, danach restlos entfernt): Refusal ohne Beleg
+(`409 no exact clarification receiver evidence`) und **nachgewiesen ohne Mutation** · nach dem
+Watch-Abo derselbe Request mit absichtlich gefälschten Body-Feldern (`worker.slot:99`,
+`receiver.slot:13`, `taskId:"gefaelscht"`, `basis:"program-main"`) → der Server stempelte Worker 2,
+Receiver 1, Provenienz `null`, `basis:"lane-watch"`; **kein Body-Feld kam durch** · zweiter Request
+mit anderem Text bei offenem Vorgang → `existing:true`, EIN Event, `watchId:null`, `awaiting:"main"`
+· Event blieb `pending`, solange die MAIN-Pane beschäftigt war, und wurde nach der Ruhe-Schwelle
+genau einmal typisiert zugestellt · Reply → Antwort wörtlich in der Worker-Pane, **genau eine**
+ANSWER-Zeile · identische Zweit-Reply `existing:true` (kein zweiter Send), abweichender Text 409
+ohne Mutation · danach Event `acknowledged`, Request `answered`, `awaiting` gelöscht.
+
+**Drei benannte Grenzen (Befunde, kein Workstream).** (1) Die Reply-Naht hat **kein**
+`send-uncertain`: wirft tmux nach teilweiser Zustellung, bleibt der Request offen und ein zweiter
+Versuch könnte den Text doppelt schreiben — direkte Folge von „niemals Erfolg vor Send" und die
+richtige Seite des Trade-offs, aber ungebucht. (2) Owner-`/send` löscht `awaiting` bedingungslos,
+auch ein `"main"`-Warten, während der Request `open` bleibt (Budgetplatz belegt, GET zeigt weiter
+offen). (3) `clarificationsFor` teilt nach `s.worktree`: der `⚙ steward` darf antworten, trägt aber
+einen Worktree und würde in GET als *Worker* gefiltert — reine Sichtbarkeitslücke, das Event trägt
+alles Nötige.
+
+**Bewusst NICHT gebaut:** UI/Client, Owner-Kanal-Adapter, Push, Event-Sourcing, generisches
+RPC/Helpdesk, Pane-Parsing, Auto-Approve, Task-Welle, Self-Land. Die spätere Owner-Kanal-Idee ist
+nur dokumentiert: Program-MAIN bekommt operative Ereignisse, ein Owner-Kanal soll später nur
+`needs-owner`, Rot und wichtige Abschlüsse dedupliziert und ackbar erhalten.
+
+## Truth-Slice: die Verify-Kette driftet DREIWEGIG (Befund 2026-08-15, ausdrücklich NICHT gebaut)
+
+Gefunden von einem read-only Sol-Ultra-Scout, der korrekt an der Stelle anhielt statt zu raten;
+vom Owner und danach hier source-seitig gegengeprüft. Drei Beschreibungen derselben Kette, und
+keine zwei sind gleich:
+
+| Quelle | Schritte |
+|---|---|
+| `AGENTS.md` §Verify (Fence) | install · pins · tsc (10 Dateien) · **`bun run build`** · clean-review · security · claude-gate |
+| `watchdog.sh:91` `VERIFY_CMD` (der LIVE serverseitige Land-Gate) | install · pins · tsc (dieselben 10) · clean-review · security · claude-gate — **KEIN Build** |
+| `CLAUDE.md` §Lane discipline | install · pins · tsc (**11** — zusätzlich `merge-prompt.ts`) · build · die drei Suiten, mit der Behauptung, das sei inhaltlich der Live-Gate |
+
+**Der reale Coverage-Gap ist genau einer: der fehlende `bun run build` im serverseitigen Gate.**
+Ein Bruch, den nur der Bundler sieht (`src/client.ts`/`src/share.ts`-Seite), kommt am Land-Gate
+vorbei und fällt erst im Post-Land-Audit oder beim Deploy auf.
+
+**`merge-prompt.ts` ist KEIN Gap** — die Präzisierung gehört dazu, sonst wandert der Befund beim
+nächsten Lesen an die falsche Stelle: `docs/verify-tiering.md` §(Zeilen 156-170) hat per
+**Mutationsprobe** bewiesen, dass `tsc` die Datei transitiv über die Importkette der explizit
+genannten Wurzeln typechecked (eingebauter Typfehler → `merge-prompt.ts(192,7): error TS2322`;
+unveränderte Kopie → still). Die CLAUDE.md-Zeile ist also redundant, nicht falsch.
+
+**Warum der Drift GRÜN blieb, und das ist der eigentliche Befund:** `e2e/pins.ts:370` heißt
+`RULE_VERIFY` = „AGENTS.md's verify block runs **exactly** what watchdog.sh's VERIFY_CMD gates",
+vergleicht aber nur zwei Mengen — die `./e2e-*.sh`-Suiten und die explizite `tsc`-Dateiliste
+(`e2e/pins.ts:376-396`). `bun install`, `bun e2e/pins.ts` und `bun run build` liegen in KEINER der
+beiden extrahierten Mengen. Der Pin sagt „exactly" und prüft zwei von mindestens fünf Schrittarten;
+die Schrittmenge und ihre Reihenfolge sind ungepinnt. Ein Pin, dessen Name mehr behauptet als sein
+Vergleich deckt, ist teurer als gar keiner — er macht die Lücke unsichtbar.
+
+**Empfohlener späterer kleiner Schnitt (Owner-Vorgabe: jetzt NICHT bauen, kein Eingriff in den
+Clarification-Diff):**
+1. Zielkette owner-seitig **aufwärts** angleichen — `bun run build` in `VERIFY_CMD` aufnehmen
+   (gemessene Kosten ~90 ms, also faktisch gratis gegen ein 94-s-p50-Gate).
+2. Die explizite `tsc`-Liste über alle drei Quellen vereinheitlichen (eine Liste, eine Wahrheit).
+3. `RULE_VERIFY` auf die **vollständige Schrittmenge und ihre Reihenfolge** schärfen, statt auf
+   zwei Teilmengen — und den Regelnamen erst dann „exactly" nennen dürfen.
+
+Bis dahin gilt für jede Lane unverändert: der lokale Beweis fährt den Build, der serverseitige
+Gate tut es nicht — ein grünes Land ist kein Beweis, dass das Bundle baut.

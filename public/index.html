@@ -238,6 +238,8 @@
      still, and is never an empty bar — a blank meter would read as a fresh session. */
   .slot .ctxfill { flex: none; font-size: 10px; color: #8b93a7; font-variant-numeric: tabular-nums; }
   .slot .ctxfill.unknown { color: #5a6072; }
+  .slot .ctxfill.cxaction { cursor: pointer; }
+  .slot .ctxfill.cxaction:hover { color: var(--accent); }
   .slot .lanediff { flex: none; font-size: 13px; color: #7dcfff; cursor: pointer; padding: 0 2px; }
   .slot .lanediff:hover { color: #bfe6ff; }
   /* the palette. Names are share.html's (the guest page) wherever the role is the same — the VALUES
@@ -919,6 +921,16 @@
   .shrbtn.active { color: var(--accent); border-color: var(--sel); background: #1c2437; }
   .shrhint { font-size: 11px; color: var(--dim); line-height: 1.5; }
   .shrbtns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  #codexpanel { gap: 12px; }
+  .cxstate { font-size: 11px; color: #aaa; line-height: 1.5; }
+  .cxlist { max-height: 360px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .cxrow { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center;
+    padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #171717; }
+  .cxrow.blocked { opacity: .65; }
+  .cxrow code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: #c5d4f5; font: 10.5px ui-monospace, Menlo, Consolas, monospace; }
+  .cxwhen { color: var(--dim); font-size: 10px; white-space: nowrap; }
+  .cxerr { color: var(--danger); font-size: 11px; line-height: 1.5; word-break: break-word; }
   .shrcmts { display: flex; flex-direction: column; gap: 6px; }
   .shrcmthead { font-size: 11px; color: var(--dim); }
   .shrcmtlist { max-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
@@ -1354,6 +1366,10 @@
 
 <div id="sharedlg" class="overlay">
   <div class="panel" id="sharepanel"></div>
+</div>
+
+<div id="codexdlg" class="overlay">
+  <div class="panel" id="codexpanel"></div>
 </div>
 
 <div id="hist" class="overlay">

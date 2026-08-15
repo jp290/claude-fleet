@@ -64,6 +64,7 @@ const CODEX_SESSIONS_DIR = process.env.FLEET_CODEX_SESSIONS_DIR
   ?? (process.env.HOME ? `${process.env.HOME}/.codex/sessions` : "");
 const CODEX_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CODEX_BIND_SLACK_MS = 5000;
+const CODEX_CANDIDATE_LIMIT = 20;
 // the single-instance lock (see claimInstanceLock). Lives next to STATE_FILE because the thing
 // being protected is the DIRECTORY, which is what STATE_FILE and every ledger below derive from.
 const PID_FILE = `${import.meta.dir}/fleet.pid`;
@@ -2193,7 +2194,7 @@ type AuditEvent =
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
-  | "codex_bind" | "codex_bind_ambiguous" | "codex_resume_lost"
+  | "codex_bind" | "codex_bind_ambiguous" | "codex_owner_bind" | "codex_resume_lost"
   // ② the conflict went to the lane's OWN session instead of the throwaway resolver — the durable
   // half of `resolvedBy`, recorded at the moment of the decision rather than reconstructed at land
   | "merge_wake_author"
@@ -2913,6 +2914,74 @@ async function codexRolloutForId(id: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+interface CodexCandidateView {
+  id: string;
+  timestamp: number;
+}
+
+// Attended discovery deliberately walks the whole rollout tree: unlike lazy v1 discovery, an
+// owner's exact choice may predate this pane life. The root's readability is a separate result;
+// returning null preserves UNKNOWN instead of turning a missing/unreadable root into zero rows.
+async function codexAttendedCandidates(s: Slot): Promise<{
+  sessionsRoot: boolean;
+  candidates: CodexCandidateView[];
+  boundElsewhere: (CodexCandidateView & { slot: number })[];
+  total: number | null;
+  truncated: boolean;
+}> {
+  if (!CODEX_SESSIONS_DIR) {
+    return { sessionsRoot: false, candidates: [], boundElsewhere: [], total: null, truncated: false };
+  }
+  const dirs = async (path: string): Promise<string[] | null> => {
+    try {
+      return (await readdir(path, { withFileTypes: true }))
+        .filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch { return null; }
+  };
+  const years = await dirs(CODEX_SESSIONS_DIR);
+  if (years === null) {
+    return { sessionsRoot: false, candidates: [], boundElsewhere: [], total: null, truncated: false };
+  }
+  const pinnedElsewhere = new Map<string, number>();
+  for (const o of slots) {
+    if (o !== s && o.cwd && o.sessionId && !pinnedElsewhere.has(o.sessionId))
+      pinnedElsewhere.set(o.sessionId, o.id);
+  }
+  const available: CodexCandidateView[] = [];
+  const boundElsewhere: (CodexCandidateView & { slot: number })[] = [];
+  for (const y of years) {
+    const yp = `${CODEX_SESSIONS_DIR}/${y}`;
+    for (const m of await dirs(yp) ?? []) {
+      const mp = `${yp}/${m}`;
+      for (const d of await dirs(mp) ?? []) {
+        const dp = `${mp}/${d}`;
+        let entries: { name: string; isFile(): boolean }[];
+        try { entries = await readdir(dp, { withFileTypes: true }); } catch { continue; }
+        for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+          if (!e.isFile() || !e.name.startsWith("rollout-") || !e.name.endsWith(".jsonl")) continue;
+          const meta = codexSessionMeta(`${dp}/${e.name}`);
+          if (!meta || meta.threadSource !== "user" || meta.cwd !== s.cwd) continue;
+          const candidate = { id: meta.id, timestamp: meta.timestamp };
+          const other = pinnedElsewhere.get(meta.id);
+          if (other !== undefined) boundElsewhere.push({ ...candidate, slot: other });
+          else available.push(candidate);
+        }
+      }
+    }
+  }
+  const newestFirst = (a: CodexCandidateView, b: CodexCandidateView) =>
+    b.timestamp - a.timestamp || a.id.localeCompare(b.id);
+  available.sort(newestFirst);
+  boundElsewhere.sort((a, b) => newestFirst(a, b) || a.slot - b.slot);
+  return {
+    sessionsRoot: true,
+    candidates: available.slice(0, CODEX_CANDIDATE_LIMIT),
+    boundElsewhere,
+    total: available.length,
+    truncated: available.length > CODEX_CANDIDATE_LIMIT,
+  };
 }
 
 async function tickCodexRecovery(s: Slot): Promise<void> {
@@ -14462,6 +14531,54 @@ Bun.serve<WSData>({
           };
         }),
       });
+    }
+    // Attended Codex recovery is owner-only by POSITION below tokenGate. It is deliberately not
+    // part of the 2 s poll: opening the surface performs one bounded, full historical walk and
+    // exposes identity metadata only — never transcript content. Unlike v1 lazy discovery, this
+    // route has no pane-lifetime window because an older manually resumed conversation is exactly
+    // what the owner is here to identify.
+    const codexCandidatesMatch = /^\/api\/slots\/(\d+)\/codex-candidates$/.exec(url.pathname);
+    if (req.method === "GET" && codexCandidatesMatch) {
+      const s = slotFrom(codexCandidatesMatch[1]);
+      if (!s) return json({ error: "unknown slot" }, 404);
+      if (!s.cwd) return json({ error: "slot not active" }, 409);
+      if (harnessOf(s.harness).id !== "codex") return json({ error: "slot harness is not codex" }, 409);
+      const view = await codexAttendedCandidates(s);
+      return json({
+        state: s.codexRecoveryState ?? (s.sessionId ? "lost" : "pending"),
+        sessionId: s.sessionId,
+        ...view,
+      });
+    }
+    // Binding only records the owner's exact, fully revalidated choice. In particular there is no
+    // tmux call here: a live pane keeps its sole writer untouched, while a dead pane is resumed by
+    // ensureSlot's existing heal loop and its single spawnCmd call site.
+    const codexBindMatch = /^\/api\/slots\/(\d+)\/codex-bind$/.exec(url.pathname);
+    if (req.method === "POST" && codexBindMatch) {
+      const s = slotFrom(codexBindMatch[1]);
+      if (!s) return json({ error: "unknown slot" }, 404);
+      if (!s.cwd) return json({ error: "slot not active" }, 409);
+      if (harnessOf(s.harness).id !== "codex") return json({ error: "slot harness is not codex" }, 409);
+      const body = await readJson(req);
+      const id = body?.sessionId;
+      if (typeof id !== "string" || !CODEX_UUID_RE.test(id))
+        return json({ error: "sessionId must be a strict UUID" }, 400);
+      const rollout = await codexRolloutForId(id);
+      if (!rollout) return json({ error: "rollout not found" }, 409);
+      const meta = codexSessionMeta(rollout);
+      if (!meta || meta.id !== id || meta.threadSource !== "user" || meta.cwd !== s.cwd)
+        return json({ error: "rollout session_meta does not match this Codex slot" }, 409);
+      const other = slots.find((o) => o !== s && !!o.cwd && o.sessionId === id);
+      if (other) return json({ error: `conversation already bound to active slot ${other.id}`, slot: other.id }, 409);
+      if (s.codexRecoveryState === "bound" && s.sessionId === id)
+        return json({ ok: true, existing: true, state: "bound", sessionId: id });
+      if (s.codexRecoveryState === "bound" && s.sessionId !== id)
+        return json({ error: `slot already bound to ${s.sessionId}` }, 409);
+      s.sessionId = id;
+      s.codexRecoveryState = "bound";
+      saveState();
+      audit("codex_owner_bind", s.id, `session=${id}`);
+      return json({ ok: true, existing: false, state: "bound", sessionId: id });
     }
     // the rows behind the poll's error counter, newest signature first. NOT in the 2 s poll, the
     // the same rule the guest ops panel stated for itself: the summary rides the poll, the list is fetched on

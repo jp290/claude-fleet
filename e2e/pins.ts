@@ -750,6 +750,28 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /await codexRolloutForId\(priorSessionId\)/.test(server)
       && !xCode.includes("--last"),
     xBody.match(/(?:pinsSession|resume): (?:true|false)/g)?.join(" | ") ?? "resume pair absent");
+  // The attended route is a persistence seam, not a second recovery engine. This rule guards the
+  // whole mutation class that runtime happy-path checks cannot: every piece of identity evidence
+  // must occur before the first assignment, and the route must remain unable to touch a pane or
+  // grow a second adapter-spawn call. Text order is semantic here because the handler is linear.
+  const ownerBindStart = server.indexOf("const codexBindMatch =");
+  const ownerBindBody = ownerBindStart < 0 ? ""
+    : server.slice(ownerBindStart, server.indexOf("// the rows behind the poll", ownerBindStart));
+  const ownerBindMutation = ownerBindBody.indexOf("s.sessionId = id;");
+  const ownerBindChecks = [
+    'harnessOf(s.harness).id !== "codex"',
+    '!CODEX_UUID_RE.test(id)',
+    "await codexRolloutForId(id)",
+    'meta.threadSource !== "user"',
+    "meta.cwd !== s.cwd",
+    "o.sessionId === id",
+  ].map((needle) => ownerBindBody.indexOf(needle));
+  pin("codex owner bind fully revalidates identity before a persistence-only mutation",
+    ownerBindMutation > 0 && ownerBindChecks.every((at) => at > 0 && at < ownerBindMutation)
+      && ownerBindBody.indexOf("saveState();", ownerBindMutation) > ownerBindMutation
+      && ownerBindBody.indexOf('audit("codex_owner_bind"', ownerBindMutation) > ownerBindMutation
+      && !/ensureSlot\(|tmux\(|\.spawnCmd\(/.test(ownerBindBody),
+    `checks=${ownerBindChecks.join(",")} mutation=${ownerBindMutation}`);
   const ensureStart = server.indexOf("async function ensureSlot(");
   const ensureBody = ensureStart < 0 ? "" : server.slice(ensureStart, server.indexOf("\n}\n", ensureStart));
   pin("ensureSlot after has-session failure is the single writer of every adapter spawn, including Codex resume",

@@ -170,6 +170,16 @@ interface SlotInfo {
   // claim about the server poll, not inferred from harness/session recency in the client.
   codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
     sessionId: string | null; disconnectSeenAt: number | null } }
+interface CodexCandidateInfo { id: string; timestamp: number }
+interface CodexCandidatesView {
+  state: "pending" | "bound" | "ambiguous" | "lost";
+  sessionId: string | null;
+  sessionsRoot: boolean;
+  candidates: CodexCandidateInfo[];
+  boundElsewhere: (CodexCandidateInfo & { slot: number })[];
+  total: number | null;
+  truncated: boolean;
+}
 // the static harness catalogue (GET /api/harnesses, fetched once). `supports` is the server's,
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
@@ -4243,6 +4253,130 @@ function updateTitle() {
   mtitle.textContent = s?.cwd ? (s.label ?? baseName(s.cwd)) : "Claude Fleet";
 }
 
+// --- attended Codex bind ---------------------------------------------------------------
+// This is intentionally a one-shot inventory opened from the cx chip. It never polls rollout
+// storage and it renders identity metadata only; the exact UUID chosen here is the exact string
+// sent back to the owner-only bind route.
+const codexdlg = $("codexdlg"), codexpanel = $("codexpanel");
+let codexDlgSlot = 0;
+let codexCandidateData: CodexCandidatesView | null = null;
+let codexCandidateError: string | null = null;
+let codexChoice: string | null = null;
+let codexCandidateLoading = false;
+
+function closeCodexDlg() {
+  codexdlg.style.display = "none";
+  codexDlgSlot = 0;
+  codexCandidateData = null;
+  codexCandidateError = null;
+  codexChoice = null;
+}
+codexdlg.addEventListener("click", (e) => { if (e.target === codexdlg) closeCodexDlg(); });
+
+function renderCodexDlg() {
+  const s = fleet[codexDlgSlot - 1];
+  if (!s?.cwd || !s.codexRecovery) { closeCodexDlg(); return; }
+  codexpanel.replaceChildren();
+  codexpanel.appendChild(el("h2", "", `Bind Codex conversation — ${s.label ?? baseName(s.cwd)}`));
+  const current = s.codexRecovery;
+  codexpanel.appendChild(el("div", "cxstate", `Recovery state: ${current.state}`
+    + (current.sessionId ? ` · bound ${current.sessionId}` : " · no conversation bound")));
+  if (codexCandidateLoading) {
+    codexpanel.appendChild(el("div", "shrhint", "Reading Codex conversation identities…"));
+  } else if (codexCandidateError) {
+    // Server refusals are owner decisions and therefore stay verbatim — no client paraphrase.
+    codexpanel.appendChild(el("div", "cxerr", codexCandidateError));
+  } else if (codexCandidateData) {
+    const data = codexCandidateData;
+    if (!data.sessionsRoot) {
+      codexpanel.appendChild(el("div", "cxerr",
+        "Candidate inventory unknown — the Codex sessions root is not configured or readable."));
+    } else {
+      const count = data.total ?? 0;
+      codexpanel.appendChild(el("div", "shrhint", count === 0
+        ? "0 eligible conversations for this exact working directory."
+        : `${count} eligible conversation${count === 1 ? "" : "s"}; choose one exact UUID.`));
+      const list = el("div", "cxlist");
+      for (const c of data.candidates) {
+        const row = el("label", "cxrow");
+        const radio = document.createElement("input");
+        radio.type = "radio"; radio.name = "codex-candidate"; radio.value = c.id;
+        radio.checked = codexChoice === c.id;
+        radio.onchange = () => { codexChoice = c.id; renderCodexDlg(); };
+        const id = el("code", "", c.id); id.title = c.id;
+        const when = el("span", "cxwhen", fmtSince(c.timestamp));
+        when.title = new Date(c.timestamp).toLocaleString();
+        row.append(radio, id, when);
+        list.appendChild(row);
+      }
+      codexpanel.appendChild(list);
+      if (data.truncated)
+        codexpanel.appendChild(el("div", "shrhint", `Showing the newest ${data.candidates.length} of ${count}.`));
+      if (data.boundElsewhere.length) {
+        codexpanel.appendChild(el("div", "cxstate", "Bound to another active slot (not selectable)"));
+        const blocked = el("div", "cxlist");
+        for (const c of data.boundElsewhere) {
+          const row = el("div", "cxrow blocked");
+          const radio = document.createElement("input"); radio.type = "radio"; radio.disabled = true;
+          const id = el("code", "", c.id); id.title = c.id;
+          const where = el("span", "cxwhen", `slot ${c.slot} · ${fmtSince(c.timestamp)}`);
+          where.title = new Date(c.timestamp).toLocaleString();
+          row.append(radio, id, where);
+          blocked.appendChild(row);
+        }
+        codexpanel.appendChild(blocked);
+      }
+    }
+  }
+  const btns = el("div", "shrbtns");
+  const bind = el("button", "shrbtn primary", "bind exact conversation") as HTMLButtonElement;
+  bind.disabled = !codexChoice || codexCandidateLoading;
+  bind.onclick = async () => {
+    const chosen = codexChoice;
+    const slot = codexDlgSlot;
+    if (!chosen || bind.disabled) return;
+    bind.disabled = true;
+    const res = await post(`/api/slots/${slot}/codex-bind`, { sessionId: chosen });
+    const answer = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) {
+      codexCandidateError = answer.error ?? String(res.status);
+      renderCodexDlg();
+      return;
+    }
+    await refresh();
+    if (codexDlgSlot === slot) await loadCodexCandidates(slot);
+  };
+  const close = el("button", "shrbtn", "close") as HTMLButtonElement;
+  close.onclick = closeCodexDlg;
+  btns.append(bind, close);
+  codexpanel.appendChild(btns);
+}
+
+async function loadCodexCandidates(slot: number) {
+  codexDlgSlot = slot;
+  codexCandidateLoading = true;
+  codexCandidateData = null;
+  codexCandidateError = null;
+  codexChoice = null;
+  renderCodexDlg();
+  const res = await api(`/api/slots/${slot}/codex-candidates`).catch(() => null);
+  if (!res) codexCandidateError = "Candidate inventory unknown — the server could not be reached.";
+  else {
+    const answer = (await res.json().catch(() => null)) as CodexCandidatesView | { error?: string } | null;
+    if (!res.ok) codexCandidateError = answer && "error" in answer && answer.error
+      ? answer.error : String(res.status);
+    else codexCandidateData = answer as CodexCandidatesView;
+  }
+  codexCandidateLoading = false;
+  renderCodexDlg();
+}
+
+function openCodexDlg(slot: number) {
+  setDrawer(false);
+  codexdlg.style.display = "flex";
+  void loadCodexCandidates(slot);
+}
+
 // the pane's own project stripe: same hue as the slot row, painted down the 6px gutter the
 // terminal already leaves free (.paneterm is inset 6px on the left). Deliberately NOT the pane
 // border — that border is the focus signal in split layouts, and a project colour must not be able
@@ -4450,14 +4584,16 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (s.codexRecovery) {
         const cr = s.codexRecovery;
         const needsOwner = cr.state === "ambiguous" || cr.state === "lost";
-        const chip = el("span", `ctxfill${needsOwner ? " unknown" : ""}`,
+        const chip = el("span", `ctxfill cxaction${needsOwner ? " unknown" : ""}`,
           `cx ${cr.state}${cr.disconnectSeenAt ? " !" : ""}`);
         chip.title = `Codex recovery: ${cr.state}`
           + (cr.sessionId ? `\nsession ${cr.sessionId}` : "\nno conversation id bound")
           + (cr.disconnectSeenAt
             ? `\nstream disconnect seen ${new Date(cr.disconnectSeenAt).toLocaleString()} — advisory; the live TUI owns retry`
             : "")
-          + (needsOwner ? "\nowner attention required; Fleet will not guess" : "");
+          + (needsOwner ? "\nowner attention required; Fleet will not guess" : "")
+          + "\nclick to inspect eligible identities and bind one exact UUID";
+        chip.onclick = (e) => { e.stopPropagation(); openCodexDlg(s.id); };
         row.appendChild(chip);
       }
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The

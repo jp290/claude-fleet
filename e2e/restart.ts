@@ -18,6 +18,16 @@ interface CodexRecoveryView {
   disconnectSeenAt: number | null;
 }
 
+interface CodexCandidatesView {
+  state: CodexRecoveryView["state"];
+  sessionId: string | null;
+  sessionsRoot: boolean;
+  candidates: { id: string; timestamp: number }[];
+  boundElsewhere: { id: string; timestamp: number; slot: number }[];
+  total: number | null;
+  truncated: boolean;
+}
+
 const codexRow = async (slot: number): Promise<{ codexRecovery?: CodexRecoveryView } | undefined> => {
   const body = (await (await get("/api/sessions")).json()) as
     { slots: { id: number; codexRecovery?: CodexRecoveryView }[] };
@@ -35,13 +45,14 @@ const waitCodex = async (slot: number, accept: (r: CodexRecoveryView) => boolean
   return (await codexRow(slot))?.codexRecovery ?? null;
 };
 
-const rolloutPath = (root: string, id: string, cwd: string, threadSource: "user" | "subagent"): string => {
+const rolloutPath = (root: string, id: string, cwd: string, threadSource: "user" | "subagent",
+  timestamp = Date.now()): string => {
   const d = new Date();
   const dir = `${root}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
   mkdirSync(dir, { recursive: true });
   const path = `${dir}/rollout-${Date.now()}-${id}.jsonl`;
   writeFileSync(path, JSON.stringify({ type: "session_meta", payload: {
-    id, cwd, timestamp: new Date().toISOString(), thread_source: threadSource, originator: "codex-tui",
+    id, cwd, timestamp: new Date(timestamp).toISOString(), thread_source: threadSource, originator: "codex-tui",
   } }) + "\n");
   return path;
 };
@@ -124,21 +135,114 @@ export async function run(ctx: Ctx): Promise<void> {
   const AMB_A = "10000000-0000-4000-8000-000000000003";
   const AMB_B = "10000000-0000-4000-8000-000000000004";
   const LOST = "10000000-0000-4000-8000-000000000005";
-  const RESUME = "10000000-0000-4000-8000-000000000006";
+  const OLD_A = "10000000-0000-4000-8000-000000000006";
+  const OLD_B = "10000000-0000-4000-8000-000000000007";
+  const GONE = "10000000-0000-4000-8000-000000000008";
+  const BAD_UUID = "not-a-codex-uuid";
+  const candidateView = async (slot: number): Promise<CodexCandidatesView> =>
+    (await (await get(`/api/slots/${slot}/codex-candidates`)).json()) as CodexCandidatesView;
 
   resetCodexRoot();
   rolloutPath(codexRoot, SUB, codexCwd, "subagent");
   rolloutPath(codexRoot, FOREIGN, `${codexCwd}-foreign`, "user");
+  rolloutPath(codexRoot, BAD_UUID, codexCwd, "user");
   const c0 = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
   check("codex recovery opens on the controlled stand-in", c0.ok, String(c0.status));
   const zero = await waitCodex(15, (r) => r.state === "pending");
   check("codex discovery binds zero candidates neither from subagents nor a foreign cwd",
     zero?.state === "pending" && zero.sessionId === null, JSON.stringify(zero));
+  const zeroView = await candidateView(15);
+  check("attended Codex discovery reports a readable root with zero eligible candidates",
+    zeroView.sessionsRoot && zeroView.total === 0 && zeroView.candidates.length === 0,
+    JSON.stringify(zeroView));
+  check("attended discovery filters subagents, foreign cwd and malformed UUIDs through first-line metadata",
+    !zeroView.candidates.some((c) => [SUB, FOREIGN, BAD_UUID].includes(c.id))
+      && zeroView.boundElsewhere.length === 0,
+    JSON.stringify(zeroView));
 
-  rolloutPath(codexRoot, AMB_A, codexCwd, "user");
-  rolloutPath(codexRoot, AMB_B, codexCwd, "user");
-  const ca = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
-  check("codex ambiguity fixture recycles the same slot", ca.ok, String(ca.status));
+  const oldAt = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  rolloutPath(codexRoot, OLD_A, codexCwd, "user", oldAt);
+  const oneView = await candidateView(15);
+  check("attended discovery includes one rollout older than the current pane window",
+    oneView.total === 1 && oneView.candidates[0]?.id === OLD_A
+      && (await codexRow(15))?.codexRecovery?.state === "pending",
+    JSON.stringify(oneView));
+  rolloutPath(codexRoot, OLD_B, codexCwd, "user", oldAt + 60 * 60 * 1000);
+  const manyView = await candidateView(15);
+  check("attended discovery reports multiple candidates in stable timestamp-descending order",
+    manyView.total === 2 && !manyView.truncated
+      && manyView.candidates.map((c) => c.id).join(",") === `${OLD_B},${OLD_A}`,
+    JSON.stringify(manyView));
+
+  const cp = await post("/api/slots/16/open", {
+    cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high",
+  });
+  check("attended-bind persistence fixture opens with model and effort", cp.ok, String(cp.status));
+  const ownerPending = await waitCodex(16, (r) => r.state === "pending");
+  await Bun.sleep(200);
+  const liveBefore = await tmuxOut("display-message", "-p", "-t", "s16", "#{pane_pid}|#{pane_start_command}");
+  const captureBefore = await tmuxOut("capture-pane", "-p", "-t", "s16");
+  const ownerBind = await post("/api/slots/16/codex-bind", { sessionId: OLD_A });
+  const ownerBindBody = (await ownerBind.json()) as { ok?: boolean; existing?: boolean; sessionId?: string };
+  const exactBound = await waitCodex(16, (r) => r.state === "bound");
+  const liveAfter = await tmuxOut("display-message", "-p", "-t", "s16", "#{pane_pid}|#{pane_start_command}");
+  const captureAfter = await tmuxOut("capture-pane", "-p", "-t", "s16");
+  check("owner bind selects exactly the requested old UUID and the poll row carries it",
+    ownerPending?.sessionId === null && ownerBind.ok && ownerBindBody.ok === true
+      && ownerBindBody.existing === false && ownerBindBody.sessionId === OLD_A
+      && exactBound?.sessionId === OLD_A,
+    `${JSON.stringify(ownerBindBody)} / ${JSON.stringify(exactBound)}`);
+  check("binding a live Codex slot only persists — pane pid, start command and capture stay byte-identical",
+    liveBefore.code === 0 && liveAfter.code === 0 && liveAfter.out === liveBefore.out
+      && captureBefore.code === 0 && captureAfter.code === 0 && captureAfter.out === captureBefore.out,
+    `${liveBefore.out.trim()} / ${liveAfter.out.trim()} / capture=${captureBefore.out === captureAfter.out}`);
+
+  const ownerAuditBefore = (await (await get("/api/audit?limit=1000")).json()) as
+    { events?: { event?: string; slot?: number }[] };
+  const ownerBindCount = ownerAuditBefore.events?.filter((e) => e.event === "codex_owner_bind" && e.slot === 16).length ?? 0;
+  const idem = await post("/api/slots/16/codex-bind", { sessionId: OLD_A });
+  const idemBody = (await idem.json()) as { ok?: boolean; existing?: boolean };
+  const idemState = (await codexRow(16))?.codexRecovery ?? null;
+  const ownerAuditAfter = (await (await get("/api/audit?limit=1000")).json()) as
+    { events?: { event?: string; slot?: number }[] };
+  check("a second identical owner bind is idempotent and writes no second audit mutation",
+    idem.ok && idemBody.ok === true && idemBody.existing === true
+      && idemState?.state === "bound" && idemState.sessionId === OLD_A
+      && (ownerAuditAfter.events?.filter((e) => e.event === "codex_owner_bind" && e.slot === 16).length ?? 0)
+        === ownerBindCount,
+    JSON.stringify(idemBody));
+
+  const beforeRefusals = (await codexRow(16))?.codexRecovery ?? null;
+  const conflict = await post("/api/slots/16/codex-bind", { sessionId: OLD_B });
+  const conflictBody = (await conflict.json()) as { error?: string };
+  const gonePath = rolloutPath(codexRoot, GONE, codexCwd, "user", oldAt + 2 * 60 * 60 * 1000);
+  rmSync(gonePath, { force: true });
+  const vanished = await post("/api/slots/16/codex-bind", { sessionId: GONE });
+  const vanishedBody = (await vanished.json()) as { error?: string };
+  const afterRefusals = (await codexRow(16))?.codexRecovery ?? null;
+  check("a different-id conflict and a vanished rollout both return 409 without changing the bind",
+    conflict.status === 409 && vanished.status === 409
+      && conflictBody.error === `slot already bound to ${OLD_A}` && vanishedBody.error === "rollout not found"
+      && afterRefusals?.state === beforeRefusals?.state
+      && afterRefusals?.sessionId === beforeRefusals?.sessionId,
+    `${JSON.stringify(conflictBody)} / ${JSON.stringify(vanishedBody)} / ${JSON.stringify(afterRefusals)}`);
+
+  const elsewhere = await candidateView(15);
+  check("an id pinned to another active slot is separated as boundElsewhere, never selectable",
+    elsewhere.candidates.some((c) => c.id === OLD_B) && !elsewhere.candidates.some((c) => c.id === OLD_A)
+      && elsewhere.boundElsewhere.some((c) => c.id === OLD_A && c.slot === 16),
+    JSON.stringify(elsewhere));
+  const nonCodex = await post("/api/slots/2/codex-bind", { sessionId: OLD_B });
+  const inactiveCandidates = await get("/api/slots/1/codex-candidates");
+  const unknownCandidates = await get("/api/slots/99/codex-candidates");
+  const noOwnerCandidates = await fetch(BASE + "/api/slots/15/codex-candidates");
+  check("Codex owner routes refuse a non-Codex slot, inactive slot, unknown slot and missing owner auth",
+    nonCodex.status === 409 && inactiveCandidates.status === 409 && unknownCandidates.status === 404
+      && noOwnerCandidates.status === 401,
+    `${nonCodex.status}/${inactiveCandidates.status}/${unknownCandidates.status}/${noOwnerCandidates.status}`);
+
+  const ambAPath = rolloutPath(codexRoot, AMB_A, codexCwd, "user");
+  const ambBPath = rolloutPath(codexRoot, AMB_B, codexCwd, "user");
   const ambiguous = await waitCodex(15, (r) => r.state === "ambiguous");
   check("two exact Codex rollouts are terminally ambiguous — newest never wins",
     ambiguous?.state === "ambiguous" && ambiguous.sessionId === null, JSON.stringify(ambiguous));
@@ -157,10 +261,44 @@ export async function run(ctx: Ctx): Promise<void> {
       && ambiguousAfterHeal.sessionId === null,
     `${ambiguousHealCmd.slice(-180)} / ${JSON.stringify(ambiguousAfterHeal)}`);
 
-  resetCodexRoot();
+  const resolveAmbiguous = await post("/api/slots/15/codex-bind", { sessionId: AMB_A });
+  const resolvedAmbiguous = await waitCodex(15, (r) => r.state === "bound");
+  check("an explicit exact bind resolves ambiguous to bound without recycling the live slot",
+    resolveAmbiguous.ok && resolvedAmbiguous?.sessionId === AMB_A,
+    JSON.stringify(resolvedAmbiguous));
+  const healAuditBefore = (await (await get("/api/audit?limit=1000")).json()) as
+    { events?: { event?: string; slot?: number }[] };
+  const healsBefore = healAuditBefore.events?.filter((e) => e.event === "self_heal_recreate" && e.slot === 15).length ?? 0;
+  await tmuxOut("kill-session", "-t", "s15");
+  let attendedHealCmd = "";
+  const attendedHealUntil = Date.now() + 7000;
+  do {
+    attendedHealCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}"))
+      .out.replaceAll("\\", "");
+    if (attendedHealCmd.includes("codex resume")) break;
+    await Bun.sleep(100);
+  } while (Date.now() < attendedHealUntil);
+  await Bun.sleep(2500);
+  const healAuditAfter = (await (await get("/api/audit?limit=1000")).json()) as
+    { events?: { event?: string; slot?: number }[] };
+  const healsAfter = healAuditAfter.events?.filter((e) => e.event === "self_heal_recreate" && e.slot === 15).length ?? 0;
+  check("a dead explicitly-bound slot heals through exactly one exact-id Codex resume",
+    attendedHealCmd.includes(`codex resume '${AMB_A}'`) && healsAfter === healsBefore + 1,
+    `${attendedHealCmd.slice(-220)} / heals ${healsBefore}->${healsAfter}`);
+
+  rmSync(ambAPath, { force: true });
+  rmSync(ambBPath, { force: true });
+  const attendedRecycle = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  const afterAttendedRecycle = await waitCodex(15, (r) => r.state === "pending");
+  const attendedRecycleCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  check("deliberate slot recycling never inherits an attended bind",
+    attendedRecycle.ok && afterAttendedRecycle?.sessionId === null && !attendedRecycleCmd.includes("codex resume"),
+    `${JSON.stringify(afterAttendedRecycle)} / ${attendedRecycleCmd.slice(-180)}`);
+
   const lostPath = rolloutPath(codexRoot, LOST, codexCwd, "user");
   const cu = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
-  check("codex unique fixture recycles the ambiguous pane", cu.ok, String(cu.status));
+  check("codex unique fixture recycles the attended pane", cu.ok, String(cu.status));
   const bound = await waitCodex(15, (r) => r.state === "bound");
   check("one exact user rollout binds its UUID lazily", bound?.state === "bound" && bound.sessionId === LOST,
     JSON.stringify(bound));
@@ -204,17 +342,6 @@ export async function run(ctx: Ctx): Promise<void> {
         && e.detail === "candidates=2"),
     JSON.stringify(ae.events?.filter((e) => e.slot === 15).map((e) => e.event)));
 
-  resetCodexRoot();
-  rolloutPath(codexRoot, RESUME, codexCwd, "user");
-  const cp = await post("/api/slots/16/open", {
-    cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high",
-  });
-  check("codex persistence fixture opens with model and effort", cp.ok, String(cp.status));
-  const resumeBound = await waitCodex(16, (r) => r.state === "bound");
-  check("the persistence fixture binds the exact rollout", resumeBound?.sessionId === RESUME,
-    JSON.stringify(resumeBound));
-  await tmuxOut("send-keys", "-t", "s16", "-l", "stream disconnected before completion");
-  await tmuxOut("send-keys", "-t", "s16", "Enter");
   let disconnectPane = "";
   const paneUntil = Date.now() + 3000;
   do {
@@ -241,17 +368,17 @@ export async function run(ctx: Ctx): Promise<void> {
   } while (Date.now() < resumeUntil);
   const resumed = (await codexRow(16))?.codexRecovery ?? null;
   check("a dead bound Codex pane resumes the exact UUID through ensureSlot's only spawn seam",
-    resumeCmd.includes(`codex resume '${RESUME}' --dangerously-bypass-approvals-and-sandbox`)
+    resumeCmd.includes(`codex resume '${OLD_A}' --dangerously-bypass-approvals-and-sandbox`)
       && resumeCmd.includes("--model 'gpt-5-codex'")
       && resumeCmd.includes("-c model_reasoning_effort='high'"), resumeCmd.slice(-260));
-  check("resume preserves the discovered pin and disconnect advisory", resumed?.sessionId === RESUME
+  check("resume preserves the owner-selected pin and disconnect advisory", resumed?.sessionId === OLD_A
     && resumed.disconnectSeenAt === disconnected?.disconnectSeenAt, JSON.stringify(resumed));
   const persistedRow = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, {
     codexPaneSpawnedAt?: number; codexDisconnectSeenAt?: number; sessionId?: string }> }).slots?.["16"];
-  if (persistedRow?.codexPaneSpawnedAt && persistedRow.codexDisconnectSeenAt && persistedRow.sessionId === RESUME)
+  if (persistedRow?.codexPaneSpawnedAt && persistedRow.codexDisconnectSeenAt && persistedRow.sessionId === OLD_A)
     persistedCodex = { anchor: persistedRow.codexPaneSpawnedAt,
-      disconnectSeenAt: persistedRow.codexDisconnectSeenAt, id: RESUME };
-  check("Codex bind, anchor and advisory are ready for server-restart persistence",
+      disconnectSeenAt: persistedRow.codexDisconnectSeenAt, id: OLD_A };
+  check("attended Codex bind, anchor and advisory are ready for server-restart persistence",
     persistedCodex !== null, JSON.stringify(persistedRow));
 
   // --- deploy-gap fact (P-4) setup, consumed in the steward + digest sections below.

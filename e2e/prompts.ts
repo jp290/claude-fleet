@@ -9,7 +9,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   DONE_LOOKING_RULES, DONE_LOOKING_PROSE, HOST_COMMIT_LOOKING_RULES,
   laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
-import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDOW_GPT } from "../src/protocol";
+import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDOW_GLM_5_3, CONTEXT_WINDOW_GPT } from "../src/protocol";
 import { check, ROOT } from "./harness";
 
 // The three tool profiles every throwaway agent is spawned with, read out of server.ts's SOURCE.
@@ -87,7 +87,8 @@ export async function run(): Promise<void> {
       .filter((l) => !l.trim().startsWith("//")).map((l) => l.replace(/\s\/\/.*$/, ""))
       .filter((l) => l.includes("--model") && !l.includes('"--model",'));
     check("model interpolation: every --model that reaches a shell command string is single-quoted",
-      modelLines.length >= 2 && modelLines.every((l) => /--model '\$\{[^}]+\}'/.test(l)),
+      modelLines.length >= 2 && modelLines.every((l) => /--model '\$\{[^}]+\}'/.test(l)
+        || /^\s*let cmd = "pi --provider zai --model 'glm-5\.3'";$/.test(l)),
       modelLines.map((l) => l.trim().slice(0, 60)).join(" | "));
   }
 
@@ -998,6 +999,10 @@ export async function run(): Promise<void> {
       && contextWindowFor("openai-codex/gpt-5.6-sol") === CONTEXT_WINDOW_GPT
       && contextWindowFor("openai/gpt-5-codex:high") === CONTEXT_WINDOW_GPT,
       JSON.stringify(CONTEXT_WINDOW_GPT));
+    check("context window: only the exact GLM-5.3 id gets the measured one-million-token window",
+      CONTEXT_WINDOW_GLM_5_3 === 1_000_000 && contextWindowFor("glm-5.3") === CONTEXT_WINDOW_GLM_5_3
+      && contextWindowFor("glm-5.2") === null && contextWindowFor("zai/glm-5.3") === null,
+      JSON.stringify(CONTEXT_WINDOW_GLM_5_3));
     check("context window: an unrelated foreign model stays unknown, never Claude's 200k fallback",
       contextWindowFor("anthropic/claude-haiku-4-5") === null);
     check("context window: no model name is null (the caller has nothing to divide by)",

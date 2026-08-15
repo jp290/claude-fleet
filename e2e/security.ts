@@ -428,13 +428,14 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const HARNESS_SLOT = 10;
   await post(`/api/slots/${HARNESS_SLOT}/kill`, {}); // ensure it is free before the first open
   const cat = (await (await get("/api/harnesses")).json()) as
-    { harnesses: { id: string; default: boolean; automatable: boolean; allowsLanes: boolean; singleton: boolean; role?: string; supports: { transcript: boolean; effort: boolean; resume: boolean; container: boolean }; effortLevels: string[]; note: string | null }[];
+    { harnesses: { id: string; default: boolean; automatable: boolean; allowsLanes: boolean; singleton: boolean; role?: string; supports: { transcript: boolean; effort: boolean; resume: boolean; model: boolean; selfSchedule: boolean; container: boolean }; effortLevels: string[]; note: string | null }[];
       defaultModel?: string };
   const pi = cat.harnesses.find((h) => h.id === "pi");
+  const piZai = cat.harnesses.find((h) => h.id === "pi-zai");
   const piHost = cat.harnesses.find((h) => h.id === "pi-unfenced");
   const def = cat.harnesses.find((h) => h.default);
-  check("§6 the catalogue names the default, fenced Pi and exceptional unfenced Pi adapters",
-    !!pi && !!piHost && !!def && def.id === "claude", cat.harnesses.map((h) => h.id).join(","));
+  check("§6 the catalogue names the default and all three explicit Pi-family adapters",
+    !!pi && !!piZai && !!piHost && !!def && def.id === "claude", cat.harnesses.map((h) => h.id).join(","));
   check("§6 pi-unfenced is attended, main-only and singleton — the exception cannot become a pool",
     piHost?.automatable === false && piHost.allowsLanes === false && piHost.singleton === true
     && /UNFENCED/.test(piHost.note ?? "") && /unrestricted filesystem writes, git and network/.test(piHost.note ?? ""),
@@ -458,9 +459,9 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   check("§6 every catalogue entry declares an axis — agent (what) or place (where), none unlabelled",
     places.length + agents.length === cat.harnesses.length,
     cat.harnesses.map((h) => `${h.id}:${h.role ?? "MISSING"}`).join(","));
-  check("§6 the container hull is the only PLACE, and all four selectable agent modes are agents",
+  check("§6 the container hull is the only PLACE, and all five selectable agent modes are agents",
     places.join(",") === "container"
-    && ["claude", "pi", "pi-unfenced", "codex"].every((id) => agents.includes(id)),
+    && ["claude", "pi", "pi-zai", "pi-unfenced", "codex"].every((id) => agents.includes(id)),
     `places=${places.join(",")} agents=${agents.join(",")}`);
   // the inverse, which is what makes the pair meaningful: a `place` is exactly the entry that runs
   // something somewhere else, so it is also the only one carrying supports.container. If these two
@@ -474,7 +475,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     typeof cat.defaultModel === "string" && cat.defaultModel.length > 0, String(cat.defaultModel));
 
   // --- the quote, per adapter. Rejected BEFORE it can reach a shell line, both times.
-  for (const h of ["pi", "pi-unfenced", "claude", "codex"]) {
+  for (const h of ["pi", "pi-zai", "pi-unfenced", "claude", "codex"]) {
     const q = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: h, model: "a/b'c" });
     check(`§6 harness ${h} rejects a model carrying a single quote (400)`, q.status === 400, String(q.status));
   }
@@ -645,6 +646,167 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     measured?.usedTokens === 52_879 && measured.windowTokens === 258_400 && measured.pct === 20.5,
     JSON.stringify(measured));
   rmSync(piFile, { force: true });
+
+  // --- §6a PI-ZAI: one provider/model, one process-local Pi home, and no key bytes in tmux. ---
+  check("§6a pi-zai publishes the closed measured capability set",
+    piZai?.automatable === false && piZai.allowsLanes === true && piZai.singleton === false
+    && piZai.supports.resume === true && piZai.supports.transcript === false
+    && piZai.supports.model === true && piZai.supports.effort === true
+    && piZai.supports.selfSchedule === false && piZai.supports.container === false
+    && JSON.stringify(piZai.effortLevels) === JSON.stringify(["low", "high", "max"]),
+    JSON.stringify(piZai));
+  check("§6a pi-zai's picker note names fixed zai/glm-5.3, the default key path, local reach and isolated Pi home",
+    /zai\/glm-5\.3/.test(piZai?.note ?? "")
+      && /~\/\.config\/claude-fleet\/secrets\/zai-coding-plan\.key/.test(piZai?.note ?? "")
+      && /full local reach/.test(piZai?.note ?? "") && /~\/\.pi untouched/.test(piZai?.note ?? ""),
+    piZai?.note ?? "missing");
+
+  // Every request boundary that accepts a harness/model/effort tuple must apply this adapter's
+  // exact model regexp and effort allowlist before any pane or worktree can be created.
+  const pzRejectTask = await post("/api/tasks", { text: "pi-zai-rejection-probe", queue: false });
+  const pzRejectTaskId = ((await pzRejectTask.json()) as { task?: { id?: string } }).task?.id ?? "";
+  check("§6a pi-zai rejection fixture has a pending attended-dispatch task",
+    pzRejectTask.ok && !!pzRejectTaskId, `${pzRejectTask.status} id=${pzRejectTaskId || "missing"}`);
+  const pzRejectSurfaces = [
+    ["open", (body: Record<string, unknown>) => post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, ...body })],
+    ["open-worktree", (body: Record<string, unknown>) => post(`/api/slots/${HARNESS_SLOT}/open-worktree`, { repo: REPO, ...body })],
+    ["lanes", (body: Record<string, unknown>) => post("/api/lanes", { repo: REPO, ...body })],
+    ["dispatch", (body: Record<string, unknown>) => post(`/api/tasks/${pzRejectTaskId}/dispatch`, body)],
+  ] as const;
+  if (pzRejectTaskId) {
+    for (const [surface, call] of pzRejectSurfaces) {
+      const wrongModel = await call({ harness: "pi-zai", model: "glm-5.2" });
+      check(`§6a ${surface} rejects any pi-zai model except exact glm-5.3 (400)`,
+        wrongModel.status === 400, String(wrongModel.status));
+      const wrongEffort = await call({ harness: "pi-zai", effort: "medium" });
+      check(`§6a ${surface} rejects pi-zai effort outside low/high/max (400)`,
+        wrongEffort.status === 400, String(wrongEffort.status));
+    }
+    await post(`/api/tasks/${pzRejectTaskId}/delete`, {});
+  }
+
+  const zaiAgentDir = process.env.FLEET_PI_ZAI_AGENT_DIR ?? "";
+  const zaiKeyFile = process.env.FLEET_PI_ZAI_KEY_FILE ?? "";
+  const zaiStandIn = "fleet-e2e-zai-stand-in-key";
+  const zaiModels = '{"providers":{"zai":{"models":[{"id":"glm-5.3","name":"GLM-5.3","contextWindow":1000000,"maxTokens":131072,"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}]}}}\n';
+  const globalPiModels = `${process.env.HOME}/.pi/agent/models.json`;
+  check("§6a pi-zai fixture uses scratch overrides for both external paths",
+    realpathSync(zaiAgentDir).startsWith(realpathSync(ROOT) + "/")
+      && realpathSync(zaiKeyFile).startsWith(realpathSync(ROOT) + "/"),
+    `${zaiAgentDir} / ${zaiKeyFile}`);
+  check("§6a global ~/.pi/agent/models.json is absent before the isolated adapter probe",
+    !existsSync(globalPiModels), globalPiModels);
+  if (zaiAgentDir && zaiKeyFile) {
+    mkdirSync(zaiAgentDir, { recursive: true });
+    writeFileSync(zaiKeyFile, `${zaiStandIn}\n`);
+  }
+  const paneComms = async (target: string): Promise<string[]> => {
+    const panePid = Number((await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}")).out);
+    if (!panePid) return [];
+    const children = spawnSync("pgrep", ["-P", String(panePid)], { encoding: "utf8" }).stdout
+      .split("\n").filter(Boolean);
+    return [String(panePid), ...children].map((pid) =>
+      spawnSync("ps", ["-o", "comm=", "-p", pid], { encoding: "utf8" }).stdout.trim().split("/").pop() ?? "")
+      .filter(Boolean);
+  };
+  const waitForPi = async (target: string): Promise<string[]> => {
+    let comms: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      comms = await paneComms(target);
+      if (comms.includes("pi")) break;
+      await Bun.sleep(100);
+    }
+    return comms;
+  };
+  const waitForModels = async (): Promise<string> => {
+    let text = "";
+    for (let i = 0; i < 40; i++) {
+      try { text = readFileSync(`${zaiAgentDir}/models.json`, "utf8"); } catch { text = ""; }
+      if (text === zaiModels) break;
+      await Bun.sleep(100);
+    }
+    return text;
+  };
+
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const pzOpen = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi-zai", effort: "high" });
+  check("§6a a pi-zai slot opens without a model pin (the adapter owns the fixed default)",
+    pzOpen.ok, String(pzOpen.status));
+  const pzCmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  check("§6a pi-zai spawn pins provider/model/session/effort and the process-local agent home",
+    pzCmd.includes("pi --provider zai --model 'glm-5.3'")
+      && /--session-id [0-9a-f-]{36}\b/.test(pzCmd) && pzCmd.includes("--thinking high")
+      && pzCmd.includes(`PI_CODING_AGENT_DIR='${zaiAgentDir}'`), pzCmd.slice(-320));
+  check("§6a pane_start_command contains $(cat key-path), never the stand-in key bytes",
+    pzCmd.includes(`ZAI_API_KEY="$(cat '${zaiKeyFile}')"`) && !pzCmd.includes(zaiStandIn),
+    pzCmd.slice(-320));
+  check("§6a the controlled Pi stand-in really started after the key guard",
+    (await waitForPi(`s${HARNESS_SLOT}`)).includes("pi"));
+  check("§6a models.json is the exact one-entry GLM-5.3 catalogue in the scratch agent directory",
+    await waitForModels() === zaiModels, `${zaiAgentDir}/models.json`);
+  check("§6a creating the pi-zai catalogue does not create global ~/.pi/agent/models.json",
+    !existsSync(globalPiModels), globalPiModels);
+
+  // A second spawn repairs drift back to the exact catalogue rather than appending duplicates.
+  writeFileSync(`${zaiAgentDir}/models.json`, "{}\n");
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const pzAgain = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi-zai", effort: "max" });
+  const pzAgainCmd = (await tmuxOut("display-message", "-p", "-t", `s${HARNESS_SLOT}`, "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  const pzSid = pzAgainCmd.match(/--session-id ([0-9a-f-]{36})\b/)?.[1] ?? "";
+  check("§6a repeated pi-zai spawn idempotently restores the exact catalogue",
+    pzAgain.ok && await waitForModels() === zaiModels, `${pzAgain.status} / ${zaiAgentDir}/models.json`);
+
+  // The context hook reads the relocated Pi session and the model-less slot still gets GLM-5.3's
+  // exact denominator because that model is literal in every pi-zai spawn command.
+  const zaiSessionDir = `${zaiAgentDir}/sessions/--${realpathSync(REPO).replace(/^\/+/, "").replaceAll("/", "-")}--`;
+  mkdirSync(zaiSessionDir, { recursive: true });
+  const zaiSession = JSON.stringify({ type: "session", version: 3, id: pzSid,
+    timestamp: "2026-08-15T00:00:00.000Z", cwd: realpathSync(REPO) });
+  const zaiUsage = JSON.stringify({ type: "message", message: { role: "assistant",
+    usage: { input: 1_167, output: 585, cacheRead: 51_712, cacheWrite: 0, reasoning: 116, totalTokens: 53_464 } } });
+  const zaiSessionFile = `${zaiSessionDir}/2026-08-15T00-00-00.000Z_${pzSid}.jsonl`;
+  writeFileSync(zaiSessionFile, `${zaiSession}\n${zaiUsage}\n`);
+  let zaiMeasured: PiFill = null;
+  for (let i = 0; i < 20 && zaiMeasured === null; i++) {
+    zaiMeasured = await piFill();
+    if (zaiMeasured === null) await Bun.sleep(100);
+  }
+  check("§6a pi-zai context reads its relocated Pi JSONL and uses the exact 1M GLM-5.3 window",
+    zaiMeasured?.usedTokens === 52_879 && zaiMeasured.windowTokens === 1_000_000 && zaiMeasured.pct === 5.3,
+    JSON.stringify(zaiMeasured));
+  rmSync(zaiSessionFile, { force: true });
+
+  // Missing and empty are separate shell predicates. Both must fail as themselves in the pane and
+  // leave only the fallback shell — no provider/model fallback and no Pi process to accept input.
+  const keyGuardProbe = async (kind: "missing" | "empty"): Promise<void> => {
+    await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+    if (kind === "missing") rmSync(zaiKeyFile, { force: true });
+    else writeFileSync(zaiKeyFile, "");
+    const opened = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi-zai" });
+    let pane = "";
+    for (let i = 0; i < 40; i++) {
+      pane = (await tmuxOut("capture-pane", "-p", "-t", `s${HARNESS_SLOT}`)).out;
+      if (pane.includes(zaiKeyFile)) break;
+      await Bun.sleep(100);
+    }
+    const comms = await paneComms(`s${HARNESS_SLOT}`);
+    check(`§6a ${kind} key file prints a loud path-specific error and never starts Pi`,
+      opened.ok && pane.includes("pi-zai: missing or empty Z.ai Coding Plan key file:")
+        && pane.includes(zaiKeyFile) && !comms.includes("pi"),
+      `${opened.status} / ${pane.slice(-220)} / comms=${comms.join(",")}`);
+  };
+  await keyGuardProbe("missing");
+  await keyGuardProbe("empty");
+  writeFileSync(zaiKeyFile, `${zaiStandIn}\n`);
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  check("§6a all pi-zai probes leave global ~/.pi/agent/models.json absent",
+    !existsSync(globalPiModels), globalPiModels);
+
+  const piProbeOpen = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi" });
+  check("§6b fixture: a Pi slot is active before the per-slot liveness cache is measured",
+    piProbeOpen.ok, String(piProbeOpen.status));
 
   // --- §6b THE PROBE IS PER SLOT, and this fleet is the sharpest place to prove it: FLEET_CMD is
   // `true`, an UNDECLARED command, so HARNESS_COMMS is empty and every default-adapter slot takes
@@ -892,7 +1054,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
     rdash.status === 400, String(rdash.status));
   // ...and NAMED FOR A HARNESS THAT HAS NO BOX: refused, not dropped. Dropping it is the failure
   // that matters most in this family — the owner would believe the session is contained.
-  for (const h of ["claude", "pi", "codex"]) {
+  for (const h of ["claude", "pi", "pi-zai", "codex"]) {
     const rh = await post(`/api/slots/${BOX_SLOT_A}/open`, { cwd: REPO, harness: h, container: "box-a" });
     check(`§6d2 harness ${h} refuses a container it would never enter (400, never silently dropped)`,
       rh.status === 400, String(rh.status));

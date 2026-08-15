@@ -76,6 +76,8 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
   });
 
   const fixture = collectRepoFacts();
+  check("context packs: the closed harness vocabulary includes the pi-zai adapter",
+    (CONTEXT_PACK_HARNESSES as readonly string[]).includes("pi-zai"), CONTEXT_PACK_HARNESSES.join(","));
   check("context packs fixture: tracked paths and source bytes were explicitly collected",
     fixture.facts !== null, fixture.error ?? `${fixture.facts?.trackedPaths.size ?? 0} tracked paths`);
   if (fixture.facts) {

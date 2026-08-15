@@ -108,8 +108,10 @@ export const FLEET_DEFAULT_MODEL = "claude-opus-5[1m]";
 export const CONTEXT_WINDOW_BASE = 200_000;
 export const CONTEXT_WINDOW_1M = 1_000_000;
 export const CONTEXT_WINDOW_GPT = 258_400;
+export const CONTEXT_WINDOW_GLM_5_3 = 1_000_000;
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;
+  if (model === "glm-5.3") return CONTEXT_WINDOW_GLM_5_3;
   if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
     return CONTEXT_WINDOW_GPT;
   }

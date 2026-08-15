@@ -423,6 +423,25 @@ export async function run(ctx: Ctx): Promise<void> {
     check("repo-worker override planted before the restart", wr.ok === true && !!workerCanon, JSON.stringify(wr));
   }
 
+  // A named harness is persisted as its id, then resolved back through HARNESSES after boot. Keep
+  // a real pi-zai slot alive across the server restart and force one later pane heal: the first
+  // proves loadState retained the id, the second proves harnessOf did not fall back to Claude.
+  const PI_ZAI_PERSIST_SLOT = 14;
+  await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/kill`, {});
+  const piZaiPersistOpen = await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/open`,
+    { cwd: codexCwd, harness: "pi-zai", effort: "low" });
+  let piZaiPersistState: { harness?: string; sessionId?: string } | undefined;
+  for (let i = 0; i < 60; i++) {
+    piZaiPersistState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { slots?: Record<string, { harness?: string; sessionId?: string }> }).slots?.[String(PI_ZAI_PERSIST_SLOT)];
+    if (piZaiPersistState?.harness === "pi-zai" && /^[0-9a-f-]{36}$/.test(piZaiPersistState.sessionId ?? "")) break;
+    await Bun.sleep(50);
+  }
+  check("pi-zai restart fixture persists its harness id and pinned Pi session before srv restart",
+    piZaiPersistOpen.ok && piZaiPersistState?.harness === "pi-zai"
+      && /^[0-9a-f-]{36}$/.test(piZaiPersistState.sessionId ?? ""),
+    `${piZaiPersistOpen.status} / ${JSON.stringify(piZaiPersistState)}`);
+
   // --- restart persistence ---
   const srvKill = Bun.spawn(["tmux", "-L", SOCK, "kill-session", "-t", "srv"]);
   await srvKill.exited;
@@ -482,6 +501,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // "kein Eintrag" must stay `verify` ABSENT — unconfigured, never a silent green (P-7c).
   const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
     "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS", "FLEET_CODEX_SESSIONS_DIR",
+    "FLEET_PI_ZAI_AGENT_DIR", "FLEET_PI_ZAI_KEY_FILE",
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
@@ -509,10 +529,27 @@ export async function run(ctx: Ctx): Promise<void> {
   await Bun.sleep(3000);
   const api = (await (await get("/api/sessions")).json()) as
     { now: number; slots: { id: number; cwd: string | null; label: string | null; lastOutput: number;
-      codexRecovery?: CodexRecoveryView }[] };
+      harness?: string; codexRecovery?: CodexRecoveryView }[] };
   check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
   check("after restart: slot 1 still empty", api.slots[0].cwd === null);
   check("after restart: label persisted", api.slots[1].label === "research-agent");
+  const piZaiAfterRestart = api.slots.find((s) => s.id === PI_ZAI_PERSIST_SLOT);
+  check("after restart: a saved pi-zai slot still resolves as pi-zai, never the default adapter",
+    piZaiAfterRestart?.harness === "pi-zai", JSON.stringify(piZaiAfterRestart));
+  await tmuxOut("kill-session", "-t", `s${PI_ZAI_PERSIST_SLOT}`);
+  let piZaiHealCmd = "";
+  const piZaiHealUntil = Date.now() + 7000;
+  do {
+    piZaiHealCmd = (await tmuxOut("display-message", "-p", "-t", `s${PI_ZAI_PERSIST_SLOT}`,
+      "#{pane_start_command}")).out.replaceAll("\\", "");
+    if (piZaiHealCmd.includes("pi --provider zai --model 'glm-5.3'")) break;
+    await Bun.sleep(100);
+  } while (Date.now() < piZaiHealUntil);
+  check("after restart: harnessOf heals the saved slot through pi-zai with its exact pinned provider/model",
+    piZaiHealCmd.includes("pi --provider zai --model 'glm-5.3'")
+      && /--session-id [0-9a-f-]{36}\b/.test(piZaiHealCmd) && piZaiHealCmd.includes("--thinking low"),
+    piZaiHealCmd.slice(-280));
+  await post(`/api/slots/${PI_ZAI_PERSIST_SLOT}/kill`, {});
   const codexAfterRestart = api.slots.find((s) => s.id === 16)?.codexRecovery;
   const codexStateAfterRestart = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
     { slots?: Record<string, { codexPaneSpawnedAt?: number }> }).slots?.["16"];

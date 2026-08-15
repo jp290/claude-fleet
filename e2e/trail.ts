@@ -15,6 +15,7 @@ import {
   TRAIL_SUITE,
   TRAIL_TREE,
   TRAIL_TRUNCATED,
+  resolveSourceTree,
   trailFile,
   trailRow,
   type TrailRow,
@@ -48,6 +49,13 @@ export async function run(): Promise<void> {
     !!trailFile && trailFile !== ROOT && !trailFile.startsWith(`${ROOT}/`),
     `trail=${trailFile} instance=${ROOT}`);
 
+  const stagedRoot = "/staged-wrapper";
+  const stagedSource = resolveSourceTree(stagedRoot, "/non-work-tree/node_modules",
+    (candidate) => candidate === stagedRoot);
+  check("trail: a node_modules symlink whose target is not a work tree never falls back to the staged wrapper",
+    stagedSource === null,
+    `source=${stagedSource} instance=${stagedRoot}`);
+
   check(SENTINEL, true);
   const s = readRows().find((r) => r.check === SENTINEL);
   check("trail: a known check's row carries the full shape (v/run/suite/tree/check/ok/msSincePrev/ts)",
@@ -56,8 +64,8 @@ export async function run(): Promise<void> {
       && typeof s.msSincePrev === "number" && s.msSincePrev >= 0 && typeof s.ts === "number" && s.ts > 0,
     JSON.stringify(s ?? null));
 
-  // the tree under test, resolved from inside a throwaway copy that has no .git of its own —
-  // without it a row cannot say WHICH code a check failed on, which is the whole query
+  // the tree under test, resolved from inside a staged wrapper only through its node_modules
+  // symlink — without it a row cannot say WHICH code a check failed on, which is the whole query
   // Both branches of the emit's own contract, because both occur in production: a run under
   // e2e-isolated.sh resolves a tree, but the POST-LAND AUDIT runs against a `git archive` snapshot
   // that is a tree and not a repository (server.ts, snapshotIntegrationTree) — there `tree` is

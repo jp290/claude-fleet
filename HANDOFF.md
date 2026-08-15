@@ -38,6 +38,15 @@ in Startkommando/Scrollback. `~/.pi/agent` unverändert (kein models.json dort).
   gemessenen Repo-Fakten, exaktes Done-/Proof-Kommando, Nested-Overlay nur bei echter lokaler
   Abweichung, private/providerbezogene Hinweise getrennt, Loader-Canary je Harness.
   `clawd/AGENTS.md` ist ein separater späterer privater Wahrheitsschnitt.
+- **Owner-Entscheid Graphify-Code-Kartograf (2026-08-15, NUR Notiz — nicht bauen/queuen):** nach
+  dem pi-zai-Schnitt zuerst eine kleine MANUELLE Kalibrierung mit dem bereits installierten
+  Claude-Graphify-Skill: fünf echte Architektur-/Impact-Fragen; primär explain/path/affected,
+  query nur mit hartem Budget und passendem `--context`; `built_at_commit` gegen HEAD prüfen;
+  wichtigste Treffer im Source verifizieren; jeden Lauf über Graphifys vorhandenes save-result
+  als useful|dead_end|corrected markieren, danach reflect auswerten. KEIN `graphify codex
+  install` (würde Fleets `AGENTS.md` verändern), kein globaler Pi-Install, kein MCP, kein
+  Cartographer-Worker vor positivem Befund. Private Repo-Ausgaben nur an bewusst vertrauten
+  Provider — lokale Graph-Erzeugung allein ist kein Provider-Schutz.
 - pi-zai-Feuerprobe für `automatable:true` steht aus; Effort-Monotonie und 1M-Vollfenster
   ungemessen; pi 0.84.2 ist verfügbar (Update wäre Owner-Akt, Katalog könnte glm-5.3 nachziehen).
 - ProgramExecutionView bleibt der empfohlene nächste Korridor-Schnitt (Core-Doc), jetzt mit den

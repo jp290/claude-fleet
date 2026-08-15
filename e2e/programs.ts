@@ -1,6 +1,6 @@
 // Program/Origin Artifact v1: a durable planning bracket above tasks and lanes. Sessions may
 // propose; only the owner confirms and advances it. Full bodies stay off the 2 s sessions poll.
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { BASE, H, REPO, ROOT, TOKEN, check, get, post, restartSrv, tmuxOut } from "./harness";
@@ -29,9 +29,37 @@ interface Program extends ProgramContent {
 }
 interface FleetState {
   programs?: Program[];
+  tasks?: Record<string, unknown>[];
+  watches?: Record<string, unknown>[];
+  events?: Record<string, unknown>[];
   stewardToken?: string;
   slots?: Record<string, { cwd?: string; selfToken?: string; openedAt?: number; sessionId?: string | null;
-    harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown }>;
+    harness?: string | null; model?: string | null; effort?: string | null; successionRetirement?: unknown;
+    taskId?: string | null; originId?: string | null; programId?: string | null }>;
+}
+
+interface ProgramExecutionRow {
+  program: { id: string; status: ProgramStatus; title: string; createdAt: number;
+    confirmedAt: number | null; activatedAt: number | null; completedAt: number | null };
+  authority: { boundSlot: number; boundOpenedAt: number; boundSessionId: string | null; boundAt: number;
+    sessionIdMatch: "exact" | "divergent" | "unknown"; executionState: "active" | "not-executing" };
+  tasks: { rows: { id: string; kind: string; status: string; releasedBy: string | null;
+    slot: number | null; originId: string | null; text: string }[]; total: number; byStatus: Record<string, number> };
+  lanes: { rows: { slot: number; openedAt: number; sessionId: string | null; repo: string | null;
+    branch: string | null; taskId: string | null; originId: string | null; harness: string | null;
+    model: string | null; effort: string | null }[]; total: number };
+  outcomes: { rows: Record<string, unknown>[]; total: number; malformed: number };
+  receipts: { rows: Record<string, unknown>[]; total: number; malformed: number };
+  operations: {
+    events: { rows: Record<string, unknown>[]; sessionMismatch: number; openDebts: number };
+    watches: { attributed: Record<string, unknown>[]; unattributedLegacy: number; foreignOccupant: number };
+  };
+  unknown: string[];
+}
+interface ProgramExecutionView {
+  at: number;
+  session: { slot: number; openedAt: number; sessionId: string | null };
+  programs: ProgramExecutionRow[];
 }
 
 interface ContextReceipt {
@@ -66,6 +94,13 @@ const selfPrograms = async (token: string): Promise<{ response: Response; progra
   const response = await fetch(`${BASE}/api/self/programs`, { headers: { "x-fleet-self-token": token } });
   const body = await response.json() as { programs?: Program[] };
   return { response, programs: body.programs ?? [] };
+};
+const selfExecution = async (token: string | null): Promise<{ response: Response; view: ProgramExecutionView | null }> => {
+  const response = await fetch(`${BASE}/api/self/program-execution`, {
+    headers: token === null ? {} : { "x-fleet-self-token": token },
+  });
+  const body = await response.json() as ProgramExecutionView | { error: string };
+  return { response, view: "programs" in body ? body : null };
 };
 const selfPropose = (token: string, body: unknown): Promise<Response> => fetch(`${BASE}/api/self/programs`, {
   method: "POST", headers: { "content-type": "application/json", "x-fleet-self-token": token },
@@ -413,6 +448,280 @@ export async function run(ctx: Ctx): Promise<void> {
     `bound=${boundSelfView.programs.length} other=${otherSelfView.programs.length}`);
   check("Program-MAIN self view: a lane token still receives the existing 409",
     laneSelfView.response.status === 409, String(laneSelfView.response.status));
+
+  // --- ProgramExecutionView v1: exact persisted joins around the authoritative MAIN occupant. ---
+  const executionMainSlot = mainSlot ?? 0;
+  const [executionActive, executionOther, executionLane, executionMissing, executionWrong] = await Promise.all([
+    selfExecution(mainSelfToken), selfExecution(plainToken), selfExecution(ctx.restartSelfTok ?? ""),
+    selfExecution(null), selfExecution("0".repeat(32)),
+  ]);
+  const activeExecutionRow = executionActive.view?.programs.find((x) => x.program.id === mainProgram.id);
+  check("ProgramExecutionView active MAIN prerequisite: the bound token resolves to exactly one authoritative Program",
+    executionActive.response.ok && executionActive.view?.programs.length === 1 && !!activeExecutionRow,
+    `${executionActive.response.status} ${JSON.stringify(executionActive.view)}`);
+  check("ProgramExecutionView active MAIN: executionState is active and authority is the persisted slot+openedAt binding",
+    activeExecutionRow?.authority.executionState === "active"
+      && activeExecutionRow.authority.boundSlot === bound?.slot
+      && activeExecutionRow.authority.boundOpenedAt === bound?.openedAt,
+    JSON.stringify(activeExecutionRow?.authority));
+  check("ProgramExecutionView foreign non-lane: proposedBy and session proximity never replace a missing MAIN binding",
+    executionOther.response.ok && executionOther.view?.programs.length === 0,
+    `${executionOther.response.status} ${JSON.stringify(executionOther.view)}`);
+  const executionLaneText = await (await fetch(`${BASE}/api/self/program-execution`, {
+    headers: { "x-fleet-self-token": ctx.restartSelfTok ?? "" },
+  })).text();
+  check("ProgramExecutionView scope: a lane gets 409 with the Programs-bracket reason",
+    executionLane.response.status === 409 && executionLaneText.includes("programs are brackets above lanes"),
+    `${executionLane.response.status} ${executionLaneText}`);
+  check("ProgramExecutionView auth: missing and wrong self credentials are flat-cost 401s",
+    executionMissing.response.status === 401 && executionWrong.response.status === 401,
+    `${executionMissing.response.status}/${executionWrong.response.status}`);
+  check("ProgramExecutionView MAIN lineage: even the otherwise complete active view always names the persisted-lineage gap",
+    activeExecutionRow?.unknown.some((line) => line.includes("no persisted Program-MAIN lineage exists") && /\d/.test(line)) === true,
+    JSON.stringify(activeExecutionRow?.unknown));
+
+  const executionLaneOpen = await post("/api/lanes", { repo: REPO });
+  const executionLaneBody = await executionLaneOpen.json() as { slot?: number; cwd?: string; branch?: string };
+  const recycleSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const recycleOpen = recycleSlot
+    ? await post(`/api/slots/${recycleSlot}/open`, { cwd: REPO, label: "program-execution-recycle" }) : null;
+  const recycleBefore = readState().slots?.[String(recycleSlot)];
+  check("ProgramExecutionView fixture prerequisite: an attributed lane and recyclable plain occupant are observable",
+    executionLaneOpen.ok && !!executionLaneBody.slot && !!executionLaneBody.cwd && !!executionLaneBody.branch
+      && !!recycleOpen?.ok && !!recycleBefore?.openedAt && /^[0-9a-f]{32}$/.test(recycleBefore.selfToken ?? ""),
+    JSON.stringify({ executionLaneBody, recycleSlot, recycleStatus: recycleOpen?.status, recycleBefore }));
+
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const executionState = readState();
+  const executionSlotRow = executionState.slots?.[String(executionLaneBody.slot)];
+  const executionMainRow = executionState.slots?.[String(executionMainSlot)];
+  const executionProgram = executionState.programs?.find((p) => p.id === mainProgram.id);
+  const matchingTaskId = "executiontaskmatch";
+  const unattributedTaskId = "executiontasklegacy";
+  const executionOrigin = "executionorigin";
+  const matchingOutcomeTs = Date.now() + 10;
+  const matchingReceiptAt = Date.now() + 20;
+  const matchingEventId = "executioneventmatch";
+  const mismatchEventId = "executioneventmismatch";
+  const attributedWatchId = "executionwatchmatch";
+  const legacyWatchId = "executionwatchlegacy";
+  const foreignWatchId = "executionwatchforeign";
+  const malformedWatchId = "executionwatchmalformed";
+  const completeProgramId = "c0ffee000000000000000001";
+  const recycleProgramId = "c0ffee000000000000000002";
+  const fixtureNow = Date.now();
+  check("ProgramExecutionView persisted-fixture prerequisite: stopped state still names MAIN, lane and Program",
+    !!executionSlotRow && !!executionMainRow?.openedAt && !!executionProgram && !!recycleBefore?.openedAt,
+    JSON.stringify({ executionSlotRow, executionMainRow, executionProgram: executionProgram?.id }));
+  if (executionSlotRow) {
+    executionSlotRow.programId = mainProgram.id;
+    executionSlotRow.taskId = matchingTaskId;
+    executionSlotRow.originId = executionOrigin;
+  }
+  executionState.tasks = [...(executionState.tasks ?? []), {
+    id: matchingTaskId, originId: executionOrigin, programId: mainProgram.id,
+    text: `program-attributed ${"x".repeat(240)}`, source: "owner", from: null, kind: "auftrag",
+    repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
+    slot: executionLaneBody.slot ?? null, note: null,
+  }, {
+    id: unattributedTaskId, originId: executionOrigin,
+    text: `same branch ${executionLaneBody.branch} and same time`, source: "owner", from: null,
+    kind: "auftrag", repo: REPO, status: "sent", releasedBy: "owner", created: fixtureNow,
+    slot: executionLaneBody.slot ?? null, note: null,
+  }];
+  const eventBase = {
+    watchId: "executioneventwatch", receiverSlot: executionMainSlot,
+    receiverOpenedAt: executionMainRow?.openedAt ?? 1, receiverIdleSec: 86_400,
+    subjectSlot: executionLaneBody.slot ?? 1, subjectBranch: executionLaneBody.branch ?? "missing",
+    kind: "lane-ready", payload: { ahead: 1, dirty: 0, idleMs: 10_000, observed: true,
+      gitOp: false, awaiting: null, hostCommits: false },
+    createdAt: fixtureNow, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+  };
+  executionState.events = [...(executionState.events ?? []),
+    { ...eventBase, id: matchingEventId, receiverSessionId: executionMainRow?.sessionId ?? null },
+    { ...eventBase, id: mismatchEventId,
+      receiverSessionId: (executionMainRow?.sessionId ?? null) === null ? "foreign-session" : null },
+  ];
+  const watchBase = {
+    slot: executionMainSlot, target: executionLaneBody.slot ?? 1, targetCwd: executionLaneBody.cwd ?? REPO,
+    targetBranch: executionLaneBody.branch ?? "missing", idleSec: 0, armed: false,
+    created: fixtureNow, firedAt: null, lastResult: "fixture",
+  };
+  executionState.watches = [...(executionState.watches ?? []),
+    { ...watchBase, id: attributedWatchId, slotOpenedAt: executionMainRow?.openedAt },
+    { ...watchBase, id: legacyWatchId },
+    { ...watchBase, id: foreignWatchId, slotOpenedAt: (executionMainRow?.openedAt ?? 1) + 1 },
+    { ...watchBase, id: malformedWatchId, slotOpenedAt: "nope" },
+  ];
+  executionState.programs = [...(executionState.programs ?? []), {
+    id: completeProgramId, ...content, title: "Completed ProgramExecutionView fixture",
+    status: "complete", createdAt: fixtureNow, proposedBy: { kind: "owner" },
+    main: { slot: executionMainSlot, openedAt: executionMainRow?.openedAt ?? 1,
+      sessionId: executionMainRow?.sessionId ?? null, boundAt: fixtureNow },
+    confirmedAt: fixtureNow, activatedAt: fixtureNow, completedAt: fixtureNow,
+  }, {
+    id: recycleProgramId, ...content, title: "Recycled occupant must not inherit execution",
+    status: "active", createdAt: fixtureNow, proposedBy: { kind: "owner" },
+    main: { slot: recycleSlot, openedAt: recycleBefore?.openedAt ?? 1,
+      sessionId: recycleBefore?.sessionId ?? null, boundAt: fixtureNow },
+    confirmedAt: fixtureNow, activatedAt: fixtureNow,
+  }];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(executionState, null, 2), { mode: 0o600 });
+
+  const outcomePath = `${ROOT}/lane-outcomes.jsonl`;
+  const receiptPath = `${ROOT}/context-receipts.jsonl`;
+  let outcomeBaseline = "";
+  let receiptBaseline = "";
+  try { outcomeBaseline = readFileSync(outcomePath, "utf8"); } catch { /* an absent ledger is an empty baseline */ }
+  try { receiptBaseline = readFileSync(receiptPath, "utf8"); } catch { /* an absent ledger is an empty baseline */ }
+  appendFileSync(outcomePath, `${JSON.stringify({
+    ts: matchingOutcomeTs, branch: executionLaneBody.branch, disposition: "landed",
+    headSha: "a".repeat(40), taskId: matchingTaskId, originId: executionOrigin,
+    programId: mainProgram.id, harness: "codex", model: "gpt-5.5", effort: "high",
+    verified: true, commitCount: 1, mainAfter: "b".repeat(40), repo: REPO,
+  })}\n${JSON.stringify({
+    ts: matchingOutcomeTs + 1, branch: executionLaneBody.branch, disposition: "landed",
+    headSha: "c".repeat(40), taskId: unattributedTaskId, originId: executionOrigin,
+    harness: "codex", model: "gpt-5.5", effort: "high", verified: true,
+    commitCount: 1, mainAfter: "d".repeat(40), repo: REPO,
+  })}\n{malformed-program-execution-outcome\n`, { mode: 0o600 });
+  appendFileSync(receiptPath, `${JSON.stringify({
+    id: "executionreceiptmatch", at: matchingReceiptAt, hash: "e".repeat(64), repo: REPO,
+    head: "f".repeat(40), branch: executionLaneBody.branch, slot: executionLaneBody.slot,
+    taskId: matchingTaskId, originId: executionOrigin, programId: mainProgram.id,
+    mode: "execution-fixture", deliveredBytes: 321,
+  })}\n${JSON.stringify({
+    id: "executionreceiptforeign", at: matchingReceiptAt + 1, hash: "1".repeat(64), repo: REPO,
+    head: "2".repeat(40), branch: executionLaneBody.branch, slot: executionLaneBody.slot,
+    taskId: matchingTaskId, originId: executionOrigin, programId: completeProgramId,
+    mode: "execution-fixture", deliveredBytes: 322,
+  })}\n${JSON.stringify({
+    id: "executionreceiptlegacy", at: matchingReceiptAt + 2, hash: "3".repeat(64), repo: REPO,
+    head: "4".repeat(40), branch: executionLaneBody.branch, slot: executionLaneBody.slot,
+    taskId: matchingTaskId, originId: executionOrigin, mode: "execution-fixture", deliveredBytes: 323,
+  })}\n{malformed-program-execution-receipt\n`, { mode: 0o600 });
+  await restartSrv();
+
+  const loadedExecutionState = readState();
+  check("ProgramExecutionView reload prerequisite: program/task/lane fixtures loaded and malformed Watch failed closed",
+    loadedExecutionState.tasks?.some((t) => t.id === matchingTaskId) === true
+      && loadedExecutionState.slots?.[String(executionLaneBody.slot)]?.programId === mainProgram.id
+      && loadedExecutionState.programs?.some((p) => p.id === completeProgramId) === true
+      && !loadedExecutionState.watches?.some((w) => w.id === malformedWatchId),
+    JSON.stringify({ tasks: loadedExecutionState.tasks?.length, lane: loadedExecutionState.slots?.[String(executionLaneBody.slot)],
+      watches: loadedExecutionState.watches?.map((w) => w.id) }));
+
+  const stateBytesBeforeView = readFileSync(`${ROOT}/fleet.json`, "utf8");
+  const stateMtimeBeforeView = statSync(`${ROOT}/fleet.json`).mtimeMs;
+  const outcomesBeforeView = readFileSync(outcomePath, "utf8");
+  const receiptsBeforeView = readFileSync(receiptPath, "utf8");
+  const executionFacts = await selfExecution(mainSelfToken);
+  const stateBytesAfterView = readFileSync(`${ROOT}/fleet.json`, "utf8");
+  const stateMtimeAfterView = statSync(`${ROOT}/fleet.json`).mtimeMs;
+  const outcomeBytesAfterView = readFileSync(outcomePath, "utf8");
+  const receiptBytesAfterView = readFileSync(receiptPath, "utf8");
+  check("ProgramExecutionView read-only prerequisite: the fixture call returned a complete projection",
+    executionFacts.response.ok && !!executionFacts.view, `${executionFacts.response.status}`);
+  check("ProgramExecutionView is observational: fleet.json bytes+mtime and both joined ledgers stay byte-identical",
+    stateBytesAfterView === stateBytesBeforeView && stateMtimeAfterView === stateMtimeBeforeView
+      && outcomeBytesAfterView === outcomesBeforeView && receiptBytesAfterView === receiptsBeforeView,
+    JSON.stringify({ stateBytes: [stateBytesBeforeView.length, stateBytesAfterView.length],
+      stateMtime: [stateMtimeBeforeView, stateMtimeAfterView], outcomes: [outcomesBeforeView.length, outcomeBytesAfterView.length],
+      receipts: [receiptsBeforeView.length, receiptBytesAfterView.length] }));
+
+  const facts = executionFacts.view!;
+  const activeFacts = facts.programs.find((x) => x.program.id === mainProgram.id);
+  const completeFacts = facts.programs.find((x) => x.program.id === completeProgramId);
+  check("ProgramExecutionView response identity: observation time and session triple are explicit",
+    Number.isFinite(facts.at) && facts.at > 0 && facts.session.slot === executionMainSlot
+      && facts.session.openedAt === executionMainRow?.openedAt
+      && facts.session.sessionId === (executionMainRow?.sessionId ?? null),
+    JSON.stringify({ at: facts.at, session: facts.session }));
+  check("ProgramExecutionView task and lane joins: only programId rows count, with status tally, text cap and task-bound lane facts",
+    activeFacts?.tasks.total === 1 && activeFacts.tasks.byStatus.sent === 1
+      && activeFacts.tasks.rows[0]?.id === matchingTaskId && activeFacts.tasks.rows[0].text.length === 200
+      && !activeFacts.tasks.rows.some((t) => t.id === unattributedTaskId)
+      && activeFacts.lanes.total === 1 && activeFacts.lanes.rows[0]?.slot === executionLaneBody.slot
+      && activeFacts.lanes.rows[0]?.taskId === matchingTaskId
+      && activeFacts.lanes.rows[0]?.originId === executionOrigin,
+    JSON.stringify({ tasks: activeFacts?.tasks, lanes: activeFacts?.lanes }));
+  check("ProgramExecutionView outcome join: matching programId appears, absent programId stays unattributed, and malformed count is explicit",
+    activeFacts?.outcomes.total === 1 && activeFacts.outcomes.rows[0]?.ts === matchingOutcomeTs
+      && activeFacts.outcomes.rows[0]?.taskId === matchingTaskId
+      && !activeFacts.outcomes.rows.some((row) => row.taskId === unattributedTaskId)
+      && activeFacts.outcomes.malformed > 0
+      && activeFacts.unknown.some((line) => line.includes(`${activeFacts.outcomes.malformed} malformed outcome ledger rows`)),
+    JSON.stringify(activeFacts?.outcomes));
+  check("ProgramExecutionView receipt join: only persisted matching programId rows appear and malformed count stays explicit",
+    activeFacts?.receipts.rows.some((row) => row.id === "executionreceiptmatch") === true
+      && !activeFacts.receipts.rows.some((row) => row.id === "executionreceiptforeign" || row.id === "executionreceiptlegacy")
+      && activeFacts.receipts.malformed > 0
+      && activeFacts.unknown.some((line) => line.includes(`${activeFacts.receipts.malformed} malformed receipt ledger rows`)),
+    JSON.stringify(activeFacts?.receipts));
+  check("ProgramExecutionView event attribution: full-triplet event is open debt; session mismatch is excluded, counted and unknown",
+    activeFacts?.operations.events.rows.some((row) => row.id === matchingEventId) === true
+      && !activeFacts.operations.events.rows.some((row) => row.id === mismatchEventId)
+      && activeFacts.operations.events.openDebts === 1 && activeFacts.operations.events.sessionMismatch === 1
+      && activeFacts.unknown.some((line) => line.includes("1 events") && line.includes("receiverSessionId")),
+    JSON.stringify(activeFacts?.operations.events));
+  check("ProgramExecutionView Watch attribution: exact openedAt is attributed; legacy and foreign occupants stay counted unknowns",
+    activeFacts?.operations.watches.attributed.some((row) => row.id === attributedWatchId) === true
+      && !activeFacts.operations.watches.attributed.some((row) => row.id === legacyWatchId || row.id === foreignWatchId)
+      && activeFacts.operations.watches.unattributedLegacy === 1
+      && activeFacts.operations.watches.foreignOccupant === 1
+      && activeFacts.unknown.some((line) => line.includes("1 legacy watches"))
+      && activeFacts.unknown.some((line) => line.includes("1 watches belong to a foreign slot occupant")),
+    JSON.stringify({ watches: activeFacts?.operations.watches, unknown: activeFacts?.unknown }));
+  check("ProgramExecutionView unknown contract: every generated sentence carries a number",
+    activeFacts?.unknown.every((line) => /\d/.test(line)) === true, JSON.stringify(activeFacts?.unknown));
+  check("ProgramExecutionView non-active status: complete renders not-executing and names status in unknown",
+    completeFacts?.authority.executionState === "not-executing"
+      && completeFacts.unknown.some((line) => line.includes("1 program has status complete")),
+    JSON.stringify({ authority: completeFacts?.authority, unknown: completeFacts?.unknown }));
+
+  const beforeExecutionReload = facts;
+  await restartSrv();
+  const afterExecutionReload = await selfExecution(mainSelfToken);
+  check("ProgramExecutionView restart: persisted facts reconstruct field-for-field apart from the fresh observation timestamp",
+    afterExecutionReload.response.ok
+      && JSON.stringify({ session: afterExecutionReload.view?.session, programs: canonical(afterExecutionReload.view?.programs) })
+        === JSON.stringify({ session: beforeExecutionReload.session, programs: canonical(beforeExecutionReload.programs) })
+      && (afterExecutionReload.view?.at ?? 0) >= beforeExecutionReload.at,
+    JSON.stringify({ beforeAt: beforeExecutionReload.at, afterAt: afterExecutionReload.view?.at }));
+
+  await post(`/api/slots/${recycleSlot}/kill`, {});
+  await Bun.sleep(2);
+  const recycleReopen = await post(`/api/slots/${recycleSlot}/open`, { cwd: REPO, label: "program-execution-recycled" });
+  const recycleAfter = readState().slots?.[String(recycleSlot)];
+  check("ProgramExecutionView recycle prerequisite: the same slot number now has a distinct openedAt and self token",
+    recycleReopen.ok && recycleAfter?.openedAt !== recycleBefore?.openedAt
+      && recycleAfter?.selfToken !== recycleBefore?.selfToken,
+    JSON.stringify({ before: recycleBefore, after: recycleAfter }));
+  const recycledExecution = await selfExecution(recycleAfter?.selfToken ?? "");
+  check("ProgramExecutionView slot recycle: same slot with new openedAt inherits no Program",
+    recycledExecution.response.ok && recycledExecution.view?.programs.length === 0,
+    `${recycledExecution.response.status} ${JSON.stringify(recycledExecution.view)}`);
+  if (executionLaneBody.slot) await post(`/api/slots/${executionLaneBody.slot}/kill`, {});
+  await post(`/api/slots/${recycleSlot}/kill`, {});
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const executionCleanup = readState();
+  executionCleanup.tasks = (executionCleanup.tasks ?? [])
+    .filter((t) => t.id !== matchingTaskId && t.id !== unattributedTaskId);
+  executionCleanup.watches = (executionCleanup.watches ?? [])
+    .filter((w) => ![attributedWatchId, legacyWatchId, foreignWatchId, malformedWatchId].includes(String(w.id)));
+  executionCleanup.events = (executionCleanup.events ?? [])
+    .filter((e) => e.id !== matchingEventId && e.id !== mismatchEventId);
+  executionCleanup.programs = (executionCleanup.programs ?? [])
+    .filter((p) => p.id !== completeProgramId && p.id !== recycleProgramId);
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(executionCleanup, null, 2), { mode: 0o600 });
+  writeFileSync(outcomePath, outcomeBaseline, { mode: 0o600 });
+  writeFileSync(receiptPath, receiptBaseline, { mode: 0o600 });
+  await restartSrv();
+  check("ProgramExecutionView fixture cleanup: later modules receive the exact pre-probe ledgers",
+    readFileSync(outcomePath, "utf8") === outcomeBaseline && readFileSync(receiptPath, "utf8") === receiptBaseline,
+    JSON.stringify({ outcomes: readFileSync(outcomePath, "utf8").length, receipts: readFileSync(receiptPath, "utf8").length }));
 
   // --- Program-aware succession: HANDOFF gate first, then one active slot+openedAt authority. ---
   const ambiguousProgram = await activateNewProgram("Ambiguous Program-MAIN succession refusal");

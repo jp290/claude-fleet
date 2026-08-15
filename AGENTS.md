@@ -102,7 +102,7 @@ bun e2e/pins.ts
 bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun \
   e2e/pins.ts src/client.ts src/share.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts \
   fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts \
-  fleet-e2e-harness.ts
+  fleet-e2e-harness.ts merge-prompt.ts
 bun run build
 ./e2e-clean-review.sh
 ./e2e-security.sh

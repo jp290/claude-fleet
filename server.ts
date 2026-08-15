@@ -1143,6 +1143,8 @@ interface WatchBase {
   id: string;
   slot: number;    // who gets typed into. Same meaning `slot` has on an Auto, so the delivery
   // path, the per-slot cap and the teardown rules all read the same field.
+  slotOpenedAt?: number; // the receiver occupant at subscribe time. Absent is an honest legacy
+  // row: slot ids are recycled, so the current occupant must never be backfilled onto old Watches.
   idleSec: number; // the WATCHER's idle gate, same field and same default as an Auto. Not a
   // limitation but the point: the message should arrive when the receiving session comes to rest,
   // which is the exact moment it would otherwise turn away without knowing.
@@ -1186,6 +1188,8 @@ function watchFrom(raw: unknown): Watch | null {
   const w = raw as Partial<Watch> & Record<string, unknown>;
   if (typeof w.id !== "string" || typeof w.slot !== "number" || typeof w.idleSec !== "number"
     || typeof w.armed !== "boolean") return null;
+  if (w.slotOpenedAt !== undefined && (typeof w.slotOpenedAt !== "number"
+    || !Number.isFinite(w.slotOpenedAt) || w.slotOpenedAt <= 0)) return null;
   if (w.kind === "audit") {
     return typeof w.repo === "string" && typeof w.mainAfter === "string" ? raw as AuditWatch : null;
   }
@@ -1720,6 +1724,139 @@ function capPrograms(list: Program[]): Program[] {
 type ProgramDigest = Pick<Program, "id" | "status" | "title" | "createdAt">;
 const programDigest = (p: Program): ProgramDigest => ({ id: p.id, status: p.status,
   title: p.title, createdAt: p.createdAt });
+
+// ProgramExecutionView v1 is deliberately a projection, never a second lifecycle model. The
+// bound MAIN occupant is the only authority bracket; everything below joins by persisted ids or
+// the full receiver occupant triple, and every gap stays visible as an explicit unknown.
+async function programExecutionView(s: Slot): Promise<Response> {
+  const [outcomeLedger, receiptLedger] = await Promise.all([
+    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
+    readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE),
+  ]);
+  const boundPrograms = programs.filter((p) => p.main
+    && p.main.slot === s.id && p.main.openedAt === s.openedAt);
+  const projected = boundPrograms.map((p) => {
+    const main = p.main!;
+    const programTasks = tasks.filter((t) => t.programId === p.id);
+    const byStatus: Record<string, number> = {};
+    for (const task of programTasks) byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
+    const outcomeRows = outcomeLedger.rows.filter((row) => row.programId === p.id);
+    outcomeRows.sort((a, b) => (typeof b.ts === "number" ? b.ts : 0)
+      - (typeof a.ts === "number" ? a.ts : 0));
+    const receiptRows = receiptLedger.rows.filter((row) => row.programId === p.id);
+    receiptRows.sort((a, b) => (typeof b.at === "number" ? b.at : 0)
+      - (typeof a.at === "number" ? a.at : 0));
+    const occupantEvents = fleetEvents.filter((e) => e.receiverSlot === s.id
+      && e.receiverOpenedAt === s.openedAt);
+    const matchingEvents = occupantEvents.filter((e) => e.receiverSessionId === s.sessionId);
+    const sessionMismatch = occupantEvents.length - matchingEvents.length;
+    const receiverWatches = watches.filter((w) => w.slot === s.id);
+    const legacyWatches = receiverWatches.filter((w) => w.slotOpenedAt === undefined).length;
+    const foreignWatches = receiverWatches.filter((w) => w.slotOpenedAt !== undefined
+      && w.slotOpenedAt !== s.openedAt).length;
+    const unknown = [
+      "1 lineage gap: no persisted Program-MAIN lineage exists; earlier bound sessions of this program are not reconstructible.",
+    ];
+    if (legacyWatches > 0)
+      unknown.push(`${legacyWatches} legacy watches have no slotOpenedAt and are unattributed.`);
+    if (foreignWatches > 0)
+      unknown.push(`${foreignWatches} watches belong to a foreign slot occupant and are unattributed.`);
+    if (sessionMismatch > 0)
+      unknown.push(`${sessionMismatch} events match slot and openedAt but not receiverSessionId and are excluded.`);
+    if (outcomeLedger.malformed > 0)
+      unknown.push(`${outcomeLedger.malformed} malformed outcome ledger rows make reconstruction incomplete.`);
+    if (receiptLedger.malformed > 0)
+      unknown.push(`${receiptLedger.malformed} malformed receipt ledger rows make reconstruction incomplete.`);
+    if (p.status !== "active")
+      unknown.push(`1 program has status ${p.status}; executionState is not-executing.`);
+    return {
+      program: {
+        id: p.id, status: p.status, title: p.title, createdAt: p.createdAt,
+        confirmedAt: p.confirmedAt ?? null, activatedAt: p.activatedAt ?? null,
+        completedAt: p.completedAt ?? null,
+      },
+      authority: {
+        boundSlot: main.slot, boundOpenedAt: main.openedAt, boundSessionId: main.sessionId,
+        boundAt: main.boundAt,
+        sessionIdMatch: main.sessionId === null || s.sessionId === null ? "unknown"
+          : main.sessionId === s.sessionId ? "exact" : "divergent",
+        executionState: p.status === "active" ? "active" : "not-executing",
+      },
+      tasks: {
+        rows: programTasks.map((t) => ({
+          id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy ?? null,
+          slot: t.slot ?? null, originId: t.originId ?? null, text: t.text.slice(0, 200),
+        })),
+        total: programTasks.length,
+        byStatus,
+      },
+      lanes: {
+        rows: slots.filter((x) => x.cwd && x.programId === p.id).map((x) => ({
+          slot: x.id, openedAt: x.openedAt, sessionId: x.sessionId,
+          repo: x.worktree?.repo ?? null, branch: x.worktree?.branch ?? null,
+          taskId: x.taskId ?? null, originId: x.originId ?? null, harness: x.harness ?? null,
+          model: x.model ?? null, effort: x.effort ?? null,
+        })),
+        total: slots.filter((x) => x.cwd && x.programId === p.id).length,
+      },
+      outcomes: {
+        rows: outcomeRows.slice(0, 20).map((row) => ({
+          ts: row.ts, branch: row.branch, disposition: row.disposition, headSha: row.headSha,
+          taskId: typeof row.taskId === "string" ? row.taskId : null,
+          originId: typeof row.originId === "string" ? row.originId : null,
+          harness: typeof row.harness === "string" ? row.harness : null,
+          model: typeof row.model === "string" ? row.model : null,
+          effort: typeof row.effort === "string" ? row.effort : null,
+          verified: row.verified, commitCount: row.commitCount,
+          mainAfter: typeof row.mainAfter === "string" ? row.mainAfter : null,
+          repo: typeof row.repo === "string" ? row.repo : null,
+        })),
+        total: outcomeRows.length,
+        malformed: outcomeLedger.malformed,
+      },
+      receipts: {
+        rows: receiptRows.slice(0, 20).map((row) => ({
+          id: row.id, at: row.at, hash: row.hash, repo: row.repo, head: row.head,
+          branch: row.branch, slot: row.slot,
+          taskId: typeof row.taskId === "string" ? row.taskId : null,
+          originId: typeof row.originId === "string" ? row.originId : null,
+          mode: row.mode, deliveredBytes: row.deliveredBytes,
+        })),
+        total: receiptRows.length,
+        malformed: receiptLedger.malformed,
+      },
+      operations: {
+        events: {
+          rows: matchingEvents.map((e) => ({
+            id: e.id, watchId: e.watchId, kind: e.kind, status: e.status,
+            createdAt: e.createdAt, deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
+          })),
+          sessionMismatch,
+          openDebts: matchingEvents.filter((e) => !["acknowledged", "receiver-gone"].includes(e.status)).length,
+        },
+        watches: {
+          attributed: receiverWatches.filter((w) => w.slotOpenedAt === s.openedAt).map((w) => ({
+            id: w.id, kind: watchKind(w), armed: w.armed, created: w.created,
+            firedAt: w.firedAt, idleSec: w.idleSec,
+            ...(watchKind(w) === "audit" && "repo" in w
+              ? { repo: w.repo, mainAfter: w.mainAfter }
+              : watchKind(w) === "deploy" && "deployId" in w
+                ? { deployId: w.deployId }
+                : "target" in w ? { target: w.target, targetBranch: w.targetBranch } : {}),
+          })),
+          unattributedLegacy: legacyWatches,
+          foreignOccupant: foreignWatches,
+        },
+      },
+      unknown,
+    };
+  });
+  return json({
+    at: Date.now(),
+    session: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
+    programs: projected,
+  });
+}
 // repo root → worker name → the executable that worker runs as, for THAT repo.
 //
 // The FLEET_*_CMD stand-ins are module constants read from the server's env, which makes each of
@@ -4288,7 +4425,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   if (watches.filter((w) => w.armed && w.slot === s.id).length + deliveryDebts >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
     return json({ error: `max ${WATCH_MAX_PER_SLOT} active watches per slot` }, 400);
   const common: WatchBase = {
-    id: randomBytes(4).toString("hex"), slot: s.id,
+    id: randomBytes(4).toString("hex"), slot: s.id, slotOpenedAt: s.openedAt,
     idleSec: Math.min(86_400, Math.max(0, Number((body ?? {}).idleSec ?? 60) | 0)),
     armed: true,
     created: Date.now(),
@@ -14102,6 +14239,15 @@ Bun.serve<WSData>({
       programs = capPrograms([...programs, program]);
       await saveStateNow();
       return json({ ok: true, program });
+    }
+
+    if (url.pathname === "/api/self/program-execution" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (s.worktree)
+        return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
+      return programExecutionView(s);
     }
 
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies

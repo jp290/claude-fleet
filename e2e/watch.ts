@@ -20,6 +20,7 @@ import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, 
 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
+  slotOpenedAt?: number;
   armed: boolean; firedAt: number | null; lastResult: string | null;
 }
 type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
@@ -33,6 +34,7 @@ interface FleetEventRow {
 }
 interface DeployWatchRow {
   id: string; kind: "deploy"; slot: number; deployId: string;
+  slotOpenedAt?: number;
   armed: boolean; firedAt: number | null; lastResult: string | null;
 }
 interface DeployEventRow {
@@ -68,6 +70,9 @@ const waitDeployEvent = async (watchId: string): Promise<DeployEventRow | undefi
 const freeSlot = async (): Promise<number> =>
   ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
     .slots.find((x) => x.cwd === null)?.id ?? 0;
+const persistedOpenedAt = (slot: number): number | undefined =>
+  (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { openedAt?: number }> }).slots?.[String(slot)]?.openedAt;
 const selfWatch = (tok: string | null, body: unknown): Promise<Response> =>
   fetch(`${BASE}/api/self/watch`, {
     method: "POST",
@@ -374,6 +379,9 @@ export async function run(): Promise<void> {
     check("POST /api/self/watch: a plain session subscribes with its OWN pane-exported token",
       sw.ok && swJ.watch?.armed === true && swJ.watch.target === peers[0].slot
       && swJ.watch.targetBranch === peers[0].branch, `${sw.status} ${JSON.stringify(swJ)}`);
+    check("new Self-route Watches persist the receiver occupant openedAt at the shared creation seam",
+      swJ.watch?.slotOpenedAt === persistedOpenedAt(cId) && (swJ.watch?.slotOpenedAt ?? 0) > 0,
+      `${swJ.watch?.slotOpenedAt} vs ${persistedOpenedAt(cId)}`);
     check("a spoofed `slot` field is ignored — the watch lands on the TOKEN's slot, not the named one",
       swJ.watch?.slot === cId, `landed on ${swJ.watch?.slot}; token slot ${cId}, spoofed ${aId}`);
     const swDup = (await (await selfWatch(cTok, { target: peers[0].slot })).json()) as
@@ -435,6 +443,9 @@ export async function run(): Promise<void> {
   const wAJ = (await wA.json()) as { watch: WatchRow };
   check("subscribe: a plain slot may watch a lane", wA.ok && !!wAJ.watch?.id && wAJ.watch.armed === true,
     JSON.stringify(wAJ).slice(0, 160));
+  check("new owner-route Watches persist the receiver occupant openedAt at the shared creation seam",
+    wAJ.watch?.slotOpenedAt === persistedOpenedAt(aId) && (wAJ.watch?.slotOpenedAt ?? 0) > 0,
+    `${wAJ.watch?.slotOpenedAt} vs ${persistedOpenedAt(aId)}`);
   check("the watch pins the target's BRANCH, not just its recycled slot id",
     wAJ.watch?.targetBranch === tgt.branch, `${wAJ.watch?.targetBranch} vs ${tgt.branch}`);
   // a second subscribe is the same subscription, not a second one: two armed watches would deliver
@@ -569,6 +580,10 @@ export async function run(): Promise<void> {
     successSubR.ok && successSub.watch?.armed === false && successEvent?.payload.ok === true
       && successEvent.payload.hitTarget === true && successEvent.subjectDeployId === successId,
     JSON.stringify({ successSub, successEvent }));
+  check("new non-lane-kind Watches also inherit slotOpenedAt from the one common creation seam",
+    successSub.watch?.kind === "deploy" && successSub.watch.slotOpenedAt === persistedOpenedAt(aId)
+      && (successSub.watch.slotOpenedAt ?? 0) > 0,
+    `${successSub.watch?.slotOpenedAt} vs ${persistedOpenedAt(aId)}`);
   const successText = (await plogRead()).find((p) => p.slot === aId
     && p.text.includes(`[event ${successEvent?.id}]`))?.text ?? "";
   check("deploy watch: success rendering says ok=YES and names notification versus verdict",
@@ -656,6 +671,7 @@ export async function run(): Promise<void> {
   const crashId = "crashboundaryfixture";
   const crashWatchId = "crashboundarywatch";
   const legacyWatchId = "legacywatchfixture";
+  const malformedOpenedAtWatchId = "malformedopenedatwatch";
   const malformedMergeId = "malformedmergefixture";
   const malformedDeployEventId = "malformeddeployfixture";
   const crashRaw = eventA ? {
@@ -682,6 +698,11 @@ export async function run(): Promise<void> {
     targetBranch: tgt.branch, idleSec: 0, armed: false, created: Date.now(),
     firedAt: Date.now(), lastResult: "sent",
   });
+  eventState?.watches?.push({
+    id: malformedOpenedAtWatchId, slot: aId, slotOpenedAt: "nope", target: tgt.slot, targetCwd: tgt.cwd,
+    targetBranch: tgt.branch, idleSec: 0, armed: false, created: Date.now(),
+    firedAt: Date.now(), lastResult: "malformed",
+  });
   if (eventState) writeFileSync(statePath, JSON.stringify(eventState, null, 2), { mode: 0o600 });
   await restartSrv();
 
@@ -702,8 +723,13 @@ export async function run(): Promise<void> {
     && uncertainAfterTicks.deliveredAt === null && uncertainAfterTicks.acknowledgedAt === null
     && (await ownerWatchMessages(aId)).length === 1, JSON.stringify(uncertainAfterTicks));
   check("legacy spent Watch loads unchanged without an invented FleetEvent",
-    (await watchRows()).some((w) => w.id === legacyWatchId && w.lastResult === "sent")
+    (await watchRows()).some((w) => w.id === legacyWatchId && w.lastResult === "sent"
+      && w.slotOpenedAt === undefined)
     && !(await eventRows()).some((e) => e.watchId === legacyWatchId));
+  check("Watch reload keeps missing slotOpenedAt as legacy but rejects a present malformed value fail-closed",
+    !(await watchRows()).some((w) => w.id === malformedOpenedAtWatchId)
+      && (await watchRows()).some((w) => w.id === legacyWatchId && w.slotOpenedAt === undefined),
+    JSON.stringify((await watchRows()).filter((w) => w.id === legacyWatchId || w.id === malformedOpenedAtWatchId)));
   check("per-kind event loading rejects a malformed merge payload without breaking legacy event restore",
     !afterRestartEvents.some((e) => e.id === malformedMergeId) && restartedA?.id === eventA?.id,
     JSON.stringify(afterRestartEvents.filter((e) => e.id === malformedMergeId || e.id === eventA?.id)));

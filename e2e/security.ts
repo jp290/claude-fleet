@@ -66,6 +66,7 @@ const PRE_AUTH_ROUTES = [
   // a non-lane session may propose and read only rows carrying its exact session triple. It never
   // confirms, activates, completes, dispatches, or writes a task; those remain owner acts.
   '= /api/self/programs',
+  '= /api/self/program-execution', // read-only and slot-bound; non-lanes only, with no mutation or foreign-slot reach
   '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
   '= /api/self/main-direct/preflight',
   '= /api/self/main-direct/finalize',

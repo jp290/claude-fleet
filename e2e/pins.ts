@@ -799,6 +799,13 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /waitForFoundingReadiness\(free, stillCurrent\)/.test(successionBody)
     && /waitForFoundingReadiness\(free, stillCurrent\)/.test(bootstrapBody),
     "shared founding readiness wait used by briefAndSend, Program-MAIN bootstrap, and succession");
+  const executionStart = server.indexOf("async function programExecutionView(");
+  const executionBody = executionStart < 0 ? ""
+    : server.slice(executionStart, server.indexOf("\n}\n", executionStart));
+  pin("ProgramExecutionView is a read-only projection with no mutation primitive in its handler",
+    executionBody.length > 0
+      && !/\b(?:saveState|saveStateNow|appendEvent|sendText|spawnCmd)\b/.test(executionBody),
+    executionBody.length > 0 ? "mutation primitive present" : "ProgramExecutionView handler missing");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",

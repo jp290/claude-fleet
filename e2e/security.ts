@@ -75,9 +75,14 @@ const PRE_AUTH_ROUTES = [
   // the caller does not control. What bounds it: the receiver is the token's slot and nothing in
   // the body can move it (createWatchForSlot takes `s`, never a body field), the message is one
   // server-authored line, it fires at most once per subscription, and WATCH_MAX_PER_SLOT caps how
-  // many can be armed. Its subscriber rule runs the OTHER way to the four lane-only routes below:
+  // many can be armed. Its subscriber rule runs the OTHER way to the original lane-only routes below:
   // a lane is refused 409 here. The opposite-scope 409s are pinned in self-token.ts/watch.ts.
   '= /api/self/watch',    // same credential: subscribe your OWN pane to a lane's done-looking
+  // The three Clarification operations share two pathname shapes: GET+POST on the collection,
+  // then one dynamic reply route. All remain pre-owner-gate because their exact self principal is
+  // the security boundary; POST collection is lane-only, reply is non-lane-only, GET is dual-scoped.
+  '= /api/self/clarifications',
+  String.raw`~ /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
   '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting

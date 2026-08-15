@@ -89,7 +89,7 @@ export async function run(ctx: Ctx): Promise<void> {
     headers: token !== undefined ? { "x-fleet-self-token": token } : {},
   });
   type Self = { slot: number; label: string | null; cwd: string; mission: string | null;
-    awaiting: "owner" | null; lane: { repo: string; branch: string } | null;
+    awaiting: "owner" | "main" | null; lane: { repo: string; branch: string } | null;
     idleMs: number; observed: boolean; autos: { id: string; slot: number; text: string }[] };
   const pRes = await selfState(plainTok ?? "");
   const pSelf = (await pRes.json()) as Self;
@@ -111,7 +111,7 @@ export async function run(ctx: Ctx): Promise<void> {
   if (plainOkJ.auto) check("delete the plain session's auto (cleanup)", (await post(`/api/autos/${plainOkJ.auto.id}/delete`, {})).ok);
 
   // --- THE REFUSALS ARE THE FEATURE. Widening the export handed the credential to sessions that
-  // can never land, so the four lane-only routes have to keep saying so — and say it as 409
+  // can never land, so the lane-only routes have to keep saying so — and say it as 409
   // ("recognized credential, unanswerable question"), never as 401, which would read as "not a
   // credential at all" and send a session hunting for a token it already holds. Driven with the
   // plain pane's OWN token. drift and gate are additionally pinned inside their own sections
@@ -122,6 +122,7 @@ export async function run(ctx: Ctx): Promise<void> {
     ["/api/self/gate", { method: "GET" }],
     ["/api/self/criterion", { method: "POST", body: JSON.stringify({ text: "a plain session has no founding task" }) }],
     ["/api/self/verify-intent", { method: "POST", body: JSON.stringify({ phase: "start" }) }],
+    ["/api/self/clarifications", { method: "POST", body: JSON.stringify({ question: "a plain session is not a worker lane" }) }],
   ];
   const refusals = await Promise.all(laneOnly.map(async ([path, init]) => {
     const r = await fetch(BASE + path, {
@@ -129,7 +130,7 @@ export async function run(ctx: Ctx): Promise<void> {
     });
     return `${path}:${r.status}`;
   }));
-  check("the four lane-only self routes answer a PLAIN session 409 not-a-lane — never 401, never 200",
+  check("the lane-only self routes answer a PLAIN session 409 not-a-lane — never 401, never 200",
     refusals.every((r) => r.endsWith(":409")), refusals.join(" "));
 
   // --- THE OPPOSITE SCOPE: succeed/retire belong only to a plain main session. A lane already has

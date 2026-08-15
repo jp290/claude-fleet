@@ -917,13 +917,13 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // contrast honest — two adapters, both true, for two different reasons.
   check("§6e the codex adapter is automatable ALONGSIDE its readiness seam, like pi (both true, published)",
     cx?.automatable === true && pi?.automatable === true, `${String(cx?.automatable)} / ${String(pi?.automatable)}`);
-  // `resume` stays false after measurement: `resume --last` skips the picker and genuinely resumes,
-  // but recency cannot identify this unpinned pane when a cwd has multiple conversations.
-  // Transcript remains false; effort is the fixed config-key capability asserted below.
-  check("§6e the codex adapter declares effort, but no identity-safe resume and no transcript",
+  // Resume is identity-safe only beside the lazy rollout-discovery seam pinned in e2e/pins.ts:
+  // fresh spawn still pins no id, and recency/--last remain forbidden. Transcript remains false;
+  // effort is the fixed config-key capability asserted below.
+  check("§6e the codex adapter declares exact-id resume and effort, but no Fleet transcript",
     cx?.supports.transcript === false && cx?.supports.effort === true
     && JSON.stringify(cx?.effortLevels) === JSON.stringify(["low", "medium", "high", "xhigh", "max", "ultra"])
-    && cx?.supports.resume === false, JSON.stringify(cx));
+    && cx?.supports.resume === true, JSON.stringify(cx));
   // the note is the only place an owner learns, at pick time, that the login is theirs to do
   check("§6e the codex adapter states at pick time that authentication is the owner's act",
     !!cx?.note && /codex login/.test(cx.note), String(cx?.note));

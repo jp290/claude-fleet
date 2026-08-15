@@ -726,6 +726,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const xBody = xStart < 0 ? "" : server.slice(xStart, server.indexOf("\n};\n", xStart));
   pin("the codex adapter's literal is bounded and non-empty (an unfound one would make the rules below vacuous)",
     xStart > 0 && xBody.length > 500 && xBody.length < 12_000, `${xBody.length} bytes`);
+  const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   // automation-eligibility FLIPPED 2026-08-12, and the pin flips WITH its condition: the flip is
   // only sound alongside the declared readiness seam (both measured block screens keep the node
   // wrapper alive, so no process probe can refuse them — only the rendered pane can). An
@@ -738,6 +739,24 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /Sign in with ChatGPT\|Welcome to Codex/.test(xBody)
     && />_ OpenAI Codex \\\(v/.test(xBody),
     xBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
+  // Resume is the same paired-decision shape. `pinsSession` MUST remain false (fresh Codex accepts
+  // no id), while supports.resume is sound only because tickGit owns an exact-cwd, user-thread,
+  // UUID-validated rollout discovery seam and ensureSlot rechecks the exact id suffix before use.
+  pin("the codex adapter advertises resume ONLY beside exact lazy rollout discovery (one decision, two fields)",
+    /\n  pinsSession: false,/.test(xBody) && /\n    resume: true,/.test(xBody)
+      && /async function tickCodexRecovery\(s: Slot\)/.test(server)
+      && /meta\.threadSource !== "user" \|\| meta\.cwd !== s\.cwd/.test(server)
+      && /CODEX_UUID_RE\.test\(p\.id\)/.test(server)
+      && /await codexRolloutForId\(priorSessionId\)/.test(server)
+      && !xCode.includes("--last"),
+    xBody.match(/(?:pinsSession|resume): (?:true|false)/g)?.join(" | ") ?? "resume pair absent");
+  const ensureStart = server.indexOf("async function ensureSlot(");
+  const ensureBody = ensureStart < 0 ? "" : server.slice(ensureStart, server.indexOf("\n}\n", ensureStart));
+  pin("ensureSlot after has-session failure is the single writer of every adapter spawn, including Codex resume",
+    (server.match(/\.spawnCmd\(/g) ?? []).length === 1
+      && /if \(has\.code !== 0\)/.test(ensureBody)
+      && /h\.spawnCmd\(\{ sessionId: candidate, resume,/.test(ensureBody),
+    `${(server.match(/\.spawnCmd\(/g) ?? []).length} spawnCmd call(s)`);
   pin("the codex adapter stays transcript-less until an owner decides otherwise",
     /\n    transcript: false,/.test(xBody), "transcript field");
   // ...and the seam's two consumers exist in the source, because only the dispatch tail is
@@ -760,7 +779,6 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     "shared founding readiness wait used by briefAndSend, Program-MAIN bootstrap, and succession");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
-  const xCode = xBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",
     /codex --dangerously-bypass-approvals-and-sandbox/.test(xCode) && !/--sandbox workspace-write/.test(xCode),
     xBody.match(/let cmd = [^\n]*/)?.[0] ?? "no spawn line");

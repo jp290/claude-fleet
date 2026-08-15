@@ -528,7 +528,18 @@ Shadow-Klassifikation (unten). Was
 von P2-B übrig ist (SkillRef-/CapabilitySnapshot-Referenzen) wartet weiter auf seine Produzenten;
 ContextPlan-Referenzen braucht es NICHT als Task-Feld (Receipt = die Zuordnung, WS12).
 Workstream 1, 2, 4, P2-A, 5, P2-B1, ContextPlan, Program-MAIN-Bootstrap und program-aware
-Succession sind gebaut (oben).
+Succession sind gebaut (oben). **Codex Conversation Recovery v1 ist seit 2026-08-15 GEBAUT
+(Workstream 15, `813149d`, Owner-Tipp vom 2026-08-14 22:13):** eine Codex-Conversation überlebt
+den Pane-Tod — `tickCodexRecovery` bindet die Conversation-ID lazy aus dem Rollout (exaktes cwd,
+`thread_source:"user"`, Zeitfenster des aktuellen Pane-Lebens, genau EIN Kandidat, nie Rezenz oder
+`--last`), ensureSlot heilt mit `codex resume '<exakte-id>'` nur bei existierendem Rollout zur ID,
+und 0/≥2 Kandidaten bzw. fehlender Rollout stehen typisiert als `pending`/`ambiguous`/`lost` an
+der Slot-Row (`codexRecovery`), samt advisory `stream disconnected`-Sichtung. Single Writer per
+Konstruktion: Resume nur nach mechanisch bewiesenem Pane-Tod, ensureSlot ist die einzige
+spawnCmd-Aufrufstelle (Pin). Live bewiesen an MAIN- und Lane-Fall (Codewort-Recall über den
+Pane-Tod, gleiche Session-ID, genau ein Rollout je cwd). Bewusst NICHT gebaut: attended
+Recovery-Fläche (Board-Knopf „gespeicherte Conversation fortsetzen"), Prompt-Replay,
+Claude-/Pi-Recovery — Zustandsmaschine und Grenzen: `docs/codex-recovery.md`.
 
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle

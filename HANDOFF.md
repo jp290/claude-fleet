@@ -1,3 +1,48 @@
+# HANDOFF — Session 62 (2026-08-15, Fable-MAIN: Codex Conversation Recovery v1 — gebaut, gelandet `813149d`, auditiert grün, deployt, beide Live-Canaries bestanden) · 61/60/59/58/57 darunter
+
+**ctx beim Schreiben: 26,5 % (GEMESSEN am Owner-Poll, 265 327 / 1 000 000).**
+Produziert: ein Land (`813149d`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `8777222a` über den
+Dispatch-Knopf, ~2,5 h Worker-Laufzeit), Audit grün (823 s, 2285/0 Checks, +24), Deploy `29cf29d9`
+(`ok:true`, `bootHead == 813149d`, `bundleStale:false`), zwei Live-Canaries, Core-Doc Workstream 15,
+CLAUDE.md-Wahrheitskorrektur (gitignored — reist von Hand).
+
+## Der Schnitt (Details: `docs/codex-recovery.md`, Commit-Body `813149d` = Flächen-Matrix)
+
+Eine Codex-Conversation überlebt jetzt den Pane-Tod. Rollout entsteht erst mit dem ersten Prompt
+(selbst gemessen, promptloser TUI-Boot >20 s schreibt nichts) ⇒ Binding ist lazy auf dem git-Tick:
+`tickCodexRecovery` bindet genau EINEN Kandidaten (exaktes cwd, `thread_source:"user"`,
+Zeitfenster des aktuellen Pane-Lebens, UUID-validiert, nie Rezenz/`--last`); ensureSlot heilt mit
+`codex resume '<exakte-id>'` nur bei existierendem Rollout zur ID; 0/≥2 Kandidaten bzw. fehlender
+Rollout = `pending`/`ambiguous`/`lost` typisiert an der Slot-Row (`codexRecovery`), advisory
+`stream disconnected`-Sichtung inklusive. Single Writer per Konstruktion (Resume nur nach
+has-session-Miss; ensureSlot = einzige spawnCmd-Aufrufstelle, gepinnt). `codex resume <fehlende-id>`
+endet mit „No saved session found" + Exit — gemessen, kein Picker.
+
+**Live-Beweise (beide bestanden):** Lane-Fall Slot 2 (`ZITRONENFALTER-73`-Recall nach Pane-Kill,
+gleiche Session-ID, genau ein Rollout fürs Lane-cwd) · MAIN-Fall Slot 4 (`GLASBLAESER-41`-Recall,
+gleiche ID `01a00412-…`). Beide Canaries vollständig aufgeräumt (Slots, Worktree, Branch).
+
+## Incident, ehrlich: Slot-4-Recycling durch mich — und exakte Wiederherstellung
+
+Für Canary B habe ich `POST /api/slots/4/open` auf einen BELEGTEN Slot gefahren (kein Frei-Check
+— mein Fehler; die Route recycelt kommentarlos). Dort lief die vom Owner am 14.08. manuell
+resumte Codex-MAIN-Conversation `019fefd0-c4d5-73f0-b42d-80a7cbd258f8`. Wiederhergestellt über
+genau den bewiesenen manuellen Weg (`codex resume '<id>'` im selben Slot/cwd — Rollout war intakt,
+nichts an `~/.codex/sessions` verändert). **Grenze, die man kennen muss: dieser Slot steht als
+`cx pending`** — die Discovery bindet nur Conversations aus dem AKTUELLEN Pane-Leben; stirbt die
+Pane, heilt sie FRISCH und das manuelle Resume muss wiederholt werden. Der Fix dafür ist die
+attended Recovery-Fläche (Owner-Tipp §4) — bewusstes Nicht-Ziel dieses Schnitts, guter nächster
+Schnitt. Der volle Owner-Tipp vom 14.08. 22:13 steht wörtlich in `streams/prompts.jsonl` (Slot 4).
+
+## Offen / nächste Schritte
+
+- **Attended Recovery-Fläche** („gespeicherte Codex-Conversation fortsetzen", Session-ID/cwd/Alter
+  angezeigt, Owner entscheidet bei Ambiguität) — Owner-Tipp §4, jetzt mit realem Bedarfsbeleg (s. o.).
+- Owner-Wunsch aus dem wiederhergestellten Slot-4-Gespräch: die ~2,5 h Worker-Laufzeit als
+  Work-Trail-Fall analysieren (Implementierung vs. Suite-Wartezeit vs. Wiederholung) — NACH
+  sicherem Abschluss, nicht als Sparprogramm am Diff.
+- Queue: 56 offene Zeilen (Register), unverändert von diesem Schnitt.
+
 # HANDOFF — Session 61 (2026-08-14: Loader-Vertrag in CLAUDE.md + Program-aware Succession v1 — die MAIN-Authority überlebt den Sessionwechsel; gebaut, gelandet, deployt) · 60/59/58/57/56 darunter
 
 **ctx beim Schreiben: 22,0 % (GEMESSEN am Owner-Poll, 220 206 / 1 000 000 vor der Doc-Arbeit).**

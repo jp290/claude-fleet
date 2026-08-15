@@ -1065,6 +1065,9 @@ export async function run(ctx: Ctx): Promise<void> {
     // repo-binding section uses), so no agent is started at all.
     const SPAWNFAIL = `${ROOT}/plain-dir-harness-probe`;
     mkdirSync(SPAWNFAIL, { recursive: true });
+    // ROOT is now intentionally a git repo for the Program-MAIN Fleet-frame probe. An invalid
+    // gitfile is the local boundary that keeps this child an explicit non-repository fixture.
+    await Bun.write(`${SPAWNFAIL}/.git`, "gitdir: missing-fixture-gitdir\n");
     const sT = (await (await post("/api/tasks", { text: "harness-spawnfail-probe", queue: false, repo: SPAWNFAIL })).json()) as { task: { id: string } };
     const sd = await post(`/api/tasks/${sT.task.id}/dispatch`, { harness: "codex", model: FOREIGN_MODEL });
     const sRow = await f2Row(sT.task.id);
@@ -1143,6 +1146,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // an unattended tick will pick it up.
     const PLAIN = `${ROOT}/plain-dir-probe`;
     mkdirSync(PLAIN, { recursive: true });
+    await Bun.write(`${PLAIN}/.git`, "gitdir: missing-fixture-gitdir\n");
     const pT = (await (await post("/api/tasks", { text: "plain-dir-spawnfail-probe", queue: false, repo: PLAIN })).json()) as { task: { id: string } };
     const pd = await post(`/api/tasks/${pT.task.id}/dispatch`, {});
     const pRow = ((await (await get("/api/sessions")).json()) as { tasks: { id: string; status: string; note?: string }[] })

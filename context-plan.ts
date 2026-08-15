@@ -7,6 +7,7 @@ import {
 } from "./context-packs";
 
 export const CONTEXT_PLAN_OMISSION_REASONS = [
+  "source-unavailable",
   "status-not-active",
   "harness-unsupported",
   "mode-unsupported",
@@ -16,6 +17,7 @@ export const CONTEXT_PLAN_OMISSION_REASONS = [
 export type ContextPlanOmissionReason = (typeof CONTEXT_PLAN_OMISSION_REASONS)[number];
 
 export interface ContextPlanInput {
+  readonly sourceTree: "fleet" | "foreign";
   readonly harness: string | null;
   readonly mode: ContextPackMode;
   readonly triggers: readonly ContextPackTrigger[];
@@ -52,7 +54,8 @@ export function planContext(input: ContextPlanInput): ContextPlan {
 
   for (const pack of CONTEXT_PACKS) {
     let why: ContextPlanOmissionReason | null = null;
-    if (pack.status !== "active") why = "status-not-active";
+    if (input.sourceTree === "foreign") why = "source-unavailable";
+    else if (pack.status !== "active") why = "status-not-active";
     else if (!(pack.harnesses as readonly string[]).includes(harness)) why = "harness-unsupported";
     else if (!(pack.modes as readonly ContextPackMode[]).includes(input.mode)) why = "mode-unsupported";
     else if (!pack.triggers.some((trigger) => triggers.has(trigger))) why = "trigger-not-matched";

@@ -35,20 +35,28 @@ const git = (cwd: string, ...args: string[]): string | null => {
   return p.status === 0 ? p.stdout.trim() : null;
 };
 
-// The tree under test. Run through e2e-isolated.sh, ROOT is a throwaway copy with no .git of its
-// own — but the wrapper symlinks node_modules back to the source checkout, and that link is the
-// only pointer home from inside the copy. Run directly from a checkout, there is no symlink and
-// ROOT itself is the tree. Symlink first: it is the exact answer when it exists.
-const sourceTree = (): string | null => {
-  const candidates: string[] = [];
-  try {
-    candidates.push(dirname(readlinkSync(`${ROOT}/node_modules`)));
-  } catch {
-    // no symlink → not a wrapper instance; ROOT below is the answer
-  }
-  candidates.push(ROOT);
-  for (const c of candidates) if (git(c, "rev-parse", "--is-inside-work-tree") === "true") return c;
+// The tree under test. A node_modules symlink marks ROOT as a staged wrapper instance, whose own
+// git identity belongs to the fixture and must never answer for the tree under test; only the
+// symlink target may answer. Without that symlink this is a direct checkout run and ROOT answers.
+export const resolveSourceTree = (
+  root: string,
+  linkedNodeModules: string | null,
+  isWorkTree: (candidate: string) => boolean,
+): string | null => {
+  const candidates = linkedNodeModules === null ? [root] : [dirname(linkedNodeModules)];
+  for (const c of candidates) if (isWorkTree(c)) return c;
   return null;
+};
+
+const sourceTree = (): string | null => {
+  let linkedNodeModules: string | null = null;
+  try {
+    linkedNodeModules = readlinkSync(`${ROOT}/node_modules`);
+  } catch {
+    // no symlink → not a staged wrapper instance; ROOT is the direct checkout
+  }
+  return resolveSourceTree(ROOT, linkedNodeModules,
+    (candidate) => git(candidate, "rev-parse", "--is-inside-work-tree") === "true");
 };
 
 const SRC = sourceTree();

@@ -29,17 +29,35 @@ Same-Tree-Rerun = 116 PASS, 0 FAIL, alle drei Phasen `ALL PASS`**, die Sonde gr�
 trägt das volle rote Verdikt samt `confirmedByHuman:true`. Queue-Zeile `911bdb73` führt diese
 Sondenfamilie weiter offen — das ist jetzt die DRITTE Session in Folge mit einem Rot aus ihr.
 
+## Zweiter Schnitt derselben Session: die Verify-Drift geschlossen (`446d74b`, main-direct)
+
+Der Truth-Slice unten wurde vom Owner sofort promotet und ist **gebaut** (Core-Doc WS20).
+`watchdog.sh:91` fährt jetzt `bun run build` und `merge-prompt.ts`, `AGENTS.md` nennt dieselben elf
+tsc-Ziele, und `RULE_VERIFY` (`e2e/pins.ts`) vergleicht die GEORDNETE Schrittfolge über drei
+Quellen — die dritte ist `LOCAL_PROOF_STEPS` aus `verify-proportion.ts`, also genau die Empfehlung,
+die Fleet jeder Lane als `localProof.steps` gab, während sein eigener Gate den Build nie fuhr.
+Mutationsprobe: ohne den Build meldet der Pin `FAIL … gate=[install>pins>tsc>clean-review>…]`,
+exit 1 — der Zustand, der vorher grün war. Volle neue Kette exit 0 (7× `ALL PASS`),
+`./e2e-isolated.sh` 2387/0.
+
+**Aktivierung ist ZWEI Schritte:** `launchctl kickstart` erneuert nur den Watchdog; der laufende
+`srv` trägt `FLEET_VERIFY_CMD` in seiner Spawn-Env. Also kickstart **und** Deploy (`3cf78f2c`,
+`ok:true`, `bootHead == target == 446d74b`). Live bewiesen ohne Waiver: `/api/self/gate` gibt einer
+Nicht-Lane `409 not a lane`, also hat eine Wegwerf-Lane mit ihrem eigenen Self-Token gefragt —
+`verify.cmd` trägt Build und `merge-prompt.ts`, `localProof.steps` ist deckungsgleich. Provenienz
+über preflight `e6ec4f8a…` → finalize (`b293e944 → 446d74be`, `result: landed`).
+**Eigener Sondenfehler, benannt:** mein erster `ps eww … | tr ' ' '\n' | grep -c "bun run build"`
+konnte durch den Wort-Split nie treffen und meldete zweimal „0"; der belastbare Vorher-Beleg ist die
+Land-Note von `ebb6f02` (verify.cmd: 0 Treffer für Build und `merge-prompt.ts`).
+`CLAUDE.md` nachgezogen (gitignored, als Text gemeldet).
+
 ## Offen / nächste Schritte
 
-- **Nächster Truth-Slice, vom Owner promotet, NOCH NICHT gebaut — die Verify-Kette driftet
-  dreiwegig** (voller Beleg: Core-Doc-Abschnitt „Truth-Slice"). `AGENTS.md` §Verify fährt
-  `bun run build`, der live gespawnte `FLEET_VERIFY_CMD` (`watchdog.sh:91`) **nicht** — das ist der
-  einzige echte Coverage-Gap: ein nur vom Bundler sichtbarer Bruch kommt am Land-Gate vorbei.
-  `CLAUDE.md` nennt zusätzlich `merge-prompt.ts` (redundant, nicht falsch — `docs/verify-tiering.md`
-  §156-170 beweist per Mutationsprobe transitive tsc-Abdeckung). Grün blieb der Drift, weil
-  `RULE_VERIFY` (`e2e/pins.ts:370`) „exactly" heißt, aber nur Suiten- und tsc-Liste vergleicht.
-  Schnitt: Build aufwärts ins `VERIFY_CMD` (~90 ms), eine tsc-Liste über alle drei Quellen, den Pin
-  auf vollständige Schrittmenge+Reihenfolge schärfen.
+- **ERLEDIGT in dieser Session (stand hier als nächster Schnitt): die Verify-Drift.** Der Zustand
+  davor, als Befund konserviert (Core-Doc „Truth-Slice"): `AGENTS.md` fuhr `bun run build`, der live
+  gespawnte `FLEET_VERIFY_CMD` nicht — ein nur vom Bundler sichtbarer Bruch kam am Land-Gate vorbei.
+  Grün blieb das, weil `RULE_VERIFY` „exactly" hieß und nur Suiten- und tsc-Liste verglich.
+  Geschlossen in `446d74b` (siehe Abschnitt oben).
 - **Drei benannte Grenzen des Clarification-Kanals** (Befunde, kein Workstream — Core-Doc WS19):
   kein `send-uncertain` an der Reply-Naht (Doppel-Zustellung möglich, wenn tmux nach teilweisem
   Send wirft) · Owner-`/send` löscht `awaiting` bedingungslos und lässt den Request offen ·

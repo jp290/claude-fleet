@@ -759,7 +759,52 @@ RPC/Helpdesk, Pane-Parsing, Auto-Approve, Task-Welle, Self-Land. Die spätere Ow
 nur dokumentiert: Program-MAIN bekommt operative Ereignisse, ein Owner-Kanal soll später nur
 `needs-owner`, Rot und wichtige Abschlüsse dedupliziert und ackbar erhalten.
 
-## Truth-Slice: die Verify-Kette driftet DREIWEGIG (Befund 2026-08-15, ausdrücklich NICHT gebaut)
+## Workstream 20 — die Verify-Drift geschlossen (gelandet `446d74b` main-direct, 2026-08-15)
+
+Der Truth-Slice darunter ist **gebaut**; er bleibt als Befund stehen, weil er den Zustand VOR
+diesem Commit beschreibt. Was sich änderte, in drei Zeilen:
+
+- **`watchdog.sh:91`** — `VERIFY_CMD` bekam `bun run build` und `merge-prompt.ts`. Aufwärts
+  angeglichen, weil die dokumentierte Kette die richtige war und nur der Gate zurückhing.
+- **`AGENTS.md` §Verify** — `merge-prompt.ts` in den Fence; alle drei Quellen nennen dieselben elf
+  tsc-Ziele. (`merge-prompt.ts` ist redundant, nicht Lücke — `docs/verify-tiering.md` hat die
+  transitive Abdeckung per Mutation bewiesen. Es steht explizit da, damit die drei Listen EINE sind.)
+- **`e2e/pins.ts`** — `RULE_VERIFY` vergleicht jetzt die GEORDNETE Schrittfolge statt zweier
+  Teilmengen, gegen eine **dritte** Quelle: `LOCAL_PROOF_STEPS` aus `verify-proportion.ts`. Das ist
+  die Pointe des Befunds — Fleet empfahl jeder Lane über `localProof.steps` einen Schritt, den sein
+  eigener Gate nie fuhr. Schritte werden über eindeutige Marker und ihre POSITION gefunden, darum
+  brauchen Repo-Guard, `|| { echo … }`-Handler und der `;`/`&&`-Mix in `VERIFY_CMD` kein Parsing.
+  `verify-proportion.ts` wird als DATEI gelesen, nicht importiert: `e2e/pins.ts` ist fs-only per
+  Konstruktion, so bleibt die dritte Quelle eine gepinnte Seite statt einer Compile-Abhängigkeit.
+
+**Der Pin fällt auch** (Mutationsprobe, Datei danach byte-identisch wiederhergestellt): ohne
+`bun run build` in `VERIFY_CMD` meldet er
+`FAIL … gate=[install>pins>tsc>clean-review>security>claude-gate]`, exit 1 — exakt der Zustand, der
+vorher grün war. Weiter gemessen: volle NEUE Kette von Hand exit 0 mit sieben `ALL PASS`;
+`./e2e-isolated.sh` 2387/0 `ALL PASS`.
+
+**Aktivierung ist ZWEI Schritte, nicht einer** (Owner-Klarstellung, und sie ist der Teil, den man
+sonst falsch macht): `launchctl kickstart` startet nur den Watchdog neu — der laufende `srv` trägt
+`FLEET_VERIFY_CMD` in seiner Spawn-Env und bleibt auf dem alten Wert, bis er selbst neu startet.
+Also kickstart **und** Deploy/srv-Neustart (`3cf78f2c`, `ok:true`, `bootHead == target == 446d74b`,
+`hitTarget:true`, `bundleStale:false`).
+
+**Live-Beweis ohne Waiver.** `GET /api/self/gate` ist lane-only und antwortet einer Nicht-Lane
+`409 not a lane — the gate judges a lane's land`. Statt das zu umgehen, hat eine Wegwerf-Lane die
+Route mit ihrem EIGENEN Self-Token gefragt: `verify.cmd` enthält `bun run build` **und**
+`merge-prompt.ts`, und `localProof.steps` = `install>pins>tsc>build>clean-review>security>claude-gate`
+ist jetzt deckungsgleich mit dem, was der Gate wirklich fährt. Lane danach restlos entfernt.
+
+**Eine eigene Sonde ist mir dabei kaputtgegangen, und das gehört ins Register:** der Vorher/Nachher-
+Vergleich lief zuerst als `ps eww <pid> | tr ' ' '\n' | grep -c "bun run build"` — der Wort-Split
+zerlegt das Muster in drei Zeilen, also konnte der Zähler NIE treffen. Er meldete „0" für den alten
+srv (richtige Antwort, falsche Begründung) und „0" für den neuen (schlicht falsch). Dieselbe Lektion
+wie im Regelbuch: eine Sonde, die nicht messen kann, meldet denselben Wert wie eine Messung. Der
+korrekte Vorher-Beleg ist ein dauerhafter Fakt statt einer Live-Sonde — die **Land-Note von
+`ebb6f02`** trägt den `verify.cmd`, der dieses Land tatsächlich gatete: `bun run build` 0 Treffer,
+`merge-prompt.ts` 0 Treffer.
+
+## Truth-Slice (Befund 2026-08-15, GEBAUT als WS20 darüber — beschreibt den Zustand davor)
 
 Gefunden von einem read-only Sol-Ultra-Scout, der korrekt an der Stelle anhielt statt zu raten;
 vom Owner und danach hier source-seitig gegengeprüft. Drei Beschreibungen derselben Kette, und

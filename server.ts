@@ -58,6 +58,12 @@ const MAX_RECENTS = 8;
 const MAX_PINS = 20;
 const STREAM_DIR = `${import.meta.dir}/streams`;
 const STATE_FILE = `${import.meta.dir}/fleet.json`;
+// Codex writes its conversation identity lazily, on the first prompt rather than at TUI boot.
+// Tests point this at their staged scratch tree; production follows Codex's own default.
+const CODEX_SESSIONS_DIR = process.env.FLEET_CODEX_SESSIONS_DIR
+  ?? (process.env.HOME ? `${process.env.HOME}/.codex/sessions` : "");
+const CODEX_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODEX_BIND_SLACK_MS = 5000;
 // the single-instance lock (see claimInstanceLock). Lives next to STATE_FILE because the thing
 // being protected is the DIRECTORY, which is what STATE_FILE and every ledger below derive from.
 const PID_FILE = `${import.meta.dir}/fleet.pid`;
@@ -258,8 +264,9 @@ interface Harness {
     file(o: { cwd: string; sessionId: string }): string | null;
     used(file: string, size: number): number | null;
   } | null;
-  // Does this harness take a session id at spawn? It decides whether s.sessionId is pinned at all,
-  // which is what makes a conversation survive a pane respawn.
+  // Does this harness take a session id at FRESH spawn? Most pins come from that act. Codex is the
+  // one explicit exception: fresh spawn cannot take an id, so its tick-time discovery seam may
+  // populate s.sessionId later while this remains false.
   pinsSession: boolean;
   // The comm prefixes that prove THIS harness's agent is running in a pane. null = "whatever the
   // env rule says" (HARNESS_COMMS) — the same null-means-defer shape as modelRe below, and for the
@@ -738,7 +745,12 @@ const CODEX_HARNESS: Harness = {
   // prelude and codex asks its own question in the pane: attended fallback, never a mangled
   // config line.
   spawnCmd: (o) => {
-    let cmd = "codex --dangerously-bypass-approvals-and-sandbox";
+    // SINGLE WRITER: the resume form is reachable only through ensureSlot after that function's
+    // has-session miss. A live pane is never resumed beside itself; the owner restart route kills
+    // its pane before entering the same seam. Discovery supplies the exact, UUID-validated id.
+    let cmd = o.resume && o.sessionId
+      ? `codex resume '${o.sessionId}' --dangerously-bypass-approvals-and-sandbox`
+      : "codex --dangerously-bypass-approvals-and-sandbox";
     // single-quoted under the same rule as slotCmd and PI_HARNESS: HARNESS_MODEL_RE admits `*` and
     // the `[1m]` suffix, and tmux's default-shell here is zsh, which ABORTS the whole line on an
     // unmatched glob ("no matches found") and takes the pane with it. No DEFAULT_MODEL fallback:
@@ -757,12 +769,9 @@ const CODEX_HARNESS: Harness = {
   // permission surface has no ToolProfile equivalent — `--tools ""` has no counterpart.
   worker: () => null,
   context: null, // Codex is deliberately left for its rollout-format integration, not guessed here
-  // Codex has no spawn-time `--session-id`. MEASURED: `codex resume --last <prompt>` bypasses the
-  // picker and genuinely continued the newest cwd-matched conversation (same rollout/session id,
-  // with an earlier marker retained). But `--last` identifies by recency, not by this Fleet slot:
-  // with multiple conversations recorded for the cwd, an unpinned respawn cannot know which one it
-  // owns. Fleet's resume promise is identity, not "whichever ran last", so no id is recorded and
-  // `supports.resume` stays false.
+  // Codex still has no FRESH-spawn `--session-id`, so this remains false. The complementary lazy
+  // discovery seam binds the id from Codex's rollout after the first prompt; only then may the
+  // resume form above receive it. `--last` is never used: recency is not slot identity.
   pinsSession: false,
   // MEASURED, and this is the one field a reader will want to argue with. The process tree is
   // `zsh → node (bin/codex.js) → <native codex>`, and the native child's comm is the FULL vendor
@@ -831,9 +840,10 @@ const CODEX_HARNESS: Harness = {
   // reach the quoted pane command, never a general operator-supplied config pass-through.
   effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
   supports: {
-    // false: see pinsSession — `--last` skips the picker but cannot identify this unpinned pane's
-    // conversation when the cwd has more than one.
-    resume: false,
+    // TRUE only beside the discovery seam: `codex resume <exact-id>` was measured to continue the
+    // same rollout without replaying its last prompt. pinsSession stays false because fresh Codex
+    // still accepts no id; ambiguity is terminal rather than resolved by `--last` or recency.
+    resume: true,
     // FALSE for the same reason as pi's, and it is load-bearing rather than cosmetic: what Fleet
     // calls a transcript is a CLAUDE-CODE .jsonl under projDir(), parsed by viewEntry for the
     // conversation view and the ✨ summary's evidence. Codex writes its own rollout files under
@@ -1414,6 +1424,7 @@ interface LaneRef {
   anchor?: LaneAnchor;
 }
 interface SuccessionRetirement { at: number; cwd: string; token: string }
+type CodexRecoveryState = "pending" | "bound" | "ambiguous" | "lost";
 
 interface Slot {
   id: number;
@@ -1479,8 +1490,11 @@ interface Slot {
   quietUntil: number; // resize/repaint make the TUI redraw — don't count that as activity
   cols: number; // last tmux window size we applied — lets a same-size reconnect skip reseeding
   rows: number;
-  sessionId: string | null; // claude session uuid we pinned at pane creation; null for
-  // adopted/pre-existing sessions (transcript lookup then falls back to newest-by-mtime)
+  sessionId: string | null; // exact conversation identity: usually pinned at pane creation;
+  // Codex discovers it lazily. null also covers adopted/pre-pinning transcript sessions.
+  codexPaneSpawnedAt: number | null; // current Codex pane life's discovery-window anchor
+  codexRecoveryState: CodexRecoveryState | null; // null for every non-Codex occupant
+  codexDisconnectSeenAt: number | null; // advisory only; a live TUI owns its own retry
   history: { text: string; ts: number }[]; // the durable "what did I prompt" record,
   // newest last: composed sends, plus terminal-typed prompts harvested from the
   // transcript (tickHarvest) — raw keystrokes themselves are deliberately not captured
@@ -1516,6 +1530,9 @@ const slots: Slot[] = Array.from({ length: MAX_SLOTS }, (_, i) => ({
   cols: 200,
   rows: 50,
   sessionId: null,
+  codexPaneSpawnedAt: null,
+  codexRecoveryState: null,
+  codexDisconnectSeenAt: null,
   history: [],
   clients: new Set(),
   inputChain: Promise.resolve(),
@@ -2176,6 +2193,7 @@ type AuditEvent =
   | "owner_auth_fail"
   | "intake_auth_fail" | "intake_auth_lock"
   | "self_heal_recreate"
+  | "codex_bind" | "codex_bind_ambiguous" | "codex_resume_lost"
   // ② the conflict went to the lane's OWN session instead of the throwaway resolver — the durable
   // half of `resolvedBy`, recorded at the moment of the decision rather than reconstructed at land
   | "merge_wake_author"
@@ -2326,6 +2344,8 @@ function saveState(): void {
   const active: Record<string, { cwd: string; label: string | null; openedAt: number;
     successionRetirement: SuccessionRetirement | null; mission: string | null; awaiting: "owner" | null;
     sessionId: string | null;
+    codexPaneSpawnedAt: number | null; codexRecoveryState: CodexRecoveryState | null;
+    codexDisconnectSeenAt: number | null;
     worktree: LaneRef | null; model: string | null;
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
@@ -2334,7 +2354,7 @@ function saveState(): void {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, selfToken: s.selfToken };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, selfToken: s.selfToken };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
@@ -2787,6 +2807,140 @@ const repoInfo = new Map<number, string | null>();
 // ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
 // spawns inline on the 100ms sessions poll. The delivery/dispatch GATES (claudeAlive at the
 // send/dispatch sites) must keep calling claudeAlive FRESH: a 10s-stale cache could gate a
+interface CodexSessionMeta { id: string; cwd: string; timestamp: number; threadSource: string }
+const codexMetaCache = new Map<string, CodexSessionMeta | null>();
+
+// Parse exactly the immutable first JSONL record. A rollout can grow to many megabytes while the
+// identity record never changes, so neither discovery nor a later tick has a reason to read it.
+function codexSessionMeta(path: string): CodexSessionMeta | null {
+  if (codexMetaCache.has(path)) return codexMetaCache.get(path) ?? null;
+  let meta: CodexSessionMeta | null = null;
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(65_536);
+      let used = 0;
+      let complete = false;
+      while (used < buf.length) {
+        const n = readSync(fd, buf, used, Math.min(4096, buf.length - used), used);
+        if (n <= 0) break;
+        used += n;
+        const nl = buf.subarray(0, used).indexOf(10);
+        if (nl >= 0) { used = nl; complete = true; break; }
+      }
+      // The file may have appeared in its directory before Codex finished its first write. Do not
+      // cache that transient absence: pending exists precisely so the next tick can bind it.
+      if (!complete) return null;
+      const raw: unknown = JSON.parse(buf.toString("utf8", 0, used));
+      const rec = raw as { type?: unknown; payload?: Record<string, unknown> };
+      const p = rec.payload;
+      const timestamp = p && typeof p.timestamp === "string" ? Date.parse(p.timestamp) : NaN;
+      if (rec.type === "session_meta" && p && typeof p.id === "string" && CODEX_UUID_RE.test(p.id)
+        && typeof p.cwd === "string" && typeof p.thread_source === "string" && Number.isFinite(timestamp)
+        && basename(path).endsWith(`-${p.id}.jsonl`)) {
+        meta = { id: p.id, cwd: p.cwd, timestamp, threadSource: p.thread_source };
+      }
+    } finally { closeSync(fd); }
+  } catch { /* a partial/malformed first line is not identity evidence */ }
+  codexMetaCache.set(path, meta);
+  return meta;
+}
+
+const codexDayKey = (at: number, utc: boolean): string => {
+  const d = new Date(at);
+  const y = utc ? d.getUTCFullYear() : d.getFullYear();
+  const m = (utc ? d.getUTCMonth() : d.getMonth()) + 1;
+  const day = utc ? d.getUTCDate() : d.getDate();
+  return `${String(y).padStart(4, "0")}/${String(m).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
+};
+
+// Codex's directory date is a storage concern rather than identity. Include both local and UTC
+// renderings at every half-day boundary in the exact discovery window, so a timezone/midnight
+// boundary cannot hide a valid first record and no unrelated historical day is scanned.
+function codexDayDirs(from: number, to: number): string[] {
+  const keys = new Set<string>();
+  for (let at = from; at <= to; at += 12 * 60 * 60 * 1000) {
+    keys.add(codexDayKey(at, false));
+    keys.add(codexDayKey(at, true));
+  }
+  keys.add(codexDayKey(to, false));
+  keys.add(codexDayKey(to, true));
+  return [...keys].sort().map((k) => `${CODEX_SESSIONS_DIR}/${k}`);
+}
+
+async function codexCandidates(s: Slot, from: number, to: number): Promise<CodexSessionMeta[]> {
+  if (!CODEX_SESSIONS_DIR) return [];
+  const pinnedElsewhere = new Set(slots
+    .filter((o) => o !== s && !!o.cwd && !!o.sessionId)
+    .map((o) => o.sessionId!));
+  const candidates: CodexSessionMeta[] = [];
+  for (const dir of codexDayDirs(from, to)) {
+    let entries: { name: string; isFile(): boolean }[];
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!e.isFile() || !e.name.startsWith("rollout-") || !e.name.endsWith(".jsonl")) continue;
+      const meta = codexSessionMeta(`${dir}/${e.name}`);
+      if (!meta || meta.threadSource !== "user" || meta.cwd !== s.cwd
+        || meta.timestamp < from || meta.timestamp > to || pinnedElsewhere.has(meta.id)) continue;
+      candidates.push(meta);
+    }
+  }
+  return candidates;
+}
+
+// Resume evidence is the filename carrying THIS id, anywhere in Codex's date tree. Sorting every
+// level makes duplicate/corrupt trees deterministic; recency never participates in the answer.
+async function codexRolloutForId(id: string): Promise<string | null> {
+  if (!CODEX_SESSIONS_DIR || !CODEX_UUID_RE.test(id)) return null;
+  const suffix = `-${id}.jsonl`;
+  const dirs = async (path: string): Promise<string[]> => {
+    try {
+      return (await readdir(path, { withFileTypes: true }))
+        .filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch { return []; }
+  };
+  for (const y of await dirs(CODEX_SESSIONS_DIR)) {
+    const yp = `${CODEX_SESSIONS_DIR}/${y}`;
+    for (const m of await dirs(yp)) {
+      const mp = `${yp}/${m}`;
+      for (const d of await dirs(mp)) {
+        const dp = `${mp}/${d}`;
+        let names: string[];
+        try { names = (await readdir(dp)).filter((n) => n.startsWith("rollout-") && n.endsWith(suffix)).sort(); }
+        catch { continue; }
+        if (names.length) return `${dp}/${names[0]}`;
+      }
+    }
+  }
+  return null;
+}
+
+async function tickCodexRecovery(s: Slot): Promise<void> {
+  if (!s.cwd || harnessOf(s.harness).id !== "codex") return;
+  let dirty = false;
+  const cap = await tmux("capture-pane", "-p", "-t", sess(s.id));
+  if (cap.code === 0 && s.codexDisconnectSeenAt === null
+    && /stream disconnected before completion/i.test(cap.out)) {
+    s.codexDisconnectSeenAt = Date.now();
+    dirty = true; // advisory only: a live Codex TUI owns its retry; no automation keys off this
+  }
+  if (s.codexRecoveryState === "pending" && s.sessionId === null && s.codexPaneSpawnedAt !== null) {
+    const now = Date.now();
+    const candidates = await codexCandidates(s, s.codexPaneSpawnedAt - CODEX_BIND_SLACK_MS, now);
+    if (candidates.length === 1) {
+      s.sessionId = candidates[0].id;
+      s.codexRecoveryState = "bound";
+      dirty = true;
+      audit("codex_bind", s.id, `session=${candidates[0].id}`);
+    } else if (candidates.length >= 2) {
+      s.codexRecoveryState = "ambiguous"; // terminal for this pane life: never newest-wins
+      dirty = true;
+      audit("codex_bind_ambiguous", s.id, `candidates=${candidates.length}`);
+    }
+  }
+  if (dirty) saveState();
+}
+
 // nudge or a bare-shell dispatch into a pane that died seconds ago.
 const aliveInfo = new Map<number, boolean>();
 // the SAME probe, unreduced: `alive` above answers "may I deliver here", which deliberately folds an
@@ -2807,6 +2961,7 @@ async function tickGit(): Promise<void> {
   try {
     for (const s of slots) {
       if (!s.cwd) { gitInfo.delete(s.id); repoInfo.delete(s.id); aliveInfo.delete(s.id); agentInfo.delete(s.id); gitOpInfo.delete(s.id); continue; }
+      await tickCodexRecovery(s);
       // liveness is independent of git state — compute it before the git branching so a
       // non-repo cwd (st.code !== 0 below) still gets an alive reading. ONE probe feeds both maps:
       // `alive` is this state reduced to canDeliver's question, and computing them separately would
@@ -3320,21 +3475,33 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
   if (has.code !== 0) {
     await tmux("set", "-g", "history-limit", "50000");
     const h = harnessOf(s.harness);
-    // pane died but we know its claude session and its transcript still exists →
-    // self-heal RESUMES the conversation instead of starting a blank one (verified:
-    // --resume <id> continues in the same transcript file, id stays stable).
-    // Otherwise: fresh claude, fresh pinned uuid — only if WE win the has-session/
+    // pane died but we know its harness-specific conversation evidence still exists →
+    // self-heal RESUMES the conversation instead of starting a blank one.
+    // Otherwise: fresh harness, fresh candidate uuid — only if WE win the has-session/
     // new-session race below (the 2s self-heal loop and a fresh openSlot() can race)
     //
     // The EVIDENCE that a conversation is still there is harness-specific, and asking claude's
     // question of another harness gets the wrong answer in the direction that loses work. For a
     // transcript harness it is the .jsonl on disk (unchanged, and still the whole test for every
-    // slot that names no harness). For one without, the session id IS the evidence: Pi's
-    // `--session-id` is create-or-attach (measured), so passing the id it already has continues
-    // the conversation — while claude's existsSync would be false for it forever, mint a fresh
-    // uuid on every respawn, and quietly abandon the session on each self-heal.
+    // slot that names no harness). Pi's `--session-id` is itself create-or-attach evidence
+    // (measured). Codex is stricter: its discovered id is necessary but not sufficient, so the
+    // exact rollout filename carrying that id must still exist before every resume.
+    const codex = h.id === "codex";
+    const priorSessionId = s.sessionId;
+    const priorCodexState = s.codexRecoveryState;
+    const codexRollout = codex && priorSessionId && CODEX_UUID_RE.test(priorSessionId)
+      ? await codexRolloutForId(priorSessionId) : null;
     const resume = !!s.sessionId && h.supports.resume
-      && (h.supports.transcript ? existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`) : true);
+      && (codex ? !!codexRollout
+        : h.supports.transcript ? existsSync(`${projDir(s.cwd)}/${s.sessionId}.jsonl`) : true);
+    // A missing exact rollout is not permission to guess, use --last, or silently relabel a fresh
+    // TUI as the old conversation. Keep the old id as the loss evidence and surface the state;
+    // the owner can deliberately recycle the slot to start clean.
+    if (codex && priorSessionId && !resume && s.codexRecoveryState !== "lost") {
+      s.codexRecoveryState = "lost";
+      saveState();
+      audit("codex_resume_lost", s.id, `session=${priorSessionId}`);
+    }
     // WHY a heal could not resume, not just THAT it could not — the two causes are different
     // bugs: no-session = nothing was ever pinned (a non-claude BASE_CMD, or the openSlot race
     // this function's spawn-block comment predicts); no-transcript = a pin exists but its .jsonl
@@ -3390,10 +3557,21 @@ async function ensureSlot(s: Slot, cause: "heal" | "restart" = "heal"): Promise<
       // record the pin only if the adapter actually PASSED it. For the default adapter this is
       // still exactly `is FLEET_CMD claude` (CLAUDE_HARNESS.pinsSession), so a stand-in command
       // keeps recording none; a harness that takes a session id records one and can resume.
-      s.sessionId = h.pinsSession ? candidate : null;
+      // A Codex resume id was discovered after fresh spawn rather than passed at fresh spawn.
+      // Preserve it across this heal even though pinsSession correctly remains false. Only a
+      // deliberate openSlot recycle clears it before reaching here.
+      s.sessionId = h.pinsSession ? candidate : codex && priorSessionId ? priorSessionId : null;
+      if (codex) {
+        s.codexPaneSpawnedAt = Date.now();
+        // An automatic heal must not erase evidence the owner has not resolved. Ambiguity remains
+        // terminal and visible across fresh fallback panes; only openSlot's deliberate recycle
+        // clears it. pending is safe to restart because it has never observed a conversation id.
+        s.codexRecoveryState = resume ? "bound" : priorSessionId ? "lost"
+          : priorCodexState === "ambiguous" ? "ambiguous" : "pending";
+      }
       saveState();
       audit(cause === "restart" ? "slot_restart" : "self_heal_recreate", s.id, healDetail); // classified pre-spawn — see healDetail above
-      console.log(`slot ${s.id}: ${resume ? `resumed claude session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
+      console.log(`slot ${s.id}: ${resume ? `resumed ${h.id} session ${candidate} in` : "created tmux session"} '${name}' in ${s.cwd}`);
     }
   }
   // the size cache follows TMUX TRUTH, not the other way round: the in-memory cols/rows
@@ -3525,6 +3703,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.selfToken = randomBytes(16).toString("hex"); // rotate: a recycled slot must not honor
   // whatever session used to hold it
   s.sessionId = null; // ensureSlot pins a new uuid when it creates the pane
+  s.codexPaneSpawnedAt = null;
+  s.codexRecoveryState = null;
+  s.codexDisconnectSeenAt = null;
   s.history = []; // ...including a fresh prompt history
   harvest.set(s.id, { file: "", offset: 0, rest: Buffer.alloc(0) }); // sentinel: harvest the NEW transcript from byte 0
   startCache.delete(s.id); // the fresh session gets a fresh start anchor
@@ -3619,6 +3800,9 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   s.cols = 200;
   s.rows = 50;
   s.sessionId = null;
+  s.codexPaneSpawnedAt = null;
+  s.codexRecoveryState = null;
+  s.codexDisconnectSeenAt = null;
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
 }
@@ -11447,6 +11631,26 @@ if (existsSync(STATE_FILE)) {
         const ph = (v as { harness?: unknown }).harness;
         if (typeof ph === "string" && HARNESSES.some((x) => x.id === ph && x !== CLAUDE_HARNESS)) s.harness = ph;
         const hOf = harnessOf(s.harness);
+        if (hOf.id === "codex") {
+          // A discovered id is the only Codex value that may ever reach a shell line. Old or
+          // hand-edited state is data, not authority: malformed UUIDs are discarded here and
+          // again refused by the resume formula.
+          if (s.sessionId !== null && !CODEX_UUID_RE.test(s.sessionId)) s.sessionId = null;
+          const psa = (v as { codexPaneSpawnedAt?: unknown }).codexPaneSpawnedAt;
+          s.codexPaneSpawnedAt = typeof psa === "number" && Number.isFinite(psa) && psa > 0 ? psa : null;
+          const pds = (v as { codexDisconnectSeenAt?: unknown }).codexDisconnectSeenAt;
+          s.codexDisconnectSeenAt = typeof pds === "number" && Number.isFinite(pds) && pds > 0 ? pds : null;
+          const prs = (v as { codexRecoveryState?: unknown }).codexRecoveryState;
+          if (prs === "pending" || prs === "bound" || prs === "ambiguous" || prs === "lost")
+            s.codexRecoveryState = prs;
+          // Cross-field normalization is fail-closed. A pin without its state is loss evidence;
+          // a state that claims a pin without one is malformed and becomes unknown/null.
+          if (s.sessionId && s.codexRecoveryState === null) s.codexRecoveryState = "lost";
+          if ((s.codexRecoveryState === "bound" || s.codexRecoveryState === "lost") && !s.sessionId)
+            s.codexRecoveryState = null;
+          if ((s.codexRecoveryState === "pending" || s.codexRecoveryState === "ambiguous") && s.sessionId)
+            s.codexRecoveryState = null;
+        }
         const pm = (v as { model?: unknown }).model;
         if (typeof pm === "string" && (hOf.modelRe ?? SLOT_MODEL_RE).test(pm)) s.model = pm;
         const pe = (v as { effort?: unknown }).effort;
@@ -14220,6 +14424,14 @@ Bun.serve<WSData>({
             // once, instead of being re-sent every two seconds for every slot.
             ...(s.harness ? { harness: s.harness } : {}),
             ...(s.effort ? { effort: s.effort } : {}),
+            // Codex binds its rollout lazily after the first prompt. This typed advisory is the
+            // owner's whole v1 control surface: ambiguity/loss are visible but never automated,
+            // and a rendered disconnect while the TUI is alive remains Codex's own retry problem.
+            ...(s.cwd && harnessOf(s.harness).id === "codex" ? { codexRecovery: {
+              state: s.codexRecoveryState ?? (s.sessionId ? "lost" : "pending"),
+              sessionId: s.sessionId,
+              disconnectSeenAt: s.codexDisconnectSeenAt,
+            } } : {}),
             // WHICH BOX AND WHICH DAEMON — RESOLVED, and carried whenever the slot's harness has a
             // container concept at all, including when the slot chose neither. That is the opposite
             // rule from `harness`/`effort` above, and it is the point of the row: "which VM did I

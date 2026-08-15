@@ -2,8 +2,9 @@
 // prompt log, shares, schedules, a lane's selfToken) and the audit log with its rotation.
 // Sets up the deploy-gap repo and the env line the steward section is measured against.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText, tmuxOut, wsUrl } from "./harness";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { BASE, IP, PORT, ROOT, SOCK, TOKEN, check, get, plogRead, post, readText, restartSrv, tmuxOut, wsUrl } from "./harness";
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, settleForMerge } from "./lane-helpers";
 
@@ -11,7 +12,42 @@ const statOrNull = (path: string): ReturnType<typeof statSync> | null => {
   try { return statSync(path); } catch { return null; }
 };
 
+interface CodexRecoveryView {
+  state: "pending" | "bound" | "ambiguous" | "lost";
+  sessionId: string | null;
+  disconnectSeenAt: number | null;
+}
+
+const codexRow = async (slot: number): Promise<{ codexRecovery?: CodexRecoveryView } | undefined> => {
+  const body = (await (await get("/api/sessions")).json()) as
+    { slots: { id: number; codexRecovery?: CodexRecoveryView }[] };
+  return body.slots.find((s) => s.id === slot);
+};
+
+const waitCodex = async (slot: number, accept: (r: CodexRecoveryView) => boolean,
+  timeoutMs = 12_000): Promise<CodexRecoveryView | null> => {
+  const until = Date.now() + timeoutMs;
+  do {
+    const r = (await codexRow(slot))?.codexRecovery;
+    if (r && accept(r)) return r;
+    await Bun.sleep(100);
+  } while (Date.now() < until);
+  return (await codexRow(slot))?.codexRecovery ?? null;
+};
+
+const rolloutPath = (root: string, id: string, cwd: string, threadSource: "user" | "subagent"): string => {
+  const d = new Date();
+  const dir = `${root}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+  mkdirSync(dir, { recursive: true });
+  const path = `${dir}/rollout-${Date.now()}-${id}.jsonl`;
+  writeFileSync(path, JSON.stringify({ type: "session_meta", payload: {
+    id, cwd, timestamp: new Date().toISOString(), thread_source: threadSource, originator: "codex-tui",
+  } }) + "\n");
+  return path;
+};
+
 export async function run(ctx: Ctx): Promise<void> {
+  let persistedCodex: { anchor: number; disconnectSeenAt: number; id: string } | null = null;
   // --- file permissions ---
   const streamPath = `${ROOT}/streams/s1.raw`;
   const streamStat = statOrNull(streamPath);
@@ -63,6 +99,160 @@ export async function run(ctx: Ctx): Promise<void> {
   await Bun.sleep(4500);
   const s2back = await tmuxOut("has-session", "-t", "s2");
   check("externally-killed slot self-heals", s2back.code === 0);
+
+  // --- Codex conversation recovery -----------------------------------------------------------
+  // Every rollout below is synthetic and lives under the suite's FLEET_CODEX_SESSIONS_DIR. Restart
+  // once through the harness's established explicit-PATH seam so THIS server inherits the inert
+  // wrapper binary. Keeping it in codex-bin avoids extending the earlier fake-Pi fixture, while a
+  // later ordinary restart automatically restores the normal path for unrelated worker checks.
+  const codexBin = `${ROOT}/codex-bin`;
+  const codexPath = `${codexBin}:${process.env.PATH ?? ""}`;
+  check("codex recovery has its controlled binary before the scoped server restart",
+    existsSync(`${codexBin}/codex`), codexBin);
+  await restartSrv({ PATH: codexPath });
+  const codexRoot = process.env.FLEET_CODEX_SESSIONS_DIR ?? "";
+  // /open stores resolve(expandCwd(...)); the fixture must name that byte-exact string. TMPDIR in
+  // the wrapper intentionally carries a doubled slash, which is the counterexample this resolve
+  // prevents from weakening the product's exact-cwd rule into path equivalence.
+  const codexCwdRaw = process.env.FLEET_E2E_REPO ?? "";
+  const codexCwd = codexCwdRaw ? resolve(codexCwdRaw) : "";
+  check("codex recovery fixture has a scratch sessions root and exact cwd", !!codexRoot && !!codexCwd,
+    `${codexRoot} / ${codexCwd}`);
+  const resetCodexRoot = () => { rmSync(codexRoot, { recursive: true, force: true }); mkdirSync(codexRoot, { recursive: true }); };
+  const SUB = "10000000-0000-4000-8000-000000000001";
+  const FOREIGN = "10000000-0000-4000-8000-000000000002";
+  const AMB_A = "10000000-0000-4000-8000-000000000003";
+  const AMB_B = "10000000-0000-4000-8000-000000000004";
+  const LOST = "10000000-0000-4000-8000-000000000005";
+  const RESUME = "10000000-0000-4000-8000-000000000006";
+
+  resetCodexRoot();
+  rolloutPath(codexRoot, SUB, codexCwd, "subagent");
+  rolloutPath(codexRoot, FOREIGN, `${codexCwd}-foreign`, "user");
+  const c0 = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  check("codex recovery opens on the controlled stand-in", c0.ok, String(c0.status));
+  const zero = await waitCodex(15, (r) => r.state === "pending");
+  check("codex discovery binds zero candidates neither from subagents nor a foreign cwd",
+    zero?.state === "pending" && zero.sessionId === null, JSON.stringify(zero));
+
+  rolloutPath(codexRoot, AMB_A, codexCwd, "user");
+  rolloutPath(codexRoot, AMB_B, codexCwd, "user");
+  const ca = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  check("codex ambiguity fixture recycles the same slot", ca.ok, String(ca.status));
+  const ambiguous = await waitCodex(15, (r) => r.state === "ambiguous");
+  check("two exact Codex rollouts are terminally ambiguous — newest never wins",
+    ambiguous?.state === "ambiguous" && ambiguous.sessionId === null, JSON.stringify(ambiguous));
+  await tmuxOut("kill-session", "-t", "s15");
+  let ambiguousHealCmd = "";
+  const ambiguousHealUntil = Date.now() + 7000;
+  do {
+    ambiguousHealCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}"))
+      .out.replaceAll("\\", "");
+    if (ambiguousHealCmd.includes("codex --dangerously-bypass-approvals-and-sandbox")) break;
+    await Bun.sleep(100);
+  } while (Date.now() < ambiguousHealUntil);
+  const ambiguousAfterHeal = (await codexRow(15))?.codexRecovery ?? null;
+  check("an automatic heal neither resumes an ambiguous id nor erases the owner-visible refusal",
+    !ambiguousHealCmd.includes("codex resume") && ambiguousAfterHeal?.state === "ambiguous"
+      && ambiguousAfterHeal.sessionId === null,
+    `${ambiguousHealCmd.slice(-180)} / ${JSON.stringify(ambiguousAfterHeal)}`);
+
+  resetCodexRoot();
+  const lostPath = rolloutPath(codexRoot, LOST, codexCwd, "user");
+  const cu = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  check("codex unique fixture recycles the ambiguous pane", cu.ok, String(cu.status));
+  const bound = await waitCodex(15, (r) => r.state === "bound");
+  check("one exact user rollout binds its UUID lazily", bound?.state === "bound" && bound.sessionId === LOST,
+    JSON.stringify(bound));
+  const boundState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { codexPaneSpawnedAt?: number; sessionId?: string }> }).slots?.["15"];
+  const boundAnchor = boundState?.codexPaneSpawnedAt ?? 0;
+  check("the Codex pane-spawn anchor and discovered pin persist together",
+    boundAnchor > 0 && boundState?.sessionId === LOST, JSON.stringify(boundState));
+
+  rmSync(lostPath, { force: true });
+  await tmuxOut("kill-session", "-t", "s15");
+  const lost = await waitCodex(15, (r) => r.state === "lost", 7000);
+  const lostCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}"))
+    .out.replaceAll("\\", "");
+  check("a bound id whose rollout vanished is visible as lost", lost?.state === "lost" && lost.sessionId === LOST,
+    JSON.stringify(lost));
+  check("a missing exact rollout never reaches codex resume and only boots the unchanged fresh form",
+    !lostCmd.includes("codex resume") && lostCmd.includes("codex --dangerously-bypass-approvals-and-sandbox"),
+    lostCmd.slice(-220));
+
+  const cr = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  check("a deliberate recycle after loss opens a fresh Codex pane", cr.ok, String(cr.status));
+  const recycled = await waitCodex(15, (r) => r.state === "pending");
+  const recycledState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { codexPaneSpawnedAt?: number; sessionId?: string | null }> }).slots?.["15"];
+  check("slot recycling drops the foreign pin and replaces its pane anchor",
+    recycled?.state === "pending" && recycled.sessionId === null
+      && (recycledState?.codexPaneSpawnedAt ?? 0) > boundAnchor && recycledState?.sessionId === null,
+    `${JSON.stringify(recycled)} / ${JSON.stringify(recycledState)}`);
+  await post("/api/slots/15/kill", {});
+  const closedState = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, unknown> }).slots?.["15"];
+  check("closing a Codex slot persists neither pin nor recovery anchor", closedState === undefined,
+    JSON.stringify(closedState));
+
+  const ae = (await (await get("/api/audit?limit=1000")).json()) as
+    { events?: { event?: string; slot?: number; detail?: string }[] };
+  check("Codex unique binding and ambiguity each leave an audit fact",
+    !!ae.events?.some((e) => e.event === "codex_bind" && e.slot === 15)
+      && !!ae.events?.some((e) => e.event === "codex_bind_ambiguous" && e.slot === 15
+        && e.detail === "candidates=2"),
+    JSON.stringify(ae.events?.filter((e) => e.slot === 15).map((e) => e.event)));
+
+  resetCodexRoot();
+  rolloutPath(codexRoot, RESUME, codexCwd, "user");
+  const cp = await post("/api/slots/16/open", {
+    cwd: codexCwd, harness: "codex", model: "gpt-5-codex", effort: "high",
+  });
+  check("codex persistence fixture opens with model and effort", cp.ok, String(cp.status));
+  const resumeBound = await waitCodex(16, (r) => r.state === "bound");
+  check("the persistence fixture binds the exact rollout", resumeBound?.sessionId === RESUME,
+    JSON.stringify(resumeBound));
+  await tmuxOut("send-keys", "-t", "s16", "-l", "stream disconnected before completion");
+  await tmuxOut("send-keys", "-t", "s16", "Enter");
+  let disconnectPane = "";
+  const paneUntil = Date.now() + 3000;
+  do {
+    disconnectPane = (await tmuxOut("capture-pane", "-p", "-t", "s16")).out;
+    if (disconnectPane.includes("stream disconnected before completion")) break;
+    await Bun.sleep(100);
+  } while (Date.now() < paneUntil);
+  check("Codex disconnect fixture renders the exact marker before the product sensor is judged",
+    disconnectPane.includes("stream disconnected before completion"), disconnectPane.slice(-180));
+  // tickGit is a 10s interval and deliberately skips a round while its prior pass is busy. Three
+  // intervals plus slack prove a successful observation under suite load rather than assuming the
+  // first timer callback was free to run.
+  const disconnected = await waitCodex(16, (r) => r.disconnectSeenAt !== null, 35_000);
+  check("rendered Codex connection loss becomes typed advisory state without restarting the live pane",
+    disconnected?.state === "bound" && disconnected.disconnectSeenAt !== null, JSON.stringify(disconnected));
+  await tmuxOut("kill-session", "-t", "s16");
+  let resumeCmd = "";
+  const resumeUntil = Date.now() + 7000;
+  do {
+    resumeCmd = (await tmuxOut("display-message", "-p", "-t", "s16", "#{pane_start_command}"))
+      .out.replaceAll("\\", "");
+    if (resumeCmd.includes("codex resume")) break;
+    await Bun.sleep(100);
+  } while (Date.now() < resumeUntil);
+  const resumed = (await codexRow(16))?.codexRecovery ?? null;
+  check("a dead bound Codex pane resumes the exact UUID through ensureSlot's only spawn seam",
+    resumeCmd.includes(`codex resume '${RESUME}' --dangerously-bypass-approvals-and-sandbox`)
+      && resumeCmd.includes("--model 'gpt-5-codex'")
+      && resumeCmd.includes("-c model_reasoning_effort='high'"), resumeCmd.slice(-260));
+  check("resume preserves the discovered pin and disconnect advisory", resumed?.sessionId === RESUME
+    && resumed.disconnectSeenAt === disconnected?.disconnectSeenAt, JSON.stringify(resumed));
+  const persistedRow = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as { slots?: Record<string, {
+    codexPaneSpawnedAt?: number; codexDisconnectSeenAt?: number; sessionId?: string }> }).slots?.["16"];
+  if (persistedRow?.codexPaneSpawnedAt && persistedRow.codexDisconnectSeenAt && persistedRow.sessionId === RESUME)
+    persistedCodex = { anchor: persistedRow.codexPaneSpawnedAt,
+      disconnectSeenAt: persistedRow.codexDisconnectSeenAt, id: RESUME };
+  check("Codex bind, anchor and advisory are ready for server-restart persistence",
+    persistedCodex !== null, JSON.stringify(persistedRow));
 
   // --- deploy-gap fact (P-4) setup, consumed in the steward + digest sections below.
   // The dir this suite runs from is a throwaway COPY of the repo (e2e-isolated.sh) and not a git
@@ -164,7 +354,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // is configured, and a repo named in NEITHER it nor the (absent) global has no gate at all.
   // "kein Eintrag" must stay `verify` ABSENT — unconfigured, never a silent green (P-7c).
   const cmdEnv = ["FLEET_CMD", "FLEET_ALLOWED_HOSTS", "FLEET_SHARE_HOSTS", "FLEET_AUDIT_ROTATE_BYTES",
-    "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS",
+    "FLEET_INTAKE_SECRET", "FLEET_DISPATCH_REPO", "FLEET_VERIFY_CMD_REPOS", "FLEET_CODEX_SESSIONS_DIR",
     // without these the post-restart server reverts to the 60s idle gate / 15s tick and no
     // auto-③ can be observed inside the suite's budget
     "FLEET_AUTO_REVIEW_MS", "FLEET_AUTO_REVIEW_IDLE_MS",
@@ -191,10 +381,21 @@ export async function run(ctx: Ctx): Promise<void> {
   await srvStart.exited;
   await Bun.sleep(3000);
   const api = (await (await get("/api/sessions")).json()) as
-    { now: number; slots: { id: number; cwd: string | null; label: string | null; lastOutput: number }[] };
+    { now: number; slots: { id: number; cwd: string | null; label: string | null; lastOutput: number;
+      codexRecovery?: CodexRecoveryView }[] };
   check("after restart: slot 2 still active", typeof api.slots[1].cwd === "string", String(api.slots[1].cwd));
   check("after restart: slot 1 still empty", api.slots[0].cwd === null);
   check("after restart: label persisted", api.slots[1].label === "research-agent");
+  const codexAfterRestart = api.slots.find((s) => s.id === 16)?.codexRecovery;
+  const codexStateAfterRestart = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots?: Record<string, { codexPaneSpawnedAt?: number }> }).slots?.["16"];
+  check("after restart: a live Codex pane keeps its exact bind, anchor and disconnect advisory without a second spawn",
+    !!persistedCodex && codexAfterRestart?.state === "bound"
+      && codexAfterRestart.sessionId === persistedCodex.id
+      && codexAfterRestart.disconnectSeenAt === persistedCodex.disconnectSeenAt
+      && codexStateAfterRestart?.codexPaneSpawnedAt === persistedCodex.anchor,
+    `${JSON.stringify(codexAfterRestart)} / ${JSON.stringify(codexStateAfterRestart)}`);
+  await post("/api/slots/16/kill", {});
   if (workerCanon) {
     const wrAfter = (await (await get("/api/repo-workers")).json()) as { workers?: Record<string, Record<string, string>> };
     check("after restart: the per-repo worker override survived (it is a stored setting, not an env flip)",

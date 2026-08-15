@@ -77,15 +77,24 @@ EOF
 # The boot-race fixtures must delay the AGENT PROCESS, not merely delay an already-visible harn.
 # A script has the interpreter's comm, so these wrappers are intentionally NOT recognised by
 # FLEET_HARNESS_COMMS=harn. Only their later `exec harn-*` transition can satisfy paneAgentAt.
-# harn-agent flushes input once on startup: an old immediate send queued during the wrapper sleep
-# is genuinely lost, while the fixed path waits for this process and sends after adapter settle.
+# boot-flush clears input BEFORE it execs the declared harn-agent. This ordering is mechanical:
+# paneAgentAt cannot call the agent alive in the tiny exec→main window before tcflush, which made
+# the former combined binary's probe depend on scheduler timing. An old send queued during the
+# wrapper sleep is still genuinely lost; the fixed path cannot observe harn until after the flush.
+cat > "$FAKEBIN/boot-flush.c" <<'EOF'
+#include <termios.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  tcflush(STDIN_FILENO, TCIFLUSH);
+  execl(argv[1], argv[1], (char *)0);
+  return 111;
+}
+EOF
 cat > "$FAKEBIN/harn-agent.c" <<'EOF'
 #include <stdio.h>
 #include <string.h>
-#include <termios.h>
-#include <unistd.h>
 int main(void) {
-  tcflush(STDIN_FILENO, TCIFLUSH);
   char line[4096] = {0};
   if (fgets(line, sizeof(line), stdin)) {
     line[strcspn(line, "\r\n")] = 0;
@@ -107,7 +116,8 @@ EOF
 cat > "$FAKEBIN/harn-boot" <<'EOF'
 #!/bin/sh
 sleep 2
-exec "$(dirname "$0")/harn-agent"
+base="$(dirname "$0")"
+exec "$base/boot-flush" "$base/harn-agent"
 EOF
 cat > "$FAKEBIN/harn-observed" <<'EOF'
 #!/bin/sh
@@ -120,9 +130,10 @@ sleep 6
 EOF
 "$CC" -O0 -o "$FAKEBIN/claude-exit" "$FAKEBIN/claude-exit.c" || exit 1
 "$CC" -O0 -o "$FAKEBIN/claude-hang" "$FAKEBIN/claude-hang.c" || exit 1
+"$CC" -O0 -o "$FAKEBIN/boot-flush" "$FAKEBIN/boot-flush.c" || exit 1
 "$CC" -O0 -o "$FAKEBIN/harn-agent" "$FAKEBIN/harn-agent.c" || exit 1
 "$CC" -O0 -o "$FAKEBIN/harn-print" "$FAKEBIN/harn-print.c" || exit 1
-chmod +x "$FAKEBIN/harn-agent" "$FAKEBIN/harn-print" "$FAKEBIN/harn-boot" "$FAKEBIN/harn-observed" "$FAKEBIN/harn-never"
+chmod +x "$FAKEBIN/boot-flush" "$FAKEBIN/harn-agent" "$FAKEBIN/harn-print" "$FAKEBIN/harn-boot" "$FAKEBIN/harn-observed" "$FAKEBIN/harn-never"
 cp "$FAKEBIN/claude-exit" "$FAKEBIN/claude"
 chmod +x "$FAKEBIN/claude" "$FAKEBIN/claude-hang"
 

@@ -165,7 +165,11 @@ interface SlotInfo {
   // how full this session's context is (server.ts, contextFill). null is an ANSWER — Fleet cannot
   // tell for this slot (no pinned transcript, no usage line yet, a harness that writes none, or a
   // model whose window it cannot name) — and must never be painted as an empty/fresh context.
-  ctx?: { usedTokens: number; windowTokens: number; pct: number } | null }
+  ctx?: { usedTokens: number; windowTokens: number; pct: number } | null;
+  // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
+  // claim about the server poll, not inferred from harness/session recency in the client.
+  codexRecovery?: { state: "pending" | "bound" | "ambiguous" | "lost";
+    sessionId: string | null; disconnectSeenAt: number | null } }
 // the static harness catalogue (GET /api/harnesses, fetched once). `supports` is the server's,
 // never a second copy maintained here: a feature this client hides must be hidden because the
 // registry says the harness cannot do it, not because someone wrote the same list twice.
@@ -4443,6 +4447,19 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id); setBoard(true); };
         row.appendChild(rb);
       }
+      if (s.codexRecovery) {
+        const cr = s.codexRecovery;
+        const needsOwner = cr.state === "ambiguous" || cr.state === "lost";
+        const chip = el("span", `ctxfill${needsOwner ? " unknown" : ""}`,
+          `cx ${cr.state}${cr.disconnectSeenAt ? " !" : ""}`);
+        chip.title = `Codex recovery: ${cr.state}`
+          + (cr.sessionId ? `\nsession ${cr.sessionId}` : "\nno conversation id bound")
+          + (cr.disconnectSeenAt
+            ? `\nstream disconnect seen ${new Date(cr.disconnectSeenAt).toLocaleString()} — advisory; the live TUI owns retry`
+            : "")
+          + (needsOwner ? "\nowner attention required; Fleet will not guess" : "");
+        row.appendChild(chip);
+      }
       // context fill — a SENSOR and nothing else: no threshold, no colour state, no action. The
       // unknown case is drawn as "ctx ?", never as 0% and never as an empty bar: a blank meter reads
       // as "fresh session", which is the one wrong answer this fact must not be able to give.
@@ -4704,6 +4721,7 @@ async function refresh() {
         // repo moves null → toplevel after the slow git tick; omitting it freezes a subdirectory
         // main's lanes under the orphan header even after the poll has learned the truthful join.
         s.openedAt, s.repo, s.worktree?.anchor?.slot, s.worktree?.anchor?.openedAt,
+        s.codexRecovery?.state, s.codexRecovery?.sessionId, s.codexRecovery?.disconnectSeenAt,
         // the context chip, at the SAME resolution the row paints it (whole percent). The raw pct
         // moves on nearly every poll; keying on it would rebuild the sidebar continuously, and
         // leaving it out entirely would freeze the chip until some other field moved — the exact

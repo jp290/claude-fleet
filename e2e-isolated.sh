@@ -135,6 +135,26 @@ if ! "${CC:-cc}" -o "$DIR/pi" "$DIR/fake-pi.c"; then
 fi
 rm -f "$DIR/fake-pi.c"
 
+# Stand-in for interactive Codex slots. It lives in its own bin directory: e2e/restart.ts adds
+# only that directory to the scratch tmux server's global PATH when the recovery section begins,
+# after the early fake-Pi checks. The tmux-global seam is deliberate — unlike FLEET_* settings,
+# restartSrv() does not carry a server command's local PATH across later server panes.
+mkdir -p "$DIR/codex-bin"
+cat > "$DIR/fake-codex.c" <<'EOF'
+#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+  fputs("stream disconnected before completion\n", stdout);
+  fflush(stdout);
+  for (;;) pause();
+}
+EOF
+if ! "${CC:-cc}" -o "$DIR/codex-bin/codex" "$DIR/fake-codex.c"; then
+  echo "FAIL: recovery fake-codex fixture could not compile"
+  exit 1
+fi
+rm -f "$DIR/fake-codex.c"
+
 # stand-in summarizer: swallows the prompt on stdin, answers in claude -p's
 # --output-format json envelope — exercises the real gather→spawn→parse→cache path
 # without a model call
@@ -534,7 +554,9 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # foreign-harness policy in its CLOSED state, so an operator who exports the flag in their own shell
 # would flip a test's premise out from under it and the failure would read as a broken gate. The
 # live fleet turns it on (watchdog.sh); this line keeps the suite's answer independent of that.
-SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_READY_WAIT_MS=3000 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
+CODEX_SESSIONS="$DIR/codex-sessions"
+mkdir -p "$CODEX_SESSIONS"
+SRV_ENV="FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_CMD=true FLEET_HARNESS_AUTOMATION=0 FLEET_CODEX_SESSIONS_DIR='$CODEX_SESSIONS' FLEET_READY_WAIT_MS=3000 FLEET_AUTOS_TICK_MS=250 FLEET_DISPATCH_TICK_MS=250 FLEET_MIGRATE_PCT=44 FLEET_MIGRATE_IDLE_MS=0 FLEET_MIGRATE_COOLDOWN_MS=900000 FLEET_MIGRATE_TICK_MS=250 FLEET_MIGRATE_GRACE_MS=500 FLEET_ALLOWED_HOSTS='$SHAREHOST' FLEET_SHARE_HOSTS='$SHAREHOST' FLEET_INTAKE_SECRET='$INTAKE' FLEET_DISPATCH_REPO='$REPO' FLEET_STEWARD_JOURNAL_PER_HOUR=30 FLEET_ANALYSIS_MS=0 FLEET_BACKLOG_NUDGE_MS=0 FLEET_AUTO_REVIEW_MS=1000 FLEET_AUTO_REVIEW_IDLE_MS=1500 FLEET_STALLED_IDLE_MS=3000 FLEET_VERIFY_TIMEOUT_MS=8000 FLEET_VERIFY_WAIT_MS=5000 FLEET_SUMMARY_CMD='$DIR/fakesum' FLEET_ENHANCE_CMD='$DIR/fakeenh' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_VERIFY_CMD_REPOS='{\"$REPO2_P\":\"$DIR/fakeverify2\"}' FLEET_COMMIT_CMD='$DIR/fakecommit' FLEET_REVIEW_CMD='$DIR/fakereview' FLEET_DIGEST_CMD='$DIR/fakedigest'"
 tmux -L "$SOCK" new-session -d -s srv \
   "cd '$DIR' && PATH='$DIR:$PATH' FLEET_HOST=127.0.0.1 $SRV_ENV exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (loaded dev box can take >2s) instead of a fixed sleep.

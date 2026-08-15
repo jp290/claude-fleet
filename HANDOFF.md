@@ -1,3 +1,49 @@
+# HANDOFF — Session 67 (2026-08-15, Fable-MAIN: Program-MAIN gründet repo-ehrlich im Ziel-Repo — gelandet `5467ce2` + `5edee9f`, auditiert grün, deployt, Live-Canary voller Kreis) · 66/65/64/63/62 darunter
+
+**ctx beim Schreiben: 24,4 % (GEMESSEN am Owner-Poll, 243 512 / 1 000 000).**
+Produziert: zwei Lands (beide je EINE taskgebundene Codex-Lane, gpt-5.6-sol high, über den
+Dispatch-Knopf: Task `f75d5766` → `5467ce2`, Task `4e8d9dd3` → `5edee9f`), ein rotes Audit mit
+einer Wurzel (adjudiziert `real`) und danach ein grünes (2396/0, 905 802 ms), Deploy `b7621e70`,
+Live-Canary über drei echte Wegwerf-Repos, Core-Doc Workstream 21.
+
+## Der Schnitt (Details: Core-Doc WS21, Commit-Bodies `f5423f7`/`5467ce2`/`5edee9f`)
+
+Program-MAIN konnte mechanisch in ein Fremd-Repo booten und lieferte dort einen falschen
+Fleet-Gründungsvertrag; die bestehende positive Sonde lief bereits gegen das isolierte Fremd-Repo
+und prüfte nur Header und Hash — ein bewiesener False-Success. **Gefunden hat es ein echter
+Consumer**, das Product-Studio-Programm *private-repo-h*; sein Bootstrap blieb bis zu diesem
+Schnitt absichtlich aus. Gebaut: Repo-Identität ausschließlich aus git (`FLEET_REPO_ROOT`,
+fail-safe bei `null`), ein geteilter Preflight VOR jeder Slot-Öffnung (Toplevel · HEAD · Branch ·
+für Fremd-Repos getrackte nichtleere Root-`AGENTS.md`), zwei Frames je Builder (fleet-control
+wortgleich, an der geordneten Schrittliste gepinnt), und `source-unavailable` als erste Stufe der
+Auslassungsleiter — im Fremd-Repo alle sechs Packs ausgelassen, Anker-Block dadurch von selbst
+leer, Receipt-Schema unverändert.
+
+**Zweites Land war meine Wurzel, nicht die der Lane.** Die Fixture, die den `fleet-control`-cwd
+überhaupt erst erzeugt (`git init` auf das gestagte Instanzverzeichnis), brach die Prämisse von
+`e2e/trail-emit.ts` `sourceTree()` („ROOT is a throwaway copy with no `.git` of its own") — sichtbar
+NUR unter dem Post-Land-Audit, der aus einem `git archive`-Snapshot fährt. Vier FAILs, eine Wurzel.
+Fix als Regel: existiert der `node_modules`-Symlink, ist ROOT eine gestagte Instanz und kommt als
+Kandidat nicht mehr vor; `resolveSourceTree()` rein herausgezogen, Gegenprobe ohne echte Instanz.
+
+## Offen / nächste Schritte
+
+- **Zwei benannte Grenzen dieses Schnitts** (bewusst offen, im Code kommentiert): ein *linked
+  worktree* von Fleet klassifiziert als `target-repo` · der Dispatch-Pfad behält
+  `sourceTree: "fleet"`, ein fremdes `FLEET_DISPATCH_REPO` bekäme dort weiter Fleet-Packs.
+- **Der Private-Repo-H-Bootstrap ist jetzt fahrbar** und war der Auslöser dieses Schnitts — er
+  braucht eine getrackte, nichtleere Root-`AGENTS.md` im Ziel-Repo, sonst 400 vor allem anderen.
+  Programm `9f42350e` steht `active`, `6ae9fac6` (Private-repo-e) `confirmed`.
+- Aus S66/S65 unverändert offen: die drei benannten Grenzen des Clarification-Kanals ·
+  Self-Land als Shadow-Klassifikation · das Wegwerf-Programm `cfa94f4f` und vier ältere stehen als
+  `complete`, weil `complete` keinen `discard`-Übergang kennt (jetzt plus drei S67-Canaries) ·
+  pi-zai-Feuerprobe für `automatable:true` · Effort-Monotonie und 1M-Vollfenster ungemessen.
+- **Graphify unverändert:** dieser Schnitt lief vollständig source-first. Der `PreToolUse`-Hook
+  fordert weiterhin bei JEDEM Bash-Aufruf `graphify query` — dokumentierter DRIFTBEFUND.
+- Queue: `f75d5766` und `4e8d9dd3` schlossen sich beim Land selbst; sonst unverändert.
+- Aufgeräumt: beide Lanes gelandet und abgeräumt, drei Canary-Slots gekillt, Canary-Repos gelöscht,
+  drei Canary-Programme `complete`, Baum sauber.
+
 # HANDOFF — Session 66 (2026-08-15, Fable-MAIN: Clarification-Kanal v1 — gebaut, gelandet `ebb6f02`, auditiert grün, deployt, Live-Canary voller Kreis) · 65/64/63/62/61 darunter
 
 **ctx beim Schreiben: 31,4 % (GEMESSEN am Owner-Poll, 313 537 / 1 000 000).**

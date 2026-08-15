@@ -844,3 +844,84 @@ Clarification-Diff):**
 
 Bis dahin gilt für jede Lane unverändert: der lokale Beweis fährt den Build, der serverseitige
 Gate tut es nicht — ein grünes Land ist kein Beweis, dass das Bundle baut.
+
+## Workstream 21 — Program-MAIN gründet im Ziel-Repo (gelandet `5467ce2` + `5edee9f`, 2026-08-15)
+
+**Gefunden hat die Lücke ein echter Consumer, nicht eine Sonde.** Das Product-Studio-Programm
+*private-repo-h* (`9f42350e…`, `active`) sollte ein Program-MAIN in seinem eigenen Repo gründen —
+und genau daran wurde sichtbar, dass Fleet das mechanisch KANN und dabei einen falschen Vertrag
+ausliefert. Der Private-repo-h-Bootstrap blieb bis zu diesem Schnitt absichtlich aus.
+
+**Der Zustand davor, an HEAD `f146162` gelesen.** `buildProgramMainBrief` und
+`buildProgramMainSuccessionBrief` gaben JEDEM Program-MAIN — in jedem cwd — dieselben vier
+Fleet-Erdungsschritte (`./state.sh`, `./register.sh`, oberster `HANDOFF.md`-Abschnitt, „inspect the
+live queue through Fleet"). `BOOTSTRAP_CONTEXT_CAPABILITIES` behauptete acht Fleet-Repo-Fähigkeiten
+bedingungslos, und alle sechs Context Packs zeigen auf Fleet-Quellen bzw. die private Overlay-ID.
+`bootstrapProgramMain` band und schrieb trotzdem ein Receipt, sobald HEAD/Branch lesbar waren und
+`sendText` durchkam. **Und die bestehende positive Sonde war ein bewiesener False-Success:** sie
+bootstrappte mit `cwd: REPO`, dem isolierten FREMD-Repo `$DIR/testrepo` ohne `AGENTS.md`, ohne
+`state.sh`, ohne `HANDOFF.md`, und prüfte nur Header-Substring und Hash-Rekonstruktion.
+
+**Was gebaut wurde, in fünf Zeilen:**
+
+- **Repo-Identität ausschließlich aus git.** `FLEET_REPO_ROOT = repoRootOf(import.meta.dir)` einmal
+  beim Boot; ein Ziel ist `fleet-control` genau dann, wenn sein kanonisches Toplevel damit
+  übereinstimmt. `null` auf der Fleet-Seite heißt: KEIN cwd ist fleet-control — fail-safe, nie eine
+  Fleet-Fähigkeit auf Verdacht. Dateinamen entscheiden nie (Decoy-Sonde unten).
+- **Preflight VOR jeder Slot-Öffnung**, geteilt von Bootstrap und Succession: kanonisches Toplevel ·
+  HEAD · Branch · und für ein Fremd-Repo eine getrackte, nichtleere Root-`AGENTS.md`
+  (`git cat-file -s HEAD:AGENTS.md`). Ein Fehlschlag öffnet keinen Slot, sendet nichts, bindet
+  nichts und schreibt kein Receipt. Der Post-Open-HEAD-Lesevorgang beider Routen ist damit
+  ersetzt, nicht verdoppelt.
+- **Zwei Frames, ein Builder je Route.** `fleet-control` ist wortgleich das Alte (an der geordneten
+  Schrittliste gepinnt, nicht per Substring). `target-repo` liefert einen ausführbaren Vertrag:
+  Root-`AGENTS.md` vollständig lesen, auf git erden, die REPO-EIGENEN Run-/Proof-Kommandos und
+  Quellen ermitteln, das eingebettete Program als Owner-Wahrheit nehmen, den nächsten kleinsten
+  Akt wählen — und nennt Fleet-Skripte, HANDOFF, Fleet-Docs, die private Overlay-ID und die
+  Fleet-Queue nicht.
+- **Ein neuer geschlossener Auslassungsgrund, `source-unavailable`**, als ERSTE Stufe der Leiter:
+  im Fremd-Repo werden alle sechs Packs mit genau diesem Grund ausgelassen, nichts wird
+  ausgewählt, und der Anker-Block bleibt dadurch von selbst leer — kein zweiter Leerpfad.
+  Receipt-Schema unverändert; Legacy-Zeilen laden byte-identisch (eigene Sonde).
+- **Bewusst NICHT geschlossen, benannt statt versteckt:** ein *linked worktree* von Fleet hat sein
+  eigenes Toplevel und klassifiziert damit als `target-repo` (Code-Kommentar). Und der
+  Dispatch-Pfad behält sein heutiges Verhalten mit explizitem `sourceTree: "fleet"` — ein fremdes
+  `FLEET_DISPATCH_REPO` bekäme dort weiterhin Fleet-Packs. Beides ist eine benannte Grenze dieses
+  Schnitts, keine Nebenwirkung.
+
+**Die Fixture war der teure Teil, und daraus wurde der zweite Commit.** Ein `fleet-control`-cwd
+existierte in der isolierten Suite gar nicht (das gestagte Instanzverzeichnis ist kein Repo), also
+`git init` auf `$DIR` — plus die beiden ausgewählten Pack-Quellen an ihren Repo-Pfaden, damit die
+Anker am Receipt-HEAD wirklich auflösen. Genau das brach eine Prämisse, die zwei Dateien weiter als
+Kommentar stand: `e2e/trail-emit.ts` `sourceTree()` fällt auf ROOT zurück, „a throwaway copy with no
+`.git` of its own". Sichtbar wurde es NUR unter dem Post-Land-Audit, der die Suite aus einem
+`git archive`-Snapshot fährt (`snapshotIntegrationTree`) — dort ist der Symlink-Kandidat kein
+Work-Tree, der Rückfall greift, und der Trail landet INNERHALB der Instanz. Vier FAILs, eine Wurzel,
+adjudiziert als `real`. Der Fix ist die Regel, nicht das Symptom: existiert der
+`node_modules`-Symlink, ist ROOT per Konstruktion eine gestagte Instanz und kommt als Kandidat nicht
+mehr vor; `resolveSourceTree()` ist dafür rein und injizierbar herausgezogen, die Gegenprobe braucht
+keine echte Audit-Instanz. **Die allgemeine Form gehört ins Register:** eine Fixture, die einem
+Wegwerf-Verzeichnis eine ECHTE Identität gibt, kann eine Sonde umlenken, die diese Identität als
+Unterscheidungsmerkmal benutzt — und die Kollision zeigt sich dann nur in der Invokations-Form, die
+die Lane nicht fährt.
+
+**Beweise.** Land 1 `5467ce2`: `verify.ok:true`, 97 455 ms Arbeit, 0 ms Mutex-Wartezeit,
+`confirmedByHuman:false` — der erste fremde Schnitt an der seit `446d74b` angeglichenen Kette
+(`install → pins → tsc(11) → build → drei Suiten`). Audit rot, 2395/4, eine Wurzel, `real`.
+Land 2 `5edee9f`: verify grün; Audit **grün und substanziell, 2396 Checks / 0 FAIL / 905 802 ms** —
+und die Trail-Familie beweist die Reparatur unter genau der Form, die die Lane ausdrücklich nicht
+fahren konnte (`$TMPDIR/fleet-e2e-trail/`, `tree=null`). Deploy `b7621e70`: `ok:true`,
+`bootHead == target == 5edee9f`, `hitTarget:true`, `bundleStale:false`.
+
+**Live-Canary, voller Kreis, drei echte Wegwerf-Repos gegen den deployten Server** (danach restlos
+entfernt, Programme `complete`):
+- Fremd-Repo OHNE getrackte `AGENTS.md` → `400 target repository requires a tracked, non-empty root
+  AGENTS.md`, und nachgemessen: Receipt-Zahl unverändert, Slot-Belegung unverändert,
+  `program.main` weiter `null`.
+- Fremd-Repo MIT `AGENTS.md` → Ziel-Vertrag ausgeliefert, Receipt auf `…/canary-with`, HEAD
+  `2493ad4` = der HEAD dieses Repos, `selected: []`, alle sechs `source-unavailable`,
+  `deliveredBytes` = tatsächliche Prompt-Bytes. Das Builder-Präfix enthält keinen der sechs
+  Fleet-Begriffe, während der Owner-Pfad `docs/program-origin.md` im JSON verbatim überlebt.
+- Fleet-Root → die vier alten Schritte in Reihenfolge, zwei Packs (`portable-core`, `verify-e2e`),
+  drei Anker, und die Anker lösen am Receipt-HEAD `5edee9f` wirklich auf (`git show` auf beide
+  Dateien, Überschriften vorhanden).

@@ -432,6 +432,23 @@ const CLAUDE_HARNESS: Harness = {
 // than something needs escaping.
 const SPAWN_PATH_RE = /^\/[A-Za-z0-9_.@+\-/ ]*$/;
 
+// `pi-zai` owns a complete, process-local Pi agent home: catalog, settings, auth and sessions all
+// stay below this Fleet-specific directory, so neither ~/.pi/agent nor ~/.claude participates.
+// Both paths enter single-quoted shell words. Refuse an unsafe operator override at boot rather
+// than silently falling back to a different location than the one the operator named.
+const PI_ZAI_AGENT_DIR = (() => {
+  const path = process.env.FLEET_PI_ZAI_AGENT_DIR ?? `${HOME}/.config/claude-fleet/pi-zai-agent`;
+  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_ZAI_AGENT_DIR must be a safe absolute path without ..");
+  return path.replace(/\/+$/, "");
+})();
+const PI_ZAI_KEY_FILE = (() => {
+  const path = process.env.FLEET_PI_ZAI_KEY_FILE ?? `${HOME}/.config/claude-fleet/secrets/zai-coding-plan.key`;
+  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_ZAI_KEY_FILE must be a safe absolute path without ..");
+  return path.replace(/\/+$/, "");
+})();
+
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
 // per line. The one flag this file does NOT take from that report is `transcript` — see below.
@@ -519,6 +536,56 @@ const PI_HARNESS: Harness = {
   // run shell with the permissions of the pi process), and since 2026-08-12 Fleet deliberately
   // adds none: full local access is the normal operating mode. The note says so at pick time.
   note: "full local access: edits, git/commit, Fleet, tmux and network run with the owner's own reach (owner decision 2026-08-12)",
+  role: "agent",
+};
+
+// Adapter #2b — Pi pinned to Z.ai's Coding Plan and exactly GLM-5.3. Pi 0.84.0 ships the `zai`
+// provider but not this model in its bundled catalogue, so the adapter supplies that one missing
+// entry through PI_CODING_AGENT_DIR. The directory relocation is the isolation boundary: Pi's
+// entire agent state (including sessions and any auth file it may create) stays Fleet-local, while
+// the API key remains an environment value expanded only inside the pane shell.
+const PI_ZAI_HARNESS: Harness = {
+  id: "pi-zai",
+  spawnCmd: (o) => {
+    let cmd = "pi --provider zai --model 'glm-5.3'";
+    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+    if (o.effort) cmd += ` --thinking ${o.effort}`;
+    const catalog = '{"providers":{"zai":{"models":[{"id":"glm-5.3","name":"GLM-5.3","contextWindow":1000000,"maxTokens":131072,"reasoning":true,"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}]}}}';
+    const keyError = `pi-zai: missing or empty Z.ai Coding Plan key file: ${PI_ZAI_KEY_FILE}`;
+    const catalogError = `pi-zai: could not prepare process-local agent directory: ${PI_ZAI_AGENT_DIR}`;
+    return `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
+      + `mkdir -p '${PI_ZAI_AGENT_DIR}' && printf '%s\\n' '${catalog}' > '${PI_ZAI_AGENT_DIR}/models.json' `
+      + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
+      + `PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${cmd}; exec ${SHELL}`;
+  },
+  // Unsupported for the same reason as Pi: there is no host Claude transcript return channel,
+  // and Pi has no equivalent of the worker tier's Claude ToolProfile.
+  worker: () => null,
+  // Same Pi JSONL format and usage parser, but rooted in this adapter's process-local agent home.
+  context: { file: piZaiContextFile, used: readPiUsedTokens },
+  pinsSession: true,
+  // The process is Pi itself; depth-one liveness has the same measured basis as PI_HARNESS.
+  comms: ["pi"],
+  // Pi has no known input-eating rendered boot screens, so readiness is not applicable and is
+  // deliberately absent. No bootSettleMs is claimed because none was measured for this path.
+  hostCommits: false,
+  // Attended dispatch already waives the harness policy gate. Until a separate fire probe exists,
+  // this adapter makes no claim that unattended prompts are safe.
+  automatable: false,
+  allowsLanes: true,
+  singleton: false,
+  laneForm: null,
+  modelRe: /^glm-5\.3$/,
+  effortLevels: ["low", "high", "max"],
+  supports: {
+    resume: true,
+    transcript: false,
+    model: true,
+    effort: true,
+    selfSchedule: false,
+    container: false,
+  },
+  note: "fixed provider zai/glm-5.3 (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; full local reach like pi; process-local agent directory leaves ~/.pi untouched",
   role: "agent",
 };
 
@@ -894,7 +961,7 @@ const CODEX_HARNESS: Harness = {
 // prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
@@ -12527,9 +12594,11 @@ function contextFill(s: Slot): ContextFill | null {
   const h = harnessOf(s.harness);
   const reader = h.context;
   if (!reader) return null;
-  // Only the default adapter actually receives DEFAULT_MODEL when its slot has no explicit model.
-  // A foreign harness's ambient model is unknown; borrowing Claude's default would fabricate 1M.
-  const windowTokens = contextWindowFor(s.model ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL : null));
+  // Only the default adapter and pi-zai have a model Fleet can name when the slot has no explicit
+  // pin: Claude receives DEFAULT_MODEL, while pi-zai's spawn line always passes literal glm-5.3.
+  // Every other foreign harness's ambient model is unknown; borrowing either default would invent.
+  const windowTokens = contextWindowFor(s.model
+    ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL : h === PI_ZAI_HARNESS ? "glm-5.3" : null));
   if (windowTokens === null) return null;
 
   const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
@@ -12626,6 +12695,37 @@ function piContextFile(o: { cwd: string; sessionId: string }): string | null {
       // weaken the anchor — the candidate is already narrowed to this directory AND this pinned
       // UUID; the header is corroboration, and rejecting a real match over a symlink would only make
       // the fact absent where it is knowable.
+      if (row.type === "session" && row.id === o.sessionId
+        && (row.cwd === o.cwd || row.cwd === real)) valid.push(file);
+    } catch { continue; }
+    finally { if (fd !== null) try { closeSync(fd); } catch { /* best effort */ } }
+  }
+  return valid.length === 1 ? valid[0] : null;
+}
+
+// pi-zai uses Pi's byte-identical session format and cwd slug, but PI_CODING_AGENT_DIR moves the
+// root. Keep piContextFile itself unchanged: normal Pi must continue reading ~/.pi/agent exactly
+// as before, while this adapter can never observe or mutate that global directory.
+function piZaiContextFile(o: { cwd: string; sessionId: string }): string | null {
+  let real: string;
+  try { real = realpathSync(o.cwd); } catch { real = o.cwd; }
+  const slug = `--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
+  const dir = `${PI_ZAI_AGENT_DIR}/sessions/${slug}`;
+  let names: string[];
+  try { names = readdirSync(dir).filter((n) => n.endsWith(`_${o.sessionId}.jsonl`)); }
+  catch { return null; }
+  const valid: string[] = [];
+  for (const name of names) {
+    const file = `${dir}/${name}`;
+    let fd: number | null = null;
+    try {
+      fd = openSync(file, "r");
+      const buf = Buffer.alloc(16 * 1024);
+      const n = readSync(fd, buf, 0, buf.length, 0);
+      const text = buf.toString("utf8", 0, n);
+      const end = text.indexOf("\n");
+      if (end < 0) continue;
+      const row = JSON.parse(text.slice(0, end)) as { type?: unknown; id?: unknown; cwd?: unknown };
       if (row.type === "session" && row.id === o.sessionId
         && (row.cwd === o.cwd || row.cwd === real)) valid.push(file);
     } catch { continue; }

@@ -826,6 +826,24 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     /return `\$\{PATH_EXPORT\}\$\{cmd\}; exec \$\{SHELL\}`/.test(pCode) && !pCode.includes("sandbox-exec"),
     pCode.match(/return `[^`]*`/g)?.join(" | ").slice(0, 200) ?? "no return");
 
+  // pi-zai's key must cross the process boundary through pane-shell expansion only. Reading it in
+  // server.ts would put the secret bytes into pane_start_command; any second assignment mechanism
+  // would make the safe-looking $(cat ...) line a decoy rather than the whole rule.
+  const pzStart = server.indexOf("const PI_ZAI_HARNESS: Harness = {");
+  const pzBody = pzStart < 0 ? "" : server.slice(pzStart, server.indexOf("\n};\n", pzStart));
+  const pzCode = pzBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("pi-zai is a bounded self-contained adapter declaration, never inherited through object spread",
+    pzStart > 0 && pzBody.length > 500 && pzBody.length < 8_000 && !pzCode.includes("..."),
+    `${pzBody.length} bytes`);
+  pin("pi-zai reads key bytes only through $(cat ...) in the pane shell",
+    pzCode.includes("ZAI_API_KEY=\"$(cat '${PI_ZAI_KEY_FILE}')\"")
+    && (pzCode.match(/ZAI_API_KEY=/g) ?? []).length === 1
+    && !/(?:readFileSync|Bun\.file|readText)\(PI_ZAI_KEY_FILE/.test(pzCode),
+    pzCode.match(/ZAI_API_KEY=[^\n]+/)?.[0]?.slice(0, 180) ?? "no ZAI_API_KEY assignment");
+  pin("pi-zai is registered in the stable harness order beside the two Pi adapters",
+    server.includes("const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];"),
+    server.match(/const HARNESSES: readonly Harness\[\] = \[[^\n]+/)?.[0] ?? "registry absent");
+
   // The one unfenced Pi is an explicit adapter, never a conditional hole in normal Pi's fence.
   // Pin both the power and all three blast-radius limits: changing only one side would make either
   // the picker warning false or an unrestricted agent reachable unattended/as a lane/as a pool.
@@ -938,19 +956,19 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     hostCommitFields.map((a) => `${a.name}:${a.values.join("|") || "missing"}`).join(" "));
   const hostCommitsOf = (name: string): string | undefined =>
     hostCommitFields.find((a) => a.name === name)?.values[0];
-  // All five are pinned OWNER DECISIONS since 2026-08-12: full local access is the normal
+  // All six are pinned OWNER DECISIONS: full local access is the normal
   // operating mode, every agent records its own work, and /commit is a recovery act. A `true`
   // reappearing here would silently re-route a harness's lifecycle through host rescue.
   const ownerHostCommitExpected: Record<string, string> = {
-    CLAUDE: "false", PI: "false", PI_UNFENCED: "false", CONTAINER: "false", CODEX: "false",
+    CLAUDE: "false", PI: "false", PI_ZAI: "false", PI_UNFENCED: "false", CONTAINER: "false", CODEX: "false",
   };
   const wrongOwnerDecision = Object.entries(ownerHostCommitExpected)
     .filter(([name, expected]) => hostCommitsOf(name) !== expected);
   pin("every adapter keeps its owner-decided commit ownership — nobody is fenced out of .git",
     wrongOwnerDecision.length === 0,
     wrongOwnerDecision.map(([name, expected]) => `${name}:${hostCommitsOf(name) ?? "missing"} expected=${expected}`).join(" ")
-      || "all five agree");
-  // `supports` is written inline on one adapter and one-field-per-line on the other three, so the
+      || "all six agree");
+  // `supports` is written inline on one adapter and one-field-per-line on the others, so the
   // field is matched WITHOUT its leading newline — anchoring on the layout would have made this
   // rule true for three adapters and unaskable for the fourth.
   const wrongWorker = adapters.filter((a) => {
@@ -959,7 +977,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     return hosts !== /\btranscript: true\b/.test(exec);
   });
   pin("no adapter offers a worker session it could not read the answer from (worker ⇔ supports.transcript)",
-    wrongWorker.length === 0, wrongWorker.map((a) => a.name).join(", ") || "all four agree");
+    wrongWorker.length === 0, wrongWorker.map((a) => a.name).join(", ") || "all six agree");
 
   // ...and its docker is PINNED, never ambient. Stated over the whole file because the harm is a
   // bare `docker` ANYWHERE on this path, not only in the adapter literal: the active context is a

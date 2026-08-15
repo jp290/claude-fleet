@@ -553,6 +553,35 @@ Pane-Tod → `codex resume '<id>'` → Codewort-Recall) und die manuell resumte 
 Prompt-Replay, Rezenz/`--last`, Claude-/Pi-Recovery, allgemeiner Session-/Transcript-Browser —
 Zustandsmaschine und Grenzen: `docs/codex-recovery.md`.
 
+**pi-zai (GLM-5.3 über Z.ai Coding Plan) ist seit 2026-08-15 GEBAUT (Workstream 17, `9659901`;
+genau eine Codex-Lane, gpt-5.6-sol high, Task `22e28ba9`).** Vorlauf war ein isolierter H0-Test
+(read-only, Wegwerf-HOME): Pi 0.84.0 hat den Provider `zai` NATIV (baseUrl
+`api.z.ai/api/coding/paas/v4`, Key-Quelle env `ZAI_API_KEY`), Live-Messungen grün (Identität
+zai/glm-5.3, Streaming, Tool-Roundtrip, 140k-Input akzeptiert, Effort low/high/max akzeptiert,
+Session-Resume, Fehler laut: fehlender Key lokal exit 1, Fremdmodell API-400 code 1214), und im
+Architektur-Blindvergleich (fixierte 8-Kriterien-Rubrik, geheimnisfreier 6,7-KB-Pack) schlug GLM
+den Fable-Entwurf 16/16 zu 12/16 mit zwei echten codegestützten Funden (WatchBase trägt kein
+`openedAt`; keine persistierte MAIN-Lineage) und null Halluzination — Verdict go. Der Adapter
+(`PI_ZAI_HARNESS`, server.ts, neben den Pi-Adaptern): fester Provider/Modell `zai`/`glm-5.3`
+(`modelRe /^glm-5\.3$/`, alles andere 400), Effort exakt low/high/max, prozesslokales Agent-Dir
+über `PI_CODING_AGENT_DIR` (Default `~/.config/claude-fleet/pi-zai-agent`, Override
+`FLEET_PI_ZAI_AGENT_DIR`; models.json mit dem fehlenden glm-5.3-Katalogeintrag wird idempotent
+hergestellt — Pis Bündelkatalog endet bei glm-5.2, `~/.pi/agent` bleibt unberührt), Key erst in
+der Pane-Shell via `$(cat '<keyfile>')` (Default `~/.config/claude-fleet/secrets/…`, Override
+`FLEET_PI_ZAI_KEY_FILE`; laute Wache bei fehlender/leerer Datei, pi startet nicht), Pins halten
+`$(cat` als einzigen Key-Mechanismus. `automatable:false` (keine Feuerprobe), `allowsLanes:true`,
+`comms:["pi"]`, worker/transcript unsupported wie pi, eigener Session-Reader unter dem
+Fleet-Agent-Dir plus `contextWindowFor("glm-5.3") = 1_000_000` — **erster fremder Harness mit
+livem ctx-Sensor** (Canary: `ctx {usedTokens, 1000000, pct}` am Owner-Poll). Land normal (Gate
+grün 94,7 s), Audit substanziell grün (837 s, 2328/0, 17 PASS-Zeilen, covers genau dieses Land),
+Deploy `511cc15e` (`ok:true`, `hitTarget:true`, `bundleStale:false`). Live-Canary voller Kreis:
+Identität zai/glm-5.3 aus der Session selbst (`PI_PROVIDER=zai`), Tool-Roundtrip, Pane-Kill →
+Heal mit gepinnter `--session-id` → Codewort-Recall (`SILBERDISTEL-88`), keine Key-Bytes in
+Startkommando/Scrollback. Grenzen, gewollt: Effort-Monotonie und volles 1M-Fenster ungemessen;
+`pi -p` braucht nicht-interaktiv `< /dev/null` (H0-Stolperstein, TUI unbetroffen); Key liegt als
+Env im pi-Prozess (Design der Env-Injektion, nie auf Platte außerhalb der Secrets-Datei).
+Bewusst NICHT gebaut: Provider-Abstraktion, ProgramExecutionView, `automatable:true`.**
+
 **Ziel dahinter (gesetzt, nicht begonnen):** Self-Land als inspizierbare Eligibility-Entscheidung
 (Shadow-Klassifikation zuerst; Tatsachenliste: Kickoff §7 / Doktrin §12) und der manuelle
 Work-Trail-Learning-Loop (P4; Owner promotet).

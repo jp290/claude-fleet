@@ -1,3 +1,50 @@
+# HANDOFF — Session 64 (2026-08-15, Fable-MAIN: GLM-H0-Test go + pi-zai-Adapter — gebaut, gelandet `9659901`, auditiert grün, deployt, Live-Canary voller Kreis) · 63/62/61/60/59 darunter
+
+**ctx beim Schreiben: 27,9 % (GEMESSEN am Owner-Poll, 278 761 / 1 000 000).**
+Produziert: H0-Test GLM-5.3 über Pi/Z.ai (isoliert, read-only, Verdict **go**), ein Land
+(`9659901`, genau EINE Codex-Lane, gpt-5.6-sol high, Task `22e28ba9` über den Dispatch-Knopf,
+48,5 min Worker-Laufzeit), Audit grün (837 s, 2328/0 Checks, 17 PASS-Zeilen), Deploy `511cc15e`
+(`ok:true`, `bootHead == 9659901`, `hitTarget:true`, `bundleStale:false`), Live-Canary voller
+Kreis, Core-Doc Workstream 17.
+
+## H0 (Kurzform; Langform Core-Doc WS17)
+
+- Pi 0.84.0 hat `zai` NATIV (baseUrl `api.z.ai/api/coding/paas/v4`, env `ZAI_API_KEY`); Katalog
+  endet bei glm-5.2 → prozesslokale Naht `PI_CODING_AGENT_DIR` (offiziell, `config.js
+  getAgentDir`) mit eigenem models.json, bewiesen ohne globale Mutation.
+- Live grün: Identität, Streaming, Tool-Roundtrip, 140k-Input, Effort low/high/max, Resume,
+  laute Fehler. **Stolperstein: `pi -p` hängt ohne `< /dev/null`** (stdin-EOF), TUI unbetroffen.
+- Blindvergleich ProgramExecutionView (fixierte Rubrik, geheimnisfreier Pack): GLM 16/16 vs.
+  Fable 12/16 — zwei echte Funde (WatchBase ohne `openedAt`; keine persistierte MAIN-Lineage),
+  keine Halluzination. Beide Entwürfe liegen NICHT mehr auf Platte (Scratch aufgeräumt, Essenz im
+  Session-Transkript/WS17); vor einem ProgramExecutionView-Bau neu ableiten, die zwei Funde gelten.
+
+## Der Schnitt (`9659901`, Commit-Body = Flächen-Matrix der Lane)
+
+`PI_ZAI_HARNESS` (server.ts neben den Pi-Adaptern): fest `zai`/`glm-5.3`, Effort low/high/max,
+Agent-Dir `~/.config/claude-fleet/pi-zai-agent` (Override `FLEET_PI_ZAI_AGENT_DIR`), Key nur via
+`$(cat '~/.config/claude-fleet/secrets/zai-coding-plan.key')` in der Pane-Shell (Override
+`FLEET_PI_ZAI_KEY_FILE`; laute Wache, Pins halten die Klasse zu), `automatable:false`,
+`allowsLanes:true`, eigener Session-Reader + `contextWindowFor("glm-5.3")=1M` — erster fremder
+Harness mit livem ctx am Owner-Poll. Canary: Identität aus der Session (`PI_PROVIDER=zai`),
+Tool-Call, Pane-Kill → Heal (`--session-id` gepinnt) → Recall `SILBERDISTEL-88`, keine Key-Bytes
+in Startkommando/Scrollback. `~/.pi/agent` unverändert (kein models.json dort).
+
+## Offen / nächste Schritte
+
+- **Owner-Entscheid (read-only Ultra-Audit, 2026-08-15, NUR Notiz — nicht bauen/queuen):** Fleets
+  `AGENTS.md` bleibt unverändert. Nach dem pi-zai-Schnitt wird das erste Private-repo-herspiel-Repo der
+  reale Pilot für eine minimale Repo-/Arbeitskreis-Initialisierung: kurze Root-`AGENTS.md` aus
+  gemessenen Repo-Fakten, exaktes Done-/Proof-Kommando, Nested-Overlay nur bei echter lokaler
+  Abweichung, private/providerbezogene Hinweise getrennt, Loader-Canary je Harness.
+  `clawd/AGENTS.md` ist ein separater späterer privater Wahrheitsschnitt.
+- pi-zai-Feuerprobe für `automatable:true` steht aus; Effort-Monotonie und 1M-Vollfenster
+  ungemessen; pi 0.84.2 ist verfügbar (Update wäre Owner-Akt, Katalog könnte glm-5.3 nachziehen).
+- ProgramExecutionView bleibt der empfohlene nächste Korridor-Schnitt (Core-Doc), jetzt mit den
+  zwei GLM-Funden als Zusatz-Constraints.
+- Queue: `22e28ba9` schloss sich beim Land selbst; ein von mir versehentlich doppelt angelegtes
+  Duplikat (`453ba2ed`) wurde archiviert+gelöscht, sonst unverändert.
+
 # HANDOFF — Session 63 (2026-08-15, Fable-MAIN: Codex Attended Recovery v1.1 — gebaut, gelandet `511c2c2`, auditiert grün, deployt, beide Live-Beweise bestanden, Slot-4-Grenze aus S62 geschlossen) · 62/61/60/59/58 darunter
 
 **ctx beim Schreiben: 21,2 % (GEMESSEN am Owner-Poll, 212 126 / 1 000 000).**

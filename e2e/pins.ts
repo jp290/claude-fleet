@@ -393,7 +393,44 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   // harness with no type coverage at all. Scoped to the fenced ```sh block so that prose ABOUT a
   // suite (this file names ./e2e-isolated.sh in the paragraph below it, correctly, as NOT a gate)
   // is not read as a claim to run it.
-  const RULE_VERIFY = "AGENTS.md's verify block runs exactly what watchdog.sh's VERIFY_CMD gates";
+  // AND "EXACTLY" NOW MEANS THE WHOLE CHAIN, not two of its subsets. Until 2026-08-15 this rule
+  // compared the SUITE names and the tsc entry list and nothing else, so the two steps that are
+  // neither — `bun install` and `bun run build` — were unpinned in a rule whose name said
+  // "exactly". `bun run build` had drifted out of VERIFY_CMD and stayed green here for as long as
+  // anyone had looked: a break only the bundler can see (src/client.ts, src/share.ts) walked
+  // through the land gate untouched, and AGENTS.md meanwhile told every lane to run it. A pin that
+  // claims more than it compares is worse than none, because it makes the hole look guarded.
+  //
+  // The fix is to compare the ORDERED STEP SEQUENCE, and to do it against a THIRD side that
+  // already had the answer: verify-proportion.ts's LOCAL_PROOF_STEPS is the vocabulary the server
+  // hands a lane in `localProof.steps`, so it was recommending `build` to lanes the gate never ran.
+  // Steps are located by first occurrence of an unambiguous marker and sorted by position, which
+  // is why VERIFY_CMD's repo guard, its `|| { echo … }` handlers and its `;`/`&&` mix need no
+  // parsing: what is compared is which steps appear and in what order, in all three files.
+  const STEP_MARKERS: readonly [string, string][] = [
+    ["install", "bun install"],
+    ["pins", "bun e2e/pins.ts"],
+    ["tsc", "bunx tsc"],
+    ["build", "bun run build"],
+    ["clean-review", "./e2e-clean-review.sh"],
+    ["security", "./e2e-security.sh"],
+    ["claude-gate", "./e2e-claude-gate.sh"],
+  ];
+  const stepsOf = (text: string): string[] => STEP_MARKERS
+    .map(([step, marker]) => [step, text.indexOf(marker)] as const)
+    .filter(([, at]) => at >= 0)
+    .sort((a, b) => a[1] - b[1])
+    .map(([step]) => step);
+  // read as a FILE, not imported: this file is fs-only by design (see the header), and that keeps
+  // verify-proportion.ts a pinned SIDE rather than a compile-time dependency of the pin.
+  const proportion = ((): string[] => {
+    let src = "";
+    try { src = read("verify-proportion.ts"); } catch { return []; }
+    const block = /export const LOCAL_PROOF_STEPS = \[([\s\S]*?)\]/.exec(src)?.[1] ?? "";
+    return [...block.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  })();
+
+  const RULE_VERIFY = "AGENTS.md, watchdog.sh's VERIFY_CMD and LOCAL_PROOF_STEPS are the same ordered chain";
   const fence = agents === null ? null : /```sh\n([\s\S]*?)```/.exec(agents)?.[1] ?? null;
   if (fence === null) pin(RULE_VERIFY, false, agents === null ? "no AGENTS.md" : "no ```sh verify block");
   else {
@@ -416,10 +453,16 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     const gateTsc = /--types bun ([^&]+?)(?:&&|$)/.exec(verifyCmd)?.[1]?.trim().split(/\s+/) ?? [];
     const missSuite = same(gateSuites, docSuites), extraSuite = same(docSuites, gateSuites);
     const missTsc = same(gateTsc, docTsc), extraTsc = same(docTsc, gateTsc);
+    // the step sequences, as strings so a failure names the drift instead of a boolean
+    const docChain = stepsOf(fence).join(">");
+    const gateChain = stepsOf(verifyCmd).join(">");
+    const proofChain = proportion.join(">");
     pin(RULE_VERIFY,
       docSuites.length > 0 && docTsc.length > 0
-      && !missSuite && !extraSuite && !missTsc && !extraTsc,
-      `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
+      && !missSuite && !extraSuite && !missTsc && !extraTsc
+      && proofChain.length > 0 && docChain === gateChain && docChain === proofChain,
+      `chain doc=[${docChain}] gate=[${gateChain}] localProof=[${proofChain}]; `
+      + `suites missing=[${missSuite}] extra=[${extraSuite}]; tsc missing=[${missTsc}] extra=[${extraTsc}]`);
   }
 
   // and the anchors, held HARD — unlike section 6's, which are advisory because a lane's CLAUDE.md

@@ -1,3 +1,40 @@
+# HANDOFF — Session 69 (2026-08-16, Fable Program-MAIN „Context Delivery Truth": G1 gelandet `4f55b48`, auditiert grün, deployt, Live-Counterproof beide Hälften) · 68/67/66 darunter
+
+**ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null` — bekannte Lücke
+`e2784b16`); Statusline zeigte ~15–20 %, also weit unter der 44-%-Schwelle. Session endet hier
+per Owner-Vorgabe („Stoppe nach dokumentiertem G1-Abschluss"), nicht an der Schwelle.**
+
+**G1 komplett, der volle Kreis, jede Stufe mit Beleg:**
+- **Auftrag:** Owner-Entscheid mid-turn — nur G1 aus `docs/triage/context-delivery-opus-audit-2026-08-16.md`
+  §5 (sourceTree am Task-Dispatch aus Git ableiten, Fleet-Dispatch byte-identisch); G2–G5,
+  Loader-Kürzung, Role/Game-Packs ausdrücklich NICHT. Audit-Zeilenzitate gegen HEAD `3977aa3`
+  nachgeprüft (Anker war `7f3fe5e`, nur Zeilennummern gewandert, Seam unverändert).
+- **Land `4f55b48`** `fix(dispatch): the delivery seam derives which tree it is delivering into` —
+  genau EINE Claude-Opus-5-Lane (Task `71786156`, Programm `441c0058`, Dispatch-Knopf,
+  Slot 6, ~75 min inkl. zweier voller isolated-Läufe in der Lane). Diff: Helfer
+  `dispatchSourceTree` neben dem Seam (Regel = `preflightProgramMain`: `repoRootOf` vs
+  `FLEET_REPO_ROOT`), Throw → bestehender Requeue; e2e/tasks.ts (d) auf die Fremd-Hälfte
+  gedreht (das Fixture-Repo WAR schon fremd — die alten Sonden maßen das Literal), (d3)
+  Fleet-Gegenprobe neu; ein Pin als REGEL (0 Literal-Zuweisungen, 2 Klassifizierer).
+- **Gate-Verify grün** (105 s Arbeit, 0 s Wartezeit, Land-Note an `4f55b48`); **Audit grün
+  2438/0, 918 s**, covers genau dieses Land; **Deploy `e1ed43d1`** `ok:true`,
+  `bootHead==target==4f55b48`, `hitTarget:true`, `bundleStale:false`.
+- **Live-Counterproof auf dem deployten Server, beide Hälften, ohne Config-Mutation** (per-Task
+  `repo` statt `FLEET_DISPATCH_REPO`-Umbiegen): (1) Wegwerf-Repo im Scratchpad, ein Dispatch →
+  Receipt `repo`=Wegwerfpfad, `head`=dessen echter Tip `58cacb18`, `selected: []`, alle sechs
+  Packs `source-unavailable`, zugestellter Prompt laut Prompt-Ledger = Brief-Bytes allein (keine
+  Anchor-Zeile); (2) Fleet-Dispatch → `portable-core,verify-e2e`, Anchor-Block byte-gleich der
+  bekannten Drei-Zeilen-Form, Receipt auf `4f55b48`. Fixtures danach vollständig abgeräumt
+  (Slots gekillt, Tasks gelöscht, Worktrees/Wegwerf-Repo entfernt).
+- **Rückkanäle:** durchgehend typisiert — lane-watch → merge-watch → audit-watch, alle Events
+  acked, kein Hand-Polling. Koordination mit dem GLM-H0-Land (Slot 8) lief über Owner-Fakten:
+  dessen `waitedOut` ist „nie gemessen", Retry gehört dem Owner, seit G1 main bewegt hat frei.
+- **Offen für die nächste Session (NICHT beginnen ohne Owner):** G2 (Omissions dem Leser
+  zustellen) ist laut Audit der natürliche zweite Schnitt; G3–G5, Role-Packs, HANDOFF-Klausel
+  (§3-Refinement) warten auf Owner-Priorisierung. Die Lane `fleet-260816094035-f07e` (Slot 8,
+  Vision-H0-Doc) und Worktree `fleet-260816135918-1265` (lebender Slot, sauber) sind fremd —
+  nicht anfassen.
+
 # HANDOFF — Session 68 (2026-08-16, Fable-MAIN Program „Fleet Communication Truth": Cut 1 `8be79d3` UND Cut 2 `03019e1` gelandet, beide auditiert grün, deployt, Live-Kreis voller Beweis) · 67/66/65 darunter
 
 **NACHTRAG Cut 2 (gleiche Session):** AttentionRequest v1 gelandet `03019e1` (eine

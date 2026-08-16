@@ -8311,6 +8311,9 @@ async function doSend() {
   send.disabled = true;
   try {
     const res = await post("/send", { slot, text, submit: true });
+    // 409 is the one failure that is not a failure: the paste may have landed in part or in whole,
+    // so the red flash alone would read as "nothing went out" and invite a duplicate send.
+    if (res.status === 409) toast("send outcome uncertain — check the pane before retrying");
     if (!res.ok) throw new Error(`send failed: ${res.status}`);
     // the ✨ draft's verdict, decided by what actually went out (see pendingEnhance). Written only
     // after the send SUCCEEDED — a failed send leaves the text in the box and nothing labeled.

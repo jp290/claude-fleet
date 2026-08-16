@@ -195,6 +195,20 @@ const server = read("server.ts");
   pin("clarification reply cannot set answered before successful sendText",
     send >= 0 && answered > send && !reply.slice(0, send).includes('request.status = "answered";'),
     `send=${send} answered=${answered}`);
+
+  // The transport marker's whole value is its ORDER: persisted (awaited) before tmux is touched, so
+  // a process death after that point is visible after restart instead of vanishing. Paired with the
+  // prune contract, because a "terminal" that swallowed send-uncertain would delete exactly the row
+  // that says this text may already be in the pane. Moving the assignment below sendText, dropping
+  // its saveStateNow, or letting prune treat send-uncertain as terminal each makes this red.
+  const uncertain = reply.indexOf('request.status = "send-uncertain";');
+  const uncertainSaved = reply.indexOf("await saveStateNow();", uncertain);
+  const prune = server.slice(server.indexOf("function pruneClarifications("),
+    server.indexOf("const sameOccupant ="));
+  pin("clarification reply persists send-uncertain before sendText and only answered|refused are terminal",
+    uncertain >= 0 && uncertainSaved > uncertain && send > uncertainSaved
+    && prune.includes('c.status === "answered" || c.status === "refused"'),
+    `uncertain=${uncertain} saved=${uncertainSaved} send=${send} prune=${prune.includes('c.status === "answered" || c.status === "refused"')}`);
 }
 const verifyCmd = /^VERIFY_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";
 const auditCmd = /^AUDIT_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";

@@ -50,7 +50,7 @@ interface ClarificationRow {
   provenance: { taskId: string | null; originId: string | null; programId: string | null };
   receiver: { slot: number; openedAt: number; sessionId: string | null };
   basis: "program-main" | "lane-watch" | "program-main+lane-watch"; eventId: string;
-  status: "open" | "answered" | "refused";
+  status: "open" | "send-uncertain" | "answered" | "refused";
   answer: { text: string; at: number; by: { slot: number; openedAt: number; sessionId: string | null } } | null;
   refusedReason: string | null; closedAt: number | null;
 }
@@ -364,6 +364,18 @@ export async function run(): Promise<void> {
       Array.isArray(legacyLoaded.clarifications) && legacyLoaded.clarifications.length === 0
         && legacyLoaded.slots?.[String(legacyOwner.slot)]?.awaiting === "owner",
       JSON.stringify({ clarifications: legacyLoaded.clarifications, awaiting: legacyLoaded.slots?.[String(legacyOwner.slot)]?.awaiting }));
+
+    // EDGE B counter-probe. An "owner" wait waits for exactly the person now typing, so the owner's
+    // own /send still clears it — the wait exists to hold AUTOMATION back, never its addressee.
+    // BREAKS IF: /send stops clearing awaiting at all (the over-correction of only preserving
+    // "main"), leaving a clarify lane parked against the owner who just answered it.
+    const legacyOwnerTok = await paneEnv(`s${legacyOwner.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const ownerWaitBefore = ((await (await selfGet(legacyOwnerTok)).json()) as { awaiting?: string | null }).awaiting;
+    await post("/send", { slot: legacyOwner.slot, text: "owner answers the clarify wait", submit: false });
+    const ownerWaitAfter = ((await (await selfGet(legacyOwnerTok)).json()) as { awaiting?: string | null }).awaiting;
+    check("owner /send still clears an 'owner' wait — the person it waits for has spoken",
+      ownerWaitBefore === "owner" && (ownerWaitAfter ?? null) === null,
+      `${ownerWaitBefore} -> ${ownerWaitAfter}`);
     await post(`/api/slots/${legacyOwner.slot}/kill`, {});
 
     const progTok = laneTokens.get(prog.slot) ?? "";
@@ -518,6 +530,18 @@ export async function run(): Promise<void> {
         && afterAck?.status === "open"
         && ((await (await selfGet(progTok)).json()) as { awaiting?: string }).awaiting === "main");
 
+    // EDGE B. The owner typing into a worker's pane is NOT Program-MAIN's answer to that worker's
+    // open clarification, so the "main" wait must survive it. Clearing it here would re-open the
+    // steward nudge path past an unanswered question — the 409 checked a few lines below.
+    // BREAKS IF: /send goes back to the unconditional `s.awaiting = null`.
+    await post("/send", { slot: prog.slot, text: "owner speaks while MAIN has not answered", submit: false });
+    const waitAfterOwnerSend = ((await (await selfGet(progTok)).json()) as { awaiting?: string | null }).awaiting;
+    const clarificationAfterOwnerSend = (await selfClarifications(progTok)).requests
+      .find((c) => c.id === progRequest?.id);
+    check("owner /send into a worker pane preserves its awaiting:'main' clarification wait",
+      waitAfterOwnerSend === "main" && clarificationAfterOwnerSend?.status === "open",
+      `${waitAfterOwnerSend} ${clarificationAfterOwnerSend?.status}`);
+
     const waitingFacts: LaneSignalView = { alive: true, idleMs: 999_999, git: { dirty: 2, ahead: 0 },
       gitOp: false, merge: null, observed: true, awaiting: "main", hostCommits: true };
     check("awaiting:'main' lane is neither host-commit-looking nor stalled",
@@ -560,15 +584,67 @@ export async function run(): Promise<void> {
 
     // A pane death without occupant replacement must not become success. On the isolated default
     // adapter the process probe is intentionally waived; sendText itself therefore supplies the
-    // deterministic paste failure and the request must remain open.
+    // deterministic paste failure, and the failure is now a PERSISTED transport state rather than a
+    // request that silently stayed open. Read from the state file, never from /api/sessions: that
+    // payload carries no `awaiting`, and casting it onto the poll response is the exact mistake two
+    // earlier probes died of (8e2b3e5).
+    // BREAKS IF: replyClarification assigns send-uncertain after sendText (nothing persisted on a
+    // crash), or drops the pre-send saveStateNow, or clears the worker's wait before an answer.
     await tmuxOut("kill-session", "-t", `s${watched.slot}`);
     const deadReply = watchRequest ? await replyClarification(main1Tok, watchRequest.id, "answer to dead pane")
       : new Response(null, { status: 599 });
     const deadReplyText = await deadReply.text();
-    check("clarification dead worker pane/send failure is a named 409 and never sets answered",
-      deadReply.status === 409 && /worker reply (?:delivery blocked|send failed)/.test(deadReplyText)
-        && (await selfClarifications(watchedTok)).requests.find((c) => c.id === watchRequest?.id)?.status === "open",
-      `${deadReply.status} ${deadReplyText}`);
+    const readClarification = (id: string | undefined) =>
+      (JSON.parse(readFileSync(clarificationStatePath, "utf8")) as { clarifications?: ClarificationRow[] })
+        .clarifications?.find((c) => c.id === id);
+    const readAwaiting = (slot: number): string | null =>
+      (JSON.parse(readFileSync(clarificationStatePath, "utf8")) as
+        { slots?: Record<string, { awaiting?: string | null }> }).slots?.[String(slot)]?.awaiting ?? null;
+    const uncertainRow = readClarification(watchRequest?.id);
+    check("clarification unresolved send persists send-uncertain with the pending answer and keeps awaiting main",
+      deadReply.status === 409 && /worker reply send failed and stays send-uncertain/.test(deadReplyText)
+        && uncertainRow?.status === "send-uncertain" && uncertainRow.answer?.text === "answer to dead pane"
+        && uncertainRow.closedAt === null && uncertainRow.refusedReason === null
+        && readAwaiting(watched.slot) === "main"
+        && (await selfClarifications(watchedTok)).requests.find((c) => c.id === watchRequest?.id)?.status === "send-uncertain",
+      `${deadReply.status} ${deadReplyText} ${JSON.stringify(uncertainRow)} awaiting=${readAwaiting(watched.slot)}`);
+
+    // The retry contract has two halves and both are load-bearing: identical text may be
+    // re-attempted, different text may not — the pending text may already sit in the pane, so a
+    // second, different answer would be half of a contradiction nobody could observe.
+    // BREAKS IF: the send-uncertain branch stops comparing the pending text, or a different-text
+    // retry is allowed to overwrite `answer` before its 409.
+    const differentRetry = watchRequest
+      ? await replyClarification(main1Tok, watchRequest.id, "a different answer entirely")
+      : new Response(null, { status: 599 });
+    const differentRetryText = await differentRetry.text();
+    const afterDifferent = readClarification(watchRequest?.id);
+    check("clarification send-uncertain retry with different text is 409 and never replaces the pending answer",
+      differentRetry.status === 409 && differentRetryText.includes("different pending text")
+        && afterDifferent?.status === "send-uncertain" && afterDifferent.answer?.text === "answer to dead pane",
+      `${differentRetry.status} ${differentRetryText}`);
+
+    // The identical retry is principal-driven and re-runs the real gates: once the self-heal has
+    // put the pane back (same occupant — the stand-in harness pins no session id, so openedAt and
+    // sessionId are untouched), the send is attempted again and only its success answers.
+    // BREAKS IF: a send-uncertain request is treated as terminal/closed, or the retry short-circuits
+    // to answered without re-running sendText (the pane text below would then be missing).
+    let healed = 1;
+    for (let i = 0; i < 60 && healed !== 0; i++) {
+      await Bun.sleep(250);
+      healed = (await tmuxOut("has-session", "-t", `s${watched.slot}`)).code;
+    }
+    const sameRetry = watchRequest ? await replyClarification(main1Tok, watchRequest.id, "answer to dead pane")
+      : new Response(null, { status: 599 });
+    const sameRetryBody = await sameRetry.json() as { request?: ClarificationRow };
+    const healedPane = (await tmuxOut("capture-pane", "-t", `s${watched.slot}`, "-p")).out;
+    check("clarification identical retry re-attempts the send and only a successful one answers and clears the wait",
+      healed === 0 && sameRetry.ok && sameRetryBody.request?.status === "answered"
+        && sameRetryBody.request.closedAt !== null
+        && healedPane.includes(`CLARIFICATION ANSWER [request ${watchRequest?.id}]`)
+        && readClarification(watchRequest?.id)?.status === "answered"
+        && readAwaiting(watched.slot) === null,
+      `healed=${healed} ${sameRetry.status} ${JSON.stringify(sameRetryBody.request)}`);
     const replySource = serverSource.slice(serverSource.indexOf("async function replyClarification("),
       serverSource.indexOf("async function acknowledgeFleetEvent("));
     check("clarification send-error branch returns 409 while answered assignment remains after sendText",
@@ -622,7 +698,40 @@ export async function run(): Promise<void> {
         && !((JSON.parse(readFileSync(clarificationStatePath, "utf8")) as { watches?: { id?: string }[] }).watches ?? [])
           .some((w) => w.id === progRequest?.id));
 
+    // EDGE C. Scope follows ROLE, not worktree-ness: a receiver that happens to run in a worktree
+    // (the ⚙ steward is exactly that shape) used to fall into the worker branch of clarificationsFor
+    // and therefore saw nothing it was the receiver OF. Both bindings are exact and server-derived.
+    // BREAKS IF: clarificationsFor reintroduces an `s.worktree` branch — this receiver HAS a
+    // worktree, so the old predicate returned its own (empty) worker rows instead of the row below.
+    // The nine fixture lanes above have finished their checks; free them FIRST so this pair is not
+    // competing for the last of MAX_SLOTS (a /api/lanes that finds no free slot returns no `slot`,
+    // and the probe would then fail as itself rather than as the scope predicate it measures).
     for (const lane of [prog, watched, conflicted, multi, none, legacy, replacedMainWorker])
+      await post(`/api/slots/${lane.slot}/kill`, {});
+    const receiverLane = await makeLane();
+    const receiverWorker = await makeLane();
+    const receiverLaneTok = await paneEnv(`s${receiverLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const receiverWorkerTok = await paneEnv(`s${receiverWorker.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const worktreeSub = await subscribe(receiverLane.slot, receiverWorker);
+    const worktreeOpen = await selfClarify(receiverWorkerTok, { question: "Who answers a receiver that lives in a worktree?" });
+    const worktreeRequest = (await worktreeOpen.json() as { request?: ClarificationRow }).request;
+    const worktreeScope = await selfClarifications(receiverLaneTok);
+    // The fixture gets its own check: a pair that could not be built must fail AS a fixture, never
+    // as the scope predicate below (a probe that never ran must not read as the thing it measured).
+    check("clarification worktree-receiver fixture: two fresh lanes, distinct tokens and a fresh Watch exist",
+      !!receiverLane.slot && !!receiverWorker.slot && /^[0-9a-f]{32}$/.test(receiverLaneTok)
+        && /^[0-9a-f]{32}$/.test(receiverWorkerTok) && receiverLaneTok !== receiverWorkerTok
+        && worktreeSub.response.ok && (worktreeSub.body.watch?.slotOpenedAt ?? 0) > 0,
+      JSON.stringify({ receiver: receiverLane.slot, worker: receiverWorker.slot,
+        sub: worktreeSub.response.status, watch: worktreeSub.body.watch }));
+    check("clarification GET scope follows role: a receiver WITH a worktree sees the rows it receives",
+      worktreeOpen.ok && worktreeRequest?.receiver.slot === receiverLane.slot
+        && worktreeScope.requests.length === 1 && worktreeScope.requests[0]?.id === worktreeRequest.id
+        && (await selfClarifications(receiverWorkerTok)).requests.some((c) => c.id === worktreeRequest.id),
+      JSON.stringify({ open: worktreeOpen.status, receiver: worktreeRequest?.receiver,
+        seen: worktreeScope.requests.map((c) => c.id) }));
+
+    for (const lane of [receiverLane, receiverWorker])
       await post(`/api/slots/${lane.slot}/kill`, {});
     await post(`/api/slots/${agreeSlot}/kill`, {});
     await post(`/api/slots/${main1}/kill`, {});

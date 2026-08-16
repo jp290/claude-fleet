@@ -1252,7 +1252,12 @@ interface ClarificationFleetEvent extends FleetEventBase {
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
   | ClarificationFleetEvent;
 
-type ClarificationStatus = "open" | "answered" | "refused";
+// `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
+// persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
+// restart instead of leaving a reply that may or may not have reached the worker's pane. It is NOT
+// terminal — terminal is answered|refused only — and it is never replayed by any tick: the one
+// principal that could have seen the pane must drive the retry, byte-identically.
+type ClarificationStatus = "open" | "send-uncertain" | "answered" | "refused";
 interface ClarificationRequest {
   id: string;
   askedAt: number;
@@ -1407,15 +1412,20 @@ function clarificationFrom(raw: unknown): ClarificationRequest | null {
     || !nullableString(provenance.programId)
     || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(c.basis))
     || typeof c.eventId !== "string" || !/^[0-9a-f]{24}$/.test(c.eventId)
-    || !["open", "answered", "refused"].includes(String(c.status))
+    || !["open", "send-uncertain", "answered", "refused"].includes(String(c.status))
     || !(c.closedAt === null || (typeof c.closedAt === "number" && Number.isFinite(c.closedAt) && c.closedAt > 0))
     || !(c.refusedReason === null || typeof c.refusedReason === "string")) return null;
   if (c.status === "open" && (answer !== null || c.refusedReason !== null || c.closedAt !== null)) return null;
+  const answerShaped = (): boolean => !!answer && typeof answer.text === "string" && !!answer.text.trim()
+    && answer.text.length <= MAX_CLARIFICATION_ANSWER && typeof answer.at === "number"
+    && Number.isFinite(answer.at) && answer.at > 0 && occupant(answer.by, false);
   if (c.status === "answered") {
-    if (!answer || typeof answer.text !== "string" || !answer.text.trim()
-      || answer.text.length > MAX_CLARIFICATION_ANSWER || typeof answer.at !== "number"
-      || !Number.isFinite(answer.at) || answer.at <= 0 || !occupant(answer.by, false)
-      || c.refusedReason !== null || c.closedAt === null) return null;
+    if (!answerShaped() || c.refusedReason !== null || c.closedAt === null) return null;
+  } else if (c.status === "send-uncertain") {
+    // the PENDING answer rides in the same field: it is what a retry must match byte-identically,
+    // and it is the only record that this text may already be sitting in the worker's pane.
+    // Not closed and not refused — an unresolved send is still an open debt.
+    if (!answerShaped() || c.refusedReason !== null || c.closedAt !== null) return null;
   } else if (answer !== null) return null;
   if (c.status === "refused" && (!(c.refusedReason ?? "").trim() || c.closedAt === null)) return null;
   return raw as ClarificationRequest;
@@ -2526,6 +2536,7 @@ type AuditEvent =
   | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_ack"
   | "fleet_event_receiver_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
+  | "clarification_reply_send_uncertain"
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
@@ -4817,8 +4828,11 @@ function pruneFleetEvents(slotId: number): void {
   fleetEvents = fleetEvents.filter((e) => !drop.has(e.id));
 }
 
+// TERMINAL IS answered|refused ONLY. `send-uncertain` looks closed (it carries an answer) and is
+// not: dropping such a row would erase the one record that says this text may already be in the
+// worker's pane, and the retry would then re-paste blindly — the exact hole this state closes.
 function pruneClarifications(): void {
-  const terminal = clarifications.filter((c) => c.status !== "open")
+  const terminal = clarifications.filter((c) => c.status === "answered" || c.status === "refused")
     .sort((a, b) => (a.closedAt ?? a.askedAt) - (b.closedAt ?? b.askedAt));
   if (terminal.length <= CLARIFICATION_KEEP_TERMINAL) return;
   const drop = new Set(terminal.slice(0, terminal.length - CLARIFICATION_KEEP_TERMINAL).map((c) => c.id));
@@ -4874,7 +4888,9 @@ function clarificationReceiverFor(lane: Slot): ClarificationReceiver | { error: 
 }
 
 function refuseClarification(c: ClarificationRequest, reason: string, at = Date.now()): void {
-  if (c.status !== "open") return;
+  // send-uncertain is refusable for the same reason it is not terminal: once the worker occupant is
+  // gone there is nobody left to retry the send for, and an unrefusable row would never be pruned.
+  if (c.status === "answered" || c.status === "refused") return;
   c.status = "refused";
   c.answer = null;
   c.refusedReason = reason;
@@ -4888,7 +4904,7 @@ function refuseClarification(c: ClarificationRequest, reason: string, at = Date.
 function reconcileClarifications(teardownSlotId?: number): boolean {
   let dirty = false;
   for (const c of clarifications) {
-    if (c.status !== "open") continue;
+    if (c.status === "answered" || c.status === "refused") continue;
     const worker = slotFrom(c.worker.slot);
     const receiver = slotFrom(c.receiver.slot);
     const workerGone = teardownSlotId === c.worker.slot || !worker?.cwd
@@ -4930,7 +4946,10 @@ async function openClarification(s: Slot, body: Record<string, unknown> | null):
   if (question.length > MAX_CLARIFICATION_QUESTION)
     return json({ error: `question must be at most ${MAX_CLARIFICATION_QUESTION} chars` }, 400);
 
-  const existing = clarifications.find((c) => c.status === "open" && c.worker.slot === s.id
+  // an unresolved send counts as an existing debt exactly like `open`: the worker must not be able
+  // to mint a twin question while an answer to the first one may already be in its pane.
+  const existing = clarifications.find((c) => (c.status === "open" || c.status === "send-uncertain")
+    && c.worker.slot === s.id
     && c.worker.openedAt === s.openedAt && c.worker.sessionId === s.sessionId);
   if (existing) return json({ ok: true, existing: true, request: existing });
 
@@ -4971,12 +4990,15 @@ async function openClarification(s: Slot, body: Record<string, unknown> | null):
   return json({ ok: true, existing: false, request });
 }
 
+// SCOPE FOLLOWS ROLE, NOT WORKTREE-NESS. The old branch asked "does this session have a worktree"
+// and answered worker-scoped, which made a receiver that happens to run in a worktree (the ⚙ steward
+// is exactly that shape) blind to every row it is the receiver of. Being a worker and being a
+// receiver are two exact bindings, both derived server-side; the caller sees the union of the rows
+// it is actually bound to, and worktree-ness appears nowhere in the predicate.
 function clarificationsFor(s: Slot): ClarificationRequest[] {
-  return s.worktree
-    ? clarifications.filter((c) => c.worker.slot === s.id && c.worker.openedAt === s.openedAt
-      && c.worker.sessionId === s.sessionId)
-    : clarifications.filter((c) => c.receiver.slot === s.id && c.receiver.openedAt === s.openedAt
-      && c.receiver.sessionId === s.sessionId);
+  const bound = (b: { slot: number; openedAt: number; sessionId: string | null }): boolean =>
+    b.slot === s.id && b.openedAt === s.openedAt && b.sessionId === s.sessionId;
+  return clarifications.filter((c) => bound(c.worker) || bound(c.receiver));
 }
 
 async function replyClarification(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
@@ -4997,6 +5019,13 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
   }
   if (request.status === "refused")
     return json({ error: `clarification was refused: ${request.refusedReason}` }, 409);
+  // A retry of an unresolved send is allowed for EXACTLY the pending text (same bound MAIN session
+  // — the event-binding check above already proved that). Different text is refused rather than
+  // sent: the pending text may already be in the pane, and a second, different answer would then
+  // be the second half of a contradiction nobody could see.
+  if (request.status === "send-uncertain" && request.answer?.text !== answer)
+    return json({ error: "clarification send is unresolved with different pending text — retry the identical text or leave it",
+      status: request.status }, 409);
 
   const worker = slotFrom(request.worker.slot);
   if (!worker?.cwd || worker.openedAt !== request.worker.openedAt
@@ -5013,10 +5042,27 @@ async function replyClarification(s: Slot, id: string, body: Record<string, unkn
     return json({ error: `worker reply delivery blocked by ${deliverable.gate}`,
       ...(deliverable.detail ? { detail: deliverable.detail } : {}) }, 409);
   const text = clarificationReplyMessage(request.id, request.question, answer);
+  // THE TRANSPORT MARKER, mirroring tickWatches' FACT 2: persisted BEFORE tmux is touched, so a
+  // process death anywhere below is visible after restart and is never blindly replayed. The
+  // worker's `awaiting` stays "main" throughout — only a CONFIRMED answered clears a wait.
+  if (request.status !== "send-uncertain") {
+    request.status = "send-uncertain";
+    request.answer = { text: answer, at: Date.now(),
+      by: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId } };
+    request.refusedReason = null;
+    request.closedAt = null;
+    await saveStateNow();
+  }
   try {
     await sendText(worker, text, true);
   } catch (e) {
-    return json({ error: `worker reply send failed: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` }, 409);
+    // tmux may have accepted some or all of the paste before reporting failure. Neither "failed"
+    // nor "answered" is an observed fact, so the pre-send marker is preserved exactly and the
+    // retry stays principal-driven: no tick re-sends this, ever.
+    audit("clarification_reply_send_uncertain", worker.id,
+      `${request.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    return json({ error: `worker reply send failed and stays send-uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
+      status: "send-uncertain" }, 409);
   }
   const at = Date.now();
   worker.history = [...worker.history, { text, ts: at }].slice(-MAX_HISTORY);
@@ -17039,9 +17085,12 @@ Bun.serve<WSData>({
       const s = slotFrom(body.slot);
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (typeof body.text !== "string" || body.text.length > 100_000) return json({ error: "bad text" }, 400);
-      // the owner has spoken to this pane, so whatever it was waiting for has arrived — the
-      // wait exists to hold AUTOMATION back, never the person it is waiting for
-      s.awaiting = null;
+      // The owner has spoken to this pane, so an OWNER wait has arrived — that wait exists to hold
+      // automation back, never the person it is waiting for. A "main" wait is a different debt: it
+      // waits for Program-MAIN's answer to an open clarification, and the owner typing into the pane
+      // is not that answer. Clearing it would re-open steward nudges past an unanswered
+      // clarification (the guard that refuses exactly that lives in handleStewardSend).
+      if (s.awaiting === "owner") s.awaiting = null;
       await sendText(s, body.text, body.submit !== false);
       const ts = Date.now();
       s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);

@@ -209,6 +209,24 @@ const server = read("server.ts");
     uncertain >= 0 && uncertainSaved > uncertain && send > uncertainSaved
     && prune.includes('c.status === "answered" || c.status === "refused"'),
     `uncertain=${uncertain} saved=${uncertainSaved} send=${send} prune=${prune.includes('c.status === "answered" || c.status === "refused"')}`);
+
+  // The owner-facing twin inherits the same crash boundary, so it inherits the same pin: the
+  // send-uncertain marker is assigned and AWAITED to disk textually before its sendText, and only
+  // answered|refused count as terminal for the prune. An answer that reached the pane while the row
+  // said "open" — or a prune that swallowed send-uncertain — would each be invisible in exactly the
+  // way this channel exists to prevent. Moving either assignment below sendText makes this red.
+  const answer = server.slice(server.indexOf("async function answerAttention("),
+    server.indexOf("async function refuseAttentionRequest("));
+  const aSend = answer.indexOf("await sendText(requester, text, true);");
+  const aUncertain = answer.indexOf('request.status = "send-uncertain";');
+  const aSaved = answer.indexOf("await saveStateNow();", aUncertain);
+  const aAnswered = answer.indexOf('request.status = "answered";');
+  const aPrune = server.slice(server.indexOf("function pruneAttention("),
+    server.indexOf("function boundProgramForMain("));
+  pin("attention answer persists send-uncertain before sendText and only answered|refused are terminal",
+    aUncertain >= 0 && aSaved > aUncertain && aSend > aSaved && aAnswered > aSend
+    && aPrune.includes('a.status === "answered" || a.status === "refused"'),
+    `uncertain=${aUncertain} saved=${aSaved} send=${aSend} answered=${aAnswered} prune=${aPrune.includes('a.status === "answered" || a.status === "refused"')}`);
 }
 const verifyCmd = /^VERIFY_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";
 const auditCmd = /^AUDIT_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";

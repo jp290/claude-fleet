@@ -23,6 +23,7 @@ import * as share from "./e2e/share";
 import * as lanesBasic from "./e2e/lanes-basic";
 import * as review from "./e2e/review";
 import * as watch from "./e2e/watch";
+import * as attention from "./e2e/attention";
 import * as lanesLifecycle from "./e2e/lanes-lifecycle";
 import * as merge from "./e2e/merge";
 import * as laneRisk from "./e2e/lane-risk";
@@ -87,6 +88,9 @@ if (REPO) {
   await review.run(ctx);
   // the outbound side of the same predicate — right after the section that establishes it
   await watch.run();
+  // the owner-facing twin of the clarification edge watch.run() establishes: MAIN→owner attention.
+  // Next to it because it plants the same kind of Program/MAIN binding fixture and tears it down.
+  await attention.run();
   await lanesLifecycle.run(lc);
   await merge.run(lc);
   await laneRisk.run();

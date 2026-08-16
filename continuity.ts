@@ -14,10 +14,17 @@
 // hole, a predecessor that fell out of scope) has an UNKNOWN wait, and unknown ≠ instant. Folding
 // those in as 0 would make the fleet look maximally continuous exactly where the record is thinnest.
 
-export type ContinuitySource = "owner" | "share" | "auto" | "terminal" | "steward";
+export type ContinuitySource = "owner" | "share" | "auto" | "terminal" | "steward" | "supervisor";
 // logPrompt's own union — the sources a LIVE record can carry. Anything else in the file (notably
 // `backfill`) is a different regime, not a resolution, and never anchors a gap either.
-export const CONTINUITY_SOURCES: readonly ContinuitySource[] = ["owner", "share", "auto", "terminal", "steward"];
+//
+// IT IS A COPY OF A UNION THAT LIVES IN ANOTHER FILE, and tsc cannot see them drift apart: the day
+// logPrompt grew a sixth source ("supervisor", the cross-program nudge) every one of its records
+// landed in `outOfScope.nonLiveSource` — silently NOT counted as the resolution it plainly is,
+// which is the one direction this file exists to refuse. A rule in e2e/pins.ts now holds the two
+// lists as the same SET; a seventh source belongs here in the same commit that mints it.
+export const CONTINUITY_SOURCES: readonly ContinuitySource[] =
+  ["owner", "share", "auto", "terminal", "steward", "supervisor"];
 
 // 2026-07-19, local midnight. The journal AND the terminal harvester both landed that day
 // (3f70922, ec1ad26), so ~1573 of the file's records are a retroactive reconstruction written by

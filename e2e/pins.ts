@@ -971,6 +971,49 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && svSuccessionBody.indexOf("await saveStateNow();", svBindAt) > svBindAt
       && /programId: null/.test(svSuccessionBody),
     `send=${svSendAt} bind=${svBindAt}`);
+  // THE PROMPT-JOURNAL SOURCE VOCABULARY IS ONE SET, WRITTEN IN TWO FILES. logPrompt's union is
+  // the writer, continuity.ts's ContinuitySource/CONTINUITY_SOURCES is a reader that re-declares
+  // it — and tsc sees no error when they drift, because two independent literal unions are both
+  // internally valid. Measured on the day "supervisor" was added: every nudge record fell into
+  // `outOfScope.nonLiveSource`, i.e. a real resolution counted as no resolution, which is exactly
+  // the direction that file exists to refuse. Compared as SETS, so the declaration order of either
+  // list stays free.
+  const continuity = read("continuity.ts");
+  const promptSources = (server.match(/function logPrompt\(s: Slot, text: string, source: ([^,]+), ts: number/)?.[1] ?? "")
+    .split("|").map((w) => w.trim().replaceAll('"', "")).filter(Boolean).sort();
+  const contTypeSources = (continuity.match(/export type ContinuitySource = ([^;]+);/)?.[1] ?? "")
+    .split("|").map((w) => w.trim().replaceAll('"', "")).filter(Boolean).sort();
+  const contListSources = (continuity.match(/CONTINUITY_SOURCES: readonly ContinuitySource\[\] =\s*\[([^\]]+)\]/)?.[1] ?? "")
+    .split(",").map((w) => w.trim().replaceAll('"', "")).filter(Boolean).sort();
+  pin("logPrompt's source union and continuity's live-source set are the SAME set — a new source is never silently out-of-scope",
+    promptSources.length >= 6 && JSON.stringify(promptSources) === JSON.stringify(contTypeSources)
+      && JSON.stringify(promptSources) === JSON.stringify(contListSources),
+    `logPrompt=${promptSources.join(",")} type=${contTypeSources.join(",")} list=${contListSources.join(",")}`);
+
+  // Cut 2's two rules over the SOURCE, for the same reason as the two above: neither regression is
+  // visible at runtime. A nudge that read a slot off the body would answer happily on every request
+  // whose body happens not to carry one, and a view that mutated would only be wrong on the state
+  // it silently changed.
+  const svNudgeAt = server.indexOf("async function supervisorNudge(");
+  const svNudgeBody = svNudgeAt < 0 ? ""
+    : server.slice(svNudgeAt, server.indexOf("\n}\n", svNudgeAt));
+  pin("the Supervisor nudge DERIVES its receiver from the named program's binding — it never reads a slot off the body",
+    svNudgeBody.length > 0
+      && /programs\.find\(\(p\) => p\.id === body\.programId\)/.test(svNudgeBody)
+      && /slotFrom\(main\.slot\)/.test(svNudgeBody)
+      && !/body\.(?:slot|receiver|target|receiverSlot)\b/.test(svNudgeBody)
+      && !/slotFrom\(body/.test(svNudgeBody),
+    svNudgeBody.length > 0 ? "receiver derivation" : "supervisorNudge handler missing");
+  const svViewAt = server.indexOf("async function supervisorView(");
+  const svViewBody = svViewAt < 0 ? "" : server.slice(svViewAt, server.indexOf("\n}\n", svViewAt));
+  const svViewRouteAt = server.indexOf('url.pathname === "/api/self/supervisor-view"');
+  const svViewRouteBody = svViewRouteAt < 0 ? "" : server.slice(svViewRouteAt, svViewRouteAt + 600);
+  pin("SupervisorExecutionView is registered on the self rail and holds no mutation primitive in its handler",
+    svViewBody.length > 0 && svViewRouteAt > 0
+      && /x-fleet-self-token/.test(svViewRouteBody)
+      && /isBoundSupervisor\(s\)/.test(svViewRouteBody)
+      && !/\b(?:saveState|saveStateNow|appendEvent|audit|sendText|spawnCmd|logPrompt)\s*\(/.test(svViewBody),
+    svViewBody.length > 0 ? "mutation primitive present" : "supervisorView handler missing");
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",

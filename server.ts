@@ -7,7 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { buildMergePrompt, buildRepairPrompt, buildCleanReviewPrompt, buildAuthorPrompt, type MergeGraphs } from "./merge-prompt";
 import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessage,
   mergeWatchMessage, auditWatchMessage, deployWatchMessage, laneWatchEventKind, laneWatchPayload,
-  clarificationWatchMessage, clarificationReplyMessage,
+  clarificationWatchMessage, clarificationReplyMessage, attentionAnswerMessage,
   type LaneWatchEventKind, type LaneWatchEventPayload, type MergeWatchEventPayload,
   type AuditWatchEventPayload, type DeployWatchEventPayload, type ClarificationEventPayload,
   type ClarificationBasis,
@@ -1274,6 +1274,28 @@ interface ClarificationRequest {
   closedAt: number | null;
 }
 
+// THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
+// bound Program-MAIN, here the bound Program-MAIN asks the OWNER. The owner is a PRINCIPAL, not a
+// slot — there is no occupant triple to bind an answer to and none is invented, which is why
+// `answer.by` is the literal "owner" rather than the receiver occupant a clarification carries.
+// Everything else is deliberately the same shape, including `send-uncertain`: the answer travels
+// into the requester's pane over the same transport, so it inherits the same crash boundary.
+type AttentionKind = "decision" | "blocked" | "review-ready";
+type AttentionStatus = "open" | "send-uncertain" | "answered" | "refused";
+interface AttentionRequest {
+  id: string;
+  raisedAt: number;
+  kind: AttentionKind;
+  text: string;
+  requester: { slot: number; openedAt: number; sessionId: string | null };
+  programId: string;
+  status: AttentionStatus;
+  answer: { text: string; at: number; by: "owner" } | null;
+  refusedReason: string | null;
+  closedAt: number | null;
+}
+const ATTENTION_KINDS: AttentionKind[] = ["decision", "blocked", "review-ready"];
+
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
@@ -1429,6 +1451,39 @@ function clarificationFrom(raw: unknown): ClarificationRequest | null {
   } else if (answer !== null) return null;
   if (c.status === "refused" && (!(c.refusedReason ?? "").trim() || c.closedAt === null)) return null;
   return raw as ClarificationRequest;
+}
+
+// Same discipline as clarificationFrom, same reason: requester identity and programId are
+// server-observed facts, so a row that does not carry them exactly is DISCARDED, never repaired.
+// The per-status invariants are the clarification ones with the owner-shaped answer substituted —
+// in particular send-uncertain carries the pending answer, is not closed and is not refused.
+function attentionFrom(raw: unknown): AttentionRequest | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const a = raw as Partial<AttentionRequest>;
+  const r = a.requester as Record<string, unknown> | undefined;
+  const answer = a.answer as AttentionRequest["answer"] | undefined;
+  if (typeof a.id !== "string" || !/^[0-9a-f]{24}$/.test(a.id)
+    || typeof a.raisedAt !== "number" || !Number.isFinite(a.raisedAt) || a.raisedAt <= 0
+    || !ATTENTION_KINDS.includes(a.kind as AttentionKind)
+    || typeof a.text !== "string" || !a.text.trim() || a.text.length > MAX_ATTENTION_TEXT
+    || !r || !Number.isInteger(r.slot) || Number(r.slot) <= 0
+    || typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || Number(r.openedAt) <= 0
+    || !(r.sessionId === null || typeof r.sessionId === "string")
+    || typeof a.programId !== "string" || !a.programId
+    || !["open", "send-uncertain", "answered", "refused"].includes(String(a.status))
+    || !(a.closedAt === null || (typeof a.closedAt === "number" && Number.isFinite(a.closedAt) && a.closedAt > 0))
+    || !(a.refusedReason === null || typeof a.refusedReason === "string")) return null;
+  const answerShaped = (): boolean => !!answer && typeof answer.text === "string" && !!answer.text.trim()
+    && answer.text.length <= MAX_ATTENTION_ANSWER && typeof answer.at === "number"
+    && Number.isFinite(answer.at) && answer.at > 0 && answer.by === "owner";
+  if (a.status === "open" && (answer !== null || a.refusedReason !== null || a.closedAt !== null)) return null;
+  if (a.status === "answered") {
+    if (!answerShaped() || a.refusedReason !== null || a.closedAt === null) return null;
+  } else if (a.status === "send-uncertain") {
+    if (!answerShaped() || a.refusedReason !== null || a.closedAt !== null) return null;
+  } else if (answer !== null) return null;
+  if (a.status === "refused" && (!(a.refusedReason ?? "").trim() || a.closedAt === null)) return null;
+  return raw as AttentionRequest;
 }
 
 // a queued feature request. Owner-created or submitted via the public /intake address
@@ -2002,6 +2057,7 @@ let autos: Auto[] = [];
 let watches: Watch[] = [];
 let fleetEvents: FleetEvent[] = [];
 let clarifications: ClarificationRequest[] = [];
+let attentionRequests: AttentionRequest[] = [];
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
 // fleet.json rather than rewriting the append-only audit ledger: that makes "nobody was available"
@@ -2229,6 +2285,14 @@ const FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT;
 const MAX_CLARIFICATION_QUESTION = 2000;
 const MAX_CLARIFICATION_ANSWER = 4000;
 const CLARIFICATION_KEEP_TERMINAL = 20;
+// Its own constants, copied from the clarification values rather than aliased: the two channels
+// answer to different principals and one may be retuned without silently retuning the other.
+const MAX_ATTENTION_TEXT = 2000;
+const MAX_ATTENTION_ANSWER = 4000;
+const ATTENTION_KEEP_TERMINAL = 20;
+// An unanswered pile is an attention FAILURE, not a queue: past this the MAIN must resolve what it
+// already raised instead of adding to a list nobody can act on.
+const ATTENTION_MAX_OPEN_PER_REQUESTER = 5;
 // THE TWO SCHEDULER TICKS, deployment parameters like ANALYSIS_TICK_MS / AUTO_REVIEW_MS rather
 // than laws. They were literals at the setInterval calls, and that made them the floor under every
 // suite that has to prove a NON-event: "the dispatcher does not take a pending task", "no auto
@@ -2537,6 +2601,11 @@ type AuditEvent =
   | "fleet_event_receiver_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
+  // the owner-facing twin: a bound Program-MAIN raised something, and what the owner did about it.
+  // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
+  // channel exists to make impossible.
+  | "attention_open" | "attention_answered" | "attention_refused" | "attention_prune"
+  | "attention_answer_send_uncertain"
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
@@ -2659,7 +2728,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
-    events: fleetEvents, clarifications, tasks, programs,
+    events: fleetEvents, clarifications, attentionRequests, tasks, programs,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -5117,6 +5186,7 @@ function dropWatchesFor(slotId: number): void {
   // every still-open delivery into an explicit terminal fact; it is never deleted with the Watch.
   markFleetEventReceiverGone(slotId);
   reconcileClarifications(slotId);
+  reconcileAttention(slotId);
   watches = watches.filter((w) => w.slot !== slotId);
   for (const w of watches) {
     if (!("target" in w) || w.target !== slotId || !w.armed) continue;
@@ -5126,6 +5196,208 @@ function dropWatchesFor(slotId: number): void {
       : "target session ended — no notification will come";
     audit("watch_skip", w.slot, w.lastResult);
   }
+}
+
+// === ATTENTION-CHANNEL-V1 =======================================================================
+// The edge above carries a worker's question to its Program-MAIN. This one carries what only the
+// OWNER can settle — a decision, a block, something ready for review — from the bound Program-MAIN
+// outward, and carries exactly one bound answer back. It is deliberately NOT a chat and NOT a
+// second queue: a durable row array plus the poll that already exists, with the same crash boundary
+// the clarification reply proved, because the answer travels the same way (into a pane).
+//
+// The asymmetry that shapes every function below: the owner is a PRINCIPAL, not an occupant. There
+// is no owner slot to bind to, so nothing here tries to invent one — `answer.by` is the literal
+// "owner", and the only occupant this channel binds exactly is the REQUESTER.
+
+// Terminal is answered|refused ONLY, for exactly the reason it is in pruneClarifications: a
+// send-uncertain row carries the one record that this text may already be in the requester's pane.
+function pruneAttention(): void {
+  const terminal = attentionRequests.filter((a) => a.status === "answered" || a.status === "refused")
+    .sort((a, b) => (a.closedAt ?? a.raisedAt) - (b.closedAt ?? b.raisedAt));
+  if (terminal.length <= ATTENTION_KEEP_TERMINAL) return;
+  const drop = new Set(terminal.slice(0, terminal.length - ATTENTION_KEEP_TERMINAL).map((a) => a.id));
+  for (const id of drop) audit("attention_prune", undefined, id);
+  attentionRequests = attentionRequests.filter((a) => !drop.has(a.id));
+}
+
+// The one authority bracket, and it is the SAME occupant rule programExecutionView projects by,
+// tightened with sessionId: raising something for the owner is an act of the bound session, so a
+// numeric successor in the same slot must not inherit it. programId is derived HERE and nowhere
+// else — no body field can nominate the program a request is filed against.
+function boundProgramForMain(s: Slot): Program | null {
+  return programs.find((p) => p.status === "active" && p.main
+    && p.main.slot === s.id && p.main.openedAt === s.openedAt
+    && p.main.sessionId === s.sessionId) ?? null;
+}
+
+const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
+  a.requester.slot === s.id && a.requester.openedAt === s.openedAt
+  && a.requester.sessionId === s.sessionId;
+
+async function openAttention(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!body || typeof body.kind !== "string" || !ATTENTION_KINDS.includes(body.kind as AttentionKind))
+    return json({ error: `kind must be one of: ${ATTENTION_KINDS.join(", ")}` }, 400);
+  if (typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  const text = body.text.trim();
+  if (!text) return json({ error: "text must not be empty" }, 400);
+  if (text.length > MAX_ATTENTION_TEXT)
+    return json({ error: `text must be at most ${MAX_ATTENTION_TEXT} chars` }, 400);
+  const program = boundProgramForMain(s);
+  if (!program)
+    return json({ error: "not the current bound MAIN of an active program — attention is raised by a program's own main session" }, 409);
+  const kind = body.kind as AttentionKind;
+
+  // Idempotence is per (binding, kind, TEXT): a MAIN may legitimately hold two open decisions, and
+  // collapsing them by kind alone would silently drop the second question. Retrying the same
+  // sentence must not mint a twin, which is the case a nervous retry actually produces.
+  const open = attentionRequests.filter((a) => (a.status === "open" || a.status === "send-uncertain")
+    && attentionBound(a, s));
+  const existing = open.find((a) => a.kind === kind && a.text === text);
+  if (existing) return json({ ok: true, existing: true, request: existing });
+  if (open.length >= ATTENTION_MAX_OPEN_PER_REQUESTER)
+    return json({ error: `max ${ATTENTION_MAX_OPEN_PER_REQUESTER} open attention requests per session — an unanswered pile is an attention failure, not a queue` }, 409);
+
+  const request: AttentionRequest = {
+    id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind, text,
+    requester: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
+    programId: program.id,
+    status: "open", answer: null, refusedReason: null, closedAt: null,
+  };
+  attentionRequests = [...attentionRequests, request];
+  audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id}`);
+  await saveStateNow();
+  return json({ ok: true, existing: false, request });
+}
+
+// Role-scoped exactly like clarificationsFor: the caller sees the rows it is bound to as requester,
+// and worktree-ness appears nowhere in the predicate.
+function attentionFor(s: Slot): AttentionRequest[] {
+  return attentionRequests.filter((a) => attentionBound(a, s));
+}
+
+function refuseAttention(a: AttentionRequest, reason: string, at = Date.now()): void {
+  if (a.status === "answered" || a.status === "refused") return;
+  a.status = "refused";
+  a.answer = null;
+  a.refusedReason = reason;
+  a.closedAt = at;
+  audit("attention_refused", a.requester.slot, `${a.id} ${reason}`);
+}
+
+// THE FAIL-SAFE THE PROGRAM DEMANDS. A row must never reroute to a recycled slot: once the
+// requester occupant is gone or replaced, the answer has nobody it was written for, and the
+// successor MAIN re-raises from its own grounding instead of inheriting a question it never asked.
+function reconcileAttention(teardownSlotId?: number): boolean {
+  let dirty = false;
+  for (const a of attentionRequests) {
+    if (a.status === "answered" || a.status === "refused") continue;
+    const requester = slotFrom(a.requester.slot);
+    const gone = teardownSlotId === a.requester.slot || !requester?.cwd
+      || requester.openedAt !== a.requester.openedAt || requester.sessionId !== a.requester.sessionId;
+    if (!gone) continue;
+    refuseAttention(a, "requester session ended");
+    dirty = true;
+  }
+  if (dirty) pruneAttention();
+  return dirty;
+}
+
+// Open first, then newest raised first. The program TITLE is joined at read time from programId —
+// denormalizing it would freeze a title the owner may since have corrected, and the join failing is
+// itself worth seeing, so a missing program renders as an explicit null rather than a guess.
+function attentionOwnerView(): (AttentionRequest & { programTitle: string | null })[] {
+  const rank = (a: AttentionRequest): number =>
+    a.status === "open" || a.status === "send-uncertain" ? 0 : 1;
+  return [...attentionRequests]
+    .sort((x, y) => rank(x) - rank(y) || y.raisedAt - x.raisedAt)
+    .map((a) => ({ ...a, programTitle: programs.find((p) => p.id === a.programId)?.title ?? null }));
+}
+
+async function answerAttention(id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const request = attentionRequests.find((a) => a.id === id);
+  if (!request) return json({ error: "unknown attention request" }, 404);
+  if (!body || typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  const answer = body.text.trim();
+  if (!answer) return json({ error: "text must not be empty" }, 400);
+  if (answer.length > MAX_ATTENTION_ANSWER)
+    return json({ error: `text must be at most ${MAX_ATTENTION_ANSWER} chars` }, 400);
+  if (request.status === "answered") {
+    if (request.answer?.text === answer) return json({ ok: true, existing: true, request });
+    return json({ error: "attention request was already answered with different text" }, 409);
+  }
+  if (request.status === "refused")
+    return json({ error: `attention request was refused: ${request.refusedReason}` }, 409);
+  // Identical text may be re-attempted, different text may not: the pending text may already sit in
+  // the requester's pane, so a second, different answer would be half of a contradiction nobody
+  // could observe. Exactly the clarification retry contract, for exactly the same reason.
+  if (request.status === "send-uncertain" && request.answer?.text !== answer)
+    return json({ error: "attention answer send is unresolved with different pending text — retry the identical text or leave it",
+      status: request.status }, 409);
+
+  const requester = slotFrom(request.requester.slot);
+  if (!requester?.cwd || requester.openedAt !== request.requester.openedAt
+    || requester.sessionId !== request.requester.sessionId) {
+    refuseAttention(request, "requester session ended");
+    pruneAttention();
+    await saveStateNow();
+    return json({ error: "requester occupant ended or was replaced; attention request refused" }, 409);
+  }
+  // The owner asked for this delivery by hand. That waives only the unattended harness policy —
+  // kill-switch, fresh liveness, blocked-screen and quiet hours remain in the shared choke-point.
+  const deliverable = await canDeliver(requester, { now: Date.now(), harness: false, idleMs: 0 });
+  if (!deliverable.ok)
+    return json({ error: `attention answer delivery blocked by ${deliverable.gate}`,
+      ...(deliverable.detail ? { detail: deliverable.detail } : {}) }, 409);
+  const text = attentionAnswerMessage(request.id, request.kind, request.text, answer);
+  // THE TRANSPORT MARKER, the same order and for the same reason as the clarification reply:
+  // persisted (awaited) BEFORE tmux is touched, so a process death anywhere below is visible after
+  // restart instead of vanishing, and no tick ever replays it.
+  if (request.status !== "send-uncertain") {
+    request.status = "send-uncertain";
+    request.answer = { text: answer, at: Date.now(), by: "owner" };
+    request.refusedReason = null;
+    request.closedAt = null;
+    await saveStateNow();
+  }
+  try {
+    await sendText(requester, text, true);
+  } catch (e) {
+    audit("attention_answer_send_uncertain", requester.id,
+      `${request.id} ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    return json({ error: `attention answer send failed and stays send-uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
+      status: "send-uncertain" }, 409);
+  }
+  const at = Date.now();
+  requester.history = [...requester.history, { text, ts: at }].slice(-MAX_HISTORY);
+  saveHistory(requester);
+  logPrompt(requester, text, "auto", at);
+  request.status = "answered";
+  request.answer = { text: answer, at, by: "owner" };
+  request.refusedReason = null;
+  request.closedAt = at;
+  audit("attention_answered", requester.id, `${request.id} kind=${request.kind}`);
+  pruneAttention();
+  await saveStateNow();
+  return json({ ok: true, existing: false, request });
+}
+
+// Dismissal WITH a reason. The reason is mandatory because the whole point of this row is that the
+// owner's silence is indistinguishable from not having seen it: a refusal is the receipt that says
+// seen-and-declined, and a receipt without a reason would be the silence again, one field deeper.
+async function refuseAttentionRequest(id: string, body: Record<string, unknown> | null): Promise<Response> {
+  const request = attentionRequests.find((a) => a.id === id);
+  if (!request) return json({ error: "unknown attention request" }, 404);
+  if (!body || typeof body.reason !== "string") return json({ error: "reason must be a string" }, 400);
+  const reason = body.reason.trim();
+  if (!reason) return json({ error: "reason must not be empty" }, 400);
+  if (reason.length > MAX_ATTENTION_ANSWER)
+    return json({ error: `reason must be at most ${MAX_ATTENTION_ANSWER} chars` }, 400);
+  if (request.status === "answered" || request.status === "refused")
+    return json({ error: `attention request is already ${request.status}`, status: request.status }, 409);
+  refuseAttention(request, reason.slice(0, MAX_ATTENTION_ANSWER));
+  pruneAttention();
+  await saveStateNow();
+  return json({ ok: true, request });
 }
 
 function advanceAuto(a: Auto, now: number): void {
@@ -12130,6 +12402,11 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { clarifications?: unknown }).clarifications))
       clarifications = ((persisted as { clarifications: unknown[] }).clarifications)
         .map(clarificationFrom).filter((c): c is ClarificationRequest => c !== null);
+    // Same rule for the owner-facing twin: legacy state has no member and loads as [], and a row
+    // whose requester binding or programId is malformed is dropped rather than reconstructed.
+    if (Array.isArray((persisted as { attentionRequests?: unknown }).attentionRequests))
+      attentionRequests = ((persisted as { attentionRequests: unknown[] }).attentionRequests)
+        .map(attentionFrom).filter((a): a is AttentionRequest => a !== null);
     const pap = (persisted as { auditPings?: unknown }).auditPings;
     if (pap && typeof pap === "object" && !Array.isArray(pap))
       for (const [key, raw] of Object.entries(pap as Record<string, unknown>)) {
@@ -12581,6 +12858,10 @@ for (const id of new Set(fleetEvents.map((e) => e.receiverSlot))) pruneFleetEven
 // recyclable; boot therefore applies the same central refusal rule as open/kill teardown.
 reconcileClarifications();
 pruneClarifications();
+// Same rule, same reason, for the owner-facing twin: a row whose requester occupant did not come
+// back is refused at boot rather than left pointing at a slot number someone else may now hold.
+reconcileAttention();
+pruneAttention();
 // a task dispatched just before shutdown is persisted as `sent` pointing at a slot; if that
 // slot didn't come back as a live lane (worktree removed out-of-band, pane gone), requeue it
 // instead of leaving it "sent" forever with nothing running
@@ -14760,6 +15041,21 @@ Bun.serve<WSData>({
       return replyClarification(s, selfClarificationReply[1], await readJson(req));
     }
 
+    // Program-MAIN→OWNER attention, the mirror of the clarification route above: POST is NON-lane
+    // only (a lane asks its MAIN via clarification and never the owner directly, which is the same
+    // "one edge per role" rule /api/self/watch states in the other direction), and the programId is
+    // derived from the caller's own MAIN binding, never taken from the body. GET is role-scoped to
+    // the exact requester occupant — no worktree predicate anywhere in it.
+    if (url.pathname === "/api/self/attention" && (req.method === "GET" || req.method === "POST")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (req.method === "GET") return json({ requests: attentionFor(s) });
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not raise attention — a lane asks its MAIN via clarification" }, 409);
+      return openAttention(s, await readJson(req));
+    }
+
     const selfEventAck = /^\/api\/self\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
     if (selfEventAck && req.method === "POST") {
       const given = req.headers.get("x-fleet-self-token") ?? "";
@@ -15139,6 +15435,18 @@ Bun.serve<WSData>({
         // owner sees every receiver binding and terminal/uncertain state here, including events
         // whose receiver has gone and that therefore cannot appear in any current /api/self row.
         events: fleetEvents,
+        // ONE NUMBER, on purpose. This is the app's most expensive path, so the attention inbox
+        // rides it as the count of rows that still want the owner (open + send-uncertain) and
+        // nothing else; the row bodies are behind GET /api/attention, fetched when the panel opens
+        // and re-fetched when this count moves while it is open.
+        //
+        // OMITTED AT ZERO, like the per-slot harness/effort fields above and for the same reason:
+        // nothing waiting is the overwhelmingly common case, and this payload is measured against a
+        // 12 KiB budget (e2e/tasks.ts, docs/data-saver.md §1) that an unconditional field crossed by
+        // four bytes. The client reads absent as zero, so absent and 0 mean the same thing here.
+        ...(attentionRequests.some((a) => a.status === "open" || a.status === "send-uncertain")
+          ? { attentionOpen: attentionRequests.filter((a) => a.status === "open" || a.status === "send-uncertain").length }
+          : {}),
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
         tasks: tasks.map(taskDigest),
         // Program bodies are owner-decision documents and never ride the 2 s poll. This digest is
@@ -16467,6 +16775,19 @@ Bun.serve<WSData>({
       saveState();
       return json({ ok: true, pins });
     }
+    // --- the attention inbox (owner side). The full rows live here rather than on /api/sessions,
+    // which carries only the open COUNT: that poll runs every 2s and was deliberately shrunk, and a
+    // row body per poll would undo exactly that (docs/data-saver.md). Answering is a delivery into
+    // the requester's pane, so it inherits the send-uncertain crash boundary; refusing is the
+    // receipt that the owner saw it and declined, which is why its reason is mandatory.
+    if (url.pathname === "/api/attention" && req.method === "GET")
+      return json({ requests: attentionOwnerView() });
+    const attentionAnswer = /^\/api\/attention\/([0-9a-f]{24})\/answer$/.exec(url.pathname);
+    if (attentionAnswer && req.method === "POST")
+      return answerAttention(attentionAnswer[1], await readJson(req));
+    const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);
+    if (attentionRefuse && req.method === "POST")
+      return refuseAttentionRequest(attentionRefuse[1], await readJson(req));
     // --- task queue (owner side). Tasks arrive here (owner-created) or via /intake
     // (pending). Only the owner moves a task to `queued`; only then can the dispatcher run it.
     if (url.pathname === "/api/tasks" && req.method === "POST") {

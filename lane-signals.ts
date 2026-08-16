@@ -285,6 +285,18 @@ export function clarificationReplyMessage(requestId: string, question: string, a
   return `[fleet] CLARIFICATION ANSWER [request ${requestId}] to question: ${oneLine(question)}\n${answer}`;
 }
 
+// The owner-facing twin of the message above, and it names the request id for the same reason: the
+// receipt must be EXACT. A MAIN may hold several open attention requests, and an answer that only
+// said "the owner replied" would be unattributable to the thing it answers.
+export function attentionAnswerMessage(
+  requestId: string,
+  kind: string,
+  raised: string,
+  answer: string,
+): string {
+  return `[fleet] OWNER ANSWER [attention ${requestId}] to your ${kind}: ${oneLine(raised)}\n${answer}`;
+}
+
 // --- the second tier, ADDITIVE: when did this lane go quiet with every non-clock clause already
 // holding? `doneLooking` answers "quiet long enough to act on" and is what auto-③ fires on; this
 // answers "the facts are in, only the clock is still running — since when". A poller reading a

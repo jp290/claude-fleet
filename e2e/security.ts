@@ -83,6 +83,13 @@ const PRE_AUTH_ROUTES = [
   // the security boundary; POST collection is lane-only, reply is non-lane-only, GET is dual-scoped.
   '= /api/self/clarifications',
   String.raw`~ /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/`,
+  // The owner-facing twin of the line above, and it is the QUIETEST entry on this list: it writes
+  // nothing into any pane and reaches no foreign slot. POST is non-lane-only AND requires the
+  // caller to be the current bound MAIN of an active program (programId is derived from that
+  // binding, never read from the body); GET returns only rows carrying the caller's exact occupant
+  // triple. The answer side — the half that does type into a pane — is owner-gated and lives on
+  // /api/attention, deliberately not here.
+  '= /api/self/attention',
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
   '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting

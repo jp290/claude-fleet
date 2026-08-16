@@ -4799,6 +4799,7 @@ async function refresh() {
       analysis?: { on?: boolean };
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
       gate?: GateInfo | null; errors?: ErrorsInfo | null;
+      attentionOpen?: number;
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -4828,6 +4829,9 @@ async function refresh() {
     // own repaint owns. The elapsed clock does not wait on this poll — it ticks off the client.
     postLandLive = data.postLandAuditLive ?? null;
     errorsInfo = data.errors ?? null;
+    // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while
+    // the panel is open a CHANGE in it is what re-fetches the rows — the panel never polls itself.
+    setAttentionOpen(data.attentionOpen ?? 0);
     deployGapInfo = data.deployGap ?? null;
     bundleStaleInfo = data.bundleStale ?? null;
     serverNow = data.now;
@@ -8005,6 +8009,171 @@ $("autobtn").onclick = () => {
   renderAutoDlg();
   autodlg.style.display = "flex";
 };
+
+// --- the attention inbox (📣): what a bound Program-MAIN raised for the OWNER — a decision, a
+// block, something ready for review — and the one bound answer back. It lives OUTSIDE the compose
+// box on purpose: an item that only ever appeared as pane text in one session is an item the owner
+// can miss entirely, which is the failure this channel exists to remove.
+//
+// Its cost on the 2s poll is one number (attentionOpen). The rows come from GET /api/attention when
+// this panel opens, and again when that number MOVES while it is open — never on a timer of its own.
+// The interfaces below are LOCAL and describe exactly what the server emits; nothing here is cast
+// onto the /api/sessions payload, which carries the count and nothing else.
+interface AttentionRow {
+  id: string; raisedAt: number; kind: "decision" | "blocked" | "review-ready"; text: string;
+  requester: { slot: number; openedAt: number; sessionId: string | null };
+  programId: string; programTitle: string | null;
+  status: "open" | "send-uncertain" | "answered" | "refused";
+  answer: { text: string; at: number; by: "owner" } | null;
+  refusedReason: string | null; closedAt: number | null;
+}
+const attndlg = $("attndlg"), attnpanel = $("attnpanel"), attnbtn = $("attnbtn");
+let attentionOpen = 0;
+let attnRows: AttentionRow[] = [];
+let attnErr: string | null = null;
+let attnBusy = false;
+// typed-but-unsent answers survive a repaint: the rows are rebuilt whenever the count moves, and
+// losing a half-written answer to an unrelated arrival would be its own reason not to use this.
+const attnDraft = new Map<string, string>();
+
+function renderAttnBtn() {
+  attnbtn.textContent = attentionOpen > 0 ? `📣${attentionOpen}` : "📣";
+  attnbtn.classList.toggle("hot", attentionOpen > 0);
+  // the affordance appears only when something is actually waiting — an always-present empty inbox
+  // trains the eye to ignore it, and there is nothing to open when the count is zero
+  attnbtn.style.display = attentionOpen > 0 || attndlg.style.display === "flex" ? "" : "none";
+}
+
+function setAttentionOpen(n: number) {
+  const moved = n !== attentionOpen;
+  attentionOpen = n;
+  renderAttnBtn();
+  if (moved && attndlg.style.display === "flex") void loadAttention();
+}
+
+async function loadAttention() {
+  const res = await api("/api/attention");
+  if (!res.ok) { attnErr = `could not load the inbox (${res.status})`; renderAttnDlg(); return; }
+  const data = (await res.json()) as { requests?: AttentionRow[] };
+  attnRows = data.requests ?? [];
+  attnErr = null;
+  renderAttnDlg();
+}
+
+function closeAttnDlg() {
+  attndlg.style.display = "none";
+  renderAttnBtn();
+}
+attndlg.addEventListener("click", (e) => {
+  if (e.target === attndlg) closeAttnDlg();
+});
+
+const ATTN_KIND_TITLE: Record<AttentionRow["kind"], string> = {
+  decision: "a decision only the owner can make",
+  blocked: "the program is blocked until the owner acts",
+  "review-ready": "something is ready for the owner to review",
+};
+
+function attnOpenRow(a: AttentionRow): HTMLElement {
+  const row = el("div", `attnrow ${a.status === "send-uncertain" ? "uncertain" : "open"}`);
+  const head = el("div", "attnhead");
+  const chip = el("span", `attnkind k-${a.kind}`, a.kind);
+  chip.title = ATTN_KIND_TITLE[a.kind];
+  head.appendChild(chip);
+  head.appendChild(el("span", "attnprog", a.programTitle ?? `program ${a.programId} (title not resolvable)`));
+  head.appendChild(el("span", "attnmeta", `slot ${a.requester.slot} · ${fmtSince(a.raisedAt)}`));
+  row.appendChild(head);
+  row.appendChild(el("div", "attntext", a.text));
+  if (a.status === "send-uncertain")
+    row.appendChild(el("div", "attnwarn",
+      "answer send unresolved — it may already be in the session's pane. Retry sends the identical text; a different answer is refused."));
+  const ta = document.createElement("textarea");
+  ta.className = "attnta";
+  ta.rows = 3;
+  // an unresolved send has exactly one legal answer: the pending text, byte for byte
+  ta.value = a.status === "send-uncertain" ? (a.answer?.text ?? "") : (attnDraft.get(a.id) ?? "");
+  ta.readOnly = a.status === "send-uncertain";
+  ta.placeholder = "Your answer — it is delivered into that session's pane.";
+  ta.addEventListener("input", () => attnDraft.set(a.id, ta.value));
+  row.appendChild(ta);
+  const btns = el("div", "shrbtns");
+  const answer = el("button", "shrbtn primary",
+    a.status === "send-uncertain" ? "retry send" : "answer") as HTMLButtonElement;
+  answer.disabled = attnBusy;
+  answer.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) { toast("an answer needs text"); return; }
+    attnBusy = true;
+    const res = await post(`/api/attention/${a.id}/answer`, { text });
+    attnBusy = false;
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      toast(err.error ?? "the answer was not delivered");
+    } else attnDraft.delete(a.id);
+    await refresh();
+    await loadAttention();
+  };
+  const refuse = el("button", "shrbtn", "refuse") as HTMLButtonElement;
+  refuse.title = "dismiss without answering — the reason is the receipt that you saw it";
+  refuse.disabled = attnBusy;
+  refuse.onclick = async () => {
+    const reason = prompt("Why are you declining this? (recorded on the row)")?.trim();
+    if (!reason) return;
+    attnBusy = true;
+    const res = await post(`/api/attention/${a.id}/refuse`, { reason });
+    attnBusy = false;
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      toast(err.error ?? "the refusal did not stick");
+    }
+    await refresh();
+    await loadAttention();
+  };
+  btns.append(answer, refuse);
+  row.appendChild(btns);
+  return row;
+}
+
+function attnClosedRow(a: AttentionRow): HTMLElement {
+  const row = el("div", `attnrow done ${a.status}`);
+  const head = el("div", "attnhead");
+  head.appendChild(el("span", `attnkind k-${a.kind}`, a.kind));
+  head.appendChild(el("span", "attnprog", a.programTitle ?? `program ${a.programId}`));
+  head.appendChild(el("span", "attnmeta", `${a.status} · ${fmtSince(a.closedAt ?? a.raisedAt)}`));
+  row.appendChild(head);
+  const outcome = a.status === "answered" ? a.answer?.text ?? "" : a.refusedReason ?? "";
+  const line = el("div", "attnclosed", `${a.text} → ${outcome}`);
+  line.title = outcome;
+  row.appendChild(line);
+  return row;
+}
+
+function renderAttnDlg() {
+  attnpanel.replaceChildren();
+  attnpanel.appendChild(el("h2", "", "Attention — raised by a program's main session"));
+  if (attnErr) attnpanel.appendChild(el("div", "attnwarn", attnErr));
+  const live = attnRows.filter((a) => a.status === "open" || a.status === "send-uncertain");
+  const closed = attnRows.filter((a) => a.status === "answered" || a.status === "refused");
+  if (!live.length) attnpanel.appendChild(el("div", "shrhint", "Nothing is waiting on you."));
+  for (const a of live) attnpanel.appendChild(attnOpenRow(a));
+  if (closed.length) {
+    attnpanel.appendChild(el("div", "attnsep", "settled"));
+    for (const a of closed) attnpanel.appendChild(attnClosedRow(a));
+  }
+  const btns = el("div", "shrbtns");
+  const close = el("button", "shrbtn", "close") as HTMLButtonElement;
+  close.onclick = closeAttnDlg;
+  btns.appendChild(close);
+  attnpanel.appendChild(btns);
+}
+
+attnbtn.onclick = () => {
+  setDrawer(false);
+  attndlg.style.display = "flex";
+  renderAttnDlg();
+  void loadAttention();
+};
+renderAttnBtn();
 
 // --- prompt history: composed sends recorded server-side per slot; recalled via the
 // 🕘 popover or ArrowUp/ArrowDown cycling in an (empty) compose box ---

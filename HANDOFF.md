@@ -1,4 +1,13 @@
-# HANDOFF — Session 68 (2026-08-16, Fable-MAIN Program „Fleet Communication Truth": Cut 1 gelandet `8be79d3`, auditiert grün 2402/0, deployt `c904ccee`, Live-Canary voller Kreis) · 67/66/65 darunter
+# HANDOFF — Session 68 (2026-08-16, Fable-MAIN Program „Fleet Communication Truth": Cut 1 `8be79d3` UND Cut 2 `03019e1` gelandet, beide auditiert grün, deployt, Live-Kreis voller Beweis) · 67/66/65 darunter
+
+**NACHTRAG Cut 2 (gleiche Session):** AttentionRequest v1 gelandet `03019e1` (eine
+Claude-Opus-5-Lane, Task `57f29dcb`, ~49 min), Audit grün 2422/0 (896 s), Deploy `f87cd3c7`
+`hitTarget:true`. Live-Kreis selbst-referentiell geschlossen: dieser MAIN erhob eine
+review-ready-Zeile, Board zeigte 📣1, Antwort im UI getippt (Playwright), typisierte OWNER-ANSWER-
+Quittung kam in die eigene Pane, Zeile terminal answered/by:"owner". Details: Core-Doc WS23.
+Der nächste Programm-Schritt wäre der typed owner-send receipt am generischen /send (bewusst
+NICHT in Cut 2 gezogen) — vorher prüfen, ob der Owner nach zwei Cuts erst abnehmen will.
+
 
 **ctx beim Schreiben: unmessbar (Slot-`ctx: null` am Owner-Poll — `contextWindowFor` kennt das
 Fable-Modell nicht, dieselbe Lücke wie bei GPT-Slots, Queue-Zeile `e2784b16`); Session war kurz

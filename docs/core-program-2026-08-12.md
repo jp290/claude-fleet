@@ -957,3 +957,37 @@ Claude-Opus-5-Lane (Task `756cf668`, Dispatch-Knopf), Fable-MAIN entwarf, review
   wiederverwendet statt erfunden.
 - **Nächster Schnitt laut Programm:** Program-MAIN→Owner attention, typed owner-send receipt,
   Client-Inbox (Cut 2) — beginnt ausdrücklich erst jetzt.
+
+## Workstream 23 — Communication Cut 2: AttentionRequest v1 (gelandet `03019e1`, 2026-08-16)
+
+Zweiter Schnitt desselben Programms, gleiche Arbeitsteilung (eine Claude-Opus-5-Lane, Task
+`57f29dcb`; Fable-MAIN entwarf, reviewte, landete). Ein gebundener Program-MAIN erreicht den
+OWNER — durable, einmal, außerhalb des Composers.
+
+- **Modell:** `AttentionRequest` = ClarificationRequest mit getauschten Rollen; der Owner ist
+  PRINCIPAL, kein Slot (`answer.by: "owner"`, kein erfundenes Occupant-Tripel). Kinds
+  decision|blocked|review-ready. `programId` wird serverseitig aus der MAIN-Bindung abgeleitet
+  (`boundProgramForMain`, dieselbe Occupant-Regel wie ProgramExecutionView), nie aus dem Body.
+- **Routen:** `POST/GET /api/self/attention` (POST nicht-Lane; Dedupe je Binding+Kind+Text;
+  Open-Cap 5) · `GET /api/attention` (Owner, Programm-Titel zur Lesezeit gejoint) ·
+  `POST /api/attention/:id/answer` — exakt der Cut-1-Transport (send-uncertain + saveStateNow VOR
+  sendText, byte-identischer Retry, Terminal = answered|refused) · `POST /api/attention/:id/refuse`
+  (Grund PFLICHT: die Refusal ist die Quittung „gesehen und abgelehnt").
+- **Fail-safe:** `reconcileAttention` (Teardown+Boot) refused Zeilen mit verschwundenem/ersetztem
+  Requester — nichts routet je auf einen recycelten Slot; die Nachfolge-MAIN erhebt neu.
+- **Client-Inbox:** 📣-Badge nur bei offenen Zeilen; auf dem 2-s-Poll reitet EIN Feld
+  (`attentionOpen`, bei 0 ausgelassen — der 12-KiB-Wächter blieb hart, die Vorschau fing die
+  4-Byte-Überschreitung); Zeilen via `GET /api/attention` beim Öffnen/Zählerwechsel. Drafts
+  überleben Repaints; send-uncertain sperrt die Textarea auf den pending Text.
+- **Beweise:** Pin (Ordnung + Terminal-Menge, Spiegel des Cut-1-Pins), 19 Checks in neuem
+  `e2e/attention.ts` (+`e2e/security.ts`-Allowlist-Eintrag mit Begründung), Gate grün, Audit grün
+  2422/0 (896 s), Deploy `f87cd3c7` `hitTarget:true`. **Live-Kreis vollständig und
+  selbst-referentiell:** dieser Program-MAIN (Slot 2, gebunden an `628fd762`) erhob live eine
+  review-ready-Zeile über die eigene Route, der Owner-Poll trug `attentionOpen:1`, das Board
+  zeigte 📣1, die Antwort wurde IM BOARD-UI getippt (Playwright), und die typisierte
+  `OWNER ANSWER [attention 260e326e…]`-Quittung kam in die Requester-Pane — Zeile terminal
+  `answered/by:"owner"`, Badge zurück auf leer, Row collapsed. Der send-uncertain-Zweig ist wie
+  bei Cut 1 e2e-/audit-bewiesen, nicht live erzwungen.
+- **Offen laut Programm:** typed owner-send receipt am generischen `/send` (receiver
+  openedAt/sessionId/sendId) blieb außerhalb dieses Schnitts; Client-Inbox zeigt nur Attention,
+  keine Clarifications (bewusst nicht aufgeblasen).

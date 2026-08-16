@@ -748,6 +748,29 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   /from "\.\/context-plan";/.test(server) && /const plan = planContext\(planFacts\);/.test(server));
 
 {
+  // WHICH TREE A SEAM IS DELIVERING INTO IS DERIVED, NEVER DECLARED. A hard-coded `sourceTree`
+  // does not fail loudly: the packs resolve for the seam's author (who is inside Fleet) and the
+  // receipt asserts them against some other repository's head — the only failure mode in this
+  // subsystem where the LEDGER becomes untrue rather than the delivery merely poor. Dispatch
+  // carried exactly that literal until 2026-08-16, with its own admission comment above it.
+  //
+  // A RULE, NOT A SNAPSHOT, so it binds the next seam too: no assignment of `sourceTree` may open
+  // with a string, and every one of the two classifiers that may produce it must decide by
+  // comparing a git toplevel against FLEET_REPO_ROOT. The conditional form
+  // (`sourceTree: frame === … ? "fleet" : "foreign"`) is deliberately allowed — the literals there
+  // are the branches of a derivation, and banning the token everywhere would only push the same
+  // constant one alias further away.
+  const literal = [...server.matchAll(/sourceTree:\s*"/g)].length;
+  const classifiers = [...server.matchAll(/=== FLEET_REPO_ROOT\b/g)].length;
+  pin("no delivery seam declares its sourceTree — every planContext caller derives it from a repository-root comparison",
+    literal === 0 && classifiers === 2
+    && /async function dispatchSourceTree\(repo: string\): Promise<"fleet" \| "foreign"> \{\n  const repoRoot = await repoRootOf\(repo\);/.test(server)
+    && /const sourceTree = await dispatchSourceTree\(wt\.repo\);/.test(server)
+    && /const frame: ProgramMainFrame = FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT/.test(server),
+    `${literal} literal sourceTree assignment(s), ${classifiers} FLEET_REPO_ROOT comparison(s)`);
+}
+
+{
   const routeStart = server.indexOf('if (url.pathname === "/api/context-receipts"');
   const routeBody = routeStart < 0 ? "" : server.slice(routeStart, server.indexOf("\n    }", routeStart));
   pin("context-receipts.jsonl is one ledger constant shared by its append-only writer and owner reader route",

@@ -12,6 +12,11 @@ Journal `uncertain`). Damit sind ALLE benannten Korridor-Elemente des Communicat
 gelandet (WS22/23/24). Die Abnahme des successCriterion gehört dem Owner — eine review-ready-
 Attention-Zeile dafür ist erhoben und WARTET OFFEN in der 📣-Inbox. Nächste Session: erst diese
 Antwort lesen, bevor irgendein weiterer Communication-Schnitt beginnt.
+**ABGENOMMEN (gleiche Session, ueber den Kanal selbst):** der Owner antwortete auf `bc69970c`
+mit „successCriterion abgenommen — Programm complete setzen"; Programm `628fd762` steht
+`complete` (completedAt gesetzt). Der erste echte Einsatz des Kanals hat damit seinen vollen
+Kreis mit dem REALEN Owner geschlossen — Frage durable erhoben, Badge, Owner-Antwort als
+typisierte Quittung in die Pane, Programm-Statuswechsel als Folge.
 
 
 **ctx beim Schreiben: unmessbar (Slot-`ctx: null` am Owner-Poll — `contextWindowFor` kennt das

@@ -1021,3 +1021,37 @@ Send-Identität, und ein partieller Send war ein untypisierter 500 ohne Spur.
   Cut 1 (drei Clarification-Kanten, `8be79d3`), Cut 2 (AttentionRequest v1 + Inbox, `03019e1`),
   Cut 3 (typed owner-send receipt, `cafb39b`). Das Erfüllungs-Urteil über das successCriterion
   gehört dem Owner; die review-ready-Attention-Zeile dafür ist erhoben und wartet offen.
+
+## Workstream 25 — Supervisor Operations Inbox v1: Delivery als Subskriptions-Fakt (gelandet `3ed2074`, 2026-08-16)
+
+Schließt die live gemessene Last-Mile-Kollision (Event `10e8c1233666c6686d638f7f`, Receiver
+Slot 4): `tickWatches` FACT 2 tippte JEDES pending FleetEvent per `sendText` in die Receiver-Pane —
+bei einer owner-attended Konversation landete der Completion-Fakt im Composer des Owners. Eine
+Claude-Opus-5-Lane implementierte (Slot 6, `529b3b8` → rebased `3ed2074`); Fable-MAIN entwarf,
+reviewte, landete, deployte, bewies.
+
+- **Der Fix ist ein FAKT, keine Heuristik:** `Watch.delivery?: "pane"|"inbox"` (absent = Legacy-
+  Pane, nie backfilled), validiert am Loader UND an `createWatchForSlot` (unbekanntes Wort =
+  benannter 400, nie ein Default). Das Event erbt das Feld plus GENAU EIN neues Statuswort
+  `"inbox"`; `deliveredAt` bleibt auf solchen Rows für immer null.
+- **Split per Konstruktion, nicht per Guard:** alle vier Mint-Stellen spreaden `mintTransport(w)`;
+  FACT 2 selektiert weiterhin `status === "pending"` allein — eine Inbox-Row kann `sendText`,
+  History-Append und Promptjournal strukturell nie erreichen. Clarifications sind watch-los und
+  pane-only; `delivery:"inbox"` darauf wird am Loader abgewiesen.
+- **Ack-Split, weil Sichtbarkeit ≠ Konsum:** Self-Ack 409t eine Inbox-Row („belongs to the
+  owner"); der neue Owner-Twin `POST /api/events/:id/ack` 409t eine Pane-Row, 404t Unbekanntes,
+  409t receiver-gone, ist idempotent und schreibt das EIGENE Audit-Wort `fleet_event_owner_ack`.
+  Identität fällt weiter geschlossen: ein recycelter Receiver macht die Row terminal.
+- **Client:** 📥-Badge/Panel über den Events, die der 2-s-Poll ohnehin trägt (null Payload-Kosten),
+  strikt getrennt von 📣 — ein Operations-Fakt ist keine Entscheidungsanfrage.
+- **Beweise:** 12-Check-Inbox-Familie in `e2e/watch.ts` + zwei strukturelle Pins (FACT 2 selektiert
+  nur „pending"; Ack-Split hält in beide Richtungen). Gate grün; Audit ROT 2451/1 — der eine Fail
+  war der 12-KiB-Budget-Check (12476 B), Same-Tree-Rerun auf `3ed2074`: ALL PASS mit exakt den
+  12224 B der Lane → adjudiziert `flake` (Run-State-Varianz der retained Fixture-Rows; die ~64 B
+  Headroom sind eine BENANNTE Fragilität, Commit-Body). Deploy `5bc2cc68` `hitTarget:true`,
+  `bundleStale:false`. **Live BEIDE Modi auf dem deployten Server, dasselbe reale Deploy-Fakt:**
+  (1) Inbox-Modus an Slot 10 — Event `325866bd` mintete direkt zu `status:"inbox"`, saß 10 s Ticks
+  bei `attempts:0`/`deliveredAt:null`, Pane-Hash byte-identisch über den ganzen Zyklus, Owner-Ack
+  einmal echt + einmal `existing:true`; (2) Pane-Modus an Slot 1 (Legacy, `delivery` absent) —
+  typisierte Nachricht kam in die Pane, Self-Ack normal. Rückkanäle der Session selbst durchgehend
+  typisiert: merge-watch → audit-watch → deploy-watch, kein Hand-Polling.

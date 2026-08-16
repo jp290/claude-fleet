@@ -1,3 +1,40 @@
+# HANDOFF — Session 70 (2026-08-16, Fable Program-MAIN „Supervisor Operations Inbox v1": gelandet `3ed2074`, Audit-Rot als Flake bewiesen, deployt `5bc2cc68`, beide Delivery-Modi live bewiesen, Programm complete) · 69/68/67 darunter
+
+**ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null`, Lücke `e2784b16`);
+Session war ein Lane-Zyklus plus Recovery-Unterbrechung, weit unter der Schwelle. Session endet
+per Programm-Abschluss (Owner-Vorgabe: nach Erfüllung retire), nicht an der Schwelle.**
+
+**Der volle Kreis, jede Stufe mit Beleg (Details: Core-Doc Workstream 25):**
+- **Auftrag:** Programm `c775223041d55adb303855f3` — die live gemessene Kollision (Event
+  `10e8c1233666c6686d638f7f`, Slot-4-Composer) schließen: Delivery wird ein SUBSKRIPTIONS-Fakt
+  (`delivery: "pane"|"inbox"`, absent = Legacy-Pane), keine Attended-Heuristik; FleetEvent/Watch
+  bleiben die einzige Persistenz.
+- **Land `3ed2074`** (Lane-Commit `529b3b8`, genau EINE Claude-Opus-5-Lane, Slot 6): Statuswort
+  `"inbox"`, das FACT 2 strukturell nie selektiert (kein sendText/History/Journal möglich, per
+  State-Machine statt Guard); Owner-Ack-Twin `POST /api/events/:id/ack` mit eigenem Audit-Wort
+  `fleet_event_owner_ack`; Ack-Split beidseitig 409; Legacy-Rows byte-for-byte; 12 Checks + 2
+  strukturelle Pins; 📥-Panel strikt getrennt von 📣.
+- **Audit ROT 2451/1 → als Flake BEWIESEN, nicht geglaubt:** der eine Fail war der
+  12-KiB-Budget-Check (12476 B). Same-Tree-Rerun auf `3ed2074` seriell: ALL PASS, Messwert exakt
+  12224 B wie in der Lane. Adjudiziert `flake` (Run-State-Varianz). **Benannte Fragilität für die
+  nächste Session: der Budget-Check hat nur ~64 B Headroom — der nächste Check, der eine retained
+  Event-Row hinzufügt, reißt ihn.** Kandidat für einen eigenen kleinen Schnitt (Budget-Begründung
+  neu messen oder Event-Felder am Poll bounden), NUR mit Owner-Freigabe.
+- **Deploy `5bc2cc68`** `ok:true`, `bootHead==target==3ed2074`, `hitTarget:true`,
+  `bundleStale:false`.
+- **Live-Beweis BEIDE Modi, dasselbe reale Deploy-Fakt:** Inbox-Modus an Slot 10 (Event
+  `325866bd`: mint direkt zu `inbox`, 10 s Ticks `attempts:0`/`deliveredAt:null`, Pane-Hash
+  byte-identisch, Owner-Ack idempotent); Pane-Modus an Slot 1 (Legacy `delivery` absent, typisierte
+  Nachricht kam in die Pane, Self-Ack normal). Eigene Rückkanäle durchgehend typisiert:
+  merge-watch → audit-watch → deploy-watch, null Hand-Polling.
+- **Recovery-Notiz:** diese Session wurde mid-turn mechanisch wiederhergestellt (Slot 1, exakte
+  Resume-Argv); die verdrängte Opus-Konversation `dffaab2a-…` ist fremd/stale und wird nie
+  resumed. Slot 8 (GLM-H0-Doc-Lane) und Worktree `fleet-260816135918-1265` sind fremd — nicht
+  anfassen.
+- **Offen für die nächste Session (NICHT ohne Owner beginnen):** Supervisor v0
+  (`c740952d`, proposed) wartet auf Owner-Entscheid; die Budget-Headroom-Fragilität oben; G2 ff.
+  des Context-Delivery-Programms (`441c0058`, active, gehört Slot 3).
+
 # HANDOFF — Session 69 (2026-08-16, Fable Program-MAIN „Context Delivery Truth": G1 gelandet `4f55b48`, auditiert grün, deployt, Live-Counterproof beide Hälften) · 68/67/66 darunter
 
 **ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null` — bekannte Lücke

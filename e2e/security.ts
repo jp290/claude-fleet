@@ -67,6 +67,15 @@ const PRE_AUTH_ROUTES = [
   // confirms, activates, completes, dispatches, or writes a task; those remain owner acts.
   '= /api/self/programs',
   '= /api/self/program-execution', // read-only and slot-bound; non-lanes only, with no mutation or foreign-slot reach
+  // The Supervisor's two Cut-2 channels, on this list for the same reason as their neighbours (the
+  // self principal IS the boundary) and narrower than any of them: both answer 409 to every session
+  // but the one the OWNER bound as Supervisor. The view is read-only and mutates nothing (pinned as
+  // a source rule). The nudge writes into a pane, and that is bounded structurally: the receiver is
+  // DERIVED from the named program's bound Program-MAIN and no body field can nominate a slot
+  // (pinned), it refuses a program that is not active, a stale/absent binding, an owner debt on the
+  // receiver, and a pane with no agent behind it.
+  '= /api/self/supervisor-view',
+  '= /api/self/nudge',
   '= /api/self/main-direct', // scoped non-lane provenance view; both git heads are server-read
   '= /api/self/main-direct/preflight',
   '= /api/self/main-direct/finalize',

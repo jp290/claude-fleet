@@ -5,7 +5,7 @@
 // worth anything.
 import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { BASE, H, ROOT, check, get, post, restartSrv, tmuxOut } from "./harness";
+import { BASE, H, REPO, ROOT, check, get, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface SupervisorBinding {
   slot: number;
@@ -39,7 +39,7 @@ const SUPERVISOR_LABEL = "🧿 Supervisor";
 const BRIEF_BODY = [
   "Your role: hold the cross-program portfolio together from typed facts, surface and ask, and NUDGE - every decision inside a program remains with its Program-MAIN or working circle, and every promotion remains with the owner.",
   "You structurally cannot confirm or activate programs, land, deploy, or write code; do not attempt any of these.",
-  "Your channels today: GET /api/self (your own row), POST /api/self/programs (propose-only), POST /api/self/attention (reach the owner). Further capabilities arrive only through later owner-promoted cuts.",
+  "Your channels today: GET /api/self (your own row), POST /api/self/programs (propose-only), POST /api/self/attention (reach the owner), GET /api/self/supervisor-view (your typed senses), POST /api/self/nudge (bounded question to a Program-MAIN). Further capabilities arrive only through later owner-promoted cuts.",
   "Begin: run ./state.sh, then ./register.sh, then observe and report what you see to the owner via the attention channel only if something needs them.",
 ];
 const FOUNDING_FIRST = "[fleet Supervisor] You are the one owner-side Supervisor session for this fleet.";
@@ -132,11 +132,13 @@ export async function run(): Promise<void> {
       && foundingPrompt.includes("ContextPlan v1 anchors"),
     foundingPrompt.slice(0, 300));
   // The denial sentence and the channel list are the whole of v0's authority statement, so the set
-  // of routes the brief names must be EXACTLY the three read/propose channels — a fourth would be
-  // a capability granted in prose that no gate ever agreed to.
+  // of routes the brief names must be EXACTLY the channels an owner-promoted cut has actually
+  // built — a sixth would be a capability granted in prose that no gate ever agreed to. Cut 2 adds
+  // the two it built and not one word more.
   const namedRoutes = [...new Set(foundingPrompt.match(/\/api\/[a-z/-]+/g) ?? [])].sort();
-  check("supervisor founding brief: v0 names exactly its three channels and states the acts it cannot perform",
-    JSON.stringify(namedRoutes) === JSON.stringify(["/api/self", "/api/self/attention", "/api/self/programs"])
+  check("supervisor founding brief: v0 names exactly its five channels and states the acts it cannot perform",
+    JSON.stringify(namedRoutes) === JSON.stringify(["/api/self", "/api/self/attention", "/api/self/nudge",
+      "/api/self/programs", "/api/self/supervisor-view"])
       && foundingPrompt.includes("structurally cannot confirm or activate programs, land, deploy, or write code"),
     namedRoutes.join(","));
 
@@ -289,6 +291,281 @@ export async function run(): Promise<void> {
     sameBinding(finalRead.supervisor, transferred)
       && !finalRead.programs.some((p) => p.id === ambiguousId),
     JSON.stringify(finalRead.supervisor));
+
+  // ============================================================================================
+  // Cut 2 — the senses and the voice. Both answer the BOUND occupant and nobody else, so every
+  // capability below is checked together with the twin that proves the refusal.
+  // ============================================================================================
+  const svToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";
+  const otherToken = Object.entries(readState().slots ?? {})
+    .filter(([id, v]) => Number(id) !== successorSlot && /^[0-9a-f]{32}$/.test(v.selfToken ?? ""))
+    .map(([, v]) => v.selfToken as string)[0] ?? "";
+  check("cut2 setup: the bound Supervisor and one ordinary session each carry a distinct self credential",
+    /^[0-9a-f]{32}$/.test(svToken) && /^[0-9a-f]{32}$/.test(otherToken) && svToken !== otherToken,
+    `sv=${svToken.length} other=${otherToken.length}`);
+
+  // The receiver of every nudge below: an ordinary session, opened here so the fixture Program can
+  // bind a REAL occupant rather than a remembered one.
+  const freeForReceiver = (await sessions()).slots.find((x) => !x.cwd)?.id ?? 0;
+  const receiverOpen = await post(`/api/slots/${freeForReceiver}/open`, { cwd: ROOT, label: "supervisor-nudge-receiver" });
+  const receiverSlot = receiverOpen.ok ? freeForReceiver : 0;
+  const receiverState = readState().slots?.[String(receiverSlot)];
+  check("cut2 setup: a plain session is open to stand as the fixture program's bound Program-MAIN",
+    receiverSlot > 0 && !!receiverState?.cwd && typeof receiverState.openedAt === "number",
+    `slot=${receiverSlot} ${JSON.stringify(receiverState ?? null)}`);
+  const receiverOccupant = { slot: receiverSlot, openedAt: receiverState?.openedAt ?? 0,
+    sessionId: receiverState?.sessionId ?? null, boundAt: Date.now() };
+
+  // Four Programs, one per branch of the receiver derivation. Installed through fleet.json for the
+  // same reason the ambiguity fixture is: bootstrapping four real MAIN sessions would prove the
+  // bootstrap, which Cut 1 already proves, and nothing about the derivation being measured here.
+  const programFixture = (id: string, status: string, main: unknown, title: string): Record<string, unknown> => ({
+    id, title, intent: "Stand as a fixture for the Supervisor nudge receiver derivation.",
+    successCriterion: "The nudge derives this program's receiver, or refuses by naming why.",
+    nonGoals: ["Proving the bootstrap"], decisions: [], evidence: [], openQuestions: [],
+    status, createdAt: Date.now(), proposedBy: { kind: "owner" },
+    ...(main ? { main } : {}), confirmedAt: Date.now(),
+    ...(status === "active" ? { activatedAt: Date.now() } : {}),
+  });
+  const activeId = `${"c".repeat(20)}0001`;
+  const proposedId = `${"c".repeat(20)}0002`;
+  const staleId = `${"c".repeat(20)}0003`;
+  const unboundId = `${"c".repeat(20)}0004`;
+  const fixtureIds = [activeId, proposedId, staleId, unboundId];
+  const installPrograms = async (rows: Record<string, unknown>[], awaitingOwner: boolean): Promise<void> => {
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const st = readState() as FleetState & Record<string, unknown>;
+    st.programs = [...(st.programs ?? []).filter((p) => !fixtureIds.includes(String(p.id))), ...rows];
+    const slotRow = (st.slots ?? {})[String(receiverSlot)];
+    if (slotRow) (slotRow as Record<string, unknown>).awaiting = awaitingOwner ? "owner" : null;
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(st, null, 2), { mode: 0o600 });
+    await restartSrv();
+  };
+  await installPrograms([
+    programFixture(activeId, "active", receiverOccupant, "Active with a live bound MAIN"),
+    programFixture(proposedId, "proposed", receiverOccupant, "Proposed, never activated"),
+    programFixture(staleId, "active", { ...receiverOccupant, openedAt: receiverOccupant.openedAt + 1 },
+      "Active, but its binding names a replaced occupant"),
+    programFixture(unboundId, "active", null, "Active with no bound MAIN at all"),
+  ], false);
+  const loaded = (await ownerRead()).programs;
+  check("cut2 fixture: all four receiver-derivation Programs loaded with the statuses they were written with",
+    fixtureIds.every((id) => !!loaded.find((p) => p.id === id))
+      && loaded.find((p) => p.id === activeId)?.status === "active"
+      && loaded.find((p) => p.id === activeId)?.main?.openedAt === receiverOccupant.openedAt
+      && loaded.find((p) => p.id === proposedId)?.status === "proposed"
+      && loaded.find((p) => p.id === unboundId)?.main === undefined,
+    JSON.stringify(loaded.filter((p) => fixtureIds.includes(p.id)).map((p) => [p.id.slice(-4), p.status])));
+
+  // --- the view -------------------------------------------------------------------------------
+  const selfGet = (path: string, token: string): Promise<Response> =>
+    fetch(`${BASE}${path}`, { headers: { "x-fleet-self-token": token } });
+  const selfPost = (path: string, token: string, body: unknown): Promise<Response> =>
+    fetch(`${BASE}${path}`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify(body) });
+
+  // One REAL row in the attention group, raised the only way one can be: by the bound MAIN of an
+  // active program, through its own credential. A group asserted only as "shaped and empty" would
+  // pass just as happily if its join were wrong. The row closes itself when the receiver slot is
+  // killed at the end of this section (reconcileAttention refuses a requester that is gone).
+  const receiverToken = readState().slots?.[String(receiverSlot)]?.selfToken ?? "";
+  const raisedText = "Does the portfolio still want this program running?";
+  const raised = await selfPost("/api/self/attention", receiverToken, { kind: "decision", text: raisedText });
+  const raisedBody = await raised.json() as { request?: { id: string; programId: string } };
+  check("cut2 fixture: the fixture program's bound MAIN raises one real attention request for the view to carry",
+    raised.ok && !!raisedBody.request && raisedBody.request.programId === activeId,
+    `${raised.status} ${JSON.stringify(raisedBody.request ?? null)}`);
+
+  // The state subset the view could plausibly disturb, compared around the read. A whole-file
+  // byte compare would be measuring the git tick, not this handler.
+  const mutableFacts = (): string => {
+    const st = readState() as FleetState & Record<string, unknown>;
+    return JSON.stringify({ supervisor: st.supervisor ?? null, programs: st.programs ?? [],
+      attention: st.attentionRequests ?? [], events: st.events ?? [],
+      slots: Object.keys(st.slots ?? {}).sort() });
+  };
+  const factsBefore = mutableFacts();
+  const viewRes = await selfGet("/api/self/supervisor-view", svToken);
+  const view = await viewRes.json() as {
+    at?: number;
+    portfolio?: { program: { id: string; status: string; title: string; completedAt: number | null };
+      main: { slot: number } | null; occupancy: string; tasks: { total: number; byStatus: Record<string, number> } }[];
+    operations?: { outcomes: { rows: unknown[]; total: number; malformed: number };
+      debts: { rows: { id: string; kind: string; receiverSlot: number; delivery: string; attempts: number }[];
+        total: number; ownerAckOnly: number } };
+    integration?: { deploys: { rows: unknown[]; total: number }; audits: { rows: unknown[]; total: number; redUnadjudicated: number };
+      deployGap: unknown; bundle: unknown };
+    attention?: { rows: { id: string; kind: string; slot: number; text: string }[]; total: number };
+    provenance?: { rows: { id: string | null; at: number; programId: string | null; slot: number; deliveredBytes: number }[];
+      total: number; malformed: number };
+    unknown?: string[];
+  };
+  check("supervisor view: the bound occupant gets all five fact groups plus an explicit unknown list",
+    viewRes.ok && !!view.portfolio && !!view.operations && !!view.integration && !!view.attention
+      && !!view.provenance && Array.isArray(view.unknown) && view.unknown.length > 0
+      && typeof view.at === "number",
+    `${viewRes.status} groups=${Object.keys(view).join(",")}`);
+  check("supervisor view: the portfolio carries every fixture program with its derived occupancy",
+    view.portfolio?.find((p) => p.program.id === activeId)?.occupancy === "live"
+      && view.portfolio?.find((p) => p.program.id === staleId)?.occupancy === "stale"
+      && view.portfolio?.find((p) => p.program.id === unboundId)?.occupancy === "unbound"
+      && view.portfolio?.find((p) => p.program.id === activeId)?.main?.slot === receiverSlot
+      && typeof view.portfolio?.find((p) => p.program.id === activeId)?.tasks.total === "number",
+    JSON.stringify(view.portfolio?.filter((p) => fixtureIds.includes(p.program.id))
+      .map((p) => [p.program.id.slice(-4), p.occupancy]) ?? []));
+  check("supervisor view: the ledger-backed groups are shaped and bounded even when a ledger is empty",
+    Array.isArray(view.operations?.outcomes.rows) && view.operations!.outcomes.rows.length <= 20
+      && typeof view.operations?.debts.ownerAckOnly === "number"
+      && Array.isArray(view.integration?.deploys.rows) && view.integration!.deploys.rows.length <= 5
+      && Array.isArray(view.integration?.audits.rows) && view.integration!.audits.rows.length <= 5
+      && typeof view.integration?.audits.redUnadjudicated === "number"
+      && Array.isArray(view.provenance?.rows)
+      && view.provenance!.rows.length <= 20,
+    JSON.stringify({ outcomes: view.operations?.outcomes.total, debts: view.operations?.debts.total,
+      deploys: view.integration?.deploys.total, audits: view.integration?.audits.total,
+      attention: view.attention?.total, provenance: view.provenance?.total }));
+  // The Supervisor's own founding receipts are cross-program rows — programId:null is a SCOPE, and
+  // the provenance group is where it has to remain readable.
+  const attentionRow = view.attention?.rows.find((a) => a.id === raisedBody.request?.id);
+  check("supervisor view: the attention group carries the row its bound MAIN just raised, sliced and attributed",
+    !!attentionRow && attentionRow.kind === "decision" && attentionRow.slot === receiverSlot
+      && attentionRow.text === raisedText && (view.attention?.total ?? 0) >= 1,
+    JSON.stringify(attentionRow ?? view.attention?.rows.slice(0, 2) ?? null));
+  check("supervisor view: provenance carries the Supervisor's own cross-program receipts",
+    (view.provenance?.rows ?? []).some((r) => r.slot === successorSlot && r.programId === null
+      && r.deliveredBytes > 0),
+    JSON.stringify(view.provenance?.rows.slice(0, 3) ?? []));
+  check("supervisor view: the read mutated nothing an owner-visible fact is made of",
+    mutableFacts() === factsBefore, "state subset unchanged");
+
+  const [viewOther, viewAnon] = await Promise.all([
+    selfGet("/api/self/supervisor-view", otherToken),
+    fetch(`${BASE}/api/self/supervisor-view`),
+  ]);
+  const viewOtherText = await viewOther.text();
+  check("supervisor view twin: an ordinary session's own credential is refused 409, and no credential at all is 401",
+    viewOther.status === 409 && viewOtherText.includes("not the bound Supervisor")
+      && viewAnon.status === 401,
+    `other=${viewOther.status}:${viewOtherText} anon=${viewAnon.status}`);
+
+  // A lane can never BE the Supervisor, so the occupancy gate is the whole lane story — proven
+  // rather than argued, because "a lane is covered by the same check" is exactly the kind of claim
+  // that stops being true when someone adds a second way to write the binding.
+  if (REPO) {
+    const lane = await (await post("/api/lanes", { repo: REPO })).json() as { slot?: number };
+    const laneToken = lane.slot ? readState().slots?.[String(lane.slot)]?.selfToken ?? "" : "";
+    const [laneView, laneNudge] = await Promise.all([
+      selfGet("/api/self/supervisor-view", laneToken),
+      selfPost("/api/self/nudge", laneToken, { programId: activeId, text: "from a lane" }),
+    ]);
+    check("supervisor cut2 twin: a lane's own credential is refused by the occupancy gate on both routes",
+      /^[0-9a-f]{32}$/.test(laneToken) && laneView.status === 409 && laneNudge.status === 409,
+      `token=${laneToken.length} view=${laneView.status} nudge=${laneNudge.status}`);
+    if (lane.slot) await post(`/api/slots/${lane.slot}/kill`, {});
+  }
+
+  // --- the nudge ------------------------------------------------------------------------------
+  const plogBeforeNudge = (await plogRead()).length;
+  const historyLen = async (slot: number): Promise<number> =>
+    ((await (await get(`/api/slots/${slot}/history`)).json()) as { history: unknown[] }).history.length;
+  const historyBefore = await historyLen(receiverSlot);
+  const decoySlot = receiverSlot === 1 ? 2 : 1;
+  const nudgeText = "Two lanes have been done-looking for an hour — is that the shape you intended?";
+  const nudgeRes = await selfPost("/api/self/nudge", svToken,
+    { programId: activeId, text: nudgeText, slot: decoySlot });
+  const nudge = await nudgeRes.json() as { ok?: boolean;
+    receipt?: { sendId: string; at: number; submitted: boolean;
+      receiver: { slot: number; openedAt: number; sessionId: string | null } } };
+  check("supervisor nudge: the happy path answers the owner-send receipt anatomy exactly",
+    nudgeRes.ok && nudge.ok === true && /^[0-9a-f]{24}$/.test(nudge.receipt?.sendId ?? "")
+      && nudge.receipt?.submitted === true && typeof nudge.receipt.at === "number"
+      && nudge.receipt.receiver.openedAt === receiverOccupant.openedAt,
+    `${nudgeRes.status} ${JSON.stringify(nudge)}`);
+  // The body carried `slot` and it changed NOTHING: the receiver is the binding's occupant.
+  check("supervisor nudge: a body slot field is ignored — the receiver stays the program's bound MAIN",
+    nudge.receipt?.receiver.slot === receiverSlot && receiverSlot !== decoySlot,
+    `receipt=${nudge.receipt?.receiver.slot} body=${decoySlot} binding=${receiverSlot}`);
+
+  const plogAfterNudge = await plogRead();
+  const journaled = plogAfterNudge.find((p) => p.sendId === nudge.receipt?.sendId);
+  check("supervisor nudge: exactly one journal line, attributed to the supervisor source and joinable by sendId",
+    !!journaled && journaled.source === "supervisor" && journaled.delivery === "sent"
+      && journaled.slot === receiverSlot
+      && plogAfterNudge.filter((p) => p.sendId === nudge.receipt?.sendId).length === 1
+      && journaled.text.startsWith(`[fleet Supervisor nudge ${nudge.receipt?.sendId}] from the owner-side Supervisor (slot ${successorSlot}).`)
+      && journaled.text.endsWith(`\n\n${nudgeText}`),
+    JSON.stringify({ source: journaled?.source, delivery: journaled?.delivery, slot: journaled?.slot,
+      head: journaled?.text.slice(0, 120) }));
+  check("supervisor nudge: the receiver's own history grew by the delivered text",
+    (await historyLen(receiverSlot)) === historyBefore + 1
+      && (await historyOf(receiverSlot)).includes(nudgeText),
+    `${historyBefore} -> ${await historyLen(receiverSlot)}`);
+  check("supervisor nudge: the delivered header states that the decision stays with Program-MAIN",
+    (await historyOf(receiverSlot)).includes("A nudge is information plus a question — the decision remains with you as Program-MAIN."),
+    (await historyOf(receiverSlot)).split("\n")[0] ?? "");
+
+  const plogBeforeRejects = (await plogRead()).length;
+  const [byOther, unknownProgram, notActive, staleMain, unboundMain, tooLong, emptyText] = await Promise.all([
+    selfPost("/api/self/nudge", otherToken, { programId: activeId, text: "not mine to send" }),
+    selfPost("/api/self/nudge", svToken, { programId: `${"f".repeat(24)}`, text: "into the void" }),
+    selfPost("/api/self/nudge", svToken, { programId: proposedId, text: "too early" }),
+    selfPost("/api/self/nudge", svToken, { programId: staleId, text: "to a replaced occupant" }),
+    selfPost("/api/self/nudge", svToken, { programId: unboundId, text: "to nobody" }),
+    selfPost("/api/self/nudge", svToken, { programId: activeId, text: "x".repeat(2001) }),
+    selfPost("/api/self/nudge", svToken, { programId: activeId, text: "   " }),
+  ]);
+  const texts = await Promise.all([byOther, unknownProgram, notActive, staleMain, unboundMain, tooLong, emptyText]
+    .map((r) => r.text()));
+  check("supervisor nudge twin: only the bound Supervisor may speak — an ordinary session is 409",
+    byOther.status === 409 && texts[0]!.includes("not the bound Supervisor"), `${byOther.status} ${texts[0]}`);
+  check("supervisor nudge twin: each failing branch of the receiver derivation names what failed, as a 409",
+    unknownProgram.status === 409 && texts[1]!.includes("unknown program")
+      && notActive.status === 409 && texts[2]!.includes("not active")
+      && staleMain.status === 409 && texts[3]!.includes("gone or was replaced")
+      && unboundMain.status === 409 && texts[4]!.includes("no bound Program-MAIN"),
+    `${unknownProgram.status}|${notActive.status}|${staleMain.status}|${unboundMain.status}`);
+  check("supervisor nudge twin: an over-long and an empty text are invalid REQUESTS (400), not policy states",
+    tooLong.status === 400 && texts[5]!.includes("at most 2000")
+      && emptyText.status === 400 && texts[6]!.includes("must not be empty"),
+    `${tooLong.status}:${texts[5]} ${emptyText.status}:${texts[6]}`);
+  check("supervisor nudge twin: not one refused nudge reached a pane or the journal",
+    (await plogRead()).length === plogBeforeRejects
+      && (await historyLen(receiverSlot)) === historyBefore + 1,
+    `plog ${plogBeforeRejects} -> ${(await plogRead()).length}`);
+
+  // --- the owner debt: a nudge never talks past a wait that belongs to the owner. ---
+  await installPrograms([
+    programFixture(activeId, "active", receiverOccupant, "Active with a live bound MAIN"),
+  ], true);
+  const awaitingLoaded = (await get("/api/sessions")).ok;
+  const plogBeforeAwaiting = (await plogRead()).length;
+  const awaitingRes = await selfPost("/api/self/nudge", svToken, { programId: activeId, text: "are you still on it?" });
+  const awaitingText = await awaitingRes.text();
+  check("supervisor nudge twin: a Program-MAIN waiting on the owner is 409 and nothing is journaled",
+    awaitingLoaded && awaitingRes.status === 409 && awaitingText.includes("waiting on the owner")
+      && (await plogRead()).length === plogBeforeAwaiting,
+    `${awaitingRes.status} ${awaitingText}`);
+
+  // --- freshness: a second read is a fresh derivation, not a cached one. ---
+  const completed = await post(`/api/programs/${activeId}/complete`, {});
+  const refreshed = await (await selfGet("/api/self/supervisor-view", svToken)).json() as {
+    portfolio?: { program: { id: string; status: string; completedAt: number | null } }[] };
+  const refreshedRow = refreshed.portfolio?.find((p) => p.program.id === activeId);
+  check("supervisor view: a second read reflects a state change made between the two — it is derived, never cached",
+    completed.ok && refreshedRow?.program.status === "complete"
+      && typeof refreshedRow.program.completedAt === "number",
+    JSON.stringify(refreshedRow ?? null));
+
+  // The fixtures leave through the door they came in: a Program row of this module's making would
+  // otherwise ride the owner poll for every later section, whose payload is size-bounded downstream.
+  await installPrograms([], false);
+  const cleaned = await ownerRead();
+  check("supervisor cut2 cleanup: every fixture Program is gone and the binding is untouched by all of it",
+    !cleaned.programs.some((p) => fixtureIds.includes(p.id)) && sameBinding(cleaned.supervisor, transferred),
+    JSON.stringify(cleaned.supervisor));
+  await post(`/api/slots/${receiverSlot}/kill`, {});
 
   // The predecessor retires on its own MIGRATE_GRACE timer; only the successor is this module's
   // to clean up, and it must be freed so later sections still find open slots.

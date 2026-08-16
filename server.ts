@@ -2474,7 +2474,10 @@ function noteComposed(slotId: number, text: string): void {
 // the owner /send receipt) passes them, and an absent one stays absent from the line rather than
 // being written as null — every reader of this journal parses optional fields, so "absent" and
 // "this surface has no send identity" must stay the same thing.
-function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward", ts: number,
+// "supervisor" is its own word, additively: attributing a cross-program nudge to "owner" would make
+// the journal say a human typed it, and "auto" would say a tick did. Neither is true, and the
+// attribution is the point of writing the line at all.
+function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward" | "supervisor", ts: number,
   sendId?: string, delivery?: "sent" | "uncertain"): void {
   if (source !== "terminal") noteComposed(s.id, text);
   // The six original fields keep their names AND their order (readers only ever add optional keys).
@@ -2674,7 +2677,10 @@ type AuditEvent =
   | "autos_quiet"
   // an owner-capable send exhausted the bounded fresh-pane readiness wait and was delivered
   // anyway. The row makes the possible loss visible without turning it into a refusal.
-  | "send_boot_timeout";
+  | "send_boot_timeout"
+  // the cross-program Supervisor spoke to one Program-MAIN. Detail carries the nudge id and the
+  // program, never the text — the same hygiene rule slot_shelve's note follows.
+  | "supervisor_nudge";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -12128,7 +12134,7 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
 const supervisorBriefBody = (): string[] => [
   "Your role: hold the cross-program portfolio together from typed facts, surface and ask, and NUDGE - every decision inside a program remains with its Program-MAIN or working circle, and every promotion remains with the owner.",
   "You structurally cannot confirm or activate programs, land, deploy, or write code; do not attempt any of these.",
-  "Your channels today: GET /api/self (your own row), POST /api/self/programs (propose-only), POST /api/self/attention (reach the owner). Further capabilities arrive only through later owner-promoted cuts.",
+  "Your channels today: GET /api/self (your own row), POST /api/self/programs (propose-only), POST /api/self/attention (reach the owner), GET /api/self/supervisor-view (your typed senses), POST /api/self/nudge (bounded question to a Program-MAIN). Further capabilities arrive only through later owner-promoted cuts.",
   "Begin: run ./state.sh, then ./register.sh, then observe and report what you see to the owner via the attention channel only if something needs them.",
 ];
 
@@ -12343,6 +12349,256 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
   } finally {
     supervisorBootstrapInflight = false;
   }
+}
+
+// --- the Supervisor's SENSES and its one VOICE --------------------------------------------------
+// Cut 1 bound an identity that could read only its own row. These two routes are what that identity
+// perceives and the single bounded thing it may say, and they are deliberately asymmetric: the view
+// aggregates five fact groups and mutates NOTHING, the nudge writes exactly one paste into exactly
+// one derived pane and persists nothing beyond the receipt and the journal line.
+
+// The occupant rule, and it is the whole authorization story of both routes below. slot+openedAt is
+// the only occupant identity Fleet trusts, so a recycled slot can never inherit the binding; a lane
+// is covered by this alone, because a lane is never the Supervisor (the bootstrap opens a plain
+// session and nothing else ever writes the binding).
+const isBoundSupervisor = (s: Slot): boolean => !!supervisor
+  && supervisor.slot === s.id && supervisor.openedAt === s.openedAt;
+const NOT_SUPERVISOR = "not the bound Supervisor — this view answers only its occupant";
+
+// Every list is capped and every free text is sliced. A Supervisor reads this on demand from a
+// pane, so the payload is bounded for the same reason programExecutionView's is: an unbounded
+// projection of ledgers that only grow becomes unreadable exactly when the fleet is busiest.
+const SUPERVISOR_VIEW_PROGRAMS = 50;
+const SUPERVISOR_VIEW_ROWS = 20;
+const SUPERVISOR_VIEW_INTEGRATION_ROWS = 5;
+const SUPERVISOR_VIEW_TEXT = 200;
+const MAX_SUPERVISOR_NUDGE_TEXT = 2000;
+
+// SupervisorExecutionView v0: a READ-ONLY cross-program projection, never a second lifecycle model
+// and never a pane capture. It joins facts that already exist — the Program brackets, the lane
+// outcome and receipt ledgers, the transport events, the deploy/audit ledgers, the attention
+// inbox — and leaves every gap as an explicit `unknown` line, the same honesty rule its
+// one-bracket-lower sibling programExecutionView follows.
+//
+// ON DEMAND, NEVER ON THE 2 s POLL. /api/sessions is the largest payload this server sends and its
+// size budget has bytes of headroom, so nothing here may become a retained field on that route.
+async function supervisorView(s: Slot): Promise<Response> {
+  const [outcomeLedger, receiptLedger, deployLedger, auditLedger, judged] = await Promise.all([
+    readLedger<Record<string, unknown>>(LANE_OUTCOME_FILE),
+    readLedger<Record<string, unknown>>(CONTEXT_RECEIPT_FILE),
+    readLedger<Record<string, unknown>>(DEPLOY_FILE),
+    readLedger<Record<string, unknown>>(POSTLAND_AUDIT_FILE),
+    adjudicationsByAudit(),
+  ]);
+  const num = (v: unknown): number => typeof v === "number" ? v : 0;
+  const str = (v: unknown): string | null => typeof v === "string" ? v : null;
+  const unknown: string[] = [];
+
+  // --- portfolio: every Program, its binding, and whether that binding still names a live
+  // occupant. The liveness rule is clarificationReceiverFor's, verbatim — one occupant rule for
+  // "who is reachable" across the whole server, so a view can never report a receiver an actual
+  // send would refuse.
+  const ordered = [...programs].sort((a, b) => b.createdAt - a.createdAt);
+  const portfolio = ordered.slice(0, SUPERVISOR_VIEW_PROGRAMS).map((p) => {
+    const main = p.main ?? null;
+    const live = main ? slotFrom(main.slot) : null;
+    const occupancy = !main ? "unbound"
+      : live?.cwd && live.id === main.slot && live.openedAt === main.openedAt ? "live" : "stale";
+    const programTasks = tasks.filter((t) => t.programId === p.id);
+    const byStatus: Record<string, number> = {};
+    for (const t of programTasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
+    return {
+      program: {
+        id: p.id, status: p.status, title: p.title.slice(0, SUPERVISOR_VIEW_TEXT),
+        createdAt: p.createdAt, confirmedAt: p.confirmedAt ?? null,
+        activatedAt: p.activatedAt ?? null, completedAt: p.completedAt ?? null,
+      },
+      main: main ? { slot: main.slot, openedAt: main.openedAt, sessionId: main.sessionId,
+        boundAt: main.boundAt } : null,
+      occupancy,
+      tasks: { total: programTasks.length, byStatus },
+    };
+  });
+  if (ordered.length > portfolio.length)
+    unknown.push(`${ordered.length - portfolio.length} programs beyond the newest ${SUPERVISOR_VIEW_PROGRAMS} are not in this projection.`);
+
+  // --- operations: what lanes finished, and what transport debt is still open. The inbox rows are
+  // REPORTED and not spendable: their acknowledgement belongs to the owner (ownerAcknowledgeFleetEvent),
+  // and a Supervisor that could close them would be answering in the owner's stead.
+  const outcomeRows = [...outcomeLedger.rows].sort((a, b) => num(b.ts) - num(a.ts));
+  const openEvents = fleetEvents
+    .filter((e) => !["acknowledged", "receiver-gone"].includes(e.status))
+    .sort((a, b) => b.createdAt - a.createdAt);
+  const operations = {
+    outcomes: {
+      rows: outcomeRows.slice(0, SUPERVISOR_VIEW_ROWS).map((row) => ({
+        ts: row.ts, branch: str(row.branch), disposition: row.disposition,
+        programId: str(row.programId), taskId: str(row.taskId),
+        verified: row.verified, mainAfter: str(row.mainAfter), repo: str(row.repo),
+      })),
+      total: outcomeRows.length,
+      malformed: outcomeLedger.malformed,
+    },
+    debts: {
+      rows: openEvents.slice(0, SUPERVISOR_VIEW_ROWS).map((e) => ({
+        id: e.id, kind: e.kind, status: e.status, receiverSlot: e.receiverSlot,
+        delivery: e.delivery ?? "pane", createdAt: e.createdAt, attempts: e.attempts,
+      })),
+      total: openEvents.length,
+      // The owner's to spend, not the Supervisor's — stated as a number so the debt is visible
+      // without a capability being implied.
+      ownerAckOnly: openEvents.filter((e) => e.delivery === "inbox").length,
+    },
+  };
+  const unattributedOutcomes = outcomeRows.filter((row) => typeof row.programId !== "string").length;
+  if (unattributedOutcomes > 0)
+    unknown.push(`${unattributedOutcomes} lane outcome rows carry no programId and cannot be attributed to a program.`);
+  if (outcomeLedger.malformed > 0)
+    unknown.push(`${outcomeLedger.malformed} malformed lane outcome rows make the operations picture incomplete.`);
+
+  // --- integration: what was deployed, what the post-land audits said, and how far the running
+  // process is behind the tree. deployFacts is the SAME cached pair /api/sessions serves (git tick,
+  // ~10 s) — reading it here adds no subprocess and cannot disagree with the owner's board.
+  const deployRows = [...deployLedger.rows].sort((a, b) => num(b.at) - num(a.at));
+  const auditRows = [...auditLedger.rows].sort((a, b) => num(b.at) - num(a.at));
+  const redUnadjudicated = auditRows.filter((row) => row.result === "red"
+    && typeof row.at === "number" && !judged.has(row.at)).length;
+  const integration = {
+    deploys: {
+      rows: deployRows.slice(0, SUPERVISOR_VIEW_INTEGRATION_ROWS).map((row) => ({
+        at: row.at, id: str(row.id), by: str(row.by), stage: str(row.stage), ok: row.ok ?? null,
+        target: str(row.target), bootHead: str(row.bootHead), head: str(row.head),
+        hitTarget: row.hitTarget ?? null, bundleStale: row.bundleStale ?? null,
+      })),
+      total: deployRows.length,
+      malformed: deployLedger.malformed,
+    },
+    audits: {
+      rows: auditRows.slice(0, SUPERVISOR_VIEW_INTEGRATION_ROWS).map((row) => ({
+        at: row.at, result: str(row.result), ms: typeof row.ms === "number" ? row.ms : null,
+        repo: str(row.repo), main: str(row.main), mainSha: str(row.mainSha),
+        adjudicated: typeof row.at === "number" && judged.has(row.at),
+      })),
+      total: auditRows.length,
+      malformed: auditLedger.malformed,
+      redUnadjudicated,
+    },
+    // null until the git tick has run once — an honest "not measured yet", never an all-clear.
+    deployGap: deployFacts ? deployFacts.gap : null,
+    bundle: deployFacts ? deployFacts.bundle : null,
+  };
+  if (!deployFacts)
+    unknown.push("the deploy-gap and bundle facts have not been measured yet; deployGap and bundle are null, which is not an all-clear.");
+  if (deployLedger.malformed > 0)
+    unknown.push(`${deployLedger.malformed} malformed deploy ledger rows make the integration picture incomplete.`);
+  if (auditLedger.malformed > 0)
+    unknown.push(`${auditLedger.malformed} malformed post-land audit rows make the integration picture incomplete.`);
+
+  // --- attention: what a Program-MAIN has raised and the owner has not closed. Same ordering rule
+  // as attentionOwnerView (open first, then newest), without its owner-side join.
+  const openAttention = attentionRequests
+    .filter((a) => a.status === "open" || a.status === "send-uncertain")
+    .sort((x, y) => y.raisedAt - x.raisedAt);
+  const attention = {
+    rows: openAttention.slice(0, SUPERVISOR_VIEW_ROWS).map((a) => ({
+      id: a.id, kind: a.kind, slot: a.requester.slot, createdAt: a.raisedAt,
+      programId: a.programId, status: a.status, text: a.text.slice(0, SUPERVISOR_VIEW_TEXT),
+    })),
+    total: openAttention.length,
+  };
+
+  // --- provenance: what context was actually delivered, including this Supervisor's own
+  // programId:null rows — cross-program scope, not a missing attribution.
+  const receiptRows = [...receiptLedger.rows].sort((a, b) => num(b.at) - num(a.at));
+  const provenance = {
+    rows: receiptRows.slice(0, SUPERVISOR_VIEW_ROWS).map((row) => ({
+      id: str(row.id), at: row.at, programId: str(row.programId), taskId: str(row.taskId),
+      slot: row.slot, mode: str(row.mode), deliveredBytes: row.deliveredBytes,
+    })),
+    total: receiptRows.length,
+    malformed: receiptLedger.malformed,
+  };
+  if (receiptLedger.malformed > 0)
+    unknown.push(`${receiptLedger.malformed} malformed context receipt rows make the provenance picture incomplete.`);
+  unknown.push("1 lineage gap: no persisted Supervisor lineage exists; earlier bound Supervisor sessions are not reconstructible.");
+
+  return json({
+    at: Date.now(),
+    session: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
+    portfolio, operations, integration, attention, provenance, unknown,
+  });
+}
+
+// The Supervisor's ONE voice, and every bound on it is structural rather than advisory.
+//
+// THE RECEIVER IS DERIVED, NEVER NOMINATED. No body field names a slot: the caller states which
+// PROGRAM it is speaking to, and the receiver is that program's bound Program-MAIN occupant under
+// the "program-main" rule clarificationReceiverFor uses. A nudge is therefore incapable of reaching
+// a pane the portfolio does not already name — which is what makes it safe to hand a session at all.
+//
+// WHAT IT IS NOT: no persistence, no FleetEvent, no watch, no tick, no retry. The receipt the caller
+// gets back and the one journal line are the whole record. A second message bus for a channel
+// nobody has watched work yet would be a contract written before its first observation.
+async function supervisorNudge(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  // Guard order is handleStewardSend's: an INVALID request is answered as invalid (400) even when
+  // the program or the receiver would refuse it, so a malformed nudge is never reported as a
+  // policy state it never reached.
+  if (!body || typeof body.programId !== "string" || !body.programId)
+    return json({ error: "programId must be a non-empty string" }, 400);
+  if (typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  const text = body.text.trim();
+  if (!text) return json({ error: "text must not be empty" }, 400);
+  if (text.length > MAX_SUPERVISOR_NUDGE_TEXT)
+    return json({ error: `text must be at most ${MAX_SUPERVISOR_NUDGE_TEXT} chars` }, 400);
+
+  const program = programs.find((p) => p.id === body.programId);
+  if (!program) return json({ error: "unknown program" }, 409);
+  if (program.status !== "active")
+    return json({ error: `program is ${program.status}, not active — a nudge reaches an executing program only` }, 409);
+  const main = program.main;
+  if (!main) return json({ error: "program has no bound Program-MAIN to nudge" }, 409);
+  const live = slotFrom(main.slot);
+  if (!(live?.cwd && live.id === main.slot && live.openedAt === main.openedAt))
+    return json({ error: "the bound Program-MAIN occupant is gone or was replaced — nothing to nudge" }, 409);
+  // An owner debt is never talked past: exactly handleStewardSend's stance, for exactly its reason.
+  // The wait exists to hold everything but the owner back, and a Supervisor is not the owner.
+  if (live.awaiting === "owner")
+    return json({ error: "the Program-MAIN is waiting on the owner — escalate, never nudge past it" }, 409);
+  // The attended waiver set the founding rails take (this is a principal's deliberate act, not a
+  // tick), minus nothing on `alive`: pasting into an agent-less pane types prose into a shell.
+  const gate = await canDeliver(live, { now: Date.now(), idleMs: 0,
+    killSwitch: false, quietHours: false, harness: false });
+  if (!gate.ok)
+    return json({ error: `nudge delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 409);
+
+  // THE DELIVERY IDENTITY, minted before the transport is touched so both outcomes carry the SAME
+  // id — the owner /send receipt anatomy exactly, because a second anatomy for the same act would
+  // make the journal two half-joinable trails.
+  const nudgeId = randomBytes(12).toString("hex");
+  const receiver = { slot: live.id, openedAt: live.openedAt, sessionId: live.sessionId };
+  const delivered = [
+    `[fleet Supervisor nudge ${nudgeId}] from the owner-side Supervisor (slot ${s.id}).`
+    + " A nudge is information plus a question — the decision remains with you as Program-MAIN.",
+    "",
+    text,
+  ].join("\n");
+  try {
+    await sendText(live, delivered, true);
+  } catch (e) {
+    // Neither "failed" nor "delivered" is an observed fact once tmux has thrown — the same truth
+    // rule the owner send and the clarification transport follow. The journal write is MANDATORY;
+    // history deliberately is not, because a history entry reads as "this text is in that pane".
+    const at = Date.now();
+    logPrompt(live, delivered, "supervisor", at, nudgeId, "uncertain");
+    return json({ error: `nudge outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
+      receipt: { sendId: nudgeId, at, delivery: "uncertain", receiver } }, 409);
+  }
+  const ts = Date.now();
+  live.history = [...live.history, { text: delivered, ts }].slice(-MAX_HISTORY);
+  saveHistory(live);
+  logPrompt(live, delivered, "supervisor", ts, nudgeId, "sent");
+  audit("supervisor_nudge", receiver.slot, `${nudgeId} program:${program.id}`); // never the text
+  return json({ ok: true, receipt: { sendId: nudgeId, at: ts, submitted: true, receiver } });
 }
 
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
@@ -15314,6 +15570,26 @@ Bun.serve<WSData>({
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot read execution as its own" }, 409);
       return programExecutionView(s);
+    }
+
+    // The Supervisor's two Cut-2 channels, on the same every-session rail and behind the same
+    // flat-cost 401, because the credential question ("is this a live session's own token") is
+    // identical. What separates them from their neighbours is the OCCUPANCY gate below: they answer
+    // only the session the owner bound as Supervisor, and a stale binding answers nobody. A lane
+    // needs no clause of its own — a lane is never the Supervisor, so the same check covers it.
+    if (url.pathname === "/api/self/supervisor-view" && req.method === "GET") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!isBoundSupervisor(s)) return json({ error: NOT_SUPERVISOR }, 409);
+      return supervisorView(s);
+    }
+    if (url.pathname === "/api/self/nudge" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      if (!isBoundSupervisor(s)) return json({ error: NOT_SUPERVISOR }, 409);
+      return supervisorNudge(s, await readJson(req));
     }
 
     // MAIN-direct provenance is an explicit two-step report by THIS non-lane session. Git supplies

@@ -21,20 +21,23 @@ import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, 
 interface WatchRow {
   id: string; slot: number; target: number; targetBranch: string;
   slotOpenedAt?: number;
+  // absent = the legacy pane transport; the server never backfills it (see WatchBase)
+  delivery?: "pane" | "inbox";
   armed: boolean; firedAt: number | null; lastResult: string | null;
 }
-type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
+type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone"
+  | "inbox";
 interface FleetEventRow {
   id: string; watchId: string;
   receiverSlot: number; receiverOpenedAt: number; receiverSessionId: string | null; receiverIdleSec: number;
   subjectSlot: number; subjectBranch: string;
   kind: "lane-ready" | "host-commit-ready"; payload: LaneWatchEventPayload;
   createdAt: number; status: FleetEventStatus; attempts: number;
-  deliveredAt: number | null; acknowledgedAt: number | null;
+  deliveredAt: number | null; acknowledgedAt: number | null; delivery?: "pane" | "inbox";
 }
 interface DeployWatchRow {
   id: string; kind: "deploy"; slot: number; deployId: string;
-  slotOpenedAt?: number;
+  slotOpenedAt?: number; delivery?: "pane" | "inbox";
   armed: boolean; firedAt: number | null; lastResult: string | null;
 }
 interface DeployEventRow {
@@ -43,6 +46,7 @@ interface DeployEventRow {
   payload: { ok: boolean | null; stage: "build" | "restart" | "boot"; target: string | null;
     bootHead: string | null; hitTarget: boolean | null; bundleStale: boolean | null; at: number; reason?: string };
   status: FleetEventStatus; attempts: number; acknowledgedAt: number | null;
+  deliveredAt: number | null; delivery?: "pane" | "inbox";
 }
 interface ClarificationRow {
   id: string; askedAt: number; question: string;
@@ -1238,6 +1242,15 @@ export async function run(): Promise<void> {
     uncertainAfterTicks?.status === "send-uncertain" && uncertainAfterTicks.attempts === 1
     && uncertainAfterTicks.deliveredAt === null && uncertainAfterTicks.acknowledgedAt === null
     && (await ownerWatchMessages(aId)).length === 1, JSON.stringify(uncertainAfterTicks));
+  // the legacy half of the transport split: every row written before `delivery` existed — watch and
+  // event alike — loads with the field ABSENT and keeps the exact pane path the checks above prove.
+  // The inbox half is asserted across its own restart further down, once such a row exists.
+  check("legacy round trip: rows written before the split load with delivery absent, not coerced to a default",
+    (await watchRows()).some((w) => w.id === legacyWatchId && w.delivery === undefined)
+      && afterRestartEvents.some((e) => e.id === eventA?.id && e.delivery === undefined)
+      && uncertain?.delivery === undefined,
+    JSON.stringify({ legacyWatch: (await watchRows()).find((w) => w.id === legacyWatchId)?.delivery,
+      legacyEvent: restartedA?.delivery, crash: uncertain?.delivery }));
   check("legacy spent Watch loads unchanged without an invented FleetEvent",
     (await watchRows()).some((w) => w.id === legacyWatchId && w.lastResult === "sent"
       && w.slotOpenedAt === undefined)
@@ -1327,7 +1340,132 @@ export async function run(): Promise<void> {
   check("deploy event: a replacement receiver session cannot acknowledge the prior session's event",
     reopenA.ok && replacementATok !== aTok && replacedDeployAck.status === 409,
     `${replacedDeployAck.status} ${await replacedDeployAck.text()}`);
+
+  // --- SUPERVISOR OPERATIONS INBOX: the transport split. `delivery` is a SUBSCRIPTION fact, named
+  // by the subscriber and validated at CREATE time. An inbox event is minted straight to the status
+  // word "inbox", which the transport loop never selects — so what is proven below is not "no
+  // message arrived this time" but "no transport step exists": no pane bytes, no history row, no
+  // prompt-journal row, deliveredAt null forever. Visibility and consumption stay separate facts —
+  // the receiver session may SEE such a row and may never acknowledge it, and the owner may close
+  // only those. Every pane-delivery check above is the untouched baseline for the legacy path.
+  //
+  // It runs HERE, LAST, on purpose: the pane fixtures above depend on a receiver pane
+  // staying busy for a bounded window and on their own retained rows, and work inserted earlier
+  // spends both. This family therefore reuses the slot the fixture has just recycled.
+  const inboxBadDelivery = await selfWatch(replacementATok, { kind: "deploy", deployId: successId, delivery: "garbage" });
+  const inboxBadDeliveryText = await inboxBadDelivery.text();
+  check("inbox: an unknown delivery word is refused 400 by name, never defaulted to a transport",
+    inboxBadDelivery.status === 400 && inboxBadDeliveryText.includes("delivery must be 'pane' or 'inbox'"),
+    `${inboxBadDelivery.status} ${inboxBadDeliveryText}`);
+
+  const paneOwnerAck = successEvent ? await post(`/api/events/${successEvent.id}/ack`, {})
+    : new Response(null, { status: 599 });
+  const paneOwnerAckText = await paneOwnerAck.text();
+  check("inbox: the owner route refuses a PANE-delivered event — the split cuts both ways",
+    paneOwnerAck.status === 409 && paneOwnerAckText.includes("acknowledgement belongs to the receiver session"),
+    `${paneOwnerAck.status} ${paneOwnerAckText}`);
+  const unknownOwnerAck = await post("/api/events/deadbeefdeadbeefdeadbeef/ack", {});
+  check("inbox: the owner route 404s an unknown event id", unknownOwnerAck.status === 404,
+    `${unknownOwnerAck.status} ${await unknownOwnerAck.text()}`);
+
+  const inboxId = "d0000005";
+  appendDeploy(deployRow(inboxId, true, "boot", { hitTarget: true, bundleStale: false }));
+  const paneBefore = await tmuxOut("capture-pane", "-p", "-t", `s${aId}`);
+  const plogBefore = (await plogRead()).length;
+  const historyOf = async (slot: number): Promise<{ text: string }[]> =>
+    ((await (await get(`/api/slots/${slot}/history`)).json()) as { history?: { text: string }[] }).history ?? [];
+  const historyBefore = (await historyOf(aId)).length;
+  const inboxSubR = await selfWatch(replacementATok, { kind: "deploy", deployId: inboxId, idleSec: 0, delivery: "inbox" });
+  const inboxSub = await inboxSubR.json() as { watch?: DeployWatchRow };
+  await Bun.sleep(AUTOS_TICK_MS * 4 + 500); // give every tick its chance to deliver it, and prove it cannot
+  const inboxEvent = (await deployEventRows()).find((e) => e.watchId === inboxSub.watch?.id);
+  check("inbox: a delivery:'inbox' subscription rides back on the watch and mints status inbox, never pending",
+    inboxSubR.ok && inboxSub.watch?.delivery === "inbox" && inboxSub.watch.armed === false
+      && inboxEvent?.status === "inbox" && inboxEvent.delivery === "inbox"
+      && inboxEvent.deliveredAt === null && inboxEvent.attempts === 0,
+    JSON.stringify({ watch: inboxSub.watch, event: inboxEvent }));
+  const paneAfter = await tmuxOut("capture-pane", "-p", "-t", `s${aId}`);
+  const plogAfterRows = (await plogRead()).slice(plogBefore);
+  const historyAfter = await historyOf(aId);
+  check("inbox: the receiver pane is byte-unchanged and no history or prompt-journal row was written",
+    paneAfter.out === paneBefore.out && historyAfter.length === historyBefore
+      && !plogAfterRows.some((p) => p.slot === aId && p.text.includes(`[event ${inboxEvent?.id}]`))
+      && !historyAfter.some((h) => h.text.includes(`[event ${inboxEvent?.id}]`)),
+    JSON.stringify({ paneChanged: paneAfter.out !== paneBefore.out, historyBefore,
+      historyAfter: historyAfter.length, newPlog: plogAfterRows.length }));
+
+  // hand the spent transport Watch back at once. A Watch is retained per slot and the fixtures
+  // around this family own theirs; the event is durable independently of it, which the checks
+  // further down assert in their own right.
+  if (inboxSub.watch) await post(`/api/watches/${inboxSub.watch.id}/delete`, {});
+  const inboxSelfAck = inboxEvent ? await ackEvent(replacementATok, inboxEvent.id) : new Response(null, { status: 599 });
+  const inboxSelfAckText = await inboxSelfAck.text();
+  check("inbox: the bound receiver session cannot self-acknowledge — it was never offered the row",
+    inboxSelfAck.status === 409 && inboxSelfAckText.includes("acknowledgement belongs to the owner"),
+    `${inboxSelfAck.status} ${inboxSelfAckText}`);
+
+  // a SECOND row for the happy path, so the first one stays open across the restart below — an
+  // already-acknowledged row would prove nothing about loading the new status word.
+  const inboxAckId = "d0000006";
+  appendDeploy(deployRow(inboxAckId, false, "build", { hitTarget: false, bundleStale: true, reason: "build failed" }));
+  const inboxAckSub = await (await selfWatch(replacementATok,
+    { kind: "deploy", deployId: inboxAckId, idleSec: 0, delivery: "inbox" })).json() as { watch?: DeployWatchRow };
+  const inboxAckEvent = (await deployEventRows()).find((e) => e.watchId === inboxAckSub.watch?.id);
+  if (inboxAckSub.watch) await post(`/api/watches/${inboxAckSub.watch.id}/delete`, {});
+  const ownerAck1 = inboxAckEvent ? await post(`/api/events/${inboxAckEvent.id}/ack`, {})
+    : new Response(null, { status: 599 });
+  const ownerAck1J = await ownerAck1.json() as
+    { existing?: boolean; event?: { status?: string; deliveredAt?: number | null; acknowledgedAt?: number | null } };
+  const ownerAck2 = inboxAckEvent ? await post(`/api/events/${inboxAckEvent.id}/ack`, {})
+    : new Response(null, { status: 599 });
+  const ownerAck2J = await ownerAck2.json() as { existing?: boolean; event?: { acknowledgedAt?: number | null } };
+  check("inbox: the owner acknowledges an inbox event once, idempotently, and it stays never-delivered",
+    ownerAck1.ok && ownerAck1J.existing === false && ownerAck1J.event?.status === "acknowledged"
+      && ownerAck1J.event.deliveredAt === null
+      && ownerAck2.ok && ownerAck2J.existing === true
+      && ownerAck2J.event?.acknowledgedAt === ownerAck1J.event.acknowledgedAt,
+    JSON.stringify({ ownerAck1J, ownerAck2J }));
+  check("inbox: an unacknowledged inbox row is open delivery debt, exactly like an undelivered pane row",
+    (await eventRows()).filter((e) => e.receiverSlot === aId
+      && !["acknowledged", "receiver-gone"].includes(e.status)).some((e) => e.id === inboxEvent?.id),
+    JSON.stringify((await eventRows()).filter((e) => e.receiverSlot === aId).map((e) => `${e.id}:${e.status}`)));
+
+  // durability: the new status word must survive fleetEventFrom, and must still be undeliverable
+  // on the other side of a restart — a fresh process re-arms every tick this row must not attract.
+  await restartSrv();
+  await Bun.sleep(AUTOS_TICK_MS * 4 + 500);
+  const inboxAfterRestart = (await deployEventRows()).find((e) => e.id === inboxEvent?.id);
+  check("inbox: a persisted inbox row survives restart as inbox/never-delivered and is still typed nowhere",
+    inboxAfterRestart?.status === "inbox" && inboxAfterRestart.delivery === "inbox"
+      && inboxAfterRestart.deliveredAt === null && inboxAfterRestart.attempts === 0
+      && !(await plogRead()).some((p) => p.text.includes(`[event ${inboxEvent?.id}]`)),
+    JSON.stringify(inboxAfterRestart));
+  const closeInbox = inboxEvent ? await post(`/api/events/${inboxEvent.id}/ack`, {})
+    : new Response(null, { status: 599 });
+  check("inbox: the owner closes the restored row through the same route, from the loaded status",
+    closeInbox.ok && (await deployEventRows()).find((e) => e.id === inboxEvent?.id)?.status === "acknowledged",
+    `${closeInbox.status} ${await closeInbox.text()}`);
+
+  // fail closed on IDENTITY, on the teardown this fixture performs anyway: an inbox row is not
+  // exempt from the recycled-receiver rule. It turns terminal with its receiver's occupant and is
+  // never re-targeted at whoever moves into the slot number next.
+  const goneInboxId = "d0000007";
+  appendDeploy(deployRow(goneInboxId, true, "boot", { hitTarget: true, bundleStale: false }));
+  const goneInboxSub = await (await selfWatch(replacementATok,
+    { kind: "deploy", deployId: goneInboxId, idleSec: 0, delivery: "inbox" })).json() as { watch?: DeployWatchRow };
+  const goneInboxEvent = (await deployEventRows()).find((e) => e.watchId === goneInboxSub.watch?.id);
+  if (goneInboxSub.watch) await post(`/api/watches/${goneInboxSub.watch.id}/delete`, {});
+  check("inbox receiver-gone setup: the receiver holds one open inbox row before its teardown",
+    goneInboxEvent?.status === "inbox" && goneInboxEvent.receiverSlot === aId,
+    JSON.stringify(goneInboxEvent));
   await post(`/api/slots/${aId}/kill`, {});
+  const goneInboxAfter = (await deployEventRows()).find((e) => e.id === goneInboxEvent?.id);
+  const goneInboxOwnerAck = goneInboxEvent ? await post(`/api/events/${goneInboxEvent.id}/ack`, {})
+    : new Response(null, { status: 599 });
+  check("inbox: teardown makes an inbox row terminal, and the owner ack is then refused, never re-targeted",
+    goneInboxAfter?.status === "receiver-gone" && goneInboxAfter.acknowledgedAt === null
+      && goneInboxOwnerAck.status === 409,
+    `${JSON.stringify(goneInboxAfter)} ${goneInboxOwnerAck.status} ${await goneInboxOwnerAck.text()}`);
 
   // === MAIN-SESSION EXIT: tickMigrate ==========================================================
   // The isolated wrapper explicitly arms the otherwise-default-off tick at 44%. FLEET_CMD=true

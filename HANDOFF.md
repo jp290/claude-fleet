@@ -592,7 +592,8 @@ Same-Tree-Lauf ALL PASS — Doktrin eingehalten, kein neuer Befund.
 **Der Korridor hat jetzt seinen ersten realen Produzenten.** Offen, in Abhängigkeitsreihenfolge:
 P2-B (`programId`/Context-Plan-Referenzen auf Tasks/Outcomes — jetzt erst sinnvoll, da Programs
 existieren) → Context-Plan-Producer → MAIN-Gründungsprompt. Product Studio bleibt pausierte
-Hypothese (`docs/attic/proposals/product-studio-working-circle-2026-08.md`, gesichert als
+Hypothese (damaliger Stand; seit 2026-08-16 reaktiviert als
+`docs/product-studio-working-circle.md`, gesichert als
 `f2fd630`) — kein erster Geldversuch ohne ausdrücklichen Owner-Start. Kein UI-Knopf für
 Programs — bewusst, API-Inspectability reicht für v1. Erdung: `./state.sh` · `./register.sh` ·
 `docs/core-program-2026-08-12.md` · dieser Abschnitt.
@@ -2917,4 +2918,3 @@ in main — aber mains Fassung **weicht ab** (132+/99−). Ob die 99 Zeilen des 
 inhaltlich abgedeckt sind, ist **ungeprüft**; wer es beantworten will:
 `git diff 0de526c main -- docs/autonomy-bausteine-2026-08-06.md`. Ein verwaister Commit
 überlebt kein `git gc` mit Ablauf — wer die Antwort braucht, holt sie besser früh.
-

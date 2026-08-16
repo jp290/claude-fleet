@@ -26,7 +26,7 @@ Every feature that survives is a principle wearing a UI:
 
 Three places, and only the first is this folder:
 
-- **`docs/*.md`** — the fourteen operative docs below. Everything that earns ongoing
+- **`docs/*.md`** — the fifteen operative docs below. Everything that earns ongoing
   maintenance.
 - **Commit bodies** — *this repo's finding register.* A defect, its mechanism, its
   measurement and its rejected alternatives are written where the change is:
@@ -42,7 +42,7 @@ Three places, and only the first is this folder:
 Deliberately **not** a fourth place: a summary doc that restates any of the three. That is
 how the shelf grew to 52 docs whose claims nobody re-derived.
 
-## The fourteen operative docs
+## The fifteen operative docs
 
 One line per doc — its *purpose*, not its contents, so this index points without rotting.
 
@@ -74,6 +74,11 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 - **`scope-inflation.md`** — the step from a finding to a *program*, and how it inflates: a
   ranked list without a cut line is a portfolio, not a plan. Quote the owner's ask verbatim
   and cut the list where it is satisfied.
+
+**Product working circles**
+- **`product-studio-working-circle.md`** — the active Product-Studio direction, its composed
+  Game-Studio profile, the measured private-repo-h lesson and the single Visual Loop v0 cut.
+  Read before turning a product idea into roles, Context Packs or a domain-specific harness.
 
 **Knowledge hygiene**
 - **`knowledge-currency.md`** — a worktree delivers the shelf as of *spawn time*. A lane

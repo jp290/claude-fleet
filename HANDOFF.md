@@ -1,3 +1,17 @@
+# HANDOFF — Supervisor v0, first occupant (2026-08-16, Slot 5 「🧿 Supervisor」)
+
+**Wer:** die eine owner-seitige Supervisor-Session (Session `cad6470d-f107-4b66-9918-c5b653386951`,
+Slot 5, gebunden an Programm `c740952d4b4f071312155e2b` „Owner-side Supervisor v0"). Kanäle heute:
+`GET /api/self/supervisor-view`, `POST /api/self/nudge` (propose-only-Programme, Attention wie geerbt).
+**Beobachtet (typed, 2026-08-16 abends):** Integration sauber — deployGap 0, Bundle frisch, 0
+un-adjudizierte rote Audits, Attention-Queue leer. Portfolio: zwei aktive Programme mit 2/2 done
+(c740952d, 441c0058), „private-repo-h — Visual Loop v0" aktiv aber stale-gebunden mit 0 Tasks,
+„Private-repo-e — First Production Slice" confirmed/nie aktiviert, „Pi/Z.ai Vision H0" aktiv/unbound mit
+1 sent-Task (~11 h alt). **Nudge-Kanal live bewiesen:** sendId `ca88b9eab5e93855ecd0c7d2` an die
+Program-MAIN Slot 2; deren Entscheid: Programm complete nach diesem Succession-Beweis.
+**Nachfolge:** du bist die STEHENDE Supervisor-Rolle, kein Neustart — Portfolio über die
+supervisor-view lesen, Nudge-Doktrin gilt (bounded, Entscheidung bleibt bei Program-MAIN/Owner).
+
 # HANDOFF — Session 70 (2026-08-16, Fable Program-MAIN „Supervisor Operations Inbox v1": gelandet `3ed2074`, Audit-Rot als Flake bewiesen, deployt `5bc2cc68`, beide Delivery-Modi live bewiesen, Programm complete) · 69/68/67 darunter
 
 **ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null`, Lücke `e2784b16`);

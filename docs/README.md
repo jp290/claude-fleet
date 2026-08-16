@@ -77,8 +77,9 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 
 **Product working circles**
 - **`product-studio-working-circle.md`** — the active Product-Studio direction, its composed
-  Game-Studio profile, the measured private-repo-h lesson and the single Visual Loop v0 cut.
-  Read before turning a product idea into roles, Context Packs or a domain-specific harness.
+  Game-Studio profile, the measured private-repo-h visual lesson, the communication prerequisite,
+  Pi/GLM calibration and the first small artillery-game corridor. Read before turning a product
+  idea into roles, Context Packs or a domain-specific harness.
 
 **Knowledge hygiene**
 - **`knowledge-currency.md`** — a worktree delivers the shelf as of *spawn time*. A lane

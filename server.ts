@@ -1154,6 +1154,12 @@ interface WatchBase {
   created: number;
   firedAt: number | null;
   lastResult: string | null;
+  // WHERE THE COMPLETION GOES, decided by the SUBSCRIBER at subscribe time and by nobody else.
+  // Absent is the legacy pane default and is kept absent on load, byte-for-byte: pane delivery is
+  // what every existing row asked for. "inbox" says the receiver is an owner-attended conversation
+  // — typing a completion fact into that TUI lands it in the owner's composer, so such a watch
+  // mints its event straight into the owner operations inbox and no transport ever touches it.
+  delivery?: "pane" | "inbox";
 }
 interface LaneWatch extends WatchBase {
   // Absent on legacy persisted rows. Keeping it absent after load is intentional: those rows pass
@@ -1192,6 +1198,9 @@ function watchFrom(raw: unknown): Watch | null {
     || typeof w.armed !== "boolean") return null;
   if (w.slotOpenedAt !== undefined && (typeof w.slotOpenedAt !== "number"
     || !Number.isFinite(w.slotOpenedAt) || w.slotOpenedAt <= 0)) return null;
+  // absent = legacy pane. A present-but-unknown value is fail-closed, never coerced to a default:
+  // guessing here would silently give a subscription a transport its subscriber did not ask for.
+  if (w.delivery !== undefined && w.delivery !== "pane" && w.delivery !== "inbox") return null;
   if (w.kind === "audit") {
     return typeof w.repo === "string" && typeof w.mainAfter === "string" ? raw as AuditWatch : null;
   }
@@ -1203,7 +1212,12 @@ function watchFrom(raw: unknown): Watch | null {
     ? raw as LaneWatch | MergeWatch : null;
 }
 
-type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone";
+// "inbox" is the ONE word the transport split adds: the event is visible to the owner operations
+// inbox and waits for the OWNER's acknowledgement. It is not a transport state — FACT 2 selects
+// `pending` alone, so an inbox row can never be sent, and `deliveredAt` therefore stays null on it
+// forever. Terminal remains acknowledged|receiver-gone for both delivery modes.
+type FleetEventStatus = "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone"
+  | "inbox";
 interface FleetEventBase {
   id: string;
   watchId: string | null;
@@ -1218,6 +1232,10 @@ interface FleetEventBase {
   attempts: number;
   deliveredAt: number | null;
   acknowledgedAt: number | null;
+  // inherited from the Watch that minted it, absent = legacy pane. It is copied onto the event
+  // rather than looked up through `watchId` because the Watch is prunable and the event is not:
+  // the row must still say by itself which transport it was minted for.
+  delivery?: "pane" | "inbox";
 }
 interface LaneFleetEvent extends FleetEventBase {
   subjectSlot: number;
@@ -1306,7 +1324,13 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
     || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
     || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
-    || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone"].includes(String(e.status))
+    || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone", "inbox"]
+      .includes(String(e.status))
+    // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch. A
+    // clarification is watch-less and pane-only by construction — it carries a question whose
+    // answer travels back into the asking worker's pane, so it can never be an inbox row.
+    || (e.delivery !== undefined && e.delivery !== "pane" && e.delivery !== "inbox")
+    || (e.delivery === "inbox" && e.kind === "clarification-request")
     || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
     || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
     || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
@@ -1316,6 +1340,7 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     receiverSessionId: e.receiverSessionId, receiverIdleSec: e.receiverIdleSec!,
     createdAt: e.createdAt, status: e.status as FleetEventStatus, attempts: e.attempts!,
     deliveredAt: e.deliveredAt, acknowledgedAt: e.acknowledgedAt,
+    ...(e.delivery !== undefined ? { delivery: e.delivery as "pane" | "inbox" } : {}),
   };
   if (e.kind === "clarification-request") {
     if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0 || typeof e.subjectBranch !== "string") return null;
@@ -1352,6 +1377,8 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
         gitOp: p.gitOp, awaiting: p.awaiting, hostCommits: p.hostCommits },
       createdAt: base.createdAt, status: base.status, attempts: base.attempts,
       deliveredAt: base.deliveredAt, acknowledgedAt: base.acknowledgedAt,
+      // last, and only when present: a legacy row without it must serialize byte-identically.
+      ...(base.delivery !== undefined ? { delivery: base.delivery } : {}),
     };
   }
   if (e.kind === "merge-terminal") {
@@ -2608,7 +2635,7 @@ type AuditEvent =
   // the doneLooking outbound channel (Watch): Watch rows record signal capture/skip; the typed
   // FleetEvent rows below record transport, acknowledgement and terminal receiver loss separately.
   | "watch_fire" | "watch_skip"
-  | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_ack"
+  | "fleet_event_delivered" | "fleet_event_send_uncertain" | "fleet_event_ack" | "fleet_event_owner_ack"
   | "fleet_event_receiver_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
@@ -4536,6 +4563,12 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
   const kind = b.kind === undefined ? "lane" : b.kind;
   if (kind !== "lane" && kind !== "merge" && kind !== "audit" && kind !== "deploy")
     return json({ error: "kind must be 'lane', 'merge', 'audit', or 'deploy'" }, 400);
+  // WHERE the completion goes is a subscription fact, named by the subscriber. Absent stays absent
+  // (legacy pane); anything else is refused by name rather than defaulted, because guessing the
+  // transport is exactly the failure this field exists to remove.
+  if (b.delivery !== undefined && b.delivery !== "pane" && b.delivery !== "inbox")
+    return json({ error: "delivery must be 'pane' or 'inbox'" }, 400);
+  const delivery = b.delivery as "pane" | "inbox" | undefined;
 
   let identity: { t: Slot; cwd: string; branch: string; terminal: MergeLast | null } | null = null;
   let auditIdentity: { repo: string; mainAfter: string; row: PostLandAuditRow | null } | null = null;
@@ -4609,6 +4642,7 @@ async function createWatchForSlot(s: Slot, body: Record<string, unknown> | null)
     created: Date.now(),
     firedAt: null,
     lastResult: null,
+    ...(delivery !== undefined ? { delivery } : {}),
   };
   const w: Watch = kind === "audit"
     ? { ...common, kind: "audit", repo: auditIdentity!.repo, mainAfter: auditIdentity!.mainAfter }
@@ -4648,6 +4682,18 @@ function mergeEventPayload(outcome: MergeLast): MergeWatchEventPayload {
   };
 }
 
+// THE ENTIRE TRANSPORT SPLIT, in one expression every mint site spreads. The Watch's delivery
+// decides the event's own delivery fact AND its initial status: "inbox" is not a pending state, and
+// FACT 2 selects `pending` alone — so an inbox event can never reach sendText, the history append
+// or the prompt journal. That is a property of the state machine, not of an added guard, which is
+// why no site below needs to know about panes at all.
+function mintTransport(w: Watch): { status: FleetEventStatus; delivery?: "pane" | "inbox" } {
+  return {
+    status: w.delivery === "inbox" ? "inbox" : "pending",
+    ...(w.delivery !== undefined ? { delivery: w.delivery } : {}),
+  };
+}
+
 function spendWatch(w: Watch, event: FleetEvent): boolean {
   if (fleetEvents.some((e) => e.watchId === w.id)) return false;
   fleetEvents = [...fleetEvents, event];
@@ -4672,7 +4718,7 @@ async function mintMergeEvents(target: number, cwd: string, branch: string, outc
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
       receiverIdleSec: w.idleSec, subjectSlot: target, subjectCwd: cwd, subjectBranch: branch,
       kind: "merge-terminal", payload: mergeEventPayload(outcome), createdAt: now,
-      status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
     };
     dirty = spendWatch(w, event) || dirty;
   }
@@ -4724,7 +4770,7 @@ async function mintAuditEvents(row: PostLandAuditRow): Promise<void> {
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
       receiverIdleSec: w.idleSec, subjectRepo: w.repo, subjectMainAfter: w.mainAfter,
       kind: "post-land-audit", payload: auditEventPayload(row, w.mainAfter), createdAt: now,
-      status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
     };
     dirty = spendWatch(w, event) || dirty;
   }
@@ -4743,7 +4789,7 @@ async function mintDeployEvents(row: DeployRow): Promise<void> {
       receiverSlot: receiver.id, receiverOpenedAt: receiver.openedAt, receiverSessionId: receiver.sessionId,
       receiverIdleSec: w.idleSec, subjectDeployId: w.deployId,
       kind: "deploy-terminal", payload: deployEventPayload(row), createdAt: now,
-      status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+      ...mintTransport(w), attempts: 0, deliveredAt: null, acknowledgedAt: null,
     };
     dirty = spendWatch(w, event) || dirty;
   }
@@ -5171,6 +5217,12 @@ async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   if (event.receiverSlot !== s.id) return json({ error: "event belongs to another slot" }, 409);
   if (event.receiverOpenedAt !== s.openedAt || event.receiverSessionId !== s.sessionId)
     return json({ error: "event belongs to a replaced session" }, 409);
+  // VISIBILITY AND CONSUMPTION ARE SEPARATE FACTS. An inbox event was never offered to this
+  // session — it exists precisely because typing it into an owner-attended pane is the failure
+  // being removed — so a self-ack on it would record model consumption that never happened. It is
+  // refused for every status, including acknowledged: only the owner's own twin route closes it.
+  if (event.delivery === "inbox")
+    return json({ error: "inbox event — acknowledgement belongs to the owner" }, 409);
   if (event.status === "acknowledged") return json({ ok: true, existing: true, event });
   // Ack is transport receipt for every event kind. For clarification-request it expressly does
   // NOT answer or close the ClarificationRequest; only a successful reply send does that.
@@ -5182,6 +5234,30 @@ async function acknowledgeFleetEvent(s: Slot, id: string): Promise<Response> {
   event.acknowledgedAt = Date.now();
   audit("fleet_event_ack", s.id, event.id);
   pruneFleetEvents(s.id);
+  await saveStateNow();
+  return json({ ok: true, existing: false, event });
+}
+
+// THE OWNER TWIN of the route above, and deliberately narrow: it closes inbox rows and nothing
+// else. The two are mutually exclusive by delivery, so neither principal can close the other's
+// events and no row is ackable twice under two different meanings. A distinct audit word keeps the
+// two receipts apart in the trail — "the owner saw this" is not "a session consumed this".
+async function ownerAcknowledgeFleetEvent(id: string): Promise<Response> {
+  const event = fleetEvents.find((e) => e.id === id);
+  if (!event) return json({ error: "unknown event" }, 404);
+  if (event.delivery !== "inbox")
+    return json({ error: "pane-delivered event — acknowledgement belongs to the receiver session" }, 409);
+  if (event.status === "acknowledged") return json({ ok: true, existing: true, event });
+  // a recycled or dead receiver already turned the row terminal (markFleetEventReceiverGone / boot
+  // reconciliation). That fact is evidence and stays as it is; acking it would overwrite it.
+  if (event.status === "receiver-gone")
+    return json({ error: "receiver occupant ended or was replaced — the event is already terminal", status: event.status }, 409);
+  if (event.status !== "inbox")
+    return json({ error: "event is not acknowledgeable", status: event.status }, 409);
+  event.status = "acknowledged";
+  event.acknowledgedAt = Date.now();
+  audit("fleet_event_owner_ack", event.receiverSlot, event.id);
+  pruneFleetEvents(event.receiverSlot);
   await saveStateNow();
   return json({ ok: true, existing: false, event });
 }
@@ -8234,7 +8310,7 @@ async function tickWatches(): Promise<void> {
           receiverIdleSec: w.idleSec,
           subjectSlot: t.id, subjectBranch: t.worktree?.branch ?? w.targetBranch,
           kind: laneWatchEventKind(watchSignal), payload: laneWatchPayload(sig),
-          createdAt: now, status: "pending", attempts: 0,
+          createdAt: now, ...mintTransport(w), attempts: 0,
           deliveredAt: null, acknowledgedAt: null,
         };
         fleetEvents = [...fleetEvents, minted];
@@ -16814,6 +16890,14 @@ Bun.serve<WSData>({
     const attentionRefuse = /^\/api\/attention\/([0-9a-f]{24})\/refuse$/.exec(url.pathname);
     if (attentionRefuse && req.method === "POST")
       return refuseAttentionRequest(attentionRefuse[1], await readJson(req));
+    // --- the OPERATIONS inbox (owner side), strictly separate from the attention inbox above: that
+    // one carries decisions a program's main session raised, this one carries completion FACTS a
+    // subscription asked to be told about with delivery:"inbox". No new payload — the rows already
+    // ride /api/sessions as `events`. Owner-only by POSITION, past the tokenGate. Its twin is
+    // POST /api/self/events/:id/ack, which refuses exactly the rows this route accepts.
+    const eventOwnerAck = /^\/api\/events\/([a-z0-9]+)\/ack$/.exec(url.pathname);
+    if (eventOwnerAck && req.method === "POST")
+      return await ownerAcknowledgeFleetEvent(eventOwnerAck[1]);
     // --- task queue (owner side). Tasks arrive here (owner-created) or via /intake
     // (pending). Only the owner moves a task to `queued`; only then can the dispatcher run it.
     if (url.pathname === "/api/tasks" && req.method === "POST") {

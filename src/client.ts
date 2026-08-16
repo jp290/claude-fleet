@@ -4800,6 +4800,7 @@ async function refresh() {
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
       gate?: GateInfo | null; errors?: ErrorsInfo | null;
       attentionOpen?: number;
+      events?: FleetEventRow[];
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null };
     if (data.v) {
       if (!bundleV) bundleV = data.v;
@@ -4832,6 +4833,9 @@ async function refresh() {
     // the attention inbox's whole share of the 2s poll: one number. It paints the badge, and while
     // the panel is open a CHANGE in it is what re-fetches the rows — the panel never polls itself.
     setAttentionOpen(data.attentionOpen ?? 0);
+    // the operations inbox reads the events the poll already carries — no extra request, and the
+    // 📥 badge counts only rows that were minted FOR it (delivery inbox, still awaiting the owner)
+    setOpsEvents(data.events ?? []);
     deployGapInfo = data.deployGap ?? null;
     bundleStaleInfo = data.bundleStale ?? null;
     serverNow = data.now;
@@ -8174,6 +8178,125 @@ attnbtn.onclick = () => {
   void loadAttention();
 };
 renderAttnBtn();
+
+// --- the OPERATIONS inbox (📥): FleetEvents whose subscription asked for delivery:"inbox" instead
+// of pane text. STRICTLY SEPARATE from 📣 above and never merged with it: that inbox carries what
+// needs an owner DECISION, this one carries completion FACTS an owner-attended session subscribed
+// to — a merge outcome, a post-land audit, a deploy, a lane reaching a completion predicate.
+// Acknowledging is a receipt that the owner saw it, nothing else; it starts no work.
+//
+// Zero payload cost: the rows already ride /api/sessions as `events` (they are the owner's only
+// view of a receiver-gone event), so this panel reads what the 2 s poll already carries.
+interface FleetEventRow {
+  id: string; watchId: string | null;
+  receiverSlot: number; receiverOpenedAt: number; receiverSessionId: string | null;
+  createdAt: number;
+  // the SERVER's union, copied whole. A local interface is a claim about a foreign surface, so an
+  // omitted word here would silently make its rows unmatched rather than mis-typed.
+  status: "pending" | "send-uncertain" | "delivered" | "acknowledged" | "receiver-gone" | "inbox";
+  delivery?: "pane" | "inbox";
+  kind: "lane-ready" | "host-commit-ready" | "merge-terminal" | "post-land-audit"
+    | "deploy-terminal" | "clarification-request";
+  subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
+  subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string;
+  payload?: Record<string, unknown>;
+}
+const opsdlg = $("opsdlg"), opspanel = $("opspanel"), opsbtn = $("opsbtn");
+let opsRows: FleetEventRow[] = [];
+let opsBusy = false;
+
+const opsOpen = (rows: FleetEventRow[]): FleetEventRow[] =>
+  rows.filter((e) => e.delivery === "inbox" && e.status === "inbox");
+
+function renderOpsBtn() {
+  const n = opsOpen(opsRows).length;
+  opsbtn.textContent = n > 0 ? `📥${n}` : "📥";
+  opsbtn.classList.toggle("hot", n > 0);
+  // same rule as 📣: no affordance while nothing is filed, so the icon means something when it appears
+  opsbtn.style.display = n > 0 || opsdlg.style.display === "flex" ? "" : "none";
+}
+
+function setOpsEvents(rows: FleetEventRow[]) {
+  opsRows = rows;
+  renderOpsBtn();
+  if (opsdlg.style.display === "flex") renderOpsDlg();
+}
+
+function closeOpsDlg() {
+  opsdlg.style.display = "none";
+  renderOpsBtn();
+}
+opsdlg.addEventListener("click", (e) => {
+  if (e.target === opsdlg) closeOpsDlg();
+});
+
+// what this row is ABOUT — the join key the owner would otherwise have to reconstruct by hand
+function opsSubject(e: FleetEventRow): string {
+  if (e.kind === "post-land-audit") return `${e.subjectRepo ?? "?"} @ ${(e.subjectMainAfter ?? "").slice(0, 8)}`;
+  if (e.kind === "deploy-terminal") return `deploy ${e.subjectDeployId ?? "?"}`;
+  return `slot ${e.subjectSlot ?? "?"} · ${e.subjectBranch ?? "?"}`;
+}
+
+// terse and per kind, never the whole payload: the point is whether the owner must look further.
+function opsSummary(e: FleetEventRow): string {
+  const p = e.payload ?? {};
+  const verify = p.verify as { ok?: boolean | null } | undefined;
+  if (e.kind === "merge-terminal")
+    return `${String(p.status)} · landed=${p.landed === true ? "YES" : "NO"}`
+      + (verify ? ` · verify=${verify.ok === true ? "ok" : verify.ok === false ? "FAILED" : "unverified"}` : "");
+  if (e.kind === "post-land-audit") return `result=${String(p.result)}`;
+  if (e.kind === "deploy-terminal")
+    return `ok=${p.ok === true ? "YES" : p.ok === false ? "NO" : "UNVERIFIED"} · stage=${String(p.stage)}`;
+  return `${p.ahead ?? "?"} ahead / ${p.dirty ?? "?"} dirty`;
+}
+
+function opsRow(e: FleetEventRow): HTMLElement {
+  const row = el("div", "attnrow open");
+  const head = el("div", "attnhead");
+  head.appendChild(el("span", "attnkind k-review-ready", e.kind));
+  head.appendChild(el("span", "attnprog", opsSubject(e)));
+  head.appendChild(el("span", "attnmeta", `receiver slot ${e.receiverSlot} · ${fmtSince(e.createdAt)}`));
+  row.appendChild(head);
+  row.appendChild(el("div", "attntext", opsSummary(e)));
+  const btns = el("div", "shrbtns");
+  const ack = el("button", "shrbtn primary", "acknowledge") as HTMLButtonElement;
+  ack.title = "a receipt that you saw this — it starts nothing and changes no lane";
+  ack.disabled = opsBusy;
+  ack.onclick = async () => {
+    opsBusy = true;
+    const res = await post(`/api/events/${e.id}/ack`, {});
+    opsBusy = false;
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      toast(err.error ?? "the acknowledgement did not stick");
+    }
+    await refresh();
+    renderOpsDlg();
+  };
+  btns.appendChild(ack);
+  row.appendChild(btns);
+  return row;
+}
+
+function renderOpsDlg() {
+  opspanel.replaceChildren();
+  opspanel.appendChild(el("h2", "", "Operations — completions filed instead of typed into a pane"));
+  const live = opsOpen(opsRows);
+  if (!live.length) opspanel.appendChild(el("div", "shrhint", "Nothing is filed."));
+  for (const e of live) opspanel.appendChild(opsRow(e));
+  const btns = el("div", "shrbtns");
+  const close = el("button", "shrbtn", "close") as HTMLButtonElement;
+  close.onclick = closeOpsDlg;
+  btns.appendChild(close);
+  opspanel.appendChild(btns);
+}
+
+opsbtn.onclick = () => {
+  setDrawer(false);
+  opsdlg.style.display = "flex";
+  renderOpsDlg();
+};
+renderOpsBtn();
 
 // --- prompt history: composed sends recorded server-side per slot; recalled via the
 // 🕘 popover or ArrowUp/ArrowDown cycling in an (empty) compose box ---

@@ -1472,6 +1472,34 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   }
 }
 
+// The transport split (owner operations inbox): an inbox event must be unable to reach pane
+// delivery BY CONSTRUCTION rather than by a guard someone can forget — FACT 2 selects `pending`
+// alone, and an inbox event is minted straight to a status that loop never looks at. Its twin rule
+// is the ack split: exactly one principal can close each row, decided by `delivery`. Neither is a
+// type. tsc is perfectly content with a loop that selects one more status word, and with two ack
+// routes that accept the same row under two different meanings.
+{
+  const fact2From = server.indexOf("// FACT 2:");
+  const fact2To = server.indexOf("// The one-line receiver text is composed");
+  const fact2 = fact2From > 0 && fact2To > fact2From ? server.slice(fact2From, fact2To) : "";
+  const loopAt = fact2.indexOf("for (const event of fleetEvents) {");
+  const selects = loopAt >= 0 && /^for \(const event of fleetEvents\) \{\n\s*if \(event\.status !== "pending"\) continue;/
+    .test(fact2.slice(loopAt));
+  pin('the FACT 2 transport loop selects status === "pending" alone — an inbox event cannot reach sendText',
+    fact2 !== "" && selects && fact2.includes("await sendText(") && !fact2.includes('"inbox"'),
+    fact2 === "" ? "FACT 2 region not found in server.ts"
+      : `selects=${selects} sends=${fact2.includes("await sendText(")} mentionsInbox=${fact2.includes('"inbox"')}`);
+
+  const selfFrom = server.indexOf("async function acknowledgeFleetEvent");
+  const ownerFrom = server.indexOf("async function ownerAcknowledgeFleetEvent");
+  const selfAck = selfFrom > 0 && ownerFrom > selfFrom ? server.slice(selfFrom, ownerFrom) : "";
+  const ownerAck = ownerFrom > 0 ? server.slice(ownerFrom, ownerFrom + 2000) : "";
+  pin("the ack split holds in both directions — self refuses an inbox row, owner refuses a pane row",
+    selfAck.includes('event.delivery === "inbox"') && selfAck.includes("belongs to the owner")
+      && ownerAck.includes('event.delivery !== "inbox"') && ownerAck.includes("belongs to the receiver session"),
+    `self=${selfAck !== ""} owner=${ownerAck !== ""}`);
+}
+
 pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
 
 console.log(rows.join("\n"));

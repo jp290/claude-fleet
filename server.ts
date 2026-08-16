@@ -1883,6 +1883,21 @@ const sameProgramSession = (p: Program, s: Slot): boolean => p.proposedBy.kind =
   && p.proposedBy.sessionId === s.sessionId;
 let programs: Program[] = [];
 const programBootstrapInflight = new Set<string>();
+
+// The cross-program Supervisor is a SINGLETON above every Program bracket, so its binding lives
+// beside `programs` rather than inside one of them. Identical shape to Program.main on purpose:
+// slot+openedAt is the only occupant identity Fleet ever trusts, and a recycled slot must never
+// inherit an authority its predecessor held. The binding grants no capability by itself — it names
+// who the Supervisor is, and nothing reads it as permission to write.
+interface SupervisorBinding {
+  slot: number;
+  openedAt: number;
+  sessionId: string | null;
+  boundAt: number;
+}
+let supervisor: SupervisorBinding | null = null;
+let supervisorBootstrapInflight = false;
+const SUPERVISOR_LABEL = "🧿 Supervisor";
 const MAX_PROGRAMS = 100;
 function capPrograms(list: Program[]): Program[] {
   if (list.length <= MAX_PROGRAMS) return list;
@@ -2766,7 +2781,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
-    events: fleetEvents, clarifications, attentionRequests, tasks, programs,
+    events: fleetEvents, clarifications, attentionRequests, tasks, programs, supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -4885,8 +4900,14 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
       && p.main.slot === s.id && p.main.openedAt === s.openedAt);
     if (bound.length > 1)
       return json({ error: `ambiguous succession: this session is Program-MAIN of ${bound.length} active programs` }, 409);
+    // Two authorities on one session have no defined order of transfer, and inventing one here
+    // would silently pick a winner. Same refusal shape as the >1-programs rule above.
+    const isSupervisor = !!supervisor && supervisor.slot === s.id && supervisor.openedAt === s.openedAt;
+    if (isSupervisor && bound.length === 1)
+      return json({ error: `ambiguous succession: this session is both the Supervisor and Program-MAIN of ${bound.length} active program` }, 409);
     if (bound.length === 1)
       return await succeedProgramMain(bound[0]!, s, label, carry, predecessor);
+    if (isSupervisor) return await succeedSupervisor(s, label, carry, predecessor);
 
     const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
     if (!free) return json({ error: "no free slot" }, 409);
@@ -12100,6 +12121,230 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
   ].join("\n") + anchorBlock;
 }
 
+// Supervisor v0 is deliberately MINIMAL: the founding text states the role, the three read/propose
+// channels it already has, and the acts it structurally cannot perform. No behavioural rulebook —
+// a Supervisor that is told how to nudge before anyone has watched it nudge would be prose, not a
+// contract, and the next cut would inherit it as if it were one.
+const supervisorBriefBody = (): string[] => [
+  "Your role: hold the cross-program portfolio together from typed facts, surface and ask, and NUDGE - every decision inside a program remains with its Program-MAIN or working circle, and every promotion remains with the owner.",
+  "You structurally cannot confirm or activate programs, land, deploy, or write code; do not attempt any of these.",
+  "Your channels today: GET /api/self (your own row), POST /api/self/programs (propose-only), POST /api/self/attention (reach the owner). Further capabilities arrive only through later owner-promoted cuts.",
+  "Begin: run ./state.sh, then ./register.sh, then observe and report what you see to the owner via the attention channel only if something needs them.",
+];
+
+function buildSupervisorBrief(anchorBlock: string): string {
+  return [
+    "[fleet Supervisor] You are the one owner-side Supervisor session for this fleet.",
+    ...supervisorBriefBody(),
+  ].join("\n") + anchorBlock;
+}
+
+function buildSupervisorSuccessionBrief(carry: string | null, anchorBlock: string): string {
+  const next = carry ? [``, `The first thing the predecessor would do next (max. ${MAX_SUCCESSION_CARRY} characters):`, carry] : [];
+  return [
+    "[fleet Supervisor succession] You are the CONTINUED owner-side Supervisor session; your predecessor is retiring; everything handed over is in HANDOFF.md.",
+    ...supervisorBriefBody(),
+    ...next,
+  ].join("\n") + anchorBlock;
+}
+
+async function succeedSupervisor(s: Slot, label: string | null, carry: string | null,
+  predecessor: { cwd: string; token: string }): Promise<Response> {
+  if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
+  supervisorBootstrapInflight = true; // synchronous reservation before any transfer await
+  try {
+    const preflight = await preflightProgramMain(predecessor.cwd);
+    if (!preflight.ok) return json({ error: preflight.error }, 400);
+    const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
+    if (!free) return json({ error: "no free slot" }, 409);
+    laneSpawn.add(free.id);
+    try {
+      try {
+        await openSlot(free, predecessor.cwd, null, s.model, label, s.harness, s.effort,
+          { container: s.container, containerContext: s.containerContext });
+      } catch (e) {
+        if (free.cwd) await killSlot(free, "reopen");
+        return json({ error: `Supervisor successor open failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
+
+      const openedAt = free.openedAt;
+      const stillCurrent = (): boolean => !!free.cwd && free.openedAt === openedAt;
+      const cleanup = async (): Promise<void> => {
+        if (stillCurrent()) await killSlot(free, "reopen");
+      };
+      await Bun.sleep(4000);
+      if (!stillCurrent()) {
+        await cleanup();
+        return json({ error: "Supervisor successor slot changed during boot" }, 500);
+      }
+      const gate = await canDeliver(free, { now: Date.now(), idleMs: 0,
+        killSwitch: false, quietHours: false, harness: false });
+      if (!gate.ok) {
+        await cleanup();
+        return json({ error: `Supervisor successor delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 500);
+      }
+      const readiness = await waitForFoundingReadiness(free, stillCurrent);
+      if (!readiness.ok) {
+        await cleanup();
+        return json({ error: `Supervisor successor ${readiness.reason}` }, 500);
+      }
+
+      const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
+      const plan = planContext(planFacts);
+      const anchorBlock = renderContextAnchorBlock(plan);
+      const deliveredBrief = buildSupervisorSuccessionBrief(carry, anchorBlock);
+      const selected = contextReceiptSelections(plan.selected);
+      const omitted = plan.omitted.map((entry) => ({ ...entry }));
+      const repo = free.cwd!;
+      if (!stillCurrent()) {
+        await cleanup();
+        return json({ error: "Supervisor successor slot changed before founding delivery" }, 500);
+      }
+
+      // Same one-way crash boundary as the Program-MAIN rail: the binding is rewritten only after a
+      // successful send. Process loss before the send reloads the OLD binding and its still-working
+      // predecessor, because no retirement was persisted. Loss after the send but before
+      // saveStateNow reloads that same old binding while the delivered successor remains an
+      // ordinary unbound session; the owner decides what to do.
+      try {
+        await sendText(free, deliveredBrief, true);
+      } catch (e) {
+        await cleanup();
+        return json({ error: `Supervisor successor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
+
+      const at = Date.now();
+      supervisor = { slot: free.id, openedAt: free.openedAt,
+        sessionId: free.sessionId ?? null, boundAt: at };
+      const hash = createHash("sha256").update(JSON.stringify({
+        anchorBlock,
+        planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
+      })).digest("hex");
+      await appendEvent(CONTEXT_RECEIPT_FILE, {
+        id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
+        // A Supervisor sits ACROSS programs, so its receipt names none: programId:null is the
+        // cross-program scope, not a missing attribution.
+        taskId: null, originId: null, programId: null, slot: free.id, branch: preflight.value.branch,
+        harness: free.harness, model: free.model, effort: free.effort,
+        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
+        deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+      });
+      free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+      saveHistory(free);
+      logPrompt(free, deliveredBrief, "auto", at);
+      const retirement = { at: at + Math.max(0, MIGRATE_GRACE_MS), ...predecessor };
+      s.successionRetirement = retirement;
+      successionStarted.set(s.id, predecessor.token);
+      const response = json({ ok: true, slot: free.id, label: free.label, supervisor });
+      await saveStateNow();
+      scheduleSuccessionRetirement(s, retirement);
+      return response;
+    } finally {
+      laneSpawn.delete(free.id);
+    }
+  } finally {
+    supervisorBootstrapInflight = false;
+  }
+}
+
+async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Response> {
+  const ho = harnessIdOf(body);
+  if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
+  const hh = harnessOf(ho.harness);
+  const mo = modelOf(body, hh);
+  if (!mo.ok) return json({ error: modelErrFor(hh) }, 400);
+  const eo = effortOf(body, hh);
+  if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+  if (typeof body.cwd !== "string" || !body.cwd.trim()) return json({ error: "cwd is required" }, 400);
+  if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
+    return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
+
+  if (supervisor) {
+    const occupant = slotFrom(supervisor.slot);
+    if (occupant?.cwd && occupant.openedAt === supervisor.openedAt)
+      return json({ ok: true, existing: true, supervisor });
+    return json({ error: `stale Supervisor binding: slot ${supervisor.slot} openedAt ${supervisor.openedAt}` }, 409);
+  }
+  if (supervisorBootstrapInflight) return json({ error: "Supervisor bootstrap already in flight" }, 409);
+
+  supervisorBootstrapInflight = true; // synchronous reservation before any slot await
+  try {
+    const preflight = await preflightProgramMain(body.cwd);
+    if (!preflight.ok) return json({ error: preflight.error }, 400);
+    const free = slots.find((x) => !x.cwd && !laneSpawn.has(x.id));
+    if (!free) return json({ error: "no free slot" }, 409);
+    laneSpawn.add(free.id);
+    try {
+      const label = typeof body.label === "string"
+        ? body.label.trim() || null
+        : SUPERVISOR_LABEL;
+      try {
+        await openSlot(free, body.cwd, null, mo.model, label, ho.harness, eo.effort);
+      } catch (e) {
+        return json({ error: `Supervisor open failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
+
+      const openedAt = free.openedAt;
+      const stillCurrent = (): boolean => !!free.cwd && free.openedAt === openedAt;
+      const cleanup = async (): Promise<void> => {
+        if (stillCurrent()) await killSlot(free, "reopen");
+      };
+      await Bun.sleep(4000);
+      if (!stillCurrent()) return json({ error: "Supervisor slot changed during boot" }, 500);
+      const gate = await canDeliver(free, { now: Date.now(), idleMs: 0,
+        killSwitch: false, quietHours: false, harness: false });
+      if (!gate.ok) {
+        await cleanup();
+        return json({ error: `Supervisor delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` }, 500);
+      }
+      const readiness = await waitForFoundingReadiness(free, stillCurrent);
+      if (!readiness.ok) {
+        await cleanup();
+        return json({ error: `Supervisor ${readiness.reason}` }, 500);
+      }
+
+      const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
+      const plan = planContext(planFacts);
+      const anchorBlock = renderContextAnchorBlock(plan);
+      const deliveredBrief = buildSupervisorBrief(anchorBlock);
+      const selected = contextReceiptSelections(plan.selected);
+      const omitted = plan.omitted.map((entry) => ({ ...entry }));
+      const repo = free.cwd!;
+      if (!stillCurrent()) return json({ error: "Supervisor slot changed before founding delivery" }, 500);
+      try {
+        await sendText(free, deliveredBrief, true);
+      } catch (e) {
+        await cleanup();
+        return json({ error: `Supervisor founding brief failed: ${e instanceof Error ? e.message : e}` }, 500);
+      }
+
+      const at = Date.now();
+      supervisor = { slot: free.id, openedAt: free.openedAt,
+        sessionId: free.sessionId ?? null, boundAt: at };
+      const hash = createHash("sha256").update(JSON.stringify({
+        anchorBlock,
+        planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
+      })).digest("hex");
+      await appendEvent(CONTEXT_RECEIPT_FILE, {
+        id: randomBytes(16).toString("hex"), hash, at, repo, head: preflight.value.head,
+        taskId: null, originId: null, programId: null, slot: free.id, branch: preflight.value.branch,
+        harness: free.harness, model: free.model, effort: free.effort,
+        mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
+        deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+      });
+      free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
+      saveHistory(free);
+      logPrompt(free, deliveredBrief, "auto", at);
+      await saveStateNow();
+      return json({ ok: true, slot: free.id, supervisor });
+    } finally {
+      laneSpawn.delete(free.id);
+    }
+  } finally {
+    supervisorBootstrapInflight = false;
+  }
+}
+
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
   predecessor: { cwd: string; token: string }): Promise<Response> {
   if (programBootstrapInflight.has(program.id))
@@ -12297,7 +12542,9 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
 }
 
 async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response> {
-  if (url.pathname === "/api/programs" && req.method === "GET") return json({ programs });
+  // additive proof read: the cross-program binding has no list of its own, and the client reads
+  // .programs, so it stays compatible by construction.
+  if (url.pathname === "/api/programs" && req.method === "GET") return json({ programs, supervisor });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
     if (!valid.ok) return json({ error: valid.error }, 400);
@@ -12665,6 +12912,19 @@ if (existsSync(STATE_FILE)) {
           ...(status === "complete" ? { completedAt: completedAt! } : {}) });
       }
       programs = capPrograms(loaded);
+    }
+    // The Supervisor binding gets the same tolerance every other state member gets: absent OR
+    // malformed loads as null, never as a half-binding. A partial row would name a slot without a
+    // session identity, and every consumer joins on slot+openedAt — so half of it is not a weaker
+    // fact, it is a different one.
+    const sv = (persisted as { supervisor?: unknown }).supervisor;
+    if (sv && typeof sv === "object" && !Array.isArray(sv)) {
+      const b = sv as Record<string, unknown>;
+      if (Number.isInteger(b.slot) && typeof b.openedAt === "number" && Number.isFinite(b.openedAt)
+        && (b.sessionId === null || typeof b.sessionId === "string")
+        && typeof b.boundAt === "number" && Number.isFinite(b.boundAt))
+        supervisor = { slot: b.slot as number, openedAt: b.openedAt,
+          sessionId: b.sessionId as string | null, boundAt: b.boundAt };
     }
     for (const [k, v] of Object.entries(persisted.slots ?? {})) {
       const s = slotFrom(k);
@@ -15324,6 +15584,16 @@ Bun.serve<WSData>({
     if (/^\/api\/programs(?:\/[^/]+\/(?:confirm|activate|complete|discard|bootstrap-main))?$/.test(url.pathname)) {
       if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
       return handleOwnerProgramRoute(req, url);
+    }
+
+    // The Supervisor is an owner bracket above the Programs, and it takes exactly the same owner
+    // gate for exactly the same reason: a self token uses its own scoped header and is therefore
+    // not a credential here at all (401), and a steward token is a plain owner-auth failure rather
+    // than a second authority over who supervises the fleet.
+    if (url.pathname === "/api/supervisor/bootstrap") {
+      if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return bootstrapSupervisor(await readJson(req) ?? {});
     }
 
     // steward principal: same placement rationale as self/autos above — sits AFTER the

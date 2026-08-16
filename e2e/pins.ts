@@ -227,6 +227,22 @@ const server = read("server.ts");
     aUncertain >= 0 && aSaved > aUncertain && aSend > aSaved && aAnswered > aSend
     && aPrune.includes('a.status === "answered" || a.status === "refused"'),
     `uncertain=${aUncertain} saved=${aSaved} send=${aSend} answered=${aAnswered} prune=${aPrune.includes('a.status === "answered" || a.status === "refused"')}`);
+
+  // The owner's own send inherits the same crash boundary and therefore the same rule: exactly one
+  // sendText, inside a try, whose catch JOURNALS the attempt as uncertain. A bare `await sendText`
+  // here is an untyped 500 that leaves no trace at all — the silent loss Cut 3 removes — and a
+  // catch that returned without logPrompt would be the same loss wearing a status code.
+  const sendRoute = server.slice(server.indexOf('url.pathname === "/send"'),
+    server.indexOf('url.pathname === "/resize"'));
+  const sTry = sendRoute.indexOf("try {");
+  const sSend = sendRoute.indexOf("await sendText(");
+  const sCatch = sendRoute.indexOf("} catch (e) {", sSend);
+  const sLog = sendRoute.indexOf("logPrompt(", sCatch);
+  const sUncertain = sendRoute.indexOf('"uncertain"', sLog);
+  pin("the owner /send route sends inside a try and journals the attempt as uncertain in its catch",
+    sendRoute.split("await sendText(").length === 2
+    && sTry >= 0 && sSend > sTry && sCatch > sSend && sLog > sCatch && sUncertain > sLog,
+    `sends=${sendRoute.split("await sendText(").length - 1} try=${sTry} send=${sSend} catch=${sCatch} log=${sLog} uncertain=${sUncertain}`);
 }
 const verifyCmd = /^VERIFY_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";
 const auditCmd = /^AUDIT_CMD='([\s\S]*?)'$/m.exec(watchdog)?.[1] ?? "";

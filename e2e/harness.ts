@@ -145,6 +145,10 @@ export const lastReviewPromptFor = (cwd: string): string => {
 
 export interface PromptLogEntry {
   ts: number; slot: number; cwd: string | null; label: string | null; source: string; text: string;
+  // occupant attribution (unconditional since the send-receipt cut) + the optional delivery
+  // identity only a receipt-minting surface writes. Optional here because the journal is
+  // append-only and older lines predate every one of them.
+  openedAt?: number; sessionId?: string | null; sendId?: string; delivery?: string;
 }
 export const plogPath = `${ROOT}/streams/prompts.jsonl`;
 export const plogRead = async (): Promise<PromptLogEntry[]> =>

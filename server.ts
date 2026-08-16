@@ -2428,9 +2428,20 @@ function noteComposed(slotId: number, text: string): void {
   list.push({ text: text.trim().slice(0, 5000), ts: Date.now() });
   recentComposed.set(slotId, list);
 }
-function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward", ts: number): void {
+// `sendId`/`delivery` are the OPTIONAL half: only a surface that mints a delivery identity (today
+// the owner /send receipt) passes them, and an absent one stays absent from the line rather than
+// being written as null — every reader of this journal parses optional fields, so "absent" and
+// "this surface has no send identity" must stay the same thing.
+function logPrompt(s: Slot, text: string, source: "owner" | "share" | "auto" | "terminal" | "steward", ts: number,
+  sendId?: string, delivery?: "sent" | "uncertain"): void {
   if (source !== "terminal") noteComposed(s.id, text);
-  const line = `${JSON.stringify({ ts, slot: s.id, cwd: s.cwd, label: s.label, source, text })}\n`;
+  // The six original fields keep their names AND their order (readers only ever add optional keys).
+  // What is new is unconditional and is the point of the line: the slot NUMBER identifies a row,
+  // and a row is recycled — `openedAt` + `sessionId` identify the OCCUPANT that actually received
+  // this text, so a prompt can never be attributed to a session that merely inherited the slot.
+  const line = `${JSON.stringify({ ts, slot: s.id, cwd: s.cwd, label: s.label, source, text,
+    openedAt: s.openedAt, sessionId: s.sessionId,
+    ...(sendId ? { sendId } : {}), ...(delivery ? { delivery } : {}) })}\n`;
   promptLogChain = promptLogChain
     .then(() => appendFile(PROMPT_LOG, line, { mode: 0o600 }))
     .then(() => chmodSync(PROMPT_LOG, 0o600)) // prompts can carry secrets, like the stream
@@ -17412,12 +17423,32 @@ Bun.serve<WSData>({
       // is not that answer. Clearing it would re-open steward nudges past an unanswered
       // clarification (the guard that refuses exactly that lives in handleStewardSend).
       if (s.awaiting === "owner") s.awaiting = null;
-      await sendText(s, body.text, body.submit !== false);
+      // THE DELIVERY IDENTITY, minted before the transport is touched so both outcomes can carry
+      // the SAME id: the receipt the owner gets back and the journal line are joinable, and the
+      // receiver triple pins the send to the occupant that was in the row at this instant.
+      const sendId = randomBytes(12).toString("hex");
+      const submit = body.submit !== false;
+      const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+      try {
+        await sendText(s, body.text, submit);
+      } catch (e) {
+        // tmux may have accepted part of the paste before reporting failure, so neither "failed"
+        // nor "delivered" is an observed fact — the same truth rule the clarification/attention
+        // transport follows. The journal write here is MANDATORY: an unjournaled uncertain send is
+        // the silent loss this receipt exists to remove, and it used to escape as an untyped 500.
+        // History deliberately does NOT gain the entry: history feeds the pane-recall UI, where an
+        // entry reads as "this text is in that pane" — replaying a paste that may never have
+        // landed would present a guess as a fact. No retry and no tick: the owner sees the 409.
+        const at = Date.now();
+        logPrompt(s, body.text, "owner", at, sendId, "uncertain");
+        return json({ error: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
+          receipt: { sendId, at, delivery: "uncertain", receiver } }, 409);
+      }
       const ts = Date.now();
       s.history = [...s.history, { text: body.text, ts }].slice(-MAX_HISTORY);
       saveHistory(s);
-      logPrompt(s, body.text, "owner", ts);
-      return json({ ok: true });
+      logPrompt(s, body.text, "owner", ts, sendId, "sent");
+      return json({ ok: true, receipt: { sendId, at: ts, submitted: submit, receiver } });
     }
     if (req.method === "POST" && url.pathname === "/resize") {
       const body = await readJson(req);

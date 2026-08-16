@@ -2,8 +2,9 @@
 // seed budget + poll plan, and HTML/txt export (including the real-metacharacter escaping
 // regression).
 import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname } from "node:path";
-import { BASE, IP, PORT, REPO, ROOT, TOKEN, check, get, paneEnv, post, tmuxOut, wsUrl, wsWithHeaders } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { slotStats } from "../slotstats";
@@ -870,6 +871,130 @@ export async function run(): Promise<void> {
   check("txt export contains session content", (await expTxt.text()).includes("compose-box-to-slot-two"));
   const expInactive = await get("/api/slots/4/export");
   check("export rejects inactive slot", expInactive.status === 400);
+
+  // --- the owner /send RECEIPT and its journal attribution (Communication Cut 3) ---
+  // The defect this family closes: a slot number identifies a ROW, and rows are recycled, so a
+  // journal line saying "slot 3" could never say WHICH occupant received the text. And a partial
+  // paste escaped as an untyped 500 that journaled nothing at all. Fixture slot is 3, free again
+  // since the export block killed it; it is killed again at the end of this block.
+  {
+    type SlotRow = { openedAt?: number; sessionId?: string | null };
+    const readSlot = (id: number): SlotRow =>
+      ((JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, SlotRow> }).slots?.[String(id)] ?? {});
+    // NEVER from /api/sessions: that payload is read through a cast and simply does not emit these
+    // fields, so an assertion against it would compare undefined to undefined forever (the
+    // documented `awaiting` trap). The state file is what the server actually persisted.
+    const occupant = async (id: number, notOpenedAt: number | null): Promise<SlotRow> => {
+      for (let i = 0; i < 60; i++) {
+        const row = readSlot(id);
+        if (row.openedAt && row.openedAt !== notOpenedAt) return row;
+        await Bun.sleep(100);
+      }
+      return readSlot(id);
+    };
+    type Receipt = { sendId?: unknown; at?: unknown; submitted?: unknown; delivery?: unknown;
+      receiver?: { slot?: unknown; openedAt?: unknown; sessionId?: unknown } };
+    const journalFor = async (sendId: string): Promise<PromptLogEntry | undefined> => {
+      // the journal write is async through promptLogChain, so poll for the line — asserting
+      // immediately would race the append and read as "the route never journaled"
+      for (let i = 0; i < 80; i++) {
+        const line = (await plogRead()).find((e) => e.sendId === sendId);
+        if (line) return line;
+        await Bun.sleep(100);
+      }
+      return undefined;
+    };
+    const scratch = `${tmpdir()}/fleet-e2e-send-receipt-${process.pid}`;
+    let fixtureOk = false;
+    try { mkdirSync(scratch, { recursive: true }); fixtureOk = exists(scratch); } catch { fixtureOk = false; }
+    // its own check: a fixture that could not be built must fail as ITSELF, never as the route
+    check("send-receipt fixture: a scratch cwd exists for the doomed occupant", fixtureOk, scratch);
+
+    const openA = fixtureOk ? await post("/api/slots/3/open", { cwd: scratch }) : null;
+    check("send-receipt fixture: slot 3 opens on the scratch cwd", !!openA?.ok,
+      openA ? `${openA.status}` : "fixture missing");
+    if (openA?.ok) {
+      const occA = await occupant(3, null);
+      check("send-receipt fixture: the first occupant is persisted with an openedAt",
+        !!occA.openedAt, JSON.stringify(occA));
+
+      // 1) SUCCESS RECEIPT. Mutation that breaks it: returning bare {ok:true} again, or building
+      // `receiver` from anything but the slot's own openedAt/sessionId.
+      const okRes = await post("/send", { slot: 3, text: "receipt-probe-one", submit: false });
+      const okBody = (await okRes.json()) as { ok?: unknown; receipt?: Receipt };
+      const r1 = okBody.receipt;
+      check("/send answers with a typed receipt carrying a 24-hex sendId and what it submitted",
+        okRes.ok && okBody.ok === true && typeof r1?.sendId === "string"
+        && /^[0-9a-f]{24}$/.test(String(r1.sendId)) && r1.submitted === false
+        && typeof r1.at === "number" && (r1.at as number) > 0,
+        JSON.stringify(okBody).slice(0, 200));
+      check("the receipt names the CURRENT occupant, not just the slot row",
+        r1?.receiver?.slot === 3 && r1?.receiver?.openedAt === occA.openedAt
+        && (r1?.receiver?.sessionId ?? null) === (occA.sessionId ?? null),
+        JSON.stringify({ receiver: r1?.receiver, state: occA }));
+
+      // 2) JOURNAL ATTRIBUTION. Mutation that breaks it: dropping openedAt/sessionId from
+      // logPrompt (the whole point), or renaming/reordering one of the six original fields.
+      const j1 = typeof r1?.sendId === "string" ? await journalFor(String(r1.sendId)) : undefined;
+      check("the prompt journal carries the send's occupant attribution and its delivery verdict",
+        !!j1 && j1.slot === 3 && j1.openedAt === occA.openedAt
+        && (j1.sessionId ?? null) === (occA.sessionId ?? null) && j1.delivery === "sent",
+        JSON.stringify(j1));
+      check("the six pre-existing journal fields are unchanged by the additive attribution",
+        !!j1 && typeof j1.ts === "number" && j1.slot === 3 && j1.cwd === scratch
+        && j1.source === "owner" && j1.text === "receipt-probe-one" && "label" in j1,
+        JSON.stringify(j1));
+
+      // 3) UNCERTAIN. The pane is destroyed AND its cwd removed, so the 2s self-heal cannot
+      // rebuild it (`tmux new-session -c <gone>` fails) — sendText then throws deterministically
+      // rather than racing the heal. Mutation that breaks it: an un-caught sendText (untyped 500,
+      // no journal line), or journaling the attempt into history as if it had arrived.
+      const histBefore = ((await (await get("/api/slots/3/history")).json()) as
+        { history: unknown[] }).history.length;
+      rmSync(scratch, { recursive: true, force: true });
+      await tmuxOut("kill-session", "-t", "s3");
+      const gone = await tmuxOut("has-session", "-t", "s3");
+      check("send-receipt fixture: the target pane is gone and its cwd cannot be respawned",
+        gone.code !== 0 && !exists(scratch), `has-session=${gone.code} cwd=${exists(scratch)}`);
+      const badRes = await post("/send", { slot: 3, text: "receipt-probe-uncertain", submit: false });
+      const badBody = (await badRes.json()) as { error?: unknown; receipt?: Receipt };
+      const r2 = badBody.receipt;
+      check("a send whose transport threw answers 409 with an uncertain receipt, never an untyped 500",
+        badRes.status === 409 && typeof badBody.error === "string"
+        && String(badBody.error).startsWith("send outcome uncertain:")
+        && r2?.delivery === "uncertain" && /^[0-9a-f]{24}$/.test(String(r2?.sendId))
+        && r2?.receiver?.openedAt === occA.openedAt,
+        `${badRes.status} ${JSON.stringify(badBody).slice(0, 200)}`);
+      const j2 = typeof r2?.sendId === "string" ? await journalFor(String(r2.sendId)) : undefined;
+      check("the uncertain ATTEMPT is journaled — an unjournaled uncertain send is the silent loss",
+        !!j2 && j2.delivery === "uncertain" && j2.text === "receipt-probe-uncertain"
+        && j2.openedAt === occA.openedAt, JSON.stringify(j2));
+      const histAfter = ((await (await get("/api/slots/3/history")).json()) as
+        { history: unknown[] }).history.length;
+      check("an uncertain send does NOT enter slot history — recall must not replay a guess as fact",
+        histAfter === histBefore, `${histBefore} -> ${histAfter}`);
+
+      // 4) RECYCLING COUNTER-PROBE — the reason attribution exists at all. Same slot NUMBER, new
+      // occupant: a receipt that still carried the old openedAt would make the journal ambiguous
+      // in exactly the way this cut removes. Mutation that breaks it: capturing the receiver
+      // triple once per slot instead of per send.
+      await post("/api/slots/3/kill", {});
+      const reopen = await post("/api/slots/3/open", { cwd: "~" });
+      check("send-receipt fixture: slot 3 is recycled to a NEW occupant", reopen.ok, String(reopen.status));
+      const occB = await occupant(3, occA.openedAt ?? null);
+      check("send-receipt fixture: the recycled occupant has a different openedAt",
+        !!occB.openedAt && occB.openedAt !== occA.openedAt, JSON.stringify({ occA, occB }));
+      const okRes2 = await post("/send", { slot: 3, text: "receipt-probe-two", submit: false });
+      const r3 = ((await okRes2.json()) as { receipt?: Receipt }).receipt;
+      check("a send to the recycled row is attributed to the NEW occupant, not the row's history",
+        okRes2.ok && r3?.receiver?.slot === 3 && r3?.receiver?.openedAt === occB.openedAt
+        && r3?.receiver?.openedAt !== r1?.receiver?.openedAt && r3?.sendId !== r1?.sendId,
+        JSON.stringify({ first: r1?.receiver, second: r3?.receiver }));
+      await post("/api/slots/3/kill", {});
+    }
+    rmSync(scratch, { recursive: true, force: true });
+  }
 
   for (const t of ["s1", "s2"]) await tmuxOut("send-keys", "-t", t, "C-u");
 

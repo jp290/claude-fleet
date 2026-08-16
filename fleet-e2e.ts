@@ -32,6 +32,7 @@ import * as landProvenance from "./e2e/land-provenance";
 import * as concurrency from "./e2e/concurrency";
 import * as selfToken from "./e2e/self-token";
 import * as programs from "./e2e/programs";
+import * as supervisor from "./e2e/supervisor";
 import * as refAdvance from "./e2e/ref-advance";
 import * as outcomes from "./e2e/outcomes";
 import * as landDurability from "./e2e/land-durability";
@@ -104,6 +105,10 @@ if (REPO) {
   // Programs are planning-session artifacts above lanes. They use both the plain session and the
   // surviving lane self-token established immediately above, and restart the scratch server once.
   await programs.run(ctx);
+  // the cross-program Supervisor binding sits ABOVE the Program brackets, so it runs directly after
+  // them: it reuses the same fleet-checkout git fixture and the same restart proof, and it leaves
+  // no occupied slot behind for the sections that follow.
+  await supervisor.run();
   // the READ half of the trail family — here, not next to trail.run() at the end, because its
   // route checks need a LANE's selfToken alive (ctx.restartSelfTok, which restart.run() tears
   // down) to prove the query reaches the principal the proof order it replaces actually binds.

@@ -946,6 +946,31 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     executionBody.length > 0
       && !/\b(?:saveState|saveStateNow|appendEvent|sendText|spawnCmd)\b/.test(executionBody),
     executionBody.length > 0 ? "mutation primitive present" : "ProgramExecutionView handler missing");
+  // The Supervisor binding is cross-program identity, so both halves of its authority story are
+  // rules over the SOURCE: the only route that mints it must sit on the owner rail, and the
+  // transfer must keep the same one-way crash boundary the Program-MAIN rail has. Neither is
+  // visible at runtime — a bootstrap moved under the self-token dispatcher would answer happily,
+  // and a binding written before the send would only be wrong on the run where the send fails.
+  const supervisorRouteAt = server.indexOf('url.pathname === "/api/supervisor/bootstrap"');
+  const selfRailAt = server.indexOf('url.pathname === "/api/self/verify-intent"');
+  const supervisorRouteBody = supervisorRouteAt < 0 ? ""
+    : server.slice(supervisorRouteAt, supervisorRouteAt + 600);
+  pin("the Supervisor bootstrap is minted on the OWNER rail only — never reachable with a self token",
+    supervisorRouteAt > 0 && selfRailAt > 0 && supervisorRouteAt > selfRailAt
+      && /if \(!\(await tokenGate\(tokenFrom\(req\)\)\)\) return json\(\{ error: "unauthorized" \}, 401\);/.test(supervisorRouteBody)
+      && !/x-fleet-self-token/.test(supervisorRouteBody)
+      && (server.match(/bootstrapSupervisor\(/g) ?? []).length === 2,
+    `route=${supervisorRouteAt} selfRail=${selfRailAt}`);
+  const svSuccessionAt = server.indexOf("async function succeedSupervisor(");
+  const svSuccessionBody = svSuccessionAt < 0 ? ""
+    : server.slice(svSuccessionAt, server.indexOf("async function bootstrapSupervisor(", svSuccessionAt));
+  const svSendAt = svSuccessionBody.indexOf("await sendText(free, deliveredBrief, true);");
+  const svBindAt = svSuccessionBody.indexOf("supervisor = {");
+  pin("Supervisor succession rewrites the binding only AFTER a successful send — loss before it keeps the predecessor",
+    svSendAt > 0 && svBindAt > svSendAt
+      && svSuccessionBody.indexOf("await saveStateNow();", svBindAt) > svBindAt
+      && /programId: null/.test(svSuccessionBody),
+    `send=${svSendAt} bind=${svBindAt}`);
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",

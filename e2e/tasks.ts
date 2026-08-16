@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
@@ -760,6 +760,15 @@ export async function run(ctx: Ctx): Promise<void> {
     // (d) the lane's founding prompt starts with the STORED BRIEF byte-for-byte, followed only by
     // the fresh ContextPlan pointer block — never the raw draft and never a fresh model compile.
     // Proven off the prompt ledger: logPrompt records the exact value sendText received.
+    //
+    // AND THE TREE DECIDES WHAT THE BLOCK MAY CONTAIN. REPO is a git repository of its own, so its
+    // toplevel is not the Fleet root and its packs' sources do not exist there. Until 2026-08-16
+    // the dispatch seam passed the literal sourceTree "fleet" and handed this lane Fleet-owned
+    // anchors that `git show <receipt.head>:<path>` cannot resolve in REPO — the receipt asserting
+    // them against REPO's own head was the one place the ledger itself was untrue. The block is now
+    // empty here BY CONSTRUCTION (source-unavailable is planContext's first rung), and the
+    // counter-proof that this is a derivation and not a broken planner is (d3) below, which
+    // dispatches into the Fleet checkout and still gets the two packs.
     let autoRows: { source?: string; text?: string }[] = [];
     let deliveredReceipt: ContextReceipt | undefined;
     for (let i = 0; i < 24; i++) { // sendText lands ~4-5s after consumption (the boot sleep)
@@ -770,24 +779,20 @@ export async function run(ctx: Ctx): Promise<void> {
       await Bun.sleep(500);
     }
     const deliveredPrompt = autoRows.find((p) => p.text?.startsWith(DBRIEF))?.text ?? "";
-    check("the dispatched lane's founding prompt preserves the STORED brief and appends the anchor block",
-      deliveredPrompt.startsWith(`${DBRIEF}\n\nContextPlan v1 anchors`)
+    check("a dispatch into a FOREIGN tree delivers the STORED brief alone — no anchor block at all",
+      deliveredPrompt === DBRIEF && !deliveredPrompt.includes("ContextPlan v1 anchors")
       && !deliveredPrompt.includes("dispatch-gate-probe"),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
     const expectedHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-    const namedAnchorsDelivered = !!deliveredReceipt && deliveredReceipt.selected.every((pack) =>
-      Array.isArray(pack.anchors)
-        ? pack.anchors.every((anchor) => deliveredPrompt.includes(anchor.path) && deliveredPrompt.includes(anchor.anchor))
-        : deliveredPrompt.includes(pack.anchors.privateSourceId));
     check("a delivered lane produces exactly one receipt carrying task/origin/program provenance and integration HEAD",
       !!deliveredReceipt && (await contextReceipts()).total === receiptsBeforeDispatch.total + 1
       && (await contextReceipts()).receipts.filter((receipt) => receipt.taskId === tid).length === 1
       && deliveredReceipt.taskId === tid && deliveredReceipt.originId === tid
       && deliveredReceipt.programId === provenanceProgramId && deliveredReceipt.head === expectedHead,
       JSON.stringify(deliveredReceipt ?? null));
-    check("the receipt is non-fictional: every named anchor occurs in the exact prompt log row sent to the pane",
-      namedAnchorsDelivered && deliveredReceipt?.selected.length === 2
-      && (deliveredReceipt.selected.length + deliveredReceipt.omitted.length) === 6,
+    check("the foreign receipt names nothing it cannot resolve: zero selected, all six packs source-unavailable",
+      deliveredReceipt?.selected.length === 0 && deliveredReceipt.omitted.length === 6
+      && deliveredReceipt.omitted.every((entry) => entry.why === "source-unavailable"),
       JSON.stringify(deliveredReceipt ?? null));
     const anchorBlock = deliveredPrompt.slice(DBRIEF.length);
     const recomputedHash = deliveredReceipt ? createHash("sha256").update(JSON.stringify({
@@ -853,6 +858,59 @@ export async function run(ctx: Ctx): Promise<void> {
     for (const id of await laneIds()) if (!lanes0.has(id) && id !== ctx.restartSelfSlot) await post(`/api/slots/${id}/kill`, {});
     await post(`/api/tasks/${cTask.task.id}/delete`, {});
     await post(`/api/tasks/${tid}/delete`, {});
+  }
+
+  // --- (d3) THE COUNTER-PROOF TO (d). An empty anchor block in a foreign tree is, on its own,
+  // equally compatible with a planner that selects nothing anywhere. So the same seam is driven
+  // once more with the only difference that may matter: the target repository's git toplevel. ROOT
+  // is this instance's own checkout — the tree FLEET_REPO_ROOT resolves to — and there the two
+  // trigger-matched packs must still be selected, still rendered, and still resolvable at the
+  // receipt's head. The dispatcher is off here by design: this is the attended button, so no tick
+  // can consume the row underneath the probe.
+  {
+    const fBrief = "FLEET-FRAME FIXTURE — this lane is inside the Fleet checkout itself";
+    const fT = (await (await post("/api/tasks", { text: "fleet-frame-probe", queue: false, repo: ROOT })).json()) as { task: { id: string } };
+    await post(`/api/tasks/${fT.task.id}/brief`, { text: fBrief });
+    const fBefore = await contextReceipts();
+    const fd = await post(`/api/tasks/${fT.task.id}/dispatch`, {});
+    const fdJ = (await fd.json()) as { ok?: boolean; slot?: number };
+    let fReceipt: ContextReceipt | undefined;
+    let fPrompt = "";
+    for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
+      fReceipt = (await contextReceipts()).receipts.find((receipt) => receipt.taskId === fT.task.id);
+      fPrompt = (((await (await get("/api/prompts?limit=100")).json()) as { prompts: { text?: string }[] }).prompts)
+        .find((p) => p.text?.startsWith(fBrief))?.text ?? "";
+      if (fReceipt && fPrompt) break;
+      await Bun.sleep(500);
+    }
+    const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    check("a dispatch INSIDE the Fleet checkout still renders the two-pack anchor block (the derivation is not a blanket refusal)",
+      fd.ok && fdJ.ok === true && fPrompt.startsWith(`${fBrief}\n\nContextPlan v1 anchors`)
+      && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
+      && fReceipt.omitted.length === 4 && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
+      `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
+    check("the Fleet-frame receipt is one row, names this checkout at its integration head, and every anchor it names is in the delivered bytes",
+      !!fReceipt && (await contextReceipts()).total === fBefore.total + 1
+      && fReceipt.repo === realpathSync(ROOT) && fReceipt.head === fHead
+      && fReceipt.selected.every((pack) => Array.isArray(pack.anchors)
+        ? pack.anchors.every((anchor) => fPrompt.includes(anchor.path) && fPrompt.includes(anchor.anchor))
+        : fPrompt.includes(pack.anchors.privateSourceId)),
+      `${fHead} ${JSON.stringify(fReceipt ?? null)}`);
+    // the lane's own cwd IS its worktree path, and it is the ONLY spelling of it the owner poll
+    // emits — LaneRef carries repo/branch/base, never a path (the cast that names one is the
+    // documented `awaiting` trap: a claim about a foreign surface, forever undefined)
+    const fLane = typeof fdJ.slot === "number"
+      ? ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+        .slots.find((s) => s.id === fdJ.slot)?.cwd ?? null
+      : null;
+    if (typeof fdJ.slot === "number") await post(`/api/slots/${fdJ.slot}/kill`, {});
+    await post(`/api/tasks/${fT.task.id}/delete`, {});
+    // kill never removes a worktree, and this one is the only lane the suite spawns from ROOT —
+    // it lands NEXT TO the instance directory (`<DIR>.worktrees/…`), outside the wrapper's `rm -rf`
+    if (fLane) {
+      spawnSync("git", ["-C", ROOT, "worktree", "remove", "--force", fLane]);
+      rmSync(`${ROOT}.worktrees`, { recursive: true, force: true }); // the parent dir createWorktree mkdir'd
+    }
   }
 
   // --- (f) the manual start button with the auto dispatcher OFF, and the archive shelf ---
@@ -1297,18 +1355,19 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(h2) a READY pending task is NOT started — the analyst advises, it never releases",
       (await hRow(hP))?.status === "pending", JSON.stringify(await hRow(hP)));
 
-    // (h3) WHAT WAS JUDGED IS WHAT RUNS. The released row does start, and the prompt begins
-    // byte-identically with the stored brief — not the draft and not a fresh compile — before the
-    // delivery seam appends its ContextPlan pointers. The suffix is expected to change briefHash.
+    // (h3) WHAT WAS JUDGED IS WHAT RUNS. The released row does start, and the prompt is the stored
+    // brief — not the draft and not a fresh compile. It is the WHOLE prompt here because the
+    // dispatch repo is a foreign tree, so the seam's derived plan has nothing to append; that the
+    // seam still appends pointers where they resolve is (d3)'s job, not this one's.
     const qRow = await till(() => hRow(hQ), (r) => r?.status === "sent" || r?.status === "queued" && !!r.note);
     const qBrief = (await hFull(hQ))?.brief;
     const sent = await till(
       async () => ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts
         .filter((p) => p.source === "auto").map((p) => p.text ?? ""),
       (ps) => ps.some((p) => p.startsWith(BRIEFMARK)));
-    check("(h3) a released task starts, receives the STORED brief intact, then the derived anchor block",
+    check("(h3) a released task starts and receives the STORED brief intact",
       qRow?.status === "sent" && !!qBrief?.text.startsWith(BRIEFMARK)
-      && sent.some((prompt) => prompt.startsWith(`${qBrief!.text}\n\nContextPlan v1 anchors`)),
+      && sent.some((prompt) => prompt === qBrief!.text),
       JSON.stringify({ status: qRow?.status, brief: qBrief?.text.slice(0, 60), sentCount: sent.length }));
     if (typeof qRow?.slot === "number") await post(`/api/slots/${qRow.slot}/kill`, {});
 
@@ -1376,10 +1435,10 @@ export async function run(ctx: Ctx): Promise<void> {
     const offPrompts = await till(
       async () => ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] }).prompts
         .filter((p) => p.source === "auto").map((p) => p.text ?? ""),
-      (ps) => ps.some((prompt) => prompt.startsWith(`${OFF_RAW}\n\nContextPlan v1 anchors`)));
+      (ps) => ps.some((prompt) => prompt === OFF_RAW));
     check("(h4r) analyst OFF changes no dispatch semantics: the released unread row starts with its raw request",
       dispatchResumed.ok && offStarted?.status === "sent"
-      && offPrompts.some((prompt) => prompt.startsWith(`${OFF_RAW}\n\nContextPlan v1 anchors`)),
+      && offPrompts.some((prompt) => prompt === OFF_RAW),
       JSON.stringify({ resume: dispatchResumed.status, row: offStarted,
         rawPromptSeen: offPrompts.some((prompt) => prompt.startsWith(OFF_RAW)) }));
     if (typeof offStarted?.slot === "number") await post(`/api/slots/${offStarted.slot}/kill`, {});

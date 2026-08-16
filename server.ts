@@ -5723,6 +5723,18 @@ const DISPATCH_CONTEXT_CAPABILITIES: readonly ContextPackCapability[] = [
   "harness-adapter-read", "private-overlay-read",
 ];
 
+// Which tree is this dispatch about to change? Git toplevel identity is the whole classifier —
+// the same rule preflightProgramMain applies to a Program-MAIN cwd, and for the same reason:
+// filenames never upgrade a foreign tree, and a linked worktree of Fleet has its own toplevel.
+// A foreign tree cannot resolve Fleet-owned pack anchors, so planContext omits all six as
+// `source-unavailable` and the anchor block empties by construction. Throwing when the root
+// cannot be read is deliberate: naming no tree beats inventing one, and the caller's requeue path
+// owns that failure exactly as it owns the integrationHead refusal at the same seam.
+async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
+  const repoRoot = await repoRootOf(repo);
+  return FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT ? "fleet" : "foreign";
+}
+
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
@@ -5803,9 +5815,12 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   const readiness = await waitForFoundingReadiness(free, () => !identityLost());
   if (!readiness.ok) { await requeue(`${readiness.reason} — requeued`); return; }
   try {
-    // Dispatch still assumes Fleet-owned pack sources even when its configured repo is foreign.
-    // That known cross-repo dispatch boundary is deliberately not closed by the Program-MAIN slice.
-    const planFacts = { sourceTree: "fleet" as const, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
+    // The pack sources are Fleet-owned, so the tree being dispatched into decides whether they
+    // exist at all — derived from git, never assumed. This used to be the literal "fleet", which
+    // handed a foreign lane anchors that cannot resolve there AND receipted them against that
+    // repo's own head: the one place where the ledger itself was untrue.
+    const sourceTree = await dispatchSourceTree(wt.repo);
+    const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
       triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
     const plan = planContext(planFacts);
     const anchorBlock = renderContextAnchorBlock(plan);

@@ -15,8 +15,14 @@ agent believes about the tree it is about to change.
 **What this report delivers.** A layer separation, a per-consumer delivery map with evidence, a
 verdict on the HANDOFF instruction, five ranked gaps, exactly one proposed smallest landable slice,
 the ownership map for the game packs (without authoring them), an adapter/surface decision table, a
-sent/receipted/loaded/used ladder, and — per the owner addendum — a nine-role × seven-field context
-contract plus a re-evaluation against the named lessons in the owner-supplied transcript.
+sent/receipted/loaded/used ladder, and — per the owner addendum — a nine-role context contract plus a
+re-evaluation against the named lessons in the owner-supplied transcript.
+
+**What this report does not do, stated up front because §9 could otherwise be misread.** It does not
+narrow any loader requirement. `AGENTS.md`'s mandatory full `CLAUDE.md` read stands for every lane,
+including every role in §9, until a live loader proof *and* an owner-promoted rule change say
+otherwise. §9 is therefore split into a **current required load** and a **future target load**, and
+only the first is an operating instruction. See §9.0.
 
 **Method and coverage.** Read in full: `AGENTS.md`, `context-packs.ts`, `context-plan.ts`,
 `e2e/context-plan.ts`, the owner-supplied transcript. Read in the ranges cited: `server.ts`
@@ -242,8 +248,8 @@ delivery seam and it makes room for later layers instead of pre-empting them.
 
 **Reused seams, no new ones.** `preflightProgramMain`'s classifier rule (git toplevel vs
 `FLEET_REPO_ROOT`, `server.ts:11605`), `planContext`'s `source-unavailable` first rung, the existing
-`ContextReceipt` row shape (unchanged — `selected` simply empties and `omitted` fills), and the
-existing requeue path for any failure to name the tree.
+`ContextReceipt` row shape, and the existing requeue path for any failure to name the tree. (The
+receipt's decision is recorded once, in the §7 surface table, and not restated here.)
 
 **Closed done criterion (one sentence).** *A dispatch into a repository whose git toplevel is not
 `FLEET_REPO_ROOT` delivers a brief with no `ContextPlan v1 anchors` block and writes exactly one
@@ -274,7 +280,10 @@ Fleet and confirm the two-pack block is unchanged. Both halves, or the measureme
 schema, no ledger format, no persisted state is touched, so old receipts stay readable either way.
 
 **Explicit non-goals of this slice.** It does not add a pack scope, a role overlay, a repository
-contract layer, a pack CRUD route, or a target-repo capability probe. It does not touch the fresh-MAIN
+contract layer, a pack CRUD route, or a target-repo capability probe. **It does not narrow any
+loader requirement** — the full `CLAUDE.md` read stays mandatory for every lane while this slice
+lands, and this slice produces no evidence that could license narrowing it. It does not touch the
+fresh-MAIN
 path (G3) or the succession asymmetry (G5). It does not deliver omissions to the reader (G2) — that
 is the natural *second* slice and is deliberately separate, because it changes what an agent reads
 and therefore deserves its own counter-proof. It authors no game pack content.
@@ -356,76 +365,142 @@ never the brief text alone. The general rule, and it is the one Fleet already li
 
 ## 9. Role and layer contract
 
-Nine roles. Each row is a contract, not a job description: (a) smallest must-load, (b) withheld by
-default, (c) authority, (d) tools/evidence, (e) output and recipient, (f) lifetime/refresh trigger,
-(g) which tracked note or pack owns the instruction. Rows marked *proposed* have no owning artifact
-today — that absence is the finding, not a gap in this table.
+### 9.0 The loader rule this section may not touch
 
-**1. Owner / supervisor.** (a) nothing — the owner is the source of C3 and the only promoter.
-(b) n/a. (c) sole authority to promote, confirm, land, deploy, and to convert a `notiz` into an
-`auftrag`. (d) the board, `/api/context-receipts`, `/api/post-land-audits`, `state.sh`. (e) decisions,
-to whichever session asked. (f) continuous. (g) `OWNER.md` (private, owner-curated) — unchanged.
+**Everything in §9 is a target design. None of it is a current operating instruction, and nothing
+here narrows what a session must read today.**
 
-**2. Fleet MAIN.** (a) C1 + C2(Fleet) + C7; i.e. `AGENTS.md`, `CLAUDE.md`, then `state.sh` and
-`register.sh` before believing anything. (b) product/game layers (C3 of a target repo), role
-overlays. (c) mutating inside Fleet, may commit; land is server-side; may found and brief lanes.
-(d) `state.sh`, `register.sh`, live queue, `/api/self/*`. (e) one land or one measured report, to the
-owner; `HANDOFF.md` at the threshold. (f) session-lifetime; refresh on every land and before any
-claim about state. (g) `AGENTS.md` + `CLAUDE.md`. **Today receives zero founding bytes — gap G3.**
+`AGENTS.md` carries a hard loader requirement in its own words: the full private operating rulebook
+is `CLAUDE.md`, it is copied into each lane, *"Read it completely. Until P1-D proves a narrower
+loader path live, that full read remains required."* That sentence outranks this report. A
+maintainer or lane reading §9 must take the **CURRENT REQUIRED LOAD** line and ignore the target
+line until two things have happened, in this order:
 
-**3. Program-MAIN / Director.** (a) C1 + C2 (the *repository's own* root `AGENTS.md`, already
-enforced for target repos at `server.ts:11609`) + C3 (Program JSON verbatim) + C7. (b) private Fleet
-deploy overlay when working in a target repo; other Programs' content. (c) chooses the next bounded
-act; proposes tasks; does not widen the Program. (d) git in its own repo, Fleet's Program/task/receipt
-routes, clarification channel. (e) a bounded act plus its evidence, to the owner. (f) until Program
-completion or succession; refresh on every HEAD move. (g) the Program record + the repository's
-`AGENTS.md`; for the Director *discipline* — *proposed*, a repo-local role note.
+1. **Live loader proof.** `docs/triage/p1d-boot-matrix.md` (measured 2026-08-12, HEAD `90d711c`)
+   established the loader matrix: `claude` auto-loads project `CLAUDE.md` but not `AGENTS.md`, while
+   `pi` and `codex` auto-load `AGENTS.md` alone (~5.5 KB) and reach the ~99 KB private book only
+   through the mandatory-read instruction. That is a measurement of what is *loaded*, not a proof
+   that a narrower selection is *sufficient* — which is the claim a narrowing would need, and which
+   no artifact in this tree makes.
+2. **An owner-promoted rule change** to `AGENTS.md`. Producers propose; only the owner promotes. A
+   report cannot retire an invariant by describing a better one.
 
-**4. Implementation Builder.** (a) C4 (task brief with done criterion and `files`) + C6 (its proof
-chain) + the narrowest C2 slice. (b) product strategy, other roles' surfaces, the full rulebook by
-default (a `CLAUDE.md`-sized load is ~8% of a 258k window before any work). (c) mutating, its owned
+Until both hold, the honest statement for every lane role below is identical: **read the full
+`CLAUDE.md`, plus `AGENTS.md`, before the role-specific load.** The target column exists so the
+design survives review and so the eventual proof has something concrete to be measured against — not
+so anyone can start following it early. Where a role runs in a tree that has no `CLAUDE.md` at all
+(a foreign target repo — `createWorktree` copies the file only when the *source* repo has it,
+`server.ts:3513-3516`), the requirement is vacuous by absence, and that repository's own root
+`AGENTS.md` is the contract instead; that is not a narrowing, it is a different tree.
+
+### 9.1 The nine contracts
+
+Each row is a contract, not a job description: **(a-now)** current required load — in force today;
+**(a-target)** the smallest load the design aims at, *not in force*; (b) withheld by default under
+the target design; (c) authority; (d) tools/evidence; (e) output and recipient; (f) lifetime/refresh
+trigger; (g) which tracked note or pack owns the instruction. Rows marked *proposed* have no owning
+artifact today — that absence is the finding, not a gap in this table.
+
+Field (b) is a **target-design** field throughout. Today nothing in the required core is withheld
+from anyone; (b) describes what a role would not receive *in addition*, once selection is real.
+Authority (c), by contrast, is current in every row: it restates rules `AGENTS.md` already carries.
+
+**1. Owner / supervisor.** (a-now) none — the owner is the source of C3 and the only promoter; no
+loader rule binds him. (a-target) unchanged. (b) n/a. (c) sole authority to promote, confirm, land,
+deploy, and to convert a `notiz` into an `auftrag` — including the authority to change the loader
+rule §9.0 protects. (d) the board, `/api/context-receipts`, `/api/post-land-audits`, `state.sh`.
+(e) decisions, to whichever session asked. (f) continuous. (g) `OWNER.md` (private, owner-curated) —
+unchanged.
+
+**2. Fleet MAIN.** (a-now) `AGENTS.md` **and the full `CLAUDE.md`**, then `state.sh` and
+`register.sh` before believing anything. (a-target) the same — this role is the one for which the
+full private book is genuinely the working set, so the target does not shrink it; only the *product*
+layers below stay out. (b) product/game layers (C3 of a target repo), role overlays. (c) mutating
+inside Fleet, may commit; land is server-side; may found and brief lanes. (d) `state.sh`,
+`register.sh`, live queue, `/api/self/*`. (e) one land or one measured report, to the owner;
+`HANDOFF.md` at the threshold. (f) session-lifetime; refresh on every land and before any claim about
+state. (g) `AGENTS.md` + `CLAUDE.md`. **Today receives zero founding bytes — gap G3.**
+
+**3. Program-MAIN / Director.** (a-now) in the Fleet checkout: `AGENTS.md` + **the full
+`CLAUDE.md`**, plus C3 (Program JSON, already delivered verbatim) and C7. In a target repo: that
+repository's own root `AGENTS.md` in full — already enforced as a precondition at `server.ts:11609` —
+plus C3 and C7; the Fleet private book is absent there rather than withheld. (a-target) unchanged
+except that C2 becomes a selected pointer set rather than a whole-file read, once a repository-contract
+scope exists (G4). (b) private Fleet deploy overlay when working in a target repo; other Programs'
+content. (c) chooses the next bounded act; proposes tasks; does not widen the Program. (d) git in its
+own repo, Fleet's Program/task/receipt routes, clarification channel. (e) a bounded act plus its
+evidence, to the owner. (f) until Program completion or succession; refresh on every HEAD move.
+(g) the Program record + the repository's `AGENTS.md`; for the Director *discipline* — *proposed*, a
+repo-local role note.
+
+**4. Implementation Builder.** — *the role the loader rule binds hardest, and the one this report
+must not appear to relax.*
+(a-now) **`AGENTS.md` plus the full `CLAUDE.md`, read completely, before any role-specific load** —
+mandatory for every lane today, not narrowable by this proposal, and unchanged by the §5 slice. On
+top of that: C4 (the task brief with its done criterion and `files`) and C6 (its proof chain).
+Practical note that is *not* a licence: `pi` and `codex` lanes do not auto-load the private book
+(p1d-boot-matrix §1), so for them the mandatory read is an explicit act the brief must not let them
+skip.
+(a-target, **not in force**) C4 + C6 + the narrowest C2 slice, with the private book selected rather
+than read whole — motivated by the byte arithmetic (a ~99 KB private book is ~8% of a 258 k window
+before any work) but licensed by nothing yet. Eligible only after the two conditions in §9.0.
+(b) *target-design only:* product strategy and other roles' owned surfaces. (c) mutating, its owned
 files only; commits; never lands. (d) `rg`/`ast-grep`, `GET /api/self/gate` for `localProof.steps`,
 `GET /api/self/drift`. (e) summary + quoted verification tail + one unresolved line, to whoever
-briefed it. (f) one lane, one slice; dies at land. (g) `AGENTS.md ## Verify` + the task brief.
+briefed it. (f) one lane, one slice; dies at land. (g) `AGENTS.md` (loader requirement **and**
+`## Verify`) + `CLAUDE.md` + the task brief.
 
-**5. Visual / gameplay Critic.** (a) C3 quality bar + creative direction + capture protocol + the
-build under test. (b) **the Builder's reasoning and diff** — a Critic that reads the justification is
-no longer blind; and the task brief's implementation plan. (c) read-only; proposes findings, promotes
-nothing. (d) the running build, captures, named seeds/viewport facts. (e) ranked findings with named
-evidence, uncertainty, and the smallest next experiment — to the Director and the owner.
-(f) one artifact version; refreshes when the build changes. (g) *proposed*, repo-local Capture/Critic
-note (§6).
+**5. Visual / gameplay Critic.** (a-now) the same mandatory core as any lane — `AGENTS.md` + full
+`CLAUDE.md` when it runs in a Fleet lane; in a target repo, that repo's own contract — plus C3
+quality bar, creative direction, capture protocol, and the build under test. (a-target) drop the
+operating core to a selected C6 slice and keep the product layers whole; not in force. (b) *target*:
+**the Builder's reasoning and diff** — a Critic that reads the justification is no longer blind — and
+the task brief's implementation plan. (c) read-only; proposes findings, promotes nothing. (d) the
+running build, captures, named seeds/viewport facts. (e) ranked findings with named evidence,
+uncertainty, and the smallest next experiment — to the Director and the owner. (f) one artifact
+version; refreshes when the build changes. (g) *proposed*, repo-local Capture/Critic note (§6).
 
-**6. Researcher / scout.** (a) the bounded question plus its acceptance test. (b) write authority of
-any kind; the repo's mutating context. (c) read-only, external reads allowed under the verb table.
+**6. Researcher / scout.** (a-now) mandatory core as above when it runs in a lane, plus the bounded
+question and its acceptance test. (a-target) the question and acceptance test alone; not in force.
+(b) *target*: the repo's mutating context. (c) read-only, external reads allowed under the verb
+table — read-only is current, not aspirational. (d) source reads and named external lookups.
 (e) evidence and explicit unknowns, to the requester. (f) one question. (g) `AGENTS.md` request-verb
 table (`ask/explain/review/diagnose` → read-only) — already normative, already sufficient.
 
-**7. Code cartographer.** (a) the subsystem boundary to map and the symbol vocabulary. (b) product
-intent and quality bars — a map is not a design. (c) read-only. (d) `ast-grep` for structural
-questions, `rg -uu` for the git-ignored operational files (a plain `rg` returns *empty*, not an
-error, on `CLAUDE.md`/`fleet.json`/the ledgers). (e) a map with file:line anchors, to the Director.
-(f) one HEAD; stale the moment the tree moves. (g) *proposed*; today only `CLAUDE.md`'s tooling
-paragraph, which no target repo has.
+**7. Code cartographer.** (a-now) mandatory core as above, plus the subsystem boundary to map and its
+symbol vocabulary. (a-target) boundary + vocabulary alone; not in force. (b) *target*: product intent
+and quality bars — a map is not a design. (c) read-only. (d) `ast-grep` for structural questions,
+`rg -uu` for the git-ignored operational files (a plain `rg` returns *empty*, not an error, on
+`CLAUDE.md`/`fleet.json`/the ledgers). (e) a map with file:line anchors, to the Director. (f) one
+HEAD; stale the moment the tree moves. (g) *proposed*; today only `CLAUDE.md`'s tooling paragraph,
+which no target repo has.
 
-**8. Verifier / reviewer.** (a) C6 in full — the exact chain and how to judge it — plus the diff.
-(b) the Builder's narrative of why it is correct. (c) read-only; may downgrade a verdict, never
-upgrade one. (d) `GET /api/self/gate` (authoritative over any doc line), the suite tails.
+**8. Verifier / reviewer.** (a-now) mandatory core as above, plus C6 in full — the exact chain and
+how to judge it — and the diff. (a-target) C6 + diff; not in force. Note that C6 is the one layer
+whose *authority* already lives outside the documents: `GET /api/self/gate` is authoritative over any
+doc line, including this one. (b) *target*: the Builder's narrative of why it is correct.
+(c) read-only; may downgrade a verdict, never upgrade one. (d) `GET /api/self/gate`, the suite tails.
 (e) a verdict with the quoted tail, to the land path and the owner. (f) one tree; a `!head` marker
 means the tree moved and the verdict is unverified — not wrong. (g) `AGENTS.md ## Verify` +
 `docs/verify-tiering.md`, i.e. exactly the existing `verify-e2e` pack.
 
-**9. Bounded aggregator.** (a) the N inputs and the merge rule. (b) authority to decide anything the
-inputs left open — an aggregator that resolves disagreement is a Director wearing a cheaper hat.
-(c) read-only; must preserve dissent rather than average it. (d) the inputs, nothing else.
-(e) one synthesis naming every unresolved disagreement, to the requester. (f) one batch.
+**9. Bounded aggregator.** (a-now) mandatory core as above when it runs in a lane, plus the N inputs
+and the merge rule. (a-target) inputs + merge rule alone; not in force. (b) *target*: authority to
+decide anything the inputs left open — an aggregator that resolves disagreement is a Director wearing
+a cheaper hat. (c) read-only; must preserve dissent rather than average it. (d) the inputs, nothing
+else. (e) one synthesis naming every unresolved disagreement, to the requester. (f) one batch.
 (g) *proposed*; `docs/scope-inflation.md`'s "cut the ranked list where the request is satisfied" is
 the closest existing rule.
 
-**The pattern across all nine.** Every role's *must-load* is one C-layer deeper than the role above
-it, and every role's *must-not* is the layer that would let it exceed its authority. That is why the
-withheld column matters as much as the loaded one: G2 (omission never reaches the reader) is what
-makes a withheld layer indistinguishable from a nonexistent one.
+**The pattern across all nine — and its current cost.** In the target design each role's must-load is
+one C-layer deeper than the role above it, and each role's must-not is the layer that would let it
+exceed its authority. **Today that gradient exists only in the role-specific tail:** every lane role
+carries the same full operating core underneath, by rule. That uniform floor is the price the
+operation currently pays for not having a proof that a narrower path is safe — and it is a price, not
+a defect, because the alternative on offer is an unproven narrowing. It also sharpens why G2 matters:
+when selection does become real, an omission the reader never sees would make a withheld layer
+indistinguishable from a nonexistent one, and this table would start describing a system nobody can
+observe.
 
 ---
 

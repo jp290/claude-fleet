@@ -1,3 +1,43 @@
+# HANDOFF — Session 71 (2026-08-16, Fable Program-MAIN "Owner-side Supervisor v0": beide Cuts gelandet, auditiert, deployt, alle Live-Beweise erbracht, Programm COMPLETE; iOS-Studio-Vorschlag eingereicht) · Supervisor-Occupant/70/69 darunter
+
+**ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null`, Lücke `e2784b16`);
+Statusline weit unter der Schwelle. Session endet per Programm-Abschluss (Owner-Vorgabe), nicht an
+der Schwelle.**
+
+**Der volle Kreis, jede Stufe mit Beleg:**
+- **Cut 1 `bedd5dd`** (Task `cf28ea9e`, eine Opus-5-Lane): SupervisorBinding (Singleton neben
+  `programs`, identische Occupant-Form wie Program.main), `POST /api/supervisor/bootstrap`
+  (owner-only, Zeile-für-Zeile auf bootstrapProgramMain, Ein-Weg-Crash-Grenze: bind erst NACH send),
+  `succeedSupervisor` aus handleSelfSucceed mit Ambiguitäts-409, toleranter Loader, additives
+  `{programs, supervisor}`. Audit grün 2477/0, Deploy `9b529373` hitTarget.
+- **Cut 2 `e9651d4`** (Task `47cae280`, eine Opus-5-Lane): `GET /api/self/supervisor-view`
+  (occupancy-gated, read-only, fünf Fakt-Gruppen mit Caps + unknown[]-Ehrlichkeit, nichts auf dem
+  2s-Poll) und `POST /api/self/nudge` (Empfänger NUR aus program.main abgeleitet, awaiting:"owner"
+  respektiert, Receipt-Anatomie exakt der Owner-/send, neue Prompt-Log-Source "supervisor"). Die
+  Lane fand und schloss eine echte Drift (continuity.ts-Source-Union, Pin falsifizierbar). Audit
+  grün 2501/0, Deploy `87c57415` hitTarget.
+- **Live-Beweise, alle vier:** (1) Bootstrap real: Slot 5 「🧿 Supervisor」 Fable, Receipt
+  programId:null 1177 B. (2) Restart-Überleben: Redeploy `de48cdd3`, Binding byte-identisch
+  nachgeladen, Occupant alive. (3) Nudge-Roundtrip: Supervisor las die View, nannte den typisierten
+  Fakt (2/2 Tasks done, Status active), Nudge `ca88b9eab5e93855ecd0c7d2` kam typisiert in MEINE
+  Pane; Journal-Zeile source:"supervisor" delivery:"sent", Audit `supervisor_nudge` ohne Text; MEINE
+  Entscheidung schloss ihn (erst Succession, dann complete) — Doktrin exakt gelebt. (4) Succession:
+  Slot 5 → Slot 7 (openedAt 1786914561754, Session `ebd34ed6…`), Handoff-Commit `079391d`, Receipt
+  programId:null 1418 B, kein stiller Fresh-Start.
+- **Programm `c740952d` COMPLETE** (completedAt 1786914603887). **Der stehende Supervisor ist
+  Slot 7** — nicht anfassen, er ist die dauerhafte Session-Form, die dieses Programm bauen sollte.
+- **iOS-App-Studio-Vorschlag eingereicht** (Owner-Auftrag mid-session, geschärft): Programm
+  `d576186dda9546a6636e7e18`, status proposed, propose-only über /api/self/programs. Owner-Review
+  offen; die fünf openQuestions (Xcode-Installation! — Maschine hat NUR CommandLineTools, gemessen —
+  App-Wahl, Developer-Account, Monetarisierung, Budget) sind die Entscheidungsfläche. Bei confirm:
+  Repo anlegen, dann bootstrap-main (target-repo-Frame baut den Gründungsbrief aus dem Programm-JSON).
+- **Bekannte getragene Grenzen:** Stale-Binding hat keinen Clear-Weg (geerbt vom Program-MAIN-Modell,
+  benannt in beiden Cut-Reviews); der 12-KiB-Budget-Check behält ~64 B Headroom (nichts in beiden
+  Cuts fügt dem Owner-Poll Bytes zu); Slot-5-Vorgänger räumt der Grace-Timer.
+- **Offen für die nächste Session (NICHT ohne Owner beginnen):** Owner-Review von `d576186d`;
+  Verhaltens-Rulebook des Supervisors ist ausdrücklich eine SPÄTERE owner-promotete Schicht
+  (Non-Goal dieses Programms); Budget-Headroom-Fragilität (S70) unverändert Kandidat.
+
 # HANDOFF — Supervisor v0, first occupant (2026-08-16, Slot 5 「🧿 Supervisor」)
 
 **Wer:** die eine owner-seitige Supervisor-Session (Session `cad6470d-f107-4b66-9918-c5b653386951`,

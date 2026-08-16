@@ -991,3 +991,33 @@ OWNER — durable, einmal, außerhalb des Composers.
 - **Offen laut Programm:** typed owner-send receipt am generischen `/send` (receiver
   openedAt/sessionId/sendId) blieb außerhalb dieses Schnitts; Client-Inbox zeigt nur Attention,
   keine Clarifications (bewusst nicht aufgeblasen).
+
+## Workstream 24 — Communication Cut 3: typed owner-send receipt (gelandet `cafb39b`, 2026-08-16)
+
+Dritter und letzter benannter Schnitt des Communication-Programms (eine Claude-Opus-5-Lane, Task
+`815db0cb`; Fable-MAIN entwarf, reviewte, landete). Schließt die Evidenz-Lücke des
+Tool-Evidence-Audits: `/send` und Promptjournal trugen weder receiver openedAt/sessionId noch eine
+Send-Identität, und ein partieller Send war ein untypisierter 500 ohne Spur.
+
+- **Journal:** `logPrompt` schreibt `openedAt`+`sessionId` UNBEDINGT für jeden Aufrufer (die
+  Slot-NUMMER identifiziert eine Row, die recycelt wird — das Occupant-Paar identifiziert, wer den
+  Text wirklich bekam), plus optional `sendId`/`delivery` (absent statt null). Alle sieben
+  Journal-Leser vorab geprüft: additiv tolerant, keiner musste angefasst werden.
+- **`/send`:** `sendId` (24 hex) VOR dem Transport gemintet, damit Receipt und Journalzeile in
+  beiden Ausgängen joinbar sind. Erfolg → `{ok, receipt:{sendId, at, submitted, receiver}}` +
+  Journal `delivery:"sent"`. Wurf → Journal `delivery:"uncertain"` PFLICHT im catch + typisierter
+  409 mit uncertain-Receipt; kein Retry, kein Tick; History bekommt den Eintrag NICHT (Recall darf
+  eine Vermutung nicht als Fakt abspielen). Cut-1-`awaiting`-Klausel byte-identisch erhalten.
+- **Client:** der 409 hebt zusätzlich einen Toast („send outcome uncertain — check the pane before
+  retrying") — der rote Flash allein las sich als „nichts ging raus" und lud zum Doppel-Send ein.
+- **Beweise:** Pin (genau ein sendText im /send-Slice, im try, catch journalt vor „uncertain"),
+  14 Checks in `e2e/slots.ts` (Receipt, Journal-Attribution gepollt, uncertain-Pfad deterministisch
+  via entferntem cwd, Recycling-Gegenprobe mit neuem openedAt), Gate grün, Audit grün 2436/0
+  (891 s), Deploy `3384abd3` `hitTarget:true`. **Live BEIDE Zweige bewiesen:** ein Leer-Text-Send
+  warf real (tmux verweigert leeren Paste) → typisierter 409 + Journal `uncertain`; der echte Send
+  lieferte das Erfolgs-Receipt, dessen `sendId` die Journalzeile joint — beide exakt auf das
+  Occupant-Tripel von Slot 2 attribuiert.
+- **Programm-Stand danach:** alle im Programm benannten Elemente des Korridors sind gelandet —
+  Cut 1 (drei Clarification-Kanten, `8be79d3`), Cut 2 (AttentionRequest v1 + Inbox, `03019e1`),
+  Cut 3 (typed owner-send receipt, `cafb39b`). Das Erfüllungs-Urteil über das successCriterion
+  gehört dem Owner; die review-ready-Attention-Zeile dafür ist erhoben und wartet offen.

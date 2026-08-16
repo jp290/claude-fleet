@@ -5,8 +5,13 @@ Claude-Opus-5-Lane, Task `57f29dcb`, ~49 min), Audit grün 2422/0 (896 s), Deplo
 `hitTarget:true`. Live-Kreis selbst-referentiell geschlossen: dieser MAIN erhob eine
 review-ready-Zeile, Board zeigte 📣1, Antwort im UI getippt (Playwright), typisierte OWNER-ANSWER-
 Quittung kam in die eigene Pane, Zeile terminal answered/by:"owner". Details: Core-Doc WS23.
-Der nächste Programm-Schritt wäre der typed owner-send receipt am generischen /send (bewusst
-NICHT in Cut 2 gezogen) — vorher prüfen, ob der Owner nach zwei Cuts erst abnehmen will.
+**NACHTRAG Cut 3 (gleiche Session):** typed owner-send receipt gelandet `cafb39b` (Lane-Task
+`815db0cb`), Audit grün 2436/0 (891 s), Deploy `3384abd3` `hitTarget:true`. Live BEIDE Zweige
+bewiesen (Erfolgs-Receipt joinbar mit Journalzeile; Leer-Text-Send warf real → typisierter 409 +
+Journal `uncertain`). Damit sind ALLE benannten Korridor-Elemente des Communication-Programms
+gelandet (WS22/23/24). Die Abnahme des successCriterion gehört dem Owner — eine review-ready-
+Attention-Zeile dafür ist erhoben und WARTET OFFEN in der 📣-Inbox. Nächste Session: erst diese
+Antwort lesen, bevor irgendein weiterer Communication-Schnitt beginnt.
 
 
 **ctx beim Schreiben: unmessbar (Slot-`ctx: null` am Owner-Poll — `contextWindowFor` kennt das

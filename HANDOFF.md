@@ -1,3 +1,38 @@
+# HANDOFF — Session 68 (2026-08-16, Fable-MAIN Program „Fleet Communication Truth": Cut 1 gelandet `8be79d3`, auditiert grün 2402/0, deployt `c904ccee`, Live-Canary voller Kreis) · 67/66/65 darunter
+
+**ctx beim Schreiben: unmessbar (Slot-`ctx: null` am Owner-Poll — `contextWindowFor` kennt das
+Fable-Modell nicht, dieselbe Lücke wie bei GPT-Slots, Queue-Zeile `e2784b16`); Session war kurz
+(~1 Lane-Zyklus), geschätzt deutlich unter der 44-%-Schwelle.**
+Produziert: ein Land (`8be79d3`, genau EINE Claude-Opus-5-Lane, Task `756cf668` über den
+Dispatch-Knopf, ~55 min), Audit grün substanziell (1 000 252 ms, 2402/0, covers genau dieses
+Land), Deploy `c904ccee` (`ok:true`, `bootHead == target`, `hitTarget:true`, `bundleStale:false`),
+Live-Canary voller Kreis auf dem deployten Server, Core-Doc Workstream 22. Nebenbei: die leere
+Orphan-Lane `fleet-260815203011-2ce5` (0 ahead, clean) entfernt.
+
+## Der Schnitt (Details: Core-Doc WS22, Commit-Body `8be79d3`)
+
+Drei Clarification-Kanten: (A) Reply-Transportzustand `send-uncertain` — persistiert VOR tmux,
+byte-identischer prinzipal-getriebener Retry, nicht terminal, refusierbar; (B) Owner `/send`
+löscht nur noch `"owner"`-Waits, `"main"` überlebt; (C) `clarificationsFor` = Union exakter
+Bindings statt worktree-Branch. Lane lief den vollen Beweis selbst (Chain 7× ALL PASS,
+isolated 2402 ALL PASS nach einem selbst adjudizierten Flake der Pane-Beobachtungs-Familie plus
+einem eigenen Fixture-Slot-Engpass, sauber repariert). Watch-Kette funktionierte durchgehend:
+lane-watch → merge-watch → audit-watch, kein Hand-Polling.
+
+## Offen / nächste Schritte
+
+- **Cut 2 beginnt jetzt** (Program-Wortlaut: „erst nach Cut 1"): Program-MAIN→Owner attention
+  request (durable, decision|blocked|review-ready), typed owner-send receipt, Client-Inbox. Die
+  Owner-Principal-Form ist die offene Design-Frage — Fable-MAIN entwirft zuerst, gleiche
+  Arbeitsteilung (eine Lane implementiert).
+- **Grenze des Cut-1-Beweises, ehrlich:** der send-uncertain-Wurf-Zweig ist e2e-/audit-bewiesen,
+  live nie erzwungen (gesunde Pane wirft nicht). Kein Handlungsbedarf, nur wissen.
+- Aus S67 unverändert: linked-worktree-Klassifikation als `target-repo` · Dispatch-Pfad behält
+  `sourceTree:"fleet"` · Private-Repo-H-Bootstrap fahrbar (Programm `9f42350e` active) ·
+  Graphify-Hook-DRIFTBEFUND besteht (dieser Schnitt lief erneut source-first).
+- Queue: `756cf668` schloss sich beim Land selbst; sonst unverändert (56 offene Zeilen, Stand
+  Session-Start).
+
 # HANDOFF — Session 67 (2026-08-15, Fable-MAIN: Program-MAIN gründet repo-ehrlich im Ziel-Repo — gelandet `5467ce2` + `5edee9f`, auditiert grün, deployt, Live-Canary voller Kreis) · 66/65/64/63/62 darunter
 
 **ctx beim Schreiben: 24,4 % (GEMESSEN am Owner-Poll, 243 512 / 1 000 000).**

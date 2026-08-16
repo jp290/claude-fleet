@@ -925,3 +925,35 @@ entfernt, Programme `complete`):
 - Fleet-Root → die vier alten Schritte in Reihenfolge, zwei Packs (`portable-core`, `verify-e2e`),
   drei Anker, und die Anker lösen am Receipt-HEAD `5edee9f` wirklich auf (`git show` auf beide
   Dateien, Überschriften vorhanden).
+
+## Workstream 22 — Communication Cut 1: drei Clarification-Kanten (gelandet `8be79d3`, 2026-08-16)
+
+Erster Schnitt des owner-bestätigten Programms „Fleet Communication Truth". Genau eine
+Claude-Opus-5-Lane (Task `756cf668`, Dispatch-Knopf), Fable-MAIN entwarf, reviewte, landete.
+
+- **Kante A — `send-uncertain` am Reply-Pfad.** `replyClarification` ließ einen `sendText`-Wurf
+  als `open` zurück: blinder Retry, kein Restart-Beweis. Jetzt spiegelt der Reply exakt das
+  FleetEvent-Transportmuster (FACT 2 in `tickWatches`): Status + pending answer `{text,at,by}`
+  werden VOR tmux persistiert (`saveStateNow`), ein Wurf bewahrt den Marker, Retry ist
+  prinzipal-getrieben und nur byte-identisch (anderer Text → 409, pending answer unangetastet),
+  kein Tick sendet je nach. Nicht terminal (Prune = answered|refused only), aber refusierbar
+  (Worker weg → sonst unprunebar). Worker-`awaiting:"main"` hält bis zum bestätigten answered.
+- **Kante B — Owner `/send` löscht nur noch einen `"owner"`-Wait.** Ein `"main"`-Wait wartet auf
+  Program-MAINs Antwort; der tippende Owner ist nicht diese Antwort, und das Löschen hätte
+  Steward-Nudges an einer unbeantworteten Frage vorbei wieder geöffnet.
+- **Kante C — GET-Scope folgt der ROLLE, nicht worktree-ness.** `clarificationsFor` ist die Union
+  exakter worker-/receiver-Binding-Matches; ein Receiver im Worktree (⚙-steward-Form) sieht
+  seine empfangenen Zeilen.
+- **Beweise:** neuer Pin (Ordnung send-uncertain → saveStateNow → sendText + Terminal-Menge),
+  sechs neue e2e-Checks (Kante-B-Gegenprobe in beide Richtungen, awaiting aus der State-Datei
+  statt `/api/sessions`-Cast, Fixture-eigene Checks), Land-Gate grün 107 s, Audit grün 2402/0
+  (1000 s), Deploy `c904ccee` `hitTarget:true`, Live-Canary voller Kreis auf dem deployten
+  Server (Clarification öffnen → Owner-/send während `awaiting:"main"` → Wait hält → Reply →
+  answered, Wait null, Antwort in der Pane). Der send-uncertain-Zweig selbst wurde nur in
+  e2e/Audit bewiesen, nicht live erzwungen (eine gesunde Pane wirft nicht).
+- **Entschieden (offene Frage 2 des Programms):** die zwei kleinen Kanten landeten MIT dem
+  Transportzustand als ein Land — gleiche ~80-Zeilen-Region, gleiche e2e-Familie, ein zweiter
+  Audit-Zyklus hätte nichts isoliert. Offene Frage 1 (Zustandsform) = die FleetEvent-Form,
+  wiederverwendet statt erfunden.
+- **Nächster Schnitt laut Programm:** Program-MAIN→Owner attention, typed owner-send receipt,
+  Client-Inbox (Cut 2) — beginnt ausdrücklich erst jetzt.

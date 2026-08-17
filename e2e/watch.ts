@@ -12,7 +12,8 @@
 // (FLEET_AUTOS_TICK_MS), but the git facts the predicate reads refresh on the 10s tickGit, so the
 // first fire cannot happen sooner than that. Every wait here is a POLL with a loud bound, never a
 // fixed sleep.
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   type ClarificationEventPayload, type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
@@ -1358,12 +1359,20 @@ export async function run(): Promise<void> {
     inboxBadDelivery.status === 400 && inboxBadDeliveryText.includes("delivery must be 'pane' or 'inbox'"),
     `${inboxBadDelivery.status} ${inboxBadDeliveryText}`);
 
+  const paneRowBefore = JSON.stringify((await eventRows()).find((e) => e.id === successEvent?.id) ?? null);
   const paneOwnerAck = successEvent ? await post(`/api/events/${successEvent.id}/ack`, {})
     : new Response(null, { status: 599 });
   const paneOwnerAckText = await paneOwnerAck.text();
   check("inbox: the owner route refuses a PANE-delivered event — the split cuts both ways",
     paneOwnerAck.status === 409 && paneOwnerAckText.includes("acknowledgement belongs to the receiver session"),
     `${paneOwnerAck.status} ${paneOwnerAckText}`);
+  // …and the refusal is INERT. The owner's new visibility into unacknowledged pane transport
+  // (src/client.ts opsUnacked) shows him exactly these rows, so the one thing that must not happen
+  // is looking at one becoming closing one — the refused call may not move a single field.
+  check("owner ack on a pane row leaves it byte-identical — seeing is not consuming",
+    paneRowBefore !== "null"
+      && JSON.stringify((await eventRows()).find((e) => e.id === successEvent?.id) ?? null) === paneRowBefore,
+    paneRowBefore.slice(0, 200));
   const unknownOwnerAck = await post("/api/events/deadbeefdeadbeefdeadbeef/ack", {});
   check("inbox: the owner route 404s an unknown event id", unknownOwnerAck.status === 404,
     `${unknownOwnerAck.status} ${await unknownOwnerAck.text()}`);
@@ -1466,6 +1475,126 @@ export async function run(): Promise<void> {
     goneInboxAfter?.status === "receiver-gone" && goneInboxAfter.acknowledgedAt === null
       && goneInboxOwnerAck.status === 409,
     `${JSON.stringify(goneInboxAfter)} ${goneInboxOwnerAck.status} ${await goneInboxOwnerAck.text()}`);
+
+  // --- PANE TRANSPORT WITHOUT A SESSION ACKNOWLEDGEMENT, CLIENT HALF. `delivered` means tmux
+  // accepted paste+Enter and nothing else; the conversation on the other side never said it read
+  // the text. Measured gap: delivered +3s, acknowledged +368s, and only because the owner happened
+  // to see the text sitting in the composer. The server writes `delivered` once and otherwise reads
+  // it only as the receiver-ack precondition, so an unacknowledged row is invisible debt.
+  //
+  // The classification rules ARE the feature, so the real `opsOpen`/`opsUnacked` are cut out of
+  // src/client.ts and RUN — the same method as e2e/outcomes.ts (9f). What stays unproved and is
+  // named: the rendering around them (this suite has no DOM harness), asserted by regex right
+  // after. Nothing here mutates anything; the derivation is read-only by construction.
+  {
+    let cliSrc: string | null = null;
+    let cliSrcError = "";
+    try {
+      cliSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/client.ts`, "utf8");
+    } catch (e) { cliSrcError = e instanceof Error ? e.message : String(e); }
+    check("precondition: node_modules exposes src/client.ts for the pane-ack visibility checks",
+      cliSrc !== null, cliSrcError);
+    if (cliSrc !== null) {
+      const opsSrc = cliSrc.slice(cliSrc.indexOf("const opsOpen ="), cliSrc.indexOf("function renderOpsBtn"));
+      check("client: the two event classes are extractable as pure functions (no DOM in either)",
+        opsSrc.includes("const opsUnacked") && opsSrc.includes("PANE_ACK_STALE_MS")
+          && !/document|el\(|opsbtn|opspanel/.test(opsSrc), opsSrc.slice(0, 80));
+      const ops = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(opsSrc)
+        + "\nreturn { opsOpen, opsUnacked, PANE_ACK_STALE_MS };")() as {
+          opsOpen: (rows: unknown[]) => unknown[];
+          opsUnacked: (rows: unknown[], now: number) => { id: string }[];
+          PANE_ACK_STALE_MS: number;
+        };
+      const NOW = 1_000_000_000;
+      const STALE = ops.PANE_ACK_STALE_MS;
+      const evt = (o: Record<string, unknown>): Record<string, unknown> =>
+        ({ id: "x", receiverSlot: 1, createdAt: NOW - STALE - 1000, kind: "lane-ready",
+          status: "delivered", deliveredAt: NOW - STALE - 1000, acknowledgedAt: null, ...o });
+      const ids = (rows: { id: string }[]): string => rows.map((r) => r.id).sort().join(",");
+      check("client: a named threshold, small and in seconds — not a timeout and not a retry budget",
+        STALE >= 30_000 && STALE <= 600_000, String(STALE));
+
+      // (1) the row this cut exists for becomes visible, and the boundary is the threshold itself
+      const justUnder = evt({ id: "fresh", deliveredAt: NOW - STALE + 1000 });
+      const justOver = evt({ id: "stale", deliveredAt: NOW - STALE - 1 });
+      check("client: a pane row delivered but unacknowledged past the threshold becomes visible",
+        ids(ops.opsUnacked([justOver], NOW)) === "stale", JSON.stringify(ops.opsUnacked([justOver], NOW)));
+      check("client: a pane row still inside the threshold is NOT surfaced — a fresh send is not debt",
+        ops.opsUnacked([justUnder], NOW).length === 0, JSON.stringify(ops.opsUnacked([justUnder], NOW)));
+
+      // (2) every state that must NOT appear, each for its own reason: an ack arrived (promptly or
+      // at all), the receiver is gone so no ack can ever come, or transport never even ran.
+      const excluded = [
+        evt({ id: "acked", status: "acknowledged", acknowledgedAt: NOW - STALE - 500 }),
+        evt({ id: "prompt-acked", status: "acknowledged", deliveredAt: NOW - 3000,
+          createdAt: NOW - 4000, acknowledgedAt: NOW - 2000 }),
+        evt({ id: "gone", status: "receiver-gone" }),
+        evt({ id: "never-sent", status: "pending", deliveredAt: null }),
+        evt({ id: "filed", status: "inbox", delivery: "inbox", deliveredAt: null }),
+      ];
+      check("client: acknowledged, receiver-gone, never-attempted and filed rows are all absent",
+        ops.opsUnacked(excluded, NOW).length === 0, ids(ops.opsUnacked(excluded, NOW)));
+
+      // (3) send-uncertain is the one status with no delivery clock at all (it is persisted BEFORE
+      // tmux is touched), so it must age from createdAt rather than fall out of the class entirely.
+      check("client: send-uncertain ages from createdAt — a missing delivery clock is not a missing row",
+        ids(ops.opsUnacked([evt({ id: "unc", status: "send-uncertain", deliveredAt: null })], NOW)) === "unc"
+          && ops.opsUnacked([evt({ id: "unc-fresh", status: "send-uncertain", deliveredAt: null,
+            createdAt: NOW - 1000 })], NOW).length === 0);
+
+      // (4) THE TWO COUNTS ARE NEVER THE SAME NUMBER OVER THE SAME ROW. Filed operations want the
+      // owner to close them; unacknowledged pane transport wants nobody. A row in both classes, or
+      // one count computed as a sum, would make one badge mean two different things.
+      const mixed = [...excluded, justOver, justUnder,
+        evt({ id: "filed2", status: "inbox", delivery: "inbox", deliveredAt: null })];
+      const filed = ops.opsOpen(mixed) as { id: string }[];
+      const unacked = ops.opsUnacked(mixed, NOW);
+      check("client: the filed-operations and unacknowledged-pane classes are disjoint over one ledger",
+        ids(filed) === "filed,filed2" && ids(unacked) === "stale"
+          && !filed.some((f) => unacked.some((u) => u.id === f.id)),
+        `filed=[${ids(filed)}] unacked=[${ids(unacked)}]`);
+
+      // (5) the rendering, by regex over the source and weaker than a render test on purpose. Two
+      // things must hold: the words are the ones the data supports, and the row offers NO ack — the
+      // owner is not the principal who could have read the pane, and the server refuses him (above).
+      // COMMENT LINES ARE STRIPPED FIRST: these are checks about the words the OWNER reads. A
+      // comment is free to name the phrasing it forbids — the row's own does — and a probe that
+      // counted those mentions would fail on its own documentation.
+      const unackedRow = cliSrc.slice(cliSrc.indexOf("function opsUnackedRow"),
+        cliSrc.indexOf("function renderOpsDlg"))
+        .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+      check("client: the unacknowledged-pane row says transport reported sent, no session acknowledgement",
+        /transport reported sent; no session acknowledgement/.test(unackedRow)
+          && /transport outcome uncertain; no session acknowledgement/.test(unackedRow),
+        unackedRow.slice(0, 80));
+      check("client: it never calls the send undelivered or failed, and every 'accept' is about tmux only",
+        !/undelivered|failed/i.test(unackedRow)
+          && [...unackedRow.matchAll(/accept\w*/gi)]
+            .every((m) => /tmux/.test(unackedRow.slice(Math.max(0, (m.index ?? 0) - 40), m.index))),
+        unackedRow.slice(0, 200));
+      // THE ONE FALSE STATEMENT THIS ROW COULD MAKE. `send-uncertain` is persisted BEFORE tmux is
+      // touched, so "tmux took the keystrokes" is unknowable on it — and that phrase sat in a SHARED
+      // detail line until review caught it. Both lines must branch, the phrase may exist exactly
+      // once, and it must live in the ELSE arm (the uncertain arm of `cond ? a : b` comes first).
+      const took = (unackedRow.match(/tmux took the keystrokes/g) ?? []).length;
+      const uncertainArmAt = unackedRow.indexOf("before Fleet could prove whether tmux accepted anything");
+      check("client: BOTH lines branch on status — a send-uncertain row never claims tmux took the keystrokes",
+        (unackedRow.match(/\buncertain\s*\?/g) ?? []).length === 2 && took === 1
+          // a NEGATED condition would keep both counts and swap what each state is told, so the
+          // positive form is part of the rule rather than a coincidence of how it is written
+          && !/!\s*uncertain/.test(unackedRow)
+          && uncertainArmAt > 0 && unackedRow.indexOf("tmux took the keystrokes") > uncertainArmAt
+          && /may or may not be in the pane/.test(unackedRow) && /Nothing here retries it/.test(unackedRow),
+        `branches=${(unackedRow.match(/\buncertain\s*\?/g) ?? []).length} took=${took} uncertainArmAt=${uncertainArmAt}`);
+      check("client: the row carries no acknowledge affordance and posts nothing at all",
+        !/\/ack\b/.test(unackedRow) && !/\bpost\(/.test(unackedRow) && !/onclick/.test(unackedRow),
+        unackedRow.slice(0, 200));
+      const btn = cliSrc.slice(cliSrc.indexOf("function renderOpsBtn"), cliSrc.indexOf("function setOpsEvents"));
+      check("client: the badge prints the two counts side by side and never adds them",
+        /opsUnacked\(opsRows, Date\.now\(\)\)\.length/.test(btn) && !/n \+ m|m \+ n/.test(btn),
+        btn.slice(0, 200));
+    }
+  }
 
   // === MAIN-SESSION EXIT: tickMigrate ==========================================================
   // The isolated wrapper explicitly arms the otherwise-default-off tick at 44%. FLEET_CMD=true

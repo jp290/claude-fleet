@@ -8200,6 +8200,10 @@ interface FleetEventRow {
   subjectSlot?: number; subjectBranch?: string; subjectCwd?: string;
   subjectRepo?: string; subjectMainAfter?: string; subjectDeployId?: string;
   payload?: Record<string, unknown>;
+  // the two transport clocks, carried for the derivation below. They already ride /api/sessions on
+  // every event; nothing was added to the payload to read them.
+  deliveredAt?: number | null;
+  acknowledgedAt?: number | null;
 }
 const opsdlg = $("opsdlg"), opspanel = $("opspanel"), opsbtn = $("opsbtn");
 let opsRows: FleetEventRow[] = [];
@@ -8208,12 +8212,38 @@ let opsBusy = false;
 const opsOpen = (rows: FleetEventRow[]): FleetEventRow[] =>
   rows.filter((e) => e.delivery === "inbox" && e.status === "inbox");
 
+// PANE TRANSPORT WITHOUT A SESSION ACKNOWLEDGEMENT — a SECOND class, derived here and shown apart.
+//
+// `delivered` records one fact only: tmux accepted paste+Enter. Nothing in the conversation on the
+// other side has said it read the text. The gap is measured: one event was delivered 3s after fire
+// and acknowledged 368s later, when the owner noticed it sitting unsent in the composer. Until then
+// the row was invisible debt — `delivered` is written once and otherwise read only as the receiver
+// ack precondition, so nothing surfaced it and nothing ever will on its own.
+//
+// This is a LOOKING GLASS, not a mechanism: no retry, no replay, no timeout, no state change. It
+// says exactly what is known — transport reported sent, no session acknowledgement — and never
+// "undelivered", "failed" or "accepted", none of which this data can support. The owner cannot
+// acknowledge these rows: seeing is not consuming, and the server's receiver-ack route is the only
+// thing that may close them (its owner twin 409s a pane row by construction).
+const PANE_ACK_STALE_MS = 120_000;
+const opsUnacked = (rows: FleetEventRow[], now: number): FleetEventRow[] =>
+  rows.filter((e) => e.delivery !== "inbox"
+    && (e.status === "delivered" || e.status === "send-uncertain")
+    && !e.acknowledgedAt
+    // send-uncertain is persisted BEFORE tmux is touched, so it has no delivery clock at all;
+    // createdAt is then the only honest origin, and it is never later than a delivery would be
+    && now - (e.deliveredAt ?? e.createdAt) >= PANE_ACK_STALE_MS);
+
 function renderOpsBtn() {
   const n = opsOpen(opsRows).length;
-  opsbtn.textContent = n > 0 ? `📥${n}` : "📥";
+  // TWO NUMBERS, NEVER A SUM. Filed operations want the owner to close them; unacknowledged pane
+  // transport wants nobody — it is a report. Adding them would make one count mean two things.
+  const m = opsUnacked(opsRows, Date.now()).length;
+  opsbtn.textContent = `📥${n > 0 ? n : ""}${m > 0 ? ` ⚠${m}` : ""}`;
   opsbtn.classList.toggle("hot", n > 0);
+  opsbtn.title = `${n} filed for you · ${m} pane event(s) sent without a session acknowledgement`;
   // same rule as 📣: no affordance while nothing is filed, so the icon means something when it appears
-  opsbtn.style.display = n > 0 || opsdlg.style.display === "flex" ? "" : "none";
+  opsbtn.style.display = n > 0 || m > 0 || opsdlg.style.display === "flex" ? "" : "none";
 }
 
 function setOpsEvents(rows: FleetEventRow[]) {
@@ -8278,12 +8308,52 @@ function opsRow(e: FleetEventRow): HTMLElement {
   return row;
 }
 
+// the read-only twin of opsRow: same facts, no affordance. It carries no acknowledge button because
+// the owner is not the principal who could have read the pane text, and the server refuses him here.
+function opsUnackedRow(e: FleetEventRow, now: number): HTMLElement {
+  const row = el("div", "attnrow uncertain");
+  const head = el("div", "attnhead");
+  head.appendChild(el("span", "attnkind", e.kind));
+  head.appendChild(el("span", "attnprog", opsSubject(e)));
+  const since = e.deliveredAt ?? e.createdAt;
+  head.appendChild(el("span", "attnmeta",
+    `receiver slot ${e.receiverSlot} · ${fmtSince(since)} without an ack`));
+  row.appendChild(head);
+  // THE TWO STATES KNOW DIFFERENT AMOUNTS, so both lines branch, headline and detail alike. A
+  // `delivered` row knows tmux took the keystrokes and nothing beyond that. A `send-uncertain` row
+  // does not even know that: it is persisted BEFORE tmux is touched, so whether a send was ever
+  // accepted is itself unknown. Saying "tmux took the keystrokes" on that row would be a false
+  // statement of the one fact this whole class exists to stop overstating.
+  const uncertain = e.status === "send-uncertain";
+  const secs = Math.round((now - since) / 1000);
+  row.appendChild(el("div", "attntext", uncertain
+    ? "transport outcome uncertain; no session acknowledgement"
+    : "transport reported sent; no session acknowledgement"));
+  row.appendChild(el("div", "shrhint", uncertain
+    ? `Recorded uncertain ${secs}s ago, before Fleet could prove whether tmux accepted anything. The `
+      + "text may or may not be in the pane, and no session acknowledgement has arrived either way. "
+      + "Nothing here retries it."
+    : `tmux took the keystrokes ${secs}s ago. Whether the session read them is not known — only its `
+      + "own acknowledgement can say so, and none has arrived."));
+  return row;
+}
+
 function renderOpsDlg() {
   opspanel.replaceChildren();
   opspanel.appendChild(el("h2", "", "Operations — completions filed instead of typed into a pane"));
   const live = opsOpen(opsRows);
   if (!live.length) opspanel.appendChild(el("div", "shrhint", "Nothing is filed."));
   for (const e of live) opspanel.appendChild(opsRow(e));
+  const now = Date.now();
+  const unacked = opsUnacked(opsRows, now);
+  if (unacked.length) {
+    opspanel.appendChild(el("h2", "",
+      "Pane transport without a session acknowledgement — a report, nothing to close"));
+    opspanel.appendChild(el("div", "shrhint",
+      `Sent into a pane over ${Math.round(PANE_ACK_STALE_MS / 1000)}s ago and still unacknowledged by `
+      + "the receiving session. These rows are read-only: nothing here retries, replays or expires."));
+    for (const e of unacked) opspanel.appendChild(opsUnackedRow(e, now));
+  }
   const btns = el("div", "shrbtns");
   const close = el("button", "shrbtn", "close") as HTMLButtonElement;
   close.onclick = closeOpsDlg;

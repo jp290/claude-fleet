@@ -19,6 +19,10 @@ import { buildRefinePrompt } from "./refine-prompt";
 import { localProofFor, type LocalProof } from "./verify-proportion";
 import { planContext, type ContextPlan, type ContextPlanSelection } from "./context-plan";
 import {
+  CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
+  type ContextManifestRead,
+} from "./context-manifest";
+import {
   CONTEXT_PACKS,
   type ContextPackCapability,
   type ContextPackMode,
@@ -5980,8 +5984,12 @@ function renderContextAnchorBlock(plan: ContextPlan): string {
 
 function contextReceiptSelections(selected: readonly ContextPlanSelection[]): ContextReceiptSelection[] {
   return selected.map((selection) => {
+    // A repo-declared pack carries its own observation on the selection; a Fleet seed's hash is
+    // read from the seed manifest. Neither invents one for the other.
     const manifest = CONTEXT_PACKS.find((pack) => pack.id === selection.id);
-    const sourceHash = manifest && "sourceHash" in manifest ? { sourceHash: manifest.sourceHash } : {};
+    const sourceHash = selection.sourceHash !== undefined
+      ? { sourceHash: selection.sourceHash }
+      : manifest && "sourceHash" in manifest ? { sourceHash: manifest.sourceHash } : {};
     if (!("privateSourceId" in selection.sources))
       return { id: selection.id, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash };
     return {
@@ -12070,6 +12078,58 @@ const programMainContextFacts = (frame: ProgramMainFrame, harness: string | null
     : TARGET_REPO_CONTEXT_CAPABILITIES,
 });
 
+// A source file Fleet will not read whole cannot have its anchor checked, so the pack that names
+// it is reported as a manifest defect rather than delivered on an unverified pointer.
+const CONTEXT_MANIFEST_MAX_SOURCE_BYTES = 4_194_304;
+
+// Read one blob AT A COMMIT, size-bounded. `git show <head>:<path>` is the ONLY way this seam ever
+// obtains repo content: the receipt asserts `head`, so a working-tree read could receipt an anchor
+// that commit does not carry — and the anchor is the whole product.
+// The three outcomes are kept apart because collapsing them would make a manifest that EXISTS but
+// is too large read as one that was never declared — a silent skip, which this carrier never does.
+type BlobAtHead = { readonly kind: "absent" } | { readonly kind: "unread" } | { readonly kind: "bytes"; readonly text: string };
+async function showAtHead(repoRoot: string, head: string, path: string, maxBytes: number): Promise<BlobAtHead> {
+  const size = await gitRead(repoRoot, "cat-file", "-s", `${head}:${path}`);
+  if (size.code !== 0 || !/^\d+$/.test(size.out)) return { kind: "absent" };
+  if (Number(size.out) > maxBytes) return { kind: "unread" };
+  const blob = await gitRead(repoRoot, "show", `${head}:${path}`);
+  return blob.code === 0 ? { kind: "bytes", text: blob.out } : { kind: "unread" };
+}
+
+// The Fleet seeds and the target repository's own declared packs land in ONE plan and one receipt.
+// In a foreign tree the seeds keep their honest `source-unavailable` verdict; the repo-declared
+// packs are additional rows. The fleet-control frame never reads a manifest at all.
+async function programMainContextPlan(preflight: ProgramMainPreflight,
+  facts: ReturnType<typeof programMainContextFacts>): Promise<ContextPlan> {
+  const base = planContext(facts);
+  if (preflight.frame !== "target-repo") return base;
+
+  const raw = await showAtHead(preflight.repoRoot, preflight.head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
+  const manifest: ContextManifestRead = raw.kind === "unread"
+    ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
+    : readContextManifest(raw.kind === "bytes" ? raw.text : null);
+  if (manifest.kind === "absent") return base;
+
+  const trackedPaths = new Set<string>();
+  const sourceBytes = new Map<string, string>();
+  if (manifest.kind === "packs") {
+    const tracked = await gitRead(preflight.repoRoot, "ls-tree", "-r", "--name-only", preflight.head);
+    if (tracked.code === 0) for (const path of tracked.out.split("\n")) if (path) trackedPaths.add(path);
+    for (const path of manifest.referencedPaths) {
+      if (!trackedPaths.has(path)) continue;
+      const bytes = await showAtHead(preflight.repoRoot, preflight.head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
+      // A source Fleet did not read stays OUT of the facts: the validator then reports the anchor
+      // as unchecked, which the plan turns into a named omission rather than a hopeful delivery.
+      if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
+    }
+  }
+  const repoPlan = planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts });
+  return {
+    selected: [...base.selected, ...repoPlan.selected],
+    omitted: [...base.omitted, ...repoPlan.omitted],
+  };
+}
+
 function buildProgramMainBrief(program: Program, frame: ProgramMainFrame, anchorBlock: string): string {
   if (frame === "target-repo") return [
     "[fleet Program-MAIN] You are the one authoritative MAIN session for the owner-confirmed Program below.",
@@ -12644,7 +12704,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
       }
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      const plan = planContext(planFacts);
+      const plan = await programMainContextPlan(preflight.value, planFacts);
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);
@@ -12756,7 +12816,7 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
       }
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      const plan = planContext(planFacts);
+      const plan = await programMainContextPlan(preflight.value, planFacts);
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildProgramMainBrief(program, preflight.value.frame, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);

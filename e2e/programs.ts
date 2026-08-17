@@ -451,6 +451,105 @@ export async function run(ctx: Ctx): Promise<void> {
   if (decoyBody.slot) await post(`/api/slots/${decoyBody.slot}/kill`, {});
   await programPost(decoyProgram.id, "complete");
 
+  // --- the repo-declared context carrier. A target repository may track its own pack manifest;
+  // Fleet reads it AT THE COMMIT THE RECEIPT ASSERTS and carries the pointers, nothing else. The
+  // three foundings below share one title on purpose: the founding brief contains no program id,
+  // so their prompts are comparable BYTE FOR BYTE and the carrier's whole delta is the block.
+  const gitIn = (dir: string, ...args: string[]): { status: number | null; stdout: string } =>
+    spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const manifestRepo = `${ROOT}/manifestrepo`;
+  mkdirSync(`${manifestRepo}/docs`, { recursive: true });
+  mkdirSync(`${manifestRepo}/.fleet`, { recursive: true });
+  gitIn(manifestRepo, "init", "-q", "-b", "main");
+  gitIn(manifestRepo, "config", "user.email", "t@t");
+  gitIn(manifestRepo, "config", "user.name", "t");
+  gitIn(manifestRepo, "config", "commit.gpgsign", "false");
+  writeFileSync(`${manifestRepo}/AGENTS.md`, "# Target contract\n\n## Repo contract\nProve with the repo's own chain.\n");
+  writeFileSync(`${manifestRepo}/docs/promise.md`, "# Promise\n\n## Product promise\nThe first minute must feel good.\n");
+  gitIn(manifestRepo, "add", "-A");
+  const manifestRepoInit = gitIn(manifestRepo, "commit", "-qm", "init");
+
+  const carrierTitle = "Repo-declared context carrier";
+  const foundInto = async (cwd: string, label: string): Promise<{ prompt: string; receipt?: ContextReceipt }> => {
+    const program = await activateNewProgram(carrierTitle);
+    const pending = beginBootstrap(program.id, { cwd, label, harness: "codex", model: "gpt-5.5", effort: "high" });
+    const slot = await waitForLabel(label);
+    if (slot !== null) await respawnScreen(slot, ">_ OpenAI Codex (v0.147.0)");
+    const body = await (await pending).json() as { slot?: number };
+    const history = typeof body.slot === "number"
+      ? await (await get(`/api/slots/${body.slot}/history`)).json() as { history: { text: string }[] }
+      : { history: [] as { text: string }[] };
+    const receipt = (await contextReceipts()).receipts.find((row) => row.programId === program.id);
+    if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
+    await programPost(program.id, "complete");
+    return { prompt: history.history.at(-1)?.text ?? "", receipt };
+  };
+  const repoPackEntry = (over: Record<string, unknown>): Record<string, unknown> => ({
+    scope: "product-quality", audience: "agent", triggers: ["always"], hardness: "guidance",
+    requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "codex", "pi"],
+    modes: ["read-only", "mutating"], estimatedBytes: 900, evidence: "tree-anchor",
+    owner: "owner", status: "active", ...over,
+  });
+  const writeManifest = (body: string, message: string): number | null => {
+    writeFileSync(`${manifestRepo}/.fleet/context-packs.json`, body);
+    gitIn(manifestRepo, "add", "-A");
+    return gitIn(manifestRepo, "commit", "-qm", message).status;
+  };
+
+  const carrierBefore = await foundInto(manifestRepo, "program-main-carrier-absent");
+  check("Program-MAIN carrier: a target repo without the manifest keeps today's empty-block founding",
+    manifestRepoInit.status === 0 && !!carrierBefore.receipt
+      && !carrierBefore.prompt.includes("ContextPlan v1 anchors")
+      && carrierBefore.receipt.selected.length === 0 && carrierBefore.receipt.omitted.length === 6
+      && carrierBefore.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
+    JSON.stringify(carrierBefore.receipt ?? null));
+
+  const manifestCommit = writeManifest(JSON.stringify([
+    repoPackEntry({ id: "product-promise", sources: [
+      { path: "AGENTS.md", anchor: "## Repo contract" },
+      { path: "docs/promise.md", anchor: "## Product promise" }] }),
+    repoPackEntry({ id: "broken-pointer", scope: "repo-contract",
+      sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
+  ], null, 2), "declare context packs");
+  const carrierOn = await foundInto(manifestRepo, "program-main-carrier-present");
+  const expectedBlock = "\n\nContextPlan v1 anchors (fresh advisory pointers; no source content is copied):"
+    + "\n- product-promise | AGENTS.md | ## Repo contract"
+    + "\n- product-promise | docs/promise.md | ## Product promise";
+  check("Program-MAIN carrier: the delivered block is exactly the validated repo anchors, and nothing else moved",
+    manifestCommit === 0 && carrierOn.prompt === carrierBefore.prompt + expectedBlock
+      && anchorsResolve(carrierOn.receipt),
+    carrierOn.prompt.slice(-400));
+  check("Program-MAIN carrier receipt: the repo pack is a selected row, the bad pointer a named omission, and the v1 hash recomputes",
+    !!carrierOn.receipt && JSON.stringify(carrierOn.receipt.selected) === JSON.stringify([{
+      id: "product-promise",
+      anchors: [{ path: "AGENTS.md", anchor: "## Repo contract" },
+        { path: "docs/promise.md", anchor: "## Product promise" }],
+    }])
+      && carrierOn.receipt.omitted.length === 7
+      && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === 6
+      && JSON.stringify(carrierOn.receipt.omitted.at(-1)) === JSON.stringify({ id: "broken-pointer", why: "manifest-invalid" })
+      && carrierOn.receipt.hash === promptHash(carrierOn.prompt, carrierOn.receipt)
+      && carrierOn.receipt.deliveredBytes === new TextEncoder().encode(carrierOn.prompt).byteLength,
+    JSON.stringify(carrierOn.receipt ?? null));
+
+  const brokenCommit = writeManifest("[{\"id\": broken json,,,\n", "break the manifest");
+  const carrierBroken = await foundInto(manifestRepo, "program-main-carrier-broken");
+  check("Program-MAIN carrier: a malformed manifest still delivers, byte-identical, and says so on the receipt",
+    brokenCommit === 0 && carrierBroken.prompt === carrierBefore.prompt && !!carrierBroken.receipt
+      && carrierBroken.receipt.selected.length === 0 && carrierBroken.receipt.omitted.length === 7
+      && JSON.stringify(carrierBroken.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" })
+      && carrierBroken.receipt.hash === promptHash(carrierBroken.prompt, carrierBroken.receipt),
+    JSON.stringify(carrierBroken.receipt ?? null));
+
+  // The Fleet-control frame must never read a manifest. This one is committed into the Fleet
+  // checkout itself, so the founding below would carry it if the carrier leaked across frames.
+  mkdirSync(`${ROOT}/.fleet`, { recursive: true });
+  writeFileSync(`${ROOT}/.fleet/context-packs.json`, JSON.stringify([
+    repoPackEntry({ id: "fleet-frame-leak-probe", sources: [{ path: "AGENTS.md", anchor: "## Verify" }] }),
+  ]));
+  gitIn(ROOT, "add", ".fleet/context-packs.json");
+  const fleetManifestCommit = gitIn(ROOT, "commit", "-qm", "fleet-frame manifest leak probe");
+
   const fleetProgram = await activateNewProgram("Fleet-control founding contract");
   const fleetLabel = "program-main-fleet";
   const fleetReceiptsBefore = await contextReceipts();
@@ -481,6 +580,12 @@ export async function run(ctx: Ctx): Promise<void> {
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
     JSON.stringify(fleetReceipt ?? null));
+  check("Program-MAIN Fleet frame: a manifest tracked in the Fleet checkout is never read or delivered",
+    fleetManifestCommit.status === 0 && !!fleetReceipt
+      && !fleetPrompt.includes("fleet-frame-leak-probe")
+      && ![...fleetReceipt.selected.map((s) => s.id), ...fleetReceipt.omitted.map((o) => o.id)]
+        .some((id) => id === "fleet-frame-leak-probe" || id === "@manifest"),
+    `${fleetManifestCommit.status} ${JSON.stringify(fleetReceipt?.omitted ?? null)}`);
 
   const fleetOpenedAt = readState().slots?.[String(fleetSlot)]?.openedAt ?? Date.now();
   await Bun.sleep(Math.max(0, (Math.floor(fleetOpenedAt / 1000) + 2) * 1000 - Date.now()));

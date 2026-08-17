@@ -1,3 +1,57 @@
+# HANDOFF — Supervisor-Occupant 4 (2026-08-18, Slot 3 「🧿 Supervisor」, Session b75f3048): Private-Repo-C-Programm live, Studio-Kit v1 steht, Harness-Research im Regal
+
+**Wer:** vierte Insassin der stehenden Supervisor-Rolle; Succession per Owner-Anweisung. Alles
+Folgende beim Schreiben geprüft, nicht erinnert.
+
+**Portfolio-Stand (via supervisor-view prüfen, nicht glauben):**
+- **Private-repo-c** (`adcd754f`, ACTIVE, Studio-MAIN Slot 1 「Studio-MAIN: Private-repo-c」, Fable,
+  cwd `~/private-repo-c`): heute von mir auf explizites Owner-„ja" confirmed+activated+gebootstrappt.
+  Repo geseedet (AGENTS.md-Vertrag, Standing-Rules, Decision-Record, Kit-Templates). MAIN hat
+  `ack.md` committed (`d772b8c` — die ACK-Naht hat beim ersten Ernstfall gehalten) und D0 sauber
+  durch die 4-Schritt-Prozedur protokolliert. Erwartung: Gate 0 (fahrbares Steckskelett), dann
+  früher Owner-Tasting-Punkt. Setup-Rationale: `docs/private-repo-c-aufstellung-2026-08-17.md`
+  (§1–§8, beide Grok-Runden eingearbeitet, §7 = die Feel-Zwei-Beweisklassen-Korrektur).
+- **Private-repo-e** (`6ae9fac6`, active, MAIN Slot 2, live): arbeitet am Victory-Frame-Fix
+  (Owner-Anweisung, von mir per Pane relayed nachdem der Owner-Entwurf ungesendet im Composer
+  hing); danach will der Owner erneut tasten. Phantom-Krater-Fix ist committed (`87768c4`).
+- **d9b9b4c4** (harness-Feld im LaneOutcome): weiterhin QUEUED, Dispatcher startet es. Beim Land:
+  normale Land-Delegation.
+- Rest unverändert: `e04cd5d8` proposed (Attention-Route lehnt Supervisor weiter ab — Owner-Kanal
+  ist die Pane), `d576186d` iOS Studio proposed (bewusst GETRENNT vom Private-repo-c gehalten), Context
+  Delivery + Private-repo-h Visual Loop stale, Pi/Z.ai-complete-Frage offen. Keine Audits offen, keine
+  Watches/Autos armed (Private-repo-c-MAIN ist MAIN — Watch-Route klassifiziert nur Lanes; Rückweg =
+  Pane-Blick + ihr Attention-Kanal).
+
+**Heute gebaut/gelandet (alles docs-only Direkt-Commits, kein Audit nötig):** Private-Repo-C-
+Aufstellung inkl. zweier adversarialer Grok-Runden (`1106c03`,`b1938b8`,`099aced`) ·
+**`studio-kit/` v1** (mechanische Studio-Invarianten als Templates; Delta-Ledger `lessons.md` mit
+fünf Private-repo-e-Lektionen + Applicability-Prädikaten; Adjudikation in
+`docs/grok-studio-kit-2026-08-18.md` — dort auch die Konvergenz-Notiz: dritter unabhängiger
+Grok-Treffer auf „typisiertes Ledger über eine Prosa-Grenze") · **Harness-Research**
+(`docs/harness-implementations-research-2026-08-18.md`, `ae1f46e`: 8 Flächen, 5 Diebstähle mit
+Fleet-Anwendungskarte; Owner-Entscheid: laufende Maschinerie NICHT anfassen — pi-RPC/Retry
+geparkt, Stop-Hook als P1 im Private-repo-c-Decision-Record, Spill-to-file im Kit `b1025fd`).
+
+**Gelernt, wichtig für dich:**
+1. **N2 lebt: vierter Fall beim Private-repo-c-Bootstrap** — Pane bootete nach dem Brief-Paste, Brief
+   verpufft. Rezept: Brief aus `streams/s<id>.history.json` holen, `tmux load-buffer` +
+   `paste-buffer -p`, Enter, Pane verifizieren. Die ACK-Pflicht im AGENTS.md macht die Zustellung
+   danach beweisbar — hat funktioniert.
+2. **Ghost/Entwurf im Composer:** nacktes Enter sendete NICHT (Slot 2, entgegen der alten
+   Lektion) — C-u, Text echt tippen, Enter, verifizieren.
+3. Owner-Doktrin heute: Supervisor darf als „Hände des Owners" mit Owner-Token
+   confirm/activate/bootstrap fahren, wenn der Owner es explizit gesagt hat („den private-repo-c
+   beginnen ja") — die ENTSCHEIDUNG bleibt seine, die Mechanik war meine.
+4. Informationsquellen-Doktrin für Studios (Owner-Frage, beantwortet): Fleet-SENSOREN rein
+   (review-sweep pro Gate, Commit-Bodies als Register), Fleet-MASCHINERIE draußen (Queue,
+   Land-Gate, Lanes — Flip-Punkt ~4–5 parallele Worker, nicht erreicht).
+
+**Deine ersten Schritte:** 1) Erdung (state/register/supervisor-view). 2) Slot 1 ansehen: steht
+Gate 0? Bei Tasting-Reife → Owner (Pane). 3) Slot 2: Victory-Frame fertig? Owner will danach
+tasten (Fix live nach Reload). 4) d9b9b4c4 beobachten. Keine neue Arbeit ohne Owner-Anlass.
+
+---
+
 # HANDOFF — Supervisor-Occupant 3 (2026-08-17 abends, Slot 1 「🧿 Supervisor」, Session 6b3cc714): Abend-Audit komplett, Doktrin steht, Private-repo-e vor der Tasting-Grenze
 
 **Wer:** dritte Insassin der stehenden Supervisor-Rolle (HANDOFF-Kopf der Vorgängerin sagt Slot 7 —

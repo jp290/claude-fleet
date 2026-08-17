@@ -1589,6 +1589,25 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     selfAck.includes('event.delivery === "inbox"') && selfAck.includes("belongs to the owner")
       && ownerAck.includes('event.delivery !== "inbox"') && ownerAck.includes("belongs to the receiver session"),
     `self=${selfAck !== ""} owner=${ownerAck !== ""}`);
+
+  // BOTH SIDES ARE TYPESCRIPT AND THAT IS EXACTLY WHY THIS PIN EXISTS. src/client.ts declares the
+  // event status union itself rather than importing it, so the pair has no compiler between it: a
+  // word added on one side does not fail to build, it silently produces rows the other side never
+  // matches. That class has fired twice here already (the `awaiting` cast, the task `kind` rename),
+  // and the client now DERIVES from these words — an unmatched status reads as "no such row exists".
+  // A share in src/protocol.ts would retire this rule; until someone promotes that, this is the
+  // fastener. Rule, not snapshot: the two SETS must be equal, in either direction.
+  const words = (s: string): string[] =>
+    [...s.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]).sort();
+  const srvUnion = server.slice(server.indexOf("type FleetEventStatus ="));
+  const srvWords = words(srvUnion.slice(0, srvUnion.indexOf(";")));
+  const client = read("src/client.ts");
+  const cliFrom = client.indexOf("interface FleetEventRow {");
+  const cliStatus = cliFrom > 0 ? client.indexOf("status:", cliFrom) : -1;
+  const cliWords = cliStatus > 0 ? words(client.slice(cliStatus, client.indexOf(";", cliStatus))) : [];
+  pin("the client's FleetEventRow status union is the same SET of words as the server's FleetEventStatus",
+    srvWords.length >= 6 && srvWords.join("|") === cliWords.join("|"),
+    `server=[${srvWords.join(",")}] client=[${cliWords.join(",")}]`);
 }
 
 pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));

@@ -1,8 +1,10 @@
 # Plan: Review-Layer — ein self-hosted CodeRabbit auf Fleets eigener Maschinerie (2026-08-16)
 
 **Status:** Entwurf für den Arbeitskreis · Owner-Promotion ausstehend. **Bei Widerspruch gilt der
-Code, nicht dieses Dokument.** Zeilenangaben gegen den Baum von `afcfe46`; wer später liest,
-prüft die Anker per `rg -n` nach, nie per gemerkter Zeile.
+Code, nicht dieses Dokument.** Teil A (§0–6) gegen den Baum von `afcfe46`; **Teil B (§7, 2026-08-17)
+gegen `3a0aa60`** — dazwischen landete `b462318` (Repo-deklarierte Packs), das Teil A an einer
+Stelle überholt (in §WP2 markiert). Wer später liest, prüft Anker per `rg -n` nach, nie per
+gemerkter Zeile.
 
 ## 0. Die Idee in einem Satz
 
@@ -94,6 +96,8 @@ Owner ist hier das eigentliche Gate, denn diese Datei WIRD Prompt-Inhalt.
   eigenen Prompt-Abschnitt „## repo review signals" VOR den DATA-Block. `sourceTree:"foreign"`
   lässt `planContext` das Pack bereits heute mit `source-unavailable` fallen — ein fremdes
   Repo bekommt Fleets Signale also strukturell nie untergeschoben, ohne neue Bedingung.
+  **[Überholt durch `b462318`, s. §7.2: ein fremdes Repo kann seit dem 2026-08-17 EIGENE Packs
+  deklarieren — der Review-Anschluss soll die im target-repo-Frame planen, statt leer zu laufen.]**
 - Vokabular-Erweiterung durch Validator und e2e-Module ziehen (Constraint 2b).
 
 **Done-Kriterium:** Ein auto-③-/Owner-Klick-Review auf einem Fleet-Baum trägt den
@@ -170,3 +174,140 @@ den Land-/Merge-Pfad an; WP2 ist das einzige mit `server.ts`-Berührung.
 2. Soll der Owner-Klick-Review (Nicht-Lane-Slots) dieselben Signale bekommen wie auto-③?
    (Vorschlag: ja — `runReview` ist ein Pfad, eine Sonderbehandlung wäre eine zweite Wahrheit.)
 3. Schwellenwerte des Sweeps (800 Zeilen fix aus dem Regelbuch, oder Drift-only?).
+
+---
+
+## 7. Teil B — Der Qualitätsvertrag je Repo: „Forcieren" sauberer Codebases, portabel (2026-08-17)
+
+**Owner-These, wörtlich:** „das ‚forcieren' einer saubereren Codebase mit gewissen regeln,
+lesbarkeit usw. [könnte] durchaus eine sehr große hilfe für alle möglichen codebases sein".
+Teil B beantwortet, wie das architektonisch in AGENTS.md-Dateien und Context Packs richtig
+aufsetzt — **komplementär** zu Teil A, nicht als Ersatz.
+
+### 7.1 Was „forcieren" hier ehrlich heißen kann — und was nicht
+
+Fleet besitzt in einem fremden Repo weder CI noch Land-Gate. Harte Erzwingung existiert dort
+strukturell nicht, und sie zu simulieren wäre die Unehrlichkeit, die dieses Repo überall sonst
+vermeidet. Was Fleet erzwingen KANN, sind drei Dinge, und zusammen sind sie stärker als ein
+Gate, das niemand besitzt:
+
+1. **Kein Agent arbeitet ohne den Vertrag im Kontext.** Der billigste und wirksamste Hebel
+   (`docs/tailored-context.md` §1: die Leverage liegt vollständig vorn). Ein Agent, der die
+   Regeln beim Start trägt, produziert Erstfassungen, die sie einhalten — Review wird Blick
+   statt Audit.
+2. **Kein Diff verlässt die Maschine un-reviewt gegen genau diesen Vertrag.** auto-③ läuft
+   ohnehin; der Vertrag wird sein Maßstab.
+3. **Kein Befund versickert.** Sweep- und Review-Befunde werden Queue-Notizen, die der Owner
+   sieht — propose/promote ist der Konsument, den K2 nie hatte.
+
+Erzwungen wird also die **Sichtbarkeit der Abweichung**, nicht die Unmöglichkeit der Abweichung.
+Das ist die einzige Form, die ohne CI-Besitz nicht lügt — und für ein Owner-eigenes Repo-Portfolio
+reicht sie, weil der Owner selbst der Konsument der Sichtbarkeit ist.
+
+### 7.2 Die neue Fläche, die Teil B trägt (gelandet als `b462318`, NACH Teil A)
+
+Ein Ziel-Repo darf `.fleet/context-packs.json` tracken (max 64 KB / 64 Packs / 64 Quellpfade,
+`context-manifest.ts`). Fleet speichert keinen Pack-Inhalt, autorisiert keinen und besitzt kein
+Register — es liest das Manifest **at-head** (`git show <head>:<pfad>`, gepinnt; ein
+Working-Tree-Read würde Anker quittieren, die der Commit nicht trägt), validiert mit demselben
+Validator wie die Fleet-Seeds, plant durch dieselbe Omission-Leiter und quittiert
+selected+omitted. Zwei neue Scopes existieren genau dafür: **`repo-contract`** und
+**`product-quality`**. Defekte sind benannte Omissions, nie stille Skips; Delivery läuft immer
+weiter.
+
+**Konsumenten heute — und das ist die Lücke, die Teil B schließt:**
+
+| Naht | plant Fleet-Seeds | plant Repo-Manifest |
+|---|---|---|
+| Program-MAIN Founding/Succession (`programMainContextPlan`) | ja | **ja** (nur target-repo-Frame) |
+| Lane-Dispatch (`briefAndSend`) | ja | nein |
+| Reviewer (`runReview`) | **nein** | **nein** |
+
+Der Qualitätsvertrag erreicht heute also genau EINEN Kopf (die Program-MAIN beim Founding) —
+nicht die Hände (Lanes) und nicht das Urteil (Review).
+
+### 7.3 Die Architektur: vier Sprossen, ein Vertrag, eine Quelle
+
+Der Vertrag lebt **im Ziel-Repo selbst**, in zwei getrackten Artefakten — nie in Fleet:
+
+- **`AGENTS.md` des Ziel-Repos** bekommt einen Abschnitt `## Code quality contract`: was
+  „sauber" in DIESEM Repo konkret heißt — Lesbarkeitsregeln, Größengrenzen, Namens- und
+  Fehlerbehandlungskonventionen, die 3–7 teuersten repo-eigenen Anti-Pattern. Kurz, prüfbar
+  formuliert, vom Repo-Owner gepflegt. (Das Program-Preflight verlangt für fremde Bäume ohnehin
+  eine getrackte Root-`AGENTS.md` — die Datei existiert also überall, wo Fleet arbeitet.)
+- **`.fleet/context-packs.json`** deklariert ein Pack `quality-contract` (scope
+  `product-quality`, hardness `guidance`), dessen Source-Anker auf genau diesen Abschnitt zeigt.
+
+Die vier Sprossen, von formend bis messend — jede konsumiert dieselbe Quelle:
+
+1. **Formend (vor der Arbeit):** Founding-Brief trägt den Vertrag. GEBAUT (`b462318`) für
+   Program-MAIN; **WP5** unten erweitert die Dispatch-Naht, damit auch eine Lane im Ziel-Repo
+   ihn beim Brief bekommt.
+2. **Begleitend (während der Arbeit):** nichts Neues nötig — der Vertrag steht in der
+   getrackten `AGENTS.md`, die codex/pi ohnehin laden und die jede claude-Lane lesen soll.
+   Bewusst KEIN Live-Nudging, kein Linter-Daemon: das wäre ein Tick ohne bewiesenen Konsum.
+3. **Prüfend (nach der Arbeit):** **WP2′** — `runReview` plant Kontext: im Fleet-Baum das
+   `review-signals`-Pack (Teil A), im target-repo-Baum die `product-quality`-Packs aus dem
+   Manifest des Repos. Der Reviewer misst damit jedes Repo an dessen EIGENEM Vertrag. Die
+   Manifest-Lese-Logik wird aus `programMainContextPlan` in eine geteilte Funktion gehoben
+   statt dupliziert (dieselbe Begründung wie `contextOmissionFor`: zwei Kopien der Leiter
+   driften).
+4. **Messend (mechanisch, jederzeit):** **WP3′** — der Sweep aus Teil A läuft repo-agnostisch
+   (Dateigröße, tote Exporte, Cast-auf-fremde-Fläche, Doc-Anker-Drift sind sprachweit, nicht
+   Fleet-spezifisch). v1 mit festen Defaults; ob Schwellen später aus dem Manifest kommen, ist
+   Owner-Frage 4 unten — nicht vorgebaut.
+
+### 7.4 Werkpaket-Deltas gegen Teil A
+
+- **WP1′ (Signal-Katalog, geschärft):** `docs/review-signals.md` wird in zwei Abschnitte
+  geschnitten — **portable Signale** (überall gültig: Cast auf fremde Fläche, Datei-Enden-
+  Verstümmelung, Größen-Drift, tote Behauptung an zweiter Stelle) und **Fleet-Signale**
+  (Sonden-Disziplin, Suite-Eigenheiten). Der portable Abschnitt ist zugleich die
+  KOPIERVORLAGE für den `## Code quality contract`-Abschnitt fremder Repos — Fleets
+  Incident-Belege bleiben als Evidenz dran, die Regel selbst ist repo-neutral formuliert.
+  Done-Kriterium wie Teil A, plus: der portable Abschnitt nennt kein Fleet-Symbol.
+- **WP2′ (Review-Anschluss, erweitert):** wie Teil A, plus target-repo-Zweig: steht der
+  Review-Baum in einem Repo mit Manifest, werden dessen `product-quality`-Quellabschnitte
+  (at-head des Review-Zeitpunkts, Byte-gedeckelt) statt der Fleet-Signale inline gestellt.
+  Done-Kriterium zusätzlich: e2e-Check mit einem Scratch-Repo, das ein Manifest trackt —
+  der Review-Prompt trägt dessen Anker-Abschnitt; dasselbe Scratch-Repo ohne Manifest → kein
+  Abschnitt, Prompt sonst byte-identisch (das Beweismuster von `b462318`s eigenen Checks).
+- **WP3′ (Sweep):** unverändert gegen Teil A, nur die Zusicherung explizit: kein Check darf
+  einen Fleet-Pfad hart kodieren — Läufe in einem beliebigen Repo-Root liefern dieselben
+  Check-Familien. Done-Kriterium zusätzlich: ein Lauf in einem Scratch-Repo ohne Fleet-Dateien
+  terminiert grün mit 0 Befunden.
+- **WP5 (neu — Dispatch trägt den Vertrag in die Lane):** `briefAndSend`s Plan-Naht plant im
+  target-repo-Fall auch das Repo-Manifest (dieselbe geteilte Funktion wie WP2′). Bewusst NACH
+  WP2′: der Review-Konsument beweist die geteilte Funktion, bevor die Dispatch-Naht sie erbt.
+  Done-Kriterium: eine in ein Manifest-Repo gebriefte Lane trägt die Anker im Brief; die
+  Fleet-eigene Dispatch-Naht bleibt byte-identisch (kein Manifest im Fleet-Checkout wird je
+  gelesen — der Pin aus `b462318` deckt das Founding, der neue Check die Dispatch-Naht).
+- **WP6 (neu, klein — die Vorlage):** `docs/templates/quality-contract.md` — der portable
+  Signal-Abschnitt als ausfüllbare Vorlage (Contract-Abschnitt für `AGENTS.md` + das
+  zugehörige Manifest-Snippet). KEIN Bootstrap-Automatismus, der sie in fremde Repos schreibt:
+  ein Repo, das den Vertrag nicht deklariert, hat ihn nicht — Absenz bleibt sichtbar statt
+  wegautomatisiert. Der target-repo-Founding-Brief darf die Vorlage in EINEM Satz erwähnen
+  („declares this repo no product-quality pack, proposing one is a first-class act").
+
+**Reihenfolge:** WP1′ → WP2′ → WP5, WP6 danach; WP3′ weiterhin unabhängig parallel.
+
+### 7.5 Nicht-Ziele von Teil B (zusätzlich zu §5)
+
+- **Kein Fleet-eigenes Regel-Register für fremde Repos.** `b462318` hat das ausdrücklich so
+  geschnitten: Fleet trägt Zeiger, nie Inhalt. Ein zentraler Regelkatalog wäre die Rückkehr
+  des Registers durch die Hintertür.
+- **Kein Auto-Fix-Agent, der Befunde selbständig „aufräumt".** Befunde werden Notizen; Arbeit
+  entsteht daraus durch Owner-Konvertierung (`adopt`/`kind`-Route), nie von selbst.
+- **Kein hartes Quality-Gate in fremden Repos** — §7.1 ist die Begründung; wer eines will,
+  baut es im Repo selbst (dessen CI), und der Vertrag in dessen `AGENTS.md` ist dann schon da.
+- **Keine Manifest-Schema-Erweiterung** (Schwellen, Verify-Kommandos, Lint-Configs im
+  Manifest). Erst konsumieren, was existiert; jede Schema-Zeile ist ein Kontrakt, der altert.
+
+### 7.6 Zusätzliche Owner-Fragen
+
+4. Sollen Sweep-Schwellen (Zeilengrenze etc.) später aus dem Repo-Manifest kommen, oder
+   bleibt der Sweep bewusst meinungslos-fix? (Vorschlag: fix bis zum ersten realen Bedarf.)
+5. WP5 setzt voraus, dass Lanes in Ziel-Repos gebrieft werden — heute dispatcht der Tick nur
+   im `DISPATCH_REPO`. Reihenfolge-Frage an den Owner: erst Program-Lane-Dispatch, dann WP5,
+   oder WP5 als vorbereiteten Ast landen? (Vorschlag: WP5 erst, wenn die erste echte
+   target-repo-Lane existiert — sonst ist es Vorbau ohne Konsument, §7.1-Logik.)

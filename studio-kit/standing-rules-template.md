@@ -25,6 +25,8 @@ marked PROGRAM. Never add judgement-call rules here — they belong in the decis
   (`state-note-template.md`, ≤2k tokens), then terminate. A state-note continuation is the SAME
   attempt. Iteration is not suspect — the ceiling exists because context grows quadratically
   with lifetime.
+- Large tool output goes to a file, never the transcript: any command whose output can exceed
+  ~100 lines runs as `cmd > log 2>&1` and you Read the tail. Judge suites by their tail.
 - Smallest sufficient context: read the files the brief names and what your task provably
   needs; never load repository-wide context on spec.
 - Report only the slice: summary + quoted verification tails + one line per unresolved item.

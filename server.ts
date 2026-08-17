@@ -15608,8 +15608,13 @@ Bun.serve<WSData>({
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree)
         return json({ error: "programs are brackets above lanes; a lane cannot propose or read them as its own" }, 409);
+      // The bound Supervisor reads every Program's CONTENT, not just the ones it authored: it holds
+      // the cross-program portfolio together, and intent/successCriterion/nonGoals/openQuestions are
+      // exactly what a portfolio is made of — a title is a label, not a thing to reason about. The
+      // disjunct is the SAME occupancy-derived predicate the Supervisor's other senses use, so this
+      // reach follows the binding through succession instead of clinging to a proposer identity.
       if (req.method === "GET") return json({ programs: programs.filter((p) => sameProgramSession(p, s)
-        || (p.main?.slot === s.id && p.main.openedAt === s.openedAt)) });
+        || (p.main?.slot === s.id && p.main.openedAt === s.openedAt) || isBoundSupervisor(s)) });
       const valid = validateProgramContent(await readJson(req));
       if (!valid.ok) return json({ error: valid.error }, 400);
       const existing = programs.find((p) => p.status === "proposed" && sameProgramSession(p, s)

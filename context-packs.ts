@@ -1,8 +1,11 @@
 // Context packs are metadata pointers into existing sources, never a second knowledge store.
 // The vocabularies are closed here so manifests and pure consumers share the same finite sets.
 
+// The last two scopes exist for packs a TARGET repository declares about itself in its tracked
+// manifest. Fleet never authors or stores their content; it only carries the pointer.
 export const CONTEXT_PACK_SCOPES = [
   "portable-core", "verify-e2e", "land-mechanics", "task-queue", "harness-adapter", "private-deploy",
+  "repo-contract", "product-quality",
 ] as const;
 export type ContextPackScope = (typeof CONTEXT_PACK_SCOPES)[number];
 

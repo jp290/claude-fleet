@@ -771,6 +771,29 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
 }
 
 {
+  // THE MANIFEST IS READ AT A COMMIT, NEVER FROM A WORKING TREE. A target repository declares its
+  // own packs in a tracked `.fleet/context-packs.json`, and the receipt asserts `head` — so a
+  // working-tree read would receipt an anchor that commit does not carry, and the receipt is the
+  // only thing a later reader has. That failure is silent by construction: the anchors resolve for
+  // whoever is standing in the dirty tree and for nobody else, ever again.
+  //
+  // A RULE, NOT A SNAPSHOT: the path constant lives in the pure module, no filesystem reader may
+  // name that path, and the seam's one blob reader must be spelled `git show <head>:<path>`.
+  const manifest = read("context-manifest.ts");
+  const fsReaders = [...server.matchAll(/(?:readFileSync|readFile|Bun\.file)\s*\([^)\n]*(?:CONTEXT_MANIFEST_PATH|\.fleet\/context-packs\.json)/g)];
+  const seamFrom = server.indexOf("async function showAtHead(");
+  const seamTo = server.indexOf("\nfunction buildProgramMainBrief(");
+  const seam = seamFrom > 0 && seamTo > seamFrom ? server.slice(seamFrom, seamTo) : "";
+  pin("the repo context manifest is read only via `git show` at the preflight head, never from a working tree",
+    /const CONTEXT_MANIFEST_PATH = "\.fleet\/context-packs\.json";/.test(manifest)
+    && [...server.matchAll(/"\.fleet\/context-packs\.json"/g)].length === 0
+    && fsReaders.length === 0 && seam !== ""
+    && /gitRead\(repoRoot, "show", `\$\{head\}:\$\{path\}`\)/.test(seam)
+    && /showAtHead\(preflight\.repoRoot, preflight\.head, CONTEXT_MANIFEST_PATH/.test(seam),
+    `${fsReaders.length} filesystem reader(s), seam=${seam.length} bytes`);
+}
+
+{
   const routeStart = server.indexOf('if (url.pathname === "/api/context-receipts"');
   const routeBody = routeStart < 0 ? "" : server.slice(routeStart, server.indexOf("\n    }", routeStart));
   pin("context-receipts.jsonl is one ledger constant shared by its append-only writer and owner reader route",

@@ -89,7 +89,36 @@ per Programm-Abschluss (Owner-Vorgabe: nach Erfüllung retire), nicht an der Sch
   (`c740952d`, proposed) wartet auf Owner-Entscheid; die Budget-Headroom-Fragilität oben; G2 ff.
   des Context-Delivery-Programms (`441c0058`, active, gehört Slot 3).
 
-# HANDOFF — Session 69 (2026-08-16, Fable Program-MAIN „Context Delivery Truth": G1 gelandet `4f55b48`, auditiert grün, deployt, Live-Counterproof beide Hälften) · 68/67/66 darunter
+# HANDOFF — Session 69 (2026-08-16/17, Fable Program-MAIN „Context Delivery Truth": G1 `4f55b48` UND Carrier `b462318` gelandet, beide auditiert grün, deployt, live bewiesen) · 68/67/66 darunter
+
+**NACHTRAG Carrier-Cut (gleiche Session, 2026-08-17, nach Supervisor-Freigabe):** Zielrepo-
+Context-Pack-Carrier gelandet **`b462318`** (eine Claude-Opus-5-Lane, Task `64a5e67c`, ~28 min):
+ein Zielrepo darf `.fleet/context-packs.json` tracken; Bootstrap-/Succession-Seam liest es per
+`git show` am Receipt-Head, validiert mit dem bestehenden puren Validator, plant durch die eine
+geteilte Omission-Leiter (`contextOmissionFor`), receipted in unveränderter Row-Form. Zwei neue
+Scopes (`repo-contract`, `product-quality`), ein Omission-Grund (`manifest-invalid`), neues pures
+Modul `context-manifest.ts`. Dispatch-, Supervisor- und Fleet-Frame-Seam byte-identisch.
+- **Land-Weg war der Confirm-Pfad, und das gehört erklärt:** Merge-Gate-Verify fiel ROT mit genau
+  einem Fail (`silent-alive fixture … lastOutput===0` als VORBEDINGUNG — die Fixture-Klasse aus
+  Queue-Zeile `ca630f68`). Same-Tree-Rerun seriell: diese Sonde GRÜN, dafür zwei ANDERE Checks
+  derselben Send-Boot-Timing-Familie (`911bdb73`) rot — wandernde Einzel-Signaturen auf
+  identischem Baum, Nichtdeterminismus direkt bewiesen (§11.7-Beweisordnung). Baum war exakt
+  main+`b462318` (keine Konflikte, `conflicted:null`), Lane hatte volle Kette inkl. claude-gate
+  und isolated 2518/0 grün. Confirm-Land per `{confirm:true}` nach vollem Diff-Review.
+  **Beide Flake-Instanzen sind frisches Belegmaterial für die zwei offenen Queue-Zeilen.**
+- **Audit grün 2518/0 (941 s)**, covers genau dieses Land; **Deploy `b42f768d`** `ok:true`,
+  `bootHead==target==b462318`, `hitTarget:true`.
+- **Live-Counterproof, drei Phasen, byte-exakt** (WEGWERF-Programme, per-Programm-Bootstrap,
+  alles abgeräumt): (1) Zielrepo OHNE Manifest → Receipt sechs `source-unavailable`, Prompt 1040
+  Bytes ohne Anchor-Zeile; (2) dasselbe Repo MIT Manifest (neuer Head `8349eed7`) → Prompt =
+  exakt P1 + `\n\nContextPlan v1 anchors …\n- promise | docs/promise.md | ## Product promise`
+  (1169 Bytes), Receipt am neuen Head, Repo-Pack selektiert, Fleet-Seeds weiter
+  `source-unavailable` (G1-Wahrheit erhalten), Anchor per `git show` am Head auflösbar;
+  (3) Fleet-Frame-Bootstrap → Zwei-Pack-Block byte-identisch zur bekannten Form.
+- **Damit ist der Weg frei für:** Private-repo-h-/Private-repo-e-Repos können Product-Promise-/Quality-Bar-/
+  Game-Feel-Packs als getrackte Dateien + Manifest deklarieren (Inhalte entstehen DORT unter
+  ihren Programmen, nie in Fleet). G2 (Omissions dem Leser) bleibt der empfohlene nächste
+  Schnitt danach; Audience-Routing, Registry, Dispatch-Seam-Anschluss bewusst nicht gebaut.
 
 **ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null` — bekannte Lücke
 `e2784b16`); Statusline zeigte ~15–20 %, also weit unter der 44-%-Schwelle. Session endet hier

@@ -150,7 +150,7 @@ gegen ein **1M-Fenster** (Fable/Opus). Alle Byte-Zahlen der Tabelle sind GEMESSE
 | `HANDOFF.md`, **ganze Datei** | 217 792 | ~54 400 | **~5,4 %** | nur wer den Vertrag bricht |
 | `AGENTS.md` (Ziel zweier Anker) | 9 572 | ~2 390 | ~0,24 % | bei Abruf |
 | `CLAUDE.md` (Regelbuch, **kein** Anker im Plan) | 106 668 | ~26 670 | **~2,7 %** | bei Abruf |
-| `GET /api/self/supervisor-view` | **UNBEKANNT** | — | — | bei Abruf |
+| `GET /api/self/supervisor-view` | 18 539 | ~4 630 | ~0,46 % | bei Abruf (GEMESSEN 2026-08-17 aus der Pane des gebundenen Supervisors, Slot 7) |
 
 **Der zugestellte Teil ist mikroskopisch: ~0,04 % des Fensters.** Die gesamte Nachfolge-Zustellung
 kostet weniger als ein Drittel eines `state.sh`-Abrufs. Wer an der Bootstrap-Nachricht spart, spart
@@ -374,8 +374,8 @@ wartet auf einen Träger, den es noch nicht gibt.
 - **Keine Pane gelesen.** Alle Live-Verlaufsangaben (Slot 5 → Slot 7, Nudge-Roundtrip) stammen aus
   `HANDOFF.md` bzw. `context-receipts.jsonl` — die Byte- und Occupant-Zahlen habe ich am Ledger
   gegengeprüft, den *Ablauf* nicht beobachtet.
-- **`GET /api/self/supervisor-view` nie aufgerufen** — als Lane 409. Die Payload-Größe bleibt
-  UNBEKANNT (§2).
+- **`GET /api/self/supervisor-view` nie aufgerufen** — als Lane 409. Die Payload-Größe in §2 ist
+  eine Fremdmessung des gebundenen Supervisors (18 539 B, 2026-08-17), nicht meine.
 - **`src/client.ts` nicht gelesen** — keine Aussage hier betrifft die Board-Oberfläche.
 - **`e2e/` nicht auditiert.** Wo ich „GELESEN" sage, meine ich: der Pfad existiert — nicht, dass eine
   Sonde ihn verteidigt.

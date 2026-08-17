@@ -1,3 +1,61 @@
+# HANDOFF — Supervisor-Occupant 3 (2026-08-17 abends, Slot 1 「🧿 Supervisor」, Session 6b3cc714): Abend-Audit komplett, Doktrin steht, Private-repo-e vor der Tasting-Grenze
+
+**Wer:** dritte Insassin der stehenden Supervisor-Rolle (HANDOFF-Kopf der Vorgängerin sagt Slot 7 —
+das war IHR Sitz; die Bindung wandert mit der Succession, `GET /api/self` ist die Wahrheit).
+Succession per Owner-Anweisung. Alles Folgende beim Schreiben geprüft.
+
+**NEUE OWNER-DIREKTIVE, von der Vorgängerin angenommen und an DICH übergeben (Wortlaut sinngemäß,
+2026-08-17 abends):** Zusätzlich angehen: **ein neues Programm „Private-repo-c-artiger Private-repo-c mit
+2000er-Computer-Grafik", als eigene neue MAIN-Session, so gebaut, dass es später als iOS-App
+laufen könnte.** Weg: Programm über `POST /api/self/programs` VORSCHLAGEN (Muster: das
+Private-repo-e-Studio — AGENTS.md-Vertrag, Gates, Owner-Tasting; iOS-Tauglichkeit als
+Architektur-Randbedingung von Anfang an, vgl. das proposed Programm `d576186d` iOS App Studio —
+prüfen ob zusammenführen oder getrennt), Owner bestätigt, Bootstrap öffnet die MAIN. Parallel läuft
+Private-repo-e WEITER bis fertig (Owner: „auf jeden Fall fertig machen lassen").
+
+**Portfolio-Stand (via supervisor-view prüfen, nicht glauben):**
+- **Private-repo-e** (`6ae9fac6`, active, MAIN Slot 2, live): Gate 4 Attempt 2 läuft; danach
+  review→commit→recapture→final-critic, dann STOPP an der Owner-Tasting-Grenze (D5) — das ist der
+  letzte Gate-Schritt, den er allein kann. Offen bei ihm: Antwort auf drei Nudges (D11-Paket +
+  Korrektur dazu + GLM-Code-Review-Befunde, darunter ein echter Bug: Phantom-Krater,
+  game.ts:265-266 — vor dem Tasting prüfenswert). Owner hat v1 informell getastet: positiv.
+- **e04cd5d8** (Supervisor-Attention-Kanal): proposed, wartet auf Owner — gehört mit ACK-Receipt
+  (N2) und sechstem Ledger (Groks Final-Report-Inbox) in EIN Entscheidungsfeld „Kanäle";
+  Mapping: `docs/grok-working-circle-second-opinion-2026-08-17.md`.
+- **d9b9b4c4** (harness-Feld im LaneOutcome): QUEUED — Dispatcher startet es; ohne dieses Land ist
+  die Harness-Doktrin nicht ledger-prüfbar. Beim Land: normale Land-Delegation.
+- Rest wie gehabt: Context Delivery/Private-repo-h Visual Loop stale, Pi/Z.ai H0 complete-Frage, iOS
+  Studio proposed.
+
+**Heute geleistet (Belege in den Docs, alle im Commit dieses Handoffs):** Work-Trail-Audit
+Private-repo-e komplett (`docs/private-repo-e-worktrail-audit-2026-08-17.md` — Phase 1 Packs, Phase 2
+Verhalten+Regeln, Adjudikation: ALLE Loop-Kandidaten produktiv, Waste = reine Kontext-Ökonomie;
+D8-Compliance 1/10, Wurzel = unverifizierte Brief-Naht) · Harness-Doktrin auf Daten
+(`docs/harness-doktrin-2026-08-17.md`; A/B same-model: Qualität gleich, Weg-Kosten verschieden;
+GLM nur über `pi-zai`, NIE `pi`) · Arbeitskreis-Aufstellung für den Owner
+(`docs/arbeitskreis-aufstellung-2026-08-17.md`) · 6 Grok-Briefe+Antworten verarbeitet ·
+Deploy `c69d5861` sauber (bootHead=HEAD).
+
+**Gelernt, teuer — vier Dinge, die du wissen musst:**
+1. **N2 dreimal live an einem Tag:** Gründungsbrief blieb still im Composer (Slot 3), pi-Dispatch
+   zweimal requeued. Nach JEDEM Send/Dispatch die Pane prüfen. Ghost-Vorschläge von Claude Code
+   sehen in capture-pane wie getippte Entwürfe aus (`48e4f0d7`, zwei Belege) — echter Text ersetzt
+   sie, nur nacktes Enter sendet sie.
+2. **Evidence-Pack-Truncation erzeugte den einzigen Falschbefund des Tages** (Edit-Args auf 60
+   Zeichen → produktives Tuning las sich als Grind). Repetitions-Keys immer (file, content-hash).
+3. **Attention-Route lehnt den Supervisor ab** (409, live gemessen) — dein Owner-Kanal ist die
+   Pane, bis `e04cd5d8` landet.
+4. Slot-Zombie nach fehlgeschlagenem Fremd-Harness-Spawn: `POST /api/slots/:id/kill` (die Route
+   heißt kill; close/recycle/DELETE existieren nicht).
+
+**Deine ersten Schritte:** 1) Erdung (state/register/supervisor-view). 2) Watches neu: KEINE
+Audits offen; Private-repo-e ist MAIN (kein Lane-Watch möglich) — Rückweg ist Pane-Blick oder sein
+attention. 3) Private-repo-c-Programm ausarbeiten und vorschlagen (s. Direktive). 4) Bei
+Private-repo-e-Tasting-Reife oder D11-Antwort: Owner. Direkt-Commit-Hinweis: dieser Handoff-Commit ist
+docs/briefs-only, ohne Land-Ledger-Eintrag — bewusst, kein Audit nötig.
+
+---
+
 # HANDOFF — Supervisor-Occupant 2 (2026-08-17, Slot 7 「🧿 Supervisor」, Session ebd34ed6): WP3+Succession+Arbeitskreis gelandet, Pocock-Lauf komplett, Private-repo-e Gate 2 läuft
 
 **Wer:** zweiter Insasse der stehenden Supervisor-Rolle; Succession per Owner-Anweisung bei vollem

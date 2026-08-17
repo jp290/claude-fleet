@@ -109,7 +109,14 @@ Reviewer ist advisory, sein Ausfall darf nie am Pack hängen).
 **Verify:** volle Kette (`server.ts` + `e2e/` = SERVER/E2E-Regel in `verify-proportion.ts`),
 `./e2e-isolated.sh` als Vorschau, weil `e2e/`-Module angefasst werden.
 
-### WP3 — Der deterministische Sauberkeits-Sweep (die „Arbeitsschicht", die keine Agenten kostet)
+### WP3 — Der deterministische Sauberkeits-Sweep (die „Arbeitsschicht", die keine Agenten kostet) — GELANDET 2026-08-17
+
+**Stand:** `review-sweep.ts` + `e2e/sweep.ts` sind gelandet; die Betriebsnotiz samt der
+bewussten Verengung jedes Checks steht in `docs/review-signals.md` §Teil 3. Owner-Zusätze,
+die gegen die Fassung unten gelten: die 800-Zeilen-Schwelle ist FEST (nicht konfigurierbar),
+und `--queue` benutzt die bestehende Owner-Task-API mit ausdrücklich übergebenem Endpunkt und
+Credential — kein Default-Host, kein Token aus einer Zustandsdatei, kein direkter Schreibzugriff
+auf `fleet.json`. Der Rest dieses Abschnitts ist die Vorgabe, gegen die gebaut wurde.
 
 **Was:** `review-sweep.ts` — bun-Skript, kein Modellaufruf, Sekunden. v1-Checks, alle aus WP1s
 mechanisch-prüfbarer Teilmenge:

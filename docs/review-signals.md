@@ -119,6 +119,30 @@ Kosten. Anker über Symbole und Überschriften, nie über Zeilennummern.
 - **Kosten:** dieselben wie P2, eine Ebene höher — die Selbstauskunft der Maschine wird
   unglaubwürdig. Review-Regel: ein Verdict ohne Mess-Metadaten ist eine Behauptung.
 
+---
+
+## Teil 3 — Der mechanische Teil: `review-sweep.ts` (WP3, gelandet 2026-08-17)
+
+Vier der Signale oben sind ohne Modell prüfbar, und genau die fährt `review-sweep.ts` —
+`bun review-sweep.ts` in einem beliebigen Git-Baum, Sekunden, JSON-Zeilen auf stdout, ein
+stabiler Fingerprint je Befund. Es ist ein **Sensor**: kein Gate, kein Auto-Fix, kein
+Server-Tick. `--queue` legt je NEUEM Fingerprint eine `notiz` über die Owner-Task-API ab
+(`--api` und `--token`/`FLEET_SWEEP_TOKEN` sind PFLICHT — ohne beides verweigert es laut, es
+gibt keinen Default-Endpunkt und keinen Credential-Fallback, und es schreibt niemals selbst in
+eine Zustandsdatei). Arbeit entsteht daraus nur durch Owner-Konvertierung.
+
+| Signal | Was der Sweep messbar macht | Bewusste Verengung (gemessen an diesem Baum, 2026-08-17) |
+| --- | --- | --- |
+| P1 | `as`-Cast auf ein `fetch`/`.json()`-Ergebnis in `src/**`, `e2e/**` | nur Casts auf einen BENANNTEN Typ, ein Befund je Datei: 917 Cast-Stellen → 73 in 17 Dateien. Das inline-Literal ist an der Aufrufstelle sichtbar, die Deklaration in der Ferne ist die Incident-Form. |
+| P3 | Zeilenzahl getrackter `.ts`/`.sh` gegen **fest 800** (Owner-Entscheid), Delta zur letzten Messung über `--baseline` | keine Konfigurierbarkeit der Schwelle; ohne Baseline ist das Delta „unbekannt", nie 0. |
+| P5 | Backtick-Pfade/-Symbole in `docs/*.md` ohne Existenz im Baum | nur EXISTENZ, kein Semantik-Urteil; `docs/attic/**` ausgenommen (ein Grab darf tote Pfade nennen); git-ignorierte Pfade gelten als lebend (ihre Absenz misst den Worktree, nicht das Doc). |
+| — | Tote VALUE-Exporte in Top-Level-`.ts` | Typ-/Interface-Exporte ausgenommen: 65 unimportierte Namen → 10, denn ein exportierter Typ neben seinen Konsumenten ist idiomatisch. |
+
+P2 deckt der „decapitated"-Pin, P4/F1/F2 bleiben Review-Fragen — der Sweep nimmt dem Reviewer
+Arbeit ab, er ersetzt ihn nicht. Beweisfläche: `e2e/sweep.ts` (Positiv-Fixture mit je einem
+Negativ-Kontrollfall daneben, Clean-Fixture ohne jede Form, und der Nachweis, dass ein Check
+ohne sein Werkzeug als ER SELBST scheitert statt „0 Befunde" zu melden).
+
 **Pflege:** Ein Signal, dessen Klasse ein Pin vollständig schließt (wie P2 für die fünf
 gestagten Suiten), bleibt hier stehen, solange die Klasse außerhalb der Pin-Fläche weiter
 existiert (P2 gilt für jede Datei, der Pin deckt fünf). Ein Signal ohne lebende Fläche wird

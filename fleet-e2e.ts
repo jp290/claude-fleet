@@ -38,6 +38,7 @@ import * as outcomes from "./e2e/outcomes";
 import * as landDurability from "./e2e/land-durability";
 import * as tasks from "./e2e/tasks";
 import * as intake from "./e2e/intake";
+import * as sweep from "./e2e/sweep";
 import * as restart from "./e2e/restart";
 import * as stewardCore from "./e2e/steward-core";
 import * as stewardOutcomes from "./e2e/steward-outcomes";
@@ -125,6 +126,11 @@ if (REPO) {
 // --- task queue + dispatch gates, intake, the public share host ---
 await tasks.run(ctx);
 await intake.run(ctx);
+
+// --- the deterministic cleanliness sweep (review-sweep.ts). Directly after the task family because
+// its --queue half mints rows through the same owner route those checks exercise — and it deletes
+// every row it minted again, so the sections after it see the queue the tasks family left behind.
+await sweep.run();
 
 // --- file permissions, kill semantics, restart persistence, the audit log ---
 await restart.run(ctx);

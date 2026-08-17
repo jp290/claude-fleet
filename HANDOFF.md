@@ -1,3 +1,48 @@
+# HANDOFF — Supervisor-Occupant 2 (2026-08-17, Slot 7 「🧿 Supervisor」, Session ebd34ed6): WP3+Succession+Arbeitskreis gelandet, Pocock-Lauf komplett, Private-repo-e Gate 2 läuft
+
+**Wer:** zweiter Insasse der stehenden Supervisor-Rolle; Succession per Owner-Anweisung bei vollem
+Kontext. Nachfolgerin: du. Alles Folgende ist geprüft, nicht erinnert (Stand beim Schreiben).
+
+**Portfolio (via supervisor-view prüfen, nicht glauben):** Private-repo-e AKTIV (Owner-Override der
+Private-repo-h-Tasting-Abhängigkeit — als D1 in ~/private-repo-e/docs/decision-record.md getrackt; MAIN Slot 2
+fährt Gate 2: 3 Renderer-Treatments gebaut, Playwright-Captures → blinder Critic stehen aus;
+STOPP-Regel: Owner-Tasting oder genau EIN Blocker). Context Delivery (441c0058) hat einen
+Carrier-Nudge offen (sendId e4a0ed0b, keine Antwort beobachtet). Pi/Z.ai H0: Task done, Befund
+gelandet (e5e1f84) — Programm-complete ist offener Owner-Punkt. Private-repo-h Visual Loop: active/stale/0
+Tasks — Owner-Entscheid offen. iOS Studio: proposed, wartet auf Xcode.
+
+**Heute gelandet + auditiert:** WP3 review-sweep (8478032+51aace1, Audit grün 2569/0; mein
+Review-Fund: literale NUL-Bytes machten den Sensor binär) · Succession-Doc+Grok-Prompt
+(4767374+0d18f11, Audit grün; briefs/grok-context-frugality.md liegt für den Owner bereit) ·
+Arbeitskreis-Analyse 813b3b1 (confirm-land nach interrupted-Artefakt; Diff = exakt eine neue
+Doc-Datei; **Audit dafür noch AUSSTEHEND**).
+
+**DEINE ersten Pflichten (Reihenfolge):**
+1. Audit-Watch für 813b3b1 NEU abonnieren ({kind:"audit", mainAfter:813b3b1…} — meine Watch
+   fb10adc6 stirbt mit mir). Grün still verbuchen, Rot dem Owner.
+2. Danach Verb-2-Deploy (POST /api/deploy): codeBehind:true seit dem UNERKLÄRTEN srv-Restart
+   14:45:18 (keine Deploy-Zeile — Crash oder Hand; beim Owner nachfragen lohnt). Nie während
+   ein Audit läuft (409).
+3. Private-repo-e beobachten (Slot 2, kein Lane-Watch möglich — MAIN): bei Tasting-Reife oder
+   Blocker den Owner ansprechen. Composer dort trägt evtl. ungesendete Owner-Entwürfe — nie
+   überschreiben.
+4. Pocock: Lauf KOMPLETT (~/pocock-research committet 5204c96; W-1..4-Slots geschlossen; GLM
+   Slot 12 läuft noch als Research-MAIN — kann nach STATE.md-Finalisierung geschlossen werden,
+   Owner fragen). Deliverables changes.md/experiments.md sind die Abend-Kandidatenliste.
+5. KEINE neue Fleet-Code-Lane ohne Anlass; Land-Delegation gilt (grünes Gate → landen; Rot
+   oder confirm → Owner fragen — er hat das heute nach einem Direkt-Land AUSDRÜCKLICH
+   nachgeschärft: Doc-Deliverables, die er konsumieren will, erst zeigen).
+
+**Abend-Kandidatenliste des Owners (er will sie heute durchgehen):** Pocock changes.md (5) +
+experiments.md (3) · 7 gerankte Lücken aus docs/working-circle-analysis-2026-08-17.md (N2
+readiness-Naht = mein Rang 1, zweimal live vom Composer-Race getroffen — Zustellquittung beweist
+keine Ankunft, Pane vor UND nach jedem Send prüfen!) · Succession-Funde aus
+docs/supervisor-succession.md (Attention-409-Semantik, stale-Binding ohne Lösch-Route) ·
+docs-only-Servergate (pins-only; Owner fand's gut) · Programm-Hygiene (H0/Visual Loop).
+
+**Gelernt, teuer:** waitedOut am Land-Gate heißt NIE gemessen (1060s Mutex-Schlange hinterm
+Audit) — Lands nicht parallel zu laufenden Audits starten, oder mit Wartezeit rechnen.
+
 # HANDOFF — Session 71 (2026-08-16, Fable Program-MAIN "Owner-side Supervisor v0": beide Cuts gelandet, auditiert, deployt, alle Live-Beweise erbracht, Programm COMPLETE; iOS-Studio-Vorschlag eingereicht) · Supervisor-Occupant/70/69 darunter
 
 **ctx beim Schreiben: unmessbar am Owner-Poll (Fable-Slot, `ctx: null`, Lücke `e2784b16`);

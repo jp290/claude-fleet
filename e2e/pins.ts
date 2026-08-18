@@ -785,13 +785,20 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // (`sourceTree: frame === … ? "fleet" : "foreign"`) is deliberately allowed — the literals there
   // are the branches of a derivation, and banning the token everywhere would only push the same
   // constant one alias further away.
+  //
+  // The comparison count is held EXACT and every occurrence is named below, so an unnamed new one
+  // still trips this rule. Since 2026-08-18 there are three, and only the first two classify a
+  // delivery seam: refineValidationFor answers the same fleet/foreign question for the refine
+  // acceptance (whether LOCAL_PROOF_STEPS describes the target tree at all), which reaches no
+  // receipt and no pack — it is listed here to keep the count honest, not because it delivers.
   const literal = [...server.matchAll(/sourceTree:\s*"/g)].length;
   const classifiers = [...server.matchAll(/=== FLEET_REPO_ROOT\b/g)].length;
   pin("no delivery seam declares its sourceTree — every planContext caller derives it from a repository-root comparison",
-    literal === 0 && classifiers === 2
+    literal === 0 && classifiers === 3
     && /async function dispatchSourceTree\(repo: string\): Promise<"fleet" \| "foreign"> \{\n  const repoRoot = await repoRootOf\(repo\);/.test(server)
     && /const sourceTree = await dispatchSourceTree\(wt\.repo\);/.test(server)
-    && /const frame: ProgramMainFrame = FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT/.test(server),
+    && /const frame: ProgramMainFrame = FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT/.test(server)
+    && /tree: snapshot === null \? null\n\s*: FLEET_REPO_ROOT !== null && snapshot\.repo === FLEET_REPO_ROOT \? "fleet" : "foreign",/.test(server),
     `${literal} literal sourceTree assignment(s), ${classifiers} FLEET_REPO_ROOT comparison(s)`);
 }
 

@@ -300,6 +300,13 @@
   .qdcrit { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: #ddd;
     line-height: 1.55; background: #161616; border: 1px solid #3a3a3a; border-radius: 8px;
     padding: 10px 12px; margin: 10px 0; resize: vertical; }
+  /* the deterministic acceptance on a refine proposal (refine-validate.ts): a hallucinated path or
+     an off-contract verify path, said next to the child it belongs to. Amber and red are NOT the
+     same claim here and must not be styled as one — red is a measured defect, amber is a check
+     that could not be made, and collapsing the two would turn "not measured" into "fine". */
+  .qdfind { font-size: 12px; line-height: 1.5; margin: -4px 0 10px; padding: 0 2px; white-space: pre-wrap;
+    word-break: break-word; }
+  .qdfind.err { color: var(--del); } .qdfind.unk { color: var(--amber); }
   .qdsection { display: block; border-top: 1px solid var(--line-soft); padding: 13px 0 2px; }
   .qdsection-title { color: var(--dim); font-size: 10.5px; font-weight: 700; letter-spacing: .07em;
     text-transform: uppercase; margin-bottom: 8px; }

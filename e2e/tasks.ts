@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
 import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
 import { buildClarifyBrief } from "../clarify-prompt";
@@ -2559,8 +2560,11 @@ export async function run(ctx: Ctx): Promise<void> {
       files?: string[]; filesOrigin?: string; cluster?: TaskCluster;
       analysis?: { verdict: string }; refine?: { at: number; unchanged: boolean; count: number } }
     interface JChild { text: string; doneCriterion?: string; verify?: string; files?: string[] }
+    interface JFinding { code: string; severity: string; child: number; detail: string; path?: string; verify?: string }
+    interface JValidation { verdict: string; findings: JFinding[] }
     interface JFull extends JRow { text: string;
-      refine?: JRow["refine"] & { model: string; proposal: { unchanged: boolean; reason?: string; tasks?: JChild[] } } }
+      refine?: JRow["refine"] & { model: string; proposal: { unchanged: boolean; reason?: string; tasks?: JChild[] };
+        validation?: JValidation } }
     const jRows = async (): Promise<JRow[]> => ((await (await get("/api/sessions")).json()) as { tasks: JRow[] }).tasks;
     const jRow = async (id: string): Promise<JRow | undefined> => (await jRows()).find((t) => t.id === id);
     const jFull = async (id: string): Promise<JFull | undefined> =>
@@ -2759,6 +2763,131 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(j) refine refuses a notiz (409 — refining it would mint auftrag rows out of an observation)",
       !!jNote.task && (await post(`/api/tasks/${jNote.task.id}/refine`, {})).status === 409);
     if (jNote.task) await post(`/api/tasks/${jNote.task.id}/delete`, {});
+
+    // --- (j2) THE DETERMINISTIC ACCEPTANCE on a proposal (refine-validate.ts, P7). The refiner's
+    // ONLY VERIFIED PATHS clause is a self-commitment of the model; this is the half that checks
+    // it, and the properties that carry it are three-valuedness and NOT BLOCKING. Every scenario
+    // below drives the same route pair — what differs is the tree the proposal is measured against,
+    // which is the whole point: paths are judged per target repo and the verify vocabulary only
+    // describes THIS one. The staged instance dir ($DIR == ROOT) is itself a git repository and is
+    // the server's own tree, so it is the only reachable "fleet" target here; REPO (testrepo) is a
+    // second, foreign repository — the pair is what makes the fleet/foreign split non-vacuous. ---
+    const jVal = async (text: string, repo: string, answer: unknown): Promise<
+      { id: string; validation: JValidation | undefined }> => {
+      await fakeRefine(JSON.stringify(answer));
+      const created = (await (await post("/api/tasks", { text, queue: false, repo })).json()) as
+        { task: { id: string } };
+      await post(`/api/tasks/${created.task.id}/refine`, {});
+      let prop: JFull["refine"];
+      for (let i = 0; i < 40 && !prop; i++) { prop = (await jFull(created.task.id))?.refine; if (!prop) await Bun.sleep(250); }
+      return { id: created.task.id, validation: prop?.validation };
+    };
+    const jCodes = (v: JValidation | undefined): string =>
+      (v?.findings ?? []).map((f) => f.code).sort().join(",");
+
+    // (a) a proposal whose path is tracked in the target tree and whose verify names a step of the
+    // local proof chain is CLEAN — the positive control, without which every finding below could
+    // just be a validator that flags everything
+    const vA = await jVal("acceptance probe A: a proposal that is actually true", ROOT,
+      { unchanged: false, tasks: [{ text: "touch the server", doneCriterion: "d", verify: "bun run build", files: ["server.ts"] }] });
+    check("(j2) a proposal with a tracked path and an on-contract verify carries NO findings",
+      vA.validation?.verdict === "pass" && (vA.validation?.findings.length ?? -1) === 0,
+      JSON.stringify(vA.validation ?? null));
+
+    // (b) the one MEASURED failure class the refiner's brief names. The finding must quote the path
+    // — a count would tell the owner that something is wrong and not which line to distrust. Two
+    // children, because DEGREE is a second statement: one bad path beside a good one is a typo or a
+    // moved file, ALL of them bad is a child compiled without the tree open, and the second child is
+    // simultaneously the counter-control proving the first does not raise it.
+    const vB = await jVal("acceptance probe B: a path this tree does not have", ROOT,
+      { unchanged: false, tasks: [
+        { text: "touch a ghost", doneCriterion: "d", verify: "bun run build",
+          files: ["server.ts", "src/hallucinated-by-the-compiler.ts"] },
+        { text: "touch only ghosts", doneCriterion: "d", verify: "bun run build",
+          files: ["ghost-one.ts", "ghost-two.ts"] }] });
+    const vB0 = (vB.validation?.findings ?? []).filter((f) => f.child === 0);
+    const vB1 = (vB.validation?.findings ?? []).filter((f) => f.child === 1);
+    check("(j2) a hallucinated path is a FINDING that names the path verbatim, while its tracked sibling is silent",
+      vB.validation?.verdict === "fail" && vB0.length === 1 && vB0[0].code === "PATH_NOT_TRACKED"
+      && vB0[0].path === "src/hallucinated-by-the-compiler.ts"
+      && vB0[0].detail.includes("src/hallucinated-by-the-compiler.ts") && vB0[0].severity === "error",
+      JSON.stringify(vB.validation ?? null));
+    check("(j2) a child whose paths are ALL absent is additionally called ungrounded — the partly-true child is not",
+      vB1.map((f) => f.code).sort().join(",") === "CHILD_UNGROUNDED,PATH_NOT_TRACKED,PATH_NOT_TRACKED"
+      && !vB0.some((f) => f.code === "CHILD_UNGROUNDED"),
+      JSON.stringify({ child0: vB0.map((f) => f.code), child1: vB1.map((f) => f.code) }));
+
+    // (c) NOT MEASURED IS NEVER A PASS — the same discipline SOURCE_BYTES_UNKNOWN carries in the
+    // pack validator. A target directory outside any repository has no tracked set to read, and
+    // that must surface as its OWN category rather than as an empty finding list (which reads
+    // "checked and clean") or as PATH_NOT_TRACKED (which reads "checked and false").
+    const jNoRepo = resolve(ROOT, "..", `fleet-e2e-notrepo-${process.pid}`);
+    mkdirSync(jNoRepo, { recursive: true });
+    check("(j2) fixture: the unreadable-tree target really is outside any git repository",
+      spawnSync("git", ["-C", jNoRepo, "rev-parse", "--show-toplevel"]).status !== 0,
+      `${jNoRepo}: git resolved a toplevel here, so the probe below would measure the wrong thing`);
+    const vC = await jVal("acceptance probe C: a target whose index cannot be read", jNoRepo,
+      { unchanged: false, tasks: [{ text: "work somewhere unreadable", doneCriterion: "d", verify: "bun run build", files: ["anything.ts"] }] });
+    check("(j2) an unreadable tree yields UNCHECKABLE + TREE_UNKNOWN and the verdict `unknown` — never pass, never fail",
+      vC.validation?.verdict === "unknown" && jCodes(vC.validation) === "PATH_UNCHECKABLE,VERIFY_TREE_UNKNOWN"
+      && (vC.validation?.findings ?? []).every((f) => f.severity === "unknown"),
+      JSON.stringify(vC.validation ?? null));
+    rmSync(jNoRepo, { recursive: true, force: true });
+
+    // (d) the second half of the acceptance: a verify path that names nothing of this repo's local
+    // proof chain. Judged only where that chain applies, which is what (e) is the counter-probe to.
+    const vD = await jVal("acceptance probe D: a verify path that is not one of ours", ROOT,
+      { unchanged: false, tasks: [
+        { text: "one", doneCriterion: "d", verify: "click around in the browser and see", files: ["server.ts"] },
+        { text: "two", doneCriterion: "d", verify: "./e2e-isolated.sh", files: ["server.ts"] },
+        { text: "three", doneCriterion: "d", verify: "", files: ["server.ts"] }] });
+    check("(j2) an off-contract verify is a finding, the isolated preview is NOT, and an empty one is its own code",
+      vD.validation?.verdict === "fail"
+      && jCodes(vD.validation) === "VERIFY_MISSING,VERIFY_OFF_CONTRACT"
+      && vD.validation?.findings.find((f) => f.code === "VERIFY_OFF_CONTRACT")?.child === 0
+      && vD.validation?.findings.find((f) => f.code === "VERIFY_MISSING")?.child === 2,
+      JSON.stringify(vD.validation ?? null));
+
+    // (e) THE COUNTER-PROBE, and the reason the verify half is three-valued at all: a task may
+    // target a foreign repository, where LOCAL_PROOF_STEPS describes nothing. The same string that
+    // was an error in (d) must come back NOT RATEABLE here — the tree decides, not the text. Paths
+    // stay judged either way, because "tracked" means the same thing in every repository.
+    const vE = await jVal("acceptance probe E: the same verify text, a foreign tree", REPO,
+      { unchanged: false, tasks: [{ text: "work over there", doneCriterion: "d",
+        verify: "click around in the browser and see", files: ["code.txt"] }] });
+    check("(j2) a foreign target repo makes the verify NOT RATEABLE (unknown), never a fail — while its tracked path still passes",
+      vE.validation?.verdict === "unknown" && jCodes(vE.validation) === "VERIFY_CONTRACT_FOREIGN"
+      && vE.validation?.findings[0].severity === "unknown",
+      JSON.stringify(vE.validation ?? null));
+
+    // …and the pure validator's own contract, away from the routes: the acceptance is a PROJECTION,
+    // so it must never be readable off disk — a state file carrying a `validation` beside a proposal
+    // would be claiming a verdict no code wrote. Read here, while the rows above are still alive:
+    // after the deletes below the same assertion would be vacuously true, which is the shape of a
+    // probe that reads green because it measured nothing.
+    const jvPersisted = (JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+      { tasks?: { refine?: { validation?: unknown } }[] }).tasks ?? [];
+    const jvWithRefine = jvPersisted.filter((row) => row.refine);
+    check("(j2) the acceptance is a projection and is never persisted beside the proposal",
+      jvWithRefine.length >= 4 && jvWithRefine.every((row) => row.refine?.validation === undefined),
+      `${jvWithRefine.length} persisted proposal(s); with validation: `
+      + JSON.stringify(jvWithRefine.filter((row) => row.refine?.validation !== undefined)));
+
+    // (f) OWNER LATITUDE — the property that makes this an acceptance and not a gate. The proposal
+    // from (b) names a path this tree does not have; confirming it must still mint, and the answer
+    // must carry the findings the owner overrode so the act is recorded with its evidence.
+    const jvc = await post(`/api/tasks/${vB.id}/refine-confirm`, {});
+    const jvcJ = (await jvc.json()) as { ok?: boolean; tasks?: JRow[]; validation?: JValidation };
+    check("(j2) a flagged proposal still promotes — the acceptance blocks nothing, and the reply carries what was overridden",
+      jvc.ok && jvcJ.tasks?.length === 2 && jvcJ.validation?.verdict === "fail"
+      && (jvcJ.validation?.findings ?? []).some((f) => f.path === "src/hallucinated-by-the-compiler.ts"),
+      `${jvc.status} ${JSON.stringify(jvcJ)}`);
+    const jvAudit = ((await (await get("/api/audit?limit=50")).json()) as { events: { event?: string; detail?: string }[] })
+      .events.find((e) => e.event === "task_refine_confirm" && (e.detail ?? "").startsWith(vB.id));
+    check("(j2) the sighted override is on the audit line, naming the verdict it was made against",
+      (jvAudit?.detail ?? "").includes("validation: fail"), JSON.stringify(jvAudit ?? null));
+    for (const k of jvcJ.tasks ?? []) await post(`/api/tasks/${k.id}/delete`, {});
+    for (const id of [vA.id, vB.id, vC.id, vD.id, vE.id]) await post(`/api/tasks/${id}/delete`, {});
 
     // prompt invariants against the pure builder — the worker's EFFECT is untestable by design,
     // so what it is TOLD is the whole assertable surface (same stance as (h)/(i))

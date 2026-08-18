@@ -1056,3 +1056,54 @@ now in the main checkout's copy, item 1 replacing the old rule rather than sitti
 `/private/tmp/tmux-501` currently holds ~200 stale `fleettest*` socket files. §10 predicted this
 from one leak; at four hand-runs in an evening it is visibly accumulating. Still outside the repo,
 still not touched.
+
+## 12. Ein Cast auf eine Netz-Antwort ist eine Behauptung — der `awaiting`-Befund (aus `CLAUDE.md` umgezogen 2026-08-18)
+
+Die Regel steht in `CLAUDE.md` §Deploy; hier der Befund im Original:
+
+- **`GET /api/sessions` TRÄGT KEIN `awaiting` — und eine Sonde, die es trotzdem fragt, scheitert als
+  „der Filter ist kaputt"** (2026-08-09 ZWEIMAL gemessen, in zwei Dateien, von zwei verschiedenen
+  Autoren: `fleet-e2e-postland-audit.ts` → repariert in `8e2b3e5`, `e2e/tasks.ts:122` → offen). Die
+  Slot-Objekte des Owner-Polls haben elf Schlüssel (`agent ctx cwd git id label lastOutput mergePending
+  model share worktree`); `awaiting` ist keiner davon — es lebt auf `laneSignalView` (`server.ts:10326`),
+  also der STEWARD-Sicht. `undefined === "owner"` ist immer falsch, der Check kann nie grün werden, und
+  **`tsc` sieht es nie**, weil beide Male ein `as`-Cast auf dem `fetch`-Helfer das Feld behauptet hat.
+  Beide Male war das Produkt in Ordnung und die Fixture schrieb die Flagge korrekt nach `fleet.json`.
+  Die Regel, verallgemeinert und weit über `awaiting` hinaus: **ein Cast auf eine Netz-Antwort ist eine
+  BEHAUPTUNG über eine fremde Fläche, kein Typ** — er macht den Feldzugriff übersetzbar und die Antwort
+  für immer `undefined`. Wo eine Sonde ein Feld braucht, das der Poll nicht führt, ist die Quelle die
+  Zustandsdatei, die der Server geladen hat (Muster: `8e2b3e5`), und die Voraussetzung bekommt einen
+  EIGENEN `check()`. **Noch nicht gepinnt** — der Pin, der die Klasse schließt, gehört nach dem nächsten
+  Land in `e2e/pins.ts` (Fläche: kein e2e-Cast auf `/api/sessions` darf ein Feld nennen, das die
+  Payload nicht emittiert).
+
+## 13. Ein grünes Audit kann bedeuten, dass nichts gemessen wurde (aus `CLAUDE.md` umgezogen 2026-08-18)
+
+Die Beweisregel (Grün an `ms` und PASS-Zeilen prüfen) steht in `CLAUDE.md` §Deploy; hier die
+Geschichte samt aller vier Lehren:
+
+- **EIN GRÜNES AUDIT KANN BEDEUTEN, DASS NICHTS GEMESSEN WURDE — und das ist gefährlicher als ein Rot**
+  (2026-08-09, Session 46; repariert in `7d3a309`). `613faa3` schrieb die letzte Zeile von
+  `e2e-isolated.sh` um und nahm die **22 Zeilen dahinter** mit — srv-Spawn, Port-Warteschleife,
+  `bun fleet-e2e.ts`, Teardown, `exit $code`. Das abgeschnittene Skript ist **gültiges sh**: es weist
+  eine Variable zu und fällt mit Status 0 ans Ende, und Status 0 ist GRÜN. Zwei Lands bekamen so ein
+  Grün, das nichts gemessen hat (1,8 s statt ~690 s, **null PASS-Zeilen**), und `./state.sh` meldete
+  das erste davon der nächsten Session als „newest audit: green on 613faa3c". Vier Lehren, und die
+  ersten beiden sind sofort anwendbar:
+  - **Ein Audit-Grün prüft man an `ms` und an den PASS-Zeilen, nicht am Wort „green".** Ein echter
+    Lauf liegt bei ~680–700 s mit 17 aufbewahrten PASS-Zeilen. Alles unter einer Minute ist
+    verdächtig, egal was in der Spalte steht. Seit `54ea616` trägt die Zeile zusätzlich
+    `checks{ran,failed}` — `ran:0` bei `result:"green"` ist die maschinelle Form derselben Frage.
+  - **Der Runner druckt erst am ENDE** (`fleet-e2e.ts`, `results.join`). Ein Absturz löscht damit den
+    Beweis, dass alles davor grün war — deshalb hat auch das ECHTE Rot zu `c604390` null PASS-Zeilen,
+    obwohl es 445 s gearbeitet hat. „Null Checks" heißt „abgestürzt oder nie gestartet", und die
+    beiden unterscheidet nur `ms`.
+  - **Kein bestehendes Gate konnte es sehen, und das war kein Zufall.** `tsc` liest keine Shell, und
+    der Pin, den `613faa3` selbst mitbrachte, liest die `SRV_ENV`-Zeile — die überlebt hat. Er war
+    grün, während das Skript enthauptet war. Seither hält ein Pin die Klasse zu: jeder der fünf
+    gestagten `e2e-*.sh` muss einen Runner ausführen **und** mit `exit $code` enden (`e2e/pins.ts`,
+    Regelname mit „decapitated"); `bun e2e/pins.ts` ist die erste Stufe des Land-Gates, `613faa3` wäre daran
+    gescheitert.
+  - **Die allgemeine Form, und sie gilt über Shell hinaus:** eine Datei, deren Ende abgeschnitten
+    wird, ist oft noch syntaktisch gültig — dann verschwindet nicht das Ergebnis, sondern die
+    ARBEIT, und übrig bleibt ein Erfolg. Wer eine Zeile am Dateiende ändert, prüft die Zeilenzahl.

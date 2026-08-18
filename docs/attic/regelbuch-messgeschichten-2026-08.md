@@ -135,3 +135,373 @@ der zwei historischen Gate-Löcher:
   `./e2e-security.sh` und drei tsc-Dateien): eine Lane konnte am Gate an einem Check scheitern, den sie nie
   lief. Er kostet Millisekunden, kein Server, kein tmux, und prüft die Muss-Paare, deren andere Seite kein
   TypeScript ist (Shell, Doc) — genau die Drift, die kein Compiler sieht.
+
+## Runde 2 (2026-08-18): die Praesens-Kur
+
+In Runde 2 wurden Bloecke in `CLAUDE.md` ins Praesens verdichtet; die Regel steht dort weiter,
+hier liegt je Block der vollstaendige Original-Wortlaut (IP-sanitiert: `<fleet-host>`).
+Die Korrektur-Bauformen darin sind absichtlich unveraendert. Bei Widerspruch gilt der Code.
+
+## §5 checkout-- im Lane-Worktree (Originalblock)
+
+- **`git checkout -- <datei>` IM LANE-WORKTREE LOESCHT DIE ARBEIT DER LANE, wenn sie dieselbe Datei
+  uncommittet haelt** (mir passiert 2026-08-09, Session 44: eine Mutationsprobe an `server.ts` im Worktree
+  von `fleet/260808213248-74d6`, danach `checkout --` — weg waren 98 Zeilen fremder, ungesicherter Arbeit).
+  Die Falle ist die UEBERTRAGUNG: bei der Lane davor war genau dieselbe Probe harmlos, weil `server.ts` dort
+  unberuehrt war, und daraus wurde ein Handgriff. **Seit der Arbeitsteilung ist der Normalfall aber, dass
+  eine fremde Lane fertige Arbeit UNCOMMITTET haelt** (sie KANN nicht committen) — im Lane-Worktree gibt es
+  also keinen sicheren `checkout --` mehr. Regel: eine Mutationsprobe an einer Datei, die eine Lane
+  uncommittet haelt, laeuft ueber `git stash push -- <datei>` + `stash pop` oder eine Kopie, nie ueber
+  `checkout --`; besser noch: **erst der Host-Commit, dann die Probe** — dann ist `checkout --` wieder
+  harmlos, und das ist der eigentliche Fix. Erholung kostete: die Lane hat ihre sieben Stellen aus dem
+  eigenen Gedaechtnis neu eingetragen (der Compiler war das Netz, weil die uebrigen Dateien die neuen Namen
+  schon referenzierten) plus ein zweiter 11-min-Suite-Lauf.
+
+## §6 Kontext-Schwelle 44 % (Originalblock)
+
+- **Kontext-Schwelle fuer eine MAIN-Session: ~44 %** (Owner-Entscheid 2026-08-08; im selben Gespraech von 40
+  auf 42 auf 44 nachgezogen — die RICHTUNG ist die Botschaft, die alten Zahlen waren zu eng). Dort BEGINNT die
+  Uebergabe: laufende Kette zu Ende fahren, ungefragt `HANDOFF.md` schreiben, Nachfolge selbst spawnen. Vier
+  Saetze dazu, und der erste ist der, an dem sich geirrt wird:
+  - **Die Schwelle ist der Startpunkt der Uebergabe, keine Decke, unter die die fertige Arbeit passen muss.**
+    Session 40 hat genau das verwechselt und die Handoff-Reserve AUF die Schwelle addiert — und deshalb eine
+    fertig gebriefte Lane liegen lassen, die bequem gepasst haette. Die Reserve liegt HINTER der Schwelle. Von
+    44 % sind es noch ~39 Punkte bis zum 83-%-Kompaktierungs-Kliff, dem einzigen dokumentierten
+    Verlustereignis.
+  - **~36 % ist der ANKER fuer einen Lane-Start, kein Zaun** (ausdruecklich halb dynamisch — eine harte Kante
+    ersetzt Urteil durch eine Zahl). Darunter ohne Begruendung. Darueber erlaubt, wenn du die Kosten der Kette
+    BENENNEN kannst und sie bis ~44 % passt — und dann gehoert die Schaetzung in deine sichtbare Ausgabe,
+    damit der Owner die Wette sieht statt sie zu erraten.
+  - **Die Kosten haengen an der ART der Restarbeit, nicht an ihrer Menge.** Eine Lane
+    briefen/ueberwachen/landen/deployen ist billig und gut vorhersagbar (S39: ~23 Punkte fuer NEUN Lands, ~2,5
+    je Land). Selbst am Host graben — Untersuchung, Handlauf, ein Skript, das du schreibst — ist der teure
+    Teil und schlecht schaetzbar (S40: ~19 Punkte fuer zwei Lands PLUS die Container-Untersuchung und den
+    Worker-Wrapper; die Lands waren darin der billige Posten). Darauf zielt der Owner-Satz "es sind ja
+    worktrees". Eine eigene Grabung anzufangen ist auch UNTER dem Anker meist falsch — dort zaehlt nicht die
+    Schwelle, sondern dass du ihre Kosten nicht schaetzen kannst.
+  - **Fixkosten, damit die Zahlen nachrechenbar bleiben statt Gefuehl zu sein:** Erdung bis "ich weiss, wo ich
+    bin" ~7,6 % (an S38 gemessen), Handoff-Schreiben + Nachfolge-Spawn ~2–4 %. Seit dem `ctx`-Sensor
+    (2026-08-07) notiert jeder Handoff seinen `ctx` beim Uebergeben UND was die Session produziert hat — so
+    steht die Schwelle nach ein paar Sessions auf Daten.
+    **DEN EIGENEN FUELLSTAND MISST DU, DU SCHAETZT IHN NICHT — und bis 2026-08-10 hat das keine Session
+    getan.** Hier stand nur „notiert jeder Handoff seinen `ctx`", nirgends WO man ihn abliest; Folge: sechs
+    Handoffs in Folge tragen eine Tilde (`~35` `~40` `~68` `~39` `~40` `~40`), und die Haeufung bei 40 ist
+    das Ankern an der Schwelle, ueber die man gerade nachdenkt. Die Schwelle stand also auf Schaetzungen,
+    waehrend dieser Absatz „auf Daten" behauptete — und der Owner hat sie auf dieser Grundlage von 40 auf
+    42 auf 44 nachgezogen. Das Kommando ist ein Einzeiler, `ctx` steht am eigenen Slot im Owner-Poll:
+    ```
+    curl -s -H "authorization: Bearer $(python3 -c "import json;print(json.load(open('fleet.json'))['token'])")" \
+      http://<fleet-host>:8790/api/sessions \
+      | python3 -c 'import json,sys,os; s=[x for x in json.load(sys.stdin)["slots"] if x["id"]==int(os.environ["FLEET_SELF_SLOT"])][0]; print(s["ctx"])'
+    ```
+    `FLEET_SELF_SLOT` steht in jeder Pane. `ctx: null` heisst NICHT „leer", sondern unmessbar — ein
+    GPT-Slot hat es immer (`contextWindowFor` kennt das Modell nicht, Zeile `e2784b16`), dort bleibt die
+    Selbstauskunft der Lane das einzige Mittel. Und eine geschaetzte Zahl gehoert nie ohne Tilde in einen
+    Handoff: sie sieht sonst aus wie eine Messung und wird als eine weiterverwendet.
+
+## §7 GPT-Lane briefen (Originalblock)
+
+- **WENN DU EINE GPT-LANE BRIEFST, RECHNE MIT 258 400 STATT 1 000 000** (Owner-Vorgabe 2026-08-08
+  abends: „ab jetzt sollten wir die gpt modelle für alles benutzen" — plus „villeicht kann die main
+  session das mitbedenken wenn es die lane prompted"). Das ist keine Stilfrage, es ist Arithmetik,
+  und drei Zahlen tragen sie:
+  - **Das Fenster.** 272 000 nominal × `effective_context_window_percent` 95 = **258 400**, und
+    `max_context_window` steht ebenfalls auf 272 000 — auf dem Abo-Pfad gibt es keine größere Stufe.
+    Zwei unabhängige Quellen, beide von Codex selbst: sein `models_cache.json` und ein nativer
+    Rollout. pi verkleinert nichts, es reicht dieselbe Zahl durch. (Über die reine API sind größere
+    Fenster dokumentiert — anderer Zugangsweg, andere Rechnung, hier nicht gemessen.)
+  - **96 % des Verbrauchs ist INPUT, nicht Denken.** An einer echten Session gemessen: kumulativ
+    428 916 Input gegen 16 701 Output, davon 6 717 Reasoning. Ein GPT-Modell denkt sparsam, und das
+    spart echtes Geld — aber es füllt das Fenster nicht. Was es füllt, sind Gesprächsverlauf und
+    **Tool-Ausgaben**, die jeder Turn erneut mitschickt: ein einzelner Turn-Input lag bei 77 804,
+    also 30 % des Fensters. **Der Hebel ist Tool-Ausgaben-Disziplin, nicht Modellwahl.**
+  - **Fixkosten fallen in BYTES an, nicht in Prozent** — das ist der unintuitive Teil. Die
+    Erdungskosten einer MAIN-Session (~7,6 % von 1M ≈ 76 000 Tokens) wären auf 258 400 **29 %**.
+    Also: die Schwellen dieses Regelbuchs (44 % Übergabe, ~36 % Lane-Start) sind auf 1M hergeleitet
+    und dürfen NICHT übertragen werden. Wer sie für ein GPT-Fenster braucht, leitet sie neu her.
+  **Was das für den BRIEF konkret heißt, und es ist eine Checkliste, keine Haltung:**
+  - **Nenne die Dateien MIT Zeilenbereich, wo du ihn kennst.** „Sieh dir `server.ts` an" sind 13 593
+    Zeilen. Ein Brief, der `server.ts:12108-12140` sagt, kostet ein Promille davon.
+  - **Schick sie nicht wholesale ins Regelbuch.** `CLAUDE.md` sind ~20 000 Tokens ≈ **8 % ihres
+    Fensters**, bevor sie irgendetwas tut. `AGENTS.md` (~1 400 Tokens) wird bei codex UND pi ohnehin
+    automatisch geladen. Nenne die ABSCHNITTE, die sie braucht.
+  - **Schreib die Such-Werkzeuge in den Brief:** `rg -n '<symbol>'`, `ast-grep --pattern '<muster>'
+    --lang ts <datei>`. `graphify` gibt es in einer Lane nicht (gitignored, nie im Worktree).
+  - **Suite-Ausgaben in eine Log-DATEI, dann den Tail lesen** — `./e2e-isolated.sh` sind ~1868
+    Checks; wer das in den Kontext leitet, verbrennt einen zweistelligen Prozentsatz für eine Zeile,
+    die „ALL PASS" heißt. (Eine Codex-Lane kann ohnehin keine Suite fahren — kein tmux in ihrer
+    Sandbox; eine pi-Lane heute schon.)
+  - **Ein Schnitt, kein Programm.** Die fertigen claude-Lanes dieses Tages lagen bei 140 000–190 000
+    Tokens. Das ist auf 258 400 der ganze Vorrat, Brief inklusive.
+  - **Lass sie ihren Füllstand SELBST melden**, denn das Board kann es nicht: ein GPT-Slot zeigt
+    `ctx: null` (`contextWindowFor` kennt das Modell nicht, und ohne Transkript gibt es keine
+    `usedTokens` — Queue-Zeile `e2784b16`). Ein Satz im Brief — „sag Bescheid, wenn du über der
+    Hälfte bist" — ersetzt einen Sensor, den es noch nicht gibt.
+
+## §8 Codex-Dispatch-Boot-Race (Originalblock)
+
+- **CODEX-DISPATCH-BOOT-RACE — GESCHLOSSEN 2026-08-12 (Readiness-Naht), Mechanismus erst da verstanden:** die 2026-08-10-Messung (3/3 codex-Lanes, Brief verpufft, Pane probt `alive`) war KEIN Timing-Problem, sondern ein blockierender SCREEN: ein Paste+Enter in Codex' Trust-Prompt BEANTWORTET den Prompt („Yes, continue") und bootet einen leeren Composer — der Brief ist restlos weg, ohne Fehler; der Sign-in-Screen frisst identisch (gerenderte Frames, codex-cli 0.147.0). Seit dem Readiness-Schnitt: `Harness.readiness{accept,blocks}` (nur codex), `paneReadiness()` neben `paneAgentAt`, canDeliver-Gate `blocked-screen` (nur „blocked" verweigert), und der Dispatch-Tail wartet bounded auf den Accept-Marker `>_ OpenAI Codex (v` (`FLEET_READY_WAIT_MS`, Default 20 s) und requeued ehrlich mit Screen-Name statt zu pasten. `codex.automatable` ist damit `true` — per Pin an die Naht gekoppelt („ein Entscheid, zwei Felder"). Das Hand-Nachschicken per `POST /send` ist nur noch Notweg. Gegenproben: `e2e/tasks.ts` f3.
+
+## §9 e2e-isolated Tier-2-Vorschau (Originalblock)
+
+- **`./e2e-isolated.sh` ist Tier-2-Vorschau, kein Gate — und seit 2026-08-07 keine Pflicht mehr in jeder
+  Lane** (Owner-Entscheid, an mich delegiert). Fahre sie, wenn du `e2e/`, einen Suite-Wrapper (`e2e-*.sh`,
+  `e2e-stage.sh`) oder den Merge-/Land-Pfad angefasst hast; sonst lass sie weg. Gemessen: ~165 min/Tag
+  Suite-Mutex für **0 echte Vorschau-Funde in zwei Tagen** (11 Rote, alle beim Same-Tree-Rerun grün; den einen
+  echten Regress fand der Post-Land-Audit, nicht die Vorschau) — und derselbe Lauf läuft nach dem Land ohnehin
+  als Stufe 2. Risiko, benannt: ein realer Bruch fällt jetzt ~9 min NACH dem Land auf statt davor.
+  **Am 2026-08-08 ist dieses Risiko zum ERSTEN MAL fällig geworden, in der vorhergesagten Form und
+  Frist — und der Entscheid bleibt trotzdem richtig.** Das Land `8e154dd` (Codex-Effort) gab dem Adapter
+  eine Effort-Fähigkeit; `e2e/security.ts` behauptete an einer zweiten Stelle noch den alten Kontrakt
+  („codex lehnt jeden Effort ab") und wurde rot. Weder die Lane noch ich konnten das vorher sehen, und
+  das ist der Teil, den man kennen muss: **`e2e/security.ts` läuft AUSSCHLIESSLICH in
+  `./e2e-isolated.sh`** — `./e2e-security.sh` ist der separate Einzeldatei-Harness
+  `fleet-e2e-security.ts` und enthält diese Familie NICHT, und der Land-Gate fährt dieselben drei
+  Suiten. Beide waren grün und beide hatten recht. **Der Auslöser ist NICHT „du fasst `e2e/*.ts` an" —
+  das war die erste Fassung dieser Zeile und sie zielt daneben.** Die Lane änderte einen ADAPTER-Wert
+  in `server.ts`; die zurückgebliebene Behauptung lag woanders. Der richtige Auslöser ist: **du änderst
+  eine Aussage, über die irgendwo eine Behauptung steht** — ein `supports.*`-Feld, ein `effortLevels`,
+  eine `note`, einen Kontrakt-Default. Dann sagt dir der Gate NICHTS, und du fährst die Vorschau (oder
+  rechnest mit dem Audit 9 min später). Wer nur auf `e2e/*.ts` achtet, lässt genau den Fall durch, der
+  am 2026-08-08 zugeschlagen hat.
+  Adjudiziert als `stale-test`, repariert in `6cc8283`. Rückfalltür: diese Zeile zurückdrehen. Safe inside lanes (each isolated suite refuses/avoids the live
+  socket). Run `./e2e-clean-review.sh` whenever you touch the merge/land path — it's the only suite that boots
+  the server with `FLEET_CLEAN_REVIEW=1` and proves the ② reviewer's downgrade-only + fail-closed contract.
+  **Und `./e2e-postland-audit.sh`, wenn du den Tier-2-Audit-Pfad anfasst** (Queue, Drain, Snapshot, Retention)
+  — es ist die einzige Suite, die dort etwas beweist, und sie MUSS mitlaufen, sonst rottet sie unbemerkt:
+  genau das ist passiert (sie kopierte `continuity.ts` nie in ihr Scratch-Verzeichnis und starb seit `13c5728`
+  bei JEDEM Lauf am Boot, unentdeckt, weil kein Gate sie fährt — gefunden und behoben 2026-07-27 in Lane
+  `b5e6`).
+
+## §10 Sonde vor Code (Originalblock)
+
+- **Bei einem roten Check an FRISCH GESCHRIEBENER eigener Arbeit ist der erste Verdaechtige die SONDE, nicht
+  der Code** (dreimal an einem Tag belegt, 2026-08-07, Session 38: eine maschinenabhaengige Erwartung · ein
+  `inSec: 0`, das die Route mit 400 abwies und das mein Helfer STILL verschluckte · ein Tick-Cache, von dem
+  ich eine Zusage verlangte, die er ausdruecklich nicht macht). Jedes Mal war der Code richtig, und jedes Mal
+  lautete die naive Lesart „der neue Gate ist kaputt". **Das Werkzeug dagegen ist die SIGNATUR des Fehlschlags
+  gegen die Erwartung zu lesen, nicht den Fehlschlag zu glauben:** derselbe Wert in der Zeile UND ihrer
+  Gegenprobe heisst „nie gemessen", nicht „Gate defekt"; ein Wert, den der Code *strukturell nicht erzeugen
+  kann* (hier `no-agent` aus einer leeren comms-Liste), datiert den Messzeitpunkt statt den Code zu
+  beschuldigen. Ergaenzt die Regel darueber, ersetzt sie nicht: „der Fail ist deiner" bleibt — dies sagt, WO
+  in deiner Arbeit du zuerst suchst. Und die Konsequenz gehoert in die Sonde: **eine Sonde, die nicht laufen
+  konnte, muss als SIE SELBST scheitern** (eigener `check()` auf ihre Voraussetzung), nie als das, was sie
+  messen sollte.
+
+## §11 concurrency-safe vs. Maschinenlast (Originalblock)
+
+- `./e2e-isolated.sh`, `./e2e-claude-gate.sh`, and `./e2e-clean-review.sh` each derive SOCK/PORT/DIR from `$$`
+  per invocation (distinct port bands) → concurrency-safe, run them directly from any lane. A clean run tails
+  "ALL PASS". The old `FLEET_SELF_TOKEN absent for a non-lane slot` pane-capture race and the
+  auto-③-supersedes-a-fresh-lane race are both fixed (2026-07-25); a fail is yours until proven
+  fails-identically-at-HEAD. **Korrektur 2026-07-25: „no known flakes" stand hier und ist falsch** —
+  `./e2e-isolated.sh` ist unter Maschinenlast messbar nicht-deterministisch (ein Lauf fiel mit 3/759 auf einem
+  Baum mit NULL Code-Änderungen, der davor und danach grün war; Mechanismus zu zwei Checks benannt in
+  `docs/verify-tiering.md`). Das ist **kein Freifahrtschein**: ein Fail bleibt deiner, bis du ihn als Flake
+  beweist (gleicher Check, frischer HEAD-Worktree, Transcript in den Report). Konsequenz fürs Gate: die volle
+  Suite darf aus genau diesem Grund kein hartes Pre-Land-Gate sein — sie läuft als Stufe 2 NACH dem Land.
+  **Präzisierung 2026-07-26 (gemessen in Lane b798/SEC-4): „concurrency-safe" oben gilt für
+  Socket/Port/Verzeichnis — NICHT für Maschinenlast.** Zwei `./e2e-isolated.sh` gleichzeitig zu fahren erzeugt
+  auf dieser Maschine zuverlässig Fehler, und zwar auf BEIDEN Bäumen und mit unterschiedlicher Signatur (Lane:
+  7 outcome/land-Fails, HEAD: 1 transcript-Fail) — ein so erzeugtes Paar beweist gar nichts. **Der
+  fails-identically-at-HEAD-Beweis MUSS seriell laufen**, sonst ist er wertlos. Gilt genauso für alles andere,
+  was nebenbei die Maschine belegt: der Post-Land-Audit (Stufe 2) IST ein `e2e-isolated`-Lauf, also nicht
+  zeitgleich Drills, Suiten oder frische Lanes danebenstellen.
+
+## §12 rg/ast-grep (Originalblock)
+
+- **`rg` ist installiert und schneller als `grep` — aber sein Default macht dich in DIESEM Repo blind.**
+  ripgrep respektiert `.gitignore`, und gitignored sind hier ausgerechnet: `CLAUDE.md` (dieses Regelbuch),
+  `fleet.json` (die Queue, also das Register), `lane-outcomes.jsonl` · `post-land-audits.jsonl` ·
+  `audit.jsonl` (alle drei Ledger) und `.env`. Ein `rg` ueber diese Dateien liefert kein Fehlerergebnis,
+  sondern ein LEERES — und ein leeres Ergebnis liest sich wie "gibt es nicht". Gemessen 2026-08-08 mit
+  `git check-ignore`. Regel: fuer getrackten Code `rg` gern, fuer alles Operative **`rg -uu`** (oder schlicht
+  `grep`). **Die strukturelle Ebene ist seit 2026-08-08 `ast-grep` (0.45.1, user-lokal in `~/.local/bin`, auch
+  als `sg`) — und sie ist genau das, was einer LANE bisher fehlte.** `graphify` (`graphify-out/`, AST +
+  Call-Graph) deckt dieselbe Ebene ab, aber NUR im Haupt-Checkout: das Verzeichnis ist gitignored, ein
+  Worktree bekommt nur getrackte Dateien, also hat eine Lane es nie. Faustregel: Text-/Symbolsuche → `rg`
+  (operativ `rg -uu`) · strukturelle Frage („alle Aufrufstellen von X", „jede async function ohne try/catch")
+  → `ast-grep --pattern '<muster>' --lang ts <datei>`, `--json=compact` fuer maschinelle Weiterverarbeitung.
+  Der Unterschied ist nicht kosmetisch, sondern gemessen: `Bun.spawn($$$)` liefert **18** echte Aufrufstellen
+  in `server.ts`, ein Text-`grep` **20** — die zwei Extra sind Kommentar/String. Auf einer Flaeche, wo jeder
+  Treffer eine Stelle ist, an der ein Wert in einen Prozess geht, ist das der Unterschied zwischen einer Liste
+  und einer Liste mit zwei Phantomen. **NICHT getan und bewusst nicht:** die 14 `grep`-Aufrufe in den eigenen
+  Shell-Skripten auf `rg` umzustellen — sie lesen winzige Dateien (Geschwindigkeit irrelevant), aber
+  `state.sh`/`register.sh` lesen `fleet.json` und die Ledger, und ein naiver Tausch macht daraus stille
+  Leer-Ergebnisse. Korrektheitsrisiko ohne Gegenwert.
+
+## §13 C-u/Owner-Entwurf (Originalblock)
+
+**Und die teure Nebenlektion vom selben Tag: eine kurze Zeile im eigenen Composer ist der ANFANG
+eines Owner-Satzes, nicht dein eigener `send-keys`-Rest.** Ich hielt ein `es` für Tipp-Müll meines
+eigenen `/effort`-Kommandos und schickte `C-u` — es waren die ersten zwei Zeichen von „es ist
+beeindruckend…", einer echten, gerade entstehenden Owner-Nachricht. Sie überlebte (`Ctrl+Y` hält
+Gelöschtes vor, und der Owner tippte weiter), aber der Griff war falsch. Regel: **im EIGENEN
+Composer nie `C-u`, solange der Inhalt auch ein wachsender Owner-Entwurf sein könnte** — zweimal im
+Abstand von Sekunden lesen; wächst der Text, tippt ein Mensch. Ein eigener `send-keys`-Rest wächst
+nie.
+
+## §14 Sammelablage der kleineren Verdichtungen
+
+### Loader-Vertrag (alte Fassung)
+
+## Loader-Vertrag (zuerst, vor allem anderen)
+
+- **Lies `AGENTS.md` vollständig** — dort lebt der portable Fleet-Vertrag (Vokabular, harte
+  Invarianten, Verify-Kette, Landing, Reporting). Diese Datei hier ist das private Overlay:
+  operative Realität, Messbelege, Maschinen-Eigenheiten.
+- **Neue dauerhafte Regeln werden in diesem Repo über propose/promote normativ:** ein Worker oder
+  eine Session darf eine Regel VORSCHLAGEN; verbindlich wird sie erst durch Owner-Promotion. Keine
+  harte Lektion wird automatisch normativ angehängt.
+- **Ein verbleibender echter Widerspruch** zwischen `AGENTS.md`, dieser Datei und dem aktuellen
+  Code stoppt die Arbeit und wird gemeldet — nie die bequemere Regel wählen. Bei
+  Doc-vs-Code-Widerspruch gilt der Code.
+
+### Backlog-Chronik (Item-Zuordnungen)
+
+  Live-Queue. **Das alte Backlog ist KEIN lebendes Register** (seit 2026-08-07 im Attic:
+  `docs/attic/backlog-2026-07.md`) — es führt Arbeit unter anderen Namen als die Queue (Item 13 = F5 =
+  gelandet, Item 12 = F6 = Zeile `2784427e`) und ist auf 2026-07-23/24 verankert.
+
+### Widerspruch-gilt-der-Code-Doppelung im Rückweg-Block
+
+§1. Die Lehre
+  daraus gilt weiter: **bei einem Widerspruch gilt der Code, nicht dieses Dokument** — und ein Absatz, der
+  eine Handarbeit empfiehlt, ist der erste, den man gegen den Code prüft.
+
+### Direkt-Commit-Ledger (Originalblock mit Mess-SHAs)
+
+- **Ein Direkt-Commit aus dem Haupt-Checkout ist fuer JEDES land-seitige Ledger unsichtbar** (gemessen
+  2026-08-07 an `0e2a672` und `4955444`): kein `git notes --ref=fleet/land`, keine Zeile in
+  `lane-outcomes.jsonl`, **und kein Post-Land-Audit** — der Tier-2-Lauf haengt an
+  `landLane`/`drainPostLandAudits`, nicht an einer Bewegung von main. Wer „arbeite selbst" umsetzt und im
+  Haupt-Checkout committet, muss die Verifikation darum **von Hand vollstaendig fahren** (das Audit-Kommando
+  IST `./e2e-isolated.sh`) und das im Handoff **sagen** — sonst liest die naechste Session
+  `post-land-audits.jsonl` und schliesst korrekt-aber-falsch, diese Commits seien nie vermessen worden. Die
+  Abdeckung ist gleichwertig, der EINTRAG fehlt. Gilt genauso fuer `./state.sh`s Land-Health-Zahlen: sie
+  zaehlen Lanes, also untertreiben sie an einem Tag mit Direkt-Commits.
+
+### gate-Route: die Uhr-Vorgeschichte der zwei Budgets
+
+dem Suite-Mutex verbringen darf, bevor es anfängt. Seit `08dc17a`; davor war es eine Uhr, und die hat am
+  2026-08-06 ein Land mit `verify.ok:false` getötet über eine Ausgabe mit NULL Fehlern — ~255 s von 300 s
+  waren fremde Suite. Ein `waitedOut` ist nie `ok:false`
+
+### Flake-Familien (Originalblock)
+
+- Vier bekannte Flake-Familien, nicht zwei: die drei aus `docs/verify-tiering.md` §5b plus **merge/resolver**
+  (`"agent reported rebased, but the lane is not clean"`, §11). **FIX1-Flake ist BEHOBEN (2026-07-28, Commit
+  `fix(merge): the land path survives its own git plumbing`): Ursache war `.git/index.lock` aus Fleets eigenen
+  Status-Polls — `GIT_OPTIONAL_LOCKS=0` an den read-only-git-Aufrufen; Beweis 10/10 FIX1-Instanzen über 5
+  serielle Läufe gegen Basisrate 8/16 (`docs/attic/analysis-2026-07-28-verification.md` §9 = Vorgeschichte —
+  seit `66d302b` im Attic, der alte Pfad stand hier bis 2026-08-07 falsch).** Ein FIX1-Rot NACH diesem Commit
+  ist darum wieder ECHT und deins. Fünfte Flake-Familie: Signatur generisch „N marks, 1..N-1" im
+  reseed+live-bytes-Check, **dreimal gesehen** (zuletzt 2026-08-01 byte-identisch gegen einen reinen
+  Picker-CSS-Diff, der den Pane-Stream gar nicht erreichen kann) — Instanzen und Mechanismus stehen in
+  `docs/verify-tiering.md` §11.2b, nicht hier, damit die Zahl nicht an zwei Stellen altert. **Sechste
+  Flake-Familie (2026-08-07 belegt): die Pane-Beobachtungs-Rennstelle im `stalled`-Abschnitt** — bis zu vier
+  FAILs, EINE Wurzel (`stalled setup: … observed …`, Detail `{"observed":false,"lastOutput":0}`), die drei
+  anderen hängen daran. Vier Instanzen, Basisrate und der benannte Fix in `docs/verify-tiering.md` §11.2c —
+  dort und nur dort, gleiche Regel wie oben. Gleiche Beweisordnung wie immer, kein Freifahrtschein.
+
+### claude-gate drei Phasen (Originalblock)
+
+- `./e2e-claude-gate.sh` hat **DREI Phasen** in einem Wrapper (hier stand bis 2026-08-09 „zwei" — nachgezählt
+  am Skript, `grep -n 'phase:' e2e-claude-gate.sh`; gilt die Datei, nicht diese Zeile): Phase 1
+  `FLEET_CMD=claude` (Stand-in-Binary), Phase 2 `FLEET_CMD=harn` — eine Harness, die server.ts nie gehört hat,
+  deklariert nur über Env —, Phase 3 `FLEET_CMD=true` mit LEERER `FLEET_HARNESS_COMMS`, die Gegenprobe zum
+  „unprobed"-Waiver. Die ersten beiden sind ein PAAR und keine ist allein vollständig: Phase 2 beweist, dass
+  fremde Modell-Muster akzeptiert werden, und die Gegenprobe (ein claude-Fleet lehnt genau diese Muster weiter
+  ab) kann nur in Phase 1 stehen. Wer `MODEL_RE` aufweitet, kommt an Phase 2 vorbei und wird von Phase 1
+  gestellt. Phase 2 setzt `default-shell` des Test-Sockets auf zsh — ein Check hängt daran, dass ein
+  unquotetes Glob-Modell die Pane tötet (unter sh wäre es harmlos und der Check bewiese nichts).
+  **Jede Phase bootet ihren eigenen Server und wartet in einer 30-s-Schleife auf den Port — und läuft danach
+  WEITER, egal ob er je geantwortet hat** (2026-08-09 gemessen: Phase 3 lief gegen ein Verzeichnis ohne
+  Server, in der aufbewahrten Instanz fehlt sogar die `server.log`, und die Sonde starb an `ENOENT` auf
+  `fleet.json`). Ein solches Rot liest sich wie ein Code-Regress und heißt „nie gemessen". Erkennungsmerkmal
+  am Post-Mortem: **keine `server.log` in der aufbewahrten Instanz** = das Kommando lief dort nie.
+
+### Runner-only / Stage-Fold (Originalblock)
+
+- `fleet-e2e.ts` is a **runner only**: it boots the check modules in `e2e/*.ts` in order and prints the tail.
+  Add a check next to its family in the right `e2e/<family>.ts`, never at EOF and never back into the runner.
+  Shared plumbing (`check`, `post`/`get`, `tmuxOut`, `paneEnv`, `ROOT`, `REPO`) is `e2e/harness.ts`; the few
+  fixtures that outlive their own section travel through the explicit context objects in `e2e/ctx.ts`. A pane
+  env-var probe MUST go through `paneEnv()` — a hand-rolled send-keys + sleep + capture-pane is the shape of
+  the flake that was just removed. `e2e-isolated.sh` copies `e2e/` alongside `fleet-e2e.ts`; a new sibling
+  file needs no wrapper change, a new top-level directory does. `fleet-e2e-claude-gate.ts`,
+  `fleet-e2e-clean-review.ts`, `fleet-e2e-security.ts` und `fleet-e2e-postland-audit.ts` sind separate
+  Einzeldatei-Harnesses und NICHT Teil dieser Struktur. **Hand-Kopierlisten gibt es nicht mehr, und du sollst
+  auch keine pflegen** (gekürzt 2026-08-07 — hier stand die Anweisung, „ALLE SECHS Skripte" zu prüfen, und im
+  selben Absatz stand, dass das erledigt ist): seit dem Stage-Fold `3d38960` leiten alle sieben Wrapper ihre
+  Kopierliste aus `e2e-stage.sh` ab, und zwei Pins halten das fest — „no shell script copies a module by name
+  (staging is derived, never listed)" und „every script that stages an instance sources e2e-stage.sh, and vice
+  versa". Die alte Todesart (`e2e-postland-audit.sh` starb monatelang unentdeckt am Boot, weil `continuity.ts`
+  in seiner Liste fehlte) ist damit strukturell zu.
+
+### Demo-Repo (Originalblock)
+
+- **Die Demo liegt NICHT MEHR in diesem Repo** (31.07.): sie ist ein eigenes, remote-loses Repo unter
+  `~/claude-fleet-demo` — Owner-Vorgabe „die demo soll nicht veröffentlicht werden", und dieses Repo ist
+  öffentlich. Sie baut gegen den Nachbar-Checkout: `build.ts` leitet ihre Seite aus `public/index.html` ab,
+  das Bundle importiert `src/client.ts` über den `@app/*`-Alias, `node_modules` ist ein Symlink hierher.
+  Konsequenz, die man kennen muss: **eine Änderung an `public/index.html` oder `src/client.ts` kann die Demo
+  brechen, und kein Gate hier sagt es** — sie hat ihr eigenes `bun run typecheck` / `bun run build`, Sekunden.
+  Kurz war `demo/src/demo.ts` in der tsc-Liste des Gates; das war falsch, sobald die Datei das Repo verließ:
+  eine Lane ist ein frischer Worktree mit nur getrackten Dateien, ein Eintrag auf eine Datei außerhalb lässt
+  JEDE Lane am Verify scheitern.
+
+### pkill-trifft-Audit (Originalblock)
+
+- **Dieselbe Falle gilt für SUITEN, und sie hat schon zugeschlagen: `pkill -f 'e2e-isolated.sh'` trifft auch
+  den Post-Land-Audit des Servers** (gemessen 2026-08-06, 20:11: Slot 1 stoppte damit seine eigene
+  Tier-2-Vorschau und tötete den Audit zu `72da914` mit — `exit 143` nach 15,6 s, NULL Checks gelaufen,
+  Ausgabe endet in der Lock-Wartezeile. Der Audit stand danach als **rot** im Register, obwohl nie etwas
+  vermessen wurde; adjudiziert als `unknowable`). Regel: einen eigenen Suite-Lauf **nur über seine notierte
+  PID** beenden (`kill <pid>`), nie über ein Namensmuster — auf dieser Maschine läuft immer auch der Audit des
+  Servers unter demselben Namen. Und die Vorschau ist ohnehin verzichtbar: Tier-2 ist Vorschau, kein Gate, und
+  läuft nach dem Land automatisch.
+
+### Scope-Regeln (Originalblock mit Owner-Entscheid-Begruendung)
+
+**Zwei Scope-Regeln, die entgegengesetzt laufen — das ist die Konstruktion, kein Widerspruch:**
+- **Lane-only sind genau vier Routen:** `/api/self/drift`, `/api/self/gate`, `/api/self/criterion`,
+  `/api/self/verify-intent`. Sie antworten einer Nicht-Lane **409, nie 401** — die Verweigerung ist ein
+  Feature und gepinnt, weil ihr Inhalt (Land-Gate-Wissen, Merge-Drift) für eine Nicht-Lane bedeutungslos wäre.
+- **Nicht-Lane-only sind drei Routen:** `/api/self/watch` antwortet einer **LANE 409**
+  (`a lane may not subscribe — lane-waits-on-lane is a coupling only the owner can make visible`); der
+  `⚙ steward` darf hier abonnieren. `/api/self/succeed` und `/api/self/retire` antworten einer Lane UND dem
+  `⚙ steward` 409: eine Lane landet statt zu migrieren, und der Steward ist eine stehende Rolle.
+
+Beide Male derselbe Grund: der Inhalt wäre für den anderen Prinzipal bedeutungslos, und die Verweigerung ist
+ein Feature (409 statt 401, damit niemand nach einem Token sucht, das er schon hat). Owner-Entscheid
+2026-08-07 zur Nicht-Lane-Regel: Lane-A-wartet-auf-Lane-B ist eine Kopplung, die es heute nicht gibt und die
+niemand sieht — später aufweiten ist billig, zurücknehmen nicht. Die Owner-Route `POST /api/slots/:id/watch`
+behält die weitere Reichweite: der Owner darf eine Lane auf eine Lane zeigen, weil er es auf dem Board sieht.
+
+### Health-Check: steward-Routen-Korrektur-Chronik
+
+Dort steht auch `deployGap` (`codeBehind`)
+  und seit `438c326` `errors`. **Korrektur 2026-08-07: hier stand `/api/steward/sessions` — die Route ist
+  steward-only und antwortet dem Owner-Token mit 404.** Beide Deploy-Fakten wurden bewusst auf den Owner-Poll
+  gehoben, weil nur der Owner sie ausführen kann (Begründung im Kommentar bei `server.ts`, grep
+  `the two deploy facts`).
+
+### Verb 2 (Originalblock mit Erstzug-Chronik)
+
+- **Verb 2 ist gebaut und läuft — der Deploy von Hand ist damit überflüssig** (`4311c92`, 2026-08-08;
+  hier stand bis 2026-08-09 „wurde NIE gezogen", und das galt genau einen Tag): `POST /api/deploy` +
+  `GET /api/deploys`, Owner **und** Steward-Token (`server.ts`, grep `VERB 2`). Erster Zug am
+  2026-08-09 durch Session 45, zweiter durch Session 46 — beide sauber (`ok:true`,
+  `bootHead == target`, `bundleStale:false`). Statt `tmux kill-session -t srv` also die Route; das
+  `kill-session` bleibt richtig für alles, was Verb 2 nicht abdeckt (Watchdog-Änderungen brauchen
+  weiterhin `launchctl kickstart`). **Von keinem Tick, keinem
+  Auto, keinem Dispatch-Pfad aufgerufen** — jeder Zug ist ein Owner-/Session-Entscheid. Konstruktion, die man
+  kennen muss: der Deploy tötet den Prozess, der ihn ausführt, also kann er sich nicht selbst verifizieren —
+  der Build läuft ZUERST und allein (ein roter Build kommt am Kill nicht vorbei), und das Verdikt schreibt der
+  **nächste Boot** über den Marker `deploy-inflight.json` auf das Ledger `deploys.jsonl`. Dreiwertig:
+  `ok:null` heißt „nicht feststellbar" und ist NIE ein Pass. Lehnt bei laufendem Post-Land-Audit mit **409**
+  ab (ein srv-Kill mitten im Audit macht ihn zu einem falschen Rot — real passiert 2026-08-06, `exit 143`).
+  Drei optionale Env-Knöpfe: `FLEET_DEPLOY_BUILD_CMD` (default `bun run build`), `FLEET_DEPLOY_RESTART_CMD`
+  (default aus `SOCK` abgeleitet, damit eine Test-Instanz nie das Live-srv trifft),
+  `FLEET_DEPLOY_BUILD_TIMEOUT_MS` (default 300 s). Kein Board-Knopf.

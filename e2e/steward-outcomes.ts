@@ -379,9 +379,36 @@ export async function run(sc: StewardCtx): Promise<void> {
     await post("/api/dispositions", { worker: "review3", ref: "deadbeefcafe0001", disposition: "wrong" });
     for (const v of ["accepted", "edited", "ignored"])
       await post("/api/dispositions", { worker: "enhance", ref: `draft-${v}`, disposition: v });
+    // ref shape 4 — analysis: the `taskId`. This worker exists because the analyst's most valuable
+    // hit leaves no trace in any outcome ledger: a `needs-you` the owner AGREES with ends in a
+    // rewritten row and never becomes a lane, so an outcome join is structurally blind to it. A
+    // REAL row is minted here rather than a synthetic id, because the key's whole claim is that it
+    // is the id the owner is looking at while judging.
+    const anTaskJ = (await (await post("/api/tasks",
+      { text: "disposition rail probe: a row to label the analyst's reading of" })).json()) as { task?: { id?: string } };
+    const anRef = anTaskJ.task?.id ?? "";
+    check("disposition setup: a real task row exists whose analysis verdict can be labeled",
+      anRef.length > 0, anRef);
+    const anWr = await post("/api/dispositions", { worker: "analysis", ref: anRef, disposition: "edited" });
+    const anWrJ = (await anWr.json()) as { ok?: boolean; record?: { worker?: string; ref?: string; source?: string } };
+    check("disposition: an `analysis` verdict is labelable with the taskId as ref, and stamps source \"owner\"",
+      anWr.ok && anWrJ.ok === true && anWrJ.record?.worker === "analysis" && anWrJ.record?.ref === anRef
+      && anWrJ.record?.source === "owner", `${anWr.status} ${JSON.stringify(anWrJ)}`);
+    const anRow = (await readDispos()).dispositions.find((d) => d.worker === "analysis" && d.ref === anRef);
+    check("disposition: the analysis label round-trips through the append-only rail",
+      anRow?.disposition === "edited" && anRow?.source === "owner" && typeof anRow?.at === "number",
+      JSON.stringify(anRow ?? null));
+    // the rail records an OWNER OPINION, not a live relation: deleting the row it judged must not
+    // erase what the analyst was once judged to have produced. No worker's ref gets an existence
+    // check, and `analysis` is deliberately no exception.
+    await post(`/api/tasks/${anRef}/delete`, {});
+    const anAfterDelete = (await readDispos()).dispositions.find((d) => d.worker === "analysis" && d.ref === anRef);
+    check("disposition: the analysis label survives the deletion of the row it judged (opinion, not relation)",
+      anAfterDelete?.disposition === "edited", JSON.stringify(anAfterDelete ?? null));
+
     const all = await readDispos();
-    check("disposition: all three workers and all four verdicts are accepted on one rail",
-      ["land", "review3", "enhance"].every((w) => all.dispositions.some((d) => d.worker === w))
+    check("disposition: all four workers and all four verdicts are accepted on one rail",
+      ["land", "review3", "enhance", "analysis"].every((w) => all.dispositions.some((d) => d.worker === w))
       && ["accepted", "edited", "ignored", "wrong"].every((v) => all.dispositions.some((d) => d.disposition === v)),
       JSON.stringify(all.dispositions.slice(0, 6)));
     check("disposition: the three ✨ verdicts land under their own draft refs",

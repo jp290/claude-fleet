@@ -10997,7 +10997,15 @@ async function laneDossier(branch: string, repoHint: string | null): Promise<Lan
 //   · enhance `draftId` = sha256(enhanced prompt).slice(0,16), stamped by /api/enhance and echoed
 //     back by the client. Server-side so the join key cannot drift, and so the client needs no
 //     crypto.subtle (unavailable on the plain-http Tailscale origin).
-// the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both
+//   · analysis the `taskId`. The verdict is a reading OF A ROW, and the row id is the only key that
+//     survives everything the owner does next — a re-analysis, a brief recompile, an edit of the
+//     text. Deliberately NOT keyed by `analysis.at`: re-reading the same row does not make the
+//     earlier judgement about it a different thing to have an opinion on, and newest-wins on the
+//     rail already carries "the owner changed their mind".
+// the worker names and the verdict vocabulary are src/protocol.ts's — the client sends both.
+// No worker gets a ref EXISTENCE check here and `analysis` is no exception: the rail records an
+// owner opinion, and a label for a row that has since been deleted is still a fact about what the
+// analyst produced. The shape gate below (non-empty, ≤200) is the whole contract.
 const MAX_DISPOSITION_REF = 200;
 interface DispositionRecord {
   at: number; worker: DispositionWorker; ref: string; disposition: DispositionVerdict; source: "owner";

@@ -1537,6 +1537,69 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify({ status: waiting?.status, note: waiting?.note }));
     await post(`/api/tasks/${hBroke}/unqueue`, {});
 
+    // (hL) THE VERDICT TRAIL. `Task.analysis` lives only in the mutable state file — the next sweep
+    // overwrites it, capTasks evacuates the row — so until now a verdict nobody overrode left no
+    // trace whatever, and scoring the analyst after the fact could structurally see only the
+    // OVERRULED minority ((h7)'s `task_override`) and never the majority it agreed with. One
+    // append-only line per ASSIGNMENT, which is why the failure cases below are not an afterthought:
+    // an unwritten measurement gap reads back as an abstention.
+    interface VerdictRow {
+      at: number; taskId: string; originId: string | null; verdict: string; reason: string;
+      blockers: string[]; collides: string[]; head: string | null; briefAt: number | null;
+      model: string; route: string; attempts: number;
+      retry: { at: number; reason: string } | null;
+    }
+    const verdictFile = `${ROOT}/analysis-verdicts.jsonl`;
+    const verdictRows = (): VerdictRow[] => (existsSync(verdictFile)
+      ? readFileSync(verdictFile, "utf8").split("\n").filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as VerdictRow)
+      : []);
+    const rowsFor = (id: string): VerdictRow[] => verdictRows().filter((r) => r.taskId === id);
+    const readyRows = rowsFor(hP);
+    check("(hL) a READY reading is written to the append-only trail — the majority the override rail never saw",
+      readyRows.length >= 1 && readyRows.some((r) => r.verdict === "ready"),
+      JSON.stringify({ rows: readyRows.length, verdicts: readyRows.map((r) => r.verdict) }));
+    check("(hL) the line carries the ground the verdict was judged against: model, route and head",
+      readyRows.every((r) => r.model === "claude-opus-5" && r.route === "claude")
+      && readyRows.some((r) => typeof r.head === "string" && r.head.length >= 7),
+      JSON.stringify(readyRows.map((r) => ({ model: r.model, route: r.route, head: r.head }))).slice(0, 300));
+    const flaggedRows = rowsFor(hKeep);
+    check("(hL) a NEEDS-YOU reading is written too, with its blockers, so the trail is the whole population",
+      flaggedRows.some((r) => r.verdict === "needs-you" && r.blockers.includes("criterion")),
+      JSON.stringify(flaggedRows.map((r) => ({ v: r.verdict, b: r.blockers, a: r.attempts }))).slice(0, 300));
+    // …and the failed RE-read of that same row is its own line rather than a silent gap. It still
+    // says `needs-you` (analysisFailed preserves the standing verdict), so `retry` is what keeps it
+    // from reading as a fresh agreement — the one addition to the field list, and the reason for it.
+    check("(hL) a failed re-read of a judged row appends its own line, marked by retry, never a silent gap",
+      flaggedRows.length >= 2 && flaggedRows.some((r) => r.attempts >= 1 && !!r.retry
+        && r.retry.reason.includes("analyst failed")),
+      JSON.stringify(flaggedRows.map((r) => ({ v: r.verdict, a: r.attempts, retry: r.retry?.reason.slice(0, 40) }))).slice(0, 300));
+    const unknownRows = rowsFor(hBroke);
+    check("(hL) an UNKNOWN is written as UNKNOWN — a measurement gap must never read back as an abstention",
+      unknownRows.some((r) => r.verdict === "unknown" && r.reason.includes("analyst failed")
+        && r.attempts >= 1 && r.model === "claude-opus-5" && r.route === "claude"),
+      JSON.stringify(unknownRows.map((r) => ({ v: r.verdict, r: r.reason.slice(0, 40), a: r.attempts }))).slice(0, 300));
+    // APPEND-ONLY, and monotonic: every line is server-stamped at write time, never with the
+    // reading's own clock (a preserved verdict's `at` belongs to an older, successful read, so
+    // stamping that would date an event to before it happened).
+    const allVerdicts = verdictRows();
+    check("(hL) the trail is append-only and server-stamped: ids resolve, and the stamps never go backwards",
+      allVerdicts.length >= 3 && allVerdicts.every((r) => typeof r.taskId === "string" && r.at > 0)
+      && allVerdicts.every((r, i) => i === 0 || r.at >= allVerdicts[i - 1]!.at),
+      JSON.stringify({ total: allVerdicts.length, first: allVerdicts[0]?.at, last: allVerdicts.at(-1)?.at }));
+    // the DELETION site is not a judgement: reanalyse drops the reading so the next tick can replace
+    // it, and a line there would enter a verdict nobody made into the record.
+    // A long but non-zero cadence, the same trick (h4r) uses: a reader stays configured, so the
+    // route deletes rather than refusing, while no tick can race the count.
+    await restartSrv({ ...hEnv, FLEET_ANALYSIS_MS: "600000" });
+    const beforeReanalyseLines = verdictRows().length;
+    const reanalyseHB = await post(`/api/tasks/${hBroke}/reanalyse`, {});
+    check("(hL) clearing a reading (reanalyse) writes NO line — a deletion is not a verdict",
+      reanalyseHB.ok && (await hFull(hBroke))?.analysis === undefined
+      && verdictRows().length === beforeReanalyseLines,
+      JSON.stringify({ status: reanalyseHB.status, before: beforeReanalyseLines, after: verdictRows().length }));
+    await restartSrv(hEnv);
+
     // (h7) AN OVERRIDE LEAVES A TRACE. Releasing a flagged task stays legal — the analyst is
     // advisory — but it must be distinguishable afterwards from releasing a clean one.
     await writeAnalyst([

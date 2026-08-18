@@ -1659,6 +1659,38 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     `server=[${srvWords.join(",")}] client=[${cliWords.join(",")}]`);
 }
 
+// --- STALENESS IS ONE RULE, RENDERED BY TWO READERS. The server decides it in
+// analysis-staleness.ts; register.sh renders `!head` from fleet.json on disk, in Python, with no
+// compiler between them. Until 2026-08-18 both were a bare tip comparison and agreed by accident;
+// now both must intersect what a land MOVED with the row's own file surface and fall to stale when
+// either side is unknown. A reader that quietly reverts to the tip is the regression this fastens
+// shut — it would look like a simplification and would silently expire every open verdict again.
+{
+  const RULE_STALE = "staleness is the same FLÄCHE rule on both sides";
+  const rule = read("analysis-staleness.ts");
+  const reg = read("register.sh");
+  // read the arms off the rule's own reason union, never off a copy of the list kept here
+  const arms = new Set((rule.match(/export type StaleReason =([^;\n]+)/)?.[1] ?? "")
+    .split("|").map((w) => w.trim().replace(/"/g, "")).filter(Boolean));
+  pin(`${RULE_STALE} — the rule keeps a surface arm AND both unknown arms`,
+    arms.has("brief") && arms.has("surface") && arms.has("unknown-surface") && arms.has("unknown-movement"),
+    `[${[...arms].join(",")}]`);
+  // server.ts must DECIDE through the rule and ask git for the moved side, never re-derive either
+  const body = server.match(/function analysisStale\([\s\S]*?\n\}/)?.[0] ?? "";
+  pin(`${RULE_STALE} — analysisStale decides through the rule and asks for the moved surface`,
+    /analysisStaleness\(/.test(body) && /movedSurfaceBetween\(/.test(body) && /surfaceOfView\(/.test(body),
+    body === "" ? "analysisStale not found in server.ts" : `${body.split("\n").length} lines`);
+  // …and register.sh's `!head` arm must do the same two things: intersect a moved set, and treat
+  // an unreadable one as stale. The slice is the arm itself, so a bare tip comparison fails here.
+  const arm = reg.match(/stale = \[\][\s\S]*?stale\.append\("head"\)/)?.[0] ?? "";
+  pin(`${RULE_STALE} — register.sh's !head arm intersects a moved set and falls to stale on unknown`,
+    /moved_since\(/.test(arm) && /is None/.test(arm) && /not known/.test(arm),
+    arm === "" ? "the !head arm was not found in register.sh" : `${arm.split("\n").length} lines`);
+  pin(`${RULE_STALE} — both derive that set the same way: two-dot, rename-blind`,
+    /git diff --name-only --no-renames/.test(reg)
+    && /"diff", "--name-only", "--no-renames"/.test(server), "");
+}
+
 pin("e2e-isolated.sh explicitly arms server.ts's default-off migration tick (otherwise its runtime checks measure nothing)", /const MIGRATE_PCT = Number\(process\.env\.FLEET_MIGRATE_PCT \?\? 0\) \| 0/.test(server) && /\bFLEET_MIGRATE_PCT=[1-9]\d*\b/.test(read("e2e-isolated.sh")));
 
 console.log(rows.join("\n"));

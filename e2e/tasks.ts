@@ -10,6 +10,7 @@ import { buildRefinePrompt } from "../refine-prompt";
 import { deriveTaskMetadata, type TaskCluster } from "../task-metadata";
 import { matchTaskWaveAnalysis, projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
 import { classifyAnalystOffWarning } from "../task-analysis-warning";
+import { analysisStaleness } from "../analysis-staleness";
 import type { Ctx } from "./ctx";
 
 export async function run(ctx: Ctx): Promise<void> {
@@ -1821,6 +1822,122 @@ export async function run(ctx: Ctx): Promise<void> {
       surfReason.includes("Files this task will touch — DERIVED") && surfReason.includes("code.txt")
       && !surfReason.includes("OWNER-CONFIRMED") && !surfReason.includes("UNKNOWN")
       && surfReason !== "NO SURFACE LINE", JSON.stringify({ reason: surfReason }));
+
+    // --- (h9s) STALENESS IS BOUND TO THE ROW'S FLÄCHE, NOT TO THE TIP. `analysisStale` was a bare
+    // equality on the integration tip: EVERY land expired the verdict of EVERY open row, whatever
+    // it had touched — a docs-only land invalidated a reading about a pure src/client.ts row. That
+    // is the named reason the sweep was switched off (ec91075): ~59 open rows meant a ~10-worker
+    // re-read wave per land, and six lands fell on 2026-08-06 alone.
+    //
+    // The rule is pure (analysis-staleness.ts), so every case is decidable here without a server —
+    // including the ones no route can produce from outside, like a verdict whose head a later gc
+    // took away. The decisive cases are then re-proven against the RUNNING server below, because a
+    // pure rule nobody wired to a git diff is exactly the half this repo has shipped before; and
+    // where a case rests on git behaving a particular way, that behaviour is asserted as itself.
+    const SURF = ["src/client.ts"];
+    const stBrief = analysisStaleness({ analysedBriefAt: 100, currentBriefAt: 200, head: "aaa",
+      tip: "bbb", surface: SURF, moved: new Set(["docs/x.md"]) });
+    const stDisjoint = analysisStaleness({ analysedBriefAt: 100, currentBriefAt: 100, head: "aaa",
+      tip: "bbb", surface: SURF, moved: new Set(["docs/x.md", "README.md"]) });
+    const stHit = analysisStaleness({ analysedBriefAt: 100, currentBriefAt: 100, head: "aaa",
+      tip: "bbb", surface: SURF, moved: new Set(["docs/x.md", "src/client.ts"]) });
+    const stNoSurface = analysisStaleness({ analysedBriefAt: 100, currentBriefAt: 100, head: "aaa",
+      tip: "bbb", surface: null, moved: new Set(["docs/x.md"]) });
+    const stEmptySurface = analysisStaleness({ analysedBriefAt: 100, currentBriefAt: 100, head: "aaa",
+      tip: "bbb", surface: [], moved: new Set(["docs/x.md"]) });
+    const stNoMoved = analysisStaleness({ analysedBriefAt: 100, currentBriefAt: 100, head: "aaa",
+      tip: "bbb", surface: SURF, moved: null });
+    check("(h9s) a docs-only move does NOT expire a verdict about a disjoint surface, an intersecting one does",
+      stDisjoint.stale === false && stDisjoint.because === null
+      && stHit.stale === true && stHit.because === "surface",
+      JSON.stringify({ disjoint: stDisjoint, hit: stHit }));
+    check("(h9s) UNKNOWN on either side falls to stale — an absent surface, an empty one, and an unreadable diff",
+      stNoSurface.stale === true && stNoSurface.because === "unknown-surface"
+      && stEmptySurface.stale === true && stEmptySurface.because === "unknown-surface"
+      && stNoMoved.stale === true && stNoMoved.because === "unknown-movement",
+      JSON.stringify({ noSurface: stNoSurface, emptySurface: stEmptySurface, noMoved: stNoMoved }));
+    // …and the two arms the cut must NOT have touched. A brief edit expires the verdict whatever
+    // the files did — it is about a string nobody will send — and an unknown tip still paints
+    // nothing, because a measurement never taken must not mark every row.
+    check("(h9s) a brief edit still expires the verdict on its own, ahead of any file question",
+      stBrief.stale === true && stBrief.because === "brief"
+      && analysisStaleness({ analysedBriefAt: null, currentBriefAt: 7, head: null, tip: null,
+        surface: null, moved: null }).because === "brief",
+      JSON.stringify(stBrief));
+    check("(h9s) an unknown tip, an unmoved tip and a headless verdict are all NOT stale",
+      analysisStaleness({ analysedBriefAt: 1, currentBriefAt: 1, head: "aaa", tip: null,
+        surface: null, moved: null }).stale === false
+      && analysisStaleness({ analysedBriefAt: 1, currentBriefAt: 1, head: "aaa", tip: "aaa",
+        surface: null, moved: null }).stale === false
+      && analysisStaleness({ analysedBriefAt: 1, currentBriefAt: 1, head: null, tip: "bbb",
+        surface: null, moved: null }).stale === false, "the three not-stale arms");
+
+    // …AND THE WIRING, which the pure rule cannot show: the server must derive the row's surface,
+    // ask git what a land moved, and intersect the two. Two fresh tracked files, so nothing here
+    // rides on a fixture another section also writes, and neither name appears in any other task
+    // text in this suite — the only way `staleness-target.txt` can reach the surface is the
+    // derivation under test.
+    // `add` by NAME, never `-A`: this fixture shares REPO with every section before it, and a
+    // blanket add would sweep up whatever one of them left uncommitted and commit it under this
+    // message — a land nobody wrote, in a repo later sections still read.
+    const stCommit = (msg: string): void => {
+      spawnSync("git", ["-C", REPO, "add", "staleness-target.txt", "staleness-unrelated.md"]);
+      spawnSync("git", ["-C", REPO, "commit", "-qm", msg]);
+    };
+    await Bun.write(`${REPO}/staleness-target.txt`, "target v1\n");
+    await Bun.write(`${REPO}/staleness-unrelated.md`, "unrelated v1\n");
+    stCommit("staleness fixture");
+    const hStale = await mkTask("SURFACE-PROBE: this row is about staleness-target.txt and nothing else");
+    const stRow0 = await till(() => hFull(hStale), (r) => r?.analysis?.verdict === "ready");
+    const stHead0 = stRow0?.analysis?.head ?? "";
+    check("(h9s) the fixture row is analysed against a real tip, with its surface derived to the one file",
+      !!stHead0 && (stRow0?.analysis?.reason ?? "").includes("staleness-target.txt")
+      && (stRow0?.analysis?.reason ?? "").includes("DERIVED"),
+      JSON.stringify({ head: stHead0, reason: (stRow0?.analysis?.reason ?? "").slice(0, 160) }));
+
+    // (a) A LAND THAT MISSED THIS ROW LEAVES IT ALONE. Bounded wait rather than a predicate: the
+    // claim is that nothing happens, and the sweep tick is 1 s — three of them, plus the poll,
+    // is well past the window in which a re-read would have started.
+    await Bun.write(`${REPO}/staleness-unrelated.md`, "unrelated v2\n");
+    stCommit("staleness: move a file this row does not touch");
+    await Bun.sleep(4000);
+    const stAfterDisjoint = await hRow(hStale);
+    const stFullDisjoint = await hFull(hStale);
+    check("(h9s) a land that moved no file on this row's surface leaves the verdict fresh and un-re-read",
+      stAfterDisjoint?.analysis?.stale === false && stFullDisjoint?.analysis?.head === stHead0
+      && (stFullDisjoint?.analysis?.attempts ?? 0) === 0,
+      JSON.stringify({ stale: stAfterDisjoint?.analysis?.stale, head0: stHead0,
+        head: stFullDisjoint?.analysis?.head, attempts: stFullDisjoint?.analysis?.attempts }));
+
+    // (e) …AND THE ASSUMPTION THE `unknown-movement` ARM RESTS ON. The rule turns an unreadable
+    // diff into stale, but "unreadable" is a claim about GIT, not about the rule — a head that a
+    // later gc took away must come back as no answer rather than as an empty one, because an empty
+    // answer is what the rule would read as "this land moved nothing". Asserted as ITSELF, on the
+    // exact command the server runs, so a git that one day started exiting 0 on an unknown rev
+    // would fail HERE instead of silently making every such verdict fresh forever.
+    const stBogus = spawnSync("git", ["-C", REPO, "diff", "--name-only", "--no-renames", "-z",
+      "0".repeat(40), stHead0], { encoding: "utf8" });
+    const stReal = spawnSync("git", ["-C", REPO, "diff", "--name-only", "--no-renames", "-z",
+      stHead0, "HEAD"], { encoding: "utf8" });
+    check("(h9s) a head git can no longer resolve yields NO answer, never an empty one — the input the unknown-movement arm needs",
+      stBogus.status !== 0 && (stBogus.stdout ?? "") === ""
+      && analysisStaleness({ analysedBriefAt: 1, currentBriefAt: 1, head: "aaa", tip: "bbb",
+        surface: ["staleness-target.txt"], moved: null }).because === "unknown-movement"
+      // the counter-probe, or the line above only proves that git said nothing at all: the SAME
+      // command on a resolvable pair must answer, or this check measured a broken git, not a rule
+      && stReal.status === 0,
+      JSON.stringify({ bogusExit: stBogus.status, bogusOut: stBogus.stdout, realExit: stReal.status }));
+
+    // (b) A LAND THAT HIT IT DOES EXPIRE IT. The observable is the re-read itself — `head` moving
+    // to the new tip — and not the badge: with attempts still 0 the ONLY thing that can make this
+    // row due is `analysisStale`, and the badge's own window is one sweep tick wide.
+    await Bun.write(`${REPO}/staleness-target.txt`, "target v2\n");
+    stCommit("staleness: move the file this row is about");
+    const stAfterHit = await till(() => hFull(hStale), (r) => (r?.analysis?.head ?? stHead0) !== stHead0);
+    check("(h9s) a land that moved this row's own file expires the verdict — the sweep re-reads it against the new tip",
+      !!stAfterHit?.analysis?.head && stAfterHit.analysis.head !== stHead0
+      && stAfterHit.analysis.head === spawnSync("git", ["-C", REPO, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim(),
+      JSON.stringify({ head0: stHead0, head: stAfterHit?.analysis?.head }));
 
     // --- (h10) THE DISPATCHER READS THE COLLISION FIELD. `analysis.collides` was computed every
     // sweep and consumed by NOTHING: the only thing keeping two released rows that rewrite the same

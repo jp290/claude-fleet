@@ -14,6 +14,7 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   laneQuietSince, DONE_LOOKING_PROSE, laneStalled, laneStalledSince, STALLED_PROSE } from "./lane-signals";
 import { buildEnhancePrompt, type EnhanceFacts } from "./enhance-prompt";
 import { buildAnalysisPrompt, ANALYSIS_BLOCKERS } from "./analysis-prompt";
+import { analysisStaleness } from "./analysis-staleness";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { localProofFor, type LocalProof } from "./verify-proportion";
@@ -2217,7 +2218,7 @@ function taskDigest(t: Task): TaskDigest {
         // 200-char store once beheaded a verdict's decisive "— but …" clause and left a review
         // reading as its own opposite.
         reason: t.analysis.reason.slice(0, 140),
-        stale: analysisStale(t), hasBrief: !!t.brief, at: t.analysis.at,
+        stale: analysisStale(t, view), hasBrief: !!t.brief, at: t.analysis.at,
         ...(t.analysis.retry ? { retry: { at: t.analysis.retry.at, attempts: t.analysis.attempts } } : {}),
       },
     } : {}),
@@ -2236,18 +2237,97 @@ function taskDigest(t: Task): TaskDigest {
 // The DISPATCH path must never read it — it takes a fresh integrationHead() before starting a lane,
 // because a cache that lags by one land is exactly a cache that green-lights the stale case.
 const integrationTips = new Map<string, string>();
-// An analysis is STALE, not wrong, when the ground it stood on has moved. Two ways that happens:
-// the integration tip advanced (criterion 1 — "what it claims about the current state is true
-// there" — was checked against a tree that no longer exists), or the owner edited the brief after
-// the verdict, which makes the verdict about a string nobody will send. Unknown tip → NOT stale:
-// the absence of a measurement must never paint every row.
-function analysisStale(t: Task): boolean {
+
+// THE FILES A LAND MOVED, between the tree a verdict judged and today's — the second half of the
+// staleness rule (analysis-staleness.ts carries the first, and the why).
+//
+// MECHANISM: `git diff --name-only <head> <tip>`, not a join over LaneOutcome.filesTouched. The
+// ledger was the tempting choice and it is the wrong one: a DIRECT COMMIT in the main checkout is
+// invisible to every land-side ledger — no fleet/land note, no lane-outcomes line, no post-land
+// audit (measured 2026-08-07 on 0e2a672 and 4955444) — so a ledger join would report "nothing
+// moved" for exactly the commits nobody supervised, and report it as a licence to keep a verdict.
+// git sees every commit, whoever wrote it. Two-dot on purpose (`git diff A B`, tree-vs-tree): the
+// tip need not descend from `head` at all after a rebase or a rewritten history, and a merge-base
+// form would then diff against a commit neither side ever had. `--no-renames` so a moved file
+// answers under BOTH names — a row still naming the old path must not slip through a rename.
+//
+// UNKNOWN NEVER READS AS FRESH. A non-zero git (a head GC'd away, an unreadable repo) and an empty
+// output where the two tips genuinely differ both store `null`, and `null` is stale at the call
+// site. The empty case is not paranoia about git: two distinct commits CAN share a tree (an empty
+// commit, a revert-and-reapply), and "the diff is empty" is indistinguishable here from "the diff
+// did not run".
+//
+// One process per (repo, head, tip) — the poll asks this per row at 2 s, and a spawn per row per
+// tick is the shape of a machine that stops answering. The sync reader is what taskDigest and
+// analysisDue need; a miss kicks the fill off ONCE (movedSurfaceInflight) and answers UNKNOWN in
+// the meantime, so a row is briefly conservative rather than briefly wrong. Read-only, so it runs
+// through gitRead's GIT_OPTIONAL_LOCKS=0 environment like every other poll against a repo whose
+// git Fleet shares with live sessions.
+const MOVED_SURFACE_MAX = 256; // insertion-ordered; the oldest pair is evicted, never the whole map
+// …and an UNKNOWN answer is retried rather than sealed. A (head,tip) pair is content-addressed, so
+// a KNOWN answer can never go stale and is kept forever; an unknown one can be a permanent fact (a
+// head GC'd away) or a passing one (the repo momentarily unreadable), and caching the second shape
+// for the life of the process would pin a row as stale with nothing left to heal it.
+const MOVED_SURFACE_UNKNOWN_TTL_MS = 60000;
+type MovedSurface = { paths: Set<string> | null; at: number };
+const movedSurfaces = new Map<string, MovedSurface>();
+const movedSurfaceInflight = new Set<string>();
+const movedSurfaceKey = (repo: string, head: string, tip: string): string => `${repo}\u0000${head}\u0000${tip}`;
+function movedSurfaceCached(key: string, now: number): MovedSurface | undefined {
+  const hit = movedSurfaces.get(key);
+  if (!hit) return undefined;
+  return hit.paths || now - hit.at < MOVED_SURFACE_UNKNOWN_TTL_MS ? hit : undefined;
+}
+async function fillMovedSurface(repo: string, head: string, tip: string): Promise<Set<string> | null> {
+  const key = movedSurfaceKey(repo, head, tip);
+  const hit = movedSurfaceCached(key, Date.now());
+  if (hit) return hit.paths;
+  let paths: Set<string> | null = null;
+  try {
+    const r = await gitRead(repo, "diff", "--name-only", "--no-renames", "-z", head, tip);
+    if (r.code === 0 && r.out) paths = new Set(r.out.split("\u0000").filter(Boolean));
+  } catch { paths = null; }
+  movedSurfaces.delete(key); // re-insert, so the eviction order below is by last measurement
+  if (movedSurfaces.size >= MOVED_SURFACE_MAX) {
+    const oldest = movedSurfaces.keys().next().value;
+    if (oldest !== undefined) movedSurfaces.delete(oldest);
+  }
+  movedSurfaces.set(key, { paths, at: Date.now() });
+  return paths;
+}
+function movedSurfaceBetween(repo: string, head: string, tip: string): Set<string> | null {
+  const key = movedSurfaceKey(repo, head, tip);
+  const hit = movedSurfaceCached(key, Date.now());
+  if (hit) return hit.paths;
+  if (!movedSurfaceInflight.has(key)) {
+    movedSurfaceInflight.add(key);
+    void fillMovedSurface(repo, head, tip).finally(() => movedSurfaceInflight.delete(key));
+  }
+  return null; // not yet measured — the same conservative answer as "could not be measured"
+}
+// An analysis is STALE, not wrong, when the ground IT stood on has moved. The rule and its four
+// arms live in analysis-staleness.ts; this gathers the facts it decides on. `view` is the
+// caller's already-computed taskView where it has one (taskDigest) — the projection is the same
+// one the analyst is fed, and deriving it twice per row per 2 s poll would be pure waste.
+function analysisStale(t: Task, view?: Task): boolean {
   const a = t.analysis;
   if (!a) return false;
-  if (a.briefAt !== (t.brief?.at ?? null)) return true;
-  if (!a.head) return false;
-  const tip = integrationTips.get(repoCanon(t.repo ?? DISPATCH_REPO));
-  return tip !== undefined && tip !== a.head;
+  const repo = repoCanon(t.repo ?? DISPATCH_REPO);
+  const tip = integrationTips.get(repo) ?? null;
+  // Both surfaces are gathered ONLY where the rule can reach them. This mirrors the rule's two
+  // early returns (no head · no or unmoved tip), and it is sound for exactly as long as they
+  // stand: a view derived and a git process asked per row per 2 s poll, for an answer those two
+  // lines already give, would BE the cost this cut exists to remove.
+  let surface: string[] | null = null;
+  let moved: ReadonlySet<string> | null = null;
+  if (a.head && tip && tip !== a.head) {
+    surface = surfaceOfView(view ?? taskView(t))?.paths ?? null;
+    moved = movedSurfaceBetween(repo, a.head, tip);
+  }
+  return analysisStaleness({
+    analysedBriefAt: a.briefAt, currentBriefAt: t.brief?.at ?? null,
+    head: a.head, tip, surface, moved,
+  }).stale;
 }
 // the dispatcher is OFF unless the owner sets a repo to spawn lanes from — an idle machine
 // auto-spawning claude sessions from external email is exactly the footgun we refuse by default
@@ -2315,7 +2395,13 @@ function taskView(t: Task): Task {
 // ↻ refine: nearly every row reached the analyst carrying nothing, while its own contract
 // ("anything you could not verify is needs-you") obliges a blind reader to answer "attribution".
 function analysisSurfaceOf(t: Task): { paths: string[]; origin: TaskFilesOrigin } | null {
-  const v = taskView(t);
+  return surfaceOfView(taskView(t));
+}
+// ONE reading of "this projection carries a KNOWN surface", because two consumers now depend on
+// the same distinction and they must never drift apart: the analyst is shown it, and staleness is
+// decided by it. Absence and an empty list are the same fact — deriveTaskMetadata returns absence
+// rather than an invented `[]`, and a reader that flattened the two would say "touches nothing".
+function surfaceOfView(v: Task): { paths: string[]; origin: TaskFilesOrigin } | null {
   return v.files?.length && v.filesOrigin ? { paths: v.files, origin: v.filesOrigin } : null;
 }
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
@@ -6139,9 +6225,11 @@ const taskRepoOf = (t: Task): string | null => {
 // ANALYSIS_MAX_ATTEMPTS it would have stayed that way until a hand `reanalyse`.
 //
 // What survives is not thereby claimed to be FRESH: `at`, `head` and `briefAt` stay the old
-// reading's own, so `analysisStale` keeps saying the ground moved under it and the dispatcher's
-// staleness gate (invariant 3) still holds a released row back — the row gains information, not
-// permission. With nothing to keep — never analysed, or the previous attempt already an absence —
+// reading's own, so the row keeps answering about the tree and the brief it was actually read
+// against — the row gains information, not permission. What SCHEDULES it is `analysisDue`'s
+// failure arm (`attempts > 0`), which owns the clock whatever staleness says; since 2026-08-18
+// staleness itself is bound to the row's own file surface, so a preserved verdict whose files
+// nobody has touched is correctly not expired by a land somewhere else in the tree. With nothing to keep — never analysed, or the previous attempt already an absence —
 // this is the old behaviour unchanged, because "unknown" is what an unread row must say.
 function analysisFailed(t: Task, reason: string, head: string | null): TaskAnalysis {
   const at = Date.now();
@@ -6299,6 +6387,20 @@ async function tickAnalysisSweep(): Promise<void> {
     for (const repo of new Set(live.map(taskRepoOf).filter((r): r is string => r !== null))) {
       const head = await integrationHead(repo);
       if (head) integrationTips.set(repo, head);
+    }
+    // …AND THE MOVED SURFACES, in the same breath and for the same reason. Staleness is an
+    // intersection since 2026-08-18, and its git side fills asynchronously: the sync reader answers
+    // UNKNOWN — conservatively stale — until the one process per (head,tip) returns. On a row badge
+    // that is a 2 s flicker. HERE it would be the entire cut undone: `analysisDue` would read that
+    // UNKNOWN on the first tick after every land, mark every open row due, and re-read the whole
+    // queue exactly as the bare tip comparison did. Not a hypothetical — e2e/tasks.ts (h9s) failed
+    // on precisely this, with the row re-read against a land that had moved one unrelated file.
+    // One git per DISTINCT (repo, head, tip); every row after the first is a map lookup.
+    for (const t of live) {
+      const repo = taskRepoOf(t);
+      const head = t.analysis?.head;
+      const tip = repo ? integrationTips.get(repo) : undefined;
+      if (repo && head && tip && tip !== head) await fillMovedSurface(repo, head, tip);
     }
     const now = Date.now();
     // RELEASED ROWS FIRST. Every land moves the tip and makes every verdict stale at once, so a
@@ -6567,6 +6669,13 @@ async function tickDispatch(): Promise<void> {
       // a moved integration tip and a brief the owner edited after the verdict. Fresh here means
       // fresh NOW: the tip is re-read rather than taken from integrationTips, because a cache that
       // lags by one land is exactly the cache that would green-light the case this guards.
+      // NARROWED 2026-08-18, and the narrowing is worth stating where the gate is rather than only
+      // where the rule is: "the tree it will run on" is now read as the part of that tree the row
+      // itself touches (analysis-staleness.ts). A land that moved no file on this row's surface no
+      // longer expires its verdict. The residual is the surface's own strength — a DERIVED surface
+      // is the paths the row's text names exactly, so a row that will also touch a file it never
+      // named is judged on the narrower list. Absence of a surface is not that case: it falls to
+      // stale, as does an unreadable diff.
       // ...but only while there IS an analyst. With FLEET_ANALYSIS_MS=0 nobody would ever clear this
       // gate, and a released queue that silently never drains is worse than an unread one: the guard
       // would have become a deadlock dressed as a safety property. No reader configured, no read
@@ -6580,11 +6689,19 @@ async function tickDispatch(): Promise<void> {
         if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
         // A row may now show a real verdict while its re-reading keeps failing (analysisFailed), so
         // this gate no longer sees every failure. It does not need to: a failed re-read leaves the
-        // OLD `head`/`briefAt` in place, and the sweep only picks a row up when one of those has
-        // gone stale — so every such row is caught two lines down, by the staleness check, which is
-        // the gate that was always the right one for "read against a tree that has since moved".
+        // OLD `head`/`briefAt` in place, so the row still answers about the tree and the brief it
+        // was genuinely read against, and the staleness check two lines down is the gate that was
+        // always the right one for "read against a tree that has since moved".
         const tip = await integrationHead(repoCanon(repo));
         if (tip) integrationTips.set(repoCanon(repo), tip);
+        // …and the moved surface is AWAITED here rather than read out of the cache. Staleness is
+        // bound to the files a land touched (analysis-staleness.ts), and the sync reader answers
+        // UNKNOWN — conservatively stale — until its one git process returns. For a row badge that
+        // is a tick of caution; for the unattended gate it would be a spurious "re-analysing" on
+        // the first tick after every land, i.e. the queue pausing on a measurement nobody waited
+        // for. This path already re-reads the tip fresh for the same reason.
+        if (tip && next.analysis?.head && tip !== next.analysis.head)
+          await fillMovedSurface(repoCanon(repo), next.analysis.head, tip);
         if (analysisStale(next)) { waiting("waiting: the analysis is older than the tree — re-analysing"); return; }
         // COLLISIONS ARE READ HERE, NOT LEFT TO THE CAP: the only thing that used to keep two
         // colliding lanes apart was DISPATCH_MAX_LANES, a number that knows nothing about files —

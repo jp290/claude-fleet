@@ -5907,7 +5907,7 @@ function renderQueueDetail() {
     // HAD been produced was gone. Now it says both, in that order: the verdict, then its age.
     const rn = t.analysis?.retry?.attempts ?? 0;
     overview.appendChild(el("div", "rvhead",
-      `${head}${rn ? ` · re-reading it has failed ${rn}×` : t.analysis?.stale ? " · stale — the tree moved, it is being re-read" : ""}`));
+      `${head}${rn ? ` · re-reading it has failed ${rn}×` : t.analysis?.stale ? " · stale — the tree moved under its files, it is being re-read" : ""}`));
     if (an.blockers.length) {
       const tags = el("div", "ocfacts");
       for (const b of an.blockers) tags.appendChild(chip(Q_BLOCKER_LABEL[b] ?? b, "warn"));

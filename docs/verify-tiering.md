@@ -752,6 +752,34 @@ at `msSincePrev` 2132 / 2128 / 2140 ms across the three runs — two rounds, con
 **No free pass.** Four sightings make the family real; they do not make the next red one a flake.
 The proof order in §11.3 applies unchanged.
 
+### 11.2c-bis The MIRROR of the family, in another harness: an unprobed pane that is already observed
+
+Signature, in `fleet-e2e-harness.ts` (phase 3 of `./e2e-claude-gate.sh`, the empty-`FLEET_HARNESS_COMMS`
+counter-probe), one FAIL and no dependents —
+
+> `FAIL  unprobed fixture: the pane is still unobserved before /send  (<epoch-ms>)`
+
+The fixture asserts `lastOutput === 0` and gets a timestamp. That is the **inverse** of §11.2c, which
+fails when `observed` never arrives: here it arrives when the fixture requires that it has not yet.
+Same underlying seam (when a freshly opened `FLEET_CMD=true` pane counts as having spoken), opposite
+direction, different harness — so it is a sibling, not a member, and §11.2c's closed fix does not
+cover it.
+
+**Two sightings, both on 2026-08-18, both proven nondeterministic by the §11.3 order:**
+
+| where | tree | outcome of the SERIAL same-tree rerun |
+|---|---|---|
+| P6 lane's own gate chain (reported in its pane, not in a trail row) | `43e5765` line of work | `PASS … (0)` |
+| the live land gate for P8 (`verify.ok:false`, 107 s, exit 1, 1 FAILURES) | `6f3b3e8` | `./e2e-claude-gate.sh` → `ALL PASS`, 116 PASS |
+
+The second one cost a real land: the gate downgraded a clean rebase to `resolved/landed:NO`, and the
+tree went in by confirm-land after the rerun.
+
+**No base rate here, and that is a statement about the measurement, not about the family.** Both
+sightings are pane reports and a merge verdict; this harness is a single-file one and its runs are not
+what §11.2c's trail counts, so nobody has a denominator yet. Two sightings make it worth naming; they
+do not make the next red one a flake. §11.3 applies unchanged.
+
 ### 11.2d A sibling, and NOT a member: `paneEnv` reads a wrapped probe line as "never answered"
 
 Recorded next to §11.2c because it wears the same symptom — *the pane probe reports that the pane

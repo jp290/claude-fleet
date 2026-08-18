@@ -2304,6 +2304,20 @@ function taskView(t: Task): Task {
   });
   return { ...t, files: undefined, filesOrigin: undefined, cluster: undefined, ...metadata };
 }
+// THE ANALYST'S READ OF THE SAME PROJECTION — deliberately taskView itself and not a second
+// derivation beside it, which is the mistake laneSurfaces' own comment records having made once on
+// this very surface. The note that stood at the call site until 2026-08-18 read: "The analyst
+// prompt's existing wording calls these DECLARED paths and has no provenance field. Feed it only
+// the stronger persisted refine-confirm surface; projecting weaker text-derived paths into that
+// shape would silently relabel them as confirmed." That was a true statement about the PROMPT
+// FORMAT and never about the data — the prompt now names the provenance per row, so the weaker
+// surface rides along as ITSELF. It matters because Task.files is written only by a confirmed
+// ↻ refine: nearly every row reached the analyst carrying nothing, while its own contract
+// ("anything you could not verify is needs-you") obliges a blind reader to answer "attribution".
+function analysisSurfaceOf(t: Task): { paths: string[]; origin: TaskFilesOrigin } | null {
+  const v = taskView(t);
+  return v.files?.length && v.filesOrigin ? { paths: v.files, origin: v.filesOrigin } : null;
+}
 let dispatchOn = false; // owner toggles at runtime; only meaningful when DISPATCH_REPO is set
 let autosOn = true; // global kill-switch for scheduled autos (the heartbeat surface); owner-toggled, default on
 let quietHours: { start: number; end: number } | null = null; // owner-set local-hour window muting the recurring/heartbeat surface (no 3am nudges)
@@ -6337,10 +6351,9 @@ async function tickAnalysisSweep(): Promise<void> {
         { worker: "analysis", cmd: ANALYSIS_CMD, tools: REVIEW_TOOLS, model: ANALYSIS_MODEL, timeoutMs: ANALYSIS_TIMEOUT_MS },
         buildAnalysisPrompt(repo, batch.map((t) => ({
           id: t.id, source: t.source, text: t.text, brief: t.brief?.text ?? null,
-          // The analyst prompt's existing wording calls these DECLARED paths and has no provenance
-          // field. Feed it only the stronger persisted refine-confirm surface; projecting weaker
-          // text-derived paths into that shape would silently relabel them as confirmed.
-          files: t.files ?? null,
+          // the deterministic surface WITH its provenance — see analysisSurfaceOf for what this
+          // used to be and why the reason it was withheld expired
+          files: analysisSurfaceOf(t),
         })), lanes), repo);
       const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       let j: { analyses?: unknown };

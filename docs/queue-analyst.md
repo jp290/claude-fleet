@@ -40,7 +40,7 @@ Four further findings from the same audit, and where each one went:
 | finding | resolution |
 |---|---|
 | the gate judged the raw draft; the lane ran a sonnet-tier rewrite of it | the brief is compiled **in a sweep** (§5a — the analyst's, or the compiler's own), stored, judged, and sent verbatim (`Task.brief`) |
-| a verdict never expired, though criterion 1 is time-dependent | the verdict records the integration tip and the brief revision it judged (`analysisStale`) |
+| a verdict never expired, though criterion 1 is time-dependent | the verdict records the integration tip and the brief revision it judged; it expires when the brief changes or when the tree moved **under the row's own files** (`analysisStale` → `analysis-staleness.ts`, §3b) |
 | a worker timeout became a permanent verdict for its whole batch | a failure is an absence with `attempts` and exponential backoff, never a finding — and since 2026-08-07 never a deletion either (§3a) |
 | an override was indistinguishable from an ordinary promote | releasing a flagged row writes a note and a `task_override` audit event |
 | priority inversion: an old pending row pre-empted a fresh promote | gone by construction — `pending` and `queued` no longer compete for a tick |
@@ -81,15 +81,17 @@ Since then (`analysisFailed`) a failure is filed **beside** the verdict:
 | field | after a failed re-reading |
 |---|---|
 | `verdict` `reason` `blockers` `collides` | the last reading that arrived — unchanged |
-| `at` `head` `briefAt` | that reading's own, so `analysisStale` keeps telling the truth |
+| `at` `head` `briefAt` | that reading's own, so the row keeps answering about the tree and brief it was genuinely read against |
 | `attempts` | +1 |
 | `retry` | `{at, reason}` — when the re-reading failed and why |
 
 Two consequences worth stating, because both are load-bearing:
 
-- **Nothing gains trust.** The preserved verdict keeps its old `head`/`briefAt`, so it is
-  still stale — and a row only ever reaches this code path *because* it went stale. The
-  dispatcher's invariant 3 holds it back exactly as before; what changed is that the owner
+- **Nothing gains trust.** The preserved verdict keeps its old `head`/`briefAt`, so it
+  still answers about the tree and the brief it was genuinely read against, and what
+  schedules the re-read is `analysisDue`'s failure arm (`attempts > 0`), which owns the
+  clock whatever staleness says. The dispatcher's invariant 3 reads it exactly as before —
+  it holds the row back iff the reading has expired under §3b. What changed is that the owner
   can now read what the last reading said while it waits.
 - **The failure owns the schedule.** `analysisDue` keys the backoff on `retry.at`, not on
   `at`. Keyed on `at` — which now belongs to the older, successful reading — a preserved
@@ -99,6 +101,56 @@ Two consequences worth stating, because both are load-bearing:
 A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue and
 `verdict(age)!stale?xN` in `register.sh`, with the failure's own words in the detail pane.
 
+## 3b. A verdict expires against its own FLÄCHE, not against the tip
+
+`analysisStale` was a bare equality on the integration tip: any land invalidated the reading
+of **every** open row, whatever that land had touched. A docs-only land expired a verdict
+about a pure `src/client.ts` row.
+
+That is not a rounding error — it is the named reason the sweep was switched off (`ec91075`):
+~59 open rows meant a re-read wave of ~10 workers **per land**, and six lands fell on
+2026-08-06 alone. The knobs that look like the fix (`ANALYSIS_BATCH_CAP`, `ANALYSIS_TICK_MS`)
+only stretch that wave over more ticks; the trigger is what was wrong.
+
+Since 2026-08-18 the rule lives in `analysis-staleness.ts`, pure, and has three arms (the third
+splits into two named reasons, one per unknown side):
+
+| a verdict is stale when | why |
+|---|---|
+| the **brief** changed (`briefAt`) | unchanged — the verdict is about a string nobody will send |
+| the tip moved **and** the files it moved intersect the row's own surface | the ground *this* row stands on actually moved |
+| either surface is **UNKNOWN** | absence of knowledge falls to stale, never to fresh |
+
+- **The row's surface** is the same `taskView`/`deriveTaskMetadata` projection the analyst is
+  fed (§3). `confirmed` and `derived` both count as known; absence is not an empty list.
+- **The moved surface** is `git diff --name-only --no-renames <head> <tip>`, cached per
+  `(repo, head, tip)` — never a spawn per row per tick. It is deliberately **not** a join over
+  `LaneOutcome.filesTouched`: a direct commit in the main checkout is invisible to every
+  land-side ledger (no `fleet/land` note, no `lane-outcomes` line, no post-land audit — measured
+  2026-08-07 on `0e2a672` and `4955444`), so a ledger join would report "nothing moved" for
+  exactly the commits nobody supervised. Two-dot, tree-vs-tree, because after a rebase the tip
+  need not descend from `head` at all. `--no-renames` so a moved file answers under both names.
+- **The sweep prefills it, and that is load-bearing.** The git side fills asynchronously, so the
+  synchronous reader answers UNKNOWN — conservatively stale — until the process returns. On a row
+  badge that is a 2 s flicker; inside `analysisDue` it would undo the whole cut, because the first
+  tick after a land would read UNKNOWN for every row and re-read the queue exactly as the tip
+  comparison did. `tickAnalysisSweep` therefore fills the surfaces immediately after it refreshes
+  the tips, in the same breath and for the same stated reason. Caught by `e2e/tasks.ts` (h9s),
+  which failed on it before the prefill existed.
+- **Unknown never reads as fresh.** A non-zero git, a head GC'd away, *and* an empty diff where
+  the two tips genuinely differ all store UNKNOWN — two commits can share a tree, and "the diff
+  is empty" is indistinguishable here from "the diff did not run". An unknown *tip* stays what
+  it always was: not stale, because a measurement never taken must not paint every row.
+
+**The residual, stated where the rule is.** A `derived` surface is the paths the row's text
+names exactly, so a row that will also touch a file it never named is judged on the narrower
+list. That is a widening of invariant 3, not a neutral refactor. It is bounded by the third arm
+(no surface ⇒ stale) and by the fact that the alternative — expiring every verdict on every
+land — is what took the analyst offline.
+
+`register.sh` renders the same rule from disk (`!head`), for the same reason it renders `!brief`:
+two meanings of "stale" in two readers is the drift this repo keeps paying for.
+
 ## 4. Invariants
 
 1. **Nothing starts unattended that the owner did not release.** `tickDispatch` selects
@@ -106,7 +158,8 @@ A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue an
 2. **What was judged is what runs.** `briefAndSend` contains no model call; it sends
    `t.brief.text ?? t.text`. An e2e check asserts byte-equality with the prompt that
    reached the pane.
-3. **Nothing starts unattended against a tree it was not read on.** A released row waits,
+3. **Nothing starts unattended against a tree it was not read on** — read since 2026-08-18
+   as *the part of that tree the row itself touches* (§3b). A released row waits,
    with the reason on its own row, while its analysis is missing, `unknown`, or stale —
    *unless no analyst is configured at all* (`FLEET_ANALYSIS_MS=0`), because a guard
    nobody can clear is a deadlock wearing a safety property's clothes. A running **brief

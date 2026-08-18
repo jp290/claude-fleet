@@ -174,6 +174,19 @@ Post-Land-Audit hängt ohnehin am Land-Pfad.
 > `docs/`-Land fast nichts. **Ehrlich benannt: der Gewinn ist verteilungsabhängig und könnte klein
 > sein**, weil dieses Repo `server.ts`-lastig landet.
 
+**GELANDET 2026-08-18 (P5).** Die Regel liegt jetzt rein in `analysis-staleness.ts` und hat vier
+Arme statt drei: (a) Brief · (b) Schnittmenge · (c) Zeilen-Oberfläche unbekannt · (c′) **bewegte
+Fläche unbekannt** — der vierte fehlte im Vorschlag und ist nicht optional, sonst liest sich ein
+gescheiterter git-Aufruf als „nichts bewegt". Der Mechanismus ist **nicht** der oben genannte
+`LaneOutcome.filesTouched`-Join, sondern `git diff --name-only --no-renames <head> <tip>`, gecacht
+pro `(repo, head, tip)`: ein Direkt-Commit im Haupt-Checkout ist für JEDES land-seitige Ledger
+unsichtbar (kein `fleet/land`-Note, keine `lane-outcomes`-Zeile, kein Post-Land-Audit — gemessen
+2026-08-07 an `0e2a672`/`4955444`), ein Ledger-Join hätte also ausgerechnet für die
+unbeaufsichtigten Commits „nichts bewegt" gemeldet. Die Zeilenangaben oben
+(`server.ts:2236-2243`, `:2240-2242`) sind damit historisch; Vertrag und Begründung:
+`docs/queue-analyst.md` §3b. `register.sh` rendert dieselbe Regel, damit „stale" nicht zwei
+Bedeutungen bekommt.
+
 ### 2.4 Modell/Route und Takt — die billigen Stellschrauben, und warum sie zuletzt kommen
 
 - **Route.** `analysis` auf `codexSparkRoute(process.env.FLEET_WORKER_ROUTE_ANALYSIS)` zu setzen

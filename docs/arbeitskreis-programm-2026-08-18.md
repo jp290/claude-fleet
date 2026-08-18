@@ -49,7 +49,7 @@ Reihenfolge = Abhängigkeit, nicht Geschmack. Details und Belege: B §6, C §8.
 | P2 | **`briefHash` + `briefSource` auf die Land-Quittung** (schließt den stillen Fehl-Join) | C2 | Code, ein Feld |
 | P3 | **Eigener Schalter für den Brief-Kompiler**, getrennt vom Analysten (`FLEET_ANALYSIS_MS` entkoppeln) — **Code gelandet 2026-08-18 als `FLEET_BRIEF_MS` (Default 0), Owner-Flip offen** | C1 | Code + Owner-Flip |
 | P4 | **Oberfläche mit Provenienz in den Analyse-Prompt** (die `taskView`-Projektion dem Worker geben) | B2 | Code, mittel — Achtung: `buildAnalysisPrompt`-Pins ungelesen (B §7) |
-| P5 | **Staleness an die Fläche binden** statt an Tip-Gleichheit (`analysisStale`, `server.ts:2236-2243`) | B3 | Code, mittel |
+| P5 | **Staleness an die Fläche binden** statt an Tip-Gleichheit (`analysisStale`) — **Code gelandet 2026-08-18**: reine Regel `analysis-staleness.ts`, bewegte Fläche per `git diff` statt Ledger-Join, `register.sh` zieht mit (B §2.3, `docs/queue-analyst.md` §3b) | B3 | Code, mittel |
 | P6 | **`briefstats.ts`** — reiner Reader in der Form von `slotstats.ts`/`trailstats.ts`, rechnet Leer-Quote je Brief-Herkunft + 0-Prompt-Quote je Land | C3 | Code, reiner Reader |
 | P7 | **Deterministische Abnahme auf Refine-Vorschlägen** (jeder Pfad am HEAD getrackt · `verify` ∈ `LOCAL_PROOF_STEPS`) — zugleich Vorbedingung der Fremdbesetzbarkeit | C4 | Code, klein |
 | P8 | **`"analysis"` in `DISPOSITION_WORKERS`** (ein Listeneintrag) | B4 | Code, trivial |

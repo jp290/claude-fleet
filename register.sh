@@ -75,7 +75,7 @@ MAINSHA=$(git rev-parse main 2>/dev/null || echo "")
 
 STATE="$STATE" METADATA="$TMPM" LANES="$TMPL" \
 MAINSHA="$MAINSHA" python3 - <<'PY'
-import json, os, re, subprocess, sys, time
+import json, os, re, shlex, subprocess, sys, time
 from pathlib import Path
 
 STATE   = os.environ["STATE"]
@@ -97,6 +97,21 @@ def sh(cmd):
         return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20).stdout
     except Exception:
         return ""
+
+# Files that moved between the tree a verdict judged and today's main, or None when that cannot be
+# read. ONE rule for staleness across the two readers: the server decides it in
+# analysis-staleness.ts, and a second, looser meaning rendered here would be the exact drift this
+# repo keeps paying for. None is UNKNOWN — an unreadable diff, or an empty one where the two tips
+# genuinely differ — and UNKNOWN falls to stale, never to fresh. Cached per head: one git per
+# distinct judged tree, not one per row. That stance also decides the degraded case for free: if
+# `bun task-metadata.ts` above failed, every row arrives with no surface and every `!head` comes
+# back — the render falls to the OLD, louder behaviour rather than to a quiet "all fresh".
+_moved = {}
+def moved_since(head):
+    if head not in _moved:
+        out = sh(f"git diff --name-only --no-renames -z {shlex.quote(head)} {shlex.quote(MAINSHA)}")
+        _moved[head] = set(p for p in out.split("\0") if p) or None
+    return _moved[head]
 
 def clip(s, n):
     s = " ".join((s or "").split())
@@ -128,11 +143,16 @@ if tasks is not None:
         origin = meta.get("filesOrigin") if meta.get("filesOrigin") in ("confirmed", "derived") else None
         cluster = meta.get("cluster") if isinstance(meta.get("cluster"), dict) else None
         # Question 5 of briefs/work-register.md §1: does the claim still hold? A verdict is stale
-        # when the tree it judged has moved or the brief it judged has been rewritten — both are
-        # recorded on the analysis for exactly this, and both are mechanical.
+        # when the tree it judged has moved UNDER THIS ROW'S OWN FILES, or the brief it judged has
+        # been rewritten — both are recorded on the analysis for exactly this, and both are
+        # mechanical. A bare tip comparison stood here until 2026-08-18 and marked every open row
+        # after every land, docs-only lands included.
         stale = []
         if a and MAINSHA and a.get("head") and a["head"] != MAINSHA and not t.get("repo"):
-            stale.append("head")
+            moved = moved_since(a["head"])
+            known = surface if origin else []
+            if not known or moved is None or (set(known) & moved):
+                stale.append("head")
         if a and brief.get("at") and a.get("briefAt") and a["briefAt"] != brief["at"]:
             stale.append("brief")
         rows.append({
@@ -189,8 +209,9 @@ if tasks is not None:
         print("  (no open rows)")
     print()
     print("  flags: b=compiled brief on the row   c=owner-confirmed done-criterion")
-    print("  verdict(age)!stale?xN — !head = the tree moved since it judged, !brief = the brief was")
-    print("  rewritten since. A stale verdict is not wrong, it is UNVERIFIED: re-run POST reanalyse.")
+    print("  verdict(age)!stale?xN — !head = the tree moved UNDER THIS ROW'S FILES since it judged")
+    print("  (or its file surface could not be read at all, which counts the same way), !brief = the")
+    print("  brief was rewritten since. A stale verdict is not wrong, it is UNVERIFIED: POST reanalyse.")
     print("  ?xN = re-reading this row has FAILED N times since that verdict came back; the verdict")
     print("  is the last one that arrived, and it is not being refreshed. At N=3 the sweep gives up")
     print("  and only POST reanalyse restarts it.")

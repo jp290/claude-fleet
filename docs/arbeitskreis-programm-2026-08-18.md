@@ -28,7 +28,9 @@ Konkret:
   für den Worker. Abschalt-Beleg `ec91075`: 445 Läufe/48 h, 22 von 28 `needs-you` falsch (~79 %
   Falsch-Alarm auf der Seite, die Arbeit VERHINDERT).
 - **Der Brief-Kompiler ist als Nebenwirkung mit-abgeschaltet** (`FLEET_ANALYSIS_MS=0` ist EIN Wert
-  für ZWEI Werkzeuge). Die Trichter-Zahlen (29 % Leer-Quote, 117/213 0-Prompt-Lands) entstanden
+  für ZWEI Werkzeuge). **Die KOPPLUNG ist seit P3 aufgehoben** (eigener Schalter `FLEET_BRIEF_MS`,
+  `docs/queue-analyst.md` §5a); der Kompiler bleibt aus, bis der Owner ihn in `watchdog.sh` setzt —
+  aus einer Nebenwirkung ist damit ein Entscheid geworden. Die Trichter-Zahlen (29 % Leer-Quote, 117/213 0-Prompt-Lands) entstanden
   fast vollständig ohne kompilierten Brief — **der Hebel ist ungetestet, nicht widerlegt.** Und
   eine vertragstreue Clarify-Lane wird per Konstruktion als `killed-empty` verbucht — ein Teil der
   29 % ist Buchungsartefakt.
@@ -45,7 +47,7 @@ Reihenfolge = Abhängigkeit, nicht Geschmack. Details und Belege: B §6, C §8.
 |---|---|---|---|
 | P1 | **Verdikt-Ledger** `analysis-verdicts.jsonl` (ein `appendEvent` an einer Stelle) | B1 | Code, klein |
 | P2 | **`briefHash` + `briefSource` auf die Land-Quittung** (schließt den stillen Fehl-Join) | C2 | Code, ein Feld |
-| P3 | **Eigener Schalter für den Brief-Kompiler**, getrennt vom Analysten (`FLEET_ANALYSIS_MS` entkoppeln) | C1 | Code + Owner-Flip |
+| P3 | **Eigener Schalter für den Brief-Kompiler**, getrennt vom Analysten (`FLEET_ANALYSIS_MS` entkoppeln) — **Code gelandet 2026-08-18 als `FLEET_BRIEF_MS` (Default 0), Owner-Flip offen** | C1 | Code + Owner-Flip |
 | P4 | **Oberfläche mit Provenienz in den Analyse-Prompt** (die `taskView`-Projektion dem Worker geben) | B2 | Code, mittel — Achtung: `buildAnalysisPrompt`-Pins ungelesen (B §7) |
 | P5 | **Staleness an die Fläche binden** statt an Tip-Gleichheit (`analysisStale`, `server.ts:2236-2243`) | B3 | Code, mittel |
 | P6 | **`briefstats.ts`** — reiner Reader in der Form von `slotstats.ts`/`trailstats.ts`, rechnet Leer-Quote je Brief-Herkunft + 0-Prompt-Quote je Land | C3 | Code, reiner Reader |

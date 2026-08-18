@@ -39,7 +39,7 @@ Four further findings from the same audit, and where each one went:
 
 | finding | resolution |
 |---|---|
-| the gate judged the raw draft; the lane ran a sonnet-tier rewrite of it | the brief is compiled **in the sweep**, stored, judged, and sent verbatim (`Task.brief`) |
+| the gate judged the raw draft; the lane ran a sonnet-tier rewrite of it | the brief is compiled **in a sweep** (§5a — the analyst's, or the compiler's own), stored, judged, and sent verbatim (`Task.brief`) |
 | a verdict never expired, though criterion 1 is time-dependent | the verdict records the integration tip and the brief revision it judged (`analysisStale`) |
 | a worker timeout became a permanent verdict for its whole batch | a failure is an absence with `attempts` and exponential backoff, never a finding — and since 2026-08-07 never a deletion either (§3a) |
 | an override was indistinguishable from an ordinary promote | releasing a flagged row writes a note and a `task_override` audit event |
@@ -109,7 +109,8 @@ A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue an
 3. **Nothing starts unattended against a tree it was not read on.** A released row waits,
    with the reason on its own row, while its analysis is missing, `unknown`, or stale —
    *unless no analyst is configured at all* (`FLEET_ANALYSIS_MS=0`), because a guard
-   nobody can clear is a deadlock wearing a safety property's clothes.
+   nobody can clear is a deadlock wearing a safety property's clothes. A running **brief
+   compiler** neither clears nor lifts this: it is not a reader (§5a).
 4. **The verdict never disables an action.** It groups, labels and warns. Every button the
    owner had, he still has.
 5. **An observation is not work.** A `note` cannot be released (409). `adopt` converts it
@@ -133,7 +134,8 @@ A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue an
 
 | env | default | |
 |---|---|---|
-| `FLEET_ANALYSIS_MS` | 60000 | sweep tick; **0 = analyst off**, and then invariant 3 lifts |
+| `FLEET_ANALYSIS_MS` | 60000 | analyst sweep tick; **0 = analyst off**, and then invariant 3 lifts |
+| `FLEET_BRIEF_MS` | 0 | the BRIEF COMPILER's own tick, §5a; **0 = compiler off**, the default |
 | `FLEET_ANALYSIS_MODEL` | `claude-opus-5` | the interactive tier — the owner's critical look is what is delegated here |
 | `FLEET_ANALYSIS_TIMEOUT_MS` | 420000 | its own, not the summarizer's 180 s: this worker reads files for a whole batch |
 | `FLEET_ANALYSIS_CMD` | — | subprocess stand-in for harnesses |
@@ -141,7 +143,47 @@ A row in this state reads `⚠ … · re-analysis failing (N×)` in the queue an
 Batch cap 6, max 3 attempts, backoff `60s × 2^attempts` **from the last failure** (§3a),
 brief compiles 3 at a time. A
 harness without a stand-in **must** set `FLEET_ANALYSIS_MS=0` or the suite spawns a real
-agent — the same rule `FLEET_AUTO_REVIEW_MS` already carries.
+agent — the same rule `FLEET_AUTO_REVIEW_MS` already carries, and since §5a the same rule
+applies to `FLEET_BRIEF_MS`, whose tick exists *only* to run the enhancer.
+
+## 5a. Two tools, two switches
+
+`FLEET_ANALYSIS_MS` used to run two things: the **analyst** (advisory — it reads a row and
+files a verdict) and the **brief compiler** (production — what it writes is the prompt a
+lane is founded on). The compile step sat inside the analyst's sweep, so switching the
+analyst off on 2026-08-08 took the compiler with it: not refuted, just dark, and every lane
+started afterwards began from the raw request.
+
+`FLEET_BRIEF_MS` is the compiler's own cadence (`tickBriefSweep`), so four states exist:
+
+| analyst | compiler | |
+|---|---|---|
+| off | off | the default, and the live deployment — unchanged in every byte |
+| off | on | drafts get a compiled brief; **no verdict is written, and the verdict ledger gets no line** |
+| on | off | unchanged: the analyst compiles its own batch's briefs, exactly where it always did |
+| on | on | both, and one shared busy flag keeps two enhancers off the same row |
+
+The live deployment is the first row, and that is machine-checked rather than re-read:
+
+<!-- pin:watchdog-spawn FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=unset -->
+
+Turning the compiler on is an owner act on `watchdog.sh` plus `launchctl kickstart`; this
+land ships the capability at its default of off and moves nothing that is running.
+
+Three boundaries, each one a thing the split deliberately does **not** do:
+
+- **The dispatcher gate (invariant 3) still reads `ANALYSIS_ON` alone.** A compiler is not
+  a reader: it writes bytes, it never judges a row against the tree it will run on.
+- **The compiler writes no reading.** No `t.analysis`, no line on `analysis-verdicts.jsonl`
+  — a row it touched is still an unread row, and the queue says so.
+- **`reanalyse` still refuses with 409 when the analyst is off.** Its reason names the
+  running compiler instead of implying deletion is all that would follow. `↻ refine` remains
+  the attended way to a different brief.
+
+Selection is the compiler's own (`briefDue`: a dispatchable `auftrag` with no brief yet),
+never `analysisDue` — the compiler's schedule is a property of the *draft* (compiled once,
+never again), the analyst's of the *tree*. A failed compile backs off in memory only
+(`60s × 2^attempts`, max 3): pacing a worker is not a finding about the work.
 
 ## 6. What it deliberately is not
 

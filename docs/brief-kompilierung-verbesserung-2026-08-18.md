@@ -62,6 +62,13 @@ Dies ist der Befund, gegen den jede Antwort unten gerechnet werden muss.
    (`server.ts:6026`).
 4. `watchdog.sh:148` startet den Live-srv mit **`FLEET_ANALYSIS_MS=0`**.
 
+> **Nachtrag 2026-08-18 (P3 gelandet):** Punkt 2 gilt nicht mehr. Die Kompilier-Stelle ist jetzt
+> `compileBriefs`, und ZWEI Sweeps rufen sie — `tickAnalysisSweep` (`ANALYSIS_ON`, unverändert) und
+> das neue `tickBriefSweep` (`BRIEF_ON`, gespeist aus `FLEET_BRIEF_MS`, Default **0**). Die Messung
+> oben beschreibt damit weiterhin den LIVE-Zustand (beide aus), aber nicht mehr eine Kopplung: der
+> Kompiler ist einschaltbar, ohne den Analysten mitzunehmen. Vertrag und die drei Grenzen des
+> Schnitts: `docs/queue-analyst.md` §5a.
+
 **Folge (BUILT, der Server sagt es selbst):** jede heute dispatchte Zeile ohne hand-geschriebenen
 Brief läuft auf `next.text` — dem rohen Entwurf. `classifyAnalystOffWarning` gibt für genau diesen
 Zustand `delivery: "raw-request"` zurück und schreibt es in die Queue-Warnung

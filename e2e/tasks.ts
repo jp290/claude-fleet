@@ -1254,9 +1254,11 @@ export async function run(ctx: Ctx): Promise<void> {
       head?: string | null; briefAt?: number | null; retry?: { at: number; reason?: string; attempts?: number } }
     interface HRow { id: string; status: string; kind?: string; note?: string; slot?: number; analysis?: HAn }
     const hSess = async (): Promise<{ tasks: HRow[]; slots: { id: number; cwd: string | null }[];
-      dispatch: { repo: string; on: boolean }; analysis?: { on?: boolean } }> =>
+      dispatch: { repo: string; on: boolean }; analysis?: { on?: boolean };
+      briefCompiler?: { on?: boolean } }> =>
       (await (await get("/api/sessions")).json()) as { tasks: HRow[]; slots: { id: number; cwd: string | null }[];
-        dispatch: { repo: string; on: boolean }; analysis?: { on?: boolean } };
+        dispatch: { repo: string; on: boolean }; analysis?: { on?: boolean };
+        briefCompiler?: { on?: boolean } };
     const hFull = async (id: string): Promise<{ analysis?: HAn; brief?: { text: string; edited: boolean } } | undefined> =>
       ((await (await get("/api/tasks")).json()) as { tasks: { id: string; analysis?: HAn; brief?: { text: string; edited: boolean } }[] })
         .tasks.find((t) => t.id === id);
@@ -1307,6 +1309,30 @@ export async function run(ctx: Ctx): Promise<void> {
       && /still loading/i.test(offLoading.text) && !/unread/i.test(offLoading.text)
       && !/will be sent/i.test(offLoading.text) && !/no stored/i.test(offLoading.text),
       JSON.stringify(offLoading));
+    // …and the SECOND mode, since the two switches were split: a running brief compiler must not be
+    // rendered as "the raw request will be sent", full stop — that sentence was true only while one
+    // number switched both tools. Delivery still follows what is STORED (a pending compile is a
+    // promise, not a delivery), so the pin is on the WORDING for a row that has no brief yet.
+    const offCompilerRaw = classifyAnalystOffWarning({ analysisOn: false, briefCompilerOn: true,
+      fullDataLoaded: true, hasStoredAnalysis: false, hasStoredBrief: false });
+    const offCompilerBrief = classifyAnalystOffWarning({ analysisOn: false, briefCompilerOn: true,
+      fullDataLoaded: true, hasStoredAnalysis: false, hasStoredBrief: true });
+    check("(h0) analyst-off warning: an ON brief compiler is named, and an uncompiled row is not promised as raw",
+      offCompilerRaw?.evidence === "unread-raw" && offCompilerRaw.delivery === "raw-request"
+      && /brief compiler on/i.test(offCompilerRaw.text)
+      && /unless the compiler writes a brief first/i.test(offCompilerRaw.text)
+      && offCompilerBrief?.delivery === "stored-brief"
+      && /stored brief will be sent/i.test(offCompilerBrief.text)
+      && !/unless the compiler/i.test(offCompilerBrief.text),
+      JSON.stringify({ offCompilerRaw, offCompilerBrief }));
+    check("(h0) analyst-off warning: with the compiler off the wording is unchanged — absent and false agree",
+      offRaw?.text === classifyAnalystOffWarning({ analysisOn: false, briefCompilerOn: false,
+        fullDataLoaded: true, hasStoredAnalysis: false, hasStoredBrief: false })?.text
+      && !/brief compiler/i.test(offRaw?.text ?? "") && !/unless the compiler/i.test(offRaw?.text ?? ""),
+      JSON.stringify(offRaw));
+    check("(h0) analyst-off warning: a running compiler still does not make the analyst on",
+      classifyAnalystOffWarning({ analysisOn: true, briefCompilerOn: true, fullDataLoaded: true,
+        hasStoredAnalysis: false, hasStoredBrief: false }) === null);
     check("(h0) analyst-off warning: ON emits no disabled-mode warning",
       classifyAnalystOffWarning({ analysisOn: true, fullDataLoaded: true,
         hasStoredAnalysis: false, hasStoredBrief: false }) === null);
@@ -1841,6 +1867,89 @@ export async function run(ctx: Ctx): Promise<void> {
         await post(`/api/tasks/${id}/done`, {});
         await post(`/api/tasks/${id}/delete`, {});
       }
+    }
+
+    // --- (hB) THE COMPILER HAS ITS OWN SWITCH. Until 2026-08-18 FLEET_ANALYSIS_MS ran two tools:
+    // the analyst (advisory) and the brief compiler (production — what it writes is what a lane is
+    // founded on). Switching the analyst off therefore took the compiler with it, untested rather
+    // than refuted, and every lane started afterwards began from the raw request. These checks hold
+    // the four states apart, and the load-bearing one is NEGATIVE: compiling must write no reading.
+    // The dispatcher is off from (h10)'s cleanup and every probe row here stays PENDING, so nothing
+    // can start behind these assertions. FLEET_DISPATCH_MAX_LANES rides along unchanged so the
+    // section hands the same server on to (i) as it did before this block existed. ---
+    {
+      const bEnv = { ...hEnv, FLEET_DISPATCH_MAX_LANES: "6" };
+      // (hB1) COMPILER ON, ANALYST OFF — the state that could not be expressed before.
+      await restartSrv({ ...bEnv, FLEET_ANALYSIS_MS: "0", FLEET_BRIEF_MS: "1000" });
+      const bPoll = await hSess();
+      check("(hB) the poll carries two independent modes: analyst off AND brief compiler on",
+        bPoll.analysis?.on === false && bPoll.briefCompiler?.on === true,
+        JSON.stringify({ analysis: bPoll.analysis, briefCompiler: bPoll.briefCompiler }));
+      const bLinesBefore = verdictRows().length;
+      const bT = await mkTask("brief-compiler probe: no analyst configured, this draft must still be compiled");
+      const bFull = await till(() => hFull(bT), (r) => !!r?.brief);
+      check("(hB1) with the analyst off the compiler still writes a machine brief for a briefless row",
+        bFull?.brief?.text.startsWith(BRIEFMARK) === true && bFull.brief.edited === false,
+        JSON.stringify(bFull?.brief ?? null));
+      // the whole point of the split, stated as a refusal: the compiler produces bytes, not verdicts
+      const bRow = await hRow(bT);
+      check("(hB1) …and writes NO reading doing it — no verdict on the row, no line on the trail",
+        bFull?.analysis === undefined && bRow?.analysis === undefined
+        && rowsFor(bT).length === 0 && verdictRows().length === bLinesBefore,
+        JSON.stringify({ full: bFull?.analysis, row: bRow?.analysis, own: rowsFor(bT).length,
+          trail: { before: bLinesBefore, after: verdictRows().length } }));
+
+      // (hB2) BOTH OFF is today's live behaviour, and it must stay byte-for-byte what it was: the
+      // draft keeps its raw text. A non-event, so it out-waits three of the cadences (hB1) just
+      // proved the compiler runs at, rather than polling for an absence.
+      await restartSrv({ ...bEnv, FLEET_ANALYSIS_MS: "0", FLEET_BRIEF_MS: "0" });
+      const bOffPoll = await hSess();
+      check("(hB2) with both switches off the compiler fact is omitted entirely (absent = off)",
+        bOffPoll.analysis?.on === false && bOffPoll.briefCompiler === undefined,
+        JSON.stringify({ analysis: bOffPoll.analysis, briefCompiler: bOffPoll.briefCompiler }));
+      const bOffLines = verdictRows().length;
+      const bOffT = await mkTask("brief-compiler probe: both switches off — this draft must stay raw");
+      await Bun.sleep(3000);
+      const bOffFull = await hFull(bOffT);
+      check("(hB2) both off: no brief, no reading, no trail line — the state this land must not move",
+        bOffFull?.brief === undefined && bOffFull?.analysis === undefined
+        && rowsFor(bOffT).length === 0 && verdictRows().length === bOffLines,
+        JSON.stringify({ full: bOffFull, own: rowsFor(bOffT).length,
+          trail: { before: bOffLines, after: verdictRows().length } }));
+
+      // (hB3) ANALYST ON, COMPILER OFF — the analyst's own compile step must be exactly where it
+      // was, or "analyst-only is unchanged" is a claim with nothing behind it. The whole (h) family
+      // above is the regression net; this is the one assertion that names the pair explicitly.
+      await restartSrv(bEnv);
+      const bBothPoll = await hSess();
+      const b3 = await mkTask("brief-compiler probe: ANALYST-READY — analyst on, compiler off, brief still compiled");
+      const b3Full = await till(() => hFull(b3), (r) => !!r?.brief && !!r?.analysis);
+      check("(hB3) analyst on + compiler off still yields BOTH a compiled brief and a verdict",
+        bBothPoll.analysis?.on === true && bBothPoll.briefCompiler === undefined
+        && b3Full?.brief?.text.startsWith(BRIEFMARK) === true && b3Full.analysis?.verdict === "ready",
+        JSON.stringify({ analysis: bBothPoll.analysis, briefCompiler: bBothPoll.briefCompiler,
+          brief: b3Full?.brief?.text.slice(0, 40), verdict: b3Full?.analysis?.verdict }));
+      check("(hB3) …and that reading IS on the trail — the compiler-only silence above was the mode, not a broken ledger",
+        rowsFor(b3).some((r) => r.verdict === "ready"),
+        JSON.stringify(rowsFor(b3).map((r) => r.verdict)));
+
+      // (hB4) THE REFUSAL STAYS A REFUSAL. reanalyse needs a READER; a compiler is not one. Only
+      // its reason may not keep implying that deletion is all that would follow.
+      await restartSrv({ ...bEnv, FLEET_ANALYSIS_MS: "0", FLEET_BRIEF_MS: "600000" });
+      const bReBefore = await hFull(b3);
+      const bRe = await post(`/api/tasks/${b3}/reanalyse`, {});
+      const bReJ = (await bRe.json()) as { ok?: boolean; error?: string };
+      const bReAfter = await hFull(b3);
+      check("(hB4) with only the compiler running, reanalyse still refuses 409 and names the compiler instead of lying",
+        bRe.status === 409 && bReJ.ok !== true
+        && (bReJ.error ?? "").includes("no analyst sweep is configured")
+        && (bReJ.error ?? "").includes("brief compiler is on")
+        && JSON.stringify(bReAfter?.analysis) === JSON.stringify(bReBefore?.analysis)
+        && JSON.stringify(bReAfter?.brief) === JSON.stringify(bReBefore?.brief),
+        `${bRe.status} ${JSON.stringify(bReJ)}`);
+
+      for (const id of [bT, bOffT, b3]) await post(`/api/tasks/${id}/delete`, {});
+      await restartSrv(bEnv); // hand (i) the same server this section always handed it
     }
 
     // cleanup — dispatcher off first (same requeue-race reason as (e)), then drop the probes. The

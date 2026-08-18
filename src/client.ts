@@ -281,6 +281,10 @@ let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "
 // Task 684a9d99 will supply this runtime fact. Missing must stay OFF: a verdict's presence does not
 // prove the analyst is configured now, and Waves may not trust model edges on that guess.
 let analysisOn: boolean | undefined;
+// The brief compiler's mode, a SEPARATE runtime fact since the two switches were split: the analyst
+// being off no longer implies that nothing compiles a brief. Omitted at zero on the wire, so
+// `undefined` and `false` mean the same thing here — off.
+let briefCompilerOn: boolean | undefined;
 let intakeOn = false;
 let serverNow = 0;
 let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server-side)
@@ -4797,6 +4801,8 @@ async function refresh() {
     const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
       v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; intake?: boolean;
       analysis?: { on?: boolean };
+      // omitted at zero by the server — absent means the compiler is off, exactly like `false`
+      briefCompiler?: { on?: boolean };
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
       gate?: GateInfo | null; errors?: ErrorsInfo | null;
       attentionOpen?: number;
@@ -4818,6 +4824,7 @@ async function refresh() {
     tasksList = data.tasks ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
     analysisOn = data.analysis?.on;
+    briefCompilerOn = data.briefCompiler?.on;
     intakeOn = data.intake ?? false;
     // tier 2's only reader. Rendered on every poll rather than behind the render-key diff below:
     // that key is about the slot tiles, and an alarm must not wait on an unrelated change to appear.
@@ -4891,7 +4898,7 @@ async function refresh() {
         // the refine proposal arrives on a poll exactly like the criterion does, and the button
         // spends minutes in `refining` before it — both have to move the key or the pane lies.
         // In Waves, another row or active branch can move this row's advisory placement too.
-        t.refine?.at, t.refining, t.comments?.n, t.comments?.at, analysisOn,
+        t.refine?.at, t.refining, t.comments?.n, t.comments?.at, analysisOn, briefCompilerOn,
         qView === "waves" ? qWaveProjectionKey() : null]) : "gone";
       if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
     }
@@ -6129,6 +6136,7 @@ function renderQueueDetail() {
       const release = el("div", "qrelease");
       const warning = classifyAnalystOffWarning({
         analysisOn,
+        briefCompilerOn,
         fullDataLoaded: qTaskFullLoaded(t.id),
         hasStoredAnalysis: taskAnalysisFull.has(t.id),
         hasStoredBrief: taskBriefFull.has(t.id),

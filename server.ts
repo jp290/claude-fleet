@@ -6082,6 +6082,18 @@ const ANALYSIS_MAX_ATTEMPTS = 3; // consecutive failures before the batch stops 
 const ANALYSIS_BACKOFF_MS = 60_000; // × 2^attempts — a broken worker must not hammer the machine
 const ANALYSIS_ENHANCE_LIMIT = 3;   // concurrent brief compiles; each is a throwaway claude session
 
+// --- ONE NUMBER USED TO SWITCH TWO TOOLS, and only one of them was ever refuted. The sweep above
+// does two jobs: the ANALYST reads a row and files a verdict (advisory, it decides nothing), and
+// the BRIEF COMPILER turns a raw draft into the bytes a lane is founded on (production — what it
+// writes is what runs). Both hung off FLEET_ANALYSIS_MS, so switching the analyst off on
+// 2026-08-08 for its measured false-alarm rate took the compiler with it: untested, not judged.
+// FLEET_BRIEF_MS is the compiler's own cadence so the four states are separable — both off (the
+// default, and today's live behaviour byte for byte), compiler only, analyst only, both.
+const BRIEF_TICK_MS = Math.max(0, Number(process.env.FLEET_BRIEF_MS ?? 0) | 0); // 0 = off, the default
+// Same shape as ANALYSIS_ON and for the same reason: briefs already on the rows are history, and
+// only the configured cadence answers whether a compiler is running NOW.
+const BRIEF_ON = BRIEF_TICK_MS > 0;
+
 // the fact block for a lane that does not exist yet. Verified, not assumed: createWorktree forks
 // with `worktree add -b <branch> <path> <integration-tip>`, so the lane starts clean AT the tip —
 // 0 ahead, 0 behind, nothing uncommitted, no commits of its own. Which is to say the enhancer's
@@ -6170,10 +6182,101 @@ function recordAnalysisVerdict(t: Task, a: TaskAnalysis): void {
     retry: a.retry ? { at: a.retry.at, reason: a.retry.reason.slice(0, 500) } : null,
   });
 }
-let analysisBusy = false;
+// ONE flag for BOTH sweeps below (named for what it guards, not for who owns it): they write the
+// same field on the same rows, so they must never overlap. Whichever is running, the other skips
+// its round and comes back on its own cadence.
+let sweepBusy = false;
+// THE ONE PLACE THE MACHINE WRITES A Task.brief. Both sweeps below call it, so a compiled brief
+// has a single shape and a single failure mode wherever it came from. Returns the ids whose compile
+// FAILED, which the two callers use differently on purpose: the analyst ignores them (its own
+// due-rule already paces that row), the compiler backs off on them, because nothing else would.
+// `consequence` names what happens NEXT for the caller — the analyst judges the draft, the
+// compiler leaves the row raw — so one server.log line stays true from both sites.
+async function compileBriefs(rows: Task[], repo: string, laneBase: string | null,
+  consequence: string): Promise<string[]> {
+  const failed: string[] = [];
+  for (let i = 0; i < rows.length; i += ANALYSIS_ENHANCE_LIMIT) {
+    await Promise.all(rows.slice(i, i + ANALYSIS_ENHANCE_LIMIT).map(async (t) => {
+      try {
+        const text = await runEnhance(t.text, repo, freshLaneFacts(laneBase));
+        t.brief = { text, at: Date.now(), model: SUMMARY_MODEL, edited: false };
+      } catch (e) {
+        // no brief is a legitimate state — the lane gets the raw draft, and the analyst is told
+        // to judge THAT as the brief. A failed compile must not stall the analysis behind it.
+        // Both records, because they answer different questions and neither replaces the other:
+        // the line names WHICH draft (server.log, one per draft), the channel groups by REASON
+        // so eighteen of these read as one broken compiler counted 18× instead of eighteen
+        // unread lines. That exact number is why this site is wired at all — the queue rows said
+        // `no-analysis`, which is what "not judged yet" also looks like.
+        failed.push(t.id);
+        console.log(`analysis: brief compile failed for ${t.id}, ${consequence}: ${e instanceof Error ? e.message : e}`);
+        logError("analysisBrief", e);
+      }
+    }));
+  }
+  return failed;
+}
+// The compiler's backoff, IN MEMORY on purpose: this paces a worker, it is not a finding about the
+// work. Nothing about a failed compile deserves to survive a restart — the row already carries the
+// honest state (no brief), and a fresh server may well have a working enhancer.
+const briefRetry = new Map<string, { attempts: number; at: number }>();
+// ONE rule for "this row needs the compiler", the sibling of analysisDue and deliberately NOT it:
+// the compiler's schedule is a property of the DRAFT (compiled once, never again — a land does not
+// invalidate a brief), the analyst's is a property of the TREE. Sharing analysisDue would have
+// coupled the compiler to a reader that may not exist, which is the very fusion this splits.
+function briefDue(t: Task, now: number): boolean {
+  if (t.kind !== "auftrag" || dispatchingTasks.has(t.id)) return false;
+  if (t.status !== "pending" && t.status !== "queued") return false;
+  if (t.brief) return false; // machine-written or owner-edited: both mean "compiled, hands off"
+  const r = briefRetry.get(t.id);
+  if (!r) return true;
+  return r.attempts < ANALYSIS_MAX_ATTEMPTS && now - r.at >= ANALYSIS_BACKOFF_MS * 2 ** r.attempts;
+}
+// A SECOND TICK, not a second gate inside the first, and the reason is that the two tools differ in
+// both of the things a tick is made of: cadence (each switch carries its own interval — one tick
+// would have had to pick a number for the other tool) and selection (briefDue vs analysisDue). What
+// they DO share is the busy flag, because they write the same field on the same rows: without it a
+// row could be handed to two enhancers at once, which is the only interaction the split creates.
+// The analyst's own compile step stays exactly where it was, so analyst-only mode is unchanged.
+async function tickBriefSweep(): Promise<void> {
+  if (sweepBusy || !BRIEF_ON) return;
+  sweepBusy = true;
+  try {
+    const now = Date.now();
+    const due = tasks.filter((t) => briefDue(t, now) && taskRepoOf(t) !== null);
+    if (!due.length) return;
+    // one repo batch per tick, same bound as the analyst: the enhancer READS this repo, and a
+    // fan-out that is not bounded here is bounded by nothing.
+    const repo = taskRepoOf(due[0])!;
+    const batch = due.filter((t) => taskRepoOf(t) === repo).slice(0, ANALYSIS_BATCH_CAP);
+    const bump = (t: Task): void => {
+      briefRetry.set(t.id, { attempts: (briefRetry.get(t.id)?.attempts ?? 0) + 1, at: Date.now() });
+    };
+    // a missing repo is not a reason to spawn a worker against a directory that is not there — it
+    // takes the same backoff as a failed compile, so a mistyped FLEET_DISPATCH_REPO costs one log
+    // line per backoff step instead of one worker per tick.
+    if (!existsSync(repo) || !statSync(repo).isDirectory()) {
+      for (const t of batch) bump(t);
+      console.log(`brief compiler: repo not found, leaving ${batch.length} draft(s) raw: ${repo}`);
+      return;
+    }
+    const laneBase = await integrationBranch(repo);
+    const failed = new Set(await compileBriefs(batch, repo, laneBase, "the row keeps its raw draft"));
+    for (const t of batch) { if (failed.has(t.id)) bump(t); else briefRetry.delete(t.id); }
+    // a row that left the queue (done, deleted, evacuated by capTasks) takes its pacing with it —
+    // otherwise this map is the one thing here that grows for the life of the process
+    if (briefRetry.size) for (const id of [...briefRetry.keys()])
+      if (!tasks.some((t) => t.id === id)) briefRetry.delete(id);
+    // …and NOTHING ELSE. No verdict, no attempt counter on t.analysis, no line on the verdict
+    // ledger: this sweep compiles, it does not read. A row it touched is still an unread row.
+    if (failed.size < batch.length) saveState();
+  } finally {
+    sweepBusy = false;
+  }
+}
 async function tickAnalysisSweep(): Promise<void> {
-  if (analysisBusy || !ANALYSIS_ON) return;
-  analysisBusy = true;
+  if (sweepBusy || !ANALYSIS_ON) return;
+  sweepBusy = true;
   try {
     const live = tasks.filter((t) => t.kind === "auftrag" && (t.status === "pending" || t.status === "queued"));
     if (!live.length) return;
@@ -6209,26 +6312,10 @@ async function tickAnalysisSweep(): Promise<void> {
     // --- compile the missing briefs. Once per draft, never again: the brief depends on the draft,
     // not on the tree, so a re-analysis after a land must not re-spend a worker per task. An
     // owner-edited brief is pinned forever (`edited`), which is what makes editing it meaningful.
+    // No backoff is applied here on purpose: this sweep's own schedule (analysisDue) already paces
+    // the row, and adding a second clock would change what the analyst-only mode does today.
     const laneBase = await integrationBranch(repo);
-    const toCompile = batch.filter((t) => !t.brief);
-    for (let i = 0; i < toCompile.length; i += ANALYSIS_ENHANCE_LIMIT) {
-      await Promise.all(toCompile.slice(i, i + ANALYSIS_ENHANCE_LIMIT).map(async (t) => {
-        try {
-          const text = await runEnhance(t.text, repo, freshLaneFacts(laneBase));
-          t.brief = { text, at: Date.now(), model: SUMMARY_MODEL, edited: false };
-        } catch (e) {
-          // no brief is a legitimate state — the lane gets the raw draft, and the analyst is told
-          // to judge THAT as the brief. A failed compile must not stall the analysis behind it.
-          // Both records, because they answer different questions and neither replaces the other:
-          // the line names WHICH draft (server.log, one per draft), the channel groups by REASON
-          // so eighteen of these read as one broken compiler counted 18× instead of eighteen
-          // unread lines. That exact number is why this site is wired at all — the queue rows said
-          // `no-analysis`, which is what "not judged yet" also looks like.
-          console.log(`analysis: brief compile failed for ${t.id}, judging the draft: ${e instanceof Error ? e.message : e}`);
-          logError("analysisBrief", e);
-        }
-      }));
-    }
+    await compileBriefs(batch.filter((t) => !t.brief), repo, laneBase, "judging the draft");
     saveState(); // briefs survive even if the analyst below then fails — they cost a worker each
 
     // --- the open lanes in this repo, so a collision can mean the running fleet and not merely
@@ -6299,7 +6386,7 @@ async function tickAnalysisSweep(): Promise<void> {
     }
     saveState();
   } finally {
-    analysisBusy = false;
+    sweepBusy = false;
   }
 }
 
@@ -6471,6 +6558,10 @@ async function tickDispatch(): Promise<void> {
       // gate, and a released queue that silently never drains is worse than an unread one: the guard
       // would have become a deadlock dressed as a safety property. No reader configured, no read
       // required — the same stance as an absent FLEET_VERIFY_CMD, which does not gate either.
+      // BRIEF_ON is deliberately not consulted here, and that is the whole point of splitting the
+      // two switches: a compiler writes the bytes a lane receives, it never reads the row against
+      // the tree. Letting it satisfy this gate would hand the unattended queue a permission that
+      // nothing had earned — the invariant is about a READING, not about a well-worded prompt.
       if (ANALYSIS_ON) {
         const a = next.analysis;
         if (!a || a.verdict === "unknown") { waiting("waiting: not analysed yet — the analyst runs on its own"); return; }
@@ -13757,6 +13848,10 @@ setInterval(() => void tickDispatch().catch((e: unknown) => logError("tickDispat
 // FLEET_ANALYSIS_MS=0 switches the analyst off entirely (same shape as FLEET_AUTO_REVIEW_MS) — a
 // harness without a FLEET_ANALYSIS_CMD stand-in MUST set it, or the suite spawns a real agent.
 if (ANALYSIS_ON) setInterval(() => void tickAnalysisSweep().catch((e: unknown) => logError("tickAnalysisSweep", e)), ANALYSIS_TICK_MS);
+// …and the brief compiler on its OWN cadence, off by default. Same stand-in warning as above and
+// it bites harder here, because this tick exists to run the enhancer: a harness without a
+// FLEET_ENHANCE_CMD stand-in MUST leave FLEET_BRIEF_MS at 0, or the suite spawns a real agent.
+if (BRIEF_ON) setInterval(() => void tickBriefSweep().catch((e: unknown) => logError("tickBriefSweep", e)), BRIEF_TICK_MS);
 setInterval(() => void tickHarvest().catch((e: unknown) => logError("tickHarvest", e)), 5000);
 // auto-③ on done-looking lanes (advisory; FLEET_AUTO_REVIEW_MS=0 turns the tick off entirely)
 if (AUTO_REVIEW_MS > 0) setInterval(() => void tickAutoReview().catch((e: unknown) => logError("tickAutoReview", e)), AUTO_REVIEW_MS);
@@ -16246,6 +16341,11 @@ Bun.serve<WSData>({
         dispatch: { available: !!DISPATCH_REPO, on: dispatchOn, maxLanes: DISPATCH_MAX_LANES, repo: DISPATCH_REPO },
         // Global runtime fact, beside dispatch rather than inferred per row from stored verdicts.
         analysis: { on: ANALYSIS_ON },
+        // The brief compiler's mode is its OWN fact beside the analyst's — one switch used to imply
+        // the other, and a client that inferred one from the other would re-create exactly that.
+        // OMITTED AT ZERO like attentionOpen above and for the same 12 KiB reason: off is the
+        // default and the common case, and absent reads as off wherever it is consumed.
+        ...(BRIEF_ON ? { briefCompiler: { on: true } } : {}),
         autosOn,
         quietHours,
         intake: !!INTAKE_SECRET,
@@ -17730,8 +17830,14 @@ Bun.serve<WSData>({
       if (t.status !== "pending" && t.status !== "queued")
         return json({ error: `task is ${t.status} — only a pending or queued task is analysed` }, 409);
       if (t.kind !== "auftrag") return json({ error: `${t.kind} is advisory, not a work brief — nothing to analyse` }, 409);
+      // The refusal stands whatever the compiler is doing: this route re-reads, and with no reader
+      // its writes are pure deletion. But the reason must not keep claiming deletion is ALL that
+      // would follow once a compiler is running — it would recompile the dropped brief on its next
+      // tick, which is a different act from the one being asked for. ↻ refine is the attended way
+      // to a new brief; nothing here mints a second verb out of a route named reanalyse.
       if (!ANALYSIS_ON)
-        return json({ error: "no analyst sweep is configured — reanalysis would otherwise only delete the existing analysis and machine-generated brief" }, 409);
+        return json({ error: "no analyst sweep is configured — reanalysis would otherwise only delete the existing analysis and machine-generated brief"
+          + (BRIEF_ON ? "; the brief compiler is on, but it compiles rather than reads, and would simply recompile the deleted brief — use ↻ refine to change one" : "") }, 409);
       t.analysis = undefined;
       // an un-edited brief goes too: "analyse this again" means the whole reading, and a brief the
       // owner never touched is the analyst's own output, not an input worth preserving.

@@ -129,7 +129,7 @@ tmux -L "$SOCK" kill-server 2>/dev/null
 # FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 is the server's own floor (Math.max(10_000, …)) — the `hang`
 # mode sleeps well past it.
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_AUDIT_PING_MS=0 FLEET_CMD=true FLEET_VERIFY_CMD='$DIR/fakeverify' FLEET_MERGE_CMD='$DIR/fakemerge' FLEET_POSTLAND_AUDIT_CMD='$DIR/fakeaudit' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD='$DIR/fakecleanreview' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind instead of a fixed sleep
 code=000
 for _ in $(seq 1 60); do
@@ -151,7 +151,7 @@ cd "$DIR" || exit 1
 # It is NOT in the list above: the harness re-exports these to rebuild the srv line, and the
 # server has no use for a suite label.
 FLEET_E2E_SUITE=postland-audit \
-  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_CMD=true \
+  FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_AUTO_REVIEW_MS=0 FLEET_ANALYSIS_MS=0 FLEET_BRIEF_MS=0 FLEET_CMD=true \
   FLEET_VERIFY_CMD="$DIR/fakeverify" FLEET_MERGE_CMD="$DIR/fakemerge" \
   FLEET_POSTLAND_AUDIT_CMD="$DIR/fakeaudit" FLEET_POSTLAND_AUDIT_TIMEOUT_MS=10000 \
   FLEET_CLEAN_REVIEW=shadow FLEET_CLEAN_REVIEW_CMD="$DIR/fakecleanreview" \

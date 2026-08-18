@@ -94,17 +94,30 @@ export const FLEET_DEFAULT_MODEL = "claude-opus-5[1m]";
 
 // --- how many tokens a model's context window holds ---------------------------------------------
 // The DENOMINATOR of the context-fill sensor, and the reason that sensor cannot be a single number:
-// the same 150k tokens are 15% of a 1M window and 75% of a 200k one. The variant is spelled in the
-// model NAME — MODEL_RE's optional bracket suffix (`claude-opus-5[1m]`) exists for exactly this, so
-// the window is a pure function of the name and needs no table of model ids to stay current.
+// the same 150k tokens are 15% of a 1M window and 75% of a 200k one. Two things can spell the
+// window: MODEL_RE's optional bracket suffix (`claude-opus-5[1m]`), which exists for exactly this,
+// and — for a model spawned without one — the model id itself.
 //
-// Three answers, and the third is the point: an UNRECOGNISED suffix returns null — "cannot tell" —
-// rather than falling back to a default. A wrong denominator does not fail, it publishes a
-// confident percentage that is off by a factor of five, which is worse than showing nothing. The
-// no-suffix case is not a guess of the same kind: every claude model without a variant suffix is
-// 200k, and that IS the base window rather than a stand-in for an unknown one.
+// Three answers, and the third is the point: a name this file cannot place returns null — "cannot
+// tell" — rather than falling back to a default. A wrong denominator does not fail, it publishes a
+// confident percentage that is off by a factor of five, which is worse than showing nothing.
 //
-// Scope: claude models plus GPT model ids, including a provider prefix and Pi's optional thinking
+// That null used to stop at the suffix door. An unrecognised suffix was "cannot tell", but a claude
+// id with NO suffix fell through to the base window, on the claim that every claude model without a
+// variant suffix is 200k. Claude Fable 5 ended that claim — its base window is 1M — and it ended it
+// as exactly the failure the paragraph above forbids: on 2026-08-18 a live `claude-fable-5` slot at
+// 176,680 tokens was published as 88.3% of a 200k window ("past the compaction cliff, hand over")
+// while the same session's own pane read 17.7%. A handoff on that number throws away a session with
+// ~800k of window still free.
+//
+// So the no-suffix door now goes through CLAUDE_CONTEXT_WINDOWS, a named set, and a claude id that
+// is not in it is null like everything else unknown. A table of model ids does need tending, which
+// the pure name function did not — but that is the honest failure mode: a missing row shows nothing
+// and asks to be measured, where the old default showed a number and asked for nothing. Every row
+// below carries the ground it stands on; a row without one is a guess wearing a table's clothes.
+//
+// Scope: the NAMED claude models below plus GPT model ids, the latter matched by shape because a
+// GPT id carries no variant to confuse — including a provider prefix and Pi's optional thinking
 // suffix. GPT's 258,400 is the USABLE window measured from Codex's own 272,000 nominal window at
 // `effective_context_window_percent: 95` (2026-08-08). Using 272,000 here would make the warning
 // instrument systematically optimistic. Everything else remains null rather than borrowing either
@@ -113,16 +126,45 @@ export const CONTEXT_WINDOW_BASE = 200_000;
 export const CONTEXT_WINDOW_1M = 1_000_000;
 export const CONTEXT_WINDOW_GPT = 258_400;
 export const CONTEXT_WINDOW_GLM_5_3 = 1_000_000;
+// The named set the no-suffix door reads. Every row is a measured or structurally forced claim, not
+// a family guess; adding a model is one line plus the ground it stands on.
+const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
+  // 200k base, and the proof is in this repo rather than in a vendor page: the fleet asks for the
+  // 1M variant of both of these by spelling the `[1m]` suffix (FLEET_DEFAULT_MODEL above,
+  // SUMMARY_MODEL in server.ts). A window you have to ask for is not the one the bare id gives you.
+  "claude-opus-5": CONTEXT_WINDOW_BASE,
+  "claude-sonnet-5": CONTEXT_WINDOW_BASE,
+  // 200k as a ceiling rather than a tier — there is no 1M variant of this one to ask for.
+  "claude-haiku-4-5": CONTEXT_WINDOW_BASE,
+  // 1M WITHOUT a suffix — the model that broke the old rule, measured 2026-08-18 on a live slot:
+  // 176,680 tokens, which its own pane reported as 17.7%.
+  "claude-fable-5": CONTEXT_WINDOW_1M,
+  // `fable` — the BARE alias, and a deliberate exception to "ids only". It is what lands in a slot
+  // record when a session is spawned by alias: slot 9, the standing supervisor, carries literally
+  // this string, so without this row the one slot the incident above happened on publishes no fill
+  // at all. Against the row: an alias is resolved by the harness and can be repointed under us, and
+  // then the denominator is a guess again. It is here anyway, because an alias resolves within ONE
+  // model family and every Fable released so far is 1M — "fable is 1M" survives the next Fable
+  // where "fable is claude-fable-5" would not. Note what does NOT get the same treatment: bare
+  // `opus`, `sonnet` and `haiku` stay null, because those families genuinely hold both windows
+  // (`claude-opus-5` vs `claude-opus-5[1m]`) and the alias says nothing about which one you got.
+  // If `fable` is ever repointed out of the Fable family this row is wrong and must be re-measured;
+  // dating the measurement is what makes that checkable instead of invisible.
+  "fable": CONTEXT_WINDOW_1M,
+};
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;
   if (model === "glm-5.3") return CONTEXT_WINDOW_GLM_5_3;
   if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
     return CONTEXT_WINDOW_GPT;
   }
-  const m = /^(claude-[^[]+)(?:\[([A-Za-z0-9]{1,8})\])?$/.exec(model);
+  const m = /^(claude-[^[]+|fable)(?:\[([A-Za-z0-9]{1,8})\])?$/.exec(model);
   if (!m) return null;
-  if (m[2] === undefined) return CONTEXT_WINDOW_BASE;
-  return m[2].toLowerCase() === "1m" ? CONTEXT_WINDOW_1M : null;
+  // An explicit suffix still wins over the table, and still only for a suffix this file recognises.
+  // It is not the same kind of claim as the id: whoever spawned the slot WROTE the variant into the
+  // name, so `[1m]` is a statement about that pane, not an inference about a model id.
+  if (m[2] !== undefined) return m[2].toLowerCase() === "1m" ? CONTEXT_WINDOW_1M : null;
+  return CLAUDE_CONTEXT_WINDOWS[m[1]!] ?? null;
 }
 
 // --- background-worker contracts ----------------------------------------------------------------

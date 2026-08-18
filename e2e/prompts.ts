@@ -9,7 +9,8 @@ import { laneDoneLooking, laneHostCommitLooking, laneWatchSignal, laneWatchMessa
   DONE_LOOKING_RULES, DONE_LOOKING_PROSE, HOST_COMMIT_LOOKING_RULES,
   laneStalled, laneStalledSince, STALLED_RULES, STALLED_PROSE, type LaneSignalView } from "../lane-signals";
 import { continuitySummary, CONTINUITY_REGIME_START, CONTINUITY_SOURCES, type ContinuityRecord } from "../continuity";
-import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDOW_GLM_5_3, CONTEXT_WINDOW_GPT } from "../src/protocol";
+import { contextWindowFor, CONTEXT_WINDOW_BASE, CONTEXT_WINDOW_1M, CONTEXT_WINDOW_GLM_5_3, CONTEXT_WINDOW_GPT,
+  FLEET_DEFAULT_MODEL } from "../src/protocol";
 import { check, ROOT } from "./harness";
 
 // The three tool profiles every throwaway agent is spawned with, read out of server.ts's SOURCE.
@@ -980,20 +981,60 @@ export async function run(): Promise<void> {
   // contrast needs TWO models on one measurement, and a live slot has one. ---
   {
     const USED = 150_349; // the measured reading this sensor was calibrated against (2026-08-07)
+    const pct = (used: number, w: number | null): number | null =>
+      w === null ? null : Math.round((used / w) * 1000) / 10;
     const wBig = contextWindowFor("claude-opus-5[1m]");
     const wSmall = contextWindowFor("claude-opus-5");
     check("context window: the [1m] suffix is 1M and its plain twin is 200k (same name, different window)",
       wBig === CONTEXT_WINDOW_1M && wSmall === CONTEXT_WINDOW_BASE && CONTEXT_WINDOW_1M === 1_000_000
       && CONTEXT_WINDOW_BASE === 200_000, JSON.stringify({ wBig, wSmall }));
     // the whole point, stated as the assertion: ONE token count, TWO percentages
-    const pct = (w: number | null): number | null => w === null ? null : Math.round((USED / w) * 1000) / 10;
     check("context fill: the same usedTokens yields a different pct per model (15.0% vs 75.2%)",
-      pct(wBig) === 15 && pct(wSmall) === 75.2, JSON.stringify({ big: pct(wBig), small: pct(wSmall) }));
+      pct(USED, wBig) === 15 && pct(USED, wSmall) === 75.2,
+      JSON.stringify({ big: pct(USED, wBig), small: pct(USED, wSmall) }));
     // an UNRECOGNISED variant suffix is null — "cannot tell" — never a fallback to the base window.
     // This is the clause that keeps a future context variant from being silently mis-scaled.
     check("context window: an unknown bracket variant is null, never a fallback to the base window",
       contextWindowFor("claude-opus-9[4m]") === null && contextWindowFor("claude-opus-9[xl]") === null,
       JSON.stringify([contextWindowFor("claude-opus-9[4m]"), contextWindowFor("claude-opus-9[xl]")]));
+    // --- the no-suffix door, rebuilt 2026-08-19 as a named set. The old rule ("every claude model
+    // without a variant suffix is 200k") published a live claude-fable-5 slot at 88.3% of a window
+    // it does not have; the pane read 17.7%. Both halves are pinned here: the model, and the RULE
+    // that made it wrong for everyone else too. ---
+    const FABLE_USED = 176_680; // the live reading of 2026-08-18 that was published as 88.3%
+    check("context window: claude-fable-5 is 1M with NO suffix, and its [1m] twin agrees",
+      contextWindowFor("claude-fable-5") === CONTEXT_WINDOW_1M
+      && contextWindowFor("claude-fable-5[1m]") === CONTEXT_WINDOW_1M,
+      JSON.stringify([contextWindowFor("claude-fable-5"), contextWindowFor("claude-fable-5[1m]")]));
+    check("context fill: the 2026-08-18 fable reading is 17.7%, not the 88.3% a 200k denominator published",
+      pct(FABLE_USED, contextWindowFor("claude-fable-5")) === 17.7
+      && pct(FABLE_USED, CONTEXT_WINDOW_BASE) === 88.3,
+      JSON.stringify({ now: pct(FABLE_USED, contextWindowFor("claude-fable-5")),
+        thenWrongly: pct(FABLE_USED, CONTEXT_WINDOW_BASE) }));
+    // the new core: an unnamed claude id is "cannot tell", the same answer an unknown suffix gets.
+    // Reinstating the 200k fallback turns this one red on its own.
+    check("context window: a claude id the table does not name is null, never the 200k base window",
+      contextWindowFor("claude-opus-9") === null && contextWindowFor("claude-nonesuch-1") === null
+      && contextWindowFor("claude-") === null,
+      JSON.stringify([contextWindowFor("claude-opus-9"), contextWindowFor("claude-nonesuch-1")]));
+    check("context window: the named 200k models still read 200k (the table moved nobody)",
+      contextWindowFor("claude-opus-5") === CONTEXT_WINDOW_BASE
+      && contextWindowFor("claude-sonnet-5") === CONTEXT_WINDOW_BASE
+      && contextWindowFor("claude-haiku-4-5") === CONTEXT_WINDOW_BASE,
+      JSON.stringify([contextWindowFor("claude-sonnet-5"), contextWindowFor("claude-haiku-4-5")]));
+    // the bare-alias DECISION, written out: `fable` is carried literally by the standing supervisor
+    // slot and is named, because an alias resolves inside ONE family and every Fable is 1M. The
+    // other bare aliases are NOT named, because their families hold both windows and the alias says
+    // nothing about which one the pane got — this asymmetry is the decision, not an oversight.
+    check("context window: bare `fable` is 1M by decision, while bare opus/sonnet/haiku stay null",
+      contextWindowFor("fable") === CONTEXT_WINDOW_1M && contextWindowFor("opus") === null
+      && contextWindowFor("sonnet") === null && contextWindowFor("haiku") === null,
+      JSON.stringify([contextWindowFor("fable"), contextWindowFor("opus")]));
+    // and the coverage guard: a named set can blind slots as easily as a bad default can mis-scale
+    // them, so the model every unpinned claude slot is spawned with must still resolve.
+    check("context window: the fleet's own default model still resolves (the table blinded nobody)",
+      contextWindowFor(FLEET_DEFAULT_MODEL) === CONTEXT_WINDOW_1M,
+      `${FLEET_DEFAULT_MODEL} -> ${contextWindowFor(FLEET_DEFAULT_MODEL)}`);
     check("context window: GPT ids use the measured 258,400 EFFECTIVE window, with or without provider/thinking",
       CONTEXT_WINDOW_GPT === 258_400 && contextWindowFor("gpt-5-codex") === CONTEXT_WINDOW_GPT
       && contextWindowFor("openai-codex/gpt-5.6-sol") === CONTEXT_WINDOW_GPT

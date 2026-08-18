@@ -600,7 +600,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   const reanalyseStart = server.indexOf("const taskReanalyse =");
   const reanalyseBody = reanalyseStart < 0 ? "" : server.slice(reanalyseStart, server.indexOf("const taskRefine =", reanalyseStart));
   pin("ANALYSIS_ON feeds the sweep guard and its only scheduler registration",
-    /analysisBusy \|\| !ANALYSIS_ON/.test(sweepBody)
+    /sweepBusy \|\| !ANALYSIS_ON/.test(sweepBody)
       && /if \(ANALYSIS_ON\) setInterval\([^\n]*tickAnalysisSweep[^\n]*, ANALYSIS_TICK_MS\);/.test(executableServer));
   pin("ANALYSIS_ON feeds the dispatch analysis invariant and reanalyse refusal",
     /if \(ANALYSIS_ON\) \{/.test(dispatchBody) && /if \(!ANALYSIS_ON\)/.test(reanalyseBody));
@@ -617,6 +617,31 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
   pin("no server analyst consumer derives on/off directly from ANALYSIS_TICK_MS",
     directCadenceUses.length >= 3 && cadenceBypasses.length === 0,
     `${directCadenceUses.length} cadence use(s); bypasses=[${cadenceBypasses.map((l) => l.trim()).join(" | ")}]`);
+  // THE BRIEF COMPILER IS A SECOND MODE, not a shade of the first. One number used to switch both,
+  // so these rules exist to keep the split from silently collapsing back: its own fact, its own
+  // guard, its own registration, and — the load-bearing one — a sweep that writes no reading.
+  const briefFactDefs = [...executableServer.matchAll(/const BRIEF_ON = BRIEF_TICK_MS > 0;/g)];
+  pin("one plainly named server fact derives brief-compiler mode from its own configured cadence",
+    briefFactDefs.length === 1, `${briefFactDefs.length} BRIEF_ON definition(s)`);
+  const briefStart = server.indexOf("async function tickBriefSweep");
+  const briefBody = briefStart < 0 ? "" : server.slice(briefStart, server.indexOf("async function tickAnalysisSweep", briefStart));
+  const briefCode = briefBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("BRIEF_ON feeds the brief sweep guard and its only scheduler registration",
+    /sweepBusy \|\| !BRIEF_ON/.test(briefBody)
+      && /if \(BRIEF_ON\) setInterval\([^\n]*tickBriefSweep[^\n]*, BRIEF_TICK_MS\);/.test(executableServer));
+  pin("the compiler sweep compiles and never judges: no analyst switch, no verdict, no reading",
+    briefCode.length > 0 && !briefCode.includes("ANALYSIS_ON")
+      && !briefCode.includes("recordAnalysisVerdict") && !briefCode.includes(".analysis"),
+    briefCode.length ? "" : "tickBriefSweep not found");
+  pin("exactly one site writes a machine-compiled brief, and both sweeps go through it",
+    [...executableServer.matchAll(/\.brief = \{ text, at: Date\.now\(\), model: SUMMARY_MODEL, edited: false \}/g)].length === 1
+      && [...executableServer.matchAll(/await compileBriefs\(/g)].length === 2);
+  pin("the owner poll carries the compiler mode as its own fact, omitted at zero",
+    /analysis: \{ on: ANALYSIS_ON \},\s*\.\.\.\(BRIEF_ON \? \{ briefCompiler: \{ on: true \} \} : \{\}\),/.test(executableServer)
+      && client.includes("briefCompilerOn = data.briefCompiler?.on;")
+      && /classifyAnalystOffWarning\(\{\s*analysisOn,\s*briefCompilerOn,/.test(client)
+      && warning.includes("input.briefCompilerOn === true"));
+
   pin("the queue warning consumes the owner poll fact and only classifies explicit false as off",
     client.includes("analysisOn = data.analysis?.on;")
       && /classifyAnalystOffWarning\(\{\s*analysisOn,/.test(client)

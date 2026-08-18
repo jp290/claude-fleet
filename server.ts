@@ -5850,6 +5850,36 @@ async function dispatchSourceTree(repo: string): Promise<"fleet" | "foreign"> {
   return FLEET_REPO_ROOT !== null && repoRoot === FLEET_REPO_ROOT ? "fleet" : "foreign";
 }
 
+// WHERE THE DELIVERED TEXT CAME FROM — a closed set, written onto every context receipt beside
+// briefHash. Without it the ledger can say WHAT crossed the seam but never by which route it was
+// authored, and an empty-lane rate per brief origin (the one number the compiler is judged by) is
+// not forward-computable from the rows: a compiled brief and a raw draft leave byte-identical
+// receipts. Derived mechanically from the task at the delivery seam, never from a later re-read of
+// a mutable row — the row's brief can be edited after the lane already ran.
+//   compiled — the analysis sweep's brief (TaskBrief, edited:false)
+//   owner    — a brief the owner wrote/edited by hand (TaskBrief, edited:true / model "owner")
+//   raw      — no brief on the row: the draft text itself was delivered
+//   clarify  — buildClarifyBrief's deterministic frame; deliberately NOT folded into "raw", because
+//              a clarify lane is briefed to settle a criterion and produce no commits, so counting
+//              it among raw dispatches would read as a raw-brief abort every time it works
+//   founding — a server-built Program-MAIN/Supervisor founding template; no task text is involved
+type BriefSource = "compiled" | "owner" | "raw" | "clarify" | "founding";
+
+function briefSourceOf(t: Task, clarify: boolean): BriefSource {
+  if (clarify) return "clarify";
+  if (!t.brief) return "raw";
+  return t.brief.edited || t.brief.model === "owner" ? "owner" : "compiled";
+}
+
+// ...and the value the OTHER four writers use. The founding rails (Program-MAIN and Supervisor,
+// bootstrap and succession) deliver a server-built template — buildProgramMainBrief, its succession
+// form, and the two Supervisor forms — with no Task anywhere in the call. Neither "raw" (claims a
+// draft text that does not exist) nor "compiled" (claims a model that never ran) is true there, so
+// the set carries the repo's own word for that delivery instead of the nearest wrong one. Their
+// briefHash is the same hash of the same kind of fact, the bytes that crossed the seam: one rule
+// for the ledger, not two. It joins no lane outcome only because a Program-MAIN is not a lane.
+const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";
+
 async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: string; branch: string; form: LaneForm },
   ownerAct: boolean, clarify = false): Promise<void> {
   // clarify mode ignores the compiled brief entirely: the enhancer turns a draft into a work brief
@@ -5858,6 +5888,9 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
   const brief = clarify
     ? buildClarifyBrief(next.text, next.analysis?.reason ?? null, `http://${HOST}:${PORT}`)
     : next.brief?.text ?? next.text;
+  // read HERE, at the same moment the bytes are chosen — not at receipt time. The row is mutable
+  // and a later reader cannot tell whether an edit came before or after this delivery.
+  const briefSource = briefSourceOf(next, clarify);
   // let claude finish booting in the fresh pane before the first prompt lands; a brand-new
   // lane is idle by definition, but claude's own startup needs a moment
   await Bun.sleep(4000);
@@ -5963,6 +5996,11 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
+      // The join key, and deliberately the SAME function LaneOutcome.briefHash uses over the lane's
+      // first logged prompt: both hash the bytes that actually crossed the seam, so a receipt and
+      // the outcome of the lane it founded meet exactly. The `hash` above stays what it was — it
+      // keys {anchorBlock, planFacts}, answers a different question, and nobody re-reads it here.
+      briefHash: briefHashOf(deliveredBrief), briefSource,
     });
     logPrompt(free, deliveredBrief, "auto", at);
     console.log(`dispatch: task ${next.id} → slot ${free.id} (${wt.branch})`);
@@ -12329,6 +12367,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
@@ -12432,6 +12471,7 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
@@ -12774,6 +12814,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);
@@ -12878,6 +12919,7 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
       saveHistory(free);

@@ -5,6 +5,7 @@
 // worth anything.
 import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { BASE, H, REPO, ROOT, check, get, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface SupervisorBinding {
@@ -31,7 +32,12 @@ interface ContextReceipt {
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   selected: unknown[]; omitted: unknown[];
   deliveredBytes: number; truncated: boolean;
+  briefHash?: string | null; briefSource?: string;
 }
+
+// server-side briefHashOf, verbatim — the receipt's join key is only worth asserting if the test
+// recomputes it the way the ledger's other half (LaneOutcome.briefHash) does
+const briefHashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
 
 const SUPERVISOR_LABEL = "🧿 Supervisor";
 // The founding body is restated here on purpose: this module is the SPEC side of the brief, so a
@@ -149,6 +155,15 @@ export async function run(): Promise<void> {
       && foundingReceipt.programId === null && foundingReceipt.taskId === null
       && foundingReceipt.originId === null && foundingReceipt.repo === ROOT
       && foundingReceipt.deliveredBytes === new TextEncoder().encode(foundingPrompt).byteLength,
+    JSON.stringify(foundingReceipt ?? null));
+  // A Supervisor brief is a SERVER-BUILT template with no Task in the call, so neither "raw" (a
+  // draft text that does not exist) nor "compiled" (a model that never ran) would be true. The
+  // hash is the same kind of fact as everywhere else — the bytes that crossed the seam — so a
+  // reader has one rule for the whole ledger; it simply joins no lane outcome, because a
+  // Supervisor is not a lane.
+  check("supervisor receipt: the founding template is receipted as founding, hashed over the delivered bytes",
+    foundingReceipt?.briefSource === "founding"
+      && foundingReceipt?.briefHash === briefHashOf(foundingPrompt),
     JSON.stringify(foundingReceipt ?? null));
 
   const occupiedAfterBootstrap = await occupied();
@@ -275,6 +290,10 @@ export async function run(): Promise<void> {
       && successionReceipt.programId === null && successionReceipt.taskId === null
       && successionReceipt.originId === null
       && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength,
+    JSON.stringify(successionReceipt ?? null));
+  check("supervisor succession receipt: the succession template is receipted as founding, hashed over the delivered bytes",
+    successionReceipt?.briefSource === "founding"
+      && successionReceipt?.briefHash === briefHashOf(successionPrompt),
     JSON.stringify(successionReceipt ?? null));
 
   // The ambiguity fixture leaves the run through the same door it came in — a Program row of this

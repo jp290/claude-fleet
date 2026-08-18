@@ -21,7 +21,11 @@ export async function run(ctx: Ctx): Promise<void> {
     selected: { id: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
     omitted: { id: string; why: string }[];
     deliveredBytes: number; truncated: boolean;
+    briefHash?: string | null; briefSource?: string;
   }
+  // server-side briefHashOf, verbatim: the join key is only worth asserting if the test computes it
+  // the same way the OUTCOME ledger does, not the same way the receipt writer does
+  const briefHashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
   const contextReceipts = async (): Promise<{ receipts: ContextReceipt[]; total: number; malformed: number }> =>
     (await (await get("/api/context-receipts")).json()) as { receipts: ContextReceipt[]; total: number; malformed: number };
 
@@ -802,6 +806,18 @@ export async function run(ctx: Ctx): Promise<void> {
         selected: deliveredReceipt.selected, omitted: deliveredReceipt.omitted,
       },
     })).digest("hex") : "";
+    // THE JOIN KEY. `hash` above keys {anchorBlock, planFacts} and answers a different question:
+    // nothing can reach a lane's OUTCOME row from it. briefHash is the same function over the same
+    // kind of fact LaneOutcome.briefHash carries — the lane's first logged prompt — so the two
+    // ledgers meet exactly. Before it, a host join receipt→outcome silently matched zero modern
+    // rows and read as "no brief found". briefSource is the other half: this brief was written by
+    // hand through the owner's route, and a receipt that cannot say so cannot carry an empty-lane
+    // rate PER ORIGIN, which is the whole point of measuring the compiler.
+    check("the receipt carries briefHash over the DELIVERED bytes (joinable to LaneOutcome.briefHash) and names the owner as the brief's author",
+      deliveredReceipt?.briefHash === briefHashOf(deliveredPrompt)
+      && /^[0-9a-f]{12}$/.test(deliveredReceipt?.briefHash ?? "")
+      && deliveredReceipt?.briefSource === "owner",
+      `${briefHashOf(deliveredPrompt)} ${JSON.stringify(deliveredReceipt ?? null)}`);
     check("the receipt id/hash are stable shapes and the documented v1 hash is recomputable from delivered facts",
       !!deliveredReceipt && /^[a-f0-9]{32}$/.test(deliveredReceipt.id)
       && deliveredReceipt.hash === recomputedHash && deliveredReceipt.truncated === false
@@ -938,6 +954,16 @@ export async function run(ctx: Ctx): Promise<void> {
       manualReceipt = (await contextReceipts()).receipts.find((receipt) => receipt.taskId === mT.task.id);
       if (!manualReceipt) await Bun.sleep(500);
     }
+    // THE RAW CASE, and it is the one the closed set must not swallow: this row was started with no
+    // brief at all, so the DRAFT text itself crossed the seam. A ledger that recorded it as
+    // "compiled" would credit the compiler with a lane it never touched.
+    const manualPrompt = ((await (await get("/api/prompts?limit=100")).json()) as { prompts: { source?: string; text?: string }[] })
+      .prompts.filter((p) => p.source === "auto").map((p) => p.text ?? "")
+      .find((text) => text.startsWith("manual-start-probe")) ?? "";
+    check("a dispatch with NO stored brief receipts briefSource raw, hashed over the draft that was actually delivered",
+      manualReceipt?.briefSource === "raw" && manualPrompt.startsWith("manual-start-probe")
+      && manualReceipt?.briefHash === briefHashOf(manualPrompt),
+      `${JSON.stringify(manualPrompt.slice(0, 80))} ${JSON.stringify(manualReceipt ?? null)}`);
     check("a task without a Program gets one receipt with honest null adapter/program facts",
       !!manualReceipt && (await contextReceipts()).total === manualReceiptsBefore.total + 1
       && manualReceipt.taskId === mT.task.id && manualReceipt.originId === mT.task.id
@@ -1369,6 +1395,17 @@ export async function run(ctx: Ctx): Promise<void> {
       qRow?.status === "sent" && !!qBrief?.text.startsWith(BRIEFMARK)
       && sent.some((prompt) => prompt === qBrief!.text),
       JSON.stringify({ status: qRow?.status, brief: qBrief?.text.slice(0, 60), sentCount: sent.length }));
+    // …and the receipt names the machine as the author. This is the only path in the suite where a
+    // brief exists that the owner never touched, so it is the only place the "compiled" arm of the
+    // derivation can be proven at all — everywhere else the brief is hand-set (edited:true).
+    const qReceipt = await till(
+      async () => (await contextReceipts()).receipts.find((receipt) => receipt.taskId === hQ),
+      (r) => !!r);
+    const qSent = sent.find((prompt) => prompt.startsWith(BRIEFMARK)) ?? "";
+    check("(h3) the analyst-compiled brief is receipted as compiled, hashed over the delivered bytes",
+      qReceipt?.briefSource === "compiled" && !!qSent
+      && qReceipt?.briefHash === briefHashOf(qSent),
+      JSON.stringify(qReceipt ?? null));
     if (typeof qRow?.slot === "number") await post(`/api/slots/${qRow.slot}/kill`, {});
 
     // (h4) THE OWNER OWNS THE BRIEF. Editing it pins the text against the sweep and invalidates the
@@ -1835,6 +1872,14 @@ export async function run(ctx: Ctx): Promise<void> {
       !!iSent && (iSent.text ?? "").includes(MARK) && (iSent.text ?? "").includes("not to implement it yet")
       && !(iSent.text ?? "").includes("enhanced prompt. own your work!"),
       JSON.stringify(iSent?.text ?? null).slice(0, 300));
+    // …and the receipt says so in one word. Booking a clarify lane as "raw" would be the costly
+    // reading: a clarify lane is briefed to settle a criterion and NOT to commit, so every one that
+    // works as designed would land in the empty-lane rate of raw dispatches.
+    const iReceipt = (await contextReceipts()).receipts.find((receipt) => receipt.taskId === iT.task.id);
+    check("(i) the clarify frame is receipted as its own origin, hashed over the frame that was delivered",
+      iReceipt?.briefSource === "clarify" && !!iSent?.text
+      && iReceipt?.briefHash === briefHashOf(iSent.text),
+      JSON.stringify(iReceipt ?? null));
     const iRow = (await (await get("/api/sessions")).json() as { tasks: { id: string; status: string; note?: string }[] })
       .tasks.find((t) => t.id === iT.task.id);
     check("(i) the row says a clarify lane is running, not a plain dispatch",

@@ -71,7 +71,14 @@ interface ContextReceipt {
   selected: { id: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
   omitted: { id: string; why: string }[];
   deliveredBytes: number; truncated: boolean;
+  // optional because rows written before this field exist and are served unchanged (the legacy
+  // fixture below is exactly one of them) — absent is a DATE, never a brief with no origin
+  briefHash?: string | null; briefSource?: string;
 }
+
+// server-side briefHashOf, verbatim — the join key is only worth asserting if the test recomputes
+// it the way the ledger's other half (LaneOutcome.briefHash) does
+const briefHashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 12);
 
 const content: ProgramContent = {
   title: "Program origin bracket",
@@ -697,6 +704,14 @@ export async function run(ctx: Ctx): Promise<void> {
       && receipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength
       && receipt.truncated === false,
     `${recomputedHash} ${JSON.stringify(receipt ?? null)}`);
+  // A Program-MAIN founding brief is a SERVER-BUILT template with no Task anywhere in the call, so
+  // neither "raw" (a draft text that does not exist) nor "compiled" (a model that never ran) would
+  // be true of it. briefHash is the same kind of fact the dispatch seam writes — the bytes that
+  // crossed it — so the ledger keeps one rule; it joins no lane outcome only because a MAIN is not
+  // a lane.
+  check("Program-MAIN target receipt: the founding template is receipted as founding, hashed over the delivered bytes",
+    receipt?.briefSource === "founding" && receipt?.briefHash === briefHashOf(deliveredPrompt),
+    JSON.stringify(receipt ?? null));
 
   const repeatSame = await beginBootstrap(mainProgram.id, {
     cwd: REPO, label: mainLabel, harness: "codex", model: "gpt-5.5", effort: "high",
@@ -1137,6 +1152,10 @@ export async function run(ctx: Ctx): Promise<void> {
       && successionReceipt.slot === successorSlot && successionReceipt.hash === successionHash
       && successionReceipt.deliveredBytes === new TextEncoder().encode(successionPrompt).byteLength
       && successionReceipt.truncated === false,
+    JSON.stringify(successionReceipt ?? null));
+  check("Program-MAIN succession receipt: the succession template is receipted as founding, hashed over the delivered bytes",
+    successionReceipt?.briefSource === "founding"
+      && successionReceipt?.briefHash === briefHashOf(successionPrompt),
     JSON.stringify(successionReceipt ?? null));
 
   const successorToken = readState().slots?.[String(successorSlot)]?.selfToken ?? "";

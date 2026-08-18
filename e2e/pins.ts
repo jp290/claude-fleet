@@ -801,6 +801,30 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /appendEvent\(CONTEXT_RECEIPT_FILE, \{/.test(server)
     && /readLedger<Record<string, unknown>>\(CONTEXT_RECEIPT_FILE\)/.test(routeBody),
     routeBody ? `${routeBody.length} route bytes` : "reader route missing");
+
+  // EVERY writer carries the brief pair, and the count is asserted so a sixth delivery seam cannot
+  // be added silently without it. Absent on a row means "written before the field existed" — a
+  // date — so one writer omitting it would forever read as an old row instead of a gap. The two
+  // values are a PAIR by construction: briefHash without briefSource cannot say by which route the
+  // bytes were authored, and briefSource without briefHash joins nothing.
+  const receiptWrites = [...server.matchAll(/appendEvent\(CONTEXT_RECEIPT_FILE, \{[\s\S]*?\n\s*\}\);/g)]
+    .map((m) => m[0]);
+  pin("every context-receipt writer carries briefHash AND briefSource — the ledger has one row shape, not two",
+    receiptWrites.length === 5
+    && receiptWrites.every((w) => /briefHash: briefHashOf\(deliveredBrief\)/.test(w)
+      && /briefSource(: FOUNDING_BRIEF_SOURCE)?,/.test(w)),
+    `${receiptWrites.length} writer(s), ${receiptWrites.filter((w) => !/briefHash/.test(w)).length} without briefHash`);
+  // The set is CLOSED at the type, and every literal in it is produced by something: four by the
+  // dispatch-seam derivation, the fifth by the founding constant. A value in the union that no
+  // writer can emit is a category the ledger promises and never delivers.
+  const briefSourceType = /type BriefSource = ([^;]+);/.exec(server)?.[1] ?? "";
+  pin("BriefSource is a closed set whose every literal has a producer",
+    briefSourceType.trim() === '"compiled" | "owner" | "raw" | "clarify" | "founding"'
+    && /if \(clarify\) return "clarify";/.test(server)
+    && /if \(!t\.brief\) return "raw";/.test(server)
+    && /t\.brief\.edited \|\| t\.brief\.model === "owner" \? "owner" : "compiled"/.test(server)
+    && /const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";/.test(server),
+    briefSourceType.trim() || "no BriefSource type");
 }
 
 {

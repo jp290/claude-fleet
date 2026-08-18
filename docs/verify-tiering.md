@@ -754,6 +754,13 @@ The proof order in §11.3 applies unchanged.
 
 ### 11.2c-bis The MIRROR of the family, in another harness: an unprobed pane that is already observed
 
+> **Superseded as a filing, 2026-08-19 — see §11.2f.** This sighting is not a sibling of §11.2c at
+> all: it is one of five checks of a family of its own, and its root is not "when does a freshly
+> opened pane count as having spoken" but `lastOutput` never having been a readiness signal in the
+> first place (`94b1362`). The two sightings below stand as measurements and are counted in
+> §11.2f's base rate; the *classification* in the paragraphs that follow is the one that was wrong.
+> The check itself was repaired on 2026-08-19 and no longer asserts `lastOutput === 0`.
+
 Signature, in `fleet-e2e-harness.ts` (phase 3 of `./e2e-claude-gate.sh`, the empty-`FLEET_HARNESS_COMMS`
 counter-probe), one FAIL and no dependents —
 
@@ -895,11 +902,19 @@ red commit check a flake — and after this fix a commit-family red has one fewe
 
 **The ordinal, counted and not asserted.** Three families in §5b, `merge/resolver` in §11.2,
 `reseed + live-bytes` in §11.2b, the `stalled` pane-observation race in §11.2c, the 💾-commit idle
-gate in §11.2e — seven. §11.2c-bis is the *mirror* of the sixth and §11.2d says of itself that it
-is a sibling and **not** a member, so neither adds one. This is the **eighth**. (The queue line
+gate in §11.2e — seven. §11.2d says of itself that it is a sibling and **not** a member, and
+§11.2c-bis was filed as one too — wrongly, but a sibling filing never carried an ordinal, so
+neither of them shifts the count. This is the **eighth**, and it absorbs §11.2c-bis. (The queue line
 that commissioned the repair, `911bdb73`, calls it the seventh; it was written without §11.2e in
 view. `CLAUDE.md` says "sechs bekannte Flake-Familien", which was already one short before this
 section existed.)
+
+**What §11 said about it before this.** Four of the five checks below appear **nowhere** in this
+file (`grep -c 'boot-race'` was 0). The fifth, the `unprobed` one, is written up — as §11.2c-bis,
+filed as a *sibling of §11.2c*. That filing is wrong and is superseded here: its mechanism is not
+§11.2c's repaint quiet-window but the one this section names, and its two sightings belong in the
+base rate below. Naming one member of a five-member family as a one-off sibling of a different
+family is itself the cost of not having had this section.
 
 **Signature: any of five checks in `./e2e-claude-gate.sh`, and *which* one changes from run to
 run.** Verbatim, all five, so a later reader recognises them:
@@ -939,13 +954,19 @@ one.** Session 49, 2026-08-10, quiet machine, serial, same tree (lane `3546db8`)
 | 1 | land gate | `boot-race fixture: the pane is still unobserved before immediate /send` |
 | 2 | suite run directly, 109 PASS | `observed-pane fixture probe: the printing harn process is really alive` · `a pane that already printed takes the unchanged no-delay send path` (`200 3191ms`) |
 
-Two runs, three FAILs, **no check in common**. Plus two older sightings of the same class on
-2026-08-09 (session 46), each proved a flake by re-running an unchanged tree, each having held up a
-land: `silent-alive fixture: the pane has still never printed before /send` (1786260763914) and
-`unprobed fixture: the pane is still unobserved before /send` (1786268459843). So ~1–2 FAILs per
-run on the affected checks — which is what made every land review-bearing; the commissioning queue
-line reports at least three lands lifted over such a red with `{confirm:true}` (not re-measured
-here).
+Two runs, three FAILs, **no check in common**. Four further sightings, all of the same class, all
+cleared by the §11.3 order (re-run the same tree), each having held up a land:
+
+- 2026-08-09, session 46: `silent-alive fixture: the pane has still never printed before /send`
+  (1786260763914) and `unprobed fixture: the pane is still unobserved before /send` (1786268459843).
+- 2026-08-18, the two rows already tabulated in §11.2c-bis, both `unprobed fixture: …`: the P6
+  lane's own gate chain (rerun `PASS … (0)`), and the **live land gate for P8** on `6f3b3e8`
+  (`verify.ok:false`, 107 s, exit 1, 1 FAILURES; rerun `ALL PASS`, 116 PASS). The second downgraded
+  a clean rebase to `resolved/landed:NO` and the tree went in by confirm-land.
+
+Seven sightings across four dates, ~1–2 FAILs per affected run — which is what made every land
+review-bearing; the commissioning queue line reports at least three lands lifted over such a red
+with `{confirm:true}` (not re-measured here).
 
 Run 2's two FAILs are **one root, not two** — the same shape §11.2c and §11.2e both have. The
 `harn-observed` stand-in sleeps 3 s and only then execs `harn-print`; `awaitObserved` waited on
@@ -1022,7 +1043,7 @@ worth keeping as an epitaph for `lastOutput`: while `harn-print` had provably ne
 - `sendBootTimeouts()` is duplicated in the two phase harnesses. They are separate single-file
   programs sharing only `e2e/harness.ts`, and the shared module was outside the repair's surface.
 
-**No free pass.** Five sightings make the family real; they do not make the next red send-boot
+**No free pass.** Seven sightings make the family real; they do not make the next red send-boot
 check a flake. After this cut a red one has one fewer excuse, not more — and the four precondition
 rows are there precisely so the next red says which it is.
 

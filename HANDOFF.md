@@ -1,3 +1,212 @@
+# HANDOFF — Supervisor-Occupant 6 (2026-08-18, Slot 7 「🧿 Supervisor」, Session 728f7a18): Kontextlast halbiert-minus, Arbeitskreis dreifach vermessen, eine Scope-Frage offen
+
+**Wer:** sechste Insassin der stehenden Supervisor-Rolle. `ctx` beim Schreiben: **39 %** von 1M,
+an der Pane gemessen, nicht geschätzt. Alles Folgende beim Schreiben geprüft, nicht erinnert —
+jede Zahl hier habe ich selbst nachgerechnet, auch die aus den Berichten meiner Lanes.
+
+---
+
+## 0. DEINE ERSTE HANDLUNG
+
+**Schalte dich auf Opus 5 mit `effort high`** — in deiner Pane `/model opus`, dann `/effort high`,
+Footer prüfen. Owner-Entscheid 2026-08-18, die Nachfolge trägt ihn nicht mit.
+
+**Und die Korrektur, die meine Vorgängerin noch nicht hatte: „in der Pane nachziehen" repariert den
+Slot-Datensatz NICHT.** Ich habe es geprüft — es gibt **keine Route, die Modell oder Effort eines
+lebenden Slots ändert** (`grep` auf eine solche Route: null Treffer). `/model` und `/effort` wirken
+zur Laufzeit, der Datensatz bleibt auf `fable`/`null`, und `succeedSupervisor` reicht den Datensatz
+wörtlich weiter. Jede Nachfolgerin bootet also wieder auf Fable, bis jemand `succeedSupervisor`
+schneidet. Prosa im Handoff behebt das nicht; es ist ein Bau-Auftrag, und die Queue führt ihn
+bereits als Notiz (`844915ff`).
+
+---
+
+## 1. WAS DER OWNER ALS NÄCHSTES WILL — das ist dein Auftrag, wörtlich
+
+„Aber ich denke das wir hier noch etwas rausholen können indem wir wichtiges besser, effizienter und
+kompakter machen. Da muss ja noch einiges gehen irgendwie, interessant wäre auch wie die claude
+fleet eigenen Kontext aufteilung uns hier hilft.. Hierfür sollten wir erstmal alles so
+kdokumentieren und dann einen neuen supervisor starten der dies dann auch mit übernimmt."
+
+Das sind **zwei** Aufträge, und der zweite ist der interessantere:
+
+**(a) Weiter verdichten — aber jetzt anders als bisher.** Die bisherige Runde hat VERSCHOBEN
+(nichts gelöscht, alles zieht um). Der Owner will jetzt „wichtiges besser, effizienter und
+kompakter" — also **umschreiben**, nicht umziehen. Das ist eine andere und gefährlichere Operation:
+Verschieben ist verlustfrei und von `pins` prüfbar, Verdichten kann Bedeutung verlieren, ohne dass
+ein Gate es merkt. Bau dir dafür eine Probe, bevor du anfängst (siehe §2, „was pins nicht prüft").
+
+**(b) Fleets EIGENE Kontext-Aufteilung nutzen.** Das ist der Faden mit dem größten Hebel, und er ist
+noch unangetastet. Fleet hat einen Mechanismus, der Sitzungen rollen- und lage-abhängig Kontext
+zustellen könnte — er wird heute fast nicht genutzt. Was ich diese Session daran verifiziert habe,
+als Startpunkt, damit du nicht neu gräbst:
+
+- `CONTEXT_PACKS` sind **sechs fest kompilierte Packs** (`context-packs.ts:85-190`). Zwei stehen auf
+  `ALL_HARNESSES` (`portable-core`, `verify-e2e`), zwei auf `["claude","pi-unfenced"]`
+  (`land-mechanics`, `private-deploy-overlay`).
+- Die Auswahl-Leiter ist `contextOmissionFor` (`context-plan.ts:73-81`). **Keine ihrer Achsen ist die
+  Aufgabe** — nicht der Text, nicht `kind`, nicht `programId`, nicht die berührten Dateien. Folge,
+  gemessen am Ledger: **61 von 70 Zustellungen wählen exakt dieselben zwei Packs.**
+- Geliefert werden **nur Zeiger**, nie Quelltext (`renderContextAnchorBlock`, `server.ts:6150-6161`),
+  angehängt an den Brief in `server.ts:6107` (`${brief}${anchorBlock}`). Kein Deckel, kein Limit.
+- Der Renderer zeigt **nur `selected`** — die Auslassungen sind unsichtbar. Deshalb hat niemand
+  gemerkt, dass Private-repo-c UND Private-repo-f mit `selected: []` gründeten.
+- **Nur `programMainContextPlan` (`server.ts:12436`) liest ein Repo-Manifest** (`.fleet/context-packs.json`).
+  Der LANE-Pfad kann es strukturell nicht — und der Supervisor-Pfad auch nicht.
+- Es gibt **keine Lese-Seite**: nichts hält fest, ob ein Empfänger die Anker je geöffnet hat
+  (`server.ts:16762-16763` sagt es selbst).
+
+**Die naheliegende These, die zu prüfen wäre — nicht meine Entscheidung, sondern deine Arbeit:**
+Das Regelbuch muss nicht als ein Monolith in jedem Präfix liegen. Es könnte in Packs zerfallen, die
+nach Rolle und Lage zugestellt werden — eine Lane bekäme Lane-Disziplin, eine Deploy-Session die
+Deploy-Regeln, ein Supervisor seine. Das würde `## Lane discipline` (27.112 B) aus jeder
+Nicht-Lane-Session nehmen und `## Einstieg` (19.019 B) aus jeder Lane. **Der Haken, den du zuerst
+klären musst:** Packs liefern heute nur ZEIGER, keine Inhalte — ein Zeiger kostet einen Read, und
+ein Read ist teurer als gecachtes Präfix (genau der Fehler, den der Loader-Vertrag heute mit
+`AGENTS.md` macht, §2). Ob Packs überhaupt Inhalt tragen können und was das kostet, ist die erste
+Frage, nicht die letzte.
+
+---
+
+## 2. DIE KONTEXTLAST-KETTE — abgeschlossen, Ziel knapp verfehlt
+
+Owner-Auftrag war eine Kette in fünf Schritten; alle fünf sind gefahren.
+
+**Ergebnis, an einer frisch geöffneten Session gemessen (nicht geschätzt, nicht von der schneidenden
+Session selbst):**
+
+| | vorher | nachher |
+|---|---:|---:|
+| Startlast einer Session | 98.368 Tokens | **79.993** |
+| `CLAUDE.md` | 109.675 B / 1154 Z. | **72.506 B / 764 Z.** |
+
+Ersparnis **18.375 Tokens**. **Das Ziel „unter 75.000" ist um ~5.000 verfehlt** — sag das so, es war
+meine Zielzahl, nicht die des Owners. Kalibrierung nebenbei: die tatsächliche Dichte ist
+**2,02 Byte/Token**; wer künftig Byte in Token umrechnet, nimmt diese Zahl.
+
+**Die drei Commits:** `ecdd62b` (Befund) · `f70b631` (Inventar) · `bf04397` (der Schnitt).
+**`bf04397` ist ein Direkt-Commit aus dem Haupt-Checkout** — keine Land-Notiz, keine
+`lane-outcomes`-Zeile, **kein Post-Land-Audit**. Wer das Ledger liest, schließt sonst korrekt-aber-
+falsch, hier sei nie verifiziert worden. Verifiziert wurde: `bun e2e/pins.ts` ALL PASS (mein eigener
+Lauf) plus die Inhalts-Überlebensprobe der Session.
+
+**Wo das Ausgezogene liegt:** `docs/attic/harness-zaun-messungen.md` (12.747 B) ·
+`docs/attic/entfernte-flaechen.md` (3.121 B) · `docs/harness-adapter.md` (16.108 B).
+`docs/rulebook-inventar-2026-08-18.md` ist die Karte: 98 Blöcke, jede Zeile 1–1154 genau einmal,
+Byte-Summe exakt 109.675. Ich habe sie unabhängig nachgerechnet — null fehlende Zeilen, null
+doppelte, **null falsche Byte-Angaben**. Sie ist weiterhin die Landkarte für jede weitere Runde.
+
+**Abschnitte heute:** Lane discipline 27.112 · Einstieg 19.019 · Deploy 15.570 · Self-scheduling
+5.999 · Loader-Vertrag 1.791 · Supervisor-Rolle 1.768 · graphify 1.231.
+
+**Was `pins` NICHT prüft, und das ist die Falle der nächsten Runde:** `bun e2e/pins.ts` prüft, dass
+zitierte Pfade auflösen und grep-Aufträge etwas finden. Es prüft **nicht**, ob eine verschobene oder
+verdichtete Regel ihre Bedeutung behalten hat. Ich habe der Schnitt-Session deshalb eine eigene
+Überlebensprobe vorgeschrieben (Sicherung als Wahrheitsquelle, Block für Block nachweisen, dass der
+Inhalt in der Vereinigung aus neuer Datei und Zieldokumenten auffindbar ist). **Für Verdichtung
+brauchst du eine schärfere Probe als das** — Auffindbarkeit reicht dort nicht, weil ein verdichteter
+Satz absichtlich anders lautet.
+
+**Nebenbefund:** die Prüfmenge des Pins ist mit der Datei geschrumpft, von 106 Pfaden und 5
+grep-Aufträgen auf **98 und 3**. Die zwei entfallenen grep-Aufträge liegen jetzt in den
+Zieldokumenten, wo dieser Pin sie nicht mehr prüft. Kleiner Abdeckungsverlust, benannt statt still.
+
+**Die Sicherung** liegt außerhalb des Baums: `~/claude-fleet-rulebook-backup-20260818-154938.md`
+(109.675 B, der Stand VOR dem Schnitt). `CLAUDE.md` ist gitignored — es gibt kein git-Netz, also
+lege vor jedem weiteren Eingriff eine neue Kopie an.
+
+---
+
+## 3. DIE OFFENE FRAGE, die der Owner selbst gestellt hat
+
+**„analysieren wir eigentlich den task-arbeitskreis oder den gamestudio arbeitskreis?"** — sie ist
+**unbeantwortet**, und sie ist berechtigt. Nachgezählt:
+
+- **Atlas und Ausarbeitung = Task-Arbeitskreis.** Alle 23 Atlas-Knoten sind Fleet-Maschinerie
+  (`intake`, `analyse-sweep`, `brief-kompiler`, `freigabe-tor`, `dispatch-tick`, `land-gate`,
+  `post-land-audit`, `deploy`). Kein Studio-Knoten.
+- **Die Vorwärts-Analyse kippt zum Gamestudio.** Wortfeld: Studio 39 · Kit 28 · Gate 23 · Private-repo-c 17 ·
+  Private-repo-f 13 gegen Queue 6 · Task 7 · Dispatch 12.
+
+**Die Naht ist mein Briefing-Fehler:** ich habe zwei Owner-Sätze („der Prozess soll sich wie ein
+Workflow anfühlen" und „eine Analyse für die kommenden Gates") in EINEN Auftrag gepackt. Meine
+Lesart, mit Beleg: der Owner führt „Studio und Arbeitskreise" selbst als zwei Dinge, und das Repo
+auch (`docs/arbeitskreis-programm-2026-08-18.md` = Task-Kette; `docs/product-studio-working-circle.md`
+= Studio). **Also: Arbeitskreis = Task-Kette.** Bestätigen lassen, bevor die Atlas-Lane die Fläche
+umbaut.
+
+---
+
+## 4. WAS LÄUFT — Slots beim Übergeben
+
+- **Slot 3, `fleet/260818115512-2413`, GLM (`pi-zai`/`glm-5.3`), LEBT und soll leben.** Sie hat den
+  Arbeitskreis-Atlas gebaut (`arbeitskreis-atlas/`: Schema getrennt vom Inhalt, 23 Knoten/28
+  Kanten/8 Phasen, eine offline lauffähige Seite, plus `docs/arbeitskreis-atlas-2026-08-18.md`).
+  **UNGELANDET, mit Absicht:** der Owner will auf dieser Fläche mit einer Session gemeinsam
+  verfeinern, und ein Land beendet den Worktree. Nicht landen, ohne ihn zu fragen.
+  **Offene Rückmeldung des Owners an sie**, noch nicht zugestellt: die Seite gibt „noch nicht
+  wirklich Aufschluss über die technische Implementierung bzw. den tatsächlich darunter liegenden
+  Prompt oder agent.md files", und er hätte das Ganze „als workflow entwerfen lassen". Ich hatte
+  dazu eine Folge-Nachricht fertig (Artefakt-Dimension ins Schema; Workflow-Ansicht statt Landkarte)
+  und **zurückgehalten**, weil der Owner die Reihenfolge drehte: erst ausarbeiten, dann darstellen.
+  Der Entwurf liegt in meinem Scratchpad; er ist wiederverwendbar.
+- **Slot 4, `fleet/260818122409-abc7`, GLM:** hat den Arbeitskreis als Workflow ausgearbeitet
+  (`docs/arbeitskreis-workflow-2026-08-18.md`, 502 Zeilen, elf Stufen als Verträge, die drei Arten
+  steuernden Textes am Code verifiziert). **ACHTUNG: der Land ist FEHLGESCHLAGEN und der Slot steht
+  in einem Zustand, der dich braucht — nicht blind wiederholen.** Zwei Dinge zugleich:
+  (a) `verify.ok:false`, exitCode 3, aber die Signatur ist die dokumentierte Flake, nicht ein
+  Regress: `e2e-claude-gate.sh` Phase 3 meldet „server did not come up" **und in der aufbewahrten
+  Instanz fehlt die `server.log`** — genau das Erkennungsmerkmal für „das Kommando lief dort nie".
+  Der Rest des Laufs steht auf `ALL PASS`. Beweisordnung ist trotzdem Pflicht: denselben Baum
+  seriell erneut fahren, bevor jemand „Flake" sagt.
+  (b) `MergeLast.status = "resolved"`, `landed:false` — es gab einen Konflikt, ein Agent hat ihn
+  aufgelöst, und diese Auflösung hat **niemand gesehen**. Die Route verweigert deshalb einen
+  einfachen Neulauf, solange `main` Vorfahr des Branches ist; sie will, dass ein Mensch den Diff
+  ansieht. Seit meinem Handoff-Commit hat `main` sich bewegt, der Riegel lapst also — **umso mehr
+  Grund, den Diff zuerst zu lesen** statt den Land einfach nochmal zu drücken.
+- **Slot 10, Haupt-Checkout, Fable:** hat den Regelbuch-Schnitt ausgeführt, fertig, committed.
+  Kann weg.
+- Die drei Studios (Slots 1, 2, 6) und die Prozess-MAIN (Slot 5) laufen unverändert weiter; ich habe
+  sie diese Session nicht angefasst.
+
+---
+
+## 5. WAS DEM OWNER GEHÖRT — offen, nicht von mir repariert
+
+1. **Die Deploy-Identität steht in getrackten Dateien eines ÖFFENTLICHEN Repos.** `git grep -inE
+   'example|100\.[0-9]+\.[0-9]+\.[0-9]+'` ist nicht leer und war es schon vor dem Schnitt
+   nicht: `HANDOFF.md` (3 Treffer), `docs/supervisor-succession.md` (4). Das Regelbuch fordert an
+   dieser Stelle ausdrücklich ein leeres Ergebnis. Die Schnitt-Session hat es korrekt gemeldet statt
+   still mitzureparieren; ich ebenso, weil es außerhalb des Auftrags lag. **Es ist offen.**
+2. **Der Supervisor-Modell-Defekt** (§0) — braucht einen Schnitt an `succeedSupervisor`.
+3. **Die drei Aus-Schalter des Arbeitskreises stehen weiter auf aus:** `FLEET_ANALYSIS_MS=0`,
+   `FLEET_BRIEF_MS` gar nicht gesetzt, **`"dispatch": false` in `fleet.json`**. Der Owner hatte den
+   Kompiler-Flip als nächsten Schritt vorgesehen (`docs/arbeitskreis-programm-2026-08-18.md` §5.3);
+   er ist nicht gefahren. `CLAUDE.md` behauptete an dieser Stelle noch `dispatch: true` — Stand
+   2026-08-06, seit dem Schnitt geprüft und korrigiert.
+
+---
+
+## 6. WAS ICH GEPRÜFT HABE UND WAS NICHT
+
+**Selbst gemessen:** die Startlast an sieben Sessions (94.897–98.873 vorher, 79.993 nachher) · die
+§3.2-Blocktabelle Byte für Byte · die Inventar-Arithmetik vollständig (98 Blöcke, Zeilenabdeckung,
+jede Blockgröße gegen die echte Datei) · `bun e2e/pins.ts` vor und nach dem Schnitt · den
+Leck-Befund · `dispatch: false` · die Adapter-Felder von `pi-zai` (`automatable:false`,
+`allowsLanes:true`) · dass keine Route Modell/Effort eines lebenden Slots ändert · die
+Zustellung jedes Briefs an der Pane.
+
+**Nicht geprüft:** den Inhalt der drei Zieldokumente Zeile für Zeile (ich habe die Überlebensprobe
+der Session gelesen, nicht wiederholt) · die 502 Zeilen der Ausarbeitung inhaltlich · die
+Atlas-Seite gerendert (nur Modell und Schema) · ob die Studio-MAINs die Kit-v2-Nudges je erhalten
+haben — die Vorwärts-Analyse sagt nein, ich habe keine Studio-Pane gelesen.
+
+**Eine Lehre, die mich Zeit gekostet hat:** ein Hintergrund-Wächter auf „kein Spinner sichtbar"
+feuert zu früh — ich habe eine Session für fertig erklärt, die noch zwölf Minuten arbeitete.
+Verlange mehrere aufeinanderfolgende ruhige Proben, und für eine Nicht-Lane gibt es ohnehin keinen
+Server-Watch (`done-looking` klassifiziert nur Lanes).
+
+---
 # HANDOFF — Supervisor-Occupant 5 (2026-08-18, Slot 4 「🧿 Supervisor」, Session 7635a906): Underwhelm-Audit + Kit v2 im Flug, GLM-Studio live, drei Sensor-Defekte gefunden
 
 **Wer:** fünfte Insassin der stehenden Supervisor-Rolle. Succession per Owner-Anweisung. `ctx` beim

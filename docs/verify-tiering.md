@@ -891,6 +891,141 @@ tree.
 **No free pass**, as with every family here: six sightings make it real, they do not make the next
 red commit check a flake — and after this fix a commit-family red has one fewer excuse, not more.
 
+### 11.2f An eighth family: the send-boot fixtures assert a precondition they do not control (2026-08-10 → repaired 2026-08-19)
+
+**The ordinal, counted and not asserted.** Three families in §5b, `merge/resolver` in §11.2,
+`reseed + live-bytes` in §11.2b, the `stalled` pane-observation race in §11.2c, the 💾-commit idle
+gate in §11.2e — seven. §11.2c-bis is the *mirror* of the sixth and §11.2d says of itself that it
+is a sibling and **not** a member, so neither adds one. This is the **eighth**. (The queue line
+that commissioned the repair, `911bdb73`, calls it the seventh; it was written without §11.2e in
+view. `CLAUDE.md` says "sechs bekannte Flake-Familien", which was already one short before this
+section existed.)
+
+**Signature: any of five checks in `./e2e-claude-gate.sh`, and *which* one changes from run to
+run.** Verbatim, all five, so a later reader recognises them:
+
+> `unprobed fixture: the pane is still unobserved before /send`
+> `boot-race fixture: the pane is still unobserved before immediate /send`
+> `observed-pane fixture probe: the printing harn process is really alive`  (detail: `zsh,sh`)
+> `a pane that already printed takes the unchanged no-delay send path`  (detail: `200 3191ms`)
+> `silent-alive fixture: the pane has still never printed before /send`
+
+The first four live in `fleet-e2e-harness.ts` (phase 2 and the phase-3 `FLEET_GATE_UNPROBED`
+branch), the fifth in `fleet-e2e-claude-gate.ts` (phase 1). This is the wrapper the **land gate**
+runs as step 4 of `VERIFY_CMD` (`watchdog.sh`), so every sighting is a red land.
+
+**Mechanism, in one sentence: `lastOutput` is not a readiness signal — tmux stamps it on the
+pane's first repaint, seconds before the agent process exists.** That is not new knowledge here;
+it is what `94b1362` *proved*, using this very family's `silent-alive` fixture as the evidence —
+its stand-in (`claude-hang.c`, `for (;;) pause();`) prints nothing by construction and got a
+timestamp anyway. `94b1362` therefore moved the boot-wait decision in `sendText` off `lastOutput`
+and onto a process probe (`paneAgentAt`) plus an `openedAt` freshness window. **The fixtures did
+not follow.** Re-read at `4614da8`: `sendText` (`server.ts:4472`) does not mention `lastOutput`
+anywhere — the three `lastOutput === 0` lines were preconditions for a code path that no longer
+exists, asserting a *negative* the fixture does not own and a repaint can destroy at any instant.
+
+`silent-alive` was the worst of them, because it destroyed its own precondition while establishing
+the other: `awaitAgent(9, "alive")` polls up to **20 s** for the liveness half, and every one of
+those seconds is a chance for the `lastOutput === 0` half to die. Twenty seconds also exceeds
+`SEND_BOOT_FRESH_MS` (15 s) — past which `sendText` skips the readiness branch entirely, so the
+fixture's fast result would have proved *staleness*, not the no-settle path. A green row for a
+thing never measured.
+
+**Base rate: disjoint failures on a byte-identical tree — the §11.2e proof shape, not the §11.3
+one.** Session 49, 2026-08-10, quiet machine, serial, same tree (lane `3546db8`):
+
+| run | source | FAIL(s) |
+|---|---|---|
+| 1 | land gate | `boot-race fixture: the pane is still unobserved before immediate /send` |
+| 2 | suite run directly, 109 PASS | `observed-pane fixture probe: the printing harn process is really alive` · `a pane that already printed takes the unchanged no-delay send path` (`200 3191ms`) |
+
+Two runs, three FAILs, **no check in common**. Plus two older sightings of the same class on
+2026-08-09 (session 46), each proved a flake by re-running an unchanged tree, each having held up a
+land: `silent-alive fixture: the pane has still never printed before /send` (1786260763914) and
+`unprobed fixture: the pane is still unobserved before /send` (1786268459843). So ~1–2 FAILs per
+run on the affected checks — which is what made every land review-bearing; the commissioning queue
+line reports at least three lands lifted over such a red with `{confirm:true}` (not re-measured
+here).
+
+Run 2's two FAILs are **one root, not two** — the same shape §11.2c and §11.2e both have. The
+`harn-observed` stand-in sleeps 3 s and only then execs `harn-print`; `awaitObserved` waited on
+`lastOutput > 0`, which the pane's first repaint satisfies immediately. The fixture therefore sent
+while the pane still held only `zsh,sh`, so the process probe found no agent (FAIL 1) **and**
+`sendText` correctly took the readiness-wait branch, returning in 3191 ms — just past
+`SEND_BOOT_WAIT_MS` = 3000 (FAIL 2). Both lines accused the product of a regression that had not
+happened.
+
+**Repair (2026-08-19), two halves, and both are needed.**
+
+- **(a) Establish the precondition instead of asserting it**, each time on the quantity the code
+  actually reads. `silent-alive` polls the pane's own process tree directly (`awaitPaneComm`)
+  rather than the git-tick cache, which lags up to 10 s and spends exactly the freshness window the
+  fixture needs; the cached reading stays as *corroboration*, moved to **after** the send, where it
+  cannot race. `observed-pane` polls the pane for the stand-in's own ready line
+  (`awaitPaneText`, `harn-observed-ready`), which proves both halves at once — the pane HAS
+  printed, and the printer IS the declared agent, because `harn-print` emits that line only after
+  its exec. `boot-race` and `unprobed` wait for nothing at all any more; the `unprobed` branch
+  sends **first** and asserts afterwards, since an empty comms declaration is a server boot fact
+  and a freshness window only shrinks. The fixtures' sleep budgets are now *read out of the
+  installed stand-in* (`fixtureSleepMs`) instead of copied from `e2e-claude-gate.sh`.
+- **(b) Carry each precondition as its own `check()` and skip its dependants** — the form
+  `d695e7e` built for `e2e/restart.ts` and `8e2b3e5` for the `awaiting` probe; this is that class's
+  third site. Four new named rows: three times "the send falls inside the boot-freshness window"
+  and once "the send began before the stand-in exec'd its agent". A precondition that runs out is
+  still **red** — but red under its own name, and the product check stays silent instead of
+  reporting a regression that never happened.
+
+**The implicit time budget is now explicit and argued.** `observedElapsed < 1000` was a bet against
+a shared machine, and it is what read `3191ms`. Both no-delay budgets are 2000 ms, stated against
+the constants they are about: `SEND_BOOT_WAIT_MS` = 3000 and Claude's `bootSettleMs` = 2500. The
+250 ms `DEFAULT_BOOT_SETTLE_MS` is **not** separable from this machine's noise — the comment says
+so rather than pretending; that branch is excluded by the *precondition* (`sendText` settles only
+when its first probe found the agent absent, and these fixtures prove it present) and not by the
+clock. Alongside it a clock-free second opinion on the **path**: `sendBootTimeouts()` reads the
+`send_boot_timeout` audit row that only the timeout branch writes. It can structurally produce only
+a false PASS (an unflushed row reads as absent, and the budget catches that case), never a false
+FAIL.
+
+**Nothing was removed or weakened.** The three `lastOutput === 0` lines were replaced by *stricter*
+preconditions (a live process instead of a cache reading, printed bytes instead of a repaint
+stamp), four named rows were added, and the two time windows grew from 1000 to 2000 ms with the
+reasoning written down — both still below the smallest regression they can separate.
+
+**Proof that the new handling bites, which a green run cannot give.** A deliberate sabotage run
+(2026-08-19) broke two preconditions on purpose: a 2500 ms sleep pushed the `boot-race` send past
+the stand-in's 2000 ms pre-exec window, and the `observed-pane` establishment budgets were set to
+0. Result — three FAILs, **all three precondition/probe rows under their own names**, and **zero**
+product rows emitted at all:
+
+```
+FAIL  boot-race fixture precondition: the send began before the stand-in exec'd its agent  (2800ms of 2000ms)
+FAIL  observed-pane fixture: the stand-in printed its ready line into the pane  (ready line never appeared)
+FAIL  observed-pane fixture probe: the printing harn process is really alive  (zsh,sh)
+```
+
+The middle row is the session-49 failure re-created; the third is byte-identical to it, `zsh,sh`
+and all. Under the old fixtures that same state produced `a pane that already printed takes the
+unchanged no-delay send path (200 3191ms)` — an accusation against `server.ts`. It now reads
+"the fixture could not set itself up", which is what actually happened. One line of the same run is
+worth keeping as an epitaph for `lastOutput`: while `harn-print` had provably never run,
+`observed-pane fixture: Fleet recorded the pane's first output` **PASSED**.
+
+**Residual risk, named.**
+
+- The 250 ms default settle remains unmeasurable by these checks; a regression that made an
+  established pane pay *only* that settle would pass. It is excluded by construction, not observed.
+- The preconditions are now facts this process owns (its own two timestamps, a window read out of
+  the fixture, a directly polled process tree), so a red one means the machine is genuinely too
+  slow — a real signal, and it costs a land. Margins measured on the repaired tree are wide:
+  `silent-alive` 323 ms of 15000, `boot-race` 297 ms of 2000, `observed-pane` 4069 ms of 15000,
+  both no-delay sends 189 ms of 2000.
+- `sendBootTimeouts()` is duplicated in the two phase harnesses. They are separate single-file
+  programs sharing only `e2e/harness.ts`, and the shared module was outside the repair's surface.
+
+**No free pass.** Five sightings make the family real; they do not make the next red send-boot
+check a flake. After this cut a red one has one fewer excuse, not more — and the four precondition
+rows are there precisely so the next red says which it is.
+
 ### 11.3 Correction to the prescribed proof method
 
 `CLAUDE.md` tells a lane to clear a suspected flake with **a fresh HEAD worktree, same check,

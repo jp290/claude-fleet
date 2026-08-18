@@ -1,4 +1,4 @@
-# Setup-health checklist (kit v1)
+# Setup-health checklist (kit v2)
 
 Run by the MAIN after the FIRST TWO worker cycles, before any gate is attempted. Results are
 written into the decision record. Any failure stops work: repair the kit instantiation, then
@@ -18,6 +18,18 @@ Leading indicators (all measurable from the trails already collected):
 - [ ] **Residency growth:** context growth over the first two cycles is within the declared
       budget slope (numbers per program; the SLOPE being wildly super-linear this early predicts
       the quadratic blow-up).
+- [ ] **Anchor presence + provenance:** `docs/anchor.md` names ≥2 reference games with a
+      situation list, and its provenance line says the owner authored it — never a producer.
+      (Frames themselves block the first appearance verdict, not this checklist.)
+- [ ] **Content-ledger integrity:** `docs/content-ledger.md` exists, its rows match the
+      contract's slice list verbatim, every `delivered` row names evidence, and no appearance
+      gate is scheduled while a `core` row is `missing`.
+- [ ] **Success criterion names the product:** the program's success criterion can fail on a
+      boring or absent GAME and cannot be satisfied by a working pipeline alone; at least one
+      gate can fail on appeal alone (comparatively, against the anchor).
+- [ ] **Kit references resolve:** every "as in the kit" / "the kit's X rule" citation in the
+      contract greps to an existing kit rule. (Private-repo-f's only fun clause cited a kit feel rule
+      that never existed — the dead pointer silently discharged the product's central claim.)
 
 Thresholds are tuned after each studio's first work-trail audit; the checklist items themselves
 change only by owner promotion.

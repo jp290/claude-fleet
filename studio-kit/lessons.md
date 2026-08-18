@@ -1,4 +1,4 @@
-# Cross-studio delta ledger (kit v1) — size-capped, human-promoted
+# Cross-studio delta ledger (kit v2) — size-capped, human-promoted
 
 One entry per transferred lesson: (studio, failure mode observed, mitigation promoted,
 applicability predicate, trail citation). A lesson transfers ONLY if its failure mode exists
@@ -28,3 +28,17 @@ a delta list, never a rulebook. A new MAIN ingests the kit + this ledger, nothin
    and gate shape** → derive it explicitly as D0 before gate 1. Predicate: every studio, at
    setup time. Cite: `docs/private-repo-c-aufstellung-2026-08-17.md` §2–3, grok-studio-kit mapping.
    (Folded: `decision-record-template.md` D0.)
+
+## Entries 6–7 (Private-repo-c + Private-repo-f, 2026-08-18 underwhelm audit)
+
+6. **Both studios — gate order put appearance before content: the owner tasted the graphics of
+   a non-game (Private-repo-c 4/12 slice items, Private-repo-f 1/1/1 vs 3/3–4/10), and no criterion anywhere
+   could fail on boredom or absent content** → owner-supplied appeal anchor as a
+   bootstrap-blocking slot + content ledger with the appearance-after-content ordering
+   invariant + comparative (never absolute) appeal verdicts. Predicate: any studio with an
+   appearance gate. Cite: `docs/studio-underwhelm-audit-2026-08-18.md` §1–§4, §8. (Folded:
+   `appeal-anchor-template.md`, `content-ledger-template.md`, setup-health items, A0.)
+7. **Private-repo-f — the contract's only fun clause cited "the kit's feel rule", which never
+   existed; a dead pointer silently discharged the product's central claim** → kit citations in
+   a contract must resolve by grep, checked in setup-health. Predicate: any contract citing the
+   kit. Cite: underwhelm audit §6. (Folded: setup-health checklist.)

@@ -1,4 +1,4 @@
-# Evidence-pack schema + fidelity rules (kit v1)
+# Evidence-pack schema + fidelity rules (kit v2)
 
 A pack is the ONLY form in which raw trails/logs cross into a judging context. The judge never
 opens the raw source; the pack names it.

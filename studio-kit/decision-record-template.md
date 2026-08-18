@@ -1,4 +1,4 @@
-# Decision record (kit v1) — opens with the proof-medium slot
+# Decision record (kit v2) — opens with the proof-medium slot
 
 Append-only, one entry per promoted decision (D1, D2, …). Producers propose; the owner promotes.
 
@@ -15,6 +15,13 @@ Filled BEFORE gate 1, via the four steps — the answers are the entry:
    form: every claim names a reproducible artifact + source commit; "unknown" is a valid label).
 
 Everything downstream (critic design, pack schema, gate exit criteria) derives from D0.
+
+## A0 (mandatory, alongside D0): appeal-anchor receipt
+
+Records that the owner-supplied anchor (`appeal-anchor-template.md`) arrived: the named games,
+the frame paths + hashes, and who authored it — an A0 naming a producer as author is invalid.
+Frames may arrive after bootstrap (they block the first appearance verdict, not the founding);
+A0 is then amended, never rewritten.
 
 ## Dn entries
 

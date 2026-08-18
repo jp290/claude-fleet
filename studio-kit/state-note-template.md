@@ -1,4 +1,4 @@
-# State note (kit v1) — the only valid output at the turn cap, ≤2k tokens
+# State note (kit v2) — the only valid output at the turn cap, ≤2k tokens
 
 1. **Works** — what is verified done, with the quoted command tail.
 2. **Residual defects** — ranked, each with the exact file:line or artifact path.

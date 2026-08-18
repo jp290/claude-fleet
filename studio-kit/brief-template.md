@@ -1,4 +1,4 @@
-# Worker/reviewer brief template (kit v1)
+# Worker/reviewer brief template (kit v2)
 
 Every slot is mandatory; an empty slot is written as `none`, never omitted — absence must be
 distinguishable from forgetting.

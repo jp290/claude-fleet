@@ -1,4 +1,4 @@
-# Standing rules (kit v1 template)
+# Standing rules (kit v2 template)
 
 This file IS the mandatory block below. The MAIN copies the block verbatim to the END of every
 worker brief AND every reviewer/critic brief. A brief without the block is invalid: an agent

@@ -234,7 +234,13 @@ interface TaskInfo { id: string; source: "owner" | "intake" | "steward"; from?: 
 // the proposal itself, as GET /api/tasks serves it (server.ts TaskRefine)
 interface RefineChildView { text: string; doneCriterion?: string; verify?: string; files?: string[] }
 interface TaskRefineFull { at: number; model: string;
-  proposal: { unchanged: boolean; reason?: string; tasks?: RefineChildView[] } }
+  proposal: { unchanged: boolean; reason?: string; tasks?: RefineChildView[] };
+  // the server's deterministic acceptance on that proposal (server.ts refineValidationFor,
+  // refine-validate.ts): tracked-path and verify-contract findings, three-valued, per child. It
+  // gates nothing here either — it is shown next to the apply button so the owner promotes a bad
+  // proposal knowingly or not at all. ABSENT on an `unchanged` proposal, which has no children.
+  validation?: { verdict: "pass" | "fail" | "unknown";
+    findings: { code: string; severity: "error" | "unknown"; child: number; detail: string }[] } }
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string }
 let fleet: SlotInfo[] = [];
 // the harness catalogue, fetched ONCE (it is a server constant) the first time the picker opens.
@@ -6003,7 +6009,23 @@ function renderQueueDetail() {
           ...(c.doneCriterion ? [`Done: ${c.doneCriterion}`] : []),
           ...(c.verify ? [`Verify: ${c.verify}`] : []),
         ].join("\n")));
+        // …and the machine's own reading of that child, immediately under it. Two severities, two
+        // colours, never merged: "not tracked in this repo" is a measured defect, "could not be
+        // read" is an absent measurement, and only the first is evidence of a bad proposal.
+        for (const sev of ["error", "unknown"] as const) {
+          const mine = (ref.validation?.findings ?? []).filter((f) => f.child === i && f.severity === sev);
+          if (mine.length) refinement!.appendChild(el("div", `qdfind ${sev === "error" ? "err" : "unk"}`,
+            mine.map((f) => `${sev === "error" ? "✕" : "?"} ${f.detail}`).join("\n")));
+        }
       });
+      // and the verdict once, above the buttons — so the apply click is never the first place the
+      // owner could have learned it. It says what it is (a check, not a gate) because the button
+      // beneath it stays enabled either way: promoting a flagged proposal is the owner's to do.
+      if (ref.validation && ref.validation.verdict !== "pass")
+        refinement!.appendChild(el("div", `qdfind ${ref.validation.verdict === "fail" ? "err" : "unk"}`,
+          ref.validation.verdict === "fail"
+            ? `checked against the target repo: ${ref.validation.findings.filter((f) => f.severity === "error").length} finding(s) above. Applying anyway is yours to decide.`
+            : "checked against the target repo: some of it could not be checked (see above) — not measured is not a pass."));
     }
     const racts = el("div", "pkdacts");
     // applying is all-or-nothing and archives this row — say so on the button, because the

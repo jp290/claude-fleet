@@ -273,9 +273,34 @@ Determinismus:**
 ein refine-Lauf fasst `t.text` nie an (`server.ts:1590-1593`), erst der Owner-Confirm mintet Rows
 (`server.ts:17709-17741`), und ein Fehlschlag ist fail-closed mit Notiz statt Halbvorschlag
 (`server.ts:6341-6345`). **Was fehlt, ist nicht die Marktschnittstelle, sondern die deterministische
-Abnahme davor** — also (1) und (2). NOT BUILT: ein Pfad-/Verify-Validator auf einem
-Refine-Vorschlag; gesucht in `server.ts` um `parseRefineAnswer` (`:6277-6309`), das clamped
-Längen und Anzahl, prüft aber **keinen Pfad gegen den Baum**.
+Abnahme davor** — also (1) und (2).
+
+**GEBAUT 2026-08-18 (P7), und zwar (1) und (2) zusammen: `refine-validate.ts`.** Reine Funktion in
+der Form von `validateContextPacks` — jede Tatsache injiziert, kein fs/git/env/Netz, dreiwertig
+(`pass` · `fail` · `unknown`), sechs Codes. Sie sitzt NICHT an `parseRefineAnswer`, wo dieses
+Dokument sie suchte, sondern als Projektion in `taskView` (`refineValidationFor`): ein Befund über
+einen Baum ist nur lesenswert, wenn er über den Baum von JETZT spricht, und dort liegt der
+index-gestempelte `trackedPaths`-Snapshot bereits — kein zweiter Pfad-Cache, kein Staleness-Anker
+wie bei `analysis.head`. Der Confirm rechnet sie ein zweites Mal, gegen den Baum in dem Moment.
+
+Drei Dinge, die man kennen muss, bevor man darauf baut:
+
+- **Sie gated NICHTS.** Ein Vorschlag mit halluzinierten Pfaden promotet weiter, wenn der Owner es
+  sagt — dieselbe Latitude wie `⏫ author` über einem roten Verify. Der Gewinn ist, dass er es
+  SEHEN konnte, und dass die Audit-Zeile den Verdikt trägt, gegen den er entschieden hat.
+- **Der Verify-Teil ist repo-abhängig, der Pfad-Teil nicht.** „Getrackt" heißt in jedem Repo
+  dasselbe; `LOCAL_PROOF_STEPS` beschreibt nur DIESEN Baum. Ein fremdes `Task.repo` ergibt darum
+  `VERIFY_CONTRACT_FOREIGN` (unknown), nie ein Fail — die Klassifikation ist dieselbe
+  Toplevel-Gleichheit gegen `FLEET_REPO_ROOT`, die `dispatchSourceTree` anwendet.
+- **Eine bewusste Weitung gegenüber (2) oben:** `./e2e-isolated.sh` zählt als vertragskonform,
+  obwohl es kein *Schritt* ist. Begründung aus dem Code, nicht aus Bequemlichkeit — `LocalProof`
+  führt `isolatedPreview` NEBEN `steps` als denselben Vertrag (`verify-proportion.ts`), und es ist
+  der meistgenannte Verify-Weg dieses Repos. Ihn zu flaggen hätte den ersten echten Befund des
+  Validators zu einem falschen gemacht.
+
+Was die Klausel ONLY VERIFIED PATHS angeht, ist die Wanderung damit halb vollzogen: sie steht
+weiter im Prompt (die Pins `e2e/tasks.ts` §(j) sind unangetastet) und wird jetzt zusätzlich
+NACHGEPRÜFT. Sie ersetzt die Selbstverpflichtung nicht — sie macht sie prüfbar.
 
 ---
 

@@ -18,6 +18,7 @@ import { analysisStaleness } from "./analysis-staleness";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { localProofFor, type LocalProof } from "./verify-proportion";
+import { validateRefineProposal, type RefineValidation } from "./refine-validate";
 import { planContext, type ContextPlan, type ContextPlanSelection } from "./context-plan";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
@@ -1658,7 +1659,15 @@ interface RefineChild { text: string; doneCriterion: string; verify: string; fil
 // The two answer shapes, as a discriminated union: either the task was already brief-shaped
 // (triage — the anti-overthink clause) or it compiles into 1..MAX_REFINE_CHILDREN children.
 type RefineProposal = { unchanged: true; reason: string } | { unchanged: false; tasks: RefineChild[] };
-interface TaskRefine { at: number; model: string; proposal: RefineProposal }
+interface TaskRefine { at: number; model: string; proposal: RefineProposal;
+  // The deterministic acceptance on that proposal (refine-validate.ts): which declared paths are
+  // tracked in the target repo, and whether each child's verify field names a step of this repo's
+  // local proof chain. READ-ONLY PROJECTION, like `cluster` on the row above it — written by
+  // taskView from the CURRENT tracked tree and never by the worker, so it is always a statement
+  // about today rather than about the minute the compile finished, and it needs no staleness
+  // anchor the way `analysis.head` does. Never persisted: normRefine rebuilds this record field by
+  // field, so a hand-edited state file cannot smuggle a verdict in either direction.
+  validation?: RefineValidation }
 const MAX_REFINE_CHILDREN = 4; // the split cap lives HERE, not in the model's judgment: an answer
 // over it is a worker that ignored its contract, and that fails closed like any other (runRefineJob)
 const MAX_REFINE_FIELD = 2000; // doneCriterion/verify/reason are sentences, not documents
@@ -2382,7 +2391,30 @@ function taskView(t: Task): Task {
     project: snapshot?.project ?? (repoRaw ? basename(repoCanon(repoRaw)).replace(/\.git$/, "") : null),
     repoRoot: snapshot?.repo ?? (repoRaw ? repoCanon(repoRaw) : null),
   });
-  return { ...t, files: undefined, filesOrigin: undefined, cluster: undefined, ...metadata };
+  return { ...t, files: undefined, filesOrigin: undefined, cluster: undefined, ...metadata,
+    ...(t.refine ? { refine: { ...t.refine, ...refineValidationFor(t, snapshot) } } : {}) };
+}
+// The acceptance that stands between a compiled proposal and the owner's confirm (refine-validate
+// .ts, docs/brief-kompilierung-verbesserung-2026-08-18.md §6). Derived HERE rather than stored at
+// compile time, for the reason the field comment on TaskRefine.validation gives: a finding about a
+// tree is only worth reading if it is about the tree as it stands now, and this projection already
+// holds the index-stamped snapshot every other surface reads — no second path cache, and no third
+// place that can disagree about what "tracked" means.
+//
+// An `unchanged` proposal gets none: it has no children, so there is nothing whose paths or verify
+// path could be judged, and an empty pass there would read as an endorsement of a triage answer
+// this validator has no opinion about.
+function refineValidationFor(t: Task, snapshot: TrackedSnapshot | null): { validation?: RefineValidation } {
+  if (!t.refine || t.refine.proposal.unchanged) return {};
+  return { validation: validateRefineProposal({
+    children: t.refine.proposal.tasks,
+    // null, never an empty set: an unreadable index is not a repository that tracks nothing
+    trackedPaths: snapshot?.paths ?? null,
+    // git toplevel identity is the classifier, exactly as dispatchSourceTree applies it — and
+    // "could not read the tree" is its own answer rather than a quiet "foreign"
+    tree: snapshot === null ? null
+      : FLEET_REPO_ROOT !== null && snapshot.repo === FLEET_REPO_ROOT ? "fleet" : "foreign",
+  }) };
 }
 // THE ANALYST'S READ OF THE SAME PROJECTION — deliberately taskView itself and not a second
 // derivation beside it, which is the mistake laneSurfaces' own comment records having made once on
@@ -18021,6 +18053,15 @@ Bun.serve<WSData>({
       // a run still in flight holds a reference to this row and would write its proposal onto the
       // archived original afterwards
       if (refineInflight.has(t.id)) return json({ error: "a refine is still running for this task" }, 409);
+      // The deterministic acceptance, recomputed AT the promote against the tree as it stands now
+      // (refine-validate.ts). It does NOT gate: a proposal with hallucinated paths still promotes
+      // if the owner says so, the same latitude ⏫ author grants him over a red verify — the value
+      // is that he could see it, and that the ledger records he confirmed it anyway. Reading it
+      // here rather than trusting the projection the detail pane showed is the point: minutes may
+      // have passed, and the tree may have moved under both of them.
+      const rRepoRaw = t.repo ?? (DISPATCH_REPO || null);
+      const rValidation = refineValidationFor(t,
+        rRepoRaw ? trackedSnapshotFor(rRepoRaw) : null).validation ?? null;
       const now = Date.now();
       const originId = t.originId ?? t.id;
       const kids: Task[] = proposal.tasks.map((c) => {
@@ -18051,8 +18092,14 @@ Bun.serve<WSData>({
       t.status = "archived";
       t.note = `refined → ${kids.map((k) => k.id).join(", ")}`;
       saveState();
-      audit("task_refine_confirm", undefined, `${t.id} → ${kids.map((k) => k.id).join(",")}`);
-      return json({ ok: true, tasks: kids.map(taskDigest) });
+      // the acceptance rides INTO the audit line when it is not clean, because "the owner promoted
+      // a proposal that named two paths this tree does not have" is exactly the kind of sighted
+      // decision an outcome ledger is later asked about. A clean one adds nothing: silence there
+      // already means pass, and a "(validation: pass)" on every row would train the eye past it.
+      audit("task_refine_confirm", undefined, `${t.id} → ${kids.map((k) => k.id).join(",")}`
+        + (rValidation && rValidation.verdict !== "pass"
+          ? ` (validation: ${rValidation.verdict}, ${rValidation.findings.length} finding${rValidation.findings.length === 1 ? "" : "s"})` : ""));
+      return json({ ok: true, tasks: kids.map(taskDigest), validation: rValidation });
     }
     // the brief is the one model output the owner may overwrite, and that is the point of storing
     // it: it is the exact text a lane will receive, so being able to read it before the fact is

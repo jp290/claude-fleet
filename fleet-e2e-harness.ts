@@ -23,42 +23,26 @@
 //
 // Run via ./e2e-claude-gate.sh. Do not run directly against a live fleet — e2e/harness.ts refuses
 // the live socket and the live port on import, before anything here can act.
-import { AUTOS_TICK_MS, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
+import { readFileSync } from "node:fs";
+import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
 
-// The empty-comms waiver is immutable server configuration, so the wrapper gives it a fresh
-// phase-2 process and enters only this counter-proof. Keep the precondition explicit: if the pane
-// was observed before /send, a fast result would prove the lastOutput fast path, not the waiver.
-if (process.env.FLEET_GATE_UNPROBED === "1") {
-  const opened = await post("/api/slots/1/open", { cwd: "~" });
-  check("unprobed fixture: the FLEET_CMD=true slot opened", opened.ok, String(opened.status));
-  const before = ((await (await get("/api/sessions")).json()) as
-    { slots: { id: number; lastOutput: number }[] }).slots.find((s) => s.id === 1)?.lastOutput;
-  check("unprobed fixture: the pane is still unobserved before /send", before === 0, String(before));
+// server.ts's two send-boot constants, mirrored the way e2e/harness.ts mirrors AUTO_MIN_EVERY_SEC:
+// neither is env-exposed, and every fixture below is a statement ABOUT them, so a fixture that
+// restated the numbers inline would say nothing when one of them moves.
+//   SEND_BOOT_FRESH_MS — outside this window sendText skips the readiness branch entirely, so a
+//     fast send proves staleness rather than whatever the fixture meant to prove. Every fixture
+//     here therefore carries it as its OWN named precondition.
+//   SEND_BOOT_WAIT_MS  — the largest delay the readiness branch can add. It is what the no-delay
+//     budgets below are sized against, and the only regression size a clock can honestly separate.
+const SEND_BOOT_FRESH_MS = 15_000; // server.ts, const SEND_BOOT_FRESH_MS
+const SEND_BOOT_WAIT_MS = 3000;    // server.ts, const SEND_BOOT_WAIT_MS
+// Deliberately below SEND_BOOT_WAIT_MS with a full second of machine-load margin, and deliberately
+// NOT below DEFAULT_BOOT_SETTLE_MS (250 ms): 250 ms is inside this machine's noise, so no clock can
+// separate "no settle" from "settled" and pretending otherwise is what made the old `< 1000` budget
+// a bet. The settle branch is excluded by the PRECONDITION instead — sendText only settles when its
+// first probe found the agent absent, and these fixtures prove it present before they send.
+const NO_DELAY_BUDGET_MS = 2000;
 
-  const marker = "unprobed-send-arrived";
-  const started = Date.now();
-  const sent = await post("/send", { slot: 1, text: `printf '${marker}\\n'` });
-  const elapsed = Date.now() - started;
-  check("an empty comms set is never readiness-delayed", sent.ok && elapsed < 1500,
-    `${sent.status} ${elapsed}ms`);
-
-  // This is the probe's OWN verdict. Only after it passes may marker absence mean /send was lost;
-  // otherwise this branch would reproduce the boot race and mislabel a probe failure as success.
-  const paneProbe = await paneEnv("s1", "FLEET_SELF_SLOT");
-  check("unprobed fixture probe: paneEnv itself ran in the stand-in shell", paneProbe === "1",
-    paneProbe ?? "probe did not run");
-  const cap = await tmuxOut("capture-pane", "-t", "s1", "-p", "-J");
-  check("the non-delayed unprobed send still arrives byte-for-byte",
-    cap.out.includes(marker), cap.out.slice(-180));
-
-  console.log(results.join("\n"));
-  console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
-  process.exit(failures() ? 1 : 0);
-}
-
-const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
-
-interface AutoInfo { id: string; slot: number; lastResult: string | null }
 type AgentState = "alive" | "no-agent" | "no-pane" | "unprobed";
 interface PollSlot { id: number; agent: AgentState | null; lastOutput: number }
 
@@ -111,6 +95,114 @@ async function directPaneComms(target: string): Promise<string[]> {
   return out;
 }
 
+// ESTABLISH, don't assert: poll the pane's own process tree until the declared agent appears.
+// Returns the last reading either way, so the caller's check reports what it really saw.
+async function awaitPaneComm(target: string, prefix: string, budgetMs: number): Promise<string[]> {
+  const until = Date.now() + budgetMs;
+  let seen: string[] = [];
+  for (;;) {
+    seen = await directPaneComms(target);
+    if (seen.some((c) => c.startsWith(prefix))) return seen;
+    if (Date.now() >= until) return seen;
+    await Bun.sleep(100);
+  }
+}
+
+// The pane's rendered bytes, which is the only honest way to say "this pane has printed". lastOutput
+// cannot say it: tmux stamps it on the pane's first REPAINT, which happens before the agent exists
+// (94b1362 — the silent-alive stand-in prints nothing at all and still got a timestamp).
+async function awaitPaneText(target: string, needle: string, budgetMs: number): Promise<boolean> {
+  const until = Date.now() + budgetMs;
+  for (;;) {
+    if ((await tmuxOut("capture-pane", "-t", target, "-p", "-J")).out.includes(needle)) return true;
+    if (Date.now() >= until) return false;
+    await Bun.sleep(100);
+  }
+}
+
+// The one PATH fact sendText leaves behind that a test can read: its timeout branch writes a
+// send_boot_timeout audit row before it pastes. This is a second opinion on WHICH branch ran,
+// next to the clock — and a safe one, because it can only ever produce a false PASS: a row still
+// sitting in the event-log write chain reads as absent, and the elapsed budget catches that case.
+// Duplicated in fleet-e2e-claude-gate.ts on purpose — the two phase harnesses are separate
+// single-file programs and share nothing but e2e/harness.ts (CLAUDE.md, "fleet-e2e.ts is a runner
+// only"). -1 means the trail itself could not be read, which is a failure of its own.
+function sendBootTimeouts(slot: number, sinceTs: number): number {
+  let raw = "";
+  try { raw = readFileSync(`${ROOT}/audit.jsonl`, "utf8"); } catch { return -1; }
+  let n = 0;
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    let row: { ts?: number; event?: string; slot?: number };
+    try { row = JSON.parse(line) as typeof row; } catch { continue; }
+    if (row.event === "send_boot_timeout" && row.slot === slot && (row.ts ?? 0) >= sinceTs) n++;
+  }
+  return n;
+}
+
+// The empty-comms waiver is immutable server configuration, so the wrapper gives it a fresh
+// phase-2 process and enters only this counter-proof.
+if (process.env.FLEET_GATE_UNPROBED === "1") {
+  const openedStarted = Date.now();
+  const opened = await post("/api/slots/1/open", { cwd: "~" });
+  check("unprobed fixture: the FLEET_CMD=true slot opened", opened.ok, String(opened.status));
+
+  // Send FIRST, assert the preconditions AFTER. Both are facts that cannot change between the send
+  // and the assertion — an empty comms declaration is a server BOOT fact, and a freshness window
+  // only ever shrinks — so nothing is bought by paying for them before the clock starts, and every
+  // millisecond spent beforehand is a millisecond of the window this fixture needs.
+  // What is NOT among them any more: `lastOutput === 0`. sendText has not consulted lastOutput
+  // since 94b1362, and tmux repaints a pane before its agent prints a byte, so that line asserted a
+  // negative this fixture never controlled and a repaint could destroy at any moment.
+  const marker = "unprobed-send-arrived";
+  const started = Date.now();
+  const sent = await post("/send", { slot: 1, text: `printf '${marker}\\n'` });
+  const elapsed = Date.now() - started;
+
+  const freshAtSend = started - openedStarted;
+  const wasFresh = freshAtSend < SEND_BOOT_FRESH_MS;
+  check("unprobed fixture precondition: the send fell inside the boot-freshness window",
+    wasFresh, `${freshAtSend}ms of ${SEND_BOOT_FRESH_MS}ms`);
+  // The server's own statement that it has no comms to probe with — which IS the waiver under test.
+  const agentSeen = await awaitAgent(1, "unprobed");
+  const wasUnprobed = agentSeen === "unprobed";
+  check("unprobed fixture precondition: the server declares no comms for this slot",
+    wasUnprobed, String(agentSeen));
+  if (wasFresh && wasUnprobed) {
+    // 1500 ms: the only delay reachable from a fresh pane is SEND_BOOT_WAIT_MS, so the budget has
+    // to separate 1500 from 3000, not from a settle the waiver branch can never pay.
+    check("an empty comms set is never readiness-delayed", sent.ok && elapsed < 1500,
+      `${sent.status} ${elapsed}ms (budget 1500 of ${SEND_BOOT_WAIT_MS})`);
+  }
+
+  // This is the probe's OWN verdict. Only after it passes may marker absence mean /send was lost;
+  // otherwise this branch would reproduce the boot race and mislabel a probe failure as success.
+  const paneProbe = await paneEnv("s1", "FLEET_SELF_SLOT");
+  check("unprobed fixture probe: paneEnv itself ran in the stand-in shell", paneProbe === "1",
+    paneProbe ?? "probe did not run");
+  const cap = await tmuxOut("capture-pane", "-t", "s1", "-p", "-J");
+  check("the non-delayed unprobed send still arrives byte-for-byte",
+    cap.out.includes(marker), cap.out.slice(-180));
+
+  console.log(results.join("\n"));
+  console.log(failures() ? `\n${failures()} FAILURES` : "\nALL PASS");
+  process.exit(failures() ? 1 : 0);
+}
+
+const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
+
+interface AutoInfo { id: string; slot: number; lastResult: string | null }
+
+// The boot fixtures race a sleep that lives in e2e-claude-gate.sh, not here. Read it out of the
+// installed stand-in rather than restating the number: a copy would rot silently the day the
+// wrapper changes, and this fixture's whole job is to send INSIDE that window.
+function fixtureSleepMs(name: string): number {
+  try {
+    const m = readFileSync(`${FAKEBIN}/${name}`, "utf8").match(/^\s*sleep\s+([0-9]+)\s*$/m);
+    return m ? Number(m[1]) * 1000 : 0;
+  } catch { return 0; }
+}
+
 // the pane's spawn command, once tmux has actually created the session
 async function startCmdOf(target: string): Promise<string> {
   for (let i = 0; i < 40; i++) {
@@ -136,53 +228,89 @@ async function installHarn(variant: "boot" | "observed" | "never" | "hang" | "ex
 // only then does it exec harn-agent. harn-agent flushes once before reading, so the old immediate
 // paste is genuinely lost; the readiness wait plus adapter settle moves delivery past that flush.
 await installHarn("boot");
+const bootSleepMs = fixtureSleepMs("harn-boot");
+check("boot-race fixture: the stand-in declares the pre-exec sleep this fixture races",
+  bootSleepMs > 0, `${bootSleepMs}ms`);
+const bootOpenStarted = Date.now();
 const bootOpen = await post("/api/slots/9/open", { cwd: "~" });
 check("boot-race fixture: the delayed foreign TUI opened", bootOpen.ok, String(bootOpen.status));
-const bootBefore = await slotLastOutput(9);
-check("boot-race fixture: the pane is still unobserved before immediate /send",
-  bootBefore === 0, String(bootBefore));
 const bootWrapperComms = await directPaneComms("s9");
+const bootUnexec = bootWrapperComms.length > 0 && bootWrapperComms.every((c) => !c.startsWith("harn"));
 check("boot-race fixture probe: no declared harn process exists before /send",
-  bootWrapperComms.length > 0 && bootWrapperComms.every((c) => !c.startsWith("harn")),
-  bootWrapperComms.join(",") || "process probe did not run");
+  bootUnexec, bootWrapperComms.join(",") || "process probe did not run");
 const bootMarker = "boot-send-model-marker";
 const bootStarted = Date.now();
 const bootSend = await post("/send", { slot: 9, text: bootMarker });
 const bootElapsed = Date.now() - bootStarted;
-check("immediate /send waits for the foreign TUI settle instead of feeding its boot flush",
-  bootSend.ok && bootElapsed >= 1000, `${bootSend.status} ${bootElapsed}ms`);
+// The fixture is only measuring a boot race if the send actually began while the stand-in was
+// still sleeping. Said under its OWN name: a send that arrives late finds an already-alive agent
+// and takes the no-delay path, and the product check below would then report a code regression
+// that never happened. Nothing here is a negative anyone else can destroy — it is this process's
+// own two timestamps against a window read out of the fixture.
+const bootRaced = bootStarted - bootOpenStarted;
+const bootInWindow = bootSleepMs > 0 && bootRaced < bootSleepMs;
+check("boot-race fixture precondition: the send began before the stand-in exec'd its agent",
+  bootInWindow, `${bootRaced}ms of ${bootSleepMs}ms`);
+if (bootInWindow && bootUnexec) {
+  check("immediate /send waits for the foreign TUI settle instead of feeding its boot flush",
+    bootSend.ok && bootElapsed >= 1000, `${bootSend.status} ${bootElapsed}ms`);
 
-// Probe verdict first, payload verdict second. If paneEnv cannot run after the stand-in exits, the
-// marker assertion is not allowed to impersonate a boot-race measurement.
-const bootPaneProbe = await paneEnv("s9", "FLEET_SELF_SLOT");
-check("boot-race fixture probe: paneEnv itself ran after the delayed TUI",
-  bootPaneProbe === "9", bootPaneProbe ?? "probe did not run");
-const bootCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
-check("the delayed TUI's model received the immediate send byte-for-byte",
-  bootCap.out.includes(`harn-received=[${bootMarker}]`), bootCap.out.slice(-220));
+  // Probe verdict first, payload verdict second. If paneEnv cannot run after the stand-in exits, the
+  // marker assertion is not allowed to impersonate a boot-race measurement.
+  const bootPaneProbe = await paneEnv("s9", "FLEET_SELF_SLOT");
+  check("boot-race fixture probe: paneEnv itself ran after the delayed TUI",
+    bootPaneProbe === "9", bootPaneProbe ?? "probe did not run");
+  const bootCap = await tmuxOut("capture-pane", "-t", "s9", "-p", "-J");
+  check("the delayed TUI's model received the immediate send byte-for-byte",
+    bootCap.out.includes(`harn-received=[${bootMarker}]`), bootCap.out.slice(-220));
+}
 
 // A separate fixture prints AFTER ensureSlot's repaint quiet-window, then hangs as a real harn
-// process. Waiting positively for lastOutput makes the fast-path precondition the thing measured,
-// not an assumption inferred from a capture.
+// process. The precondition is now ESTABLISHED rather than asserted: the stand-in's own ready line
+// is what proves both halves this fixture needs — the pane HAS printed, and the printer IS the
+// declared agent, because harn-print emits that line only after harn-observed exec'd it.
 await installHarn("observed");
+const observedSleepMs = fixtureSleepMs("harn-observed");
+check("observed-pane fixture: the stand-in declares its pre-print sleep",
+  observedSleepMs > 0, `${observedSleepMs}ms`);
+const observedOpenStarted = Date.now();
 const observedOpen = await post("/api/slots/11/open", { cwd: "~" });
 check("observed-pane fixture: the delayed-print foreign TUI opened",
   observedOpen.ok, String(observedOpen.status));
+const observedPrinted = await awaitPaneText("s11", "harn-observed-ready", observedSleepMs + 10_000);
+check("observed-pane fixture: the stand-in printed its ready line into the pane",
+  observedPrinted, observedPrinted ? "harn-observed-ready" : "ready line never appeared");
+const observedComms = await awaitPaneComm("s11", "harn", 5000);
+const observedAlive = observedComms.some((c) => c.startsWith("harn"));
+check("observed-pane fixture probe: the printing harn process is really alive",
+  observedAlive, observedComms.join(",") || "process probe did not run");
 const observedAt = await awaitObserved(11);
 check("observed-pane fixture: Fleet recorded the pane's first output",
   observedAt !== undefined && observedAt > 0, String(observedAt));
-const observedComms = await directPaneComms("s11");
-check("observed-pane fixture probe: the printing harn process is really alive",
-  observedComms.some((c) => c.startsWith("harn")), observedComms.join(",") || "process probe did not run");
-const observedMarker = "observed-send-arrived";
-const observedStarted = Date.now();
-const observedSend = await post("/send", { slot: 11, text: observedMarker });
-const observedElapsed = Date.now() - observedStarted;
-check("a pane that already printed takes the unchanged no-delay send path",
-  observedSend.ok && observedElapsed < 1000, `${observedSend.status} ${observedElapsed}ms`);
-const observedCap = await tmuxOut("capture-pane", "-t", "s11", "-p", "-J");
-check("the observed-pane direct send preserves its bytes",
-  observedCap.out.includes(observedMarker), observedCap.out.slice(-220));
+// Establishing the two facts above costs the stand-in's sleep, so the window this send needs is the
+// one thing the establishing could have spent. Its own named check, and the reason it is here at
+// all: a send that fell OUT of the window would return fast for a reason that has nothing to do
+// with the no-delay path, and would read as a green measurement of something never measured.
+const observedFresh = Date.now() - observedOpenStarted;
+const observedInWindow = observedFresh < SEND_BOOT_FRESH_MS;
+check("observed-pane fixture precondition: the send still falls inside the boot-freshness window",
+  observedInWindow, `${observedFresh}ms of ${SEND_BOOT_FRESH_MS}ms`);
+if (observedPrinted && observedAlive && observedInWindow) {
+  const observedMarker = "observed-send-arrived";
+  const auditMark = Date.now();
+  const observedSend = await post("/send", { slot: 11, text: observedMarker });
+  const observedElapsed = Date.now() - auditMark;
+  check("a pane that already printed takes the unchanged no-delay send path",
+    observedSend.ok && observedElapsed < NO_DELAY_BUDGET_MS,
+    `${observedSend.status} ${observedElapsed}ms (budget ${NO_DELAY_BUDGET_MS} of ${SEND_BOOT_WAIT_MS})`);
+  // ...and the branch itself, not just its duration: the timeout branch is the one that leaves a row.
+  const observedTimeouts = sendBootTimeouts(11, auditMark);
+  check("the no-delay send took no readiness-timeout branch (no audit row)",
+    observedTimeouts === 0, observedTimeouts < 0 ? "audit trail unreadable" : `${observedTimeouts} rows`);
+  const observedCap = await tmuxOut("capture-pane", "-t", "s11", "-p", "-J");
+  check("the observed-pane direct send preserves its bytes",
+    observedCap.out.includes(observedMarker), observedCap.out.slice(-220));
+}
 
 // --- branch 1: the probe FINDS a foreign agent. The positive control, and it has to come first:
 // without it, a probe that simply answered "no-agent" to everything would satisfy every negative

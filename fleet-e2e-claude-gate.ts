@@ -30,7 +30,9 @@ import { runFreshPinnedTranscriptIsolation } from "./e2e/history";
 const FAKEBIN = process.env.FAKE_CLAUDE_DIR!;
 
 interface AutoInfo { id: string; slot: number; lastResult: string | null }
-interface SendPollSlot { id: number; agent: "alive" | "no-agent" | "no-pane" | "unprobed" | null; lastOutput: number }
+// No lastOutput: this harness has no use for it any more, and a cast is a CLAIM about a foreign
+// surface — a field kept "just in case" is a claim nothing verifies (docs/verify-tiering.md §12).
+interface SendPollSlot { id: number; agent: "alive" | "no-agent" | "no-pane" | "unprobed" | null }
 
 async function awaitAgent(slot: number, want: SendPollSlot["agent"]): Promise<SendPollSlot | undefined> {
   let seen: SendPollSlot | undefined;
@@ -41,6 +43,65 @@ async function awaitAgent(slot: number, want: SendPollSlot["agent"]): Promise<Se
     await Bun.sleep(250);
   }
   return seen;
+}
+
+// server.ts's send-boot constants, mirrored the way e2e/harness.ts mirrors AUTO_MIN_EVERY_SEC —
+// none of them is env-exposed, and the fixtures below are statements ABOUT them.
+const SEND_BOOT_FRESH_MS = 15_000;      // server.ts, const SEND_BOOT_FRESH_MS
+const CLAUDE_BOOT_SETTLE_MS = 2500;     // server.ts, CLAUDE_HARNESS bootSettleMs
+// Explicit and argued, where the old `< 1000` was an implicit bet against a shared machine: the
+// smallest regression this check can detect is Claude's 2500 ms settle, so the budget has to sit
+// below 2500 and as far above this machine's send cost (probe + two tmux calls + 150 ms) as that
+// leaves room for. 2000 keeps a 500 ms detection margin and gives the machine 4x the headroom the
+// old number did. Nothing wider would still separate the settle; nothing narrower is measured.
+const NO_SETTLE_BUDGET_MS = 2000;
+
+// paneAgentAt's own process-tree question, asked DIRECTLY by the fixture: does a process whose comm
+// starts with `prefix` hang under this pane? Re-implemented here rather than imported because the
+// phase harnesses are separate single-file programs sharing only e2e/harness.ts (CLAUDE.md,
+// "fleet-e2e.ts is a runner only"); fleet-e2e-harness.ts carries the phase-2 twin.
+async function paneComms(target: string): Promise<string[]> {
+  const pane = Number((await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}")).out);
+  if (!pane) return [];
+  const pg = Bun.spawn(["pgrep", "-P", String(pane)], { stdout: "pipe" });
+  const kids = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
+  await pg.exited;
+  const out: string[] = [];
+  for (const pid of [String(pane), ...kids]) {
+    const ps = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
+    const comm = (await new Response(ps.stdout).text()).trim().split("/").pop() ?? "";
+    await ps.exited;
+    if (comm) out.push(comm);
+  }
+  return out;
+}
+
+// ESTABLISH, don't assert: poll until the declared agent appears, and return the last reading
+// either way so a failing check reports what it really saw.
+async function awaitPaneComm(target: string, prefix: string, budgetMs: number): Promise<string[]> {
+  const until = Date.now() + budgetMs;
+  for (;;) {
+    const seen = await paneComms(target);
+    if (seen.some((c) => c.startsWith(prefix)) || Date.now() >= until) return seen;
+    await Bun.sleep(100);
+  }
+}
+
+// The one PATH fact sendText leaves behind that a test can read: its timeout branch writes a
+// send_boot_timeout audit row before it pastes. Absence can never produce a false FAIL — a row
+// still in the event-log write chain reads as absent, and the elapsed budget catches that case.
+// -1 means the trail itself could not be read, which is a failure of its own.
+function sendBootTimeouts(slot: number, sinceTs: number): number {
+  let raw = "";
+  try { raw = readFileSync(`${ROOT}/audit.jsonl`, "utf8"); } catch { return -1; }
+  let n = 0;
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    let row: { ts?: number; event?: string; slot?: number };
+    try { row = JSON.parse(line) as typeof row; } catch { continue; }
+    if (row.event === "send_boot_timeout" && row.slot === slot && (row.ts ?? 0) >= sinceTs) n++;
+  }
+  return n;
 }
 
 // --- branch 1: claude is NOT running (fake binary exits immediately, `exec $SHELL`
@@ -74,25 +135,56 @@ check("open slot 2 (alive-claude branch)", o2.ok);
 await Bun.sleep(1500); // let the fake binary actually start and settle as a pane child
 
 // Regression for the distinction lastOutput cannot make: this agent is positively alive but its
-// hang stand-in never prints a byte. It must not pay Claude's 2500 ms settle forever. Keep it on a
-// separate slot so the existing alive-gate check below retains its original never-printed fixture.
+// hang stand-in never prints a byte (claude-hang.c is `for (;;) pause();` — the silence is a
+// property of the FIXTURE's source, not something a test has to observe). It must not pay Claude's
+// 2500 ms settle forever. Keep it on a separate slot so the existing alive-gate check below retains
+// its original never-printed fixture.
+//
+// What this fixture no longer asserts is `lastOutput === 0`. sendText has consulted a PROCESS probe
+// plus the openedAt freshness window since 94b1362, never lastOutput; and 94b1362's own proof was
+// that tmux stamps lastOutput on a repaint before the agent prints — this very stand-in got a
+// timestamp while printing nothing. Worse, the wait that established the OTHER precondition
+// (`awaitAgent`, up to 20 s) was the thing most likely to destroy it. A precondition nobody
+// controls is not a precondition.
+const silentOpenStarted = Date.now();
 const silentOpen = await post("/api/slots/9/open", { cwd: "~" });
 check("silent-alive fixture: open a second live claude that never prints", silentOpen.ok,
   String(silentOpen.status));
-const silentBefore = await awaitAgent(9, "alive");
-check("silent-alive fixture: the agent is positively alive before /send",
-  silentBefore?.agent === "alive", JSON.stringify(silentBefore));
-check("silent-alive fixture: the pane has still never printed before /send",
-  silentBefore?.lastOutput === 0, String(silentBefore?.lastOutput));
-const silentMarker = "alive-silent-must-not-settle";
-const silentStarted = Date.now();
-const silentSend = await post("/send", { slot: 9, text: silentMarker });
-const silentElapsed = Date.now() - silentStarted;
-check("an already-alive pane that never printed takes the no-settle send path",
-  silentSend.ok && silentElapsed < 1000, `${silentSend.status} ${silentElapsed}ms`);
-const silentCap = await tmuxOut("capture-pane", "-t", "s9", "-p");
-check("the no-settle send reaches the already-alive silent pane",
-  silentCap.out.includes(silentMarker), silentCap.out.slice(-160));
+// ESTABLISHED, and established DIRECTLY: the pane's own process tree, not the git-tick cache, which
+// can be up to one tick (10 s) behind and would spend the freshness window this fixture needs.
+const silentComms = await awaitPaneComm("s9", "claude", 10_000);
+const silentAlive = silentComms.some((c) => c.startsWith("claude"));
+check("silent-alive fixture: the claude stand-in is a live pane process before /send",
+  silentAlive, silentComms.join(",") || "process probe did not run");
+// The window itself, as its own named check. Outside it sendText skips the readiness branch
+// entirely, so a fast send would prove staleness — a green row for a thing never measured.
+const silentFresh = Date.now() - silentOpenStarted;
+const silentInWindow = silentFresh < SEND_BOOT_FRESH_MS;
+check("silent-alive fixture precondition: the send falls inside the boot-freshness window",
+  silentInWindow, `${silentFresh}ms of ${SEND_BOOT_FRESH_MS}ms`);
+if (silentAlive && silentInWindow) {
+  const silentMarker = "alive-silent-must-not-settle";
+  const silentStarted = Date.now();
+  const silentSend = await post("/send", { slot: 9, text: silentMarker });
+  const silentElapsed = Date.now() - silentStarted;
+  check("an already-alive pane that never printed takes the no-settle send path",
+    silentSend.ok && silentElapsed < NO_SETTLE_BUDGET_MS,
+    `${silentSend.status} ${silentElapsed}ms (budget ${NO_SETTLE_BUDGET_MS} of ${CLAUDE_BOOT_SETTLE_MS})`);
+  // ...and the BRANCH, not only its duration: the readiness-timeout branch is the one that leaves
+  // a durable row behind, so its absence is a second, clock-free opinion on which path ran.
+  const silentTimeouts = sendBootTimeouts(9, silentStarted);
+  check("the no-settle send took no readiness-timeout branch (no audit row)",
+    silentTimeouts === 0, silentTimeouts < 0 ? "audit trail unreadable" : `${silentTimeouts} rows`);
+  const silentCap = await tmuxOut("capture-pane", "-t", "s9", "-p");
+  check("the no-settle send reaches the already-alive silent pane",
+    silentCap.out.includes(silentMarker), silentCap.out.slice(-160));
+}
+// Corroboration, deliberately AFTER the send: Fleet's cached fact layer must agree with the pane
+// this fixture probed directly. It is a stable reading (claude-hang does not exit), so nothing is
+// racing here — and paying its tick latency before the send is what used to eat the window above.
+const silentSeen = await awaitAgent(9, "alive");
+check("silent-alive fixture: Fleet's own probe agrees the agent is alive",
+  silentSeen?.agent === "alive", JSON.stringify(silentSeen));
 
 const marker2 = "gate-must-type-this";
 const a2res = await post("/api/slots/2/autos", { text: marker2, inSec: 1, idleSec: 0 });

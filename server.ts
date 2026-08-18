@@ -85,6 +85,14 @@ const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
 const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
+// the analyst's verdict trail — one append-only line per ASSIGNMENT of Task.analysis, `unknown`
+// included. `Task.analysis` lives only in the mutable state file: the next sweep overwrites it and
+// capTasks evacuates the row, so a verdict nobody overrode left no trace at all — ex-post scoring
+// of the analyst could structurally only ever see the OVERRULED minority (audit.jsonl
+// `task_override`) and never the majority it agreed with. A measurement gap that goes unwritten
+// reads back as an abstention, which is the one thing it is not, so failures are written too. Same
+// appendEvent discipline/rotation as the trails above.
+const ANALYSIS_VERDICT_FILE = `${import.meta.dir}/analysis-verdicts.jsonl`;
 // the post-land audit trail (verification tier 2) — one row per full-suite run against the
 // integration branch after a land. Same appendEvent discipline/rotation as the trails above.
 const POSTLAND_AUDIT_FILE = `${import.meta.dir}/post-land-audits.jsonl`;
@@ -6101,6 +6109,29 @@ function analysisDue(t: Task, now: number): boolean {
       && now - (a.retry?.at ?? a.at) >= ANALYSIS_BACKOFF_MS * 2 ** a.attempts;
   return analysisStale(t);
 }
+// One line per assignment above. Only server-stamped facts, the same choke-point discipline as
+// audit.jsonl and lane-outcomes.jsonl: nothing here comes off a wire, and there is deliberately no
+// route that accepts a verdict from outside. `at` is when the LINE was written, not `a.at` — with a
+// preserved verdict (analysisFailed) the reading's own clock belongs to an older, successful read,
+// and a trail that stamped that would date the event to before it happened. `retry` rides along for
+// exactly that case, so a preserved `needs-you` cannot read as a fresh one.
+function recordAnalysisVerdict(t: Task, a: TaskAnalysis): void {
+  void appendEvent(ANALYSIS_VERDICT_FILE, {
+    at: Date.now(),
+    taskId: t.id,
+    originId: t.originId ?? null,
+    verdict: a.verdict,
+    reason: a.reason.slice(0, 500),
+    blockers: a.blockers,
+    collides: a.collides,
+    head: a.head,
+    briefAt: a.briefAt,
+    model: a.model,
+    route: workerRouteFor("analysis").route,
+    attempts: a.attempts,
+    retry: a.retry ? { at: a.retry.at, reason: a.retry.reason.slice(0, 500) } : null,
+  });
+}
 let analysisBusy = false;
 async function tickAnalysisSweep(): Promise<void> {
   if (analysisBusy || !ANALYSIS_ON) return;
@@ -6129,7 +6160,10 @@ async function tickAnalysisSweep(): Promise<void> {
     // 2026-08-07 it is never storable OVER one either: analysisFailed keeps whatever verdict the
     // row already carried and files the failure next to it.
     const unknown = (reason: string): void => {
-      for (const t of batch) t.analysis = analysisFailed(t, reason, integrationTips.get(repo) ?? null);
+      for (const t of batch) {
+        t.analysis = analysisFailed(t, reason, integrationTips.get(repo) ?? null);
+        recordAnalysisVerdict(t, t.analysis);
+      }
       saveState();
     };
     if (!existsSync(repo) || !statSync(repo).isDirectory()) { unknown(`repo not found: ${repo}`); return; }
@@ -6223,6 +6257,7 @@ async function tickAnalysisSweep(): Promise<void> {
         // same shape as a dead worker rather than quietly reading as either verdict — including
         // the part that matters most, that it does not erase the last reading that did arrive
         : analysisFailed(t, "the analyst returned no entry for this task", integrationTips.get(repo) ?? null);
+      recordAnalysisVerdict(t, t.analysis);
     }
     saveState();
   } finally {

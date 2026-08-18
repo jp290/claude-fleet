@@ -1,3 +1,144 @@
+# HANDOFF — Supervisor-Occupant 5 (2026-08-18, Slot 4 「🧿 Supervisor」, Session 7635a906): Underwhelm-Audit + Kit v2 im Flug, GLM-Studio live, drei Sensor-Defekte gefunden
+
+**Wer:** fünfte Insassin der stehenden Supervisor-Rolle. Succession per Owner-Anweisung. `ctx` beim
+Schreiben: **36 %** von 1M (gemessen an der Pane, NICHT geschätzt — siehe Sensor-Defekt 1 unten).
+Alles Folgende beim Schreiben geprüft, nicht erinnert.
+
+---
+
+## 0. DEINE ERSTE HANDLUNG, bevor du irgendetwas liest
+
+**Schalte dich auf Opus 5 mit `effort high`** — in deiner eigenen Pane:
+`tmux -L claudefleet send-keys -t s<DEIN_SLOT> '/model opus' Enter`, dann `'/effort high' Enter`,
+Footer prüfen. Owner-Entscheid 2026-08-18 („ab jetzt sollte der supervisor auf opus5 mit high
+effort laufen") — **die Nachfolge trägt ihn NICHT mit**: `succeedSupervisor` (`server.ts:12264`)
+reicht `s.model`/`s.effort` des Vorgänger-Slots wörtlich durch, mein Slot-Datensatz sagt `fable`,
+also bootest du auf Fable. Mechanik + Beleg: `CLAUDE.md` §„Die stehende Supervisor-Rolle",
+Queue-Notiz `844915ff`.
+
+**Und beim Tippen in eine Pane — auch die eigene: NIE `C-u` auf einen kurzen Text.** Ich hielt ein
+`es` für meinen eigenen send-keys-Rest und löschte damit den Anfang eines echten, gerade
+entstehenden Owner-Satzes. Er überlebte, der Griff war falsch. Zweimal im Abstand von Sekunden
+lesen: wächst der Text, tippt ein Mensch. Ein eigener Rest wächst nie.
+
+---
+
+## 1. Was JETZT ansteht, in Reihenfolge (Owner-Anweisung 2026-08-18)
+
+1. **Lane `fleet/260818092745-1b96` (Slot 3, Commit `65f8358`) auswerten UND landen.** Der Owner
+   hat das ausdrücklich dir übertragen. Sie ist landbereit (Drift geprüft: `behind:0`,
+   `wouldConflict:false`, sauber, keine untracked files). Inhalt: **Studio-Kit v2** (zwei neue
+   Templates: `appeal-anchor-template.md`, `content-ledger-template.md` + README-Bump, A0 im
+   Decision-Record, vier Setup-Health-Items, Lessons 6+7) und
+   **`docs/studio-doktrin-auftrag-2026-08-18.md`** — der fertige Implementierungsauftrag an dich.
+   Ihr Verify: `localProof` stufte auf conservative-default, volle lokale Kette gefahren, ein
+   FAIL in `e2e-claude-gate.sh` (silent-alive-Fixture) **als Flake bewiesen in der richtigen
+   Beweisordnung** (derselbe Baum, seriell, 0 fremde Suiten → ALL PASS). Ich habe §0, §3, §6, §7
+   selbst gelesen und für gut befunden; **§4 und §5 (die zwei Studio-Nudges) habe ich NICHT
+   gelesen** — das ist deine Prüfpflicht vor dem Zustellen.
+2. **Danach: eine Analyse „auf gleicher Gründlichkeitsebene für die kommenden Gates"**
+   (Owner-Wortlaut). So verstehe ich es, und die Unschärfe gehört benannt statt geraten: derselbe
+   Messstandard wie beim Underwhelm-Audit — mehrere unabhängige Leser, jede Behauptung mit
+   file:line, „was ich nicht geprüft habe" als Pflichtabschnitt — aber **vorwärts** gerichtet: wie
+   die Gate-Folge unter Kit v2 aussehen muss, wo sie voraussichtlich bricht, was sie kostet.
+   **Frag den Owner einmal kurz nach, worauf genau er zielt, bevor du drei Agenten losschickst** —
+   die Formulierung „und wie auch immer" lässt Spielraum, und ein falsch gezielter Audit kostet
+   eine Stunde.
+3. **Danach will der Owner „das private-repo-c projekt neu beginnen".** Das ist eine
+   Portfolio-Entscheidung und deine Vorbereitungspflicht: das laufende Programm ist `adcd754f`
+   (MAIN Slot 1). Ein Neubeginn heißt vermutlich: neues Programm mit den **Kit-v2-Slots von Anfang
+   an gefüllt** (Appeal-Anker + Content-Ledger), Gate-Ordnung Inhalt-vor-Aussehen. Du kannst
+   Programme nur VORSCHLAGEN (`POST /api/self/programs`); Confirm/Activate/Bootstrap ist Owner —
+   ausgenommen, er sagt ausdrücklich „mach", dann bist du seine Hände (Doktrin steht in
+   Occupant-4s Handoff §3 und hat heute dreimal getragen).
+
+**Offene Owner-Bringschuld, klein und blockierend nur fürs Appeal-Gate:** pro Studio 2–3
+Referenzspiele + je ein Satz „was wir davon stehlen". **Schlag ihm KEINE Spiele vor** — der
+Auftrag begründet ausdrücklich, warum der Anker seinen Geschmack tragen muss und nicht unsere
+Vermutung darüber. Frames danach in seinem Takt; Situationslisten stehen fertig im Auftrag §3.
+
+---
+
+## 2. Portfolio-Stand (über `supervisor-view` prüfen, nicht glauben)
+
+- **Private-repo-c** `adcd754f`, MAIN Slot 1, live, Fable. Gate 1, drei Kunstrichtungs-Runden hinter
+  sich. Tailscale: **http://100.64.0.1:4321**. Vom Audit betroffen (siehe §3).
+- **Private-repo-e** `6ae9fac6`, MAIN Slot 2, live, Opus 5. Polish-Backlog. **Achtung:** dort stand
+  stundenlang ein ungesendeter Owner-Entwurf im Composer („add the impact sound improvement") —
+  prüfe, ob er noch hängt; ein Entwurf ist KEINE queued message und wird nie von selbst gesendet.
+- **GLM-Studio / Private-repo-f** `1374ed5a`, MAIN Slot 6, live, Opus 5. Heute Nacht von mir gebootstrappt
+  (Aufstellung `caa1fe7`). GLM-5.3 baut über `pi --print`, Fable/Opus führt, Opus 5 sieht.
+  Gate 0 durch, Gate 1 läuft. Tailscale: **http://100.64.0.1:5273**. Methodisch das stärkste
+  Studio (entscheidet Kritiker-Streit durch Pixelmessung statt Argument).
+- **🛠 Prozess-MAIN** Slot 5 (Fable, stehende Rolle, an KEIN Programm gebunden → weder Nudge noch
+  Attention erreicht sie; nur der Owner oder die Pane). Fährt das Arbeitskreis-Programm P1–P8,
+  sechs Lands heute Nacht, P7/P8 offen. Repariert Fleets Mess-Substrat — **direkt relevant für
+  jede künftige Frage der Form „kann Modell X Briefs/Triage gut?"**.
+- Proposed und unangetastet: `e04cd5d8` (Attention-Route), `d576186d` (iOS Studio).
+  `2a5fb604` Pi/Z.ai Vision H0 active-unbound, `441c0058` + `809c22f0` active-stale.
+
+---
+
+## 3. Der Befund, um den sich alles dreht
+
+`docs/studio-underwhelm-audit-2026-08-18.md` (`ba9b365`) — drei Messläufe. Kern: **die
+Gate-Ordnung stellt in beiden Studios das Aussehen VOR den Inhalt.** Der Private-repo-c hat **keine
+Strecke** (`grep -rni 'track|course|circuit' src/sim/` leer), liefert 4 von 12 zugesagten
+Slice-1-Teilen und ist „ein Kart, das auf einer unendlichen leeren Ebene driftet" — während neun
+Stunden in drei Kunstrichtungs-Verträge gingen. Private-repo-f: 1 Level/1 Turm/1 Gegner/1 Welle gegen
+1/3/3–4/10. Dazu: kein Kriterium in beiden Verträgen kann an Langeweile scheitern, keine Rubrik
+hat eine Durchfall-Note. Inhalt:Maschinerie 58:42 (Private-repo-c) vs 25:75 (Private-repo-f),
+Reparaturquote 6 % vs 43 % — **die Inversion ist der Harness-Unterschied, nicht Modellgüte**
+(Private-repo-fs eigenes Ledger: „six seam causes, zero model causes").
+
+**Setup-Fehler, die meine waren** (im Audit §6 benannt, damit du sie nicht wiederholst): Gate-Ordnung
+aus dem Private-repo-c kopiert · Private-repo-fs Erfolgskriterium beschreibt die Pipeline statt das Spiel · „clarity
+beats spectacle" als einzige ästhetische Aussage · die Fun-Klausel zeigt auf eine Kit-Regel, die es
+nicht gibt, während ich die Feel-Beweisregel beim Adaptieren gestrichen hatte.
+
+---
+
+## 4. Drei Sensor-Defekte, heute gemessen — baue nicht auf die alten Zahlen
+
+1. **`ctx` am Board ist für Fable-Slots um Faktor 5 falsch** (Notiz `d72823a7`).
+   `contextWindowFor` (`src/protocol.ts:118-121`) hält jedes Claude-Modell ohne `[1m]`-Suffix für
+   200k; Fable 5 hat 1M. Slot 5 meldete 88,3 % am Board und **18 % an der Pane** — ich habe daraufhin
+   einen Fehlalarm an den Owner geschickt und musste ihn zurückziehen. **Miss `ctx` an der PANE.**
+   Zweitens: der blanke Alias `fable` (Slots 1, 2, 4) liefert `null` — diese Slots zeigen am Board
+   gar keinen Füllstand.
+2. **Die Supervisor-Rolle lässt sich nicht mechanisch auf ein Modell festlegen** (Notiz `844915ff`,
+   §0 oben).
+3. **`POST /api/self/attention` lehnt den Supervisor ab** („not the current bound MAIN of an active
+   program"). Sie lebt inzwischen und will `kind: decision|blocked|review-ready`, antwortet aber nur
+   Program-MAINs. **Dein Owner-Kanal ist die Pane.** `POST /api/self/nudge` funktioniert und wurde
+   heute zweimal erfolgreich benutzt (beide Tailscale-Server kamen so zustande).
+
+---
+
+## 5. Was heute sonst passierte, in einer Liste
+
+Deploy auf `5fb1b92` gefahren (Verb 2, wartete korrekt auf einen laufenden Post-Land-Audit ab, dann
+`ok:true`). GLM-Studio-Programm vorgeschlagen, vom Owner freigegeben, von mir confirmed/activated/
+gebootstrappt inkl. Repo-Seed `~/private-repo-f` und ACK-Beweis. Beide Spiele über Tailscale erreichbar
+gemacht — **nicht selbst, sondern per Nudge an die zuständigen MAINs**, weil Private-repo-fs Loopback-Bindung
+eine bewusste Studio-Invariante war; die MAIN hat sie sauber aufgemacht (Default bleibt Loopback).
+Underwhelm-Audit in drei parallelen Läufen. Kit-v2-Lane gebrieft.
+
+**N2 lebt weiter:** der Private-repo-f-Bootstrap-Brief verpuffte beim Boot (fünfter Fall). Rezept
+unverändert: Brief aus `streams/s<id>.history.json` holen, `tmux load-buffer` + `paste-buffer -p`,
+Enter, Pane verifizieren. Die ACK-Pflicht machte die Zustellung danach beweisbar.
+
+---
+
+## 6. Wenn du nichts anderes mitnimmst
+
+Der Owner hat heute zweimal etwas gesehen, das drei Maschinen-Instanzen übersehen hatten
+(„underwhelming", und dass die Studios schneller wurden). **Sein Urteil ist der schärfste Sensor im
+Fleet — und die Maschine ist so gebaut, dass sie ihm erst am Ende zuhört.** Das zu ändern ist der
+Zweck von Kit v2. Miss deine Arbeit daran, ob das nächste Tasting ein SPIEL vor sich hat.
+
+---
+
 # HANDOFF — Supervisor-Occupant 4 (2026-08-18, Slot 3 「🧿 Supervisor」, Session b75f3048): Private-Repo-C-Programm live, Studio-Kit v1 steht, Harness-Research im Regal
 
 **Wer:** vierte Insassin der stehenden Supervisor-Rolle; Succession per Owner-Anweisung. Alles

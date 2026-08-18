@@ -5928,6 +5928,32 @@ function renderQueueDetail() {
     // label cannot carry and the only thing that says whether ↻ re-analyse would help.
     if (anFull?.retry) overview.appendChild(el("div", "shellhint",
       `the last re-reading failed at ${fmtTs(anFull.retry.at)}: ${anFull.retry.reason}`));
+    // was this READING worth anything? The disposition rail's fourth worker, joined by taskId. It
+    // exists because the analyst's most valuable hit leaves no trace anywhere else: a `needs-you`
+    // the owner agrees with ends in a rewritten row and never becomes a lane, so no outcome join
+    // can ever see it. Same rule as everywhere on the rail — ABSENCE IS NOT APPROVAL, an unlabeled
+    // verdict renders as unlabeled. Nothing here gates anything: the label is an owner opinion
+    // recorded after the fact, and the analysis stays advisory either way.
+    const acur = dispoOf("analysis", t.id);
+    const alab = el("div", "ocdispo-row");
+    alab.appendChild(el("span", "ocdispo-state" + (acur ? ` is-${acur}` : " is-none"),
+      acur ? `dein Urteil: ${DISPO_WORD_UI[acur]}` : "unbewertet"));
+    for (const [verdict, word, why] of [
+      ["accepted", "brauchbar", "the reading was right and you acted on it"],
+      ["edited", "umgeschrieben", "you rewrote this row because of it — the analyst's most valuable hit, invisible to every ledger"],
+      ["ignored", "ignoriert", "you started it anyway"],
+      ["wrong", "falsch", "the reading was wrong about this row"],
+    ] as [DispositionVerdict, string, string][]) {
+      const b = el("button", `ocdispo-btn${acur === verdict ? " active" : ""}`, word) as HTMLButtonElement;
+      b.title = `${why} — records an owner \`${verdict}\` disposition on the rail`;
+      b.onclick = async () => {
+        b.disabled = true;
+        if (await labelDisposition("analysis", t.id, verdict)) renderQueueDetail();
+        else b.disabled = false;
+      };
+      alab.appendChild(b);
+    }
+    overview.appendChild(alab);
   }
   // THE BRIEF — the exact bytes a lane receives, editable while the task has not been sent.
   // It exists in the UI at all because it used to be compiled at spawn time and fired straight
@@ -8741,7 +8767,7 @@ dropFile.addEventListener("change", () => {
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 void (async () => {
   await refresh();
-  void loadDispositions(); // so an already-labeled ③ review renders its label, not "unbewertet"
+  void loadDispositions(); // so an already-labeled ③ review or analysis verdict renders its label, not "unbewertet"
   let view: { layout?: number; panes?: number[]; focused?: number } = {};
   try {
     view = JSON.parse(localStorage.getItem("fleet.view") ?? "{}") as typeof view;

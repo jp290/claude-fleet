@@ -236,7 +236,7 @@ die interessantere.**
 | Lane-Outcome | `lane-outcomes.jsonl` (`server.ts:81`) | `taskId?` · `briefHash` · `disposition` · `commitCount` · `ownerPrompts` · `sessionMs` · `verified` · `repo`/`mainAfter` (`server.ts:10008-10071`) | wie eine Lane endete |
 | Audit | `audit.jsonl` | Event `task_override`, Detail `"<taskId>:<verdict>"` (`server.ts:17874`) | wann der Owner ein `needs-you` überstimmt hat |
 | Context-Receipt | `context-receipts.jsonl` (`server.ts:84`) | `taskId` · `branch` · `slot` · `hash` · `head` · `harness`/`model`/`effort` (`server.ts:5950-5962`) | welche Bytes eine Lane wirklich bekam |
-| Disposition | `dispositions.jsonl` (`server.ts:87`) | `worker ∈ {land, review3, enhance}` · `disposition ∈ {accepted, edited, ignored, wrong}` (`src/protocol.ts:49-52`) | wie der Owner einen Worker-Output beurteilte |
+| Disposition | `dispositions.jsonl` (`server.ts:87`) | `worker ∈ {land, review3, enhance, analysis}` (seit P8 — `analysis` mit der `taskId` als `ref`) · `disposition ∈ {accepted, edited, ignored, wrong}` (`src/protocol.ts:49-52`) | wie der Owner einen Worker-Output beurteilte |
 
 **Der eine Join, der HEUTE einen echten Score liefert** (INFERRED, aber vollständig aus obigen
 Feldern konstruierbar — der Host müsste ihn fahren, nicht diese Lane):

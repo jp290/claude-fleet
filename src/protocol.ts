@@ -44,11 +44,15 @@ export function normalizeLaneAnchor(value: unknown): LaneAnchor | null {
 // --- disposition rail ---------------------------------------------------------------------------
 // Which advisory worker an owner verdict is about, and the verdict vocabulary. The server validates
 // POST /api/dispositions against these lists; the client renders the same four words and sends the
-// same three worker names. Typing the client's call sites against `DispositionWorker` is what makes
+// same four worker names. Typing the client's call sites against `DispositionWorker` is what makes
 // a mistyped "review-3" a compile error instead of a 400 nobody sees.
-export type DispositionWorker = "land" | "review3" | "enhance";
+// `analysis` is the queue analyst's verdict on ONE task row, and it is the only worker here whose
+// most valuable hit produces no lane at all: a `needs-you` the owner agrees with ends in a rewritten
+// row, so an outcome-ledger join can never see it. Its ref is the taskId — see the ref-shape block
+// in server.ts.
+export type DispositionWorker = "land" | "review3" | "enhance" | "analysis";
 export type DispositionVerdict = "accepted" | "edited" | "ignored" | "wrong";
-export const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance"];
+export const DISPOSITION_WORKERS: DispositionWorker[] = ["land", "review3", "enhance", "analysis"];
 export const DISPOSITION_VERDICTS: DispositionVerdict[] = ["accepted", "edited", "ignored", "wrong"];
 
 // --- post-land audit projection -----------------------------------------------------------------

@@ -244,3 +244,86 @@ It is **not a safety gate**. It is a reading, and a spend gate on nothing at all
 safety boundary is still where it was: no tick calls `mergeJob`, so an unattended lane
 produces a branch that waits for a human. Do not let the presence of a critical-looking
 worker be mistaken for that boundary moving.
+
+## 7. Die Dispatcher-Betriebsreferenz (aus `CLAUDE.md` umgezogen 2026-08-18)
+
+Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollreferenz im Original
+(kinds, Lane-Deckel, `Task.brief`, Analyse, `FLEET_BRIEF_MS`, ↻ refine, „▸ clarify first"):
+
+- **Der Dispatcher ist AN, startet aber NUR, was der Owner freigegeben hat** (Stand 2026-08-06: `fleet.json`
+  trägt `"dispatch": true` — Zustand nie behaupten, ohne `grep '"dispatch"' fleet.json` zu prüfen; diese Zeile
+  stand schon zweimal falsch. Seit `500ff63` wählt `tickDispatch` wörtlich `t.status === "queued"` — **es gibt
+  kein Verdict, das eine Task von selbst startet**. ABER (Korrektur 2026-08-06,
+  `docs/autonomy-bausteine-2026-08-06.md` §1.2): „nach `queued` kommt eine Zeile ausschließlich durch den
+  Owner-Promote" ist FALSCH — zwei Maschinen-Pfade schreiben `status="queued"` (Requeue nach fehlgeschlagenem
+  Spawn, `server.ts` grep `requeue`, und der Boot-Abgleich verwaister `sent`-Zeilen); beide vertretbar, aber
+  wer auf die Ausschließlichkeit baut (Verb 3!), baut auf einen Satz, der nicht gilt. Der **Hand-Knopf**
+  `POST /api/tasks/:id/dispatch` läuft unabhängig davon weiter — er prüft weder Master-Stop noch Deckel noch
+  Quiet Hours (`server.ts`, grep `taskDispatch`); `dispatchOn` ist ein persistierter Laufzeit-Schalter,
+  `POST /api/dispatch {on:true|false}`; Env: `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES=2`). Er wählt
+  aus, spawnt und brieft — **landen kann er nichts**, kein Tick ruft `mergeJob` (nur die Route;
+  Owner-Entscheid vom 2026-08-04: „noch nicht", erst echte Läufe ansehen). Seit 2026-08-04 (Queue-Umbau,
+  Session 21):
+  - **(a)** Tasks tragen `kind` mit VIER Werten — `auftrag` · `richtung` · `notiz` · `betrieb` (seit
+    `dd0c9a8`, 2026-08-10; die alten `lane`/`note` werden beim Laden migriert). Steward-Tasks sind default
+    `notiz` (Beobachtung; opt-in `kind:"auftrag"` im POST-Body ist der bewusste Claim), Owner/Intake sind
+    `auftrag`. **NUR ein `auftrag` darf freigegeben werden — die drei anderen Arten bekommen 409**, an
+    BEIDEN Türen: am `▸ queue`-Knopf und an `POST /api/tasks {queue:true}` (Owner-Entscheid 2026-08-05,
+    bestätigt und auf alle drei ausgeweitet 2026-08-10). Der Weg für eine beratende Zeile ist die
+    KONVERTIERUNG durch den Owner (`adopt` bzw. die `/kind`-Route), danach ist sie ein `auftrag` und wird
+    normal freigegeben. **Hier stand bis 2026-08-10 „Promote einer Note bleibt erlaubt", und diese Zeile
+    war seit dem 05.08. falsch — sie hat die kind-Umbau-Lane dazu gebracht, den 409-Riegel zu entfernen und
+    Sonden zu schreiben, die das Gegenteil der bestehenden behaupteten.** Kein Gate konnte es sehen:
+    `e2e/tasks.ts` und `e2e/steward-outcomes.ts` laufen ausschließlich in `./e2e-isolated.sh`, also erst
+    NACH dem Land. Die Lehre ist die alte: bei einem Widerspruch gilt der Code, nicht dieses Dokument.
+    **UND: EINE UMBENENNUNG IM SERVER MUSS DEN CLIENT MITNEHMEN — `tsc` sagt dir das NICHT.**
+    `dd0c9a8` ließ `src/client.ts` unberührt, und dort steht eine EIGENE Typdeklaration der fremden
+    Fläche (`interface TaskInfo`, `kind?: …`). Gegen die alte Union compilierte jedes
+    `t.kind === "note"` weiter und war nur für immer falsch: Gruppierung, Chip „not work" und drei
+    Guards waren tot, ohne ein einziges Compiler-Wort — dieselbe Klasse wie der `awaiting`-Befund
+    (eine Deklaration über eine fremde Fläche ist eine BEHAUPTUNG, kein Typ). Das Werkzeug dagegen ist
+    billig und war hier entscheidend: **zuerst die Union im Client korrigieren, dann `tsc` die
+    Fundstellen aufzählen lassen** (nannte exakt sechs, `TS2367 no overlap`) — nie von Hand suchen.
+  - **(b)** Der Lane-Deckel zählt nur noch Lanes im `DISPATCH_REPO` (kanonisiert via realpath — createWorktree
+    speichert das Symlink-aufgelöste Toplevel!), und eine wartende Task sagt auf ihrer Row WARUM („waiting:
+    N/M lanes busy" / „no free slot").
+  - **(c)** Der Brief entsteht NICHT mehr beim Dispatch: `tickAnalysisSweep` kompiliert ihn einmal pro Entwurf
+    und legt ihn als `Task.brief` auf die Zeile — vor dem Start lesbar UND editierbar
+    (`POST /api/tasks/:id/brief`; eine Bearbeitung pinnt ihn als `edited` und macht das Urteil stale).
+    `briefAndSend` hat seither **keinen Modellaufruf mehr** (`next.brief?.text ?? next.text`) — was geprüft
+    wurde, ist damit auch das, was läuft.
+  - **(d) Das Eval-Gate ist GESCHICHTE — seit `500ff63` (2026-08-06) gibt es stattdessen eine ANALYSE, und sie
+    gated nichts.** Prüfbar statt zu glauben: `tickEvalSweep`, `FLEET_EVAL_MAX_AUTO_PER_DAY`, `evalAuto` und
+    die Route `eval-reset` kommen in `server.ts` **null mal** vor. Was es gibt: `tickAnalysisSweep` (Env
+    `FLEET_ANALYSIS_CMD` / `FLEET_ANALYSIS_MS`, **0 = aus**; eine Harness ohne Stand-in MUSS
+    `FLEET_ANALYSIS_MS=0` setzen, sonst spawnt die Suite einen echten Agenten — `server.ts`, grep
+    `FLEET_ANALYSIS_MS=0`) schreibt `Task.analysis` mit dreiwertigem Verdict `ready | needs-you | unknown`
+    plus `blockers`/`collides`/`head`/`briefAt`/`attempts`; `unknown` ist die Absenz einer Antwort
+    (Worker-Fehler, Backoff 60s×2ⁿ) und darf NIE als eines der beiden Urteile gelesen werden. Der Sweep liest
+    `pending` UND `queued` und läuft **unabhängig von `dispatchOn`**. Er ist ADVISORY: die Analyse ist die
+    Evidenz, der Promote ist die Entscheidung. Neu urteilen lassen: `POST /api/tasks/:id/reanalyse`. Warum der
+    Umbau: das Gate hatte in seiner Lebenszeit genau EIN Verdict erzeugt — seine Population waren die
+    un-promoteten Entwürfe des Owners, und seine einzige Macht war, sie hinter seinem Rücken zu starten
+    (Messung im Body von `500ff63`). **Seit `e15d672` (2026-08-18, Programm P3) hat der Brief-Kompiler
+    einen EIGENEN Schalter `FLEET_BRIEF_MS` (Default 0 = aus):** `FLEET_ANALYSIS_MS=0` schaltet nur noch
+    den Analysten ab; ein laufender Kompiler befriedigt das Dispatcher-Gate NICHT und schreibt weder
+    `t.analysis` noch eine Zeile auf `analysis-verdicts.jsonl` (das Verdikt-Ledger aus P1, `bee2576`).
+    Suiten/fremde Harnesses ohne Stand-in müssen BEIDE Werte 0 setzen. Vertrag: `docs/queue-analyst.md` §5a.
+    Owner-Poll trägt `briefCompiler:{on:true}` (bei 0 weggelassen).
+  - **(d2) ↻ refine, der Brief-Kompiler** (`POST /api/tasks/:id/refine` async, `…/refine-confirm`
+    all-or-nothing; `briefs/task-refine.md`): read-only-Worker, der eine rohe Zeile in 1..N geschnittene
+    Kinder mit Done-Kriterium, Verify-Weg und `files` übersetzt — oder mit `unchanged:true` + Begründung
+    zurückgibt (Triage-Riegel gegen Aufblähen; hat bei seinem ersten Live-Einsatz korrekt gegriffen).
+    Propose/promote wie beim Kriterium: der Lauf fasst den Text der Zeile nie an, erst der Confirm mintet die
+    Kinder — **ohne** `brief` und **ohne** `analysis`, denn ein Kind ist ein neuer Entwurf und trifft die
+    Analyse frisch.
+  - **(e) „▸ clarify first"** (Knopf neben „▸ start lane", `POST /api/tasks/:id/dispatch {clarify:true}`, NUR
+    attended — kein Tick übergibt es): derselbe Spawn, aber der Gründungsprompt ist `clarify-prompt.ts` statt
+    `runEnhance` (bewusst kein Enhancer: er kompiliert ein Done-Kriterium, und genau das fehlt hier; kein
+    `/sharpen3` aus demselben Grund). Der Grund aus `Task.analysis` reist als „prüfen, nicht glauben" mit
+    (`buildClarifyBrief(next.text, next.analysis?.reason ?? null, …)`). Die Lane schlägt via
+    `POST /api/self/criterion` vor (`confirmedAt:null`), der Owner bestätigt mit eigenem Text
+    (`POST /api/tasks/:id/criterion-confirm`) — propose/promote, damit der Produzent nie den Anker schreibt,
+    an dem er gemessen wird. Solange sie wartet: `Slot.awaiting="owner"` (persistiert), und
+    `handleStewardSend` weist den Slot mit 409 ab. Historie: `docs/attic/autonomy-trial-1.md`,
+    `docs/attic/queue-automation.md`.

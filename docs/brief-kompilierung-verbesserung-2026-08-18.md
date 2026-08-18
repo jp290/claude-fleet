@@ -119,7 +119,12 @@ leeres Ergebnis liest sich wie eine Aussage). Der Join, der trägt, ist `taskId`
 
 ## 4. Frage 1 — welche Kennzahl misst Brief-Qualität, und wer rechnet sie?
 
-**Wer rechnet sie: NOT BUILT.** Gesucht in `state.sh`, `register.sh`, `slotstats.ts`,
+**Wer rechnet sie: GEBAUT seit P6 — `briefstats.ts`** (Programm `docs/arbeitskreis-programm-2026-08-18.md`
+P6). `bun briefstats.ts <lane-outcomes.jsonl> <context-receipts.jsonl> [--json]` rechnet beide
+Kennzahlen je `briefSource`, mit ausgewiesenen Nennern und ausgewiesenen Ausschlüssen; Sonden in
+`e2e/briefstats.ts`. Der Befund darunter ist der Zustand VOR P6 und die Begründung des Readers:
+
+**Wer rechnete sie vorher: NOT BUILT.** Gesucht in `state.sh`, `register.sh`, `slotstats.ts`,
 `trailstats.ts` (`grep -n 'briefHash\|ownerPrompts\|disposition'`): der einzige Treffer ist
 `state.sh:127`, und der zählt nur Dispositionen. Kein Leser dieser Schicht existiert. Die gebaute
 **Form**, in der ein solcher Leser gehört, existiert dagegen dreifach und ist selbstähnlich:

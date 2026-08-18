@@ -12,6 +12,7 @@ import { newCtx, type LaneCtx } from "./e2e/ctx";
 import * as contextPacks from "./e2e/context-packs";
 import * as contextPlan from "./e2e/context-plan";
 import * as prompts from "./e2e/prompts";
+import * as briefstats from "./e2e/briefstats";
 import * as auth from "./e2e/auth";
 import * as dirsPins from "./e2e/dirs-pins";
 import * as slots from "./e2e/slots";
@@ -62,6 +63,9 @@ try {
 await contextPacks.run(check);
 await contextPlan.run(check);
 await prompts.run();
+// the brief-quality reader (briefstats.ts): pure over two synthetic ledgers, plus its CLI spawned
+// as the operator runs it. No server, so it sits with the other pure families.
+await briefstats.run();
 
 // --- auth, request guards, the ✨ enhance surface, and the directory/pin API ---
 await auth.run();

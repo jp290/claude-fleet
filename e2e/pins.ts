@@ -850,6 +850,24 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && /t\.brief\.edited \|\| t\.brief\.model === "owner" \? "owner" : "compiled"/.test(server)
     && /const FOUNDING_BRIEF_SOURCE: BriefSource = "founding";/.test(server),
     briefSourceType.trim() || "no BriefSource type");
+
+  // ...and the READER of that ledger carries the same two sets, in a second file, as literal arrays.
+  // tsc holds neither to the other — two independent literal unions are both perfectly well typed —
+  // so a sixth briefSource or a renamed disposition would leave briefstats.ts silently booking real
+  // rows as `unknownSource` or as malformed, which is a hole that reads like data. Stated as a set
+  // comparison rather than as a copied list, so a value added tomorrow is covered tomorrow.
+  const briefstats = read("briefstats.ts");
+  const literals = (src: string): string[] =>
+    [...src.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!).sort();
+  const readerSources = literals(/export const BRIEF_SOURCES = \[([^\]]+)\]/.exec(briefstats)?.[1] ?? "");
+  pin("briefstats.ts's BRIEF_SOURCES is server.ts's BriefSource union, value for value",
+    readerSources.length === 5 && readerSources.join() === literals(briefSourceType).join(),
+    `reader=[${readerSources}] server=[${literals(briefSourceType)}]`);
+  const dispositionType = /type LaneDisposition = ([^;]+);/.exec(server)?.[1] ?? "";
+  const readerDispositions = literals(/export const LANE_DISPOSITIONS = \[([^\]]+)\]/.exec(briefstats)?.[1] ?? "");
+  pin("briefstats.ts's LANE_DISPOSITIONS is server.ts's LaneDisposition union, value for value",
+    readerDispositions.length === 5 && readerDispositions.join() === literals(dispositionType).join(),
+    `reader=[${readerDispositions}] server=[${literals(dispositionType)}]`);
 }
 
 {

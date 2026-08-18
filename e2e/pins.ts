@@ -1111,6 +1111,52 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /isBoundSupervisor\(s\)/.test(svViewRouteBody)
       && !/\b(?:saveState|saveStateNow|appendEvent|audit|sendText|spawnCmd|logPrompt)\s*\(/.test(svViewBody),
     svViewBody.length > 0 ? "mutation primitive present" : "supervisorView handler missing");
+  // WHO MAY READ isBoundSupervisor — the SET of its readers is the rule, and it is named here.
+  // The predicate was written as a LOCAL rule of the two Cut-2 routes; the comment over its
+  // definition still calls it "the whole authorization story of both routes below", and it is the
+  // ONLY authorization condition those routes have. fa69586 gave it a THIRD reader, a disjunct in
+  // the programs list far below that block, and nothing recorded that the sentence had stopped
+  // being true. Every further reader widens what a bound Supervisor may reach, and it costs one
+  // line that reads like reuse: no compiler, no review diff and no suite makes that visible.
+  //
+  // IDENTIFIED, NOT COUNTED. A `=== 3` would fall on a correctly moved call or a renamed slot
+  // variable and then say nothing useful, while three readers that are the WRONG three would pass
+  // it. So each call names itself by the ROUTE it sits in (nearest preceding url.pathname literal —
+  // a reader outside the dispatcher gets no route name and fails) plus its SHAPE: `gate` refuses a
+  // non-Supervisor with NOT_SUPERVISOR/409, `widening` is a disjunct that hands the Supervisor
+  // something a plain session would not see. Compared as a MULTISET, so the order of the three in
+  // the file stays free, while a gate quietly turned into a disjunct — or a second reader inside an
+  // already-named route — is a different set and falls.
+  const SV_READERS_ALLOWED = [
+    "/api/self/nudge [gate]",            // the one bounded VOICE — refuses a non-Supervisor outright
+    "/api/self/programs [widening]",     // GET-filter disjunct — the Supervisor reads every Program's content
+    "/api/self/supervisor-view [gate]",  // the SENSES — refuses a non-Supervisor outright
+  ];
+  const svRoutesAt = [...server.matchAll(/url\.pathname === "([^"]+)"/g)]
+    .map((m) => ({ at: m.index, path: m[1] ?? "" }));
+  const svReadersFound = [...server.matchAll(/isBoundSupervisor\s*\(/g)].map((m) => {
+    const at = m.index;
+    const before = server.slice(Math.max(0, at - 120), at);
+    const after = server.slice(at, at + 200);
+    const kind = /!\s*isBoundSupervisor\s*\($/.test(`${before}isBoundSupervisor(`)
+        && /NOT_SUPERVISOR/.test(after) && /\b409\b/.test(after) ? "gate"
+      : /(?:\|\||&&)\s*$/.test(before) ? "widening" : "unclassified";
+    let route = "OUTSIDE THE ROUTE DISPATCHER";
+    for (const r of svRoutesAt) { if (r.at < at) route = r.path; else break; }
+    return `${route} [${kind}]`;
+  }).sort();
+  const svMissingFrom = (a: string[], b: string[]): string[] => {
+    const rest = [...b], out: string[] = [];
+    for (const x of a) { const i = rest.indexOf(x); if (i < 0) out.push(x); else rest.splice(i, 1); }
+    return out;
+  };
+  const svUnnamed = svMissingFrom(svReadersFound, SV_READERS_ALLOWED);
+  const svVanished = svMissingFrom(SV_READERS_ALLOWED, svReadersFound);
+  pin("every reader of isBoundSupervisor is named here — a reader not in this list widens the Supervisor's reach, so name it here or take it back",
+    svUnnamed.length === 0 && svVanished.length === 0,
+    svUnnamed.length > 0 || svVanished.length > 0
+      ? `unnamed=[${svUnnamed.join(" · ")}] no-longer-there=[${svVanished.join(" · ")}] found=[${svReadersFound.join(" · ")}]`
+      : svReadersFound.join(" · "));
   pin("the codex adapter declares its OWN comms — a null would hand it back the unprobed waiver",
     /\n  comms: \["codex", "node"\],/.test(xBody), xBody.match(/\n  comms: [^\n]*/)?.[0]?.trim() ?? "no comms field");
   pin("the codex spawn line runs full access — approvals and sandbox bypassed by owner decision 2026-08-12",

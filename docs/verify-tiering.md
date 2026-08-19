@@ -898,7 +898,7 @@ tree.
 **No free pass**, as with every family here: six sightings make it real, they do not make the next
 red commit check a flake — and after this fix a commit-family red has one fewer excuse, not more.
 
-### 11.2f An eighth family: the send-boot fixtures assert a precondition they do not control (2026-08-10 → repaired 2026-08-19)
+### 11.2f An eighth family: the send-boot fixtures assert a precondition they do not control (2026-08-10 → repaired 2026-08-19 in two cuts)
 
 **The ordinal, counted and not asserted.** Three families in §5b, `merge/resolver` in §11.2,
 `reseed + live-bytes` in §11.2b, the `stalled` pane-observation race in §11.2c, the 💾-commit idle
@@ -909,25 +909,27 @@ that commissioned the repair, `911bdb73`, calls it the seventh; it was written w
 view. `CLAUDE.md` says "sechs bekannte Flake-Familien", which was already one short before this
 section existed.)
 
-**What §11 said about it before this.** Four of the five checks below appear **nowhere** in this
-file (`grep -c 'boot-race'` was 0). The fifth, the `unprobed` one, is written up — as §11.2c-bis,
-filed as a *sibling of §11.2c*. That filing is wrong and is superseded here: its mechanism is not
-§11.2c's repaint quiet-window but the one this section names, and its two sightings belong in the
-base rate below. Naming one member of a five-member family as a one-off sibling of a different
-family is itself the cost of not having had this section.
+**What §11 said about it before this.** Four of the six checks below appear **nowhere** in this
+file (`grep -c 'boot-race'` was 0). The `unprobed` one is written up — as §11.2c-bis, filed as a
+*sibling of §11.2c*. That filing is wrong and is superseded here: its mechanism is not §11.2c's
+repaint quiet-window but the one this section names, and its two sightings belong in the base rate
+below. Naming one member of a six-member family as a one-off sibling of a different family is
+itself the cost of not having had this section. The sixth check was missed twice over: it appears
+in no filing before 2026-08-19, and the first repair cut walked past it — see the correction below.
 
-**Signature: any of five checks in `./e2e-claude-gate.sh`, and *which* one changes from run to
-run.** Verbatim, all five, so a later reader recognises them:
+**Signature: any of six checks in `./e2e-claude-gate.sh`, and *which* one changes from run to
+run.** Verbatim, all six, so a later reader recognises them:
 
 > `unprobed fixture: the pane is still unobserved before /send`
 > `boot-race fixture: the pane is still unobserved before immediate /send`
 > `observed-pane fixture probe: the printing harn process is really alive`  (detail: `zsh,sh`)
 > `a pane that already printed takes the unchanged no-delay send path`  (detail: `200 3191ms`)
 > `silent-alive fixture: the pane has still never printed before /send`
+> `boot-timeout fixture: the pane is still unobserved before /send`  (detail: an epoch-ms stamp)
 
-The first four live in `fleet-e2e-harness.ts` (phase 2 and the phase-3 `FLEET_GATE_UNPROBED`
-branch), the fifth in `fleet-e2e-claude-gate.ts` (phase 1). This is the wrapper the **land gate**
-runs as step 4 of `VERIFY_CMD` (`watchdog.sh`), so every sighting is a red land.
+Five of them live in `fleet-e2e-harness.ts` (phase 2 and the phase-3 `FLEET_GATE_UNPROBED`
+branch), the `silent-alive` one in `fleet-e2e-claude-gate.ts` (phase 1). This is the wrapper the
+**land gate** runs as step 4 of `VERIFY_CMD` (`watchdog.sh`), so every sighting is a red land.
 
 **Mechanism, in one sentence: `lastOutput` is not a readiness signal — tmux stamps it on the
 pane's first repaint, seconds before the agent process exists.** That is not new knowledge here;
@@ -936,8 +938,9 @@ its stand-in (`claude-hang.c`, `for (;;) pause();`) prints nothing by constructi
 timestamp anyway. `94b1362` therefore moved the boot-wait decision in `sendText` off `lastOutput`
 and onto a process probe (`paneAgentAt`) plus an `openedAt` freshness window. **The fixtures did
 not follow.** Re-read at `4614da8`: `sendText` (`server.ts:4472`) does not mention `lastOutput`
-anywhere — the three `lastOutput === 0` lines were preconditions for a code path that no longer
+anywhere — the four `lastOutput === 0` lines were preconditions for a code path that no longer
 exists, asserting a *negative* the fixture does not own and a repaint can destroy at any instant.
+(Three of the four went in the first cut; the fourth, `boot-timeout`, is the correction below.)
 
 `silent-alive` was the worst of them, because it destroyed its own precondition while establishing
 the other: `awaitAgent(9, "alive")` polls up to **20 s** for the liveness half, and every one of
@@ -963,8 +966,13 @@ cleared by the §11.3 order (re-run the same tree), each having held up a land:
   lane's own gate chain (rerun `PASS … (0)`), and the **live land gate for P8** on `6f3b3e8`
   (`verify.ok:false`, 107 s, exit 1, 1 FAILURES; rerun `ALL PASS`, 116 PASS). The second downgraded
   a clean rebase to `resolved/landed:NO` and the tree went in by confirm-land.
+- 2026-08-19, **after** the first repair cut: `boot-timeout fixture: the pane is still unobserved
+  before /send`, FAIL detail an epoch-ms stamp, on a **live land gate** (retained instance
+  `fleet-e2e-gate-instance-32527`). The identical serial re-run failed identically; the following
+  A/B chain then ran 4/4 green on both trees. Non-deterministic, fixture inheritance, no code
+  regression — and the sighting that proved the first cut had left one member standing.
 
-Seven sightings across four dates, ~1–2 FAILs per affected run — which is what made every land
+Eight sightings across five dates, ~1–2 FAILs per affected run — which is what made every land
 review-bearing; the commissioning queue line reports at least three lands lifted over such a red
 with `{confirm:true}` (not re-measured here).
 
@@ -976,7 +984,8 @@ while the pane still held only `zsh,sh`, so the process probe found no agent (FA
 `SEND_BOOT_WAIT_MS` = 3000 (FAIL 2). Both lines accused the product of a regression that had not
 happened.
 
-**Repair (2026-08-19), two halves, and both are needed.**
+**Repair, cut 1 (`889bbe1`, 2026-08-19) — five of the six checks. Two halves, and both are
+needed.**
 
 - **(a) Establish the precondition instead of asserting it**, each time on the quantity the code
   actually reads. `silent-alive` polls the pane's own process tree directly (`awaitPaneComm`)
@@ -1007,8 +1016,8 @@ clock. Alongside it a clock-free second opinion on the **path**: `sendBootTimeou
 a false PASS (an unflushed row reads as absent, and the budget catches that case), never a false
 FAIL.
 
-**Nothing was removed or weakened.** The three `lastOutput === 0` lines were replaced by *stricter*
-preconditions (a live process instead of a cache reading, printed bytes instead of a repaint
+**Nothing was removed or weakened.** The three `lastOutput === 0` lines this cut reached were
+replaced by *stricter* preconditions (a live process instead of a cache reading, printed bytes instead of a repaint
 stamp), four named rows were added, and the two time windows grew from 1000 to 2000 ms with the
 reasoning written down — both still below the smallest regression they can separate.
 
@@ -1031,6 +1040,33 @@ unchanged no-delay send path (200 3191ms)` — an accusation against `server.ts`
 worth keeping as an epitaph for `lastOutput`: while `harn-print` had provably never run,
 `observed-pane fixture: Fleet recorded the pane's first output` **PASSED**.
 
+**Repair, cut 2 (2026-08-19, this commit) — the sixth check, which cut 1 walked past.**
+`fleet-e2e-harness.ts` carried one more `lastOutput === 0` line, in the `boot-timeout` fixture
+(the `harn-never` stand-in: `sleep 6`, no `exec`). It is the same construction fault verbatim —
+`slotLastOutput(10) === 0`, a negative the fixture does not own — and it survived because cut 1 was
+scoped by the five *sighted* check names rather than by a sweep for the anti-pattern. It cost a
+land gate nine days after the mechanism was written down.
+
+The repair is cut 1's own handwriting, applied once more:
+
+- **Establish, don't assert.** The line is replaced by the quantity `sendText` really reads. Its
+  boot branch turns on `openedAt` alone (`server.ts`, `mayStillBeBooting`), so the fixture now
+  stamps its own clock before `POST /api/slots/10/open` and states, under its own name,
+  `boot-timeout fixture precondition: the send falls inside the boot-freshness window`
+  (`${elapsed}ms of ${SEND_BOOT_FRESH_MS}ms`) — this process's two timestamps against a server
+  constant already mirrored in the file, which nothing outside the process can destroy. The
+  existing process probe stays exactly where it was: "no `harn` under this pane" is a property of
+  the `harn-never` **source**, not of a repaint.
+- **Skip the dependants.** The four rows that only mean something on the timeout branch — bounded
+  send, `paneEnv` verdict, delivered bytes, `send_boot_timeout` audit row — now sit behind
+  `if (timeoutInWindow && timeoutUnexec)`. Outside the window `sendText` skips the readiness branch
+  entirely: the send would return at once with no audit row, and all four would have accused
+  `server.ts` of a regression that never happened.
+
+The family's check count is unchanged at seven for this fixture (one assertion out, one named
+precondition in); no product check was touched, and `slotLastOutput` stays — `awaitObserved` is
+still an honest reader of it.
+
 **Residual risk, named.**
 
 - The 250 ms default settle remains unmeasurable by these checks; a regression that made an
@@ -1039,11 +1075,18 @@ worth keeping as an epitaph for `lastOutput`: while `harn-print` had provably ne
   the fixture, a directly polled process tree), so a red one means the machine is genuinely too
   slow — a real signal, and it costs a land. Margins measured on the repaired tree are wide:
   `silent-alive` 323 ms of 15000, `boot-race` 297 ms of 2000, `observed-pane` 4069 ms of 15000,
-  both no-delay sends 189 ms of 2000.
+  both no-delay sends 189 ms of 2000. Cut 2's `boot-timeout` margin over three serial runs:
+  296 / 276 / 276 ms of 15000.
 - `sendBootTimeouts()` is duplicated in the two phase harnesses. They are separate single-file
   programs sharing only `e2e/harness.ts`, and the shared module was outside the repair's surface.
+- Cut 2 is evidence that a name-scoped repair leaves members standing. The mechanical guard against
+  a seventh is a grep, not a memory:
+  `rg -n 'lastOutput === 0' fleet-e2e-harness.ts fleet-e2e-claude-gate.ts | rg -v '^[^:]*:[0-9]+:\s*//'`
+  must stay empty — the three surviving hits are all *comments* saying the line is gone, and the
+  filter is what separates them from a returning assertion. It is empty as of this commit. No pin
+  enforces it: `e2e/pins.ts` was outside this cut's surface.
 
-**No free pass.** Seven sightings make the family real; they do not make the next red send-boot
+**No free pass.** Eight sightings make the family real; they do not make the next red send-boot
 check a flake. After this cut a red one has one fewer excuse, not more — and the four precondition
 rows are there precisely so the next red says which it is.
 

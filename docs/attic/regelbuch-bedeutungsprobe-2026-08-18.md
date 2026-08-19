@@ -127,8 +127,8 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | D48 | C | lane-discipline | ausserhalb des Repos: stoppen und melden | <code>shared reality</code> |
 | S1 | C | supervisor | Supervisor-Rolle: Opus 5 high; nicht mechanisch durchgesetzt | <code>Opus 5</code> · <code>effort high</code> |
 | S2 | C | supervisor | /model+/effort in Pane aendert Slot-Datensatz nicht | <code>aktualisiert den Slot-Datensatz aber nicht</code> |
-| S3 | C | supervisor | im eigenen Composer nie C-u bei moeglichem Owner-Entwurf | <code>nie C-u</code> |
-| S4 | C | supervisor | waechst der Text, tippt ein Mensch | <code>tippt ein Mensch</code> |
+| S3 | C | supervisor | Composer-Entwurf ist Claude Codes eigener Rest, nie ein Owner-Entwurf | <code>CLAUDE CODES EIGENER REST</code> |
+| S4 | C | supervisor | den Owner NICHT fragen, ob ein Entwurf seiner ist | <code>NICHT, ob ein Entwurf seiner ist</code> |
 | F1 | C | self-scheduling | Self-Env-Vars in jeder Pane; vor Gebrauch pruefen | <code>FLEET_SELF_TOKEN</code> |
 | F2 | C | self-scheduling | lane-only: vier Routen, 409 nie 401 | <code>verify-intent</code> |
 | F3 | C | self-scheduling | watch: Lane bekommt 409 | <code>lane may not subscribe</code> · <code>409</code> |

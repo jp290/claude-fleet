@@ -425,39 +425,54 @@ await installHarn("never");
 // agent. It later exits to the shell only so paneEnv can independently prove delivery happened.
 // must still preserve the owner's ability to type into the surviving shell, but it must wait only
 // the short route budget and leave a durable, text-free audit row instead of returning a silent OK.
+const timeoutOpenStarted = Date.now();
 const timeoutOpen = await post("/api/slots/10/open", { cwd: "~" });
 check("boot-timeout fixture: the dead foreign harness opened onto its shell",
   timeoutOpen.ok, String(timeoutOpen.status));
-const timeoutBefore = await slotLastOutput(10);
-check("boot-timeout fixture: the pane is still unobserved before /send",
-  timeoutBefore === 0, String(timeoutBefore));
+// What this fixture no longer asserts is `lastOutput === 0`. sendText has never read lastOutput —
+// its boot branch turns on `openedAt` alone (server.ts, `mayStillBeBooting`) — and 94b1362 proved
+// tmux stamps lastOutput on the pane's first REPAINT, before any agent prints a byte. That line was
+// therefore a negative this fixture does not own and a repaint can destroy at any instant; it is
+// replaced below by the window sendText actually reads, established from this process's own clock.
+// The process probe stays where it is: unlike a repaint stamp, "no harn under this pane" is a
+// property of the harn-never SOURCE (it sleeps and execs nothing), so nothing can take it away.
 const timeoutWrapperComms = await directPaneComms("s10");
+const timeoutUnexec = timeoutWrapperComms.length > 0
+  && timeoutWrapperComms.every((c) => !c.startsWith("harn"));
 check("boot-timeout fixture probe: no declared harn process exists before /send",
-  timeoutWrapperComms.length > 0 && timeoutWrapperComms.every((c) => !c.startsWith("harn")),
-  timeoutWrapperComms.join(",") || "process probe did not run");
+  timeoutUnexec, timeoutWrapperComms.join(",") || "process probe did not run");
 const timeoutMarker = "boot-timeout-send-arrived";
 const timeoutStarted = Date.now();
 const timeoutSend = await post("/send", { slot: 10, text: `printf '${timeoutMarker}\\n'` });
 const timeoutElapsed = Date.now() - timeoutStarted;
-check("a readiness timeout is bounded and still sends — never 409/refusal",
-  timeoutSend.ok && timeoutElapsed >= 2800 && timeoutElapsed < 6000,
-  `${timeoutSend.status} ${timeoutElapsed}ms`);
-const timeoutProbe = await paneEnv("s10", "FLEET_SELF_SLOT");
-check("boot-timeout fixture probe: paneEnv itself ran in the surviving shell",
-  timeoutProbe === "10", timeoutProbe ?? "probe did not run");
-const timeoutCap = await tmuxOut("capture-pane", "-t", "s10", "-p", "-J");
-check("the owner send is delivered after timeout, preserving the dead-agent pane capability",
-  timeoutCap.out.includes(timeoutMarker), timeoutCap.out.slice(-220));
-let timeoutAudit: { event?: string; slot?: number; detail?: string } | undefined;
-for (let i = 0; i < 30 && !timeoutAudit; i++) {
-  const rows = ((await (await get("/api/audit?limit=100")).json()) as
-    { events: { event?: string; slot?: number; detail?: string }[] }).events;
-  timeoutAudit = rows.find((e) => e.event === "send_boot_timeout" && e.slot === 10);
-  if (!timeoutAudit) await Bun.sleep(100);
+// The precondition under its OWN name. Outside the freshness window sendText skips the readiness
+// branch entirely: the send would return at once and leave no audit row, and the four checks below
+// would report a code regression that never happened instead of a fixture that arrived too late.
+const timeoutFresh = timeoutStarted - timeoutOpenStarted;
+const timeoutInWindow = timeoutFresh < SEND_BOOT_FRESH_MS;
+check("boot-timeout fixture precondition: the send falls inside the boot-freshness window",
+  timeoutInWindow, `${timeoutFresh}ms of ${SEND_BOOT_FRESH_MS}ms`);
+if (timeoutInWindow && timeoutUnexec) {
+  check("a readiness timeout is bounded and still sends — never 409/refusal",
+    timeoutSend.ok && timeoutElapsed >= 2800 && timeoutElapsed < 6000,
+    `${timeoutSend.status} ${timeoutElapsed}ms`);
+  const timeoutProbe = await paneEnv("s10", "FLEET_SELF_SLOT");
+  check("boot-timeout fixture probe: paneEnv itself ran in the surviving shell",
+    timeoutProbe === "10", timeoutProbe ?? "probe did not run");
+  const timeoutCap = await tmuxOut("capture-pane", "-t", "s10", "-p", "-J");
+  check("the owner send is delivered after timeout, preserving the dead-agent pane capability",
+    timeoutCap.out.includes(timeoutMarker), timeoutCap.out.slice(-220));
+  let timeoutAudit: { event?: string; slot?: number; detail?: string } | undefined;
+  for (let i = 0; i < 30 && !timeoutAudit; i++) {
+    const rows = ((await (await get("/api/audit?limit=100")).json()) as
+      { events: { event?: string; slot?: number; detail?: string }[] }).events;
+    timeoutAudit = rows.find((e) => e.event === "send_boot_timeout" && e.slot === 10);
+    if (!timeoutAudit) await Bun.sleep(100);
+  }
+  check("the readiness timeout is visible on the audit trail",
+    !!timeoutAudit && timeoutAudit.detail === "harness=default budget=3000ms",
+    JSON.stringify(timeoutAudit ?? null));
 }
-check("the readiness timeout is visible on the audit trail",
-  !!timeoutAudit && timeoutAudit.detail === "harness=default budget=3000ms",
-  JSON.stringify(timeoutAudit ?? null));
 
 await installHarn("exit");
 const o6 = await post("/api/slots/6/open", { cwd: "~" });

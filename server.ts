@@ -84,6 +84,10 @@ const LANE_OUTCOME_FILE = `${import.meta.dir}/lane-outcomes.jsonl`;
 // Immutable evidence of the exact ContextPlan pointers delivered with a founding brief. Selection
 // is always freshly derived; only this delivery receipt is historical and append-only.
 const CONTEXT_RECEIPT_FILE = `${import.meta.dir}/context-receipts.jsonl`;
+// Which anchor renderer wrote the delivered block. Every row written from here carries it; a row
+// WITHOUT it predates the field and is v1 — that is the only honest way to keep the ledger's
+// byte-reconstruction promise across a renderer change.
+const CONTEXT_ANCHOR_RENDERER = "v2";
 // the owner disposition rail — one append-only label per advisory output the owner ruled on
 // (see the DISPOSITION region below). Same appendEvent discipline/rotation as the two above.
 const DISPOSITION_FILE = `${import.meta.dir}/dispositions.jsonl`;
@@ -6114,8 +6118,10 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     await sendText(free, deliveredBrief, true);
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
-    // facts {harness, mode, triggers, selected, omitted}. A later reader can reconstruct every
-    // byte from the row and the v1 renderer; neither the mutable task nor a later tree is needed.
+    // facts {harness, mode, triggers, selected, omitted}. A later reader can reconstruct every byte
+    // from the row and the renderer the row NAMES — `renderer` says which one wrote this block, and
+    // a row without that field is a v1 row by date. Neither the mutable task nor a later tree is
+    // needed.
     const hash = createHash("sha256").update(JSON.stringify({
       anchorBlock,
       planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
@@ -6128,6 +6134,7 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
       mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
       deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength,
       truncated: false,
+      renderer: CONTEXT_ANCHOR_RENDERER,
       // The join key, and deliberately the SAME function LaneOutcome.briefHash uses over the lane's
       // first logged prompt: both hash the bytes that actually crossed the seam, so a receipt and
       // the outcome of the lane it founded meet exactly. The `hash` above stays what it was — it
@@ -6143,19 +6150,23 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
 
 type ContextReceiptSelection = {
   id: string;
+  useWhen?: string;
   anchors: readonly { path: string; anchor: string }[] | { privateSourceId: string };
   sourceHash?: string;
 };
 
+// v2 renders PURPOSE beside the pointer: v1 handed a lane `- <id> | <path> | <anchor>` and left it
+// to guess when following the pointer was worth a read. The pack line carries useWhen exactly once
+// and the pointers sit indented beneath it, so one pack is one paragraph however many sources it
+// names. A selection WITHOUT useWhen (a repo-declared pack from before the field) loses that line
+// and keeps every pointer — the block never goes silent because a purpose was never stated.
 function renderContextAnchorBlock(plan: ContextPlan): string {
   if (plan.selected.length === 0) return "";
-  const lines = ["ContextPlan v1 anchors (fresh advisory pointers; no source content is copied):"];
+  const lines = ["ContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"];
   for (const pack of plan.selected) {
-    if ("privateSourceId" in pack.sources) {
-      lines.push(`- ${pack.id} | ${pack.sources.privateSourceId}`);
-    } else {
-      for (const source of pack.sources) lines.push(`- ${pack.id} | ${source.path} | ${source.anchor}`);
-    }
+    lines.push(pack.useWhen ? `- ${pack.id} — ${pack.useWhen}` : `- ${pack.id}`);
+    if ("privateSourceId" in pack.sources) lines.push(`  ${pack.sources.privateSourceId}`);
+    else for (const source of pack.sources) lines.push(`  ${source.path} | ${source.anchor}`);
   }
   return `\n\n${lines.join("\n")}`;
 }
@@ -6168,10 +6179,14 @@ function contextReceiptSelections(selected: readonly ContextPlanSelection[]): Co
     const sourceHash = selection.sourceHash !== undefined
       ? { sourceHash: selection.sourceHash }
       : manifest && "sourceHash" in manifest ? { sourceHash: manifest.sourceHash } : {};
+    // useWhen is copied from the SELECTION, never re-read from the seed: the row must describe the
+    // block that was delivered, and the plan is the only thing the renderer saw.
+    const useWhen = selection.useWhen !== undefined ? { useWhen: selection.useWhen } : {};
     if (!("privateSourceId" in selection.sources))
-      return { id: selection.id, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash };
+      return { id: selection.id, ...useWhen, anchors: selection.sources.map((source) => ({ ...source })), ...sourceHash };
     return {
       id: selection.id,
+      ...useWhen,
       anchors: { privateSourceId: selection.sources.privateSourceId },
       ...sourceHash,
     };
@@ -12752,6 +12767,7 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
@@ -12856,6 +12872,7 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
@@ -13199,6 +13216,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);
@@ -13304,6 +13322,7 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
         harness: free.harness, model: free.model, effort: free.effort,
         mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted,
         deliveredBytes: new TextEncoder().encode(deliveredBrief).byteLength, truncated: false,
+        renderer: CONTEXT_ANCHOR_RENDERER,
         briefHash: briefHashOf(deliveredBrief), briefSource: FOUNDING_BRIEF_SOURCE,
       });
       free.history = [...free.history, { text: deliveredBrief, ts: at }].slice(-MAX_HISTORY);

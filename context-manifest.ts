@@ -5,7 +5,7 @@
 // COMMIT THE RECEIPT ASSERTS, validates it with the same pure validator the Fleet seeds pass, and
 // plans it through the same omission ladder. Everything in this file is pure — it is handed the
 // manifest bytes and the repo facts, and performs no filesystem, git, env, or network read.
-import { validateContextPacks, type ContextPackRepoFacts } from "./context-pack-validator";
+import { validateContextPacks, validUseWhen, type ContextPackRepoFacts } from "./context-pack-validator";
 import { CONTEXT_PACKS, type ContextPackCapability, type ContextPackMode, type ContextPackSource,
   type ContextPackTrigger } from "./context-packs";
 import { contextOmissionFor, resolveContextHarness, type ContextPlan, type ContextPlanInput,
@@ -121,6 +121,7 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       readonly sources: readonly ContextPackSource[];
       readonly estimatedBytes: number;
       readonly sourceHash?: string;
+      readonly useWhen?: unknown;
     };
     // Sources are present at the planned commit: validation proved every path tracked there and
     // every anchor present in those exact bytes.
@@ -135,6 +136,10 @@ export function planRepoContext(input: RepoContextPlanInput): ContextPlan {
       id,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })),
       estimatedBytes: pack.estimatedBytes,
+      // The validator already condemned any pack whose useWhen is unusable, so this re-check can
+      // only ever see a valid line or none. It is still stated here rather than assumed: the field
+      // is carried into a delivered brief, and a carrier must never widen what it was handed.
+      ...(validUseWhen(pack.useWhen) ? { useWhen: pack.useWhen } : {}),
       ...(typeof pack.sourceHash === "string" ? { sourceHash: pack.sourceHash } : {}),
     });
   }

@@ -10,7 +10,7 @@ import {
   type ContextPackCapability,
   type ContextPackHarness,
 } from "../context-packs";
-import { validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
+import { USE_WHEN_MAX, validateContextPacks, type ContextPackRepoFacts } from "../context-pack-validator";
 
 export type ContextPackCheck = (name: string, ok: boolean, detail?: string) => void;
 
@@ -137,6 +137,36 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       privateLeakResult.verdict === "fail" && hasCode(privateLeakResult, "PRIVATE_SOURCE_LEAK")
         && hasCode(privateLeakResult, "PRIVATE_SOURCE_HASH_INVALID"),
       issueSummary(privateLeakResult));
+
+    // useWhen is PURPOSE, one line, and it is delivered verbatim into a brief — so the seeds are
+    // held to the same bound the validator enforces, and the field's ABSENCE stays legal because
+    // repo manifests written before it exist and must keep validating.
+    check("context packs: every seed states one bounded line of purpose",
+      CONTEXT_PACKS.every((pack) => typeof pack.useWhen === "string" && !/[\r\n]/.test(pack.useWhen)
+        && pack.useWhen.trim().length >= 1 && pack.useWhen.trim().length <= USE_WHEN_MAX),
+      CONTEXT_PACKS.map((pack) => `${pack.id}:${pack.useWhen.length}`).join(","));
+
+    const noUseWhen = clonePacks();
+    for (const pack of noUseWhen) delete pack.useWhen;
+    const noUseWhenResult = validateContextPacks({ packs: noUseWhen, repo: fixture.facts, capabilities });
+    check("context packs: a manifest that states no useWhen at all still validates (absence is a date, not a defect)",
+      noUseWhenResult.verdict === "pass" && noUseWhenResult.issues.length === 0,
+      issueSummary(noUseWhenResult));
+
+    for (const [label, value] of [
+      ["over the length bound", "x".repeat(USE_WHEN_MAX + 1)],
+      ["multi-line", "purpose line one\nline two"],
+      ["blank after trimming", "   "],
+      ["not a string", 42],
+    ] as const) {
+      const bad = clonePacks();
+      bad[0].useWhen = value;
+      const badResult = validateContextPacks({ packs: bad, repo: fixture.facts, capabilities });
+      check(`context packs: a useWhen ${label} fails as USE_WHEN_INVALID on its own pack`,
+        badResult.verdict === "fail" && badResult.issues.some((issue) =>
+          issue.code === "USE_WHEN_INVALID" && issue.packId === "portable-core"),
+        issueSummary(badResult));
+    }
 
     const openVocabulary = clonePacks();
     openVocabulary[0].triggers = ["free-form-trigger"];

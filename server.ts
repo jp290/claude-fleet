@@ -10431,7 +10431,22 @@ interface LaneOutcome {
   // a repository — the same bargain `recent`/`last` make in /api/dirinfo.
   repo?: string;
   mainAfter?: string;
+  // How many BYTES of tool_result this lane's agent carried in its conversation, split by tool.
+  // The rulebook already tells a lane to send suite output to a log file and read only the tail —
+  // an instruction whose EFFECT was never measured, because nothing on the outcome row records what
+  // tool output actually cost. This is that sensor, and it is additive: nothing reads it, no gate
+  // consults it, a land never waits on it.
+  // Three-valued like every other measurement here. `null` = could not be measured (harness keeps no
+  // claude-code transcript, the project dir does not exist, the walk threw). It is NEVER 0 for those
+  // cases: 0 is itself a measurement ("this lane spent no tool_result bytes"), and collapsing the two
+  // would make an unmeasurable lane read as a frugal one. Optional because every row written before
+  // this field existed carries no answer at all, and the reader must say so rather than default.
+  toolResultBytes?: ToolResultBytes | null;
 }
+// total + per-tool tool_result bytes. `byTool` keys are the tool NAMES from the matching tool_use
+// entry; a tool_result whose tool_use id is not in the same file lands under "?" rather than being
+// dropped — an unattributable byte is still a byte this lane paid for.
+type ToolResultBytes = { total: number; byTool: Record<string, number> };
 // `verdict: null` + `raw: true` = the reviewer produced no explicit verdict (error/timeout/unparseable
 // /no fork base) — the measurement failed. A "pass" is only ever an explicit {"verdict":"ok"}.
 // `rawAnswer` rides along on `raw: true` rows ONLY — the reviewer's own answer text (post-envelope,
@@ -10505,6 +10520,59 @@ async function laneOwnerPrompts(cwd: string): Promise<{ count: number; firstText
     return { count: 0, firstText: null };
   }
 }
+// a single transcript file bigger than this is skipped rather than read into memory on the land
+// path. Skipping does NOT make the measurement null — the walk still ran and still answers for the
+// files it could read; a lane with one monster file and ten normal ones is measured, undercounted,
+// and that is a better answer than "unknown". (No env knob: one field, one truth.)
+const TOOL_RESULT_FILE_MAX_BYTES = 100 * 1024 * 1024;
+// tool_result bytes for a lane, read from claude's own transcripts under projDir(cwd). Best effort
+// and strictly read-only: every failure mode degrades to a smaller number or to null, and none of
+// them can delay or fail a land — buildLaneOutcome's caller is the land path.
+// Attribution is per FILE: `tool_use` blocks on assistant lines carry {id,name}, `tool_result`
+// blocks on user lines carry `tool_use_id`. The id map is rebuilt for each file because ids are only
+// unique within a conversation, and a cross-file map would attribute one session's bytes to another
+// session's tool. Every *.jsonl in the dir counts, including the throwaway worker transcripts that
+// share a slot's project dir (BACKGROUND_MARKS) — this asks what the DIRECTORY cost, not what one
+// conversation did, and a worker's own tool output is a cost of running this lane too.
+async function laneToolResultBytes(cwd: string): Promise<ToolResultBytes | null> {
+  try {
+    const dir = projDir(cwd);
+    if (!existsSync(dir)) return null;
+    const byTool: Record<string, number> = {};
+    let total = 0;
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".jsonl")) continue;
+      const path = `${dir}/${name}`;
+      try {
+        if (statSync(path).size > TOOL_RESULT_FILE_MAX_BYTES) continue;
+        const names = new Map<string, string>(); // tool_use id → tool name, this file only
+        for (const line of (await Bun.file(path).text()).split("\n")) {
+          if (!line.startsWith("{")) continue;
+          let j: unknown;
+          try { j = JSON.parse(line); } catch { continue; } // torn/rotated line — skip, keep the rest
+          const content = (j as { message?: { content?: unknown } }).message?.content;
+          if (!Array.isArray(content)) continue;
+          for (const raw of content) {
+            const b = raw as { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown; content?: unknown };
+            if (b.type === "tool_use") {
+              if (typeof b.id === "string" && typeof b.name === "string") names.set(b.id, b.name);
+              continue;
+            }
+            if (b.type !== "tool_result") continue;
+            const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "");
+            const bytes = Buffer.byteLength(text, "utf8");
+            const tool = (typeof b.tool_use_id === "string" ? names.get(b.tool_use_id) : undefined) ?? "?";
+            byTool[tool] = (byTool[tool] ?? 0) + bytes;
+            total += bytes;
+          }
+        }
+      } catch { /* one unreadable file must not sink the whole measurement */ }
+    }
+    return { total, byTool };
+  } catch {
+    return null;
+  }
+}
 // the review on record for a lane at its terminal event, with the staleness relation resolved
 // against the tree AS IT IS NOW. Read-only and never awaited-on: a review still inflight (the
 // owner clicked ③ seconds ago) contributes nothing rather than delaying a land — "none" then is
@@ -10569,6 +10637,10 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
   const ts = Date.now();
   const { count: ownerPrompts, firstText } = await laneOwnerPrompts(cwd);
   const review = await outcomeReview(s, cwd, base);
+  // gated on the SAME fact transcriptFile() gates on, not on a second "is it claude" test: a harness
+  // that writes no claude-code transcript has nothing here to read, whatever it writes elsewhere, and
+  // walking projDir() for it would hand this lane a co-located claude session's bytes.
+  const toolResultBytes = harnessOf(s.harness).supports.transcript ? await laneToolResultBytes(cwd) : null;
   return {
     ts,
     branch: s.worktree.branch,
@@ -10620,6 +10692,9 @@ async function buildLaneOutcome(s: Slot, kind: "landed" | "shelved" | "killed", 
     // absence reads as "this row cannot say", which is true, where a null would read as an answer.
     repo: s.worktree.repo,
     ...(kind === "landed" && facts.mainAfter ? { mainAfter: facts.mainAfter } : {}),
+    // written on EVERY live-lane row including the null: here the key's PRESENCE is what separates
+    // "measured, and the answer is unknowable" from a row that predates the field and cannot say.
+    toolResultBytes,
   };
 }
 // the reverted case has no live slot (the lane landed and was torn down) — assemble from the repo
@@ -10657,6 +10732,9 @@ async function buildRevertedOutcome(repo: string, rec: LandRecord): Promise<Lane
     // no live slot here (the lane landed and was torn down) → no review cache to read. Recorded as
     // the explicit "nothing covered this", never as a missing field.
     review: { state: "none" },
+    // `toolResultBytes` is OMITTED here, not nulled: a revert has no live slot and therefore no cwd
+    // to read transcripts from, so this row cannot say — and the lane's own `landed` row already
+    // carries the measurement, joinable by branch like the land-shape facts above.
     // this row's files are exactly mainBefore...mainAfter in this repo, so it can say both without
     // anyone handing them over — the undo record IS the land site's statement
     repo,

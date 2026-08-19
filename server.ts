@@ -11148,7 +11148,44 @@ async function buildCodeGraph(repo: string, dir: string, ref: string): Promise<s
   }
 }
 
-async function runMerge(cwd: string, branch: string, main: string, conflicted: string[], laneTask: string | null, graphs: MergeGraphs): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
+// THE LANDING ANCHORS FOR THE TWO MUTATING WORKERS — computed HERE, at the call site, and appended
+// to the prompt. Deliberately NOT wired into WorkerSpec/runWorker: the resolver and the repair
+// round are the only workers that rewrite a lane's history, and the other nine must inherit
+// nothing. A parameter on the shared runner would hand it to all of them by default and make
+// "which worker gets landing rules" a flag question forever; a call-site suffix answers it by
+// construction. Appending is safe against runWorker's contract-mark check — a suffix removes no
+// substring — and renderContextAnchorBlock returns "" on an empty selection, so a foreign tree
+// (whose Fleet-owned anchors cannot resolve) simply gets nothing, with no special case here.
+//
+// `harness` is the literal "claude" and that is a fact, not a shortcut: this path runs over
+// WORKER_HARNESS.worker, whose command line starts `claude` whatever FLEET_CMD says. Passing a
+// foreign FLEET_CMD through would omit `land-mechanics` as `harness-unsupported` for a session
+// that is in fact Claude — the anchors would vanish for the wrong reason. `root` is the SOURCE
+// repository, never the lane worktree: a linked worktree has its own git toplevel, so classifying
+// `cwd` would call every lane foreign and empty the block on exactly the path that needs it.
+// No receipt is written: context-receipts.jsonl rows are session-shaped (slot, branch, taskId) and
+// briefSource is a closed five-value vocabulary — a worker has none of those, and a sixth value is
+// an owner act, not a side effect of this seam. The anchors stay observable in the worker transcript.
+async function landingAnchorBlock(root: string): Promise<string> {
+  // AN ADVISORY POINTER MAY NEVER DECIDE A LAND. dispatchSourceTree THROWS when the root cannot be
+  // classified, and that is right at the dispatch seam: a receipt would otherwise assert anchors
+  // against a repository it cannot name, and the requeue path owns the failure. Nothing is
+  // receipted here, so there is no truth to protect by refusing — while an uncaught throw would
+  // travel to mergeJob's catch and turn an otherwise successful conflict resolution into an
+  // `error` verdict. Unclassifiable is therefore NO ANCHORS, never "foreign" (which would claim a
+  // classification that was not made), and the resolver runs exactly as it did before this seam.
+  const sourceTree = await dispatchSourceTree(root).catch(() => null);
+  if (sourceTree === null) return "";
+  return renderContextAnchorBlock(planContext({
+    sourceTree,
+    harness: "claude",
+    mode: "mutating",
+    triggers: ["landing"],
+    capabilities: DISPATCH_CONTEXT_CAPABILITIES,
+  }));
+}
+
+async function runMerge(cwd: string, root: string, branch: string, main: string, conflicted: string[], laneTask: string | null, graphs: MergeGraphs): Promise<{ status: "rebased" | "blocked" | "unparseable"; detail: string }> {
   const lg = await git(cwd, "log", "--no-color", "--oneline", `${main}..HEAD`);
   // main's intent, deterministically: commits main gained since the fork. Compute the merge-base
   // here (fall back to `main` if it can't be resolved — then mergeBase..main is empty, matching
@@ -11167,7 +11204,8 @@ async function runMerge(cwd: string, branch: string, main: string, conflicted: s
     graphs,
   });
   const out = await runWorker(
-    { worker: "merge", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
+    { worker: "merge", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS },
+    `${prompt}${await landingAnchorBlock(root)}`, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   // the JSON is the agent's NARRATIVE, never the authority — a correct rebase answered in
   // prose must not be thrown away (seen live: agent ignored an injected commit subject,
@@ -11260,11 +11298,12 @@ async function wakeAuthor(s: Slot, cwd: string, branch: string, main: string,
 // Invoked exactly like runMerge (same MERGE_CMD/session, timeout, tools). The returned status is
 // the agent's NARRATIVE only — mergeJob's loop re-establishes the git-verified state and re-runs
 // runVerify to decide, never trusting this word (believe git, not the agent).
-async function runRepair(cwd: string, branch: string, main: string, conflicted: string[],
+async function runRepair(cwd: string, root: string, branch: string, main: string, conflicted: string[],
   verify: { cmd: string; out: string }, graphs: MergeGraphs): Promise<{ status: "repaired" | "blocked" | "unparseable"; detail: string }> {
   const prompt = buildRepairPrompt({ branch, main, verifyCmd: verify.cmd, verifyOut: verify.out, conflicted, graphs });
   const out = await runWorker(
-    { worker: "repair", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS }, prompt, cwd);
+    { worker: "repair", cmd: MERGE_CMD, tools: MERGE_TOOLS, timeoutMs: MERGE_TIMEOUT_MS },
+    `${prompt}${await landingAnchorBlock(root)}`, cwd);
   const body = out.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
   try {
     const j = JSON.parse(body) as { status?: unknown; detail?: unknown };
@@ -11841,7 +11880,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
     }
     const r = pre.clean
       ? { status: "rebased" as const, detail: "clean rebase — no conflicts, agent not needed" }
-      : await runMerge(cwd, branch, main, pre.conflicted, laneTask, graphs);
+      : await runMerge(cwd, root, branch, main, pre.conflicted, laneTask, graphs);
     if (r.status === "blocked") {
       res = { status: "blocked", detail: r.detail, landed: false, branch, at: Date.now() };
     } else {
@@ -11895,7 +11934,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         let repairRounds = 0;
         if (!pre.clean && verify && verify.ok === false && MERGE_REPAIR_ROUNDS > 0) {
           for (let round = 1; round <= MERGE_REPAIR_ROUNDS; round++) {
-            const rep = await runRepair(cwd, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out }, graphs);
+            const rep = await runRepair(cwd, root, branch, main, pre.conflicted, { cmd: verify.cmd, out: verify.out }, graphs);
             if (rep.status === "blocked") break; // agent aborted, tree left pristine — nothing to re-verify
             const rst = await git(cwd, "status", "--porcelain");
             if (rst.code !== 0 || rst.out) {

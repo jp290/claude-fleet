@@ -776,6 +776,23 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
 pin("server.ts imports and calls the pure ContextPlan producer at the dispatch delivery seam",
   /from "\.\/context-plan";/.test(server) && /const plan = planContext\(planFacts\);/.test(server));
 
+// ...and its SECOND consumer, the two mutating workers. Same argument, one seam further: the pure
+// plan checks in e2e/context-plan.ts assert the facts→plan mapping and would stay green with the
+// server.ts wiring deleted. Held EXACT at two call sites, and the suffix form is part of the rule —
+// appending is what keeps runWorker's contract-mark check satisfied, and computing the plan at the
+// call site is what keeps the other nine workers from inheriting landing rules through WorkerSpec.
+{
+  const appended = [...server.matchAll(/\$\{await landingAnchorBlock\(root\)\}`, cwd\);/g)].length;
+  pin("the merge and repair workers each append the landing anchors, and no shared runner hands them to anyone else",
+    appended === 2
+    && /const sourceTree = await dispatchSourceTree\(root\)\.catch\(\(\) => null\);\n  if \(sourceTree === null\) return "";/.test(server)
+    && /async function landingAnchorBlock\(root: string\): Promise<string> \{/.test(server)
+    && /triggers: \["landing"\],/.test(server)
+    && [...server.matchAll(/landingAnchorBlock\(/g)].length === appended + 1
+    && !/interface WorkerSpec \{[^}]*plan/.test(server),
+    `${appended} call-site append(s)`);
+}
+
 {
   // WHICH TREE A SEAM IS DELIVERING INTO IS DERIVED, NEVER DECLARED. A hard-coded `sourceTree`
   // does not fail loudly: the packs resolve for the seam's author (who is inside Fleet) and the

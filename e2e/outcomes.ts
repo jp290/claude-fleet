@@ -179,6 +179,23 @@ export async function run(): Promise<void> {
     check("outcome: killed lane WITH a commit → killed-dirty, commitCount 1",
       rec2?.disposition === "killed-dirty" && rec2?.commitCount === 1, JSON.stringify(rec2));
 
+    // tool_result BYTES, negative half — the attention-cost sensor for tool output. The rulebook
+    // tells a lane to keep suite output out of its context; nothing measured whether that has any
+    // effect, because no outcome row recorded what tool output cost. This half is the one that
+    // matters: an unmeasurable lane must record null, never 0.
+    // Both halves ride lanes this family ALREADY creates. That is not tidiness: outcomes.run() runs
+    // before tasks.run(), whose payload-budget probe measures a /api/sessions response with only
+    // ~76 B of headroom left — an extra lane here spends that budget in a check three families away,
+    // where nobody would look for it. (Measured 2026-08-19: base 12212 B, +1 fixture lane 12722 B.)
+    const projDirOf = (cwd: string) =>
+      `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    // the precondition fails as ITSELF: if this dir somehow existed, "null" below would be a real
+    // (and wrong) measurement rather than this assertion's subject
+    check("outcome: tool_result fixture precondition — the killed lane's project dir does not exist",
+      !existsSync(projDirOf(oc2.cwd)), projDirOf(oc2.cwd));
+    check("outcome: a lane with no transcript dir records toolResultBytes null — the key is PRESENT (measured: unknowable), never 0",
+      rec2 !== undefined && "toolResultBytes" in rec2 && rec2.toolResultBytes === null, JSON.stringify(rec2?.toolResultBytes));
+
     // (3) KILLED-EMPTY — a lane with no commits at all
     const oc3 = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; branch: string };
     await post(`/api/slots/${oc3.slot}/kill`, {});
@@ -191,60 +208,38 @@ export async function run(): Promise<void> {
     await Bun.write(`${oc4.cwd}/shelf.txt`, "later\n");
     spawnSync("git", ["-C", oc4.cwd, "add", "shelf.txt"]);
     spawnSync("git", ["-C", oc4.cwd, "commit", "-qm", "shelved work"]);
+    // tool_result BYTES, positive half — planted BEFORE the terminal event, because buildLaneOutcome
+    // reads the transcripts at that moment. One assistant line naming two tools, one user line
+    // carrying three results: an attributed Bash string (10 B), an attributed Read whose content is
+    // an ARRAY (stringified — 29 B), and an ORPHAN whose tool_use id this file never declared (3 B,
+    // which must land under "?" rather than vanish). The byte counts are hand-computed, never
+    // recomputed by the rule under test. The torn line must be skipped without sinking the file.
+    const trDir = projDirOf(oc4.cwd);
+    mkdirSync(trDir, { recursive: true });
+    await Bun.write(`${trDir}/fixture.jsonl`, [
+      JSON.stringify({ type: "assistant", message: { content: [
+        { type: "tool_use", id: "tu_bash", name: "Bash" },
+        { type: "tool_use", id: "tu_read", name: "Read" },
+      ] } }),
+      JSON.stringify({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "tu_bash", content: "0123456789" },
+        { type: "tool_result", tool_use_id: "tu_read", content: [{ type: "text", text: "hi" }] },
+        { type: "tool_result", tool_use_id: "tu_never_declared", content: "abc" },
+      ] } }),
+      "{ not json",
+      "",
+    ].join("\n"));
+    check("outcome: tool_result fixture precondition — the planted transcript is on disk where projDir() looks",
+      existsSync(`${trDir}/fixture.jsonl`), trDir);
     await post(`/api/slots/${oc4.slot}/shelve`, { note: "resume later" });
     const rec4 = forBranch(await readOutcomes(), oc4.branch);
     check("outcome: shelved lane → shelved disposition", rec4?.disposition === "shelved", JSON.stringify(rec4));
-
-    // (4b) tool_result BYTES — the attention-cost sensor for tool output. The rulebook already tells
-    // a lane to keep suite output out of its context; nothing measured whether that instruction has
-    // any effect, because no outcome row recorded what tool output cost. Two probes, and the second
-    // is the one that matters: an unmeasurable lane must record null, never 0.
-    {
-      const projDirOf = (cwd: string) =>
-        `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
-      // the NEGATIVE half, taken off the shelved lane above: a fresh worktree has no project dir,
-      // so this row's honest answer is null. Its precondition is checked as ITSELF — if the dir
-      // somehow existed, "null" would be a real (and wrong) measurement, not this assertion's subject.
-      check("outcome: tool_result fixture precondition — the shelved lane's project dir does not exist",
-        !existsSync(projDirOf(oc4.cwd)), projDirOf(oc4.cwd));
-      check("outcome: a lane with no transcript dir records toolResultBytes null — the key is PRESENT (measured: unknowable), never 0",
-        rec4 !== undefined && "toolResultBytes" in rec4 && rec4.toolResultBytes === null, JSON.stringify(rec4?.toolResultBytes));
-
-      const ocTR = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
-      const trDir = projDirOf(ocTR.cwd);
-      mkdirSync(trDir, { recursive: true });
-      // one assistant line naming two tools, one user line carrying three results: an attributed
-      // Bash string (10 B), an attributed Read whose content is an ARRAY (stringified — 29 B), and
-      // an ORPHAN whose tool_use id this file never declared (3 B, must land under "?" rather than
-      // being dropped). Byte counts are hand-computed, not recomputed by the same rule under test.
-      const trLines = [
-        JSON.stringify({ type: "assistant", message: { content: [
-          { type: "tool_use", id: "tu_bash", name: "Bash" },
-          { type: "tool_use", id: "tu_read", name: "Read" },
-        ] } }),
-        JSON.stringify({ type: "user", message: { content: [
-          { type: "tool_result", tool_use_id: "tu_bash", content: "0123456789" },
-          { type: "tool_result", tool_use_id: "tu_read", content: [{ type: "text", text: "hi" }] },
-          { type: "tool_result", tool_use_id: "tu_never_declared", content: "abc" },
-        ] } }),
-        "{ not json",           // a torn line must be skipped, not sink the file
-        "",
-      ].join("\n");
-      await Bun.write(`${trDir}/fixture.jsonl`, trLines);
-      check("outcome: tool_result fixture precondition — the planted transcript is on disk where projDir() looks",
-        existsSync(`${trDir}/fixture.jsonl`), trDir);
-      await Bun.write(`${ocTR.cwd}/tr.txt`, "tool result bytes\n");
-      spawnSync("git", ["-C", ocTR.cwd, "add", "tr.txt"]);
-      spawnSync("git", ["-C", ocTR.cwd, "commit", "-qm", "tool result bytes"]);
-      await post(`/api/slots/${ocTR.slot}/shelve`, { note: "measured" });
-      const recTR = forBranch(await readOutcomes(), ocTR.branch);
-      check("outcome: toolResultBytes carries the EXACT planted bytes, split by the tool that produced them",
-        recTR?.toolResultBytes?.total === 42
-        && recTR.toolResultBytes.byTool.Bash === 10
-        && recTR.toolResultBytes.byTool.Read === 29
-        && recTR.toolResultBytes.byTool["?"] === 3, JSON.stringify(recTR?.toolResultBytes));
-      rmSync(trDir, { recursive: true, force: true });
-    }
+    check("outcome: toolResultBytes carries the EXACT planted bytes, split by the tool that produced them",
+      rec4?.toolResultBytes?.total === 42
+      && rec4.toolResultBytes.byTool.Bash === 10
+      && rec4.toolResultBytes.byTool.Read === 29
+      && rec4.toolResultBytes.byTool["?"] === 3, JSON.stringify(rec4?.toolResultBytes));
+    rmSync(trDir, { recursive: true, force: true });
 
     // (5) REVERTED — a conflict-free lane lands via the server script path (ADVANCES main), then
     // /api/repos/undo-land reverts it. The strongest negative outcome, assembled from the undo

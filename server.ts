@@ -9895,7 +9895,16 @@ async function drainPostLandAudits(): Promise<void> {
       // be folded into the next run (the coalescing contract above) rather than retired by this
       // run's bookkeeping.
       const covers = q.covers.slice();
-      await runPostLandAudit(repo, q.main, covers); // never throws — every failure is a row
+      // WRITE SITE 2 of 2 (the verify GATE made visible — see that region). The audit takes the
+      // same machine-wide mutex as a land gate, for ~10 minutes, and until now the surface that
+      // exists to say who holds it named only a pid. It has no slot — it is fleet's own work,
+      // owned by no pane — so the row goes out with `slot: null` and names the tree instead.
+      // Wrapped HERE rather than inside runPostLandAudit for the same reason `runningPostLandAudit`
+      // is cleared here: the drain's frame is the one that certainly outlives the run, on every
+      // exit including a throw. Sight only; deleting this wrapper restores today's behaviour.
+      await reportServerRun("audit",
+        { slot: null, label: basename(repo), branch: q.main, suite: "post-land audit", cwd: null },
+        () => runPostLandAudit(repo, q.main, covers)); // never throws — every failure is a row
       // ...and only NOW is the entry consumed. Deleting first — today's order — means a process
       // death mid-run loses the audit even with a durable mirror, because the mirror would already
       // say "nothing pending". An entry outlives its run and dies with the ROW: queued and
@@ -11403,15 +11412,27 @@ async function laneDrift(s: Slot, main: string): Promise<DriftInfo | null> {
 // nothing anywhere could say who held the lock, who was waiting, or how long either had been true.
 //
 // So this region adds SIGHT, never control. It starts and stops nothing, and it is not a queue:
-// the mkdir mutex remains the whole truth of serialization. Two INDEPENDENT sources, deliberately
-// kept apart on the wire so a reader can tell measurement from hearsay:
+// the mkdir mutex remains the whole truth of serialization. THREE sources, deliberately kept apart
+// so a reader can tell measurement from hearsay:
 //   · the LOCK, read straight off the filesystem — ground truth, and read-ONLY. Reaping a dead
 //     holder belongs to the wrappers, which re-check the pid VALUE before removing it; a second
 //     reaper here would be a new collider on exactly the race that design closed.
-//   · the REPORTS, which lanes volunteer through POST /api/self/verify-intent. Advisory by
-//     construction — a lane can lie, forget, or die mid-suite, and none of that touches the mutex.
-//     Their durable half is audit.jsonl: every phase CHANGE is one line, so the next exit-144 has
-//     a timeline to be read against instead of an instance directory and a guess.
+//   · the REPORTS lanes volunteer through POST /api/self/verify-intent (`origin: "lane"`).
+//     HEARSAY by construction — a lane can lie, forget, or die mid-suite, and none of that touches
+//     the mutex. Their durable half is audit.jsonl: every phase CHANGE is one line, so the next
+//     exit-144 has a timeline to be read against instead of an instance directory and a guess.
+//   · the REPORTS FLEET WRITES ABOUT ITS OWN RUNS (`origin: "server"`, added 2026-08-19). The
+//     land gate (mergeJob → runVerify) and the tier-2 post-land audit (drainPostLandAudits) both
+//     take this same mutex and, until now, said NOTHING: during the two-lane episode of
+//     2026-08-17 the surface carried `lock.pid` and an EMPTY report list, and "which slot is
+//     having which tree verified right now" was answerable only by `ps -o ppid` + `lsof` — host
+//     process archaeology for a fact this process already held.
+//     These are MEASUREMENT, not hearsay: the reporter IS the process running the suite. They
+//     therefore obey different rules from the lane half, and the difference is the point —
+//     `origin` is on the wire so the board can keep saying which kind of claim each row is.
+//     Still SIGHT only: writing one starts nothing, and deleting the two write sites (the
+//     `gateRun` wrapper in mergeJob and the `reportServerRun` call in drainPostLandAudits)
+//     restores today's behaviour exactly.
 const SUITE_LOCK = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock";
 type VerifyPhase = "waiting" | "running" | "done" | "failed";
 const VERIFY_PHASES: VerifyPhase[] = ["waiting", "running", "done", "failed"];
@@ -11428,6 +11449,34 @@ interface VerifyIntent { phase: VerifyPhase; suite: string; exitCode: number | n
 const verifyIntents = new Map<number, VerifyIntent>(); // slot id → its LAST report. In memory only:
 // a restart is a fact about the server, and reviving one side of a phase pair across it would be
 // the one thing this region must never do — invent state. The audit log keeps the history.
+// FLEET'S OWN RUNS — a SECOND store, not a second key range in the one above, and that is the
+// whole of design question (1). A land gate for slot 6 and slot 6's own self-report are two
+// different claims about two different things that can be true at the same instant; sharing
+// `verifyIntents`' `slot id` key would have made either one silently overwrite the other, and
+// namespacing the key inside one map would force every read to re-derive which kind it is
+// holding. Two stores, two lifetimes, two rules — and the audit, which has no slot at all, then
+// needs no null-shaped hole punched through the lane half.
+// The keys:
+//   `land:<slot>`  — a slot has at most one merge job (the route's own running guard), so this
+//                    can never collide with itself.
+//   `audit`        — a CONSTANT, because `auditDraining` makes the drain one-at-a-time across ALL
+//                    repos: a repo-keyed map could never hold two entries, and a constant key
+//                    cannot leak a finished repo's row into the next loop iteration.
+// `phase` is not stored: a server-side run is on this surface only WHILE it runs (see the finally
+// in reportServerRun), so its phase is `running` by construction. Its terminal outcome is not
+// sight — it is the merge verdict and the post-land-audit ledger, both durable, both elsewhere.
+interface ServerRun { slot: number | null; label: string | null; branch: string; suite: string; cwd: string | null; at: number }
+const serverRuns = new Map<string, ServerRun>();
+// Design question (3): TERMINALITY, not ageing. A lane report ages out because a lane can die
+// between `running` and `done` and nothing here would ever hear about it. A server-side run
+// cannot: the job ends in this very process, in this very frame, so the entry is removed the
+// instant the run stops — including on a throw. The only way to orphan one is to kill the
+// process, and that clears the map with it. So there is deliberately no timer and no stale
+// window on this half; a row here means a run is in flight right now.
+async function reportServerRun<T>(key: string, rec: Omit<ServerRun, "at">, fn: () => Promise<T>): Promise<T> {
+  serverRuns.set(key, { ...rec, at: Date.now() });
+  try { return await fn(); } finally { serverRuns.delete(key); }
+}
 // How long a LIVE holder may hold before the surface calls it out. Measured on this machine: a
 // full isolated run takes 5.8–9.8 min (six runs, post-land-audits.jsonl) and the gate chain's
 // individual wrappers 21–38 s. 20 minutes is therefore "no suite here takes this long", with 2x
@@ -11457,7 +11506,12 @@ interface GateLock {
   heldMs: number;
   state: GateLockState;   // the four facts above, named — see SUITE_HOLD_OVERDUE_MS
 }
-interface GateReport { slot: number; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number }
+// `slot: number | null` — design question (4). `null` is a run with no session behind it, which
+// today is exactly the tier-2 audit: it is fleet's own work, triggered by a land, owned by no
+// pane. Reporting it as slot 0, or leaving it off the surface, would both be claims; the absence
+// of a slot is the fact. `origin` is what keeps measurement and hearsay apart now that both ride
+// this one list — the UI reads it to decide what the row may be trusted for.
+interface GateReport { slot: number | null; label: string | null; phase: VerifyPhase; suite: string; exitCode: number | null; at: number; origin: "lane" | "server"; branch: string | null }
 interface GateView { lock: GateLock | null; reports: GateReport[] }
 // The lock as it is on disk right now. `null` = the dir does not exist, i.e. nothing holds the
 // mutex. Costs two stats, a small read and one signal-0 per call, which is why it is computed per
@@ -11507,11 +11561,31 @@ function gateView(): GateView | null {
       verifyIntents.delete(id);
       continue;
     }
-    reports.push({ slot: id, label: s.label, phase: v.phase, suite: v.suite, exitCode: v.exitCode, at: v.at });
+    reports.push({ slot: id, label: s.label, phase: v.phase, suite: v.suite, exitCode: v.exitCode,
+      at: v.at, origin: "lane", branch: null });
+  }
+  // Fleet's own runs. Design question (2): the RECYCLE RULE applies here too, and unchanged —
+  // a land-gate row names a slot, so its predecessor must never be attributed to whoever occupies
+  // that slot now. Same `s.cwd !== v.cwd` test, same reasoning. What takes its place for the
+  // AUDIT row, which names no slot: nothing has to. There is no slot to be recycled under, its
+  // identity is the repo it names, and its lifetime is the drain's own frame — a row that cannot
+  // outlive the function that wrote it cannot be misattributed to a later occupant of anything.
+  for (const r of [...serverRuns.values()]) {
+    if (r.slot !== null) {
+      const s = slots.find((x) => x.id === r.slot);
+      // NOT deleted on a mismatch, unlike the lane half: this row belongs to a run that is still
+      // executing and will remove its own entry in its finally. Dropping it here would only make
+      // the same run reappear on the next poll. Hidden, not forgotten.
+      if (!s?.cwd || s.cwd !== r.cwd) continue;
+    }
+    reports.push({ slot: r.slot, label: r.label, phase: "running", suite: r.suite, exitCode: null,
+      at: r.at, origin: "server", branch: r.branch });
   }
   const lock = suiteLockView();
   if (!lock && reports.length === 0) return null;
-  return { lock, reports: reports.sort((a, b) => a.slot - b.slot) };
+  // slot order as before; the slotless audit row sorts last rather than first, so the rows that
+  // answer "which session" stay where a reader already looks for them.
+  return { lock, reports: reports.sort((a, b) => (a.slot ?? Number.MAX_SAFE_INTEGER) - (b.slot ?? Number.MAX_SAFE_INTEGER)) };
 }
 function recordVerifyIntent(s: Slot, body: Record<string, unknown> | null): Response {
   const phase = body?.phase;
@@ -11794,7 +11868,16 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // field stays absent and today's behavior is unchanged. mainSha === the main just
         // rebased onto, reused below as mainBefore for the clean-path land.
         const mainSha = (await git(root, "rev-parse", main)).out;
-        let verify = await runVerify(cwd, root, mainSha);
+        // WRITE SITE 1 of 2 (the verify GATE made visible — see that region). Every runVerify on
+        // this path goes through here, the repair loop's re-runs included, so the board says
+        // "slot N · running land gate · <branch>" for as long as the gate is actually holding the
+        // machine-wide mutex — and stops saying it the moment the run ends, on any exit. Sight
+        // only: nothing below reads `serverRuns`, and deleting this wrapper restores today's
+        // behaviour byte for byte. `runVerify` returning `undefined` for an unconfigured repo is
+        // a sub-millisecond row and stays true while it is up: the gate step DID run, it declined.
+        const gateRun = <T,>(fn: () => Promise<T>): Promise<T> =>
+          reportServerRun(`land:${s.id}`, { slot: s.id, label: s.label, branch, suite: "land gate", cwd }, fn);
+        let verify = await gateRun(() => runVerify(cwd, root, mainSha));
         // Bounded resolver↔verify repair loop (CONFLICT path only). A conflict resolution can
         // rebase cleanly yet fail the deterministic verify (a dropped symbol, a broken type). Rather
         // than dead-end at a red verdict, feed the exact failure back to the resolver for up to
@@ -11826,7 +11909,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
             const anc2 = await git(root, "merge-base", "--is-ancestor", main, branch);
             if (anc2.code !== 0) break; // repair broke the rebase onto main — abandon, keep prior state
             repairRounds = round;
-            const rv = await runVerify(cwd, root, mainSha);
+            const rv = await gateRun(() => runVerify(cwd, root, mainSha));
             if (rv) verify = rv;
             if (verify && verify.ok) break; // repaired to green — done
           }

@@ -1415,9 +1415,14 @@ async function pollOutline(slot: number): Promise<string[]> {
 //
 // Tolerant on the wire on purpose: an older server sends no `gate` at all and this must then be
 // absent, never "no suite is running" — which is a claim, and one nothing here has measured.
+// `slot: null` is a run with no session behind it — the tier-2 post-land audit, which is fleet's
+// own work and owned by no pane. `origin` and `branch` are optional for the same wire-tolerance
+// reason the whole shape is: a server from before 2026-08-19 sends neither, and a row without an
+// origin must then read as the only kind that server had — a lane's own word.
 interface GateInfo {
   lock: { pid: number | null; alive: boolean | null; heldMs: number; state?: string } | null;
-  reports: { slot: number; label: string | null; phase: string; suite: string; exitCode: number | null; at: number }[];
+  reports: { slot: number | null; label: string | null; phase: string; suite: string; exitCode: number | null; at: number;
+    origin?: string; branch?: string | null }[];
 }
 let gateInfo: GateInfo | null = null;
 // fmtDur rounds to whole minutes, which reads as "0m" for the first half-minute of a hold — the
@@ -1505,10 +1510,18 @@ function gateSection(): HTMLElement | null {
   if (g) sec.appendChild(gateLockHead(g.lock));
   for (const row of liveRows) sec.appendChild(row);
   for (const r of g?.reports ?? []) {
-    const who = `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
+    // a slotless row is fleet's own work (the tier-2 audit); its label names the repo instead. The
+    // fallback is for that row alone — "slot null" would read as a bug in this line, not on the wire.
+    const who = r.slot === null ? (r.label ?? "fleet itself") : `slot ${r.slot}${r.label ? ` · ${r.label}` : ""}`;
     const what = r.phase === "failed" && r.exitCode !== null ? `failed exit ${r.exitCode}` : r.phase;
-    const row = el("div", "bidmeta", `${who} · ${what} ${r.suite} · ${gateAge(Date.now() - r.at)}`);
-    row.title = "Self-reported by that lane. Advisory — the mutex, not this, decides what runs.";
+    const where = r.branch ? ` · ${r.branch}` : "";
+    const row = el("div", "bidmeta", `${who} · ${what} ${r.suite}${where} · ${gateAge(Date.now() - r.at)}`);
+    // MEASUREMENT vs HEARSAY, the distinction the server keeps on the wire (`origin`) and this is
+    // the reader that must not blur it: a lane's row is its own word about itself, fleet's row is
+    // written by the process actually running the suite. Neither one gates anything.
+    row.title = r.origin === "server"
+      ? "Fleet's own run, reported by the process running it — this one is measured, not volunteered. It still gates nothing: the mutex decides what runs."
+      : "Self-reported by that lane. Advisory — the mutex, not this, decides what runs.";
     sec.appendChild(row);
   }
   return sec;

@@ -13,22 +13,32 @@
 //    the real lock to test them would be the one thing this feature must never do. §2b turns the
 //    same three states around and tests the WRITER — what e2e-stage.sh says out loud while it
 //    blocks, which is the half the land gate's silent 255 s wait went missing in.
-//  · The REPORTS are hearsay, and the checks say so: what is asserted is that the server binds a
-//    report to the TOKEN'S slot (never a `slot` field in the body), that a phase CHANGE reaches
-//    audit.jsonl while an identical re-post does not, and that a report dies with its lane.
+//  · The REPORTS carry TWO kinds of row, and the checks keep them apart the way the wire does.
+//    §3–§6 test the HEARSAY half (`origin: "lane"`): that the server binds a report to the
+//    TOKEN'S slot (never a `slot` field in the body), that a phase CHANGE reaches audit.jsonl
+//    while an identical re-post does not, and that a report dies with its lane.
+//    §7 tests the MEASURED half (`origin: "server"`, added 2026-08-19): fleet's own two suite
+//    runs — the land gate and the tier-2 post-land audit — saying so themselves while they hold
+//    the mutex. That half is the one thing this file could NOT say before: on 2026-08-17 a land
+//    gate and an audit ran back to back and the surface carried a pid and an empty report list,
+//    so "which slot is having which tree verified" needed `ps -o ppid` plus `lsof`.
 //
-// Nothing here asserts that a suite ran. Nothing in the feature runs one.
-import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+// §1–§6 assert nothing about a suite having run. §7 does the opposite: it MAKES fleet run two
+// (against sleeping stand-ins, never a real suite) and reads the surface while they are in flight,
+// which is why its preconditions — did the stand-in actually start? — are checks of their own.
+import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, post, readText, restartSrv } from "./harness";
+import { exists, openLane, settleForMerge, waitMerge } from "./lane-helpers";
 
 const TMP = process.env.TMPDIR ?? "/tmp";
 const REAL_LOCK = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock"; // what e2e-stage.sh took
 const OWN_LOCK = `${TMP}/fleet-e2e-gatelock-${process.pid}`; // never the real one — see the header
 
 interface GateLock { pid: number | null; alive: boolean | null; heldMs: number; state: string }
-interface GateReport { slot: number; label: string | null; phase: string; suite: string; exitCode: number | null; at: number }
+interface GateReport { slot: number | null; label: string | null; phase: string; suite: string;
+  exitCode: number | null; at: number; origin?: string; branch?: string | null }
 interface Gate { lock: GateLock | null; reports: GateReport[] }
 
 const gateOf = async (): Promise<Gate | null | undefined> =>
@@ -97,8 +107,15 @@ export async function run(): Promise<void> {
       `lock=${JSON.stringify(g?.lock)} ppid=${process.ppid}`);
     check("§1 the hold duration is a real elapsed time, not a placeholder",
       (g?.lock?.heldMs ?? -1) > 0, String(g?.lock?.heldMs));
-    check("§1 no lane has reported a phase yet, so the gate carries an empty report list",
-      Array.isArray(g?.reports) && g.reports.length === 0, JSON.stringify(g?.reports));
+    // NARROWED to the lane half on purpose (2026-08-19). The claim this check was written to make
+    // is "nobody has volunteered a phase yet"; `reports.length === 0` stopped being that sentence
+    // the moment fleet's own runs joined the same list, because a land gate or an audit in flight
+    // anywhere on this box would now put a row here — a fact about the machine, not a defect this
+    // module can assert away. `origin !== "server"` also covers a pre-2026-08-19 server, which
+    // sends no origin at all and whose every row is a lane's.
+    check("§1 no lane has volunteered a phase yet, so the gate carries no hearsay row",
+      Array.isArray(g?.reports) && g.reports.filter((r) => r.origin !== "server").length === 0,
+      JSON.stringify(g?.reports));
   }
 
   // ===== §2 the lock states, against a PRIVATE lock dir =====
@@ -360,4 +377,181 @@ export async function run(): Promise<void> {
   check("§6 killing the lane drops its report — a dead session's `failed` is not a live fact",
     !(await gateOf())?.reports.some((x) => x.slot === lane.slot), JSON.stringify((await gateOf())?.reports));
   await post(`/api/slots/${free}/kill`, {}); // leave the slot inventory as this module found it
+
+  // ===== §7 the MEASURED half: fleet's own two suite runs report themselves =====
+  // Both of them take the same machine-wide mutex the lock half reports, both hold it for minutes,
+  // and until 2026-08-19 neither said a word: `gate.lock` named a pid and `gate.reports` was empty,
+  // so the two-lane episode of 2026-08-17 was reconstructed with `ps -o ppid` and `lsof -a -d cwd`.
+  //
+  // Driven against SLEEPING STAND-INS, never a real suite: FLEET_VERIFY_CMD and
+  // FLEET_POSTLAND_AUDIT_CMD are pointed at two scripts that announce themselves, sleep ~2s, and
+  // exit. The sleep is the whole fixture — it is what makes "in flight" an observable state rather
+  // than a moment between two polls.
+  //
+  // The stand-ins ANNOUNCE BEFORE THEY SLEEP, and that ordering is the reason the preconditions
+  // below can be checks of their own: the marker file appearing means "the run this section is
+  // about has genuinely started", so a missing gate row after that is a product regress, while a
+  // marker that never appears is this section failing to set itself up — two different sentences,
+  // never wearing each other's words. A probe that could not run must fail as ITSELF; failing in
+  // the place of the thing it was going to measure is how a green box gets read as a red product.
+  {
+    // THE LEDGER THIS SECTION IS ABOUT TO WRITE INTO, snapshotted. §7 is the only place in the whole
+    // isolated suite that makes tier 2 genuinely run, so it is the only place that appends a REAL
+    // row to post-land-audits.jsonl — and later modules count that file (e2e/steward-core.ts asserts
+    // an exact `audits.length`). A real row left behind is this section rewriting another module's
+    // fixture, which is a defect in this section, not in that one. Restored before the final restart.
+    const LEDGER = `${ROOT}/post-land-audits.jsonl`;
+    const ledgerBefore = existsSync(LEDGER) ? readFileSync(LEDGER, "utf8") : null;
+    const MARK_V = `${TMP}/fleet-e2e-gaterun-verify-${process.pid}`;
+    const MARK_A = `${TMP}/fleet-e2e-gaterun-audit-${process.pid}`;
+    const FAILFLAG = `${TMP}/fleet-e2e-gaterun-fail-${process.pid}`;
+    const SLOW_V = `${TMP}/fleet-e2e-slowverify-${process.pid}`;
+    const SLOW_A = `${TMP}/fleet-e2e-slowaudit-${process.pid}`;
+    for (const f of [MARK_V, MARK_A, FAILFLAG]) rmSync(f, { force: true });
+    // exit 1 on demand (the flag file) so ONE stand-in can drive both a kept lane and a landing
+    // one. Read AFTER the sleep, so the flag can be flipped while a run is already in flight.
+    writeFileSync(SLOW_V, `#!/bin/sh\necho "$PWD" >> '${MARK_V}'\nsleep 2\n`
+      + `if [ -f '${FAILFLAG}' ]; then echo "slowverify FAIL"; exit 1; fi\necho "slowverify PASS"\n`, { mode: 0o755 });
+    writeFileSync(SLOW_A, `#!/bin/sh\necho "$PWD" >> '${MARK_A}'\nsleep 2\necho "PASS slowaudit"\necho "ALL PASS"\n`, { mode: 0o755 });
+    chmodSync(SLOW_V, 0o755);
+    chmodSync(SLOW_A, 0o755);
+    // a fixture for an EXECUTABLE artefact has to establish that it EXECUTES, not that it exists
+    check("§7 fixture: the sleeping verify stand-in runs and exits green",
+      spawnSync("/bin/sh", ["-c", `'${SLOW_V}'`], { cwd: TMP }).status === 0, SLOW_V);
+    rmSync(MARK_V, { force: true }); // …and that trial run's mark must not be mistaken for a gate's
+
+    // FLEET_POSTLAND_AUDIT_CMD is deliberately unset for the whole isolated suite (tier 2 off, see
+    // e2e/land-provenance.ts), and POSTLAND_AUDIT_CMD is read once at boot — so this needs the
+    // restart, and the restart at the end of the block puts the suite back the way it found it.
+    await restartSrv({ FLEET_VERIFY_CMD: SLOW_V, FLEET_POSTLAND_AUDIT_CMD: SLOW_A,
+      FLEET_POSTLAND_AUDIT_TIMEOUT_MS: "30000", FLEET_AUDIT_PING_MS: "0" });
+
+    const marks = (f: string): number => { try { return readFileSync(f, "utf8").split("\n").filter(Boolean).length; } catch { return 0; } };
+    // the whole snapshot comes back, not just the hit: some of the claims below are about what
+    // else was on the surface AT THE SAME INSTANT, and a second poll for that would be a second
+    // moment — by then the run may have ended and the question would answer itself trivially.
+    const pollGate = async (want: (r: GateReport) => boolean, ms = 25_000): Promise<{ row: GateReport | null; all: GateReport[] }> => {
+      let all: GateReport[] = [];
+      for (let i = 0; i < Math.ceil(ms / 120); i++) {
+        all = (await gateOf())?.reports ?? [];
+        const hit = all.find(want);
+        if (hit) return { row: hit, all };
+        await Bun.sleep(120);
+      }
+      return { row: null, all };
+    };
+    const pollGateGone = async (want: (r: GateReport) => boolean, ms = 40_000): Promise<boolean> => {
+      for (let i = 0; i < Math.ceil(ms / 120); i++) {
+        if (!(await gateOf())?.reports.some(want)) return true;
+        await Bun.sleep(120);
+      }
+      return false;
+    };
+    const isServer = (r: GateReport): boolean => r.origin === "server";
+
+    // --- (a) the LAND GATE, on a lane that is KEPT ---------------------------------------------
+    // The verify is made to FAIL on purpose, which is not about the verdict: a lane that lands is
+    // torn down, and a row that vanishes because its slot did cannot tell "the entry was removed"
+    // from "the entry is being hidden by the recycle rule". A kept lane keeps its slot and its
+    // cwd, so the disappearance below is the removal itself.
+    writeFileSync(FAILFLAG, "fail\n");
+    const lnA = await openLane(REPO, "gaterun-kept");
+    await settleForMerge(lnA.slot);
+    for (let i = 0; i < 8; i++) {
+      await post(`/api/slots/${lnA.slot}/merge`, {});
+      const r = await get(`/api/slots/${lnA.slot}/merge`);
+      if (r.status === 400) break;
+      const j = (await r.json()) as { running: boolean; last: unknown };
+      if (j.running || j.last !== null) break;
+      await Bun.sleep(400);
+      await settleForMerge(lnA.slot);
+    }
+    const { row: gateRow, all: gateSnap } = await pollGate((r) => isServer(r) && r.slot === lnA.slot);
+    // THE PRECONDITION, as its own check. If the stand-in never ran there was no land gate to see,
+    // and every assertion under it would be about a run that does not exist.
+    const gateRan = marks(MARK_V) > 0;
+    check("§7 fixture: the land gate actually ran on this lane's tree (the stand-in announced itself)",
+      gateRan, `${MARK_V} lines=${marks(MARK_V)}`);
+    if (gateRan) {
+      check("§7 a server-side land gate names ITSELF on /api/sessions while it runs — no ps, no lsof",
+        !!gateRow && gateRow.origin === "server" && gateRow.slot === lnA.slot
+          && gateRow.branch === lnA.branch && gateRow.phase === "running" && gateRow.suite === "land gate",
+        JSON.stringify(gateRow));
+      // Design question (1) as an assertion: hearsay and measurement do not share a key. This lane
+      // never posted a verify-intent, so exactly ONE row may name its slot — and if the two halves
+      // shared `verifyIntents`' slot-id key, a lane reporting on itself mid-gate would have
+      // silently replaced this row instead of standing beside it.
+      check("§7 the land-gate row does not occupy the lane's own report key — one slot, one server row, no collision",
+        gateSnap.filter((r) => r.slot === lnA.slot).length === 1
+          && gateSnap.filter((r) => r.slot === lnA.slot && r.origin === "lane").length === 0,
+        JSON.stringify(gateSnap));
+    }
+    const vA = await waitMerge(lnA.slot, { requireVerdict: true });
+    check("§7 fixture: the failing gate kept the lane, so its slot is still alive to be asserted about",
+      !vA.gone && vA.last?.landed === false && exists(lnA.cwd), JSON.stringify(vA.last?.status));
+    if (gateRan && !vA.gone) {
+      check("§7 the row is gone the moment the run goes terminal — on a slot that is still there, so this is removal, not the recycle rule hiding it",
+        await pollGateGone((r) => isServer(r) && r.slot === lnA.slot),
+        JSON.stringify((await gateOf())?.reports));
+    }
+
+    // --- (b) the POST-LAND AUDIT, which has no slot at all ---------------------------------------
+    rmSync(FAILFLAG, { force: true }); // this lane's gate passes, so it lands, so tier 2 fires
+    const lnB = await openLane(REPO, "gaterun-landed");
+    await settleForMerge(lnB.slot);
+    for (let i = 0; i < 8; i++) {
+      const r0 = await get(`/api/slots/${lnB.slot}/merge`);
+      if (r0.status === 400) break;
+      await post(`/api/slots/${lnB.slot}/merge`, {});
+      const r = await get(`/api/slots/${lnB.slot}/merge`);
+      if (r.status === 400) break;
+      const j = (await r.json()) as { running: boolean; last: unknown };
+      if (j.running || j.last !== null) break;
+      await Bun.sleep(400);
+      await settleForMerge(lnB.slot);
+    }
+    const { row: auditRow } = await pollGate((r) => isServer(r) && r.slot === null);
+    const vB = await waitMerge(lnB.slot);
+    check("§7 fixture: lane B landed, so a tier-2 audit was actually scheduled",
+      vB.gone || vB.last?.landed === true, JSON.stringify(vB.last?.status ?? "gone"));
+    // the precondition here is the LAND, not the row: with tier 2 configured, a land that moves main
+    // schedules an audit by construction. Deriving it from `auditRow` instead would be circular —
+    // the row's own existence cannot be the evidence that there was something for it to report.
+    const auditRan = vB.gone || vB.last?.landed === true;
+    if (auditRan) {
+      // `slot: null` is the fact, not a placeholder: the audit is fleet's own work, owned by no
+      // pane. It names the tree it is measuring instead, which is the half `lock.pid` never had.
+      check("§7 a running post-land audit names itself with NO slot, and says which tree it is measuring",
+        !!auditRow && auditRow.slot === null && auditRow.origin === "server"
+          && auditRow.suite === "post-land audit" && auditRow.branch === "main"
+          && auditRow.label === REPO.split("/").filter(Boolean).slice(-1)[0],
+        JSON.stringify(auditRow));
+      check("§7 the audit row is gone once the audit is terminal — the surface is in-flight-only",
+        await pollGateGone((r) => isServer(r) && r.slot === null),
+        JSON.stringify((await gateOf())?.reports));
+      // …and only NOW, non-circularly: the run the row stood for had a real payload. Asserted after
+      // terminality on purpose — before it, a stand-in that has not been spawned yet and one that
+      // will never be spawned look identical, so this same line read earlier would be a coin flip.
+      check("§7 the audit row stood for a real run — its stand-in did execute, so the row was no phantom",
+        marks(MARK_A) > 0, `${MARK_A} lines=${marks(MARK_A)}`);
+    }
+
+    // leave the machine exactly as this block found it: no lane, no stand-ins, tier 2 off again.
+    await post(`/api/slots/${lnA.slot}/kill`, {});
+    for (const f of [MARK_V, MARK_A, FAILFLAG, SLOW_V, SLOW_A]) rmSync(f, { force: true });
+    if (ledgerBefore === null) rmSync(LEDGER, { force: true });
+    else writeFileSync(LEDGER, ledgerBefore);
+    await restartSrv();
+    // Asserted, not assumed: this block reconfigured the LAND GATE of a server every later module
+    // shares, and a restore that silently failed would leave the rest of the suite verifying
+    // against a deleted sleeper. `/api/self/gate` reads the running server's own env, so it is the
+    // one answer that cannot be a guess about it.
+    const probe = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number };
+    const probeTok = await selfTokenOf(probe.slot);
+    const gateCfg = (await (await fetch(`${BASE}/api/self/gate`, { headers: { "x-fleet-self-token": probeTok } }))
+      .json()) as { verify?: { cmd?: string } | null };
+    check("§7 the suite's env is restored: the land gate is back on the suite's own verify stand-in, not this block's sleeper",
+      gateCfg.verify?.cmd?.endsWith("fakeverify") === true, JSON.stringify(gateCfg.verify));
+    await post(`/api/slots/${probe.slot}/kill`, {});
+  }
 }

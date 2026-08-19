@@ -148,13 +148,15 @@ under `gate` (`server.ts`, grep *the verify GATE*), and painted at the top of th
 (`gateSection()` in `src/client.ts` — machine-level, above the lane story, on the owner's placement
 call). Checks: `e2e/verify-queue.ts`.
 
-**Two sources, deliberately never blended on the wire**, because they are different kinds of claim:
+**Three sources, deliberately never blended on the wire**, because they are different kinds of claim
+(the third joined on 2026-08-19 — see §8):
 
-| | `gate.lock` | `gate.reports` |
-|---|---|---|
-| where it comes from | `statSync`/`readFileSync` on the lock dir | `POST /api/self/verify-intent`, a lane's self token |
-| what it is | a measurement | hearsay, and labelled as such in the UI |
-| if it is wrong | the filesystem lied | a lane lied, forgot, or died mid-suite |
+| | `gate.lock` | `gate.reports`, `origin: "lane"` | `gate.reports`, `origin: "server"` |
+|---|---|---|---|
+| where it comes from | `statSync`/`readFileSync` on the lock dir | `POST /api/self/verify-intent`, a lane's self token | `mergeJob` and `drainPostLandAudits`, in the process running the suite |
+| what it is | a measurement | hearsay, and labelled as such in the UI | a measurement, and labelled as such in the UI |
+| if it is wrong | the filesystem lied | a lane lied, forgot, or died mid-suite | fleet lied about its own frame |
+| how it ends | the wrapper reaps the dir | it ages out (`VERIFY_TERMINAL_MS` / `VERIFY_STALE_MS`) | it is deleted the instant the run is terminal — no timer |
 
 The lock projection reproduces `e2e-stage.sh`'s own semantics rather than a simplification of them,
 because every one of those distinctions is load-bearing: **no dir** = nothing held · **pid alive** =
@@ -172,25 +174,6 @@ holder of a lock nobody holds.
 - **No scheduling, priorities, or merge train.** ~6 lands/day does not pay for it (`lane-outcomes`).
 - **The mkdir mutex is untouched.** It remains the whole truth of serialization; a report is advisory
   and a lane that never sends one is not treated differently by anything.
-
-Reports are in memory and die with a restart — reviving one half of a phase pair across a restart
-would be inventing state. Their durable half is `audit.jsonl`: one `verify_intent` line per phase
-CHANGE (an identical re-post writes nothing, so a chatty lane cannot push real events out of the
-rotation window). That is the timeline the next `exit 144` gets to be read against.
-
-**How a lane actually reports, and the one phase it cannot send.** A lane invokes a wrapper and
-then blocks inside it, so it can post `waiting` before the call and `done`/`failed` after it
-returns — but it never learns the moment the mutex was granted, so `running` is not a phase a lane
-can honestly claim about itself. That phase is in the contract for a reporter that *can* tell (the
-wrapper, if v1.5 ever happens); until then the lock line is what says who is actually running, and
-it is a measurement rather than a claim. The reporting snippet belongs in `CLAUDE.md`'s
-self-scheduling section, next to `/api/self/autos`.
-
-**Still open after v1:** the wrappers themselves do not report, so a suite run by a plain shell shows
-up only as the lock. Doing it from `e2e-stage.sh` needs the live server's host, port and a
-credential the wrapper has no business knowing — a real coupling, and the lock line already answers
-"something is running" for that case. Also, the info card is desktop-only (`renderBoard` returns
-early on mobile), so the phone sees none of this.
 
 ## 8. The waiter speaks for itself (2026-08-06)
 
@@ -261,3 +244,56 @@ process *group* would be the cure and is a behaviour change, not a message chang
 construction (one queued `isolated` ≈ 8 min, two ≈ 16), so any fixed number only moves the
 threshold. Giving the land gate priority on the mutex is the structurally cleaner cure and is the
 owner's call, not a lane's.
+
+## 9. …and fleet's OWN two suite runs say so too (2026-08-19)
+
+§7 left one hole, and the two-lane episode of 2026-08-17 fell straight into it: the **land gate**
+(`mergeJob` → `runVerify`) and the **tier-2 post-land audit** (`drainPostLandAudits`) take the very
+same mutex, hold it for minutes, and reported nothing. `reports` was fed *exclusively* by lanes
+volunteering through `POST /api/self/verify-intent`, so while slot 5 landed, the surface carried
+`lock.pid` and an empty list — and "which slot is having which tree verified" was answered with
+`ps -o ppid` (9638 → 34985 = `bun server.ts`) plus `lsof -a -d cwd`. Host process archaeology for a
+fact the server already held. The case that hurts is the SECOND land behind the first one's audit:
+slot 6's gate started 31 s after slot 5's land, the audit ahead of it ran 940 958 ms against a
+900 000 ms wait budget, and a `waitedOut` (`verify.ok: null` — no failure, but no pass either) was
+the only trace that anyone had waited at all.
+
+Both now write into the same `reports` list, with `origin: "server"` telling them apart from
+hearsay. Four constructions worth knowing:
+
+- **A second store, not a second key range.** `verifyIntents` stays keyed by slot id and untouched;
+  fleet's runs live in `serverRuns`, keyed `land:<slot>` and the constant `audit`. A land gate for
+  slot 6 and slot 6's own self-report are two claims that can be true at the same instant, and one
+  map keyed by slot would have made either overwrite the other.
+- **`slot: number | null`.** The audit is fleet's own work, owned by no pane. `null` is the fact;
+  slot 0 would be a claim. It names the tree (`branch`) and the repo (`label`) instead.
+- **Terminality, not ageing.** A lane row ages out because a lane can die between `running` and
+  `done`. A server-side run ends *in this process, in this frame*, so its row is removed in a
+  `finally` — including on a throw. A row on this half means a run is in flight right now.
+- **The recycle rule still applies to the land-gate row**, which names a slot: a predecessor's run
+  is never attributed to whoever occupies that slot now. The audit row names no slot and needs no
+  substitute — nothing can misattribute a row that cannot outlive the function that wrote it.
+
+Still sight, still no control: nothing reads `serverRuns` back, and deleting the two write sites
+restores the previous behaviour exactly. Checks: `e2e/verify-queue.ts` §7, which drives both runs
+against sleeping stand-ins and fails its *preconditions* as themselves — a stand-in that never
+started is this section failing to set itself up, never a product regress.
+
+Reports are in memory and die with a restart — reviving one half of a phase pair across a restart
+would be inventing state. Their durable half is `audit.jsonl`: one `verify_intent` line per phase
+CHANGE (an identical re-post writes nothing, so a chatty lane cannot push real events out of the
+rotation window). That is the timeline the next `exit 144` gets to be read against.
+
+**How a lane actually reports, and the one phase it cannot send.** A lane invokes a wrapper and
+then blocks inside it, so it can post `waiting` before the call and `done`/`failed` after it
+returns — but it never learns the moment the mutex was granted, so `running` is not a phase a lane
+can honestly claim about itself. That phase is in the contract for a reporter that *can* tell (the
+wrapper, if v1.5 ever happens); until then the lock line is what says who is actually running, and
+it is a measurement rather than a claim. The reporting snippet belongs in `CLAUDE.md`'s
+self-scheduling section, next to `/api/self/autos`.
+
+**Still open after v1:** the wrappers themselves do not report, so a suite run by a plain shell shows
+up only as the lock. Doing it from `e2e-stage.sh` needs the live server's host, port and a
+credential the wrapper has no business knowing — a real coupling, and the lock line already answers
+"something is running" for that case. Also, the info card is desktop-only (`renderBoard` returns
+early on mobile), so the phone sees none of this.

@@ -554,14 +554,17 @@ export async function run(ctx: Ctx): Promise<void> {
       && carrierBroken.receipt.hash === promptHash(carrierBroken.prompt, carrierBroken.receipt),
     JSON.stringify(carrierBroken.receipt ?? null));
 
-  // The Fleet-control frame must never read a manifest. This one is committed into the Fleet
-  // checkout itself, so the founding below would carry it if the carrier leaked across frames.
+  // THE FLEET-CONTROL FRAME READS A MANIFEST TOO — since 2026-08-19, and this is the check that
+  // used to assert the opposite. Until then `programMainContextPlan` returned early for this frame,
+  // which meant a target repository could explain its own context to a founding session and Fleet
+  // could not explain its own: a new Fleet pack was a TypeScript change plus a deploy. The probe is
+  // unchanged in shape — a manifest committed into the Fleet checkout — only the verdict flipped.
   mkdirSync(`${ROOT}/.fleet`, { recursive: true });
   writeFileSync(`${ROOT}/.fleet/context-packs.json`, JSON.stringify([
-    repoPackEntry({ id: "fleet-frame-leak-probe", sources: [{ path: "AGENTS.md", anchor: "## Verify" }] }),
+    repoPackEntry({ id: "fleet-frame-carrier-probe", sources: [{ path: "AGENTS.md", anchor: "## Verify" }] }),
   ]));
   gitIn(ROOT, "add", ".fleet/context-packs.json");
-  const fleetManifestCommit = gitIn(ROOT, "commit", "-qm", "fleet-frame manifest leak probe");
+  const fleetManifestCommit = gitIn(ROOT, "commit", "-qm", "fleet-frame manifest carrier probe");
 
   const fleetProgram = await activateNewProgram("Fleet-control founding contract");
   const fleetLabel = "program-main-fleet";
@@ -588,17 +591,20 @@ export async function run(ctx: Ctx): Promise<void> {
     !!fleetReceipt && fleetReceiptRows.total === fleetReceiptsBefore.total + 1
       && fleetBody.program?.main?.slot === fleetSlot && fleetReceipt.repo === ROOT
       && fleetReceipt.head === fleetExpectedHead && fleetReceipt.branch === fleetExpectedBranch
-      && fleetReceipt.selected.length === 2 && fleetReceipt.omitted.length === 4
-      && fleetReceipt.selected.length + fleetReceipt.omitted.length === 6
+      && fleetReceipt.selected.length === 3 && fleetReceipt.omitted.length === 4
+      && fleetReceipt.selected.length + fleetReceipt.omitted.length === 7
       && anchorsResolve(fleetReceipt) && fleetReceipt.hash === promptHash(fleetPrompt, fleetReceipt)
       && fleetReceipt.deliveredBytes === new TextEncoder().encode(fleetPrompt).byteLength,
     JSON.stringify(fleetReceipt ?? null));
-  check("Program-MAIN Fleet frame: a manifest tracked in the Fleet checkout is never read or delivered",
+  check("Program-MAIN Fleet frame: a manifest tracked in the Fleet checkout IS read, delivered, and receipted beside the seeds",
     fleetManifestCommit.status === 0 && !!fleetReceipt
-      && !fleetPrompt.includes("fleet-frame-leak-probe")
-      && ![...fleetReceipt.selected.map((s) => s.id), ...fleetReceipt.omitted.map((o) => o.id)]
-        .some((id) => id === "fleet-frame-leak-probe" || id === "@manifest"),
-    `${fleetManifestCommit.status} ${JSON.stringify(fleetReceipt?.omitted ?? null)}`);
+      && fleetPrompt.includes("fleet-frame-carrier-probe")
+      && fleetReceipt.selected.some((selection) => selection.id === "fleet-frame-carrier-probe")
+      && !fleetReceipt.omitted.some((entry) => entry.id === "@manifest")
+      // the manifest row is an ADDITION, never a replacement: the seeds keep their own verdict
+      && fleetReceipt.selected.filter((selection) => selection.id !== "fleet-frame-carrier-probe")
+        .map((selection) => selection.id).sort().join(",") === "portable-core,verify-e2e",
+    `${fleetManifestCommit.status} ${JSON.stringify(fleetReceipt?.selected ?? null)}`);
 
   const fleetOpenedAt = readState().slots?.[String(fleetSlot)]?.openedAt ?? Date.now();
   await Bun.sleep(Math.max(0, (Math.floor(fleetOpenedAt / 1000) + 2) * 1000 - Date.now()));
@@ -626,7 +632,7 @@ export async function run(ctx: Ctx): Promise<void> {
     fleetHandoffCommit.status === 0 && fleetSuccessionResponse.ok
       && JSON.stringify(fleetSuccessionPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
         === JSON.stringify(successionGroundingSteps)
-      && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 2
+      && fleetSuccessionPrompt.includes(fleetCarry) && fleetSuccessionReceipt?.selected.length === 3
       && fleetSuccessionReceipt.omitted.length === 4 && anchorsResolve(fleetSuccessionReceipt)
       && fleetSuccessionReceipt.hash === promptHash(fleetSuccessionPrompt, fleetSuccessionReceipt)
       && fleetSuccessionReceipt.deliveredBytes === new TextEncoder().encode(fleetSuccessionPrompt).byteLength,
@@ -634,6 +640,15 @@ export async function run(ctx: Ctx): Promise<void> {
   if (fleetBody.slot) await post(`/api/slots/${fleetBody.slot}/kill`, {});
   if (fleetSuccessionBody.slot) await post(`/api/slots/${fleetSuccessionBody.slot}/kill`, {});
   await programPost(fleetProgram.id, "complete");
+  // The probe manifest leaves the instance checkout again. Every LATER module founding or
+  // dispatching into ROOT (e2e/supervisor.ts, e2e/tasks.ts (d3)) reasons about the SEED plan, and
+  // a fixture that quietly stays committed would make those modules depend on this one's leftovers.
+  gitIn(ROOT, "rm", "-q", ".fleet/context-packs.json");
+  const fleetManifestRemoved = gitIn(ROOT, "commit", "-qm", "remove the fleet-frame carrier probe");
+  check("Program-MAIN Fleet frame fixture: the probe manifest is removed again, so later modules see the seed plan alone",
+    fleetManifestRemoved.status === 0
+      && gitIn(ROOT, "ls-files", "--error-unmatch", ".fleet/context-packs.json").status !== 0,
+    String(fleetManifestRemoved.status));
 
   const failureProgram = await activateNewProgram("Program-MAIN delivery cleanup");
   const failureLabel = "program-main-failure";

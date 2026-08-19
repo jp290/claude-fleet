@@ -2,7 +2,7 @@
 // quiet hours reach the DISPATCHER too, proven against a positive control.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { check, get, post, restartSrv, afterTick, paneEnv, plogRead, tmuxOut, BASE, DISPATCH_TICK_MS, REPO, ROOT } from "./harness";
 import { buildAnalysisPrompt } from "../analysis-prompt";
@@ -947,6 +947,88 @@ export async function run(ctx: Ctx): Promise<void> {
       spawnSync("git", ["-C", ROOT, "worktree", "remove", "--force", fLane]);
       rmSync(`${ROOT}.worktrees`, { recursive: true, force: true }); // the parent dir createWorktree mkdir'd
     }
+  }
+
+  // --- (d4) THE DISPATCH SEAM READS THE TARGET REPOSITORY'S OWN MANIFEST. Until 2026-08-19 only
+  // the Program-MAIN founding seam did, so the 72-of-82 majority of deliveries could not carry a
+  // repo-declared pack at all and a new pack meant a TypeScript change plus a deploy. The seam has
+  // NO frame branch — the same merge runs for a Fleet and a foreign tree — so a foreign fixture
+  // proves the wiring, and e2e/programs.ts proves the Fleet frame at the founding seam.
+  //
+  // Its own repository, built here rather than in the wrapper: this is the only check that needs a
+  // tree carrying a tracked `.fleet/context-packs.json`, and the manifest is rewritten mid-block to
+  // get the invalid case from the SAME repo — which is what makes the two receipts comparable.
+  {
+    const gitIn = (dir: string, ...args: string[]): { status: number | null; stdout: string } =>
+      spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+    const mRepo = `${ROOT}/dispatchmanifestrepo`;
+    mkdirSync(`${mRepo}/.fleet`, { recursive: true });
+    gitIn(mRepo, "init", "-q", "-b", "main");
+    gitIn(mRepo, "config", "user.email", "t@t");
+    gitIn(mRepo, "config", "user.name", "t");
+    gitIn(mRepo, "config", "commit.gpgsign", "false");
+    writeFileSync(`${mRepo}/AGENTS.md`, "# Target contract\n\n## Repo contract\nProve with the repo's own chain.\n");
+    const writeManifest = (body: string, message: string): number | null => {
+      writeFileSync(`${mRepo}/.fleet/context-packs.json`, body);
+      gitIn(mRepo, "add", "-A");
+      return gitIn(mRepo, "commit", "-qm", message).status;
+    };
+    const validCommit = writeManifest(JSON.stringify([{
+      id: "dispatch-declared", useWhen: "Wenn du in diesem Baum arbeitest: der Repo-Kontrakt.",
+      scope: "repo-contract", audience: "agent", triggers: ["always"], hardness: "guidance",
+      sources: [{ path: "AGENTS.md", anchor: "## Repo contract" }],
+      requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "pi", "codex"],
+      modes: ["read-only", "mutating"], estimatedBytes: 900, evidence: "tree-anchor",
+      owner: "owner", status: "active",
+    }]), "declare context packs");
+
+    const dispatchInto = async (brief: string, text: string): Promise<{ prompt: string; receipt?: ContextReceipt; lane: string | null }> => {
+      const task = (await (await post("/api/tasks", { text, queue: false, repo: mRepo })).json()) as { task: { id: string } };
+      await post(`/api/tasks/${task.task.id}/brief`, { text: brief });
+      const res = await post(`/api/tasks/${task.task.id}/dispatch`, {});
+      const body = (await res.json()) as { slot?: number };
+      let receipt: ContextReceipt | undefined;
+      let prompt = "";
+      for (let i = 0; i < 24; i++) { // same window as (d): sendText lands after the boot sleep
+        receipt = (await contextReceipts()).receipts.find((row) => row.taskId === task.task.id);
+        prompt = (((await (await get("/api/prompts?limit=100")).json()) as { prompts: { text?: string }[] }).prompts)
+          .find((p) => p.text?.startsWith(brief))?.text ?? "";
+        if (receipt && prompt) break;
+        await Bun.sleep(500);
+      }
+      const lane = typeof body.slot === "number"
+        ? ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null }[] })
+          .slots.find((slot) => slot.id === body.slot)?.cwd ?? null
+        : null;
+      if (typeof body.slot === "number") await post(`/api/slots/${body.slot}/kill`, {});
+      await post(`/api/tasks/${task.task.id}/delete`, {});
+      return { prompt, receipt, lane };
+    };
+
+    const okBrief = "DISPATCH-MANIFEST FIXTURE — a foreign tree that declares its own pack";
+    const ok = await dispatchInto(okBrief, "dispatch-manifest-valid");
+    check("a dispatch into a tree with a tracked valid manifest delivers the repo-declared pack in the block and on the receipt",
+      validCommit === 0 && ok.prompt.startsWith(`${okBrief}\n\nContextPlan v2 anchors`)
+      && ok.prompt.includes("dispatch-declared") && ok.prompt.includes("AGENTS.md | ## Repo contract")
+      && ok.receipt?.selected.length === 1 && ok.receipt.selected[0]?.id === "dispatch-declared"
+      // the six Fleet seeds keep their honest verdict in a foreign tree — the manifest row is added,
+      // never substituted, which is the whole shape of the merge at this seam
+      && ok.receipt.omitted.length === 6
+      && ok.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
+      `${JSON.stringify(ok.receipt ?? null)} ${ok.prompt.slice(-200)}`);
+
+    const brokenCommit = writeManifest("[{\"id\": broken json,,,\n", "break the manifest");
+    const badBrief = "DISPATCH-MANIFEST FIXTURE — the same tree, manifest now malformed";
+    const bad = await dispatchInto(badBrief, "dispatch-manifest-invalid");
+    check("an invalid manifest at the dispatch seam is the named @manifest omission, never a silent drop",
+      brokenCommit === 0 && bad.prompt === badBrief && !bad.prompt.includes("ContextPlan v2 anchors")
+      && bad.receipt?.selected.length === 0 && bad.receipt.omitted.length === 7
+      && JSON.stringify(bad.receipt.omitted.at(-1)) === JSON.stringify({ id: "@manifest", why: "manifest-invalid" }),
+      JSON.stringify(bad.receipt ?? null));
+
+    for (const lane of [ok.lane, bad.lane]) if (lane) spawnSync("git", ["-C", mRepo, "worktree", "remove", "--force", lane]);
+    rmSync(`${mRepo}.worktrees`, { recursive: true, force: true });
+    rmSync(mRepo, { recursive: true, force: true });
   }
 
   // --- (f) the manual start button with the auto dispatcher OFF, and the archive shelf ---

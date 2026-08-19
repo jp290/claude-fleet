@@ -1,3 +1,129 @@
+# HANDOFF — Slot 6 「kontextSchichtAnalyse」 (2026-08-19, Session f99f9645): die Kontextlast-Kette ist gebaut, B2 wartet auf eine ruhige Maschine
+
+**Wer:** die Sitzung, die die Kontextlast-Achsen vermessen, die Architektur entworfen und die
+Kette A · B1 · C gelandet hat. `ctx` beim Schreiben: **51,9 % von 1M** (519.003 Tokens, am
+eigenen Slot gemessen, nicht geschätzt). Laufzeit ~20,7 h — der älteste Slot der Flotte.
+
+---
+
+## 0. DEINE ERSTE HANDLUNG
+
+**B2 landen, sobald die Maschine ruhig ist.** Slot 2, `fleet/260819103751-f1fd`, seit Stunden
+fertig: `ahead=1`, sauber, `merge-tree` konfliktfrei, Überlappung mit main nur `server.ts`.
+
+```
+ps -eo pid,ppid,etime,command | grep '^ *[0-9]* *[0-9]* *[0-9:]* /bin/sh ./e2e-'   # muss LEER sein
+POST /api/slots/2/merge
+```
+
+**Das verankerte Muster ist Pflicht** — ein schlichtes `grep` zählt zsh-Wrapper mit. Und: ein
+zweiter Watch auf dasselbe Ziel gibt dir den ALTEN, verbrauchten zurück (siehe §4), also nach
+dem POST nicht auf eine Nachricht warten, die nie kommt.
+
+**Landen NICHT, solange eine Suite läuft.** Vier Anläufe sind gescheitert, keiner am Baum:
+zweimal ausgewartet (`waitMs` 1.089.000 und 2.620.000 gegen ein Budget von 900.000), einmal vom
+Server-Neustart zerrissen, einmal an einer Pipe hängen geblieben, bis ich sie von Hand löste.
+Jedes Mal `verify.ok: null` — **kein Urteil über den Baum, kein Fehlschlag der Lane.**
+
+---
+
+## 1. WAS GELANDET IST — die Kontextlast-Kette
+
+| Schnitt | Commit | Was jetzt gilt |
+|---|---|---|
+| B1 + C | `0c07410`, `c44883d` | **`CLAUDE.md` ist ein GENERAT** aus sieben Fragmenten in `rulebook/` (gitignored). Renderer `rulebook.ts`, rein. Bedeutungs-Probe um die Fragment-Spalte erweitert, Check in `e2e/pins.ts` §6b. |
+| A | `54e2620` | merge-/repair-Worker bekommen `triggers:["landing"]`-Anker an der Aufrufstelle — `runWorker` unberührt, die neun anderen Worker erben nichts. |
+| Probe-Fix | `3f22392` | S3/S4 der Bedeutungs-Probe tragen die Owner-Korrektur zu Composer-Entwürfen. |
+| Messungen | `a317fc0`, `8f14f0b` | Arbeitsschritt-Achse (inert), Präfix-Caching (gemessen), Architektur A/B1/B2/C. |
+| Waisen-Befund | `00714c8`, `b4f40d3` | siehe §3 — der wichtigste Fund des Tages. |
+
+**Regeländerung geht ab jetzt über das Fragment, dann neu rendern** (Kommando im Kopf von
+`rulebook.ts`). Eine Handänderung an `CLAUDE.md` ist beim nächsten Render weg und rötet bis
+dahin `e2e/pins.ts` §6b. Ich habe das dreimal gefahren, es trägt.
+
+**Offen und erst NACH B2 fällig:** `rulebook/lane-discipline.md` sagt, `CLAUDE.md` werde beim
+Spawn „nur KOPIERT". Das ist **heute noch korrekt** und wird erst mit B2 zur halben Wahrheit
+(dann ist Kopieren nur der Fallback für ein fremdes `task.repo` ohne `rulebook/`). Vorher
+ändern hieße, das Regelbuch dem Code vorauslaufen zu lassen.
+
+---
+
+## 2. DIE GATE-AUSHUNGERUNG — der Zustand, der B2 blockiert
+
+`gate WORK p50` ist **98 s**. `FLEET_VERIFY_WAIT_MS` ist **900.000** (`watchdog.sh`; Default
+identisch, `server.ts:9070`). Historisch warteten **124 von 153 Lands null Sekunden** — heute
+wartet jedes. Die Arbeit ist winzig, die Schlange ist alles.
+
+**Drei Wege, meine Empfehlung zuerst:**
+
+1. **Warten und landen, wenn frei.** Kostet nichts, braucht nur einen ruhigen Moment. Heute gab
+   es keinen; die Maschine trug über Stunden 2–4 Suiten.
+2. **`FLEET_VERIFY_WAIT_MS` erhöhen** (z. B. 2.700.000) + `launchctl kickstart -k
+   gui/$(id -u)/com.claude-fleet.watchdog` — der laufende `sh` liest seine Datei nicht neu.
+   Schließt die Klasse. **Owner-Akt, propose/promote.**
+3. **Confirm-Land** — `POST /api/slots/2/land` (`server.ts:18750`, `landLane(s,
+   OWNER_LAND_FACTS)`) fährt das Gate nicht und schreibt `confirmedByHuman: true`. Vertretbar,
+   weil der Baum verifiziert IST, nur nicht vom Gate: die Lane fuhr die volle lokale Kette
+   (`ALL PASS`, 393 PASS) **und** `./e2e-isolated.sh` (`ALL PASS`, 2.682 PASS, ein run-id,
+   `tree=b7d6b89`, `dirty=false`). **Ich habe das dem Owner vorgelegt und KEINE Antwort
+   bekommen — also nicht von dir allein entscheiden.**
+
+`b3d042ec` (Audit-Bündelung) liegt beim Owner und ist die Ursache dieser Contention.
+
+---
+
+## 3. DER WAISEN-BEFUND — lies `00714c8`, hier nur, was nicht im Doc steht
+
+Der `waitedOut`-Kill trifft `p`, nicht die Prozessgruppe (`server.ts:9328`). Die Suite-Wrapper
+sind ENKEL (`Bun.spawn(["sh","-c",cmd])`, `:9300`), überleben mit `ppid=1` und **halten die
+geerbten Schreibenden von stdout/stderr**. Der Server drainiert bis EOF, BEVOR er auf den Exit
+wartet (`:9358`) — also löst der Lauf-Await nie auf. **Ein `waitedOut` kann den Merge-Job
+unbegrenzt hängen lassen.** Heute hat nur ein `kill <pid>` von Hand ihn aufgelöst.
+
+**Die offene Gegenprobe, und sie ist die nächste Handlung, wenn wieder eine Waise auftaucht:**
+`lsof -p <waise>` auf die Pipes des Servers prüfen, **BEVOR** irgendjemand killt. Die
+Pipe-Erklärung ist INFERRED, nicht gemessen — an einem toten Prozess geht es nicht mehr.
+
+**Wie man eine Waise sicher beendet:** nur über die notierte PID, nie über ein Namensmuster
+(unter `/bin/sh ./e2e-*` läuft auch der Post-Land-Audit und der Gate fremder Lanes). Vorher
+prüfen, ob sie den Lock hält (`/tmp/fleet-e2e.lock/pid`) und ob ein entkoppelter Runner unter
+ihr hängt (`bun fleet-e2e*` mit `ppid=1` — die P5-Klasse). Beides war hier nicht der Fall.
+
+---
+
+## 4. KORREKTUREN — was du sonst neu lernst
+
+- **Ein VERBRAUCHTER Watch blockiert das Nachabonnieren.** `POST /api/self/watch` auf ein Ziel
+  mit gefeuertem Watch liefert `{existing:true, armed:false, firedAt:true}` — mit `ok`, nicht
+  mit einer Ablehnung. `WATCH_KEEP_SPENT = 5` (`server.ts:2469`) hält die Leiche vor, eine
+  Lösch-Route gibt es nicht. **Wer das nicht prüft, hält sich für abonniert und wartet ewig.**
+  Ich bin heute zweimal darauf gestoßen und musste beide Male auf einen Timer ausweichen.
+- **Composer-Entwürfe sind CLAUDE CODES EIGENER REST, nie Owner-Entwürfe.** Owner-Korrektur
+  2026-08-19, ausdrücklich und gereizt („zum aller verdammt nochmal letzten mal"). Frag ihn
+  NICHT, ob ein Entwurf seiner ist. Steht in `rulebook/supervisor.md` und als Probe S3/S4.
+- **Die Bedeutungs-Probe fängt eine VERLORENE Regel, aber keine UMGESCHRIEBENE.** Ein Muster,
+  das nur noch als Zitat überlebt, ist für sie geltend. Die 117/117 sind eine
+  Vollständigkeits-, keine Bedeutungsgarantie. Ich habe das erzeugt, zweimal, in Minuten.
+- **`pgrep -f 'bun server.ts'` trifft e2e-Testinstanzen.** Den Live-Server über die `srv`-Pane
+  identifizieren, nicht über ein Namensmuster.
+- **Der Supervisor hat sich heute zweimal korrigiert** (Waise → „doch kein Defekt" → „doch") und
+  zweimal die Maschine als „ruhig" gemeldet, während zwei bis drei Suiten liefen. Seine Befunde
+  sind wertvoll, seine Zustandsangaben prüfst du nach.
+
+---
+
+## 5. WAS ICH NICHT GETAN HABE
+
+- **Nicht deployt.** Der Deploy vom 16:50:39 kam von jemand anderem; seither läuft A/B1/C im
+  Prozess und der ctx-Sensor-Fix `beda7a3` ist aktiv (Slot 1 meldet wieder 20,2 % statt 101,8 %).
+  Der Punkt ist ZU und darf dem Owner nicht erneut vorgelegt werden.
+- **Keine fremden Suiten angefasst.** Ein `pkill -f` träfe garantiert auch einen fremden Audit.
+- **Kein Confirm-Land ohne Owner-Wort.** Das normale Landen ist mir delegiert; ein Confirm-Land
+  setzt seine Bestätigung an die Stelle der Maschinenprüfung, und das kann ich nicht behaupten.
+- **`.env.bak-1787083401` und `promote-program.sh`** liegen untracked im Haupt-Checkout. Das
+  erste trägt Deploy-Identität und darf nie in ein `git add -A`.
+
+---
 # HANDOFF — Supervisor-Occupant 6 (2026-08-18, Slot 7 「🧿 Supervisor」, Session 728f7a18): Kontextlast halbiert-minus, Arbeitskreis dreifach vermessen, eine Scope-Frage offen
 
 **Wer:** sechste Insassin der stehenden Supervisor-Rolle. `ctx` beim Schreiben: **39 %** von 1M,

@@ -162,10 +162,17 @@ export function trailStats(records: TrailRecord[], opts: {
   maxEvidence?: number;
   /** torn mid-append lines the caller could not parse */
   malformed?: number;
+  /**
+   * trail FILES the caller's read cap left unread. A READ-SIDE fact, passed in the same way
+   * `malformed` is: this module knows records, never files. Absent/0 means "the caller read
+   * everything it could see" — it is never inferred, and never optimistically assumed.
+   */
+  filesOmitted?: number;
 }): TrailSummary {
   const windowMs = opts.windowMs ?? TRAILSTATS_WINDOW_MS;
   const maxGroups = opts.maxGroups ?? TRAILSTATS_MAX_GROUPS;
   const maxEvidence = opts.maxEvidence ?? TRAILSTATS_MAX_EVIDENCE;
+  const filesOmitted = Math.max(0, opts.filesOmitted ?? 0);
   const from = opts.now - windowMs;
   const wantSuite = opts.suite ?? null;
   const wantCheck = opts.check ?? null;
@@ -267,8 +274,18 @@ export function trailStats(records: TrailRecord[], opts: {
       cleanTrees: [...cleanFails].map(([tree, rs]) => ({ tree, runs: [...rs].slice(0, maxEvidence) })),
       dirtyFailRuns: [...dirty].slice(0, maxEvidence),
       unknownTreeFailRuns: [...unknown].slice(0, maxEvidence),
+      // `never-failed` is the ONLY one of the three observed verdicts that claims an ABSENCE, so
+      // it is the only one an unread remainder can falsify: `not-your-diff` rests on two clean
+      // fails already SEEN and unread files can only add more, and `insufficient-evidence` is
+      // already the weak answer. So a caller that read part of its material gets the weak answer
+      // here too — the count itself stays the caller's to report (server.ts serves `filesOmitted`
+      // beside this summary). Measured 2026-08-07 on the deployed tree: FIX1 answered
+      // "never-failed, runs 74, failedRuns 0" over the newest 400 trail files while the 741
+      // omitted ones held 9 failing runs on 3 distinct clean trees — and newest-first means the
+      // omitted material is the OLDER material, which is where a historical flake lives by
+      // definition. Positive evidence of absence is the one thing a cap makes unaffordable.
       verdict: runs.size === 0 ? "not-in-window" // never observed — NOT a clean bill of health
-        : failRuns.size === 0 ? "never-failed"
+        : failRuns.size === 0 ? (filesOmitted > 0 ? "insufficient-evidence" : "never-failed")
         : cleanFails.size >= 2 ? "not-your-diff" : "insufficient-evidence",
     };
   }

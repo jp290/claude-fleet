@@ -135,7 +135,7 @@ answers three questions and carries no field that answers none of them:
   distinct clean trees the failure appeared on (`notYourDiff` = that count ≥ 2).
 - **slowest[]** — summed and median `msSincePrev` per check. Still cost-to-get-here, not runtime (§4).
 - **point** — `?check=` asks about one check and answers with the run ids and tree shas as evidence:
-  `not-your-diff` | `insufficient-evidence` | `never-failed`.
+  `not-your-diff` | `insufficient-evidence` | `never-failed` | `not-in-window`.
 
 Three exclusions carry the whole honesty of the answer, and each has already produced a wrong
 number somewhere:
@@ -176,7 +176,15 @@ grants no capability either — a lane can already open `e2e-trail/` through the
 The server reads **both** directories from §3 (`<checkout>/e2e-trail` and the tmpdir fallback),
 because reading either alone silently drops a whole population — the previews or the post-land
 audits. `FLEET_TRAIL_DIRS` overrides. Files are pre-filtered by mtime and capped at the newest 400
-(~28 MB, ~325 ms measured), with `filesOmitted` reporting the cut rather than hiding it.
+(~28 MB, ~325 ms measured), with `filesOmitted` reporting the cut rather than hiding it — and
+**handed to `trailStats`, which will not answer `never-failed` while any file went unread** (it
+answers `insufficient-evidence` instead). The cut is newest-first, so the unread remainder is the
+*older* material, which is where a historical flake lives by definition: measured 2026-08-07 on the
+deployed tree, `FIX1` read `never-failed, runs 74, failedRuns 0` over the newest 400 files while the
+741 omitted ones held 9 failing runs on 3 distinct clean trees. Only the absence claim is downgraded
+— `not-your-diff` rests on clean fails already seen, and unread files can only ever add more.
+`not-in-window` (`runs === 0`) is structurally the same absence claim over the same cap and is
+**not** yet covered.
 
 **It gates nothing and alarms nobody.** A verdict here is evidence *for* a lane's proof order, not
 a substitute for it — the same stance §5's "must never change a run's outcome" takes on the write

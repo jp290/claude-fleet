@@ -141,6 +141,36 @@ export async function run(ctx: Ctx): Promise<void> {
   check("trailstats: a check that ran and never failed reads never-failed, not insufficient-evidence",
     clean.point?.verdict === "never-failed" && clean.point.runs === 1 && clean.flakes.length === 0,
     JSON.stringify(clean.point));
+  // ...but only when the caller actually read its material. The routes cap the trail at the newest
+  // 400 files (server.ts, grep TRAIL_MAX_FILES) and hand the remainder over as `filesOmitted`; the
+  // cut is newest-first, so what goes unread is the OLDER material — where a historical flake lives
+  // by definition. Measured 2026-08-07 on the deployed tree: FIX1 answered "never-failed, runs 74,
+  // failedRuns 0" over 400 files while the 741 omitted ones held 9 failing runs on 3 clean trees.
+  // A lane reading that took positive evidence of absence from a partial read, which is exactly
+  // what this file's direction discipline forbids everywhere else.
+  const capped = trailStats([row({ run: "r1", check: C, ok: true, tree: A })],
+    { now: T, check: C, filesOmitted: 741 });
+  check("trailstats: never-failed is never claimed over unread files — a cap downgrades it to insufficient-evidence",
+    capped.point?.verdict === "insufficient-evidence" && capped.point.runs === 1
+      && capped.point.failedRuns === 0,
+    JSON.stringify(capped.point));
+  // the other half, and it is not decoration: without it "downgrade everything" would pass the
+  // check above and destroy the verdict's only positive answer.
+  const uncapped = trailStats([row({ run: "r1", check: C, ok: true, tree: A })],
+    { now: T, check: C, filesOmitted: 0 });
+  check("trailstats: a COMPLETE read still reads never-failed — the downgrade is the cap, not the question",
+    uncapped.point?.verdict === "never-failed" && uncapped.point.runs === 1
+      && uncapped.point.failedRuns === 0,
+    JSON.stringify(uncapped.point));
+  // and the asymmetry itself: a cap can only falsify a claim of ABSENCE. Two clean fails already
+  // SEEN stay seen no matter how much went unread — unread files could only ever add a third.
+  const cappedProof = trailStats([
+    row({ run: "r1", check: C, ok: false, tree: A }),
+    row({ run: "r2", check: C, ok: false, tree: B }),
+  ], { now: T, check: C, filesOmitted: 741 });
+  check("trailstats: a cap never weakens not-your-diff — unread files can only add evidence, never remove it",
+    cappedProof.point?.verdict === "not-your-diff" && cappedProof.point.cleanTrees.length === 2,
+    JSON.stringify(cappedProof.point));
   // ...and a name NOBODY ran is a fourth answer, not the third. This is the one that keeps the
   // renamed-check limit visible: ask about a name that no longer exists and the answer says it was
   // never observed, instead of handing back a clean bill of health nobody measured.

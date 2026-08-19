@@ -35,6 +35,9 @@ public/app.js
 public/share.js
 CLAUDE.md
 OWNER.md
+# CLAUDE.md is a GENERAT of the seven fragments in rulebook/ — they carry the same deploy
+# host and IP the monolith did, so they are ignored for exactly the same reason it is.
+rulebook/
 # graphify (code knowledge graph) — machine-local artifacts, never tracked (public repo + lanes must stay clean)
 graphify-out/
 # graphify hook config carries a machine-local absolute path (account name) — advisory hook stays local-only

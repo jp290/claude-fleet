@@ -22,6 +22,10 @@
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
+  fragmentFileName, renderRulebook, type RulebookFragment,
+} from "../rulebook";
 
 const ROOT = resolve(import.meta.dir, "..");
 const read = (rel: string): string => readFileSync(`${ROOT}/${rel}`, "utf8");
@@ -1552,6 +1556,19 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   }
 }
 
+// The checkout a lane's copies come FROM. `.git` is a DIRECTORY in the main checkout and a FILE
+// pointing at `…/.git/worktrees/<name>` in a lane. Read, never shelled out to — this file is
+// fs-only by design. Sections 6 and 6b both need it: one to age CLAUDE.md against its source, the
+// other to reach `rulebook/`, which is gitignored and therefore exists in the source alone.
+const SOURCE_DIR = ((): string | null => {
+  try {
+    if (statSync(`${ROOT}/.git`).isDirectory()) return ROOT;
+    const m = /gitdir:\s*(\S+)/.exec(readFileSync(`${ROOT}/.git`, "utf8"));
+    const i = m ? m[1].indexOf("/.git/worktrees/") : -1;
+    return i > 0 ? m![1].slice(0, i) : null;
+  } catch { return null; }
+})();
+
 // ================================================================================================
 // 6. CLAUDE.md — the one steering document with no drift pin at all
 // ================================================================================================
@@ -1585,14 +1602,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // in a lane. Read, never shelled out to — this file is fs-only by design.
   let copy: string | null = null;
   try { copy = read(CLAUDE); } catch { /* absent → not comparable */ }
-  const sourcePath = ((): string | null => {
-    try {
-      if (statSync(`${ROOT}/.git`).isDirectory()) return `${ROOT}/${CLAUDE}`; // the copy IS the source
-      const m = /gitdir:\s*(\S+)/.exec(readFileSync(`${ROOT}/.git`, "utf8"));
-      const i = m ? m[1].indexOf("/.git/worktrees/") : -1;
-      return i > 0 ? `${m![1].slice(0, i)}/${CLAUDE}` : null;
-    } catch { return null; }
-  })();
+  const sourcePath = SOURCE_DIR === null ? null : `${SOURCE_DIR}/${CLAUDE}`;
   const source = ((): string | null => {
     try { return sourcePath ? readFileSync(sourcePath, "utf8") : null; } catch { return null; }
   })();
@@ -1680,6 +1690,134 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       `${state === "current" ? "" : `${state} copy — advisory; `}${deadPaths.join("; ")}`, soft);
     pin(RULE_GREPS, deadGreps.length === 0,
       `${state === "current" ? "" : `${state} copy — advisory; `}${deadGreps.join("; ")}`, soft);
+  }
+}
+
+// ================================================================================================
+// 6b. The rulebook is SEVEN FRAGMENTS, and CLAUDE.md is their render — not a hand-kept file
+// ================================================================================================
+// Section 6 holds CLAUDE.md's anchors to the tree. This one holds CLAUDE.md to its SOURCE. Since
+// the B1 split the file is a GENERAT of `rulebook/loader.md` … `rulebook/graphify.md`, assembled by
+// rulebook.ts; a hand edit to CLAUDE.md is lost at the next render, and a fragment that loses a
+// rule leaves no trace in git — the whole layer is gitignored, exactly like the monolith was.
+//
+// FOUR CONSTRAINTS, each one the reason a rule below is shaped the way it is:
+//
+// (1) `rulebook/` LIVES IN THE SOURCE CHECKOUT ALONE. Gitignored, so a worktree never materialises
+//     it. The rules that need it read it through SOURCE_DIR; where that is unreachable they SKIP
+//     under their own name. A pin that goes green because it could not look is the exact failure
+//     mode CLAUDE.md's own "eine Sonde, die nicht laufen konnte, muss als SIE SELBST scheitern"
+//     was written about, and it would be worse here than elsewhere: silence would read as proof.
+// (2) NO CONTENT LEAVES THIS FILE, same as section 6. The fragments carry the deploy host and IP.
+//     Emitted detail is rule ids, fragment names, and counts — never a line of rulebook text.
+// (3) THE FRAGMENT COLUMN IS A RULE, NOT A LIST. It must equal the id prefix; a row that departs
+//     from its prefix has to be NAMED in the doc's own prose as a cut-C move. So the two rules C
+//     relocated are legal and self-documenting, and a silent third one is not.
+// (4) PLACEMENT IS HELD HARD, UNIQUENESS IS ONLY REPORTED. "Every rule stands in the fragment its
+//     column names" catches a loss or a silent move. "…and in no other" cannot be demanded: eleven
+//     patterns are generic substrings (`409`, `mergeJob`, `⚙ steward`) that legitimately recur, and
+//     demanding uniqueness would mean rewriting those patterns — i.e. blunting the probe to make
+//     the pin green. The count is printed instead, so a drop is visible without being fatal.
+{
+  const PROBE = "docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md";
+  const RULE_RENDER = 'CLAUDE.md is renderRulebook("main", rulebook/) byte for byte';
+  const RULE_PLACED = "every rule of the meaning probe stands in the fragment its Fragment column names";
+  const RULE_COLUMN = "the Fragment column is the id prefix, and every departure is named as a cut-C move";
+  const RULE_SELECT = "FRAGMENTS_FOR keeps all seven for main and a duplicate-free subset for a lane";
+  const RULE_HOLE = "renderRulebook refuses to assemble a rulebook with a fragment missing";
+
+  // --- the module's own arithmetic. Needs no checkout: it is data in a tracked file.
+  {
+    const mainOk = FRAGMENTS_FOR.main.length === RULEBOOK_FRAGMENTS.length
+      && RULEBOOK_FRAGMENTS.every((f, i) => FRAGMENTS_FOR.main[i] === f);
+    const lane = FRAGMENTS_FOR.lane;
+    const laneOk = lane.length > 0 && lane.length < RULEBOOK_FRAGMENTS.length
+      && new Set(lane).size === lane.length
+      && lane.every((f) => (RULEBOOK_FRAGMENTS as readonly string[]).includes(f));
+    // the prefix map must be total and injective, or the Fragment column below is not derivable
+    const mapped = Object.values(FRAGMENT_BY_RULE_PREFIX);
+    const mapOk = new Set(mapped).size === RULEBOOK_FRAGMENTS.length
+      && RULEBOOK_FRAGMENTS.every((f) => mapped.includes(f));
+    pin(RULE_SELECT, mainOk && laneOk && mapOk,
+      `main=${FRAGMENTS_FOR.main.length}/${RULEBOOK_FRAGMENTS.length}, lane=${lane.length}, prefixes=${Object.keys(FRAGMENT_BY_RULE_PREFIX).length}`);
+  }
+  {
+    let threw = false;
+    try { renderRulebook("main", new Map()); } catch { threw = true; }
+    pin(RULE_HOLE, threw);
+  }
+
+  // --- the probe table. Rows wrap: a cell may run over several physical lines (P7's does), and a
+  // line-wise parser hands such a row ZERO patterns, whereupon `every()` over an empty list says
+  // true and the row passes having measured nothing. Joining continuations first is what keeps
+  // that vacuum out; a row that still yields no pattern is counted as a violation, by name.
+  const norm = (t: string): string => t.replace(/`/g, "").replace(/\*\*/g, "").split(/\s+/).join(" ");
+  const probe = ((): string | null => { try { return read(PROBE); } catch { return null; } })();
+  const rows: { id: string; frag: string; pats: string[] }[] = [];
+  if (probe !== null) {
+    const joined: string[] = [];
+    for (const l of probe.split("\n")) {
+      if (l.startsWith("| ")) joined.push(l);
+      else if (joined.length && !joined[joined.length - 1].trimEnd().endsWith("|")) joined[joined.length - 1] += ` ${l}`;
+    }
+    for (const l of joined) {
+      const c = l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((x) => x.trim());
+      if (c.length < 5 || !/^[LEDSFPG]\d+$/.test(c[0])) continue;
+      rows.push({ id: c[0], frag: c[2], pats: [...c[4].matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => norm(m[1])) });
+    }
+  }
+
+  if (probe === null) {
+    skip(RULE_COLUMN, "the meaning probe is not in this tree");
+  } else {
+    // a departure from the prefix is legal only where the doc says WHY, by id, as a cut-C move
+    const prose = probe.slice(0, probe.indexOf("| id |"));
+    const bad = rows.filter((r) => {
+      if (!(RULEBOOK_FRAGMENTS as readonly string[]).includes(r.frag)) return true;
+      if (r.frag === FRAGMENT_BY_RULE_PREFIX[r.id[0]]) return false;
+      return !(prose.includes(r.id) && prose.includes("Schnitt C"));
+    });
+    pin(RULE_COLUMN, rows.length > 0 && bad.length === 0,
+      `${rows.length} row(s); unexplained: ${bad.map((r) => r.id).join(",") || "none"}`);
+  }
+
+  // --- and the two rules that need the source checkout
+  const fragments = new Map<RulebookFragment, string>();
+  const unreadable: string[] = [];
+  for (const f of RULEBOOK_FRAGMENTS) {
+    try { fragments.set(f, readFileSync(`${SOURCE_DIR}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, "utf8")); }
+    catch { unreadable.push(f); }
+  }
+  const why = SOURCE_DIR === null ? "source checkout not locatable from here"
+    : `rulebook/ not readable in the source checkout (${unreadable.length}/${RULEBOOK_FRAGMENTS.length} fragment(s))`;
+
+  if (unreadable.length > 0) {
+    skip(RULE_RENDER, why);
+    skip(RULE_PLACED, why);
+  } else {
+    const rendered = renderRulebook("main", fragments);
+    const monolith = ((): string | null => {
+      try { return readFileSync(`${SOURCE_DIR}/CLAUDE.md`, "utf8"); } catch { return null; }
+    })();
+    if (monolith === null) skip(RULE_RENDER, "CLAUDE.md not readable in the source checkout");
+    else pin(RULE_RENDER, rendered === monolith,
+      `rendered ${Buffer.byteLength(rendered)} B vs CLAUDE.md ${Buffer.byteLength(monolith)} B`);
+
+    if (probe === null) {
+      skip(RULE_PLACED, "the meaning probe is not in this tree");
+    } else {
+      const text = new Map([...fragments].map(([f, t]) => [f as string, norm(t)]));
+      const misplaced: string[] = [];
+      let unique = 0;
+      for (const r of rows) {
+        if (r.pats.length === 0) { misplaced.push(`${r.id}(no pattern)`); continue; }
+        const hits = [...text].filter(([, t]) => r.pats.every((p) => t.includes(p))).map(([f]) => f);
+        if (!hits.includes(r.frag)) misplaced.push(r.id);
+        else if (hits.length === 1) unique++;
+      }
+      pin(RULE_PLACED, rows.length > 0 && misplaced.length === 0,
+        `${rows.length - misplaced.length}/${rows.length} placed, ${unique} of them in that fragment alone${misplaced.length ? `; misplaced: ${misplaced.join(",")}` : ""}`);
+    }
   }
 }
 

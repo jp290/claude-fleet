@@ -46,6 +46,10 @@ export interface ContextPackSource {
 
 interface ContextPackBase {
   readonly id: string;
+  // One human line of PURPOSE — when a reader needs this pack, never what it says. The anchor block
+  // renders it beside the pointer so a lane can decide whether to follow it; source prose stays in
+  // the source file, which is why the content firewall applies to this field like any other.
+  readonly useWhen: string;
   readonly scope: ContextPackScope;
   readonly audience: ContextPackAudience;
   readonly triggers: readonly ContextPackTrigger[];
@@ -85,6 +89,7 @@ const ALL_MODES = CONTEXT_PACK_MODES;
 export const CONTEXT_PACKS = [
   {
     id: "portable-core",
+    useWhen: "Immer zuerst: das Vokabular und die harten Invarianten, die jede Session in diesem Baum binden.",
     scope: "portable-core",
     audience: "agent",
     triggers: ["always"],
@@ -100,6 +105,7 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "verify-e2e",
+    useWhen: "Wenn du beweisen willst, dass deine Aenderung traegt: welcher Beweis wann genuegt und was das Gate wirklich faehrt.",
     scope: "verify-e2e",
     audience: "agent",
     triggers: ["verification"],
@@ -118,6 +124,7 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "land-mechanics",
+    useWhen: "Bevor du eine Lane landest oder den Land-Pfad anfasst: was sich beim Land wirklich bewegt.",
     scope: "land-mechanics",
     audience: "maintainer",
     triggers: ["landing"],
@@ -136,6 +143,7 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "task-queue",
+    useWhen: "Wenn du Queue-Zeilen liest, erzeugst oder disponierst: das Refinement-System hinter der Queue.",
     scope: "task-queue",
     audience: "maintainer",
     triggers: ["task-queue"],
@@ -154,6 +162,7 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "harness-adapter",
+    useWhen: "Wenn du einen Harness auswaehlst oder den Adapter-Kontrakt anfasst: Probe-Mengen und Automations-Grenzen.",
     scope: "harness-adapter",
     audience: "maintainer",
     triggers: ["harness-selection"],
@@ -172,6 +181,7 @@ export const CONTEXT_PACKS = [
   },
   {
     id: "private-deploy-overlay",
+    useWhen: "Wenn du deployen oder die Live-Instanz anfassen willst: das private Betriebs-Overlay (nur als Hash-Referenz).",
     scope: "private-deploy",
     audience: "private-ops",
     triggers: ["deployment"],

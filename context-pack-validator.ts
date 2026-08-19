@@ -50,6 +50,7 @@ export const CONTEXT_PACK_VALIDATION_CODES = [
   "SUPERSEDES_CYCLE",
   "SUPERSEDES_TARGET_MISSING",
   "TRIGGER_UNKNOWN",
+  "USE_WHEN_INVALID",
 ] as const;
 export type ContextPackValidationCode = (typeof CONTEXT_PACK_VALIDATION_CODES)[number];
 
@@ -86,7 +87,7 @@ export interface ContextPackValidationResult {
 type UnknownRecord = Record<string, unknown>;
 
 const PACK_KEYS = new Set([
-  "id", "scope", "audience", "triggers", "hardness", "sources", "requiredCapabilities",
+  "id", "useWhen", "scope", "audience", "triggers", "hardness", "sources", "requiredCapabilities",
   "harnesses", "modes", "estimatedBytes", "evidence", "owner", "status", "supersedes",
   "privateSourceId", "sourceHash", "observedAt",
 ]);
@@ -113,6 +114,12 @@ const validObservedAt = (value: unknown): value is string => {
   if (typeof value !== "string" || !OBSERVED_AT.test(value)) return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && new Date(parsed).toISOString().replace(".000Z", "Z") === value;
+};
+export const USE_WHEN_MAX = 120;
+export const validUseWhen = (value: unknown): value is string => {
+  if (typeof value !== "string" || /[\r\n]/.test(value)) return false;
+  const trimmed = value.trim();
+  return trimmed.length >= 1 && trimmed.length <= USE_WHEN_MAX;
 };
 const validAnchor = (value: unknown): value is string => {
   if (typeof value !== "string" || !value || value.length > 200 || /[\r\n]/.test(value)) return false;
@@ -196,6 +203,12 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
     arrayVocabulary("harnesses", CONTEXT_PACK_HARNESSES, "HARNESS_UNKNOWN");
     arrayVocabulary("modes", CONTEXT_PACK_MODES, "MODE_UNKNOWN");
 
+    // PRESENCE is optional and ABSENCE is not a defect: a repo-declared manifest written before the
+    // field existed must keep validating exactly as it did. What is checked is only that a stated
+    // useWhen is one usable line — the anchor block renders it inline, so a newline would forge a
+    // second pointer row, and an unbounded string would be prose smuggled past the content firewall.
+    if ("useWhen" in raw && !validUseWhen(raw.useWhen))
+      emit("USE_WHEN_INVALID", "error", packId, "useWhen must be one line of 1..120 trimmed characters");
     if (raw.owner !== "owner") emit("OWNER_INVALID", "error", packId, "owner must be the promoting owner");
     if (typeof raw.estimatedBytes !== "number" || !Number.isFinite(raw.estimatedBytes) || raw.estimatedBytes < 0)
       emit("ESTIMATED_BYTES_INVALID", "error", packId, "estimatedBytes must be finite and nonnegative");

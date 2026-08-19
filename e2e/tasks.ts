@@ -20,9 +20,12 @@ export async function run(ctx: Ctx): Promise<void> {
     taskId: string | null; originId: string | null; programId: string | null;
     slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
     mode: string; triggers: string[];
-    selected: { id: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
+    selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
     omitted: { id: string; why: string }[];
     deliveredBytes: number; truncated: boolean;
+    // absent renderer means the row predates the field and its block was written by v1 — a date,
+    // never an unknown renderer
+    renderer?: string;
     briefHash?: string | null; briefSource?: string;
   }
   // server-side briefHashOf, verbatim: the join key is only worth asserting if the test computes it
@@ -786,7 +789,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     const deliveredPrompt = autoRows.find((p) => p.text?.startsWith(DBRIEF))?.text ?? "";
     check("a dispatch into a FOREIGN tree delivers the STORED brief alone — no anchor block at all",
-      deliveredPrompt === DBRIEF && !deliveredPrompt.includes("ContextPlan v1 anchors")
+      deliveredPrompt === DBRIEF && !deliveredPrompt.includes("ContextPlan v2 anchors")
       && !deliveredPrompt.includes("dispatch-gate-probe"),
       JSON.stringify(autoRows.slice(0, 3)).slice(0, 300));
     const expectedHead = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
@@ -820,7 +823,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && /^[0-9a-f]{12}$/.test(deliveredReceipt?.briefHash ?? "")
       && deliveredReceipt?.briefSource === "owner",
       `${briefHashOf(deliveredPrompt)} ${JSON.stringify(deliveredReceipt ?? null)}`);
-    check("the receipt id/hash are stable shapes and the documented v1 hash is recomputable from delivered facts",
+    check("the receipt id/hash are stable shapes and the documented receipt hash is recomputable from delivered facts",
       !!deliveredReceipt && /^[a-f0-9]{32}$/.test(deliveredReceipt.id)
       && deliveredReceipt.hash === recomputedHash && deliveredReceipt.truncated === false
       && deliveredReceipt.deliveredBytes === new TextEncoder().encode(deliveredPrompt).byteLength,
@@ -903,7 +906,7 @@ export async function run(ctx: Ctx): Promise<void> {
     }
     const fHead = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
     check("a dispatch INSIDE the Fleet checkout still renders the two-pack anchor block (the derivation is not a blanket refusal)",
-      fd.ok && fdJ.ok === true && fPrompt.startsWith(`${fBrief}\n\nContextPlan v1 anchors`)
+      fd.ok && fdJ.ok === true && fPrompt.startsWith(`${fBrief}\n\nContextPlan v2 anchors`)
       && fReceipt?.selected.map((pack) => pack.id).sort().join(",") === "portable-core,verify-e2e"
       && fReceipt.omitted.length === 4 && fReceipt.omitted.every((entry) => entry.why !== "source-unavailable"),
       `${fd.status} ${JSON.stringify(fReceipt ?? null)} ${fPrompt.slice(0, 200)}`);
@@ -914,6 +917,21 @@ export async function run(ctx: Ctx): Promise<void> {
         ? pack.anchors.every((anchor) => fPrompt.includes(anchor.path) && fPrompt.includes(anchor.anchor))
         : fPrompt.includes(pack.anchors.privateSourceId)),
       `${fHead} ${JSON.stringify(fReceipt ?? null)}`);
+    // WHY, not just WHERE — the whole point of v2. Each selected pack contributes EXACTLY ONE
+    // purpose line to the delivered block: counting occurrences (rather than asserting presence)
+    // is what catches a renderer that repeats useWhen once per source line, which is the shape a
+    // two-source pack like verify-e2e would otherwise take.
+    const useWhenLines = fPrompt.split("\n").filter((line) => line.startsWith("- ") && line.includes(" — "));
+    check("the v2 block states each selected pack's purpose exactly once, whatever its source count",
+      !!fReceipt && fReceipt.selected.length === 2
+      && fReceipt.selected.every((pack) => typeof pack.useWhen === "string" && pack.useWhen.length > 0
+        && useWhenLines.filter((line) => line === `- ${pack.id} — ${pack.useWhen}`).length === 1)
+      && useWhenLines.length === 2,
+      `${JSON.stringify(useWhenLines)} ${JSON.stringify(fReceipt?.selected ?? null)}`);
+    // The row must NAME the renderer that wrote the block it receipts, or "reconstruct every byte
+    // from the row" silently becomes "…with whichever renderer ships today".
+    check("the receipt names the renderer that produced the delivered block",
+      fReceipt?.renderer === "v2", JSON.stringify(fReceipt ?? null));
     // the lane's own cwd IS its worktree path, and it is the ONLY spelling of it the owner poll
     // emits — LaneRef carries repo/branch/base, never a path (the cast that names one is the
     // documented `awaiting` trap: a claim about a foreign surface, forever undefined)

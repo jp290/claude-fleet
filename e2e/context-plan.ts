@@ -32,6 +32,14 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     normal.omitted.length === 4 && normal.omitted.every((pack) => pack.why === "trigger-not-matched"),
     summary(normal));
 
+  // The plan is what the renderer sees, so PURPOSE must survive selection — a seed's mandatory
+  // useWhen reaching the selection unchanged is the only reason the v2 block can state one.
+  check("context plan: every selected Fleet seed carries its seed's purpose line verbatim",
+    normal.selected.length === 2 && normal.selected.every((pack) =>
+      pack.useWhen === CONTEXT_PACKS.find((seed) => seed.id === pack.id)?.useWhen
+      && typeof pack.useWhen === "string" && pack.useWhen.length > 0),
+    summary(normal));
+
   // THE MUTATING-WORKER PATH (runMerge/runRepair) — a SECOND assertion standing beside the session
   // one above, not a widening of it. The merge and repair resolvers rewrite a lane's history and
   // are the only consumers of the `landing` trigger; their facts are the literal harness "claude"
@@ -123,6 +131,19 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     valid.omitted.length === 0 && valid.selected.length === 1 && valid.selected[0].id === "product-promise"
       && JSON.stringify(valid.selected[0].sources) === JSON.stringify([{ path: "docs/promise.md", anchor: "## Product promise" }]),
     JSON.stringify(valid));
+  const repoUseWhen = "Wenn du das Produktversprechen dieses Repos pruefst.";
+  const withUseWhen = planRepoContext(repoWorld([repoPack({ useWhen: repoUseWhen })]));
+  check("context manifest: a repo pack's own purpose line is carried through, never rewritten",
+    withUseWhen.selected.length === 1 && withUseWhen.selected[0].useWhen === repoUseWhen,
+    JSON.stringify(withUseWhen));
+  check("context manifest: a repo pack without a purpose line is selected with the field absent, not empty",
+    valid.selected.length === 1 && !("useWhen" in valid.selected[0]), JSON.stringify(valid.selected[0]));
+  const badUseWhen = planRepoContext(repoWorld([repoPack({ useWhen: "one\ntwo" })]));
+  check("context manifest: an unusable purpose line condemns the whole entry rather than being dropped silently",
+    badUseWhen.selected.length === 0
+      && JSON.stringify(badUseWhen.omitted) === JSON.stringify([{ id: "product-promise", why: "manifest-invalid" }]),
+    JSON.stringify(badUseWhen));
+
   const untracked = planRepoContext(repoWorld([repoPack({ id: "untracked-pack",
     sources: [{ path: "docs/absent.md", anchor: "## Product promise" }] })]));
   check("context manifest: an entry naming an untracked path is omitted manifest-invalid by id",

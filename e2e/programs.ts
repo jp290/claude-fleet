@@ -68,9 +68,11 @@ interface ContextReceipt {
   taskId: string | null; originId: string | null; programId: string | null;
   slot: number; branch: string; harness: string | null; model: string | null; effort: string | null;
   mode: string; triggers: string[];
-  selected: { id: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
+  selected: { id: string; useWhen?: string; anchors: { path: string; anchor: string }[] | { privateSourceId: string }; sourceHash?: string }[];
   omitted: { id: string; why: string }[];
   deliveredBytes: number; truncated: boolean;
+  // absent on a row written before the renderer was named — that row's block is v1 by date
+  renderer?: string;
   // optional because rows written before this field exist and are served unchanged (the legacy
   // fixture below is exactly one of them) — absent is a DATE, never a brief with no origin
   briefHash?: string | null; briefSource?: string;
@@ -420,7 +422,7 @@ export async function run(ctx: Ctx): Promise<void> {
   };
   const promptHash = (prompt: string, receipt: ContextReceipt | undefined): string => {
     if (!receipt) return "";
-    const anchorAt = prompt.indexOf("\n\nContextPlan v1 anchors");
+    const anchorAt = prompt.indexOf("\n\nContextPlan v2 anchors");
     const anchorBlock = anchorAt >= 0 ? prompt.slice(anchorAt) : "";
     return createHash("sha256").update(JSON.stringify({
       anchorBlock,
@@ -506,7 +508,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const carrierBefore = await foundInto(manifestRepo, "program-main-carrier-absent");
   check("Program-MAIN carrier: a target repo without the manifest keeps today's empty-block founding",
     manifestRepoInit.status === 0 && !!carrierBefore.receipt
-      && !carrierBefore.prompt.includes("ContextPlan v1 anchors")
+      && !carrierBefore.prompt.includes("ContextPlan v2 anchors")
       && carrierBefore.receipt.selected.length === 0 && carrierBefore.receipt.omitted.length === 6
       && carrierBefore.receipt.omitted.every((entry) => entry.why === "source-unavailable"),
     JSON.stringify(carrierBefore.receipt ?? null));
@@ -519,14 +521,15 @@ export async function run(ctx: Ctx): Promise<void> {
       sources: [{ path: "docs/absent.md", anchor: "## Never tracked" }] }),
   ], null, 2), "declare context packs");
   const carrierOn = await foundInto(manifestRepo, "program-main-carrier-present");
-  const expectedBlock = "\n\nContextPlan v1 anchors (fresh advisory pointers; no source content is copied):"
-    + "\n- product-promise | AGENTS.md | ## Repo contract"
-    + "\n- product-promise | docs/promise.md | ## Product promise";
+  const expectedBlock = "\n\nContextPlan v2 anchors (fresh advisory pointers; no source content is copied):"
+    + "\n- product-promise"
+    + "\n  AGENTS.md | ## Repo contract"
+    + "\n  docs/promise.md | ## Product promise";
   check("Program-MAIN carrier: the delivered block is exactly the validated repo anchors, and nothing else moved",
     manifestCommit === 0 && carrierOn.prompt === carrierBefore.prompt + expectedBlock
       && anchorsResolve(carrierOn.receipt),
     carrierOn.prompt.slice(-400));
-  check("Program-MAIN carrier receipt: the repo pack is a selected row, the bad pointer a named omission, and the v1 hash recomputes",
+  check("Program-MAIN carrier receipt: the repo pack is a selected row, the bad pointer a named omission, and the hash recomputes",
     !!carrierOn.receipt && JSON.stringify(carrierOn.receipt.selected) === JSON.stringify([{
       id: "product-promise",
       anchors: [{ path: "AGENTS.md", anchor: "## Repo contract" },
@@ -535,6 +538,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && carrierOn.receipt.omitted.length === 7
       && carrierOn.receipt.omitted.filter((entry) => entry.why === "source-unavailable").length === 6
       && JSON.stringify(carrierOn.receipt.omitted.at(-1)) === JSON.stringify({ id: "broken-pointer", why: "manifest-invalid" })
+      // A repo pack declaring no useWhen keeps every pointer and grows no purpose line — the
+      // pre-field manifests that exist today must deliver byte-identically under v2.
+      && carrierOn.receipt.renderer === "v2"
       && carrierOn.receipt.hash === promptHash(carrierOn.prompt, carrierOn.receipt)
       && carrierOn.receipt.deliveredBytes === new TextEncoder().encode(carrierOn.prompt).byteLength,
     JSON.stringify(carrierOn.receipt ?? null));
@@ -578,7 +584,7 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN Fleet frame: founding prompt keeps exactly the four existing grounding steps in order",
     fleetResponse.ok && JSON.stringify(fleetPrompt.split("\n").filter((line) => /^\d+\./.test(line)))
       === JSON.stringify(groundingSteps), fleetPrompt.slice(0, 500));
-  check("Program-MAIN Fleet frame: binding, bytes, git facts, six-way plan, anchors, and v1 hash stay equivalent",
+  check("Program-MAIN Fleet frame: binding, bytes, git facts, six-way plan, anchors, and the receipt hash stay equivalent",
     !!fleetReceipt && fleetReceiptRows.total === fleetReceiptsBefore.total + 1
       && fleetBody.program?.main?.slot === fleetSlot && fleetReceipt.repo === ROOT
       && fleetReceipt.head === fleetExpectedHead && fleetReceipt.branch === fleetExpectedBranch
@@ -686,7 +692,7 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(mainBody));
   check("Program-MAIN target frame: delivered history carries the executable repo contract and owner Program JSON only",
     targetContractPresent(deliveredPrompt, mainProgram.title) && targetContractClean(deliveredPrompt)
-      && !deliveredPrompt.includes("ContextPlan v1 anchors"),
+      && !deliveredPrompt.includes("ContextPlan v2 anchors"),
     deliveredPrompt.slice(0, 240));
   check("Program-MAIN target frame: exactly one receipt carries target repo git and harness facts",
     !!receipt && mainReceipts.total === receiptsBeforeMain.total + 1
@@ -1134,9 +1140,9 @@ export async function run(ctx: Ctx): Promise<void> {
     successionPrompt.startsWith("[fleet Program-MAIN succession]")
       && targetContractPresent(successionPrompt, mainProgram.title) && targetContractClean(successionPrompt)
       && successionPrompt.includes(carry) && successionPrompt.includes("Owner-confirmed Program content (verbatim JSON)")
-      && !successionPrompt.includes("ContextPlan v1 anchors"),
+      && !successionPrompt.includes("ContextPlan v2 anchors"),
     successionPrompt.slice(0, 500));
-  const successionAnchorAt = successionPrompt.indexOf("\n\nContextPlan v1 anchors");
+  const successionAnchorAt = successionPrompt.indexOf("\n\nContextPlan v2 anchors");
   const successionAnchor = successionAnchorAt >= 0 ? successionPrompt.slice(successionAnchorAt) : "";
   const successionHash = successionReceipt ? createHash("sha256").update(JSON.stringify({
     anchorBlock: successionAnchor,

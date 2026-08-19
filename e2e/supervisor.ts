@@ -135,7 +135,7 @@ export async function run(): Promise<void> {
   check("supervisor founding brief: the delivered text is the minimal role/denial/channel/begin brief in order",
     foundingLines[0] === FOUNDING_FIRST
       && JSON.stringify(foundingLines.slice(1, 5)) === JSON.stringify(BRIEF_BODY)
-      && foundingPrompt.includes("ContextPlan v1 anchors"),
+      && foundingPrompt.includes("ContextPlan v2 anchors"),
     foundingPrompt.slice(0, 300));
   // The denial sentence and the channel list are the whole of v0's authority statement, so the set
   // of routes the brief names must be EXACTLY the channels an owner-promoted cut has actually
@@ -280,7 +280,7 @@ export async function run(): Promise<void> {
   check("supervisor succession brief: the founding body is delivered under the succession preamble with the carry",
     successionLines[0] === SUCCESSION_FIRST
       && JSON.stringify(successionLines.slice(1, 5)) === JSON.stringify(BRIEF_BODY)
-      && successionPrompt.includes(carry) && successionPrompt.includes("ContextPlan v1 anchors"),
+      && successionPrompt.includes(carry) && successionPrompt.includes("ContextPlan v2 anchors"),
     successionPrompt.slice(0, 300));
 
   const successionReceipts = await receipts();

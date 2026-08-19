@@ -30,8 +30,12 @@ export interface ContextPlanInput {
   readonly capabilities: readonly ContextPackCapability[];
 }
 
+// `useWhen` is OPTIONAL on a selection although it is mandatory on a Fleet seed: a repo-declared
+// pack may predate the field, and a plan that invented a purpose line for it would be stating a
+// claim nobody made. Absent here means the renderer omits the line, never the pointer.
 export type ContextPlanSelection = {
   readonly id: string;
+  readonly useWhen?: string;
   readonly sources: readonly ContextPackSource[];
   readonly estimatedBytes: number;
   // Only a repo-declared pack carries its observation here; a Fleet seed's hash lives on its own
@@ -39,6 +43,7 @@ export type ContextPlanSelection = {
   readonly sourceHash?: string;
 } | {
   readonly id: string;
+  readonly useWhen?: string;
   readonly sources: { readonly privateSourceId: string };
   readonly estimatedBytes: number;
   readonly sourceHash?: string;
@@ -103,8 +108,8 @@ export function planContext(input: ContextPlanInput): ContextPlan {
       continue;
     }
     selected.push("sources" in pack
-      ? { id: pack.id, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
-      : { id: pack.id, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
+      ? { id: pack.id, useWhen: pack.useWhen, sources: pack.sources.map((source) => ({ ...source })), estimatedBytes: pack.estimatedBytes }
+      : { id: pack.id, useWhen: pack.useWhen, sources: { privateSourceId: pack.privateSourceId }, estimatedBytes: pack.estimatedBytes });
   }
 
   return { selected, omitted };

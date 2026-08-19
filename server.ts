@@ -18,6 +18,10 @@ import { analysisStaleness } from "./analysis-staleness";
 import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { localProofFor, type LocalProof } from "./verify-proportion";
+import {
+  RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderBackref, rulebookBody,
+  type RulebookFragment,
+} from "./rulebook";
 import { validateRefineProposal, type RefineValidation } from "./refine-validate";
 import { planContext, type ContextPlan, type ContextPlanInput, type ContextPlanSelection } from "./context-plan";
 import {
@@ -3746,6 +3750,36 @@ async function decideLaneAnchor(repo: string, explicit: LaneAnchor | undefined):
   return mostRecentMainAnchor(eligible);
 }
 
+// The rulebook is SEVEN FRAGMENTS in `rulebook/` of the source checkout, and rulebook.ts is the
+// pure half of that split — it reads nothing. This is the impure half, and it lives here because
+// the caller is the only side that knows which checkout it may read. A PARTIAL rulebook/ counts as
+// none: renderRulebook would refuse the hole anyway, and a short rulebook reads exactly like a
+// complete one.
+function readRulebookFragments(repo: string): Map<RulebookFragment, string> | null {
+  const m = new Map<RulebookFragment, string>();
+  for (const f of RULEBOOK_FRAGMENTS) {
+    try { m.set(f, readFileSync(`${repo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, "utf8")); }
+    catch { return null; }
+  }
+  return m;
+}
+
+// The bytes a lane's CLAUDE.md is SUPPOSED to hold, given this source checkout: the three lane
+// fragments plus the back-reference block naming the four it does not get. `null` = this repo has
+// no readable `rulebook/` at all, which a foreign task.repo legitimately has not — the two callers
+// (the spawn seam, the /api/self/gate drift probe) then both fall back to the pre-split behaviour,
+// and they MUST fall back the same way or the probe judges bytes the spawn never wrote.
+// The source hash is taken over the MAIN render, i.e. over all seven fragments: a lane should be
+// able to tell that the rulebook moved even when the part that moved is one it does not hold.
+function laneRulebookFor(repo: string, at: string): string | null {
+  const frag = readRulebookFragments(repo);
+  if (!frag) return null;
+  let body: string, whole: string;
+  try { body = renderRulebook("lane", frag); whole = renderRulebook("main", frag); } catch { return null; }
+  const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 8);
+  return body + renderBackref("lane", { repoRoot: repo, at, sourceHash });
+}
+
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
 // need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
@@ -3797,6 +3831,21 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
   // ritual names as a load duty, it is gitignored (so the copy cannot dirty the lane), and until
   // now neither a lane nor the steward worktree ever saw it. Same snapshot caveat as CLAUDE.md —
   // a long-lived lane's copy ages against the source (docs/ungoverned-artifacts.md).
+  // CLAUDE.md stays in this list as the FALLBACK ONLY: the branch above wrote the lane rendering
+  // where a `rulebook/` exists, and the `existsSync(path/f)` guard then skips it here.
+  // CLAUDE.md is the one that is WRITTEN rather than copied: a lane gets the LANE rendering of the
+  // rulebook — 3 of 7 fragments, ~29 KB instead of ~62 — and the file must still be called exactly
+  // CLAUDE.md (nothing else is auto-loaded) and still be gitignored (an untracked copy blocks
+  // `land`), so it keeps every guard the copies have. `laneRulebookFor` null → no readable
+  // `rulebook/` in the source, which is the ordinary state of a FOREIGN task.repo: fall back to
+  // copying the monolith below rather than leaving the lane with no rulebook at all. Failing the
+  // spawn over it would be worse still — the rulebook is scaffolding, not the lane's work.
+  const laneRulebook = laneRulebookFor(root, new Date().toISOString());
+  if (laneRulebook !== null && !existsSync(`${path}/CLAUDE.md`)
+      && (await git(root, "check-ignore", "-q", "CLAUDE.md")).code === 0) {
+    writeFileSync(`${path}/CLAUDE.md`, laneRulebook, { mode: 0o600 });
+    chmodSync(`${path}/CLAUDE.md`, 0o600);
+  }
   for (const f of [".env", "CLAUDE.md", "OWNER.md", ".claude/settings.local.json"]) {
     if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`)) continue;
     if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
@@ -16426,16 +16475,24 @@ Bun.serve<WSData>({
       const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the gate judges a lane's land" }, 409);
-      // rulebook: does the lane's copied CLAUDE.md still match the source repo's current one?
-      // null = not comparable (either side missing) — served as absent, never as "no drift"
-      // (a lane of a foreign task.repo may legitimately have no rulebook on either side).
+      // rulebook: does the lane's CLAUDE.md still hold what the source repo would give it TODAY?
+      // Since the fragment split that is no longer the source file itself — a lane is written the
+      // LANE rendering (3 of 7 fragments), so a byte compare against the monolith would be
+      // permanently true and would send every lane to load the very bytes the split just saved.
+      // So the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote with;
+      // where that is null (no readable `rulebook/`, the ordinary state of a foreign task.repo)
+      // the spawn copied the monolith and the compare falls back to it, in lockstep.
+      // Compared BODY-ONLY: the back-reference block carries the generation timestamp, so
+      // including it would report drift on every single call.
+      // null = not comparable (either side unreadable) — served as absent, NEVER as "no drift".
       let rulebookDrifted: boolean | null = null;
       try {
-        const [src, copy] = await Promise.all([
-          Bun.file(`${s.worktree.repo}/CLAUDE.md`).text(),
-          Bun.file(`${s.cwd!}/CLAUDE.md`).text(),
-        ]);
-        rulebookDrifted = src !== copy;
+        const copy = await Bun.file(`${s.cwd!}/CLAUDE.md`).text();
+        const rendered = laneRulebookFor(s.worktree.repo, "");
+        const expected = rendered === null
+          ? await Bun.file(`${s.worktree.repo}/CLAUDE.md`).text()
+          : rendered;
+        rulebookDrifted = rulebookBody(copy) !== rulebookBody(expected);
       } catch { /* either side unreadable → stays null */ }
       return json({
         // `timeoutMs` is the WORK budget and `waitMs` the queueing one — two numbers because a

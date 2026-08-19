@@ -15409,7 +15409,8 @@ const TRAIL_DIRS: string[] = (process.env.FLEET_TRAIL_DIRS ?? "").trim()
   : [`${import.meta.dir}/e2e-trail`, `${tmpdir()}/fleet-e2e-trail`];
 // ~220 KB and ~880 rows per run file (docs/e2e-trail.md §2) — 1115 files on this machine already.
 // Newest-by-mtime first and capped, so the cost of this route is bounded by the cap and not by how
-// long the fleet has been running; `filesOmitted` reports the cut rather than hiding it.
+// long the fleet has been running; `filesOmitted` reports the cut rather than hiding it AND is
+// handed to trailStats, which refuses to answer `never-failed` while any file went unread.
 const TRAIL_MAX_FILES = 400;
 const TRAIL_DEFAULT_DAYS = 14;
 
@@ -15438,6 +15439,9 @@ function trailStatsView(now: number, opts: { days?: number; suite?: string | nul
   }
   cand.sort((a, b) => b.mtime - a.mtime);
   const take = cand.slice(0, TRAIL_MAX_FILES);
+  // the cap is a READ-SIDE fact and the reader cannot see it, so it is handed over the same way
+  // `malformed` is — otherwise the summary claims `never-failed` over material nobody opened.
+  const filesOmitted = Math.max(0, cand.length - take.length);
   const records: TrailRecord[] = [];
   let malformed = 0;
   for (const f of take) {
@@ -15449,8 +15453,8 @@ function trailStatsView(now: number, opts: { days?: number; suite?: string | nul
     }
   }
   return {
-    ...trailStats(records, { now, windowMs, suite: opts.suite ?? null, check: opts.check ?? null, malformed }),
-    dirs: TRAIL_DIRS, files: take.length, filesOmitted: Math.max(0, cand.length - take.length), unreadableFiles,
+    ...trailStats(records, { now, windowMs, suite: opts.suite ?? null, check: opts.check ?? null, malformed, filesOmitted }),
+    dirs: TRAIL_DIRS, files: take.length, filesOmitted, unreadableFiles,
   };
 }
 // the query-string half, shared verbatim by the owner route and the session route so the two can

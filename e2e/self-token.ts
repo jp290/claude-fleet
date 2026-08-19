@@ -6,6 +6,10 @@ import { spawnSync } from "node:child_process";
 import { BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post } from "./harness";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor } from "../verify-proportion";
+import {
+  FRAGMENTS_FOR, FRAGMENT_TITLES, RULEBOOK_BACKREF_HEADING, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
+  fragmentFileName, renderRulebook, rulebookBody, type RulebookFragment,
+} from "../rulebook";
 
 export async function run(ctx: Ctx): Promise<void> {
   // --- Part C: scoped self-scheduling token (FLEET_SELF_TOKEN / FLEET_SELF_SLOT) ---
@@ -419,6 +423,77 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify({ rb: g2.rulebookDrifted }));
   rmSync(`${REPO}/CLAUDE.md`);
   rmSync(`${lnTok.cwd}/CLAUDE.md`);
+
+  // --- THE SPLIT ITSELF: a lane of a repo that HAS a `rulebook/` is WRITTEN the lane rendering (a
+  // strict subset of the fragments) instead of being handed the monolith, and the gate still reads
+  // false on it. Both halves in one fixture on purpose: the seam without the probe fix is the
+  // self-cancelling state — a permanent `rulebookDrifted: true` ordering every lane to load the
+  // very bytes the split saved. Own repo, so REPO's clean-tree assumptions stay untouched.
+  {
+    const rbRepo = `${ROOT}/rulebook-split-repo`;
+    rmSync(rbRepo, { recursive: true, force: true });
+    mkdirSync(`${rbRepo}/${RULEBOOK_DIR}`, { recursive: true });
+    spawnSync("git", ["-C", rbRepo, "init", "-q", "-b", "main"]);
+    spawnSync("git", ["-C", rbRepo, "config", "user.email", "e2e@example.invalid"]);
+    spawnSync("git", ["-C", rbRepo, "config", "user.name", "Fleet E2E"]);
+    // gitignored on BOTH counts, exactly as in the real checkout: an untracked copy would leave
+    // every lane permanently dirty and block `land`, which is why the seam checks check-ignore.
+    writeFileSync(`${rbRepo}/.gitignore`, `CLAUDE.md\n${RULEBOOK_DIR}/\n`);
+    spawnSync("git", ["-C", rbRepo, "add", ".gitignore"]);
+    spawnSync("git", ["-C", rbRepo, "commit", "-qm", "seed"]);
+    const frag = new Map<RulebookFragment, string>(
+      RULEBOOK_FRAGMENTS.map((f) => [f, `## ${f}\n\nrule text of ${f}\n`]),
+    );
+    for (const [f, body] of frag) writeFileSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, body);
+    writeFileSync(`${rbRepo}/CLAUDE.md`, renderRulebook("main", frag));
+
+    const rbLane = (await (await post("/api/lanes", { repo: rbRepo })).json()) as
+      { ok?: boolean; slot?: number; cwd?: string; error?: string };
+    check("rulebook split: a lane of a repo with rulebook/ spawns",
+      typeof rbLane.slot === "number" && typeof rbLane.cwd === "string", JSON.stringify(rbLane));
+    const written = ((): string | null => {
+      try { return readFileSync(`${rbLane.cwd}/CLAUDE.md`, "utf8"); } catch { return null; }
+    })();
+    const expectBody = renderRulebook("lane", frag);
+    const omitted = RULEBOOK_FRAGMENTS.filter((f) => !FRAGMENTS_FOR.lane.includes(f));
+    // the SUBSET claim is about the rules, so it is measured on the body: the back-reference block
+    // is a fixed ~1 KB and outweighs a synthetic monolith, which says nothing about the real one.
+    check("rulebook split: the lane is WRITTEN the lane rendering, not handed the monolith",
+      written !== null && rulebookBody(written) === expectBody
+        && Buffer.byteLength(expectBody) < Buffer.byteLength(renderRulebook("main", frag))
+        && omitted.every((f) => !rulebookBody(written).includes(`rule text of ${f}`))
+        && FRAGMENTS_FOR.lane.every((f) => rulebookBody(written).includes(`rule text of ${f}`)),
+      `written=${written === null ? "absent" : Buffer.byteLength(written)} B (body ${written === null ? "-" : Buffer.byteLength(rulebookBody(written))} B), lane body=${Buffer.byteLength(expectBody)} B, main=${Buffer.byteLength(renderRulebook("main", frag))} B`);
+    check("rulebook split: its back-reference block names every omitted fragment and an absolute path into the SOURCE checkout",
+      written !== null && written.includes(RULEBOOK_BACKREF_HEADING)
+        && omitted.every((f) => written.includes(FRAGMENT_TITLES[f]))
+        && omitted.every((f) => written.includes(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`)),
+      `omitted=${omitted.join(",")}`);
+    // the lane must still be landable: a copy that git sees would block it
+    const rbStatus = spawnSync("git", ["-C", rbLane.cwd ?? rbRepo, "status", "--porcelain"]).stdout.toString().trim();
+    check("rulebook split: the written rulebook leaves the lane clean (gitignored, so `land` is not blocked)",
+      rbStatus === "", `status=[${rbStatus.slice(0, 200)}]`);
+    const rbTok = typeof rbLane.slot === "number" ? await paneEnv(`s${rbLane.slot}`, "FLEET_SELF_TOKEN") : null;
+    const rbGate = (await (await selfGate(rbTok ?? "")).json()) as Gate;
+    check("rulebook split: the gate reads rulebookDrifted:false on a subset it wrote itself",
+      rbGate.rulebookDrifted === false, JSON.stringify({ rb: rbGate.rulebookDrifted }));
+    // and it still SEES a source that moved — including a move in a fragment the lane does not hold
+    writeFileSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName("lane-discipline")}`, "## lane-discipline\n\nmoved\n");
+    const rbGate2 = (await (await selfGate(rbTok ?? "")).json()) as Gate;
+    check("rulebook split: a moved source fragment still reads rulebookDrifted:true",
+      rbGate2.rulebookDrifted === true, JSON.stringify({ rb: rbGate2.rulebookDrifted }));
+    // …and a rulebook/ that cannot be read is null — never true, and never a quiet false
+    rmSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName("deploy")}`);
+    rmSync(`${rbRepo}/CLAUDE.md`);
+    const rbGate3 = (await (await selfGate(rbTok ?? "")).json()) as Gate;
+    check("rulebook split: an unreadable source rulebook is null (not comparable), never true",
+      rbGate3.rulebookDrifted === null, JSON.stringify({ rb: rbGate3.rulebookDrifted }));
+    if (typeof rbLane.slot === "number")
+      check("rulebook split: the lane slot is torn down", (await post(`/api/slots/${rbLane.slot}/kill`, {})).ok);
+    spawnSync("git", ["-C", rbRepo, "worktree", "remove", "--force", rbLane.cwd ?? ""]);
+    rmSync(`${rbRepo}.worktrees`, { recursive: true, force: true });
+    rmSync(rbRepo, { recursive: true, force: true });
+  }
 
   // --- THE SUCCESS PATH: the handoff is committed after THIS slot opened, one successor receives
   // the server-built founding ritual, and the caller disappears even if it never remembers to call

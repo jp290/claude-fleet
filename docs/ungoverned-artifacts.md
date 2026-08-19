@@ -24,6 +24,13 @@ are, respectively, the file that governs every lane and the data that will decid
   `docs/attic/agent-visibility-2026-08-06.md` corrected the same reference to `1251`, which was exact
   at `04646d3` and was five lines off two commits later (`ed5c352`, `d49c6e8`) — a bare line
   number into `server.ts` has a half-life of days.*
+  *Correction 2026-08-19 (Schnitt B2): for a repo that has a `rulebook/`, `CLAUDE.md` is no longer
+  copied at all — it is **written**. The lane receives `renderRulebook("lane", …)`, three of the
+  seven fragments (28.699 B instead of 62.660 B at this HEAD), plus a back-reference block naming
+  the four omitted parts and an absolute read path into the source checkout. The copy branch
+  survives as the fallback for a repo with no readable `rulebook/` (a foreign `task.repo`), so the
+  paragraph above still describes that case exactly. Everything else about the layer is unchanged:
+  still untracked, still git-ignored on purpose, still dies with the worktree.*
 - `OWNER.md` (15 KB, the safety-critical owner-model) is untracked *and* not in the copy list —
   so no lane has ever seen it. Probably intended; recorded because nothing states it.
 

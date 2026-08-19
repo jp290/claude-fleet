@@ -197,6 +197,20 @@ const expected = await renderRulebookAt(s.worktree.repo, "lane");  // liest rule
 rulebookDrifted = expected === null ? null : expected !== copy;
 ```
 
+**Gebaut in B2, mit zwei benannten Abweichungen von diesem Entwurf:**
+
+1. **Der Randfall „kein `rulebook/`" ist KEIN `null`-Grund geworden, sondern ein Rückfall.** Der
+   Spawn fällt dort auf das heutige Kopieren zurück (sonst stünde ein fremdes `task.repo` ohne
+   Regelbuch da, ein echter Fähigkeitsverlust), und die Sonde vergleicht dann gegen genau die
+   Bytes, die der Spawn geschrieben hat — die Quelldatei. Ein `null` wäre an dieser Stelle die
+   FALSCHE Aussage: die Kopie *ist* vergleichbar. Beide Seiten leiten ihre Erwartung aus
+   **derselben Funktion** `laneRulebookFor(repo)` ab; das ist die eigentliche Invariante, und
+   `e2e/pins.ts` §6c hält sie strukturell. `null` bleibt reserviert für „eine Seite unlesbar" —
+   ein halbes `rulebook/` fällt darunter, nie auf `true`.
+2. **Verglichen wird der RUMPF, nicht die Datei.** Der Rückweg-Block trägt einen Zeitstempel; ein
+   Byte-Vergleich, der ihn einschlösse, meldete bei JEDEM Aufruf Drift. `rulebookBody()` schneidet
+   an der Überschrift aus §2.5 ab, auf beiden Seiten gleich.
+
 Die Dreiwertigkeit bleibt exakt erhalten und ist hier wichtiger als vorher: `null` heißt
 weiterhin „nicht vergleichbar" und **nie** „kein Drift" (Regel `D14`). Neu ist ein zweiter
 `null`-Grund — das Quell-`rulebook/` fehlt (fremdes `task.repo`) — und er fällt in dieselbe

@@ -24,8 +24,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
-  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
-  fragmentFileName, renderRulebook, type RulebookFragment,
+  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS, RULEBOOK_BACKREF_HEADING,
+  FRAGMENT_TITLES, fragmentFileName, renderRulebook, renderBackref, rulebookBody, type RulebookFragment,
 } from "../rulebook";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
@@ -1762,7 +1762,24 @@ const SOURCE_DIR = ((): string | null => {
   const source = ((): string | null => {
     try { return sourcePath ? readFileSync(sourcePath, "utf8") : null; } catch { return null; }
   })();
-  const state = copy === null ? "absent" : source === null ? "unpaired" : source === copy ? "current" : "stale";
+  // A lane is no longer HANDED the source file: since B2 it is written the LANE rendering of the
+  // fragments (3 of 7) plus a back-reference block. Both shapes are "current" — comparing only
+  // against the monolith would demote every fresh lane to advisory, which is this section going
+  // quiet exactly where it was built to speak. Body-only, because the block carries a timestamp.
+  const laneSource = ((): string | null => {
+    if (SOURCE_DIR === null) return null;
+    const frag = new Map<RulebookFragment, string>();
+    for (const f of RULEBOOK_FRAGMENTS) {
+      try { frag.set(f, readFileSync(`${SOURCE_DIR}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, "utf8")); }
+      catch { return null; }
+    }
+    try { return renderRulebook("lane", frag); } catch { return null; }
+  })();
+  const matchesSource = copy !== null
+    && ((source !== null && source === copy) || (laneSource !== null && rulebookBody(copy) === laneSource));
+  const state = copy === null ? "absent"
+    : source === null && laneSource === null ? "unpaired"
+    : matchesSource ? "current" : "stale";
   const soft = state !== "current";
 
   // the rule NAMES are the same in every branch — a reader grepping the report for a rule must find
@@ -1974,6 +1991,51 @@ const SOURCE_DIR = ((): string | null => {
       pin(RULE_PLACED, rows.length > 0 && misplaced.length === 0,
         `${rows.length - misplaced.length}/${rows.length} placed, ${unique} of them in that fragment alone${misplaced.length ? `; misplaced: ${misplaced.join(",")}` : ""}`);
     }
+  }
+
+  // --- 6c. The back-reference block, and the one seam it protects. A lane no longer HOLDS four of
+  // the seven fragments; the block is the only thing that tells it they exist. Needs no checkout:
+  // the renderer is pure, so the block can be produced here and read back.
+  {
+    const RULE_BACKREF = "the lane rulebook's back-reference block names every omitted fragment and an absolute read path for it";
+    const RULE_SPLIT = "rulebookBody strips the back-reference block and nothing else — the timestamp cannot read as drift";
+    const block = renderBackref("lane", { repoRoot: "/src/repo", at: "2026-01-01T00:00:00.000Z", sourceHash: "deadbeef" });
+    const omitted = RULEBOOK_FRAGMENTS.filter((f) => !FRAGMENTS_FOR.lane.includes(f));
+    const named = omitted.filter((f) => block.includes(FRAGMENT_TITLES[f]));
+    const pathed = omitted.filter((f) => block.includes(`/src/repo/${RULEBOOK_DIR}/${fragmentFileName(f)}`));
+    pin(RULE_BACKREF,
+      omitted.length > 0 && named.length === omitted.length && pathed.length === omitted.length
+        && block.includes(RULEBOOK_BACKREF_HEADING) && block.includes("deadbeef")
+        && block.includes("2026-01-01T00:00:00.000Z")
+        // `git show main:` is the wrong reflex here and the block says so — the fragments are untracked
+        && /git show main:/.test(block),
+      `${named.length}/${omitted.length} named, ${pathed.length}/${omitted.length} with a path`);
+
+    const body = renderRulebook("lane", new Map(RULEBOOK_FRAGMENTS.map((f) => [f, `# ${f}\nbody of ${f}\n`])));
+    const later = renderBackref("lane", { repoRoot: "/src/repo", at: "2026-06-06T06:06:06.000Z", sourceHash: "deadbeef" });
+    pin(RULE_SPLIT,
+      rulebookBody(body + block) === body && rulebookBody(body + later) === body && rulebookBody(body) === body
+        && block !== later,
+      `body ${Buffer.byteLength(body)} B, block ${Buffer.byteLength(block)} B`);
+  }
+  {
+    // The seam and the probe must agree on the expected bytes BY CONSTRUCTION: one function, two
+    // call sites. If the gate ever compared against `${repo}/CLAUDE.md` again while the spawn wrote
+    // a rendering, `rulebookDrifted` would be permanently true and would order every lane to load
+    // the 34 KB the split just saved — the self-cancelling state this cut was written to avoid.
+    const RULE_ONE_EXPECTED = "the spawn seam and the /api/self/gate drift probe derive a lane's rulebook from the SAME function";
+    const calls = [...server.matchAll(/laneRulebookFor\(/g)].length;
+    const wtFrom = server.indexOf("async function createWorktree(");
+    const wtTo = server.indexOf("async function syncLaneRefs(");
+    const wt = wtFrom > 0 && wtTo > wtFrom ? server.slice(wtFrom, wtTo) : "";
+    const gateFrom = server.indexOf('if (url.pathname === "/api/self/gate"');
+    const gateTo = gateFrom > 0 ? server.indexOf("suiteLock: suiteLockView()", gateFrom) : -1;
+    const gate = gateFrom > 0 && gateTo > gateFrom ? server.slice(gateFrom, gateTo) : "";
+    pin(RULE_ONE_EXPECTED,
+      calls >= 3 && wt !== "" && gate !== ""
+        && wt.includes("laneRulebookFor(root") && wt.includes('writeFileSync(`${path}/CLAUDE.md`')
+        && gate.includes("laneRulebookFor(s.worktree.repo") && gate.includes("rulebookBody(copy)"),
+      `${calls} call(s); seam=${wt.includes("laneRulebookFor(root")} probe=${gate.includes("laneRulebookFor(s.worktree.repo")}`);
   }
 }
 

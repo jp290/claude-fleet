@@ -76,3 +76,72 @@ export function renderRulebook(
   }
   return out;
 }
+
+/**
+ * The human name of each fragment, for the back-reference block a lane's rulebook ends with. A
+ * lane that does not know a Deploy part EXISTS cannot ask for it — that is the one way this split
+ * does real damage, so the omitted parts are named rather than silently absent.
+ */
+export const FRAGMENT_TITLES: Record<RulebookFragment, string> = {
+  loader: "Loader-Vertrag",
+  einstieg: "Einstieg",
+  "lane-discipline": "Lane discipline",
+  supervisor: "Supervisor-Rolle",
+  "self-scheduling": "Self-scheduling",
+  deploy: "Deploy",
+  graphify: "graphify",
+};
+
+/**
+ * The heading that separates the rendered rules from the back-reference block. It is the SPLIT
+ * POINT, not decoration: the block carries a timestamp, so a byte comparison that included it
+ * would report drift on every single gate call. Everything before it is the rulebook proper and
+ * is compared byte for byte; everything after is provenance.
+ */
+export const RULEBOOK_BACKREF_HEADING = "## Was in dieser Fassung NICHT steht";
+const BACKREF_SEP = `\n${RULEBOOK_BACKREF_HEADING}\n`;
+
+/** The rules half of a rendered rulebook — the part `renderRulebook` produced, block stripped. */
+export function rulebookBody(text: string): string {
+  const i = text.indexOf(BACKREF_SEP);
+  return i < 0 ? text : text.slice(0, i);
+}
+
+/**
+ * The back-reference block. Pure: the absolute read path is handed in by the caller (the server
+ * knows `s.worktree.repo`), never guessed — and `git show main:rulebook/…` is NOT an alternative,
+ * the fragments are untracked and a worktree never materialises them.
+ */
+export function renderBackref(
+  audience: RulebookAudience,
+  o: { repoRoot: string; at: string; sourceHash: string },
+): string {
+  const have = FRAGMENTS_FOR[audience];
+  const missing = RULEBOOK_FRAGMENTS.filter((f) => !have.includes(f));
+  const lines = [
+    "",
+    RULEBOOK_BACKREF_HEADING,
+    "",
+    `Du hast die ${audience.toUpperCase()}-Fassung des Regelbuchs — ${have.length} von ${RULEBOOK_FRAGMENTS.length} Teilen.`,
+    missing.length === 0
+      ? "Nicht enthalten ist nichts: diese Fassung ist vollständig."
+      : `Nicht enthalten: ${missing.map((f) => FRAGMENT_TITLES[f]).join(" · ")}.`,
+  ];
+  if (missing.length > 0) {
+    lines.push(
+      "",
+      "Brauchst du einen davon, lies ihn im Quell-Checkout — die Fragmente sind untracked,",
+      "`git show main:rulebook/…` findet sie NIE:",
+      "",
+      ...missing.map((f) => `    cat ${o.repoRoot}/${RULEBOOK_DIR}/${fragmentFileName(f)}`),
+    );
+  }
+  lines.push(
+    "",
+    `Erzeugt aus ${RULEBOOK_DIR}/ am ${o.at}, Quell-Hash ${o.sourceHash} (über alle ${RULEBOOK_FRAGMENTS.length} Fragmente).`,
+    "Diese Fassung ist ein SNAPSHOT wie die Kopie vor ihr: bewegt sich die Quelle, meldet",
+    "`GET /api/self/gate` dir `rulebookDrifted: true` — und dann gilt die Quelle, nicht dein Baum.",
+    "",
+  );
+  return lines.join("\n");
+}

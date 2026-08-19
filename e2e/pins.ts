@@ -24,7 +24,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
-  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS, RULEBOOK_BACKREF_HEADING,
+  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_AUDIENCES, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
+  RULEBOOK_BACKREF_HEADING,
   FRAGMENT_TITLES, fragmentFileName, renderRulebook, renderBackref, rulebookBody, type RulebookFragment,
 } from "../rulebook";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
@@ -1857,12 +1858,36 @@ const SOURCE_DIR = ((): string | null => {
         else if (!hay.includes(m[1])) deadGreps.push(`${CLAUDE}:${i + 1} ${safe(m[1])} not in ${safe(target)}`);
       }
 
-    // both classes non-empty, or the two rules below are measuring nothing and saying "fine"
-    pin(RULE_SUBJ, paths > 0 && greps > 0, `state=${state}; ${paths} path(s), ${greps} grep errand(s)`);
+    // --- is this copy a PARTIAL rendering? Since B2 a lane is not handed the whole rulebook but
+    // three of the seven fragments, and the errand form `…, grep \`sym\`` happens to live only in
+    // fragments a lane never receives: the lane rendering carries 50 paths and ZERO errands. So
+    // "both classes non-empty" would red the land gate of every lane spawned after that split —
+    // for a class its rulebook structurally cannot host. The marker is the back-reference block's
+    // own audience line, taken FROM renderBackref rather than typed out here, and it is structural
+    // rather than an equality against a freshly rendered lane copy: a long-running lane goes STALE
+    // the moment a fragment moves, and that copy is no less partial for it.
+    const partialLines = RULEBOOK_AUDIENCES
+      .filter((a) => FRAGMENTS_FOR[a].length < RULEBOOK_FRAGMENTS.length)
+      .flatMap((a) => renderBackref(a, { repoRoot: "/", at: "", sourceHash: "" })
+        .split("\n").filter((l) => l.includes(`${a.toUpperCase()}-Fassung`)));
+    const partial = partialLines.length > 0 && partialLines.some((l) => copy.includes(l));
+
+    // both classes non-empty, or the two rules below are measuring nothing and saying "fine". For
+    // a FULL rendering — the main checkout's CLAUDE.md, which RULE_RENDER holds byte-identical to
+    // renderRulebook("main") and which therefore carries no back-reference block at all — that is
+    // unchanged: a rulebook with no errand in it is a rule with no subject. For a partial one the
+    // errand half is not demanded, and RULE_GREPS then says NEVER MEASURED under its own name
+    // instead of passing over an empty set, which is the same vacuum-green this pin exists to stop.
+    pin(RULE_SUBJ, paths > 0 && (greps > 0 || partial),
+      `state=${state}${partial ? ", partial rendering" : ""}; ${paths} path(s), ${greps} grep errand(s)`);
     pin(RULE_PATHS, deadPaths.length === 0,
       `${state === "current" ? "" : `${state} copy — advisory; `}${deadPaths.join("; ")}`, soft);
-    pin(RULE_GREPS, deadGreps.length === 0,
-      `${state === "current" ? "" : `${state} copy — advisory; `}${deadGreps.join("; ")}`, soft);
+    if (partial && greps === 0) {
+      skip(RULE_GREPS, `partial rendering (state=${state}) — no errand in these fragments to follow`);
+    } else {
+      pin(RULE_GREPS, deadGreps.length === 0,
+        `${state === "current" ? "" : `${state} copy — advisory; `}${deadGreps.join("; ")}`, soft);
+    }
   }
 }
 

@@ -21,11 +21,17 @@
 // NOT what this file is for: e2e/dirs-pins.ts, an unrelated neighbour, tests the directory picker's
 // bookmark list. "Pin" there is a UI feature; "pin" here is a fastener between two files.
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
   FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
   fragmentFileName, renderRulebook, type RulebookFragment,
 } from "../rulebook";
+// The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
+// re-implemented the validator would only pin its own copy of the rules.
+import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
+import { readContextManifest } from "../context-manifest";
+import { validUseWhen, validateContextPacks } from "../context-pack-validator";
 
 const ROOT = resolve(import.meta.dir, "..");
 const read = (rel: string): string => readFileSync(`${ROOT}/${rel}`, "utf8");
@@ -774,7 +780,7 @@ pin("the audit ping is opt-in: unset means zero and exactly one positive-only ti
 // cross-file fact a compiler cannot protect against: deleting the consumer would leave both pure
 // modules and their unit tests green while restoring the dead island this cut exists to end.
 pin("server.ts imports and calls the pure ContextPlan producer at the dispatch delivery seam",
-  /from "\.\/context-plan";/.test(server) && /const plan = planContext\(planFacts\);/.test(server));
+  /from "\.\/context-plan";/.test(server) && /const base = planContext\(planFacts\);/.test(server));
 
 // ...and its SECOND consumer, the two mutating workers. Same argument, one seam further: the pure
 // plan checks in e2e/context-plan.ts assert the facts→plan mapping and would stay green with the
@@ -842,8 +848,141 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     && [...server.matchAll(/"\.fleet\/context-packs\.json"/g)].length === 0
     && fsReaders.length === 0 && seam !== ""
     && /gitRead\(repoRoot, "show", `\$\{head\}:\$\{path\}`\)/.test(seam)
-    && /showAtHead\(preflight\.repoRoot, preflight\.head, CONTEXT_MANIFEST_PATH/.test(seam),
+    && /showAtHead\(repoRoot, head, CONTEXT_MANIFEST_PATH/.test(seam),
     `${fsReaders.length} filesystem reader(s), seam=${seam.length} bytes`);
+}
+
+{
+  // ============================================================================================
+  // FLEET'S OWN MANIFEST — unlandable while invalid
+  // ============================================================================================
+  // Since 2026-08-19 the fleet-control frame reads `.fleet/context-packs.json` too, so this repo
+  // declares its own packs as a tracked JSON commit instead of a TypeScript change plus a deploy.
+  // The price of that convenience is that a typo in a JSON file can silently empty an anchor block
+  // at every delivery seam: planRepoContext turns a defect into an omission row, which is honest
+  // and completely invisible unless someone reads a receipt. This pin is the gate — `bun e2e/pins.ts`
+  // is step 1 of the land chain, so an invalid Fleet manifest cannot reach main.
+  //
+  // The probe runs the SAME pure functions the server runs (readContextManifest + the shared
+  // validator), fed the SAME kind of facts: paths git actually tracks and the referenced files'
+  // actual bytes. A probe that could not gather those facts fails UNDER ITS OWN NAME below —
+  // "could not be read" must never be spelled as "the manifest is invalid".
+  const MANIFEST = ".fleet/context-packs.json";
+  const RULE_MANIFEST = "Fleet's own context manifest is valid at every rule the delivery seam applies";
+  let manifestText: string | null = null;
+  try { manifestText = read(MANIFEST); } catch { manifestText = null; }
+  const lsFiles = spawnSync("git", ["-C", ROOT, "ls-files", "-z"],
+    { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 16 * 1024 * 1024 });
+  if (manifestText === null)
+    pin(`${RULE_MANIFEST} — PROBE: the tracked manifest is readable`, false,
+      `${MANIFEST} could not be read; it is tracked and every seam reads it`);
+  else if (lsFiles.status !== 0)
+    pin(`${RULE_MANIFEST} — PROBE: git named the tracked paths`, false,
+      (lsFiles.stderr || `git ls-files exited ${String(lsFiles.status)}`).trim().slice(0, 160));
+  else {
+    const trackedPaths = new Set(lsFiles.stdout.split("\0").filter(Boolean));
+    const manifest = readContextManifest(manifestText);
+    if (manifest.kind !== "packs")
+      pin(RULE_MANIFEST, false, manifest.kind === "invalid" ? manifest.detail : "the tracked manifest parses as absent");
+    else {
+      const sourceBytes = new Map<string, string>();
+      const unreadable: string[] = [];
+      for (const path of manifest.referencedPaths) {
+        try { sourceBytes.set(path, read(path)); } catch { unreadable.push(path); }
+      }
+      const result = validateContextPacks({ packs: manifest.packs, repo: { trackedPaths, sourceBytes }, capabilities: new Map() });
+      const errors = result.issues.filter((issue) => issue.severity === "error");
+      const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
+      const records = manifest.packs.filter((pack): pack is Record<string, unknown> =>
+        typeof pack === "object" && pack !== null && !Array.isArray(pack));
+      const noUseWhen = records.filter((pack) => !validUseWhen(pack.useWhen))
+        .map((pack) => String(pack.id ?? "?"));
+      const collisions = records.map((pack) => String(pack.id ?? "?")).filter((id) => seedIds.has(id));
+      // useWhen is OPTIONAL to the shared validator on purpose (a target repo's manifest may predate
+      // the field). FLEET'S OWN manifest is held to the stricter rule the code seeds already meet:
+      // a pointer this repo publishes about itself without saying WHEN it is needed is a pointer a
+      // lane must open to find out, which is the cost the whole v2 block exists to avoid.
+      pin(RULE_MANIFEST, errors.length === 0 && unreadable.length === 0
+        && records.length === manifest.packs.length && noUseWhen.length === 0 && collisions.length === 0,
+        `${manifest.packs.length} pack(s); errors=[${errors.map((i) => `${i.code}:${i.packId}`).join(",")}]`
+        + ` unreadable=[${unreadable}] no-useWhen=[${noUseWhen}] seed-collision=[${collisions}]`);
+    }
+  }
+}
+
+{
+  // ============================================================================================
+  // TRIGGER REACHABILITY — a pack whose trigger no seam ever passes is shelf-ware
+  // ============================================================================================
+  // MEASURED 2026-08-19 over every context receipt on the ledger: the trigger histogram contains
+  // `always` and `verification` and nothing else. Three call sites in server.ts are the entire
+  // supply of triggers, and only these three:
+  //   DISPATCH_CONTEXT_TRIGGERS   — the dispatch delivery seam
+  //   BOOTSTRAP_CONTEXT_TRIGGERS  — Program-MAIN / Supervisor founding and succession
+  //   landingAnchorBlock          — the two mutating merge workers, `triggers: ["landing"]`
+  // A pack whose triggers all lie outside that union can never be selected anywhere. That is a
+  // legitimate state (a seam that will pass them is not built yet) but it must be DECLARED, not
+  // discovered — otherwise a pack is authored, validated, committed, and silently never delivered.
+  //
+  // WHY THIS PIN GREPS THE THREE NAMED CALL SITES AND NEVER A BARE LITERAL — do not "simplify" it:
+  // counting `"verification"` across server.ts is counting phantoms. That literal also appears as a
+  // JSON KEY inside a WORKER_CONTRACTS template (the worker-contract block, unrelated to context
+  // packs), and it has already falsified one Supervisor count of this exact question. Binding to
+  // the constant names and to landingAnchorBlock's own body is the same real-call-site-vs-phantom
+  // separation the rulebook means when it says to reach for ast-grep instead of grep.
+  const RULE_REACH = "every active context pack has a trigger some delivery seam actually passes";
+  const triggersOf = (source: string): string[] =>
+    [...source.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  const constTriggers = (name: string): string[] | null => {
+    const m = new RegExp(`const ${name}: readonly ContextPackTrigger\\[\\] = \\[([^\\]]*)\\]`).exec(server);
+    return m ? triggersOf(m[1]) : null;
+  };
+  const landingFrom = server.indexOf("async function landingAnchorBlock(root: string)");
+  const landingBody = landingFrom < 0 ? "" : server.slice(landingFrom, server.indexOf("\n}", landingFrom));
+  const landingTriggers = /triggers: \["landing"\],/.test(landingBody) ? ["landing"] : null;
+  const dispatchTriggers = constTriggers("DISPATCH_CONTEXT_TRIGGERS");
+  const bootstrapTriggers = constTriggers("BOOTSTRAP_CONTEXT_TRIGGERS");
+
+  if (!dispatchTriggers || !bootstrapTriggers || !landingTriggers)
+    pin(`${RULE_REACH} — PROBE: all three delivery call sites were located`, false,
+      `dispatch=${dispatchTriggers ?? "not found"} bootstrap=${bootstrapTriggers ?? "not found"} landing=${landingTriggers ?? "not found"}`);
+  else {
+    const reaching = new Set([...dispatchTriggers, ...bootstrapTriggers, ...landingTriggers]);
+    // DORMANT — triggers with ZERO literals at those three call sites, listed in full and on
+    // purpose. Each is ruled by a seam Fleet has not built and the owner has not decided on:
+    // `task-queue` (no queue-reading seam plans context), `harness-selection` (adapter choice
+    // happens before any plan is derived), `deployment` (Verb 2 derives no plan at all).
+    // A SHORT list here would be worse than none: it would pass while asserting that the trigger
+    // it forgot is reachable, so the set is held EXACTLY equal to the complement of the union.
+    const DORMANT = ["task-queue", "harness-selection", "deployment"];
+    const complement = CONTEXT_PACK_TRIGGERS.filter((trigger) => !reaching.has(trigger));
+    pin(`${RULE_REACH} — the dormant list is exactly the triggers no seam passes`,
+      JSON.stringify([...complement].sort()) === JSON.stringify([...DORMANT].sort()),
+      `union=[${[...reaching].sort()}] complement=[${[...complement].sort()}] declared-dormant=[${[...DORMANT].sort()}]`);
+
+    const active: { id: string; triggers: string[] }[] = CONTEXT_PACKS
+      .filter((pack) => pack.status === "active")
+      .map((pack) => ({ id: pack.id, triggers: [...pack.triggers] }));
+    let manifestRead = "";
+    try {
+      const manifest = readContextManifest(read(".fleet/context-packs.json"));
+      if (manifest.kind !== "packs") manifestRead = `manifest ${manifest.kind}`;
+      else for (const pack of manifest.packs) {
+        if (typeof pack !== "object" || pack === null || Array.isArray(pack)) continue;
+        const record = pack as Record<string, unknown>;
+        if (record.status !== "active" || !Array.isArray(record.triggers)) continue;
+        active.push({ id: String(record.id ?? "?"), triggers: record.triggers.map(String) });
+      }
+    } catch { manifestRead = "manifest unreadable"; }
+    const stranded = active.filter((pack) => !pack.triggers.some((trigger) => reaching.has(trigger)))
+      .filter((pack) => !pack.triggers.every((trigger) => (DORMANT as readonly string[]).includes(trigger)))
+      .map((pack) => `${pack.id}[${pack.triggers}]`);
+    if (manifestRead)
+      pin(`${RULE_REACH} — PROBE: the Fleet manifest's active packs were read`, false, manifestRead);
+    else
+      pin(RULE_REACH, stranded.length === 0,
+        `${active.length} active pack(s); stranded=[${stranded.join(" ")}]`);
+  }
 }
 
 {

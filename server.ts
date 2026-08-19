@@ -19,7 +19,7 @@ import { buildClarifyBrief } from "./clarify-prompt";
 import { buildRefinePrompt } from "./refine-prompt";
 import { localProofFor, type LocalProof } from "./verify-proportion";
 import { validateRefineProposal, type RefineValidation } from "./refine-validate";
-import { planContext, type ContextPlan, type ContextPlanSelection } from "./context-plan";
+import { planContext, type ContextPlan, type ContextPlanInput, type ContextPlanSelection } from "./context-plan";
 import {
   CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES, planRepoContext, readContextManifest,
   type ContextManifestRead,
@@ -6104,17 +6104,28 @@ async function briefAndSend(next: Task, free: Slot, wt: { repo: string; path: st
     // handed a foreign lane anchors that cannot resolve there AND receipted them against that
     // repo's own head: the one place where the ledger itself was untrue.
     const sourceTree = await dispatchSourceTree(wt.repo);
+    // Read the integration tip on the server at the delivery seam. If it cannot be named, do not
+    // deliver a brief whose receipt would have to invent HEAD; the existing requeue path owns it.
+    // THIS NOW COMES BEFORE THE PLAN, and the order is the contract rather than a tidy-up: the
+    // manifest below is read AT this commit and the receipt asserts it, so a plan derived before
+    // the tip was named could only receipt anchors against a commit nobody read.
+    const head = await integrationHead(wt.repo);
+    if (!head) throw new Error("could not read integration HEAD for context receipt");
     const planFacts = { sourceTree, harness: free.harness, mode: DISPATCH_CONTEXT_MODE,
       triggers: DISPATCH_CONTEXT_TRIGGERS, capabilities: DISPATCH_CONTEXT_CAPABILITIES };
-    const plan = planContext(planFacts);
+    // The Fleet seeds plus whatever THIS repository declares about itself at that commit — the
+    // same merge Program-MAIN founding does, and deliberately with no frame branch here: the
+    // dispatch seam is the 72-of-82 majority of deliveries, and a Fleet-only or foreign-only rule
+    // would be a second, quieter policy. `repoRootOf` throws on an unnameable root and the catch
+    // below requeues, exactly as the integrationHead refusal above already does.
+    const base = planContext(planFacts);
+    const repoPlan = await repoManifestContextPlan(await repoRootOf(wt.repo), head, planFacts);
+    const plan: ContextPlan = { selected: [...base.selected, ...repoPlan.selected],
+      omitted: [...base.omitted, ...repoPlan.omitted] };
     const anchorBlock = renderContextAnchorBlock(plan);
     const deliveredBrief = `${brief}${anchorBlock}`;
     const selected = contextReceiptSelections(plan.selected);
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
-    // Read the integration tip on the server at the delivery seam. If it cannot be named, do not
-    // deliver a brief whose receipt would have to invent HEAD; the existing requeue path owns it.
-    const head = await integrationHead(wt.repo);
-    if (!head) throw new Error("could not read integration HEAD for context receipt");
     await sendText(free, deliveredBrief, true);
     const at = Date.now();
     // Hash exactly this canonical JSON: the delivered anchor block plus the receipt-visible plan
@@ -11178,6 +11189,8 @@ async function buildCodeGraph(repo: string, dir: string, ref: string): Promise<s
 // that is in fact Claude — the anchors would vanish for the wrong reason. `root` is the SOURCE
 // repository, never the lane worktree: a linked worktree has its own git toplevel, so classifying
 // `cwd` would call every lane foreign and empty the block on exactly the path that needs it.
+// Manifest-declared packs deliberately do NOT reach this seam: a merge worker gets no receipt and
+// no named commit here, and an anchor nobody receipts at a stated HEAD is a pointer into no tree.
 // No receipt is written: context-receipts.jsonl rows are session-shaped (slot, branch, taskId) and
 // briefSource is a closed five-value vocabulary — a worker has none of those, and a sixth value is
 // an owner act, not a side effect of this seam. The anchors stay observable in the worker transcript.
@@ -12569,34 +12582,45 @@ async function showAtHead(repoRoot: string, head: string, path: string, maxBytes
   return blob.code === 0 ? { kind: "bytes", text: blob.out } : { kind: "unread" };
 }
 
-// The Fleet seeds and the target repository's own declared packs land in ONE plan and one receipt.
-// In a foreign tree the seeds keep their honest `source-unavailable` verdict; the repo-declared
-// packs are additional rows. The fleet-control frame never reads a manifest at all.
-async function programMainContextPlan(preflight: ProgramMainPreflight,
-  facts: ReturnType<typeof programMainContextFacts>): Promise<ContextPlan> {
-  const base = planContext(facts);
-  if (preflight.frame !== "target-repo") return base;
-
-  const raw = await showAtHead(preflight.repoRoot, preflight.head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
+// A REPOSITORY'S OWN DECLARED PACKS, read at the commit the caller will receipt. Returns ONLY the
+// repo-declared rows: every caller owns its own base plan (the Fleet seeds) and merges these onto
+// it, so one manifest reader serves every delivery seam instead of one per seam. The repository is
+// named by root and commit alone — this function knows nothing about frames, and deliberately so:
+// Fleet's own checkout declares packs by exactly the same rule a target repository does.
+async function repoManifestContextPlan(repoRoot: string, head: string,
+  facts: Omit<ContextPlanInput, "sourceTree">): Promise<ContextPlan> {
+  const raw = await showAtHead(repoRoot, head, CONTEXT_MANIFEST_PATH, CONTEXT_MANIFEST_MAX_BYTES);
   const manifest: ContextManifestRead = raw.kind === "unread"
     ? { kind: "invalid", detail: "manifest could not be read at head within its byte bound" }
     : readContextManifest(raw.kind === "bytes" ? raw.text : null);
-  if (manifest.kind === "absent") return base;
+  if (manifest.kind === "absent") return { selected: [], omitted: [] };
 
   const trackedPaths = new Set<string>();
   const sourceBytes = new Map<string, string>();
   if (manifest.kind === "packs") {
-    const tracked = await gitRead(preflight.repoRoot, "ls-tree", "-r", "--name-only", preflight.head);
+    const tracked = await gitRead(repoRoot, "ls-tree", "-r", "--name-only", head);
     if (tracked.code === 0) for (const path of tracked.out.split("\n")) if (path) trackedPaths.add(path);
     for (const path of manifest.referencedPaths) {
       if (!trackedPaths.has(path)) continue;
-      const bytes = await showAtHead(preflight.repoRoot, preflight.head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
+      const bytes = await showAtHead(repoRoot, head, path, CONTEXT_MANIFEST_MAX_SOURCE_BYTES);
       // A source Fleet did not read stays OUT of the facts: the validator then reports the anchor
       // as unchecked, which the plan turns into a named omission rather than a hopeful delivery.
       if (bytes.kind === "bytes") sourceBytes.set(path, bytes.text);
     }
   }
-  const repoPlan = planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts });
+  return planRepoContext({ manifest, repo: { trackedPaths, sourceBytes }, facts });
+}
+
+// The Fleet seeds and the repository's own declared packs land in ONE plan and one receipt. In a
+// foreign tree the seeds keep their honest `source-unavailable` verdict; the repo-declared packs
+// are additional rows. BOTH FRAMES READ A MANIFEST since 2026-08-19: until then the fleet-control
+// frame returned early here, which meant a target repository could explain its own context to a
+// founding session and Fleet could not explain its own — a new Fleet pack needed a TypeScript
+// change and a deploy. It is now a tracked JSON commit, read at `preflight.head` like any other.
+async function programMainContextPlan(preflight: ProgramMainPreflight,
+  facts: ReturnType<typeof programMainContextFacts>): Promise<ContextPlan> {
+  const base = planContext(facts);
+  const repoPlan = await repoManifestContextPlan(preflight.repoRoot, preflight.head, facts);
   return {
     selected: [...base.selected, ...repoPlan.selected],
     omitted: [...base.omitted, ...repoPlan.omitted],
@@ -12729,7 +12753,9 @@ async function succeedSupervisor(s: Slot, label: string | null, carry: string | 
       }
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      const plan = planContext(planFacts);
+      // The Supervisor lives in a real checkout with an honest root and head (preflight proved
+      // both), so it reads that repository's declared packs like every other founding seam.
+      const plan = await programMainContextPlan(preflight.value, planFacts);
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildSupervisorSuccessionBrief(carry, anchorBlock);
       const selected = contextReceiptSelections(plan.selected);
@@ -12845,7 +12871,8 @@ async function bootstrapSupervisor(body: Record<string, unknown>): Promise<Respo
       }
 
       const planFacts = programMainContextFacts(preflight.value.frame, free.harness);
-      const plan = planContext(planFacts);
+      // Same honest root+head as the succession seam above — preflightProgramMain named both.
+      const plan = await programMainContextPlan(preflight.value, planFacts);
       const anchorBlock = renderContextAnchorBlock(plan);
       const deliveredBrief = buildSupervisorBrief(anchorBlock);
       const selected = contextReceiptSelections(plan.selected);

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "rulebook-generat",
+    "useWhen": "Bevor du das Regelbuch (CLAUDE.md) aenderst: es ist ein Generat — Fragment editieren und rendern.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["always"],
+    "hardness": "guidance",
+    "sources": [
+      { "path": "rulebook.ts", "anchor": "export const RULEBOOK_FRAGMENTS =" },
+      { "path": "docs/rulebook-inventar-2026-08-18.md", "anchor": "# Regelbuch-Inventar `CLAUDE.md` — Schritt 1 der Kontextlast-Kette" }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 25900,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  }
+]

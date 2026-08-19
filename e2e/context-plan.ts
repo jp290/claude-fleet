@@ -32,6 +32,24 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
     normal.omitted.length === 4 && normal.omitted.every((pack) => pack.why === "trigger-not-matched"),
     summary(normal));
 
+  // THE MUTATING-WORKER PATH (runMerge/runRepair) — a SECOND assertion standing beside the session
+  // one above, not a widening of it. The merge and repair resolvers rewrite a lane's history and
+  // are the only consumers of the `landing` trigger; their facts are the literal harness "claude"
+  // (WORKER_HARNESS.worker starts `claude` whatever FLEET_CMD is) and the six capabilities
+  // DISPATCH_CONTEXT_CAPABILITIES names. Weakening either check is caught by the other: the session
+  // path must NOT pick up land-mechanics, and the worker path must NOT pick up the session packs.
+  const workerLanding = planContext({ sourceTree: "fleet", harness: "claude", mode: "mutating", triggers: ["landing"],
+    capabilities: ["tracked-source-read", "pure-validator-run", "e2e-run", "git-inspect",
+      "harness-adapter-read", "private-overlay-read"] });
+  check("context plan: the merge/repair worker facts select exactly the land-mechanics pack",
+    workerLanding.selected.map((pack) => pack.id).join(",") === "land-mechanics", summary(workerLanding));
+  check("context plan: the worker path omits the session packs by trigger, never by capability",
+    workerLanding.omitted.length === CONTEXT_PACKS.length - 1
+    && workerLanding.omitted.every((pack) => pack.why === "trigger-not-matched")
+    && ["portable-core", "verify-e2e"].every((id) =>
+      workerLanding.omitted.some((pack) => pack.id === id && pack.why === "trigger-not-matched")),
+    summary(workerLanding));
+
   const defaultHarness = planContext({ sourceTree: "fleet", harness: null, mode: "mutating", triggers: ["landing"],
     capabilities: fullCapabilities() });
   const unknownHarness = planContext({ sourceTree: "fleet", harness: "future-unknown-adapter", mode: "mutating", triggers: ["landing"],

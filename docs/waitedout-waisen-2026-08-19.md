@@ -111,6 +111,14 @@ laesst sich daraus NICHT belegen: beobachtet ist genau EIN Fall, und die anderen
 Nachmittags hatten alle echte Elternprozesse. **Diese These wurde aufgestellt und wieder
 zurueckgezogen; sie steht hier nur, damit niemand sie ein zweites Mal aufstellt.**
 
+### 3.1 Nachtrag: wo man die Wartezeit NICHT nachlesen kann
+
+`suiteWait` parst laut Kommentar an `server.ts:9360` die **volle** Ausgabe, nicht den gedeckelten
+Tail. Wer die `acquired`-Zeilen in der GESPEICHERTEN Retention sucht (2 KB), findet sie nicht —
+und schliesst daraus faelschlich `waitedMs = 0`. Das ist die falsche Quelle, nicht ein Befund
+ueber die Wartezeit. Gemeldet vom Supervisor, nachdem er und Slot 5 genau darauf hereingefallen
+waren.
+
 ## 4. Was daraus folgt — Vorschläge, nicht Änderungen
 
 **1 · Den Kill auf die Prozessgruppe richten.** `Bun.spawn` mit eigener Gruppe starten und die

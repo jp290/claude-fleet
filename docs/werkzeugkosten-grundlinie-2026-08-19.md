@@ -44,6 +44,17 @@ mit:**
 Turn-Grenze und jede Cache-Ablauf-Grenze den Block neu anlegt. 47,9 × 2,86 = 137. Die beiden Zahlen
 widersprechen sich also nicht, sie zählen verschiedene Nenner.
 
+**Gegenmessung von der Anbieter-Seite — schließt den Einwand „Replay-Faktor ist ein Artefakt des
+Transcript-Scans".** Das Anthropic-Usage-Modal (Wochenverbrauch, abgelesen 2026-08-19 aus einer
+geparkten Session) schlüsselt auf: **79 % des Verbrauchs entstehen bei Kontext >150k, 29 % stammen
+aus Sessions mit 8+ Stunden Laufzeit.** Das ist Anthropics eigene Buchhaltung, unabhängig vom
+Transcript-Scan dieser Grundlinie, und sie sagt dasselbe: nicht die Anzahl der Züge kostet, sondern
+wie groß und wie lang ein Fenster bewohnt wird. **Zwei Vorbehalte, die mitgeschrieben gehören:**
+der Render ist unbekannten Alters — als Größenordnung belastbar, als Stichtagswert nicht. Und die
+Achsen sind Anthropics: „Kontext >150k" ist nicht identisch mit unserem Nenner (per-Session-
+Maximum). Die beiden Messungen bestätigen sich in der RICHTUNG, nicht in der Einheit; keine der
+Zahlen darf in die andere Rechnung eingesetzt werden.
+
 ## 3. Werkzeuge: wo die Bytes herkommen
 
 **Bash ist 17.077 von ~23.100 Werkzeugaufrufen (74 %).** Nach zurückgegebenen Bytes gemessen:

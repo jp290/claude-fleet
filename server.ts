@@ -9480,10 +9480,12 @@ function parkMergeVerdict(slotId: number, clearAll: boolean): void {
   if (m && reviewable) mergeParked.set(m.branch, m);
   if (reviewable || clearAll) mergeLast.delete(slotId);
 }
-// the ⏸ board signal: this lane holds agent-chosen conflict resolutions that no human has seen.
-// Two shapes qualify — a settled "resolved" verdict, and an INTERRUPTED run that had already
-// handed the conflicts to the agent (same discriminator the ⏫ re-run guard uses, kept in one
-// place so the badge and the refusal can never disagree about which lanes need an eye).
+// the ⏸ board signal: this lane is stopped and wants an owner's eye. Two shapes qualify — a
+// settled "resolved" verdict, and an INTERRUPTED run that had already handed the conflicts to the
+// agent. DELIBERATELY WIDER than the ⏫ re-run guard, which refuses only the subset that holds an
+// agent's resolution (`conflicted`/`resolvedBy`): a "resolved" written for an unmeasured or red
+// verify still wants the badge — nothing about it auto-landed — but it must stay RE-RUNNABLE,
+// because re-running the gate is the whole remedy that verdict's own text prescribes.
 function needsMergeReview(id: number): boolean {
   if (mergeInflight.has(id) || mergeStart.has(id)) return false; // a RUNNING job is not awaiting an eye
   const m = mergeLast.get(id);
@@ -17401,8 +17403,30 @@ Bun.serve<WSData>({
         // never got past the script pre-pass carries NO `conflicted` and is deliberately not
         // caught here: no agent judgment is in that tree, and a fresh run redoes rebase, verify
         // and review from scratch, which is strictly the honest outcome.
+        // WHAT "resolved" DOES NOT MEAN. The status word is written for FOUR different sachlagen
+        // and only ONE of them holds a resolution: the conflict branch (`conflicted` + `resolvedBy`
+        // set), plus three CLEAN-rebase stops that merely decline to auto-land — verify never
+        // measured (`ok: null` — waitedOut/timedOut/skipped), verify measured RED (`ok: false`),
+        // and the ② reviewer flagging a look. None of those three has an agent's judgment in the
+        // tree, and gating them here told the owner a falsehood about their tree ("conflict
+        // resolution awaits your review") while refusing the very re-run their own verdict text
+        // recommends. Measured live three times on 2026-08-17/19 — twice on `waitedOut`, once on a
+        // red gate, which is the expensive one: it made a red gate unrepeatable, so the mandated
+        // flake proof (run the same tree again) could not be driven through the gate at all and
+        // the only exit from the verdict was `{confirm:true}`, the path that skips the measurement.
+        // So: discriminate on the RESOLUTION, not on the word.
         const pend = mergeLast.get(s.id);
-        if (pend?.status === "resolved" || (pend?.status === "interrupted" && (pend.conflicted?.length ?? 0) > 0)) {
+        // `conflicted` OR `resolvedBy`, not AND. Every writer sets the two together or neither —
+        // the conflict branch (`if (unreviewed.length)`), the author hand-off (reachable only via
+        // a non-halted non-clean pre-pass, which by construction carries files), and the error
+        // path (`carried.length ? {conflicted, resolvedBy} : {}`) — so on any row a writer made,
+        // OR and AND agree. They part only on a row nobody wrote that way, and boot restores
+        // `mergeLast` with a cast that validates neither field (see the `merges` loader): OR keeps
+        // the guard STANDING on such a row, which is the fail-safe direction for a guard whose job
+        // is to stop unreviewed work from landing.
+        const holdsResolution = (pend?.conflicted?.length ?? 0) > 0 || !!pend?.resolvedBy;
+        if ((pend?.status === "resolved" && holdsResolution)
+            || (pend?.status === "interrupted" && (pend.conflicted?.length ?? 0) > 0)) {
           const anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code === 0)
             return json({ running: false, last: pend, status: pend.status,
@@ -17412,10 +17436,15 @@ Bun.serve<WSData>({
                   + `${main} with those resolutions — nobody has seen them and no verdict was ever recorded. Review the diff and land it from the board, or discard the lane.` });
         }
         // The VERDICT is superseded; the FACT it recorded is not. If it held agent-chosen conflict
-        // resolutions, those commits are still in this lane and still unreviewed — and the only
-        // way to reach this line with such a verdict is the guard above LAPSING because main moved
-        // on, which is precisely when the fresh run's pre-pass rebases them cleanly. Carry them, or
-        // the clean auto-land branch lands work no human has seen (`unreviewed` in mergeJob).
+        // resolutions, those commits are still in this lane and still unreviewed — and a verdict
+        // that HOLDS one reaches this line by exactly one route, the guard above LAPSING because
+        // main moved on, which is precisely when the fresh run's pre-pass rebases them cleanly.
+        // Carry them, or the clean auto-land branch lands work no human has seen (`unreviewed` in
+        // mergeJob). A "resolved" that holds NONE now reaches this line too (the sharpened guard
+        // lets it through, on purpose): `conflicted` is absent, so `carried` is `[]` and every
+        // downstream use of it is inert — `unreviewed` stays empty on a clean re-rebase, the error
+        // path's `carried.length ?` spread writes nothing, and `carriedBy` is read only where
+        // `carried` is non-empty. Passing it on is a no-op, not a silent carry.
         const carried = (pend?.conflicted ?? []).slice(0, 50);
         // …and WHO chose them. This is the one hop where the attribution can be lost: the verdict
         // is about to be deleted, and the tree it describes looks the same whichever resolver made

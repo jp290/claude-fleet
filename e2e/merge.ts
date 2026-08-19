@@ -364,9 +364,14 @@ export async function run(lc: LaneCtx): Promise<void> {
     vFt1.last?.status === "resolved" && (vFt1.last.conflicted ?? []).includes("code.txt"), JSON.stringify(vFt1.last));
   // the half that never changed: while main is STILL an ancestor, a re-run is refused outright
   await settleForMerge(lnFt.slot);
-  const ftGuard = (await (await post(`/api/slots/${lnFt.slot}/merge`, {})).json()) as { status?: string; detail?: string };
+  const ftGuard = (await (await post(`/api/slots/${lnFt.slot}/merge`, {})).json()) as { status?: string; detail?: string; running?: boolean };
+  // The REFUSAL half of the ⏸ pair. It is keyed on the verdict HOLDING a resolution (`conflicted`
+  // set — vFt1 above), not on the word "resolved"; the re-runnable half is the wait-out block in
+  // section (C3). `running` must stay absent: a refusal that also started a job would land the
+  // unreviewed resolution while telling the owner it had refused.
   check("⏸ a re-run is refused while the resolution is still rebased onto main (guard unchanged)",
-    ftGuard.status === "resolved" && (ftGuard.detail ?? "").includes("review"), JSON.stringify(ftGuard));
+    ftGuard.status === "resolved" && (ftGuard.detail ?? "").includes("review")
+    && ftGuard.running !== true, JSON.stringify(ftGuard));
   // main moves on an UNRELATED file → the guard lapses and the resolution replays with no conflict
   await Bun.write(`${REPO}/ft-moved.txt`, "moved\n");
   spawnSync("git", ["-C", REPO, "add", "ft-moved.txt"]);
@@ -758,6 +763,47 @@ export async function run(lc: LaneCtx): Promise<void> {
     const vwLog = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
     check("V1: the wait-out lane's commit has NOT reached main",
       !vwLog.includes("verify-wait lane work"), vwLog.trim());
+    // …and it must stay RE-RUNNABLE. This is the OTHER half of the ⏸ pair (the refusal half is the
+    // fall-through block above, "a re-run is refused while the resolution is still rebased onto
+    // main"): "resolved" is one word for four sachlagen, and this one holds NO agent resolution —
+    // nothing was resolved here, nothing was even measured. The guard used to key on the word
+    // alone, so a second ⏫ answered "conflict resolution awaits your review": a false statement
+    // about this tree, and a refusal of the exact remedy this verdict's own text prescribes
+    // ("Re-run the gate once the machine is free"). Measured live on 2026-08-17 and twice more on
+    // 2026-08-19 — including on a RED gate, where it made the mandated flake proof (run the same
+    // tree again) undrivable through the gate and left `{confirm:true}`, the path that skips the
+    // measurement, as the only exit. Neither half of this pair proves anything alone: the refusal
+    // half without this one is satisfied by the old word-keyed guard, and this half without the
+    // refusal half is satisfied by deleting the guard.
+    const vwMain = spawnSync("git", ["-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.toString().trim();
+    const vwAnc = spawnSync("git", ["-C", REPO, "merge-base", "--is-ancestor", vwMain, lnVw.branch]);
+    // the guard's own precondition, failing as ITSELF: once main is no longer an ancestor the guard
+    // lapses for every verdict shape, and a re-run below would start for a reason that is not this
+    // change. Then the check would read "re-runnable" while having measured nothing of the kind.
+    check("V1 setup: main is still an ancestor of the waited-out lane — the ⏸ guard's own precondition",
+      vwAnc.status === 0, `merge-base --is-ancestor ${vwMain} ${lnVw.branch} → exit ${vwAnc.status}`);
+    check("V1 setup: the wait-out verdict holds NO agent resolution — no conflicted, no resolvedBy",
+      (vVw.last?.conflicted ?? []).length === 0
+        && (vVw.last as { resolvedBy?: string } | null)?.resolvedBy === undefined,
+      JSON.stringify({ conflicted: vVw.last?.conflicted,
+        resolvedBy: (vVw.last as { resolvedBy?: string } | null)?.resolvedBy }));
+    await settleForMerge(lnVw.slot);
+    const vwRerun = (await (await post(`/api/slots/${lnVw.slot}/merge`, {})).json()) as
+      { running?: boolean; status?: string; detail?: string };
+    check("⏸ a 'resolved' that holds NO resolution is RE-RUNNABLE — the gate starts instead of refusing",
+      vwRerun.running === true && vwRerun.status === undefined
+        && !(vwRerun.detail ?? "").includes("conflict resolution awaits"), JSON.stringify(vwRerun));
+    const vVw2 = await waitMerge(lnVw.slot);
+    // and it really MEASURED again rather than replaying the parked verdict: a fresh verify record
+    // (the stand-in queues forever, so the second run waits out exactly as the first did)
+    check("⏸ the re-run produced a NEW verify record, not a replay of the old verdict",
+      vVw2.last?.verify?.waitedOut === true && typeof vVw2.last?.verify?.at === "number"
+        && typeof vVw.last?.verify?.at === "number" && vVw2.last.verify.at > vVw.last.verify.at,
+      JSON.stringify({ at1: vVw.last?.verify?.at, at2: vVw2.last?.verify?.at, ok: vVw2.last?.verify?.ok }));
+    check("⏸ the re-run still did NOT auto-land — re-runnable is not a licence to land unmeasured",
+      !vVw2.gone && vVw2.last?.status === "resolved" && vVw2.last?.landed === false
+        && !spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("verify-wait lane work"),
+      JSON.stringify(vVw2.last));
     // discarded, not landed: the marker would make every later clean lane in this suite queue too
     await post(`/api/slots/${lnVw.slot}/kill`, {});
     await post("/api/worktrees/discard", { repo: REPO, path: lnVw.cwd, branch: lnVw.branch });

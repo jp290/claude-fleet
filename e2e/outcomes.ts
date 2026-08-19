@@ -2,7 +2,7 @@
 // relation on it, the client-source assertions about how it renders, and the criteria counter.
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, copyFileSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { BASE, REPO, ROOT, check, get, post, restartSrv } from "./harness";
 import { exists, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
 
@@ -29,7 +29,10 @@ export async function run(): Promise<void> {
         scope?: string; notes?: string; raw?: boolean };
       // optional for the same reason: rows predate them, and mainAfter is absent by design on any
       // land that did not move the integration branch
-      repo?: string; mainAfter?: string };
+      repo?: string; mainAfter?: string;
+      // optional for the same reason again: rows written before the sensor existed carry no key at
+      // all, and `null` (measured, unknowable) is a different answer from that absence
+      toolResultBytes?: { total: number; byTool: Record<string, number> } | null };
     const readOutcomes = async (): Promise<Outcome[]> =>
       ((await (await get("/api/lane-outcomes?limit=1000")).json()) as { outcomes: Outcome[] }).outcomes;
     // outcomes are newest-first → the first match for a (unique) lane branch is its latest record
@@ -191,6 +194,57 @@ export async function run(): Promise<void> {
     await post(`/api/slots/${oc4.slot}/shelve`, { note: "resume later" });
     const rec4 = forBranch(await readOutcomes(), oc4.branch);
     check("outcome: shelved lane → shelved disposition", rec4?.disposition === "shelved", JSON.stringify(rec4));
+
+    // (4b) tool_result BYTES — the attention-cost sensor for tool output. The rulebook already tells
+    // a lane to keep suite output out of its context; nothing measured whether that instruction has
+    // any effect, because no outcome row recorded what tool output cost. Two probes, and the second
+    // is the one that matters: an unmeasurable lane must record null, never 0.
+    {
+      const projDirOf = (cwd: string) =>
+        `${process.env.HOME}/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      // the NEGATIVE half, taken off the shelved lane above: a fresh worktree has no project dir,
+      // so this row's honest answer is null. Its precondition is checked as ITSELF — if the dir
+      // somehow existed, "null" would be a real (and wrong) measurement, not this assertion's subject.
+      check("outcome: tool_result fixture precondition — the shelved lane's project dir does not exist",
+        !existsSync(projDirOf(oc4.cwd)), projDirOf(oc4.cwd));
+      check("outcome: a lane with no transcript dir records toolResultBytes null — the key is PRESENT (measured: unknowable), never 0",
+        rec4 !== undefined && "toolResultBytes" in rec4 && rec4.toolResultBytes === null, JSON.stringify(rec4?.toolResultBytes));
+
+      const ocTR = (await (await post("/api/lanes", { repo: oRepo })).json()) as { slot: number; cwd: string; branch: string };
+      const trDir = projDirOf(ocTR.cwd);
+      mkdirSync(trDir, { recursive: true });
+      // one assistant line naming two tools, one user line carrying three results: an attributed
+      // Bash string (10 B), an attributed Read whose content is an ARRAY (stringified — 29 B), and
+      // an ORPHAN whose tool_use id this file never declared (3 B, must land under "?" rather than
+      // being dropped). Byte counts are hand-computed, not recomputed by the same rule under test.
+      const trLines = [
+        JSON.stringify({ type: "assistant", message: { content: [
+          { type: "tool_use", id: "tu_bash", name: "Bash" },
+          { type: "tool_use", id: "tu_read", name: "Read" },
+        ] } }),
+        JSON.stringify({ type: "user", message: { content: [
+          { type: "tool_result", tool_use_id: "tu_bash", content: "0123456789" },
+          { type: "tool_result", tool_use_id: "tu_read", content: [{ type: "text", text: "hi" }] },
+          { type: "tool_result", tool_use_id: "tu_never_declared", content: "abc" },
+        ] } }),
+        "{ not json",           // a torn line must be skipped, not sink the file
+        "",
+      ].join("\n");
+      await Bun.write(`${trDir}/fixture.jsonl`, trLines);
+      check("outcome: tool_result fixture precondition — the planted transcript is on disk where projDir() looks",
+        existsSync(`${trDir}/fixture.jsonl`), trDir);
+      await Bun.write(`${ocTR.cwd}/tr.txt`, "tool result bytes\n");
+      spawnSync("git", ["-C", ocTR.cwd, "add", "tr.txt"]);
+      spawnSync("git", ["-C", ocTR.cwd, "commit", "-qm", "tool result bytes"]);
+      await post(`/api/slots/${ocTR.slot}/shelve`, { note: "measured" });
+      const recTR = forBranch(await readOutcomes(), ocTR.branch);
+      check("outcome: toolResultBytes carries the EXACT planted bytes, split by the tool that produced them",
+        recTR?.toolResultBytes?.total === 42
+        && recTR.toolResultBytes.byTool.Bash === 10
+        && recTR.toolResultBytes.byTool.Read === 29
+        && recTR.toolResultBytes.byTool["?"] === 3, JSON.stringify(recTR?.toolResultBytes));
+      rmSync(trDir, { recursive: true, force: true });
+    }
 
     // (5) REVERTED — a conflict-free lane lands via the server script path (ADVANCES main), then
     // /api/repos/undo-land reverts it. The strongest negative outcome, assembled from the undo

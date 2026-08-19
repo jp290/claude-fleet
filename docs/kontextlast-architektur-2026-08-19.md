@@ -148,6 +148,15 @@ neue Erfindung: die Bedeutungs-Probe (`docs/attic/regelbuch-bedeutungsprobe-2026
 | `graphify.md` | G | 1 | 1.232 | nein | ja |
 | | | **117** | **61.807** | **29,2 KB** | 61,8 KB |
 
+**Gemessen in B1 (`f3b4dfa`), diese Tabelle war INFERRED (§7 erster Punkt):** der Monolith ist
+**62.149 B**, nicht 61.822 — die Zahl im Bauplan stammt von einem aelteren HEAD. Die sieben
+Fragmente NACH Schnitt C: loader 2.165 · einstieg 15.763 · lane-discipline 20.961 · supervisor
+1.496 · self-scheduling 5.555 · deploy 14.956 · graphify 1.231 (Summe 62.127, plus 15 B Praeambel
+und 7 Trennzeilen = 62.149, `cmp`-identisch mit dem Monolithen vor jedem Eingriff). **Die
+Lane-Fassung ist damit 28.699 B, nicht ~29,2 KB** — C hat 885 B aus `lane-discipline` nach
+`einstieg` gezogen, also aus der Lane-Auswahl heraus. **B2 rechnet mit 28.699 B**, sonst prueft
+es gegen eine Zahl, die es nie erreichen kann.
+
 Ein **reiner** Renderer `rulebook.ts` — keine fs-, git-, env- oder Netz-Lesung, er bekommt die
 Fragmentinhalte und gibt Text zurück, genau wie `context-plan.ts` und `verify-proportion.ts`
 gebaut sind:

@@ -132,6 +132,22 @@ nicht Verständnis. Normaler Produktbetrieb verlangt keine Überwachung innerer 
 genügt, Konstruktion, Zielinstanz, beobachtete Zustellung, wichtige Acknowledgements und Resultate
 korrekt zu erfassen.
 
+### Promotion als Policy, nicht als Agentenurteil
+
+Der Owner muss nicht jeden Routine-Diff selbst prüfen. Er promoviert stattdessen die bindende
+`PromotionPolicy`: welche Klassen Fleet automatisch weiterführen darf, welche Belege dafür frisch
+vorliegen müssen und welche Fälle immer eskalieren. Ein konkreter Land kann dadurch entweder auf
+einen benannten Owner-Akt oder auf eine benannte, zuvor vom Owner promovierte Policy zurückgehen.
+
+Vor jedem Land wird der konkrete `LandCandidate` unveränderlich gebunden: mindestens Main-SHA,
+Candidate-SHA beziehungsweise Lane-Tip, Tree-/Diff-Identität und Verify-Lauf. Die konkrete
+Landentscheidung referenziert zusätzlich die angewandte Policy-Version. Ändert sich einer dieser
+Gegenstände, sind frühere Bewertungen stale und dürfen nicht verwendet werden. Ein ephemerer
+read-only Merge Critic kann `no-objection`, `needs-human` oder `unknown` liefern. Er liefert Evidenz
+innerhalb der Policy; er promoviert, landet und deployt niemals selbst. Geschmack,
+Richtungsfragen, unbekannte Messungen und von der Policy benannte Hochrisikofälle gehen weiterhin
+an den Owner.
+
 ## Kontextschichten
 
 Kontext wird von stabil und allgemein nach konkret und flüchtig aufgebaut:
@@ -183,8 +199,10 @@ nicht Agentenrollen.
 6. Blockierende Fragen werden als adressierte Objekte zugestellt und wecken nach Antwort den
    richtigen Requester.
 7. Resultat, Artefakte und Proof laufen über denselben Act zur Project MAIN zurück.
-8. Supervisor und Fleet Controller aggregieren nur belegte Zustände; der Owner entscheidet
-   Promotion, Tasting, Land oder Richtungswechsel.
+8. Supervisor und Fleet Controller aggregieren nur belegte Zustände. Der Server führt einen Land
+   nur nach frischem Recheck unter einer owner-promovierten Policy oder einem konkreten Owner-Akt
+   aus; Tasting, Policy-Ausnahmen, Hochrisiko und Richtungswechsel bleiben beim Owner. Deploy ist
+   davon getrennt.
 
 ## UI als Arbeits- und Beobachtungsfläche
 
@@ -198,7 +216,8 @@ Projekte -> aktive Acts -> zuständige Agenten -> Fragen/Ergebnisse -> Artefakte
 Terminals bleiben für direkte Interaktion wichtig, sind aber nicht die einzige Zustandsquelle. Der
 rechte Tab braucht deshalb sowohl solide Grundnavigation — anklickbare Commits, echten File Explorer,
 Suche und Tastaturbedienung — als auch später Programbindung, ContextEnvelope-/Trace-Stand, offene
-Fragen, Wake-Zustand und Verify-/Land-Fakten.
+Fragen, Wake-Zustand und Verify-/Land-Fakten einschließlich Candidate-, Policy- und Critic-
+Provenienz.
 
 ## Wissensordnung
 

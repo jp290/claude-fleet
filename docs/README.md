@@ -1,9 +1,11 @@
 # Claude Fleet — the knowledge, not just the tool
 
-Fleet is a **harness for Claude Code** — see, send, spawn, land, let go. That is the whole
-of it (owner decision, 2026-07-28). What this shelf holds is the operating knowledge that
-makes the harness work: how to brief a session, what a green gate actually attests, which
-failures are the machine's and which are yours.
+Fleet is a **local control plane for coding agents** — Claude, Codex and Pi-compatible harnesses
+share Sessions, Lanes, Programs, evidence and promotion machinery. The original 2026-07-28
+"see, send, spawn, land, let go" decision still describes the interaction ideal, but no longer the
+whole product inventory. What this shelf holds is the operating knowledge that makes the control
+plane work: how to brief a session, what a green gate actually attests, which failures are the
+machine's and which are yours.
 
 Every feature that survives is a principle wearing a UI:
 

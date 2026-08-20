@@ -1,3 +1,89 @@
+# HANDOFF — ACP Project MAIN (Slot 2), 2026-08-21, ctx GEMESSEN am eigenen Slot
+
+Zustand wird ABGELEITET, nicht hier aufgeschrieben: `./state.sh` und `./register.sh` zuerst.
+Diese Datei traegt nur, was git nicht tragen kann — Absicht, Korrekturen, Reihenfolge, offene
+Entscheidungen.
+
+## Was diese Session war
+
+Gebundene Project MAIN fuer Program `eeba7c04caae64d79969199b`. Genau EIN Schnitt: der
+Result-Rail (ACP-05/06), Scope B-D. Kein eigener Produktcode, kein Land, kein Deploy.
+
+## Belegter Stand
+
+- **Candidate `0057259`** auf `fleet/260820204100-7aa1` (Slot 3, Sol high), zwei Commits:
+  `cc127b5` Bau, `0057259` Reparatur. Basis `main e59d89f`, behind 0, wouldConflict false,
+  Lane clean inkl. 0 untracked. **Reviewreif, NICHT gelandet** — Attention `ce32bda5` offen.
+- Proof unabhaengig nachgemessen: `./e2e-isolated.sh` seriell **2771 PASS / 0 FAIL, EINE
+  run-id**; pins 161 PASS; claude-gate 410 PASS. Runde 1 lag bei 2767, Act-3-Basis bei 2755 —
+  die neuen Checks existieren wirklich, die Zahl steht nicht still.
+- **Scope-Teilung gehalten:** Teil A (`attemptId`, Lifecycle) ist NICHT gebaut und kommt im
+  Baum nicht vor. Er bleibt ein eigener Owner-Entscheid.
+- **Der Live-Server ist weiter hinter `main`.** Act 3 UND dieser Schnitt sind damit gebaut,
+  aber nicht aktiv. Deploy ist ein getrennter Owner-Akt und wurde nicht angefasst.
+- Die zehn untracked Owner-Dateien im Haupt-Checkout: unangetastet, vor und nach jedem
+  Schritt geprueft.
+
+## Freigegebene Reihenfolge fuer die Nachfolgerin
+
+1. **Land-Entscheid zu `0057259`** einholen (Attention `ce32bda5`). Nicht selbst entscheiden.
+2. **Deploy-Entscheid** — getrennt vom Land, und er deckt zwei Schnitte ab, nicht einen.
+3. Danach erst die drei task-fertigen, NICHT dispatchten Briefs: `ad2ee96a` CTX-01 ·
+   `7aaa6644` STUDIO-00 · `e952c2b2` HARNESS-01 (nicht blockierend).
+
+## GLM Studio Readiness: CONDITIONAL-GO
+
+Die Rollenfrage ist entschieden: **Project MAIN plus temporaere Specialists genuegt. Es gibt
+KEINE Fable-MAIN-Zwischenebene.** Vor einem Studio-Start fehlen drei Dinge, keines davon
+Bauarbeit der Nachfolgerin:
+- **Result-Rail gelandet UND live.** Gebaut reicht nicht — ohne laufenden Code ist der
+  Rueckkanal an echter Arbeit nicht beweisbar.
+- **Owner-Entscheid: attended oder automatisierter Dispatch?** Verschiedene Fehlermodi,
+  verschiedene Spuren.
+- **Owner-Entscheid: ehrliche Entkopplung von der Act-9-Feuerprobe.** Act 9 ist heute nicht
+  messbar (Tabelle: `docs/messungen/2026-08-20-gamestudio-readiness.md`). STUDIO-00 darf sich
+  daran nicht aufhaengen — was NICHT geht, ist so zu tun, als sei die Feuerprobe gefahren.
+
+## Routing ab dem naechsten Schnitt (Owner, 2026-08-21)
+
+Qualitaetskritische Builder und frische Code-Critics standardmaessig **Opus 5**, nicht
+Sol/Codex. Sol ist nur noch begruendeter Spezialist. Fable bleibt Director/visueller
+Integrator, GLM attended Cross-Family-Gegenpruefung. **Pi+Opus nur als genau EIN
+kontrollierter Canary**, nicht als Default, bis Spawn/High/Tools/Commit/Resume/ctx/
+Result-Rueckkanal belegt sind. Und: **heute laesst sich fuer eine claude-Lane kein
+expliziter high-Fakt behaupten** — der Adapter kennt das reale `--effort`-Flag nicht
+(gemessen: CLI 2.1.238 hat es, `slotCmd`/`agentCmd` reichen es nie durch,
+`supports.effort:false`). Das ist `e952c2b2` HARNESS-01.
+
+## Vier Befunde, die die Nachfolgerin braucht
+
+- **Der ③-Reviewer ist defekt** (`summarizer timed out without an answer`), durchgehend, auch
+  als Owner-POST. Die mechanische Review-Haelfte steht also nicht zur Verfuegung; eine
+  unabhaengige Review kostet derzeit einen eigenen Critic-Slot.
+- **Ein Lane-Watch ist strukturell stumm, solange `ahead=0`.** `done-looking` verlangt
+  idle + clean + ahead>0; eine Lane, die vor dem ersten Commit stoppt, erreicht dich NIE. Das
+  ist zweimal passiert (Regel-Widerspruch, dann Write-Set-Grenze) und beide Male hat nur ein
+  eigener Pane-Quiet-Watcher es gemeldet. Dasselbe gilt fuer jeden read-only Critic: er
+  committet nie, also feuert nichts.
+- **Der Loader-Vertrag widerspricht sich** (`notiz 13ed6ce9`): `AGENTS.md` fordert den vollen
+  `CLAUDE.md`-Read unter einer Sunset-Klausel, deren Bedingung laengst eingetreten ist — eine
+  Lane haelt seit dem Generat nur noch eine Lane-Fassung (29 529 B / 340 Z. / 3 von 7 Teilen,
+  ~3 % eines GPT-Fensters, nicht die ~8 %, die die Brief-Checkliste nennt). Ein Sol-Builder
+  ist daran korrekt stehengeblieben.
+- **Das FleetEvent-Zustellbudget schliesst den Rueckkanal bei maximaler Koordination**
+  (`notiz c89c18df`): eine MAIN mit 5 armed Watches hat null Budget. Steht woertlich schon auf
+  `main:5313` fuer Clarifications — geerbt, nicht neu, und ein Entscheid, kein Bugfix.
+
+## Was ich falsch gemacht habe
+
+- **Ich habe einem Builder eine Regel weggewinkt, die ein Brief nicht waiven kann.** Mein
+  Brief sagte "nie `CLAUDE.md` am Stueck lesen" gegen eine als *hard loader requirement*
+  deklarierte Zeile in `AGENTS.md` — und meine ~8-%-Begruendung war gegen die falsche Datei
+  gerechnet (Haupt-Checkout 62 678 B statt Lane-Fassung 29 529 B).
+- **Ich habe dem Builder vier Sicherheits-Schranken woertlich diktiert, und eine war falsch.**
+  Der PRE_AUTH-Eintrag behauptete "lane-only" auch fuer GET; GET ist dual-scoped. Der Critic
+  hat es gefunden, der Builder hatte es korrekt umgesetzt — der Fehler war meiner.
+
 # HANDOFF — ACP Project MAIN (Slot 3), 2026-08-20, ctx 31,7 % GEMESSEN
 
 Zustand wird ABGELEITET, nicht hier aufgeschrieben: `./state.sh` und `./register.sh` zuerst.

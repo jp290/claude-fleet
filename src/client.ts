@@ -1734,10 +1734,14 @@ const fxScroll = new Map<string, number>();      // cwd → the card tree's scro
 let fxShell: Shell | null = null;
 // The card's search box is REBUILT by every 3s repaint (renderBoard replaceChildren's the whole
 // board), so surviving the refresh cannot mean "keep the element" — the element is gone. It means
-// restoring what the reader could lose: the text, the caret, and the focus. Only the focus needs a
-// flag, because "was this input focused" is not recoverable from a node that no longer exists.
-let fxFocusCwd: string | null = null;
-let fxCaret = 0;
+// restoring what the reader could lose: the text, the caret, and the focus.
+//
+// Whether it WAS focused is asked of the document, at build time, against the node the previous
+// pass left behind — deliberately not tracked with a focus/blur flag. Removing a focused element
+// fires blur, and engines are not agreed on whether that lands before or after the restore below;
+// a blur arriving late would clear a flag the restore had just re-set, and the box would then lose
+// focus on the SECOND refresh rather than the first — the worst kind of intermittent.
+const fxInputEl = new Map<string, HTMLInputElement>();
 // Restoring focus and scroll has to happen AFTER the board has committed its new nodes: until
 // `boardBody.replaceChildren(...)` runs, the card this built is not in the document, and .focus()
 // on a detached node is a silent no-op. A microtask is not good enough — renderBoard is async, so
@@ -1906,9 +1910,7 @@ function fxSearchInput(cwd: string, onInput: () => void, wide: boolean): HTMLInp
   // (type, then Enter on the best match), so it does NOT opt out via data-ownEnter.
   inp.placeholder = "search paths — e.g. e2e/pins";
   inp.value = fxQuery.get(cwd) ?? "";
-  inp.oninput = () => { fxQuery.set(cwd, inp.value); fxCaret = inp.selectionStart ?? inp.value.length; onInput(); };
-  inp.onfocus = () => { fxFocusCwd = cwd; };
-  inp.onblur = () => { if (fxFocusCwd === cwd) fxFocusCwd = null; };
+  inp.oninput = () => { fxQuery.set(cwd, inp.value); onInput(); };
   return inp;
 }
 
@@ -1946,7 +1948,12 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
   sec.appendChild(el("div", "bstate", `${t.total} tracked file${t.total === 1 ? "" : "s"}`
     + (t.capped ? ` · showing the first ${t.files.length}` : "")));
   const box = el("div", "fxtree");
+  // the box this pass REPLACES — the only place the caret and the focus still exist
+  const prev = fxInputEl.get(cwd);
+  const refocus = !!prev && document.activeElement === prev;
+  const caret = prev ? (prev.selectionStart ?? prev.value.length) : 0;
   const inp = fxSearchInput(cwd, () => repaint(), false);
+  fxInputEl.set(cwd, inp);
   sec.appendChild(inp);
   const repaint = () => paintTree(box, treeOf(t.files), {
     open: fxOpenSet(cwd),
@@ -1960,10 +1967,9 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
   // module state and re-applied; without it the card silently jumped to the top every three seconds
   box.onscroll = () => { fxScroll.set(cwd, box.scrollTop); };
   const y = fxScroll.get(cwd) ?? 0;
-  const refocus = fxFocusCwd === cwd;
   fxAfterPaint = () => {
     if (y) box.scrollTop = y;
-    if (refocus) { inp.focus(); inp.setSelectionRange(fxCaret, fxCaret); }
+    if (refocus) { inp.focus(); inp.setSelectionRange(caret, caret); }
   };
   sec.appendChild(box);
   return sec;

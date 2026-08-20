@@ -92,6 +92,11 @@ const PRE_AUTH_ROUTES = [
   // the security boundary; POST collection is lane-only, reply is non-lane-only, GET is dual-scoped.
   '= /api/self/clarifications',
   String.raw`~ /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/`,
+  // The result sibling is lane-only: a recognized non-lane (including the steward) gets 409,
+  // never 401. Its receiver is derived only through clarificationReceiverFor and no body field
+  // can nominate one; the body is the closed three-value status plus length-capped text. The row
+  // is report-only: no land, dispatch, auto, Watch or tick gates on its status.
+  '= /api/self/fleet-report',
   // The owner-facing twin of the line above, and it is the QUIETEST entry on this list: it writes
   // nothing into any pane and reaches no foreign slot. POST is non-lane-only AND requires the
   // caller to be the current bound MAIN of an active program (programId is derived from that

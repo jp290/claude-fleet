@@ -46,9 +46,10 @@ import {
 import {
   WS_INPUT_MAX_BYTES, FLEET_DEFAULT_MODEL, WORKER_CONTRACTS, doneMark, contextWindowFor,
   DISPOSITION_WORKERS, DISPOSITION_VERDICTS,
-  normalizeLaneAnchor,
+  FLEET_REPORT_STATUSES, normalizeLaneAnchor,
   type GitInfo, type LaneAnchor, type PostLandAuditInfo, type PostLandAuditLiveInfo, type WorkerName,
-  type DispositionWorker, type DispositionVerdict,
+  type DispositionWorker, type DispositionVerdict, type FleetReportEventPayload,
+  type FleetReportStatus,
 } from "./src/protocol";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
@@ -1292,8 +1293,14 @@ interface ClarificationFleetEvent extends FleetEventBase {
   kind: "clarification-request";
   payload: ClarificationEventPayload;
 }
+interface FleetReportFleetEvent extends FleetEventBase {
+  subjectSlot: number;
+  subjectBranch: string;
+  kind: "fleet-report";
+  payload: FleetReportEventPayload;
+}
 type FleetEvent = LaneFleetEvent | MergeFleetEvent | AuditFleetEvent | DeployFleetEvent
-  | ClarificationFleetEvent;
+  | ClarificationFleetEvent | FleetReportFleetEvent;
 
 // `send-uncertain` mirrors the FleetEvent transport state exactly (see FACT 2 in tickWatches): it is
 // persisted BEFORE tmux is touched, so a process death anywhere after that point is visible after
@@ -1317,6 +1324,21 @@ interface ClarificationRequest {
   closedAt: number | null;
 }
 
+// A report is the immutable result sibling of a ClarificationRequest. Transport state belongs to
+// its FleetEvent; this row carries only the lane-stamped report and the exact two endpoint
+// occupants. In particular there is no attempt/task lifecycle identity here.
+interface FleetReport {
+  id: string;
+  reportedAt: number;
+  status: FleetReportStatus;
+  text: string;
+  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
+  provenance: { taskId: string | null; originId: string | null; programId: string | null };
+  receiver: { slot: number; openedAt: number; sessionId: string | null };
+  basis: ClarificationBasis;
+  eventId: string;
+}
+
 // THE OWNER-FACING TWIN of ClarificationRequest, with the roles flipped: there a worker asks its
 // bound Program-MAIN, here the bound Program-MAIN asks the OWNER. The owner is a PRINCIPAL, not a
 // slot — there is no occupant triple to bind an answer to and none is invented, which is why
@@ -1332,6 +1354,10 @@ interface AttentionRequest {
   text: string;
   requester: { slot: number; openedAt: number; sessionId: string | null };
   programId: string;
+  // Absent means a pre-provenance persisted row and stays observably absent. New rows always carry
+  // all five keys; null means the caller explicitly had no fact for that key.
+  provenance?: { taskId: string | null; originId: string | null; programId: string | null;
+    branch: string | null; candidateSha: string | null };
   status: AttentionStatus;
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null;
@@ -1342,20 +1368,25 @@ const ATTENTION_KINDS: AttentionKind[] = ["decision", "blocked", "review-ready"]
 function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
+  const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";
+  // Keep the original clarification equivalence explicit: e2e/pins.ts couples that persisted
+  // discriminant to its mint site. The second clause adds the one new watch-less sibling without
+  // weakening null watchId for any Watch-backed event kind.
+  const clarificationWatchIdMismatch = ((e.kind === "clarification-request") !== (e.watchId === null));
   if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
-    || ((e.kind === "clarification-request") !== (e.watchId === null))
+    || (clarificationWatchIdMismatch && e.kind !== "fleet-report")
+    || (e.kind === "fleet-report" && e.watchId !== null)
     || !Number.isInteger(e.receiverSlot) || (e.receiverSlot ?? 0) <= 0
     || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
     || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
     || !Number.isInteger(e.receiverIdleSec) || (e.receiverIdleSec ?? -1) < 0
     || !["pending", "send-uncertain", "delivered", "acknowledged", "receiver-gone", "inbox"]
       .includes(String(e.status))
-    // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch. A
-    // clarification is watch-less and pane-only by construction — it carries a question whose
-    // answer travels back into the asking worker's pane, so it can never be an inbox row.
+    // absent = legacy pane; an unknown value is fail-closed exactly as it is on the Watch. The two
+    // watch-less lane→MAIN variants are pane-only by construction, so neither can be an inbox row.
     || (e.delivery !== undefined && e.delivery !== "pane" && e.delivery !== "inbox")
-    || (e.delivery === "inbox" && e.kind === "clarification-request")
+    || (e.delivery === "inbox" && watchless)
     || typeof e.createdAt !== "number" || !Number.isFinite(e.createdAt) || e.createdAt <= 0
     || !Number.isInteger(e.attempts) || (e.attempts ?? -1) < 0
     || !(typeof e.deliveredAt === "number" || e.deliveredAt === null)
@@ -1379,6 +1410,22 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
     return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
       kind: e.kind, payload: { requestId: p.requestId, question: p.question,
         taskId: p.taskId, originId: p.originId, programId: p.programId,
+        basis: p.basis as ClarificationBasis } };
+  }
+  if (e.kind === "fleet-report") {
+    if (!Number.isInteger(e.subjectSlot) || Number(e.subjectSlot) <= 0
+      || typeof e.subjectBranch !== "string" || !e.subjectBranch) return null;
+    const p = e.payload as Partial<FleetReportEventPayload> | undefined;
+    if (!p || typeof p.reportId !== "string" || !/^[0-9a-f]{24}$/.test(p.reportId)
+      || !FLEET_REPORT_STATUSES.includes(p.status as FleetReportStatus)
+      || typeof p.text !== "string" || !p.text.trim() || p.text.length > MAX_FLEET_REPORT_TEXT
+      || !(p.taskId === null || typeof p.taskId === "string")
+      || !(p.originId === null || typeof p.originId === "string")
+      || !(p.programId === null || typeof p.programId === "string")
+      || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(p.basis))) return null;
+    return { ...base, subjectSlot: Number(e.subjectSlot), subjectBranch: e.subjectBranch,
+      kind: e.kind, payload: { reportId: p.reportId, status: p.status as FleetReportStatus,
+        text: p.text, taskId: p.taskId, originId: p.originId, programId: p.programId,
         basis: p.basis as ClarificationBasis } };
   }
   if (e.kind === "lane-ready" || e.kind === "host-commit-ready") {
@@ -1505,6 +1552,32 @@ function clarificationFrom(raw: unknown): ClarificationRequest | null {
   return raw as ClarificationRequest;
 }
 
+function fleetReportFrom(raw: unknown): FleetReport | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Partial<FleetReport>;
+  const occupant = (v: unknown, withLane: boolean): boolean => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+    const x = v as Record<string, unknown>;
+    return Number.isInteger(x.slot) && Number(x.slot) > 0
+      && typeof x.openedAt === "number" && Number.isFinite(x.openedAt) && x.openedAt > 0
+      && (x.sessionId === null || typeof x.sessionId === "string")
+      && (!withLane || (typeof x.cwd === "string" && x.cwd.length > 0
+        && typeof x.branch === "string" && x.branch.length > 0));
+  };
+  const provenance = r.provenance as Record<string, unknown> | undefined;
+  const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
+  if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id)
+    || typeof r.reportedAt !== "number" || !Number.isFinite(r.reportedAt) || r.reportedAt <= 0
+    || !FLEET_REPORT_STATUSES.includes(r.status as FleetReportStatus)
+    || typeof r.text !== "string" || !r.text.trim() || r.text.length > MAX_FLEET_REPORT_TEXT
+    || !occupant(r.worker, true) || !occupant(r.receiver, false)
+    || !provenance || !nullableString(provenance.taskId) || !nullableString(provenance.originId)
+    || !nullableString(provenance.programId)
+    || !["program-main", "lane-watch", "program-main+lane-watch"].includes(String(r.basis))
+    || typeof r.eventId !== "string" || !/^[0-9a-f]{24}$/.test(r.eventId)) return null;
+  return raw as FleetReport;
+}
+
 // Same discipline as clarificationFrom, same reason: requester identity and programId are
 // server-observed facts, so a row that does not carry them exactly is DISCARDED, never repaired.
 // The per-status invariants are the clarification ones with the owner-shaped answer substituted —
@@ -1513,7 +1586,18 @@ function attentionFrom(raw: unknown): AttentionRequest | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const a = raw as Partial<AttentionRequest>;
   const r = a.requester as Record<string, unknown> | undefined;
+  const provenance = a.provenance as Record<string, unknown> | undefined;
   const answer = a.answer as AttentionRequest["answer"] | undefined;
+  const nullableBounded = (v: unknown): boolean => v === null
+    || (typeof v === "string" && v.length > 0 && v.length <= MAX_ATTENTION_PROVENANCE_TEXT);
+  const provenanceShaped = provenance === undefined || (
+    nullableBounded(provenance.taskId) && nullableBounded(provenance.originId)
+    && (provenance.programId === null || provenance.programId === a.programId)
+    && (provenance.branch === null || (typeof provenance.branch === "string"
+      && validAttentionBranch(provenance.branch)))
+    && (provenance.candidateSha === null || (typeof provenance.candidateSha === "string"
+      && ATTENTION_CANDIDATE_SHA_RE.test(provenance.candidateSha)))
+  );
   if (typeof a.id !== "string" || !/^[0-9a-f]{24}$/.test(a.id)
     || typeof a.raisedAt !== "number" || !Number.isFinite(a.raisedAt) || a.raisedAt <= 0
     || !ATTENTION_KINDS.includes(a.kind as AttentionKind)
@@ -1522,6 +1606,7 @@ function attentionFrom(raw: unknown): AttentionRequest | null {
     || typeof r.openedAt !== "number" || !Number.isFinite(r.openedAt) || Number(r.openedAt) <= 0
     || !(r.sessionId === null || typeof r.sessionId === "string")
     || typeof a.programId !== "string" || !a.programId
+    || !provenanceShaped
     || !["open", "send-uncertain", "answered", "refused"].includes(String(a.status))
     || !(a.closedAt === null || (typeof a.closedAt === "number" && Number.isFinite(a.closedAt) && a.closedAt > 0))
     || !(a.refusedReason === null || typeof a.refusedReason === "string")) return null;
@@ -2132,6 +2217,7 @@ let autos: Auto[] = [];
 let watches: Watch[] = [];
 let fleetEvents: FleetEvent[] = [];
 let clarifications: ClarificationRequest[] = [];
+let fleetReports: FleetReport[] = [];
 let attentionRequests: AttentionRequest[] = [];
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
@@ -2482,11 +2568,21 @@ const FLEET_EVENT_KEEP_TERMINAL = WATCH_KEEP_SPENT;
 const MAX_CLARIFICATION_QUESTION = 2000;
 const MAX_CLARIFICATION_ANSWER = 4000;
 const CLARIFICATION_KEEP_TERMINAL = 20;
+const MAX_FLEET_REPORT_TEXT = 4000;
+const FLEET_REPORT_KEEP = 20;
 // Its own constants, copied from the clarification values rather than aliased: the two channels
 // answer to different principals and one may be retuned without silently retuning the other.
 const MAX_ATTENTION_TEXT = 2000;
 const MAX_ATTENTION_ANSWER = 4000;
 const ATTENTION_KEEP_TERMINAL = 20;
+const MAX_ATTENTION_PROVENANCE_TEXT = 200;
+const ATTENTION_CANDIDATE_SHA_RE = /^[0-9a-f]{40,64}$/;
+const ATTENTION_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+function validAttentionBranch(branch: string): boolean {
+  return branch.length <= MAX_ATTENTION_PROVENANCE_TEXT && ATTENTION_BRANCH_RE.test(branch)
+    && !branch.includes("..") && !branch.includes("//") && !branch.includes("@{")
+    && !branch.endsWith("/") && !branch.endsWith(".") && !branch.endsWith(".lock");
+}
 // An unanswered pile is an attention FAILURE, not a queue: past this the MAIN must resolve what it
 // already raised instead of adding to a list nobody can act on.
 const ATTENTION_MAX_OPEN_PER_REQUESTER = 5;
@@ -2942,7 +3038,7 @@ function saveState(): void {
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   const body = JSON.stringify({ token: persistedToken, stewardToken, slots: active, recents, pins, shares, autos, watches,
-    events: fleetEvents, clarifications, attentionRequests, tasks, programs, supervisor,
+    events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks, programs, supervisor,
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
     repoBases, repoWorkers, shelved, undoLands: Object.fromEntries(undoStack), undoDrops: Object.fromEntries(undoDropped),
@@ -5354,6 +5450,76 @@ function clarificationsFor(s: Slot): ClarificationRequest[] {
   return clarifications.filter((c) => bound(c.worker) || bound(c.receiver));
 }
 
+function fleetReportsFor(s: Slot): FleetReport[] {
+  const bound = (b: { slot: number; openedAt: number; sessionId: string | null }): boolean =>
+    b.slot === s.id && b.openedAt === s.openedAt && b.sessionId === s.sessionId;
+  return fleetReports.filter((r) => bound(r.worker) || bound(r.receiver));
+}
+
+function pruneFleetReports(): void {
+  const terminal = fleetReports.filter((report) => {
+    const event = fleetEvents.find((e) => e.id === report.eventId);
+    return !event || event.status === "acknowledged" || event.status === "receiver-gone";
+  }).sort((a, b) => a.reportedAt - b.reportedAt);
+  if (terminal.length <= FLEET_REPORT_KEEP) return;
+  const drop = new Set(terminal.slice(0, terminal.length - FLEET_REPORT_KEEP).map((r) => r.id));
+  fleetReports = fleetReports.filter((r) => !drop.has(r.id));
+}
+
+function fleetReportMessage(event: FleetReportFleetEvent): string {
+  return `[fleet] WORKER REPORT from slot ${event.subjectSlot} (${event.subjectBranch}) `
+    + `[event ${event.id}; report ${event.payload.reportId}]. Read the typed row with `
+    + `GET /api/self/fleet-report, then acknowledge receipt with POST /api/self/events/${event.id}/ack using `
+    + `x-fleet-self-token from $FLEET_SELF_TOKEN.`;
+}
+
+async function openFleetReport(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!body || Object.keys(body).some((key) => key !== "status" && key !== "text"))
+    return json({ error: "body must contain only status and text" }, 400);
+  if (typeof body.status !== "string" || !FLEET_REPORT_STATUSES.includes(body.status as FleetReportStatus))
+    return json({ error: `status must be one of: ${FLEET_REPORT_STATUSES.join(", ")}` }, 400);
+  if (typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+  const text = body.text.trim();
+  if (!text) return json({ error: "text must not be empty" }, 400);
+  if (text.length > MAX_FLEET_REPORT_TEXT)
+    return json({ error: `text must be at most ${MAX_FLEET_REPORT_TEXT} chars` }, 400);
+
+  const resolved = clarificationReceiverFor(s);
+  if ("error" in resolved) return json({ error: resolved.error }, 409);
+  const deliveryDebts = fleetEvents.filter((e) => e.receiverSlot === resolved.receiver.slot
+    && !["acknowledged", "receiver-gone"].includes(e.status)).length;
+  const armedReservations = watches.filter((w) => w.armed && w.slot === resolved.receiver.slot).length;
+  if (deliveryDebts + armedReservations >= FLEET_EVENT_MAX_OPEN_PER_SLOT)
+    return json({ error: "fleet-report receiver has no FleetEvent delivery budget" }, 409);
+
+  const reportedAt = Date.now();
+  const id = randomBytes(12).toString("hex");
+  const eventId = randomBytes(12).toString("hex");
+  const status = body.status as FleetReportStatus;
+  const report: FleetReport = {
+    id, reportedAt, status, text,
+    worker: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId,
+      cwd: s.cwd!, branch: s.worktree!.branch },
+    provenance: { taskId: s.taskId, originId: s.originId, programId: s.programId },
+    receiver: resolved.receiver, basis: resolved.basis, eventId,
+  };
+  const event: FleetReportFleetEvent = {
+    id: eventId, watchId: null,
+    receiverSlot: resolved.receiver.slot, receiverOpenedAt: resolved.receiver.openedAt,
+    receiverSessionId: resolved.receiver.sessionId, receiverIdleSec: 60,
+    subjectSlot: s.id, subjectBranch: s.worktree!.branch,
+    kind: "fleet-report",
+    payload: { reportId: id, status, text, taskId: s.taskId, originId: s.originId,
+      programId: s.programId, basis: resolved.basis },
+    createdAt: reportedAt, status: "pending", attempts: 0, deliveredAt: null, acknowledgedAt: null,
+  };
+  fleetReports = [...fleetReports, report];
+  fleetEvents = [...fleetEvents, event];
+  pruneFleetReports();
+  await saveStateNow();
+  return json({ ok: true, report });
+}
+
 async function replyClarification(s: Slot, id: string, body: Record<string, unknown> | null): Promise<Response> {
   const request = clarifications.find((c) => c.id === id);
   if (!request) return json({ error: "unknown clarification request" }, 404);
@@ -5556,6 +5722,24 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   if (!text) return json({ error: "text must not be empty" }, 400);
   if (text.length > MAX_ATTENTION_TEXT)
     return json({ error: `text must be at most ${MAX_ATTENTION_TEXT} chars` }, 400);
+  const optionalId = (name: "taskId" | "originId"): string | null | Response => {
+    const value = body[name];
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "string" || !value || value.length > MAX_ATTENTION_PROVENANCE_TEXT)
+      return json({ error: `${name} must be null or a non-empty string of at most ${MAX_ATTENTION_PROVENANCE_TEXT} chars` }, 400);
+    return value;
+  };
+  const taskId = optionalId("taskId");
+  if (taskId instanceof Response) return taskId;
+  const originId = optionalId("originId");
+  if (originId instanceof Response) return originId;
+  const branch = body.branch === undefined || body.branch === null ? null : body.branch;
+  if (branch !== null && (typeof branch !== "string" || !validAttentionBranch(branch)))
+    return json({ error: `branch must be null or a valid branch name of at most ${MAX_ATTENTION_PROVENANCE_TEXT} chars` }, 400);
+  const candidateSha = body.candidateSha === undefined || body.candidateSha === null ? null : body.candidateSha;
+  if (candidateSha !== null && (typeof candidateSha !== "string"
+    || !ATTENTION_CANDIDATE_SHA_RE.test(candidateSha)))
+    return json({ error: "candidateSha must be null or a lowercase hexadecimal SHA (40-64 chars)" }, 400);
   const program = boundProgramForMain(s);
   if (!program)
     return json({ error: "not the current bound MAIN of an active program — attention is raised by a program's own main session" }, 409);
@@ -5575,6 +5759,7 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
     id: randomBytes(12).toString("hex"), raisedAt: Date.now(), kind, text,
     requester: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
     programId: program.id,
+    provenance: { taskId, originId, programId: program.id, branch, candidateSha },
     status: "open", answer: null, refusedReason: null, closedAt: null,
   };
   attentionRequests = [...attentionRequests, request];
@@ -8804,6 +8989,8 @@ async function tickWatches(): Promise<void> {
       await saveStateNow();
       const text = event.kind === "clarification-request"
         ? clarificationWatchMessage(event.subjectSlot, event.subjectBranch, event)
+        : event.kind === "fleet-report"
+        ? fleetReportMessage(event)
         : event.kind === "merge-terminal"
         ? mergeWatchMessage(event.subjectSlot, event.subjectCwd, event)
         : event.kind === "post-land-audit"
@@ -13729,6 +13916,11 @@ if (existsSync(STATE_FILE)) {
     if (Array.isArray((persisted as { clarifications?: unknown }).clarifications))
       clarifications = ((persisted as { clarifications: unknown[] }).clarifications)
         .map(clarificationFrom).filter((c): c is ClarificationRequest => c !== null);
+    // The report rail is another member of the same state document. Legacy state has no member;
+    // malformed rows are discarded because both endpoint bindings and provenance are server facts.
+    if (Array.isArray((persisted as { fleetReports?: unknown }).fleetReports))
+      fleetReports = ((persisted as { fleetReports: unknown[] }).fleetReports)
+        .map(fleetReportFrom).filter((r): r is FleetReport => r !== null);
     // Same rule for the owner-facing twin: legacy state has no member and loads as [], and a row
     // whose requester binding or programId is malformed is dropped rather than reconstructed.
     if (Array.isArray((persisted as { attentionRequests?: unknown }).attentionRequests))
@@ -16414,6 +16606,19 @@ Bun.serve<WSData>({
       if (!s.worktree)
         return json({ error: "not a lane — only a worker lane can open a clarification" }, 409);
       return openClarification(s, await readJson(req));
+    }
+
+    // Worker result reports are the immutable sibling of clarifications on the SAME FleetEvent
+    // transport. Only a real lane may POST (the steward is a standing role, not a lane); GET is
+    // dual-scoped to the exact worker or receiver occupant. Every identity is derived server-side.
+    if (url.pathname === "/api/self/fleet-report" && (req.method === "GET" || req.method === "POST")) {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (req.method === "GET") return json({ reports: fleetReportsFor(s) });
+      if (!s.worktree || s.label === STEWARD_LABEL)
+        return json({ error: "not a worker lane — MAIN and the steward cannot file a fleet report" }, 409);
+      return openFleetReport(s, await readJson(req));
     }
 
     const selfClarificationReply = /^\/api\/self\/clarifications\/([0-9a-f]{24})\/reply$/.exec(url.pathname);

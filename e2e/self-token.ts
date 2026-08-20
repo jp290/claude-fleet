@@ -127,6 +127,7 @@ export async function run(ctx: Ctx): Promise<void> {
     ["/api/self/criterion", { method: "POST", body: JSON.stringify({ text: "a plain session has no founding task" }) }],
     ["/api/self/verify-intent", { method: "POST", body: JSON.stringify({ phase: "start" }) }],
     ["/api/self/clarifications", { method: "POST", body: JSON.stringify({ question: "a plain session is not a worker lane" }) }],
+    ["/api/self/fleet-report", { method: "POST", body: JSON.stringify({ status: "complete", text: "a plain session is not a worker lane" }) }],
   ];
   const refusals = await Promise.all(laneOnly.map(async ([path, init]) => {
     const r = await fetch(BASE + path, {

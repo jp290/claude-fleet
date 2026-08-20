@@ -15,6 +15,8 @@ interface AttentionRow {
   id: string; raisedAt: number; kind: "decision" | "blocked" | "review-ready"; text: string;
   requester: { slot: number; openedAt: number; sessionId: string | null };
   programId: string; programTitle?: string | null;
+  provenance?: { taskId: string | null; originId: string | null; programId: string | null;
+    branch: string | null; candidateSha: string | null };
   status: "open" | "send-uncertain" | "answered" | "refused";
   answer: { text: string; at: number; by: "owner" } | null;
   refusedReason: string | null; closedAt: number | null;
@@ -108,7 +110,12 @@ export async function run(): Promise<void> {
   // --- 1. who may raise, and what the server derives rather than believes -----------------------
   // BREAKS IF: the route stops deriving programId from the binding and reads it from the body, or
   // the kind union is widened, or the non-lane/binding gates are dropped.
-  const decision = await raised(await selfRaise(tokA, { kind: "decision", text: "Ship cut 2 now or after the audit?", programId: "spoofed" }));
+  const candidateSha = "b".repeat(40);
+  const decision = await raised(await selfRaise(tokA, {
+    kind: "decision", text: "Ship cut 2 now or after the audit?", programId: "spoofed",
+    taskId: "task-declared-by-main", originId: "origin-declared-by-main",
+    branch: "fleet/result-rail", candidateSha,
+  }));
   const blocked = await raised(await selfRaise(tokA, { kind: "blocked", text: "The land gate needs an owner token I do not hold." }));
   const reviewReady = await raised(await selfRaise(tokA, { kind: "review-ready", text: "The inbox slice is ready for your eyes." }));
   check("attention: a bound MAIN raises all three kinds and programId is server-derived, never body-supplied",
@@ -117,6 +124,14 @@ export async function run(): Promise<void> {
         && a.answer === null && a.closedAt === null)
       && readRows().length === 3,
     JSON.stringify({ decision, rows: readRows().length }));
+  check("attention object provenance: task, branch and candidate are fields while programId stays server-derived",
+    decision?.provenance?.taskId === "task-declared-by-main"
+      && decision.provenance.originId === "origin-declared-by-main"
+      && decision.provenance.branch === "fleet/result-rail"
+      && decision.provenance.candidateSha === candidateSha
+      && decision.provenance.programId === programA
+      && decision.programId === programA && !JSON.stringify(decision).includes("spoofed"),
+    JSON.stringify(decision?.provenance));
 
   const laneRaise = await selfRaise(laneTok, { kind: "decision", text: "may a lane ask the owner?" });
   const laneRaiseText = await laneRaise.text();
@@ -137,9 +152,14 @@ export async function run(): Promise<void> {
   const emptyText = await selfRaise(tokA, { kind: "decision", text: "   " });
   const hugeText = await selfRaise(tokA, { kind: "decision", text: "x".repeat(2001) });
   const nonString = await selfRaise(tokA, { kind: "decision", text: 17 });
-  check("attention validation: unknown kind, empty, oversized and non-string text all fail closed 400",
-    [badKind, emptyText, hugeText, nonString].every((r) => r.status === 400) && readRows().length === 3,
-    [badKind, emptyText, hugeText, nonString].map((r) => r.status).join(","));
+  const badBranch = await selfRaise(tokA, { kind: "decision", text: "bad branch", branch: "bad..branch" });
+  const badSha = await selfRaise(tokA, { kind: "decision", text: "bad sha", candidateSha: "not-a-sha" });
+  const longTask = await selfRaise(tokA, { kind: "decision", text: "long task", taskId: "t".repeat(201) });
+  check("attention validation: text, branch, candidate SHA and provenance lengths all fail closed 400",
+    [badKind, emptyText, hugeText, nonString, badBranch, badSha, longTask]
+      .every((r) => r.status === 400) && readRows().length === 3,
+    [badKind, emptyText, hugeText, nonString, badBranch, badSha, longTask]
+      .map((r) => r.status).join(","));
 
   // --- 2. dedupe and the open cap ---------------------------------------------------------------
   // BREAKS IF: dedupe keys on binding+kind alone (the second decision below would vanish), or on
@@ -299,6 +319,29 @@ export async function run(): Promise<void> {
     JSON.stringify({ beforeKill, statuses: afterKill.map((a) => a.status) }));
 
   for (const slot of [mainA, mainB, mainC, lane.slot]) await post(`/api/slots/${slot}/kill`, {});
+
+  // Pre-provenance rows are a distinct historical shape: absence means UNKNOWN and must stay
+  // absent on both disk and the owner route. Normalizing it to a five-null object would invent an
+  // observation about fields the old server never knew existed.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const withLegacy = JSON.parse(readFileSync(statePath, "utf8")) as { attentionRequests?: AttentionRow[] };
+  const legacyId = "d".repeat(24);
+  withLegacy.attentionRequests = [...(withLegacy.attentionRequests ?? []), {
+    id: legacyId, raisedAt: Date.now(), kind: "decision", text: "legacy row without object provenance",
+    requester: { slot: mainA, openedAt: Number(rowA.openedAt),
+      sessionId: typeof rowA.sessionId === "string" ? rowA.sessionId : null },
+    programId: programA, status: "refused", answer: null,
+    refusedReason: "legacy terminal fixture", closedAt: Date.now(),
+  }];
+  writeFileSync(statePath, JSON.stringify(withLegacy, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const legacyDisk = readRow(legacyId);
+  const legacyOwner = (await ownerRows()).find((a) => a.id === legacyId);
+  check("attention legacy provenance: a row without the field survives as UNKNOWN, never five invented nulls",
+    !!legacyDisk && !("provenance" in legacyDisk)
+      && !!legacyOwner && !("provenance" in legacyOwner),
+    JSON.stringify({ disk: legacyDisk, owner: legacyOwner }));
 
   // The zero case is ABSENT, not 0 — the field is omitted when nothing waits (server.ts: the 12 KiB
   // poll budget), and the client reads absent as zero. Asserted last, once every row above has

@@ -50,6 +50,58 @@ function pollPlan(hidden: boolean, saver: boolean): { pollMs: number; chatMs: nu
   const t = saver ? SAVER : NORMAL;
   return hidden ? { pollMs: 0, chatMs: 0, boardMs: 0, seed: t.seed } : { ...t };
 }
+
+// --- GITPATH: git's two path shapes, decoded once, at the one boundary that matters -----------
+//
+// Git hands this client paths in two shapes and the difference is invisible until a click misses.
+// `git status --porcelain`, `git diff --name-status` and the `diff --git` header all QUOTE a path
+// the moment it holds a space or a byte above ASCII; `git ls-files -z` (the explorer tree) never
+// does. Measured on 2026-08-20:
+//     ?? "untracked file.txt"                          ← a SPACE is enough
+//      M "umlaut-\303\244\303\266\303\274.txt"         ← \NNN is an octal BYTE, not a character
+//     R  "old name.txt" -> "new name.txt"              ← a rename names both sides
+//     diff --git "a/umlaut-\303\244….txt" "b/umlaut-\303\244….txt"   ← prefix INSIDE the quotes
+// Every file row here turns such a line into a REQUEST PATH, so the decode belongs at that
+// boundary, once: an undecoded `"untracked file.txt"` asks the server for a file whose name really
+// does begin with a quote, and gets "no such file" — which reads to the owner as "that file is
+// gone". Both producers (porcelain rows, diff headers) go through this ONE decoder on purpose:
+// a file pick matches a diff file by string equality, so two half-decodes would miss each other.
+//
+// Pure, and kept clear of the DOM/localStorage lines below it: the e2e suite has no DOM harness,
+// so it cuts this block out and runs it for real (e2e/explorer.ts) — same method as pollPlan above.
+const GITPATH_ESCAPES: Record<string, number> = {
+  a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92,
+};
+function gitUnquote(s: string): string {
+  if (s.length < 2 || !s.startsWith('"') || !s.endsWith('"')) return s;
+  const body = s.slice(1, -1);
+  const enc = new TextEncoder();
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== "\\") { for (const b of enc.encode(c)) bytes.push(b); continue; }
+    const n = body[++i];
+    if (n === undefined) break;
+    if (n >= "0" && n <= "7") { bytes.push(parseInt(body.slice(i, i + 3), 8) & 0xff); i += 2; continue; }
+    const known = GITPATH_ESCAPES[n];
+    if (known !== undefined) bytes.push(known);
+    else for (const b of enc.encode(n)) bytes.push(b);
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+// One porcelain-shaped row → the path the reader means. The rename ARROW is only read when the
+// status code actually says rename/copy: a file may legitimately be NAMED `a -> b`, and git does
+// not quote it for that, so splitting on the arrow unconditionally would invent a path.
+function porcelainPath(line: string): string {
+  const rest = line.slice(3);
+  if (line[0] === "R" || line[0] === "C") {
+    const arrow = rest.indexOf(" -> ");
+    // a rename means the file that EXISTS now — the old name is history, and nothing can open it
+    if (arrow >= 0) return gitUnquote(rest.slice(arrow + 4));
+  }
+  return gitUnquote(rest);
+}
+
 let dataSaver = localStorage.getItem("fleet.datasaver") === "1";
 const plan = () => pollPlan(document.hidden, dataSaver);
 
@@ -810,6 +862,15 @@ interface BriefInfo { branch: string | null; head: string | null; worktree: Work
   uncommitted: number; uncommittedFiles: string[]; files: string[]; shortstat: string;
   commits: BriefCommit[]; repoCommits: BriefCommit[]; laneScoped: boolean; laneBase: string | null;
   ahead: number; behind: number; gitOp?: boolean }
+// Which repo string the REPO-WIDE routes will accept for this slot. `/api/commits` validates its
+// `repo` against knownRepos() (server.ts) — which holds a lane's PARENT repo and a plain session's
+// own cwd, never a lane's worktree path. Measured 2026-08-20: for a lane, `worktree.repo` is in
+// that list; for a plain repo session, `cwd` is. `repo` (the canonical toplevel) is deliberately
+// NOT preferred — a session opened in a SUBDIRECTORY has a toplevel that knownRepos never added,
+// and the lens says so honestly rather than this guessing a third spelling.
+const repoOfSlot = (s: SlotInfo | undefined, brief: BriefInfo): string | null =>
+  brief.worktree?.repo ?? s?.cwd ?? null;
+
 const boardBody = $("boardbody");
 let boardOpen = localStorage.getItem("fleet.board") === "1";
 let boardBusy = false;
@@ -1650,17 +1711,48 @@ function errorsSection(): HTMLElement | null {
 //
 // The tree is `git ls-files` and nothing else — see the /api/tree comment in server.ts for why,
 // and for the one thing it therefore cannot show (untracked files; the card above shows those).
+// `-z` also means the server's list is the ONE git path shape that is never quoted, so nothing
+// here needs GITPATH's decoder; the changed-file cards above, which read porcelain, do.
 //
 // Two rules this cache exists to keep, both of them about the 3s board repaint:
 //   · it is fetched ONCE per working directory, never from the repaint loop. /api/sessions at 2s
 //     is what data-saver.md had to shrink; a subprocess per board render would put it back.
 //   · what the reader has OPENED is module state, not DOM state, so a repaint cannot fold the
 //     tree shut under their hands. Same reason `agentsOpen` and the picker's `pkdOpen` are.
+//
+// Everything the reader has DONE to this card is keyed BY CWD, and that is the third rule. The
+// open-folder set used to be one global Set of `"a/b"` prefixes: two repos that both have a `src/`
+// shared its state, so opening `src` in one pane silently opened it in the other — a repaint then
+// presented one repo's shape as the other's. Search text, scroll offset and the picked file are
+// per-cwd for the same reason.
 interface TreeInfo { root: string; files: string[]; total: number; capped: boolean }
 const fxTree = new Map<string, TreeInfo | { error: string }>(); // keyed by the slot's cwd
 const fxAsked = new Set<string>();  // the latch: one fetch per cwd, retried only by ⟳
-const fxOpen = new Set<string>();   // directories the reader has expanded, as "a/b" prefixes
+const fxOpen = new Map<string, Set<string>>();   // cwd → directories expanded, as "a/b" prefixes
+const fxQuery = new Map<string, string>();       // cwd → the card's search text
+const fxScroll = new Map<string, number>();      // cwd → the card tree's scroll offset
 let fxShell: Shell | null = null;
+// The card's search box is REBUILT by every 3s repaint (renderBoard replaceChildren's the whole
+// board), so surviving the refresh cannot mean "keep the element" — the element is gone. It means
+// restoring what the reader could lose: the text, the caret, and the focus. Only the focus needs a
+// flag, because "was this input focused" is not recoverable from a node that no longer exists.
+let fxFocusCwd: string | null = null;
+let fxCaret = 0;
+// Restoring focus and scroll has to happen AFTER the board has committed its new nodes: until
+// `boardBody.replaceChildren(...)` runs, the card this built is not in the document, and .focus()
+// on a detached node is a silent no-op. A microtask is not good enough — renderBoard is async, so
+// one can land between the build and the commit. renderBoard calls this at the commit point.
+let fxAfterPaint: (() => void) | null = null;
+function fxRestoreAfterPaint(): void {
+  const fn = fxAfterPaint;
+  fxAfterPaint = null;
+  fn?.();
+}
+const fxOpenSet = (cwd: string): Set<string> => {
+  let set = fxOpen.get(cwd);
+  if (!set) { set = new Set(); fxOpen.set(cwd, set); }
+  return set;
+};
 
 // the tree as a nested map, derived from the flat path list on every paint. Cheap (a few thousand
 // strings at most, capped server-side) and it keeps ONE source of truth — the flat list the server
@@ -1681,34 +1773,112 @@ function treeOf(paths: string[]): TreeNode {
   return root;
 }
 
+// The search. It matches the WHOLE relative path, not the basename, because the question the
+// explorer could not answer was "where is the file whose path contains …" — `e2e/pins`, `docs/ver`
+// and `client.ts` all have to find something. Space-separated terms are ANDed in any order, so
+// `pins e2e` and `e2e pins` are the same query; case is ignored.
+//
+// A hit list is FLAT and deliberately so: a filtered tree still has to be walked open folder by
+// open folder, which is the work the search exists to remove. Sorted shortest-path-first so the
+// closest match to a short query is the first row rather than the alphabetically luckiest one.
+function matchTree(paths: string[], query: string): string[] {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  return paths
+    .filter((p) => { const lc = p.toLowerCase(); return terms.every((t) => lc.includes(t)); })
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+}
+
 // One renderer, two homes: the board card and the explorer window's list pane. `onPick` is what a
 // FILE row does — the only thing the two callers disagree about. Folding a directory repaints
 // THIS container from the root and nothing else: re-rendering the board would re-run its fetches,
 // and a fold is not new information.
-function paintTree(into: HTMLElement, root: TreeNode, onPick: (rel: string) => void,
-  picked: () => string | null): void {
-  const redraw = () => { into.replaceChildren(); walk(root, "", 0); };
-  const walk = (node: TreeNode, prefix: string, depth: number): void => {
+//
+// Rows are <button>s. A div with an onclick is reachable by mouse only; the tag is what makes the
+// tree tabbable, Enter/Space-activatable and focus-ringed without a keydown handler that could
+// drift from the click handler. `onRows` hands the flat visual order back to a caller that has a
+// window shell to drive with it (↑↓ + Enter) — the card has no shell and passes none.
+interface PaintOpts {
+  open: Set<string>;
+  onPick: (rel: string) => void;
+  picked: () => string | null;
+  query?: string;
+  all?: string[];               // the unfiltered list, so a filtered paint can still count the whole
+  onRows?: (rows: ShellRow[]) => void;
+  capped?: boolean;
+  shown?: number;               // how many paths the server actually delivered
+  total?: number;               // how many it says exist
+}
+function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void {
+  // Folding repaints this container, which DETACHES the row that was just activated — so a reader
+  // who opened a folder with Enter lost the keyboard entirely, and the next Tab started from the
+  // top of the page. The row is rebuilt with the same `rel`, so focus is handed back to it.
+  let wantFocus: string | null = null;
+  const takeFocus = (rel: string, row: HTMLElement) => {
+    if (wantFocus !== rel) return;
+    wantFocus = null;
+    row.focus();
+  };
+  const redraw = () => { into.replaceChildren(); const rows: ShellRow[] = []; walk(rows); o.onRows?.(rows); };
+  const fileRow = (rel: string, name: string, depth: number, rows: ShellRow[]) => {
+    const row = el("button", `fxrow fxfile${o.picked() === rel ? " fxpicked" : ""}`) as HTMLButtonElement;
+    row.style.paddingLeft = `${depth * 12 + 12}px`;
+    row.appendChild(el("span", "fxname", name));
+    row.title = rel;
+    const act = () => { o.onPick(rel); redraw(); };
+    row.onclick = act;
+    into.appendChild(row);
+    rows.push({ el: row, open: act });
+  };
+  const walkTree = (node: TreeNode, prefix: string, depth: number, rows: ShellRow[]): void => {
     for (const [name, kid] of Array.from(node.dirs.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
       const rel = prefix ? `${prefix}/${name}` : name;
-      const open = fxOpen.has(rel);
-      const row = el("div", "fxrow fxdir");
+      const open = o.open.has(rel);
+      const row = el("button", `fxrow fxdir${open ? " fxopen" : ""}`) as HTMLButtonElement;
       row.style.paddingLeft = `${depth * 12}px`;
       row.appendChild(el("span", "fxtwist", open ? "▾" : "▸"));
       row.appendChild(el("span", "fxname", name));
-      row.onclick = () => { if (open) fxOpen.delete(rel); else fxOpen.add(rel); redraw(); };
+      row.title = `${rel}/ — ${open ? "collapse" : "expand"}`;
+      row.setAttribute("aria-expanded", open ? "true" : "false");
+      const act = () => { if (open) o.open.delete(rel); else o.open.add(rel); wantFocus = rel; redraw(); };
+      row.onclick = act;
       into.appendChild(row);
-      if (open) walk(kid, rel, depth + 1);
+      takeFocus(rel, row);
+      rows.push({ el: row, open: act });
+      if (open) walkTree(kid, rel, depth + 1, rows);
     }
     for (const name of node.files.slice().sort((a, b) => a.localeCompare(b))) {
-      const rel = prefix ? `${prefix}/${name}` : name;
-      const row = el("div", `fxrow fxfile${picked() === rel ? " sel" : ""}`);
-      row.style.paddingLeft = `${depth * 12 + 12}px`;
-      row.appendChild(el("span", "fxname", name));
-      row.title = rel;
-      row.onclick = () => { onPick(rel); redraw(); };
-      into.appendChild(row);
+      fileRow(prefix ? `${prefix}/${name}` : name, name, depth, rows);
     }
+  };
+  const walk = (rows: ShellRow[]): void => {
+    const q = (o.query ?? "").trim();
+    if (!q) { walkTree(root, "", 0, rows); return; }
+    const hits = matchTree(o.all ?? [], q);
+    if (!hits.length) {
+      // The two empty answers are DIFFERENT facts and the reader has to be able to act on which
+      // one this is: nothing matches, or the server never sent the part that might. TREE_CAP is
+      // not a rendering detail — a capped tree makes "no match" an unfinished sentence.
+      into.appendChild(el("div", "bempty", o.capped
+        ? `nothing here matches “${q}” — but the server sent only the first ${o.shown ?? 0} of `
+          + `${o.total ?? 0} tracked files, so a match may exist outside what was delivered`
+        : `nothing matches “${q}” among the ${o.total ?? o.shown ?? 0} tracked files in this repo`));
+      return;
+    }
+    for (const rel of hits) {
+      const row = el("button", `fxrow fxfile fxhit${o.picked() === rel ? " fxpicked" : ""}`) as HTMLButtonElement;
+      const cut = rel.lastIndexOf("/");
+      if (cut >= 0) row.appendChild(el("span", "fxdim", `${rel.slice(0, cut)}/`));
+      row.appendChild(el("span", "fxname", cut >= 0 ? rel.slice(cut + 1) : rel));
+      row.title = rel;
+      const act = () => { o.onPick(rel); redraw(); };
+      row.onclick = act;
+      into.appendChild(row);
+      rows.push({ el: row, open: act });
+    }
+    if (o.capped) into.appendChild(el("div", "bempty",
+      `${hits.length} match${hits.length === 1 ? "" : "es"} — searched only the first ${o.shown ?? 0}`
+      + ` of ${o.total ?? 0} tracked files the server delivered`));
   };
   redraw();
 }
@@ -1722,6 +1892,24 @@ async function loadTree(slot: number, cwd: string): Promise<void> {
     fxTree.set(cwd, { error: e?.error ?? "the file tree could not be read" });
   }
   void renderBoard();
+}
+
+// The search box, built the same way for the card and for the window. It is one function because
+// the two must agree about what a query IS — a filter that means different things in the two
+// places would make the window's answer an unreliable check on the card's.
+function fxSearchInput(cwd: string, onInput: () => void, wide: boolean): HTMLInputElement {
+  const inp = el("input", wide ? "pkfilterin" : "fxfilterin") as HTMLInputElement;
+  inp.type = "text";
+  inp.spellcheck = false;
+  inp.autocomplete = "off";
+  // the shell consumes Enter in the CAPTURE phase to open the selected row; this field wants that
+  // (type, then Enter on the best match), so it does NOT opt out via data-ownEnter.
+  inp.placeholder = "search paths — e.g. e2e/pins";
+  inp.value = fxQuery.get(cwd) ?? "";
+  inp.oninput = () => { fxQuery.set(cwd, inp.value); fxCaret = inp.selectionStart ?? inp.value.length; onInput(); };
+  inp.onfocus = () => { fxFocusCwd = cwd; };
+  inp.onblur = () => { if (fxFocusCwd === cwd) fxFocusCwd = null; };
+  return inp;
 }
 
 // The card. Compact by design — it lists the repo root and lets the reader walk down; the WINDOW
@@ -1750,10 +1938,33 @@ function fileTreeSection(slot: number, cwd: string): HTMLElement {
     return sec;
   }
   if ("error" in t) { sec.appendChild(el("div", "bempty", t.error)); return sec; }
+  if (!t.total) {
+    sec.appendChild(el("div", "bempty",
+      "this repository tracks no files yet — `git ls-files` is empty, so there is nothing to list"));
+    return sec;
+  }
   sec.appendChild(el("div", "bstate", `${t.total} tracked file${t.total === 1 ? "" : "s"}`
     + (t.capped ? ` · showing the first ${t.files.length}` : "")));
   const box = el("div", "fxtree");
-  paintTree(box, treeOf(t.files), (rel) => openExplorer(slot, cwd, rel), () => null);
+  const inp = fxSearchInput(cwd, () => repaint(), false);
+  sec.appendChild(inp);
+  const repaint = () => paintTree(box, treeOf(t.files), {
+    open: fxOpenSet(cwd),
+    onPick: (rel) => openExplorer(slot, cwd, rel),
+    picked: () => null,
+    query: fxQuery.get(cwd) ?? "",
+    all: t.files, capped: t.capped, shown: t.files.length, total: t.total,
+  });
+  repaint();
+  // the 3s repaint discards this element and builds a new one, so the offset has to be carried in
+  // module state and re-applied; without it the card silently jumped to the top every three seconds
+  box.onscroll = () => { fxScroll.set(cwd, box.scrollTop); };
+  const y = fxScroll.get(cwd) ?? 0;
+  const refocus = fxFocusCwd === cwd;
+  fxAfterPaint = () => {
+    if (y) box.scrollTop = y;
+    if (refocus) { inp.focus(); inp.setSelectionRange(fxCaret, fxCaret); }
+  };
   sec.appendChild(box);
   return sec;
 }
@@ -1769,14 +1980,21 @@ function openExplorer(slot: number, cwd: string, startAt?: string) {
   const shell = openShell({
     id: "files",
     title: "Files",
-    subtitle: `${baseName(cwd)} · ${t.total} tracked`,
+    // TREE_CAP is a property of the ANSWER, not of the card that first showed it: the window is
+    // where the reader searches, so it is the window that most needs to say the list is partial.
+    subtitle: `${baseName(cwd)} · ${t.total} tracked`
+      + (t.capped ? ` · only the first ${t.files.length} were sent` : ""),
     detailHint: "Pick a file on the left. Reading is all it does until you press ✎.",
     listWidth: 340,
     onClose: () => { fxShell = null; },
   });
   fxShell = shell;
+  // the path of what is open, above the list — a basename in the header is not an answer to
+  // "which of the four files called index.ts am I reading"
+  const path = el("div", "fxpath", "");
   const open = (rel: string) => {
     picked = rel;
+    path.textContent = rel;
     showFileView(shell, {
       path: `${cwd}/${rel}`,
       label: rel.split("/").pop() ?? rel,
@@ -1784,14 +2002,34 @@ function openExplorer(slot: number, cwd: string, startAt?: string) {
       edit: { slot },
       back: { label: "the tree", go: () => {
         picked = null;
+        path.textContent = "";
         shell.setCloseGuard(null);
         shell.detail.replaceChildren(el("div", "shellhint", "Pick a file on the left."));
+        repaint();
       } },
     });
+    repaint();
   };
-  paintTree(shell.list, treeOf(t.files), open, () => picked);
+  const repaint = () => paintTree(shell.list, treeOf(t.files), {
+    open: fxOpenSet(cwd),
+    onPick: open,
+    picked: () => picked,
+    query: fxQuery.get(cwd) ?? "",
+    all: t.files, capped: t.capped, shown: t.files.length, total: t.total,
+    // ↑↓ walk the rows and Enter opens the selected one — the same keyboard contract every other
+    // window here has. Without it this list was mouse-only, alone among the four.
+    onRows: (rows) => {
+      shell.setRows(rows);
+      // clicking a row also moves the shell's cursor there, so Enter afterwards means "this row"
+      for (const [i, r] of rows.entries()) r.el.onfocus = () => shell.select(i, false, false);
+    },
+  });
+  shell.tools.appendChild(fxSearchInput(cwd, repaint, true));
+  shell.tools.appendChild(path);
+  repaint();
   if (startAt) open(startAt);
 }
+
 
 let boardAgain = false;
 async function renderBoard() {
@@ -1967,7 +2205,7 @@ async function renderBoard() {
             // as with the committed list below: every row here opened the WHOLE working diff,
             // whichever row you clicked. Now it opens the review window on this file — and an
             // UNTRACKED file has no diff to open on, so it goes straight to the file itself.
-            const upath = f.slice(3);
+            const upath = porcelainPath(f);
             const untracked = f.startsWith("??");
             row.title = untracked ? `${f} — click to read it (untracked: there is no diff yet)`
               : `${f} — click to see what changed in this file`;
@@ -2114,12 +2352,31 @@ async function renderBoard() {
       // 3 — COMMITS: the history, and deliberately TWO lists ("vllt beides", owner §F4) — what
       // this lane/session added, and what the project got around it. The second list is empty
       // whenever it would merely repeat the first (server: repoRecentCommits).
-      const commitRow = (cm: BriefCommit) => {
-        const row = el("div", "brow");
+      //
+      // Both lists are CLICKABLE, and each opens the lens whose route can actually serve it — the
+      // two are not interchangeable, which is why this takes a `where` instead of guessing.
+      // Measured 2026-08-20 against a live server, real requests, real status codes:
+      //   · a lane commit  → GET /api/slots/:id/commit-diff?hash=…            → 200 + diff + files
+      //   · a REPO commit  → the same route                                   → 404 "not a commit
+      //     of this slot", and rightly so: that route recomputes slotCommits (base..HEAD) and
+      //     checks membership, and the second list is `git log <base>` — disjoint by construction.
+      //     GET /api/commit-diff?repo=<worktree.repo>&hash=… serves it 200, and every hash in
+      //     the second list was in that route's own list. So: the Commits lens, opened on it.
+      // A `<button>` rather than a div with an onclick: Enter/Space, tab focus and the focus ring
+      // come with the element, and criterion "no double-click or hover requirement" is then a
+      // property of the tag, not of a handler someone has to remember to keep.
+      const commitRow = (cm: BriefCommit, where: "session" | "repo") => {
+        const row = el("button", "brow") as HTMLButtonElement;
         row.appendChild(el("span", "bhash", cm.hash));
         const sub = el("span", "bsub", cm.subject);
-        sub.title = cm.subject;
+        sub.title = cm.subject; // the row is one line wide; a long subject is only readable on hover
         row.appendChild(sub);
+        row.title = where === "session"
+          ? `${cm.hash} — open this commit's diff and file list`
+          : `${cm.hash} — open this commit in the repo's Commits lens (it is not this session's own commit)`;
+        row.onclick = where === "session"
+          ? () => void openReview(slot, "working", { k: "commit", hash: cm.hash })
+          : () => void openActivity("commits", { repo: repoOfSlot(s, brief), hash: cm.hash });
         return row;
       };
       const csec = el("div", "bsec");
@@ -2128,11 +2385,11 @@ async function renderBoard() {
         : brief.sessionStart ? "this session" : "recent"));
       if (!brief.commits.length) csec.appendChild(el("div", "bempty",
         brief.laneScoped ? `no commits yet — even with ${brief.laneBase ?? "main"}` : "no commits this session yet"));
-      for (const cm of brief.commits) csec.appendChild(commitRow(cm));
+      for (const cm of brief.commits) csec.appendChild(commitRow(cm, "session"));
       if (brief.repoCommits.length) {
         csec.appendChild(el("div", "bsubhead", brief.laneScoped
           ? `already in ${brief.laneBase ?? "main"}` : "earlier in this repo"));
-        for (const cm of brief.repoCommits) csec.appendChild(commitRow(cm));
+        for (const cm of brief.repoCommits) csec.appendChild(commitRow(cm, "repo"));
       }
       nodes.push(csec);
 
@@ -2150,7 +2407,7 @@ async function renderBoard() {
           // card listed thirty files and answered the same way for all of them. It now opens the
           // review window ON the file you clicked. `f` is porcelain ("M  path"), so the path
           // starts at column 3.
-          const path = f.slice(3);
+          const path = porcelainPath(f);
           row.title = `${f} — click to see what changed in this file`;
           row.onclick = () => void openReview(slot, "working", { k: "file", path });
           fsec.appendChild(row);
@@ -2512,6 +2769,9 @@ async function renderBoard() {
     const y = boardBody.scrollTop;
     boardBody.replaceChildren(...nodes);
     boardBody.scrollTop = y;
+    // the explorer card's own scroll offset and its search box's focus/caret — restorable only
+    // now that the nodes this pass built are actually in the document (see fxRestoreAfterPaint)
+    fxRestoreAfterPaint();
   } finally {
     boardBusy = false;
     if (boardAgain) {
@@ -5009,21 +5269,39 @@ function renderDiffInto(target: HTMLElement, diff: string) {
 
 // A unified diff's content lines always carry a ' ', '+' or '-' prefix, so `diff --git` at column
 // zero is always a file header — the split needs no state machine and file CONTENT cannot spoof it.
-interface DiffFile { path: string; text: string; add: number; del: number }
-function diffPath(header: string): string {
+// `path` is what the row SAYS (a rename says both sides); `newPath` is what still exists on disk
+// and is therefore the only one a file pick or a "read the whole file" can be resolved against.
+// They differ for exactly one shape — a rename — and conflating them is why a rename row clicked
+// from the board's changed-files card answered "that file is no longer in this diff": the board
+// sends the new path (server.ts sessionFiles already reduces `--name-status` to its last field)
+// and the diff header had been rendered as "old → new".
+interface DiffFile { path: string; newPath: string; text: string; add: number; del: number }
+function diffPath(header: string): { path: string; newPath: string } {
+  const rest = header.slice("diff --git ".length);
+  // A QUOTED header quotes each side WHOLE, `a/`/`b/` prefix inside the quotes — so it matches
+  // none of the unquoted patterns below and used to fall through to the raw header as a "path".
+  if (rest.startsWith('"')) {
+    const q = /^("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")$/.exec(rest);
+    if (q) {
+      const a = gitUnquote(q[1]).slice(2), b = gitUnquote(q[2]).slice(2);
+      return { path: a === b ? a : `${a} → ${b}`, newPath: b };
+    }
+    return { path: rest, newPath: rest };
+  }
   // `a/x b/x` for an edit; a rename has two different paths and is shown as such. Matching the
   // same path on both sides first is what keeps filenames containing spaces intact.
-  const same = /^diff --git a\/(.+) b\/\1$/.exec(header);
-  if (same) return same[1];
-  const two = /^diff --git a\/(.+?) b\/(.+)$/.exec(header);
-  return two ? `${two[1]} → ${two[2]}` : header.slice("diff --git ".length);
+  const same = /^a\/(.+) b\/\1$/.exec(rest);
+  if (same) return { path: same[1], newPath: same[1] };
+  const two = /^a\/(.+?) b\/(.+)$/.exec(rest);
+  return two ? { path: two[1] === two[2] ? two[1] : `${two[1]} → ${two[2]}`, newPath: two[2] }
+    : { path: rest, newPath: rest };
 }
 function splitDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let cur: DiffFile | undefined;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      cur = { path: diffPath(line), text: line, add: 0, del: 0 };
+      cur = { ...diffPath(line), text: line, add: 0, del: 0 };
       files.push(cur);
       continue;
     }
@@ -5224,10 +5502,12 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
         // into a const first: `pick` is a mutable binding another closure writes, so TS drops its
         // narrowing inside the callback below
         const path = pick.path;
-        const f = cd.files.find((x) => x.path === path);
+        // `newPath` too: a rename ROW reads "old → new", while every caller that sends a path
+        // (the board's changed-files card) sends the side that still exists.
+        const f = cd.files.find((x) => x.path === path || x.newPath === path);
         if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is not in this commit")); return; }
         shell.detail.appendChild(el("div", "rvsub", `${f.path} · +${f.add} −${f.del}`));
-        rvWholeFile(f.path, f.text, hash);
+        rvWholeFile(f.newPath, f.text, hash);
         showDiffText(shell.detail, f.text);
         return;
       }
@@ -5248,11 +5528,11 @@ async function openReview(slotId: number, initial: RvSource, startAt?: RvPick) {
     if (d.error) { shell.detail.appendChild(el("div", "diffstat", d.error)); return; }
     if (pick.k === "file") {
       const path = pick.path;
-      const f = d.files.find((x) => x.path === path);
+      const f = d.files.find((x) => x.path === path || x.newPath === path);
       if (!f) { shell.detail.appendChild(el("div", "shellhint", "that file is no longer in this diff")); return; }
       shell.detail.appendChild(el("div", "rvhead", f.path));
       shell.detail.appendChild(el("div", "diffstat", `+${f.add} −${f.del}`));
-      rvWholeFile(f.path, f.text, null);
+      rvWholeFile(f.newPath, f.text, null);
       showDiffText(shell.detail, f.text);
       return;
     }
@@ -6765,6 +7045,13 @@ interface CommitsResp { repos: string[]; repo: string | null; branch?: string | 
   commits: RvCommit[]; capped?: boolean; error?: string }
 let cmData: CommitsResp | null = null;
 let cmErr: string | null = null;
+// The board's SECOND commit list opens this lens on one hash. Held as a want, not as a selection:
+// until the list has actually loaded there is no way to know whether that commit is in it, and a
+// selection that turns out not to exist must render as a stated miss, never as a blank pane.
+let cmWant: { repo: string | null; hash: string } | null = null;
+// set when the wanted repo is not one Fleet has open at all — a different sentence from
+// "that commit is not in this repo's recent history", and the reader needs to know which.
+let cmRepoMiss: string | null = null;
 
 async function loadCommitsLens(repo: string | null) {
   const q = repo ? `?repo=${encodeURIComponent(repo)}` : "";
@@ -6817,6 +7104,28 @@ function renderCommits() {
   const rows: ShellRow[] = [];
   let selIdx = -1;
   if (!cmData.commits.length) shell.list.appendChild(el("div", "histnone", "no commits in this repo"));
+  // The board sent us here ON a commit. Resolve it against the list that actually loaded, once:
+  // found → select it and paint its change; not found → say which of the two misses it was. A
+  // silent no-op would leave the reader on "Pick a row on the left" after clicking a named commit,
+  // which reads as "that click does nothing" rather than as the measured fact it is.
+  const want = cmWant;
+  if (want) {
+    cmWant = null;
+    const hit = cmData.commits.find((c) => c.hash === want.hash);
+    if (hit) cmPick = hit.hash;
+    else {
+      shell.detail.replaceChildren();
+      shell.detail.appendChild(el("div", "rvhead", want.hash));
+      shell.detail.appendChild(el("div", "diffstat err", cmRepoMiss
+        ? `Fleet has no open session in ${cmRepoMiss}, so this lens cannot read that repository —`
+          + " the commit exists, this window just has no route to it."
+        : `commit ${want.hash} is not in the recent history this lens lists for `
+          + `${cmData.repo ? baseName(cmData.repo) : "this repo"}`
+          + (cmData.capped ? " — and the list is capped, so it may sit below the cut."
+            : ". It may be on a branch this repo does not currently have checked out.")));
+      shell.showDetail(true);
+    }
+  }
   for (const c of cmData.commits) {
     const r = el("div", "shellrow");
     cmRowOf.set(r, c);
@@ -6832,6 +7141,10 @@ function renderCommits() {
   }
   shell.setRows(rows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
+  if (want && cmPick === want.hash) {
+    const hit = cmData.commits.find((c) => c.hash === want.hash);
+    if (hit) { renderCommitDetail(hit); shell.showDetail(true); }
+  }
 }
 
 let cmDiffSeq = 0; // latest-wins: arrow-keying down the commit list outruns the fetches it starts
@@ -6877,9 +7190,11 @@ function renderCommitDetail(c: RvCommit) {
       const list = el("div", "cmfiles");
       // `--name-status` rows are "M\tpath" (and "R100\told\tnew" for a rename) — the path is the
       // LAST field, which is also the one that exists at this revision
-      const byPath = new Map(splitDiff(d.diff ?? "").map((x) => [x.path, x.text]));
+      const byPath = new Map(splitDiff(d.diff ?? "").map((x) => [x.newPath, x.text]));
       for (const f of files) {
-        const path = f.split("\t").pop() ?? f;
+        // `--name-status` quotes a path holding a space or a non-ASCII byte exactly as porcelain
+        // does — undecoded it asks the server for a filename that begins with a quote (GITPATH)
+        const path = gitUnquote(f.split("\t").pop() ?? f);
         const rowEl = el("div", "cmfile open", f);
         rowEl.title = `read ${path} as this commit left it`;
         rowEl.onclick = () => showFileView(shell, {
@@ -7742,7 +8057,15 @@ async function loadLens(k: ActLens) {
       outcomeMalformed = typeof data.malformed === "number" ? data.malformed : 0;
     }
   } else if (k === "commits") {
+    // Always the default listing FIRST: it is the only thing that reports which repos Fleet has
+    // open, and asking for an unknown one directly answers 400 — a refusal this window would then
+    // have to render as if the repo were broken. Two cheap GETs buy an honest sentence.
     await loadCommitsLens(null);
+    const want = cmWant?.repo;
+    if (want && cmData && cmData.repo !== want) {
+      if (cmData.repos.includes(want)) await loadCommitsLens(want);
+      else cmRepoMiss = want;
+    }
   } else if (k === "akte") {
     const res = await api("/api/lane");
     if (res.ok) {
@@ -7763,7 +8086,7 @@ async function loadLens(k: ActLens) {
   actLoaded.add(k);
 }
 
-async function openActivity(lens: ActLens) {
+async function openActivity(lens: ActLens, at?: { repo: string | null; hash: string }) {
   setDrawer(false);
   ocShell?.close();
   outcomeDispo = "all";
@@ -7775,6 +8098,8 @@ async function openActivity(lens: ActLens) {
   cmData = null;
   cmErr = null;
   cmPick = null;
+  cmWant = at ?? null;
+  cmRepoMiss = null;
   ocPick = null;
   auditPick = null;
   akteData = [];

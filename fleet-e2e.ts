@@ -28,6 +28,7 @@ import * as attention from "./e2e/attention";
 import * as lanesLifecycle from "./e2e/lanes-lifecycle";
 import * as merge from "./e2e/merge";
 import * as laneRisk from "./e2e/lane-risk";
+import * as explorer from "./e2e/explorer";
 import * as drops from "./e2e/drops";
 import * as landProvenance from "./e2e/land-provenance";
 import * as concurrency from "./e2e/concurrency";
@@ -100,6 +101,10 @@ if (REPO) {
   await lanesLifecycle.run(lc);
   await merge.run(lc);
   await laneRisk.run();
+  // the board's grundbedienung: the two commit lists' routes, and the explorer's own interaction
+  // probes. In the lane block because both halves need a LANE — two disjoint commit lists exist
+  // nowhere else — and it opens and kills its own slot, so it shares no fixture with its neighbours.
+  await explorer.run();
   // the upload surface. In the lane block because its whole point is a property of a WORKTREE
   // (an untracked drop blocks the land), on its own slot and its own branch, and it tears both
   // down again — so it shares no fixture with the sections around it.

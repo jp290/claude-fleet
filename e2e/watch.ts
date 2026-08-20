@@ -158,6 +158,25 @@ const selfFleetReports = async (tok: string): Promise<{ response: Response; repo
 const fleetReportEventRows = async (): Promise<FleetReportEventRow[]> =>
   (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as FleetReportEventRow[])
     .filter((e) => e.kind === "fleet-report");
+interface AuditRow { event?: string; slot?: number; detail?: string }
+let auditReadError = "";
+const auditRows = (): AuditRow[] => [
+  { file: `${ROOT}/audit.jsonl.1`, required: false },
+  { file: `${ROOT}/audit.jsonl`, required: true },
+].flatMap(({ file, required }) => {
+  try {
+    return readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line) as AuditRow]; }
+      catch (error) {
+        auditReadError = `${file}: ${error instanceof Error ? error.message : String(error)}`;
+        return [];
+      }
+    });
+  } catch (error) {
+    if (required) auditReadError = `${file}: ${error instanceof Error ? error.message : String(error)}`;
+    return [];
+  }
+});
 
 export async function run(): Promise<void> {
   // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
@@ -851,6 +870,9 @@ export async function run(): Promise<void> {
     check("fleet-report legacy state: an absent fleetReports member loads as [] in the shared state document",
       Array.isArray(legacyLoaded.fleetReports) && legacyLoaded.fleetReports.length === 0,
       JSON.stringify(legacyLoaded.fleetReports));
+    const reportAuditStart = auditRows().length;
+    check("fleet-report audit fixture: the rotation-aware audit ledger is readable before baselining",
+      auditReadError === "", auditReadError);
 
     const nonLane = await selfFleetReport(mainTok, { status: "complete", text: "MAIN cannot report" });
     const nonLaneText = await nonLane.text();
@@ -898,6 +920,20 @@ export async function run(): Promise<void> {
         && completeEvent?.watchId === null && completeEvent.receiverSlot === main
         && completeEvent.payload.reportId === completeReport.id,
       JSON.stringify({ completeReport, completeEvent }));
+    await Bun.sleep(300);
+    const openAudits = auditRows().slice(reportAuditStart).filter((row) => row.event === "fleet_report_open");
+    const expectedOpenAudits = [
+      { id: completeReport?.id, slot: completeLane.slot },
+      { id: needsReport?.id, slot: needsLane.slot },
+      { id: failedReport?.id, slot: failedLane.slot },
+    ].filter((entry): entry is { id: string; slot: number } => !!entry.id);
+    check("fleet-report audit: every accepted open records its id and slot without copying report text",
+      openAudits.length === 3 && expectedOpenAudits.every(({ id, slot }) => openAudits.some((row) =>
+        row.slot === slot && row.detail?.startsWith(`${id} receiver=${main} status=`)))
+        && openAudits.every((row) => !row.detail?.includes("All requested B-D checks are green.")
+          && !row.detail?.includes("MAIN must decide the promotion boundary.")
+          && !row.detail?.includes("The named verification failed.")),
+      JSON.stringify(openAudits));
 
     const [workerScope, mainScope, foreignScope, mainInbox, foreignInbox] = await Promise.all([
       selfFleetReports(completeTok), selfFleetReports(mainTok), selfFleetReports(foreignTok),
@@ -949,6 +985,42 @@ export async function run(): Promise<void> {
       delivered?.status === "delivered" && delivered.attempts === 1 && reportPrompts.length === 1
         && ack.ok && acknowledged?.status === "acknowledged" && acknowledged.acknowledgedAt !== null,
       JSON.stringify({ delivered, prompts: reportPrompts.length, ack: ack.status, acknowledged }));
+
+    // Cross the report retention threshold with valid old rows whose events are already absent.
+    // This is deliberately a separate fixture check: if the planted rows cannot hydrate, the
+    // audit assertion below must not masquerade as a missing-prune defect.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const pruneImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
+      fleetReports?: FleetReportRow[];
+    };
+    const oldReports: FleetReportRow[] = completeReport ? Array.from({ length: 21 }, (_, index) => ({
+      ...completeReport,
+      id: (0xa000 + index).toString(16).padStart(24, "0"),
+      eventId: (0xb000 + index).toString(16).padStart(24, "0"),
+      reportedAt: Math.max(1, completeReport.reportedAt - 100_000 + index),
+      text: `old terminal report ${index}`,
+    })) : [];
+    pruneImage.fleetReports?.push(...oldReports);
+    writeFileSync(reportStatePath, JSON.stringify(pruneImage, null, 2), { mode: 0o600 });
+    const pruneAuditStart = auditRows().length;
+    await restartSrv();
+    const hydratedOld = (await selfFleetReports(mainTok)).reports.filter((r) =>
+      oldReports.some((old) => old.id === r.id));
+    check("fleet-report prune audit fixture: 21 valid terminal rows hydrate before pruning",
+      oldReports.length === 21 && hydratedOld.length === 21,
+      `${oldReports.length}/${hydratedOld.length}`);
+    const pruneTrigger = await selfFleetReport(completeTok,
+      { status: "complete", text: "Trigger the bounded report retention pass." });
+    await Bun.sleep(300);
+    const expectedPruned = oldReports.slice(0, 2).map((r) => r.id);
+    const pruneAudits = auditRows().slice(pruneAuditStart).filter((row) => row.event === "fleet_report_prune");
+    const afterPruneIds = (await selfFleetReports(mainTok)).reports.map((r) => r.id);
+    check("fleet-report audit: retention records every removed report id and keeps those ids out of state",
+      pruneTrigger.ok && expectedPruned.length === 2
+        && expectedPruned.every((id) => pruneAudits.some((row) => row.detail === id)
+          && !afterPruneIds.includes(id)),
+      JSON.stringify({ trigger: pruneTrigger.status, expectedPruned, pruneAudits }));
 
     for (const slot of [completeLane.slot, needsLane.slot, failedLane.slot, noReceiverLane.slot,
       stewardLane.slot, main, foreignMain]) await post(`/api/slots/${slot}/kill`, {});

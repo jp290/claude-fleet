@@ -105,6 +105,21 @@ export const QUESTION_ROUTES = [
     gaps: [],
   },
   {
+    role: "lane",
+    recipient: "Program-MAIN selected by the server and returned in report.receiver",
+    adapter: {
+      route: "/api/self/fleet-report",
+      method: "POST",
+      credential: "header x-fleet-self-token",
+      roleCondition: "lane only",
+    },
+    constraints: [
+      "Body carries only a closed complete | needs-main | failed status and length-capped text; the caller does not choose the receiver.",
+      "The report is declarative: no land, dispatch, auto, Watch, or tick path gates on its status.",
+    ],
+    gaps: [],
+  },
+  {
     role: "program-main",
     recipient: "owner",
     adapter: {
@@ -113,7 +128,10 @@ export const QUESTION_ROUTES = [
       credential: "header x-fleet-self-token",
       roleCondition: "non-lane current bound MAIN of an active Program",
     },
-    constraints: ["programId is derived from the caller's current Program binding, never from the body."],
+    constraints: [
+      "programId is derived from the caller's current Program binding, never from the body.",
+      "taskId, originId, branch, and candidateSha are caller-declared and form-validated only; nothing routes or gates on them.",
+    ],
     gaps: [],
   },
   {

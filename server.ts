@@ -1369,14 +1369,9 @@ function fleetEventFrom(raw: unknown): FleetEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Partial<FleetEvent> & Record<string, unknown>;
   const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";
-  // Keep the original clarification equivalence explicit: e2e/pins.ts couples that persisted
-  // discriminant to its mint site. The second clause adds the one new watch-less sibling without
-  // weakening null watchId for any Watch-backed event kind.
-  const clarificationWatchIdMismatch = ((e.kind === "clarification-request") !== (e.watchId === null));
   if (typeof e.id !== "string" || !/^[a-z0-9]+$/.test(e.id)
     || !(e.watchId === null || (typeof e.watchId === "string" && /^[a-z0-9]+$/.test(e.watchId)))
-    || (clarificationWatchIdMismatch && e.kind !== "fleet-report")
-    || (e.kind === "fleet-report" && e.watchId !== null)
+    || (watchless !== (e.watchId === null))
     || !Number.isInteger(e.receiverSlot) || (e.receiverSlot ?? 0) <= 0
     || typeof e.receiverOpenedAt !== "number" || !Number.isFinite(e.receiverOpenedAt) || e.receiverOpenedAt <= 0
     || !(typeof e.receiverSessionId === "string" || e.receiverSessionId === null)
@@ -2908,6 +2903,7 @@ type AuditEvent =
   | "fleet_event_receiver_gone" | "fleet_event_prune"
   | "clarification_open" | "clarification_answered" | "clarification_refused" | "clarification_prune"
   | "clarification_reply_send_uncertain"
+  | "fleet_report_open" | "fleet_report_prune"
   // the owner-facing twin: a bound Program-MAIN raised something, and what the owner did about it.
   // `attention_refused` is a RECEIPT that the owner saw it and declined — the silent closure this
   // channel exists to make impossible.
@@ -5463,6 +5459,7 @@ function pruneFleetReports(): void {
   }).sort((a, b) => a.reportedAt - b.reportedAt);
   if (terminal.length <= FLEET_REPORT_KEEP) return;
   const drop = new Set(terminal.slice(0, terminal.length - FLEET_REPORT_KEEP).map((r) => r.id));
+  for (const id of drop) audit("fleet_report_prune", undefined, id);
   fleetReports = fleetReports.filter((r) => !drop.has(r.id));
 }
 
@@ -5515,6 +5512,8 @@ async function openFleetReport(s: Slot, body: Record<string, unknown> | null): P
   };
   fleetReports = [...fleetReports, report];
   fleetEvents = [...fleetEvents, event];
+  audit("fleet_report_open", s.id,
+    `${id} receiver=${resolved.receiver.slot} status=${status} basis=${resolved.basis}`);
   pruneFleetReports();
   await saveStateNow();
   return json({ ok: true, report });

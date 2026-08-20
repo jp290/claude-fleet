@@ -85,6 +85,18 @@ These transports describe today's role policy; they are not additional stable fu
 - Gaps:
 - none
 
+### lane
+
+- Recipient: Program-MAIN selected by the server and returned in report.receiver
+- Adapter: `POST /api/self/fleet-report`
+- Credential: `header x-fleet-self-token`
+- Role condition: lane only
+- Constraints:
+- Body carries only a closed complete | needs-main | failed status and length-capped text; the caller does not choose the receiver.
+- The report is declarative: no land, dispatch, auto, Watch, or tick path gates on its status.
+- Gaps:
+- none
+
 ### program-main
 
 - Recipient: owner
@@ -93,6 +105,7 @@ These transports describe today's role policy; they are not additional stable fu
 - Role condition: non-lane current bound MAIN of an active Program
 - Constraints:
 - programId is derived from the caller's current Program binding, never from the body.
+- taskId, originId, branch, and candidateSha are caller-declared and form-validated only; nothing routes or gates on them.
 - Gaps:
 - none
 

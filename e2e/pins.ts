@@ -188,19 +188,26 @@ const watchdog = read("watchdog.sh");
 const server = read("server.ts");
 
 {
-  // Clarifications are the sole FleetEvent kind without a Watch. Keep both directions of that
-  // persisted discriminant coupled: accepting null on any old kind loses provenance, while
-  // requiring a string on clarification invents a Watch that does not exist.
+  // Clarifications and fleet reports are the only FleetEvent kinds without a Watch. Keep both
+  // directions of that persisted discriminant coupled: accepting null on any Watch-backed kind
+  // loses provenance, while requiring a string on either sibling invents a Watch that does not exist.
   const parser = server.slice(server.indexOf("function fleetEventFrom("),
     server.indexOf("function clarificationFrom("));
   const mint = server.slice(server.indexOf("async function openClarification("),
-    server.indexOf("function clarificationsFor("));
-  pin("FleetEvent watchId is null exactly for clarification-request and a string for every Watch event",
+    server.indexOf("async function replyClarification("));
+  const watchlessKinds = 'const watchless = e.kind === "clarification-request" || e.kind === "fleet-report";';
+  const watchlessEquivalence = parser.includes(watchlessKinds)
+    && parser.includes('    || (watchless !== (e.watchId === null))\n'
+      + "    || !Number.isInteger(e.receiverSlot)");
+  const nullMints = (mint.match(/watchId: null/g) ?? []).length;
+  pin("FleetEvent watchId is null exactly for clarification-request and fleet-report, and a string for every Watch event",
     /watchId: string \| null/.test(server)
-      && parser.includes('((e.kind === "clarification-request") !== (e.watchId === null))')
-      && mint.includes("watchId: null")
+      && watchlessEquivalence
+      && mint.includes("const event: ClarificationFleetEvent")
+      && mint.includes("const event: FleetReportFleetEvent")
+      && nullMints === 2
       && (server.match(/watchId: w\.id/g) ?? []).length >= 4,
-    `equivalence=${parser.includes('((e.kind === "clarification-request") !== (e.watchId === null))')}`);
+    `equivalence=${watchlessEquivalence} nullMints=${nullMints}`);
 
   // The reply's truth boundary is tmux acceptance. Any answered assignment before sendText would
   // recreate the original bug: an API success/terminal row while the worker never got the text.

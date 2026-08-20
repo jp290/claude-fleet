@@ -1,8 +1,18 @@
 # Claude Fleet
 
-**Run and steer many Claude Code sessions at once — from your desk or from your phone.**
+**Run and steer coding-agent sessions from one local control plane — from your desk or phone.**
 
-Web dashboard (desktop + mobile) for up to 16 persistent Claude Code tmux sessions on one machine — sidebar with activity dots, native xterm.js scrollback (WebGL-rendered), direct typing into the focused session, a directory picker with recents for starting sessions per project. Plus: per-slot prompt history (🕘 / ArrowUp recall), print/PDF export (⇩), a conversation view that renders the claude transcript as structured messages (💬), password-gated, view-only session sharing for guests ([SHARING.md](SHARING.md)), scheduled prompts (⏱ — one-shot or recurring with idle/claude-alive guard rails), and crash-resilient sessions — a died pane self-heals with `claude --resume`, keeping the conversation. Fork of [claude-deck](https://github.com/jp290/claude-deck) (single-session phone remote), generalized to a slot registry.
+Web dashboard (desktop + mobile) for up to 16 persistent tmux-backed agent sessions on one machine.
+Fleet began as a multi-session Claude harness and now also coordinates Codex- and Pi-compatible
+harnesses, isolated lanes, Programs, delegation and evidence-backed promotion. The stable target
+model — controllers, Project MAINs, Workers, Supervisors, Acts and context layers — lives in
+[`SYSTEM.md`](SYSTEM.md). Current implementation can lag that target; code and live sensors remain
+authoritative for what works today.
+
+The original terminal surface remains: sidebar activity, xterm.js scrollback, direct input,
+project picker, prompt history, export, Claude conversation view, guest sharing, scheduled prompts
+and crash-resilient sessions. Fork of [claude-deck](https://github.com/jp290/claude-deck), expanded
+into a local agent control plane.
 
 ![claude-fleet — four Claude Code sessions in a 2×2 grid](docs/screenshot.png)
 

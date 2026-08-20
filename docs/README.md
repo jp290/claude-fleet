@@ -26,8 +26,8 @@ Every feature that survives is a principle wearing a UI:
 
 Three places, and only the first is this folder:
 
-- **`docs/*.md`** — the fifteen operative docs below. Everything that earns ongoing
-  maintenance.
+- **`docs/*.md`** — the curated operative shelf below plus explicitly dated Program- and Audit-
+  snapshots. The list is a router, not a claim that unlisted files do not exist.
 - **Commit bodies** — *this repo's finding register.* A defect, its mechanism, its
   measurement and its rejected alternatives are written where the change is:
   `git log <last handoff>..HEAD` with bodies, never a summary. Integration provenance
@@ -42,7 +42,16 @@ Three places, and only the first is this folder:
 Deliberately **not** a fourth place: a summary doc that restates any of the three. That is
 how the shelf grew to 52 docs whose claims nobody re-derived.
 
-## The fifteen operative docs
+## Current system entry points
+
+- **`../SYSTEM.md`** — owner-ausgerichtetes Zielmodell für Rollen, Kernobjekte, Kontextschichten
+  und Ende-zu-Ende-Lebenszyklus. Es ist kein Runtime-Inventar.
+- **`agentic-control-plane-program-2026-08-20.md`** — datierter Outside-in-Program Brief mit
+  Journeys, Acts, Agentenbriefing, Write-Leases und Canaries. Nach Umsetzung bleibt er Snapshot.
+- **`kontextschicht-analyse-2026-08-20.md`** — gemessener Ist-Befund, Korrekturen und offene
+  Grenzen, nicht die laufende Systemwahrheit.
+
+## Curated operative docs
 
 One line per doc — its *purpose*, not its contents, so this index points without rotting.
 

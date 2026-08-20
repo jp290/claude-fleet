@@ -1,3 +1,89 @@
+# HANDOFF — ACP Project MAIN (Slot 3), 2026-08-20, ctx 31,7 % GEMESSEN
+
+Zustand wird ABGELEITET, nicht hier aufgeschrieben: `./state.sh` und `./register.sh` zuerst.
+Diese Datei trägt nur, was git nicht tragen kann — Absicht, Korrekturen, Reihenfolge, offene
+Entscheidungen.
+
+## Was diese Session war
+
+Gebundene Project MAIN für Program `eeba7c04caae64d79969199b`. Vier Owner-Freigaben abgearbeitet:
+Promotion + Deploy, gameStudio-Readiness, Act 3 gebaut/repariert/gelandet, Result-Rail geschnitten.
+Kein eigener Produktcode. Die Nachfolge ist eine OWNER-ANWEISUNG, keine Schwellen-Übergabe —
+31,7 % liegt deutlich unter den 44 %.
+
+## Belegter Stand
+
+- **`main` = `9fd1025`** (Act 3). Die Session hat main ausserdem von `e19c80f` auf den
+  Integrationstip vorgezogen und das Haupt-Checkout auf `main` umgestellt — Fleet landet
+  seitdem wieder auf `main` statt auf dem `docs/`-Zweig (`integrationBranch()` server.ts:3143
+  fällt auf den Branch des Haupt-Checkouts zurück).
+- **Act 3 gelandet und tier-2-grün.** Land-Note: `b4897ba` → `9fd1025`, verify `ok:true`,
+  `exitCode 0`, `ms 99758`, `waitMs 0`, `confirmedByHuman:false` (clean auto-land).
+  Post-Land-Audit `green`, **`ms 998782`, `ran 2755`, `failed 0`**, covers genau diesen einen Land.
+- **DER LIVE-SERVER HAT ACT 3 NICHT.** `deployGap`: bootHead `8f31701`, head `9fd1025`,
+  `behindCount 3`, **`codeBehind: true`**. Act 3 ändert `server.ts` (Confirm-Pfad) — der
+  Identitäts-Guard ist also GEBAUT, aber NICHT AKTIV. Ein Deploy ist NICHT owner-freigegeben.
+  Das ist der wichtigste offene Punkt.
+- `b4897ba` ist ein Direkt-Commit aus dem Haupt-Checkout (Readiness-Messung) — für jedes
+  land-seitige Ledger unsichtbar. Verifikation lief von Hand vollständig: volle Kette exit 0,
+  fünfmal ALL PASS, danach `./e2e-isolated.sh` 2739 PASS / 0 FAIL, EINE run-id.
+- Offene Attention: **keine**. `2e9e4207…` ist vom Owner mit „Ja" beantwortet.
+- Zehn untracked Owner-Dateien im Haupt-Checkout: unangetastet, wie vom Vorgänger übernommen.
+  Die drei fremden Worktrees ebenfalls — Owner-Anweisung.
+
+## Freigegebene Reihenfolge für die Nachfolgerin
+
+1. **Result-Rail `bbb2e53f`** (kind `auftrag`, `pending`, programgebunden). Sein hartes
+   Gate — „nicht dispatchen, solange Act 3 nicht gelandet ist" — **ist jetzt erfüllt**. Der
+   Brief steht vollständig in der Task; er verortet den Schnitt ausdrücklich in den
+   BESTEHENDEN Acts 5/6 und verbietet ein zweites Objekt neben Clarification/Attention.
+   Zwei Punkte gehören dem Owner und sind im Brief benannt: ob `attemptId` (Lifecycle) mit
+   B–D (Transport-Symmetrie) in eine Lane geht, und ob der Rail je etwas gaten darf (dieser
+   Schnitt sagt nein).
+2. **Deploy-Entscheid für Act 3 einholen.** Siehe oben — nicht selbst entscheiden.
+3. `ec9e85a6` (kind `notiz`) trägt den UI-/Faktschicht-Befund für Act 4 oder 7.
+
+## Vier Befunde, die die Nachfolgerin braucht
+
+- **Ein grüner Suite-Lauf beweist nur, was seine Fixtures anfassen.** Der Builder UND ich
+  hatten je einen ehrlichen `./e2e-isolated.sh` mit 0 FAIL auf `b2809f5`; beide waren blind
+  für einen echten Regress, weil `G1c` und der neue Fixture main in einer ANDEREN DATEI
+  bewegen (`e2e/land-provenance.ts:457` schreibt `moved.txt`). Der frische read-only Critic
+  fand ihn, weil er über das PRIMITIV nachdachte statt dem Lauf zu glauben:
+  `git patch-id --stable` hasht Kontextzeilen mit. Reproduktion (Wegwerf-Repo): Lane-Edit
+  byte-identisch, main bewegt eine Kontextzeile zwei Zeilen darüber, Rebase konfliktfrei,
+  patch-id `ca7d66f2` → `780b5e99`. **Lehre: der Critic-Schritt in Acts 5–8 ist kein Zeremoniell.**
+- **`awaiting`, `hot` und „läuft" sind heute EINE Darstellung für DREI Zustände**
+  (arbeitet · vom Provider blockiert · wartet auf den Suite-Mutex). Der Klassifikator
+  EXISTIERT bereits — `paneReadiness()` server.ts:4672 liefert ready|blocked|pending mit
+  `why` —, ist aber nur Gate (server.ts:4692, :5784), nie projizierter Fakt, und seine
+  `blocks`-Liste (server.ts:903-906) kennt nur Spawn-Zeit-Screens. Details: `ec9e85a6`.
+- **Act 9 ist heute nicht messbar.** Von acht Grössen seines Proof hat keine einen
+  vollständigen Sensor. Ursache: `lane-outcomes.jsonl` (der einzige reiche Per-Versuch-Ledger)
+  entsteht am LANE-Ende, und die Studios laufen als MAIN-Sessions IN ihren Repos —
+  300 Zeilen für claude-fleet, 1/1/1 für private-repo-c/private-repo-e/private-repo-i, 0 für
+  private-repo-f/private-repo-g. Ganze Tabelle: `docs/messungen/2026-08-20-gamestudio-readiness.md`.
+- **Drei Reste an der Act-3-Naht, bewusst offen gelassen** (in `0a4b1e38` als Kommentar
+  `6448b326` festgehalten): `awaiting-author` bindet einen Tip, der sich nach der
+  Autor-Auflösung zwingend ändert → Confirm 409, Verhalten korrekt aber ungetestet · der ff
+  zielt auf den Branch-NAMEN statt die geprüfte `candidateSha`, ms-kleines TOCTOU-Fenster,
+  **vor diesem Diff genauso offen, kein Regress** · `bindCandidate` hält den vollen
+  `--binary`-Diff im Speicher, ungemessen.
+
+## Was ich falsch gemacht habe
+
+- **Eine Lane-Watch für einen read-only Critic wäre nie gefeuert.** `done-looking` verlangt
+  `ahead>0`, ein Kritiker committet nie. Ich habe es rechtzeitig gemerkt und einen
+  Hintergrund-Watcher auf Pane-Ruhe genommen — aber die Falle ist real und sieht von aussen
+  wie „arbeitet noch" aus.
+- **Zwei eigene Sonden waren falsch, nicht die Maschine.** Ein `grep '"repo": "'` über
+  `lane-outcomes.jsonl` verfehlt Zeilen mit anderer JSON-Spationierung und meldete für alle
+  fünf Spiele-Repos fälschlich Null (die geparsten Zahlen gelten). Und ein
+  `$(git rev-parse master 2>/dev/null || git rev-parse main)` fing BEIDE Ausgaben ein und
+  zerlegte meine erste patch-id-Reproduktion.
+- **Ich habe „land it" empfohlen, als stünde die Entscheidung an.** Der Owner hat korrigiert:
+  eine Empfehlung im Composer ist keine Autorität. Der Land kam erst nach ausdrücklichem „Ja"
+  über die Attention-Route.
 # HANDOFF — ACP Project MAIN (Slot 2), 2026-08-20, ctx ~40 %
 
 Zustand wird ABGELEITET, nicht hier aufgeschrieben: `./state.sh` und `./register.sh` zuerst.

@@ -228,3 +228,69 @@ export function defuseDelimiters(s: string, markers: string[] = ["DATA"]): strin
     out = out.replaceAll(`<<<${m}`, "«escaped-delimiter»").replaceAll(`${m}>>>`, "«escaped-delimiter»");
   return out;
 }
+
+// --- stable Fleet capability declarations -------------------------------------------------------
+// A capability is allowed to be absent. `adapter: null` is the executable statement that Fleet
+// has no transport for it today; forcing every row to name a route would turn an intended API into
+// a false runtime promise. `gaps` then says what is missing without inventing a second status enum.
+export const CAPABILITY_FUNCTIONS = ["describe_self", "get_project_context"] as const;
+export type CapabilityFunction = (typeof CAPABILITY_FUNCTIONS)[number];
+
+export type CapabilityRole = "session" | "program-main";
+export type CapabilityHttpMethod = "GET" | "POST";
+
+export interface CapabilityAdapter {
+  readonly route: string;
+  readonly method: CapabilityHttpMethod;
+  readonly credential: string;
+  readonly roleCondition: string;
+}
+
+export interface CapabilityProbe {
+  readonly kind: "http" | "absence";
+  readonly assertion: string;
+}
+
+export interface SystemCapability {
+  readonly name: CapabilityFunction;
+  readonly summary: string;
+  readonly roles: readonly CapabilityRole[];
+  readonly authority: string;
+  readonly stateEffect: "none";
+  readonly adapter: CapabilityAdapter | null;
+  readonly returns: readonly string[];
+  readonly probe: CapabilityProbe;
+  readonly gaps: readonly string[];
+}
+
+// A proven transport can exist before (or without) a stable function name. Keeping that fact in a
+// differently keyed shape prevents an adapter probe from silently extending SYSTEM.md's function
+// vocabulary while preserving the same role/authority/effect evidence.
+export interface CapabilityAdapterProbeDataset {
+  readonly id: string;
+  readonly summary: string;
+  readonly roles: readonly CapabilityRole[];
+  readonly authority: string;
+  readonly stateEffect: "none";
+  readonly adapter: CapabilityAdapter;
+  readonly returns: readonly string[];
+  readonly probe: CapabilityProbe;
+  readonly gaps: readonly string[];
+}
+
+export interface CapabilityDimensionGap {
+  readonly dimension: "uiGesture" | "traceEffect" | "harnessSupport";
+  readonly gap: string;
+}
+
+// Question transports are role policy, not a fourth stable Fleet function: `ask_question` remains
+// future vocabulary. Keeping the current rail beside the capability rows still lets a reader learn
+// where a question goes without repeating the Supervisor brief's false attention promise.
+export type QuestionRole = "lane" | "program-main" | "supervisor" | "other-session";
+export interface QuestionRoute {
+  readonly role: QuestionRole;
+  readonly recipient: string;
+  readonly adapter: CapabilityAdapter | null;
+  readonly constraints: readonly string[];
+  readonly gaps: readonly string[];
+}

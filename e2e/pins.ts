@@ -28,6 +28,11 @@ import {
   RULEBOOK_BACKREF_HEADING,
   FRAGMENT_TITLES, fragmentFileName, renderRulebook, renderBackref, rulebookBody, type RulebookFragment,
 } from "../rulebook";
+import {
+  SYSTEM_CAPABILITIES, SELF_GET_ADAPTER_PROBE, QUESTION_ROUTES,
+  UNMODELED_CAPABILITY_DIMENSIONS, renderSystemCapabilities,
+} from "../capability-map";
+import { CAPABILITY_FUNCTIONS } from "../src/protocol";
 // The Fleet manifest rules below run the SAME pure functions the delivery seams run — a pin that
 // re-implemented the validator would only pin its own copy of the rules.
 import { CONTEXT_PACKS, CONTEXT_PACK_TRIGGERS } from "../context-packs";
@@ -543,6 +548,205 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     const dead = cited.filter((p) => !exists(p));
     pin(RULE_ANCHORS, cited.length > 0 && dead.length === 0, `${cited.length} cited, dead=[${dead}]`);
   }
+}
+
+// ================================================================================================
+// 3b. Capability source -> generated map -> real server adapters
+// ================================================================================================
+// One source has to be able to say BOTH "this route exists" and "this function has no adapter".
+// Otherwise get_project_context would be forced onto a neighbouring GET and recreate the exact
+// false-capability defect this registry exists to prevent. The document is only a projection; the
+// registry and server remain the two executable sides.
+{
+  const DOC = "docs/system-capabilities.generated.md";
+  const rendered = renderSystemCapabilities();
+  const generated = ((): string | null => { try { return read(DOC); } catch { return null; } })();
+  pin("the generated system capability map is byte-for-byte fresh from capability-map.ts",
+    generated !== null && generated === rendered,
+    generated === null ? `${DOC} missing` : `rendered ${Buffer.byteLength(rendered)} B vs file ${Buffer.byteLength(generated)} B`);
+
+  const declaredNames = SYSTEM_CAPABILITIES.map((capability) => capability.name);
+  pin("the capability source declares exactly the two promoted stable functions, once and in order",
+    declaredNames.length === 2 && new Set(declaredNames).size === declaredNames.length
+      && CAPABILITY_FUNCTIONS.every((name, index) => declaredNames[index] === name),
+    `[${declaredNames.join(",")}]`);
+
+  // SYSTEM.md owns the stable vocabulary. The source may additionally hold adapter/probe datasets,
+  // but neither their id nor a transport-shaped alias may become a function heading by accident.
+  const system = read("SYSTEM.md");
+  const vocabularyAt = system.indexOf("## Funktionen statt Routenwissen");
+  const vocabularyEnd = vocabularyAt < 0 ? -1 : system.indexOf("\n## ", vocabularyAt + 3);
+  const vocabularyBlock = vocabularyAt < 0 || vocabularyEnd < 0 ? "" : system.slice(vocabularyAt, vocabularyEnd);
+  const systemFunctions = new Set([...vocabularyBlock.matchAll(/^- `([a-z_]+)`/gm)].map((match) => match[1]!));
+  const stableBlock = generated === null ? ""
+    : generated.slice(generated.indexOf("## Stable functions"), generated.indexOf("## Current adapter/probe datasets"));
+  const stableHeadings = [...stableBlock.matchAll(/^### `([a-z_]+)`/gm)].map((match) => match[1]!);
+  const foreignFunctions = CAPABILITY_FUNCTIONS.filter((name) => !systemFunctions.has(name));
+  const foreignHeadings = stableHeadings.filter((name) => !systemFunctions.has(name));
+  pin("every stable function comes from SYSTEM.md while the Self GET stays an adapter/probe dataset",
+    systemFunctions.size > 0 && foreignFunctions.length === 0 && foreignHeadings.length === 0
+      && stableHeadings.length === declaredNames.length
+      && stableHeadings.every((name, index) => name === declaredNames[index])
+      && SELF_GET_ADAPTER_PROBE.id === "self_get_adapter_probe",
+    `system=[${[...systemFunctions].join(",")}] stable=[${stableHeadings.join(",")}] foreign-source=[${foreignFunctions.join(",")}] foreign-heading=[${foreignHeadings.join(",")}] dataset=${SELF_GET_ADAPTER_PROBE.id}`);
+
+  // Derive HTTP pairs from the actual route conditions. All current self handlers keep their
+  // pathname and accepted methods on the same condition line; collecting every method on that
+  // line handles both the single-method form and the GET-or-POST form without a route inventory.
+  const serverPairs = new Set<string>();
+  for (const line of server.split("\n")) {
+    const route = /url\.pathname === "(\/api\/[^"]+)"/.exec(line)?.[1];
+    if (!route) continue;
+    for (const method of line.matchAll(/req\.method === "([A-Z]+)"/g))
+      serverPairs.add(`${method[1]} ${route}`);
+  }
+  const adapters = [
+    ...SYSTEM_CAPABILITIES.map((capability) => ({ owner: capability.name, adapter: capability.adapter })),
+    { owner: SELF_GET_ADAPTER_PROBE.id, adapter: SELF_GET_ADAPTER_PROBE.adapter },
+    ...QUESTION_ROUTES.map((route) => ({ owner: `question:${route.role}`, adapter: route.adapter })),
+  ];
+  const unresolved = adapters.filter((entry) => entry.adapter !== null
+    && !serverPairs.has(`${entry.adapter.method} ${entry.adapter.route}`));
+  pin("every non-null capability and question adapter resolves as the declared method on server.ts",
+    unresolved.length === 0,
+    unresolved.map((entry) => `${entry.owner}=${entry.adapter!.method} ${entry.adapter!.route}`).join(", "));
+
+  // A null adapter may cite a checked neighbour only in the explicit REJECTED grammar. Route text
+  // anywhere else would still read as a promise in the generated entry, despite `adapter: null`.
+  const rejected = /^Rejected neighbor: (GET|POST) (\/api\/\S+) returns .+, not .+\.$/;
+  const falsePromises: string[] = [];
+  for (const capability of SYSTEM_CAPABILITIES) {
+    if (capability.adapter !== null) continue;
+    const outsideGaps = JSON.stringify({ ...capability, gaps: [] });
+    if (/\/api\//.test(outsideGaps)) falsePromises.push(`${capability.name}: route outside gaps`);
+    for (const gap of capability.gaps)
+      if (/\b(?:GET|POST) \/api\//.test(gap) && !rejected.test(gap))
+        falsePromises.push(`${capability.name}: ${gap}`);
+  }
+  pin("an unsupported capability names no route except an explicitly rejected checked neighbour",
+    falsePromises.length === 0, falsePromises.join(" | "));
+
+  const project = SYSTEM_CAPABILITIES.find((capability) => capability.name === "get_project_context");
+  const projectRejected = project?.gaps.filter((gap) => rejected.test(gap)) ?? [];
+  pin("get_project_context is a measured absence with both non-equivalent Self GET neighbours named",
+    project?.adapter === null
+      && project.gaps.some((gap) => gap.includes("authoritative project sources and selectable packs"))
+      && projectRejected.some((gap) => gap.includes("GET /api/self/programs") && gap.includes("Program content"))
+      && projectRejected.some((gap) => gap.includes("GET /api/self/program-execution") && gap.includes("execution state")),
+    project ? project.gaps.join(" | ") : "entry missing");
+
+  const describe = SYSTEM_CAPABILITIES.find((capability) => capability.name === "describe_self");
+  const safe = SELF_GET_ADAPTER_PROBE;
+  const missingDescribeFacts = ["Role", "Authority", "Capabilities", "active Act"];
+  pin("describe_self exposes only the real Self payload and names every unimplemented SYSTEM.md promise",
+    describe?.adapter?.method === "GET" && describe.adapter.route === "/api/self"
+      && missingDescribeFacts.every((fact) => describe.gaps.some((gap) => gap.includes(fact))),
+    describe ? `gaps=[${describe.gaps.join(" | ")}]` : "entry missing");
+  pin("the named adapter/probe dataset is the every-session read-only Self GET with the scoped header credential",
+    safe.adapter.method === "GET" && safe.adapter.route === "/api/self"
+      && safe.adapter.credential === "header x-fleet-self-token"
+      && safe.adapter.roleCondition === "any current session with cwd"
+      && safe.stateEffect === "none" && safe.gaps.length === 0,
+    `${safe.adapter.method} ${safe.adapter.route}; ${safe.adapter.credential}; ${safe.adapter.roleCondition}`);
+
+  // Read the top-level keys of GET /api/self's object literal, ignoring comments and its nested
+  // `lane` object. The registry therefore cannot silently gain or lose a returned field while its
+  // route continues to exist and the broad route pin stays green.
+  const selfAt = server.indexOf('if (url.pathname === "/api/self" && req.method === "GET")');
+  const returnAt = selfAt < 0 ? -1 : server.indexOf("return json({\n        slot:", selfAt);
+  const returnEnd = returnAt < 0 ? -1 : server.indexOf("\n      });", returnAt);
+  const objectText = returnAt < 0 || returnEnd < 0 ? ""
+    : server.slice(returnAt + "return json({".length, returnEnd)
+      .split("\n").map((line) => line.replace(/\/\/.*$/, "")).join("\n");
+  const selfFields = new Set<string>();
+  let depth = 1;
+  for (let i = 0; i < objectText.length;) {
+    const ch = objectText[i]!;
+    if (ch === "{") { depth++; i++; continue; }
+    if (ch === "}") { depth--; i++; continue; }
+    if (depth === 1 && /[A-Za-z_]/.test(ch)) {
+      const word = /^[A-Za-z_]\w*/.exec(objectText.slice(i))?.[0] ?? "";
+      let after = i + word.length;
+      while (/\s/.test(objectText[after] ?? "")) after++;
+      if (word && objectText[after] === ":") selfFields.add(word);
+      i += Math.max(1, word.length);
+      continue;
+    }
+    i++;
+  }
+  const fieldDrift = (fields: readonly string[]): string[] => [
+    ...fields.filter((field) => !selfFields.has(field)).map((field) => `declared-only:${field}`),
+    ...[...selfFields].filter((field) => !fields.includes(field)).map((field) => `server-only:${field}`),
+  ];
+  const describeDrift = describe ? fieldDrift(describe.returns) : ["describe_self missing"];
+  const safeDrift = fieldDrift(safe.returns);
+  pin("describe_self and the Self adapter/probe dataset declare exactly the fields GET /api/self returns",
+    selfFields.size > 0 && describeDrift.length === 0 && safeDrift.length === 0,
+    `server=[${[...selfFields].join(",")}] drift=[${[...describeDrift, ...safeDrift].join(",")}]`);
+
+  const laneQuestion = QUESTION_ROUTES.find((route) => route.role === "lane");
+  const mainQuestion = QUESTION_ROUTES.find((route) => route.role === "program-main");
+  const supervisorQuestion = QUESTION_ROUTES.find((route) => route.role === "supervisor");
+  const clarificationRouteAt = server.indexOf('if (url.pathname === "/api/self/clarifications"');
+  const clarificationRouteBody = clarificationRouteAt < 0 ? ""
+    : server.slice(clarificationRouteAt, server.indexOf("const selfClarificationReply", clarificationRouteAt));
+  const clarificationOpenAt = server.indexOf("async function openClarification(");
+  const clarificationOpenBody = clarificationOpenAt < 0 ? ""
+    : server.slice(clarificationOpenAt, server.indexOf("async function replyClarification(", clarificationOpenAt));
+  const attentionRouteAt = server.indexOf('if (url.pathname === "/api/self/attention"');
+  const attentionRouteBody = attentionRouteAt < 0 ? ""
+    : server.slice(attentionRouteAt, server.indexOf("const selfEventAck", attentionRouteAt));
+  const attentionOpenAt = server.indexOf("async function openAttention(");
+  const attentionOpenBody = attentionOpenAt < 0 ? ""
+    : server.slice(attentionOpenAt, server.indexOf("function attentionFor(", attentionOpenAt));
+  const serverQuestionCuts = /if \(!s\.worktree\)/.test(clarificationRouteBody)
+    && /clarificationReceiverFor\(s\)/.test(clarificationOpenBody)
+    && /receiver: resolved\.receiver/.test(clarificationOpenBody)
+    && /const MAX_CLARIFICATION_QUESTION = 2000;/.test(server)
+    && /clarifications\.find\(/.test(clarificationOpenBody)
+    && !/body\.receiver/.test(clarificationOpenBody)
+    && /if \(s\.worktree && s\.label !== STEWARD_LABEL\)/.test(attentionRouteBody)
+    && /boundProgramForMain\(s\)/.test(attentionOpenBody)
+    && /programId: program\.id/.test(attentionOpenBody)
+    && !/body\.programId/.test(attentionOpenBody);
+  pin("question return paths preserve the lane->derived Program-MAIN and bound Program-MAIN->owner role cuts",
+    laneQuestion?.adapter?.route === "/api/self/clarifications"
+      && laneQuestion.adapter.method === "POST" && laneQuestion.adapter.roleCondition === "lane only"
+      && laneQuestion.recipient.includes("request.receiver")
+      && laneQuestion.constraints.some((constraint) => constraint.includes("at most 2000"))
+      && laneQuestion.constraints.some((constraint) => constraint.includes("Exactly one"))
+      && mainQuestion?.adapter?.route === "/api/self/attention"
+      && mainQuestion.adapter.method === "POST"
+      && mainQuestion.adapter.roleCondition === "non-lane current bound MAIN of an active Program"
+      && mainQuestion.recipient === "owner"
+      && mainQuestion.constraints.some((constraint) => constraint.includes("programId is derived"))
+      && supervisorQuestion?.adapter === null
+      && serverQuestionCuts,
+    `lane=${laneQuestion?.adapter?.method ?? "none"} ${laneQuestion?.adapter?.route ?? "none"}; main=${mainQuestion?.adapter?.method ?? "none"} ${mainQuestion?.adapter?.route ?? "none"}; supervisor=${supervisorQuestion?.adapter === null ? "unsupported" : "adapter"}; server-cuts=${serverQuestionCuts}`);
+
+  // Every HTTP pair printed anywhere in the generated document — adapters AND explicitly rejected
+  // neighbours — must resolve. Source-symbol anchors are held by declarations, not line numbers.
+  const generatedPairs = generated === null ? []
+    : [...generated.matchAll(/\b(GET|POST) (\/api\/[A-Za-z0-9_./:-]+)/g)].map((match) => `${match[1]} ${match[2]}`);
+  const deadGenerated = generatedPairs.filter((pair) => !serverPairs.has(pair));
+  const capabilitySource = read("capability-map.ts");
+  const protocolSource = read("src/protocol.ts");
+  pin("every route and source symbol named by the generated capability map resolves in this tree",
+    generatedPairs.length > 0 && deadGenerated.length === 0
+      && /export const SYSTEM_CAPABILITIES\b/.test(capabilitySource)
+      && /export const SELF_GET_ADAPTER_PROBE\b/.test(capabilitySource)
+      && /export const QUESTION_ROUTES\b/.test(capabilitySource)
+      && /export const UNMODELED_CAPABILITY_DIMENSIONS\b/.test(capabilitySource)
+      && /export interface SystemCapability\b/.test(protocolSource)
+      && /export interface CapabilityAdapter\b/.test(protocolSource),
+    `${generatedPairs.length} route mention(s), dead=[${deadGenerated.join(",")}]`);
+
+  const dimensions = new Map(UNMODELED_CAPABILITY_DIMENSIONS.map((row) => [row.dimension, row.gap]));
+  pin("UI gesture, trace effect and harness support remain explicit unmodeled follow-up dimensions",
+    dimensions.size === 3
+      && ["uiGesture", "traceEffect", "harnessSupport"].every((name) => dimensions.get(name as never)?.includes("not modeled"))
+      && generated?.includes("## Dimensions not yet modeled") === true,
+    `[${[...dimensions].map(([name, gap]) => `${name}:${gap}`).join(" | ")}]`);
 }
 
 // ================================================================================================

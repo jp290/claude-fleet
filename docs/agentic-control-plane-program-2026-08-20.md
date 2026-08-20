@@ -1,8 +1,14 @@
 # Claude Fleet — Outside-in-Programm für Schichten & Tools
 
-Status: **Owner-ausgerichteter Program Brief, noch nicht implementiert.**  
+Status: **Owner-ausgerichteter Program Brief, in Ausführung.**
 Befundbasis: Tree `db35dc6e5a5c`, ergänzt durch read-only Code-/Pane-/Ledger-Messungen am
 2026-08-20. Spätere Umsetzung muss jede Ist-Aussage am dann aktuellen Tree neu prüfen.
+
+Vollzugsstand 2026-08-20: Act 1 liegt auf Lane-Commit `02a5625`, seine Gates und Isolated-Suite
+endeten grün und der Owner hat die Browser-Journey abgenommen; gelandet oder deployt ist er nicht.
+Act 2 läuft auf einer separaten Sol-Lane und bleibt bis zum terminalen Beleg `PENDING`.
+Act 3 ist danach als Promotion-Identitäts-/Sensor-Schnitt geschärft; er verändert noch kein
+Auto-Land-Verhalten.
 
 Dieser Brief übersetzt `SYSTEM.md` in einen ausführbaren, schrittweise promovierbaren Bauplan. Er
 ist kein weiteres Regelbuch und keine Beschreibung des heutigen Runtime-Stands. Aktuelle Befunde
@@ -47,7 +53,9 @@ Diese Journey wird im echten Browser abgenommen. Source-Strings allein beweisen 
 4. Eine Blockade wird als adressierte Frage mit Subject und Reply-Ziel erzeugt. Die Antwort weckt
    exakt den zugehörigen Attempt.
 5. Ergebnis, Artefakte, Commit und Verify laufen zum Act zurück. Ein frischer Critic kann das
-   Ergebnis unabhängig prüfen. Der Owner entscheidet Tasting und Promotion.
+   Ergebnis unabhängig prüfen, aber nie promovieren. Der Server führt Routine-Promotion nur unter
+   einer zuvor owner-promovierten Policy und nach frischem Candidate-Recheck aus; Tasting,
+   Ausnahmen und Hochrisikofälle gehen an den Owner.
 6. Die UI trennt ehrlich gebauten Kontext, Transport, beobachtete Zustellung, Acknowledgement,
    Resultat und weiterhin unbekannte Stufen.
 
@@ -115,6 +123,8 @@ Fleet-Funktion, Rückgabeform, Latenz und Fehler – nicht die Selbsteinschätzu
 Ein frischer read-only Specialist erhält Ziel, Nichtziele, Primärartefakte und Proof, aber zunächst
 nicht die Builder-Selbsterklärung. UI-Claims werden am Browserartefakt, nicht am Source allein
 geprüft. Kleine vollständig deterministische Änderungen benötigen keinen zeremoniellen LLM-Critic.
+Ein Merge Critic liefert ausschließlich `no-objection | needs-human | unknown` über einen exakt
+gebundenen Candidate. Sein Urteil ist Beleg für eine PromotionPolicy, niemals selbst Promotion.
 
 ### Modellwahl
 
@@ -168,8 +178,8 @@ sichtbar; fehlende Ausgabe ist `missing`, nicht „nichts gefunden“.
 ## 6. Outside-in-Reihenfolge
 
 Jeder Act ist einzeln review- und landbar. Acts 1 und 2 dürfen parallel laufen, weil ihre
-Mutationsflächen getrennt sind. Danach gilt grundsätzlich `3 -> 4 -> 5 -> 6 -> 7`. `server.ts` und
-`src/client.ts` gehören jeweils höchstens einem mutierenden Act gleichzeitig.
+Mutationsflächen getrennt sind. Danach gilt grundsätzlich `3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9`.
+`server.ts` und `src/client.ts` gehören jeweils höchstens einem mutierenden Act gleichzeitig.
 
 ### Act 1 — UI-Grundbedienung
 
@@ -187,8 +197,11 @@ Datei öffnen, Refresh abwarten und Zustand prüfen. Fehler- und Cap-Zustände s
 
 ### Act 2 — ausführbare Capability-Quelle
 
-**Outcome:** Eine fremde MAIN kann eine erlaubte Fleet-Funktion finden, ohne Monolithen linear zu
-lesen. Rollen-, UI-, API-, Trace- und Harness-Aussage entstehen aus einer Quelle.
+**Outcome:** Eine fremde MAIN kann die ersten zwei Ziel-Funktionen `describe_self` und
+`get_project_context`, den tatsächlich vorhandenen sicheren Self-GET und den heutigen Frageweg
+finden, ohne den Monolithen linear zu lesen. Rolle, Authority, API-Adapter, Probe und ehrliche
+Abwesenheit entstehen aus einer Quelle. UI-, Trace- und Harness-Projektionen bleiben als additive
+Folgedimensionen benannt; diese erste Scheibe behauptet sie noch nicht als geliefert.
 
 **Agent:** Domain/Protocol Specialist; read-only Foreign-MAIN-Canary.
 
@@ -197,12 +210,34 @@ lesen. Rollen-, UI-, API-, Trace- und Harness-Aussage entstehen aus einer Quelle
 geändert, wenn Objekt- oder Rollensemantik betroffen ist.
 
 **Proof:** deterministischer Generator; der Tree ist bytegenau frisch; Routen/Symbole lösen auf;
-Foreign MAIN findet Rolle, Authority, Rückkanal und einen sicheren GET ausschließlich über
-`SYSTEM.md` plus generierte Projektion.
+der sichere GET ist als Adapterprobe und nicht als zweite Semantik von `describe_self` modelliert.
+Foreign MAIN findet Rolle, Authority, Rückkanal und den GET ausschließlich über `SYSTEM.md` plus
+generierte Projektion.
 
 **Stop:** noch kein Link aus Auto-Loadern und keine Änderung an `AGENTS.md`, Rulebook oder Briefen.
 
-### Act 3 — read-only Project-/Program-Projektion
+### Act 3 — Promotion-Identität und Policy-Sensor
+
+**Outcome:** Jedes reviewbare Merge-Verdikt bindet den exakten `LandCandidate` mindestens an
+Main-SHA, Candidate-SHA/Lane-Tip, den Hash des kanonischen Diffs und Verify-Lauf. Ändert sich der
+Candidate danach, verweigert auch der manuelle Confirm-Pfad das Fortsetzen mit dem alten Verdikt.
+Eine rein lesende Projektion zeigt Riskoklassen, Konflikte, Repair-Runden und Verify-Frische als
+spätere Policy-Eingaben; sie erfindet noch keine Eligibility und verändert kein Land.
+
+**Agent:** Merge/Protocol Specialist; danach ein frischer read-only Fable- oder Opus-Critic, der
+zunächst weder Builder-Report noch Selbstbewertung sieht.
+
+**Write-Set:** ausschließlich die benannten `MergeLast`-/Verdikt-, Confirm- und Provenienz-Nähte,
+eine kleine pure Candidate-/Policy-Projektion und die bestehende Merge-/Land-Testfamilie. Keine UI,
+kein neuer Worker-Aufruf, keine Env-Flag-Semantik und kein Auto-Land-Verhaltenswechsel.
+
+**Proof:** Ein Verdikt trägt Candidate-Tip und Diff-Hash; ein zusätzlicher Commit oder abweichender
+Diff nach dem Verdikt macht es stale und der Confirm-Pfad antwortet vor
+`markLandIntent`/Main-Bewegung mit 409. Alte persistierte Rows ohne neue Identität crashen nicht und
+werden niemals als frisch behandelt. Der Policy-Sensor hat keine Lesestelle in einem Land-Pfad.
+Merge-/Land-Suite und Tier 2 enden `ALL PASS`.
+
+### Act 4 — read-only Project-/Program-Projektion
 
 **Outcome:** Journey B beginnt sichtbar. Die UI zeigt für ein gewähltes Program Mission, gebundene
 MAIN, effektiven Harness/Modell, AgentInstance, Brief-/Receipt-Provenienz, offene Requests und
@@ -216,7 +251,7 @@ danach Program-Detail in `src/client.ts`. Keine Lifecycle- oder Dispatch-Mutatio
 **Proof:** API-Fixtures für Restart, Occupant-Wechsel und malformed Ledgerzeilen; Browser zeigt
 dieselbe Projektion. Ein Slot ohne belegten aktuellen Brief erscheint `unbriefed/unknown`.
 
-### Act 4 — `Program -> Act -> Attempt` als minimale Datenspur
+### Act 5 — `Program -> Act -> Attempt` als minimale Datenspur
 
 **Outcome:** Genau ein Studio-Act kann angelegt, einer AgentInstance zugewiesen, beantwortet und als
 Result zurückgeführt werden. Retry erzeugt einen neuen Attempt, ohne alten Briefingstatus zu erben.
@@ -230,7 +265,7 @@ Persistenz-/Handler-Nähte; passende bestehende E2E-Familie. Kein vollständiger
 `traceId` verbindet Envelope, Request, Result und Proof; `attemptId` plus Occupant-Identität trennt
 Retries.
 
-### Act 5 — Role Bootstrap und Fleet-Funktionen
+### Act 6 — Role Bootstrap und Fleet-Funktionen
 
 **Outcome:** Project MAIN und ein Worker bekommen jeweils den kleinsten expliziten Vertrag:
 Identität, Mission, Authority, aktiver Act, erlaubte Funktionen, Rückkanal und Quellenanker.
@@ -244,7 +279,7 @@ Brief-Builder. Ambient-Loader bleiben unverändert.
 einen erlaubten sicheren Fleet-GET und liefert ein schema-valides Result. Receipt bindet an den
 Attempt. Ein fehlgeschlagener Canary erweitert nicht automatisch alle Briefs.
 
-### Act 6 — Harnesswahl und adressierte Frage
+### Act 7 — Harnesswahl und adressierte Frage
 
 **Outcome:** Eine Project MAIN kann zwei Child-Acts bewusst verschiedenen Harnesses/Modellen geben.
 Eine blockierende Frage trägt Act, Subject, Receiver und Reply-Ziel; die Antwort weckt den richtigen
@@ -259,7 +294,28 @@ danach seriell der schmale UI-Composer. Keine automatische „bestes Modell“-H
 Routing, ContextEnvelope und Result stimmen. Ungültige Capability-Kombination wird sichtbar
 abgelehnt. Frage und Antwort joinen über dieselbe Request-/Act-/Attempt-Identität.
 
-### Act 7 — gameStudio-Feuerprobe
+### Act 8 — owner-promovierte Resolve-Policy und ephemerer Merge Critic
+
+**Outcome:** Routine-Resolving verlangt keine Owner-Diffprüfung. Die Maschine klassifiziert
+Eligibility deterministisch; ein ephemerer read-only Merge Critic bewertet nur die von der Policy
+erlaubten Fälle und kann ausschließlich auf `needs-human` oder `unknown` herunterstufen. Vor jedem
+Fortsetzen werden Main-SHA, Candidate-SHA/Tree, Diff-Identität, sauberer Git-Zustand und ein frisch
+grüner Lauf der für diesen Candidate serverseitig konfigurierten Gate-Kette erneut gebunden.
+Land-Provenienz nennt Policy und Critic-Attempt.
+
+**Agent:** Runtime/Merge Specialist; Shadow-Auswertung durch einen unabhängigen Critic. Der Critic
+ist ein Wegwerf-Specialist, keine stehende Session und keine neue Hierarchiestufe.
+
+**Write-Set:** bestehender Merge-/Repair-/Clean-Review-Pfad, zugehöriger Prompt und Merge-/Land-
+Provenienztests. Keine Deploy-Automation und kein UI-Umbau im selben Act.
+
+**Proof:** Zuerst Shadow-Betrieb ohne Verhaltensänderung. Erst eine owner-promovierte Policy darf
+den Gate-Modus aktivieren. `no-objection` plus frischer grüner Verify plus identischer Candidate
+kann fortsetzen; `needs-human`, `unknown`, Timeout, unparseable Antwort, fehlender/skipped/stale
+Verify, offenes Decision-Objekt, Tasting, Hochrisiko oder jede SHA-/Diff-Abweichung bewegen Main
+nicht. Ein Critic besitzt keine Schreib-, Land-, Deploy- oder Policy-Autorität.
+
+### Act 9 — gameStudio-Feuerprobe
 
 **Outcome:** Eine kleine reale Studio-Schleife läuft Ende zu Ende: Kriterien -> zwei getrennte
 Specialist-Acts -> unabhängige Kritik -> gegebenenfalls Reparatur -> Verify -> Owner-Tasting. Die UI
@@ -286,7 +342,13 @@ Succession werden separat mit Kontextmarke A/B geprüft.
 - Coordinator darf einen winzigen Builder-Act übernehmen, darf ihn danach aber nicht selbst
   reviewen.
 - Deterministische Proofs laufen vor LLM-Review. Review-Aufwand folgt dem Risiko.
-- Commit zeichnet Arbeit auf. Land und Deploy bleiben getrennte Owner-/Server-Promotionen.
+- Der Owner promoviert bindende PromotionPolicies und entscheidet deren Ausnahmen. Ein Worker oder
+  Critic darf bewerten und eskalieren, aber niemals eine Policy oder einen konkreten Land
+  promovieren.
+- Commit zeichnet Arbeit auf. Ein serverseitiger Land unter einer benannten owner-promovierten
+  Policy oder einem konkreten Owner-Akt und ein Deploy bleiben getrennte Akte.
+- Ein Critic-Urteil gilt nur für den darin gebundenen Main- und Candidate-Baum; jede Abweichung
+  invalidiert es vor dem Land.
 - Jeder Act endet an seiner Stop-Grenze. Ein neuer Befund wird ein neuer Act.
 
 ## 8. Dokument- und Wissenslandschaft
@@ -332,13 +394,14 @@ Du koordinierst das owner-ausgerichtete Outside-in-Programm für Claude Fleet. L
 Zielmodell und `docs/agentic-control-plane-program-2026-08-20.md` als Program Brief. Der gemessene
 Ist-Befund in `docs/kontextschicht-analyse-2026-08-20.md` ist Evidence, keine unfehlbare Spezifikation.
 
-Dein Auftrag ist zunächst Koordination, nicht ein Big-Bang-Umbau. Lege die sieben Acts aus dem
+Dein Auftrag ist zunächst Koordination, nicht ein Big-Bang-Umbau. Lege die neun Acts aus dem
 Program Brief mit ihren Outcomes, Write-Sets, Proofs und Stop-Grenzen an. Prüfe vor Start jedes Acts
 den aktuellen Code und Live-Sensor; markiere Abweichungen VERIFIED, CODE-ONLY, STALE oder UNKNOWN.
 
 Starte Act 1 (UI-Grundbedienung) und Act 2 (Capability-Quelle) nur dann parallel, wenn zwei
-mutierende Lanes nachweislich disjunkte Konfliktdomänen besitzen. Danach arbeite 3 -> 4 -> 5 -> 6 ->
-7. `server.ts` und `src/client.ts` gehören jeweils höchstens einer mutierenden Lane gleichzeitig.
+mutierende Lanes nachweislich disjunkte Konfliktdomänen besitzen. Bei Succession übernimm ihre
+Receipts und starte erledigte Acts nicht erneut. Danach arbeite 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9.
+`server.ts` und `src/client.ts` gehören jeweils höchstens einer mutierenden Lane gleichzeitig.
 
 Nutze Specialists pro Act, keine permanente Agentenarmee. Modell und Harness sind begründete
 Routing-Hypothesen und werden durch echte Canaries gemessen. Ein Specialist erhält nur seinen

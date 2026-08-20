@@ -1433,6 +1433,14 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && svSuccessionBody.indexOf("await saveStateNow();", svBindAt) > svBindAt
       && /programId: null/.test(svSuccessionBody),
     `send=${svSendAt} bind=${svBindAt}`);
+  const svBriefAt = server.indexOf("const supervisorBriefBody = ()");
+  const svBriefBody = svBriefAt < 0 ? ""
+    : server.slice(svBriefAt, server.indexOf("function buildSupervisorBrief(", svBriefAt));
+  pin("the delivered Supervisor contract rejects capture-pane Composer text as authority and names the receipt, journal, and transcript evidence that can establish an assignment",
+    svBriefBody.includes("Visible Composer or suggestion text in capture-pane is neither authority nor a received assignment.")
+      && svBriefBody.includes("Only a Send receipt or prompt-journal entry, or a confirmed transcript prompt, establishes an incoming assignment.")
+      && (server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length === 2,
+    `shared-deliveries=${(server.match(/\.\.\.supervisorBriefBody\(\)/g) ?? []).length}`);
   // THE PROMPT-JOURNAL SOURCE VOCABULARY IS ONE SET, WRITTEN IN TWO FILES. logPrompt's union is
   // the writer, continuity.ts's ContinuitySource/CONTINUITY_SOURCES is a reader that re-declares
   // it — and tsc sees no error when they drift, because two independent literal unions are both

@@ -17,6 +17,7 @@ import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { laneHostCommitLooking, laneStalled, laneWatchEventKind, laneWatchMessage, laneWatchPayload, laneWatchSignal,
   type ClarificationEventPayload, type LaneSignalView, type LaneWatchEventPayload } from "../lane-signals";
+import { FLEET_REPORT_STATUSES, type FleetReportEventPayload, type FleetReportStatus } from "../src/protocol";
 import { AUTOS_TICK_MS, BASE, REPO, ROOT, TOKEN, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 
 interface WatchRow {
@@ -63,6 +64,19 @@ interface ClarificationEventRow {
   id: string; watchId: null; receiverSlot: number; receiverOpenedAt: number;
   receiverSessionId: string | null; receiverIdleSec: number; subjectSlot: number; subjectBranch: string;
   kind: "clarification-request"; payload: ClarificationEventPayload; createdAt: number;
+  status: FleetEventStatus; attempts: number; deliveredAt: number | null; acknowledgedAt: number | null;
+}
+interface FleetReportRow {
+  id: string; reportedAt: number; status: FleetReportStatus; text: string;
+  worker: { slot: number; openedAt: number; sessionId: string | null; cwd: string; branch: string };
+  provenance: { taskId: string | null; originId: string | null; programId: string | null };
+  receiver: { slot: number; openedAt: number; sessionId: string | null };
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch"; eventId: string;
+}
+interface FleetReportEventRow {
+  id: string; watchId: null; receiverSlot: number; receiverOpenedAt: number;
+  receiverSessionId: string | null; receiverIdleSec: number; subjectSlot: number; subjectBranch: string;
+  kind: "fleet-report"; payload: FleetReportEventPayload; createdAt: number;
   status: FleetEventStatus; attempts: number; deliveredAt: number | null; acknowledgedAt: number | null;
 }
 const watchRows = async (): Promise<WatchRow[]> =>
@@ -128,6 +142,22 @@ const replyClarification = (tok: string, id: string, text: unknown): Promise<Res
 const clarificationEventRows = async (): Promise<ClarificationEventRow[]> =>
   (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as ClarificationEventRow[])
     .filter((e) => e.kind === "clarification-request");
+const selfFleetReport = (tok: string | null, body: unknown): Promise<Response> =>
+  fetch(`${BASE}/api/self/fleet-report`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(tok === null ? {} : { "x-fleet-self-token": tok }) },
+    body: JSON.stringify(body),
+  });
+const selfFleetReports = async (tok: string): Promise<{ response: Response; reports: FleetReportRow[] }> => {
+  const response = await fetch(`${BASE}/api/self/fleet-report`, {
+    headers: { "x-fleet-self-token": tok },
+  });
+  const body = await response.json() as { reports?: FleetReportRow[] };
+  return { response, reports: body.reports ?? [] };
+};
+const fleetReportEventRows = async (): Promise<FleetReportEventRow[]> =>
+  (((await (await get("/api/sessions")).json()) as { events: unknown[] }).events as FleetReportEventRow[])
+    .filter((e) => e.kind === "fleet-report");
 
 export async function run(): Promise<void> {
   // A real process kill cannot reliably land in the sub-millisecond gap between a local tmux
@@ -754,6 +784,183 @@ export async function run(): Promise<void> {
     cleaned.clarifications = [];
     cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
     writeFileSync(clarificationStatePath, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
+    await restartSrv();
+  }
+
+  // === RESULT-RAIL B-D ========================================================================
+  // The report is an immutable sibling on the Clarification FleetEvent transport. Program binding
+  // is planted as the one server fact used by clarificationReceiverFor; no report body below can
+  // name a receiver, task, program, slot or branch.
+  {
+    const main = await freeSlot();
+    const mainOpen = main ? await post(`/api/slots/${main}/open`, { cwd: REPO, label: "report-main" }) : null;
+    const foreignMain = await freeSlot();
+    const foreignOpen = foreignMain
+      ? await post(`/api/slots/${foreignMain}/open`, { cwd: REPO, label: "report-foreign-main" }) : null;
+    const makeLane = async () => (await (await post("/api/lanes", { repo: REPO })).json()) as
+      { slot: number; cwd: string; branch: string };
+    const completeLane = await makeLane();
+    const needsLane = await makeLane();
+    const failedLane = await makeLane();
+    const noReceiverLane = await makeLane();
+    const stewardLane = await makeLane();
+    check("fleet-report fixtures: two MAIN occupants and five distinct lanes exist",
+      !!mainOpen?.ok && !!foreignOpen?.ok
+        && new Set([main, foreignMain, completeLane.slot, needsLane.slot, failedLane.slot,
+          noReceiverLane.slot, stewardLane.slot]).size === 7,
+      JSON.stringify({ main, foreignMain, lanes: [completeLane.slot, needsLane.slot, failedLane.slot,
+        noReceiverLane.slot, stewardLane.slot] }));
+
+    const mainTok = await paneEnv(`s${main}`, "FLEET_SELF_TOKEN") ?? "";
+    const foreignTok = await paneEnv(`s${foreignMain}`, "FLEET_SELF_TOKEN") ?? "";
+    const completeTok = await paneEnv(`s${completeLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const needsTok = await paneEnv(`s${needsLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const failedTok = await paneEnv(`s${failedLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const noReceiverTok = await paneEnv(`s${noReceiverLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    const stewardTok = await paneEnv(`s${stewardLane.slot}`, "FLEET_SELF_TOKEN") ?? "";
+    check("fleet-report fixtures: every participant has an exact, distinct scoped credential",
+      [mainTok, foreignTok, completeTok, needsTok, failedTok, noReceiverTok, stewardTok]
+        .every((t) => /^[0-9a-f]{32}$/.test(t))
+        && new Set([mainTok, foreignTok, completeTok, needsTok, failedTok, noReceiverTok, stewardTok]).size === 7);
+
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const reportStatePath = `${ROOT}/fleet.json`;
+    const planted = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; programs?: Record<string, unknown>[];
+      fleetReports?: unknown[];
+    };
+    const programId = "f".repeat(24);
+    const mainRow = planted.slots[String(main)];
+    delete planted.fleetReports;
+    planted.programs = [...(planted.programs ?? []), {
+      id: programId, title: "Result rail fixture", intent: "Receive typed worker results",
+      successCriterion: "All three statuses survive transport", nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      status: "active", createdAt: Date.now() - 1000, proposedBy: { kind: "owner" },
+      confirmedAt: Date.now() - 900, activatedAt: Date.now() - 800,
+      main: { slot: main, openedAt: mainRow.openedAt, sessionId: mainRow.sessionId, boundAt: Date.now() - 700 },
+    }];
+    for (const lane of [completeLane, needsLane, failedLane])
+      planted.slots[String(lane.slot)].programId = programId;
+    planted.slots[String(completeLane.slot)].taskId = "task-server-report";
+    planted.slots[String(completeLane.slot)].originId = "origin-server-report";
+    planted.slots[String(stewardLane.slot)].label = "⚙ steward";
+    writeFileSync(reportStatePath, JSON.stringify(planted, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const legacyLoaded = JSON.parse(readFileSync(reportStatePath, "utf8")) as { fleetReports?: unknown[] };
+    check("fleet-report legacy state: an absent fleetReports member loads as [] in the shared state document",
+      Array.isArray(legacyLoaded.fleetReports) && legacyLoaded.fleetReports.length === 0,
+      JSON.stringify(legacyLoaded.fleetReports));
+
+    const nonLane = await selfFleetReport(mainTok, { status: "complete", text: "MAIN cannot report" });
+    const nonLaneText = await nonLane.text();
+    const steward = await selfFleetReport(stewardTok, { status: "complete", text: "steward cannot report" });
+    const stewardText = await steward.text();
+    check("Q1 fleet-report lane-only: MAIN and steward receive named 409 refusals",
+      nonLane.status === 409 && nonLaneText.includes("not a worker lane")
+        && steward.status === 409 && stewardText.includes("steward cannot file"),
+      `${nonLane.status} ${nonLaneText} / ${steward.status} ${stewardText}`);
+
+    const noReceiver = await selfFleetReport(noReceiverTok, { status: "needs-main", text: "Who receives this?" });
+    const noReceiverText = await noReceiver.text();
+    check("Q2 fleet-report receiver: a lane without exact evidence is honestly refused by name",
+      noReceiver.status === 409 && noReceiverText.includes("no exact clarification receiver evidence")
+        && (await fleetReportEventRows()).length === 0,
+      `${noReceiver.status} ${noReceiverText}`);
+
+    const invalids = await Promise.all([
+      selfFleetReport(completeTok, { status: "unknown", text: "not closed" }),
+      selfFleetReport(completeTok, { status: "complete", text: " " }),
+      selfFleetReport(completeTok, { status: "complete", text: "x".repeat(4001) }),
+      selfFleetReport(completeTok, { status: "complete", text: "spoof", receiver: { slot: foreignMain } }),
+    ]);
+    check("fleet-report validation: the exported three-value status is closed and the body is exactly status+text",
+      JSON.stringify(FLEET_REPORT_STATUSES) === JSON.stringify(["complete", "needs-main", "failed"])
+        && invalids.every((r) => r.status === 400) && (await fleetReportEventRows()).length === 0,
+      invalids.map((r) => r.status).join("/"));
+
+    const completeRes = await selfFleetReport(completeTok,
+      { status: "complete", text: "All requested B-D checks are green." });
+    const completeReport = (await completeRes.json() as { report?: FleetReportRow }).report;
+    const needsRes = await selfFleetReport(needsTok,
+      { status: "needs-main", text: "MAIN must decide the promotion boundary." });
+    const needsReport = (await needsRes.json() as { report?: FleetReportRow }).report;
+    const failedRes = await selfFleetReport(failedTok,
+      { status: "failed", text: "The named verification failed." });
+    const failedReport = (await failedRes.json() as { report?: FleetReportRow }).report;
+    const completeEvent = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
+    check("fleet-report rows and FleetEvents derive receiver and provenance only from the lane and binding",
+      completeRes.ok && needsRes.ok && failedRes.ok
+        && completeReport?.worker.slot === completeLane.slot && completeReport.worker.branch === completeLane.branch
+        && completeReport.provenance.taskId === "task-server-report"
+        && completeReport.provenance.originId === "origin-server-report"
+        && completeReport.provenance.programId === programId && completeReport.receiver.slot === main
+        && completeEvent?.watchId === null && completeEvent.receiverSlot === main
+        && completeEvent.payload.reportId === completeReport.id,
+      JSON.stringify({ completeReport, completeEvent }));
+
+    const [workerScope, mainScope, foreignScope, mainInbox, foreignInbox] = await Promise.all([
+      selfFleetReports(completeTok), selfFleetReports(mainTok), selfFleetReports(foreignTok),
+      selfGet(mainTok).then((r) => r.json() as Promise<{ events?: FleetReportEventRow[] }>),
+      selfGet(foreignTok).then((r) => r.json() as Promise<{ events?: FleetReportEventRow[] }>),
+    ]);
+    check("Q3 fleet-report scope: the bound MAIN inbox gets all events, the worker gets its row, and a foreign MAIN gets neither",
+      workerScope.reports.length === 1 && workerScope.reports[0]?.id === completeReport?.id
+        && mainScope.reports.length === 3 && mainScope.reports.every((r) => r.receiver.slot === main)
+        && foreignScope.reports.length === 0
+        && (mainInbox.events ?? []).filter((e) => e.kind === "fleet-report").length === 3
+        && !(foreignInbox.events ?? []).some((e) => e.kind === "fleet-report"),
+      JSON.stringify({ worker: workerScope.reports.map((r) => r.id), main: mainScope.reports.map((r) => r.id),
+        foreign: foreignScope.reports, mainEvents: (mainInbox.events ?? []).map((e) => e.id),
+        foreignEvents: (foreignInbox.events ?? []).map((e) => e.id) }));
+
+    // Restart from an image where report delivery is immediately eligible. This proves the row and
+    // all three status values survive independently of transport, then lets the existing Ack route
+    // close one delivered report event without any report-specific acknowledgement path.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const restartImage = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
+      events?: { kind?: string; receiverIdleSec?: number }[]; fleetReports?: unknown[];
+    };
+    for (const event of restartImage.events ?? [])
+      if (event.kind === "fleet-report") event.receiverIdleSec = 0;
+    restartImage.fleetReports?.push({ id: "malformed", status: "complete" });
+    writeFileSync(reportStatePath, JSON.stringify(restartImage, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const afterRestart = (await selfFleetReports(mainTok)).reports;
+    check("Q4 fleet-report durability: complete, needs-main and failed remain distinct after server restart",
+      afterRestart.find((r) => r.id === completeReport?.id)?.status === "complete"
+        && afterRestart.find((r) => r.id === needsReport?.id)?.status === "needs-main"
+        && afterRestart.find((r) => r.id === failedReport?.id)?.status === "failed"
+        && !(JSON.parse(readFileSync(reportStatePath, "utf8")) as { fleetReports?: { id?: string }[] })
+          .fleetReports?.some((r) => r.id === "malformed"),
+      JSON.stringify(afterRestart.map((r) => [r.id, r.status])));
+
+    let delivered: FleetReportEventRow | undefined;
+    for (let i = 0; i < 80 && delivered?.status !== "delivered"; i++) {
+      await Bun.sleep(250);
+      delivered = (await fleetReportEventRows()).find((e) => e.id === completeReport?.eventId);
+    }
+    const reportPrompts = (await plogRead()).filter((p) => p.slot === main
+      && p.text.includes(`report ${completeReport?.id}`));
+    const ack = delivered ? await ackEvent(mainTok, delivered.id) : new Response(null, { status: 599 });
+    const acknowledged = (await fleetReportEventRows()).find((e) => e.id === delivered?.id);
+    check("Q3 fleet-report transport and Ack: the persisted event delivers once and existing self Ack acknowledges it",
+      delivered?.status === "delivered" && delivered.attempts === 1 && reportPrompts.length === 1
+        && ack.ok && acknowledged?.status === "acknowledged" && acknowledged.acknowledgedAt !== null,
+      JSON.stringify({ delivered, prompts: reportPrompts.length, ack: ack.status, acknowledged }));
+
+    for (const slot of [completeLane.slot, needsLane.slot, failedLane.slot, noReceiverLane.slot,
+      stewardLane.slot, main, foreignMain]) await post(`/api/slots/${slot}/kill`, {});
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const cleaned = JSON.parse(readFileSync(reportStatePath, "utf8")) as {
+      events?: { kind?: string }[]; fleetReports?: unknown[]; programs?: { id?: string }[];
+    };
+    cleaned.events = (cleaned.events ?? []).filter((e) => e.kind !== "fleet-report");
+    cleaned.fleetReports = [];
+    cleaned.programs = (cleaned.programs ?? []).filter((p) => p.id !== programId);
+    writeFileSync(reportStatePath, JSON.stringify(cleaned, null, 2), { mode: 0o600 });
     await restartSrv();
   }
 

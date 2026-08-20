@@ -26,6 +26,22 @@ export const WS_INPUT_MAX_BYTES = 1024;
 // redeclaring it, so a field added for the client cannot be forgotten on the server and vice versa.
 export interface GitInfo { branch: string; dirty: number; ahead: number; behind: number }
 
+// --- worker result rail ------------------------------------------------------------------------
+// The route, persisted row and FleetEvent payload share this CLOSED vocabulary. Keeping the value
+// here makes a new spelling fail compilation in both the server and its transport probe instead of
+// silently widening one side. These are reported facts only; no promotion path consumes them.
+export const FLEET_REPORT_STATUSES = ["complete", "needs-main", "failed"] as const;
+export type FleetReportStatus = typeof FLEET_REPORT_STATUSES[number];
+export interface FleetReportEventPayload {
+  reportId: string;
+  status: FleetReportStatus;
+  text: string;
+  taskId: string | null;
+  originId: string | null;
+  programId: string | null;
+  basis: "program-main" | "lane-watch" | "program-main+lane-watch";
+}
+
 // --- stable lane ownership ----------------------------------------------------------------------
 // A lane belongs to one main-session OCCUPANT, not merely to a numbered slot: slots recycle, so
 // the opening timestamp is the generation half of the identity. Optional on every carrier because

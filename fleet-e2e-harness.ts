@@ -95,6 +95,28 @@ async function directPaneComms(target: string): Promise<string[]> {
   return out;
 }
 
+// The negative half of phase 1's argv probe: observe the resident foreign agent itself, not the
+// shell text tmux was asked to start, so a claude-only flag cannot hitchhike into another harness.
+async function directPaneArgv(target: string, prefix: string): Promise<string[]> {
+  const pane = Number((await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}")).out);
+  if (!pane) return [];
+  const pg = Bun.spawn(["pgrep", "-P", String(pane)], { stdout: "pipe" });
+  const children = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
+  await pg.exited;
+  const out: string[] = [];
+  for (const pid of [String(pane), ...children]) {
+    const comm = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
+    const name = (await new Response(comm.stdout).text()).trim().split("/").pop() ?? "";
+    await comm.exited;
+    if (!name.startsWith(prefix)) continue;
+    const ps = Bun.spawn(["ps", "-ww", "-o", "command=", "-p", pid], { stdout: "pipe" });
+    const argv = (await new Response(ps.stdout).text()).trim();
+    await ps.exited;
+    if (argv) out.push(argv);
+  }
+  return out;
+}
+
 // ESTABLISH, don't assert: poll the pane's own process tree until the declared agent appears.
 // Returns the last reading either way, so the caller's check reports what it really saw.
 async function awaitPaneComm(target: string, prefix: string, budgetMs: number): Promise<string[]> {
@@ -320,6 +342,10 @@ const o1 = await post("/api/slots/1/open", { cwd: "~" });
 check("open slot 1 under a foreign harness", o1.ok, String(o1.status));
 const ag1 = await awaitAgent(1, "alive");
 check("the liveness probe recognises a NON-claude agent by its declared comm", ag1 === "alive", String(ag1));
+const foreignArgv = await directPaneArgv("s1", "harn");
+check("the live foreign stand-in receives no claude prompt-suggestions flag in its argv",
+  foreignArgv.length > 0 && foreignArgv.every((argv) => !argv.includes("--prompt-suggestions")),
+  foreignArgv.join(" | ") || "no harn argv observed");
 
 // ...and the gate it feeds actually delivers, so "alive" is not a label the rest of the app ignores.
 const marker1 = "harness-must-type-this";

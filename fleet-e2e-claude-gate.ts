@@ -76,6 +76,28 @@ async function paneComms(target: string): Promise<string[]> {
   return out;
 }
 
+// Read the resident process's argv from the OS. pane_start_command would only prove that Fleet
+// rendered text into a shell line; this observes what the stand-in agent actually received.
+async function paneArgv(target: string, prefix: string): Promise<string[]> {
+  const pane = Number((await tmuxOut("display-message", "-p", "-t", target, "#{pane_pid}")).out);
+  if (!pane) return [];
+  const pg = Bun.spawn(["pgrep", "-P", String(pane)], { stdout: "pipe" });
+  const children = (await new Response(pg.stdout).text()).split("\n").filter(Boolean);
+  await pg.exited;
+  const out: string[] = [];
+  for (const pid of [String(pane), ...children]) {
+    const comm = Bun.spawn(["ps", "-o", "comm=", "-p", pid], { stdout: "pipe" });
+    const name = (await new Response(comm.stdout).text()).trim().split("/").pop() ?? "";
+    await comm.exited;
+    if (!name.startsWith(prefix)) continue;
+    const ps = Bun.spawn(["ps", "-ww", "-o", "command=", "-p", pid], { stdout: "pipe" });
+    const argv = (await new Response(ps.stdout).text()).trim();
+    await ps.exited;
+    if (argv) out.push(argv);
+  }
+  return out;
+}
+
 // ESTABLISH, don't assert: poll until the declared agent appears, and return the last reading
 // either way so a failing check reports what it really saw.
 async function awaitPaneComm(target: string, prefix: string, budgetMs: number): Promise<string[]> {
@@ -185,6 +207,11 @@ if (silentAlive && silentInWindow) {
 const silentSeen = await awaitAgent(9, "alive");
 check("silent-alive fixture: Fleet's own probe agrees the agent is alive",
   silentSeen?.agent === "alive", JSON.stringify(silentSeen));
+
+const claudeArgv = await paneArgv("s9", "claude");
+check("the live claude stand-in receives --prompt-suggestions false in its argv",
+  claudeArgv.some((argv) => /(?:^|\s)--prompt-suggestions\s+false(?:\s|$)/.test(argv)),
+  claudeArgv.join(" | ") || "no claude argv observed");
 
 const marker2 = "gate-must-type-this";
 const a2res = await post("/api/slots/2/autos", { text: marker2, inSec: 1, idleSec: 0 });

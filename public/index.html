@@ -903,15 +903,33 @@
   /* the explorer tree — one renderer, in the board card and in the window's list pane */
   .fxtree { margin-top: 4px; max-height: 320px; overflow-y: auto; }
   .shelllist .fxtree, .shelllist > .fxrow { max-height: none; }
+  /* rows are <button>s so the tree is tabbable and Enter/Space-activatable without a keydown
+     handler that could drift from the click handler — hence the reset before the styling */
   .fxrow { display: flex; align-items: center; gap: 4px; padding: 2px 4px; cursor: pointer;
-    border-radius: 4px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
+    border-radius: 4px; font-size: 11.5px; white-space: nowrap; overflow: hidden;
+    width: 100%; text-align: left; background: none; border: 0; color: inherit;
+    font-family: inherit; appearance: none; }
   .fxrow:hover { background: #242424; }
   .fxrow.sel { background: #1c2437; }
+  /* .sel is the keyboard CURSOR (the shell owns it); .fxpicked is the file actually open in the
+     detail pane. Two different facts, so two different marks — one would hide the other. */
+  .fxrow.fxpicked { background: #1d2a1f; box-shadow: inset 2px 0 0 var(--add); }
+  .fxrow:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .fxtwist { color: #667; width: 9px; flex: none; font-size: 9px; }
   .fxdir .fxname { color: #b8b8b8; }
   .fxfile .fxname { color: #8a8a8a; }
-  .fxfile:hover .fxname, .fxrow.sel .fxname { color: #cfe0ff; }
+  .fxfile:hover .fxname, .fxrow.sel .fxname, .fxrow.fxpicked .fxname { color: #cfe0ff; }
   .fxname { overflow: hidden; text-overflow: ellipsis; }
+  /* a search hit is a PATH, and the directory half of it is context, not the answer */
+  .fxdim { color: #5c5c66; flex: none; }
+  .fxhit { padding-left: 4px !important; }
+  .fxfilterin { width: 100%; margin-top: 6px; height: 26px; padding: 0 8px; border-radius: 6px;
+    border: 1px solid var(--line); background: #141414; color: #ddd; font-size: 11px;
+    font-family: inherit; }
+  .fxfilterin:focus { outline: none; border-color: var(--focus); }
+  .fxpath { flex: 1 1 100%; min-width: 0; color: var(--dim); font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fxpath:empty { display: none; }
   .ocsub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
   .ocnote { font-size: 11px; color: #999; line-height: 1.45; margin-top: 4px; }
   .ocwarn { font-size: 11px; color: var(--amber); line-height: 1.45; margin-top: 4px; }
@@ -1106,7 +1124,14 @@
   .bbtn.subtle:hover:not(:disabled) { color: var(--text); border-color: #3a3a44; }
   /* AGENTS group: make the advisory / read-only nature legible */
   .bagenthint { color: var(--faint); font-size: 10px; margin-bottom: 2px; }
-  .brow { display: flex; gap: 7px; padding: 2px 0; color: #999; line-height: 1.45; }
+  /* a commit row is a <button>: both lists are clickable, and Enter/Space + the focus ring come
+     from the tag rather than from a handler. The reset keeps it looking like the row it was. */
+  .brow { display: flex; gap: 7px; padding: 2px 4px; margin-left: -4px; color: #999;
+    line-height: 1.45; cursor: pointer; width: 100%; text-align: left; background: none;
+    border: 0; font-family: inherit; font-size: inherit; appearance: none; border-radius: 4px; }
+  .brow:hover { background: #242424; color: #ddd; }
+  .brow:hover .bhash { color: var(--accent); }
+  .brow:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .brow .bhash { flex: none; color: var(--faint); }
   .brow .bsub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bfile { color: #999; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

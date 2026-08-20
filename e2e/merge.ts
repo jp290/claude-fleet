@@ -1,11 +1,12 @@
 // The ⏫ merge/land paths: the agent verdicts (blocked / lying / resolved / prose), the server's
-// own conflict-free script pre-pass, confirm-land and its stale-main replay, the V1 deterministic
+// own conflict-free script pre-pass, identity-bound confirm-land, the V1 deterministic
 // verify gate, and the orphan reattach / remove / discard flows.
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { BASE, REPO, REPO2, REPO3, ROOT, check, get, paneEnv, plogRead, post, restartSrv, tmuxOut } from "./harness";
 import type { LaneCtx } from "./ctx";
 import { exists, fakeClaudeInPane, setMergeMode, settleForMerge, waitMerge } from "./lane-helpers";
+import { projectPromotionPolicyFacts } from "../land-candidate";
 
 type MergeEventRow = {
   id: string; watchId: string; receiverSlot: number; kind: "merge-terminal";
@@ -288,11 +289,9 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("prose-merged lane's commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("prose lane work"));
 
-  // atomic confirm-land: if main moves between the resolution and the owner's confirm, the
-  // earlier rebase is stale — but the resolution was already made, so the server REPLAYS it
-  // onto the current main and lands in one step (no full agent re-run) when the move doesn't
-  // re-conflict. Only a move that touches the SAME lines falls back to ⏫. (Was: confirm hard-
-  // refused on ANY move, which in a busy fleet meant a resolved lane could never win the race.)
+  // Main identity and candidate identity are distinct at confirm: an unrelated main move makes
+  // the old verify stale, but the existing controlled replay may land when the reviewed lane tip
+  // was untouched and patch-id proves the content stayed the same.
   const lnStale = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   await Bun.write(`${lnStale.cwd}/code.txt`, "root\nstale-lane\n");
   spawnSync("git", ["-C", lnStale.cwd, "commit", "-aqm", "stale lane work"]);
@@ -303,25 +302,26 @@ export async function run(lc: LaneCtx): Promise<void> {
   await post(`/api/slots/${lnStale.slot}/merge`, {});
   const vSt = await waitMerge(lnStale.slot);
   check("stale-test lane resolved + paused", !vSt.gone && vSt.last?.status === "resolved", JSON.stringify(vSt.last));
-  // main moves on an UNRELATED file before confirm → the resolution still replays cleanly
+  // main moves on an UNRELATED file before confirm → the reviewed candidate content is unchanged
   await Bun.write(`${REPO}/moved.txt`, "moved\n");
   spawnSync("git", ["-C", REPO, "add", "moved.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "main moved after resolution"]);
-  const staleJ = (await (await post(`/api/slots/${lnStale.slot}/merge`, { confirm: true })).json()) as
+  const staleR = await post(`/api/slots/${lnStale.slot}/merge`, { confirm: true });
+  const staleJ = (await staleR.json()) as
     { status?: string; landed?: boolean; detail?: string };
-  check("confirm-land re-rebases onto a moved main and lands (unrelated move, no agent re-run)",
-    staleJ.status === "merged" && staleJ.landed === true, JSON.stringify(staleJ));
-  check("confirm-landed lane's resolution + the intervening main move both reached main",
-    ((): boolean => { const lg = spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString();
-      return lg.includes("stale lane work") && lg.includes("main moved after resolution"); })(),
+  check("confirm-land replays onto moved main when lane tip + canonical diff stayed reviewed",
+    staleR.ok && staleJ.status === "merged" && staleJ.landed === true,
+    `${staleR.status} ${JSON.stringify(staleJ)}`);
+  check("replayed confirm carries both the reviewed resolution and intervening main move",
+    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("stale lane work")
+      && spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("main moved after resolution"),
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
-  check("confirm-landed lane kept its resolved content on main (theirs = lane side)",
+  check("replayed confirm kept the resolved content on main (theirs = lane side)",
     spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString() === "root\nstale-lane\n",
     JSON.stringify(spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString()));
 
-  // the fallback still holds: when the moved main touches the SAME lines the resolution did,
-  // the re-rebase re-conflicts — the server aborts it cleanly and sends the owner back to ⏫
-  // (never landing a NEW, unreviewed auto-resolution). Lane is left exactly as it was.
+  // Same-line main movement passes the candidate pre-check, then the controlled replay conflicts
+  // and falls back to ⏫ exactly as before. The lane is left clean and unchanged.
   const lnReconf = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
   await Bun.write(`${lnReconf.cwd}/code.txt`, "root\nrc-lane\n");
   spawnSync("git", ["-C", lnReconf.cwd, "commit", "-aqm", "reconf lane work"]);
@@ -333,10 +333,12 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("reconf lane resolved + paused", !vRc.gone && vRc.last?.status === "resolved", JSON.stringify(vRc.last));
   await Bun.write(`${REPO}/code.txt`, "root\nrc-main2\n"); // main re-touches the SAME line before confirm
   spawnSync("git", ["-C", REPO, "commit", "-aqm", "reconf main re-touch"]);
-  const rcJ = (await (await post(`/api/slots/${lnReconf.slot}/merge`, { confirm: true })).json()) as
+  const rcR = await post(`/api/slots/${lnReconf.slot}/merge`, { confirm: true });
+  const rcJ = (await rcR.json()) as
     { status?: string; detail?: string };
-  check("confirm-land falls back to ⏫ when the moved main re-conflicts",
-    rcJ.status === "blocked" && (rcJ.detail ?? "").includes("re-run"), JSON.stringify(rcJ));
+  check("confirm-land falls back to ⏫ when moved main re-conflicts",
+    rcJ.status === "blocked" && (rcJ.detail ?? "").includes("re-run"),
+    `${rcR.status} ${JSON.stringify(rcJ)}`);
   check("re-conflicting confirm leaves the lane intact (no half-rebase, no git op stuck)",
     exists(lnReconf.cwd)
     && spawnSync("git", ["-C", lnReconf.cwd, "status", "--porcelain"]).stdout.toString().trim() === "",
@@ -513,6 +515,29 @@ export async function run(lc: LaneCtx): Promise<void> {
     vVf.last?.verify?.ok === false && vVf.last.verify.cmd.endsWith("fakeverify")
       && vVf.last.verify.out.includes("VERIFYBAD") && typeof vVf.last.verify.mainSha === "string" && /^[0-9a-f]{40,64}$/.test(vVf.last.verify.mainSha),
     JSON.stringify(vVf.last?.verify));
+  check("ACP-03 Q1: the real merge verdict binds mainSha + candidateSha + stable diffHash",
+    /^[0-9a-f]{40,64}$/.test(vVf.last?.mainSha ?? "")
+      && /^[0-9a-f]{40,64}$/.test(vVf.last?.candidateSha ?? "")
+      && /^[0-9a-f]{40,64}$/.test(vVf.last?.diffHash ?? "")
+      && vVf.last?.mainSha === vVf.last?.verify?.mainSha,
+    JSON.stringify(vVf.last));
+  const vfPolicyFacts = projectPromotionPolicyFacts(vVf.last ?? {}, {
+    mainSha: vVf.last?.mainSha ?? "", candidateSha: vVf.last?.candidateSha ?? "",
+    diffHash: vVf.last?.diffHash ?? "",
+  });
+  check("ACP-03 policy sensor: identity/verify freshness and risk facts are read-only inputs, not eligibility",
+    vfPolicyFacts.candidateFreshness === "fresh" && vfPolicyFacts.verifyFreshness === "fresh"
+      && vfPolicyFacts.riskClasses.includes("verify-failed")
+      && vfPolicyFacts.conflicts.length === 0 && vfPolicyFacts.repairRounds === 0
+      && !("eligible" in vfPolicyFacts),
+    JSON.stringify(vfPolicyFacts));
+  const movedMainFacts = projectPromotionPolicyFacts(vVf.last ?? {}, {
+    mainSha: "f".repeat(40), candidateSha: vVf.last?.candidateSha ?? "",
+    diffHash: vVf.last?.diffHash ?? "",
+  });
+  check("ACP-03 policy sensor: unrelated main movement keeps candidate fresh but makes verify stale",
+    movedMainFacts.candidateFreshness === "fresh" && movedMainFacts.verifyFreshness === "stale",
+    JSON.stringify(movedMainFacts));
   check("merge event restart fixture: pause transport before minting the persisted red outcome",
     (await post("/api/autos/switch", { on: false })).ok);
   const redSubR = await selfMergeWatch(receiverAToken, lnVf.slot);
@@ -540,19 +565,134 @@ export async function run(lc: LaneCtx): Promise<void> {
   const vfPreLand = spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString();
   check("V1: verify-failed lane's commit has NOT reached main",
     !vfPreLand.includes("verify-fail lane work"), vfPreLand.trim());
-  // owner latitude (OWNER.md §4a): confirm-land must NOT hard-block on verify.ok:false — the
-  // owner reviewed the failure and may land anyway. The clean rebase left main an ancestor,
-  // so confirm ff-lands directly.
+
+  // ACP-03 Q2: the verdict reviewed one exact candidate. A later lane commit changes both the
+  // tip and canonical diff, so confirm must bite with 409 before markLandIntent/main/note.
+  await Bun.write(`${lnVf.cwd}/candidate-after-review.txt`, "this commit was not reviewed\n");
+  spawnSync("git", ["-C", lnVf.cwd, "add", "candidate-after-review.txt"]);
+  let staleCommit = false;
+  for (let i = 0; i < 20 && !staleCommit; i++) {
+    staleCommit = spawnSync("git", ["-C", lnVf.cwd, "commit", "-qm", "candidate changed after review"]).status === 0;
+    if (!staleCommit) await Bun.sleep(150);
+  }
+  check("ACP-03 Q2 setup: the post-verdict commit exists (the stale guard is measuring a real change)",
+    staleCommit, spawnSync("git", ["-C", lnVf.cwd, "status", "--porcelain"]).stdout.toString().trim());
+  const staleTip = spawnSync("git", ["-C", lnVf.cwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+  const staleMainBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+  const staleNoteBefore = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", staleTip]).status;
   await settleForMerge(lnVf.slot);
-  const vfConf = (await (await post(`/api/slots/${lnVf.slot}/merge`, { confirm: true })).json()) as { status?: string; landed?: boolean };
-  check("V1: owner may confirm-land a verify-failed resolution anyway (no hard block on ok:false)",
-    vfConf.status === "merged" && vfConf.landed === true, JSON.stringify(vfConf));
-  check("V1: after the owner's confirm the verify-failed lane's commit is on main",
-    spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("verify-fail lane work"));
+  const staleConfirmR = await post(`/api/slots/${lnVf.slot}/merge`, { confirm: true });
+  const staleConfirm = (await staleConfirmR.json()) as { status?: string; landed?: boolean; detail?: string };
+  const staleMainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+  const staleNoteAfter = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", staleTip]).status;
+  check("ACP-03 Q2: post-verdict candidate change makes confirm return 409 stale",
+    staleConfirmR.status === 409 && staleConfirm.status === "stale" && staleConfirm.landed === false,
+    `${staleConfirmR.status} ${JSON.stringify(staleConfirm)}`);
+  check("ACP-03 Q2: stale refusal leaves main byte-for-byte at the pre-confirm SHA",
+    staleMainBefore === staleMainAfter,
+    JSON.stringify({ before: staleMainBefore, after: staleMainAfter }));
+  check("ACP-03 Q2: stale refusal writes no land note for the unreviewed candidate",
+    staleNoteBefore !== 0 && staleNoteAfter !== 0,
+    JSON.stringify({ candidate: staleTip, noteBeforeExit: staleNoteBefore, noteAfterExit: staleNoteAfter }));
+  await post(`/api/slots/${lnVf.slot}/kill`, {});
+  await post("/api/worktrees/discard", { repo: REPO, path: lnVf.cwd, branch: lnVf.branch });
+
+  // ACP-03 Q3 counter-probe: the same red-verify review flow, with no commit after the verdict,
+  // still preserves owner latitude and lands normally.
+  const lnVfresh = (await (await post("/api/lanes", { repo: REPO })).json()) as
+    { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnVfresh.cwd}/verify-fresh-confirm.txt`, "lane work with a VERIFYBAD marker\n");
+  spawnSync("git", ["-C", lnVfresh.cwd, "add", "verify-fresh-confirm.txt"]);
+  let freshCommit = false;
+  for (let i = 0; i < 20 && !freshCommit; i++) {
+    freshCommit = spawnSync("git", ["-C", lnVfresh.cwd, "commit", "-qm", "fresh candidate confirm lane work"]).status === 0;
+    if (!freshCommit) await Bun.sleep(150);
+  }
+  check("ACP-03 Q3 setup: unchanged-candidate fixture commit exists",
+    freshCommit, spawnSync("git", ["-C", lnVfresh.cwd, "status", "--porcelain"]).stdout.toString().trim());
+  await Bun.write(`${REPO}/vf-fresh-main.txt`, "main side\n");
+  spawnSync("git", ["-C", REPO, "add", "vf-fresh-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "fresh candidate main work"]);
+  await settleForMerge(lnVfresh.slot);
+  await post(`/api/slots/${lnVfresh.slot}/merge`, {});
+  const vFresh = await waitMerge(lnVfresh.slot);
+  check("ACP-03 Q3 setup: unchanged candidate has a reviewable identity-bound verdict",
+    vFresh.last?.status === "resolved" && vFresh.last.verify?.ok === false
+      && /^[0-9a-f]{40,64}$/.test(vFresh.last.candidateSha ?? ""), JSON.stringify(vFresh.last));
+  const freshMainBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+  await settleForMerge(lnVfresh.slot);
+  const freshConfirmR = await post(`/api/slots/${lnVfresh.slot}/merge`, { confirm: true });
+  const freshConfirm = (await freshConfirmR.json()) as { status?: string; landed?: boolean };
+  const freshMainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+  check("ACP-03 Q3: the unchanged candidate still confirm-lands normally",
+    freshConfirmR.ok && freshConfirm.status === "merged" && freshConfirm.landed === true
+      && freshMainBefore !== freshMainAfter,
+    `${freshConfirmR.status} ${JSON.stringify({ freshConfirm, freshMainBefore, freshMainAfter })}`);
   // scrub the VERIFYBAD marker back out of main so later clean lanes (this suite reuses REPO
   // heavily) don't inherit a red verify from this deliberately-broken confirm-land.
-  spawnSync("git", ["-C", REPO, "rm", "-q", "verify-fail.txt"]);
+  spawnSync("git", ["-C", REPO, "rm", "-q", "verify-fresh-confirm.txt"]);
   spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop VERIFYBAD marker from main"]);
+
+  // ACP-03 Q4: boot a genuinely persisted pre-identity row. Killing the scratch server before
+  // editing its scratch fleet.json makes the fixture deterministic: no process can overwrite it.
+  const lnLegacy = (await (await post("/api/lanes", { repo: REPO })).json()) as
+    { slot: number; cwd: string; branch: string };
+  await Bun.write(`${lnLegacy.cwd}/legacy-verify.txt`, "lane work with a VERIFYBAD marker\n");
+  spawnSync("git", ["-C", lnLegacy.cwd, "add", "legacy-verify.txt"]);
+  let legacyCommit = false;
+  for (let i = 0; i < 20 && !legacyCommit; i++) {
+    legacyCommit = spawnSync("git", ["-C", lnLegacy.cwd, "commit", "-qm", "legacy verdict lane work"]).status === 0;
+    if (!legacyCommit) await Bun.sleep(150);
+  }
+  check("ACP-03 Q4 setup: legacy fixture commit exists",
+    legacyCommit, spawnSync("git", ["-C", lnLegacy.cwd, "status", "--porcelain"]).stdout.toString().trim());
+  await Bun.write(`${REPO}/legacy-main.txt`, "main side\n");
+  spawnSync("git", ["-C", REPO, "add", "legacy-main.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "legacy verdict main work"]);
+  await settleForMerge(lnLegacy.slot);
+  await post(`/api/slots/${lnLegacy.slot}/merge`, {});
+  const legacyWritten = await waitMerge(lnLegacy.slot);
+  check("ACP-03 Q4 setup: current server first wrote a complete verdict to downgrade into a legacy fixture",
+    legacyWritten.last?.status === "resolved" && /^[0-9a-f]{40,64}$/.test(legacyWritten.last.diffHash ?? ""),
+    JSON.stringify(legacyWritten.last));
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const legacyState = (await Bun.file(`${ROOT}/fleet.json`).json()) as
+    { merges?: Record<string, Record<string, unknown>> };
+  const legacyRow = legacyState.merges?.[String(lnLegacy.slot)];
+  check("ACP-03 Q4 setup: persisted MergeLast fixture exists before removing only its identity fields",
+    legacyRow !== undefined, JSON.stringify(legacyState.merges ?? null));
+  if (legacyRow) {
+    delete legacyRow.mainSha;
+    delete legacyRow.candidateSha;
+    delete legacyRow.diffHash;
+  }
+  await Bun.write(`${ROOT}/fleet.json`, JSON.stringify(legacyState, null, 2));
+  await restartSrv();
+  const legacyRendered = await waitMerge(lnLegacy.slot);
+  const legacyFacts = projectPromotionPolicyFacts(legacyRendered.last ?? {});
+  check("ACP-03 Q4: legacy persisted row without identity deserializes and renders after restart",
+    legacyRow !== undefined && legacyRendered.last?.status === "resolved"
+      && legacyRendered.last.mainSha === undefined && legacyRendered.last.candidateSha === undefined
+      && legacyRendered.last.diffHash === undefined,
+    JSON.stringify({ fixture: legacyRow, rendered: legacyRendered.last }));
+  check("ACP-03 Q4: the policy projection never calls an identity-less legacy row fresh",
+    legacyFacts.candidate === null && legacyFacts.candidateFreshness === "unknown"
+      && legacyFacts.verifyFreshness === "unknown",
+    JSON.stringify(legacyFacts));
+  const legacyConfirmR = await post(`/api/slots/${lnLegacy.slot}/merge`, { confirm: true });
+  const legacyConfirm = (await legacyConfirmR.json()) as { status?: string; landed?: boolean };
+  check("ACP-03 Q4: identity-UNKNOWN legacy row retains the git-gated owner confirm escape hatch",
+    legacyConfirmR.ok && legacyConfirm.status === "merged" && legacyConfirm.landed === true,
+    `${legacyConfirmR.status} ${JSON.stringify(legacyConfirm)}`);
+  const legacyNoteRaw = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", "main"]);
+  let legacyNote: { resolverDetail?: string } | null = null;
+  try { legacyNote = JSON.parse(legacyNoteRaw.stdout.toString()) as { resolverDetail?: string }; } catch { /* asserted below */ }
+  check("ACP-03 Q4: legacy confirm provenance records identity freshness as UNKNOWN",
+    legacyNoteRaw.status === 0 && (legacyNote?.resolverDetail ?? "").includes("freshness was UNKNOWN"),
+    legacyNoteRaw.stdout.toString().trim());
+  spawnSync("git", ["-C", REPO, "rm", "-q", "legacy-verify.txt"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "cleanup: drop legacy VERIFYBAD marker from main"]);
 
   // (C) clean rebase whose verify command DECLINES to verify the tree (server.ts VERIFY_SKIP_EXIT).
   // This is the hole the tri-state closes: the guard used to `exit 0`, which recorded ok:true and

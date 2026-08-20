@@ -294,3 +294,49 @@ export interface QuestionRoute {
   readonly constraints: readonly string[];
   readonly gaps: readonly string[];
 }
+
+// --- immutable land-candidate identity and future policy inputs --------------------------------
+// These are facts, not a PromotionPolicy and not an eligibility decision. The merge server binds
+// the three identity fields onto a reviewable verdict; land-candidate.ts projects that record for
+// later read-only surfaces without giving the projection any place in a land path.
+export interface LandCandidateVerifyRun {
+  readonly cmd: string;
+  readonly ok: boolean | null;
+  readonly out: string;
+  readonly at: number;
+  readonly mainSha: string;
+  readonly stale?: boolean;
+  readonly timedOut?: true;
+  readonly waitedOut?: true;
+  readonly startedAt?: number;
+  readonly ms?: number;
+  readonly waitMs?: number;
+  readonly waitPartial?: true;
+  readonly exitCode?: number | null;
+}
+
+export interface LandCandidate {
+  readonly mainSha: string;
+  readonly candidateSha: string;
+  readonly diffHash: string;
+  readonly verify: LandCandidateVerifyRun | null;
+}
+
+export type CandidateFreshness = "fresh" | "stale" | "unknown";
+export type VerifyFreshness = "fresh" | "stale" | "not-run" | "unknown";
+export type PromotionRiskClass =
+  | "conflict-resolution"
+  | "repair-rounds"
+  | "verify-failed"
+  | "verify-unmeasured"
+  | "verify-not-run"
+  | "clean-review-flagged";
+
+export interface PromotionPolicyFacts {
+  readonly candidate: LandCandidate | null;
+  readonly candidateFreshness: CandidateFreshness;
+  readonly verifyFreshness: VerifyFreshness;
+  readonly riskClasses: readonly PromotionRiskClass[];
+  readonly conflicts: readonly string[];
+  readonly repairRounds: number;
+}

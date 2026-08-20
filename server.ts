@@ -9483,6 +9483,11 @@ const REVIEW_TOOLS = '--setting-sources "" --permission-mode dontAsk --allowedTo
 // process that owed a verdict died. Everything else here is a settled outcome.
 interface MergeLast { status: "merged" | "blocked" | "error" | "resolved" | "interrupted" | "awaiting-author";
   detail: string; landed: boolean; branch: string; at: number; conflicted?: string[];
+  // Immutable identity of the exact candidate a reviewable verdict describes. Optional only for
+  // interrupted writes and rows persisted by an older server; absence is UNKNOWN, never fresh,
+  // while the legacy owner's git-gated confirm escape hatch remains available. `diffHash` is
+  // git patch-id --stable over mainSha...candidateSha.
+  mainSha?: string; candidateSha?: string; diffHash?: string;
   // WHO is resolving (or resolved) the files in `conflicted`. Present only where that question has a
   // subject — i.e. alongside `conflicted`, never on a clean verdict. On "awaiting-author" it is a
   // record of who was HANDED the conflict; on "resolved" it is who chose the lines now in the tree.
@@ -11912,12 +11917,28 @@ function shadowOf(r: { verdict: "ok" | "review"; reason: string; raw: boolean; a
 async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main: string,
   carried: string[] = [], carriedBy: "agent" | "author" = "agent"): Promise<void> {
   let res: MergeLast;
+  let candidateMainSha: string | null = null;
+  const bindCandidate = async (r: MergeLast): Promise<MergeLast> => {
+    const reviewable = r.status === "resolved" || r.status === "awaiting-author"
+      || (r.status === "interrupted" && (r.conflicted?.length ?? 0) > 0);
+    if (!reviewable) return r;
+    const mainSha = candidateMainSha ?? (await git(root, "rev-parse", main)).out;
+    const tip = await git(cwd, "rev-parse", "HEAD");
+    if (!/^[0-9a-f]{40,64}$/.test(mainSha) || tip.code !== 0 || !/^[0-9a-f]{40,64}$/.test(tip.out)) return r;
+    const diff = await git(cwd, "diff", "--binary", `${mainSha}...${tip.out}`, "--");
+    if (diff.code !== 0) return r;
+    const diffHash = await patchIdOf(cwd, diff.out, "");
+    return diffHash ? { ...r, mainSha, candidateSha: tip.out, diffHash } : r;
+  };
   // the verdict write, extracted so the ② author path can leave early without duplicating it: a
   // slot recycled onto a DIFFERENT cwd mid-run already had its verdict slate cleared by openSlot,
   // and this lane's verdict must not be written over whatever lives there now.
   const record = async (r: MergeLast): Promise<void> => {
     if (!s.cwd || s.cwd === cwd) {
-      mergeLast.set(s.id, r);
+      const bound = await bindCandidate(r);
+      mergeLast.set(s.id, bound);
+      // Candidate identity belongs to the on-demand merge row, not the bounded event facts that
+      // ride the 2 s /api/sessions hot poll. The event vocabulary is intentionally unchanged.
       await mintMergeEvents(s.id, cwd, branch, r);
       await saveStateNow(); // verdict + any event are on disk before this job becomes non-running
     }
@@ -12065,6 +12086,7 @@ async function mergeJob(s: Slot, cwd: string, root: string, branch: string, main
         // field stays absent and today's behavior is unchanged. mainSha === the main just
         // rebased onto, reused below as mainBefore for the clean-path land.
         const mainSha = (await git(root, "rev-parse", main)).out;
+        candidateMainSha = mainSha;
         // WRITE SITE 1 of 2 (the verify GATE made visible — see that region). Every runVerify on
         // this path goes through here, the repair loop's re-runs included, so the board says
         // "slot N · running land gate · <branch>" for as long as the gate is actually holding the
@@ -14031,8 +14053,14 @@ if (existsSync(STATE_FILE)) {
         if (s?.worktree && typeof v === "object" && v !== null
           && ["merged", "blocked", "error", "resolved", "interrupted", "awaiting-author"].includes((v as MergeLast).status)
           && typeof (v as MergeLast).detail === "string" && typeof (v as MergeLast).branch === "string"
-          && (v as MergeLast).branch === s.worktree.branch)
-          mergeLast.set(s.id, v as MergeLast);
+          && (v as MergeLast).branch === s.worktree.branch) {
+          const row = v as MergeLast;
+          const identityComplete = /^[0-9a-f]{40,64}$/.test(row.mainSha ?? "")
+            && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")
+            && /^[0-9a-f]{40,64}$/.test(row.diffHash ?? "");
+          const { mainSha: _mainSha, candidateSha: _candidateSha, diffHash: _diffHash, ...legacy } = row;
+          mergeLast.set(s.id, identityComplete ? row : legacy as MergeLast);
+        }
       }
     // ...and the branch-keyed park (see parkMergeVerdict): verdicts whose slot let go before a
     // reattach. Only the reviewable shapes are ever parked, and the key must equal the row's own
@@ -14042,8 +14070,14 @@ if (existsSync(STATE_FILE)) {
       for (const [b, v] of Object.entries(pp as Record<string, unknown>))
         if (typeof v === "object" && v !== null
           && ["resolved", "interrupted", "awaiting-author"].includes((v as MergeLast).status)
-          && typeof (v as MergeLast).detail === "string" && (v as MergeLast).branch === b)
-          mergeParked.set(b, v as MergeLast);
+          && typeof (v as MergeLast).detail === "string" && (v as MergeLast).branch === b) {
+          const row = v as MergeLast;
+          const identityComplete = /^[0-9a-f]{40,64}$/.test(row.mainSha ?? "")
+            && /^[0-9a-f]{40,64}$/.test(row.candidateSha ?? "")
+            && /^[0-9a-f]{40,64}$/.test(row.diffHash ?? "");
+          const { mainSha: _mainSha, candidateSha: _candidateSha, diffHash: _diffHash, ...legacy } = row;
+          mergeParked.set(b, identityComplete ? row : legacy as MergeLast);
+        }
     const psh = (persisted as { shelved?: unknown }).shelved;
     if (typeof psh === "object" && psh !== null && !Array.isArray(psh))
       for (const [k, v] of Object.entries(psh as Record<string, unknown>))
@@ -17601,12 +17635,38 @@ Bun.serve<WSData>({
           // files, and verify result are the review story this land is owning. Read it BEFORE
           // the delete below so the provenance note carries what the owner actually reviewed.
           const reviewed = mergeLast.get(s.id);
-          // atomic confirm-land: if main moved since the agent resolved, the earlier rebase is
-          // stale — but the conflicts were already resolved once, so REPLAY those resolved
-          // commits onto the CURRENT main and land in one step, instead of sending the owner
-          // back through a full agent re-run. Only a re-rebase that CONFLICTS AGAIN (main
-          // touched the same lines) genuinely needs the agent — then, and only then, fall back
-          // to ⏫. rerere off: never silently replay a recorded resolution and land it unseen.
+          const readCandidateIdentity = async (): Promise<{ mainSha: string; candidateSha: string; diffHash: string } | null> => {
+            const [mainNow, tipNow] = await Promise.all([
+              git(repo, "rev-parse", main), git(cwd, "rev-parse", "HEAD"),
+            ]);
+            if (mainNow.code !== 0 || tipNow.code !== 0
+              || !/^[0-9a-f]{40,64}$/.test(mainNow.out) || !/^[0-9a-f]{40,64}$/.test(tipNow.out)) return null;
+            const diff = await git(cwd, "diff", "--binary", `${mainNow.out}...${tipNow.out}`, "--");
+            if (diff.code !== 0) return null;
+            const diffHash = await patchIdOf(cwd, diff.out, "");
+            return diffHash ? { mainSha: mainNow.out, candidateSha: tipNow.out, diffHash } : null;
+          };
+          const identityKnown = reviewed !== undefined
+            && /^[0-9a-f]{40,64}$/.test(reviewed.mainSha ?? "")
+            && /^[0-9a-f]{40,64}$/.test(reviewed.candidateSha ?? "")
+            && /^[0-9a-f]{40,64}$/.test(reviewed.diffHash ?? "");
+          // Main moving is not a candidate edit: the existing replay path handles it and marks
+          // verify stale. Before that controlled rewrite, BOTH the lane tip and stable diff must
+          // still be exactly what the verdict bound.
+          const candidateMatches = (current: { mainSha: string; candidateSha: string; diffHash: string } | null,
+            expectedSha: string | null): boolean => current !== null && expectedSha !== null
+              && current.candidateSha === expectedSha && reviewed?.diffHash === current.diffHash;
+          let currentCandidate = await readCandidateIdentity();
+          if (identityKnown && !candidateMatches(currentCandidate, reviewed!.candidateSha!)) return json({ status: "stale", landed: false,
+            detail: "the reviewed lane tip or canonical diff changed — run merge again and review the new candidate before confirming",
+            reviewed: reviewed ? { mainSha: reviewed.mainSha ?? null, candidateSha: reviewed.candidateSha ?? null,
+              diffHash: reviewed.diffHash ?? null } : null,
+            current: currentCandidate }, 409);
+          // Defensive ancestry check for a structurally fresh identity. Normal resolved verdicts
+          // are already descendants of their bound mainSha; an abnormal row that is not may replay
+          // onto that SAME main, but the second identity check below will refuse if replay rewrites
+          // the candidate. rerere stays off: no recorded resolution can silently become a land.
+          let allowedCandidateSha = identityKnown ? reviewed!.candidateSha! : null;
           let anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code !== 0) {
             // Same plumbing, same hazard as the merge pre-pass (see tryScriptRebase): index.lock
@@ -17625,12 +17685,24 @@ Bun.serve<WSData>({
             anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
             if (anc.code !== 0) return json({ status: "error",
               detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
+            // This exact rewrite is server-controlled. Rebase changes commit SHAs, while
+            // patch-id --stable below proves whether it changed the reviewed content.
+            const replayedTip = await git(cwd, "rev-parse", "HEAD");
+            allowedCandidateSha = replayedTip.code === 0 ? replayedTip.out : null;
           }
           // the re-rebase above (if it ran) rewrote the lane tip — the root's mirror is now behind
           // the very commits about to be landed, and markLandIntent/advanceIntegration both read it
           const rebasedSync = await syncLaneRefs(s.worktree, cwd);
           if (rebasedSync) return json({ status: "error", detail: `${rebasedSync.error} — lane kept, nothing landed` }, 409);
-          const mainBefore = (await git(repo, "rev-parse", main)).out;
+          // Re-read after sync so a concurrent commit or main move cannot cross the review→intent
+          // boundary. The first check above protects the old rebase/replay block; this one is the
+          // final identity gate immediately before markLandIntent.
+          currentCandidate = await readCandidateIdentity();
+          if (identityKnown && !candidateMatches(currentCandidate, allowedCandidateSha)) return json({ status: "stale", landed: false,
+            detail: "the reviewed land candidate changed while confirm was preparing the land — review the current candidate and confirm again",
+            reviewed: { mainSha: reviewed!.mainSha ?? null, candidateSha: reviewed!.candidateSha ?? null,
+              diffHash: reviewed!.diffHash ?? null }, current: currentCandidate }, 409);
+          const mainBefore = currentCandidate?.mainSha ?? (await git(repo, "rev-parse", main)).out;
           // stale-verify guard: `verify.mainSha` bound the verdict to the main it verified
           // against — if main moved past it since (the replay above), the recorded green
           // never saw the landed state. MARK it stale rather than re-running: a re-run
@@ -17638,10 +17710,13 @@ Bun.serve<WSData>({
           // timeout could hang the land). Owner latitude stands — stale never blocks.
           const rv = reviewed?.verify;
           const verifyProv = rv && rv.mainSha !== mainBefore ? { ...rv, stale: true } : rv;
-          const prov: LandProvenance = { conflicted: reviewed?.conflicted, resolverDetail: reviewed?.detail,
+          const resolverDetail = identityKnown ? reviewed?.detail
+            : `${reviewed?.detail ? `${reviewed.detail} ` : ""}Land candidate identity was not recorded; freshness was UNKNOWN at confirm.`;
+          const prov: LandProvenance = { conflicted: reviewed?.conflicted, resolverDetail,
             verify: verifyProv, confirmedByHuman: true };
           // same declaration-before-the-advance as the clean auto-land path (see markLandIntent)
-          await markLandIntent(repo, main, branch, mainBefore, (await git(repo, "rev-parse", branch)).out, prov);
+          const laneTip = currentCandidate?.candidateSha ?? (await git(repo, "rev-parse", branch)).out;
+          await markLandIntent(repo, main, branch, mainBefore, laneTip, prov);
           const adv = await advanceIntegration(repo, main, branch);
           if (adv) {
             clearLandIntent(repo);

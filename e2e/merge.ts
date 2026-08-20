@@ -289,36 +289,53 @@ export async function run(lc: LaneCtx): Promise<void> {
   check("prose-merged lane's commit reached main",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-3"]).stdout.toString().includes("prose lane work"));
 
-  // Main identity and candidate identity are distinct at confirm: an unrelated main move makes
-  // the old verify stale, but the existing controlled replay may land when the reviewed lane tip
-  // was untouched and patch-id proves the content stayed the same.
+  // Main identity and candidate identity are distinct at confirm. This fixture deliberately moves
+  // a CONTEXT line in the SAME file, within patch-id's three context lines: the replay is clean and
+  // the lane hunk byte-identical, but patch-id changes. The server-observed replay-tip SHA — not a
+  // cross-context patch-id comparison — is therefore the second guard's authority.
+  await Bun.write(`${REPO}/code.txt`, "a\nb\nc\nTARGET\ne\n");
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "context replay fixture base"]);
   const lnStale = (await (await post("/api/lanes", { repo: REPO })).json()) as { slot: number; cwd: string };
-  await Bun.write(`${lnStale.cwd}/code.txt`, "root\nstale-lane\n");
+  await Bun.write(`${lnStale.cwd}/code.txt`, "a\nb\nc\nCHANGED\ne\n");
   spawnSync("git", ["-C", lnStale.cwd, "commit", "-aqm", "stale lane work"]);
-  await Bun.write(`${REPO}/code.txt`, "root\nstale-main\n"); // conflict → agent runs → resolved
+  await Bun.write(`${REPO}/code.txt`, "a\nb\nc\nMAIN-SIDE\ne\n"); // TARGET conflict → agent resolves to CHANGED
   spawnSync("git", ["-C", REPO, "commit", "-aqm", "stale main work"]);
   await setMergeMode("do");
   await settleForMerge(lnStale.slot);
   await post(`/api/slots/${lnStale.slot}/merge`, {});
   const vSt = await waitMerge(lnStale.slot);
-  check("stale-test lane resolved + paused", !vSt.gone && vSt.last?.status === "resolved", JSON.stringify(vSt.last));
-  // main moves on an UNRELATED file before confirm → the reviewed candidate content is unchanged
-  await Bun.write(`${REPO}/moved.txt`, "moved\n");
-  spawnSync("git", ["-C", REPO, "add", "moved.txt"]);
-  spawnSync("git", ["-C", REPO, "commit", "-qm", "main moved after resolution"]);
+  check("ACP-03 repair setup: same-file lane hunk is resolved + verified before context movement",
+    !vSt.gone && vSt.last?.status === "resolved" && vSt.last.verify?.ok === true
+      && /^[0-9a-f]{40,64}$/.test(vSt.last.diffHash ?? ""), JSON.stringify(vSt.last));
+  // `b` is two lines above the reviewed TARGET/CHANGED hunk: within patch-id context, outside the
+  // changed line. Git replays this conflict-free, but stable patch-id changes with the context.
+  await Bun.write(`${REPO}/code.txt`, "a\nb-MOVED\nc\nMAIN-SIDE\ne\n");
+  spawnSync("git", ["-C", REPO, "commit", "-aqm", "main moved patch context after resolution"]);
+  const replayMainBefore = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
   const staleR = await post(`/api/slots/${lnStale.slot}/merge`, { confirm: true });
   const staleJ = (await staleR.json()) as
     { status?: string; landed?: boolean; detail?: string };
-  check("confirm-land replays onto moved main when lane tip + canonical diff stayed reviewed",
+  check("ACP-03 repair: same-file context movement replays conflict-free and confirm lands",
     staleR.ok && staleJ.status === "merged" && staleJ.landed === true,
     `${staleR.status} ${JSON.stringify(staleJ)}`);
-  check("replayed confirm carries both the reviewed resolution and intervening main move",
+  check("ACP-03 repair: replayed land carries the byte-identical lane hunk plus moved context",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("stale lane work")
-      && spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().includes("main moved after resolution"),
+      && spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString() === "a\nb-MOVED\nc\nCHANGED\ne\n",
     spawnSync("git", ["-C", REPO, "log", "--oneline", "-4"]).stdout.toString().trim());
-  check("replayed confirm kept the resolved content on main (theirs = lane side)",
-    spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString() === "root\nstale-lane\n",
-    JSON.stringify(spawnSync("git", ["-C", REPO, "show", "HEAD:code.txt"]).stdout.toString()));
+  const replayMainAfter = spawnSync("git", ["-C", REPO, "rev-parse", "main"]).stdout.toString().trim();
+  const replayDiff = spawnSync("git", ["-C", REPO, "diff", "--binary", `${replayMainBefore}...${replayMainAfter}`, "--"]);
+  const replayPatch = spawnSync("git", ["-C", REPO, "patch-id", "--stable"], { input: replayDiff.stdout });
+  const replayDiffHash = replayPatch.stdout.toString().trim().split(/\s+/)[0] ?? "";
+  check("ACP-03 repair probe bites: same lane hunk has a different patch-id after nearby context moved",
+    /^[0-9a-f]{40,64}$/.test(replayDiffHash) && replayDiffHash !== vSt.last?.diffHash,
+    JSON.stringify({ reviewed: vSt.last?.diffHash, replayed: replayDiffHash }));
+  const contextNoteRaw = spawnSync("git", ["-C", REPO, "notes", "--ref=fleet/land", "show", "main"]);
+  let contextNote: { verify?: { mainSha?: string; stale?: true } } | null = null;
+  try { contextNote = JSON.parse(contextNoteRaw.stdout.toString()) as { verify?: { mainSha?: string; stale?: true } }; } catch { /* asserted below */ }
+  check("ACP-03 repair: replayed confirm marks the pre-move verify stale in provenance",
+    contextNoteRaw.status === 0 && contextNote?.verify?.stale === true
+      && contextNote.verify.mainSha === vSt.last?.verify?.mainSha,
+    contextNoteRaw.stdout.toString().trim());
 
   // Same-line main movement passes the candidate pre-check, then the controlled replay conflicts
   // and falls back to ⏫ exactly as before. The lane is left clean and unchanged.

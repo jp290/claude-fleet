@@ -17654,19 +17654,21 @@ Bun.serve<WSData>({
           // verify stale. Before that controlled rewrite, BOTH the lane tip and stable diff must
           // still be exactly what the verdict bound.
           const candidateMatches = (current: { mainSha: string; candidateSha: string; diffHash: string } | null,
-            expectedSha: string | null): boolean => current !== null && expectedSha !== null
-              && current.candidateSha === expectedSha && reviewed?.diffHash === current.diffHash;
+            expectedSha: string | null, requireReviewedDiff: boolean): boolean => current !== null && expectedSha !== null
+              && current.candidateSha === expectedSha
+              && (!requireReviewedDiff || reviewed?.diffHash === current.diffHash);
           let currentCandidate = await readCandidateIdentity();
-          if (identityKnown && !candidateMatches(currentCandidate, reviewed!.candidateSha!)) return json({ status: "stale", landed: false,
+          if (identityKnown && !candidateMatches(currentCandidate, reviewed!.candidateSha!, true)) return json({ status: "stale", landed: false,
             detail: "the reviewed lane tip or canonical diff changed — run merge again and review the new candidate before confirming",
             reviewed: reviewed ? { mainSha: reviewed.mainSha ?? null, candidateSha: reviewed.candidateSha ?? null,
               diffHash: reviewed.diffHash ?? null } : null,
             current: currentCandidate }, 409);
           // Defensive ancestry check for a structurally fresh identity. Normal resolved verdicts
-          // are already descendants of their bound mainSha; an abnormal row that is not may replay
-          // onto that SAME main, but the second identity check below will refuse if replay rewrites
-          // the candidate. rerere stays off: no recorded resolution can silently become a land.
+          // are already descendants of their bound mainSha; when main moved, the server may replay
+          // onto it and the second identity check accepts only the exact tip that replay produced.
+          // rerere stays off: no recorded resolution can silently become a land.
           let allowedCandidateSha = identityKnown ? reviewed!.candidateSha! : null;
+          let serverReplayed = false;
           let anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
           if (anc.code !== 0) {
             // Same plumbing, same hazard as the merge pre-pass (see tryScriptRebase): index.lock
@@ -17685,10 +17687,13 @@ Bun.serve<WSData>({
             anc = await git(repo, "merge-base", "--is-ancestor", main, branch);
             if (anc.code !== 0) return json({ status: "error",
               detail: `re-rebased onto ${main}, but it is still not an ancestor — lane kept` }, 409);
-            // This exact rewrite is server-controlled. Rebase changes commit SHAs, while
-            // patch-id --stable below proves whether it changed the reviewed content.
+            // SERVER-OBSERVED REPLAY-TIP: this exact rewrite is server-controlled. The SHA read
+            // immediately afterwards becomes the second guard's authority; patch-id cannot be
+            // compared across this boundary because nearby main context changes its hash even
+            // when the lane hunk is byte-identical.
             const replayedTip = await git(cwd, "rev-parse", "HEAD");
             allowedCandidateSha = replayedTip.code === 0 ? replayedTip.out : null;
+            serverReplayed = true;
           }
           // the re-rebase above (if it ran) rewrote the lane tip — the root's mirror is now behind
           // the very commits about to be landed, and markLandIntent/advanceIntegration both read it
@@ -17698,7 +17703,7 @@ Bun.serve<WSData>({
           // boundary. The first check above protects the old rebase/replay block; this one is the
           // final identity gate immediately before markLandIntent.
           currentCandidate = await readCandidateIdentity();
-          if (identityKnown && !candidateMatches(currentCandidate, allowedCandidateSha)) return json({ status: "stale", landed: false,
+          if (identityKnown && !candidateMatches(currentCandidate, allowedCandidateSha, !serverReplayed)) return json({ status: "stale", landed: false,
             detail: "the reviewed land candidate changed while confirm was preparing the land — review the current candidate and confirm again",
             reviewed: { mainSha: reviewed!.mainSha ?? null, candidateSha: reviewed!.candidateSha ?? null,
               diffHash: reviewed!.diffHash ?? null }, current: currentCandidate }, 409);

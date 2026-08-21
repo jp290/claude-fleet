@@ -1,3 +1,127 @@
+# HANDOFF — ACP Architecture Controller V (Slot 3), 2026-08-21/22, ctx 25,8 % GEMESSEN
+
+**Welle 2 ist zu drei Vierteln gefahren.** Diese Session hat ACP-13, ACP-11 und ACP-12
+gebrieft, gefahren, gelandet, auditiert und deployt. Kein Act blieb halb. **ACP-15 und ACP-16
+sind UNBERUEHRT** — bewusst nicht angefangen, weil sie in mein 25/30-Band gefallen waeren.
+
+## 0. Die exakte naechste Handlung
+
+**ACP-15 (Deckel korrekt ausdruecken)**, danach **ACP-16 (Die Huelle)**. Owner-Reihenfolge,
+unveraendert. Beide auf `server.ts`, seriell. **GLM F5** (zwei Ablagepfade mit entgegengesetzter
+Repo-Semantik) reitet laut Vorgaenger-Befund MIT ACP-16, nicht davor — dieselbe Naht.
+**GLM F1/F2/F3 bleiben Vorschlaege** ohne Owner-Promotion.
+
+Zwei kleine Posten, die an ACP-12 haengen und JETZT faellig sind (siehe §3).
+
+## 1. Was terminal ist — alles gemessen, nichts geschaetzt
+
+| Act | Land | Land-Gate | Post-Land-Audit | Deploy |
+|---|---|---|---|---|
+| ACP-13 | `92bce16` → **`f123312`** | ok, exit 0, 113 973 ms, wait 0 | **green** 1 296 538 ms, 2784/0 | `aa190693` ok, hitTarget |
+| ACP-11 | `f123312` → **`ec7cfc1`** | ok, exit 0, 123 955 ms, wait 0 | **green** 1 283 291 ms, 2792/0 | `eee8e64b` ok, hitTarget |
+| ACP-12 | `ec7cfc1` → **`b250d49`** | ok, exit 0, 116 348 ms, wait 0 | **green** 1 390 809 ms, 2794/0 | `a9d46ea0` ok, hitTarget |
+
+Jedes Audit-Gruen ist an `ms` UND `checks.ran` geprueft, nicht am Wort „green". Die 2792 gegen
+2784 sind exakt die acht neuen Sonden von ACP-11 — die Zahl ist konsistent, nicht zufaellig.
+
+## 2. Was die drei Acts wirklich geaendert haben
+
+- **ACP-13** — eine STALE Program-MAIN-Bindung ist ueberschreibbar, eine LIVE nie; die Antwort
+  nennt die ersetzte Bindung, Trail-Zeile `program_main_rebound` NACH der echten Neubindung.
+  `boundProgramForMain` nutzt `filter`, `>1` bekommt eine eigene 409-Meldung, `sessionId` wird als
+  `sessionIdMatch` BERICHTET statt gegatet. `GET /api/programs` traegt `occupancy` aus EINEM
+  Helfer, den auch die Supervisor-Sicht benutzt.
+  **`staleSince` wurde bewusst NICHT gebaut** (meine Entscheidung, Abweichung vom
+  Vorgaenger-Handoff): nichts Persistiertes haelt fest, WANN eine Besetzung starb; ein erfundener
+  Zeitstempel laese sich hinterher wie eine Messung. Braucht ein persistiertes Ereignis.
+- **ACP-11** — Codex traegt einen echten ctx-Reader. Zaehler und Nenner aus DERSELBEN Zeile des
+  Rollout-Tails; Reader-Vertrag um ein optionales `windowFromFile` erweitert, fuer den der
+  Modell-Nenner nie befragt wird. Andere Adapter byte-gleich. Aufloesungskosten gemessen:
+  169 Rollouts / 16 Datumsverzeichnisse = 0,45 ms, danach je Besetzung gecacht.
+- **ACP-12** — der Effort-Knopf ist nativ. `slotCmd`/`agentCmd` nehmen `effort` und haengen
+  ` --effort '<level>'` an, **nur auf dem claude-Zweig**; `CLAUDE_HARNESS` traegt die fuenf Stufen
+  und `supports.effort: true`; der falsche Kommentar ist ersetzt und nennt die Quelle. Der
+  Container-Adapter uebergibt explizit `null` — der Drop ist sichtbar, nicht implizit, und seine
+  `effortLevels` bleiben `[]` **weil ungemessen** (kein Docker-Daemon erreichbar; keine colima-VM
+  gestartet — geteilte Realitaet ausserhalb des Repos). Drei neue Source-Pins: die Shell-Form der
+  Flagge, die Geschlossenheit jeder `effortLevels`-Liste (das Argument, auf dem die Quotierung
+  ruht) und die Paarform `effortLevels` ↔ `supports.effort` in BEIDEN Richtungen.
+  **Zwei aeltere Falschaussagen mitkorrigiert:** der Interface-Kommentar `:264` („every adapter but
+  Pi ignores effort" — codex tat es schon vorher) und eine `e2e/security.ts`-§6-Zeile, die ab
+  diesem Schnitt im TEST falsch gewesen waere.
+  **Eine Schranke wurde bewusst gelockert und begruendet:** die Vakuitaets-Grenze des
+  Container-Literal-Pins von 8 000 auf 12 000 B. Sie ist ein VAKUITAETS-Waechter (ein nicht
+  gefundener Terminator darf die Slice nicht ueber die naechsten Deklarationen laufen lassen),
+  keine Groessenpolitik; die Prosa zu kuerzen haette geheissen, das Bewachte zu editieren, um den
+  Waechter zufriedenzustellen. Der Grund steht in der Datei. Ich habe den Diff selbst gelesen.
+
+## 3. Was an ACP-12 haengt und JETZT dran ist
+
+1. **Die Supervisor-Nachfolge auf `claude-sonnet-5[1m]` + `high`.** Das ist ein
+   CONTROLLER-Akt, keine Lane-Arbeit, und er war absichtlich nicht im Lane-Brief.
+   **Kenne die Falle, bevor du sie ausuebst:** `succeedSupervisor` reicht `s.model`/`s.effort` des
+   Vorgaengers WOERTLICH durch, `POST /api/self/succeed` nimmt keinen Override, und **es gibt
+   keine Route, die Modell oder Effort eines LEBENDEN Slots aendert.** Ein `/model` + `/effort` in
+   der Pane wirkt sofort, aktualisiert den Slot-Datensatz aber NICHT — jede Nachfolge faellt still
+   auf den alten Wert zurueck. Also: in der Pane nachziehen UND am Footer verifizieren.
+2. **Der Regelbuch-Absatz zum Supervisor-Effort** (Rest von ACP-17). `CLAUDE.md` ist ein GENERAT:
+   der Schnitt gehoert ins `rulebook.ts`-Fragment, **nie** in die gerenderte Datei.
+
+## 4. Offene Raender, die ich WEITERTRAGE — keiner ist ein Fehler dieser Acts
+
+1. **`attentionBound` / `reconcileAttention` gaten weiter auf `sessionId`.** Nach ACP-13 darf eine
+   im selben Pane neu geminzte Session wieder Attention STELLEN, erbt ihre alten offenen Zeilen
+   aber nicht (sie werden als „requester session ended" refused). Dort ausdruecklich als Fail-Safe
+   kommentiert. War nicht im Auftrag — eine Naht, die ein spaeterer Act entscheiden muss.
+2. **Der Boot-Reconcile-Defekt `94ab77dd` steht unveraendert offen.** Eine ENTWAFFNETE Watch
+   verliert beim naechsten Deploy den Grund, warum nie etwas kam. In dieser Session zweimal
+   beobachtet und beide Male folgenlos, weil ich die Ergebnisse schon hatte. Meine LEBENDEN
+   Watches haben jeden der drei srv-Neustarts ueberlebt — der Filter trifft sie korrekt nicht.
+3. **`~/.codex/config.toml` waechst unbegrenzt** — als `notiz 1270b246` mit Entscheidungsraum
+   abgelegt. Gemessen: 7810 Zeilen, 2602 Strophen, **2580 tote Pfade (99,2 %)**. Jeder
+   `./e2e-isolated.sh`-Lauf laesst mindestens eine zurueck. SHARED REALITY ausserhalb des Repos —
+   NICHT angefasst, und die naechste Session fasst es auch nicht ohne Owner-Entscheid an.
+4. **Die 9 stale Program-Bindungen sind jetzt REPARIERBAR, aber nicht repariert.** ACP-13 macht
+   Reparatur moeglich; WER neu gebunden wird, ist eine Owner-Entscheidung. Bewusst keine Daten
+   angefasst.
+
+## 5. Was ich falsch gemacht habe
+
+- **Ich habe `POST /api/slots/2/land` fuer den Merge gehalten.** Das ist die TEARDOWN-Route
+  (`landLane:4109`) — sie setzt voraus, dass der Merge schon lief, und raeumt nur den Worktree ab.
+  Sie hat fail-closed mit `unpushed commits` abgelehnt, main hat sich nicht bewegt, nichts ging
+  verloren. Der richtige Weg ist `POST /api/slots/:id/merge` (die einzige `mergeJob(`-Aufrufstelle)
+  und danach sofort `{kind:"merge"}` abonnieren. Kostete Zeit, keine Arbeit.
+- **Eine Bindungs-Messung ueber `GET /api/sessions` war ein Artefakt.** Der Owner-Poll fuehrt
+  **kein `sessionId`** — meine erste Zaehlung meldete darum „alle 13 sessionId-abweichend". Die
+  echte Quelle ist `fleet.json` (der Zustand, den der Server geladen hat); dort: **0 Abweichungen
+  unter den lebenden Bindungen**. Genau die Cast-auf-eine-Netzantwort-Klasse, vor der
+  `docs/verify-tiering.md` §12 warnt. Innerhalb derselben Runde korrigiert.
+
+## 6. Maschinenzustand bei der Uebergabe
+
+- Server laeuft auf **`b250d49`** — dem gelandeten, auditierten und deployten SHA.
+  `bundleStale:false`, `deployGap.behindCount 0`, `codeBehind false`. Alle drei Acts sind LIVE.
+- **DIESER Handoff ist ein DIREKT-Commit aus dem Haupt-Checkout** und damit fuer jedes
+  land-seitige Ledger unsichtbar: keine `fleet/land`-Note, keine `lane-outcomes`-Zeile, kein
+  Post-Land-Audit. Reine `HANDOFF.md`. `deployGap.codeBehind` liest sich danach `true` bei
+  `behindCount 1` — das ist KEIN Server-Code-Unterschied und braucht keinen Deploy.
+  `./state.sh`s Land-Health-Zahlen zaehlen nur Lanes und untertreiben an einem Tag mit
+  Direkt-Commits.
+- `dispatch: false` — kein Tick startet etwas. Die Queue traegt weiter mindestens eine `queued`
+  Zeile, die niemand startet (GLM F2 beschreibt genau das).
+- Drei neue Queue-Zeilen dieser Session: `dfd0ac58` (ACP-13, done), `854d9184` (ACP-11, done),
+  `0f4b92fc` (ACP-12) und die `notiz 1270b246`.
+- Ich habe einen fertig gelandeten Orphan-Worktree entfernt (`fleet-260821172044-475f`, 0 ahead /
+  5 behind, sauber). Branch bleibt.
+- **Slot 8 haelt eine FREMDE, lebende claude-fleet-Lane** (`⎇ claude-fleet 0be7`,
+  `fleet/260821211509-0be7`, 1 ahead / 3 behind). **Nicht meine** — sie erschien waehrend meiner
+  Arbeit. Rein docs (`docs/auftragsmarkt-integration-2026-08-21.md`), also KEINE Kollision mit
+  `server.ts` und damit keine mit ACP-15/ACP-16. **Nicht als Orphan behandeln und nicht
+  entfernen** — sie gehoert einer anderen Session.
+- Maschinen-Hygiene aus `./state.sh` NICHT angefasst (geleakte e2e-Sockets, TMPDIR-Scratch) —
+  waehrend Lanes Suiten fahren ist das Reapen riskanter als der Gewinn.
+
 # HANDOFF — ACP Architecture Controller IV (Slot 2), 2026-08-21, ctx 25,3 % GEMESSEN
 
 **Der rote Integrationszustand ist GESCHLOSSEN, main ist deployed, der Tip ist gruen.** Diese

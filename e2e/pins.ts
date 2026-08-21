@@ -458,6 +458,23 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     agents.includes("`GET /api/self/gate`") && agents.includes("`localProof.steps`"),
     `self-gate=${agents.includes("`GET /api/self/gate`")} steps=${agents.includes("`localProof.steps`")}`);
 
+  // The B2 split made a Fleet lane's private rulebook structurally partial. AGENTS.md used to
+  // keep saying "full", "copied into each lane" and "read it completely" after that change,
+  // sending Codex/Pi through the wholesale private load the split removed. Couple the public loader
+  // claim to the executable audience partition so neither side can move alone again.
+  const RULE_LOADER_BOUNDARY = "AGENTS.md names the partial lane overlay and never requires a wholesale private read";
+  if (agents === null) skip(RULE_LOADER_BOUNDARY, "no AGENTS.md in this tree");
+  else {
+    const partialLane = FRAGMENTS_FOR.lane.length < RULEBOOK_FRAGMENTS.length;
+    const namesPartial = agents.includes("smaller render plus explicit back-references");
+    const rejectsWholesale = agents.includes("must not read it wholesale");
+    const staleFullClaim = /full private operating rulebook|copied into each lane|Read it completely/.test(agents);
+    pin(RULE_LOADER_BOUNDARY,
+      partialLane ? namesPartial && rejectsWholesale && !staleFullClaim : !namesPartial,
+      `lane=${FRAGMENTS_FOR.lane.length}/${RULEBOOK_FRAGMENTS.length}, partial-claim=${namesPartial}, `
+      + `no-wholesale=${rejectsWholesale}, stale-full-claim=${staleFullClaim}`);
+  }
+
   // THE SHARP ONE, both directions. A suite the gate runs that AGENTS.md omits sends a Codex lane
   // into the land under-verified; a suite AGENTS.md lists that the gate does not run makes the file
   // claim coverage nobody has. Same for the tsc entry list — the exact drift that left the tier-2

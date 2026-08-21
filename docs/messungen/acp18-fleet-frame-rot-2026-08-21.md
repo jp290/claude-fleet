@@ -156,8 +156,15 @@ STEHEN GEBLIEBEN: sie zu entfernen wäre unbestelltes Aufräumen in derselben La
 
 Beleg: ein serieller `./e2e-isolated.sh`-Lauf aus dieser Lane (Trail
 `isolated-20260821T184923Z-2724.jsonl`, Baum `e4dd0da` + die beiden Sonden-Dateien uncommittet)
-endet wörtlich auf `ALL PASS`, 2765 results, 0 failed. Die vier vorher roten Checks stehen als
-PASS, und ihr `msSincePrev` ist zurück im gesunden Band:
+endet wörtlich auf `ALL PASS`: **2774 PASS-Zeilen, 0 FAIL-Zeilen** — dieselbe Checkzahl, die der
+rote Audit-Lauf auf `850d27b` als `ran: 2774` meldete. (Die im Lauf sichtbare Zeile
+`rows=2765 results=2765` ist eine Momentaufnahme aus der Trail-Familie: ihr Detail wird gebaut,
+bevor die neun Checks dieser Familie selbst gezählt sind — 2765 + 9 = 2774.) Gegengeprüft über die
+Namensmengen beider Trails: 2774 Zeilen und 2768 verschiedene Namen auf BEIDEN Seiten, **null Namen
+nur im roten, null nur im grünen Lauf**. Es wurde also kein Check hinzugefügt, entfernt oder
+umbenannt; der einzige Unterschied sind vier FAIL, die PASS wurden.
+
+Die vier vorher roten Checks, einzeln, mit ihrem `msSincePrev` vorher/nachher:
 
 | Check | rot (2026-08-21) | nach dem Fix |
 |---|---|---|
@@ -166,8 +173,8 @@ PASS, und ihr `msSincePrev` ist zurück im gesunden Band:
 | Fleet frame: a manifest tracked in the Fleet checkout IS read, delivered, and receipted beside the seeds | FAIL 0 ms | **PASS 1 ms** |
 | Fleet succession: the byte-stable grounding and carry frame remains Fleet-control | FAIL 4312 ms | **PASS 4988 ms** |
 
-Die Checkzahl ist unverändert (2774 Trail-Zeilen vorher wie nachher): die beiden neuen `check()`
-feuern nur im Fehlerfall, es wurde also nichts übersprungen und nichts wegdefiniert.
+Die beiden neuen `check()` feuern nur im Fehlerfall — deshalb ist die Checkzahl identisch
+geblieben, statt um zwei zu wachsen. Nichts übersprungen, nichts wegdefiniert.
 
 ## Methode
 
@@ -290,5 +297,7 @@ ts	phase	entscheidung	warum	beleg	ergebnis
 2026-08-21T18:20:00Z	fix	Fix in die Sonde, nicht ins Produkt	server.ts:4459/:4531 ist gewolltes Verhalten; die Sonde liest es falsch	Owner-Freigabe ACP-18 zweiter Schnitt	e2e/programs.ts + e2e/tasks.ts
 2026-08-21T18:22:00Z	fix	neue check() nur im Fehlerfall	ein gruener Lauf soll seine Checkzahl behalten	2774 Trail-Zeilen vorher wie nachher	Checkzahl unveraendert
 2026-08-21T18:23:00Z	fix	Bun.sleep(250)-Umgehungen stehen gelassen	unbestelltes Aufraeumen in derselben Lane	Auftrag "kein Aufraeumen nebenbei"	3 Stellen unveraendert
-2026-08-21T19:03:00Z	verify	ein serieller e2e-isolated-Lauf	Write-Set beruehrt e2e/	isolated-20260821T184923Z-2724.jsonl	ALL PASS, 2765 results, 0 failed
+2026-08-21T19:03:00Z	verify	ein serieller e2e-isolated-Lauf	Write-Set beruehrt e2e/	isolated-20260821T184923Z-2724.jsonl	ALL PASS, 2774 PASS / 0 FAIL
+2026-08-21T19:35:00Z	verify	Checkzahl gegen den roten Lauf aufgerechnet	"2765 results" war eine Momentaufnahme, nicht die Endzahl	Namensmengen beider Trails	2774 = 2774, 0 Namen Differenz
+2026-08-21T19:40:00Z	verify	volle Gate-Kette gefahren (localProof nannte alle sieben Schritte)	Write-Set beruehrt e2e/	verify-chain.log	7x ALL PASS, 411 PASS / 0 FAIL
 ```

@@ -2927,7 +2927,12 @@ type AuditEvent =
   | "send_boot_timeout"
   // the cross-program Supervisor spoke to one Program-MAIN. Detail carries the nudge id and the
   // program, never the text — the same hygiene rule slot_shelve's note follows.
-  | "supervisor_nudge";
+  | "supervisor_nudge"
+  // a bootstrap call overwrote a STALE Program-MAIN binding. The one row that separates "this
+  // Program was rebound" from "it was bootstrapped for the first time" after the fact — the
+  // response says it once, to one caller. Detail names the program and the REPLACED occupation
+  // (slot + openedAt), never a line of the Program's content or of the founding brief.
+  | "program_main_rebound";
 // generic append-only event-log chain: format (one JSON line), chmod 600, single-generation
 // rotation. audit.jsonl is the first consumer but not the only shape this fits (automation-
 // synergies.md finding 5 — journal/outcome logs later reuse this exact discipline instead of
@@ -5699,14 +5704,51 @@ function pruneAttention(): void {
   attentionRequests = attentionRequests.filter((a) => !drop.has(a.id));
 }
 
-// The one authority bracket, and it is the SAME occupant rule programExecutionView projects by,
-// tightened with sessionId: raising something for the owner is an act of the bound session, so a
-// numeric successor in the same slot must not inherit it. programId is derived HERE and nowhere
-// else — no body field can nominate the program a request is filed against.
-function boundProgramForMain(s: Slot): Program | null {
-  return programs.find((p) => p.status === "active" && p.main
-    && p.main.slot === s.id && p.main.openedAt === s.openedAt
-    && p.main.sessionId === s.sessionId) ?? null;
+// Does a Program's binding still name a live occupant? ONE function, because the two views that
+// answer this question (the owner's program list and the Supervisor's portfolio) must not be able
+// to disagree — a second copy of the rule is a second answer waiting to drift from the first.
+// The rule itself is clarificationReceiverFor's, verbatim: reachable means the named slot is
+// occupied and its openedAt is the one that was bound.
+//
+// There is deliberately NO staleSince: nothing in the persisted state records WHEN an occupation
+// died, so any timestamp here would be invented and would read afterwards like a measurement.
+type ProgramOccupancy = "live" | "stale" | "unbound";
+function programOccupancy(p: Program): ProgramOccupancy {
+  const main = p.main ?? null;
+  if (!main) return "unbound";
+  const live = slotFrom(main.slot);
+  return live?.cwd && live.id === main.slot && live.openedAt === main.openedAt ? "live" : "stale";
+}
+
+// The one authority bracket, and it is the SAME occupant rule programExecutionView and
+// clarificationReceiverFor project by. programId is derived HERE and nowhere else — no body field
+// can nominate the program a request is filed against.
+//
+// sessionId is REPORTED, never gated (loosened 2026-08-21, and this is the honest reason): `slot +
+// openedAt` already identifies the occupation uniquely — openedAt changes on every reopen, so a
+// numeric successor in the same slot can never match. What the extra sessionId condition caught on
+// top of that was a session re-minted INSIDE the same pane (/clear, resume, respawn): same MAIN,
+// same pane, same cwd, silently losing its attention rights. It is no security boundary either —
+// whoever can drive that pane already holds the FLEET_SELF_TOKEN baked into it.
+//
+// `filter`, not `find`: two active Programs naming the same occupation is unreachable today (0 such
+// tuples measured 2026-08-21), and a `find` would answer such a state by silently picking the first
+// one. Ambiguity gets its OWN refusal, in its own words — collapsing it into "you are not bound"
+// would tell the caller to go fix the wrong thing.
+type BoundMain =
+  | { ok: true; program: Program; sessionIdMatch: "exact" | "divergent" | "unknown" }
+  | { ok: false; error: string };
+function boundProgramForMain(s: Slot): BoundMain {
+  const matches = programs.filter((p) => p.status === "active" && p.main
+    && p.main.slot === s.id && p.main.openedAt === s.openedAt);
+  if (matches.length > 1)
+    return { ok: false, error: `ambiguous Program-MAIN binding: ${matches.length} active programs name slot ${s.id} openedAt ${s.openedAt} — the owner must resolve which one this session is MAIN of` };
+  const program = matches[0];
+  if (!program) return { ok: false, error: "not the current bound MAIN of an active program — attention is raised by a program's own main session" };
+  const bound = program.main!;
+  return { ok: true, program,
+    sessionIdMatch: bound.sessionId === null || s.sessionId === null ? "unknown"
+      : bound.sessionId === s.sessionId ? "exact" : "divergent" };
 }
 
 const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
@@ -5739,9 +5781,9 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   if (candidateSha !== null && (typeof candidateSha !== "string"
     || !ATTENTION_CANDIDATE_SHA_RE.test(candidateSha)))
     return json({ error: "candidateSha must be null or a lowercase hexadecimal SHA (40-64 chars)" }, 400);
-  const program = boundProgramForMain(s);
-  if (!program)
-    return json({ error: "not the current bound MAIN of an active program — attention is raised by a program's own main session" }, 409);
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
   const kind = body.kind as AttentionKind;
 
   // Idempotence is per (binding, kind, TEXT): a MAIN may legitimately hold two open decisions, and
@@ -5750,7 +5792,7 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   const open = attentionRequests.filter((a) => (a.status === "open" || a.status === "send-uncertain")
     && attentionBound(a, s));
   const existing = open.find((a) => a.kind === kind && a.text === text);
-  if (existing) return json({ ok: true, existing: true, request: existing });
+  if (existing) return json({ ok: true, existing: true, request: existing, sessionIdMatch });
   if (open.length >= ATTENTION_MAX_OPEN_PER_REQUESTER)
     return json({ error: `max ${ATTENTION_MAX_OPEN_PER_REQUESTER} open attention requests per session — an unanswered pile is an attention failure, not a queue` }, 409);
 
@@ -5764,7 +5806,7 @@ async function openAttention(s: Slot, body: Record<string, unknown> | null): Pro
   attentionRequests = [...attentionRequests, request];
   audit("attention_open", s.id, `${request.id} kind=${kind} program=${program.id}`);
   await saveStateNow();
-  return json({ ok: true, existing: false, request });
+  return json({ ok: true, existing: false, request, sessionIdMatch });
 }
 
 // Role-scoped exactly like clarificationsFor: the caller sees the rows it is bound to as requester,
@@ -13299,15 +13341,13 @@ async function supervisorView(s: Slot): Promise<Response> {
   const unknown: string[] = [];
 
   // --- portfolio: every Program, its binding, and whether that binding still names a live
-  // occupant. The liveness rule is clarificationReceiverFor's, verbatim — one occupant rule for
-  // "who is reachable" across the whole server, so a view can never report a receiver an actual
-  // send would refuse.
+  // occupant. The liveness rule is programOccupancy's — the SAME function GET /api/programs
+  // answers with, so a view can never report a receiver an actual send would refuse, and the two
+  // program lists can never disagree about the same binding.
   const ordered = [...programs].sort((a, b) => b.createdAt - a.createdAt);
   const portfolio = ordered.slice(0, SUPERVISOR_VIEW_PROGRAMS).map((p) => {
     const main = p.main ?? null;
-    const live = main ? slotFrom(main.slot) : null;
-    const occupancy = !main ? "unbound"
-      : live?.cwd && live.id === main.slot && live.openedAt === main.openedAt ? "live" : "stale";
+    const occupancy = programOccupancy(p);
     const programTasks = tasks.filter((t) => t.programId === p.id);
     const byStatus: Record<string, number> = {};
     for (const t of programTasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
@@ -13616,11 +13656,19 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
   if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
     return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
 
+  // A LIVE binding is never displaced by a bootstrap call: the occupant is a running session with
+  // its own founding brief, and a second MAIN for the same Program is the one outcome this route
+  // must not be able to produce. A STALE binding is the opposite case — it names an occupation that
+  // no longer exists, and refusing it left the Program permanently orphaned: `complete` would be a
+  // false statement about the work, and nothing else here can clear a binding (measured 2026-08-21:
+  // 9 of 13 active Programs stood on a stale binding). So stale falls through into the bootstrap,
+  // and the success response NAMES what it replaced — never a silent rebind.
+  let replaced: Program["main"] | null = null;
   if (program.main) {
     const occupant = slotFrom(program.main.slot);
     if (occupant?.cwd && occupant.openedAt === program.main.openedAt)
       return json({ ok: true, existing: true, program });
-    return json({ error: `stale Program-MAIN binding: slot ${program.main.slot} openedAt ${program.main.openedAt}` }, 409);
+    replaced = { ...program.main };
   }
   if (programBootstrapInflight.has(program.id))
     return json({ error: "Program-MAIN bootstrap already in flight" }, 409);
@@ -13679,6 +13727,10 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
       const at = Date.now();
       program.main = { slot: free.id, openedAt: free.openedAt,
         sessionId: free.sessionId ?? null, boundAt: at };
+      // booked HERE and not at the stale branch above: a bootstrap that dies in preflight, boot or
+      // founding delivery replaced nothing, and a trail row for it would claim otherwise.
+      if (replaced)
+        audit("program_main_rebound", free.id, `${program.id} replaced slot:${replaced.slot} openedAt:${replaced.openedAt}`);
       const hash = createHash("sha256").update(JSON.stringify({
         anchorBlock,
         planFacts: { harness: free.harness, mode: planFacts.mode, triggers: planFacts.triggers, selected, omitted },
@@ -13696,7 +13748,7 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
       saveHistory(free);
       logPrompt(free, deliveredBrief, "auto", at);
       await saveStateNow();
-      return json({ ok: true, slot: free.id, program });
+      return json({ ok: true, slot: free.id, program, ...(replaced ? { replaced } : {}) });
     } finally {
       laneSpawn.delete(free.id);
     }
@@ -13707,8 +13759,11 @@ async function bootstrapProgramMain(program: Program, body: Record<string, unkno
 
 async function handleOwnerProgramRoute(req: Request, url: URL): Promise<Response> {
   // additive proof read: the cross-program binding has no list of its own, and the client reads
-  // .programs, so it stays compatible by construction.
-  if (url.pathname === "/api/programs" && req.method === "GET") return json({ programs, supervisor });
+  // .programs, so it stays compatible by construction. `occupancy` is the same additive shape and
+  // the same computation the Supervisor portfolio uses — a DERIVED field, never persisted: it is
+  // recomputed per request because the slot it describes can die between two of them.
+  if (url.pathname === "/api/programs" && req.method === "GET")
+    return json({ programs: programs.map((p) => ({ ...p, occupancy: programOccupancy(p) })), supervisor });
   if (url.pathname === "/api/programs" && req.method === "POST") {
     const valid = validateProgramContent(await readJson(req));
     if (!valid.ok) return json({ error: valid.error }, 400);

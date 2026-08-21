@@ -132,6 +132,43 @@ Nicht empfohlen, weil es die Ursache nicht trifft: `FLEET_READY_WAIT_MS` hochdre
 NIE bereit, nicht spät bereit) und den Fleet-frame-Block zurückdrehen (die Bruchstelle ist fünf
 Tage älter als er).
 
+### (e) Nachtrag 2026-08-21: der Schnitt aus (d) ist gefahren
+
+Owner-Freigabe lag vor; der Fix ist committet als **`8ad4192`** (das Land fährt der Owner),
+Write-Set `e2e/programs.ts` +
+`e2e/tasks.ts`, `server.ts` unberührt.
+
+Ausgeführte Form, in zwei Teilen — der zweite ist der, den (d) noch nicht benannt hatte:
+
+1. **`waitForLabel` wartet jetzt auf die PANE**, nicht auf das Label: ein per Label gefundener Slot
+   wird nur zurückgegeben, wenn `tmux has-session -t sN` gleichzeitig 0 liefert. Damit kann der in
+   §Ergebnis vermessene Zustand („Label sichtbar, Pane fehlt") den Aufrufer nicht mehr erreichen.
+2. **Beide Sonden scheitern als SIE SELBST.** `respawnScreen` wiederholt `respawn-pane` gebündelt
+   (60 × 50 ms) und meldet nach Ablauf einen eigenen `check()` mit dem Exit-Code; `waitForLabel`
+   meldet nach Ablauf einen eigenen `check()`, der zwischen „nie ein Slot mit dem Label" und
+   „Slot da, Pane nie gewachsen" unterscheidet. Beide Checks feuern NUR im Fehlerfall — ein grüner
+   Lauf behält seine Checkzahl, ein kaputtes Fixture nennt sich künftig beim Namen statt sich als
+   Produktregress zu tarnen. Dieselbe Fehlerform in `e2e/tasks.ts` an der einen Stelle, die
+   dasselbe Muster hat (`screenLane`, Dispatch-Tail der Readiness-Sonde).
+
+Die drei vorhandenen `Bun.sleep(250)`-Umgehungen an den Nachfolge-Aufrufstellen sind bewusst
+STEHEN GEBLIEBEN: sie zu entfernen wäre unbestelltes Aufräumen in derselben Lane.
+
+Beleg: ein serieller `./e2e-isolated.sh`-Lauf aus dieser Lane (Trail
+`isolated-20260821T184923Z-2724.jsonl`, Baum `e4dd0da` + die beiden Sonden-Dateien uncommittet)
+endet wörtlich auf `ALL PASS`, 2765 results, 0 failed. Die vier vorher roten Checks stehen als
+PASS, und ihr `msSincePrev` ist zurück im gesunden Band:
+
+| Check | rot (2026-08-21) | nach dem Fix |
+|---|---|---|
+| Fleet frame: founding prompt keeps exactly the four existing grounding steps in order | FAIL 7535 ms | **PASS 4916 ms** |
+| Fleet frame: binding, bytes, git facts, six-way plan, anchors, and the receipt hash stay equivalent | FAIL 0 ms | **PASS 111 ms** |
+| Fleet frame: a manifest tracked in the Fleet checkout IS read, delivered, and receipted beside the seeds | FAIL 0 ms | **PASS 1 ms** |
+| Fleet succession: the byte-stable grounding and carry frame remains Fleet-control | FAIL 4312 ms | **PASS 4988 ms** |
+
+Die Checkzahl ist unverändert (2774 Trail-Zeilen vorher wie nachher): die beiden neuen `check()`
+feuern nur im Fehlerfall, es wurde also nichts übersprungen und nichts wegdefiniert.
+
 ## Methode
 
 Alles in einer Wegwerf-Instanz mit eigenem Socket (`fleetacp18`), eigenem Port (23500, außerhalb
@@ -220,15 +257,23 @@ Reine CPU-Last verbreitert das Fenster also nicht messbar.
   fleet-control- und target-repo-Gründung (5/5 getrennt). Die Erklärung dafür — der
   target-repo-Zweig in `preflightProgramMain` fährt einen zusätzlichen git-Prozess
   (`git cat-file -s HEAD:AGENTS.md`, `server.ts:12888`), den der fleet-control-Zweig nicht fährt —
-  ist aus dem Code gelesen und nicht einzeln vermessen.
-- Ich habe **keinen** `./e2e-isolated.sh`-Lauf gefahren (Budget war 2, verbraucht 0). Die
-  Bestätigung, dass der Diff aus (d) die Familie grün macht, steht damit aus.
+  ist aus dem Code gelesen und nicht einzeln vermessen. **Der grüne Lauf berührt diese Erklärung
+  nicht**: der Fix entfernt die Abhängigkeit von der Phase überhaupt, statt sie zu verschieben —
+  er kann also weder für noch gegen `server.ts:12888` sprechen.
+- ~~Die Bestätigung, dass der Diff aus (d) die Familie grün macht, steht aus.~~ Nachgeholt in
+  (e): ein Lauf, `ALL PASS`, die vier Checks als PASS. Im ersten Schnitt waren 0 von 2 Läufen
+  verbraucht, im zweiten 1.
 - `e2e/tasks.ts` benutzt dasselbe `respawn-pane`-Muster; ich habe es nicht gelesen und keine
   Aussage über seine Aufrufstellen gemacht.
 - Ob es außer dem Readiness-Timeout weitere Wege ins Rot gibt (Gate `not-alive`,
   `blocked-screen`, `sendText`-Fehler), ist nicht ausgeschlossen — nur nicht nötig: die gemessene
   Signatur (Status, Body, 7.4 s) deckt den beobachteten Fall vollständig.
 - Die drei aufgehobenen Instanzen wurden nur gelesen; nichts darin gestartet, nichts gelöscht.
+- **Unerklärt und NICHT untersucht:** zwischen dem Start des Beweislaufs (Suite-Lock genommen
+  17:47Z) und dem Anlegen seines Instanzverzeichnisses (18:49:15Z, `stat -f %SB`) liegen ~62
+  Minuten ohne Ausgabe. Kein zweiter Suite-Lauf im Trail-Verzeichnis in diesem Fenster, kein
+  Sleep-Eintrag in `pmset -g log`. Danach lief die Suite in normaler Zeit durch. Wer das aufgreift,
+  fängt bei `_stage_closure` in `e2e-stage.sh` an — die einzige Stelle zwischen beiden Zeitpunkten.
 
 ## Entscheidungs-Trail
 
@@ -242,4 +287,8 @@ ts	phase	entscheidung	warum	beleg	ergebnis
 2026-08-21T17:37:00Z	P1	Fenster für beide cwds vermessen	trennt "hängt am Fleet-Checkout" von "hängt am Sampler"	window.ts	25-41 ms bei beiden; Phase 90 vs 116-141 ms
 2026-08-21T17:38:00Z	last	CPU-Last-Hypothese geprüft und verworfen	load average 6.49 ändert nichts	seq.ts unter 14 Brennern	4/4 grün
 2026-08-21T17:42:00Z	urteil	kein e2e-isolated-Lauf gefahren	Ursache steht ohne ihn; Budget bleibt für den Fix-Act	—	0 von 2 Läufen verbraucht
+2026-08-21T18:20:00Z	fix	Fix in die Sonde, nicht ins Produkt	server.ts:4459/:4531 ist gewolltes Verhalten; die Sonde liest es falsch	Owner-Freigabe ACP-18 zweiter Schnitt	e2e/programs.ts + e2e/tasks.ts
+2026-08-21T18:22:00Z	fix	neue check() nur im Fehlerfall	ein gruener Lauf soll seine Checkzahl behalten	2774 Trail-Zeilen vorher wie nachher	Checkzahl unveraendert
+2026-08-21T18:23:00Z	fix	Bun.sleep(250)-Umgehungen stehen gelassen	unbestelltes Aufraeumen in derselben Lane	Auftrag "kein Aufraeumen nebenbei"	3 Stellen unveraendert
+2026-08-21T19:03:00Z	verify	ein serieller e2e-isolated-Lauf	Write-Set beruehrt e2e/	isolated-20260821T184923Z-2724.jsonl	ALL PASS, 2765 results, 0 failed
 ```

@@ -137,7 +137,9 @@ export const FLEET_DEFAULT_MODEL = "claude-opus-5[1m]";
 // suffix. GPT's 258,400 is the USABLE window measured from Codex's own 272,000 nominal window at
 // `effective_context_window_percent: 95` (2026-08-08). Using 272,000 here would make the warning
 // instrument systematically optimistic. Everything else remains null rather than borrowing either
-// provider's denominator.
+// provider's denominator. A claude id that carries a provider prefix is matched WHOLE, as its own
+// row: the prefix is part of the claim, because the same bare id can hold a different window behind
+// a bridge than it holds on its own (see `claude-bridge/claude-opus-5` below).
 export const CONTEXT_WINDOW_BASE = 200_000;
 export const CONTEXT_WINDOW_1M = 1_000_000;
 export const CONTEXT_WINDOW_GPT = 258_400;
@@ -167,6 +169,24 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   // If `fable` is ever repointed out of the Fable family this row is wrong and must be re-measured;
   // dating the measurement is what makes that checkable instead of invisible.
   "fable": CONTEXT_WINDOW_1M,
+  // Pi's `claude-bridge` provider, measured 2026-08-21: a live slot spawned as
+  // `--model 'claude-bridge/claude-opus-5'` published ctx: null while its own pi footer read
+  // `13.0%/1.0M`. The prefix is part of the id and must never be stripped to reach this table —
+  // bare `claude-opus-5` is the 200k row at the top, so a strip would republish that 13.0% as 65%,
+  // the same factor-five error the fable row exists to end.
+  // What makes this a row rather than a guess is not the footer but the bridge's own mapping: it
+  // REWRITES the id it hands to Claude Code. pi-claude-bridge 0.6.3, src/models.ts,
+  // `resolveClaudeCodeRuntimeModel` maps `claude-opus-5` to cliModelId `claude-opus-5[1m]`,
+  // contextWindow 1M, unconditionally — that branch reads no plan setting. The pane really is on the
+  // [1m] variant; this row only spells the suffix where Fleet can see it.
+  // Against the row: it is a claim about a THIRD-PARTY package at one version. Repoint the bridge,
+  // downgrade it, or let that branch turn plan-dependent (two of its siblings already are) and this
+  // row is wrong — dating the measurement is what makes that checkable instead of invisible.
+  // The siblings are deliberately absent: the bridge's `claude-haiku-4-5` is 200k, and its
+  // `claude-opus-4-6`/`claude-sonnet-4-6` hang on a plan flag that lives in the bridge's config and
+  // not in anything Fleet reads. Every other `claude-bridge/*` id stays null and asks to be
+  // measured — including the ones that package source would let us guess at.
+  "claude-bridge/claude-opus-5": CONTEXT_WINDOW_1M,
 };
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;

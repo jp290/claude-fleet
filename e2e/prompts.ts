@@ -1030,6 +1030,42 @@ export async function run(): Promise<void> {
       contextWindowFor("fable") === CONTEXT_WINDOW_1M && contextWindowFor("opus") === null
       && contextWindowFor("sonnet") === null && contextWindowFor("haiku") === null,
       JSON.stringify([contextWindowFor("fable"), contextWindowFor("opus")]));
+    // --- the BRIDGE denominator, added 2026-08-21. A pi slot on `claude-bridge/claude-opus-5`
+    // published ctx: null while its own footer read 13.0%/1.0M: the id is a claude id, so it reaches
+    // the named set, and the set did not name it. The trap this family pins is the OBVIOUS repair —
+    // strip the provider prefix and look up the rest — because the stripped id is a DIFFERENT window:
+    // the bridge hands Claude Code `claude-opus-5[1m]` (pi-claude-bridge 0.6.3, src/models.ts
+    // resolveClaudeCodeRuntimeModel), while bare `claude-opus-5` is the 200k tier pinned above. ---
+    const BRIDGE_USED = 130_000; // the fill that footer read as 13.0% of 1.0M; it prints no token count
+    check("context window: the bridge id is 1M as a WHOLE name, while its stripped twin is still 200k",
+      contextWindowFor("claude-bridge/claude-opus-5") === CONTEXT_WINDOW_1M
+      && contextWindowFor("claude-opus-5") === CONTEXT_WINDOW_BASE,
+      JSON.stringify([contextWindowFor("claude-bridge/claude-opus-5"), contextWindowFor("claude-opus-5")]));
+    check("context fill: the bridge's measured 13.0% is what a stripped prefix would have published as 65.0%",
+      pct(BRIDGE_USED, contextWindowFor("claude-bridge/claude-opus-5")) === 13
+      && pct(BRIDGE_USED, contextWindowFor("claude-opus-5")) === 65,
+      JSON.stringify({ whole: pct(BRIDGE_USED, contextWindowFor("claude-bridge/claude-opus-5")),
+        stripped: pct(BRIDGE_USED, contextWindowFor("claude-opus-5")) }));
+    // the counter-probe, and it is the one that goes red if the 200k fallback is ever reinstated:
+    // the bridge's OTHER ids stay null. `claude-haiku-4-5` behind the bridge really is a 200k model
+    // and STILL reads null — an unmeasured row is not a row, and 200k is never an answer this
+    // function reaches by default. `claude-opus-4-6` behind the bridge is plan-dependent inside the
+    // bridge's own config, which Fleet does not read, so it is unknowable rather than merely
+    // unmeasured. Naming either one later is allowed — it moves this pin, deliberately, with a
+    // measurement attached.
+    check("context window: an unnamed claude-bridge id is null — not 200k, and not 1M by prefix",
+      contextWindowFor("claude-bridge/claude-haiku-4-5") === null
+      && contextWindowFor("claude-bridge/claude-opus-4-6") === null
+      && contextWindowFor("claude-bridge/claude-nonesuch-1") === null,
+      JSON.stringify([contextWindowFor("claude-bridge/claude-haiku-4-5"),
+        contextWindowFor("claude-bridge/claude-opus-4-6")]));
+    // The NON-GOAL, stated where the next reader of this family will be standing: naming the id here
+    // bought a DENOMINATOR, not a permission. The default claude adapter still refuses this exact
+    // string — its MODEL_RE admits no `/` — and e2e/security.ts §6 asserts that end-to-end against a
+    // live route. It is deliberately not re-asserted here: a hand-copied regex in this file would be
+    // a copy that can drift green while the server moves, which is the failure this whole file exists
+    // to prevent.
+
     // and the coverage guard: a named set can blind slots as easily as a bad default can mis-scale
     // them, so the model every unpinned claude slot is spawned with must still resolve.
     check("context window: the fleet's own default model still resolves (the table blinded nobody)",

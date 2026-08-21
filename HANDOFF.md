@@ -1,3 +1,154 @@
+# HANDOFF — ACP Architecture Controller (Slot 8), 2026-08-21, ctx 41,2 % GEMESSEN
+
+**Uebergabe auf Owner-Anweisung an der Controller-Risikogrenze (~40 %).** Diese Session war
+Evidenz-Kurator und Synthetisierer fuer die Rollen-/Capability-Architektur. **Kein Produktcode,
+kein Land, kein Deploy, keine Suite gefahren.** Einziger Commit dieser Session: diese Datei.
+
+## 0. Die exakte naechste Handlung
+
+**Der GLM-Architekt (Slot 9) schreibt in DIESEM MOMENT Abschnitt J** (Autonomie-Delta). Ein
+Pane-Ruhe-Watcher lief unter der Vorgaengerin und ist mit ihr weg — **die Nachfolgerin muss den
+Rueckweg selbst neu legen** (Pane-Ruhe, nicht mtime: die Datei wird in Schueben geschrieben, ein
+mtime-Watcher hat hier zweimal zu frueh gefeuert). Wenn J steht: den **Opus-Kritiker (Slot 12,
+lebt, ctx 32 %, hat den vollen Kontext)** mit dem Delta beauftragen — Owner-Wortlaut: das
+Autonomie-Prinzip auf **unsichere Mehrdeutigkeit** angreifen, **ohne es durch Schritt-Buerokratie
+zu ersetzen**. Danach Synthese, Widersprueche und Umsetzungsreihenfolge neu fassen.
+
+## 1. Die fuenf Analyse-Artefakte — ALLE UNTRACKED, ALLE VORSCHLAG
+
+**Status: PROPOSAL, uncommitted, nicht normativ.** Sie wurden bewusst NICHT committet (ein Commit
+im Haupt-Checkout bewegt `main`, und es lag kein Land-Entscheid vor). Der Owner hat ausdruecklich
+verboten, sie zu editieren, zu committen oder zu normalisieren.
+
+| Datei | Zeilen | sha256 (16) | Was |
+|---|---|---|---|
+| `docs/rollen-evidenz-2026-08-21.md` | 617 | `4ab207036183cbb3…` | Kurator-Evidenzdossier (18 Abschnitte) |
+| `docs/rollen-architektur-glm-2026-08-21.md` | 650 | `2cd7a3590e60f8c7…` | GLM-Entwurf A–I (Abschnitt J IN ARBEIT) |
+| `docs/kritik-opus-2026-08-21.md` | 596 | `d301445b44370923…` | Opus-Kritik, 15 gerangte Befunde |
+| `docs/unterbau-audit-glm-2026-08-21.md` | 385 | `81219a0a7293051c…` | Unterbau-Audit, 12 Befunde |
+| `docs/synthese-rollenarchitektur-2026-08-21.md` | 171 | `93756fd7e27fd08b…` | Synthese (VERALTET durch Owner-Korrektur) |
+
+**Der Hash von `rollen-architektur-glm-*.md` ist ein Schnappschuss und aendert sich**, sobald der
+Architekt J anhaengt. Die Synthese ist durch die Owner-Korrektur (§3) inhaltlich ueberholt und muss
+neu geschrieben werden, nicht geflickt.
+
+## 2. Ergebnisse der vier Agenten
+
+- **(1) GLM-5.3/pi-zai, Architekt, Slot 9:** drei Agentenrollen als typisierte BINDUNGEN eines
+  Sitzes (`lane` · `program-main` · `supervisor`), dazu Owner und Maschine als
+  Nicht-Agenten-Prinzipale. Fable-MAIN: **gar keine Rolle**. Critic = Modus, Resolver = Policy.
+- **(2) Opus 5, adversarialer Kritiker, Slot 12:** 15 gerangte Befunde. Drei bringen je einen
+  Schnitt zum Einsturz, alle drei von mir am Code nachgeprueft: `stateEffect` ist der **Literaltyp
+  `"none"`** (`src/protocol.ts:275`), also ist GLMs Wirkungs-Taxonomie nicht in die Karte
+  schreibbar und Schnitt 1 faellt an seinem eigenen Proof · `e2e/pins.ts:732` pinnt den
+  `STEWARD_LABEL`-Literalstring, und `bun e2e/pins.ts` IST Stufe 1 des Land-Gates, also reisst der
+  Steward-Rueckbau das Gate ein · der Interventions-Rail hat keinen Konsumenten.
+- **(3) pi + claude-bridge/claude-opus-5, Harness-Canary (Slot 13, beendet):** `supports.*` sind
+  **Politik-Werte, keine Faehigkeitsmessungen** — `selfSchedule:false` widerlegt (POST gab 200),
+  und der Code sagt selbst *„The flag means 'do not advertise this'"* (`server.ts:557`).
+  `ctx:null` ist fuer pi falsch. Sein staerkster Satz: *„nichts hat mir gesagt, dass mein Ergebnis
+  nirgendwo ankommt."*
+- **(4) GLM-5.3/pi-zai #2, Unterbau-Audit, Slot 14:** 12 Befunde, kannte die Kritik nicht und
+  **widerspricht ihr in der Rail-Frage**. Haerteste Funde: ein `canary`-Pack kann seinen eigenen
+  Promotionsbeweis strukturell nicht erzeugen (die Omissions-Leiter prueft `status !== "active"`
+  VOR allen Triggern) · das Lizenz-Gate hat keinen Maschinenleser · **`supervisorNudge` schreibt
+  KEINE Journal-Zeile**, und eine verweigerte Zustellung schreibt gar nichts.
+
+**Zwei LIVE-DEFEKTE im heutigen Code**, beim Pruefen eines Dokuments gefunden, von mir bestaetigt,
+**unabhaengig von jeder Architekturvariante und unter der neuen Zielrichtung teurer**:
+1. **Eine Codex-Program-MAIN verliert `POST /api/self/attention`** — sie erreicht den Owner nicht
+   mehr. `boundProgramForMain` (`:5706`) gated auf `sessionId`; `bootstrapProgramMain` schreibt
+   fuer Codex `null` (`pinsSession:false`); `tickCodexRecovery` (`:3675`) setzt spaeter eine echte
+   uuid. `clarificationReceiverFor` (`:5301`) gated deshalb ausdruecklich NICHT darauf.
+2. **`boundProgramForMain` ist ein `.find` ohne Eindeutigkeitspruefung** bei live 13 aktiven
+   Programmen; `handleSelfSucceed` (`:5199`) behandelt dieselbe Gefahr korrekt mit 409.
+
+## 3. OWNER-KORREKTUR: intelligence-first bounded autonomy (autoritativ)
+
+**Die Lesart, gegen die alles oben erhoben wurde, war zu eng.** Nach Bestaetigung und Aktivierung
+eines Programs soll dessen gebundene Project-MAIN reversible Produkt- und Reihenfolge-Entscheidungen
+treffen, eigene begrenzte Tasks **anlegen UND starten/dispatchen**, Worker anstupsen/wiederholen/
+ersetzen, Modelle waehlen und gewoehnliche Critic-Reparaturen aufloesen — **ohne Rueckkehr zum
+Owner**. Kanonisch: Camera Impact — innerhalb einer freigegebenen Qualitaetsachse entscheidet und
+handelt die MAIN. Klassen: **(A)** reversibel im bestaetigten Scope → MAIN · **(B)** begrenzte
+Ausfuehrung/Routing → MAIN in expliziten Grenzen · **(C)** Scope-Erweiterung, irreversible
+Richtung, externe Wirkung/Kosten, Deploy/Submit, erklaertes Geschmacks-Gate → Owner.
+
+**Damit ist der Satz „die MAIN darf die Schlange fuettern, nicht den Zaun oeffnen" ueberholt** — und
+der bestgemessene Befund des Tages kehrt seine Bedeutung um: `releaseTask(t, "machine")`
+(`server.ts:2262`) ist die einzige Funktion, die `pending → queued` bewegt, hat genau eine
+Aufrufstelle (`:18865`, Owner-Tier, hart `"owner"`), und **der Wert `"machine"` hat null
+Aufrufer** — der Kommentar (`:2251`–`:2261`) nennt ihn woertlich *„the transition a future
+UNATTENDED promote will make"*. Der Stempelplatz ist gebaut und unbenutzt. `Task.releasedBy` wird
+persistiert.
+
+**Owner-Prinzip Autonomie/Reparatur (normativ):** jede gebundene Session besitzt ihren Scope und
+wird an Ergebnissen, Belegen und Grenz-Einhaltung gemessen, nicht an einem geskripteten
+Mikro-Workflow. Kein hoeherer Manager, **keine neue Regel fuer jeden Fehler**. Bei Scheitern zuerst
+die kleinste stromaufwaerts liegende Ursache klassifizieren (Wissen → Brief/Pack · Handlung nicht
+auffindbar → Capability/Adapter · falsche Grenze → Program-/Rollenvertrag · Modell-Passung →
+Routing · unbeobachtbar → Sensor/Receipt · Urteilsfehler → Reparatur in derselben Rolle), **nur
+diese** aendern, canaryn, wirkungslose Anweisung zurueckziehen. **Eine einzelne Anekdote bleibt
+Evidenz, nie eine globale Regel** — auch die scharfen Befunde von heute werden NICHT ins Regelbuch
+promotet.
+
+## 4. Context Packs sind beratend, NICHT Autoritaet
+
+Owner-Vorgabe: Packs sind Wissens-/Ambitions-Eingaben und duerfen Autoritaet **weder gewaehren noch
+entziehen noch heimlich gaten**; Program-Autoritaet und Capability-Pruefung sind eine **separate
+Ebene**. **Gemessen: das gilt heute schon** — `ContextPackCapability` kommt ausschliesslich in
+`context-packs.ts`, `context-plan.ts`, `context-manifest.ts`, `context-pack-validator.ts` vor und
+**nie im Auth-Pfad von `server.ts`**; `requiredCapabilities` entscheidet, ob ein ZEIGER
+zustellenswert ist. Aufgabe ist **Erhalt, nicht Bau**. Und: `capability-map.ts`
+(Faehigkeits-Register) ist eine ANDERE Ebene als `context-packs.ts` (Wissens-Zeiger) — sie duerfen
+nie verschmelzen.
+
+## 5. Der Pi-Self-Token-Vorfall und seine Eindaemmung
+
+**Meine Sonde war falsch geschrieben und hat den Self-Token von Slot 13 im Klartext in die Pane
+gedruckt.** `${VAR:+gesetzt}${VAR:-FEHLT}` druckt bei GESETZTER Variable „gesetzt" UND den Wert
+(`:-` greift nur bei ungesetzt). Der Canary hat es selbst gemeldet und Rotation empfohlen.
+**Eingedaemmt:** Streu-Auto `eb0a1279` geloescht, Slot 13 beendet, der Slot-Eintrag ist aus
+`fleet.json` verschwunden, das Token existiert nicht mehr (Rotation beim Recycling,
+`server.ts:4494`). Das Credential war slot-scoped und nur lokal/Tailscale erreichbar. Richtige
+Form: `[ -n "$V" ] && echo gesetzt || echo FEHLT`. **In keinem der fuenf Artefakte steht ein
+Tokenwert** (geprueft).
+
+## 6. Offen, mit Besitzer
+
+- **Owner-Entscheid, benannt und unbeantwortet:** Default-`kind` fuer MAIN-erzeugte Zeilen —
+  `notiz` oder `auftrag`? Die zwei Praezedenzfaelle zeigen gegeneinander: der Steward (vertrauteste
+  Nicht-Owner-Quelle) schreibt `notiz` (`:16244`), `/intake` (am wenigsten vertraut, oeffentlich
+  erreichbar) schreibt `auftrag` (`:13806`).
+- **Die ungeloeste semantische Grenze fuer J.3, ehrlich zu halten:** „reversibel" ist beim Landen
+  keine Eigenschaft der Handlung allein, sondern Handlung MAL Rate — `undo-land` deckt genau EIN
+  Land und nur bis zum naechsten (`:17706`), Land N ist beim Alarm auf N+1 schon unerreichbar.
+  `SYSTEM.md` erlaubt den Policy-Weg bereits woertlich; die Maschinerie (`land-candidate.ts`) ist
+  gebaut und wird nur von Tests importiert.
+- **Attention `ce32bda5`** (Result-Rail Candidate `0057259`) bleibt offen — Land- und
+  Deploy-Entscheid gehoeren dem Owner, unberuehrt.
+- **Slots 9, 12, 14 leben** und tragen den vollen Kontext ihrer Rolle; Slot 13 ist beendet.
+
+## 7. Was ich falsch gemacht habe
+
+- **Mein Evidenzdossier trug fuenf Fehler.** Drei fand ich selbst, einen der Architekt
+  (`main-direct`-Zeilen existieren: 415 Zeilen, 27 davon), einen erst der dritte unabhaengige
+  Leser — und **dieser eine war bereits in den Entwurf gewandert und stand dort als „bestaetigt"**
+  (die Nudge-Journal-Zeile, die es nicht gibt). Das ist das Argument fuer die vier Perspektiven,
+  keine Fussnote dazu.
+- **Die Token-Sonde** (§5).
+- **Zwei Watcher feuerten zu frueh**, weil ich mtime-Stabilitaet als Fertig-Signal nahm; ein
+  Agent, der in Schueben arbeitet, laesst die Datei stillstehen, waehrend er denkt. Pane-Ruhe ist
+  das richtige Signal, mit herausgefilterten Spinner- und Zaehlerzeilen.
+
+## 8. Verifikation dieses Commits — ehrlich
+
+**Keine Suite gefahren.** Der Owner hat Suiten fuer diese Uebergabe ausdruecklich untersagt; die
+Aenderung ist ausschliesslich diese Datei. Ein Direkt-Commit aus dem Haupt-Checkout ist fuer jedes
+land-seitige Ledger unsichtbar (keine `fleet/land`-Note, keine Outcome-Zeile, kein Tier-2-Lauf) —
+das steht hier, damit die naechste Session nicht korrekt-aber-falsch schliesst, er sei vermessen
+worden.
+
 # FRONTIER — 2026-08-21: die Controller-Architektur, bevor weiter gebaut wird
 
 **Owner-Entscheid 2026-08-21:** der Spiele-Bau tritt zurueck; zuerst wird die

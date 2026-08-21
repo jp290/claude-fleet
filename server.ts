@@ -291,7 +291,16 @@ interface Harness {
   // only a host-readable usage file and therefore cannot accidentally enable transcript/summary.
   context: {
     file(o: { cwd: string; sessionId: string }): string | null;
-    used(file: string, size: number): number | null;
+    // The numerator, tail-read out of that file. A reader whose FILE also names the window returns
+    // the PAIR (ContextRead) instead of a bare number and sets `windowFromFile` below; both halves
+    // then come off ONE record, which is the only form in which a file-supplied denominator is a
+    // fact rather than a pairing of two turns.
+    used(file: string, size: number): number | ContextRead | null;
+    // OPTIONAL, and its ABSENCE is exactly the behaviour every reader had before it existed: the
+    // denominator comes from the SLOT'S MODEL via contextWindowFor. Present only for a harness
+    // whose usage record carries the window itself (codex), and then contextWindowFor is never
+    // consulted for it — inventing a Codex model's window is the guess this whole seam refuses.
+    windowFromFile?: true;
   } | null;
   // Does this harness take a session id at FRESH spawn? Most pins come from that act. Codex is the
   // one explicit exception: fresh spawn cannot take an id, so its tick-time discovery seam may
@@ -864,7 +873,12 @@ const CODEX_HARNESS: Harness = {
   // that id. (2) It writes no ~/.claude transcript in the shape projDir()/viewEntry parse. (3) Its
   // permission surface has no ToolProfile equivalent — `--tools ""` has no counterpart.
   worker: () => null,
-  context: null, // Codex is deliberately left for its rollout-format integration, not guessed here
+  // Codex's rollout format, integrated rather than guessed: identity is the FILENAME's UUID suffix
+  // (codexContextFile), and numerator + denominator come off ONE `token_count` record
+  // (readCodexContext). `windowFromFile` because the window is a property of the FILE here, not of
+  // a model name Fleet could look up — there is deliberately no contextWindowFor entry for any
+  // Codex model, and adding one would be exactly the guess the null above refused.
+  context: { file: codexContextFile, used: readCodexContext, windowFromFile: true },
   // Codex still has no FRESH-spawn `--session-id`, so this remains false. The complementary lazy
   // discovery seam binds the id from Codex's rollout after the first prompt; only then may the
   // resume form above receive it. `--last` is never used: recency is not slot identity.
@@ -15016,22 +15030,36 @@ function transcriptFact(s: Slot): { bytes: number; mtime: number } | null {
 //   3. a usage file with no usage record in its tail.
 //   4. a harness with no host-side context reader. This is intentionally NOT supports.transcript:
 //      Pi supplies the narrow fact without promising a CLAUDE-CODE conversation to other features.
-//   5. a model whose context window this server cannot name (contextWindowFor → null). Tokens
-//      without a denominator are not a percentage, so the whole fact goes, not just the pct.
+//   5. NO DENOMINATOR, which has two faces because there are two kinds of reader. For a reader
+//      whose window comes from the slot's MODEL: a model this server cannot name (contextWindowFor
+//      → null). For a reader whose window comes from the FILE (`windowFromFile`, codex): a tail
+//      whose newest usage record does not carry one. Either way tokens without a denominator are
+//      not a percentage, so the whole fact goes, not just the pct — and neither kind ever borrows
+//      the other's answer, because a window nobody measured for THIS session is a guess.
 //   6. a reader that cannot map exactly one identity-anchored file to the slot. In particular,
 //      multiple Pi files naming the same pinned id are ambiguity, never a licence to pick by mtime.
 const CTX_TAIL_BYTES = 512 * 1024;
 interface ContextFill { usedTokens: number; windowTokens: number; pct: number }
+// What a reader returns when its FILE names the window. The pair exists so that absence 5 can stay
+// absence for such a reader too: `used` alone would have to be divided by something, and there is
+// nothing honest to divide it by. Both numbers must come from ONE record — see readCodexContext.
+interface ContextRead { used: number; window: number }
 // Positive source resolutions are cached separately: Pi needs one directory read + session-head
 // validation to find its timestamped filename, but after that an unchanged file must cost exactly
 // one stat and nothing else on the 2 s owner poll. Identity includes harness/cwd/session so recycling
 // a slot cannot inherit the previous occupant's path.
 const ctxFiles = new Map<number, { identity: string; file: string }>();
-// parsed usedTokens per slot, keyed by the file identity it was read from — a usage file grows to
+// the parsed READ per slot, keyed by the file identity it came from — a usage file grows to
 // megabytes and this rides the 2 s owner poll, so an unchanged file must cost one stat and nothing
-// else. The window is NOT cached with it: it comes from the slot's model, which can change without
-// the file moving, and a cached denominator would keep answering for the previous model.
-const ctxCache = new Map<number, { key: string; used: number | null }>();
+// else. Whether the WINDOW belongs in here is decided by where the window comes from, and the two
+// answers are exact opposites:
+//   - a MODEL denominator is deliberately kept OUT (it is computed fresh below): the slot's model
+//     can change without the file moving, and a cached denominator would keep answering for the
+//     previous model.
+//   - a FILE denominator (ContextRead, `windowFromFile`) belongs IN, for that same reason read the
+//     other way: it is a property of this file at this size/mtime, it cannot change while the key
+//     does not, and re-reading it separately could only pair it with a different record's counter.
+const ctxCache = new Map<number, { key: string; read: number | ContextRead | null }>();
 function contextFill(s: Slot): ContextFill | null {
   if (!s.cwd || !s.sessionId) return null;
   const h = harnessOf(s.harness);
@@ -15040,9 +15068,13 @@ function contextFill(s: Slot): ContextFill | null {
   // Only the default adapter and pi-zai have a model Fleet can name when the slot has no explicit
   // pin: Claude receives DEFAULT_MODEL, while pi-zai's spawn line always passes literal glm-5.3.
   // Every other foreign harness's ambient model is unknown; borrowing either default would invent.
-  const windowTokens = contextWindowFor(s.model
+  // A reader that carries its own denominator never reaches this: for Codex the window is in the
+  // rollout, and contextWindowFor names no Codex model on purpose.
+  const modelWindow = reader.windowFromFile ? null : contextWindowFor(s.model
     ?? (h === CLAUDE_HARNESS ? DEFAULT_MODEL : h === PI_ZAI_HARNESS ? "glm-5.3" : null));
-  if (windowTokens === null) return null;
+  // Absence 5 for a model-denominator reader, decided BEFORE any disk work exactly as before — so
+  // neither the answer nor the cost of the claude/pi/pi-zai path is touched by this branch.
+  if (!reader.windowFromFile && modelWindow === null) return null;
 
   const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
   const known = ctxFiles.get(s.id);
@@ -15050,16 +15082,16 @@ function contextFill(s: Slot): ContextFill | null {
   if (!file) return null;
   if (known?.identity !== identity) ctxFiles.set(s.id, { identity, file });
 
-  let used: number | null;
+  let read: number | ContextRead | null;
   try {
     const st = statSync(file);
     const key = `${file}:${st.size}:${st.mtimeMs}`;
     const hit = ctxCache.get(s.id);
     if (hit && hit.key === key) {
-      used = hit.used;
+      read = hit.read;
     } else {
-      used = reader.used(file, st.size);
-      ctxCache.set(s.id, { key, used });
+      read = reader.used(file, st.size);
+      ctxCache.set(s.id, { key, read });
     }
   } catch {
     // A timestamped Pi file can be replaced across a resume. Forget the positive resolution so the
@@ -15067,8 +15099,15 @@ function contextFill(s: Slot): ContextFill | null {
     ctxFiles.delete(s.id);
     return null;
   }
-  if (used === null) return null;
-  return { usedTokens: used, windowTokens, pct: Math.round((used / windowTokens) * 1000) / 10 };
+  if (read === null) return null;
+  const usedTokens = typeof read === "number" ? read : read.used;
+  // Absence 5 again, and it is the same rule for both kinds of reader: a numerator whose
+  // denominator this server cannot NAME is not a percentage, so the whole fact goes. A file
+  // denominator that the tail did not carry arrives here as null from the reader, never as a
+  // fallback to the model — that fallback would answer for a window nobody measured.
+  const windowTokens = typeof read === "number" ? modelWindow : read.window;
+  if (windowTokens === null) return null;
+  return { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 };
 }
 // the newest `message.usage` in the file's TAIL. Tail-read for the same reason pulseLastOutput is:
 // a transcript runs to megabytes and neither the poll nor a tick may slurp one. A usage line that
@@ -15210,6 +15249,93 @@ function readPiUsedTokens(file: string, size: number): number | null {
     const input = num("input"), cacheRead = num("cacheRead"), cacheWrite = num("cacheWrite");
     if (input === null || cacheRead === null || cacheWrite === null) continue;
     return input + cacheRead + cacheWrite;
+  }
+  return null;
+}
+
+// Codex names its rollout by the conversation UUID, so identity here is the FILENAME's suffix and
+// no header re-read is needed: an id only ever reaches a Codex slot after codexSessionMeta already
+// proved `cwd` and `thread_source` at bind time, and re-proving cwd here could only manufacture
+// absence on a symlinked path — the very defect piContextFile pays realpathSync to avoid.
+// Same walk rule as codexRolloutForId — every level sorted, recency never participates — but
+// SYNCHRONOUS, because contextFill rides the 2 s owner poll and cannot await. Measured on this
+// host: 169 rollouts across 16 date directories walk in 0.45 ms, and ctxFiles caches the positive
+// resolution per slot-occupancy anyway, so a bound slot pays one stat per poll and this walk once.
+// codexRolloutForId is deliberately NOT reworked to share this: it answers the resume path, and
+// that answer must keep coming from the same async call it always did.
+function codexContextFile({ sessionId }: { cwd: string; sessionId: string }): string | null {
+  if (!CODEX_SESSIONS_DIR || !CODEX_UUID_RE.test(sessionId)) return null;
+  const suffix = `-${sessionId}.jsonl`;
+  const dirs = (path: string): string[] => {
+    try {
+      return readdirSync(path, { withFileTypes: true })
+        .filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch { return []; }
+  };
+  for (const y of dirs(CODEX_SESSIONS_DIR)) {
+    const yp = `${CODEX_SESSIONS_DIR}/${y}`;
+    for (const m of dirs(yp)) {
+      const mp = `${yp}/${m}`;
+      for (const d of dirs(mp)) {
+        const dp = `${mp}/${d}`;
+        let names: string[];
+        try { names = readdirSync(dp).filter((n) => n.startsWith("rollout-") && n.endsWith(suffix)).sort(); }
+        catch { continue; }
+        if (names.length) return `${dp}/${names[0]}`;
+      }
+    }
+  }
+  return null;
+}
+
+// Codex's newest `token_count` event, tail-read under the same bounded contract as the two readers
+// above. It is the one usage record on this fleet that carries BOTH halves: `last_token_usage`
+// (the turn's counters) and `model_context_window` sit under the same `payload.info`. Measured
+// 2026-08-21 on a live 56 MB rollout — 12 such lines in the last 300 KB, all 12 carrying both.
+//
+// Two rules make "the same line" more than a comment. (1) The NEWEST parseable token_count record
+// IS the answer: nothing walks further back once one is found. (2) If that record has a usable
+// counter but no window, the whole fact is null (absence 5) — NOT `continue`, because walking back
+// would pair this turn's absent window with an earlier turn's numerator, and not a fallback to
+// contextWindowFor, because no Codex model's window is named there and inventing one is the guess
+// this reader exists to avoid.
+//
+// The counter is `last_token_usage.total_tokens` — the owner's own measurement of what this file
+// reports (115 267 against a 258 400 window). It differs in composition from the two readers above,
+// which sum input+cache and exclude the completion: Codex's `total_tokens` is that turn's input
+// PLUS its output, i.e. it already reads as what the NEXT turn will be holding. Fleet reports what
+// the file states rather than re-deriving a sum from parts, and this note is here so the difference
+// is visible rather than looking like an oversight.
+function readCodexContext(file: string, size: number): ContextRead | null {
+  const from = Math.max(0, size - CTX_TAIL_BYTES);
+  let text: string;
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const buf = Buffer.alloc(size - from);
+    const n = readSync(fd, buf, 0, buf.length, from);
+    text = buf.toString("utf8", 0, n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) try { closeSync(fd); } catch { /* best effort */ }
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"last_token_usage"')) continue;
+    let row: { type?: unknown; payload?: { type?: unknown; info?: unknown } };
+    try { row = JSON.parse(lines[i]) as typeof row; }
+    catch { continue; } // torn first tail line — keep walking back
+    if (row.type !== "event_msg" || row.payload?.type !== "token_count") continue;
+    const info = row.payload.info;
+    if (typeof info !== "object" || info === null) continue;
+    const last = (info as Record<string, unknown>).last_token_usage;
+    if (typeof last !== "object" || last === null) continue;
+    const used = (last as Record<string, unknown>).total_tokens;
+    if (typeof used !== "number" || !Number.isFinite(used) || used < 0) continue;
+    const window = (info as Record<string, unknown>).model_context_window;
+    if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) return null;
+    return { used, window };
   }
   return null;
 }

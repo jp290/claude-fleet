@@ -45,17 +45,38 @@ const waitCodex = async (slot: number, accept: (r: CodexRecoveryView) => boolean
   return (await codexRow(slot))?.codexRecovery ?? null;
 };
 
+// `tail` defaults to empty, which is byte-for-byte the file every discovery/recovery fixture below
+// has always staged: identity lives in the first line alone. Only the context-reader fixture passes
+// lines, because that reader is the only thing on this fleet that looks past line one.
 const rolloutPath = (root: string, id: string, cwd: string, threadSource: "user" | "subagent",
-  timestamp = Date.now()): string => {
+  timestamp = Date.now(), tail: string[] = []): string => {
   const d = new Date();
   const dir = `${root}/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
   mkdirSync(dir, { recursive: true });
   const path = `${dir}/rollout-${Date.now()}-${id}.jsonl`;
-  writeFileSync(path, JSON.stringify({ type: "session_meta", payload: {
+  writeFileSync(path, [JSON.stringify({ type: "session_meta", payload: {
     id, cwd, timestamp: new Date(timestamp).toISOString(), thread_source: threadSource, originator: "codex-tui",
-  } }) + "\n");
+  } }), ...tail].join("\n") + "\n");
   return path;
 };
+
+// One Codex `token_count` event, in the shape measured on a live rollout 2026-08-21: both the
+// counter and the window sit under payload.info, and `window: null` stages the real-world record
+// that carries a usable counter and no denominator.
+const codexTokenCount = (total: number, window: number | null): string => JSON.stringify({
+  ordinal: 1, timestamp: "2026-08-21T00:00:00.000Z", type: "event_msg",
+  payload: {
+    type: "token_count",
+    info: {
+      total_token_usage: { input_tokens: total, cached_input_tokens: 0, cache_write_input_tokens: 0,
+        output_tokens: 0, reasoning_output_tokens: 0, total_tokens: total },
+      last_token_usage: { input_tokens: total, cached_input_tokens: 0, cache_write_input_tokens: 0,
+        output_tokens: 0, reasoning_output_tokens: 0, total_tokens: total },
+      ...(window === null ? {} : { model_context_window: window }),
+    },
+    rate_limits: null,
+  },
+});
 
 export async function run(ctx: Ctx): Promise<void> {
   let persistedCodex: { anchor: number; disconnectSeenAt: number; id: string } | null = null;
@@ -138,6 +159,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const OLD_A = "10000000-0000-4000-8000-000000000006";
   const OLD_B = "10000000-0000-4000-8000-000000000007";
   const GONE = "10000000-0000-4000-8000-000000000008";
+  const CTX_OK = "10000000-0000-4000-8000-000000000009";
+  const CTX_NOWIN = "10000000-0000-4000-8000-00000000000a";
   const BAD_UUID = "not-a-codex-uuid";
   const candidateView = async (slot: number): Promise<CodexCandidatesView> =>
     (await (await get(`/api/slots/${slot}/codex-candidates`)).json()) as CodexCandidatesView;
@@ -341,6 +364,98 @@ export async function run(ctx: Ctx): Promise<void> {
       && !!ae.events?.some((e) => e.event === "codex_bind_ambiguous" && e.slot === 15
         && e.detail === "candidates=2"),
     JSON.stringify(ae.events?.filter((e) => e.slot === 15).map((e) => e.event)));
+
+  // --- the Codex CONTEXT reader (the ctx fact, not the recovery state) -----------------------
+  // Codex is the one harness whose usage record names its own window, so this section proves the
+  // three things that can only be wrong here. The slot is opened with NO model on purpose: for a
+  // model-denominator reader contextWindowFor(null) is null and the whole fact would be absent, so
+  // any non-null answer below can only have come out of the file. The staged window 197 531 is a
+  // number no model table on this server names, which closes the same door a second way.
+  type CtxFill = { usedTokens: number; windowTokens: number; pct: number } | null;
+  const codexCtx = async (slot: number): Promise<CtxFill> => {
+    const body = (await (await get("/api/sessions")).json()) as { slots: { id: number; ctx: CtxFill }[] };
+    return body.slots.find((x) => x.id === slot)?.ctx ?? null;
+  };
+  const ctxSlotModel = async (slot: number): Promise<string | null> => {
+    const body = (await (await get("/api/sessions")).json()) as { slots: { id: number; model: string | null }[] };
+    return body.slots.find((x) => x.id === slot)?.model ?? null;
+  };
+  // An OLDER complete record sits under the newest one in both fixtures, and it is the whole point:
+  // in the first it must lose (its 999 999/400 000 pair may not be paired with anything), in the
+  // second it must not be fallen back to when the newest record has no window.
+  const ctxOkPath = rolloutPath(codexRoot, CTX_OK, codexCwd, "user", Date.now(), [
+    codexTokenCount(999_999, 400_000),
+    codexTokenCount(115_267, 197_531),
+    JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "after the counters" } }),
+  ]);
+  const ctxOkStaged = readFileSync(ctxOkPath, "utf8").split("\n");
+  // The fixture's own precondition, checked as ITSELF: a staged file that does not carry the pair
+  // would make every row below read as "the reader is broken" while nothing had been measured.
+  check("codex ctx fixture: the staged rollout carries an older pair, a newest pair and a trailing non-usage line",
+    ctxOkStaged.length === 5 && ctxOkStaged[1].includes('"model_context_window":400000')
+      && ctxOkStaged[2].includes('"total_tokens":115267') && ctxOkStaged[2].includes('"model_context_window":197531')
+      && !ctxOkStaged[3].includes("token_count"),
+    `${ctxOkStaged.length} lines`);
+  const ctxOpen = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  const ctxBound = await waitCodex(15, (r) => r.state === "bound");
+  const ctxModel = await ctxSlotModel(15);
+  // The second precondition, and the one a predecessor paid for: a Codex sessionId is revalidated
+  // against CODEX_UUID_RE on the load path, and a discarded pin leaves the fixture silently inert
+  // and every ctx row below green-but-blind. Prove the pin arrived before judging what it reads.
+  check("codex ctx fixture: the slot carries the pinned UUID and no model before ctx is judged",
+    ctxOpen.ok && ctxBound?.state === "bound" && ctxBound.sessionId === CTX_OK && ctxModel === null,
+    `${String(ctxOpen.status)} / ${JSON.stringify(ctxBound)} / model=${String(ctxModel)}`);
+  let ctxMeasured: CtxFill = null;
+  for (let i = 0; i < 20 && ctxMeasured === null; i++) {
+    ctxMeasured = await codexCtx(15);
+    if (ctxMeasured === null) await Bun.sleep(100);
+  }
+  check("Codex context reads counter and window off the SAME token_count record, never across two",
+    ctxMeasured?.usedTokens === 115_267 && ctxMeasured.windowTokens === 197_531 && ctxMeasured.pct === 58.4,
+    JSON.stringify(ctxMeasured));
+
+  rmSync(ctxOkPath, { force: true });
+  let ctxAfterVanish: CtxFill = ctxMeasured;
+  for (let i = 0; i < 20 && ctxAfterVanish !== null; i++) {
+    ctxAfterVanish = await codexCtx(15);
+    if (ctxAfterVanish !== null) await Bun.sleep(100);
+  }
+  check("a pinned Codex session with no rollout on disk is ctx-absent, never a stale last reading",
+    ctxAfterVanish === null, JSON.stringify(ctxAfterVanish));
+
+  const ctxNoWinPath = rolloutPath(codexRoot, CTX_NOWIN, codexCwd, "user", Date.now(), [
+    codexTokenCount(115_267, 197_531),
+    codexTokenCount(120_000, null),
+  ]);
+  const ctxNoWinStaged = readFileSync(ctxNoWinPath, "utf8").split("\n");
+  check("codex ctx fixture: the window-less rollout has a usable counter and no denominator on its newest record",
+    ctxNoWinStaged.length === 4 && ctxNoWinStaged[1].includes('"model_context_window":197531')
+      && ctxNoWinStaged[2].includes('"total_tokens":120000') && !ctxNoWinStaged[2].includes("model_context_window"),
+    `${ctxNoWinStaged.length} lines`);
+  const ctxNoWinOpen = await post("/api/slots/15/open", { cwd: codexCwd, harness: "codex" });
+  const ctxNoWinBound = await waitCodex(15, (r) => r.state === "bound");
+  check("codex ctx fixture: the window-less slot carries its own pinned UUID before absence is judged",
+    ctxNoWinOpen.ok && ctxNoWinBound?.state === "bound" && ctxNoWinBound.sessionId === CTX_NOWIN,
+    `${String(ctxNoWinOpen.status)} / ${JSON.stringify(ctxNoWinBound)}`);
+  // Read ONCE, not until-null: `ctx` is computed on the request, and a wait-for-absence loop would
+  // pass on any absence at all — including one that means the fixture never took.
+  const ctxNoWin = await codexCtx(15);
+  check("a newest Codex record without a window is absence — no walk back to an older pair, no guessed default",
+    ctxNoWin === null, JSON.stringify(ctxNoWin));
+  // ...and the discriminator that makes that absence mean what it says: put a window back on the
+  // newest record of THE SAME file and the same slot answers. Without this row, "null" could just
+  // as well be a file the reader never opened.
+  writeFileSync(ctxNoWinPath, `${ctxNoWinStaged[0]}\n${codexTokenCount(115_267, 197_531)}\n${codexTokenCount(120_000, 197_531)}\n`);
+  let ctxRestored: CtxFill = null;
+  for (let i = 0; i < 20 && ctxRestored === null; i++) {
+    ctxRestored = await codexCtx(15);
+    if (ctxRestored === null) await Bun.sleep(100);
+  }
+  check("the same file and slot answer as soon as the newest record names a window — the absence above was the missing denominator",
+    ctxRestored?.usedTokens === 120_000 && ctxRestored.windowTokens === 197_531 && ctxRestored.pct === 60.7,
+    JSON.stringify(ctxRestored));
+  rmSync(ctxNoWinPath, { force: true });
+  await post("/api/slots/15/kill", {});
 
   let disconnectPane = "";
   const paneUntil = Date.now() + 3000;

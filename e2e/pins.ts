@@ -1321,8 +1321,13 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   // own object literal rather than the file, or a `automatable: false` anywhere would satisfy it.
   const cStart = server.indexOf("const CONTAINER_HARNESS: Harness = {");
   const cBody = cStart < 0 ? "" : server.slice(cStart, server.indexOf("\n};\n", cStart));
+  // The upper bound is a VACUITY guard (an unfound terminator must not let the slice swallow the
+  // declarations after it), never a size policy on the adapter. It was 8_000 and started failing on
+  // a legitimate comment in 2026-08-21's effort cut — shrinking prose to fit a magic number is
+  // editing the thing the pin guards in order to satisfy the pin, so the number moved instead. It
+  // still guards what it was written for: server.ts is two orders of magnitude larger than this.
   pin("the container adapter's literal is bounded and non-empty (an unfound one would make the rule below vacuous)",
-    cStart > 0 && cBody.length > 500 && cBody.length < 8_000, `${cBody.length} bytes`);
+    cStart > 0 && cBody.length > 500 && cBody.length < 12_000, `${cBody.length} bytes`);
   pin("the container adapter stays automation-INELIGIBLE and transcript-less until an owner decides otherwise",
     /\n  automatable: false,/.test(cBody) && /\n    transcript: false,/.test(cBody),
     cBody.match(/automatable: \w+/)?.[0] ?? "no automatable field");
@@ -1890,6 +1895,48 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     /agentInfo\.set\(s\.id, agentState\);/.test(server)
     && /aliveInfo\.set\(s\.id, \(agentState === "alive" \|\| agentState === "unprobed"\) && harnessAutomatable\(s\)\);/.test(server),
     "agentInfo unconditional + aliveInfo gated");
+}
+
+{
+  // THE EFFORT FLAG'S SHELL FORM, pinned at the SOURCE because no runtime suite can cover the rule.
+  // A suite proves the levels somebody thought to type; the property that has to hold is about every
+  // level the list will ever carry, and both halves of it are string concatenation — invisible to
+  // tsc, and exactly the shape e2e/pins.ts exists for.
+  //
+  // Half one: `--effort` is interpolated SINGLE-QUOTED and sits on the claude branch. A foreign
+  // BASE_CMD must never see it — `--effort` is claude's spelling; pi has `--thinking` and codex has
+  // a `-c` config key, and both are their own adapters' business. An append that slipped below the
+  // branch would hand claude's flag to a binary that has never heard of it, and the pane would die
+  // at spawn with the task text about to be typed into a bare shell.
+  const acStart = server.indexOf("function agentCmd(");
+  const acBody = server.slice(acStart, server.indexOf("\n}\n", acStart));
+  pin("agentCmd's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
+    acStart > 0 && acBody.length > 400 && acBody.length < 8_000, `${acBody.length} bytes`);
+  const claudeBranch = acBody.slice(acBody.indexOf("if (claude) {"), acBody.indexOf("else if (HARNESS_MODEL_FLAG"));
+  const effortAppends = (acBody.match(/cmd \+= ` --effort /g) ?? []).length;
+  pin("agentCmd appends --effort single-quoted, exactly once, and only on the claude branch",
+    effortAppends === 1
+    && claudeBranch.length > 100
+    && /if \(effort\) cmd \+= ` --effort '\$\{effort\}'`;/.test(claudeBranch),
+    `appends=${effortAppends} branch=${claudeBranch.length}b`);
+  // Half two: the reason those quotes are sufficient rather than merely tidy. Every adapter's
+  // effortLevels is a CLOSED list of bare lowercase words, so there is no metacharacter any level
+  // could carry into the line — which is the argument agentCmd's comment makes and this row is what
+  // keeps it true as the lists grow. Both directions matter: a level with a quote in it would break
+  // out of the wrap, and one with a glob would abort the pane under zsh.
+  const levelLists = [...server.matchAll(/effortLevels: \[([^\]]*)\]/g)].map((m) => (m[1] ?? "").trim());
+  pin("every adapter's effortLevels is a closed list of bare lowercase words — the property the quoting rests on",
+    levelLists.length >= 5 && levelLists.every((l) => l === "" || /^"[a-z]+"(?:, "[a-z]+")*$/.test(l)),
+    levelLists.map((l) => `[${l}]`).join(" ") || "no effortLevels literal found");
+  // ...and the pair that must never disagree, in BOTH directions: a declared capability with an
+  // empty set is a picker offering nothing, and a non-empty set behind `effort: false` is a list
+  // effortOf refuses every member of. Read off the adapter literals rather than the running server
+  // so it is judged before the type check, not after a suite boots.
+  const adapters = [...server.matchAll(/effortLevels: \[([^\]]*)\],\n(?:\s*\/\/[^\n]*\n)*\s*supports: \{([^}]*)\}/g)]
+    .map((m) => ({ levels: (m[1] ?? "").trim(), effort: /effort: true/.test(m[2] ?? "") }));
+  pin("effortLevels and supports.effort agree in both directions on every adapter that states them together",
+    adapters.length >= 2 && adapters.every((a) => a.effort === (a.levels !== "")),
+    adapters.map((a) => `${a.effort}/${a.levels === "" ? "empty" : "set"}`).join(" ") || "no adapter pair matched");
 }
 
 {

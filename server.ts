@@ -136,14 +136,16 @@ const BASE_CMD = process.env.FLEET_CMD ?? "claude";
 // function rather than restating it): a slot that chose no harness is spawned by exactly the
 // code that spawned every slot before harnesses existed, so "byte-identical" is a property of
 // the call graph here, not a claim someone has to re-check by reading two implementations.
-function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model)}; exec ${SHELL}`;
+function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
+  effort: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec` rather than
 // restating the flag rules, so "the sandboxed slot runs the same agent the fleet runs" is a
 // property of the call graph instead of two implementations someone has to diff.
-function agentCmd(sessionId: string | null, resume: boolean, model: string | null): string {
+function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
+  effort: string | null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   let cmd = sessionId && claude
     ? `${BASE_CMD} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -156,6 +158,20 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   // plain single-quote wrap is closed, not merely escaped.
   if (claude) {
     cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
+    // `claude --help`: `--effort <level>  Effort level for the current session (low, medium, high,
+    // xhigh, max)`. Only when the slot pins one — with no flag claude keeps its own session default,
+    // and that absence is what every claude pane spawned before this looked like, byte for byte.
+    //
+    // Single-quoted for the SAME DISCIPLINE as the model above, NOT for the same necessity, and the
+    // difference is worth stating because copying the reason would hide where the guarantee really
+    // sits. The model needs its quotes: `claude-opus-5[1m]` is an unmatched glob and zsh aborts the
+    // pane on it. The five effort levels are bare lowercase words with no metacharacter in them, so
+    // an unquoted one would survive. What makes that safe is UPSTREAM and is the actual boundary:
+    // effortOf() admits only a member of THIS adapter's effortLevels — a closed literal list, not a
+    // charset — and the state-file rehydration re-judges a stored value against the same list, so
+    // nothing else can reach this line. The quotes are what keeps that argument from depending on
+    // the list never gaining a word with a metacharacter in it (e2e/pins.ts pins both halves).
+    if (effort) cmd += ` --effort '${effort}'`;
     cmd += " --prompt-suggestions false";
   }
   // A declared foreign harness gets its model the same way, and under the same quoting rule — the
@@ -261,7 +277,7 @@ interface Harness {
   // field. The slot stores an absence (see Slot.container) and boxFor() turns it into the effective
   // pair exactly once, so the spawn line and the row an owner reads on /api/sessions can never
   // disagree about which box and which daemon this session is in. Adapters with no container
-  // concept ignore both, the same way every adapter but Pi ignores `effort`.
+  // concept ignore both, the same way an adapter with no effort concept ignores `effort`.
   //
   // `cwd` is the slot's OWN working directory, and it is here for one adapter only: codex
   // persists per-path TRUST, so its spawn line writes the trust entry for exactly this path
@@ -410,7 +426,7 @@ interface Harness {
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -449,8 +465,15 @@ const CLAUDE_HARNESS: Harness = {
   // worktree is fine — and this is the lane form every caller, script and suite already produces.
   laneForm: null,
   modelRe: null,
-  effortLevels: [], // claude has no CLI effort flag — the /model tier is the only knob, and it is `model`
-  supports: { resume: true, transcript: true, model: true, effort: false, selfSchedule: true, container: false },
+  // MEASURED, not inferred: `claude --help` on the installed binary prints
+  //   `--effort <level>   Effort level for the current session (low, medium, high, xhigh, max)`
+  // and the five below are that line's own set in its own order (2026-08-21). This field carried
+  // the opposite claim until then — "claude has no CLI effort flag" — which was false at the time
+  // it was read and silently cost every claude slot the knob. A level named here reaches the pane
+  // through slotCmd → agentCmd; nothing else can, because effortOf judges the request against
+  // exactly this list.
+  effortLevels: ["low", "medium", "high", "xhigh", "max"],
+  supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false },
   note: null,
   role: "agent",
 };
@@ -736,7 +759,7 @@ const CONTAINER_HARNESS: Harness = {
   // still load-bearing: both are single-quoted, and both charsets exclude `'` for that reason.
   spawnCmd: (o) =>
     `${PATH_EXPORT}docker --context '${o.containerContext}' exec -it -w "$PWD" '${o.container}' `
-    + `${agentCmd(o.sessionId, o.resume, o.model)}; exec ${SHELL}`,
+    + `${agentCmd(o.sessionId, o.resume, o.model, null)}; exec ${SHELL}`,
   // NULL, and this is the case the whole member exists for — it is also STAGE 2 of the queue row
   // this adapter came from. A claude inside the box writes its transcript against the CONTAINER's
   // $HOME while projDir() reads the HOST's, so the worker's answer would never arrive; worse, the
@@ -782,7 +805,14 @@ const CONTAINER_HARNESS: Harness = {
   // names the very same binary would reject on the host. A container that one day runs a foreign
   // agent is a different adapter, not a wider regex on this one.
   modelRe: null,
-  effortLevels: [], // agentCmd has no effort flag to pass — same absence as the default adapter
+  // [] — and NO LONGER for the reason this line gave until 2026-08-21. `agentCmd` DOES carry
+  // `--effort` now, and this adapter wraps that exact line, so a level added here would reach the
+  // box. It stays empty because nothing has MEASURED that the claude inside the image takes the
+  // flag — the image ships its own binary at its own version, and no docker daemon was reachable
+  // here to ask (both colima profiles down that day). An effort the owner set and the container's
+  // agent rejected at startup is the silent drop `supports` exists to prevent. One command the day
+  // a box is up — `docker --context <ctx> exec <box> claude --help` — and the answer goes here.
+  effortLevels: [],
   supports: {
     resume: true,
     // FALSE, and this is the SHARPER version of the pi case rather than a copy of it. A claude

@@ -5088,6 +5088,8 @@ async function refresh() {
       analysis?: { on?: boolean };
       // omitted at zero by the server — absent means the compiler is off, exactly like `false`
       briefCompiler?: { on?: boolean };
+      // digest only (id/status/title/createdAt) — the binding lives on GET /api/programs
+      programs?: ProgramDigest[];
       postLandAudit?: PostLandAuditInfo | null; postLandAuditLive?: PostLandAuditLiveInfo | null;
       gate?: GateInfo | null; errors?: ErrorsInfo | null;
       attentionOpen?: number;
@@ -5107,6 +5109,7 @@ async function refresh() {
     }
     autosList = data.autos ?? [];
     tasksList = data.tasks ?? [];
+    programsPoll = data.programs ?? [];
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
     analysisOn = data.analysis?.on;
     briefCompilerOn = data.briefCompiler?.on;
@@ -5172,7 +5175,14 @@ async function refresh() {
     // proposal arrived on this poll, but the detail only ever repainted on reselect — the
     // owner sat in front of a stale pane while the lane waited on them. Keyed on the fields
     // the detail actually paints, so hover and an in-progress criterion edit survive quiet polls.
-    if (qShell?.isOpen() && qPick !== null) {
+    if (qShell?.isOpen() && qPick !== null && qPick.startsWith("prog:")) {
+      // the same rule for a program pane: its MARK moves with the SLOTS, not with the program,
+      // so a pane keyed on the program alone would keep claiming a MAIN that just died
+      const p = programsList.find((x) => `prog:${x.id}` === qPick);
+      const dk = p ? JSON.stringify(["prog", p.id, p.status, p.title, programMark(p).mark,
+        p.main?.slot ?? null, p.main?.openedAt ?? null]) : "prog-gone";
+      if (dk !== qDetailKey) { qDetailKey = dk; renderQueueDetail(); }
+    } else if (qShell?.isOpen() && qPick !== null) {
       const t = tasksList.find((x) => x.id === qPick);
       // `analysis.at` alone stopped being enough when a failed re-reading started leaving the old
       // verdict (and its timestamp) in place: the attempt counter is then the ONLY thing that
@@ -5809,6 +5819,126 @@ async function loadTaskTexts() {
   if (filled) { qKey = ""; qDetailKey = ""; renderQueue(); renderQueueDetail(); }
 }
 
+// --- PROGRAMS: the owner's standing work frames, and whether each still HAS a MAIN ---
+// The 2 s poll carries only the digest (id/status/title/createdAt) — a Program body is an
+// owner-decision document and deliberately stays off it. The BINDING (`main`) exists only on
+// GET /api/programs, which is why that fetch is what makes "does this program still have a
+// living MAIN" answerable at all. Fetched while the queue overlay is open, never on a timer of
+// its own: the poll's digest set is the change signal, plus a floor for the one rebinding path
+// (succession) that moves a binding without moving any digest field.
+interface ProgramDigest { id: string; status: string; title: string; createdAt: number }
+interface ProgramInfo extends ProgramDigest {
+  intent?: string; successCriterion?: string; nonGoals?: string[];
+  // ABSENT or null = unbound. A PRESENT object may still be incomplete, and that is `unknown`,
+  // never `live` — see programMark.
+  main?: { slot?: number; openedAt?: number; sessionId?: string | null; boundAt?: number } | null;
+}
+let programsPoll: ProgramDigest[] = [];   // the digest set the 2 s poll already carries
+let programsList: ProgramInfo[] = [];     // the full rows, from GET /api/programs
+let programsRead: "unread" | "ok" | "fail" = "unread";
+let programsAt = 0;
+let programsBusy = false;
+let programsDigestKey = "";
+const PROGRAMS_FLOOR_MS = 30_000;
+
+async function loadPrograms(force = false): Promise<void> {
+  if (programsBusy) return;
+  const digest = JSON.stringify(programsPoll.map((p) => [p.id, p.status, p.title]));
+  if (!force && programsRead !== "unread" && digest === programsDigestKey
+    && Date.now() - programsAt < PROGRAMS_FLOOR_MS) return;
+  programsBusy = true;
+  const before = JSON.stringify(programsList);
+  const beforeRead = programsRead;
+  try {
+    const res = await api("/api/programs");
+    if (res.ok) {
+      const data = (await res.json()) as { programs?: ProgramInfo[] };
+      programsList = data.programs ?? [];
+      programsRead = "ok";
+    } else programsRead = "fail";
+  } catch {
+    // unreachable server: the section SAYS so. An empty list would read as "no programs".
+    programsRead = "fail";
+  }
+  programsAt = Date.now();
+  programsDigestKey = digest;
+  programsBusy = false;
+  // repaint only on real change — this runs off the 2 s poll, exactly like loadTaskTexts.
+  // `programsRead` counts as a change on its own: unread → ok over an EMPTY list moves no row,
+  // but it is the difference between "not read yet" and "there are none", and the composer's
+  // hint says exactly that sentence.
+  if (JSON.stringify(programsList) !== before || programsRead !== beforeRead) {
+    qKey = ""; qDetailKey = ""; renderQueue(); renderQueueDetail();
+  }
+}
+
+type ProgramMark = "live" | "stale" | "unbound" | "unknown";
+// The mark is DERIVED here and stored nowhere: the server keeps a binding, not a verdict about
+// one. UNKNOWN is a real answer and never softens into live — a missing field or a missing
+// snapshot means "cannot be checked", which an owner must not read as a working MAIN.
+//
+// The session-id half of the binding is deliberately unchecked: /api/sessions carries no
+// sessionId per slot (server.ts, the slots.map projection), so the id is present on the stored
+// side only. The rule is "must match when present on BOTH sides"; here it never is, and the
+// live sentence says so rather than implying a check that did not happen.
+function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
+  const main = p.main;
+  if (main === null || main === undefined)
+    return { mark: "unbound", why: "no Program-MAIN binding — nothing has been founded for this program yet" };
+  if (typeof main.slot !== "number" || typeof main.openedAt !== "number")
+    return { mark: "unknown", why: "the stored binding carries no complete slot+openedAt pair, so it cannot"
+      + " be matched against any session — unknown, and unknown is never live" };
+  if (!fleet.length)
+    return { mark: "unknown", why: "no session snapshot has arrived yet, so there is nothing to match the binding against" };
+  const occ = fleet.find((s) => s.id === main.slot);
+  if (!occ) return { mark: "stale", why: `the binding names slot ${main.slot}, which this fleet does not have` };
+  if (!occ.cwd) return { mark: "stale", why: `slot ${main.slot} is empty — the bound session is gone` };
+  if (typeof occ.openedAt !== "number")
+    return { mark: "unknown", why: `this server's poll carries no openedAt for slot ${main.slot}, so the binding cannot be checked` };
+  if (occ.openedAt !== main.openedAt)
+    return { mark: "stale", why: `slot ${main.slot} was reopened since it was bound (bound ${fmtTs(main.openedAt)},`
+      + ` current occupant opened ${fmtTs(occ.openedAt)})` };
+  return { mark: "live", why: `slot ${main.slot} still holds the bound session (opened ${fmtTs(main.openedAt)});`
+    + " the session id is not on this poll, so only slot+openedAt were checked" };
+}
+
+// the picker's pinned + recent roots as an <input list=> source. Shared by the task composer and
+// the Program-MAIN founding flow — both ask for a directory, and a second copy of this fetch
+// would be a second thing to keep in step. The inputs work without it: a failed fetch costs the
+// dropdown and nothing else.
+let repoDatalistAt = 0;
+async function ensureRepoDatalist(): Promise<void> {
+  if (Date.now() - repoDatalistAt < 60_000) return;
+  repoDatalistAt = Date.now();
+  try {
+    const d = (await (await api(`/api/dirs?path=${encodeURIComponent("~")}`)).json()) as { pins?: string[]; recents?: string[] };
+    document.getElementById("qrepodl")?.remove();
+    const dl = document.createElement("datalist");
+    dl.id = "qrepodl";
+    for (const p of [...new Set([...(d.pins ?? []), ...(d.recents ?? [])])]) {
+      const o = document.createElement("option");
+      o.value = p;
+      dl.appendChild(o);
+    }
+    document.body.appendChild(dl);
+  } catch {
+    repoDatalistAt = 0; // suggestions only — but let the next open try again
+  }
+}
+
+// The founding draft. Held here for the same reason qCompose is: a poll may repaint this pane
+// (the mark can flip under the cursor), and a locally-created input would eat a half-typed path.
+let qBsFor: string | null = null;
+let qBsCwd: HTMLInputElement | null = null;
+let qBsLabel: HTMLInputElement | null = null;
+let qBsHarness: string | null = null;
+let qBsModel = "";
+let qBsEffort = "";
+let qBsErr: string | null = null;  // the server's own sentence, kept verbatim across repaints
+let qBsBusy = false;
+// the composer's program picker, same once-per-open lifecycle as qRepoIn
+let qProgSel: HTMLSelectElement | null = null;
+
 // --- WHAT THE LIST IS ORDERED BY, and why it is no longer `status`.
 //
 // `pending` vs `queued` is a mechanism detail — it records whether the owner has clicked promote.
@@ -6025,6 +6155,168 @@ function qDetailSection(parent: HTMLElement, title: string, disclosure = false, 
   return body;
 }
 
+// One program, in the SAME list/detail pane the tasks use. What it must make impossible is the
+// state this surface was built for: a program whose MAIN died months ago reading like a running
+// one. So the mark, its derivation sentence, and the founding flow all sit on one pane.
+function renderProgramDetail(shell: Shell, id: string): void {
+  const p = programsList.find((x) => x.id === id);
+  if (!p) {
+    shell.detail.appendChild(el("div", "shellhint", programsRead === "fail"
+      ? "GET /api/programs did not answer — this row cannot be read right now"
+      : "that program is gone — it was discarded or completed"));
+    return;
+  }
+  const { mark, why } = programMark(p);
+  shell.detail.appendChild(el("div", "rvhead", p.title));
+  const facts = el("div", "ocfacts");
+  facts.appendChild(chip(p.status, p.status === "active" ? "ok" : "dim",
+    "the program's own lifecycle status — proposed → confirmed → active → complete"));
+  facts.appendChild(chip(`MAIN ${mark}`,
+    mark === "live" ? "ok" : mark === "unbound" ? "dim" : "warn", why));
+  if (p.main && typeof p.main.slot === "number")
+    facts.appendChild(chip(`slot ${p.main.slot}`, "dim",
+      `the stored binding names slot ${p.main.slot}${typeof p.main.boundAt === "number" ? `, bound ${fmtTs(p.main.boundAt)}` : ""}`));
+  facts.appendChild(chip(fmtTs(p.createdAt), "dim", "when this program was created"));
+  shell.detail.appendChild(facts);
+  shell.detail.appendChild(el("div", "shellhint", why));
+
+  if (p.intent || p.successCriterion) {
+    const frame = qDetailSection(shell.detail, "Frame", true, false);
+    if (p.intent) { frame.appendChild(el("div", "rvhead", "intent")); frame.appendChild(el("div", "qdtext", p.intent)); }
+    if (p.successCriterion) {
+      frame.appendChild(el("div", "rvhead", "success criterion"));
+      frame.appendChild(el("div", "qdtext", p.successCriterion));
+    }
+  }
+
+  if (mark === "stale" || mark === "unknown") {
+    const st = qDetailSection(shell.detail, "Binding");
+    st.appendChild(el("div", "shellhint", mark === "stale"
+      ? "No button here on purpose: this server has neither an unbind nor a rebind, and"
+        + " bootstrap-main answers 409 for a program that already carries a binding. A stale MAIN"
+        + " can only be cleared where it was written."
+      : "No button here: nothing can be founded while the binding cannot even be read. Fix the"
+        + " missing fact first — an unknown binding is not an absent one."));
+    return;
+  }
+  if (mark === "live") return;
+
+  const bs = qDetailSection(shell.detail, "Found a Program-MAIN");
+  bs.appendChild(el("div", "shellhint",
+    `POST /api/programs/${p.id}/bootstrap-main opens a free slot in the directory below and sends the`
+    + " server-built founding brief. Fleet accepts it only for an ACTIVE program and only while a slot"
+    + " is free; every refusal below is the server's own sentence, word for word."));
+  if (p.status !== "active") bs.appendChild(el("div", "pkdwarn",
+    `this program is ${p.status} — the server will answer 409 until it is active`));
+  if (qBsFor !== p.id) {
+    qBsFor = p.id;
+    qBsCwd = null; qBsLabel = null; qBsErr = null;
+    qBsHarness = null; qBsModel = ""; qBsEffort = "";
+  }
+  if (!qBsCwd) {
+    qBsCwd = el("input", "qaddin") as HTMLInputElement;
+    qBsCwd.placeholder = "cwd — the checkout this MAIN works in (required)";
+    qBsCwd.title = "the server refuses a bootstrap without a cwd, and checks it before opening anything;"
+      + " suggestions come from your pinned/recent projects";
+    qBsCwd.setAttribute("list", "qrepodl");
+    void ensureRepoDatalist();
+  }
+  bs.appendChild(qBsCwd);
+  if (!qBsLabel) {
+    qBsLabel = el("input", "qaddin") as HTMLInputElement;
+    qBsLabel.placeholder = `label — empty = "Program-MAIN: ${p.title}"`;
+    qBsLabel.title = "the slot label; leave it empty for the server's own";
+  }
+  bs.appendChild(qBsLabel);
+
+  // the same three spawn fields every other spawn in this app carries, from the SAME server
+  // catalogue — a harness that has no model or no effort concept simply does not offer the field
+  const agents = agentHarnesses();
+  if (agents.length > 1) {
+    const row = el("div", "pkdopts");
+    const hSel = el("select", "pkdsel") as HTMLSelectElement;
+    for (const h of agents) {
+      const o = el("option", "", h.default ? `${h.id} (default)` : h.id) as HTMLOptionElement;
+      o.value = h.id;
+      if ((qBsHarness ?? agents.find((x) => x.default)?.id) === h.id) o.selected = true;
+      hSel.appendChild(o);
+    }
+    hSel.onchange = () => {
+      const next = agents.find((h) => h.id === hSel.value);
+      qBsHarness = next && !next.default ? next.id : null;
+      if (!next?.supports.model) qBsModel = "";
+      if (!next?.supports.effort || !next.effortLevels.includes(qBsEffort)) qBsEffort = "";
+      qDetailKey = "";
+      renderQueueDetail();
+    };
+    row.appendChild(labelled("harness", hSel));
+    const chosen = agents.find((h) => h.id === hSel.value) ?? agents.find((h) => h.default);
+    if (chosen?.supports.model) {
+      const mIn = el("input", "pkdin") as HTMLInputElement;
+      mIn.type = "text";
+      mIn.placeholder = chosen.default && defaultModel ? defaultModel : "default";
+      mIn.value = qBsModel;
+      mIn.oninput = () => { qBsModel = mIn.value.trim(); };
+      row.appendChild(labelled("model", mIn));
+    }
+    if (chosen?.supports.effort && chosen.effortLevels.length) {
+      const eSel = el("select", "pkdsel") as HTMLSelectElement;
+      for (const lv of ["", ...chosen.effortLevels]) {
+        const o = el("option", "", lv || "default") as HTMLOptionElement;
+        o.value = lv;
+        if (qBsEffort === lv) o.selected = true;
+        eSel.appendChild(o);
+      }
+      eSel.onchange = () => { qBsEffort = eSel.value; };
+      row.appendChild(labelled("effort", eSel));
+    }
+    bs.appendChild(row);
+  }
+
+  if (qBsErr) bs.appendChild(el("div", "pkdwarn", qBsErr));
+  const acts = el("div", "pkdacts");
+  acts.style.marginTop = "10px";
+  const go = el("button", "shrbtn primary", qBsBusy ? "founding…" : "found Program-MAIN") as HTMLButtonElement;
+  go.disabled = qBsBusy;
+  go.title = "opens a free slot in that cwd and sends the founding brief — this spawns a real session";
+  go.onclick = async () => {
+    const cwd = qBsCwd?.value.trim() ?? "";
+    if (!cwd) {
+      qBsErr = "cwd is required — the server refuses a bootstrap without one";
+      qDetailKey = ""; renderQueueDetail();
+      return;
+    }
+    qBsBusy = true; qBsErr = null;
+    qDetailKey = ""; renderQueueDetail();
+    const label = qBsLabel?.value.trim() ?? "";
+    const r = await post(`/api/programs/${p.id}/bootstrap-main`, {
+      cwd,
+      ...(label ? { label } : {}),
+      ...(qBsHarness ? { harness: qBsHarness } : {}),
+      ...(qBsModel ? { model: qBsModel } : {}),
+      ...(qBsEffort ? { effort: qBsEffort } : {}),
+    });
+    const j = (await r.json().catch(() => null)) as { error?: string; slot?: number } | null;
+    qBsBusy = false;
+    if (!r.ok) {
+      // VERBATIM. A 409 here names exactly which door closed — wrong status, no free slot, a
+      // binding this server cannot clear — and a paraphrase would drop that half of the answer.
+      qBsErr = j?.error ? `${r.status}: ${j.error}` : `the server answered ${r.status} with no readable reason`;
+      qDetailKey = ""; renderQueueDetail();
+      return;
+    }
+    qBsErr = null;
+    if (qBsCwd) qBsCwd.value = "";
+    if (qBsLabel) qBsLabel.value = "";
+    await refresh();
+    await loadPrograms(true);
+    qKey = ""; qDetailKey = "";
+    renderQueue(); renderQueueDetail();
+  };
+  acts.appendChild(go);
+  bs.appendChild(acts);
+}
+
 function renderQueueDetail() {
   const shell = qShell;
   if (!shell) return;
@@ -6056,34 +6348,57 @@ function renderQueueDetail() {
     shell.detail.appendChild(qCompose);
     if (!qRepoIn) {
       qRepoIn = el("input", "qaddin") as HTMLInputElement;
-      qRepoIn.placeholder = dispatch.repo
-        ? `target repo — empty = ${dispatch.repo.split("/").pop()}` : "target repo (path)";
+      // REQUIRED, and said so on the control itself. Empty was never "no repo": the server reads
+      // an absent repo as the dispatch default, so the quiet path put tasks in the Fleet checkout
+      // that were never meant for it. The button below refuses instead of posting.
+      qRepoIn.placeholder = "target repo (path) — required";
       qRepoIn.title = "where this task's lane spawns; suggestions come from your pinned/recent projects";
       qRepoIn.setAttribute("list", "qrepodl");
-      // suggestions: the picker's pinned + recent roots. Fetched once per composer create;
-      // the input works without them, so a failed fetch costs only the dropdown.
-      void (async () => {
-        try {
-          const d = (await (await api(`/api/dirs?path=${encodeURIComponent("~")}`)).json()) as { pins?: string[]; recents?: string[] };
-          document.getElementById("qrepodl")?.remove();
-          const dl = document.createElement("datalist");
-          dl.id = "qrepodl";
-          for (const p of [...new Set([...(d.pins ?? []), ...(d.recents ?? [])])]) {
-            const o = document.createElement("option");
-            o.value = p;
-            dl.appendChild(o);
-          }
-          document.body.appendChild(dl);
-        } catch { /* suggestions only */ }
-      })();
+      void ensureRepoDatalist();
     }
     shell.detail.appendChild(qRepoIn);
+    shell.detail.appendChild(el("div", "shellhint", dispatch.repo
+      ? `Target repo is required here. An empty value does not mean "no repo" — POST /api/tasks would`
+        + ` silently fall back to ${dispatch.repo}.`
+      : "Target repo is required here. An empty value does not mean \"no repo\" — the server would"
+        + " silently fall back to its own dispatch default."));
+    // programId is accepted by POST /api/tasks for a confirmed|active program ONLY, so this
+    // dropdown offers exactly that set: a value it cannot offer is a 409 it cannot provoke.
+    const bindable = programsList.filter((x) => x.status === "confirmed" || x.status === "active");
+    if (!qProgSel) {
+      qProgSel = el("select", "pkdsel") as HTMLSelectElement;
+      qProgSel.title = "bind this task to a program — optional, and only confirmed or active programs qualify";
+    }
+    const keepProg = qProgSel.value;
+    qProgSel.replaceChildren();
+    const noProg = el("option", "", "— no program —") as HTMLOptionElement;
+    noProg.value = "";
+    qProgSel.appendChild(noProg);
+    for (const x of bindable) {
+      const o = el("option", "", `${x.title} (${x.status})`) as HTMLOptionElement;
+      o.value = x.id;
+      qProgSel.appendChild(o);
+    }
+    qProgSel.value = bindable.some((x) => x.id === keepProg) ? keepProg : "";
+    shell.detail.appendChild(labelled("program", qProgSel));
+    if (!bindable.length) shell.detail.appendChild(el("div", "shellhint",
+      programsRead === "fail" ? "GET /api/programs did not answer, so no program can be offered here"
+        : programsRead === "unread" ? "programs have not been read yet"
+        : "no confirmed or active program exists — a task can only bind to one of those"));
     const add = el("button", "shrbtn primary", "add task") as HTMLButtonElement;
     add.onclick = async () => {
       const box = qCompose;
       if (!box || !box.value.trim()) return;
-      const repo = qRepoIn?.value.trim();
-      const r = await post("/api/tasks", { text: box.value, queue: false, ...(repo ? { repo } : {}) });
+      const repo = qRepoIn?.value.trim() ?? "";
+      if (!repo) {
+        toast(dispatch.repo
+          ? `target repo is required — an empty value would silently become ${dispatch.repo}`
+          : "target repo is required — an empty value would silently become the server's dispatch default");
+        return;
+      }
+      const programId = qProgSel?.value ?? "";
+      const r = await post("/api/tasks", { text: box.value, queue: false, repo,
+        ...(programId ? { programId } : {}) });
       if (!r.ok) {
         // a bad repo path comes back with the exact reason — show it, keep the typed text
         const j = (await r.json().catch(() => null)) as { error?: string } | null;
@@ -6099,6 +6414,12 @@ function renderQueueDetail() {
     acts.style.marginTop = "10px";
     acts.appendChild(add);
     shell.detail.appendChild(acts);
+    restoreFocus();
+    return;
+  }
+  // program rows carry a prefixed id; a task id is plain hex and can never collide with it
+  if (qPick.startsWith("prog:")) {
+    renderProgramDetail(shell, qPick.slice(5));
     restoreFocus();
     return;
   }
@@ -6523,6 +6844,7 @@ function renderQueue() {
   const shell = qShell;
   if (!shell || !shell.isOpen()) return;
   void loadTaskTexts(); // no-op unless the visible task set changed
+  void loadPrograms();  // no-op unless the poll's digest moved or the floor elapsed
   const shown = tasksList.filter((t) => !qQuery
     || qTaskText(t.id).toLowerCase().includes(qQuery)
     || t.status.includes(qQuery) || (t.note ?? "").toLowerCase().includes(qQuery));
@@ -6531,6 +6853,9 @@ function renderQueue() {
   const now = Date.now();
   const key = JSON.stringify([qView, qPick, qQuery, dispatch.on, dispatch.available, intakeOn,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
+    // the MARK is derived from the slots, so it moves without any program field moving. Leaving
+    // it out of the key would freeze a MAIN at `live` for as long as no task changed.
+    programsRead, programsList.map((p) => [p.id, p.status, p.title, programMark(p).mark]),
     shown.map((t) => [t.id, t.status, t.slot, t.note, t.kind, t.briefAt, t.analysis?.verdict,
       t.analysis?.blockers.join(","), t.analysis?.stale, t.analysis?.retry?.attempts,
       t.criterion ? t.criterion.confirmedAt === null : null, taskText.has(t.id),
@@ -6595,6 +6920,29 @@ function renderQueue() {
   let visibleRows = 0;
   if (!projection) {
     add({ name: "＋ New task", cls: "qnew", id: null });
+    // PROGRAMS above the task groups: they are the frames the rows below belong to, and the one
+    // question this list has to answer about each — does it still have a living MAIN — is derived
+    // from the same poll that paints the board.
+    const progShown = programsList.filter((p) => !qQuery
+      || p.title.toLowerCase().includes(qQuery) || p.status.includes(qQuery)
+      || programMark(p).mark.includes(qQuery));
+    if (progShown.length || programsRead === "fail") {
+      addSection("Programs", progShown.length,
+        "the owner's standing work frames. The MAIN mark is DERIVED on this poll — live only when"
+        + " slot and openedAt both match a current occupant; stale when the binding is complete but"
+        + " nothing matches; unknown when it cannot be checked at all, which is never read as live.");
+      if (programsRead === "fail") shell.list.appendChild(el("div", "pknone",
+        "GET /api/programs did not answer — these rows cannot be read right now"));
+      for (const p of [...progShown].sort((a, b) => b.createdAt - a.createdAt)) {
+        const { mark } = programMark(p);
+        add({
+          name: p.title, id: `prog:${p.id}`,
+          cls: mark === "stale" || mark === "unknown" ? "q-flag" : "",
+          facts: [`MAIN ${mark}`, p.status,
+            p.main && typeof p.main.slot === "number" ? `slot ${p.main.slot}` : "", "program"],
+        });
+      }
+    }
     for (const g of Q_GROUPS) {
       const group = shown.filter((t) => qGroupOf(t) === g.k);
       if (!group.length) continue;
@@ -6669,19 +7017,25 @@ function openQueue() {
   qKey = "";
   qCompose = null;
   qRepoIn = null;
+  qProgSel = null;
   qCmBox = null;
   qCmFor = null;
   qBriefDraft = null;
   qCriterionDraft = null;
   qRawAck = null;
+  qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false;
+  qBsHarness = null; qBsModel = ""; qBsEffort = "";
+  void loadHarnesses();  // the founding flow's harness/model/effort row reads this catalogue
+  void loadPrograms(true);
   const shell = openShell({
     id: "queue",
     title: "Task queue",
     listWidth: 380,
     onSelect: (row) => { if (qRowId.has(row.el)) qSelect(qRowId.get(row.el) ?? null); },
     onClose: () => {
-      qShell = null; qCompose = null; qRepoIn = null; qCmBox = null; qCmFor = null;
+      qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
       qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qRowId = new Map();
+      qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false;
     },
   });
   qShell = shell;

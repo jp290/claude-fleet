@@ -138,12 +138,26 @@ const activateNewProgram = async (title: string): Promise<Program> => {
 };
 const beginBootstrap = (id: string, body: Record<string, unknown>): Promise<Response> =>
   programPost(id, "bootstrap-main", body);
+// Waits for the PANE, not for the label. openSlot publishes s.cwd and s.label (server.ts:4459,
+// :4471) BEFORE `await ensureSlot(s)` (server.ts:4531) creates the tmux session (server.ts:4340),
+// so a slot found by label alone can still have no pane — measured window 25-41 ms against this
+// helper's 50 ms sampler (docs/messungen/acp18-fleet-frame-rot-2026-08-21.md). Returning such a
+// slot let respawnScreen fire into nothing, the harness screen was never planted, and the founding
+// then died in the server's readiness wait (server.ts:4790) as if the PRODUCT were broken: four
+// checks of the Fleet-frame family, three runs, one root.
 const waitForLabel = async (label: string): Promise<number | null> => {
+  let seen: number | undefined;
   for (let i = 0; i < 60; i++) {
     const slot = (await sessions()).slots.find((s) => s.cwd && s.label === label)?.id;
-    if (slot) return slot;
+    if (slot) {
+      seen = slot;
+      if ((await tmuxOut("has-session", "-t", `s${slot}`)).code === 0) return slot;
+    }
     await Bun.sleep(50);
   }
+  // The fixture could not be arranged — say THAT, instead of letting the caller's subject carry it.
+  check(`founding fixture: a slot labelled ${label} came up with a live pane`, false,
+    seen === undefined ? "no slot ever carried the label" : `slot ${seen} never grew a pane`);
   return null;
 };
 
@@ -390,9 +404,22 @@ export async function run(ctx: Ctx): Promise<void> {
   await programPost(capacityProgram.id, "complete");
 
   const NODE = Bun.which("node") ?? "node";
-  const respawnScreen = (slot: number, screen: string): Promise<{ out: string; code: number }> =>
-    tmuxOut("respawn-pane", "-k", "-t", `s${slot}`,
-      `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${JSON.stringify(screen)}`);
+  // The exit code is never discarded again. respawn-pane answers non-zero for a pane that does not
+  // exist yet, and that swallowed "can't find pane: sN" is what made the founding read as a product
+  // regression (see waitForLabel above). Retry inside the server's boot grace, then fail as
+  // OURSELVES — a probe that could not run must never be reported as the thing it was measuring.
+  const respawnScreen = async (slot: number, screen: string): Promise<{ out: string; code: number }> => {
+    let last: { out: string; code: number } = { out: "", code: -1 };
+    for (let i = 0; i < 60; i++) {
+      last = await tmuxOut("respawn-pane", "-k", "-t", `s${slot}`,
+        `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${JSON.stringify(screen)}`);
+      if (last.code === 0) return last;
+      await Bun.sleep(50);
+    }
+    check(`founding fixture: pane s${slot} accepted the harness screen`, false,
+      `respawn-pane exited ${last.code}`);
+    return last;
+  };
   const groundingSteps = [
     "1. Run ./state.sh.",
     "2. Run ./register.sh.",

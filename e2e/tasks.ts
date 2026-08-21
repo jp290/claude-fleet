@@ -1187,8 +1187,21 @@ export async function run(ctx: Ctx): Promise<void> {
         const t = (await (await post("/api/tasks", { text: "readiness-probe", queue: false })).json()) as { task: { id: string } };
         const d = (await (await post(`/api/tasks/${t.task.id}/dispatch`, { harness: "codex" })).json()) as { ok?: boolean; slot?: number };
         check("readiness probe: codex dispatch accepted (fixture setup)", d.ok === true && typeof d.slot === "number", JSON.stringify(d));
-        // inside the boot grace: kill the real codex TUI before it can matter, render the fixture
-        await tmuxOut("respawn-pane", "-k", "-t", `s${d.slot}`, `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${js}`);
+        // inside the boot grace: kill the real codex TUI before it can matter, render the fixture.
+        // Same failure form as e2e/programs.ts' respawnScreen, and for the same reason: the slot is
+        // published before openSlot's ensureSlot has created the pane (server.ts:4459/:4531), so
+        // respawn-pane can answer non-zero — retry, and if it never lands, fail as OURSELVES rather
+        // than as the screen verdict this section exists to measure
+        // (docs/messungen/acp18-fleet-frame-rot-2026-08-21.md).
+        let planted: { out: string; code: number } = { out: "", code: -1 };
+        for (let i = 0; i < 60; i++) {
+          planted = await tmuxOut("respawn-pane", "-k", "-t", `s${d.slot}`, `${NODE} -e 'console.log(process.argv[1]); setInterval(() => {}, 1e9)' ${js}`);
+          if (planted.code === 0) break;
+          await Bun.sleep(50);
+        }
+        if (planted.code !== 0)
+          check(`readiness probe: pane s${d.slot} accepted the screen fixture`, false,
+            `respawn-pane exited ${planted.code}`);
         return { id: t.task.id, slot: d.slot ?? -1 };
       };
       const rowAfter = async (id: string, want: (r: FRow | undefined) => boolean): Promise<FRow | undefined> => {

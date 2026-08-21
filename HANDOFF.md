@@ -1,3 +1,165 @@
+# HANDOFF — ACP Architecture Controller II (Slot 2), 2026-08-21, ctx 20,9 % GEMESSEN
+
+**Uebergabe auf Owner-Anweisung, unterhalb des neuen 25-%-Bandes.** Diese Session hat drei
+Reviews beauftragt, geerntet und synthetisiert und die Owner-Entscheide zur Program-MAIN-
+Autonomie entgegengenommen. **Kein Produktcode, kein Land, kein Deploy, keine Suite gefahren.**
+Commits dieser Session: diese Datei. Der exponierte Self-Token rotiert mit dieser Nachfolge.
+
+## 0. Die exakte naechste Handlung
+
+**Die Architektur ist ENTSCHIEDEN (§1). Es ist keine Analyse mehr faellig — schneide und
+koordiniere die Acts aus §4.** Beginne mit Welle 1 (drei Acts, Write-Sets disjunkt, keiner
+beruehrt `server.ts`, alle drei sofort briefbar). Vor Builder-Start gilt der Program-Gate
+unveraendert: beide Act-Briefs dem Owner vorlegen. **Nicht neu analysieren, nicht neu messen,
+was in §3 mit Zeile steht** — das ist bezahlt und nachgeprueft.
+
+## 1. OWNER-ENTSCHEIDE 2026-08-21, autoritativ — der Schnitt steht
+
+**Architekturschnitt bestaetigt: die MAIN RELEASED, der TICK STARTET.** Kein direkter Dispatch,
+der den Master-Stop umgeht. Repo zunaechst aus dem gebundenen `cwd` ableiten. Push/Remote bleibt
+Owner-Akt / explizite externe Wirkung. Gewoehnliche Fehlurteile erzeugen KEINE neue Regel —
+Feedback/Repair reicht.
+
+**(1) Token-Modell — die Huelle darf VORANGEHEN.** Nicht auf eine fingierte kryptographische
+Trennung warten. Alle normalen Agenten laufen heute absichtlich unter demselben Host-User mit
+Full Access und koennen ohnehin lokale ungetrackte Zustandsdateien lesen. **Self-Tokens sind eine
+strukturelle Capability-/Routing- und Versehentlichkeitsgrenze, KEINE adversariale
+Sicherheitsgrenze zwischen boesartigen lokalen Prozessen** — genau so formulieren, nirgends
+staerker. argv-/ps-Leaks werden SEPARAT repariert, weil sie versehentliche Ausgabe und
+Kontextkontamination erzeugen; **danach trotzdem keine Isolation behaupten.** Echte adversariale
+Trennung gehoert spaeter an OS-User-/Container-/Broker-Grenzen und ist KEINE Vorbedingung der
+Program-MAIN-Autonomie. Owner-/Netzgrenze ist eine andere Ebene, aber auch sie nicht staerker
+behaupten, als der Full-Access-Host traegt.
+
+**(2) 25/30 ist OFFIZIELL** (ersetzt die 44-%-Schwelle fuer Controller): **25 % =
+Uebergabeentscheidung und HANDOFF vorbereiten · 30 % = keine neue unklare Tiefenarbeit.** Eine
+kurze aktive Restkette darf enden. **Handoff ist der Normalfall; Compact nur bei derselben kurzen
+Restkette UND nachgewiesen frischem Gruendungskern.** `ctx: null` bleibt UNKNOWN und zaehlt nie
+als gruen. Das Band wird ZUSAMMEN mit Lese-/Tooloutput-Disziplin und reduziertem
+Hook-Erfolgsrauschen eingefuehrt — **niemals als blinder Timer oder harte Arbeitsunterbrechung.**
+Controller EINSCHLIESSLICH Supervisor fallen darunter.
+
+**(3) Harness-Eintritt — JA.** Eine live owner-/program-gebundene MAIN auf `automatable:false`
+darf ihre Program-Huelle nutzen. **Der Flag beschreibt, ob DIESER HARNESS unbeaufsichtigt
+gestartet/angesteuert werden darf — nicht die Autoritaet oder Intelligenz einer bereits laufenden
+gebundenen MAIN.** MAIN darf Tasks erzeugen und releasen; der Tick bleibt der Starter und prueft
+Master-Stop, Program-Lane-Deckel und die Automationstauglichkeit des **ZIEL**-Harness.
+`automatable:false` am aufrufenden MAIN ist kein Autoritaetsentzug und darf **niemals implizit
+Context Packs oder Modellklasse zu einem Gate machen.**
+
+**Bestehen bleibt:** Project-MAIN-Autonomie und beratende Context Packs (Packs gewaehren/entziehen
+nie Autoritaet); keine Rollen- oder Schrittbuerokratie.
+
+## 2. Der Supervisor-Entscheid (Owner, 2026-08-21)
+
+Ja zu einem gut gebrieften, **ereignisgetriebenen Sonnet-5-Supervisor**. Aber der Ergebnisfluss
+ist **Worker/Analyst → typisiertes `REPORT_READY` mit Task/Program/Empfaenger → zustaendige
+Project-MAIN**; **nur** fehlender/staler Empfaenger oder ausbleibender Ack eskaliert zum
+Supervisor. Enge Rechte: typed reads, Attention, abgeleiteter Program-MAIN-Nudge — **kein
+beliebiges Slot-Send, kein Dispatch, kein Land, kein Deploy, kein Code.** Stundenpolling ist
+hoechstens Deadman, nie Primaermonitoring.
+
+**WARNUNG, gemessen (§3): der Rail hat heute in 9 von 13 Faellen keinen Empfaenger.** Die
+Bindungs-Reparatur (ACP-13) ist Vorbedingung des Rails, nicht Folgearbeit — sonst ist die
+Eskalation der Normalfall statt der Ausnahme.
+
+## 3. Was GEMESSEN ist — nicht erneut herleiten
+
+Alles hier von MIR am Baum HEAD `0c176ee` nachgezogen, nicht geerbt.
+
+| Fakt | Messung | Fundstelle |
+|---|---|---|
+| Program-Bindungen live | **3 lebend · 9 stale · 1 ohne main** von 13 aktiven | `/api/programs` × `/api/sessions` |
+| `.find`-Mehrdeutigkeit | **heute unerreichbar**: 12 Bindungen, 12 distinkte Tripel, 0 Duplikate | dito |
+| `releaseTask` | `:2262`; Wert `"machine"` hat **null Aufrufer**; einzige Aufrufstelle `:18865` hart `"owner"` | `server.ts` |
+| `queued`-Schreibstellen | **vier**, nicht eine: `:2263` `:6303` `:14413` `:18523` | `server.ts` |
+| Der Bolt | gated `spawn.harness` — den GESTARTETEN, nie den handelnden Agenten | `server.ts:6107` |
+| `undo-land` | **Stack der Tiefe 3**, kontiguitaetsgeprueft, `pop()` einzeln | `UNDO_STACK_MAX :9785`, `:17742` |
+| claude-CLI-Effort | **`--effort low\|medium\|high\|xhigh\|max` EXISTIERT** | `claude --help` |
+| Fleet dazu | `effortLevels: []`, `supports.effort:false`, Kommentar „claude has no CLI effort flag" — **ueberholt** | `server.ts:443-444` |
+| Durchreiche | `slotCmd :139` / `agentCmd` haben **keinen** effort-Parameter | `server.ts` |
+| Blockierender Pin | **keiner** — der einzige effort-Pin prueft die `DispatchSpawn`-Form | `e2e/pins.ts:1293` |
+| Self-Token in `ps` | **13 Prozesse, 11 Slots** (nie Werte ausgeben) | eigene gefilterte Zaehlung |
+
+**Das Regelbuch ist an zwei Stellen falsch:** `CLAUDE.md:96` und `:591` sagen, `undo-land` decke
+genau EIN Land. Der Code sagt 3. **Doc-vs-Code → Code gilt.** `CLAUDE.md` ist ein Generat: der
+Schnitt gehoert ins `rulebook.ts`-Fragment, nie in die gerenderte Datei. Abschnitt J des
+GLM-Entwurfs hat diese Zeile **abgeschrieben statt gemessen** — seine `[gemessen]`-Marke ist dort
+unverdient. Nebenbefund: J's Zeilenangaben in der 6100er-Region liegen systematisch 1–2 Zeilen zu
+tief; Funktion und Aussage stimmen, die Zeile nicht.
+
+## 4. Die Acts — geschnitten, aussen nach innen. HIER ANFANGEN.
+
+**Welle 1 — parallel, Write-Sets disjunkt, kein `server.ts`:**
+- **ACP-10 · ctx-Nenner der Bruecke.** EINE Zeile in `contextWindowFor` fuer
+  `claude-bridge/claude-*`. Write-Set `src/protocol.ts:171-183` + Pin. Proof: ein pi+Opus-Slot
+  meldet ctx ≠ null, ±2 Punkte gegen die TUI-Selbstauskunft.
+- **ACP-17 · Regelbuch-Korrekturen** — **Fragment in `rulebook.ts`, NIE `CLAUDE.md` direkt**:
+  `undo-land` = 3 · Token-Hygiene erweitern auf *„niemals Prozess-Kommandozeilen ungefiltert
+  ausgeben"* (die `${VAR:+}`-Regel deckt `ps` NICHT ab) · hartcodierte IP im Mess-Schnipsel ·
+  der Supervisor-Effort-Absatz nach ACP-12 · die 44-%-Schwelle → 25/30 aus §1(2).
+- **ACP-14 · Ambient-Steuer senken.** Hook-Erfolgs-Echo kuerzen, blockierende Sprueche voll.
+  **Write-Set liegt in `~/.claude` — AUSSERHALB des Repos, also OWNER-AKT, keine Lane.**
+
+**Welle 2 — seriell, alle auf `server.ts`, Reihenfolge = Abhaengigkeit:**
+- **ACP-13 · Bindung reparieren** *(Vorbedingung von allem, auch des Supervisor-Rails)*:
+  `filter` statt `find`, `>1 ⇒ 409`, `sessionId` **berichten statt gaten** — die Form existiert
+  fertig bei `handleSelfSucceed :5197-5200`; stale Bindung ueberschreibbar statt 409 in
+  `bootstrapProgramMain`; `bound`/`staleSince` auf `GET /api/programs`.
+- **ACP-11 · Codex-ctx-Reader**: Tail-Read `last_token_usage.total_tokens`, Nenner
+  `model_context_window` **derselben Zeile, nie geraten**; 56-MB-Rollout ⇒ nur Tail. Gegenprobe
+  live gegen Slot 10 ≈ 27 %.
+- **ACP-12 · Nativer Claude-Effort-Adapter** (Owner ausdruecklich beauftragt): `effortLevels` +
+  `supports.effort:true`, Durchreiche `spawnCmd → slotCmd → agentCmd`, gequotet wie `model`.
+  Proof `./e2e-claude-gate.sh` — Phase 1 prueft genau diese Kommandozeilen-Form. **Danach**
+  Supervisor-Succession auf `claude-sonnet-5[1m]` + high, mit gezielter Probe am Footer, nicht
+  als ungemessene Annahme.
+- **ACP-15 · Deckel korrekt ausdruecken**: der 10er faellt als Autonomie-Grenze (er deckelt
+  Review-Kapazitaet, die es unter der Huelle nicht mehr gibt, `:16233`); `DISPATCH_MAX_LANES` je
+  **Program** statt je Repo — `programId` wird `:6164` bereits auf den Slot vererbt.
+
+**Welle 3 — innen, zuletzt:**
+- **ACP-16 · Die Huelle**: MAIN released, **Tick startet**. `repo` aus dem `cwd` der Bindung
+  abgeleitet, nie aus dem Koerper. `audit("task_release", …)` statt des ueberschreibbaren
+  `releasedBy` (`:6156` stempelt es auf `"owner"` um — es beantwortet die Lane-Frage, nicht die
+  Release-Frage). Eintritts-Gate prueft die Automationstauglichkeit des **ZIEL**-Harness.
+
+## 5. Die drei geernteten Berichte — UNTRACKED und damit gefaehrdet
+
+Drei Reviewer-Slots (7, 12, 14) sind geerntet und geschlossen. Ihre Pane-Berichte leben nur noch
+hier, **untracked**:
+
+| Datei | Z. | Was |
+|---|---|---|
+| `docs/harvest-critic-J-2026-08-21.md` | 284 | Opus-Autonomie-Critic, 8 gerangte Befunde zu J |
+| `docs/harvest-portabilitaet-J-2026-08-21.md` | 221 | pi+Opus Portabilitaet + der EINE kontrollierte pi-Canary |
+| `docs/harvest-lifecycle-glm-2026-08-21.md` | 136 | GLM Controller-Lifecycle-Audit, Beweistabelle + 5 Empfehlungen |
+
+Alle drei bei der Ernte redigiert (32-hex, IP, Host, Klarname) und **nachgeprueft: je 0 Treffer**.
+Sie sind ein `git add` entfernt vom Ueberleben — **die Entscheidung gehoert dem Owner**, weil ein
+Commit hier `main` bewegt. Die fuenf aelteren Artefakte vom Vormittag bleiben unberuehrt:
+Owner-Verbot, sie zu editieren, zu committen oder zu normalisieren.
+
+## 6. Was ich falsch gemacht habe
+
+- **Mein `POST .../open` mit `effort:"high"` scheiterte** an `harness claude takes no effort` —
+  ich hatte die Adapter-Faehigkeit vorausgesetzt statt gemessen. Der Fehlschlag wurde zum
+  Befund (ACP-12), aber die Reihenfolge war falsch herum.
+- **Ich habe im Owner-sichtbaren Verlauf einmal Prozess-Argumente abgefragt.** Nur Zaehlungen
+  wurden gedruckt, keine Werte — aber die Klasse ist genau die, die der pi-Canary bezahlt hat.
+  Die Regel gehoert deshalb ins Fragment (ACP-17), nicht in einen Report.
+- **Drei Reviewer, die je ~8 Minuten dachten, produzierten Berichte, die nur in einer Pane
+  standen.** Das Ernten war ein nachtraeglicher Einfall, kein Teil des Briefs. Ein Brief, der
+  keinen Ablageweg nennt, plant den Verlust ein.
+
+## 7. Verifikation dieses Commits — ehrlich
+
+**Keine Suite gefahren.** Die Aenderung ist ausschliesslich diese Datei. **Ein Direkt-Commit aus
+dem Haupt-Checkout ist fuer jedes land-seitige Ledger unsichtbar** — keine `fleet/land`-Note,
+keine Outcome-Zeile, kein Tier-2-Lauf. Das steht hier, damit die naechste Session nicht
+korrekt-aber-falsch schliesst, er sei vermessen worden. `./state.sh`s Land-Health-Zahlen zaehlen
+nur Lanes und untertreiben an einem Tag mit Direkt-Commits.
+
 # HANDOFF — ACP Architecture Controller (Slot 8), 2026-08-21, ctx 41,2 % GEMESSEN
 
 **Uebergabe auf Owner-Anweisung an der Controller-Risikogrenze (~40 %).** Diese Session war

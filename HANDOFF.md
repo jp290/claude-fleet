@@ -1,3 +1,190 @@
+# HANDOFF — ACP Architecture Controller III (Slot 3), 2026-08-21, ctx 27,8 % GEMESSEN
+
+**Uebergabe auf Owner-Anweisung im 25/30-Band.** Diese Session hat Welle 1 geschnitten und
+gefahren: ACP-10 gebaut+gelandet, ACP-17 ausgefuehrt, ACP-14 vermessen und vorgelegt. **Der
+Integrations-Tip ist ROT und die Ursache ist NICHT gefunden — aber sie ist EINGEGRENZT und
+ACP-10 ist mechanisch entlastet.** Kein Deploy. Kein Undo. Kein Welle-2-Start.
+
+## 0. Die exakte naechste Handlung
+
+**A. Den roten Integrationszustand schliessen** — hoechstens EINE eng gebriefte Diagnose-/
+Repair-Lane, KEINE Suite-Kaskade (Owner-Vorgabe). Alles, was ich dazu weiss, steht in §2; der
+Kandidatenraum ist bereits auf drei Doc-Commits eingeengt und die zwei teuren Ausschluesse sind
+BEZAHLT — nicht neu messen.
+**B. Erst bei gruenem oder erklaertem Tip ACP-13** (Binding-Reparatur), danach **ACP-11 →
+ACP-12 → ACP-15 seriell** (alle auf `server.ts`).
+**C. ACP-16 / REPORT_READY erst NACH ACP-13.**
+
+## 1. Was gelandet und was gemessen ist
+
+| Act | Stand | Beleg |
+|---|---|---|
+| **ACP-10** ctx-Nenner der Bruecke | **gelandet** `850d27b`, Gate gruen (exit 0, 98,8 s, waitMs 0) | `git notes --ref=fleet/land show 850d27b` |
+| **ACP-17** Regelbuch | **fertig**, `2c1cf59` + `2629dcf`, `bun e2e/pins.ts` ALL PASS | unten §4 |
+| **ACP-14** Ambient-Steuer | **vermessen**, Diff liegt beim Owner | `docs/acts-welle-1-2026-08-21.md` §3 |
+
+ACP-10 waehlte Option (1) (benannte Zeile) und belegte sie STAERKER als gebrieft: nicht mit dem
+pi-Footer (Selbstauskunft), sondern mit der Ursache im Paket — `pi-claude-bridge` 0.6.3,
+`src/models.ts:43-44`, `resolveClaudeCodeRuntimeModel` schreibt `claude-opus-5` bedingungslos auf
+`claude-opus-5[1m]` mit `ONE_M_CONTEXT` um; der Zweig liest keine Plan-Einstellung. **Von mir
+unabhaengig nachgelesen**, ebenso die drei Nebenaussagen (Geschwister `:49-51`/`:62-65` sind
+plan-abhaengig, Bridge-`haiku-4-5` ist 200k `:66-67`, Version `package.json:3`). Die Lane hielt ihr
+Write-Set exakt und entfernte eine vierte Pin-Zeile selbst, weil sie `MODEL_RE` von Hand kopiert
+haette — richtige Entscheidung, begruendet.
+
+## 2. DER ROTE TIP — was bewiesen ist und was nicht
+
+**Rote Audit-Row:** `post-land-audits.jsonl`, letzte Zeile. `result: red`, `mainSha 850d27b…`,
+`ms 1041448`, `checks {ran: 2774, failed: 4}`, `covers: [fleet/260821141046-f182]`.
+
+**Die vier Fehlschlaege sind EINE Wurzel, nicht vier Schaeden** — der Fleet-frame-Bootstrap
+liefert keinen Prompt. Signatur, in allen drei Laeufen identisch:
+
+```
+FAIL  Program-MAIN Fleet frame: founding prompt keeps exactly the four existing grounding steps in order
+FAIL  Program-MAIN Fleet frame: binding, bytes, git facts, six-way plan, anchors, and the receipt hash stay equivalent  (null)
+FAIL  Program-MAIN Fleet frame: a manifest tracked in the Fleet checkout IS read, delivered, and receipted beside the seeds  (0 null)
+FAIL  Program-MAIN Fleet succession: the byte-stable grounding and carry frame remains Fleet-control  (401 )
+```
+
+Leerer Prompt · `receipt: null` · beim Nachfolge-Check ein blankes `401` (leeres Self-Token, weil
+es nie einen Slot gab). Quelle: `e2e/programs.ts:587-645`.
+
+**DREI LAEUFE, ZWEI BAEUME — das ist der Kern der Uebergabe:**
+
+| Lauf | Baum | Ergebnis | Log |
+|---|---|---|---|
+| Post-Land-Audit 16:19 | `850d27b` | rot, 4/2774 | `post-land-audits.jsonl` (letzte Zeile, Feld `out` ist elidiert — nimm den Trail) |
+| meiner, seriell 16:40 | `850d27b` | **identisch rot** | `<scratch>/proof-850d27b.log` |
+| meiner, seriell | **`2629dcf`** (Elternbaum, ACP-10 DRAUSSEN) | **identisch rot** | `<scratch>/proof-2629dcf.log` |
+
+`<scratch>` = `/private/tmp/claude-501/-Users-owner-claude-fleet/8aaef263-f887-4bab-8753-bc6273b404ff/scratchpad`.
+Die Logs liegen im Session-Scratchpad und sterben mit ihm — die Signatur oben ist deshalb HIER
+ausgeschrieben. Der Per-Check-Trail ueberlebt laenger:
+`$TMPDIR/fleet-e2e-trail/isolated-20260821T161952Z-31042.jsonl` (Audit) und
+`…T164024Z-115.jsonl` (mein Wiederholungslauf), `ok:false` filtern.
+
+**Owner-Entscheid mechanisch angewandt: Elternbaum rot mit denselben vier Fehlern ⇒ ACP-10 ist
+ENTLASTET. Kein Undo. Der rote Tip bleibt als ehrlicher Fakt stehen. Kein Deploy.**
+
+**BEZAHLT UND AUSGESCHLOSSEN — nicht neu messen:**
+- **Kein Flake.** 3 Laeufe, dieselben 4 Checks, dieselben Details. Die Familie war davor 34/35
+  gruen; ich habe zuerst auf Flake getippt, und das war falsch.
+- **Kein Timeout/Last.** Der Audit war mit 1041 s langsam (Ledger-p50 700 s, Rang 194/212), aber
+  mein serieller Wiederholungslauf faellt identisch. Die Langsamkeit war Nebengeraeusch.
+- **Nicht ACP-17.** `e2e-stage.sh` kopiert `rulebook/` **ueberhaupt nicht** in die Suite-Instanz —
+  meine Fragment-Edits sind fuer diesen Lauf strukturell unsichtbar.
+- **Nicht die Grounding-Steps aus dem Regelbuch.** Die sind hartcodierte Literale,
+  `server.ts:12985` und `:13014`.
+- **Nicht EISDIR.** `e2e/errors.ts:9-11` ersetzt `streams/sN.history.json` ABSICHTLICH durch ein
+  Verzeichnis und `:148` stellt es wieder her. Fixture, nicht Korruption.
+- **Keine verschraenkten Laeufe.** Die dokumentierte Sonde (`grep -ao 'isolated-…' | sort -u`)
+  liefert genau EINE run-id.
+
+**WAS DAMIT UEBRIG BLEIBT — der Kandidatenraum fuer die Diagnose-Lane.** Der letzte bekannte
+gruene Lauf dieser Familie war der Tier-2-Vorschau-Lauf der ACP-10-Lane auf Baum **`9cdb77a`**
+(2774 PASS, 0 FAIL). Rot ist alles ab **`2629dcf`**. Dazwischen liegen GENAU ZWEI Commits, beide
+meine, beide reine `docs/`-Aenderungen:
+- `2c1cf59` — `docs/attic/regelbuch-bedeutungsprobe-2026-08-18.md` (drei Zeilen der Bedeutungsprobe)
+- `2629dcf` — `docs/acts-welle-1-2026-08-21.md` (angehaengte Abschnitte)
+
+**Das ist die eine Hypothese, die noch offen und nicht geprueft ist**, und sie ist unbequem: dass
+eine reine Doc-Aenderung den Fleet-frame-Bootstrap kippt, waere ueberraschend — aber genau dort
+liegt das Delta. Die naheliegende Naht: das Manifest `.fleet/context-packs.json` (getrackt, ein
+Pack `rulebook-generat`, `870593a`) und die Anker-Aufloesung in `docs/`; der Check erwartet
+`selected.length === 3` und `omitted.length === 4`. **Nicht verifiziert — als Startpunkt gedacht,
+nicht als Befund.** Der ehrliche Alternativstand: die Ursache ist aelter als `9cdb77a` und der
+gruene Lauf der Lane war der Ausreisser. Beides ist mit den vorhandenen Daten nicht entschieden.
+
+## 3. Maschinenzustand bei der Uebergabe
+
+- `main` = **`850d27b`** (ACP-10 gelandet). Arbeitsbaum sauber bis auf die bekannten untracked-Dateien.
+- **`undo-land` bezeichnet noch GENAU dieses Land** (`mainBefore 2629dcf` → `mainAfter 850d27b`,
+  `fleet/260821141046-f182`). Seit dem Land hat nichts main bewegt. **Nicht ausgeuebt** — ACP-10 ist
+  entlastet. Der Branch existiert, die Arbeit ist recoverable.
+- **`deployGap`: `codeBehind: true`, `behindCount: 10`; `bundleStale: true`.** Der laufende Server
+  ist Stand `0ce32dc`. **Das ist ABSICHT** — kein Deploy waehrend ungeklaertem Rot.
+- Suite-Lock frei, keine Suite laeuft, mein Proof-Worktree ist entfernt und `git worktree prune`
+  gelaufen.
+- **ACP-10s Live-Nachweis fehlt** und ist die einzige offene Zusage des Acts: `observableOutcome`
+  ist „ein pi-Slot meldet `ctx != null` innerhalb ±2 Punkten seiner Fusszeile". Braucht den Deploy.
+  Bis dahin: **gebaut und gelandet, nicht bewiesen.**
+
+## 4. ACP-17 im Detail (ausgefuehrt, damit es niemand zweimal tut)
+
+Vier Korrekturen in `rulebook/*.md`, `CLAUDE.md` neu gerendert (Render-Zeile: `rulebook.ts:5`),
+`bun e2e/pins.ts` ALL PASS inkl. `RULE_RENDER`.
+1. **`undo-land` = Stack der Tiefe 3** (`UNDO_STACK_MAX`, `server.ts:9785`), mit dem Teil, den die
+   alte Zeile richtig hatte: die Tiefe ist keine Garantie, ein Kontiguitaetsbruch toetet alles
+   darunter (`killUndoStack :9832`). Selbst am Code nachgezogen.
+2. **Kontext-Band 25/30** ersetzt 44 %/36 %, samt der drei Owner-Saetze (kurze Restkette darf enden ·
+   Handoff ist der Normalfall · niemals ein blinder Timer).
+3. **NEUE Regel Token-Hygiene** in `self-scheduling.md`: niemals eine Prozess-Kommandozeile
+   ungefiltert ausgeben. `ensureSlot` backt die Credentials per Konstruktion in den Pane-String;
+   die `${VAR:+}`-Vorsicht deckt `ps` NICHT ab. Ausdruecklich ohne Isolationsanspruch.
+4. **Host aus `.env`** statt eingetippter IP im ctx-Schnipsel (`einstieg.md`), verbatim getestet.
+   **Bewusst NUR dort**: die zwei Lane-Schnipsel (`drift`, `gate`) behalten den literalen Host, weil
+   eine Lane weder `.env` noch `fleet.json` hat und `$FLEET_HOST` in keiner Pane gesetzt ist.
+   Rueckweg ist eine Zeile, falls der Owner es anders will.
+
+**Die Bedeutungsprobe wurde dabei ROT und hat getan, wofuer sie da ist** (E9/E10/P12 hielten exakt
+die drei alten Aussagen). Da `rulebook/` gitignored ist, war dieser Pin die einzige Stelle, an der
+die Korrektur ihrer eigenen Behauptung begegnen konnte.
+
+## 5. Owner-Entscheide dieser Session — normativ
+
+- **ACP-17 fuehrt die MAIN im Haupt-Checkout aus** (nicht als Lane): `rulebook/` ist gitignored
+  (`.gitignore:40`), `server.ts:3930` kopiert es beim Spawn als Snapshot — eine Lane saehe ihre
+  Aenderung nie in `git status`.
+- **Harvest-Berichte + Act-Vorlage werden getrackt** (`9cdb77a`).
+- **Land/Deploy nur mit ausdruecklicher Owner-Promotion** (Program-Non-Goal). Das Land von ACP-10
+  war so freigegeben; der Deploy war es AUCH, ist aber wegen des unerklaerten Rot NICHT ausgefuehrt.
+- **Reihenfolge fuer die Nachfolge:** A roten Tip schliessen (max. EINE Diagnose-/Repair-Lane, keine
+  Suite-Kaskade) · B ACP-13, dann ACP-11 → ACP-12 → ACP-15 seriell · C ACP-16/REPORT_READY nach ACP-13.
+
+### Dateientscheid — eigener Cleanup-Act, NICHT waehrend Rot
+- Die **fuenf Rollenarchitektur-Rohpapiere** werden nach vollstaendigem Public-Hygiene-Scan
+  gesammelt als historische **NONNORMATIVE Vorschlaege** unter
+  `docs/attic/proposals/rollenarchitektur-2026-08-21/` archiviert. `SYSTEM.md` + die Harvests
+  bleiben aktive Wahrheit.
+- Die **zehn lokalen Root-Dateien** (`.env.bak-*`, alte Stand-/Prompt-/Link-Dateien,
+  `promote-program.sh`) kommen **NICHT** ins oeffentliche Repo: nach Kollisionscheck recoverable
+  nach `claude-fleet-private/inbox/2026-08-21` verschieben, **nichts loeschen**; `.env.bak-*`
+  anschliessend ignorierbar machen. Owner-autorisierter Cleanup-Act, **nicht** Teil der
+  Rot-Reparatur.
+
+## 6. Der Befund, der ueber diesem Tag steht
+
+**Der Fortschrittsverlust heute war erneut fehlende PROJEKTION, nicht fehlende Arbeit.** Gebaut,
+gelandet und belegt wurde ein sauberer Act; verloren ging Zeit daran, dass der Zustand „wartet auf
+Audit" nirgends sichtbar ist und ich beim ersten Rot auf Flake statt aufs Ausschlussverfahren
+getippt habe. **Kuenftiger Mindestzustand: `WAITING_ON_AUDIT` / `REPORT_READY` / `HANDOFF_DUE`,
+abgeleitet aus VORHANDENEN Fakten, in der UI.** Alle drei sind heute schon berechenbar
+(`post-land-audits.jsonl` · der Result-Rail · `ctx` gegen das 25/30-Band) — sie werden nur nirgends
+gerendert.
+
+## 7. Was ich falsch gemacht habe
+
+- **Beim ersten roten Audit auf „Flake" getippt.** Ich hatte die Dauer-Statistik als Indiz und habe
+  sie wie ein Argument benutzt. Der Wiederholungslauf hat mich widerlegt. Die Regel „der Fail ist
+  deiner, bis du das Gegenteil beweist" gilt AB der ersten Minute, nicht ab der zweiten Messung.
+- **Ich habe geschrieben, die Lane habe „denselben Inhalt" gruen gemessen.** Sie mass `9cdb77a`,
+  nicht den gelandeten Stand. Das war zu grosszuegig gelesen und hat die Eingrenzung verzoegert.
+- **Drei Suite-Laeufe fuer eine Eingrenzung, die keinen Taeter gefunden hat.** Zwei davon waren
+  noetig (Determinismus, Ownership), der Erkenntnisgewinn des dritten war klein gegen ~17 min
+  Maschinenzeit.
+- **Ich habe zwei Doc-Commits abgesetzt, waehrend eine Lane lief**, und genau die stehen jetzt als
+  einziger Kandidat im Delta. Das Regelbuch warnt davor („main-seitige Doc-Analyse committen,
+  BEVOR du eine Lane spawnst"), und ich habe die Reihenfolge nur zur Haelfte eingehalten.
+
+## 8. Verifikation dieses Commits — ehrlich
+
+**Keine Suite fuer diesen Commit gefahren** — die Aenderung ist ausschliesslich `HANDOFF.md`. Die
+Zahlen oben stammen aus den drei protokollierten Laeufen und aus `/api/sessions`. **Ein
+Direkt-Commit aus dem Haupt-Checkout ist fuer jedes land-seitige Ledger unsichtbar** — keine
+`fleet/land`-Note, keine Outcome-Zeile, kein Tier-2-Lauf. `./state.sh`s Land-Health-Zahlen zaehlen
+nur Lanes und untertreiben an einem Tag mit Direkt-Commits.
+
 # HANDOFF — ACP Architecture Controller II (Slot 2), 2026-08-21, ctx 20,9 % GEMESSEN
 
 **Uebergabe auf Owner-Anweisung, unterhalb des neuen 25-%-Bandes.** Diese Session hat drei

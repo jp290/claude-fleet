@@ -30,6 +30,7 @@ interface Program extends ProgramContent {
 }
 interface FleetState {
   programs?: Program[];
+  attentionRequests?: Record<string, unknown>[];
   tasks?: Record<string, unknown>[];
   watches?: Record<string, unknown>[];
   events?: Record<string, unknown>[];
@@ -100,6 +101,15 @@ const canonical = (value: unknown): unknown => Array.isArray(value)
     : value;
 const ownerPrograms = async (): Promise<Program[]> =>
   ((await (await get("/api/programs")).json()) as { programs: Program[] }).programs;
+// occupancy is DERIVED per request and never persisted, so it is read off the route and never off
+// fleet.json — a state-file read would answer `undefined` for every program and look like "the
+// field is missing" rather than "this reader asked the wrong source".
+type ProgramOccupancy = "live" | "stale" | "unbound";
+const programsWithOccupancy = async (): Promise<(Program & { occupancy?: ProgramOccupancy })[]> =>
+  ((await (await get("/api/programs")).json()) as
+    { programs: (Program & { occupancy?: ProgramOccupancy })[] }).programs;
+const occupancyOf = async (id: string): Promise<ProgramOccupancy | undefined> =>
+  (await programsWithOccupancy()).find((p) => p.id === id)?.occupancy;
 const selfPrograms = async (token: string): Promise<{ response: Response; programs: Program[] }> => {
   const response = await fetch(`${BASE}/api/self/programs`, { headers: { "x-fleet-self-token": token } });
   const body = await response.json() as { programs?: Program[] };
@@ -1220,23 +1230,164 @@ export async function run(ctx: Ctx): Promise<void> {
   check("Program-MAIN succession restart: the successor binding is field-validated and reconstructed byte-identically",
     JSON.stringify(afterSuccessionRestart?.main) === JSON.stringify(transferredBinding),
     `before=${JSON.stringify(transferredBinding)} after=${JSON.stringify(afterSuccessionRestart?.main)}`);
+  // A LIVE binding is the half of the cut that must NOT move. Repeating a bootstrap against it is
+  // the same call that overwrites a stale one three sections down — the only difference is whether
+  // the named occupant still exists, so both arms are asserted against the same route.
   const bootstrapAfterSuccession = await beginBootstrap(mainProgram.id, { cwd: ROOT });
-  check("Program-MAIN bootstrap after succession returns existing:true and opens no competing MAIN",
-    bootstrapAfterSuccession.ok
-      && ((await bootstrapAfterSuccession.json()) as { existing?: boolean }).existing === true,
-    String(bootstrapAfterSuccession.status));
+  const afterSuccessionBody = await bootstrapAfterSuccession.json() as { existing?: boolean; replaced?: unknown };
+  check("Program-MAIN bootstrap against a LIVE binding: existing:true, no `replaced`, binding byte-identical",
+    bootstrapAfterSuccession.ok && afterSuccessionBody.existing === true
+      && afterSuccessionBody.replaced === undefined
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)
+        === JSON.stringify(transferredBinding),
+    `${bootstrapAfterSuccession.status} ${JSON.stringify(afterSuccessionBody)}`);
+  const liveOccupancy = await programsWithOccupancy();
+  const neverBootstrapped = liveOccupancy.find((p) => !p.main);
+  check("GET /api/programs occupancy: a live binding reads live and a never-bootstrapped program reads unbound",
+    liveOccupancy.find((p) => p.id === mainProgram.id)?.occupancy === "live"
+      && !!neverBootstrapped && neverBootstrapped.occupancy === "unbound",
+    JSON.stringify(liveOccupancy.map((p) => [p.id, p.occupancy])));
+
+  // === what boundProgramForMain answers, and IN WHOSE WORDS ====================================
+  // Both fixtures are planted in the persisted state with srv down — the technique every other
+  // binding fixture in this file uses. `slot` and `openedAt` stay the server's own; only the NUMBER
+  // of active programs naming this occupation, and the two recorded sessionIds, are ours.
+  const attentionRaise = (token: string, text: string): Promise<Response> =>
+    fetch(`${BASE}/api/self/attention`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      body: JSON.stringify({ kind: "decision", text }) });
+  const attentionBeforeProbes = readState().attentionRequests ?? [];
+  const twinId = "a1b2c3d4e5f6a1b2c3d4e5f6";
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const twinState = readState();
+  const twinSource = twinState.programs?.find((p) => p.id === mainProgram.id);
+  if (twinSource) twinState.programs?.push({ ...twinSource, id: twinId,
+    title: "Twin program naming the same occupation" });
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(twinState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const twinsLoaded = (await ownerPrograms()).filter((p) => p.status === "active"
+    && p.main?.slot === successorSlot && p.main.openedAt === transferredBinding?.openedAt).length;
+  // FIXTURE PRECONDITION, its own check: the refusal below is only evidence if TWO active programs
+  // really named one occupation. A row the loader dropped would make the ambiguous arm answer "not
+  // bound" and read like the cut failing, when nothing was ever measured.
+  check("ambiguity fixture: two active programs are loaded naming the identical occupation",
+    twinsLoaded === 2, `${twinsLoaded} active programs name slot ${successorSlot} openedAt ${transferredBinding?.openedAt}`);
+  const ambiguous = await attentionRaise(successorToken, "which program am I the MAIN of?");
+  const ambiguousText = await ambiguous.text();
+  const unboundProbeSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
+  const unboundProbeOpen = unboundProbeSlot === null ? null
+    : await post(`/api/slots/${unboundProbeSlot}/open`, { cwd: REPO, label: "unbound-attention-probe" });
+  const unboundProbeToken = readState().slots?.[String(unboundProbeSlot)]?.selfToken ?? "";
+  const unbound = await attentionRaise(unboundProbeToken, "am I the MAIN of anything at all?");
+  const unboundText = await unbound.text();
+  check("boundProgramForMain: an ambiguous binding is its OWN 409 — never collapsed into \"you are not bound\"",
+    !!unboundProbeOpen?.ok && ambiguous.status === 409 && unbound.status === 409
+      && ambiguousText.includes("ambiguous Program-MAIN binding")
+      && ambiguousText.includes(`slot ${successorSlot}`)
+      && ambiguousText.includes(`openedAt ${transferredBinding?.openedAt}`)
+      && !ambiguousText.includes("not the current bound MAIN")
+      && unboundText.includes("not the current bound MAIN")
+      && !unboundText.includes("ambiguous"),
+    `ambiguous=${ambiguous.status}:${ambiguousText} unbound=${unbound.status}:${unboundText}`);
+  if (unboundProbeSlot !== null) await post(`/api/slots/${unboundProbeSlot}/kill`, {});
+
+  // The sessionId GATE is gone, and this is the case it used to swallow: same pane, same slot, same
+  // openedAt — only the session id inside the pane was re-minted (/clear, resume, respawn). Both
+  // halves are planted because at runtime both are server-owned facts; what is under test is the
+  // COMPARISON the route now refuses to gate on, and the value it reports instead.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const divergentState = readState();
+  divergentState.programs = (divergentState.programs ?? []).filter((x) => x.id !== twinId);
+  const divergentRow = divergentState.programs.find((x) => x.id === mainProgram.id);
+  const recordedSession = "11111111-1111-4111-8111-111111111111";
+  const paneSession = "22222222-2222-4222-8222-222222222222";
+  if (divergentRow?.main) divergentRow.main.sessionId = recordedSession;
+  const divergentSlotRow = divergentState.slots?.[String(successorSlot)];
+  if (divergentSlotRow) divergentSlotRow.sessionId = paneSession;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(divergentState, null, 2), { mode: 0o600 });
+  await restartSrv();
+  const divergentBinding = (await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main;
+  const divergentSlotState = readState().slots?.[String(successorSlot)];
+  // FIXTURE PRECONDITION again, and it is a real risk: a codex slot's sessionId is re-validated on
+  // load (CODEX_UUID_RE) and a rejected value would silently become null — leaving both sides equal
+  // and the subject below passing for the wrong reason.
+  check("divergence fixture: the loaded binding and the loaded pane carry two DIFFERENT session ids",
+    divergentBinding?.sessionId === recordedSession && divergentSlotState?.sessionId === paneSession
+      && divergentBinding.slot === successorSlot && divergentBinding.openedAt === transferredBinding?.openedAt,
+    `binding=${JSON.stringify(divergentBinding)} pane=${divergentSlotState?.sessionId}`);
+  const divergent = await attentionRaise(successorToken, "the pane minted a new session id");
+  const divergentBody = await divergent.json() as
+    { ok?: boolean; sessionIdMatch?: string; request?: { programId?: string } };
+  check("boundProgramForMain: a re-minted sessionId inside one occupation no longer refuses — it is REPORTED as divergent",
+    divergent.ok && divergentBody.ok === true && divergentBody.sessionIdMatch === "divergent"
+      && divergentBody.request?.programId === mainProgram.id,
+    `${divergent.status} ${JSON.stringify(divergentBody)}`);
+
+  // Put the state back the way the sections below expect to find it: the twin is already gone, the
+  // planted session ids return to the null pair the succession check proved, and the attention row
+  // this section raised is removed rather than left to age into another module's counts.
+  await tmuxOut("kill-session", "-t", "srv");
+  await Bun.sleep(500);
+  const probeCleanup = readState();
+  probeCleanup.attentionRequests = attentionBeforeProbes;
+  const cleanupRow = probeCleanup.programs?.find((x) => x.id === mainProgram.id);
+  if (cleanupRow?.main) cleanupRow.main.sessionId = transferredBinding?.sessionId ?? null;
+  const cleanupSlotRow = probeCleanup.slots?.[String(successorSlot)];
+  if (cleanupSlotRow) cleanupSlotRow.sessionId = successorState?.sessionId ?? null;
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(probeCleanup, null, 2), { mode: 0o600 });
+  await restartSrv();
+  check("probe cleanup: the binding is back to the succession's own bytes and this section left no attention row",
+    JSON.stringify((await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main)
+      === JSON.stringify(transferredBinding)
+      && (readState().attentionRequests ?? []).length === attentionBeforeProbes.length,
+    `binding=${JSON.stringify((await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main)} rows=${(readState().attentionRequests ?? []).length}`);
 
   if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;
-  const bindingBeforeStale = JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main);
-  const stale = await beginBootstrap(mainProgram.id, { cwd: REPO });
-  const staleText = await stale.text();
-  check("Program-MAIN stale binding after successor kill: repeat is a loud 409 with no heuristic rebind",
-    stale.status === 409 && staleText.includes("stale Program-MAIN binding")
-      && staleText.includes(`slot ${transferredBinding?.slot}`) && staleText.includes(`openedAt ${transferredBinding?.openedAt}`)
-      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main) === bindingBeforeStale
-      && (await sessions()).slots.filter((s) => s.cwd).length === occupiedAfterKill,
-    `${stale.status} ${staleText}`);
+  check("GET /api/programs occupancy: killing the bound occupant flips the SAME program to stale",
+    (await occupancyOf(mainProgram.id)) === "stale"
+      && JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)
+        === JSON.stringify(transferredBinding),
+    `${await occupancyOf(mainProgram.id)} ${JSON.stringify((await ownerPrograms()).find((p) => p.id === mainProgram.id)?.main)}`);
+
+  // THE CUT: a stale binding is overwritable, because the alternative was a permanently orphaned
+  // Program. The bootstrap runs its whole founding path — so the probe plants the harness screen
+  // the same way every other founding fixture here does, and fails as ITSELF if it cannot.
+  const rebindLabel = "program-main-rebind";
+  const auditBeforeRebind = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+  const rebindPending = beginBootstrap(mainProgram.id, {
+    cwd: REPO, label: rebindLabel, harness: "codex", model: "gpt-5.5", effort: "high",
+  });
+  const rebindSlot = await waitForLabel(rebindLabel);
+  check("Program-MAIN rebind precondition: the replacement occupant became observable",
+    rebindSlot !== null, String(rebindSlot));
+  if (rebindSlot !== null) await respawnScreen(rebindSlot, ">_ OpenAI Codex (v0.147.0)");
+  const rebind = await rebindPending;
+  const rebindBody = await rebind.json() as { ok?: boolean; slot?: number; program?: Program;
+    replaced?: { slot: number; openedAt: number; sessionId: string | null; boundAt: number } };
+  const rebindState = readState().slots?.[String(rebindSlot)];
+  check("Program-MAIN stale binding is overwritable, and the success response NAMES the binding it replaced",
+    rebind.ok && rebindBody.ok === true && rebindBody.slot === rebindSlot
+      && JSON.stringify(rebindBody.replaced) === JSON.stringify(transferredBinding)
+      && rebindBody.program?.main?.slot === rebindSlot
+      && rebindBody.program.main.openedAt === rebindState?.openedAt
+      && rebindBody.program.main.openedAt !== transferredBinding?.openedAt
+      && (await sessions()).slots.filter((s) => s.cwd).length === occupiedAfterKill + 1,
+    `${rebind.status} ${JSON.stringify(rebindBody)}`);
+  const rebindTrail = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+    .slice(auditBeforeRebind)
+    .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string })
+    .filter((row) => row.event === "program_main_rebound");
+  check("Program-MAIN rebind leaves ONE trail row naming the replaced occupation and no Program text",
+    rebindTrail.length === 1 && rebindTrail[0]?.slot === rebindSlot
+      && rebindTrail[0]?.detail === `${mainProgram.id} replaced slot:${transferredBinding?.slot} openedAt:${transferredBinding?.openedAt}`
+      && !rebindTrail[0]?.detail?.includes(mainProgram.title),
+    JSON.stringify(rebindTrail));
+  check("GET /api/programs occupancy: the rebound program reads live again",
+    (await occupancyOf(mainProgram.id)) === "live", String(await occupancyOf(mainProgram.id)));
+  if (rebindSlot !== null) await post(`/api/slots/${rebindSlot}/kill`, {});
 
   // Recycle the same slot and bind only a COMPLETE Program to its new occupant. The active Program
   // still names the old openedAt, so this caller must take the byte-stable ordinary succession path.

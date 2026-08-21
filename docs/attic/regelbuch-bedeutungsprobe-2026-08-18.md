@@ -60,8 +60,8 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | E6 | C | einstieg | Mutationsprobe nie via checkout--, sondern stash/Kopie | <code>stash push</code> |
 | E7 | C | einstieg | Host-Commit vor Probe macht checkout-- harmlos | <code>erst der Host-Commit, dann die Probe</code> |
 | E8 | C | einstieg | Direkt-Commit: Verifikation von Hand + im Handoff sagen | <code>Ledger unsichtbar</code> |
-| E9 | C | einstieg | Uebergabe beginnt bei ~44% | <code>44 %</code> |
-| E10 | C | einstieg | Lane-Start-Anker ~36%, kein Zaun | <code>36 %</code> |
+| E9 | C | einstieg | Uebergabe-Entscheidung bei 25 % (Owner-Entscheid 2026-08-21, ersetzt ~44 %) | <code>25 % = Uebergabe-ENTSCHEIDUNG</code> |
+| E10 | C | einstieg | ab 30 % keine neue unklare Tiefenarbeit (ersetzt den ~36-%-Anker) | <code>30 % = keine NEUE unklare Tiefenarbeit</code> |
 | E11 | C | einstieg | Kompaktierungs-Kliff 83% = Verlustereignis | <code>83-%</code> |
 | E12 | C | einstieg | Fuellstand messen (ctx am eigenen Slot), nie schaetzen | <code>MISST DU</code> · <code>s["ctx"]</code> |
 | E13 | C | einstieg | ctx:null heisst unmessbar, nicht leer | <code>ctx: null</code> |
@@ -150,7 +150,7 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | P9 | C | deploy | Lese-Reichweite = Provider-Reichweite | <code>VERTRAUENSFRAGE</code> |
 | P10 | C | deploy | Fixture fuer Ausfuehrbares muss ausfuehren | <code>AUSFÜHREN</code> |
 | P11 | C | deploy | --allowedTools additiv; nur mechanische Verweigerung zaehlt | <code>ADDITIV</code> |
-| P12 | C | deploy | undo-land gilt fuer genau ein Land | <code>genau EIN Land</code> |
+| P12 | C | deploy | undo-land ist ein Stack der Tiefe 3, nicht ein einzelnes Land | <code>STACK der Tiefe 3</code> |
 | P13 | C | deploy | Cast auf Netz-Antwort = Behauptung | <code>BEHAUPTUNG über eine fremde Fläche</code> |
 | P14 | C | deploy | Audit-Gruen an ms/PASS-Zeilen pruefen | <code>ran:0</code> |
 | P15 | C | deploy | Verb 2: ok:null NIE ein Pass | <code>ok:null</code> |

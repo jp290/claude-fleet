@@ -1,3 +1,61 @@
+# FRONTIER — 2026-08-21: die Controller-Architektur, bevor weiter gebaut wird
+
+**Owner-Entscheid 2026-08-21:** der Spiele-Bau tritt zurueck; zuerst wird die
+Controller-Architektur geklaert. **Kein Land, kein Deploy, keine alte Queue-Arbeit neu
+starten.** Die Nachfolgerin beginnt READ-ONLY.
+
+## Die gemessene Luecke, die den Schnitt ausloest
+
+Eine gebundene Program-MAIN kann **strukturell keine Fleet-Task anlegen oder dispatchen**.
+Nachgemessen, nicht vermutet:
+- Es gibt **keine** self-Route, die eine Task anlegt oder startet (`rg` auf self+task: leer).
+- `POST /api/tasks` (`server.ts:18486`) und `POST /api/tasks/:id/dispatch` (`:18363`) liegen
+  **unterhalb** des Owner-Gates (`:16999`, „everything below carries authority").
+- Folge: alles, was diese Session heute an Queue-Arbeit tat — drei Briefs anlegen, den
+  Result-Rail dispatchen, den Critic spawnen (`POST /api/lanes`) — lief ueber das
+  **OWNER-Token**, nicht ueber das Prinzipal „Program-MAIN". Der dokumentierte Selbst-Kanal
+  einer MAIN ist heute: propose, attention, watch, autos, ack, succeed/retire. Mehr nicht.
+- Der Ausweichweg ist damit der manuelle Worktree — genau die Handarbeit, die die
+  Architektur abschaffen soll.
+
+## Auftrag der Nachfolgerin (Owner-Wortlaut, verdichtet)
+
+Entwirf die **kleinste kohaerente Rollen-/Funktions-Architektur**, die diese Luecke schliesst.
+Sie muss unterscheiden: **globaler Owner-seitiger Controller · Supervisor · Project-MAIN ·
+Fable/kreative MAIN (falls ueberhaupt) · Builder-Lane · Critic/Resolver · Worker.** Zu jeder
+Rolle gehoeren: **typisierte Capabilities, Autoritaet, Receipts, Harness-Degradation, und wo
+das Landen wohnt.** `SYSTEM.md` und der heutige Code werden WIEDERVERWENDET; ueberfluessige
+Schichten werden ausdruecklich **zurueckgebaut**, nicht ergaenzt.
+
+**Vor jeder Implementierung** zwei UNABHAENGIGE Review-Briefs vorbereiten:
+1. **Adversarialer Opus-Architektur-Critic.**
+2. **Echter Pi-Harness** (`claude-bridge/claude-opus-5`, thinking high) als
+   **Portabilitaets-Critic** — zugleich der EINE kontrollierte Pi+Opus-Canary, den die
+   Routingvorgabe erlaubt; er ist noch durch nichts belegt (kein Lane/Land-Canary, kein
+   `transcript:true`-Vertrag, kein Worker-Tier).
+
+**Kein Code**, bis beide Kritiken synthetisiert sind und der Owner die minimale Architektur
+plus die **strittigen Grenzen** bekommen hat.
+
+## Was offen liegen bleibt und NICHT angefasst wird
+
+- **Attention `ce32bda5`:** Result-Rail Candidate `0057259` ist reviewreif. Land-Entscheid und
+  Deploy-Entscheid gehoeren dem Owner. Lane `fleet/260820204100-7aa1` (Slot 3) bleibt stehen.
+- Drei task-fertige, NICHT dispatchte Briefs: `ad2ee96a` CTX-01 · `7aaa6644` STUDIO-00 ·
+  `e952c2b2` HARNESS-01. Zwei notizen: `13ed6ce9` Loader-Widerspruch · `c89c18df`
+  Zustellbudget.
+- Exakt loeschbar, bewusst nicht geloescht: Slot 7 (`fleet-260820222129-8e3a`, geernteter
+  read-only Critic, ahead=0/clean) und der orphan `fleet-260820171920-5ad5` (ahead=0/clean,
+  HEAD ist Ahne von main, kein Slot haelt ihn).
+- Die zehn untracked Owner-Dateien im Root: **niemals anfassen.**
+
+## Zwei Werkzeug-Wahrheiten, die die Nachfolgerin sofort braucht
+
+- **Der ③-Reviewer ist defekt** (`summarizer timed out without an answer`). Eine unabhaengige
+  Review kostet derzeit einen eigenen Critic-Slot.
+- **Ein Lane-Watch ist stumm, solange `ahead=0`**, und ein read-only Critic committet nie —
+  fuer beide braucht es einen eigenen Pane-Quiet-Watcher. Zweimal an einem Tag bezahlt.
+
 # HANDOFF — ACP Project MAIN (Slot 2), 2026-08-21, ctx GEMESSEN am eigenen Slot
 
 Zustand wird ABGELEITET, nicht hier aufgeschrieben: `./state.sh` und `./register.sh` zuerst.

@@ -1,3 +1,113 @@
+# HANDOFF — ACP Architecture Controller IV (Slot 2), 2026-08-21, ctx 25,3 % GEMESSEN
+
+**Der rote Integrationszustand ist GESCHLOSSEN, main ist deployed, der Tip ist gruen.** Diese
+Session hat ACP-18 geschnitten, diagnostiziert, repariert, gelandet, auditiert und deployt. Es
+wurde KEIN Architektur-Act begonnen. Welle 2 ist unberuehrt.
+
+## 0. Die exakte naechste Handlung
+
+**ACP-13 (Bindungs-Reparatur)** — Vorbedingung von allem, auch des Supervisor-Rails. Danach
+seriell **ACP-11 → ACP-12 → ACP-15 → ACP-16** (alle auf `server.ts`). Owner-Reihenfolge,
+unveraendert. **GLM F2 wird NUR nach ausdruecklicher Owner-Promotion in ACP-16 gefaltet**;
+F3 und F1 bleiben Vorschlaege. Das Aufraeumen der 15 untracked Dateien ist ein EIGENER Act
+nach dem Gruen, unter der bestehenden public/private-Entscheidung — nicht nebenbei.
+
+## 1. Terminale Fakten dieser Session (alle gemessen, keine geschaetzt)
+
+| Fakt | Wert | Beleg |
+|---|---|---|
+| Land | `mainBefore 67418a8` → **`mainAfter aedc24d`** | `git notes --ref=fleet/land show aedc24d` |
+| Land-Gate | `verify.ok true`, exit 0, **119 793 ms**, `waitMs 0` | dasselbe Note |
+| Post-Land-Audit | **green**, `ms 1 265 185`, `checks {ran: 2774, failed: 0}`, `covers [aedc24d]` | `post-land-audits.jsonl`, letzte Zeile |
+| Deploy | id **`9279b26b`**, `ok true`, `hitTarget true`, `ms 2002` | `GET /api/deploys`, erste Zeile |
+| Live danach | `bootHead == head == aedc24d`, `codeBehind false`, `behindCount 0`, `bundleStale false` | `GET /api/sessions` |
+
+**Die vier Commits auf main:** `e4dd0da` Diagnose · **`8ad4192` der Fix** · `942f955` Notiz traegt
+den Schnitt · `aedc24d` Checkzahl richtiggestellt.
+
+## 2. Was ACP-18 wirklich war — und was die Diagnose des Vorgaengers wert war
+
+**Das Rot war ein SONDEN-RENNEN, kein Produktfehler.** `openSlot` veroeffentlicht `s.cwd`
+(`server.ts:4459`) und `s.label` (`:4468`) und legt die tmux-Pane erst in `await ensureSlot(s)`
+(`:4531` → `:4340`) an. `waitForLabel` pollte auf Label+cwd und lieferte einen Slot, dessen Pane
+noch nicht existierte; `respawnScreen` antwortete `can't find pane: sN`, **und sein Exit-Code
+verfiel an allen acht Aufrufstellen still** — der Codex-Banner wurde nie gemalt, `bootstrap-main`
+starb in der Readiness-Warte mit HTTP 500 `pane never showed its ready marker within 3s`
+(6 von 6 nachgestellt, 7436–7490 ms; die rote Trail-Zeile trug `msSincePrev 7535`).
+
+**Der Fix `8ad4192`** (`e2e/programs.ts` + `e2e/tasks.ts`, `server.ts` UNBERUEHRT): `waitForLabel`
+gibt einen Slot nur zurueck, wenn `tmux has-session -t sN` gleichzeitig 0 liefert; `respawnScreen`
+wiederholt bounded und meldet nach Ablauf **einen eigenen `check()` mit dem Exit-Code**. Die Sonde
+scheitert endlich als SIE SELBST, und „nie ein Slot mit dem Label" ist von „Slot da, Pane nie
+gewachsen" getrennt. Dieselbe Fehlerform in `e2e/tasks.ts` (`screenLane`).
+
+**MECHANISCH WIDERLEGT und nicht wieder aufzumachen:** der Kandidatenraum aus dem
+Vorgaenger-Handoff (die zwei Doc-Commits `2c1cf59`/`2629dcf`). `e2e-isolated.sh:59-70` +
+`e2e-stage.sh` bestimmen abschliessend, was in eine Suite-Instanz kommt — namentlich nur
+`AGENTS.md`, `HANDOFF.md`, `docs/verify-tiering.md`, `docs/land-mechanics.md`,
+`docs/plan-queue-refinement-2026-08-11.md`, `docs/container.md` plus Import-Huelle, `public/`,
+`package.json`. Keine der beiden geaenderten Dateien ist darunter. **Die Ursache war aelter als
+`9cdb77a`**: beide Helfer stammen unveraendert aus `971c8da` (2026-08-14), fuenf Tage vor dem
+Check-Block `870593a`. Der gruene Lane-Vorschaulauf war der Ausreisser, nicht die roten Laeufe.
+
+**Die „neun fehlenden Checks" waren MEINE Fehldeutung, aufgeklaert:** rot und gruen haben beide
+2774 Trail-Zeilen und 2768 distinct Namen, `Namen nur/anders` = 0 auf beiden Seiten. Nichts
+uebersprungen. Die 2765 war die Trail-Selbstpruefung, die acht Zeilen vor Schluss zaehlt; die zwei
+neuen `check()` feuern nur im Fehlerfall.
+
+## 3. Zwei offene Raender — benannt, NICHT untersucht
+
+1. **Die Phasenerklaerung bleibt GEFOLGERT.** Warum die fleet-control-Gruendung ihr Label 30–50 ms
+   frueher veroeffentlicht als eine target-repo-Gruendung, ist aus dem Code gelesen (ein
+   zusaetzlicher `git cat-file` im target-repo-Zweig, `server.ts:12888`), nicht gemessen. Der
+   gruene Lauf kann das weder stuetzen noch widerlegen — der Fix ENTFERNT die Abhaengigkeit von
+   der Phase, statt sie zu verschieben. Kein offener Schaden, nur eine offene Erklaerung.
+2. **~62 Minuten ohne Ausgabe im Beweislauf**, unerklaert: zwischen Suite-Lock (17:47Z) und dem
+   Anlegen des Instanzverzeichnisses (18:49:15Z, `stat -f %SB`) liegt eine Luecke; kein zweiter
+   Lauf im Trail-Verzeichnis in diesem Fenster, kein Sleep-Eintrag in `pmset -g log`. Einziger
+   Code dazwischen ist `_stage_closure` in `e2e-stage.sh`. Danach lief die Suite in normaler Zeit.
+   In `docs/messungen/acp18-fleet-frame-rot-2026-08-21.md` vermerkt. **Wenn ein Land je wieder
+   unerklaerlich lange braucht, ist das die erste Spur** — sonst nicht verfolgen.
+
+## 4. Der GLM-Kritikerlauf (Slot 7) — geerntet, NICHT promotet
+
+Fuenf Feststellungen mit CUT LINE, `REPORT_READY` gedruckt. Roh erhalten ausserhalb des
+oeffentlichen Baums: `~/claude-fleet-private/harvest/glm-gap-critic-2026-08-21.txt` (884 Zeilen).
+**Ich habe die vier tragenden Zitate am Code gegengeprueft, alle halten woertlich:**
+- **F1** kein Ergebnis-Rueckweg fuer Nicht-MAIN-Specialists — `openAttention:5742-5744` 409t
+  alles ohne `boundProgramForMain`. Loch echt. **Aber die Kostenrechnung ist ueberzogen** und das
+  ist meine Gegenmessung: ich habe in dieser Session ZWEI Specialist-Berichte geerntet (Slot 4,
+  Slot 7), je ein `capture-pane` in eine Datei, je unter zwei Minuten — nicht „30–60 min". Und
+  `capture-pane` leakt keine Tokens; die Leak-Klasse haengt an `ps`, nicht am Ernten.
+- **F2** `GET /api/self` traegt kein `dispatch`-Feld (`:16412-16427`), Tick-Waechter `:6928`.
+  **Staerker als GLM wusste:** ich habe gemessen — `fleet.json` fuehrt `"dispatch": false`, und es
+  liegt bereits **1 queued row** da (1 queued / 72 pending), die kein Tick je startet. Das
+  Szenario ist der stehende Zustand, nicht eine Prognose. Ein Feld, eine Zeile.
+- **F3** `rulebookDrifted` liegt hinter dem Lane-409 (`:16720`, Berechnung erst `:16731`) — genau
+  die 25/30-Nachfolger sind vom Drift-Sensor ausgeschlossen. Eine Ungenauigkeit GLMs: den
+  25/30-Wechsel traegt KEIN Commit (`CLAUDE.md` ist gitignored, im Haupt-Checkout gerendert) —
+  das macht den Befund eher schlimmer.
+- **F5 (subtraktiv)** zwei Ablagepfade mit entgegengesetzter Repo-Semantik, `:16245`
+  `repo: null, // never body.repo`. Sauber belegt; sollte MIT ACP-16 reiten, nicht davor, weil es
+  dieselbe Naht anfasst.
+- **F4** unter der Schnittlinie: Ersparnis INFERRED, Gegenmittel ein Pack, dessen Wirkung niemand
+  misst. GLM sagt das selbst.
+
+## 5. Maschinenzustand bei der Uebergabe
+
+- Server laeuft auf **`aedc24d`** (dem auditierten und deployten SHA), Bundle frisch.
+  `main` steht eine Stufe hoeher auf **`c955dc7`** — DIESER Handoff, ein DIREKT-Commit aus dem
+  Haupt-Checkout, reines `HANDOFF.md`. Er ist fuer jedes land-seitige Ledger unsichtbar (keine
+  `fleet/land`-Note, keine `lane-outcomes`-Zeile, kein Post-Land-Audit). Von Hand verifiziert:
+  `bun e2e/pins.ts` ALL PASS. `deployGap.codeBehind` liest sich deshalb `true` bei
+  `behindCount 1` — es ist KEIN Server-Code-Unterschied und braucht keinen Deploy.
+- **`undo-land` bezeichnet dieses Land** (`67418a8` → `aedc24d`). Nicht ausgeuebt, kein Grund.
+- Slot 3 haelt den fertigen ACP-18-Worktree (gelandet, sauber). Slot 7 haelt den GLM-Kritiker
+  (fertig, `REPORT_READY`, geerntet). Beide koennen abgeraeumt werden.
+- 15 untracked Dateien im Haupt-Checkout, davon die fuenf nichtnormativen Architektur-Papiere.
+  **Eigener Act nach dem Gruen** — nicht nebenbei aufraeumen.
+- Queue: 73 offen (63 auftrag / 10 notiz), `dispatch: false`, 1 queued row wartet auf einen Tick,
+  der nicht laeuft (siehe F2).
 # HANDOFF — ACP Architecture Controller III (Slot 3), 2026-08-21, ctx 27,8 % GEMESSEN
 
 **Uebergabe auf Owner-Anweisung im 25/30-Band.** Diese Session hat Welle 1 geschnitten und

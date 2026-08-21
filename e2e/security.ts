@@ -570,9 +570,32 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   // harness without the concept refuses one rather than accepting a flag it will silently drop.
   const be = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, harness: "pi", effort: "low; rm -rf /" });
   check("§6 a pi effort outside the declared level set is rejected (400)", be.status === 400, String(be.status));
-  const ce = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, effort: "high" });
-  check("§6 the default adapter refuses an effort it has no flag for, rather than dropping it (400)",
-    ce.status === 400, String(ce.status));
+  // the default adapter GAINED a flag on 2026-08-21 (`claude --effort <level>`), so the row that
+  // used to stand here — "refused because there is no flag" — now asserts the two halves that are
+  // actually live: a declared level is TAKEN, and one outside this adapter's own set is refused
+  // with effortErrFor's exact text. "ultra" is deliberate: it is a real level on the codex adapter
+  // and not on this one, so a shared/widened set would pass the acceptance row and fail here.
+  const defH = cat.harnesses.find((h) => h.id === "claude");
+  const okE = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, effort: "high" });
+  const okEJ = okE.ok ? { error: "" } : ((await okE.json()) as { error?: string });
+  check("§6 the default adapter accepts a declared effort level (200) — it is no longer effort-less",
+    okE.ok, `${okE.status} ${JSON.stringify(okEJ)}`);
+  await post(`/api/slots/${HARNESS_SLOT}/kill`, {});
+  const badDefE = await post(`/api/slots/${HARNESS_SLOT}/open`, { cwd: REPO, effort: "ultra" });
+  const badDefEJ = (await badDefE.json()) as { error?: string };
+  check("§6 the default adapter refuses a level outside its OWN set, naming the levels it takes",
+    badDefE.status === 400 && badDefEJ.error === `bad effort (one of: ${defH?.effortLevels.join(", ") ?? ""})`
+    && (defH?.effortLevels.length ?? 0) > 0,
+    `${badDefE.status} ${JSON.stringify(badDefEJ)} levels=${JSON.stringify(defH?.effortLevels)}`);
+  // ...and the NO-CONCEPT branch of effortErrFor keeps a probe at /open rather than only at ▸ start
+  // below: the container hull has no flag to pass on, and must refuse rather than drop. effortOf
+  // runs before boxOf in this route, so no pane is spawned by this row.
+  const ce = await post(`/api/slots/${HARNESS_SLOT}/open`,
+    { cwd: REPO, harness: "container", container: "e2e-effort-probe", effort: "high" });
+  const ceJ = (await ce.json()) as { error?: string };
+  check("§6 a harness with no effort concept refuses one at /open, rather than dropping it (400)",
+    ce.status === 400 && ceJ.error === "harness container takes no effort",
+    `${ce.status} ${JSON.stringify(ceJ)}`);
 
   // ▸ start is its own spawn reader, so repeat both effort rejections at that boundary rather
   // than inferring them from /open. The error TEXT is part of the contract: a generic 400 could

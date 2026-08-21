@@ -365,6 +365,67 @@ check("the pane spawn command injects the default model when the slot pins none"
   startCmdDef.includes(`--model '${FLEET_DEFAULT_MODEL}'`), startCmdDef.slice(-160));
 await tmuxOut("kill-session", "-t", "s4");
 
+// --- Slot.effort reaches the spawn string too, and this is the ONLY place it can be proven: the
+// append is claude-gated exactly like --model, so the main suite (FLEET_CMD=true) never sees it and
+// the API-level rows in e2e/security.ts prove only that the request was accepted, never that the
+// flag arrived. `claude --help` states the flag: `--effort <level>` over (low, medium, high, xhigh,
+// max). The row that would otherwise rot is the NO-EFFORT one: a slot that pins no level must still
+// spawn the command line it spawned before this adapter learned the flag, byte for byte. ---
+async function claudePaneCmd(target: string): Promise<string> {
+  let cmd = "";
+  for (let i = 0; i < 40; i++) {
+    if ((await tmuxOut("has-session", "-t", target)).code === 0) {
+      cmd = (await tmuxOut("display-message", "-p", "-t", target, "#{pane_start_command}")).out;
+      if (cmd.includes("claude")) break;
+    }
+    await Bun.sleep(250);
+  }
+  return cmd;
+}
+const oE = await post("/api/slots/4/open", { cwd: process.cwd(), effort: "high" });
+const oEJ = oE.ok ? { error: "" } : ((await oE.json()) as { error?: string });
+// the FOURTH done-statement, asserted as its own row rather than folded into the command-line one:
+// this route answered `harness claude takes no effort` until 2026-08-21, and a regression there
+// would read as "the pane has no --effort" — a wrong diagnosis of a right symptom.
+check("open slot 4 with an effort level — the default adapter no longer answers 'takes no effort'",
+  oE.ok && !/takes no effort/.test(oEJ.error ?? ""), `${oE.status} ${JSON.stringify(oEJ)}`);
+const cmdE = await claudePaneCmd("s4");
+// THE PROBE'S OWN PRECONDITION, failing as ITSELF: with no pane (or a pane that never carried the
+// claude line) the assertion below would report "no --effort" while nothing was ever measured.
+check("effort probe precondition: slot 4's pane exists and carries the claude line",
+  cmdE.includes("claude"), cmdE.slice(-160) || "no pane command");
+check("the pane spawn command carries the per-slot effort, shell-quoted",
+  cmdE.includes("--effort 'high'"), cmdE.slice(-160));
+await tmuxOut("kill-session", "-t", "s4");
+
+// ...and with NO effort the line must carry no flag at all — the absence is the contract for every
+// slot that pins none, and it is what "byte-identical to before" means here.
+const oNE = await post("/api/slots/4/open", { cwd: process.cwd() });
+check("reopen slot 4 with no effort", oNE.ok, String(oNE.status));
+const cmdNE = await claudePaneCmd("s4");
+check("effort probe precondition: the no-effort pane exists and carries the claude line",
+  cmdNE.includes("claude"), cmdNE.slice(-160) || "no pane command");
+check("a slot that pins no effort spawns a command line without --effort at all",
+  !cmdNE.includes("--effort"), cmdNE.slice(-160));
+await tmuxOut("kill-session", "-t", "s4");
+
+// ...and a level outside the declared five never becomes a command line. The error TEXT is part of
+// the assertion: a bare 400 could come from the cwd or capacity checks and would not prove effortOf
+// judged it. `xhigh ` with a trailing space is a member-plus-one-byte — a `startsWith` or a regex
+// where a set membership belongs would let it through, and it would land inside the quotes.
+// The five are SPELLED OUT here rather than imported from the catalogue on purpose, and this is the
+// opposite decision from the model rows above for a reason: there the assertion was about the shell
+// FORM and a private copy of the name would have rotted. Here the set itself is the claim — it is
+// `claude --help`'s own list — so a server-side edit to it must fail this row and be re-measured
+// against the binary, not silently ratified by a test that reads its answer from the thing it tests.
+for (const bad of ["ultra", "HIGH", "xhigh ", "high; id"]) {
+  const r = await post("/api/slots/5/open", { cwd: process.cwd(), effort: bad });
+  const rj = (await r.json()) as { error?: string };
+  check(`the default adapter rejects the effort ${JSON.stringify(bad)} and names the five levels (400)`,
+    r.status === 400 && rj.error === "bad effort (one of: low, medium, high, xhigh, max)",
+    `${r.status} ${JSON.stringify(rj)}`);
+}
+
 // --- THE COUNTER-PROOF for the harness phase (phase 2, fleet-e2e-harness.ts): a claude fleet must
 // keep REJECTING the foreign model shapes that phase accepts. This is the half that a widened
 // shared MODEL_RE would silently break, and it can only be asserted where BASE_CMD is claude — i.e.

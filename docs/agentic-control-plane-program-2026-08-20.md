@@ -4,17 +4,44 @@ Status: **Owner-ausgerichteter Program Brief, in Ausführung.**
 Befundbasis: Tree `db35dc6e5a5c`, ergänzt durch read-only Code-/Pane-/Ledger-Messungen am
 2026-08-20. Spätere Umsetzung muss jede Ist-Aussage am dann aktuellen Tree neu prüfen.
 
-Vollzugsstand 2026-08-20: Act 1 liegt auf Lane-Commit `02a5625`, seine Gates und Isolated-Suite
-endeten grün und der Owner hat die Browser-Journey abgenommen; gelandet oder deployt ist er nicht.
-Act 2 läuft auf einer separaten Sol-Lane und bleibt bis zum terminalen Beleg `PENDING`.
-Act 3 ist danach als Promotion-Identitäts-/Sensor-Schnitt geschärft; er verändert noch kein
-Auto-Land-Verhalten.
+Vollzugsstand 2026-08-21:
+
+- **Act 1 ist gelandet und deployt:** Commit-Klick und File Explorer liegen in `914b25d`, der
+  Fokus-/Scroll-Fix in `4e4a70e`.
+- **Act 2 ist gelandet und deployt:** `7a91ef1` ist die ausführbare Capability-Quelle mit
+  generierter lesbarer Projektion.
+- **Act 3 ist teilweise gelandet:** `b2809f5` bindet Merge-Reviews an den konkreten
+  Land-Candidate; `9fd1025` erlaubt den kontrollierten Replay nach Kontextverschiebung. Eine
+  owner-promovierte Resolve-Policy und automatisches Weiterführen existieren noch nicht.
+- **Act 4 ist teilweise sichtbar:** `37c9111`/`0ce32dc` machen Program-MAIN-Bindung und explizite
+  Task-Bindung in der UI lesbar. Die vollständige `AgentInstance`-/Brief-/Receipt-/Request-
+  Projektion bleibt offen.
+- **Act 5 besitzt einen realen Vorläufer:** `3b0b55f`/`f1e50e9` führen Worker-Ergebnisse über
+  einen Result Rail zur gebundenen Program-MAIN zurück. Das eigentliche
+  `Act -> Attempt -> ContextEnvelope -> Trace`-Objektmodell ist noch nicht gebaut.
+
+**Aktueller Entscheidungs-Checkpoint, kein zusätzlicher Produkt-Act:** Die vorhandenen Game-
+Worktrails sind auf Zeit-, Token-, Stillstands-, Rework- und Ergebnisursachen normalisiert
+(`docs/worktrail-audit-II/`, `docs/worktrail-audit-III/` und
+`docs/private-repo-e-worktrail-audit-2026-08-17.md`). Eine frische Opus-5-High-Session hat daraus den
+kleinsten heutigen Studioschnitt adjudiziert: zwei kleine Repo-Packs (`project-spine` und genau
+eine `quality-axis`), ein kurzer rollenbezogener Act-Brief statt eines dritten Packs, eine
+gebundene Program-MAIN und mindestens zwei echte Fleet-Lanes. Ein unabhängiger GLM-Transfer
+bestätigt denselben Kern für ein späteres `ios-app-studio`; iOS-spezifische Release-, Geräte- und
+Compliance-Belege gehören in Spine/Evidence, nicht in eine neue Workflow-Schicht. So wird weder
+Game-spezifische Prozedur zum Fleet-Core erklärt noch eine zweite Planhierarchie eröffnet.
+
+**Nächste Baukante nach dem Checkpoint (Owner-Promotion 2026-08-21):** zuerst den falschen
+Loader-Vertrag samt Drift-Pin korrigieren, ohne den bereits geteilten Runtime-Loader umzubauen;
+danach den kleinsten heutigen Pilot fahren. Anhand seiner Receipts und Worktrail-Messung wird
+entschieden, welcher noch offene Teil von Act 3–5 vor Role Bootstrap (Act 6) wirklich fehlt. Die
+Reihenfolge 6 -> 7 -> 8 -> 9 bleibt unverändert.
 
 Dieser Brief übersetzt `SYSTEM.md` in einen ausführbaren, schrittweise promovierbaren Bauplan. Er
 ist kein weiteres Regelbuch und keine Beschreibung des heutigen Runtime-Stands. Aktuelle Befunde
-und Abweichungen stehen in `docs/kontextschicht-analyse-2026-08-20.md`. Loader, Briefcompiler,
-Sessionstart und Zustellwege bleiben unverändert, bis der jeweilige Act belegt und vom Owner
-freigegeben ist.
+und Abweichungen stehen in `docs/kontextschicht-analyse-2026-08-20.md`. Der Ambient-Loader,
+Briefcompiler, Sessionstart und die Zustellwege bleiben unverändert, bis der jeweilige Act belegt
+und vom Owner freigegeben ist; die Loader-Vertragskorrektur oben ist ausdrücklich freigegeben.
 
 ## 1. Owner-Ziel
 

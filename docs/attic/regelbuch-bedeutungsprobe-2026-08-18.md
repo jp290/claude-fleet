@@ -29,10 +29,10 @@ das aufgedeckt. Das Muster lautet jetzt `explicit stop instruction` und steht ge
 
 **Was der Check in `e2e/pins.ts` (Abschnitt 6b) daraus macht** — zwei Aussagen, nicht eine:
 
-- **hart:** jede der 117 Regeln ist mit ihrem VOLLSTAENDIGEN Muster-Satz in dem Fragment
-  auffindbar, das ihre Spalte nennt. 117/117. Das ist der Satz, der einen Verlust oder einen
+- **hart:** jede der 118 Regeln ist mit ihrem VOLLSTAENDIGEN Muster-Satz in dem Fragment
+  auffindbar, das ihre Spalte nennt. 118/118. Das ist der Satz, der einen Verlust oder einen
   stillen Umzug faengt.
-- **gemessen und berichtet, nicht gefordert:** bei 106 der 117 ist dieses Fragment auch das
+- **gemessen und berichtet, nicht gefordert:** bei 107 der 118 ist dieses Fragment auch das
   EINZIGE, in dem der Muster-Satz steht. Die uebrigen 11 tragen ein generisches Substring
   (`409`, `mergeJob`, `⚙ steward`, `ALL PASS`), das anderswo mitlaeuft. Das ist kein
   Ueberdeckungs-Fehler: die Zuordnung ist trotzdem eindeutig, weil die Spalte eine PARTITION ist
@@ -51,6 +51,7 @@ laeuft ueber zwei physische Zeilen und lieferte einem zeilenweisen Parser NULL M
 | L2 | C | loader | Regeln werden nur durch Owner-Promotion normativ | <code>propose/promote</code> |
 | L3 | C | loader | Doc-vs-Code-Widerspruch: Code gewinnt; Widerspruch stoppt Arbeit | <code>gilt der Code</code> |
 | L4 | C | loader | Fable-5-Safeguard: Owner-Phrasierung, Retry-Rezept | <code>false-flagged</code> · <code>rephrase</code> |
+| L5 | C | loader | Pi/Codex lesen das private Overlay nicht pauschal; MAIN- und Lane-Render sind verschieden | <code>nicht vollständig</code> · <code>kleineren Render</code> |
 | E1 | C | einstieg | Erdungs-Reihenfolge vor jedem Plan | <code>./state.sh</code> · <code>register.sh</code> |
 | E2 | C | einstieg | altes Backlog nicht als Register lesen | <code>KEIN lebendes Register</code> |
 | E3 | C | einstieg | Idle!=fertig; Pane lesen UND ahead/dirty | <code>vier Zustände sehen gleich aus</code> · <code>ahead/dirty</code> |

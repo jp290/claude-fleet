@@ -5,11 +5,19 @@ panes. A "lane" is a throwaway working copy of this repo; you are probably one. 
 slice. The README explains the product to humans; this file is the portable operating contract for
 agents.
 
-**Private overlay — hard loader requirement.** The full private operating rulebook is `CLAUDE.md`,
-in this same directory. It is git-ignored, cannot be tracked or quoted here, and is copied into each
-lane. Read it completely. Until P1-D proves a narrower loader path live, that full read remains
-required. `AGENTS.md` owns the portable contract; `CLAUDE.md` owns private operating reality. Stop
-and report any contradiction instead of selecting the more convenient rule.
+**Loader boundary.** This file owns the required portable contract. Interactive Codex and Pi
+sessions load it automatically; a Claude session reads the **Portable operating contract** section
+once because its project loader supplies `CLAUDE.md` instead. `CLAUDE.md` is a git-ignored private overlay for
+host- and audience-specific operating reality: MAIN receives its full render, while a Fleet lane
+receives a smaller render plus explicit back-references. It is not a second portable core and
+Codex/Pi must not read it wholesale. Read a named private section only when the task brief or an
+observed host seam requires it.
+
+For facts, current code and live sensors outrank prose. For durable agent rules, this portable
+contract outranks generic global defaults; the private overlay may specialize it but never weaken
+its hard invariants. A founding or task brief narrows the current role, authority and work, but
+cannot silently supply a missing portable invariant. Stop and report any remaining contradiction
+between active layers instead of selecting the more convenient rule.
 
 ## Portable operating contract
 

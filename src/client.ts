@@ -5838,11 +5838,15 @@ let programsList: ProgramInfo[] = [];     // the full rows, from GET /api/progra
 let programsRead: "unread" | "ok" | "fail" = "unread";
 let programsAt = 0;
 let programsBusy = false;
+// a forced refetch that arrives DURING a fetch (the bootstrap POST answers while the poll's own
+// read is in flight) would otherwise be dropped, and a freshly founded MAIN would keep reading
+// `unbound` until the floor elapsed. Exactly one is queued: more would only repeat the same read.
+let programsForceQueued = false;
 let programsDigestKey = "";
 const PROGRAMS_FLOOR_MS = 30_000;
 
 async function loadPrograms(force = false): Promise<void> {
-  if (programsBusy) return;
+  if (programsBusy) { if (force) programsForceQueued = true; return; }
   const digest = JSON.stringify(programsPoll.map((p) => [p.id, p.status, p.title]));
   if (!force && programsRead !== "unread" && digest === programsDigestKey
     && Date.now() - programsAt < PROGRAMS_FLOOR_MS) return;
@@ -5863,6 +5867,7 @@ async function loadPrograms(force = false): Promise<void> {
   programsAt = Date.now();
   programsDigestKey = digest;
   programsBusy = false;
+  if (programsForceQueued) { programsForceQueued = false; void loadPrograms(true); }
   // repaint only on real change — this runs off the 2 s poll, exactly like loadTaskTexts.
   // `programsRead` counts as a change on its own: unread → ok over an EMPTY list moves no row,
   // but it is the difference between "not read yet" and "there are none", and the composer's
@@ -5877,11 +5882,21 @@ type ProgramMark = "live" | "stale" | "unbound" | "unknown";
 // one. UNKNOWN is a real answer and never softens into live — a missing field or a missing
 // snapshot means "cannot be checked", which an owner must not read as a working MAIN.
 //
-// The session-id half of the binding is deliberately unchecked: /api/sessions carries no
-// sessionId per slot (server.ts, the slots.map projection), so the id is present on the stored
-// side only. The rule is "must match when present on BOTH sides"; here it never is, and the
-// live sentence says so rather than implying a check that did not happen.
+// The session-id half of the binding is deliberately unchecked: /api/sessions exposes no
+// top-level sessionId per slot to compare against Program.main.sessionId (the only session id
+// on that payload is codexRecovery.sessionId, a claim about codex rollout binding and not the
+// same field). The rule is "must match when present on BOTH sides", and the comparable side is
+// missing here — so the live sentence names what WAS compared instead of implying more.
+//
+// FAIL-CLOSED on a failed read: cached rows are context, never a verdict. Only a read that
+// currently stands may produce live/stale/unbound; anything else is unknown, and unknown never
+// grows a bootstrap button, a live claim or a bindable program in the composer.
 function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
+  if (programsRead !== "ok")
+    return { mark: "unknown", why: programsRead === "fail"
+      ? "the last GET /api/programs did not answer — this row is CACHED context, not current truth,"
+        + " so no binding claim is made from it until a fresh read succeeds"
+      : "GET /api/programs has not been read yet, so nothing about this binding is known" };
   const main = p.main;
   if (main === null || main === undefined)
     return { mark: "unbound", why: "no Program-MAIN binding — nothing has been founded for this program yet" };
@@ -5899,7 +5914,8 @@ function programMark(p: ProgramInfo): { mark: ProgramMark; why: string } {
     return { mark: "stale", why: `slot ${main.slot} was reopened since it was bound (bound ${fmtTs(main.openedAt)},`
       + ` current occupant opened ${fmtTs(occ.openedAt)})` };
   return { mark: "live", why: `slot ${main.slot} still holds the bound session (opened ${fmtTs(main.openedAt)});`
-    + " the session id is not on this poll, so only slot+openedAt were checked" };
+    + " slot and openedAt were compared — this poll carries no top-level session id to match"
+    + " Program.main.sessionId against, so that half is unchecked" };
 }
 
 // the picker's pinned + recent roots as an <input list=> source. Shared by the task composer and
@@ -5936,6 +5952,12 @@ let qBsModel = "";
 let qBsEffort = "";
 let qBsErr: string | null = null;  // the server's own sentence, kept verbatim across repaints
 let qBsBusy = false;
+// The founding POST is the one long await in this pane, and the owner can move on while it runs.
+// Every answer therefore carries the generation it was sent under: a bumped generation (a new
+// send, a changed selection, a reset draft, a closed overlay) makes an older answer touch NOTHING
+// — not the error line, not the two inputs, not the busy flag of the request that replaced it.
+// A p.id comparison alone would not do: A → B → A is back at the same id with a different draft.
+let qBsSeq = 0;
 // the composer's program picker, same once-per-open lifecycle as qRepoIn
 let qProgSel: HTMLSelectElement | null = null;
 
@@ -6195,8 +6217,12 @@ function renderProgramDetail(shell: Shell, id: string): void {
       ? "No button here on purpose: this server has neither an unbind nor a rebind, and"
         + " bootstrap-main answers 409 for a program that already carries a binding. A stale MAIN"
         + " can only be cleared where it was written."
-      : "No button here: nothing can be founded while the binding cannot even be read. Fix the"
-        + " missing fact first — an unknown binding is not an absent one."));
+      : programsRead === "fail"
+        ? "No button here: the last GET /api/programs did not answer, so this row is cached context"
+          + " and its binding is unknown. Founding resumes when a fresh read succeeds — an unknown"
+          + " binding is not an absent one, and bootstrap-main would 409 on one that still stands."
+        : "No button here: nothing can be founded while the binding cannot even be read. Fix the"
+          + " missing fact first — an unknown binding is not an absent one."));
     return;
   }
   if (mark === "live") return;
@@ -6210,7 +6236,8 @@ function renderProgramDetail(shell: Shell, id: string): void {
     `this program is ${p.status} — the server will answer 409 until it is active`));
   if (qBsFor !== p.id) {
     qBsFor = p.id;
-    qBsCwd = null; qBsLabel = null; qBsErr = null;
+    qBsSeq++; // this is a DIFFERENT draft; anything still in flight for the old one is orphaned
+    qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false;
     qBsHarness = null; qBsModel = ""; qBsEffort = "";
   }
   if (!qBsCwd) {
@@ -6286,10 +6313,15 @@ function renderProgramDetail(shell: Shell, id: string): void {
       qDetailKey = ""; renderQueueDetail();
       return;
     }
+    const forId = p.id;
+    const seq = ++qBsSeq;
+    // still the same draft this send belongs to? Generation AND id, because either alone lies:
+    // the generation catches A → B → A, the id catches a reset that did not bump anything.
+    const mine = () => seq === qBsSeq && qBsFor === forId;
     qBsBusy = true; qBsErr = null;
     qDetailKey = ""; renderQueueDetail();
     const label = qBsLabel?.value.trim() ?? "";
-    const r = await post(`/api/programs/${p.id}/bootstrap-main`, {
+    const r = await post(`/api/programs/${forId}/bootstrap-main`, {
       cwd,
       ...(label ? { label } : {}),
       ...(qBsHarness ? { harness: qBsHarness } : {}),
@@ -6297,6 +6329,12 @@ function renderProgramDetail(shell: Shell, id: string): void {
       ...(qBsEffort ? { effort: qBsEffort } : {}),
     });
     const j = (await r.json().catch(() => null)) as { error?: string; slot?: number } | null;
+    // An orphaned answer still refreshes the FACTS (a spawn that happened, happened) but writes
+    // nothing into a draft that is no longer the one it was sent from.
+    if (!mine()) {
+      if (r.ok) { await refresh(); await loadPrograms(true); qKey = ""; renderQueue(); }
+      return;
+    }
     qBsBusy = false;
     if (!r.ok) {
       // VERBATIM. A 409 here names exactly which door closed — wrong status, no free slot, a
@@ -6308,6 +6346,7 @@ function renderProgramDetail(shell: Shell, id: string): void {
     qBsErr = null;
     if (qBsCwd) qBsCwd.value = "";
     if (qBsLabel) qBsLabel.value = "";
+    qDetailKey = ""; renderQueueDetail();
     await refresh();
     await loadPrograms(true);
     qKey = ""; qDetailKey = "";
@@ -6327,8 +6366,12 @@ function renderQueueDetail() {
     ? { start: focused.selectionStart, end: focused.selectionEnd, direction: focused.selectionDirection }
     : null;
   const restoreFocus = () => {
-    if (!(focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement) || !focused.isConnected) return;
+    // a <select> has no text caret, but it does have focus worth keeping: the composer's program
+    // picker is a kept node, so a repaint under an open keyboard interaction must not drop it
+    if (!(focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement
+      || focused instanceof HTMLSelectElement) || !focused.isConnected) return;
     focused.focus();
+    if (focused instanceof HTMLSelectElement) return; // no caret to restore, only the focus
     if (selection && selection.start !== null && selection.end !== null) {
       try { focused.setSelectionRange(selection.start, selection.end, selection.direction ?? undefined); }
       catch { /* input types without a text selection */ }
@@ -6364,7 +6407,11 @@ function renderQueueDetail() {
         + " silently fall back to its own dispatch default."));
     // programId is accepted by POST /api/tasks for a confirmed|active program ONLY, so this
     // dropdown offers exactly that set: a value it cannot offer is a 409 it cannot provoke.
-    const bindable = programsList.filter((x) => x.status === "confirmed" || x.status === "active");
+    // And ONLY while a read stands: after a failed GET /api/programs the cached rows are context,
+    // so nothing is offered at all — an emptied dropdown also drops any prior pick, which is the
+    // fail-closed direction (no programId is sent rather than a stale one).
+    const bindable = programsRead === "ok"
+      ? programsList.filter((x) => x.status === "confirmed" || x.status === "active") : [];
     if (!qProgSel) {
       qProgSel = el("select", "pkdsel") as HTMLSelectElement;
       qProgSel.title = "bind this task to a program — optional, and only confirmed or active programs qualify";
@@ -6382,7 +6429,8 @@ function renderQueueDetail() {
     qProgSel.value = bindable.some((x) => x.id === keepProg) ? keepProg : "";
     shell.detail.appendChild(labelled("program", qProgSel));
     if (!bindable.length) shell.detail.appendChild(el("div", "shellhint",
-      programsRead === "fail" ? "GET /api/programs did not answer, so no program can be offered here"
+      programsRead === "fail" ? "GET /api/programs did not answer — no program is offered here until a"
+        + " fresh read succeeds; the cached rows in the list are context, not a current binding claim"
         : programsRead === "unread" ? "programs have not been read yet"
         : "no confirmed or active program exists — a task can only bind to one of those"));
     const add = el("button", "shrbtn primary", "add task") as HTMLButtonElement;
@@ -6833,6 +6881,9 @@ function renderQueueDetail() {
 }
 
 function qSelect(id: string | null) {
+  // a selection change orphans an in-flight founding POST even when it does not reset the draft
+  // (selecting a task, or a program whose pane returns before the draft block ever runs)
+  if (id !== qPick) qBsSeq++;
   qPick = id;
   qKey = ""; // selection is painted on the rows, so they must be rebuilt
   renderQueue();
@@ -6889,7 +6940,12 @@ function renderQueue() {
     if (o.facts) {
       const facts = el("div", "qfacts");
       const classes = ["verdict", "age", "slot", "source"] as const;
-      o.facts.forEach((fact, i) => facts.appendChild(el("span", `qfact qfact-${classes[i]}`, fact)));
+      // an EMPTY fact draws nothing: a program with no binding has no slot to name, and an empty
+      // span is a blank column that reads like a missing value. The index still fixes the class,
+      // so the remaining facts keep their own colour (task rows never produce an empty fact).
+      o.facts.forEach((fact, i) => {
+        if (fact) facts.appendChild(el("span", `qfact qfact-${classes[i]}`, fact));
+      });
       m.appendChild(facts);
     }
     r.appendChild(m);
@@ -7023,9 +7079,17 @@ function openQueue() {
   qBriefDraft = null;
   qCriterionDraft = null;
   qRawAck = null;
-  qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false;
+  qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false; qBsSeq++;
   qBsHarness = null; qBsModel = ""; qBsEffort = "";
-  void loadHarnesses();  // the founding flow's harness/model/effort row reads this catalogue
+  // (4) the founding flow's harness/model/effort row reads this catalogue. It is fetched once per
+  // app life, so it can land AFTER a program pane is already open — repaint that pane exactly
+  // once when it does, instead of leaving the row missing until the owner comes back to it.
+  void loadHarnesses().then(() => {
+    if (qShell?.isOpen() && qPick !== null && qPick.startsWith("prog:")) {
+      qDetailKey = "";
+      renderQueueDetail();
+    }
+  });
   void loadPrograms(true);
   const shell = openShell({
     id: "queue",
@@ -7035,7 +7099,7 @@ function openQueue() {
     onClose: () => {
       qShell = null; qCompose = null; qRepoIn = null; qProgSel = null; qCmBox = null; qCmFor = null;
       qBriefDraft = null; qCriterionDraft = null; qRawAck = null; qRowId = new Map();
-      qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false;
+      qBsFor = null; qBsCwd = null; qBsLabel = null; qBsErr = null; qBsBusy = false; qBsSeq++;
     },
   });
   qShell = shell;

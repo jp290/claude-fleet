@@ -1,3 +1,138 @@
+# HANDOFF — ACP Architecture Controller VI (Slot 2), 2026-08-22, ctx 24,1 % GEMESSEN
+
+**Welle 2 ist VOLLSTAENDIG gefahren.** ACP-15 und ACP-16 sind gebrieft, gebaut, gelandet und
+auditiert; ACP-15 ist deployt. Damit ist die Kette ACP-13 -> ACP-11 -> ACP-12 -> ACP-15 -> ACP-16
+aus der Owner-Reihenfolge zu Ende. Kein Act blieb halb.
+
+## 0. Die exakte naechste Handlung
+
+**Die Huelle ist gebaut, aber NIEMAND BENUTZT SIE.** `POST /api/self/tasks/:id/release` existiert,
+ist bewiesen und live — aber `dispatch` steht auf `false`, also startet der Tick nichts, und keine
+Program-MAIN hat die Route je aufgerufen. Der naechste Schritt ist **die erste echte Benutzung
+unter Beobachtung**, nicht der naechste Bau: eine `pending`-auftrag-Zeile dieses Programs freigeben,
+`dispatch` einschalten, zusehen, ob die Zeile durch die Gates laeuft. Das ist der Owner-Entscheid,
+den STAND.md §5 seit Tagen offen fuehrt („nicht manuell als Abkuerzung einschalten: ACP-16 baut die
+intelligente Project-MAIN-Freigabe" — sie ist jetzt gebaut).
+
+Danach erst: die Studio-Feuerprobe aus STAND.md.
+
+## 1. Was terminal ist — alles gemessen, nichts geschaetzt
+
+| Act | Land | Land-Gate | Post-Land-Audit | Deploy |
+|---|---|---|---|---|
+| ACP-15 | `a19d831` -> **`4d1b2d3`** | ok, 116 479 ms, wait 0 | **green** 1 308 722 ms, **2800/0** | `53efe62d` ok, hitTarget, 4 783 ms |
+| ACP-16 | `4d1b2d3` -> **`83468e0`** | ok, 118 007 ms, wait 0 | **green** 1 287 903 ms, **2810/0** | `50e1ceca` ok, hitTarget, 5 876 ms |
+
+Beide Gruens sind an `ms` UND `checks.ran` geprueft, nicht am Wort „green". Die Check-Zahlen sind
+konsistent statt zufaellig: 2794 (Vorgaenger) -> **2800** = die sechs neuen Verhaltens-Sonden von
+ACP-15 -> **2810** = die zehn von ACP-16.
+
+Live nach beiden Deploys: `bootHead == head == 83468e0`, `codeBehind false`, `behindCount 0`,
+`bundleStale false`. **Beide Acts sind LIVE.**
+
+## 2. Was die zwei Acts wirklich geaendert haben
+
+- **ACP-15 · Deckel korrekt ausdruecken** (3 Commits: `ad69783`, `ed181b4`, `4d1b2d3`).
+  Ein ZWEITER Lane-Deckel je Program, `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM`, **ausschliesslich
+  verengend** (Owner-Entscheid 2026-08-22). Der Repo-Deckel bleibt byte-gleich und prueft ZUERST;
+  die Program-Pruefung haengt an einer truthy `programId` — **kein null-Topf**, sonst deckelten
+  unverwandte Zeilen einander. Der `waiting`-Text nennt den Program-TITEL, damit am Board
+  unterscheidbar ist, welcher Deckel hielt.
+  **Der Preis steht ehrlich im Kommentar: mit dem Default (= `DISPATCH_MAX_LANES`) bindet die neue
+  Pruefung NIE.** Sie ist erst scharf, wenn der Owner sie kleiner setzt. Wer das fuer einen Defekt
+  haelt, hat den Entscheid nicht gelesen: ein ERSETZENDER Deckel haette 13x2 = 26 Lanes auf 16
+  Slots erlaubt.
+  Schnitt 2: `STEWARD_MAX_PENDING` sagt jetzt, was er wirklich deckelt (den Review-Puffer fuer
+  STEWARD-Ablagen), und ausdruecklich, dass er **nicht** die Autonomie-Grenze des Fleets ist.
+  Zahl und Verhalten unveraendert.
+- **ACP-16 · Die Huelle** (`83468e0`). `POST /api/self/tasks/:id/release`: eine gebundene
+  Program-MAIN schaltet eine `pending`-Zeile IHRES Programs auf `queued`.
+  **Die Route DISPATCHT NICHT — darauf ruht der ganze Act.** Starten bleibt beim Tick, also bleiben
+  Master-Stop, Quiet Hours, `DISPATCH_MAX_LANES`, der neue Program-Deckel, das Analyse-Gate und die
+  Kollisionslesung unveraendert in Kraft. Der Act weitet, WER freigeben darf — nichts daran, was
+  unbeaufsichtigt laufen darf.
+  **Sie liest ueberhaupt keinen Body** (gepinnt): `programId` kommt aus `boundProgramForMain`,
+  `repo` aus dem eigenen Checkout. Provenienz ueber `audit("task_release", …)`, weil `releasedBy`
+  bei `:6242` von einem spaeteren attended ▸ start auf `"owner"` ueberstempelt wird — das Feld
+  beantwortet die LANE-Frage, nicht die RELEASE-Frage.
+  Deckel `PROGRAM_MAX_RELEASED` (5) je Program; das Produkt steht am Kommentar (16x5 = 80 < 200).
+  Nicht-Lane-only, Steward darf.
+
+## 3. Was ich am Bericht der Lane SELBST nachgeprueft habe (nicht geglaubt)
+
+Beides war sicherheitsrelevant und beides haelt:
+
+1. **Die bewusste Abweichung von meiner Brief-Regel 7 ist korrekt.** Der Eintritts-Gate benutzt
+   `harnessAutomatableFor(h)`, das fuer den Default-Adapter weder `automatable` noch
+   `FLEET_HARNESS_AUTOMATION` konsultiert. Das ist **eine Extraktion, kein zweites Praedikat**: auf
+   main stand `return HARNESS_AUTOMATION && h.automatable;` bereits bei `server.ts:4776` mit
+   derselben Default-Ausnahme darueber, und `dispatchTask:6210` stellt inline dieselben zwei
+   Bedingungen. **Die Release-Tuer ist damit nie durchlaessiger als die Dispatch-Tuer.** Ein Gate,
+   der verweigert, was der Tick erlaubt, waere der Fehler gewesen.
+2. **Der Griff nach `e2e/security.ts` (11 Zeilen, ausserhalb des Write-Sets) war noetig.**
+   `PRE_AUTH_ROUTES` ist die reviewte Allowlist; jede `/api/self/*`-Route steht dort. Ohne Eintrag
+   haette der Land-Gate GESCHWIEGEN (die Familie laeuft nur in `./e2e-isolated.sh`) und der
+   Post-Land-Audit waere ~9 min spaeter rot geworden.
+
+Die Lane hat ausserdem eine Schranke gebaut, die ich **nicht** gebrieft hatte: ein Release reicht
+nie ueber Repo-Grenzen (`repoCanon(target) !== mainRepo` -> 409). Verengung, angenommen.
+
+## 4. Offene Raender, die ich WEITERTRAGE
+
+1. **Modell/Effort eines LEBENDEN Slots sind unreparierbar** — als `notiz 5ddc8877` mit
+   Entscheidungsraum abgelegt, DREI Varianten, keine von mir entschieden. Gemessen: Slot 1 traegt
+   `model: "fable"`, `effort: null` im Datensatz, seine Pane meldet `Opus 5 (1M context)` und hat
+   auf Zuruf `/effort high` gesetzt. **Ein Pane-Heal respawnt die stehende Supervisor-Rolle als
+   `fable`, und jede Nachfolge erbt den falschen Wert** (`succeedSupervisor:13152` reicht beides
+   woertlich durch, `restart` liest keinen Body, `handleSelfSucceed:5222` nimmt nur `label`/`carry`).
+2. **Es gibt fuer den Effort ueberhaupt keinen Sensor** (von der Supervisor-Insassin gemessen und
+   gemeldet, nicht von mir): der Footer nennt Branch, ctx und Modell, aber NICHT den Effort. Der
+   einzige sichtbare Beleg ist die Bestaetigungszeile des Befehls, und die scrollt weg. Steht als
+   zweiter Befund in derselben notiz.
+3. **Ein wiederholtes Release antwortet 409 mit dem Status statt idempotent `ok:true`** wie
+   `openAttention`. Das war meine Brief-Regel 4 woertlich; die Aenderung waere eine Zeile.
+   Owner-Geschmack, nicht Defekt.
+4. **`docs/self-api.md` hat kein §release** — unvollstaendig, nicht falsch. Ebenso
+   `docs/queue-analyst.md:263` (zaehlt die Dispatch-Env-Variablen auf, kennt den neuen Knopf nicht).
+5. **Der Boot-Reconcile-Defekt `94ab77dd`** steht unveraendert offen. In dieser Session erneut
+   folgenlos: meine LEBENDEN Watches haben den srv-Neustart ueberlebt, der Filter trifft sie
+   korrekt nicht.
+6. **`~/.codex/config.toml` waechst unbegrenzt** (`notiz 1270b246`), unveraendert. SHARED REALITY
+   ausserhalb des Repos — nicht angefasst.
+7. **Die 9 stale Program-Bindungen** sind seit ACP-13 reparierbar, aber nicht repariert. WER neu
+   gebunden wird, ist Owner-Entscheidung.
+8. **`dispatch: false`.** Siehe §0 — das ist jetzt der interessante Knopf, nicht mehr ein Detail.
+
+## 5. Was ich falsch gemacht habe
+
+- **Mein ACP-15-Brief liess die Lane `docs/kritik-opus-2026-08-21.md` im Code zitieren — die Datei
+  ist UNTRACKED.** In einem public Repo waere das ein toter Verweis gewesen. Die Lane hat es
+  gemeldet; der Nachschnitt `4d1b2d3` ersetzt das Zitat durch das ARGUMENT und hat gleich **jeden
+  Pfadnamen beider Commits gegen `git ls-files` geprueft**. Lehre fuer den naechsten Brief: ein
+  zitierter Pfad muss IM REPO aufloesen, sonst ist er kein Beleg.
+- **Ich habe ZWEIMAL im Haupt-Checkout das Regelbuch gerendert, waehrend eine Suite lief.** Beim
+  ersten Mal (08:33:38) hat das der ACP-15-Lane einen transienten roten Pin beschert
+  (`CLAUDE.md is renderRulebook(...) byte for byte`, 66990 vs 66142 B); ihre Diagnose war richtig
+  und ihre zwei Folgelaeufe gruen. Beim zweiten Mal lief das ACP-16-Land-Gate — diesmal folgenlos.
+  **Das war Glueck, nicht Koennen.** Regel fuer die Nachfolgerin: `rulebook/`-Aenderungen und
+  Render NIE waehrend eines laufenden Land-Gates oder Audits.
+
+## 6. Maschinenzustand bei der Uebergabe
+
+- Server laeuft auf **`83468e0`** — dem gelandeten, gruen auditierten und deployten SHA.
+- **DIESER Handoff ist ein DIREKT-Commit aus dem Haupt-Checkout** und damit fuer jedes land-seitige
+  Ledger unsichtbar: keine `fleet/land`-Note, keine `lane-outcomes`-Zeile, kein Post-Land-Audit.
+  `./state.sh`s Land-Health-Zahlen zaehlen nur Lanes und untertreiben an einem Tag mit
+  Direkt-Commits.
+- **`rulebook/` wurde in dieser Session an ZWEI Fragmenten geaendert und ist gitignored** — es taucht
+  in keinem Diff auf: `rulebook/supervisor.md` (Supervisor-Absatz nach ACP-12, plus die
+  Footer-taugt-nicht-als-Effort-Sensor-Korrektur) und `rulebook/self-scheduling.md`
+  („Nicht-Lane-only sind VIER Routen", `/api/self/tasks/:id/release` aufgenommen). Beide gerendert,
+  `bun e2e/pins.ts` ALL PASS.
+- Neue Queue-Zeilen dieser Session: `855e2735` (ACP-15), `96358ec5` (ACP-16), `5ddc8877` (notiz,
+  Modell/Effort eines lebenden Slots).
+- Program `eeba7c04caae64d79969199b` ist occupant-genau an Slot 2 gebunden.
+
 # HANDOFF — ACP Architecture Controller V (Slot 3), 2026-08-21/22, ctx 25,8 % GEMESSEN
 
 **Welle 2 ist zu drei Vierteln gefahren.** Diese Session hat ACP-13, ACP-11 und ACP-12

@@ -37,6 +37,25 @@ agent run. A **task** is the existing queue item and its **brief** is the exact 
 proves a tree; **commit** records it; **land** promotes it server-side; **deploy** updates a running
 instance; **audit** measures a landed tree. These are distinct acts.
 
+### Role contract — four levels
+
+This contract gives you the LEVEL only: the dynamic role bootstrap gives this instance its concrete
+role, authority and capabilities, the project's own `AGENTS.md` and sources give domain reality, and
+the act brief gives the assignment — four sources, not four names for one.
+
+A bound session owns its declared scope and is judged on results, evidence and staying inside its
+bounds, never on following a centrally scripted micro-workflow. Ownership: Project MAIN -> its
+program · lane -> its task · Supervisor -> fleet health · global controller -> portfolio and owner
+translation. Three of the four are typed bindings in code (lane, program-main, supervisor); Fleet
+Controller is a scope a plain session carries, not a binding — do not read this table as one.
+
+| Level | Purpose | Autonomy | Back-channel, verified in this tree | Decides itself |
+|---|---|---|---|---|
+| Fleet Controller | hold the portfolio across programs and translate owner intent into programs | proposes; confirm and activate are owner acts | `POST /api/self/programs` proposes and reads (non-lane). **No owner route of its own** — it reports in its own pane. | which program to propose, how to phrase it, what to ground first |
+| Project MAIN | run one confirmed program end to end | intelligence-first bounded: (A) reversible inside the confirmed scope -> act · (B) bounded execution, resources, routing -> act inside stated limits · (C) scope growth, irreversible direction, external effect or cost, deploy/submit, declared taste gate -> owner | `POST /api/self/attention` reaches the owner (program derived from the binding) · `POST /api/self/clarifications/:id/reply` answers a worker · `POST /api/self/tasks/:id/release` moves its own pending row to queued and does not dispatch. **Creating a queue row has no route today**; the owner creates it. | ordering and decomposition inside scope, worker and model choice, nudge/retry/replace, ordinary critic repairs |
+| Act Lead / Worker | Worker: execute one bounded act in a lane and prove it. **Act Lead is not built**: `SYSTEM.md` lets a complex worker open child acts, and the role is to date neither adopted nor refused. | Worker: acts inside the write set and stop line of its brief; verify and land gates are machines it may interpret but never replace. Act Lead: none, because no mechanism exists. | `POST /api/self/clarifications` asks its MAIN · `POST /api/self/fleet-report` returns a result · `GET /api/self/drift` and `GET /api/self/gate` are its lane senses. A lane may not release, subscribe or raise attention (409 by design). **Act Lead has no route**: `delegate_act` in `SYSTEM.md` is target vocabulary with no implementation. | how to solve inside its write set, whether a red check is its own, when to stop and report |
+| Supervisor | watch sessions, acts, questions, deadlines and evidence chains; name stalls, non-delivery and contradictory state | observes and nudges; never a second owner voice, never a command level | `GET /api/self/supervisor-view` reads, `POST /api/self/nudge` reaches a bound Program MAIN. **No route to the owner** — attention requires a MAIN binding, so its escalation is owner-read, not owner-sent. | what to watch, what counts as a stall, whom to nudge and when silence is correct |
+
 ### Hard invariants
 
 - Request verbs select the mode and no broader authority:

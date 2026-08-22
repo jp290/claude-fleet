@@ -255,12 +255,25 @@ Die Vertrauensgrenzen im Präsens stehen in `CLAUDE.md` §Deploy; hier die Vollr
   stand schon zweimal falsch. Seit `500ff63` wählt `tickDispatch` wörtlich `t.status === "queued"` — **es gibt
   kein Verdict, das eine Task von selbst startet**. ABER (Korrektur 2026-08-06,
   `docs/autonomy-bausteine-2026-08-06.md` §1.2): „nach `queued` kommt eine Zeile ausschließlich durch den
-  Owner-Promote" ist FALSCH — zwei Maschinen-Pfade schreiben `status="queued"` (Requeue nach fehlgeschlagenem
-  Spawn, `server.ts` grep `requeue`, und der Boot-Abgleich verwaister `sent`-Zeilen); beide vertretbar, aber
-  wer auf die Ausschließlichkeit baut (Verb 3!), baut auf einen Satz, der nicht gilt. Der **Hand-Knopf**
+  Owner-Promote" ist FALSCH — **DREI Maschinen-Pfade schreiben `status="queued"`** (Stand 2026-08-22;
+  bis `83468e0` waren es zwei, und die Zwei-Pfade-Aussage hier war ab da falsch): (1) der Requeue nach
+  fehlgeschlagenem Spawn, `server.ts` grep `requeue`, (2) der Boot-Abgleich verwaister `sent`-Zeilen und
+  (3) seit ACP-16 die **Release-Tür einer gebundenen Program-MAIN**,
+  `POST /api/self/tasks/:id/release` (Route `server.ts:17018`, Handler `releaseTaskForMain`
+  `server.ts:5854`), die über den Helfer `releaseTask` (`server.ts:2306`) genau dieses Feld schreibt
+  und dabei `releasedBy:"machine"` stempelt — die Referenz mit allen Ablehnungen steht in
+  `docs/self-api.md` §release. Nur (3) ist eine echte FREIGABE; (1) und (2) stellen eine Zeile in einen
+  Zustand zurück, in den sie schon freigegeben WAR, und stempeln darum bewusst kein `releasedBy`. Alle
+  drei vertretbar, aber wer auf die Ausschließlichkeit baut (Verb 3!), baut auf einen Satz, der nicht
+  gilt. Der **Hand-Knopf**
   `POST /api/tasks/:id/dispatch` läuft unabhängig davon weiter — er prüft weder Master-Stop noch Deckel noch
   Quiet Hours (`server.ts`, grep `taskDispatch`); `dispatchOn` ist ein persistierter Laufzeit-Schalter,
-  `POST /api/dispatch {on:true|false}`; Env: `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES=2`). Er wählt
+  `POST /api/dispatch {on:true|false}`; Env: `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES=2`, dazu
+  seit 2026-08-22 zwei weitere Knöpfe: `FLEET_DISPATCH_MAX_LANES_PER_PROGRAM` (`server.ts:2492`,
+  Default = `DISPATCH_MAX_LANES`, ein ZWEITER Lane-Deckel je Program, der nach dem Repo-Deckel geprüft
+  wird und darum ausschließlich verengen kann — beim Default kann er nie derjenige sein, der hält) und
+  `FLEET_PROGRAM_MAX_RELEASED` (`server.ts:2505`, Default 5, Deckel für Pfad (3) oben: freigegebene,
+  vom Tick noch nicht gestartete Zeilen je Program)). Er wählt
   aus, spawnt und brieft — **landen kann er nichts**, kein Tick ruft `mergeJob` (nur die Route;
   Owner-Entscheid vom 2026-08-04: „noch nicht", erst echte Läufe ansehen). Seit 2026-08-04 (Queue-Umbau,
   Session 21):

@@ -73,3 +73,67 @@ Gründungsbrief und räumt den alten Slot nach der Grace-Frist. `carry` ist opti
 begrenzt; der echte Transfer ist `HANDOFF.md`. Nach dem Schlussbericht räumt `POST /api/self/retire` denselben
 Slot sofort. Kein freier Slot oder kein frischer sauberer Handoff = 409, und die Vorgängerin bleibt stehen.
 
+
+## release — `POST /api/self/tasks/:id/release`
+
+**Die Route DISPATCHT NICHT.** Sie schreibt genau einen Übergang, `pending → queued`, und nichts
+sonst; gestartet wird die Zeile weiterhin vom Tick. Jedes Gate, das entscheidet, ob eine
+freigegebene Zeile wirklich LAUFEN darf, bleibt damit unberührt und beim Tick — Master-Stop und
+Quiet Hours (`canDeliver`), der Repo-Deckel `DISPATCH_MAX_LANES`, der Program-Deckel
+`DISPATCH_MAX_LANES_PER_PROGRAM`, das Analyse-Gate und der Kollisions-Read. Die Route weitet WER
+freigeben darf. Sie weitet nichts daran, was unbeaufsichtigt laufen darf.
+
+```
+curl -X POST http://<fleet-host>:<port>/api/self/tasks/<taskId>/release \
+  -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+```
+
+**Sie nimmt KEINEN Body**, und das ist eine Eigenschaft, keine Sparsamkeit: `programId` und `repo`
+sind genau die zwei Felder, mit denen ein Request Arbeit außerhalb der eigenen Authority
+nominieren könnte — das Program kommt aus der MAIN-Bindung (`boundProgramForMain`), das Repo aus
+dem Checkout des Aufrufers (`repoKeyOf`). `/api/self/autos` ignoriert ein `slot`-Feld aus demselben
+Grund; hier gibt es gar nichts erst zu ignorieren (in `e2e/pins.ts` gepinnt).
+
+Antwort bei Erfolg: `{ok:true, sessionIdMatch, task:{id,kind,status,releasedBy,programId}}`.
+`sessionIdMatch` (`exact` | `divergent` | `unknown`) wird BERICHTET, nie gegated — dieselbe Form
+wie bei `/api/self/attention` und `/api/self/succeed`. `releasedBy` steht danach auf `"machine"`
+(gesetzt über den Helfer `releaseTask`, nie per nackter Zuweisung), und der Trail trägt zusätzlich
+ein `task_release`-Audit-Event, weil ein späterer beaufsichtigter ▸ start das Feld überschreibt.
+
+- Deckel: **`PROGRAM_MAX_RELEASED` freigegebene, noch nicht gestartete Zeilen pro Program**
+  (`FLEET_PROGRAM_MAX_RELEASED`, Default 5). Gezählt werden ausschließlich `queued`-Zeilen des
+  Programs; `sent`-Zeilen sind Lanes und bereits doppelt durch die zwei Dispatch-Deckel gebunden.
+  Der Deckel bindet QUEUE-TIEFE und sonst nichts.
+- Ablehnungen — jede sagt in ihren eigenen Worten, was der Aufrufer zu reparieren hat:
+  - **als LANE 409** (an der Route, vor dem Handler):
+    `a lane may not release a queue row — releasing is the bracket above lanes`. Eine Lane FÜHRT
+    die Zeile aus, auf die sie gegründet wurde; sie füllt nicht die Queue, aus der ihre eigene MAIN
+    freigibt. Der `⚙ steward` darf.
+  - **keine Program-Bindung** (409): `not the current bound MAIN of an active program …` — und
+    getrennt davon **mehrdeutige Bindung** (409): `ambiguous Program-MAIN binding: N active
+    programs name slot …`. Zwei Ablehnungen, weil sie auf zwei verschiedene Reparaturen zeigen.
+  - **unbekannte Zeile** (404): `unknown task`.
+  - **fremdes Program** (409): `task belongs to no program of this MAIN — a Program-MAIN releases
+    only rows of program <id>`. Eine Zeile ohne Program (`programId` null) ist niemandes; für sie
+    bleibt der `▸ queue`-Knopf des Owners die einzige Tür.
+  - **`kind != auftrag`** (409): `a <kind> is advisory — the dispatcher never runs this` —
+    wortgleich mit den zwei bestehenden Türen.
+  - **Status != `pending`** (409): `task is <status> — only a pending row can be released`. Nur
+    `pending → queued` ist eine Freigabe; `queued` ist schon frei, `sent` läuft, terminal ist
+    Historie. **Ein wiederholter Aufruf ist damit NICHT idempotent** — er antwortet 409 mit dem
+    Status, den er vorgefunden hat.
+  - **kein git-Repo** (409): `this session's checkout is not a git repository — the release target
+    repo cannot be derived`. Ein nicht ableitbares Repo scheitert als ES SELBST, statt still als
+    „passt" durchzugehen.
+  - **kein Dispatch-Repo** (409): `no dispatch repo is configured — a released row would have
+    nowhere to run` (die Zeile trägt kein `repo` und `FLEET_DISPATCH_REPO` ist leer).
+  - **Repo-Grenze** (409): `task targets <x> and this MAIN is bound in <y> — a release never
+    reaches across repositories`. Eine freigegebene Zeile spawnt eine unbeaufsichtigte Lane im
+    Ziel-Repo und isst dessen `DISPATCH_MAX_LANES`-Budget.
+  - **nicht automatisierbare Harness** (409): `harness <id> is not automatable — no unattended path
+    may drive it (FLEET_HARNESS_AUTOMATION off)`. Geprüft wird die Harness, auf der die Zeile
+    tatsächlich landen würde (`harnessOf(DEFAULT_SPAWN.harness)`, denn `tickDispatch` ruft
+    `dispatchTask` ohne `spawn`). Heute ist das der Default-Adapter, diese Prüfung kann also nie
+    die sein, die ablehnt — gesagt statt zum Entdecken übriggelassen.
+  - **Deckel** (409): `program release cap reached (N/M released rows not yet started) — let the
+    tick start one first`.

@@ -1113,6 +1113,25 @@ function effortOf(body: Record<string, unknown> | null, h: Harness): { ok: true;
 const effortErrFor = (h: Harness) =>
   h.supports.effort ? `bad effort (one of: ${h.effortLevels.join(", ")})` : `harness ${h.id} takes no effort`;
 
+// The SET-time validator for a queue row's persisted agent choice (Task.spawn): the same three
+// validators the attended ▸ start route runs, in the same order — harness first, because it is
+// what model and effort are judged by. All-absent answers `undefined`, never an all-null object:
+// absence is the row's honest legacy shape and resolves to DEFAULT_SPAWN at dispatch, and a stored
+// { null, null, null } would be a second spelling of that one state. An explicit "claude" harness
+// collapses to null through harnessIdOf for the same one-representation reason.
+function taskSpawnFromBody(body: Record<string, unknown> | null):
+  { ok: true; spawn: DispatchSpawn | undefined } | { ok: false; error: string } {
+  const h = harnessIdOf(body);
+  if (!h.ok) return { ok: false, error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` };
+  const harness = harnessOf(h.harness);
+  const m = modelOf(body, harness);
+  if (!m.ok) return { ok: false, error: modelErrFor(harness) };
+  const e = effortOf(body, harness);
+  if (!e.ok) return { ok: false, error: effortErrFor(harness) };
+  return { ok: true, spawn: h.harness === null && m.model === null && e.effort === null
+    ? undefined : { harness: h.harness, model: m.model, effort: e.effort } };
+}
+
 // WHICH BOX and WHICH DAEMON this one session runs in — the pair that used to be frozen fleet-wide
 // in the process env. Absence is the important case and it has exactly one meaning: "the fleet's
 // default", which is the NEUTRAL context, never the operator's ambient one. That property is the
@@ -1682,6 +1701,23 @@ const loadTaskKind = (value: unknown, source: Task["source"]): TaskKind => {
 };
 const taskKindNote = (kind: TaskKind): string | null =>
   kind === "auftrag" ? null : `${kind} — the dispatcher never runs this`;
+// The load-time reader of a row's persisted agent choice, in the SLOT loader's exact discipline
+// (and order — the harness comes back first because it is what the model and effort are judged
+// by): only a REGISTERED non-default harness id survives, and each remaining field is re-judged
+// against that adapter, degrading field-wise to null rather than to a different value. An
+// all-null result degrades to ABSENT — the field never reloads as an empty choice.
+const loadTaskSpawn = (value: unknown): DispatchSpawn | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as { harness?: unknown; model?: unknown; effort?: unknown };
+  const harness = typeof raw.harness === "string"
+    && HARNESSES.some((h) => h.id === raw.harness && h !== CLAUDE_HARNESS) ? raw.harness : null;
+  const h = harnessOf(harness);
+  const model = typeof raw.model === "string" && h.supports.model
+    && (h.modelRe ?? SLOT_MODEL_RE).test(raw.model) ? raw.model : null;
+  const effort = typeof raw.effort === "string" && h.supports.effort
+    && h.effortLevels.includes(raw.effort) ? raw.effort : null;
+  return harness === null && model === null && effort === null ? undefined : { harness, model, effort };
+};
 
 interface Task {
   id: string;
@@ -1705,6 +1741,14 @@ interface Task {
   repo: string | null; // the task's TARGET repo — where its lane spawns. OWNER-only: intake and
   // steward can never choose where external text materializes as a working session. null =
   // the dispatcher default (FLEET_DISPATCH_REPO), which is also every pre-field row's meaning.
+  spawn?: DispatchSpawn; // the row's persisted agent choice — WHICH harness/model/effort its lane
+  // runs, in exactly the shape the attended ▸ start button already sends. Validated at SET time
+  // (taskSpawnFromBody: the same three adapter validators as the attended route, harness first),
+  // written only by the owner create route and the Program-MAIN filing door. ABSENT is the honest
+  // legacy shape and resolves to DEFAULT_SPAWN at every consumer (taskSpawnOf) — never backfilled,
+  // and never stored as an all-null object. The release door and the tick judge THIS field's
+  // harness for automatability, so an invalid or non-automatable stored choice is refused loudly
+  // instead of silently falling back to the default adapter.
   files?: string[]; // the task's file surface. In persisted state this is written ONLY when a ↻
   // refine proposal is confirmed (from RefineChild.files): the refiner verified it against the
   // tree and the owner promoted it. API views may instead PROJECT exact tracked paths named in the
@@ -5915,15 +5959,14 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // (7) THE ENTRY GATE: the automation fitness of the harness the row would actually land on. The
   // tick starts it UNATTENDED, so a release onto a harness no unattended path may drive is a row
   // that waits forever while looking released. Derived, not guessed and not taken from a request:
-  // tickDispatch calls dispatchTask with no `spawn` (pinned), so DEFAULT_SPAWN IS the tick's entire
-  // spawn decision and harnessOf(DEFAULT_SPAWN.harness) is the adapter it would use.
-  // Today that is the default adapter and this check can therefore never be the one that refuses —
-  // said plainly rather than left to be discovered, exactly like the honest-price note on
-  // DISPATCH_MAX_LANES_PER_PROGRAM. It is the second lock for the case the absence cannot cover: a
-  // tick that one day names a harness, or an adapter added tomorrow, inherits the refusal here
-  // instead of the permission. The two conditions live in harnessAutomatableFor, which is also what
-  // canDeliver's slot-level gate asks — one predicate, so this door cannot drift away from that one.
-  const spawnH = harnessOf(DEFAULT_SPAWN.harness);
+  // tickDispatch hands dispatchTask the ROW's own persisted choice (taskSpawnOf — Task.spawn,
+  // DEFAULT_SPAWN on absence), so harnessOf(taskSpawnOf(t).harness) is exactly the adapter the
+  // tick would use for THIS row. On a legacy or choice-less row that is the default adapter and
+  // this check never refuses; a row carrying a stored foreign choice is refused HERE, at the
+  // release, instead of sitting released while the tick's own gate says why on the row forever.
+  // The two conditions live in harnessAutomatableFor, which is also what canDeliver's slot-level
+  // gate asks — one predicate, so this door cannot drift away from that one.
+  const spawnH = harnessOf(taskSpawnOf(t).harness);
   if (!harnessAutomatableFor(spawnH))
     return json({ error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` }, 409);
   // (8) THE CAP, counted per Program over the rows this door has released and the tick has not yet
@@ -5991,10 +6034,14 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   if (body.programId !== undefined)
     return json({ error: `programId comes from this session's MAIN binding (${program.id}) and is never read from the body` }, 400);
   // (2) …and the rest as a closed set, named in the refusal so the caller can see what it may say.
-  const SELF_TASK_FIELDS = ["text", "kind"];
+  // The spawn triple joined the set as one unit: harness/model/effort are the same three top-level
+  // words the attended ▸ start button sends, validated below by the same validators. The refusal
+  // keeps its historic "text and kind only" opening as a stable prefix — the spawn triple is named
+  // separately because it is optional and travels as a unit, not three independent fields.
+  const SELF_TASK_FIELDS = ["text", "kind", "harness", "model", "effort"];
   const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k));
   if (extra.length)
-    return json({ error: `this door reads ${SELF_TASK_FIELDS.join(" and ")} only — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+    return json({ error: `this door reads text and kind only beside the optional spawn triple (harness, model, effort) — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
   if (typeof body.text !== "string" || !body.text.trim())
     return json({ error: "text must be a non-empty string" }, 400);
   // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
@@ -6006,6 +6053,12 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   if (body.kind !== undefined && !isTaskKind(body.kind))
     return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
   const kind: TaskKind = isTaskKind(body.kind) ? body.kind : "notiz";
+  // (3b) THE SPAWN TRIPLE, validated at SET time by the same three adapter validators the attended
+  // dispatch runs — harness first, then model and effort against THAT adapter. An invalid
+  // combination is a 400 here, at the filing, never a stored choice that fails at release or,
+  // worse, silently runs the default adapter instead of the one the MAIN named.
+  const spawnChoice = taskSpawnFromBody(body);
+  if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
   // (4) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper as at the release door.
   // Deliberately DERIVED rather than left null, and the reason is that other door: it compares
   // `t.repo ?? DISPATCH_REPO` against the caller's own checkout, so on a fleet whose configured
@@ -6026,6 +6079,7 @@ async function createTaskForMain(s: Slot, body: Record<string, unknown> | null):
   const t: Task = {
     id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
     source: "main", from: null, kind, repo: mainRepo, programId: program.id,
+    ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
     // THE STATUS THIS ROUTE CANNOT BE TALKED OUT OF: a literal, not anything derived from the
     // request. And no `releasedBy` — that field exists so an unreleased row stays distinguishable
     // from one somebody released, and a filing has not been released by anyone.
@@ -6423,6 +6477,11 @@ const dispatchingTasks = new Set<string>();
 // adapter, byte-for-byte what every caller before this sent.
 type DispatchSpawn = { harness: string | null; model: string | null; effort: string | null };
 const DEFAULT_SPAWN: DispatchSpawn = { harness: null, model: null, effort: null };
+// THE ONE BRIDGE from a queue row to a spawn choice: the row's own persisted, SET-time-validated
+// field, DEFAULT_SPAWN on absence. Every unattended reader (the tick's dispatch call, the release
+// door's entry gate) goes through this accessor, so "which agent would this row run" has exactly
+// one answer — never a request value, never an env default (pinned in e2e/pins.ts).
+const taskSpawnOf = (t: Task): DispatchSpawn => t.spawn ?? DEFAULT_SPAWN;
 async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify = false,
   spawn: DispatchSpawn = DEFAULT_SPAWN):
   Promise<{ ok: true; slot: number; branch: string; tail: Promise<void> } | { ok: false; error: string }> {
@@ -6432,11 +6491,13 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
   if (next.kind !== "auftrag")
     return { ok: false, error: `${next.kind} is advisory — the dispatcher never runs this` };
   // THE BOLT, restated where the choice now arrives. It used to be openSlot's parameter default
-  // alone: the tick called the short form, so it COULD not name a harness. That absence still
-  // holds (tickDispatch passes no `spawn`, pinned in e2e/pins.ts) — this is the second lock, for
-  // the case the absence cannot cover: a future unattended caller that does pass one. Same two
-  // conditions every other unattended path answers to, and in the same order, so the reason a
-  // start was refused is the specific one rather than a generic failure.
+  // alone: the tick called the short form, so it COULD not name a harness. The tick now passes the
+  // ROW's own persisted, SET-time-validated choice (taskSpawnOf, pinned in e2e/pins.ts) — and
+  // exactly therefore this second lock carries weight: a stored foreign choice that reaches an
+  // unattended call answers to the same two conditions every other unattended path answers to,
+  // and in the same order, so the reason a start was refused is the specific one rather than a
+  // generic failure. The tick's own row gate refuses the same rows BEFORE a slot is reserved and
+  // writes why on the row; this lock stays for any caller that skips that gate.
   const spawnH = harnessOf(spawn.harness);
   if (spawnH !== CLAUDE_HARNESS && !ownerAct && !(HARNESS_AUTOMATION && spawnH.automatable))
     return { ok: false, error: `harness ${spawnH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)` };
@@ -6465,8 +6526,9 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
     const wt = await createWorktree(dispatchRepo, "", dForm.form);
     // no `base` here (the dispatcher lane keeps today's live re-derivation), but the fork
     // commit is still captured — the outcome record needs it after the land moves main
-    // model/harness/effort ride in from the attended request only (DEFAULT_SPAWN is the tick's
-    // all-null shape and is the claude adapter); `label` stays null here because the line below names the slot.
+    // model/harness/effort ride in from the attended request or the row's own persisted choice
+    // (DEFAULT_SPAWN is the absence shape and is the claude adapter); `label` stays null here
+    // because the line below names the slot.
     const dRef: LaneRef = { repo: wt.repo, branch: wt.branch,
       baseSha: await laneForkSha(wt.path, await integrationBranch(wt.repo)),
       ...(anchor ? { anchor } : {}),
@@ -7309,6 +7371,20 @@ async function tickDispatch(): Promise<void> {
           continue;
         }
       }
+      // WHICH AGENT this row would run: its own persisted, SET-time-validated choice, DEFAULT_SPAWN
+      // on absence (taskSpawnOf — the one bridge, pinned). The release doors refuse a stored
+      // non-automatable choice, but the owner's ▸ queue and create-and-release are attended acts
+      // that do not; a row that reaches the queue anyway must say WHY it never starts instead of
+      // sitting silent, and it must not fall back to the default adapter. Same predicate as the
+      // release door and canDeliver's slot gate. SKIPS rather than returns, like the collision
+      // check: this is a property of one row, not of the machine, and a single such row must not
+      // hold every unrelated row in the queue behind it.
+      const rowSpawn = taskSpawnOf(next);
+      const rowH = harnessOf(rowSpawn.harness);
+      if (!harnessAutomatableFor(rowH)) {
+        waiting(`waiting: harness ${rowH.id} is not automatable — no unattended path may drive it (FLEET_HARNESS_AUTOMATION off)`);
+        continue;
+      }
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) { waiting("waiting: no free slot"); return; }
       // THE UNATTENDED INVARIANT: nothing starts on its own that has not been read against the tree
@@ -7383,7 +7459,7 @@ async function tickDispatch(): Promise<void> {
       // exist yet.
       const pre = await canDeliver(free, { now: Date.now(), alive: false });
       if (!pre.ok) return; // task stays queued
-      const r = await dispatchTask(next, free, false);
+      const r = await dispatchTask(next, free, false, false, taskSpawnOf(next));
       if (r.ok) await r.tail;
       return; // serial by design — one lane per tick, whichever row got past every gate
     }
@@ -14335,6 +14411,10 @@ if (existsSync(STATE_FILE)) {
         .map((t) => ({ ...t,
           kind: loadTaskKind((t as { kind?: unknown }).kind, t.source),
           repo: typeof t.repo === "string" ? t.repo : null,
+          // the persisted agent choice comes back through the slot loader's discipline
+          // (loadTaskSpawn): registered harness only, model/effort re-judged against it,
+          // malformed degrades field-wise to null and all-null to ABSENT — never to a pass.
+          spawn: loadTaskSpawn((t as { spawn?: unknown }).spawn),
           // Stable request provenance is captured only while a task is alive. A pre-field row
           // stays absent on load — assigning its own id here would be a backfill, not observation.
           originId: typeof t.originId === "string" && t.originId ? t.originId : undefined,
@@ -19009,6 +19089,12 @@ Bun.serve<WSData>({
       // rather than letting a row arrive already `queued` in a state no tick will ever run.
       if (body.queue === true && isTaskKind(body.kind) && body.kind !== "auftrag")
         return json({ error: `a ${body.kind} is advisory, not a work brief — create it pending, then change its kind` }, 409);
+      // The row's persisted agent choice, in the attended route's exact top-level vocabulary and
+      // through the same validators (taskSpawnFromBody: harness first, then model/effort against
+      // that adapter). Absence persists nothing — the row stays legacy-shaped and the dispatch
+      // default (DEFAULT_SPAWN) remains its honest meaning.
+      const spawnChoice = taskSpawnFromBody(body);
+      if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
       let taskProgramId: string | undefined;
       if (body.programId !== undefined) {
         if (typeof body.programId !== "string" || !body.programId)
@@ -19034,6 +19120,7 @@ Bun.serve<WSData>({
         id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
         source: "owner", from: null, kind: isTaskKind(body.kind) ? body.kind : "auftrag", repo: taskRepo,
         ...(taskProgramId ? { programId: taskProgramId } : {}),
+        ...(spawnChoice.spawn ? { spawn: spawnChoice.spawn } : {}),
         status: body.queue === true ? "queued" : "pending", created: Date.now(), slot: null,
         note: body.queue === true ? taskKindNote(isTaskKind(body.kind) ? body.kind : "auftrag") : null,
         // create-and-release in one call is still a release (see releaseTask, which the separate
@@ -19092,19 +19179,28 @@ Bun.serve<WSData>({
       // owner first (clarify-prompt.ts). Only reachable from this attended route.
       const dBody = await readJson(req);
       const clarify = dBody?.clarify === true;
-      // WHICH AGENT runs it, read the same way every attended spawn route reads it. Absent → null →
-      // the default adapter, so a body that predates this field takes exactly the path it always
-      // took. Validated BEFORE the free-slot lookup on purpose: a malformed request should be told
-      // it is malformed, not handed a 409 about machine capacity that would disappear on retry.
+      // WHICH AGENT runs it. An explicit body field wins PER FIELD; a field the body does not name
+      // falls to the ROW's own persisted choice (Task.spawn via taskSpawnOf), and only full absence
+      // on both sides is the default adapter — so a body that predates this field on a legacy row
+      // takes exactly the path it always took, byte for byte. Validated BEFORE the free-slot lookup
+      // on purpose: a malformed request should be told it is malformed, not handed a 409 about
+      // machine capacity that would disappear on retry.
       const dh = harnessIdOf(dBody);
       if (!dh.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
-      // ...and the model is judged by THAT harness's charset, never by one shared widened rule: a
-      // claude slot keeps MODEL_RE, a foreign one gets HARNESS_MODEL_RE. Two charsets, and the
-      // counter-proof that they have not collapsed lives in fleet-e2e-claude-gate.ts (phase 1).
-      const dHarness = harnessOf(dh.harness);
-      const dModel = modelOf(dBody, dHarness);
+      // ...and the COMBINED value is re-validated as a WHOLE against the EFFECTIVE harness: the
+      // model is judged by that harness's charset, never by one shared widened rule (a claude slot
+      // keeps MODEL_RE, a foreign one gets HARNESS_MODEL_RE — the counter-proof that they have not
+      // collapsed lives in fleet-e2e-claude-gate.ts, phase 1). A row-stored model or effort that an
+      // overriding body harness cannot carry is therefore a 400 here, never a mixed pair on a pane.
+      const dNames = (k: "harness" | "model" | "effort"): boolean => {
+        const v = dBody?.[k]; return v !== undefined && v !== null && v !== "";
+      };
+      const dRowSpawn = taskSpawnOf(t);
+      const dHarnessId = dNames("harness") ? dh.harness : dRowSpawn.harness;
+      const dHarness = harnessOf(dHarnessId);
+      const dModel = modelOf(dNames("model") ? dBody : { model: dRowSpawn.model }, dHarness);
       if (!dModel.ok) return json({ error: modelErrFor(dHarness) }, 400);
-      const dEffort = effortOf(dBody, dHarness);
+      const dEffort = effortOf(dNames("effort") ? dBody : { effort: dRowSpawn.effort }, dHarness);
       if (!dEffort.ok) return json({ error: effortErrFor(dHarness) }, 400);
       const free = slots.find((s) => !s.cwd && !laneSpawn.has(s.id));
       if (!free) return json({ error: "no free slot" }, 409);
@@ -19117,15 +19213,16 @@ Bun.serve<WSData>({
       // an audit line that can be claimed rather than earned is worth less than no line at all.
       const rawAck = dBody?.acknowledged === true && (!t.analysis || t.analysis.verdict !== "ready");
       const r = await dispatchTask(t, free, true, clarify,
-        { harness: dh.harness, model: dModel.model, effort: dEffort.effort });
+        { harness: dHarnessId, model: dModel.model, effort: dEffort.effort });
       if (!r.ok) return json({ error: r.error }, 500);
       r.tail.catch(() => {}); // the tail requeues on every failure itself; nothing to add here
       // the mode rides in the audit detail, never a second event name: one "an owner started a
       // task" line stays greppable, and the bare id remains the normal path's exact detail
-      // the harness rides in the SAME detail for the same reason, and only when one was named:
-      // a default start must keep producing the exact line it produced before this field existed
+      // the harness rides in the SAME detail for the same reason, and only when one is EFFECTIVE —
+      // body-named or row-stored, it names the adapter that actually ran; a default start keeps
+      // producing the exact line it produced before either field existed
       audit("task_dispatch", r.slot,
-        [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : "", dh.harness ? `harness=${dh.harness}` : ""].filter(Boolean).join(" "));
+        [t.id, clarify ? "clarify" : "", rawAck ? "raw-acknowledged" : "", dHarnessId ? `harness=${dHarnessId}` : ""].filter(Boolean).join(" "));
       return json({ ok: true, slot: r.slot, branch: r.branch, clarify, rawAcknowledged: rawAck });
     }
     // re-read this task from scratch: drop the verdict so the next sweep judges it again. An

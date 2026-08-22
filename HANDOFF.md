@@ -1,3 +1,131 @@
+# HANDOFF — ACP Architecture Controller IX (Slot 3), 2026-08-22, ctx 22,4 % GEMESSEN
+
+**Der Rollenvertrag steht.** `8bc77d8` hat ihn seit einem Tag verlangt, ACP-22 hat ihn gebaut,
+gelandet (`9bd9071`) und gruen auditiert (2810/0, ms 1 421 893, covers genau diesen Land). Dazu
+zwei Auftraege des Owners mitten in der Session, beide zu Ende: die 15 untracked Dateien sind
+aufgeloest (`b425807`) und das Private-repo-e-Program ist sauber terminalisiert. Nichts liegt halb.
+
+## 0. Die exakte naechste Handlung
+
+**`POST /api/self/tasks` briefen — die MAIN darf ihre eigene Zeile ANLEGEN, nicht nur freigeben.**
+Der Vorschlag liegt beim Owner und ist NICHT promotet; ohne sein Go wird nichts gebaut.
+
+Er hat jetzt zwei unabhaengige Belege, und genau das ist die Wiederholung, die §18 der
+Owner-Korrektur vor einer Regel verlangt:
+- **ACP-22 (diese Session, von innen):** §17 gibt der Project MAIN das Recht, eigene begrenzte
+  Tasks „anlegen UND starten"; der Code kann nur `release` einer BESTEHENDEN Zeile
+  (`server.ts:17018`). Einen `POST /api/self/tasks`-Handler gibt es nicht.
+- **Slot 5 / Private-repo-e-Pilot (fremdes Program, von aussen):** dieselbe Klasse, dreimal — fehlende
+  Basis-URL, fehlender Dispatch-Weg, fehlender Schreibweg zum Abschluss
+  (`POST /api/self/fleet-report` antwortet einer MAIN 409 „not a worker lane").
+  Woertlich in `/Users/owner/private-repo-e`, `docs/efficiency-pilot-result.md`.
+
+**Ich habe die Luecke in dieser Session SELBST bezahlt:** die ACP-22-Zeile `0ea14929` musste ich
+mit dem OWNER-Token ueber `POST /api/tasks` anlegen. Eine gebundene MAIN benutzt heute das
+Credential des Owners fuer das, was ihre eigene Ebene koennen soll.
+
+Der Schnitt, wenn er freigegeben wird: Route + `Task.source`, `programId` AUS DER BINDUNG (eine
+Koerperangabe ist 400), nur `pending`, Deckel, Audit-Wort, plus die Ambiguitaets-409 aus
+`handleSelfSucceed`. **Zwei Dinge, die die Analysen vom 2026-08-21 schon geklaert haben und die du
+nicht neu herleiten musst:** (a) die Karten-Zeile MUSS ein EIGENER spaeterer Schnitt sein, sonst
+faellt er an `src/protocol.ts:275` (`stateEffect` ist der Literaltyp `"none"`) — belegt in
+`docs/kritik-opus-2026-08-21.md` Befund 3. (b) Default `notiz` oder `auftrag` ist ein OFFENER
+OWNER-ENTSCHEID, die zwei Praezedenzfaelle zeigen gegeneinander (`docs/synthese-
+rollenarchitektur-2026-08-21.md` §4).
+
+## 1. Was terminal ist — alles gemessen, nichts geschaetzt
+
+| Act | Land | Land-Gate | Post-Land-Audit | Deploy |
+|---|---|---|---|---|
+| Untracked-Aufloesung | `f51bdb9` -> **`b425807`** | main-direct, `bun e2e/pins.ts` ALL PASS | keiner (kein Lane-Land) | nicht geschuldet |
+| ACP-22 | `b425807` -> **`9bd9071`** | ok, exit 0, **124 159 ms**, wait 0 | **green** 1 421 893 ms, **2810/0**, covers `9bd9071c` | nicht geschuldet |
+| Private-repo-e-Program | kein Land in DIESEM Repo | — | — | — |
+
+**Die 2810 sind erneut unveraendert, und das ist wieder das SOLL:** ACP-22 fasste nur `AGENTS.md`
+an, kein `e2e/`-Modul. Eine bewegte Zahl waere hier das Verdaechtige. Geprueft an `ms`,
+`checks.ran` und `covers`, nicht am Wort „green".
+
+## 2. `codeBehind: true` IST MEINS UND HARMLOS — jag es nicht
+
+`deployGap.codeBehind` kippte in dieser Session von `false` auf `true`. **Kein Deploy ist
+geschuldet.** Der Netto-Diff `bootHead(83468e0)..HEAD` enthaelt genau einen Pfad, den keine der
+drei Allowlists kennt: **`.gitignore`**, aus meinem `b425807`. Der Fail-safe ist Absicht („a path
+counts as code unless it is KNOWN not to be", `server.ts:15583`). Die einzige Stelle, an der der
+laufende Server `.gitignore` beruehrt, ist der Upload-Landability-Gate (`server.ts:18793`), und
+die ruft `git check-ignore` PRO REQUEST — sie liest die Datei von Platte. Ein Neustart aendert
+dort nichts.
+
+`.gitignore` in die docs-Allowlist aufzunehmen waere eine **Aenderung an der Abwaegung**, kein
+Bugfix: der Kommentar (`:15594`) hat diesen Fehlalarm zweimal gemessen (2026-08-02 `src/client.ts`,
+2026-08-04 `e2e/verify-queue.ts`) und sich bewusst dafuer entschieden — „A false warning costs one
+restart; a hidden gap cost a day." Ein eigener Act, wenn ueberhaupt.
+
+## 3. Der Rollenvertrag — was drin steht und was ich SELBST nachgeprueft habe
+
+`AGENTS.md`, ein `###`-Unterabschnitt in `## Portable operating contract`, **18 Zeilen /
+3 310 Bytes** (Budget war <= 45 / <= 3500). Vier Ebenen x vier Angaben.
+
+Nachgeprueft am Baum, nicht dem Lane-Bericht geglaubt:
+1. Alle acht zitierten self-Routen existieren in `server.ts`.
+2. `POST /api/self/tasks/:id/release` liegt bei `:17018` — als REGEX. Ein Literal-grep auf
+   `"/api/self/tasks` gibt 0 und liest sich wie „gibt es nicht".
+3. `delegate_act`: **0** Vorkommen. Der Vertrag fuehrt `Act Lead` deshalb als „not built".
+4. Die drei Lane-409 stehen woertlich bei `:16958` (subscribe), `:16995` (reply), `:17010`
+   (attention).
+5. **Die schaerfste Aussage haelt:** der Supervisor hat KEINEN Owner-Rueckweg — `openAttention`
+   gated auf `boundProgramForMain` (`server.ts:5942`), seine Eskalation ist owner-GELESEN, nicht
+   owner-gesendet.
+
+## 4. Der Private-repo-e-Cleanup (Owner-Auftrag, fremdes Program)
+
+Program `a6d7f0910ed8def26e8b2924` -> `status: complete`, `completedAt: 2026-08-22 14:02:59`,
+ueber `POST /api/programs/:id/complete` (die legale Transition `active -> complete`,
+`server.ts:14006`). Kein Zustand von Hand editiert.
+
+**Die Reihenfolge war der Punkt, nicht der Knopf.** Die MAIN in Slot 5 konnte ihren eigenen Record
+nicht schliessen und sagte das selbst. Vor dem Freigeben habe ich geprueft, was mit dem Slot
+gestorben waere: der GESAMTE Ertrag des Pilots (30 KB) lag nur im Scratchpad unter `/private/tmp`,
+nichts davon getrackt. Also erst ernten lassen, dann `POST /api/self/retire` — **die MAIN hat sich
+selbst beendet, ich habe sie nicht getoetet.** Sie lieferte mehr als verlangt:
+`5d1b385` in `/Users/owner/private-repo-e`, 4 Dateien, 806 Zeilen (Result, Measurements, **Briefs**,
+plus D16 im bestehenden `decision-record.md`).
+
+**Merke fuer den naechsten Cleanup:** ein `POST /send` pastet OHNE zu leeren. In Slot 5 stand ein
+ungesendeter Rest im Composer, der sonst mit meinem Prompt verschmolzen waere — vorher `C-u`,
+Text vorher sichern. Und die Zustellung habe ich an der PANE geprueft, nicht an
+`submitted:true` (das ist laut ACP-21 ein Echo des Request-Flags).
+
+## 5. Offene Raender, die ich WEITERTRAGE
+
+1. **Neun Owner-Arbeitsdateien im Wurzelverzeichnis sind weiter ungeschuetzt.** Fuenf tragen echte
+   Hostnamen/IP (`BEFEHLE.md` 7 Treffer, `SPIELE-LINKS.md` 10, `STAND.md` 4, `PROMPT-GLM-DOKU.md`
+   2, `NAECHSTE-SESSION.md` 1). Das Repo ist PUBLIC; ein `git add -A` publiziert sie. Ich habe nur
+   den eindeutigen Fall geschlossen (`.env.bak*`, ein Backup einer bereits ignorierten
+   Geheimnisdatei). Die neun sind ein OWNER-Entscheid, kein Defekt — aber sie liegen dort weiter.
+2. **`autoReview: summarizer timed out without an answer`, zweimal**, unveraendert seit zwei
+   Handoffs (`errors.total 2`). Nicht diagnostiziert, in dieser Session folgenlos.
+3. **Der alte Private-repo-e-Worktree `fleet-260817174850-065d`** (`f53f85a`, vom 08-17) steht auf
+   Platte. NICHT Slot 8, nicht ACP, nicht angefasst — nur benannt.
+4. **`notiz 5ddc8877` (ACP-19)** — Modell/Effort eines LEBENDEN Slots unreparierbar. Unveraendert.
+   Slot 1 traegt weiter `model: "fable"`, `effort: null`.
+5. **Queue-Zeile `89b48243`** (Welcome-Composer) bleibt OFFEN und unbelegt.
+6. **Boot-Reconcile-Defekt `94ab77dd`**, **`~/.codex/config.toml` waechst unbegrenzt
+   (`1270b246`)**, **9 stale Program-Bindungen** — alle unveraendert.
+7. **`RULE_ANCHORS` deckt weiter nur `pfad §anker` nebeneinander** (Rand aus ACP-20).
+
+## 6. Maschinenzustand bei der Uebergabe
+
+- main **`9bd9071`**, Server auf `83468e0`, `bundleStale false`, `codeBehind true` (siehe §2 —
+  harmlos und erklaert). **Kein Deploy geschuldet.**
+- `dispatch: false`, 0 queued, 0 sent, keine Suite laeuft.
+- **Zehn freie Slots** (2, 4, 5, 7, 9, 11–15) — die GLM-/Fable-Architektursessions sind in dieser
+  Session zu Ende gegangen; das Board ist so leer wie lange nicht.
+- Program `eeba7c04caae64d79969199b` ist occupant-genau an Slot 3 gebunden; die Nachfolge erbt es.
+- Queue-Bewegungen dieser Session: `0ea14929` (ACP-22) neu, dispatcht, `done (landed)`.
+- Provenienz beider Lands ist sichtbar: ACP-22 ueber eine Lane (Land-Note, `lane-outcomes`,
+  Post-Land-Audit), die Untracked-Aufloesung ueber `main-direct/preflight` + `/finalize`
+  (preflight `dc1719b0ed6faa14966a8af7`, Outcome `landed`, `f51bdb9 -> b425807`).
+
 # HANDOFF — ACP Architecture Controller VIII (Slot 2), 2026-08-22, ctx 22,9 % GEMESSEN
 
 **Der Prompt-Annahmefehler ist keine Vermutung mehr.** ACP-21 hat ihn an einer echten claude-TUI

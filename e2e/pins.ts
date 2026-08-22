@@ -1306,6 +1306,38 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const tickCalls = [...tBody.matchAll(/dispatchTask\(([^)]*)\)/g)].map((m) => m[1].trim());
   pin("the tick's own dispatch call names no harness — the choice enters only through an attended request body",
     tickCalls.length === 1 && tickCalls[0] === "next, free, false", tickCalls.join(" | ") || "no dispatchTask call");
+  // THE TWO CAPS AND THEIR ORDER, pinned as SHAPE because no runtime test can see the difference
+  // between "the program cap narrows the repo cap" and "the program cap replaced it". A later
+  // refactor that hoists the program check above the repo check, or that drops the repo check for
+  // rows carrying a programId, still passes every behavioural check written with the per-program
+  // cap set BELOW the repo cap — which is the only configuration a test ever exercises — while
+  // silently permitting programs × per-program lanes on a fixed slot board.
+  const repoCapIdx = tBody.indexOf("if (lanes >= DISPATCH_MAX_LANES)");
+  const progGuardIdx = tBody.indexOf("if (next.programId) {");
+  const progCapIdx = tBody.indexOf("programLanes >= DISPATCH_MAX_LANES_PER_PROGRAM");
+  pin("the repo lane cap is checked UNCONDITIONALLY and BEFORE the per-program one — the second cap can only narrow",
+    repoCapIdx > 0 && progGuardIdx > repoCapIdx && progCapIdx > progGuardIdx
+    // six spaces = the candidate loop's own body level: the repo check sits under no further `if`
+    && /\n      if \(lanes >= DISPATCH_MAX_LANES\) \{/.test(tBody),
+    JSON.stringify({ repoCapIdx, progGuardIdx, progCapIdx }));
+  // NO NULL BUCKET. `s.programId === next.programId` alone is true for every unbracketed row against
+  // every unbracketed lane, so without the truthy guard the cap would silently bind rows whose only
+  // shared property is that nobody bracketed them. The `s.cwd &&` is the second half of the same
+  // rule: openSlot clears programId, but a cap counting slots it has not proven occupied is a cap on
+  // history rather than on load.
+  const progCount = tBody.match(/const programLanes = [^;]+;/)?.[0] ?? "";
+  pin("the per-program cap fires only for a row that NAMES a program, and counts only OCCUPIED slots of that program",
+    /\n      if \(next\.programId\) \{/.test(tBody)
+    && /slots\.filter\(\(s\) => s\.cwd && s\.programId === next\.programId\)\.length/.test(progCount),
+    progCount || "no programLanes count");
+  // The two caps write onto the SAME row, so the owner can only tell which one held from the words.
+  // A refactor that reuses the repo cap's sentence would leave the board unable to distinguish them.
+  const capNotes = [...tBody.matchAll(/waiting\(`(waiting: [^`]*)`\)/g)].map((m) => m[1]);
+  const repoNote = capNotes.find((n) => n.includes("lanes busy in ${basename(repo)}")) ?? "";
+  const progNote = capNotes.find((n) => n.includes("lanes busy in program")) ?? "";
+  pin("each lane cap names ITSELF on the row — the repo one names the repo, the program one names the program",
+    !!repoNote && !!progNote && repoNote !== progNote && !repoNote.includes("program"),
+    JSON.stringify({ repoNote, progNote }));
   // THE SECOND LOCK, for the case the absence above cannot cover: a future unattended caller that
   // does pass one. Same two conditions as every other unattended path (the operator's env flag AND
   // the adapter's own claim), so a harness added tomorrow inherits the refusal rather than the

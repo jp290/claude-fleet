@@ -881,6 +881,128 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/tasks/${tid}/delete`, {});
   }
 
+  // --- (e2) THE SECOND LANE CAP, PER PROGRAM (server.ts, DISPATCH_MAX_LANES_PER_PROGRAM). It sits
+  // one line below (e)'s repo cap and can only ever NARROW it — so with the default (= the repo cap)
+  // it can never be the check that holds anything, and only a fleet restarted with a SMALLER value
+  // shows it at all. Two facts have to hold at once and neither is visible to tsc:
+  //   (a) a second released row of a program already at its lane cap stays QUEUED and its note names
+  //       the PROGRAM — both caps write onto the same row, so wording is the owner's only way to
+  //       tell from the board which one held;
+  //   (b) a released row that names NO program is untouched, and starts from BEHIND the held one.
+  //       There is no shared "null" bucket, and the check SKIPS rather than returning: a per-program
+  //       cap that stopped the tick would cap the whole fleet through one full bracket.
+  // Every precondition is asserted as ITSELF. A fixture that could not raise the bracket's first
+  // lane, or a restart whose env never arrived, would otherwise read as "the cap holds". ---
+  {
+    type PRow = { id: string; status: string; note?: string | null; programId?: string; slot?: number | null };
+    type PSlot = { id: number; cwd: string | null; worktree: unknown | null };
+    const pSess = async (): Promise<{ slots: PSlot[]; tasks: PRow[]; dispatch: { on: boolean; maxLanes: number } }> =>
+      (await (await get("/api/sessions")).json()) as
+        { slots: PSlot[]; tasks: PRow[]; dispatch: { on: boolean; maxLanes: number } };
+    const pRow = async (id: string): Promise<PRow | undefined> => (await pSess()).tasks.find((t) => t.id === id);
+    const pTill = async (id: string, ok: (r: PRow | undefined) => boolean, tries = 60): Promise<PRow | undefined> => {
+      let last = await pRow(id);
+      for (let i = 0; i < tries && !ok(last); i++) { await Bun.sleep(250); last = await pRow(id); }
+      return last;
+    };
+    // the cap counts SLOTS carrying the program (`s.cwd && s.programId === …`), and /api/sessions
+    // carries neither field per slot — deliberately: the owner's non-goal for this cut was that the
+    // board gains nothing. So the fixture reads the persisted slot rows, the same source
+    // e2e/programs.ts joins its ProgramExecutionView assertions against, i.e. the exact quantity the
+    // cap counts rather than a proxy for it.
+    const pLanesOf = (programId: string): number => {
+      const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+        { slots?: Record<string, { cwd?: string | null; programId?: string | null }> };
+      return Object.values(state.slots ?? {}).filter((s) => s.cwd && s.programId === programId).length;
+    };
+    const pTitle = ((await (await get("/api/programs")).json()) as { programs: { id: string; title: string }[] })
+      .programs.find((p) => p.id === provenanceProgramId)?.title ?? "";
+
+    // the REPO cap must not be what holds anything here: it is checked first and would write its own
+    // note over the one under test. Lifted clear of every lane this block can put on the machine.
+    await restartSrv({ FLEET_DISPATCH_MAX_LANES: "6", FLEET_DISPATCH_MAX_LANES_PER_PROGRAM: "1" });
+    // PRECONDITION AS ITSELF #1 — the restart's env reached the server. The per-program number is
+    // not on any route (that is the non-goal), so the repo cap is the readable witness: it rides the
+    // same env string of the same restart, and its default is 3.
+    const pCfg = await pSess();
+    check("(e2) fixture: the cap restart took effect — the dispatcher reports the LIFTED repo cap it was restarted with",
+      pCfg.dispatch.maxLanes === 6 && !!pTitle && !!provenanceProgramId,
+      JSON.stringify({ maxLanes: pCfg.dispatch.maxLanes, program: provenanceProgramId, title: pTitle }));
+
+    // a clean field: no foreign lane may carry the probe program, no foreign released row may win a
+    // tick ahead of the probes, and two slots must be free (one for the bracket, one for the
+    // counter-probe). The persistence lane the restart section needs alive is never touched.
+    for (const s of (await pSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    await Bun.sleep(600);
+    for (const t of (await pSess()).tasks) if (t.status === "queued") await post(`/api/tasks/${t.id}/unqueue`, {});
+    const pClean = await pSess();
+    // PRECONDITION AS ITSELF #2 — nothing else can explain a row that fails to start.
+    check("(e2) fixture: the field is clean — no lane carries the probe program, two slots free, repo cap not reached",
+      pLanesOf(provenanceProgramId) === 0 && pClean.slots.filter((s) => !s.cwd).length >= 2
+      && pClean.slots.filter((s) => s.worktree).length < pCfg.dispatch.maxLanes,
+      JSON.stringify({ programLanes: pLanesOf(provenanceProgramId), free: pClean.slots.filter((s) => !s.cwd).length,
+        lanes: pClean.slots.filter((s) => s.worktree).length, cap: pCfg.dispatch.maxLanes }));
+
+    await post("/api/dispatch", { on: true });
+    const pAnchor = (await (await post("/api/tasks", {
+      text: "(e2) program-cap anchor — the bracket's first and only permitted lane",
+      queue: true, programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const pAnchorRow = await pTill(pAnchor.task.id, (r) => r?.status === "sent");
+    // PRECONDITION AS ITSELF #3 — the bracket really is AT its cap of 1, measured the way the cap
+    // measures. Without this a "did not start" below could mean "nothing ever started".
+    check("(e2) fixture: the bracket's first lane is running and the SLOT carries the program — the cap's own count is 1/1",
+      pAnchorRow?.status === "sent" && pLanesOf(provenanceProgramId) === 1,
+      JSON.stringify({ status: pAnchorRow?.status, slot: pAnchorRow?.slot, programLanes: pLanesOf(provenanceProgramId) }));
+
+    // held row FIRST, unbracketed row BEHIND it — a check that queued the counter-probe first would
+    // never notice a cap that stops the tick instead of skipping the row.
+    const pHeld = (await (await post("/api/tasks", {
+      text: "(e2) a second row of the SAME program — the per-program cap must hold it",
+      queue: true, programId: provenanceProgramId,
+    })).json()) as { task: { id: string } };
+    const pOpen = (await (await post("/api/tasks", {
+      text: "(e2) a row bracketed by NO program — queued behind the held one",
+      queue: true,
+    })).json()) as { task: { id: string } };
+
+    // (b) THE COUNTER-PROBE, and it is the load-bearing one: a dispatcher that had stopped starting
+    // anything would satisfy every "did not start" assertion. Its start also DATES the observation —
+    // at that instant a tick has provably run PAST the held row to completion.
+    const pOpenRow = await pTill(pOpen.task.id, (r) => r?.status === "sent");
+    check("(e2)(b) a released row that names NO program is untouched by the per-program cap — it starts from behind a held one",
+      pOpenRow?.status === "sent", JSON.stringify(pOpenRow ?? null));
+    // (a) …and in that same window the bracketed row did not move, and its note names the PROGRAM.
+    // The repo cap's sentence ends "land or close one" and names basename(repo); this one must be
+    // distinguishable from it on the board, so the title and the word `program` are both asserted.
+    const pHeldRow = await pRow(pHeld.task.id);
+    const pHeldNote = pHeldRow?.note ?? "";
+    check("(e2)(a) a second row of a program at its lane cap stays QUEUED, and its note names the PROGRAM rather than the repo",
+      pHeldRow?.status === "queued" && pHeldRow?.slot == null
+      && /^waiting: 1\/1 lanes busy in program "/.test(pHeldNote) && pHeldNote.includes(pTitle)
+      && pHeldNote.includes("one of ITS lanes"),
+      JSON.stringify({ status: pHeldRow?.status, slot: pHeldRow?.slot, note: pHeldNote }));
+
+    // (c) the hold is a WAIT, not a verdict. Retire the row before closing its lane: while it is
+    // `sent` its id is running work, and killing the lane first would leave that half standing.
+    await post(`/api/tasks/${pAnchor.task.id}/done`, {});
+    if (typeof pAnchorRow?.slot === "number") await post(`/api/slots/${pAnchorRow.slot}/kill`, {});
+    const pFreed = await pTill(pHeld.task.id, (r) => r?.status === "sent", 80);
+    check("(e2)(c) with the bracket's lane closed the held row starts on its own — the cap is a wait, not a refusal",
+      pFreed?.status === "sent", JSON.stringify({ status: pFreed?.status, note: pFreed?.note }));
+
+    // cleanup — dispatcher OFF first (a killed lane's brief tail can requeue its task, and a live
+    // tick would then leak a fresh lane), then close every lane this block spawned and retire the
+    // rows. The final restart hands the next section the env it had before this block existed.
+    await post("/api/dispatch", { on: false });
+    for (const s of (await pSess()).slots) if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+    for (const id of [pAnchor.task.id, pHeld.task.id, pOpen.task.id]) {
+      await post(`/api/tasks/${id}/done`, {});
+      await post(`/api/tasks/${id}/delete`, {});
+    }
+    await restartSrv();
+  }
+
   // --- (d3) THE COUNTER-PROOF TO (d). An empty anchor block in a foreign tree is, on its own,
   // equally compatible with a planner that selects nothing anywhere. So the same seam is driven
   // once more with the only difference that may matter: the target repository's git toplevel. ROOT

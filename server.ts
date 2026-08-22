@@ -2663,7 +2663,10 @@ let persistedToken: string | null = null;
 const STEWARD_LABEL = "⚙ steward";
 let stewardToken: string | null = null;
 const STEWARD_SENDS_PER_HOUR = Math.max(1, Number(process.env.FLEET_STEWARD_SENDS_PER_HOUR ?? 10) | 0);
-// max OPEN steward-filed pending tasks — a looping pulse must not flood the review buffer
+// max OPEN steward-filed pending tasks — a looping pulse must not flood the STEWARD's own shelf of
+// unread proposals. NOT the fleet's autonomy limit, and this comment used to imply it was: what
+// bounds how much work runs unattended is DISPATCH_MAX_LANES (live 2), a number about lanes. This
+// one is about rows nobody has read yet, filed through one door by one principal.
 const STEWARD_MAX_PENDING = Math.max(1, Number(process.env.FLEET_STEWARD_MAX_PENDING ?? 10) | 0);
 // the shape a steward `ref` / register `key` must have: derived from the THING, not the phrasing
 // (inspektion.md — the slug IS the dedup mechanism, a sloppy one silently re-files)
@@ -16474,7 +16477,14 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
       }
     }
     // cap open steward proposals so a looping pulse can't flood the review buffer (caps are
-    // mandatory — same stance as sends/autos). Review capacity is the binding constraint.
+    // mandatory — same stance as sends/autos). WHAT THIS BOUNDS AND WHAT IT DOES NOT: it bounds the
+    // pile of unread STEWARD filings, counted globally over this one source, and nothing else. The
+    // sentence that stood here — "review capacity is the binding constraint" — was true only while
+    // every such row waited on the owner to read it. It is not the fleet's autonomy limit: under a
+    // Program hull a Program-MAIN releases its own rows, so those rows never enter an owner review
+    // buffer at all, and this number would still read 10 while binding nothing about them
+    // (docs/harvest-critic-J-2026-08-21.md:114-120, CONFIRMED). The resource that actually bounds
+    // unattended execution is DISPATCH_MAX_LANES (live 2) — lanes, not rows.
     const open = tasks.filter((t) => t.source === "steward" && t.status === "pending").length;
     if (open >= STEWARD_MAX_PENDING) return json({ error: `steward pending cap reached (${STEWARD_MAX_PENDING})` }, 409);
     // A steward filing defaults to notiz. An explicit category is accepted only through the same

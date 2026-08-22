@@ -1,3 +1,177 @@
+# HANDOFF — ACP Architecture Controller VIII (Slot 2), 2026-08-22, ctx 22,9 % GEMESSEN
+
+**Der Prompt-Annahmefehler ist keine Vermutung mehr.** ACP-21 hat ihn an einer echten claude-TUI
+reproduziert, gelandet (`4974cdc`), gruen auditiert (2810/0, ms 1 304 418). Und der Owner hat
+mitten in der Session eine Korrektur fuer den STABILEN Plan gegeben, die ich getragen habe
+(`8bc77d8`). Beide Ketten sind zu Ende — nichts liegt halb.
+
+## 0. Die exakte naechste Handlung
+
+**Den gemeinsamen Rollenvertrag als eigenen kleinen Schnitt in `AGENTS.md` bauen.** Das
+Plandokument VERLANGT ihn seit `8bc77d8`; geschrieben ist er nicht. Vier Ebenen — Fleet
+Controller, Project MAIN, Act Lead/Worker, Supervisor — mit je vier Angaben: Zweck, Autonomie,
+Rueckweg, und welche Entscheidungen die Ebene SELBST trifft. Knapp: kein Megahandbuch, aber auch
+keine Reduktion auf Funktionsnamen.
+
+**Zwei Dinge, die du vor dem Briefen pruefst, nicht annimmst:** (a) `AGENTS.md` wird von pi UND
+codex automatisch geladen — jede Zeile dort kostet in JEDER fremden Lane Fenster; das ist das
+Argument fuer „knapp", nicht Geschmack. (b) Das Program fuehrt „kein AGENTS-Umbau in dieser
+Gruendungsrunde" als Non-Goal. Die Gruendungsrunde ist mit Welle 1-3 vorbei und die Owner-Anweisung
+geht vor — ich habe den Widerspruch BENANNT statt still aufgeloest, und du erbst ihn benannt.
+
+## 1. DIE OWNER-KORREKTUR VOM 2026-08-22 — woertlich inhaltlich, wie verlangt
+
+Sie steht zusaetzlich dauerhaft als `notiz 30592fb1` am Program (mit zwei Kommentaren:
+dem gemessenen Befund zu (2) und dem Erfuellungsstand). Hier der Inhalt:
+
+**(1) Rollenverstaendnis ist Kernkontext.** `AGENTS.md` soll einen knappen gemeinsamen
+Rollenvertrag ueber die Ebenen Fleet Controller, Project MAIN, Act Lead/Worker und Supervisor
+tragen: Zweck, Autonomie, Rueckweg und wer welche Entscheidungen selbst trifft. Der dynamische
+Role Bootstrap weist die konkrete Rolle, Authority und Capabilities der Instanz zu;
+Projekt-AGENTS/-Quellen liefern Domaenenrealitaet; der Act-Brief liefert den Auftrag. Keine
+Rollen-Megahandbuecher, aber auch keine Reduktion auf Funktionsnamen.
+
+**(2) Im Studio-Plan ueberall „schmale Lanes" korrigieren zu „kohaerent begrenzte Lanes".**
+Bounded bedeutet Ziel/Authority/Ownership/Proof/Checkpoints begrenzt, NICHT zwingend kurze Dauer
+oder kleine Dateiflaeche. Game Development braucht bewusst resident arbeitende System-/Feel-/
+Optimization-Spezialisten, wenn mehrere Mess->Aenderung->Tasting-Schleifen, starke Kopplung und
+Cache-Wiederverwendung Nutzen bringen. Repairs duerfen zum selben resident Agent zurueck, damit
+sein Arbeitsmodell/Cache genutzt wird. Kurze frische Lanes bleiben fuer isolierte Slices und
+besonders Blind-Critics sinnvoll. Workerform wird aus Kopplungsradius, erwarteten Iterationen,
+Cache-Nutzen, Bedarf an Unabhaengigkeit und Kontextfuellstand entschieden.
+
+**(3) Nach terminalem ACP-21 einen getrackten stabilen Plan-Schnitt erstellen, keine weitere
+datierte Stand-heute-Summary:** SYSTEM.md nur fuer dauerhafte Semantik; vorhandenes passendes
+Plan-/Studio-Dokument fuer Umsetzungsreihenfolge waehlen oder den kleinsten eindeutig noetigen
+Plananker schaffen.
+
+Ausdrueckliche Auflage, die ich eingehalten habe: **ACP-21 / Prompt-Annahme wurde dadurch NICHT
+aufgeweitet.** Der Act lief unveraendert mit dem Brief, den er vor der Korrektur bekommen hatte.
+
+### Was von (3) erfuellt ist — und was NICHT
+
+Erfuellt. Traeger ist `docs/agentic-control-plane-program-2026-08-20.md`, ein VORHANDENES
+Plandokument (§3 Arbeitsmodell, §4 Agentenformen, §6 Act-Reihenfolge 1-9) — keine neue datierte
+Summary, `SYSTEM.md` unberuehrt.
+
+**Die Korrektur (2) traf dort einen echten Widerspruch, keine Wortwahl** — das ist der Satz, den
+du kennen musst, bevor du das Dokument liest: §3 fuehrte als Lebensdauer eines Specialists
+woertlich „genau ein Act", und ein Bullet nannte Builder/Researcher/Critic „Modi TEMPORAERER
+Specialists". Beides schliesst residente Spezialisten und den Repair-Rueckweg strukturell aus.
+
+**GEMESSEN vor dem Schnitt, damit niemand ein Suchen-und-Ersetzen erwartet:**
+`rg -n -i 'schmale lane|narrow lane' docs/ SYSTEM.md AGENTS.md` trifft NUR
+`docs/attic/agent-os-2026-08-11/agent-os-rules.md:68` (Attic = Historie, kein Anspruch auf den
+heutigen Baum). In den fuenf Studio-Dokumenten steht die Lane-FORM-Doktrin ueberhaupt nicht —
+weder „schmal" noch „kurz/klein/wegwerf/resident". (2) war also das AUFSCHREIBEN einer bisher
+ungeschriebenen Entscheidungsregel, nicht eine Ersetzung.
+
+**NICHT erfuellt:** der Rollenvertrag selbst. `8bc77d8` verlangt ihn in `AGENTS.md` — geschrieben
+steht er nicht. Das ist §0.
+
+## 2. Was terminal ist — alles gemessen, nichts geschaetzt
+
+| Act | Land | Land-Gate | Post-Land-Audit | Deploy |
+|---|---|---|---|---|
+| ACP-21 | `84a0ee9` -> **`4974cdc`** | ok, exit 0, 117 765 ms, wait 0 | **green** 1 304 418 ms, **2810/0**, covers genau diesen Land | nicht geschuldet |
+| Plan-Schnitt | `4974cdc` -> **`8bc77d8`** | main-direct, `bun e2e/pins.ts` exit 0 ALL PASS | keiner (kein Lane-Land) | nicht geschuldet |
+
+**Kein Deploy offen, und das ist gemessen, nicht geschlossen:** beide Commits sind reine
+`docs/*.md`. Live nach dem Audit: `codeBehind false`, `bundleStale false`. Der Server laeuft
+weiter auf `83468e0` — richtig, nicht rueckstaendig.
+
+**Die 2810 sind erneut unveraendert, und das ist wieder das SOLL:** ACP-21 legte eine Datei in
+`docs/messungen/` ab und fasste kein `e2e/`-Modul an. Eine bewegte Zahl waere hier das
+Verdaechtige. `ms` 1 304 418 liegt im Band echter Laeufe (Vorlauf: 1 303 529) — geprueft an `ms`
+und `checks.ran`, nicht am Wort „green".
+
+## 3. Was ACP-21 wirklich gemessen hat (`4974cdc`, eine Datei, 186 Zeilen)
+
+`docs/messungen/acp21-prompt-annahme-2026-08-22.md`. **Reproduziert, mit einer Bedingung:** bei
+einem MEHRZEILIGEN Paste, den die CLI zu `[Pasted text #1 +N lines]` einklappt, geht das eine
+Enter aus `sendText` intermittierend verloren — Text vollstaendig im Composer, kein Transcript,
+zweites Enter schickt sofort ab.
+
+| Zelle | n | Fehlform |
+|---|---|---|
+| Kontrolle (`send-keys -l` + Enter) | 5 | 0 — die Sonde misst, was sie messen soll |
+| Einzeiler, Fleet-Form, 150 ms | 10 | 0 |
+| **Mehrzeiler, Fleet-Form, 150 ms** | 7 | **2 (29 %)** |
+| Mehrzeiler, 2500 ms | 4 | 0 |
+
+Die Lane sagt beim 0/4 selbst, dass es **kein Beweis** ist (bei p=0,29 waere 0/4 zu 25 % Zufall).
+`@/abs/path` (3/3) und fuehrendes `/` (3/3) haben NICHT reproduziert — der dokumentierte
+Popup-Ausloeser (`server.ts:7598-7606`) ist damit nicht widerlegt, nur nicht getroffen. Beide
+Konfundierer wurden vor ALLEN 40 Sends geprueft: 40/40 sauber, auch in den zwei
+Fehlform-Captures. 40 echte Prompts, Budget ausgeschoepft.
+
+**Der belegte Kernsatz:** in genau dieser Fehlform antwortet die Route `{ok:true,
+receipt:{submitted:true}}`, waehrend der Prompt im Composer steht. `submitted: submit`
+(`server.ts:19534`) echot das Request-Flag (`:19513`) — die Quittung KANN strukturell nichts
+anderes sagen. Der Fix-Vorschlag steht als Vorschlag am Ende der Notiz; gebaut wurde nichts.
+
+## 4. Was ich am Bericht der Lane SELBST nachgeprueft habe (nicht geglaubt)
+
+1. **Write-Set exakt:** eine Datei, 186 Zeilen, Baum sauber, keine untracked Datei, kein
+   `server.ts`.
+2. **`server.ts:19513`** (`const submit = body.submit !== false`) woertlich am Baum bestaetigt.
+3. **Ein Verdacht, der sich als FALSCH erwies, und darum hier steht:** die Notiz nennt den
+   Probe-Spawn „1:1 nach `agentCmd`", setzt aber `--prompt-suggestions false` — ich hielt das fuer
+   eine unbenannte Abweichung. Es steht in `server.ts:175`. Der Spawn ist wirklich 1:1. Geprueft
+   statt gemeldet.
+
+## 5. Was ich falsch gemacht habe
+
+- **Ich habe `POST /api/slots/3/land` fuer den Merge gehalten.** Das ist der TEARDOWN nach einem
+  Merge (`landLane` -> `removeWorktreeSafe`, `server.ts:4192`/`:4150`); der Merge ist
+  `POST /api/slots/:id/merge` (`:18132`, die einzige `mergeJob(`-Aufrufstelle). Der Fehlruf
+  verweigerte sauber mit `unpushed commits` — nachgeprueft: main unbewegt, Branch nicht gemerged,
+  Lane intakt, **nichts halb passiert**. Fuer die Nachfolgerin: **merge, dann land.**
+- **Ich habe fast eine Regelbuch-Korrektur gemeldet, die falsch gewesen waere.** Eine frisch
+  dispatchte Pane zeigte `● high · /effort`, und ich hielt den Footer fuer einen Effort-Sensor.
+  An drei Panes nachgemessen: das ist die rotierende HINWEIS-Flaeche rechts (dort steht auch
+  „✔ Update installed" und „new task? /clear to save 137.5k tokens"). Der Footer traegt Branch,
+  `ctx` und Modell — **nie** den Effort. Die Regelbuch-Zeile stimmt, ACP-19 bleibt offen.
+
+## 6. Offene Raender, die ich WEITERTRAGE
+
+1. **15 UNTRACKED Dateien im Haupt-Checkout**, darunter vier Rollen-Analysen
+   (`docs/rollen-architektur-glm-2026-08-21.md`, `docs/synthese-rollenarchitektur-2026-08-21.md`,
+   `docs/kritik-opus-2026-08-21.md`, `docs/rollen-evidenz-2026-08-21.md`) — **genau der Input fuer
+   Owner-Korrektur (1)**, also fuer §0. Uncommittet sind sie fuer jede Lane unsichtbar und
+   Kollisions-Zuendstoff (das Regelbuch nennt genau diese Falle). Ich habe sie NICHT gelesen und
+   fremde Analyse nicht ungefragt committet. Wer §0 briefet, muss das zuerst aufloesen: lesen und
+   committen, oder bewusst danebenlegen — aber nicht ignorieren.
+2. **`autoReview: summarizer timed out without an answer`, zweimal**, unveraendert seit dem
+   Vorgaenger-Handoff (`errors.total 2`, letzte 12:03:39, keine neue in dieser Session). Nicht
+   diagnostiziert.
+3. **Queue-Zeile `89b48243`** (Welcome-Composer nach `bootstrap-main`) bleibt OFFEN und ist
+   kommentiert: ACP-21 hat sie NICHT nachgestellt (ihr Brief lief durch den echten Fleet-Pfad,
+   die Probe nicht). Belegt oder widerlegt ist sie damit nicht.
+4. **`notiz 5ddc8877` (ACP-19)** — Modell/Effort eines LEBENDEN Slots unreparierbar, unveraendert.
+   Slot 1 traegt weiter `model: "fable"`, `effort: null`.
+5. **Der orphane Worktree `fleet-260821211509-0be7`** (Slot 8, fremde auftragsmarkt-Doku-Lane) steht
+   unveraendert auf Platte. Nicht meine, nicht ACP.
+6. **Boot-Reconcile-Defekt `94ab77dd`**, **`~/.codex/config.toml` waechst unbegrenzt
+   (`1270b246`)**, **9 stale Program-Bindungen** — alle unveraendert, alle in dieser Session
+   folgenlos.
+7. **`RULE_ANCHORS` deckt weiter nur `pfad §anker` nebeneinander** (Rand aus ACP-20).
+
+## 7. Maschinenzustand bei der Uebergabe
+
+- main **`8bc77d8`**, Server auf `83468e0`, `codeBehind false`, `bundleStale false` — kein Deploy.
+- **Zwei Provenienz-Formen in dieser Session, beide sichtbar:** ACP-21 ueber eine Lane (Land-Note,
+  `lane-outcomes`, Post-Land-Audit). Der Plan-Schnitt als Direkt-Commit — aber **nicht unsichtbar**:
+  ueber `POST /api/self/main-direct/preflight` + `/finalize` gefahren
+  (preflight `7026a83cb126f190d1efb136`, Outcome `landed`, `4974cdc -> 8bc77d8`, verify
+  `bun e2e/pins.ts` ok). Verify auf Prosa-Proportion, KEIN Tier-2 — die Aenderung ist reine Prosa
+  in einer `docs/*.md`, dieselbe Klasse, die der Land-Gate als `docs-or-prose` mit
+  steps `[install, pins]` fuehrt. Das ist eine bewusste Entscheidung, keine Auslassung.
+- `dispatch: false`, 0 queued, 0 sent, keine Suite laeuft. Freie Slots: **3, 11, 15**.
+- Program `eeba7c04caae64d79969199b` ist occupant-genau an Slot 2 gebunden; die Nachfolge erbt es.
+- Queue-Bewegungen dieser Session: `b9fb044e` (ACP-21) neu und `done (landed)` ·
+  `30592fb1` (Owner-Korrektur) neu als `notiz`, OFFEN, zwei Kommentare · `89b48243` kommentiert.
+
 # HANDOFF — ACP Architecture Controller VII (Slot 3), 2026-08-22, ctx 21,9 % GEMESSEN
 
 **Die Huelle wird benutzt.** ACP-16 hatte `POST /api/self/tasks/:id/release` gebaut und niemand

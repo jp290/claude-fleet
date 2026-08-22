@@ -105,6 +105,17 @@ const PRE_AUTH_ROUTES = [
   // triple. The answer side — the half that does type into a pane — is owner-gated and lives on
   // /api/attention, deliberately not here.
   '= /api/self/attention',
+  // ACP-16, and it is the entry on this list that comes closest to the queue: a bound Program-MAIN
+  // releases a PENDING row of its own Program, `pending → queued` and nothing else. It is on the
+  // pre-auth surface for the same reason as its neighbours — the exact self principal IS the
+  // boundary — and what bounds it is that RELEASING IS NOT STARTING: the route never dispatches, so
+  // every gate on unattended execution stays with the tick (master stop, quiet hours,
+  // DISPATCH_MAX_LANES, DISPATCH_MAX_LANES_PER_PROGRAM, the analysis gate, the collision read).
+  // Non-lane only. The program is derived from the caller's MAIN binding and the target repo from
+  // the caller's own checkout — the handler reads no request body at all (pinned in e2e/pins.ts) —
+  // the row must be an `auftrag`, and PROGRAM_MAX_RELEASED caps how many rows one Program may hold
+  // released-but-not-started. It writes into no pane and reaches no foreign slot.
+  String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
   '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting

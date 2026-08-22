@@ -1344,6 +1344,216 @@ export async function run(ctx: Ctx): Promise<void> {
       && (readState().attentionRequests ?? []).length === attentionBeforeProbes.length,
     `binding=${JSON.stringify((await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main)} rows=${(readState().attentionRequests ?? []).length}`);
 
+  // === ACP-16 · THE PROGRAM-MAIN RELEASE DOOR ==================================================
+  // Runs on the binding the cleanup above just restored: mainProgram is ACTIVE and bound LIVE to
+  // successorSlot, whose cwd is REPO — which is also FLEET_DISPATCH_REPO in this suite, so an
+  // unbound row's target repo and this MAIN's own checkout are the same repository.
+  //
+  // WHY THE CALLER'S HARNESS IS THE DISCRIMINATOR HERE, and it is not incidental: this MAIN runs
+  // the CODEX adapter and the whole suite runs with FLEET_HARNESS_AUTOMATION=0. The route's entry
+  // gate asks whether an unattended path may drive the harness the TICK would spawn — DEFAULT_SPAWN,
+  // i.e. the default adapter — not the harness of the session asking. A gate that read the caller's
+  // slot instead would turn (a) below red and leave every other check in this section green, which
+  // is exactly the shape that makes this fixture worth stating.
+  const releaseBinding = (await ownerPrograms()).find((x) => x.id === mainProgram.id)?.main;
+  const releaseMainState = readState().slots?.[String(successorSlot)];
+  const releaseOccupancy = await occupancyOf(mainProgram.id);
+  // FIXTURE PRECONDITION, its own check: every refusal and every success below is only evidence if
+  // the caller really is the live bound MAIN of an active Program, in a checkout that is a repo.
+  // A probe that cannot establish its precondition must fail AS ITSELF.
+  check("ACP-16 fixture: the release probes run on a LIVE binding whose MAIN sits in a checkout and drives codex",
+    successorSlot !== null && releaseOccupancy === "live"
+      && releaseBinding?.slot === successorSlot && releaseBinding.openedAt === releaseMainState?.openedAt
+      && typeof releaseMainState?.cwd === "string" && releaseMainState.cwd.length > 0
+      && releaseMainState.harness === "codex" && /^[0-9a-f]{32}$/.test(successorToken),
+    `occupancy=${releaseOccupancy} binding=${JSON.stringify(releaseBinding)} cwd=${releaseMainState?.cwd} harness=${releaseMainState?.harness}`);
+
+  const selfRelease = (token: string, id: string, body?: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks/${id}/release`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": token },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  type TaskRow = { id: string; kind: string; status: string; releasedBy?: string | null;
+    programId?: string; repo?: string | null; slot?: number | null };
+  const allTasks = async (): Promise<TaskRow[]> =>
+    ((await (await get("/api/tasks")).json()) as { tasks: TaskRow[] }).tasks;
+  const taskRow = async (id: string): Promise<TaskRow | undefined> =>
+    (await allTasks()).find((t) => t.id === id);
+  const madeTasks: string[] = [];
+  const makeTask = async (fields: Record<string, unknown>): Promise<string> => {
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: TaskRow };
+    madeTasks.push(created.task.id);
+    return created.task.id;
+  };
+  const fleetSwitches = async (): Promise<{ dispatchOn: boolean; autosOn: boolean; occupied: number; lanes: number }> => {
+    const body = (await (await get("/api/sessions")).json()) as
+      { slots: { cwd: string | null; worktree: unknown | null }[]; dispatch: { on: boolean }; autosOn: boolean };
+    return { dispatchOn: body.dispatch.on, autosOn: body.autosOn,
+      occupied: body.slots.filter((x) => x.cwd).length, lanes: body.slots.filter((x) => x.worktree).length };
+  };
+  const switchesBefore = await fleetSwitches();
+  // Both master stops OFF for the whole section: this door must not start anything, and a tick that
+  // legitimately started a released row mid-section would make every count below unreadable. The
+  // causal control for "a queued row DOES get dispatched once the gates open" is e2e/tasks.ts's
+  // dispatch-gate block (c) — it is that section's subject, and duplicating it here would spawn a
+  // lane in the middle of the occupancy bookkeeping this file depends on.
+  await post("/api/dispatch", { on: false });
+  await post("/api/autos/switch", { on: false });
+  const auditLines = (): number => readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).length;
+  const auditSince = (from: number): { event?: string; slot?: number; detail?: string }[] =>
+    readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean).slice(from)
+      .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
+
+  // (a) THE ACT ITSELF, and the trail it must leave.
+  const ownId = await makeTask({ text: "acp16 own auftrag", programId: mainProgram.id });
+  const auditBeforeRelease = auditLines();
+  const stateBeforeRelease = await fleetSwitches();
+  const releaseOk = await selfRelease(successorToken, ownId);
+  const releaseOkBody = await releaseOk.json() as
+    { ok?: boolean; sessionIdMatch?: string; task?: TaskRow };
+  const releasedRow = await taskRow(ownId);
+  const releaseTrail = auditSince(auditBeforeRelease).filter((r) => r.event === "task_release");
+  check("ACP-16 (a): a bound MAIN releases its own pending auftrag — queued, releasedBy machine, one task_release row",
+    releaseOk.status === 200 && releaseOkBody.ok === true
+      && releaseOkBody.task?.status === "queued" && releaseOkBody.task.releasedBy === "machine"
+      && typeof releaseOkBody.sessionIdMatch === "string"
+      && releasedRow?.status === "queued" && releasedRow.releasedBy === "machine"
+      && releaseTrail.length === 1 && releaseTrail[0]?.slot === successorSlot
+      && releaseTrail[0]?.detail === `${ownId} program=${mainProgram.id}`,
+    `${releaseOk.status} ${JSON.stringify(releaseOkBody)} row=${JSON.stringify(releasedRow)} trail=${JSON.stringify(releaseTrail)}`);
+
+  // (f) RELEASING IS NOT STARTING. Three separate absences, because they fail differently: the
+  // answer names no slot, the row keeps none, and no occupant appeared. Then a FULL dispatch tick
+  // passes with the master stops engaged and the row is still exactly where the release left it.
+  const stateAfterRelease = await fleetSwitches();
+  const dispatchTrail = auditSince(auditBeforeRelease).filter((r) => r.event === "task_dispatch");
+  await Bun.sleep(1500); // > FLEET_DISPATCH_TICK_MS (250 ms in this suite) by a wide margin
+  const rowAfterTick = await taskRow(ownId);
+  const stateAfterTick = await fleetSwitches();
+  check("ACP-16 (f): the release DISPATCHES NOTHING — no slot in the answer, none on the row, no new occupant, and a full tick under the master stops changes nothing",
+    releasedRow?.slot == null && !("slot" in (releaseOkBody.task ?? {}))
+      && dispatchTrail.length === 0
+      && stateAfterRelease.occupied === stateBeforeRelease.occupied
+      && stateAfterRelease.lanes === stateBeforeRelease.lanes
+      && rowAfterTick?.status === "queued" && rowAfterTick.slot == null
+      && stateAfterTick.occupied === stateBeforeRelease.occupied
+      && stateAfterTick.lanes === stateBeforeRelease.lanes
+      && stateAfterTick.dispatchOn === false && stateAfterTick.autosOn === false,
+    `before=${JSON.stringify(stateBeforeRelease)} after=${JSON.stringify(stateAfterTick)} row=${JSON.stringify(rowAfterTick)} dispatchRows=${dispatchTrail.length}`);
+
+  // (b) A ROW OF ANOTHER PROGRAM. The bracket is derived from the binding, so this is not the
+  // caller's to release — and the refusal must leave the row byte-identical, not half-touched.
+  const foreignProgram = await activateNewProgram("ACP-16 foreign bracket");
+  const foreignId = await makeTask({ text: "acp16 foreign auftrag", programId: foreignProgram.id });
+  const foreignBefore = JSON.stringify(await taskRow(foreignId));
+  const foreignRes = await selfRelease(successorToken, foreignId);
+  const foreignText = await foreignRes.text();
+  // ...and the row nobody bracketed at all: `programId` is absent, which is not "matches nothing in
+  // particular" — it is a row whose only door stays the owner's ▸ queue.
+  const unbracketedId = await makeTask({ text: "acp16 unbracketed auftrag" });
+  const unbracketedBefore = JSON.stringify(await taskRow(unbracketedId));
+  const unbracketedRes = await selfRelease(successorToken, unbracketedId);
+  check("ACP-16 (b): a row of another program — and an unbracketed row — are 409 and stay untouched",
+    foreignRes.status === 409 && foreignText.includes(`releases only rows of program ${mainProgram.id}`)
+      && JSON.stringify(await taskRow(foreignId)) === foreignBefore
+      && unbracketedRes.status === 409
+      && JSON.stringify(await taskRow(unbracketedId)) === unbracketedBefore,
+    `foreign=${foreignRes.status}:${foreignText} unbracketed=${unbracketedRes.status}`);
+
+  // (c) AN ADVISORY ROW IS NOT WORK, in the same words the two doors before this one use.
+  const notizId = await makeTask({ text: "acp16 own notiz", kind: "notiz", programId: mainProgram.id });
+  const notizBefore = JSON.stringify(await taskRow(notizId));
+  const notizRes = await selfRelease(successorToken, notizId);
+  const notizText = await notizRes.text();
+  check("ACP-16 (c): a notiz of the caller's OWN program is 409 with the dispatcher's own sentence, and stays pending",
+    notizRes.status === 409 && notizText.includes("a notiz is advisory — the dispatcher never runs this")
+      && JSON.stringify(await taskRow(notizId)) === notizBefore,
+    `${notizRes.status}:${notizText}`);
+  // …and the same row is refused a SECOND way once it is no longer pending: only pending → queued
+  // is a release, so the already-released row from (a) answers about its status, not about its kind.
+  const rereleaseRes = await selfRelease(successorToken, ownId);
+  const rereleaseText = await rereleaseRes.text();
+  check("ACP-16: a repeat release of an already-released row is 409 naming the status it actually hit",
+    rereleaseRes.status === 409 && rereleaseText.includes("task is queued — only a pending row can be released")
+      && (await taskRow(ownId))?.releasedBy === "machine",
+    `${rereleaseRes.status}:${rereleaseText}`);
+
+  // (d) NO BINDING AT ALL — and the words must be the HELPER's, not this route's paraphrase of it.
+  const unboundReleaseSlot = (await sessions()).slots.find((x) => !x.cwd)?.id ?? null;
+  const unboundReleaseOpen = unboundReleaseSlot === null ? null
+    : await post(`/api/slots/${unboundReleaseSlot}/open`, { cwd: REPO, label: "unbound-release-probe" });
+  const unboundReleaseToken = readState().slots?.[String(unboundReleaseSlot)]?.selfToken ?? "";
+  const unboundId = await makeTask({ text: "acp16 row for an unbound caller", programId: mainProgram.id });
+  const unboundRes = await selfRelease(unboundReleaseToken, unboundId);
+  const unboundResText = await unboundRes.text();
+  check("ACP-16 (d): a session with no Program-MAIN binding is 409 in boundProgramForMain's OWN words",
+    !!unboundReleaseOpen?.ok && /^[0-9a-f]{32}$/.test(unboundReleaseToken)
+      && unboundRes.status === 409
+      && unboundResText.includes("not the current bound MAIN")
+      && !unboundResText.includes("ambiguous")
+      && (await taskRow(unboundId))?.status === "pending",
+    `open=${unboundReleaseOpen?.status} ${unboundRes.status}:${unboundResText}`);
+  if (unboundReleaseSlot !== null) await post(`/api/slots/${unboundReleaseSlot}/kill`, {});
+
+  // (e) THE BODY CANNOT NOMINATE ANYTHING. Two shapes at once: a body naming the FOREIGN program
+  // (which would flip a refusal into a success if it were read) and a body naming a different repo
+  // (which would move where the lane spawns). The row's own fields must come out unchanged.
+  const bodyProbeId = await makeTask({ text: "acp16 body-nomination probe", programId: mainProgram.id });
+  const bodyProbeBefore = await taskRow(bodyProbeId);
+  const bodyProbeRes = await selfRelease(successorToken, bodyProbeId,
+    { programId: foreignProgram.id, repo: REPO3, slot: 1, releasedBy: "owner" });
+  const bodyProbeAfter = await taskRow(bodyProbeId);
+  // the mirror direction, and it is the one that would look like a PASS if the body were read: a
+  // body naming the caller's OWN program must not rescue the foreign row (b) already refused.
+  const foreignWithBody = await selfRelease(successorToken, foreignId, { programId: mainProgram.id });
+  check("ACP-16 (e): a programId/repo in the BODY changes nothing — the binding wins in both directions",
+    bodyProbeRes.status === 200 && bodyProbeAfter?.status === "queued"
+      && bodyProbeAfter.releasedBy === "machine"
+      && bodyProbeAfter.programId === mainProgram.id
+      && bodyProbeAfter.repo === bodyProbeBefore?.repo
+      && foreignWithBody.status === 409
+      && (await taskRow(foreignId))?.status === "pending",
+    `own=${bodyProbeRes.status} after=${JSON.stringify(bodyProbeAfter)} foreignWithBody=${foreignWithBody.status}`);
+
+  // THE CAP, per Program, over rows released-but-not-yet-started. Non-tautological in both
+  // directions: the fill must actually cross the cap (so the guard below could fail), and the rows
+  // that got through must still be there when the refusal comes.
+  const queuedOfMain = async (): Promise<number> =>
+    (await allTasks()).filter((t) => t.programId === mainProgram.id && t.status === "queued").length;
+  const RELEASE_CAP = 5; // PROGRAM_MAX_RELEASED's default; the suite sets no FLEET_PROGRAM_MAX_RELEASED
+  const queuedBeforeCap = await queuedOfMain();
+  const capIds: string[] = [];
+  for (let i = 0; i <= RELEASE_CAP - queuedBeforeCap; i++)
+    capIds.push(await makeTask({ text: `acp16 cap filler ${i}`, programId: mainProgram.id }));
+  const capStatuses: number[] = [];
+  let capLastText = "";
+  for (const capId of capIds) {
+    const res = await selfRelease(successorToken, capId);
+    capStatuses.push(res.status);
+    capLastText = await res.text();
+  }
+  check("ACP-16 cap: a Program-MAIN holds at most PROGRAM_MAX_RELEASED released-but-unstarted rows, and the refusal names the number",
+    queuedBeforeCap < RELEASE_CAP && capStatuses.length === RELEASE_CAP - queuedBeforeCap + 1
+      && capStatuses.slice(0, -1).every((s) => s === 200) && capStatuses.at(-1) === 409
+      && capLastText.includes(`release cap reached (${RELEASE_CAP}/${RELEASE_CAP} released rows not yet started)`)
+      && (await queuedOfMain()) === RELEASE_CAP,
+    `before=${queuedBeforeCap} statuses=${capStatuses.join(",")} last=${capLastText}`);
+
+  // Leave the queue and the two switches exactly as this section found them: every row it minted is
+  // deleted (none of them is `sent`, so none is a running lane's founding row), and the master stops
+  // go back to the values the modules after this one inherit.
+  for (const id of madeTasks) await post(`/api/tasks/${id}/delete`, {});
+  await post("/api/dispatch", { on: switchesBefore.dispatchOn });
+  await post("/api/autos/switch", { on: switchesBefore.autosOn });
+  const switchesAfter = await fleetSwitches();
+  check("ACP-16 cleanup: every row this section minted is gone and both master stops are back where they were",
+    (await allTasks()).every((t) => !madeTasks.includes(t.id))
+      && switchesAfter.dispatchOn === switchesBefore.dispatchOn
+      && switchesAfter.autosOn === switchesBefore.autosOn,
+    `rows=${(await allTasks()).filter((t) => madeTasks.includes(t.id)).length} switches=${JSON.stringify(switchesAfter)}`);
+
+
   if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;
   check("GET /api/programs occupancy: killing the bound occupant flips the SAME program to stale",

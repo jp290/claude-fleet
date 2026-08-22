@@ -115,6 +115,18 @@ const PRE_AUTH_ROUTES = [
   // the caller's own checkout — the handler reads no request body at all (pinned in e2e/pins.ts) —
   // the row must be an `auftrag`, and PROGRAM_MAX_RELEASED caps how many rows one Program may hold
   // released-but-not-started. It writes into no pane and reaches no foreign slot.
+  // ACP-23, the FILING half of the pair below it, and it is the newer of the two doors a bound
+  // Program-MAIN has onto the queue. On this list for the same reason as every neighbour — the
+  // exact self principal IS the boundary — and what bounds it is that FILING IS NOT RELEASING: the
+  // row arrives `pending`, which the handler writes as a literal, so it is not even a candidate for
+  // the tick until the separate release act moves it. Non-lane only. The program is derived from
+  // the caller's MAIN binding and the target repo from the caller's own checkout; the body may
+  // carry `text` and `kind` and NOTHING else (a closed set — `programId`, `repo`, `status`,
+  // `queue`, `releasedBy` are refused 400, never dropped), `kind` runs through the same four-value
+  // validator as the owner and steward create routes and defaults to the advisory `notiz`, and
+  // PROGRAM_MAX_PENDING caps how many unreleased rows one Program's MAIN may hold. It writes into
+  // no pane, starts nothing and reaches no foreign slot.
+  '= /api/self/tasks',
   String.raw`~ /^\/api\/self\/tasks\/([a-z0-9]+)\/release$/`,
   '~ /^\\/api\\/self\\/events\\/([a-z0-9]+)\\/ack$/', // same slot+session credential; idempotent receipt only
   '= /api/self/succeed',  // non-lane only: committed HANDOFF → one successor; caller retires on grace

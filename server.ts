@@ -1674,7 +1674,11 @@ const loadTaskKind = (value: unknown, source: Task["source"]): TaskKind => {
   if (value === "lane") return "auftrag";
   if (value === "note") return "notiz";
   if (isTaskKind(value)) return value;
-  return source === "steward" ? "notiz" : "auftrag";
+  // The safe default is the DOOR's default, per producer. A main row reaching this line is already
+  // malformed (POST /api/self/tasks always writes a validated kind), and the only question left is
+  // which way a malformed row should fall: "auftrag" would promote an advisory filing into the one
+  // executable category across a reload, i.e. hand the dispatcher a row nobody ever wrote as work.
+  return source === "steward" || source === "main" ? "notiz" : "auftrag";
 };
 const taskKindNote = (kind: TaskKind): string | null =>
   kind === "auftrag" ? null : `${kind} — the dispatcher never runs this`;
@@ -1687,7 +1691,12 @@ interface Task {
   programId?: string; // owner-attached Program bracket. Absent means this task belongs to no
   // Program (or predates the field); refine children inherit it, but no load-time backfill occurs.
   text: string;
-  source: "owner" | "intake" | "steward";
+  // ACP-23 added "main": a row a bound Program-MAIN filed through POST /api/self/tasks. It is a
+  // PRODUCER name like the other three, not a permission — what a main row may be is bounded at
+  // its door (always pending, notiz unless the caller names a kind), and every reader that already
+  // asked "is this steward" keeps its answer. The load allowlist in loadState carries the same
+  // four values: a source it does not list is dropped on the next boot, silently and greenly.
+  source: "owner" | "intake" | "steward" | "main";
   from: string | null; // intake sender label (freeform, for display only — never trusted)
   kind: TaskKind; // auftrag is the one executable category. richtung, notiz and betrieb are
   // advisory categories without their own motor (owner decision 2026-08-10); promoting one is
@@ -2503,6 +2512,17 @@ const DISPATCH_MAX_LANES_PER_PROGRAM = Math.max(1,
 // how deep the queue is. 80 is also below MAX_TASKS (200), so the product cannot outgrow the list
 // it lives in. The cap bounds QUEUE DEPTH, and it is honest about bounding nothing else.
 const PROGRAM_MAX_RELEASED = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_RELEASED ?? 5) | 0);
+// ACP-23: how many rows ONE Program-MAIN may hold FILED-but-not-yet-released through its own
+// create door. Same per-object shape as the cap above, so it owes the same product, and it is
+// counted the same way: only rows this door wrote (source "main") for THIS program that nobody has
+// released yet. A released row leaves this count and enters PROGRAM_MAX_RELEASED's, so the two
+// compose instead of double-counting — one MAIN can hold 5 unreleased drafts plus 5 released ones.
+// THE PRODUCT: filing needs a LIVE bound Program-MAIN, i.e. an occupied slot, so at most MAX_SLOTS
+// (16) programs can be filing at any moment → 16 × 5 = 80 rows, and 80 + the release cap's 80 is
+// still under MAX_TASKS (200). What this bounds is QUEUE DEPTH and nothing else — a filed row is
+// PENDING, so it is not even a candidate for the tick; what bounds unattended EXECUTION remains
+// lane-shaped and untouched (DISPATCH_MAX_LANES per repo, narrowed by DISPATCH_MAX_LANES_PER_PROGRAM).
+const PROGRAM_MAX_PENDING = Math.max(1, Number(process.env.FLEET_PROGRAM_MAX_PENDING ?? 5) | 0);
 // createWorktree stores the git TOPLEVEL (symlink-resolved: /tmp → /private/tmp) as a lane's
 // repo, so comparing lanes against a raw configured path would silently match nothing — and a
 // cap that matches nothing is no cap. Canonicalize once per repo (cached — realpaths of repo
@@ -2941,6 +2961,11 @@ type AuditEvent =
   | "merge_wake_author"
   | "steward_send" | "steward_send_capped"
   | "steward_journal" | "steward_journal_capped" | "steward_task" | "steward_propose_outcome"
+  // ACP-23 · a bound Program-MAIN filed a row of its own Program through POST /api/self/tasks.
+  // Named after its PRODUCER like steward_task, and separate from task_release for the same reason
+  // that pair is separate: filing and releasing are two acts, and a trail that could not tell them
+  // apart would make "the machine wrote itself work" and "the machine started work" one line.
+  | "main_task"
   // a steward filing whose `ref` matched a live proposal — answered with the existing row, so the
   // trail shows the pulse KEPT seeing the condition without the queue growing a duplicate
   | "steward_task_dedup"
@@ -5921,6 +5946,100 @@ async function releaseTaskForMain(s: Slot, id: string): Promise<Response> {
   // and handleSelfSucceed answer with.
   return json({ ok: true, sessionIdMatch,
     task: { id: t.id, kind: t.kind, status: t.status, releasedBy: t.releasedBy, programId: t.programId } });
+}
+
+// ACP-23 · THE THIRD CONSUMER OF THE BRACKET ABOVE, and the door ACP-16 turned out to presuppose.
+// A bound Program-MAIN files a row of its OWN Program: it arrives `pending`, and nothing else.
+//
+// WHY IT EXISTS. The owner's promotion of 2026-08-22, in its own words: "Default `notiz`, but keep
+// Project-MAIN autonomy: the self route may create `kind:\"auftrag\"` EXPLICITLY, only inside its
+// occupant-bound OWN program; creating is ALWAYS `pending`, and release stays the separate
+// deliberate act over the existing route/the tick. The safe default is therefore NOT a ban on
+// autonomy." Until this route existed the code could only release a row that ALREADY stood in the
+// queue, so a Program-MAIN that discovered a new piece of work had to reach for the OWNER token to
+// write it down — the one credential the whole self rail exists to keep out of a session's hands.
+// It was paid twice on one day: the MAIN that briefed this act filed its own predecessor row that
+// way, and a foreign program hit the same class three times (~/private-repo-e, docs/efficiency-pilot-result.md).
+//
+// THE TWO ACTS STAY TWO, and that is the property the whole act rests on. This door writes
+// "pending" as a LITERAL: there is no `queue: true` shorthand like the owner's create route has,
+// and no body field this handler reads can reach the status at all. Releasing therefore remains
+// exactly one separate deliberate act through releaseTaskForMain, which is untouched — so every
+// gate that decides whether a row may RUN unattended (the master stop and quiet hours, both
+// dispatch caps, the analysis gate, the collision read, the release cap) is reached through the
+// same door as before. This widens WHO MAY WRITE A ROW. It widens nothing about what may run.
+//
+// WHAT THE BODY MAY SAY — and unlike the release door next to it, this one has to read a body at
+// all, so it says its rule out loud instead of getting it for free from an absence. `programId`
+// and `repo` are precisely the two fields a request could use to nominate work outside the
+// caller's authority, so neither is read: the program comes from the binding, the repo from the
+// caller's own checkout. Everything else is refused by a CLOSED set rather than dropped, because a
+// field silently ignored is a field the caller believes was honoured — `status`, `queue`,
+// `source`, `releasedBy` and `ref` all have a meaning at some other door, and a caller that spells
+// one here must be told it did not land, not left to infer it from a row it cannot see.
+async function createTaskForMain(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  // The authority bracket answers FIRST and in its own words — "not bound" and "ambiguously bound"
+  // stay two different refusals, exactly as at the release door: they send the caller to fix two
+  // different things.
+  const bound = boundProgramForMain(s);
+  if (!bound.ok) return json({ error: bound.error }, 409);
+  const { program, sessionIdMatch } = bound;
+  if (!body) return json({ error: "invalid json" }, 400);
+  // (1) THE PROGRAM COMES FROM THE BINDING. A body naming one is refused rather than compared or
+  // overwritten: a comparison would make the field look consultable, and an overwrite would let a
+  // caller believe it filed against a program its request never reached.
+  if (body.programId !== undefined)
+    return json({ error: `programId comes from this session's MAIN binding (${program.id}) and is never read from the body` }, 400);
+  // (2) …and the rest as a closed set, named in the refusal so the caller can see what it may say.
+  const SELF_TASK_FIELDS = ["text", "kind"];
+  const extra = Object.keys(body).filter((k) => !SELF_TASK_FIELDS.includes(k));
+  if (extra.length)
+    return json({ error: `this door reads ${SELF_TASK_FIELDS.join(" and ")} only — [${extra.join(", ")}] is not read: repo comes from this session's checkout, and a filed row is always pending (release it with POST /api/self/tasks/:id/release)` }, 400);
+  if (typeof body.text !== "string" || !body.text.trim())
+    return json({ error: "text must be a non-empty string" }, 400);
+  // (3) THE KIND, through the SAME four-value validator the owner and steward create routes use —
+  // never a second charset. The default is the owner's word: notiz. `auftrag` is reachable and only
+  // by naming it, which is the autonomy the promotion explicitly preserved. `richtung` and `betrieb`
+  // come along because they are advisory in exactly the way notiz is (taskKindNote says so of all
+  // three, and every dispatch path skips them); refusing them would force a MAIN to file an
+  // operations observation as a note and leave the owner to repair the category by hand afterwards.
+  if (body.kind !== undefined && !isTaskKind(body.kind))
+    return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
+  const kind: TaskKind = isTaskKind(body.kind) ? body.kind : "notiz";
+  // (4) THE REPO COMES FROM THE BINDING'S CHECKOUT, by the same helper as at the release door.
+  // Deliberately DERIVED rather than left null, and the reason is that other door: it compares
+  // `t.repo ?? DISPATCH_REPO` against the caller's own checkout, so on a fleet whose configured
+  // FLEET_DISPATCH_REPO is a DIFFERENT repository a null-repo row would be refused by the very MAIN
+  // that wrote it. An underivable repo fails as ITSELF rather than silently becoming that null.
+  const mainRepo = await repoKeyOf(s);
+  if (!mainRepo)
+    return json({ error: "this session's checkout is not a git repository — the row's target repo cannot be derived" }, 409);
+  // (5) THE CAP, per Program, over the rows this door has filed that nobody has released yet. It
+  // counts only `source: "main"` rows, so the owner's own drafts in the same bracket are not
+  // charged to the MAIN's budget and the MAIN cannot be locked out by them. An exceeded cap is a
+  // 409 that NAMES THE NUMBER — a filing quietly dropped would be indistinguishable from one made.
+  const openPending = tasks.filter((x) => x.source === "main" && x.programId === program.id
+    && x.status === "pending").length;
+  if (openPending >= PROGRAM_MAX_PENDING)
+    return json({ error: `program filing cap reached (${openPending}/${PROGRAM_MAX_PENDING} filed rows not yet released) — release or drop one first` }, 409);
+  const id = randomBytes(4).toString("hex");
+  const t: Task = {
+    id, originId: id, text: body.text.slice(0, MAX_TASK_TEXT).trim(),
+    source: "main", from: null, kind, repo: mainRepo, programId: program.id,
+    // THE STATUS THIS ROUTE CANNOT BE TALKED OUT OF: a literal, not anything derived from the
+    // request. And no `releasedBy` — that field exists so an unreleased row stays distinguishable
+    // from one somebody released, and a filing has not been released by anyone.
+    status: "pending", created: Date.now(), slot: null, note: null,
+  };
+  tasks = capTasks([...tasks, t]);
+  // saveStateNow, not the debounced saveState the steward's filing uses. This row is the INPUT to
+  // an unattended release, and a filing lost inside the debounce window would vanish exactly the
+  // way an unlisted `source` vanishes at the next boot: silently, with every check still green.
+  await saveStateNow();
+  audit("main_task", s.id, `${t.id} program=${program.id} ${kind}`);
+  // sessionIdMatch is REPORTED, never gated — ACP-13's doctrine, the same shape releaseTaskForMain
+  // and openAttention answer with.
+  return json({ ok: true, sessionIdMatch, task: t });
 }
 
 const attentionBound = (a: AttentionRequest, s: Slot): boolean =>
@@ -14207,7 +14326,7 @@ if (existsSync(STATE_FILE)) {
       tasks = ((persisted as { tasks: unknown[] }).tasks).filter((x): x is Task =>
         typeof x === "object" && x !== null
         && typeof (x as Task).id === "string" && typeof (x as Task).text === "string"
-        && ["owner", "intake", "steward"].includes((x as Task).source)
+        && ["owner", "intake", "steward", "main"].includes((x as Task).source)
         && ["pending", "queued", "sent", "done", "archived"].includes((x as Task).status))
         // The 2026-08-10 kind migration is deliberately a load normalisation: legacy lane/note
         // rows become auftrag/notiz, already-migrated rows remain byte-stable on every reload,
@@ -17009,6 +17128,21 @@ Bun.serve<WSData>({
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not raise attention — a lane asks its MAIN via clarification" }, 409);
       return openAttention(s, await readJson(req));
+    }
+
+    // ACP-23 · Program-MAIN filing. Non-lane only, for the same "one edge per role" reason as its
+    // two neighbours: a lane EXECUTES the row it was founded on — it does not fill the queue its
+    // own MAIN releases from. Placed ABOVE the release route on purpose: that route's pin holds
+    // "the release route reads no body" over the source region between its own opening line and
+    // the events-ack line, so a body-reading route wedged in there would read as a regression of a
+    // rule that had not moved.
+    if (url.pathname === "/api/self/tasks" && req.method === "POST") {
+      const given = req.headers.get("x-fleet-self-token") ?? "";
+      const s = given ? slots.find((x) => x.cwd && x.selfToken && secretEq(given, x.selfToken)) : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (s.worktree && s.label !== STEWARD_LABEL)
+        return json({ error: "a lane may not file a queue row — a lane executes the row it was founded on, it does not fill the queue its own MAIN releases from" }, 409);
+      return createTaskForMain(s, await readJson(req));
     }
 
     // ACP-16 · Program-MAIN release. Non-lane only, like its attention neighbour above and for the

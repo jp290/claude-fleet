@@ -120,6 +120,13 @@ Controller is a scope a plain session carries, not a binding — do not read thi
   state transition, an exception requiring action, or a predeclared deadline. Otherwise use one
   long-lived quiet wait outside the transcript. Never replace a missing route with tmux injection,
   and never stream repeated pane, process, trail, or API snapshots into model context.
+- Waiting is event-driven. After you start a run that proceeds without you (a worker, a process,
+  a build), one check is allowed: that the intended run accepted the work. If a reliable watch,
+  notification, or wait mechanism exists for the awaited state, arm exactly one such return path
+  and do not sample that state again until it fires; when it fires, read the evidence it names,
+  not the whole surface. Sample the state yourself only when no return path exists or its defect
+  is under investigation; then name the cadence and the stop line, and report `unknown` for every
+  unobserved interval.
 - Provider-, lifecycle-, or client-shaped work must decide every relevant adapter and surface as
   `apply`, `unsupported`, or `not-applicable`. Relevant surfaces can include protocol/wire,
   server, client, reverse-state, docs, and probes; silence is not a decision.

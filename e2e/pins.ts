@@ -1386,6 +1386,63 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     queuedWrites === 3
       && /function releaseTask\(t: Task, by: "owner" \| "machine"\): void \{\n  t\.status = "queued";/.test(server),
     `${queuedWrites} direct writes of status = "queued"`);
+  // ACP-23 · THE FILING DOOR, and it gets rules over the SOURCE for the same reason its release
+  // neighbour has three: not one of them is visible at runtime on a green fleet. A handler that
+  // read `programId` off the request would answer happily on every request that happens not to
+  // carry one; a status assembled from the body instead of written as a literal would look
+  // identical until the first caller spelled `queued`; and an open-ended body would drop a field
+  // the caller believed was honoured.
+  const crStart = server.indexOf("async function createTaskForMain(");
+  const crBody = crStart < 0 ? "" : server.slice(crStart, server.indexOf("\n}\n", crStart));
+  pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
+    crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
+  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED two-field body",
+    crBody.length > 0
+      && /const bound = boundProgramForMain\(s\);/.test(crBody)
+      && /programId: program\.id,/.test(crBody)
+      && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
+      && /repo: mainRepo,/.test(crBody)
+      && /if \(body\.programId !== undefined\)/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind"\];/.test(crBody)
+      && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
+    crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
+  // FILING IS NOT RELEASING, and the whole separation rests on this one line staying a literal.
+  // Both directions: the status is written as `"pending"`, and the two spellings that would turn a
+  // filing into a release — a `queued` anywhere in this handler, or a `releasedBy` stamp — are
+  // absent. A row that arrives released would bypass nothing at the tick, but it would erase the
+  // deliberate second act the owner's promotion made the condition of the first.
+  // Read over the CODE only: the two absences are rules about what this handler DOES, and the
+  // paragraphs above it name both spellings while explaining why neither is written.
+  const crCode = crBody.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  pin("a filed row arrives pending as a LITERAL — the filing door writes no other status and stamps no releasedBy",
+    crCode.length > 0
+      && /\n    status: "pending", created: Date\.now\(\), slot: null, note: null,\n/.test(crCode)
+      && !/releasedBy/.test(crCode) && !/"queued"/.test(crCode),
+    crCode.match(/\n    status: [^\n]*/)?.[0]?.trim() ?? "no status line");
+  // THE TRAP A NEW `source` SETS, held as a SET COMPARISON. loadState filters the persisted task
+  // list through a LITERAL allowlist of source values, and tsc holds it to nothing at all: the
+  // array is a `string[]`, the union is a type, and neither knows about the other. A producer whose
+  // value is missing there writes rows that survive every runtime probe of its own route and then
+  // VANISH at the next boot — silently, with the whole suite green, in a place no probe of the
+  // writing door can reach. Stated as a set rather than as a copied list, so a fifth source added
+  // tomorrow is covered tomorrow.
+  const taskSourceUnion = /\n  source: ("owner"[^;\n]*);\n/.exec(server)?.[1] ?? "";
+  const taskLoadAllowed = /&& \[([^\]]+)\]\.includes\(\(x as Task\)\.source\)/.exec(server)?.[1] ?? "";
+  const srcLiterals = (s: string): string[] => [...s.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!).sort();
+  pin("loadState's task-source allowlist is the Task['source'] union, value for value — a source it omits is dropped at the next boot",
+    srcLiterals(taskSourceUnion).length === 4
+      && srcLiterals(taskSourceUnion).join() === srcLiterals(taskLoadAllowed).join(),
+    `union=[${srcLiterals(taskSourceUnion)}] allowlist=[${srcLiterals(taskLoadAllowed)}]`);
+  // …and the OTHER load-time reader of the same field, which decides what a MALFORMED row's kind
+  // degrades to. A main row falling to `auftrag` would promote an advisory filing into the one
+  // executable category across a reload — the safe default has to name this producer too.
+  const loadKindStart = server.indexOf("const loadTaskKind = (");
+  const loadKindBody = loadKindStart < 0 ? "" : server.slice(loadKindStart, server.indexOf("\n};\n", loadKindStart));
+  pin("loadTaskKind's safe default is advisory for BOTH producers whose door defaults to notiz",
+    loadKindBody.length > 0
+      && /return source === "steward" \|\| source === "main" \? "notiz" : "auftrag";/.test(loadKindBody),
+    loadKindBody.match(/return source[^\n]*/)?.[0] ?? "loadTaskKind missing");
+
   // ONE PREDICATE for "may an unattended path drive this harness", asked by the slot-level gate and
   // by the release door about the adapter the TICK would spawn (DEFAULT_SPAWN, whose emptiness the
   // pin above locks). Both named conditions must stay inside it: a helper reduced to `return true`

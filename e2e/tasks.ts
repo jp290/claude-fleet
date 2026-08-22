@@ -3236,4 +3236,242 @@ export async function run(ctx: Ctx): Promise<void> {
 
     for (const id of [kA, kB, kC]) await post(`/api/tasks/${id}/delete`, {});
   }
+
+  // --- (m) ACP-23 · POST /api/self/tasks: the FILING door of a bound Program-MAIN. Its neighbour
+  // ACP-16 could only RELEASE a row that already stood in the queue, so a MAIN that discovered a
+  // new piece of work had to reach for the OWNER token to write it down. This section measures the
+  // door that closes that gap and, above all, the two things about it that no ordinary probe sees:
+  // that a filed row is `pending` and stays so, and that it is STILL THERE after the next boot ---
+  {
+    // Back to the wrapper's env first. The (k) block above points the analyst at a stand-in with a
+    // 1 s tick, and a sweep writing `analysis` onto the rows filed here would put fields into the
+    // reload comparison below that nothing in this section wrote. It also leaves the server exactly
+    // where every neighbouring module documents it should be left — on the wrapper's env.
+    await restartSrv();
+
+    interface MSlot { id: number; cwd: string | null; label: string | null; worktree?: unknown }
+    interface MState {
+      slots?: Record<string, { openedAt?: number; sessionId?: string | null; selfToken?: string }>;
+      programs?: { id: string; status?: string; main?: unknown }[];
+    }
+    interface MRow {
+      id: string; text: string; source: string; kind: string; status: string;
+      programId?: string; repo?: string | null; releasedBy?: string; slot?: number | null;
+    }
+    const mState = (): MState => JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as MState;
+    const mSess = async (): Promise<MSlot[]> =>
+      ((await (await get("/api/sessions")).json()) as { slots: MSlot[] }).slots;
+    const mAll = async (): Promise<MRow[]> =>
+      ((await (await get("/api/tasks")).json()) as { tasks: MRow[] }).tasks;
+    const mRow = async (id: string): Promise<MRow | undefined> => (await mAll()).find((t) => t.id === id);
+    const mAuditRows = (): { event?: string; slot?: number; detail?: string }[] =>
+      readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { event?: string; slot?: number; detail?: string });
+    const mProgram = async (title: string): Promise<string> => {
+      const made = await post("/api/programs", {
+        title, intent: "ACP-23 filing probes.", successCriterion: "The door files pending rows only.",
+        nonGoals: [], decisions: [], evidence: [], openQuestions: [],
+      });
+      const id = ((await made.json()) as { program?: { id: string } }).program?.id ?? "";
+      await post(`/api/programs/${id}/confirm`, {});
+      await post(`/api/programs/${id}/activate`, {});
+      return id;
+    };
+    const mFile = (token: string, body: unknown = {}): Promise<Response> =>
+      fetch(`${BASE}/api/self/tasks`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-fleet-self-token": token },
+        body: JSON.stringify(body),
+      });
+
+    const mMainProgram = await mProgram("ACP-23 filing bracket");
+    const mSlot = (await mSess()).find((x) => !x.cwd)?.id ?? -1;
+    const mOpen = mSlot < 0 ? null : await post(`/api/slots/${mSlot}/open`, { cwd: REPO, label: "acp23-main" });
+    // The binding is PLANTED through the state file, the same way e2e/programs.ts plants its stale
+    // and complete-bound fixtures: the bootstrap route spawns a fresh session and waits for a
+    // harness screen, and none of that founding path is what this section measures.
+    await tmuxOut("kill-session", "-t", "srv");
+    await Bun.sleep(500);
+    const mPlanted = mState();
+    const mSlotRow = mPlanted.slots?.[String(mSlot)];
+    const mProgramRow = mPlanted.programs?.find((p) => p.id === mMainProgram);
+    if (mProgramRow && mSlotRow?.openedAt)
+      mProgramRow.main = { slot: mSlot, openedAt: mSlotRow.openedAt,
+        sessionId: mSlotRow.sessionId ?? null, boundAt: Date.now() };
+    writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(mPlanted, null, 2), { mode: 0o600 });
+    await restartSrv();
+    const mToken = mState().slots?.[String(mSlot)]?.selfToken ?? "";
+    const mLive = (await mSess()).find((x) => x.id === mSlot);
+    const mBoundSlot = ((await (await get("/api/programs")).json()) as
+      { programs: { id: string; main?: { slot: number } }[] })
+      .programs.find((p) => p.id === mMainProgram)?.main?.slot;
+    const mRepoReal = realpathSync(REPO);
+    // FIXTURE PRECONDITION, and it carries its own check: every success and every refusal below is
+    // evidence only if the caller really is the LIVE bound MAIN of an active Program, sitting in a
+    // git checkout and NOT in a worktree lane. A probe that cannot establish its own precondition
+    // must fail as ITSELF, never as the thing it was meant to measure.
+    check("ACP-23 fixture: the filing probes run on a live bound NON-LANE MAIN in a git checkout",
+      mSlot >= 0 && !!mOpen?.ok && /^[0-9a-f]{32}$/.test(mToken)
+        && !!mLive?.cwd && !mLive.worktree && mBoundSlot === mSlot,
+      `slot=${mSlot} open=${mOpen?.status} token=${mToken.length} cwd=${mLive?.cwd} bound=${mBoundSlot}`);
+
+    // (1) THE ACT ITSELF: one pending row, the program from the BINDING, the repo from the
+    // CHECKOUT, no releasedBy, and one greppable trail line naming both ids.
+    const mAuditBefore = mAuditRows().length;
+    const mOkRes = await mFile(mToken, { text: "acp23 filed note" });
+    const mOkBody = await mOkRes.json() as { ok?: boolean; sessionIdMatch?: string; task?: MRow };
+    const mOkId = mOkBody.task?.id ?? "";
+    const mOkRow = await mRow(mOkId);
+    const mOkTrail = mAuditRows().slice(mAuditBefore).filter((r) => r.event === "main_task");
+    check("ACP-23 (1): a bound non-lane MAIN files its own row — pending, source main, program from the binding, repo from the checkout, one main_task line",
+      mOkRes.status === 200 && mOkBody.ok === true && typeof mOkBody.sessionIdMatch === "string"
+        && mOkRow?.status === "pending" && mOkRow.source === "main"
+        && mOkRow.programId === mMainProgram && mOkRow.repo === mRepoReal
+        && mOkRow.releasedBy === undefined && mOkRow.slot == null
+        && mOkTrail.length === 1 && mOkTrail[0]?.slot === mSlot
+        && mOkTrail[0]?.detail === `${mOkId} program=${mMainProgram} notiz`,
+      `${mOkRes.status} ${JSON.stringify(mOkBody)} row=${JSON.stringify(mOkRow)} trail=${JSON.stringify(mOkTrail)}`);
+
+    // (2) THE DEFAULT IS THE OWNER'S WORD. No `kind` in the body means `notiz` — advisory, and the
+    // dispatcher never runs it. Read off the row, not off the answer, so a response that flattered
+    // itself would still be caught.
+    check("ACP-23 (2): a filing with no kind is a notiz — the advisory default the owner named",
+      mOkRow?.kind === "notiz" && mOkBody.task?.kind === "notiz",
+      `row=${mOkRow?.kind} answer=${mOkBody.task?.kind}`);
+
+    // (3) AND THE AUTONOMY THE PROMOTION EXPLICITLY PRESERVED: `auftrag` is reachable, by naming
+    // it. Still pending, still unreleased — the second act is untouched by the first.
+    const mAuftragRes = await mFile(mToken, { text: "acp23 filed auftrag", kind: "auftrag" });
+    const mAuftragId = ((await mAuftragRes.json()) as { task?: MRow }).task?.id ?? "";
+    const mAuftragRow = await mRow(mAuftragId);
+    check("ACP-23 (3): an EXPLICIT auftrag is accepted and still arrives pending and unreleased",
+      mAuftragRes.status === 200 && mAuftragRow?.kind === "auftrag"
+        && mAuftragRow.status === "pending" && mAuftragRow.releasedBy === undefined
+        && mAuftragRow.source === "main" && mAuftragRow.programId === mMainProgram,
+      `${mAuftragRes.status} ${JSON.stringify(mAuftragRow)}`);
+    // …and the third door's own words on the same row: an unknown category is refused by the SAME
+    // four-value validator the owner and steward routes use, never by a second charset here.
+    const mBadKind = await mFile(mToken, { text: "acp23 bad kind", kind: "lane" });
+    const mBadKindText = await mBadKind.text();
+    check("ACP-23 (3b): an unknown kind is a 400 naming the same four categories the other create doors accept",
+      mBadKind.status === 400 && mBadKindText.includes("auftrag, richtung, notiz, betrieb"),
+      `${mBadKind.status}:${mBadKindText}`);
+
+    // (4) THE BODY CANNOT NOMINATE ANYTHING. `programId` answers in its own sentence (naming the
+    // program the binding already decided), and the rest of the world's fields are refused as a
+    // CLOSED SET rather than dropped — a field silently ignored is a field the caller believes was
+    // honoured. Both directions are checked at once: a body naming the caller's own program is
+    // refused too, so this is a rule about the FIELD and not about which value it carries.
+    const mBeforeBody = (await mAll()).length;
+    const mBodyProgram = await mFile(mToken, { text: "acp23 body programId", programId: mMainProgram });
+    const mBodyProgramText = await mBodyProgram.text();
+    const mBodyRepo = await mFile(mToken, { text: "acp23 body repo", repo: REPO });
+    const mBodyRepoText = await mBodyRepo.text();
+    const mBodyStatus = await mFile(mToken, { text: "acp23 body status", status: "queued", queue: true });
+    const mBodyStatusText = await mBodyStatus.text();
+    check("ACP-23 (4): programId in the body is a 400 in its own words, repo/status/queue are refused as a closed set, and none of the three minted a row",
+      mBodyProgram.status === 400
+        && mBodyProgramText.includes("programId comes from this session's MAIN binding")
+        && mBodyProgramText.includes(mMainProgram)
+        && mBodyRepo.status === 400 && mBodyRepoText.includes("[repo]")
+        && mBodyRepoText.includes("this door reads text and kind only")
+        && mBodyStatus.status === 400 && mBodyStatusText.includes("status")
+        && mBodyStatusText.includes("queue")
+        && (await mAll()).length === mBeforeBody,
+      `programId=${mBodyProgram.status}:${mBodyProgramText} repo=${mBodyRepo.status}:${mBodyRepoText} status=${mBodyStatus.status}:${mBodyStatusText}`);
+    // …and the two ordinary text refusals, which must not be reachable by omission either.
+    const mNoText = await mFile(mToken, {});
+    const mEmptyText = await mFile(mToken, { text: "   " });
+    check("ACP-23 (4b): a missing or blank text is a 400, never a row with an empty brief",
+      mNoText.status === 400 && mEmptyText.status === 400 && (await mAll()).length === mBeforeBody,
+      `missing=${mNoText.status} blank=${mEmptyText.status}`);
+
+    // (5) A LANE IS REFUSED, and the refusal SAYS WHY — the same "one edge per role" rule the
+    // release door next to it states in the same direction: a lane executes the row it was founded
+    // on, it does not fill the queue its own MAIN releases from. 409 and never 401, so nobody goes
+    // looking for a credential they already hold.
+    const mLaneToken = ctx.restartSelfTok ?? "";
+    const mLaneIsLane = (await mSess()).find((x) => x.id === ctx.restartSelfSlot)?.worktree;
+    const mLaneRes = mLaneToken ? await mFile(mLaneToken, { text: "acp23 from a lane" }) : null;
+    const mLaneText = mLaneRes ? await mLaneRes.text() : "";
+    check("ACP-23 (5): a LANE is refused 409 with the reason spelled out — and the probe carries its own precondition that the caller really is a lane",
+      /^[0-9a-f]{32}$/.test(mLaneToken) && !!mLaneIsLane
+        && mLaneRes?.status === 409
+        && mLaneText.includes("a lane may not file a queue row")
+        && (await mAll()).length === mBeforeBody,
+      `token=${mLaneToken.length} lane=${!!mLaneIsLane} ${mLaneRes?.status}:${mLaneText}`);
+
+    // (6) A NON-LANE WITH NO BINDING is refused too, in boundProgramForMain's OWN words — a
+    // different sentence from (5), because it sends the caller to fix a different thing.
+    const mUnboundSlot = (await mSess()).find((x) => !x.cwd)?.id ?? -1;
+    const mUnboundOpen = mUnboundSlot < 0 ? null
+      : await post(`/api/slots/${mUnboundSlot}/open`, { cwd: REPO, label: "acp23-unbound" });
+    const mUnboundToken = mState().slots?.[String(mUnboundSlot)]?.selfToken ?? "";
+    const mUnboundRes = mUnboundToken ? await mFile(mUnboundToken, { text: "acp23 from an unbound session" }) : null;
+    const mUnboundText = mUnboundRes ? await mUnboundRes.text() : "";
+    check("ACP-23 (6): an unbound non-lane session is 409 in the bracket's own words — not the lane sentence, and not 401",
+      mUnboundSlot >= 0 && !!mUnboundOpen?.ok && /^[0-9a-f]{32}$/.test(mUnboundToken)
+        && mUnboundRes?.status === 409
+        && mUnboundText.includes("not the current bound MAIN")
+        && !mUnboundText.includes("ambiguous")
+        && !mUnboundText.includes("a lane may not file")
+        && (await mAll()).length === mBeforeBody,
+      `open=${mUnboundOpen?.status} ${mUnboundRes?.status}:${mUnboundText}`);
+    if (mUnboundSlot >= 0) await post(`/api/slots/${mUnboundSlot}/kill`, {});
+
+    // (7) THE RELOAD, and this is the probe the whole act needed. loadState filters the persisted
+    // task list through a LITERAL allowlist of `source` values; a producer missing from it writes
+    // rows that pass every runtime check of their own route and then VANISH at the next boot,
+    // silently, with the suite still green. So: file → reboot the server → look again. The kinds
+    // are re-read here too, because the same load pass normalises them and a malformed-row default
+    // that fell to `auftrag` would promote an advisory filing into the one executable category.
+    await restartSrv();
+    const mAfterReload = await mAll();
+    const mOkReloaded = mAfterReload.find((t) => t.id === mOkId);
+    const mAuftragReloaded = mAfterReload.find((t) => t.id === mAuftragId);
+    check("ACP-23 (7): a filed row SURVIVES a state reload — same id, source main, kind and pending status intact",
+      !!mOkReloaded && mOkReloaded.source === "main" && mOkReloaded.kind === "notiz"
+        && mOkReloaded.status === "pending" && mOkReloaded.programId === mMainProgram
+        && mOkReloaded.repo === mRepoReal && mOkReloaded.releasedBy === undefined
+        && !!mAuftragReloaded && mAuftragReloaded.source === "main"
+        && mAuftragReloaded.kind === "auftrag" && mAuftragReloaded.status === "pending",
+      `notiz=${JSON.stringify(mOkReloaded)} auftrag=${JSON.stringify(mAuftragReloaded)}`);
+
+    // (8) THE CAP, per Program, over rows this door filed that nobody has released. Non-tautological
+    // in both directions: the fill must actually CROSS the cap (so the guard below could fail), and
+    // the rows that got through must still be there when the refusal comes. The token survives the
+    // reload above — a fresh read would hide a regression in exactly that.
+    const mFileToken = mState().slots?.[String(mSlot)]?.selfToken ?? "";
+    const mFiledCount = async (): Promise<number> =>
+      (await mAll()).filter((t) => t.source === "main" && t.programId === mMainProgram
+        && t.status === "pending").length;
+    const FILE_CAP = 5; // PROGRAM_MAX_PENDING's default; the suite sets no FLEET_PROGRAM_MAX_PENDING
+    const mBeforeCap = await mFiledCount();
+    const mCapStatuses: number[] = [];
+    let mCapLast = "";
+    for (let i = 0; i <= FILE_CAP - mBeforeCap; i++) {
+      const res = await mFile(mFileToken, { text: `acp23 cap filler ${i}` });
+      mCapStatuses.push(res.status);
+      mCapLast = await res.text();
+    }
+    check("ACP-23 (8): a Program-MAIN holds at most PROGRAM_MAX_PENDING filed-but-unreleased rows, and the refusal names the number",
+      mFileToken === mToken && mBeforeCap > 0 && mBeforeCap < FILE_CAP
+        && mCapStatuses.length === FILE_CAP - mBeforeCap + 1
+        && mCapStatuses.slice(0, -1).every((s) => s === 200) && mCapStatuses.at(-1) === 409
+        && mCapLast.includes(`filing cap reached (${FILE_CAP}/${FILE_CAP} filed rows not yet released)`)
+        && (await mFiledCount()) === FILE_CAP,
+      `before=${mBeforeCap} statuses=${mCapStatuses.join(",")} last=${mCapLast}`);
+
+    // Leave the queue and the board as this section found them: every row it filed is deleted (none
+    // of them is `sent`, so none is a running lane's founding row), the planted MAIN's slot is
+    // closed, and the Program it was bound to is completed rather than left active for the modules
+    // after this one to inherit.
+    for (const t of await mAll()) if (t.source === "main") await post(`/api/tasks/${t.id}/delete`, {});
+    await post(`/api/slots/${mSlot}/kill`, {});
+    await post(`/api/programs/${mMainProgram}/complete`, {});
+    check("ACP-23 cleanup: no main-filed row is left in the queue and the planted MAIN slot is closed",
+      (await mAll()).every((t) => t.source !== "main")
+        && !(await mSess()).some((x) => x.id === mSlot && x.cwd),
+      `rows=${(await mAll()).filter((t) => t.source === "main").length}`);
+  }
 }

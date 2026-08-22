@@ -1299,13 +1299,31 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const tBody = server.slice(tStart, server.indexOf("\n}\n", tStart));
   pin("tickDispatch's body is bounded and non-empty (an unbounded slice would make the rule below vacuous)",
     tStart > 0 && tBody.length > 500 && tBody.length < 20_000, `${tBody.length} bytes`);
-  // THE ABSENCE, at the one call a tick can make. A `spawn` argument here — from a Task field, an
-  // env default, anything — is the change that would hand an unattended lane a foreign agent, and
-  // it is invisible to tsc (the parameter is optional) and to every runtime test on a fleet with
-  // FLEET_HARNESS_AUTOMATION off, which is every suite.
-  const tickCalls = [...tBody.matchAll(/dispatchTask\(([^)]*)\)/g)].map((m) => m[1].trim());
-  pin("the tick's own dispatch call names no harness — the choice enters only through an attended request body",
-    tickCalls.length === 1 && tickCalls[0] === "next, free, false", tickCalls.join(" | ") || "no dispatchTask call");
+  // THE ONE SOURCE, at the one call a tick can make. The tick MAY now hand dispatchTask a spawn —
+  // but only the ROW's own persisted, SET-time-validated choice, through the one accessor
+  // (taskSpawnOf = t.spawn ?? DEFAULT_SPAWN). Any other argument here — a request value, an env
+  // default, a computed harness — is the change that would hand an unattended lane an agent nobody
+  // validated at set time, and it is invisible to tsc (the parameter accepts any DispatchSpawn) and
+  // to every runtime test on a fleet with FLEET_HARNESS_AUTOMATION off, which is every suite.
+  // one nested paren level, because the expected argument list itself contains a call
+  const tickCalls = [...tBody.matchAll(/dispatchTask\(((?:[^()]|\([^()]*\))*)\)/g)].map((m) => m[1].trim());
+  pin("the tick's dispatch call carries the ROW's persisted choice through taskSpawnOf and nothing else",
+    tickCalls.length === 1 && tickCalls[0] === "next, free, false, false, taskSpawnOf(next)",
+    tickCalls.join(" | ") || "no dispatchTask call");
+  // ...and the accessor itself stays the one bridge from a row to a choice: the row's own field,
+  // DEFAULT_SPAWN on absence. A second derivation, or a fallback to anything but DEFAULT_SPAWN,
+  // is how "which agent would this row run" grows two answers.
+  pin("taskSpawnOf is the row field or DEFAULT_SPAWN — nothing else can answer for a row's agent choice",
+    /const taskSpawnOf = \(t: Task\): DispatchSpawn => t\.spawn \?\? DEFAULT_SPAWN;/.test(server),
+    server.match(/const taskSpawnOf[^\n]*/)?.[0] ?? "taskSpawnOf missing");
+  // ...and the tick's own row gate asks the SAME automatability predicate before reserving a slot,
+  // writing the refusal on the row: a stored non-automatable choice must wait loudly, never fall
+  // back to the default adapter and never sit silent.
+  pin("the tick refuses a non-automatable row choice through harnessAutomatableFor and says so on the row",
+    /const rowH = harnessOf\(rowSpawn\.harness\);/.test(tBody)
+    && /if \(!harnessAutomatableFor\(rowH\)\) \{/.test(tBody)
+    && /waiting\(`waiting: harness \$\{rowH\.id\} is not automatable/.test(tBody),
+    tBody.match(/harnessAutomatableFor[^\n]*/)?.[0] ?? "no row gate");
   // THE TWO CAPS AND THEIR ORDER, pinned as SHAPE because no runtime test can see the difference
   // between "the program cap narrows the repo cap" and "the program cap replaced it". A later
   // refactor that hoists the program check above the repo check, or that drops the repo check for
@@ -1396,16 +1414,24 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
   const crBody = crStart < 0 ? "" : server.slice(crStart, server.indexOf("\n}\n", crStart));
   pin("createTaskForMain's body is bounded and non-empty (an unbounded slice would make the rules below vacuous)",
     crStart > 0 && crBody.length > 500 && crBody.length < 20_000, `${crBody.length} bytes`);
-  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED two-field body",
+  pin("the Program-MAIN filing door DERIVES program and repo and reads a CLOSED body — text, kind, and the spawn triple",
     crBody.length > 0
       && /const bound = boundProgramForMain\(s\);/.test(crBody)
       && /programId: program\.id,/.test(crBody)
       && /const mainRepo = await repoKeyOf\(s\);/.test(crBody)
       && /repo: mainRepo,/.test(crBody)
       && /if \(body\.programId !== undefined\)/.test(crBody)
-      && /const SELF_TASK_FIELDS = \["text", "kind"\];/.test(crBody)
+      && /const SELF_TASK_FIELDS = \["text", "kind", "harness", "model", "effort"\];/.test(crBody)
       && /Object\.keys\(body\)\.filter\(\(k\) => !SELF_TASK_FIELDS\.includes\(k\)\)/.test(crBody),
     crBody.length > 0 ? "derivation + closed body" : "createTaskForMain missing");
+  // THE SPAWN TRIPLE HAS ONE SET-TIME VALIDATOR, and both create doors go through it: the same
+  // three adapter validators the attended route runs, harness first. A door that stored the three
+  // fields raw — or its own re-derivation — would mint a choice no adapter ever judged, and on a
+  // suite fleet nothing at runtime distinguishes that from the validated path until dispatch.
+  pin("both task-create doors validate the spawn triple through taskSpawnFromBody and persist it only when chosen",
+    [...server.matchAll(/const spawnChoice = taskSpawnFromBody\(body\);/g)].length === 2
+    && [...server.matchAll(/\.\.\.\(spawnChoice\.spawn \? \{ spawn: spawnChoice\.spawn \} : \{\}\),/g)].length === 2,
+    `${[...server.matchAll(/taskSpawnFromBody\(body\)/g)].length} validator call(s)`);
   // FILING IS NOT RELEASING, and the whole separation rests on this one line staying a literal.
   // Both directions: the status is written as `"pending"`, and the two spellings that would turn a
   // filing into a release — a `queued` anywhere in this handler, or a `releasedBy` stamp — are
@@ -1444,9 +1470,10 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
     loadKindBody.match(/return source[^\n]*/)?.[0] ?? "loadTaskKind missing");
 
   // ONE PREDICATE for "may an unattended path drive this harness", asked by the slot-level gate and
-  // by the release door about the adapter the TICK would spawn (DEFAULT_SPAWN, whose emptiness the
-  // pin above locks). Both named conditions must stay inside it: a helper reduced to `return true`
-  // falls here, and on a suite fleet with FLEET_HARNESS_AUTOMATION=0 nothing else would notice.
+  // by the release door about the adapter the TICK would spawn for THIS row (taskSpawnOf — the
+  // row's persisted choice, DEFAULT_SPAWN on absence, whose accessor the pin above locks). Both
+  // named conditions must stay inside it: a helper reduced to `return true` falls here, and on a
+  // suite fleet with FLEET_HARNESS_AUTOMATION=0 nothing else would notice.
   const hafStart = server.indexOf("function harnessAutomatableFor(");
   const hafBody = hafStart < 0 ? "" : server.slice(hafStart, server.indexOf("\n}\n", hafStart));
   pin("the unattended-harness question is ONE predicate carrying both conditions — the operator's flag AND the adapter's own claim",
@@ -1454,7 +1481,7 @@ pin("server.ts imports and calls the pure ContextPlan producer at the dispatch d
       && /if \(h === CLAUDE_HARNESS\) return true;/.test(hafBody)
       && /return HARNESS_AUTOMATION && h\.automatable;/.test(hafBody)
       && /return harnessAutomatableFor\(harnessOf\(s\.harness\)\);/.test(server)
-      && /const spawnH = harnessOf\(DEFAULT_SPAWN\.harness\);/.test(relBody)
+      && /const spawnH = harnessOf\(taskSpawnOf\(t\)\.harness\);/.test(relBody)
       && /if \(!harnessAutomatableFor\(spawnH\)\)/.test(relBody),
     hafBody.length > 0 ? "shared predicate" : "harnessAutomatableFor missing");
   // The bolt above is generic (it names no adapter), which is what makes it cover an adapter added

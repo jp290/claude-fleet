@@ -1553,6 +1553,215 @@ export async function run(ctx: Ctx): Promise<void> {
       && switchesAfter.autosOn === switchesBefore.autosOn,
     `rows=${(await allTasks()).filter((t) => madeTasks.includes(t.id)).length} switches=${JSON.stringify(switchesAfter)}`);
 
+  // === Task.spawn · the row's persisted agent choice (harness/model/effort) ===================
+  // The queue row can now CARRY the same DispatchSpawn triple the attended ▸ start button may
+  // name: validated at SET time by the same three adapter validators, judged by the release door,
+  // and handed to the tick's dispatch call. Absence stays DEFAULT_SPAWN — the honest legacy shape.
+  // Runs on the same live binding as ACP-16 above (successorToken), and this fleet's
+  // FLEET_HARNESS_AUTOMATION=0 is again the discriminator: a stored codex choice is exactly the
+  // row no unattended path may drive, without any adapter having to exist beyond the registry.
+  type SpawnTriple = { harness: string | null; model: string | null; effort: string | null };
+  type SpawnRow = TaskRow & { spawn?: SpawnTriple; note?: string | null };
+  const spawnRows = async (): Promise<SpawnRow[]> =>
+    ((await (await get("/api/tasks")).json()) as { tasks: SpawnRow[] }).tasks;
+  const spawnRowOf = async (id: string): Promise<SpawnRow | undefined> =>
+    (await spawnRows()).find((t) => t.id === id);
+  const spawnTasks: string[] = [];
+  const spawnFile = async (body: unknown): Promise<Response> =>
+    fetch(`${BASE}/api/self/tasks`, { method: "POST",
+      headers: { "content-type": "application/json", "x-fleet-self-token": successorToken },
+      body: JSON.stringify(body) });
+  const spawnOwnerMake = async (fields: Record<string, unknown>): Promise<SpawnRow> => {
+    const created = (await (await post("/api/tasks", { queue: false, ...fields })).json()) as { task: SpawnRow };
+    spawnTasks.push(created.task.id);
+    return created.task;
+  };
+  // both master stops off for the SET/release halves, so no probe row can start mid-assertion
+  await post("/api/dispatch", { on: false });
+  await post("/api/autos/switch", { on: false });
+
+  // (1) A MAIN filing stores a VALID triple, validated at set time and persisted on the row.
+  const spawnOkRes = await spawnFile({ text: "task-spawn: main files a codex triple", kind: "auftrag",
+    harness: "codex", model: "gpt-5.5", effort: "high" });
+  const spawnOkBody = await spawnOkRes.json() as { ok?: boolean; task?: SpawnRow };
+  if (spawnOkBody.task?.id) spawnTasks.push(spawnOkBody.task.id);
+  const spawnOkRow = spawnOkBody.task?.id ? await spawnRowOf(spawnOkBody.task.id) : undefined;
+  check("task-spawn (1): a MAIN filing persists the validated harness/model/effort triple on a still-pending row",
+    spawnOkRes.status === 200 && spawnOkBody.ok === true
+      && JSON.stringify(spawnOkRow?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" })
+      && spawnOkRow?.status === "pending",
+    `${spawnOkRes.status} ${JSON.stringify(spawnOkRow ?? null)}`);
+
+  // (1b) ...and refuses invalid combinations at SET time in the adapters' own words — never a row.
+  const spawnRowsBeforeBad = (await spawnRows()).length;
+  const [spawnBadHarness, spawnBadModel, spawnBadEffort, spawnDefaultBadEffort] = await Promise.all([
+    spawnFile({ text: "task-spawn bad harness", harness: "not-a-harness" }),
+    spawnFile({ text: "task-spawn bad model", harness: "codex", model: "bad model!" }),
+    spawnFile({ text: "task-spawn bad effort", harness: "codex", effort: "maximum" }),
+    spawnFile({ text: "task-spawn default-adapter bad effort", effort: "extreme" }),
+  ]);
+  const spawnBadTexts = await Promise.all([spawnBadHarness, spawnBadModel, spawnBadEffort, spawnDefaultBadEffort].map((r) => r.text()));
+  check("task-spawn (1b): unknown harness and harness-mismatched model/effort are 400 at the filing, and no row is minted",
+    [spawnBadHarness, spawnBadModel, spawnBadEffort, spawnDefaultBadEffort].every((r) => r.status === 400)
+      && spawnBadTexts[0].includes("unknown harness") && spawnBadTexts[1].includes("bad model")
+      && spawnBadTexts[2].includes("bad effort") && spawnBadTexts[3].includes("bad effort")
+      && (await spawnRows()).length === spawnRowsBeforeBad,
+    spawnBadTexts.join(" | "));
+
+  // (1c) absence is ABSENCE: a filing naming no spawn field persists no `spawn` member at all —
+  // the legacy row shape, never an all-null object pretending a choice was made.
+  const spawnPlainRes = await spawnFile({ text: "task-spawn absent choice", kind: "auftrag" });
+  const spawnPlainBody = await spawnPlainRes.json() as { task?: SpawnRow };
+  if (spawnPlainBody.task?.id) spawnTasks.push(spawnPlainBody.task.id);
+  const spawnPlainRow = spawnPlainBody.task?.id ? await spawnRowOf(spawnPlainBody.task.id) : undefined;
+  check("task-spawn (1c): a filing without spawn fields stays a legacy-shaped row — no spawn member at all",
+    spawnPlainRes.status === 200 && !!spawnPlainRow && !("spawn" in spawnPlainRow),
+    JSON.stringify(spawnPlainRow ?? null));
+
+  // (1d) the owner create door persists the same triple through the same validator.
+  const spawnOwnerRow = await spawnOwnerMake({ text: "task-spawn owner codex row",
+    harness: "codex", model: "gpt-5.5", effort: "low" });
+  check("task-spawn (1d): the owner create door persists the same validated triple",
+    JSON.stringify(spawnOwnerRow.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "low" }),
+    JSON.stringify(spawnOwnerRow));
+
+  // (1e) the choice SURVIVES a restart byte-for-byte, and the legacy row stays legacy-shaped —
+  // the load normalizer must neither drop a valid stored choice nor backfill an absent one.
+  await restartSrv();
+  const spawnOkAfterRestart = await spawnRowOf(spawnOkBody.task!.id);
+  const spawnPlainAfterRestart = await spawnRowOf(spawnPlainBody.task!.id);
+  check("task-spawn (1e): a stored choice survives restart unchanged and an absent one is not backfilled",
+    JSON.stringify(spawnOkAfterRestart?.spawn) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" })
+      && !!spawnPlainAfterRestart && !("spawn" in spawnPlainAfterRestart),
+    `ok=${JSON.stringify(spawnOkAfterRestart?.spawn)} plain=${JSON.stringify(spawnPlainAfterRestart ?? null)}`);
+  // the restart reloads persisted switch state — re-assert the stops for the release half below
+  await post("/api/dispatch", { on: false });
+  await post("/api/autos/switch", { on: false });
+
+  // (2) THE RELEASE DOOR JUDGES THE ROW'S OWN CHOICE. The stored codex row is refused with the
+  // adapter named and stays pending; the absent-choice sibling releases fine — DEFAULT_SPAWN is
+  // still the automatable default adapter.
+  const spawnReleaseRes = await selfRelease(successorToken, spawnOkBody.task!.id);
+  const spawnReleaseText = await spawnReleaseRes.text();
+  const spawnPlainRelease = await selfRelease(successorToken, spawnPlainBody.task!.id);
+  check("task-spawn (2): release refuses a stored non-automatable choice naming the adapter, and the absent-choice row still releases",
+    spawnReleaseRes.status === 409 && spawnReleaseText.includes("harness codex is not automatable")
+      && (await spawnRowOf(spawnOkBody.task!.id))?.status === "pending"
+      && spawnPlainRelease.status === 200
+      && (await spawnRowOf(spawnPlainBody.task!.id))?.status === "queued",
+    `${spawnReleaseRes.status}:${spawnReleaseText} plain=${spawnPlainRelease.status}`);
+
+  // (5b) AN ATTENDED OVERRIDE IS RE-VALIDATED AGAINST THE EFFECTIVE HARNESS: the row's stored
+  // codex choice judges a body model/effort the body did not pair with a harness — 400 in codex's
+  // own words (its effort list carries "ultra", which no claude answer contains), and no lane.
+  const spawnMixModel = await post(`/api/tasks/${spawnOwnerRow.id}/dispatch`, { model: "bad model!" });
+  const spawnMixModelText = await spawnMixModel.text();
+  const spawnMixEffort = await post(`/api/tasks/${spawnOwnerRow.id}/dispatch`, { effort: "maximum" });
+  const spawnMixEffortText = await spawnMixEffort.text();
+  check("task-spawn (5b): a body override is judged by the row's EFFECTIVE harness — codex answers, 400, no lane",
+    spawnMixModel.status === 400 && spawnMixModelText.includes("bad model")
+      && spawnMixEffort.status === 400 && spawnMixEffortText.includes("ultra")
+      && (await spawnRowOf(spawnOwnerRow.id))?.status === "pending",
+    `${spawnMixModel.status}:${spawnMixModelText} ${spawnMixEffort.status}:${spawnMixEffortText}`);
+
+  // (5) THE ATTENDED BUTTON WITHOUT SPAWN FIELDS RUNS THE ROW'S CHOICE, and an explicit override
+  // wins per field: a claude row storing model+effort is started with only `effort` in the body —
+  // the slot must carry the row's model beside the body's effort.
+  const spawnAttendedRow = await spawnOwnerMake({ text: "task-spawn attended effective probe",
+    model: "task-spawn-row-model", effort: "low" });
+  const spawnAttendedRes = await post(`/api/tasks/${spawnAttendedRow.id}/dispatch`, { effort: "high" });
+  const spawnAttendedBody = await spawnAttendedRes.json() as { ok?: boolean; slot?: number };
+  type SlotState = NonNullable<FleetState["slots"]>[string];
+  let spawnAttendedSlot: SlotState | undefined;
+  for (let i = 0; i < 20; i++) { // saveState is debounced — poll the persisted slot row
+    spawnAttendedSlot = typeof spawnAttendedBody.slot === "number"
+      ? readState().slots?.[String(spawnAttendedBody.slot)] : undefined;
+    if (spawnAttendedSlot?.model === "task-spawn-row-model") break;
+    await Bun.sleep(250);
+  }
+  check("task-spawn (5): an attended start without spawn fields runs the ROW's model while the body's effort override wins",
+    spawnAttendedRes.status === 200 && spawnAttendedBody.ok === true
+      && spawnAttendedSlot?.model === "task-spawn-row-model" && spawnAttendedSlot?.effort === "high"
+      && (spawnAttendedSlot?.harness ?? null) === null,
+    `${spawnAttendedRes.status} slot=${JSON.stringify({ model: spawnAttendedSlot?.model, effort: spawnAttendedSlot?.effort, harness: spawnAttendedSlot?.harness ?? null })}`);
+  // kill THEN delete immediately: the dying brief tail may requeue this row (dispatcher is off,
+  // so it cannot start again), and a requeued leftover would make the tick fixture count below lie
+  if (typeof spawnAttendedBody.slot === "number") await post(`/api/slots/${spawnAttendedBody.slot}/kill`, {});
+  await post(`/api/tasks/${spawnAttendedRow.id}/delete`, {});
+
+  // (3)+(4) THE TICK CARRIES THE ROW'S CHOICE — and only the row's. Three released rows: one with
+  // a stored claude model/effort, one with the stored codex choice, one legacy-shaped. The serial
+  // tick starts the first and the third with exactly their own values, and the codex row between
+  // them WAITS LOUDLY — the note names the adapter, the queue behind it keeps moving, and nothing
+  // ever falls back to the default adapter on its behalf.
+  const spawnSessions = async (): Promise<{ id: number; cwd: string | null; worktree: unknown | null }[]> =>
+    ((await (await get("/api/sessions")).json()) as { slots: { id: number; cwd: string | null; worktree: unknown | null }[] }).slots;
+  for (const s of await spawnSessions())
+    if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+  await Bun.sleep(600);
+  const spawnBoard = await spawnSessions();
+  check("task-spawn tick fixture: two free slots and room under the lane cap (non-tautology guard)",
+    spawnBoard.filter((s) => !s.cwd).length >= 2 && spawnBoard.filter((s) => s.worktree).length <= 1
+      && (await spawnRows()).filter((t) => t.status === "queued" && t.kind === "auftrag").length === 1,
+    `free=${spawnBoard.filter((s) => !s.cwd).length} lanes=${spawnBoard.filter((s) => s.worktree).length} queued=${JSON.stringify((await spawnRows()).filter((t) => t.status === "queued"))}`);
+  // the queued absent-choice row from (2) is retired first so the three probe rows below are the
+  // whole released set the tick sees
+  await post(`/api/tasks/${spawnPlainBody.task!.id}/delete`, {});
+  const spawnTickRow = await spawnOwnerMake({ text: "task-spawn tick claude probe", queue: true,
+    model: "task-spawn-tick-model", effort: "xhigh" });
+  const spawnTickCodex = await spawnOwnerMake({ text: "task-spawn tick codex hold", queue: true,
+    harness: "codex", model: "gpt-5.5" });
+  const spawnTickLegacy = await spawnOwnerMake({ text: "task-spawn tick legacy probe", queue: true });
+  await post("/api/autos/quiet", { start: null });
+  await post("/api/autos/switch", { on: true });
+  await post("/api/dispatch", { on: true });
+  let tickRowAfter: SpawnRow | undefined; let tickLegacyAfter: SpawnRow | undefined; let tickCodexAfter: SpawnRow | undefined;
+  for (let i = 0; i < 60; i++) { // two serial dispatches, each holding the tick through its tail
+    tickRowAfter = await spawnRowOf(spawnTickRow.id);
+    tickLegacyAfter = await spawnRowOf(spawnTickLegacy.id);
+    tickCodexAfter = await spawnRowOf(spawnTickCodex.id);
+    if (tickRowAfter?.status === "sent" && tickLegacyAfter?.status === "sent" && tickCodexAfter?.note) break;
+    await Bun.sleep(500);
+  }
+  await post("/api/dispatch", { on: false });
+  let tickSlot: SlotState | undefined; let tickLegacySlot: SlotState | undefined;
+  for (let i = 0; i < 20; i++) { // saveState is debounced — poll until both slot rows persisted
+    const spawnTickState = readState();
+    tickSlot = typeof tickRowAfter?.slot === "number" ? spawnTickState.slots?.[String(tickRowAfter.slot)] : undefined;
+    tickLegacySlot = typeof tickLegacyAfter?.slot === "number" ? spawnTickState.slots?.[String(tickLegacyAfter.slot)] : undefined;
+    if (tickSlot?.model === "task-spawn-tick-model" && !!tickLegacySlot?.cwd) break;
+    await Bun.sleep(250);
+  }
+  check("task-spawn (3): the tick starts an automatable row with ITS stored model/effort — the slot carries the effective value",
+    tickRowAfter?.status === "sent" && tickSlot?.model === "task-spawn-tick-model"
+      && tickSlot?.effort === "xhigh" && (tickSlot?.harness ?? null) === null,
+    `row=${JSON.stringify(tickRowAfter ?? null)} slot=${JSON.stringify({ model: tickSlot?.model, effort: tickSlot?.effort, harness: tickSlot?.harness ?? null })}`);
+  check("task-spawn (4): a legacy row without the field still runs DEFAULT_SPAWN — all three slot fields stay null",
+    tickLegacyAfter?.status === "sent" && (tickLegacySlot?.model ?? null) === null
+      && (tickLegacySlot?.effort ?? null) === null && (tickLegacySlot?.harness ?? null) === null,
+    `row=${JSON.stringify(tickLegacyAfter ?? null)} slot=${JSON.stringify({ model: tickLegacySlot?.model ?? null, effort: tickLegacySlot?.effort ?? null, harness: tickLegacySlot?.harness ?? null })}`);
+  check("task-spawn (3b): the released codex row waits LOUDLY — still queued, the adapter named on its own row, and the queue behind it moved",
+    tickCodexAfter?.status === "queued"
+      && (tickCodexAfter?.note ?? "").includes("harness codex is not automatable")
+      && tickLegacyAfter?.status === "sent",
+    JSON.stringify(tickCodexAfter ?? null));
+
+  // cleanup — dispatcher already off; kill the two tick lanes, delete every probe row, and put
+  // both master stops back where this section found them (ACP-16 restored them above, so "found"
+  // is switchesBefore again). Quiet hours stay cleared — the suite default, which e2e/tasks.ts
+  // sets and clears for itself either way.
+  for (const s of await spawnSessions())
+    if (s.worktree && s.id !== ctx.restartSelfSlot) await post(`/api/slots/${s.id}/kill`, {});
+  for (const id of spawnTasks) await post(`/api/tasks/${id}/delete`, {});
+  await post("/api/dispatch", { on: switchesBefore.dispatchOn });
+  await post("/api/autos/switch", { on: switchesBefore.autosOn });
+  const spawnSwitchesAfter = await fleetSwitches();
+  check("task-spawn cleanup: every probe row and lane is gone and both master stops are back where they were",
+    (await spawnRows()).every((t) => !spawnTasks.includes(t.id))
+      && (await spawnSessions()).filter((s) => s.worktree && s.id !== ctx.restartSelfSlot).length === 0
+      && spawnSwitchesAfter.dispatchOn === switchesBefore.dispatchOn
+      && spawnSwitchesAfter.autosOn === switchesBefore.autosOn,
+    `rows=${(await spawnRows()).filter((t) => spawnTasks.includes(t.id)).length} switches=${JSON.stringify(spawnSwitchesAfter)}`);
 
   if (successorSlot !== null) await post(`/api/slots/${successorSlot}/kill`, {});
   const occupiedAfterKill = (await sessions()).slots.filter((s) => s.cwd).length;

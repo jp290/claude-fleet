@@ -2158,10 +2158,12 @@ const SOURCE_DIR = ((): string | null => {
   const RULE_PATHS = "every path CLAUDE.md cites still resolves";
   const RULE_GREPS = "every grep CLAUDE.md sends the reader on still finds something";
   const RULE_SUBJ = "CLAUDE.md yields anchors of both classes (a rule with no subject is not a pass)";
+  const RULE_ANCHORS = "every section anchor CLAUDE.md cites resolves to a heading in that file";
 
   if (copy === null) {
     skip(RULE_SUBJ, `no rulebook in this tree (state=${state})`);
     skip(RULE_PATHS, "no rulebook in this tree");
+    skip(RULE_ANCHORS, "no rulebook in this tree");
     skip(RULE_GREPS, "no rulebook in this tree");
   } else {
     // --- what counts as a citation THIS repo can be held to. Three filters, each for a class of
@@ -2228,6 +2230,64 @@ const SOURCE_DIR = ((): string | null => {
         else if (!hay.includes(m[1])) deadGreps.push(`${CLAUDE}:${i + 1} ${safe(m[1])} not in ${safe(target)}`);
       }
 
+    // --- class C: a cited SECTION ANCHOR that no longer resolves. Class A holds a cited path to
+    // the existence of its FILE and stops there, so a rulebook may point at `docs/self-api.md`
+    // §release for months while that file has no such section — which is exactly how the reference
+    // for POST /api/self/tasks/:id/release stayed missing after 83468e0 landed the route: the
+    // rulebook named the door and the errand ended in nothing, with every check green. The form
+    // held here is the one the rulebook actually writes: a path immediately followed by `§<anchor>`
+    // (backticks optional — one citation carries none), filtered by the SAME attributable/exists
+    // gate as class A so a gitignored or foreign path is not double-reported here and there.
+    //
+    // THE MATCH IS DELIBERATELY TOLERANT, because a pin that reds on a correct heading is worse
+    // than no pin: the anchor is a shorthand, never the heading. Two shapes, and no special-case
+    // list — a list of exceptions in here would BE the defect:
+    //   · a numeric anchor (`§4`, `§11.7`) must START its heading, once a leading `§` is stripped
+    //     from the heading too (the messgeschichten file writes its headings as `## §4 …`). The
+    //     start requirement is what keeps `§1` from resolving against `## 11. …`.
+    //   · a word anchor (`§PATH`, `§autos`, `§Faktschicht`) may stand anywhere in the heading on
+    //     word boundaries — `§succeed` answers to `## succeed / retire — …` and `§Faktschicht` to
+    //     `## Die Faktschicht \`agent\``, and neither is a prefix of its heading. SLASHED TOKENS
+    //     ARE DROPPED FIRST, and that is not tidiness: these headings quote the route they document
+    //     (`## watch — POST /api/self/watch`), so a plain word match reads the ROUTE and the anchor
+    //     then resolves against any heading that merely mentions it. Measured, not feared — renaming
+    //     that heading to `## abonnieren — POST /api/self/watch` left the first version of this rule
+    //     GREEN on a broken anchor. A path token inside a heading is not that heading's name.
+    const deadAnchors: string[] = [];
+    let anchors = 0;
+    const headingCache = new Map<string, string[] | null>();
+    const headingsOf = (rel: string): string[] | null => {
+      if (!headingCache.has(rel)) {
+        let hs: string[] | null = null;
+        try {
+          hs = read(rel).split("\n").filter((l) => /^#{1,6}\s/.test(l))
+            .map((l) => l.replace(/^#{1,6}\s+/, "").replace(/[`*]/g, "").replace(/^§/, "").trim());
+        } catch { hs = null; }
+        headingCache.set(rel, hs);
+      }
+      return headingCache.get(rel) ?? null;
+    };
+    const anchorResolves = (rel: string, anc: string): boolean => {
+      const hs = headingsOf(rel);
+      if (hs === null) return false;
+      const numeric = /^[0-9]+(?:\.[0-9]+)*$/.test(anc);
+      const esc = anc.replace(/[.+^${}()|[\]\\*?]/g, "\\$&");
+      if (numeric) {
+        const re = new RegExp(`^${esc}(?![A-Za-z0-9])`);
+        return hs.some((h) => re.test(h));
+      }
+      const re = new RegExp(`(?<![A-Za-z0-9])${esc}(?![A-Za-z0-9])`, "i");
+      return hs.some((h) => re.test(h.split(/\s+/).filter((t) => !t.includes("/")).join(" ")));
+    };
+    for (let i = 0; i < lines.length; i++)
+      for (const m of lines[i].matchAll(/`?([A-Za-z0-9_][A-Za-z0-9_./-]*\.md)`?\s+§([^\s,;)]+)/g)) {
+        const p = m[1].replace(/^\.\//, "");
+        const anc = m[2].replace(/[.,;:]+$/, "");
+        if (!anc || !attributable(p) || !exists(p)) continue;
+        anchors++;
+        if (!anchorResolves(p, anc)) deadAnchors.push(`${CLAUDE}:${i + 1} ${safe(`${p} §${anc}`)}`);
+      }
+
     // --- is this copy a PARTIAL rendering? Since B2 a lane is not handed the whole rulebook but
     // three of the seven fragments, and the errand form `…, grep \`sym\`` happens to live only in
     // fragments a lane never receives: the lane rendering carries 50 paths and ZERO errands. So
@@ -2252,6 +2312,15 @@ const SOURCE_DIR = ((): string | null => {
       `state=${state}${partial ? ", partial rendering" : ""}; ${paths} path(s), ${greps} grep errand(s)`);
     pin(RULE_PATHS, deadPaths.length === 0,
       `${state === "current" ? "" : `${state} copy — advisory; `}${deadPaths.join("; ")}`, soft);
+    // No anchor in these fragments is not a defect of the tree — it is a rulebook that sends the
+    // reader on no sectioned errand, and this rule then says NEVER MEASURED under its own name
+    // rather than passing over an empty set (the vacuum-green RULE_GREPS is skipped for above).
+    if (anchors === 0) {
+      skip(RULE_ANCHORS, `state=${state} — no \`path §anchor\` citation in this rendering`);
+    } else {
+      pin(RULE_ANCHORS, deadAnchors.length === 0,
+        `${state === "current" ? "" : `${state} copy — advisory; `}${anchors} anchor(s)${deadAnchors.length ? `; ${deadAnchors.join("; ")}` : ""}`, soft);
+    }
     if (partial && greps === 0) {
       skip(RULE_GREPS, `partial rendering (state=${state}) — no errand in these fragments to follow`);
     } else {

@@ -102,17 +102,55 @@ Die sichtbaren Produktrollen aus `SYSTEM.md` reduzieren sich auf zwei Autorität
 | Klasse | Lebensdauer | Aufgabe | Mutation |
 |---|---|---|---|
 | **Coordinator** | langlebig | Ziel, Entscheidungen, Fragen und Act-Reihenfolge zusammenhalten | Program-/Act-Zustand; Produktcode nur als eigener geleaster Act |
-| **Specialist** | genau ein Act | untersuchen, bauen, reparieren, kritisieren oder testen | nur bei mutierendem Act und nur im exklusiven Write-Set |
+| **Specialist** | kohärent begrenzt (siehe unten) | untersuchen, bauen, reparieren, kritisieren oder testen | nur bei mutierendem Act und nur im exklusiven Write-Set |
 
 - Fleet Controller und Project MAIN sind Coordinator mit unterschiedlichem Scope.
 - Supervisor ist ein beobachtender Coordinator beziehungsweise deterministischer Sensor plus
   optionaler Digest-Specialist. Er ist keine parallele Owner-Autorität.
 - Builder, Researcher, Context Cartographer, Browser-Taster, Visual Critic und Reviewer sind Modi
-  temporärer Specialists, keine dauerhaften Rollen.
+  von Specialists, keine dauerhaften Rollen. „Modus" sagt, WAS eine Instanz tut, nicht wie lange
+  sie lebt — die Lebensdauer entscheidet die Workerform weiter unten.
 - Clarification ist ein Zustand und ein Request-Objekt, keine notwendige Sessionart. Eine
   Clarify-Lane wird nur gegründet, wenn wirklich unabhängige Recherche nötig ist.
 - Verify- und Land-Gates sind Maschinen. Ein Agent darf Evidenz interpretieren, ersetzt das Gate
   aber nicht.
+
+### Der gemeinsame Rollenvertrag
+
+Rollenverständnis ist Kernkontext, nicht Beiwerk. `AGENTS.md` trägt einen KNAPPEN gemeinsamen
+Rollenvertrag über vier Ebenen — Fleet Controller, Project MAIN, Act Lead/Worker, Supervisor —
+mit je vier Angaben: Zweck, Autonomie, Rückweg, und welche Entscheidungen die Ebene SELBST trifft.
+
+Vier Quellen, klar geschnitten und nicht gegeneinander austauschbar:
+
+| Quelle | liefert |
+|---|---|
+| Rollenvertrag in `AGENTS.md` | die EBENE: Zweck, Autonomie, Rückweg, Entscheidungshoheit |
+| dynamischer Role Bootstrap (Act 6) | die KONKRETE Rolle, Authority und Capabilities DIESER Instanz |
+| Projekt-`AGENTS.md` und Projektquellen | Domänenrealität |
+| Act-Brief | den Auftrag |
+
+Grenze in beide Richtungen: keine Rollen-Megahandbücher, aber auch keine Reduktion auf
+Funktionsnamen. Ein Rollenname ohne Autonomie- und Rückwegangabe ist kein Vertrag, sondern ein
+Etikett.
+
+### Kohärent begrenzte Lanes — nicht „schmale" Lanes
+
+**Bounded heißt: Ziel, Authority, Ownership, Proof und Checkpoints sind begrenzt — NICHT zwingend
+kurze Dauer oder kleine Dateifläche.** Der Reflex „schmal = kurz und klein" ist damit verworfen,
+nicht abgeschwächt.
+
+Game Development braucht bewusst RESIDENT arbeitende System-, Feel- und Optimization-Spezialisten,
+wenn mehrere Mess-→Änderungs-→Tasting-Schleifen, starke Kopplung und Cache-Wiederverwendung Nutzen
+bringen. Ein Repair darf zum SELBEN residenten Agenten zurück, damit sein Arbeitsmodell und sein
+Cache genutzt werden; ein frischer Agent zahlt beides ein zweites Mal.
+
+Kurze frische Lanes bleiben richtig für isolierte Slices und besonders für Blind-Critics, deren
+Wert gerade darin liegt, die Selbsterklärung des Builders nicht zu kennen.
+
+Die Workerform wird aus fünf Größen entschieden, nie aus Gewohnheit:
+**Kopplungsradius · erwartete Iterationen · Cache-Nutzen · Bedarf an Unabhängigkeit ·
+Kontextfüllstand.**
 
 ## 4. Welche Agents dieses Programm braucht
 

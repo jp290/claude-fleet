@@ -48,3 +48,8 @@ inspektion-register.jsonl
 # untracked file blocks a lane land, and the route REFUSES to write where this line is missing.
 # Keeping a drop is then a deliberate `git add -f` — losing it is the default.
 drops/
+
+# backups of the deploy identity. `.env` above is ignored, its copies were not: a `.env.bak-<ts>`
+# sat untracked in this PUBLIC repo carrying the real host, IP and share URLs (measured 2026-08-22).
+# One `git add -A` would have published them.
+.env.bak*
